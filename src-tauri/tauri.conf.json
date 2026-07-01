@@ -18,6 +18,7 @@
         "title": "说吧！",
         "width": 1080,
         "height": 860,
+        "center": true,
         "resizable": true,
         "visible": false,
         "decorations": false
