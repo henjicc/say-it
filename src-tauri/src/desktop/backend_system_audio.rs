@@ -1,4 +1,7 @@
-use crate::desktop::backend_mic::{build_backend_mic_stream, flush_backend_mic_buffer};
+use crate::desktop::backend_mic::{
+    flush_backend_mic_buffer, interleaved_to_mono_f32_from_f32, interleaved_to_mono_f32_from_i16,
+    interleaved_to_mono_f32_from_u16, push_backend_mic_samples,
+};
 use crate::prelude::*;
 use crate::state::*;
 
@@ -6,11 +9,64 @@ use crate::state::*;
 /// 会自动切到 loopback 模式，采集到的就是该设备正在播放的声音（见 cpal wasapi 模块文档）。
 /// 除了设备来源换成 `output_devices()`，worker 线程/attach/pause 状态机与
 /// `backend_mic.rs` 完全一致，复用同一套 `BackendMicState`/`BackendMicCommand` 类型和
-/// `build_backend_mic_stream`/`flush_backend_mic_buffer` 辅助函数。
+/// `flush_backend_mic_buffer` 辅助函数。
 fn find_output_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
     host.output_devices()
         .ok()?
         .find(|device| device.name().map(|n| n == name).unwrap_or(false))
+}
+
+fn build_backend_system_audio_stream(
+    system_audio: Arc<Mutex<BackendMicState>>,
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+) -> Result<cpal::Stream, String> {
+    let stream_config: cpal::StreamConfig = config.clone().into();
+    let channels = stream_config.channels.max(1) as usize;
+    let err_fn = |err| dlog!("[backend-system-audio] 输入流错误: {err}");
+
+    match config.sample_format() {
+        cpal::SampleFormat::F32 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[f32], _| {
+                    push_backend_mic_samples(
+                        &system_audio,
+                        interleaved_to_mono_f32_from_f32(data, channels),
+                    );
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
+        cpal::SampleFormat::I16 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[i16], _| {
+                    push_backend_mic_samples(
+                        &system_audio,
+                        interleaved_to_mono_f32_from_i16(data, channels),
+                    );
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
+        cpal::SampleFormat::U16 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[u16], _| {
+                    push_backend_mic_samples(
+                        &system_audio,
+                        interleaved_to_mono_f32_from_u16(data, channels),
+                    );
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
+        sample_format => Err(format!("不支持的系统音频采样格式: {sample_format:?}")),
+    }
 }
 
 #[tauri::command]
@@ -82,14 +138,15 @@ pub(crate) fn start_backend_system_audio(
     };
     let resolved_device_name = if fallback { None } else { requested.clone() };
     let config = device
-        .default_input_config()
-        .map_err(|e| format!("读取系统音频 loopback 配置失败: {e}"))?;
+        .default_output_config()
+        .map_err(|e| format!("读取系统音频输出配置失败: {e}"))?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
     let system_audio = state.backend_system_audio.clone();
     std::thread::spawn(move || {
-        let stream = match build_backend_mic_stream(system_audio.clone(), &device, &config) {
+        let stream = match build_backend_system_audio_stream(system_audio.clone(), &device, &config)
+        {
             Ok(stream) => stream,
             Err(err) => {
                 dlog!("[backend-system-audio] {err}");
@@ -242,7 +299,9 @@ pub(crate) fn attach_backend_system_audio_to_asr(
 }
 
 #[tauri::command]
-pub(crate) fn pause_backend_system_audio(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+pub(crate) fn pause_backend_system_audio(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<(), String> {
     let worker = {
         let guard = state
             .backend_system_audio
@@ -272,7 +331,9 @@ pub(crate) fn pause_backend_system_audio(state: tauri::State<'_, RuntimeState>) 
 }
 
 #[tauri::command]
-pub(crate) fn release_backend_system_audio(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+pub(crate) fn release_backend_system_audio(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<(), String> {
     let worker = {
         let mut guard = state
             .backend_system_audio
