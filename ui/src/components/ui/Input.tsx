@@ -153,9 +153,8 @@ export function Select({
         className={cn(
           fieldBase,
           "flex items-center justify-between gap-3 pr-3 text-left",
-          "bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.035))]",
-          "hover:border-white/18 hover:bg-white/[0.075]",
-          open && "border-white/30 bg-white/[0.085]",
+          "hover:border-white/18 hover:bg-white/[0.06]",
+          open && "border-white/30 bg-white/[0.06]",
           disabled && "cursor-not-allowed opacity-50",
         )}
         disabled={disabled}
