@@ -32,7 +32,7 @@ export function Tabs<K extends string>({ tabs, active, onChange, className }: Ta
             className={cn(
               "rounded-lg px-4 py-2 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]",
               isActive
-                ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)] [box-shadow:0_8px_24px_color-mix(in_srgb,var(--color-accent)_18%,transparent)]"
+                ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
                 : "text-white/55 hover:bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] hover:text-white/85",
             )}
           >

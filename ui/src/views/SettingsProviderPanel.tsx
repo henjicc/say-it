@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Field, CheckField } from "@/components/ui/Field";
@@ -7,6 +7,27 @@ import { Slider } from "@/components/ui/Slider";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 
+const API_KEY_MASK = "••••••••••••••••";
+
+function EyeIcon({ visible }: { visible: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden
+    >
+      <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z" />
+      <circle cx="12" cy="12" r="2.8" />
+      {!visible && <path d="M4 4 20 20" />}
+    </svg>
+  );
+}
+
 export function SettingsProviderPanel() {
   const providers = useProviderStore((s) => s.profiles);
   const providerStatus = useProviderStore((s) => s.statusText);
@@ -14,6 +35,10 @@ export function SettingsProviderPanel() {
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
 
   const [apiKey, setApiKey] = useState("");
+  const [savedApiKey, setSavedApiKey] = useState("");
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
   const [message, setMessage] = useState("");
   const [languageHints, setLanguageHints] = useState<string[]>([]);
   const [semanticPunctuation, setSemanticPunctuation] = useState(false);
@@ -23,6 +48,10 @@ export function SettingsProviderPanel() {
 
   const funasr = providers.find((p) => p.id === "funasr");
   const hasApiKey = !!funasr?.status?.hasApiKey;
+  const saveRequestRef = useRef(0);
+  const apiKeyInputRef = useRef<HTMLInputElement>(null);
+  const showStoredApiKey = !apiKey && (savedApiKey || hasApiKey);
+  const apiKeyInputValue = apiKey || (showStoredApiKey ? (apiKeyVisible && savedApiKey ? savedApiKey : API_KEY_MASK) : "");
 
   useEffect(() => {
     loadProviders();
@@ -42,14 +71,50 @@ export function SettingsProviderPanel() {
     );
   }, [funasr?.config]);
 
-  const saveApiKey = async () => {
-    try {
-      await updateProviderConfig("funasr", { apiKey });
-      setApiKey("");
-      setMessage("API Key 已保存。");
-    } catch (error) {
-      setMessage(`保存失败：${String(error)}`);
+  useEffect(() => {
+    if (!apiKeyDirty) return;
+    const nextApiKey = apiKey.trim();
+    if (!nextApiKey) {
+      setApiKeySaving(false);
+      return;
     }
+
+    setApiKeySaving(true);
+    const timer = window.setTimeout(async () => {
+      const requestId = saveRequestRef.current + 1;
+      saveRequestRef.current = requestId;
+
+      try {
+        await updateProviderConfig("funasr", { apiKey: nextApiKey });
+        if (saveRequestRef.current !== requestId) return;
+        setSavedApiKey(nextApiKey);
+        setApiKeyDirty(false);
+        if (document.activeElement !== apiKeyInputRef.current) {
+          setApiKey("");
+          setApiKeyVisible(false);
+        }
+        setMessage("API Key 已自动保存。");
+      } catch (error) {
+        if (saveRequestRef.current === requestId) setMessage(`保存失败：${String(error)}`);
+      } finally {
+        if (saveRequestRef.current === requestId) setApiKeySaving(false);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [apiKey, apiKeyDirty, updateProviderConfig]);
+
+  const beginApiKeyEdit = () => {
+    if (!apiKey && showStoredApiKey) {
+      setSavedApiKey("");
+      setApiKeyVisible(false);
+    }
+  };
+
+  const finishApiKeyEdit = () => {
+    if (!apiKey.trim() || apiKeyDirty) return;
+    setApiKey("");
+    setApiKeyVisible(false);
   };
 
   const openApiKeyPage = async () => {
@@ -95,20 +160,36 @@ export function SettingsProviderPanel() {
         </button>
       </CardDescription>
 
-      <div className="mt-4 flex items-center gap-2">
-        <Input
-          type="password"
-          placeholder={hasApiKey ? "已保存 API Key，输入新值可覆盖" : "输入阿里云百炼 API Key"}
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-        />
-        <Button variant="primary" onClick={saveApiKey} disabled={!apiKey.trim()}>
-          保存
-        </Button>
+      <div className="mt-4">
+        <div className="relative">
+          <Input
+            ref={apiKeyInputRef}
+            type={apiKeyVisible && (apiKey || savedApiKey) ? "text" : "password"}
+            placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
+            value={apiKeyInputValue}
+            onFocus={beginApiKeyEdit}
+            onBlur={finishApiKeyEdit}
+            onChange={(event) => {
+              setApiKey(event.target.value);
+              setApiKeyDirty(true);
+              setSavedApiKey("");
+            }}
+            className="pr-11"
+          />
+          <button
+            type="button"
+            aria-label={apiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
+            onClick={() => setApiKeyVisible((current) => !current)}
+            disabled={!apiKey && !savedApiKey}
+            className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            <EyeIcon visible={apiKeyVisible} />
+          </button>
+        </div>
       </div>
       <p className="mt-2 text-xs text-white/45">
         当前状态：{hasApiKey ? "已配置 API Key" : "未配置 API Key"}
-        {providerStatus ? ` · ${providerStatus}` : ""}
+        {apiKeySaving ? " · 正在自动保存..." : providerStatus ? ` · ${providerStatus}` : ""}
       </p>
 
       <div className="mt-5 rounded-lg border border-white/10 bg-black/20 p-3">
