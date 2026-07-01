@@ -1,8 +1,7 @@
 import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
-import { float32ToBase64 } from "@/lib/audio-dsp";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useSubtitleStore, type SubtitlePrefs } from "@/store/useSubtitleStore";
+import { useSubtitleStore, parseSubtitleSource, type SubtitlePrefs } from "@/store/useSubtitleStore";
 import {
   clearMicShutdownTimer,
   ensureMic,
@@ -42,11 +41,7 @@ const MAX_RECONNECT_ATTEMPTS = 6;
 let reconnecting = false;
 let reconnectAttempts = 0;
 
-let systemStream: MediaStream | null = null;
-let systemAudioCtx: AudioContext | null = null;
-let systemSource: MediaStreamAudioSourceNode | null = null;
-let systemProcessor: ScriptProcessorNode | null = null;
-let pushChain: Promise<unknown> = Promise.resolve();
+let backendSystemAudioSampleRate = 48000;
 
 function setStatus(statusText: string, statusTone: "" | "ok" | "err" = "") {
   useSubtitleStore.getState().setRuntime({ statusText, statusTone });
@@ -145,70 +140,25 @@ function renderSubtitle(nextSegment = currentSegment) {
   cmdSilent(CMD.setIndicatorText, { text: displayText });
 }
 
-function pushSystemSamples(samples: Float32Array) {
-  const sessionId = subtitleSessionId;
-  if (!sessionId || samples.length === 0) return;
-  const audioBase64 = float32ToBase64(samples);
-  pushChain = pushChain.then(() =>
-    cmd(CMD.asrStreamPushF32Chunk, { sessionId, audioBase64 }).catch((error) => {
-      pushLog(`系统音频推送失败：${String(error)}`);
-    }),
+/** 原生 loopback 采集系统音频（把选定的播放设备当输入设备打开），不依赖浏览器共享屏幕弹窗。 */
+async function ensureBackendSystemAudio(deviceName: string | undefined) {
+  const result = await cmd<{
+    sampleRate?: number;
+    channels?: number;
+    reused?: boolean;
+    deviceName?: string | null;
+    fallback?: boolean;
+  }>(CMD.startBackendSystemAudio, { deviceName });
+  backendSystemAudioSampleRate = result.sampleRate || 48000;
+  pushLog(
+    `系统音频采集已${result.reused ? "复用" : "激活"}：${backendSystemAudioSampleRate}Hz / ${result.channels || 1}ch${
+      result.deviceName ? ` / ${result.deviceName}` : " / 默认播放设备"
+    }`,
   );
+  if (result.fallback) pushLog("所选播放设备未找到，已回退到默认播放设备。");
 }
 
-async function startSystemAudio() {
-  const mediaDevices = navigator.mediaDevices;
-  if (!mediaDevices?.getDisplayMedia) {
-    throw new Error("当前 WebView 不支持系统音频捕获");
-  }
-  const stream = await mediaDevices.getDisplayMedia({
-    audio: {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    },
-    video: true,
-  });
-  const audioTracks = stream.getAudioTracks();
-  stream.getVideoTracks().forEach((track) => track.stop());
-  if (audioTracks.length === 0) {
-    stream.getTracks().forEach((track) => track.stop());
-    throw new Error("未获取到系统音频轨道，请在共享窗口中勾选系统音频");
-  }
-
-  systemStream = stream;
-  systemAudioCtx = new AudioContext();
-  systemSource = systemAudioCtx.createMediaStreamSource(stream);
-  systemProcessor = systemAudioCtx.createScriptProcessor(4096, 1, 1);
-  systemProcessor.onaudioprocess = (event) => {
-    const input = event.inputBuffer;
-    const channels = Math.max(1, input.numberOfChannels);
-    const output = new Float32Array(input.length);
-    for (let ch = 0; ch < channels; ch += 1) {
-      const data = input.getChannelData(ch);
-      for (let i = 0; i < data.length; i += 1) output[i] += data[i] / channels;
-    }
-    pushSystemSamples(output);
-  };
-  systemSource.connect(systemProcessor);
-  systemProcessor.connect(systemAudioCtx.destination);
-}
-
-function stopSystemAudio() {
-  if (systemProcessor) {
-    systemProcessor.disconnect();
-    systemProcessor.onaudioprocess = null;
-  }
-  if (systemSource) systemSource.disconnect();
-  if (systemAudioCtx && systemAudioCtx.state !== "closed") systemAudioCtx.close().catch(() => {});
-  systemStream?.getTracks().forEach((track) => track.stop());
-  systemStream = null;
-  systemAudioCtx = null;
-  systemSource = null;
-  systemProcessor = null;
-}
-
-/** 开一路新的 ASR 会话，并（麦克风来源时）把已在跑的后端麦克风接过来。不动 committedLines/currentSegment，供首次启动和断线重连共用。 */
+/** 开一路新的 ASR 会话，并把已在跑的对应后端音频采集（麦克风/系统音频）接过来。不动 committedLines/currentSegment，供首次启动和断线重连共用。 */
 async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
@@ -216,8 +166,11 @@ async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number) {
     params: useDictPrefs.getState().dspParams(),
   });
   subtitleSessionId = session.session_id;
-  if (prefs.source === "microphone") {
+  const { kind } = parseSubtitleSource(prefs.source);
+  if (kind === "mic") {
     await cmd(CMD.attachBackendMicToAsr, { sessionId: subtitleSessionId });
+  } else {
+    await cmd(CMD.attachBackendSystemAudioToAsr, { sessionId: subtitleSessionId });
   }
 }
 
@@ -253,7 +206,7 @@ async function reconnectSubtitleSession() {
     }
     pushLog("ASR 会话已自动重连。");
     setStatus(
-      prefs.source === "microphone" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
+      parseSubtitleSource(prefs.source).kind === "mic" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
       "ok",
     );
   } catch (error) {
@@ -275,19 +228,20 @@ async function startSubtitles() {
   await syncSubtitleIndicator(prefs);
 
   subtitleSampleRate = 48000;
-  if (prefs.source === "microphone") {
+  const { kind, deviceName } = parseSubtitleSource(prefs.source);
+  if (kind === "mic") {
     await ensureMic(pushLog);
     subtitleSampleRate = getBackendMicSampleRate() || 48000;
   } else {
-    await startSystemAudio();
-    subtitleSampleRate = systemAudioCtx?.sampleRate || 48000;
+    await ensureBackendSystemAudio(deviceName);
+    subtitleSampleRate = backendSystemAudioSampleRate;
   }
 
   await openAsrSession(prefs, subtitleSampleRate);
 
   useSubtitleStore.getState().setRuntime({
     running: true,
-    statusText: prefs.source === "microphone" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
+    statusText: kind === "mic" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
     statusTone: "ok",
     latestText: "",
   });
@@ -300,9 +254,10 @@ async function stopSubtitles() {
   subtitleSessionId = null;
   currentSegment = "";
   committedLines = [];
-  stopSystemAudio();
   await cmdSilent(CMD.pauseBackendMic);
   scheduleMicShutdown(pushLog);
+  await cmdSilent(CMD.pauseBackendSystemAudio);
+  await cmdSilent(CMD.releaseBackendSystemAudio);
   if (session) await cmdSilent(CMD.stopAsrStream, { sessionId: session });
   await emitEvent(EVT.indicatorConfig, { mode: "dictation" });
   await cmdSilent(CMD.setIndicatorLayout, { width: 520, height: 220, anchor: "bottom", offsetY: 36 });
@@ -324,8 +279,8 @@ export async function toggleSubtitles() {
   } catch (error) {
     const session = subtitleSessionId;
     subtitleSessionId = null;
-    stopSystemAudio();
     await shutdownMic();
+    await cmdSilent(CMD.releaseBackendSystemAudio);
     if (session) await cmdSilent(CMD.stopAsrStream, { sessionId: session });
     await cmdSilent(CMD.setIndicatorState, { state: "hidden" });
     useSubtitleStore.getState().setRuntime({

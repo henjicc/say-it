@@ -1,6 +1,27 @@
 import { create } from "zustand";
 
-export type SubtitleSource = "microphone" | "system";
+/**
+ * 声音来源用一个字符串 id 表达："mic:default" / "system:default" 是最上面的
+ * 默认麦克风/系统音频；"mic:<设备名>" / "system:<设备名>" 指向某个具体的输入/
+ * 播放设备（系统音频这边是把播放设备当输入设备做 loopback 采集）。
+ */
+export type SubtitleSource = string;
+export type SubtitleSourceKind = "mic" | "system";
+export const DEFAULT_SUBTITLE_SOURCE: SubtitleSource = "mic:default";
+
+export function buildSubtitleSource(kind: SubtitleSourceKind, deviceName?: string): SubtitleSource {
+  return deviceName ? `${kind}:${deviceName}` : `${kind}:default`;
+}
+
+export function parseSubtitleSource(source: SubtitleSource): { kind: SubtitleSourceKind; deviceName?: string } {
+  const [kind, ...rest] = source.split(":");
+  const deviceName = rest.join(":");
+  return {
+    kind: kind === "system" ? "system" : "mic",
+    deviceName: deviceName && deviceName !== "default" ? deviceName : undefined,
+  };
+}
+
 export type SubtitleAnchor = "top" | "center" | "bottom";
 export type SubtitleMode = "scroll" | "replace";
 
@@ -43,7 +64,7 @@ interface SubtitleState {
 const SUBTITLE_PREFS_KEY = "sayItSubtitlePrefs";
 
 const defaults = (): SubtitlePrefs => ({
-  source: "microphone",
+  source: DEFAULT_SUBTITLE_SOURCE,
   mode: "replace",
   fontFamily: "Microsoft YaHei",
   fontSizePercent: 2.6,
@@ -57,9 +78,18 @@ const defaults = (): SubtitlePrefs => ({
   rounded: 18,
 });
 
+// 旧版本只存 "microphone"/"system" 两个粗粒度值，迁移成新的 "kind:default" 格式，
+// 避免下拉框因为找不到匹配项而显示成原始字符串。
+function migrateLegacySource(source: string): string {
+  if (source === "microphone") return buildSubtitleSource("mic");
+  if (source === "system") return buildSubtitleSource("system");
+  return source;
+}
+
 function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
   return {
     ...prefs,
+    source: migrateLegacySource(prefs.source),
     fontSizePercent: Math.min(6, Math.max(1.5, Number(prefs.fontSizePercent) || 2.6)),
     lineCount: Math.min(4, Math.max(1, Math.round(Number(prefs.lineCount) || 1))),
     widthPercent: Math.min(70, Math.max(20, Number(prefs.widthPercent) || 46)),

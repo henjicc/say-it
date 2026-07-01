@@ -14,7 +14,15 @@ import {
   startSubtitleShortcutCapture,
   clearSubtitleShortcut,
 } from "@/features/subtitles/controller";
-import { useSubtitleStore, type SubtitleAnchor, type SubtitleMode, type SubtitleSource } from "@/store/useSubtitleStore";
+import {
+  useSubtitleStore,
+  buildSubtitleSource,
+  parseSubtitleSource,
+  type SubtitleAnchor,
+  type SubtitleMode,
+} from "@/store/useSubtitleStore";
+import { useAudioDevices } from "@/features/audio/devices";
+import { useDictPrefs } from "@/store/useDictPrefs";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 
@@ -80,6 +88,20 @@ export function RealtimeSubtitlesPanel() {
   const { prefs, running, statusText, statusTone, capturing, shortcutLabel, patch } = useSubtitleStore();
   const [previewOpen, setPreviewOpen] = useState(false);
   const systemFonts = useSystemFonts();
+  const { inputs, outputs } = useAudioDevices();
+  const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
+  const dictPatch = useDictPrefs((s) => s.patch);
+
+  // 麦克风设备是语音输入和实时字幕共用的全局偏好（同一个后端采集单例），
+  // 这里下拉框选中的"麦克风"具体设备始终跟着这个全局值走，而不是自己单独存一份。
+  const parsedSource = parseSubtitleSource(prefs.source);
+  const sourceSelectValue =
+    parsedSource.kind === "mic" ? buildSubtitleSource("mic", micDeviceId || undefined) : prefs.source;
+  const onSourceChange = (nextValue: string) => {
+    const next = parseSubtitleSource(nextValue);
+    if (next.kind === "mic") dictPatch({ micDeviceId: next.deviceName || "" });
+    patch({ source: nextValue });
+  };
 
   // 真正运行、或预览开着时，持续把样式变化同步到悬浮窗。
   useEffect(() => {
@@ -137,12 +159,34 @@ export function RealtimeSubtitlesPanel() {
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <Field label="声音来源">
           <Select
-            value={prefs.source}
+            searchable={inputs.length + outputs.length > 5}
+            searchPlaceholder="搜索设备…"
+            value={sourceSelectValue}
             disabled={running}
-            onChange={(event) => patch({ source: event.target.value as SubtitleSource })}
+            onChange={(event) => onSourceChange(event.target.value)}
           >
-            <option value="microphone">麦克风</option>
-            <option value="system">系统音频</option>
+            <option value={buildSubtitleSource("mic")}>麦克风（默认）</option>
+            <option value={buildSubtitleSource("system")}>系统音频（默认）</option>
+            {inputs.length > 0 && (
+              <option value="__group_inputs" disabled>
+                — 输入设备 —
+              </option>
+            )}
+            {inputs.map((device) => (
+              <option key={`in:${device.name}`} value={buildSubtitleSource("mic", device.name)}>
+                {device.name}
+              </option>
+            ))}
+            {outputs.length > 0 && (
+              <option value="__group_outputs" disabled>
+                — 输出设备 —
+              </option>
+            )}
+            {outputs.map((device) => (
+              <option key={`out:${device.name}`} value={buildSubtitleSource("system", device.name)}>
+                {device.name}
+              </option>
+            ))}
           </Select>
         </Field>
         <Field label="字幕更新方式">
