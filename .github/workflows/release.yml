@@ -26,12 +26,38 @@ jobs:
       - name: install frontend dependencies
         run: npm install
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: build tauri app
+        run: npm run tauri:build
+
+      - name: publish github release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: '说吧！ v__VERSION__'
-          releaseBody: '## 更新内容\n\n- \n\n下载对应安装包进行安装。'
-          releaseDraft: false
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $bundleDir = Join-Path $PWD "src-tauri/target/release/bundle/nsis"
+          $installers = @(Get-ChildItem -LiteralPath $bundleDir -Filter "*.exe")
+
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer in $bundleDir, found $($installers.Count)."
+          }
+
+          $installerName = "说吧_${version}_x64-setup.exe"
+          $installerPath = Join-Path $bundleDir $installerName
+          Rename-Item -LiteralPath $installers[0].FullName -NewName $installerName
+
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          @"
+          ## 更新内容
+
+          - 初始发布版本。
+
+          下载对应安装包进行安装。
+          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          gh release create "${{ github.ref_name }}" $installerPath `
+            --title "说吧！ v$version" `
+            --notes-file $notesPath `
+            --latest
