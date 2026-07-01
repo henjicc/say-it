@@ -48,6 +48,7 @@ export function SettingsProviderPanel() {
   const [languageHints, setLanguageHints] = useState<string[]>([]);
   const [semanticPunctuation, setSemanticPunctuation] = useState(false);
   const [maxSentenceSilence, setMaxSentenceSilence] = useState(1300);
+  const [multiThresholdMode, setMultiThresholdMode] = useState(false);
   const [heartbeat, setHeartbeat] = useState(false);
   const [noiseThreshold, setNoiseThreshold] = useState("");
 
@@ -68,6 +69,7 @@ export function SettingsProviderPanel() {
     setLanguageHints(Array.isArray(config.languageHints) ? (config.languageHints as string[]) : []);
     setSemanticPunctuation(!!config.semanticPunctuationEnabled);
     setMaxSentenceSilence(Number(config.maxSentenceSilence ?? 1300));
+    setMultiThresholdMode(!!config.multiThresholdModeEnabled);
     setHeartbeat(!!config.heartbeat);
     setNoiseThreshold(
       config.speechNoiseThreshold === null || config.speechNoiseThreshold === undefined
@@ -143,6 +145,7 @@ export function SettingsProviderPanel() {
         languageHints,
         semanticPunctuationEnabled: semanticPunctuation,
         maxSentenceSilence,
+        multiThresholdModeEnabled: multiThresholdMode,
         heartbeat,
         speechNoiseThreshold: threshold === "" ? null : Number(threshold),
       });
@@ -253,6 +256,14 @@ export function SettingsProviderPanel() {
                 onChange={setMaxSentenceSilence}
               />
             </div>
+            <CheckField
+              className="mt-3"
+              checked={multiThresholdMode}
+              onChange={setMultiThresholdMode}
+              disabled={semanticPunctuation}
+            >
+              多阈值模式（multi_threshold_mode_enabled，防止 VAD 断句切割过长，仅在语义断句关闭时生效）
+            </CheckField>
             <CheckField className="mt-3" checked={heartbeat} onChange={setHeartbeat}>
               心跳包（heartbeat，长时间静音保活连接）
             </CheckField>

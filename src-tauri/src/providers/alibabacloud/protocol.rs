@@ -17,6 +17,8 @@ pub struct FunAsrParams {
     #[serde(default = "default_max_sentence_silence")]
     pub max_sentence_silence: u32,
     #[serde(default)]
+    pub multi_threshold_mode_enabled: bool,
+    #[serde(default)]
     pub heartbeat: bool,
     #[serde(default)]
     pub speech_noise_threshold: Option<f64>,
@@ -54,6 +56,8 @@ pub fn build_run_task_message(task_id: &str, params: &FunAsrParams) -> Message {
     }
     if params.semantic_punctuation_enabled {
         parameters["semantic_punctuation_enabled"] = json!(true);
+    } else if params.multi_threshold_mode_enabled {
+        parameters["multi_threshold_mode_enabled"] = json!(true);
     }
     if params.heartbeat {
         parameters["heartbeat"] = json!(true);

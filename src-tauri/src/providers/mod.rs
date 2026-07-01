@@ -101,6 +101,7 @@ pub fn funasr_profile() -> ProviderProfile {
             "languageHints": [],
             "semanticPunctuationEnabled": false,
             "maxSentenceSilence": 1300,
+            "multiThresholdModeEnabled": false,
             "heartbeat": false,
             "speechNoiseThreshold": null
         }),
