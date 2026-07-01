@@ -32,10 +32,15 @@ export {
 } from "./hotkeys";
 
 let subtitleSessionId: string | null = null;
+let subtitleSampleRate = 48000;
 let busy = false;
 let committedLines: string[] = [];
 let currentSegment = "";
 let displayText = "";
+
+const MAX_RECONNECT_ATTEMPTS = 6;
+let reconnecting = false;
+let reconnectAttempts = 0;
 
 let systemStream: MediaStream | null = null;
 let systemAudioCtx: AudioContext | null = null;
@@ -197,33 +202,82 @@ function stopSystemAudio() {
   systemProcessor = null;
 }
 
-async function startSubtitles() {
-  const prefs = useSubtitleStore.getState().prefs;
-  committedLines = [];
-  currentSegment = "";
-  displayText = "";
-  clearMicShutdownTimer();
-  await syncSubtitleIndicator(prefs);
-
-  let sampleRate = 48000;
-  if (prefs.source === "microphone") {
-    await ensureMic(pushLog);
-    sampleRate = getBackendMicSampleRate() || 48000;
-  } else {
-    await startSystemAudio();
-    sampleRate = systemAudioCtx?.sampleRate || 48000;
-  }
-
+/** 开一路新的 ASR 会话，并（麦克风来源时）把已在跑的后端麦克风接过来。不动 committedLines/currentSegment，供首次启动和断线重连共用。 */
+async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
     sampleRate,
     params: useDictPrefs.getState().dspParams(),
   });
   subtitleSessionId = session.session_id;
-
   if (prefs.source === "microphone") {
     await cmd(CMD.attachBackendMicToAsr, { sessionId: subtitleSessionId });
   }
+}
+
+/**
+ * 上游 ASR 连接结束后自动重开一路新会话，音频采集（麦克风/系统音频）不受影响，
+ * 已识别的 committedLines 也不清空——这样"单句替换"模式下说完一句话不会卡死，
+ * 后面继续说话会接上新的一句。连续失败达到上限才放弃并停止字幕。
+ */
+async function reconnectSubtitleSession() {
+  if (reconnecting || !useSubtitleStore.getState().running) return;
+  reconnecting = true;
+  try {
+    reconnectAttempts += 1;
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      pushLog("自动重连次数过多，已停止实时字幕。");
+      await stopSubtitles();
+      setStatus("实时字幕连接反复中断，已自动停止，请检查网络或 API Key 后重新开始。", "err");
+      return;
+    }
+    if (reconnectAttempts > 1) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2000, 300 * reconnectAttempts)));
+    }
+    pushLog(`ASR 连接已结束，正在自动重连（第 ${reconnectAttempts} 次）…`);
+    setStatus("实时字幕重新连接中…");
+    const prefs = useSubtitleStore.getState().prefs;
+    await openAsrSession(prefs, subtitleSampleRate);
+    if (!useSubtitleStore.getState().running) {
+      // 重连期间用户已手动停止，收掉刚建好的会话，不要留成孤儿连接。
+      const orphan = subtitleSessionId;
+      subtitleSessionId = null;
+      if (orphan) await cmdSilent(CMD.stopAsrStream, { sessionId: orphan });
+      return;
+    }
+    pushLog("ASR 会话已自动重连。");
+    setStatus(
+      prefs.source === "microphone" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
+      "ok",
+    );
+  } catch (error) {
+    pushLog(`自动重连失败：${String(error)}`);
+    await stopSubtitles();
+    setStatus(`实时字幕连接已断开且自动重连失败：${String(error)}`, "err");
+  } finally {
+    reconnecting = false;
+  }
+}
+
+async function startSubtitles() {
+  const prefs = useSubtitleStore.getState().prefs;
+  committedLines = [];
+  currentSegment = "";
+  displayText = "";
+  reconnectAttempts = 0;
+  clearMicShutdownTimer();
+  await syncSubtitleIndicator(prefs);
+
+  subtitleSampleRate = 48000;
+  if (prefs.source === "microphone") {
+    await ensureMic(pushLog);
+    subtitleSampleRate = getBackendMicSampleRate() || 48000;
+  } else {
+    await startSystemAudio();
+    subtitleSampleRate = systemAudioCtx?.sampleRate || 48000;
+  }
+
+  await openAsrSession(prefs, subtitleSampleRate);
 
   useSubtitleStore.getState().setRuntime({
     running: true,
@@ -287,6 +341,7 @@ export function handleSubtitleAsrEvent(data: {
 }): boolean {
   if (!data.session_id || data.session_id !== subtitleSessionId) return false;
   if (data.kind === "result") {
+    reconnectAttempts = 0;
     const text = data.payload?.text || "";
     if (text) {
       currentSegment = text;
@@ -299,9 +354,11 @@ export function handleSubtitleAsrEvent(data: {
       renderSubtitle("");
     }
   } else if (data.kind === "error") {
-    setStatus(`实时字幕 ASR 错误：${data.payload?.message || "未知错误"}`, "err");
-  } else if (data.kind === "ended" || data.kind === "closed") {
-    if (useSubtitleStore.getState().running) setStatus("实时字幕连接已结束", "err");
+    // 上游 ASR 出错后 Rust 侧总会紧接着断开并触发下面的 "ended"，由那里统一负责自动重连，
+    // 这里只记日志，避免每次瞬时错误都在界面上闪一次刺眼的红色提示。
+    pushLog(`实时字幕 ASR 错误：${data.payload?.message || "未知错误"}`);
+  } else if (data.kind === "ended") {
+    if (useSubtitleStore.getState().running) reconnectSubtitleSession();
   }
   return true;
 }
