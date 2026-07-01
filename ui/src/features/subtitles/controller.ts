@@ -43,6 +43,17 @@ let reconnectAttempts = 0;
 
 let backendSystemAudioSampleRate = 48000;
 
+const SUBTITLE_SHADOW_GUTTER = 56;
+const SUBTITLE_PANEL_VERTICAL_PADDING = 28;
+const LEGACY_SUBTITLE_TOP_PADDING = 18;
+const LEGACY_SUBTITLE_BOTTOM_PADDING = 24;
+
+function subtitleWindowOffset(anchor: SubtitlePrefs["anchor"], offsetY: number) {
+  if (anchor === "top") return offsetY - (SUBTITLE_SHADOW_GUTTER - LEGACY_SUBTITLE_TOP_PADDING);
+  if (anchor === "bottom") return offsetY - (SUBTITLE_SHADOW_GUTTER - LEGACY_SUBTITLE_BOTTOM_PADDING);
+  return offsetY;
+}
+
 function setStatus(statusText: string, statusTone: "" | "ok" | "err" = "") {
   useSubtitleStore.getState().setRuntime({ statusText, statusTone });
 }
@@ -87,12 +98,16 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
   // 单句替换模式下永远只显示当前一行，行高不应受"显示行数"设置影响。
   const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
   const lineHeight = Math.round(fontSize * 1.38);
-  const height = Math.max(136, lineHeight * effectiveLines + 86);
+  const windowWidth = width + SUBTITLE_SHADOW_GUTTER * 2;
+  const height = Math.max(
+    136,
+    lineHeight * effectiveLines + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2,
+  );
   await cmdSilent(CMD.setIndicatorLayout, {
-    width,
+    width: windowWidth,
     height,
     anchor: prefs.anchor,
-    offsetY,
+    offsetY: subtitleWindowOffset(prefs.anchor, offsetY),
   });
   await emitEvent(EVT.indicatorConfig, {
     mode: "subtitle",
