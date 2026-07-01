@@ -130,6 +130,21 @@ pub(crate) fn set_indicator_text(app: tauri::AppHandle, text: String, fade: Opti
     Ok(())
 }
 
+/// 返回指示器窗口所在显示器的逻辑尺寸，供前端把百分比换算成像素。
+#[tauri::command]
+pub(crate) fn get_indicator_monitor_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let window = ensure_indicator_window(&app)?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let size = monitor.size();
+        return Ok(json!({
+            "width": size.width as f64 / scale,
+            "height": size.height as f64 / scale,
+        }));
+    }
+    Ok(json!({ "width": 1920.0, "height": 1080.0 }))
+}
+
 /// 调整字幕/指示器窗口尺寸与屏幕位置。anchor: "top" | "center" | "bottom"。
 #[tauri::command]
 pub(crate) fn set_indicator_layout(

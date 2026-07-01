@@ -222,6 +222,7 @@ fn main() {
             set_indicator_state,
             set_indicator_text,
             set_indicator_layout,
+            get_indicator_monitor_metrics,
             set_debug_log,
             run_asr_silence_test
         ])

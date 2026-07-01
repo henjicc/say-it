@@ -25,6 +25,7 @@ export const CMD = {
   setIndicatorState: "set_indicator_state",
   setIndicatorText: "set_indicator_text",
   setIndicatorLayout: "set_indicator_layout",
+  getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   injectText: "inject_text",
   runAsrSilenceTest: "run_asr_silence_test",
   processAudioOffline: "process_audio_offline",

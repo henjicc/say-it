@@ -83,27 +83,33 @@ export function rgba(hex: string, opacity: number) {
 }
 
 export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleStore.getState().prefs) {
+  const { width: monitorWidth, height: monitorHeight } = await cmd<{ width: number; height: number }>(
+    CMD.getIndicatorMonitorMetrics,
+  ).catch(() => ({ width: 1920, height: 1080 }));
+  const fontSize = Math.round((monitorHeight * prefs.fontSizePercent) / 100);
+  const width = Math.round((monitorWidth * prefs.widthPercent) / 100);
+  const offsetY = Math.round((monitorHeight * prefs.offsetYPercent) / 100);
   // 单句替换模式下永远只显示当前一行，行高不应受"显示行数"设置影响。
   const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
-  const lineHeight = Math.round(prefs.fontSize * 1.38);
+  const lineHeight = Math.round(fontSize * 1.38);
   const height = Math.max(136, lineHeight * effectiveLines + 86);
   await cmdSilent(CMD.setIndicatorLayout, {
-    width: prefs.width,
+    width,
     height,
     anchor: prefs.anchor,
-    offsetY: prefs.offsetY,
+    offsetY,
   });
   await emitEvent(EVT.indicatorConfig, {
     mode: "subtitle",
     subtitle: {
       displayMode: prefs.mode,
       fontFamily: prefs.fontFamily,
-      fontSize: prefs.fontSize,
+      fontSize,
       lineCount: effectiveLines,
       textColor: prefs.textColor,
       backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
       rounded: prefs.rounded,
-      width: prefs.width,
+      width,
     },
   });
 }

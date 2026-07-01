@@ -160,12 +160,12 @@ export function RealtimeSubtitlesPanel() {
       </div>
 
       <div className="mt-5 grid gap-x-8 gap-y-4 md:grid-cols-2">
-        <Slider label="字号" min={18} max={64} step={1} value={prefs.fontSize} onChange={(fontSize) => patch({ fontSize })} format={(v) => `${v}px`} />
+        <Slider label="字号" min={1.5} max={6} step={0.1} value={prefs.fontSizePercent} onChange={(fontSizePercent) => patch({ fontSizePercent })} format={(v) => `${v.toFixed(1)}%`} />
         {prefs.mode === "scroll" && (
           <Slider label="显示行数" min={1} max={4} step={1} value={prefs.lineCount} onChange={(lineCount) => patch({ lineCount })} format={(v) => `${v} 行`} />
         )}
-        <Slider label="字幕宽度" min={420} max={1280} step={20} value={prefs.width} onChange={(width) => patch({ width })} format={(v) => `${v}px`} />
-        <Slider label="位置偏移" min={-180} max={220} step={4} value={prefs.offsetY} onChange={(offsetY) => patch({ offsetY })} format={(v) => `${v}px`} />
+        <Slider label="字幕宽度" min={20} max={70} step={1} value={prefs.widthPercent} onChange={(widthPercent) => patch({ widthPercent })} format={(v) => `${v}%`} />
+        <Slider label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
         <Slider label="背景不透明" min={0} max={100} step={1} value={prefs.backgroundOpacity} onChange={(backgroundOpacity) => patch({ backgroundOpacity })} format={(v) => `${v}%`} />
         <Slider label="圆角" min={0} max={36} step={1} value={prefs.rounded} onChange={(rounded) => patch({ rounded })} format={(v) => `${v}px`} />
       </div>

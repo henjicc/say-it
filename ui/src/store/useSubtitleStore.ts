@@ -8,11 +8,14 @@ export interface SubtitlePrefs {
   source: SubtitleSource;
   mode: SubtitleMode;
   fontFamily: string;
-  fontSize: number;
+  /** 字号，屏幕高度的百分比 */
+  fontSizePercent: number;
   lineCount: number;
-  width: number;
+  /** 字幕框最大宽度，屏幕宽度的百分比 */
+  widthPercent: number;
   anchor: SubtitleAnchor;
-  offsetY: number;
+  /** 相对锚点的位置偏移，屏幕高度的百分比 */
+  offsetYPercent: number;
   textColor: string;
   backgroundColor: string;
   backgroundOpacity: number;
@@ -43,11 +46,11 @@ const defaults = (): SubtitlePrefs => ({
   source: "microphone",
   mode: "replace",
   fontFamily: "Microsoft YaHei",
-  fontSize: 28,
+  fontSizePercent: 2.6,
   lineCount: 1,
-  width: 880,
+  widthPercent: 46,
   anchor: "bottom",
-  offsetY: 64,
+  offsetYPercent: 6,
   textColor: "#ffffff",
   backgroundColor: "#05070a",
   backgroundOpacity: 72,
@@ -57,10 +60,10 @@ const defaults = (): SubtitlePrefs => ({
 function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
   return {
     ...prefs,
-    fontSize: Math.min(64, Math.max(18, Number(prefs.fontSize) || 28)),
+    fontSizePercent: Math.min(6, Math.max(1.5, Number(prefs.fontSizePercent) || 2.6)),
     lineCount: Math.min(4, Math.max(1, Math.round(Number(prefs.lineCount) || 1))),
-    width: Math.min(1280, Math.max(420, Number(prefs.width) || 880)),
-    offsetY: Math.min(220, Math.max(-180, Number(prefs.offsetY) || 64)),
+    widthPercent: Math.min(70, Math.max(20, Number(prefs.widthPercent) || 46)),
+    offsetYPercent: Math.min(20, Math.max(-17, Number(prefs.offsetYPercent) || 6)),
     backgroundOpacity: Math.min(100, Math.max(0, Number(prefs.backgroundOpacity) || 72)),
     rounded: Math.min(36, Math.max(0, Number(prefs.rounded) || 18)),
   };
