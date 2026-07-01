@@ -97,8 +97,14 @@ export function RealtimeSubtitlesPanel() {
               placeholder="未设置"
               className={cn(capturing && "border-white/40")}
             />
-            <Button onClick={startSubtitleShortcutCapture}>{capturing ? "取消" : "设置快捷键"}</Button>
-            {!capturing && shortcutLabel && <Button onClick={clearSubtitleShortcut}>清除</Button>}
+            <Button className="shrink-0" onClick={startSubtitleShortcutCapture}>
+              {capturing ? "取消" : "修改"}
+            </Button>
+            {!capturing && shortcutLabel && (
+              <Button className="shrink-0" onClick={clearSubtitleShortcut}>
+                清除
+              </Button>
+            )}
           </div>
         </Field>
       </div>

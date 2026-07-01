@@ -206,7 +206,7 @@ export function IndicatorApp() {
           <div id="text-content" ref={textContentRef} />
         </div>
       </div>
-      {mode !== "subtitle" && (
+      {pillPhase !== "subtitle" && (
         <div className={`pill ${pillPhase}`} id="pill">
           <span className="dot" />
           <span className="label" id="label">
