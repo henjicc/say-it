@@ -155,8 +155,8 @@ pub(crate) fn set_indicator_layout(
     offset_y: Option<f64>,
 ) -> Result<(), String> {
     let window = ensure_indicator_window(&app)?;
-    let width = width.unwrap_or(DEFAULT_INDICATOR_WIDTH).clamp(320.0, 1400.0);
-    let height = height.unwrap_or(DEFAULT_INDICATOR_HEIGHT).clamp(120.0, 420.0);
+    let width = width.unwrap_or(DEFAULT_INDICATOR_WIDTH).clamp(320.0, 2400.0);
+    let height = height.unwrap_or(DEFAULT_INDICATOR_HEIGHT).clamp(120.0, 720.0);
     let anchor = anchor.unwrap_or_else(|| "bottom".to_string());
     let offset_y = offset_y.unwrap_or(36.0).clamp(-240.0, 240.0);
     place_indicator_window(&window, width, height, &anchor, offset_y);

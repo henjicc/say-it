@@ -26,7 +26,7 @@ body,
   width: 100vw;
   justify-content: flex-end;
   gap: 10px;
-  padding: 18px 24px 24px;
+  padding: 56px;
 }
 
 .pill {
@@ -120,8 +120,8 @@ body,
 
 .subtitle-mode #text {
   --text-line-height: var(--subtitle-line-height, 39px);
-  width: min(var(--subtitle-width, 880px), calc(100vw - 48px));
-  max-width: min(var(--subtitle-width, 880px), calc(100vw - 48px));
+  width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
+  max-width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
   height: calc(var(--text-line-height) * var(--subtitle-lines, 2) + 28px);
   padding: 14px 22px;
   border-radius: var(--subtitle-radius, 18px);
