@@ -5,6 +5,9 @@ import { Field, CheckField } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { useDictPrefs, type CueKind } from "@/store/useDictPrefs";
 import { playCue } from "@/lib/cues";
+import { useAudioDevices } from "@/features/audio/devices";
+
+const DEFAULT_INPUT_VALUE = "";
 
 const CUE_OPTIONS: { value: CueKind; label: string }[] = [
   { value: "none", label: "无" },
@@ -17,6 +20,7 @@ const CUE_OPTIONS: { value: CueKind; label: string }[] = [
 export function SettingsMicCuePanel() {
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
+  const { inputs } = useAudioDevices();
   const cueTargetRef = useRef<"start" | "end" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -56,6 +60,21 @@ export function SettingsMicCuePanel() {
     <Card>
       <CardTitle>麦克风保活与提示音</CardTitle>
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="输入设备">
+          <Select
+            searchable={inputs.length > 5}
+            searchPlaceholder="搜索麦克风…"
+            value={prefs.micDeviceId || DEFAULT_INPUT_VALUE}
+            onChange={(e) => patch({ micDeviceId: e.target.value })}
+          >
+            <option value={DEFAULT_INPUT_VALUE}>默认输入</option>
+            {inputs.map((device) => (
+              <option key={device.name} value={device.name}>
+                {device.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
         <Field label="麦克风保活（秒，0=用完即关）">
           <Input
             type="number"

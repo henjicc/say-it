@@ -145,31 +145,86 @@ pub(crate) fn build_backend_mic_stream(
     }
 }
 
+/// 按名字在麦克风输入设备里查找；找不到（比如设备已拔出）返回 `None`，由调用方回退到默认设备。
+fn find_input_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    host.input_devices()
+        .ok()?
+        .find(|device| device.name().map(|n| n == name).unwrap_or(false))
+}
+
 #[tauri::command]
 pub(crate) fn start_backend_mic(
+    device_name: Option<String>,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<BackendMicStartResponse, String> {
+    let requested = device_name.and_then(|s| {
+        let trimmed = s.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
     {
         let guard = state
             .backend_mic
             .lock()
             .map_err(|_| "Backend mic lock failed".to_string())?;
-        if guard.worker.is_some() {
+        if guard.worker.is_some() && guard.current_device == requested {
             return Ok(BackendMicStartResponse {
                 sample_rate: guard.sample_rate,
                 channels: guard.channels,
                 reused: true,
+                device_name: guard.current_device.clone(),
+                fallback: false,
             });
         }
     }
 
+    // 请求的设备和当前正在跑的不一致（包括从无到有第一次指定/切回默认），
+    // 先停掉旧 worker 再按新设备起一个，避免同时开两路麦克风采集。
+    let previous_worker = {
+        let mut guard = state
+            .backend_mic
+            .lock()
+            .map_err(|_| "Backend mic lock failed".to_string())?;
+        guard.worker.take()
+    };
+    if let Some(worker) = previous_worker {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        if worker
+            .send(BackendMicCommand::Stop {
+                reply: Some(stop_tx),
+            })
+            .is_ok()
+        {
+            let _ = stop_rx.recv_timeout(Duration::from_secs(2));
+        }
+    }
+
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
+    let (device, fallback) = match requested.as_deref() {
+        Some(name) => match find_input_device_by_name(&host, name) {
+            Some(device) => (device, false),
+            None => {
+                let default = host
+                    .default_input_device()
+                    .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
+                (default, true)
+            }
+        },
+        None => {
+            let default = host
+                .default_input_device()
+                .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
+            (default, false)
+        }
+    };
+    let resolved_device_name = if fallback { None } else { requested.clone() };
     let config = device
         .default_input_config()
-        .map_err(|e| format!("读取默认麦克风配置失败: {e}"))?;
+        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
@@ -199,6 +254,7 @@ pub(crate) fn start_backend_mic(
         dlog!(
             "[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}"
         );
+        let mut stop_reply: Option<std::sync::mpsc::Sender<()>> = None;
         while let Ok(command) = worker_rx.recv() {
             match command {
                 BackendMicCommand::Attach {
@@ -238,7 +294,10 @@ pub(crate) fn start_backend_mic(
                     })();
                     let _ = reply.send(result);
                 }
-                BackendMicCommand::Stop => break,
+                BackendMicCommand::Stop { reply } => {
+                    stop_reply = reply;
+                    break;
+                }
             }
         }
         drop(stream);
@@ -251,8 +310,12 @@ pub(crate) fn start_backend_mic(
             guard.pending.clear();
             guard.buffer.clear();
             guard.chunk_count = 0;
+            guard.current_device = None;
         }
         dlog!("[backend-mic] worker 已停止");
+        if let Some(reply) = stop_reply {
+            let _ = reply.send(());
+        }
     });
 
     let mut guard = state
@@ -267,11 +330,14 @@ pub(crate) fn start_backend_mic(
     guard.pending.clear();
     guard.buffer.clear();
     guard.chunk_count = 0;
-    dlog!("[backend-mic] 已启动后端麦克风 sample_rate={sample_rate} channels={channels}");
+    guard.current_device = resolved_device_name.clone();
+    dlog!("[backend-mic] 已启动后端麦克风 sample_rate={sample_rate} channels={channels} device={resolved_device_name:?}");
     Ok(BackendMicStartResponse {
         sample_rate,
         channels,
         reused: false,
+        device_name: resolved_device_name,
+        fallback,
     })
 }
 
@@ -356,7 +422,7 @@ pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Resu
         guard.worker.take()
     };
     if let Some(worker) = worker {
-        let _ = worker.send(BackendMicCommand::Stop);
+        let _ = worker.send(BackendMicCommand::Stop { reply: None });
     }
     let mut guard = state
         .backend_mic
@@ -368,6 +434,7 @@ pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Resu
     guard.sample_rate = 0;
     guard.channels = 0;
     guard.chunk_count = 0;
+    guard.current_device = None;
     dlog!("[backend-mic] 已释放后端麦克风");
     Ok(())
 }

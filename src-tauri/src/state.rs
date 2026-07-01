@@ -21,6 +21,8 @@ pub(crate) struct BackendMicState {
     pub(crate) pending: VecDeque<Vec<f32>>,
     pub(crate) buffer: Vec<f32>,
     pub(crate) chunk_count: u64,
+    /// 当前 worker 实际打开的设备名；`None` 表示用的是系统默认设备。
+    pub(crate) current_device: Option<String>,
 }
 
 pub(crate) enum BackendMicCommand {
@@ -32,7 +34,11 @@ pub(crate) enum BackendMicCommand {
     Pause {
         reply: std::sync::mpsc::Sender<Result<usize, String>>,
     },
-    Stop,
+    /// `reply` 在设备真正释放、guard 状态清理完成后才会收到信号，
+    /// 用于切换设备时确保旧 worker 完全退出后再起新的，避免状态被旧线程的收尾逻辑覆盖。
+    Stop {
+        reply: Option<std::sync::mpsc::Sender<()>>,
+    },
 }
 
 #[derive(Serialize)]
@@ -41,6 +47,10 @@ pub(crate) struct BackendMicStartResponse {
     pub(crate) sample_rate: u32,
     pub(crate) channels: usize,
     pub(crate) reused: bool,
+    /// 实际打开的设备名；`None` 表示默认设备。
+    pub(crate) device_name: Option<String>,
+    /// 请求的设备没找到（比如已拔出），已回退到默认设备。
+    pub(crate) fallback: bool,
 }
 
 #[derive(Serialize)]

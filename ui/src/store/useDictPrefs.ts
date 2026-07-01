@@ -17,6 +17,8 @@ export interface DictPrefs extends DspParams {
   debugLog: boolean;
   localRulesEnabled: boolean;
   localRules: LocalRule[];
+  /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
+  micDeviceId: string;
 }
 
 const DICT_PREFS_KEY = "sayItDictPrefs";
@@ -30,6 +32,7 @@ function defaults(): DictPrefs {
     debugLog: false,
     localRulesEnabled: false,
     localRules: defaultLocalRules(),
+    micDeviceId: "",
     ...dspDefaults,
   };
 }
