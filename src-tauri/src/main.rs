@@ -226,7 +226,8 @@ fn main() {
             set_indicator_layout,
             get_indicator_monitor_metrics,
             set_debug_log,
-            run_asr_silence_test
+            run_asr_silence_test,
+            list_system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

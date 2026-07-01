@@ -5,6 +5,7 @@ import { CheckField, Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { Slider } from "@/components/ui/Slider";
 import { cn } from "@/lib/cn";
+import { CMD, cmd } from "@/lib/tauri";
 import {
   syncSubtitleIndicator,
   showSubtitlePreview,
@@ -14,6 +15,29 @@ import {
   clearSubtitleShortcut,
 } from "@/features/subtitles/controller";
 import { useSubtitleStore, type SubtitleAnchor, type SubtitleMode, type SubtitleSource } from "@/store/useSubtitleStore";
+
+const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
+
+let cachedSystemFonts: string[] | null = null;
+
+function useSystemFonts() {
+  const [fonts, setFonts] = useState<string[]>(cachedSystemFonts ?? FALLBACK_FONTS);
+
+  useEffect(() => {
+    if (cachedSystemFonts) return;
+    cmd<string[]>(CMD.listSystemFonts)
+      .then((names) => {
+        if (!names || names.length === 0) return;
+        cachedSystemFonts = names;
+        setFonts(names);
+      })
+      .catch(() => {
+        /* 保留内置常用字体兜底 */
+      });
+  }, []);
+
+  return fonts;
+}
 
 const toneClass: Record<string, string> = {
   "": "text-white/50",
@@ -55,6 +79,7 @@ function ColorField({
 export function RealtimeSubtitlesPanel() {
   const { prefs, running, statusText, statusTone, capturing, shortcutLabel, patch } = useSubtitleStore();
   const [previewOpen, setPreviewOpen] = useState(false);
+  const systemFonts = useSystemFonts();
 
   // 真正运行、或预览开着时，持续把样式变化同步到悬浮窗。
   useEffect(() => {
@@ -133,11 +158,17 @@ export function RealtimeSubtitlesPanel() {
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <Field label="字体">
-          <Select value={prefs.fontFamily} onChange={(event) => patch({ fontFamily: event.target.value })}>
-            <option value="Microsoft YaHei">微软雅黑</option>
-            <option value="SimHei">黑体</option>
-            <option value="KaiTi">楷体</option>
-            <option value="Segoe UI">Segoe UI</option>
+          <Select
+            searchable
+            searchPlaceholder="搜索字体…"
+            value={prefs.fontFamily}
+            onChange={(event) => patch({ fontFamily: event.target.value })}
+          >
+            {systemFonts.map((font) => (
+              <option key={font} value={font}>
+                {font}
+              </option>
+            ))}
           </Select>
         </Field>
         <Field label="位置">

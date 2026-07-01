@@ -38,6 +38,9 @@ export interface SelectProps
   defaultValue?: string;
   onChange?: (event: SelectChangeEvent) => void;
   children: React.ReactNode;
+  /** 打开时在选项上方显示搜索框，按 label/value 过滤，选项较多时（如字体、设备列表）适用。 */
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
 function ChevronDownIcon({ open }: { open: boolean }) {
@@ -66,13 +69,18 @@ export function Select({
   disabled,
   name,
   id,
+  searchable,
+  searchPlaceholder = "搜索…",
   ...props
 }: SelectProps) {
   const generatedId = useId();
   const buttonId = id || generatedId;
   const listboxId = `${buttonId}-listbox`;
   const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [internalValue, setInternalValue] = useState(defaultValue || "");
   const selectedValue = value ?? internalValue;
 
@@ -90,8 +98,18 @@ export function Select({
       });
   }, [children]);
 
-  const selectedOption = options.find((option) => option.value === selectedValue) || options[0];
-  const enabledOptions = options.filter((option) => !option.disabled);
+  // 当前值可能来自异步加载的列表（字体/设备），列表还没到位或值已不在列表里时，
+  // 直接显示原始值而不是错误地回退成第一项。
+  const selectedOption =
+    options.find((option) => option.value === selectedValue) ||
+    (selectedValue ? { value: selectedValue, label: selectedValue } : options[0]);
+
+  const visibleOptions = useMemo(() => {
+    if (!searchable || !query.trim()) return options;
+    const q = query.trim().toLowerCase();
+    return options.filter((option) => option.label.toLowerCase().includes(q) || option.value.toLowerCase().includes(q));
+  }, [options, searchable, query]);
+  const enabledOptions = visibleOptions.filter((option) => !option.disabled);
 
   useEffect(() => {
     if (selectedValue || !options[0]) return;
@@ -109,6 +127,14 @@ export function Select({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      return;
+    }
+    if (searchable) searchInputRef.current?.focus();
+  }, [open, searchable]);
+
   const commitValue = (nextValue: string, close = true) => {
     if (disabled) return;
     if (value === undefined) setInternalValue(nextValue);
@@ -123,7 +149,7 @@ export function Select({
     commitValue(enabledOptions[nextIndex].value, false);
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+  const handleListKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     if (disabled) return;
 
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -133,14 +159,28 @@ export function Select({
       return;
     }
 
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (open && searchable) {
+        const activeInList = enabledOptions.find((option) => option.value === selectedOption?.value);
+        const target = activeInList ?? enabledOptions[0];
+        if (target) commitValue(target.value);
+      } else {
+        setOpen((current) => !current);
+      }
+      return;
+    }
+
+    if (event.key === " " && !searchable) {
       event.preventDefault();
       setOpen((current) => !current);
       return;
     }
 
     if (event.key === "Escape") {
+      event.preventDefault();
       setOpen(false);
+      buttonRef.current?.focus();
     }
   };
 
@@ -148,6 +188,7 @@ export function Select({
     <div ref={rootRef} className={cn("relative w-full", className)}>
       {name && <input type="hidden" name={name} value={selectedOption?.value || ""} />}
       <button
+        ref={buttonRef}
         id={buttonId}
         type="button"
         className={cn(
@@ -164,7 +205,7 @@ export function Select({
         aria-haspopup="listbox"
         aria-activedescendant={selectedOption ? `${listboxId}-${selectedOption.value}` : undefined}
         onClick={() => setOpen((current) => !current)}
-        onKeyDown={handleKeyDown}
+        onKeyDown={handleListKeyDown}
         {...props}
       >
         <span className="min-w-0 truncate">{selectedOption?.label || "请选择"}</span>
@@ -176,9 +217,26 @@ export function Select({
           id={listboxId}
           role="listbox"
           aria-labelledby={buttonId}
-          className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-64 overflow-auto rounded-xl border border-white/12 bg-[#101010]/95 p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+          className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-[19.5rem] overflow-hidden rounded-xl border border-white/12 bg-[#101010]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
         >
-          {options.map((option) => {
+          {searchable && (
+            <div className="border-b border-white/10 p-1.5">
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={handleListKeyDown}
+                placeholder={searchPlaceholder}
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_58%,transparent)]"
+              />
+            </div>
+          )}
+          <div className="max-h-64 overflow-auto p-1.5">
+          {visibleOptions.length === 0 && (
+            <div className="px-3 py-2 text-sm text-white/40">无匹配结果</div>
+          )}
+          {visibleOptions.map((option) => {
             const selected = option.value === selectedOption?.value;
             return (
               <button
@@ -202,6 +260,7 @@ export function Select({
               </button>
             );
           })}
+          </div>
         </div>
       )}
     </div>
