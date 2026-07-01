@@ -12,6 +12,7 @@ export const CMD = {
   saveProviderSettings: "save_provider_settings",
   setDefaultProvider: "set_default_provider",
   updateProviderConfig: "update_provider_config",
+  getProviderApiKey: "get_provider_api_key",
   funasrSaveHotwords: "funasr_save_hotwords",
   funasrSyncHotwords: "funasr_sync_hotwords",
   funasrClearHotwords: "funasr_clear_hotwords",

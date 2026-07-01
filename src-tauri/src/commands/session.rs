@@ -67,6 +67,22 @@ pub(crate) fn set_default_provider(
 }
 
 #[tauri::command]
+pub(crate) fn get_provider_api_key(
+    provider_id: String,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<String, String> {
+    let settings = read_provider_settings(&state)?;
+    let profile = find_profile(&settings, &provider_id)
+        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    Ok(profile
+        .config
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string())
+}
+
+#[tauri::command]
 pub(crate) fn update_provider_config(
     app: tauri::AppHandle,
     provider_id: String,

@@ -12,7 +12,7 @@ const NESTED_COLLAPSE_CLASS = "border-white/10 bg-black/20";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
 const NESTED_BODY_CLASS = "px-3 py-3";
 
-const API_KEY_MASK = "••••••••••••••••";
+const API_KEY_MASK = "•".repeat(32);
 
 function EyeIcon({ visible }: { visible: boolean }) {
   return (
@@ -44,6 +44,7 @@ export function SettingsProviderPanel() {
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [apiKeyLoading, setApiKeyLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [languageHints, setLanguageHints] = useState<string[]>([]);
   const [semanticPunctuation, setSemanticPunctuation] = useState(false);
@@ -124,6 +125,23 @@ export function SettingsProviderPanel() {
     setApiKeyVisible(false);
   };
 
+  const toggleApiKeyVisibility = async () => {
+    if (!apiKeyVisible && !apiKey && !savedApiKey && hasApiKey) {
+      setApiKeyLoading(true);
+      try {
+        const realApiKey = await cmd<string>(CMD.getProviderApiKey, { providerId: "funasr" });
+        setSavedApiKey(realApiKey);
+        setApiKeyVisible(true);
+      } catch (error) {
+        setMessage(`读取 API Key 失败：${String(error)}`);
+      } finally {
+        setApiKeyLoading(false);
+      }
+      return;
+    }
+    setApiKeyVisible((current) => !current);
+  };
+
   const openApiKeyPage = async () => {
     try {
       await cmd(CMD.openApiKeyPage);
@@ -191,8 +209,8 @@ export function SettingsProviderPanel() {
             <button
               type="button"
               aria-label={apiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-              onClick={() => setApiKeyVisible((current) => !current)}
-              disabled={!apiKey && !savedApiKey}
+              onClick={toggleApiKeyVisibility}
+              disabled={(!apiKey && !savedApiKey && !hasApiKey) || apiKeyLoading}
               className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] disabled:cursor-not-allowed disabled:opacity-35"
             >
               <EyeIcon visible={apiKeyVisible} />

@@ -199,6 +199,7 @@ fn main() {
             save_provider_settings,
             set_default_provider,
             update_provider_config,
+            get_provider_api_key,
             funasr_save_hotwords,
             funasr_sync_hotwords,
             funasr_clear_hotwords,
