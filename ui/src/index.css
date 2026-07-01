@@ -19,7 +19,7 @@
   --color-accent: #5199ff;
   --color-accent-light: #8ec1ff;
   --color-accent-dark: #1c6fea;
-  --color-accent-contrast: #ffffff;
+  --color-accent-contrast: #050505;
 
   --radius-pill: 9999px;
 
@@ -118,4 +118,13 @@ input[type="radio"] {
 
 [data-ui-tone="light"] .bg-black {
   background-color: var(--color-bg) !important;
+}
+
+[data-ui-tone="light"] button.text-white,
+[data-ui-tone="light"] button [class*="text-white"] {
+  color: var(--color-fg) !important;
+}
+
+[data-ui-tone="light"] button.text-\[var\(--color-accent-contrast\)\] {
+  color: var(--color-accent-contrast) !important;
 }

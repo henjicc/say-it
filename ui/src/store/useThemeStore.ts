@@ -67,7 +67,9 @@ export function accentContrast(hex: string) {
     channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
   );
   const luminance = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
-  return luminance > 0.58 ? "#050505" : "#FFFFFF";
+  const blackContrast = (luminance + 0.05) / 0.05;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  return blackContrast >= whiteContrast ? "#050505" : "#FFFFFF";
 }
 
 function hexToRgb(hex: string) {
