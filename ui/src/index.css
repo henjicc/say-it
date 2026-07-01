@@ -16,6 +16,10 @@
   --color-err: #ff6b6b;
   --color-warn: #ffd166;
   --color-rec: #ff4d4f;
+  --color-accent: #5199ff;
+  --color-accent-light: #8ec1ff;
+  --color-accent-dark: #1c6fea;
+  --color-accent-contrast: #ffffff;
 
   --radius-pill: 9999px;
 
@@ -78,4 +82,10 @@ textarea,
 select,
 button {
   font-family: inherit;
+}
+
+input[type="checkbox"],
+input[type="range"],
+input[type="radio"] {
+  accent-color: var(--color-accent);
 }

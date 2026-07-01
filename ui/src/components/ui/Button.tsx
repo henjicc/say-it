@@ -10,9 +10,10 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 }
 
 const variants: Record<Variant, string> = {
-  primary: "bg-white text-black font-medium hover:bg-white/90 disabled:bg-white/40",
+  primary:
+    "bg-[var(--color-accent)] text-[var(--color-accent-contrast)] font-medium [box-shadow:0_10px_30px_color-mix(in_srgb,var(--color-accent)_22%,transparent)] hover:bg-[var(--color-accent-light)] disabled:bg-white/40 disabled:text-black/50",
   ghost:
-    "bg-white/5 text-white border border-white/10 backdrop-blur-[2px] hover:bg-white/10 hover:border-white/20 disabled:opacity-40",
+    "bg-white/5 text-white border border-white/10 backdrop-blur-[2px] hover:border-[color-mix(in_srgb,var(--color-accent)_42%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_13%,transparent)] disabled:opacity-40",
   danger:
     "bg-[#ff4d4f]/15 text-[#ff8589] border border-[#ff4d4f]/30 hover:bg-[#ff4d4f]/25 disabled:opacity-40",
 };
@@ -30,7 +31,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         type={type}
         className={cn(
           "inline-flex items-center justify-center gap-2 rounded-full transition-colors",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]",
           "disabled:cursor-not-allowed",
           variants[variant],
           sizes[size],

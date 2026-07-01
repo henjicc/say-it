@@ -30,10 +30,10 @@ export function Tabs<K extends string>({ tabs, active, onChange, className }: Ta
             type="button"
             onClick={() => onChange(tab.key)}
             className={cn(
-              "rounded-lg px-4 py-2 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30",
+              "rounded-lg px-4 py-2 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]",
               isActive
-                ? "bg-white font-medium text-black shadow-[0_8px_24px_rgba(255,255,255,0.08)]"
-                : "text-white/55 hover:bg-white/[0.06] hover:text-white/85",
+                ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)] [box-shadow:0_8px_24px_color-mix(in_srgb,var(--color-accent)_18%,transparent)]"
+                : "text-white/55 hover:bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] hover:text-white/85",
             )}
           >
             {tab.label}

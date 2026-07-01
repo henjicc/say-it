@@ -48,7 +48,7 @@ export function CheckField({
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-white"
+        className="h-4 w-4 [accent-color:var(--color-accent)]"
       />
       {children}
     </label>

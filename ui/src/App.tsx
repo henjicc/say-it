@@ -5,6 +5,7 @@ import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { CMD, cmd } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
+import { accentContrast, useThemeStore } from "@/store/useThemeStore";
 
 import { DictationView } from "@/views/DictationView";
 import { SettingsView } from "@/views/SettingsView";
@@ -17,8 +18,17 @@ const VIEWS: Record<ViewKey, React.ReactNode> = {
 export default function App() {
   const view = useUiStore((s) => s.view);
   const setSession = useUiStore((s) => s.setSession);
+  const theme = useThemeStore((s) => s.theme);
 
   useTauriBridge();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--color-accent", theme.accent);
+    root.style.setProperty("--color-accent-light", theme.accentLight);
+    root.style.setProperty("--color-accent-dark", theme.accentDark);
+    root.style.setProperty("--color-accent-contrast", accentContrast(theme.accent));
+  }, [theme]);
 
   useEffect(() => {
     cmd<SessionStatus>(CMD.getSessionStatus)

@@ -4,7 +4,7 @@ import { cn } from "@/lib/cn";
 const fieldBase =
   "w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white " +
   "placeholder:text-white/30 backdrop-blur-[1px] transition-colors " +
-  "focus:outline-none focus:border-white/30 disabled:opacity-50";
+  "focus:outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_58%,transparent)] disabled:opacity-50";
 
 export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
@@ -30,7 +30,10 @@ interface SelectOption {
 }
 
 export interface SelectProps
-  extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, "children" | "onChange" | "value" | "defaultValue"> {
+  extends Omit<
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
+    "children" | "onChange" | "value" | "defaultValue"
+  > {
   value?: string;
   defaultValue?: string;
   onChange?: (event: SelectChangeEvent) => void;
@@ -190,8 +193,8 @@ export function Select({
                 className={cn(
                   "flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                   selected
-                    ? "bg-white text-black"
-                    : "text-white/72 hover:bg-white/[0.07] hover:text-white",
+                    ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                    : "text-white/72 hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] hover:text-white",
                   option.disabled && "cursor-not-allowed opacity-40",
                 )}
               >

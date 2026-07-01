@@ -32,11 +32,13 @@ export function Sidebar() {
               className={cn(
                 "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors",
                 active
-                  ? "bg-white/10 font-medium text-white"
-                  : "text-white/55 hover:bg-white/5 hover:text-white/90",
+                  ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] font-medium text-white ring-1 ring-[color-mix(in_srgb,var(--color-accent)_24%,transparent)]"
+                  : "text-white/55 hover:bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] hover:text-white/90",
               )}
             >
-              <span className="grid h-5 w-5 place-items-center">{item.icon}</span>
+              <span className={cn("grid h-5 w-5 place-items-center", active && "text-[var(--color-accent-light)]")}>
+                {item.icon}
+              </span>
               <span>{item.label}</span>
             </button>
           );

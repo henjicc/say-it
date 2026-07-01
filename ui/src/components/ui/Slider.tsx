@@ -30,7 +30,7 @@ export function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-white"
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/15 [accent-color:var(--color-accent)]"
       />
       <span className="text-right text-xs tabular-nums text-white/70">
         {format ? format(value) : value}

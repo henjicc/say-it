@@ -113,7 +113,7 @@ export function LocalRulesPanel() {
                     type="checkbox"
                     checked={rule.enabled}
                     onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
-                    className="h-4 w-4 shrink-0 accent-white"
+                    className="h-4 w-4 shrink-0 [accent-color:var(--color-accent)]"
                     title={rule.enabled ? "已启用" : "已停用"}
                   />
                   <button
