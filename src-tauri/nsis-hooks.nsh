@@ -5,6 +5,7 @@
 !macro NSIS_HOOK_PREINSTALL
   !if "${INSTALLMODE}" == "currentUser"
     ${If} $INSTDIR == "$LOCALAPPDATA\${PRODUCTNAME}"
+    ${OrIf} $INSTDIR == "$LOCALAPPDATA\${MAINBINARYNAME}"
       StrCpy $INSTDIR "$LOCALAPPDATA\say-it"
       SetOutPath $INSTDIR
     ${EndIf}
