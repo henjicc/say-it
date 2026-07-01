@@ -1,0 +1,178 @@
+html,
+body,
+#indicator-root {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 36px 32px;
+  box-sizing: border-box;
+  height: 220px;
+  justify-content: flex-end;
+  animation: wrapIn 0.24s ease-out both;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 16px;
+  border-radius: 20px;
+  background: #12141c;
+  color: #fff;
+  font: 13px/1.2 system-ui, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.recording .dot {
+  background: #ff4d4f;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.processing .dot {
+  background: #faad14;
+  animation: spin 0.9s linear infinite;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #faad14;
+  box-sizing: border-box;
+}
+
+.label {
+  white-space: nowrap;
+}
+
+#text {
+  --text-line-height: 22.5px;
+  width: 440px;
+  box-sizing: border-box;
+  max-width: 440px;
+  height: calc(var(--text-line-height) * 3 + 20px);
+  overflow: hidden;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: #0f121a;
+  color: #eaf0ff;
+  font: 15px/1.5 system-ui, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: content;
+}
+
+#text-flow {
+  position: relative;
+  height: calc(var(--text-line-height) * 3);
+  overflow: hidden;
+}
+
+#text-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transform: translate3d(0, 0, 0);
+  transition: transform 0.12s ease-out;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+#text.empty {
+  display: none;
+}
+
+.fresh {
+  animation: freshIn 0.18s ease-out both;
+}
+
+.swap-in {
+  animation: swapIn 0.32s ease-out both;
+}
+
+@keyframes wrapIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes freshIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes swapIn {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #text-content {
+    transition: none;
+  }
+  #wrap {
+    animation: none;
+  }
+  .fresh,
+  .swap-in,
+  .recording .dot,
+  .processing .dot {
+    animation: none;
+  }
+}

@@ -1,0 +1,323 @@
+//! 全局热键（Windows 低级键盘钩子实现）。
+//!
+//! 为什么不用 `RegisterHotKey` / global-shortcut 插件：
+//! - `RegisterHotKey` 无法注册 CapsLock 这类锁定键；
+//! - 即使能注册，按下 CapsLock 仍会切换大小写状态。
+//!
+//! 低级钩子（`WH_KEYBOARD_LL`）可以捕获任意按键，并在命中目标键时“吞掉”事件，
+//! 这样把 CapsLock 用作语音输入键时不会真的切换大小写。
+
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Mutex, OnceLock};
+
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
+
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, GetKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HC_ACTION,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+    WM_SYSKEYUP,
+};
+
+pub const MOD_CTRL: u8 = 1;
+pub const MOD_SHIFT: u8 = 2;
+pub const MOD_ALT: u8 = 4;
+pub const MOD_WIN: u8 = 8;
+
+const VK_CAPITAL: u16 = 0x14;
+const VK_NUMLOCK: u16 = 0x90;
+const VK_SCROLL: u16 = 0x91;
+
+// 目标键与修饰键（由设置写入，钩子回调读取）。
+static TARGET_VK: AtomicU16 = AtomicU16::new(VK_CAPITAL);
+static TARGET_MODS: AtomicU8 = AtomicU8::new(0);
+// 目标键当前是否处于“已触发未释放”，用于长按去重和成对吞掉 keyup。
+static TRIGGERED: AtomicBool = AtomicBool::new(false);
+static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+static APP: OnceLock<AppHandle> = OnceLock::new();
+// 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
+// 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
+static TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
+
+const VK_ESCAPE: u16 = 0x1B;
+
+/// 保存 AppHandle 并安装一次键盘钩子（带消息循环的专用线程）。
+pub fn init(app: AppHandle) {
+    let _ = APP.set(app);
+    if HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    // 发送线程：把钩子信号转成前端事件。
+    let (tx, rx) = channel::<()>();
+    let _ = TOGGLE_TX.set(Mutex::new(tx));
+    std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            emit_toggle();
+        }
+    });
+
+    let (cancel_tx, cancel_rx) = channel::<()>();
+    let _ = CANCEL_TX.set(Mutex::new(cancel_tx));
+    std::thread::spawn(move || {
+        while cancel_rx.recv().is_ok() {
+            emit_cancel();
+        }
+    });
+
+    // 钩子线程（带消息循环）。
+    std::thread::spawn(|| unsafe {
+        let hook = match SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_hook_proc),
+            HINSTANCE::default(),
+            0,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                HOOK_INSTALLED.store(false, Ordering::SeqCst);
+                crate::dlog!("[hotkey] SetWindowsHookExW 失败: {e}");
+                if let Some(app) = APP.get() {
+                    let _ = app.emit(
+                        "dictation-shortcut-error",
+                        json!({ "message": format!("安装键盘钩子失败: {e}"), "key_code": "" }),
+                    );
+                }
+                return;
+            }
+        };
+        let _ = hook; // 进程存活期间一直挂着，无需主动卸载。
+        crate::dlog!("[hotkey] 键盘钩子已安装");
+
+        // WH_KEYBOARD_LL 要求安装线程有消息循环来分发钩子回调。
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    });
+}
+
+/// 钩子回调里调用：发一个非阻塞信号给发送线程。
+fn signal_toggle() {
+    if let Some(lock) = TOGGLE_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+fn signal_cancel() {
+    if let Some(lock) = CANCEL_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+pub fn set_dictation_active(active: bool) {
+    DICTATION_ACTIVE.store(active, Ordering::SeqCst);
+    if !active {
+        ESCAPE_TRIGGERED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 更新当前热键（仅改原子，钩子已常驻）。
+pub fn set_hotkey(vk: u16, mods: u8) {
+    TARGET_VK.store(vk, Ordering::SeqCst);
+    TARGET_MODS.store(mods, Ordering::SeqCst);
+    TRIGGERED.store(false, Ordering::SeqCst);
+    // 若把锁定键（如 CapsLock）设为热键，启动/切换时先把它的开关状态强制关掉，
+    // 之后钩子会无条件吞掉该键，状态便永久保持关闭。
+    if is_lock_key(vk) {
+        force_lock_off(vk);
+    }
+}
+
+fn is_lock_key(vk: u16) -> bool {
+    vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL
+}
+
+/// 锁定键当前是否处于开启（toggle 位）。
+fn lock_is_on(vk: u16) -> bool {
+    unsafe { (GetKeyState(vk as i32) & 0x0001) != 0 }
+}
+
+/// 模拟敲一下某键（注入事件带 LLKHF_INJECTED，会被本钩子放行）。
+unsafe fn tap_key(vk: u16) {
+    let mk = |flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [mk(KEYBD_EVENT_FLAGS(0)), mk(KEYEVENTF_KEYUP)];
+    SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// 如果锁定键当前是开启状态，强制关掉。
+fn force_lock_off(vk: u16) {
+    if lock_is_on(vk) {
+        unsafe { tap_key(vk) };
+        crate::dlog!("[hotkey] 已强制关闭锁定键 vk={vk:#04x}");
+    }
+}
+
+fn key_down(vk: u16) -> bool {
+    unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+}
+
+fn modifiers_match(mods: u8) -> bool {
+    let ctrl = key_down(VK_CONTROL.0);
+    let shift = key_down(VK_SHIFT.0);
+    let alt = key_down(VK_MENU.0);
+    let win = key_down(VK_LWIN.0) || key_down(VK_RWIN.0);
+    ((mods & MOD_CTRL != 0) == ctrl)
+        && ((mods & MOD_SHIFT != 0) == shift)
+        && ((mods & MOD_ALT != 0) == alt)
+        && ((mods & MOD_WIN != 0) == win)
+}
+
+fn emit_toggle() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("dictation-toggle", json!({}));
+    }
+}
+
+fn emit_cancel() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("dictation-cancel", json!({}));
+    }
+}
+
+unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+
+        // 忽略我们自己（enigo）注入的按键，避免粘贴/键入时误触发热键。
+        if (kb.flags.0 & LLKHF_INJECTED.0) != 0 {
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
+
+        let vk = kb.vkCode as u16;
+        let message = wparam.0 as u32;
+        let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+        let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
+
+        if vk == VK_ESCAPE {
+            if is_down && DICTATION_ACTIVE.load(Ordering::SeqCst) {
+                if !ESCAPE_TRIGGERED.swap(true, Ordering::SeqCst) {
+                    crate::dlog!("[hotkey] 触发速记取消");
+                    signal_cancel();
+                }
+                return LRESULT(1);
+            }
+            if is_up && ESCAPE_TRIGGERED.swap(false, Ordering::SeqCst) {
+                return LRESULT(1);
+            }
+        }
+
+        let target = TARGET_VK.load(Ordering::SeqCst);
+        let mods = TARGET_MODS.load(Ordering::SeqCst);
+
+        if vk == target {
+            let lock = is_lock_key(target);
+            if is_down {
+                if modifiers_match(mods) {
+                    // 长按只在第一次按下触发一次。
+                    if !TRIGGERED.swap(true, Ordering::SeqCst) {
+                        crate::dlog!("[hotkey] 触发 toggle (vk={vk:#04x})");
+                        signal_toggle();
+                    }
+                }
+                if lock {
+                    // 锁定键无条件吞掉 keydown（toggle 发生在 keydown），
+                    // 无论修饰键是否匹配，彻底阻止切换大小写 / NumLock 等。
+                    return LRESULT(1);
+                }
+            } else if is_up {
+                TRIGGERED.store(false, Ordering::SeqCst);
+                if lock {
+                    // 成对吞掉 keyup，避免下游收到孤立的 keyup。
+                    return LRESULT(1);
+                }
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// 把浏览器 KeyboardEvent.code 映射为 Windows 虚拟键码。
+pub fn code_to_vk(code: &str) -> Option<u16> {
+    // 字母 KeyA..KeyZ
+    if let Some(rest) = code.strip_prefix("Key") {
+        let bytes = rest.as_bytes();
+        if bytes.len() == 1 && bytes[0].is_ascii_uppercase() {
+            return Some(bytes[0] as u16); // 'A'(0x41)..'Z'(0x5A)
+        }
+    }
+    // 数字 Digit0..Digit9
+    if let Some(rest) = code.strip_prefix("Digit") {
+        let bytes = rest.as_bytes();
+        if bytes.len() == 1 && bytes[0].is_ascii_digit() {
+            return Some(bytes[0] as u16); // '0'(0x30)..'9'(0x39)
+        }
+    }
+    // 功能键 F1..F24
+    if let Some(rest) = code.strip_prefix('F') {
+        if let Ok(n) = rest.parse::<u16>() {
+            if (1..=24).contains(&n) {
+                return Some(0x70 + (n - 1)); // VK_F1 = 0x70
+            }
+        }
+    }
+    let vk = match code {
+        "CapsLock" => 0x14,
+        "Space" => 0x20,
+        "Enter" => 0x0D,
+        "Tab" => 0x09,
+        "Backquote" => 0xC0,
+        "Backslash" => 0xDC,
+        "Minus" => 0xBD,
+        "Equal" => 0xBB,
+        "BracketLeft" => 0xDB,
+        "BracketRight" => 0xDD,
+        "Semicolon" => 0xBA,
+        "Quote" => 0xDE,
+        "Comma" => 0xBC,
+        "Period" => 0xBE,
+        "Slash" => 0xBF,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Insert" => 0x2D,
+        "Delete" => 0x2E,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "NumLock" => 0x90,
+        "ScrollLock" => 0x91,
+        "Pause" => 0x13,
+        "PrintScreen" => 0x2C,
+        _ => return None,
+    };
+    Some(vk)
+}

@@ -1,0 +1,7 @@
+node_modules/
+ui/dist/
+src-tauri/target/
+src-tauri/bundle-assets/
+src-tauri/nsis-hooks.generated.nsh
+npm-debug.log*
+.env

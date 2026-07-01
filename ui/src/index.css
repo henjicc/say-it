@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+/* ============ 设计令牌（图片风格：纯黑 + 玻璃 + 白字） ============ */
+@theme {
+  --color-bg: #000000;
+  --color-surface: rgba(255, 255, 255, 0.05);
+  --color-surface-strong: rgba(255, 255, 255, 0.08);
+  --color-line: rgba(255, 255, 255, 0.1);
+  --color-line-strong: rgba(255, 255, 255, 0.2);
+
+  --color-fg: #ffffff;
+  --color-fg-muted: rgba(255, 255, 255, 0.7);
+  --color-fg-subtle: rgba(255, 255, 255, 0.4);
+
+  --color-ok: #25c36f;
+  --color-err: #ff6b6b;
+  --color-warn: #ffd166;
+  --color-rec: #ff4d4f;
+
+  --radius-pill: 9999px;
+
+  --font-sans:
+    "Microsoft YaHei", "PingFang SC", system-ui, "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+/* ============ 全局基样式 ============ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tauri 拖拽区域 */
+[data-tauri-drag-region] {
+  app-region: drag;
+}
+.no-drag {
+  app-region: no-drag;
+}
+
+/* 滚动条（深色细滚动条） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: content-box;
+}
+
+/* 表单元素继承字体 */
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+}
