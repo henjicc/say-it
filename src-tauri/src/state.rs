@@ -8,6 +8,8 @@ pub(crate) struct RuntimeState {
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
+    /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
+    pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
 }
 
