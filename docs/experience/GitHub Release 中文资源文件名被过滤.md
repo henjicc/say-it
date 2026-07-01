@@ -8,7 +8,9 @@
 
 Release asset 的真实文件名使用 ASCII，例如 `SayIt_0.1.0_x64-setup.exe`。
 
-如果需要中文展示名，使用 GitHub CLI 支持的 asset label 语法：
+默认不要设置 asset label，让 GitHub Releases 直接显示真实英文文件名。
+
+如果以后明确需要中文展示名，再使用 GitHub CLI 支持的 asset label 语法：
 
 ```powershell
 gh release create v0.1.0 "path/to/SayIt_0.1.0_x64-setup.exe#说吧 v0.1.0 x64 安装包"

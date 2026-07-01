@@ -57,8 +57,6 @@ jobs:
           下载对应安装包进行安装。
           "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
 
-          $asset = "${installerPath}#说吧 v${version} x64 安装包"
-
           gh release view "${{ github.ref_name }}" *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release delete "${{ github.ref_name }}" --yes
@@ -67,7 +65,7 @@ jobs:
             }
           }
 
-          gh release create "${{ github.ref_name }}" $asset `
+          gh release create "${{ github.ref_name }}" $installerPath `
             --title "说吧！ v$version" `
             --notes-file $notesPath `
             --latest
