@@ -89,3 +89,33 @@ input[type="range"],
 input[type="radio"] {
   accent-color: var(--color-accent);
 }
+
+[data-ui-tone="light"] body {
+  background:
+    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 34%),
+    var(--color-bg);
+}
+
+[data-ui-tone="light"] .text-white {
+  color: var(--color-fg) !important;
+}
+
+[data-ui-tone="light"] [class*="text-white/"] {
+  color: var(--color-fg-muted) !important;
+}
+
+[data-ui-tone="light"] [class*="border-white/"] {
+  border-color: var(--color-line) !important;
+}
+
+[data-ui-tone="light"] [class*="bg-white/"] {
+  background-color: rgba(255, 255, 255, 0.72) !important;
+}
+
+[data-ui-tone="light"] [class*="bg-black/"] {
+  background-color: rgba(255, 255, 255, 0.52) !important;
+}
+
+[data-ui-tone="light"] .bg-black {
+  background-color: var(--color-bg) !important;
+}

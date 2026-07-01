@@ -3,28 +3,16 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
-import { defaultAccentTheme, useThemeStore, type AccentTheme } from "@/store/useThemeStore";
-
-type AccentKey = keyof AccentTheme;
-
-const FIELDS: { key: AccentKey; label: string; description: string }[] = [
-  { key: "accent", label: "强调色", description: "按钮、选中项与焦点状态" },
-  { key: "accentLight", label: "亮色调", description: "悬停、发光与高亮边缘" },
-  { key: "accentDark", label: "暗色调", description: "深色背景上的压暗层次" },
-];
+import { defaultAccentTheme, useThemeStore } from "@/store/useThemeStore";
 
 function isHexColor(value: string) {
   return /^#?[0-9a-fA-F]{3}$/.test(value.trim()) || /^#?[0-9a-fA-F]{6}$/.test(value.trim());
 }
 
-function ColorField({
-  label,
-  description,
+function AccentColorField({
   value,
   onChange,
 }: {
-  label: string;
-  description: string;
   value: string;
   onChange: (value: string) => void;
 }) {
@@ -46,14 +34,14 @@ function ColorField({
         type="color"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        aria-label={label}
+        aria-label="强调色"
         className="h-10 w-10 cursor-pointer rounded-lg border border-white/15 bg-transparent p-0.5 [accent-color:var(--color-accent)]"
       />
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-white">{label}</p>
-            <p className="mt-0.5 text-xs text-white/42">{description}</p>
+            <p className="text-sm font-medium text-white">强调色</p>
+            <p className="mt-0.5 text-xs text-white/42">按钮、选中项、焦点与滑块颜色</p>
           </div>
           <span className="shrink-0 font-mono text-xs text-white/48">{value}</span>
         </div>
@@ -80,36 +68,44 @@ export function SettingsAppearancePanel() {
 
   return (
     <Card>
-      <CardTitle>外观强调色</CardTitle>
-      <CardDescription>
-        默认蓝色已规范化为 {defaultAccentTheme.accent}。亮色调和暗色调会分别用于悬停、高亮与深色层次。
-      </CardDescription>
+      <CardTitle>外观</CardTitle>
+      <CardDescription>只保留整体色调和强调色。默认强调色为 {defaultAccentTheme.accent}。</CardDescription>
 
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
         <div className="grid gap-3">
-          {FIELDS.map((field) => (
-            <ColorField
-              key={field.key}
-              label={field.label}
-              description={field.description}
-              value={theme[field.key]}
-              onChange={(value) => patch({ [field.key]: value } as Partial<AccentTheme>)}
-            />
-          ))}
+          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
+            <p className="text-sm font-medium text-white">整体色调</p>
+            <p className="mt-0.5 text-xs text-white/42">切换界面基础明暗。</p>
+            <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1">
+              {[
+                { value: "dark", label: "暗色调" },
+                { value: "light", label: "亮色调" },
+              ].map((option) => {
+                const active = theme.tone === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => patch({ tone: option.value as "dark" | "light" })}
+                    className={cn(
+                      "h-9 rounded-lg text-sm transition-colors",
+                      active
+                        ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
+                        : "text-white/58 hover:bg-white/[0.07] hover:text-white",
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <AccentColorField value={theme.accent} onChange={(value) => patch({ accent: value })} />
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_30%_20%,color-mix(in_srgb,var(--color-accent-light)_24%,transparent),transparent_42%),linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.025))] p-4">
-          <div className="flex items-center gap-2">
-            {[theme.accentLight, theme.accent, theme.accentDark].map((color) => (
-              <span
-                key={color}
-                className="h-7 flex-1 rounded-full border border-white/15"
-                style={{ backgroundColor: color }}
-              />
-            ))}
-          </div>
-
-          <div className="mt-5 rounded-xl border border-white/10 bg-black/30 p-3">
+          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
             <p className="text-xs text-white/45">预览</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="primary">
@@ -127,7 +123,7 @@ export function SettingsAppearancePanel() {
           </div>
 
           <Button className="mt-4 w-full" size="sm" onClick={reset}>
-            恢复默认蓝色
+            恢复默认
           </Button>
         </div>
       </div>

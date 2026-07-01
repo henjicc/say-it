@@ -1,9 +1,8 @@
 import { create } from "zustand";
 
 export interface AccentTheme {
+  tone: "dark" | "light";
   accent: string;
-  accentLight: string;
-  accentDark: string;
 }
 
 interface ThemeState {
@@ -15,9 +14,8 @@ interface ThemeState {
 const THEME_KEY = "sayItAccentTheme";
 
 export const defaultAccentTheme: AccentTheme = {
+  tone: "dark",
   accent: "#5199FF",
-  accentLight: "#8EC1FF",
-  accentDark: "#1C6FEA",
 };
 
 function normalizeHex(value: string, fallback: string) {
@@ -37,9 +35,8 @@ function normalizeHex(value: string, fallback: string) {
 
 function normalizeTheme(theme: Partial<AccentTheme>): AccentTheme {
   return {
+    tone: theme.tone === "light" ? "light" : "dark",
     accent: normalizeHex(theme.accent || "", defaultAccentTheme.accent),
-    accentLight: normalizeHex(theme.accentLight || "", defaultAccentTheme.accentLight),
-    accentDark: normalizeHex(theme.accentDark || "", defaultAccentTheme.accentDark),
   };
 }
 
@@ -71,6 +68,40 @@ export function accentContrast(hex: string) {
   );
   const luminance = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
   return luminance > 0.58 ? "#050505" : "#FFFFFF";
+}
+
+function hexToRgb(hex: string) {
+  const color = normalizeHex(hex, defaultAccentTheme.accent).slice(1);
+  return {
+    r: parseInt(color.slice(0, 2), 16),
+    g: parseInt(color.slice(2, 4), 16),
+    b: parseInt(color.slice(4, 6), 16),
+  };
+}
+
+function rgbToHex({ r, g, b }: { r: number; g: number; b: number }) {
+  return `#${[r, g, b]
+    .map((value) => Math.round(Math.max(0, Math.min(255, value))).toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase()}`;
+}
+
+function mix(hex: string, target: string, amount: number) {
+  const from = hexToRgb(hex);
+  const to = hexToRgb(target);
+  return rgbToHex({
+    r: from.r + (to.r - from.r) * amount,
+    g: from.g + (to.g - from.g) * amount,
+    b: from.b + (to.b - from.b) * amount,
+  });
+}
+
+export function accentLight(hex: string) {
+  return mix(hex, "#FFFFFF", 0.34);
+}
+
+export function accentDark(hex: string) {
+  return mix(hex, "#000000", 0.32);
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => ({
