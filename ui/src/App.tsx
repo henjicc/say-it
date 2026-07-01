@@ -8,10 +8,12 @@ import { useTauriBridge } from "@/hooks/useTauriBridge";
 import { accentContrast, accentDark, accentLight, useThemeStore } from "@/store/useThemeStore";
 
 import { DictationView } from "@/views/DictationView";
+import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { SettingsView } from "@/views/SettingsView";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
+  subtitles: <RealtimeSubtitlesPanel />,
   settings: <SettingsView />,
 };
 

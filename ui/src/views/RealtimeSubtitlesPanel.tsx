@@ -53,7 +53,7 @@ export function RealtimeSubtitlesPanel() {
   }, [prefs, running]);
 
   return (
-    <Card className="mt-6">
+    <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <CardTitle>实时字幕</CardTitle>
@@ -136,4 +136,3 @@ export function RealtimeSubtitlesPanel() {
     </Card>
   );
 }
-

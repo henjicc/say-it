@@ -28,6 +28,16 @@ export const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    view: "subtitles",
+    label: "实时字幕",
+    icon: (
+      <svg {...iconProps}>
+        <rect x="4" y="5" width="16" height="14" rx="3" />
+        <path d="M8 10h8M8 14h5" />
+      </svg>
+    ),
+  },
+  {
     view: "settings",
     label: "设置",
     icon: (
