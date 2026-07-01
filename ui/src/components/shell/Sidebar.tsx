@@ -1,7 +1,7 @@
 import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/cn";
 import { NAV_ITEMS } from "./navConfig";
-import appIcon from "../../../app-icon.png";
+import appIcon from "../../../../src-tauri/icons/icon.png";
 
 export function Sidebar() {
   const view = useUiStore((s) => s.view);
