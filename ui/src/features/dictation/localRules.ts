@@ -15,7 +15,7 @@ export function runLocalRules(
   rules: LocalRule[],
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<LocalRunResult> {
-  const active = rules.filter((r) => r.enabled && r.pattern);
+  const active = rules.filter((r) => r.enabled && (r.mode === "find" ? r.find : r.pattern));
   // 没有可执行规则：直接返回，省去 worker 启动开销。
   if (active.length === 0) return Promise.resolve({ text, timedOut: false });
 

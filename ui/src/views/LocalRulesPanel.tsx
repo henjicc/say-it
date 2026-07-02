@@ -26,11 +26,26 @@ function newRule(): LocalRule {
   };
 }
 
+function newFindRule(): LocalRule {
+  return {
+    id: crypto.randomUUID(),
+    enabled: true,
+    name: "",
+    pattern: "",
+    flags: "gi",
+    replacement: "",
+    mode: "find",
+    find: "",
+  };
+}
+
 export function LocalRulesPanel() {
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
   const resetLocalRules = useDictPrefs((s) => s.resetLocalRules);
   const rules = prefs.localRules;
+  const regexRules = rules.filter((r) => r.mode !== "find");
+  const findRules = rules.filter((r) => r.mode === "find");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [previewIn, setPreviewIn] = useState(PREVIEW_SAMPLE);
@@ -60,12 +75,13 @@ export function LocalRulesPanel() {
   const updateRule = (id: string, partial: Partial<LocalRule>) => {
     patch({ localRules: rules.map((r) => (r.id === id ? { ...r, ...partial } : r)) });
   };
+  // 正则规则统一排在查找替换规则之前；上移/下移只在正则规则内部重排。
   const moveRule = (index: number, dir: -1 | 1) => {
     const target = index + dir;
-    if (target < 0 || target >= rules.length) return;
-    const next = rules.slice();
+    if (target < 0 || target >= regexRules.length) return;
+    const next = regexRules.slice();
     [next[index], next[target]] = [next[target], next[index]];
-    patch({ localRules: next });
+    patch({ localRules: [...next, ...findRules] });
   };
   const deleteRule = (id: string) => {
     patch({ localRules: rules.filter((r) => r.id !== id) });
@@ -73,8 +89,12 @@ export function LocalRulesPanel() {
   };
   const addRule = () => {
     const rule = newRule();
-    patch({ localRules: [...rules, rule] });
+    patch({ localRules: [...regexRules, rule, ...findRules] });
     setEditingId(rule.id);
+  };
+  const addFindRule = () => {
+    const rule = newFindRule();
+    patch({ localRules: [...rules, rule] });
   };
   const toggleFlag = (rule: LocalRule, flag: string, on: boolean) => {
     const set = new Set(rule.flags.split(""));
@@ -104,8 +124,74 @@ export function LocalRulesPanel() {
           !prefs.localRulesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        <div className="overflow-hidden rounded-lg border border-white/10 bg-black/20">
-          {rules.map((rule, i) => {
+        <p className="text-xs font-medium text-white/60">查找替换</p>
+        <p className="mt-1 text-[11px] text-white/35">
+          按词整体匹配：英文词紧贴中文（无空格）或被空格 / 标点围绕都能识别到。
+        </p>
+        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-black/20">
+          {findRules.length === 0 && (
+            <p className="px-3 py-2.5 text-xs text-white/30">暂无查找替换规则</p>
+          )}
+          {findRules.map((rule) => (
+            <div
+              key={rule.id}
+              className="flex items-center gap-2 border-b border-white/5 px-3 py-2 last:border-b-0"
+            >
+              <input
+                type="checkbox"
+                checked={rule.enabled}
+                onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
+                className="h-4 w-4 shrink-0 [accent-color:var(--color-accent)]"
+                title={rule.enabled ? "已启用" : "已停用"}
+              />
+              <Input
+                value={rule.find ?? ""}
+                placeholder="查找，例如 Cloud Code"
+                spellCheck={false}
+                onChange={(e) => updateRule(rule.id, { find: e.target.value })}
+                className="h-8 flex-1 px-2.5 py-1 text-xs"
+              />
+              <span className="shrink-0 text-white/30">→</span>
+              <Input
+                value={rule.replacement}
+                placeholder="替换为，留空 = 删除"
+                spellCheck={false}
+                onChange={(e) => updateRule(rule.id, { replacement: e.target.value })}
+                className="h-8 flex-1 px-2.5 py-1 text-xs"
+              />
+              <label
+                title="忽略大小写"
+                className="flex shrink-0 items-center gap-1 text-[11px] text-white/40"
+              >
+                <input
+                  type="checkbox"
+                  checked={rule.flags?.includes("i") ?? false}
+                  onChange={(e) => updateRule(rule.id, { flags: e.target.checked ? "gi" : "g" })}
+                  className="h-3.5 w-3.5 [accent-color:var(--color-accent)]"
+                />
+                Aa
+              </label>
+              <Button
+                size="sm"
+                variant="danger"
+                className="h-7 shrink-0 px-2.5"
+                title="删除"
+                onClick={() => deleteRule(rule.id)}
+              >
+                删除
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2.5">
+          <Button size="sm" onClick={addFindRule}>
+            + 添加查找替换
+          </Button>
+        </div>
+
+        <p className="mt-4 text-xs font-medium text-white/60">正则规则</p>
+        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-black/20">
+          {regexRules.map((rule, i) => {
             const err = validateRule(rule.pattern, rule.flags);
             const open = editingId === rule.id;
             return (
@@ -202,7 +288,7 @@ export function LocalRulesPanel() {
                           size="sm"
                           className="h-7 w-7 px-0"
                           title="下移"
-                          disabled={i === rules.length - 1}
+                          disabled={i === regexRules.length - 1}
                           onClick={() => moveRule(i, 1)}
                         >
                           ↓
@@ -229,7 +315,7 @@ export function LocalRulesPanel() {
 
         <div className="mt-2.5 flex items-center gap-2">
           <Button size="sm" onClick={addRule}>
-            + 添加规则
+            + 添加正则规则
           </Button>
           <Button size="sm" onClick={resetLocalRules}>
             恢复内置默认

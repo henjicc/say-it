@@ -6,11 +6,13 @@ export interface LocalRule {
   id: string; // 内置规则用固定 id（便于升级合并）；自定义用 uuid
   enabled: boolean;
   name: string;
-  pattern: string; // 正则源串
+  pattern: string; // 正则源串（mode "find" 时不使用，运行时从 find 现算）
   flags: string; // 如 "g" / "gi" / "gm"
-  replacement: string; // "" = 删除；支持 $1 反向引用
+  replacement: string; // "" = 删除；regex 模式支持 $1 反向引用，find 模式为纯字面量
   builtin?: boolean; // 内置预置（可改可关、不可删；可一键恢复默认）
   note?: string;
+  mode?: "regex" | "find"; // 默认 "regex"；"find" = 简单查找替换（非正则，自动处理中英文边界）
+  find?: string; // mode "find" 时的查找文本（字面量，非正则）
 }
 
 // ---- 预置规则（保守默认：易误伤的项默认关闭）----
@@ -94,6 +96,17 @@ function presets(): LocalRule[] {
       note: "用于压掉口吃式重复，但“谢谢谢”这类也会被压，默认关闭。",
     },
     {
+      id: "cjk-latin-space",
+      enabled: true,
+      builtin: true,
+      name: "中英文之间自动加空格",
+      pattern:
+        "(?<=[\\u4e00-\\u9fa5])(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])(?=[\\u4e00-\\u9fa5])",
+      flags: "g",
+      replacement: " ",
+      note: "中文与英文字母/数字紧挨着时自动补一个空格，已有空格则不重复添加。",
+    },
+    {
       id: "end-strip-punct",
       enabled: true,
       builtin: true,
@@ -109,6 +122,30 @@ function presets(): LocalRule[] {
 export function defaultLocalRules(): LocalRule[] {
   // 深拷贝，避免外部修改污染默认表。
   return presets().map((r) => ({ ...r }));
+}
+
+const ASCII_WORD_CHAR_RE = /[A-Za-z0-9_]/;
+
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// 替换文本按纯字面量处理时，需转义 $，避免被 String.replace 解释成 $1/$& 等特殊语法。
+function escapeReplacementLiteral(s: string): string {
+  return s.replace(/\$/g, "$$$$");
+}
+
+/**
+ * 简单查找替换（find 模式）编译为正则源串：整体转义为字面量，
+ * 仅在查找词首尾恰好是英文字母/数字/下划线时才加 \b，
+ * 这样英文词紧贴中文（无空格）或被空格/标点围绕时都能命中，
+ * 而查找词本身是中文时不会因误加 \b 导致匹配不到。
+ */
+export function buildFindPattern(find: string): string {
+  const escaped = escapeRegExpLiteral(find);
+  const startsWord = ASCII_WORD_CHAR_RE.test(find[0] ?? "");
+  const endsWord = ASCII_WORD_CHAR_RE.test(find[find.length - 1] ?? "");
+  return `${startsWord ? "\\b" : ""}${escaped}${endsWord ? "\\b" : ""}`;
 }
 
 /** 校验单条规则的正则是否合法，返回 null 表示合法，否则返回错误信息。 */
@@ -147,15 +184,28 @@ export function mergeLocalRules(stored: LocalRule[] | undefined): LocalRule[] {
 export function applyRulesPure(text: string, rules: LocalRule[]): string {
   let out = String(text ?? "");
   for (const r of rules) {
-    if (!r || !r.enabled || !r.pattern) continue;
+    if (!r || !r.enabled) continue;
     let re: RegExp;
-    try {
-      re = new RegExp(r.pattern, r.flags || "g");
-    } catch {
-      continue; // 非法正则：跳过
+    let replacement: string;
+    if (r.mode === "find") {
+      if (!r.find) continue;
+      try {
+        re = new RegExp(buildFindPattern(r.find), r.flags?.includes("i") ? "gi" : "g");
+      } catch {
+        continue; // 非法正则：跳过
+      }
+      replacement = escapeReplacementLiteral(r.replacement ?? "");
+    } else {
+      if (!r.pattern) continue;
+      try {
+        re = new RegExp(r.pattern, r.flags || "g");
+      } catch {
+        continue; // 非法正则：跳过
+      }
+      replacement = r.replacement ?? "";
     }
     try {
-      out = out.replace(re, r.replacement ?? "");
+      out = out.replace(re, replacement);
     } catch {
       continue; // 替换异常（如非法 $ 引用）：跳过
     }
