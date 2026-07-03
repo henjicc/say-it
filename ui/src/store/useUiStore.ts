@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "subtitles" | "settings";
+export type ViewKey = "dictation" | "subtitles" | "transcription" | "settings";
 
 export interface SessionStatus {
   default_asr_provider?: string;

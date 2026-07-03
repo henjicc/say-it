@@ -35,6 +35,7 @@ export const CMD = {
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   injectText: "inject_text",
   runAsrSilenceTest: "run_asr_silence_test",
+  getLocalFileInfo: "get_local_file_info",
   transcriptionStart: "transcription_start",
   transcriptionCancel: "transcription_cancel",
   processAudioOffline: "process_audio_offline",

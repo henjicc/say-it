@@ -9,11 +9,13 @@ import { accentContrast, accentDark, accentLight, useThemeStore } from "@/store/
 
 import { DictationView } from "@/views/DictationView";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
+import { TranscriptionView } from "@/views/TranscriptionView";
 import { SettingsView } from "@/views/SettingsView";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
   subtitles: <RealtimeSubtitlesPanel />,
+  transcription: <TranscriptionView />,
   settings: <SettingsView />,
 };
 

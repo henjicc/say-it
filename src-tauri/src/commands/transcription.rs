@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::commands::common::*;
@@ -19,6 +20,39 @@ type CancelFlag = Arc<AtomicBool>;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TranscriptionStartResponse {
     pub(crate) job_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalFileInfo {
+    pub(crate) path: String,
+    pub(crate) name: String,
+    pub(crate) size: u64,
+}
+
+#[tauri::command]
+pub(crate) async fn get_local_file_info(file_path: String) -> Result<LocalFileInfo, String> {
+    if file_path.trim().is_empty() {
+        return Err("文件路径不能为空".to_string());
+    }
+    let path = Path::new(&file_path);
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|err| format!("读取文件信息失败：{err}"))?;
+    if !metadata.is_file() {
+        return Err("请选择一个本地文件".to_string());
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("未命名文件")
+        .to_string();
+    Ok(LocalFileInfo {
+        path: file_path,
+        name,
+        size: metadata.len(),
+    })
 }
 
 #[tauri::command]

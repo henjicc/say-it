@@ -12,6 +12,7 @@
     "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "dialog:default"
   ]
 }
