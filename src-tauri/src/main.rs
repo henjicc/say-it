@@ -8,6 +8,7 @@ mod persistence;
 mod prelude;
 mod providers;
 mod state;
+mod text_align;
 
 use prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,6 +238,7 @@ fn main() {
             save_text_file,
             transcription_start,
             transcription_cancel,
+            align_transcript,
             list_system_fonts,
             list_audio_devices
         ])

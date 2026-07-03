@@ -39,6 +39,7 @@ export const CMD = {
   saveTextFile: "save_text_file",
   transcriptionStart: "transcription_start",
   transcriptionCancel: "transcription_cancel",
+  alignTranscript: "align_transcript",
   processAudioOffline: "process_audio_offline",
   openApiKeyPage: "open_api_key_page",
   getStartupSettings: "get_startup_settings",
