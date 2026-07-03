@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
 import { defaultAccentTheme, useThemeStore } from "@/store/useThemeStore";
 
@@ -29,21 +29,21 @@ function AccentColorField({
   };
 
   return (
-    <div className="grid grid-cols-[2.75rem_1fr] gap-3 rounded-xl border border-white/10 bg-white/[0.035] p-3">
+    <div className="grid grid-cols-[2.75rem_1fr] gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
       <input
         type="color"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         aria-label="强调色"
-        className="h-10 w-10 cursor-pointer rounded-lg border border-white/15 bg-transparent p-0.5 [accent-color:var(--color-accent)]"
+        className="h-10 w-10 cursor-pointer rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-transparent p-0.5 [accent-color:var(--color-accent)]"
       />
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-white">强调色</p>
-            <p className="mt-0.5 text-xs text-white/42">按钮、选中项、焦点与滑块颜色</p>
+            <p className="text-sm font-medium text-[var(--color-fg)]">强调色</p>
+            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">按钮、选中项、焦点与滑块颜色</p>
           </div>
-          <span className="shrink-0 font-mono text-xs text-white/48">{value}</span>
+          <span className="shrink-0 font-mono text-xs text-[var(--color-fg-subtle)]">{value}</span>
         </div>
         <Input
           value={draft}
@@ -52,10 +52,10 @@ function AccentColorField({
           onKeyDown={(event) => {
             if (event.key === "Enter") commit();
           }}
-          className={cn("mt-2 h-9 font-mono", invalid && "border-[#ff4d4f]/60")}
+          className={cn("mt-2 min-h-0 h-9 font-mono", invalid && "border-[var(--color-err)]")}
           spellCheck={false}
         />
-        {invalid && <p className="mt-1 text-xs text-[#ff8589]">请输入 3 或 6 位 Hex 颜色。</p>}
+        {invalid && <p className="mt-1 text-xs text-[var(--color-err)]">请输入 3 或 6 位 Hex 颜色。</p>}
       </div>
     </div>
   );
@@ -67,16 +67,17 @@ export function SettingsAppearancePanel() {
   const reset = useThemeStore((s) => s.reset);
 
   return (
-    <Card>
-      <CardTitle>外观</CardTitle>
-      <CardDescription>只保留整体色调和强调色。默认强调色为 {defaultAccentTheme.accent}。</CardDescription>
+    <SettingsSection title="外观">
+      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+        只保留整体色调和强调色。默认强调色为 {defaultAccentTheme.accent}。
+      </p>
 
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
         <div className="grid gap-3">
-          <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
-            <p className="text-sm font-medium text-white">整体色调</p>
-            <p className="mt-0.5 text-xs text-white/42">切换界面基础明暗。</p>
-            <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1">
+          <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
+            <p className="text-sm font-medium text-[var(--color-fg)]">整体色调</p>
+            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">切换界面基础明暗。</p>
+            <div className="mt-3 grid grid-cols-2 gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-1">
               {[
                 { value: "dark", label: "暗色调" },
                 { value: "light", label: "亮色调" },
@@ -88,10 +89,10 @@ export function SettingsAppearancePanel() {
                     type="button"
                     onClick={() => patch({ tone: option.value as "dark" | "light" })}
                     className={cn(
-                      "h-9 rounded-lg text-sm transition-colors",
+                      "h-9 rounded-[var(--radius-md)] text-sm transition-colors duration-[var(--dur-fast)]",
                       active
                         ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
-                        : "text-white/58 hover:bg-white/[0.07] hover:text-white",
+                        : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                     )}
                   >
                     {option.label}
@@ -104,21 +105,21 @@ export function SettingsAppearancePanel() {
           <AccentColorField value={theme.accent} onChange={(value) => patch({ accent: value })} />
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_30%_20%,color-mix(in_srgb,var(--color-accent-light)_24%,transparent),transparent_42%),linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.025))] p-4">
-          <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-            <p className="text-xs text-white/45">预览</p>
+        <div className="rounded-[var(--radius-xl)] border border-[var(--color-line)] bg-[radial-gradient(circle_at_30%_20%,color-mix(in_srgb,var(--color-accent-light)_24%,transparent),transparent_42%),linear-gradient(145deg,var(--color-surface-strong),var(--color-surface))] p-4">
+          <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3">
+            <p className="text-xs text-[var(--color-fg-subtle)]">预览</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="primary">
                 主要操作
               </Button>
               <Button size="sm">次要操作</Button>
             </div>
-            <div className="mt-4 h-2 rounded-full bg-white/10">
+            <div className="mt-4 h-2 rounded-full bg-[var(--color-surface-strong)]">
               <div className="h-full w-2/3 rounded-full bg-[linear-gradient(90deg,var(--color-accent-dark),var(--color-accent-light))]" />
             </div>
-            <div className="mt-4 flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] px-3 py-2 text-sm ring-1 ring-[color-mix(in_srgb,var(--color-accent)_26%,transparent)]">
+            <div className="mt-4 flex items-center gap-2 rounded-[var(--radius-lg)] bg-[var(--accent-soft-strong)] px-3 py-2 text-sm ring-1 ring-[var(--accent-ring)]">
               <span className="h-2 w-2 rounded-full bg-[var(--color-accent-light)]" />
-              <span className="text-white/86">当前选中状态</span>
+              <span className="text-[var(--color-fg)]">当前选中状态</span>
             </div>
           </div>
 
@@ -127,6 +128,6 @@ export function SettingsAppearancePanel() {
           </Button>
         </div>
       </div>
-    </Card>
+    </SettingsSection>
   );
 }
