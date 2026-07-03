@@ -56,6 +56,20 @@ pub(crate) async fn get_local_file_info(file_path: String) -> Result<LocalFileIn
 }
 
 #[tauri::command]
+pub(crate) async fn save_text_file(path: String, content: String) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("保存路径不能为空".to_string());
+    }
+    let path = Path::new(&path);
+    if path.is_dir() {
+        return Err("保存路径不能是文件夹".to_string());
+    }
+    tokio::fs::write(path, content)
+        .await
+        .map_err(|err| format!("写入文件失败：{err}"))
+}
+
+#[tauri::command]
 pub(crate) async fn transcription_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
