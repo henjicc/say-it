@@ -159,45 +159,45 @@ export function FileDropSection(props: {
         onClick={onPick}
         disabled={disabled}
         className={cn(
-          "mt-5 flex min-h-44 w-full flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-8 text-center transition-colors",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]",
+          "flex min-h-52 w-full flex-col items-center justify-center rounded-[var(--radius-xl)] border border-dashed px-6 py-10 text-center transition-colors",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
           dragActive
-            ? "border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]"
-            : "border-white/16 bg-white/[0.035] hover:border-[color-mix(in_srgb,var(--color-accent)_42%,transparent)] hover:bg-white/[0.055]",
+            ? "border-[var(--color-accent)] bg-[var(--accent-soft-strong)]"
+            : "border-[var(--color-line-strong)] bg-[var(--color-surface)] hover:border-[var(--accent-ring)] hover:bg-[var(--color-surface-hover)]",
           disabled && "cursor-wait opacity-75",
         )}
       >
-        <span className="flex h-11 w-11 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] text-white/70">
+        <span className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--color-line)] bg-[var(--color-surface-strong)] text-[var(--color-fg-muted)]">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
             <path d="M12 16V4" />
             <path d="m7 9 5-5 5 5" />
             <path d="M5 18.5h14" />
           </svg>
         </span>
-        <span className="mt-4 text-base font-medium text-white">
+        <span className="mt-4 text-base font-medium text-[var(--color-fg)]">
           {pickState === "loading" ? "正在读取文件信息…" : file ? file.name : "选择或拖放音视频文件"}
         </span>
-        <span className="mt-2 max-w-xl text-sm leading-relaxed text-white/45">
+        <span className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--color-fg-subtle)]">
           支持 mp3、wav、m4a、mp4、flac、ogg、webm 等常见格式，单文件最大 2GB。
         </span>
       </button>
 
       {file && (
-        <div className="mt-4 grid gap-3 rounded-xl border border-white/10 bg-white/[0.035] p-4 text-sm md:grid-cols-[1fr_auto]">
+        <div className="grid gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4 text-sm md:grid-cols-[1fr_auto]">
           <div className="min-w-0">
-            <p className="truncate font-medium text-white">{file.name}</p>
-            <p className="mt-1 truncate text-white/42">{file.path}</p>
+            <p className="truncate font-medium text-[var(--color-fg)]">{file.name}</p>
+            <p className="mt-1 truncate text-[var(--color-fg-subtle)]">{file.path}</p>
           </div>
-          <div className="flex items-center gap-2 text-white/55 md:justify-end">
+          <div className="flex items-center gap-2 text-[var(--color-fg-muted)] md:justify-end">
             <span>{formatSize(file.size)}</span>
-            <span className="h-1 w-1 rounded-full bg-white/28" aria-hidden />
+            <span className="h-1 w-1 rounded-full bg-[var(--color-fg-faint)]" aria-hidden />
             <span>{extensionOf(file.name || file.path).toUpperCase() || "未知格式"}</span>
           </div>
         </div>
       )}
 
       {(validationMessage || message) && (
-        <p className={cn("mt-3 text-sm", pickState === "error" ? "text-[#ff8589]" : "text-[#f5c56f]")}>
+        <p className={cn("text-sm", pickState === "error" ? "text-[var(--color-err)]" : "text-[var(--color-warn)]")}>
           {message || validationMessage}
         </p>
       )}

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
-import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { CheckField, Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
-import { cn } from "@/lib/cn";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { SettingsSection } from "@/components/ui/SettingsSection";
+import { FormGrid } from "@/components/ui/FormGrid";
+import { StatusBar, type StatusTone } from "@/components/ui/StatusBar";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   cancelTranscription,
@@ -165,28 +167,32 @@ export function TranscriptionView() {
     return () => window.clearTimeout(timer);
   }, [params, updateProviderConfig, setRuntime]);
 
+  const statusTone: StatusTone =
+    stage === "completed" ? "ok" : stage === "error" ? "err" : running ? "running" : "info";
+
   return (
-    <div className="flex flex-col gap-4 py-2">
-      <div>
-        <h1 className="text-xl font-semibold text-white">录音识别</h1>
-        <p className="mt-1 text-sm text-white/45">处理本地音视频文件，生成转写文本或用于文稿对齐的时间轴。</p>
-      </div>
+    <div className="flex flex-col gap-7">
+      <PageHeader
+        title="录音识别"
+        description="处理本地音视频文件，生成转写文本或用于文稿对齐的时间轴。"
+      />
 
       <Tabs<TranscriptionTab> tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "transcribe" ? (
-        <Card className="mt-2">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle>录音转写</CardTitle>
-              <CardDescription>选择一个本地音视频文件，上传到临时 OSS 后提交阿里云百炼录音识别。</CardDescription>
-            </div>
-            {selectedFile && (
+        <SettingsSection
+          title="录音转写"
+          right={
+            selectedFile && (
               <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
                 重新选择
               </Button>
-            )}
-          </div>
+            )
+          }
+        >
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            选择一个本地音视频文件，上传到临时 OSS 后提交阿里云百炼录音识别。
+          </p>
 
           <FileDropSection
             file={selectedFile}
@@ -197,7 +203,7 @@ export function TranscriptionView() {
             onPick={pickFile}
           />
 
-          <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" onClick={startTranscription} disabled={!selectedFile || running}>
               开始识别
             </Button>
@@ -206,33 +212,16 @@ export function TranscriptionView() {
                 取消
               </Button>
             )}
-            {!hasApiKey && (
-              <Button onClick={openProviderSettings}>
-                去设置 API Key
-              </Button>
-            )}
+            {!hasApiKey && <Button onClick={openProviderSettings}>去设置 API Key</Button>}
           </div>
 
-          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-4">
-            <div className="flex items-center gap-3">
-              <span
-                className={cn(
-                  "h-2.5 w-2.5 rounded-full",
-                  stage === "completed" && "bg-[#25c36f]",
-                  stage === "error" && "bg-[#ff6b6b]",
-                  running && "animate-pulse bg-[var(--color-accent)]",
-                  stage === "idle" && "bg-white/28",
-                )}
-                aria-hidden
-              />
-              <p className="text-sm text-white/70">{statusText || "等待选择文件。"}</p>
-            </div>
-            {errorMessage && <p className="mt-2 text-sm text-[#ff8589]">{errorMessage}</p>}
-            {saveMessage && <p className="mt-2 text-xs text-white/45">{saveMessage}</p>}
-          </div>
+          <StatusBar tone={statusTone} message={statusText || "等待选择文件。"}>
+            {errorMessage && <p className="text-sm text-[var(--color-err)]">{errorMessage}</p>}
+            {saveMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{saveMessage}</p>}
+          </StatusBar>
 
           {result && (
-            <div className="mt-5 border-t border-white/10 pt-5">
+            <div className="border-t border-[var(--color-line)] pt-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <Tabs
                   tabs={[
@@ -256,20 +245,20 @@ export function TranscriptionView() {
                 <textarea
                   readOnly
                   value={textResult}
-                  className="mt-4 min-h-72 w-full resize-y rounded-xl border border-white/10 bg-white/[0.035] px-4 py-3 text-sm leading-7 text-white/82 outline-none"
+                  className="mt-4 min-h-72 w-full resize-y rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
                 />
               ) : (
-                <div className="mt-4 max-h-[34rem] overflow-auto rounded-xl border border-white/10 bg-white/[0.035]">
+                <div className="mt-4 max-h-[34rem] overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
                   {cues.length === 0 ? (
-                    <p className="p-4 text-sm text-white/45">当前结果没有可展示的句级时间戳。</p>
+                    <p className="p-4 text-sm text-[var(--color-fg-subtle)]">当前结果没有可展示的句级时间戳。</p>
                   ) : (
                     cues.map((cue) => (
-                      <div key={cue.index} className="grid gap-2 border-b border-white/8 px-4 py-3 last:border-b-0 md:grid-cols-[3rem_15rem_1fr]">
-                        <span className="text-xs tabular-nums text-white/35">{cue.index}</span>
-                        <span className="font-mono text-xs text-white/50">
+                      <div key={cue.index} className="grid gap-2 border-b border-[var(--color-line)] px-4 py-3 last:border-b-0 md:grid-cols-[3rem_15rem_1fr]">
+                        <span className="text-xs tabular-nums text-[var(--color-fg-faint)]">{cue.index}</span>
+                        <span className="font-mono text-xs text-[var(--color-fg-subtle)]">
                           {formatSrtTime(cue.beginMs)} → {formatSrtTime(cue.endMs)}
                         </span>
-                        <span className="text-sm leading-6 text-white/82">{cueText(cue)}</span>
+                        <span className="text-sm leading-6 text-[var(--color-fg-muted)]">{cueText(cue)}</span>
                       </div>
                     ))
                   )}
@@ -277,17 +266,16 @@ export function TranscriptionView() {
               )}
             </div>
           )}
-        </Card>
+        </SettingsSection>
       ) : tab === "align" ? (
         <TranscriptAlignPanel />
       ) : (
-        <Card className="mt-2">
-          <div>
-            <CardTitle>通用设置</CardTitle>
-            <CardDescription>录音转写与文稿对齐共用这些识别设置。</CardDescription>
-          </div>
+        <SettingsSection title="通用设置">
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            录音转写与文稿对齐共用这些识别设置。
+          </p>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <FormGrid>
             <Field label="识别模型">
               <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
                 {FILE_ASR_MODEL_OPTIONS.map((option) => (
@@ -297,10 +285,10 @@ export function TranscriptionView() {
                 ))}
               </Select>
             </Field>
-          </div>
+          </FormGrid>
 
-          <div className="mt-4">
-            <p className="text-xs font-medium text-white/60">语种提示</p>
+          <div>
+            <p className="text-xs font-medium text-[var(--color-fg-muted)]">语种提示</p>
             <div className="mt-2 flex flex-wrap gap-4">
               <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
                 自动
@@ -313,7 +301,7 @@ export function TranscriptionView() {
             </div>
           </div>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <FormGrid className="items-center">
             <CheckField checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })}>
               说话人分离
             </CheckField>
@@ -331,10 +319,10 @@ export function TranscriptionView() {
                 placeholder="自动"
               />
             </Field>
-          </div>
+          </FormGrid>
 
-          {saveMessage && <p className="mt-3 text-xs text-white/45">{saveMessage}</p>}
-        </Card>
+          {saveMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{saveMessage}</p>}
+        </SettingsSection>
       )}
     </div>
   );
