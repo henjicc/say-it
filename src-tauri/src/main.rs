@@ -234,6 +234,7 @@ fn main() {
             set_debug_log,
             run_asr_silence_test,
             get_local_file_info,
+            save_text_file,
             transcription_start,
             transcription_cancel,
             list_system_fonts,

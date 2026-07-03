@@ -36,6 +36,7 @@ export const CMD = {
   injectText: "inject_text",
   runAsrSilenceTest: "run_asr_silence_test",
   getLocalFileInfo: "get_local_file_info",
+  saveTextFile: "save_text_file",
   transcriptionStart: "transcription_start",
   transcriptionCancel: "transcription_cancel",
   processAudioOffline: "process_audio_offline",
