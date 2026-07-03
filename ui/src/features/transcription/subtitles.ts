@@ -1,4 +1,5 @@
 import type {
+  AlignedLine,
   TranscriptionResult,
   TranscriptionSentence,
   TranscriptionWord,
@@ -208,6 +209,17 @@ export function buildCues(result: TranscriptionResult | null, options: BuildCueO
     }
   }
   return normalizeTimeline(merged);
+}
+
+export function cuesFromAlignedLines(lines: AlignedLine[]): SubtitleCue[] {
+  return lines
+    .filter((line) => line.text.trim())
+    .map((line, index) => ({
+      index: index + 1,
+      beginMs: line.beginMs,
+      endMs: line.endMs,
+      text: line.text,
+    }));
 }
 
 export function formatSrtTime(ms: number) {
