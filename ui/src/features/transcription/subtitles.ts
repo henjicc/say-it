@@ -1,5 +1,6 @@
 import type {
   AlignedLine,
+  OptimizedSegment,
   TranscriptionResult,
   TranscriptionSentence,
   TranscriptionWord,
@@ -222,7 +223,7 @@ export function cuesFromAlignedLines(lines: AlignedLine[]): SubtitleCue[] {
     }));
 }
 
-/** 「识别修正」结果的字幕条目：来自文稿行或识别文本替换段。 */
+/** 「识别修正」结果的字幕条目：来自文稿行原文，或未被文稿认领的识别文本。 */
 export interface AlignedResultCue extends SubtitleCue {
   source: "script" | "asr";
   lineIndex?: number;
@@ -230,59 +231,30 @@ export interface AlignedResultCue extends SubtitleCue {
 }
 
 /**
- * 行相似度低于该阈值判定为“与音频差异过大”，修正版改用识别文本。
- * 取值考量：正常 ASR 错字率（10%~30%）下相似度仍有 0.7 以上，不会误替换；
- * 只有行内容明显没被念出来（改写、跳读、即兴）时才会低于 0.4。
+ * 把后端算好的片段（保留原文的文稿段 + 只给词范围的识别插入段）渲染成字幕：
+ * 文稿段直接使用；识别段复用 splitWords 按词范围生成实际文本与时间
+ * （与「录音转写」的句级切分同一套逻辑，保证长段落也能正常拆行）。
  */
-export const ALIGN_REPLACE_THRESHOLD = 0.4;
-
-export function shouldUseAsrText(line: AlignedLine) {
-  return line.interpolated || line.similarity < ALIGN_REPLACE_THRESHOLD;
-}
-
-/**
- * 生成「识别修正」版结果：相似度达标的行保留文稿文本与对齐时间；
- * 连续的差异行合并为一段，用前后保留行之间的 ASR 词区间生成识别字幕
- * （区间为空说明音频里没有对应内容，该段文稿行被自然丢弃）。
- */
-export function buildOptimizedAlignCues(
-  lines: AlignedLine[],
+export function cuesFromOptimizedSegments(
+  segments: OptimizedSegment[],
   words: TranscriptionWord[],
 ): AlignedResultCue[] {
   const raw: Omit<AlignedResultCue, "index">[] = [];
-  let lastKeptWordEnd = -1;
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!shouldUseAsrText(line)) {
+  for (const segment of segments) {
+    if (segment.source === "script") {
       raw.push({
-        beginMs: line.beginMs,
-        endMs: line.endMs,
-        text: line.text,
+        beginMs: segment.beginMs,
+        endMs: segment.endMs,
+        text: segment.text,
         source: "script",
-        lineIndex: line.lineIndex,
-        matchRatio: line.matchRatio,
+        lineIndex: segment.lineIndex,
+        matchRatio: segment.matchRatio,
       });
-      if (line.asrWordEnd !== null) lastKeptWordEnd = Math.max(lastKeptWordEnd, line.asrWordEnd);
-      i += 1;
       continue;
     }
-    let j = i;
-    while (j < lines.length && shouldUseAsrText(lines[j])) j += 1;
-    let regionEnd = words.length - 1;
-    for (let k = j; k < lines.length; k += 1) {
-      if (!shouldUseAsrText(lines[k]) && lines[k].asrWordBegin !== null) {
-        regionEnd = (lines[k].asrWordBegin as number) - 1;
-        break;
-      }
+    for (const cue of splitWords(words, segment.wordBegin, segment.wordEnd, DEFAULT_MAX_WIDTH)) {
+      raw.push({ ...cue, source: "asr" });
     }
-    const regionStart = lastKeptWordEnd + 1;
-    if (regionStart <= regionEnd) {
-      for (const cue of splitWords(words, regionStart, regionEnd, DEFAULT_MAX_WIDTH)) {
-        raw.push({ ...cue, source: "asr" });
-      }
-    }
-    i = j;
   }
   return normalizeTimeline(raw);
 }

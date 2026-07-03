@@ -1,10 +1,10 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
-import { buildOptimizedAlignCues } from "@/features/transcription/subtitles";
+import { cuesFromOptimizedSegments } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
-  type AlignedLine,
+  type AlignOutput,
   type TranscriptionEventPayload,
   type TranscriptionParams,
   type TranscriptionResult,
@@ -170,11 +170,11 @@ async function runAlign(result: TranscriptionResult, scriptLines: string[]) {
   useTranscriptionStore.getState().setRuntime({ alignStage: "aligning", alignStatusText: "正在对齐文稿…" });
   try {
     const words = flattenWords(result);
-    const lines = await cmd<AlignedLine[]>(CMD.alignTranscript, { words, scriptLines });
+    const output = await cmd<AlignOutput>(CMD.alignTranscript, { words, scriptLines });
     useTranscriptionStore.getState().setRuntime({
       alignStage: "completed",
-      alignedLines: lines,
-      alignOptimizedCues: buildOptimizedAlignCues(lines, words),
+      alignedLines: output.lines,
+      alignOptimizedCues: cuesFromOptimizedSegments(output.optimizedSegments, words),
       alignStatusText: "对齐完成。",
       alignErrorMessage: "",
     });
