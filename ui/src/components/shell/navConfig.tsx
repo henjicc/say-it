@@ -38,6 +38,17 @@ export const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    view: "transcription",
+    label: "录音识别",
+    icon: (
+      <svg {...iconProps}>
+        <path d="M7 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20v-3.5" />
+        <path d="M13 3.5V8h4" />
+        <path d="M3.5 12h2l1.2-3.2 2.2 6.4 1.6-4.2H13" />
+      </svg>
+    ),
+  },
+  {
     view: "settings",
     label: "设置",
     icon: (

@@ -51,6 +51,7 @@ fn main() {
                 .args([AUTOSTART_ARG])
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeState::default())
         .setup(|app| {
             if let Some(persisted) = load_persisted_state(&app.handle())? {
@@ -232,6 +233,7 @@ fn main() {
             get_indicator_monitor_metrics,
             set_debug_log,
             run_asr_silence_test,
+            get_local_file_info,
             transcription_start,
             transcription_cancel,
             list_system_fonts,
