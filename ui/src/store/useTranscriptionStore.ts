@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type TranscriptionTab = "transcribe" | "align";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
+export type AlignStage = TranscriptionStage | "aligning";
 export type TranscriptionResultView = "text" | "subtitles";
 
 export interface SelectedTranscriptionFile {
@@ -45,6 +46,21 @@ export interface TranscriptionResult {
   transcripts: TranscriptionTranscript[];
 }
 
+export interface AlignedLine {
+  lineIndex: number;
+  text: string;
+  beginMs: number;
+  endMs: number;
+  matchRatio: number;
+  interpolated: boolean;
+}
+
+export interface AlignRecognitionCache {
+  filePath: string;
+  paramsKey: string;
+  result: TranscriptionResult;
+}
+
 export interface TranscriptionEventPayload {
   jobId?: string;
   stage?: string;
@@ -79,11 +95,22 @@ interface TranscriptionState {
   errorMessage: string;
   result: TranscriptionResult | null;
   saveMessage: string;
+  alignFile: SelectedTranscriptionFile | null;
+  scriptText: string;
+  alignStage: AlignStage;
+  alignJobId: string;
+  alignStatusText: string;
+  alignErrorMessage: string;
+  alignedLines: AlignedLine[] | null;
+  alignSaveMessage: string;
+  alignRecognition: AlignRecognitionCache | null;
   setTab: (tab: TranscriptionTab) => void;
   setSelectedFile: (file: SelectedTranscriptionFile | null) => void;
+  setAlignFile: (file: SelectedTranscriptionFile | null) => void;
+  setScriptText: (text: string) => void;
   setParams: (params: Partial<TranscriptionParams>) => void;
   replaceParams: (params: TranscriptionParams) => void;
-  setRuntime: (patch: Partial<Omit<TranscriptionState, "setTab" | "setSelectedFile" | "setParams" | "replaceParams" | "setRuntime" | "resetRuntime">>) => void;
+  setRuntime: (patch: Partial<Omit<TranscriptionState, "setTab" | "setSelectedFile" | "setAlignFile" | "setScriptText" | "setParams" | "replaceParams" | "setRuntime" | "resetRuntime">>) => void;
   resetRuntime: () => void;
 }
 
@@ -99,8 +126,19 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   errorMessage: "",
   result: null,
   saveMessage: "",
+  alignFile: null,
+  scriptText: "",
+  alignStage: "idle",
+  alignJobId: "",
+  alignStatusText: "",
+  alignErrorMessage: "",
+  alignedLines: null,
+  alignSaveMessage: "",
+  alignRecognition: null,
   setTab: (tab) => set({ tab }),
   setSelectedFile: (selectedFile) => set({ selectedFile }),
+  setAlignFile: (alignFile) => set({ alignFile }),
+  setScriptText: (scriptText) => set({ scriptText }),
   setParams: (params) => set((state) => ({ params: { ...state.params, ...params } })),
   replaceParams: (params) => set({ params }),
   setRuntime: (patch) => set(patch),
