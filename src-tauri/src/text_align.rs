@@ -23,9 +23,24 @@ const BAND_CELL_LIMIT: usize = 64_000_000;
 /// 锚点 n-gram 长度，从大到小尝试。
 const ANCHOR_NGRAM_SIZES: [usize; 2] = [5, 3];
 
-const SCORE_MATCH: i32 = 2;
-const SCORE_MISMATCH: i32 = -1;
-const SCORE_GAP: i32 = -1;
+// 仿射 gap 计分（Gotoh）：长插入/删除只收一次开口费。若用线性 gap，说话人大段
+// 即兴时对齐会倾向把文稿“就近替换”到无关内容上，而不是跳过插入命中真实匹配。
+const SCORE_MATCH: i32 = 8;
+const SCORE_MISMATCH: i32 = -4;
+const GAP_OPEN: i32 = -6;
+const GAP_EXTEND: i32 = -1;
+const NEG: i32 = i32::MIN / 4;
+
+/// 三个对齐状态：0=M（对角）、1=Ix（文稿 token 落空）、2=Iy（跳过 ASR token）。
+fn best3(m: i32, ix: i32, iy: i32) -> (i32, u8) {
+    if m >= ix && m >= iy {
+        (m, 0)
+    } else if ix >= iy {
+        (ix, 1)
+    } else {
+        (iy, 2)
+    }
+}
 
 /// 对齐输入的词级时间戳（来自录音识别结果 `sentences[].words[]` 拍平）。
 #[derive(Clone, Debug, Deserialize)]
@@ -49,8 +64,15 @@ pub struct AlignedLine {
     pub end_ms: u64,
     /// 真匹配 token 数 / 行 token 数，供界面提示文稿与音频不符的行。
     pub match_ratio: f32,
+    /// 行与其命中音频区间的双向相似度（Dice：2×匹配 / (行 token + 区间 ASR token)）。
+    /// 与 match_ratio 的差别：音频区间里说了大量文稿之外的内容时也会显著降低，
+    /// 供“差异过大的行改用识别文本”决策使用。
+    pub similarity: f32,
     /// 行时间来自相邻行内插而非自身命中。
     pub interpolated: bool,
+    /// 行命中（匹配或替换对）覆盖的 ASR 词范围，为输入 words 的下标（含两端）；无命中为 None。
+    pub asr_word_begin: Option<usize>,
+    pub asr_word_end: Option<usize>,
 }
 
 /// 文稿 token 与 ASR token 的对应关系。
@@ -68,6 +90,8 @@ struct AsrToken {
     canon: String,
     begin_ms: u64,
     end_ms: u64,
+    /// 所属词在输入 words 中的原始下标。
+    word_index: usize,
 }
 
 /// 对齐主入口：`script_lines` 一行一句，输出与输入行一一对应。
@@ -93,6 +117,8 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
 
     let mut timings: Vec<Option<(u64, u64)>> = Vec::with_capacity(line_ranges.len());
     let mut ratios: Vec<f32> = Vec::with_capacity(line_ranges.len());
+    let mut similarities: Vec<f32> = Vec::with_capacity(line_ranges.len());
+    let mut word_ranges: Vec<Option<(usize, usize)>> = Vec::with_capacity(line_ranges.len());
     for &(start, end) in &line_ranges {
         let tokens = end - start;
         let mut match_count = 0usize;
@@ -121,6 +147,21 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
         } else {
             match_count as f32 / tokens as f32
         });
+        match (first_hit, last_hit) {
+            (Some(first), Some(last)) => {
+                // 双向相似度：命中区间内未匹配的 ASR token（音频里多说的内容）同样拉低相似度
+                let span_tokens = last - first + 1;
+                similarities.push(2.0 * match_count as f32 / (tokens + span_tokens) as f32);
+                word_ranges.push(Some((
+                    asr_tokens[first].word_index,
+                    asr_tokens[last].word_index,
+                )));
+            }
+            _ => {
+                similarities.push(0.0);
+                word_ranges.push(None);
+            }
+        }
         // 命中太少的行不信任自身命中（CJK 常见字在差异区可能随机配对导致边界漂移），改用内插
         let reliable = (hit_count >= 2 && hit_count * 5 >= tokens)
             || (tokens > 0 && tokens <= 3 && match_count >= 1);
@@ -151,17 +192,20 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
             begin_ms: resolved[i].0,
             end_ms: resolved[i].1,
             match_ratio: ratios[i],
+            similarity: similarities[i],
             interpolated: interpolated[i],
+            asr_word_begin: word_ranges[i].map(|(begin, _)| begin),
+            asr_word_end: word_ranges[i].map(|(_, end)| end),
         })
         .collect())
 }
 
 /// 把 ASR 词按时间排序后拆成 token，多 token 词内部按字符数线性内插时间。
 fn build_asr_tokens(words: &[AlignWord]) -> Vec<AsrToken> {
-    let mut sorted: Vec<&AlignWord> = words.iter().collect();
-    sorted.sort_by_key(|w| w.begin_time);
+    let mut sorted: Vec<(usize, &AlignWord)> = words.iter().enumerate().collect();
+    sorted.sort_by_key(|(_, w)| w.begin_time);
     let mut tokens = Vec::new();
-    for word in sorted {
+    for (word_index, word) in sorted {
         let parts = tokenize_text(&word.text);
         if parts.is_empty() {
             continue;
@@ -180,6 +224,7 @@ fn build_asr_tokens(words: &[AlignWord]) -> Vec<AsrToken> {
                 canon: part,
                 begin_ms: b,
                 end_ms: e,
+                word_index,
             });
         }
     }
@@ -388,8 +433,9 @@ fn longest_increasing_by_a(candidates: &[(usize, usize)]) -> Vec<(usize, usize)>
     out
 }
 
-/// 全矩阵 Needleman-Wunsch。free_start / free_end 为 ASR 侧首/尾 gap 免罚
+/// 全矩阵仿射 gap 对齐（Gotoh 三状态）。free_start / free_end 为 ASR 侧首/尾 gap 免罚
 /// （半全局对齐：容忍音频里存在文稿之外的片头/片尾内容）。
+/// 回溯字节布局：bit0-1 = M 的来源状态，bit2-3 = Ix 的来源状态，bit4-5 = Iy 的来源状态。
 fn nw_full(
     s: &[u32],
     a: &[u32],
@@ -402,60 +448,74 @@ fn nw_full(
     let n = s.len();
     let m = a.len();
     let width = m + 1;
-    // 回溯方向：1=对角（匹配/替换）、2=向上（文稿 token 落空）、3=向左（跳过 ASR token）
     let mut tb = vec![0u8; (n + 1) * width];
-    let mut prev = vec![0i32; width];
-    let mut cur = vec![0i32; width];
+    let mut m_prev = vec![NEG; width];
+    let mut ix_prev = vec![NEG; width];
+    let mut iy_prev = vec![NEG; width];
+    let mut m_cur = vec![NEG; width];
+    let mut ix_cur = vec![NEG; width];
+    let mut iy_cur = vec![NEG; width];
+
+    m_prev[0] = 0;
     for j in 1..=m {
-        prev[j] = if free_start { 0 } else { j as i32 * SCORE_GAP };
-        tb[j] = 3;
+        iy_prev[j] = if free_start { 0 } else { GAP_OPEN + GAP_EXTEND * (j as i32 - 1) };
+        if j >= 2 {
+            tb[j] = 2 << 4;
+        }
     }
     for i in 1..=n {
-        cur[0] = i as i32 * SCORE_GAP;
-        tb[i * width] = 2;
+        m_cur[0] = NEG;
+        iy_cur[0] = NEG;
+        ix_cur[0] = GAP_OPEN + GAP_EXTEND * (i as i32 - 1);
+        tb[i * width] = if i >= 2 { 1 << 2 } else { 0 };
         for j in 1..=m {
-            let diag = prev[j - 1]
-                + if s[i - 1] == a[j - 1] {
-                    SCORE_MATCH
-                } else {
-                    SCORE_MISMATCH
-                };
-            let up = prev[j] + SCORE_GAP;
-            let left = cur[j - 1] + SCORE_GAP;
-            let (best, dir) = if diag >= up && diag >= left {
-                (diag, 1)
-            } else if up >= left {
-                (up, 2)
-            } else {
-                (left, 3)
-            };
-            cur[j] = best;
-            tb[i * width + j] = dir;
+            let subst = if s[i - 1] == a[j - 1] { SCORE_MATCH } else { SCORE_MISMATCH };
+            let (diag_best, diag_state) = best3(m_prev[j - 1], ix_prev[j - 1], iy_prev[j - 1]);
+            m_cur[j] = diag_best + subst;
+            let (ix_best, ix_state) = best3(
+                m_prev[j] + GAP_OPEN,
+                ix_prev[j] + GAP_EXTEND,
+                iy_prev[j] + GAP_OPEN,
+            );
+            ix_cur[j] = ix_best;
+            let (iy_best, iy_state) = best3(
+                m_cur[j - 1] + GAP_OPEN,
+                ix_cur[j - 1] + GAP_OPEN,
+                iy_cur[j - 1] + GAP_EXTEND,
+            );
+            iy_cur[j] = iy_best;
+            tb[i * width + j] = diag_state | (ix_state << 2) | (iy_state << 4);
         }
-        std::mem::swap(&mut prev, &mut cur);
+        std::mem::swap(&mut m_prev, &mut m_cur);
+        std::mem::swap(&mut ix_prev, &mut ix_cur);
+        std::mem::swap(&mut iy_prev, &mut iy_cur);
     }
-    // prev 此时是最后一行
-    let mut j = m;
+    // *_prev 此时是最后一行
+    let (mut j, mut state) = {
+        let (_, st) = best3(m_prev[m], ix_prev[m], iy_prev[m]);
+        (m, st)
+    };
     if free_end {
-        let mut best = prev[m];
-        for (jj, &score) in prev.iter().enumerate() {
-            if score > best {
-                best = score;
+        let mut best = NEG;
+        for jj in 0..=m {
+            let (value, st) = best3(m_prev[jj], ix_prev[jj], iy_prev[jj]);
+            if value > best {
+                best = value;
                 j = jj;
+                state = st;
             }
         }
     }
     let mut i = n;
     while i > 0 || j > 0 {
-        let dir = if i == 0 {
-            3
+        if i == 0 {
+            state = 2;
         } else if j == 0 {
-            2
-        } else {
-            tb[i * width + j]
-        };
-        match dir {
-            1 => {
+            state = 1;
+        }
+        let flags = tb[i * width + j];
+        match state {
+            0 => {
                 i -= 1;
                 j -= 1;
                 links[s_off + i] = if s[i] == a[j] {
@@ -463,15 +523,23 @@ fn nw_full(
                 } else {
                     TokenLink::Sub(a_off + j)
                 };
+                state = flags & 0b11;
             }
-            2 => i -= 1,
-            _ => j -= 1,
+            1 => {
+                i -= 1;
+                state = (flags >> 2) & 0b11;
+            }
+            _ => {
+                j -= 1;
+                state = (flags >> 4) & 0b11;
+            }
         }
     }
 }
 
-/// 带宽限制的 NW 兜底：只计算对角带内的单元格。该路径仅在段超大且完全找不到锚点
-/// （两侧文本高度不相似或高度重复）时触发，带外视为不可达，用质量换内存。
+/// 带宽限制的仿射 gap 对齐兜底：只计算对角带内的单元格。该路径仅在段超大且完全
+/// 找不到锚点（两侧文本高度不相似或高度重复）时触发，带外视为不可达，用质量换内存。
+/// 回溯字节布局与 nw_full 相同。
 fn nw_banded(
     s: &[u32],
     a: &[u32],
@@ -489,13 +557,12 @@ fn nw_banded(
         half = (max_width - 1) / 2;
     }
     let bw = 2 * half + 1;
-    let neg = i32::MIN / 4;
     let band_lo = |i: usize| -> usize { (i * m / n).saturating_sub(half) };
     let band_hi = |i: usize| -> usize { (i * m / n + half).min(m) };
     // 行分数只保留带内值，带外读取一律视为不可达
     let read = |row: &[i32], lo: usize, j: usize| -> i32 {
         if j < lo || j >= lo + row.len() {
-            neg
+            NEG
         } else {
             row[j - lo]
         }
@@ -503,81 +570,101 @@ fn nw_banded(
 
     let mut tb = vec![0u8; (n + 1) * bw];
     let mut prev_lo = band_lo(0);
-    let mut prev: Vec<i32> = (prev_lo..=band_hi(0))
+    let prev_hi0 = band_hi(0);
+    let mut m_prev: Vec<i32> = vec![NEG; prev_hi0 - prev_lo + 1];
+    let mut ix_prev: Vec<i32> = vec![NEG; prev_hi0 - prev_lo + 1];
+    let mut iy_prev: Vec<i32> = (prev_lo..=prev_hi0)
         .map(|j| {
-            if j == 0 || free_start {
+            if j == 0 {
+                NEG
+            } else if free_start {
                 0
             } else {
-                j as i32 * SCORE_GAP
+                GAP_OPEN + GAP_EXTEND * (j as i32 - 1)
             }
         })
         .collect();
-    for j in prev_lo..=band_hi(0) {
-        if j > 0 {
-            tb[j - prev_lo] = 3;
+    m_prev[0] = 0; // band_lo(0) == 0
+    for j in prev_lo..=prev_hi0 {
+        if j >= 2 {
+            tb[j - prev_lo] = 2 << 4;
         }
     }
     for i in 1..=n {
         let lo = band_lo(i);
         let hi = band_hi(i);
-        let mut cur: Vec<i32> = vec![neg; hi - lo + 1];
+        let mut m_cur: Vec<i32> = vec![NEG; hi - lo + 1];
+        let mut ix_cur: Vec<i32> = vec![NEG; hi - lo + 1];
+        let mut iy_cur: Vec<i32> = vec![NEG; hi - lo + 1];
         for j in lo..=hi {
-            let (best, dir) = if j == 0 {
-                (i as i32 * SCORE_GAP, 2)
-            } else {
-                let diag = read(&prev, prev_lo, j - 1)
-                    + if s[i - 1] == a[j - 1] {
-                        SCORE_MATCH
-                    } else {
-                        SCORE_MISMATCH
-                    };
-                let up = read(&prev, prev_lo, j) + SCORE_GAP;
-                let left = read(&cur, lo, j - 1) + SCORE_GAP;
-                if diag >= up && diag >= left {
-                    (diag, 1)
-                } else if up >= left {
-                    (up, 2)
-                } else {
-                    (left, 3)
-                }
-            };
-            cur[j - lo] = best;
-            tb[i * bw + (j - lo)] = dir;
+            if j == 0 {
+                ix_cur[0] = GAP_OPEN + GAP_EXTEND * (i as i32 - 1);
+                tb[i * bw] = if i >= 2 { 1 << 2 } else { 0 };
+                continue;
+            }
+            let subst = if s[i - 1] == a[j - 1] { SCORE_MATCH } else { SCORE_MISMATCH };
+            let (diag_best, diag_state) = best3(
+                read(&m_prev, prev_lo, j - 1),
+                read(&ix_prev, prev_lo, j - 1),
+                read(&iy_prev, prev_lo, j - 1),
+            );
+            m_cur[j - lo] = diag_best + subst;
+            let (ix_best, ix_state) = best3(
+                read(&m_prev, prev_lo, j) + GAP_OPEN,
+                read(&ix_prev, prev_lo, j) + GAP_EXTEND,
+                read(&iy_prev, prev_lo, j) + GAP_OPEN,
+            );
+            ix_cur[j - lo] = ix_best;
+            let (iy_best, iy_state) = best3(
+                read(&m_cur, lo, j - 1) + GAP_OPEN,
+                read(&ix_cur, lo, j - 1) + GAP_OPEN,
+                read(&iy_cur, lo, j - 1) + GAP_EXTEND,
+            );
+            iy_cur[j - lo] = iy_best;
+            tb[i * bw + (j - lo)] = diag_state | (ix_state << 2) | (iy_state << 4);
         }
-        prev = cur;
+        m_prev = m_cur;
+        ix_prev = ix_cur;
+        iy_prev = iy_cur;
         prev_lo = lo;
     }
 
-    let mut j = m;
+    let (mut j, mut state) = {
+        let (_, st) = best3(
+            read(&m_prev, prev_lo, m),
+            read(&ix_prev, prev_lo, m),
+            read(&iy_prev, prev_lo, m),
+        );
+        (m, st)
+    };
     if free_end {
-        let mut best = read(&prev, prev_lo, m);
-        for (off, &score) in prev.iter().enumerate() {
-            if score > best {
-                best = score;
+        let mut best = NEG;
+        for off in 0..m_prev.len() {
+            let (value, st) = best3(m_prev[off], ix_prev[off], iy_prev[off]);
+            if value > best {
+                best = value;
                 j = prev_lo + off;
+                state = st;
             }
         }
     }
     let mut i = n;
     while i > 0 || j > 0 {
-        let dir = if i == 0 {
-            3
+        let lo = band_lo(i);
+        let hi = band_hi(i);
+        if i == 0 {
+            state = 2;
         } else if j == 0 {
-            2
-        } else {
-            let lo = band_lo(i);
-            let hi = band_hi(i);
-            if j < lo {
-                // 回溯滑出带外时向可行方向收敛，保证终止
-                2
-            } else if j > hi {
-                3
-            } else {
-                tb[i * bw + (j - lo)]
-            }
-        };
-        match dir {
-            1 => {
+            state = 1;
+        } else if j < lo {
+            // 回溯滑出带外时向可行方向收敛，保证终止
+            state = 1;
+        } else if j > hi {
+            state = 2;
+        }
+        let flags = if j >= lo && j <= hi { tb[i * bw + (j - lo)] } else { 0 };
+        match state {
+            0 => {
                 i -= 1;
                 j -= 1;
                 links[s_off + i] = if s[i] == a[j] {
@@ -585,9 +672,16 @@ fn nw_banded(
                 } else {
                     TokenLink::Sub(a_off + j)
                 };
+                state = flags & 0b11;
             }
-            2 => i -= 1,
-            _ => j -= 1,
+            1 => {
+                i -= 1;
+                state = (flags >> 2) & 0b11;
+            }
+            _ => {
+                j -= 1;
+                state = (flags >> 4) & 0b11;
+            }
         }
     }
 }
@@ -723,6 +817,9 @@ mod tests {
         assert!(out
             .iter()
             .all(|l| (l.match_ratio - 1.0).abs() < f32::EPSILON && !l.interpolated));
+        assert!(out.iter().all(|l| (l.similarity - 1.0).abs() < f32::EPSILON));
+        assert_eq!((out[0].asr_word_begin, out[0].asr_word_end), (Some(0), Some(2)));
+        assert_eq!((out[1].asr_word_begin, out[1].asr_word_end), (Some(3), Some(4)));
         assert_timeline_valid(&out);
     }
 
@@ -768,9 +865,21 @@ mod tests {
         .unwrap();
         assert!(out[1].interpolated);
         assert!(out[1].match_ratio < 0.3);
+        assert!(out[1].similarity < 0.4, "整行不匹配的行相似度应显著偏低");
+        assert!(out[0].similarity > 0.8 && out[2].similarity > 0.8);
         assert!(out[1].begin_ms >= out[0].end_ms);
         assert!(out[1].end_ms <= out[2].begin_ms);
         assert_timeline_valid(&out);
+    }
+
+    #[test]
+    fn similarity_drops_when_audio_says_more() {
+        // 行内 token 全部匹配，但该行音频区间里说了大量文稿之外的内容：
+        // match_ratio 仍为 1，similarity 必须显著下降（双向相似度的意义所在）
+        let words = char_words("开场白其实这里即兴发挥了非常非常多的内容结束语", 0, 100);
+        let out = align_script(&words, &lines(&["开场白结束语"])).unwrap();
+        assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
+        assert!(out[0].similarity < 0.6, "similarity={}", out[0].similarity);
     }
 
     #[test]

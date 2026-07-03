@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AlignedResultCue } from "@/features/transcription/subtitles";
 
 export type TranscriptionTab = "transcribe" | "align";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
@@ -52,8 +53,15 @@ export interface AlignedLine {
   beginMs: number;
   endMs: number;
   matchRatio: number;
+  /** 行与其命中音频区间的双向相似度（Dice），供“差异过大改用识别文本”决策。 */
+  similarity: number;
   interpolated: boolean;
+  /** 行命中覆盖的 ASR 词范围（words 数组下标，含两端）；无命中为 null。 */
+  asrWordBegin: number | null;
+  asrWordEnd: number | null;
 }
+
+export type AlignResultView = "script" | "optimized";
 
 export interface AlignRecognitionCache {
   filePath: string;
@@ -102,6 +110,8 @@ interface TranscriptionState {
   alignStatusText: string;
   alignErrorMessage: string;
   alignedLines: AlignedLine[] | null;
+  alignOptimizedCues: AlignedResultCue[] | null;
+  alignResultView: AlignResultView;
   alignSaveMessage: string;
   alignRecognition: AlignRecognitionCache | null;
   setTab: (tab: TranscriptionTab) => void;
@@ -133,6 +143,8 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   alignStatusText: "",
   alignErrorMessage: "",
   alignedLines: null,
+  alignOptimizedCues: null,
+  alignResultView: "script",
   alignSaveMessage: "",
   alignRecognition: null,
   setTab: (tab) => set({ tab }),

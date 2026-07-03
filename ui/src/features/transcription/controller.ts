@@ -1,5 +1,6 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
+import { buildOptimizedAlignCues } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
@@ -160,19 +161,20 @@ function flattenWords(result: TranscriptionResult) {
       beginTime: Math.max(0, Math.round(Number(word.beginTime) || 0)),
       endTime: Math.max(0, Math.round(Number(word.endTime) || 0)),
       text: word.text || "",
+      // 后端对齐忽略该字段；保留它是为了替换段的识别字幕带标点
+      punctuation: word.punctuation ?? null,
     }));
 }
 
 async function runAlign(result: TranscriptionResult, scriptLines: string[]) {
   useTranscriptionStore.getState().setRuntime({ alignStage: "aligning", alignStatusText: "正在对齐文稿…" });
   try {
-    const lines = await cmd<AlignedLine[]>(CMD.alignTranscript, {
-      words: flattenWords(result),
-      scriptLines,
-    });
+    const words = flattenWords(result);
+    const lines = await cmd<AlignedLine[]>(CMD.alignTranscript, { words, scriptLines });
     useTranscriptionStore.getState().setRuntime({
       alignStage: "completed",
       alignedLines: lines,
+      alignOptimizedCues: buildOptimizedAlignCues(lines, words),
       alignStatusText: "对齐完成。",
       alignErrorMessage: "",
     });
@@ -302,6 +304,7 @@ export async function startAlignment() {
   if (cache && cache.filePath === file.path && cache.paramsKey === paramsKey) {
     store.setRuntime({
       alignedLines: null,
+      alignOptimizedCues: null,
       alignErrorMessage: "",
       alignSaveMessage: "",
       alignStatusText: "复用上次识别结果…",
@@ -315,6 +318,7 @@ export async function startAlignment() {
     alignStage: "uploading",
     alignJobId: "",
     alignedLines: null,
+    alignOptimizedCues: null,
     alignErrorMessage: "",
     alignSaveMessage: "",
     alignStatusText: "正在准备识别任务…",
