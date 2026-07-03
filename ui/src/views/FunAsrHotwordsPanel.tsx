@@ -99,9 +99,9 @@ export function FunAsrHotwordsPanel() {
         <Button size="sm" onClick={handleClear} disabled={!vocabularyId && !hotwordsText.trim()}>
           清除热词
         </Button>
-        {vocabularyId && <span className="text-xs text-white/40">词表 ID：{vocabularyId}</span>}
+        {vocabularyId && <span className="text-xs text-[var(--color-fg-subtle)]">词表 ID：{vocabularyId}</span>}
       </div>
-      {message && <p className="mt-2 text-xs text-white/50">{message}</p>}
+      {message && <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
     </>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
 import { CheckField } from "@/components/ui/Field";
+import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { validateRule, type LocalRule } from "@/features/dictation/localRulesEngine";
@@ -104,38 +105,40 @@ export function LocalRulesPanel() {
   };
 
   return (
-    <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-4">
-      <p className="text-sm font-medium text-white">本地处理</p>
-      <CheckField
-        checked={prefs.localRulesEnabled}
-        onChange={(v) => patch({ localRulesEnabled: v })}
-        className="mt-2"
-      >
-        启用本地快速处理
-      </CheckField>
-      <p className="mt-1.5 text-xs text-white/40">
-        每条规则按顺序对文本做一次查找替换。点规则名展开编辑，替换内容留空即为删除。
-        规则在独立线程运行并带超时保护，写错正则也不会卡住听写。
-      </p>
+    <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
+      <div className="flex items-center gap-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-[var(--color-fg)]">本地处理</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+            每条规则按顺序对文本做一次查找替换。点规则名展开编辑，替换内容留空即为删除。
+            规则在独立线程运行并带超时保护，写错正则也不会卡住听写。
+          </p>
+        </div>
+        <Switch
+          checked={prefs.localRulesEnabled}
+          onChange={(v) => patch({ localRulesEnabled: v })}
+          label="启用本地快速处理"
+        />
+      </div>
 
       <div
         className={cn(
-          "mt-3 transition-opacity",
+          "mt-4 transition-opacity",
           !prefs.localRulesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        <p className="text-xs font-medium text-white/60">查找替换</p>
-        <p className="mt-1 text-[11px] text-white/35">
+        <p className="text-xs font-medium text-[var(--color-fg-muted)]">查找替换</p>
+        <p className="mt-1 text-[11px] text-[var(--color-fg-subtle)]">
           按词整体匹配：英文词紧贴中文（无空格）或被空格 / 标点围绕都能识别到。
         </p>
-        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-black/20">
+        <div className="mt-2 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {findRules.length === 0 && (
-            <p className="px-3 py-2.5 text-xs text-white/30">暂无查找替换规则</p>
+            <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无查找替换规则</p>
           )}
           {findRules.map((rule) => (
             <div
               key={rule.id}
-              className="flex items-center gap-2 border-b border-white/5 px-3 py-2 last:border-b-0"
+              className="flex items-center gap-2 border-b border-[var(--color-line)] px-3 py-2 last:border-b-0"
             >
               <input
                 type="checkbox"
@@ -149,19 +152,19 @@ export function LocalRulesPanel() {
                 placeholder="查找，例如 Cloud Code"
                 spellCheck={false}
                 onChange={(e) => updateRule(rule.id, { find: e.target.value })}
-                className="h-8 flex-1 px-2.5 py-1 text-xs"
+                className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
               />
-              <span className="shrink-0 text-white/30">→</span>
+              <span className="shrink-0 text-[var(--color-fg-faint)]">→</span>
               <Input
                 value={rule.replacement}
                 placeholder="替换为，留空 = 删除"
                 spellCheck={false}
                 onChange={(e) => updateRule(rule.id, { replacement: e.target.value })}
-                className="h-8 flex-1 px-2.5 py-1 text-xs"
+                className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
               />
               <label
                 title="忽略大小写"
-                className="flex shrink-0 items-center gap-1 text-[11px] text-white/40"
+                className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--color-fg-subtle)]"
               >
                 <input
                   type="checkbox"
@@ -189,13 +192,13 @@ export function LocalRulesPanel() {
           </Button>
         </div>
 
-        <p className="mt-4 text-xs font-medium text-white/60">正则规则</p>
-        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-black/20">
+        <p className="mt-4 text-xs font-medium text-[var(--color-fg-muted)]">正则规则</p>
+        <div className="mt-2 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {regexRules.map((rule, i) => {
             const err = validateRule(rule.pattern, rule.flags);
             const open = editingId === rule.id;
             return (
-              <div key={rule.id} className="border-b border-white/5 last:border-b-0">
+              <div key={rule.id} className="border-b border-[var(--color-line)] last:border-b-0">
                 <div className="flex items-center gap-2.5 px-3 py-2">
                   <input
                     type="checkbox"
@@ -209,24 +212,24 @@ export function LocalRulesPanel() {
                     onClick={() => setEditingId(open ? null : rule.id)}
                     className={cn(
                       "flex min-w-0 flex-1 items-center gap-2 text-left text-sm",
-                      rule.enabled ? "text-white/85" : "text-white/40",
+                      rule.enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)]",
                     )}
                   >
                     <span className="truncate">{rule.name || "（未命名规则）"}</span>
                     {rule.builtin && (
-                      <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-white/45">
+                      <span className="shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-surface-strong)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-subtle)]">
                         内置
                       </span>
                     )}
                     {err && (
-                      <span className="shrink-0 text-[11px] text-[#ff8589]" title={err}>
+                      <span className="shrink-0 text-[11px] text-[var(--color-err)]" title={err}>
                         ● 正则错误
                       </span>
                     )}
                   </button>
                   <span
                     className={cn(
-                      "shrink-0 text-white/30 transition-transform",
+                      "shrink-0 text-[var(--color-fg-faint)] transition-transform",
                       open && "rotate-90",
                     )}
                   >
@@ -240,7 +243,7 @@ export function LocalRulesPanel() {
                       value={rule.name}
                       placeholder="规则名称"
                       onChange={(e) => updateRule(rule.id, { name: e.target.value })}
-                      className="h-8 px-2.5 py-1 text-xs"
+                      className="min-h-0 h-8 px-2.5 py-1 text-xs"
                     />
                     <div className="flex items-center gap-2">
                       <Input
@@ -249,27 +252,27 @@ export function LocalRulesPanel() {
                         spellCheck={false}
                         onChange={(e) => updateRule(rule.id, { pattern: e.target.value })}
                         className={cn(
-                          "h-8 flex-1 px-2.5 py-1 font-mono text-xs",
-                          err && "border-[#ff4d4f]/60",
+                          "min-h-0 h-8 flex-1 px-2.5 py-1 font-mono text-xs",
+                          err && "border-[var(--color-err)]",
                         )}
                       />
-                      <span className="shrink-0 text-xs text-white/30">替换为</span>
+                      <span className="shrink-0 text-xs text-[var(--color-fg-faint)]">替换为</span>
                       <Input
                         value={rule.replacement}
                         placeholder="留空 = 删除"
                         spellCheck={false}
                         onChange={(e) => updateRule(rule.id, { replacement: e.target.value })}
-                        className="h-8 flex-1 px-2.5 py-1 font-mono text-xs"
+                        className="min-h-0 h-8 flex-1 px-2.5 py-1 font-mono text-xs"
                       />
                     </div>
-                    {err && <p className="text-[11px] text-[#ff8589]">正则错误：{err}</p>}
+                    {err && <p className="text-[11px] text-[var(--color-err)]">正则错误：{err}</p>}
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
                       {FLAG_OPTIONS.map((opt) => (
                         <CheckField
                           key={opt.flag}
                           checked={rule.flags.includes(opt.flag)}
                           onChange={(v) => toggleFlag(rule, opt.flag, v)}
-                          className="text-xs text-white/60"
+                          className="text-xs text-[var(--color-fg-muted)]"
                         >
                           {opt.label}
                         </CheckField>
@@ -305,7 +308,7 @@ export function LocalRulesPanel() {
                         </Button>
                       </div>
                     </div>
-                    {rule.note && <p className="text-[11px] text-white/35">{rule.note}</p>}
+                    {rule.note && <p className="text-[11px] text-[var(--color-fg-subtle)]">{rule.note}</p>}
                   </div>
                 )}
               </div>
@@ -320,12 +323,12 @@ export function LocalRulesPanel() {
           <Button size="sm" onClick={resetLocalRules}>
             恢复内置默认
           </Button>
-          <span className="text-xs text-white/35">恢复默认会清除自定义规则。</span>
+          <span className="text-xs text-[var(--color-fg-subtle)]">恢复默认会清除自定义规则。</span>
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-white/60">试运行 · 输入</span>
+            <span className="text-xs font-medium text-[var(--color-fg-muted)]">试运行 · 输入</span>
             <Textarea
               rows={3}
               spellCheck={false}
@@ -334,17 +337,17 @@ export function LocalRulesPanel() {
             />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-white/60">试运行 · 输出</span>
+            <span className="text-xs font-medium text-[var(--color-fg-muted)]">试运行 · 输出</span>
             <Textarea
               rows={3}
               readOnly
               spellCheck={false}
               value={previewOut}
-              className="bg-white/[0.02]"
+              className="bg-[var(--color-bg)]"
             />
           </label>
         </div>
-        {previewNote && <p className="mt-1 text-[11px] text-[#ff8589]">{previewNote}</p>}
+        {previewNote && <p className="mt-1 text-[11px] text-[var(--color-err)]">{previewNote}</p>}
       </div>
     </div>
   );

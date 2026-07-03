@@ -7,7 +7,7 @@ export const LogPanel = forwardRef<HTMLPreElement, React.HTMLAttributes<HTMLPreE
     <pre
       ref={ref}
       className={cn(
-        "max-h-60 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-black/30 p-3 text-xs leading-relaxed whitespace-pre-wrap text-[var(--color-fg-muted)]",
+        "max-h-60 overflow-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3 text-xs leading-relaxed whitespace-pre-wrap text-[var(--color-fg-muted)]",
         "font-mono",
         className,
       )}
