@@ -36,13 +36,20 @@ export default function App() {
       "--color-accent-contrast",
       theme.tone === "dark" ? "#FFFFFF" : accentContrast(theme.accent),
     );
-    root.style.setProperty("--color-bg", theme.tone === "light" ? "#F4F7FB" : "#000000");
-    root.style.setProperty("--color-fg", theme.tone === "light" ? "#111827" : "#FFFFFF");
-    root.style.setProperty("--color-fg-muted", theme.tone === "light" ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.7)");
-    root.style.setProperty("--color-fg-subtle", theme.tone === "light" ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.4)");
-    root.style.setProperty("--color-surface", theme.tone === "light" ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.05)");
-    root.style.setProperty("--color-surface-strong", theme.tone === "light" ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
-    root.style.setProperty("--color-line", theme.tone === "light" ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.1)");
+    const light = theme.tone === "light";
+    root.style.setProperty("--color-bg", light ? "#F4F7FB" : "#0A0E16");
+    root.style.setProperty("--color-bg-sidebar", light ? "#EAF0F8" : "#080B12");
+    root.style.setProperty("--color-bg-titlebar", light ? "#EAF0F8" : "#080B12");
+    root.style.setProperty("--color-overlay", light ? "#FFFFFF" : "#12161F");
+    root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
+    root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.64)");
+    root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.42)");
+    root.style.setProperty("--color-fg-faint", light ? "rgba(17, 24, 39, 0.32)" : "rgba(255, 255, 255, 0.30)");
+    root.style.setProperty("--color-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
+    root.style.setProperty("--color-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
+    root.style.setProperty("--color-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
+    root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.08)");
+    root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.18)" : "rgba(255, 255, 255, 0.16)");
   }, [theme]);
 
   useEffect(() => {
