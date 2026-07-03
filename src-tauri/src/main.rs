@@ -232,6 +232,8 @@ fn main() {
             get_indicator_monitor_metrics,
             set_debug_log,
             run_asr_silence_test,
+            transcription_start,
+            transcription_cancel,
             list_system_fonts,
             list_audio_devices
         ])

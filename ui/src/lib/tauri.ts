@@ -35,6 +35,8 @@ export const CMD = {
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   injectText: "inject_text",
   runAsrSilenceTest: "run_asr_silence_test",
+  transcriptionStart: "transcription_start",
+  transcriptionCancel: "transcription_cancel",
   processAudioOffline: "process_audio_offline",
   openApiKeyPage: "open_api_key_page",
   getStartupSettings: "get_startup_settings",
@@ -46,6 +48,7 @@ export const CMD = {
 
 export const EVT = {
   asrStreamEvent: "asr-stream-event",
+  transcriptionEvent: "transcription-event",
   dictationToggle: "dictation-toggle",
   dictationCancel: "dictation-cancel",
   dictationShortcutError: "dictation-shortcut-error",

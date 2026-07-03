@@ -4,6 +4,7 @@ use crate::prelude::*;
 pub(crate) struct RuntimeState {
     pub(crate) providers: Mutex<ProviderSettings>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
+    pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
     pub(crate) startup: Mutex<StartupSettings>,
