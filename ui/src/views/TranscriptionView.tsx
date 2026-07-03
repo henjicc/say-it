@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
-import { Collapse } from "@/components/ui/Collapse";
 import { CheckField, Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
@@ -22,9 +21,7 @@ import {
 import { buildCues, cueText, formatSrtTime, plainText, toSrt } from "@/features/transcription/subtitles";
 import {
   FILE_ASR_MODEL_OPTIONS,
-  fileModelSummary,
   isSupportedFileModel,
-  supportsFunAsrVocabularyId,
 } from "@/features/asr/modelOptions";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -38,6 +35,7 @@ import {
 const TABS: TabItem<TranscriptionTab>[] = [
   { key: "transcribe", label: "录音转写" },
   { key: "align", label: "文稿对齐" },
+  { key: "settings", label: "通用设置" },
 ];
 
 const LANGUAGE_OPTIONS = [
@@ -55,7 +53,7 @@ function normalizeStoredParams(value: unknown): TranscriptionParams {
       typeof source.model === "string" && isSupportedFileModel(source.model)
         ? source.model
         : DEFAULT_TRANSCRIPTION_PARAMS.model,
-    vocabularyId: typeof source.vocabularyId === "string" ? source.vocabularyId : "",
+    vocabularyId: "",
     languageHints: Array.isArray(source.languageHints) ? source.languageHints.filter((item): item is string => typeof item === "string") : [],
     diarizationEnabled: !!source.diarizationEnabled,
     speakerCount: Number.isFinite(speakerCount) && speakerCount > 0 ? speakerCount : null,
@@ -113,7 +111,6 @@ export function TranscriptionView() {
   const textResult = useMemo(() => plainText(result), [result]);
   const cues = useMemo(() => buildCues(result), [result]);
   const srt = useMemo(() => toSrt(cues), [cues]);
-  const supportsFunAsrVocabulary = supportsFunAsrVocabularyId(params.model);
 
   const toggleLanguageHint = (value: string) => {
     const next = params.languageHints.includes(value)
@@ -200,19 +197,6 @@ export function TranscriptionView() {
             onPick={pickFile}
           />
 
-          <div className="mt-4 rounded-xl border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/8 p-4">
-            <Field label="识别模型">
-              <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
-                {FILE_ASR_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <p className="mt-2 text-xs text-white/55">{fileModelSummary(params.model)}</p>
-          </div>
-
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Button variant="primary" onClick={startTranscription} disabled={!selectedFile || running}>
               开始识别
@@ -246,60 +230,6 @@ export function TranscriptionView() {
             {errorMessage && <p className="mt-2 text-sm text-[#ff8589]">{errorMessage}</p>}
             {saveMessage && <p className="mt-2 text-xs text-white/45">{saveMessage}</p>}
           </div>
-
-          <Collapse title="识别参数" subtitle="默认配置适合大多数录音" className="mt-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field
-                label="热词 ID"
-                hint={
-                  supportsFunAsrVocabulary
-                    ? "实时识别热词不自动复用到录音识别；需要时手动填写 Fun-ASR 词表 ID。"
-                    : "当前模型不复用现有 Fun-ASR 热词词表，留空即可。"
-                }
-              >
-                <Input
-                  value={params.vocabularyId}
-                  onChange={(event) => setParams({ vocabularyId: event.target.value })}
-                  placeholder="留空"
-                  disabled={!supportsFunAsrVocabulary}
-                />
-              </Field>
-            </div>
-
-            <div className="mt-4">
-              <p className="text-xs font-medium text-white/60">语种提示</p>
-              <div className="mt-2 flex flex-wrap gap-4">
-                <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
-                  自动
-                </CheckField>
-                {LANGUAGE_OPTIONS.map((lang) => (
-                  <CheckField key={lang.value} checked={params.languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
-                    {lang.label}
-                  </CheckField>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <CheckField checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })}>
-                说话人分离
-              </CheckField>
-              <Field label="说话人数" hint="留空自动判断；开启说话人分离后可填 2 到 100。">
-                <Input
-                  type="number"
-                  min={2}
-                  max={100}
-                  disabled={!params.diarizationEnabled}
-                  value={params.speakerCount ?? ""}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    setParams({ speakerCount: Number.isFinite(value) && value > 0 ? value : null });
-                  }}
-                  placeholder="自动"
-                />
-              </Field>
-            </div>
-          </Collapse>
 
           {result && (
             <div className="mt-5 border-t border-white/10 pt-5">
@@ -348,8 +278,63 @@ export function TranscriptionView() {
             </div>
           )}
         </Card>
-      ) : (
+      ) : tab === "align" ? (
         <TranscriptAlignPanel />
+      ) : (
+        <Card className="mt-2">
+          <div>
+            <CardTitle>通用设置</CardTitle>
+            <CardDescription>录音转写与文稿对齐共用这些识别设置。</CardDescription>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <Field label="识别模型">
+              <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
+                {FILE_ASR_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-xs font-medium text-white/60">语种提示</p>
+            <div className="mt-2 flex flex-wrap gap-4">
+              <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
+                自动
+              </CheckField>
+              {LANGUAGE_OPTIONS.map((lang) => (
+                <CheckField key={lang.value} checked={params.languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
+                  {lang.label}
+                </CheckField>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <CheckField checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })}>
+              说话人分离
+            </CheckField>
+            <Field label="说话人数" hint="留空自动判断；开启说话人分离后可填 2 到 100。">
+              <Input
+                type="number"
+                min={2}
+                max={100}
+                disabled={!params.diarizationEnabled}
+                value={params.speakerCount ?? ""}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setParams({ speakerCount: Number.isFinite(value) && value > 0 ? value : null });
+                }}
+                placeholder="自动"
+              />
+            </Field>
+          </div>
+
+          {saveMessage && <p className="mt-3 text-xs text-white/45">{saveMessage}</p>}
+        </Card>
       )}
     </div>
   );

@@ -145,7 +145,7 @@ export function TranscriptAlignPanel() {
         </div>
         {alignErrorMessage && <p className="mt-2 text-sm text-[#ff8589]">{alignErrorMessage}</p>}
         <p className="mt-2 text-xs text-white/40">
-          识别参数沿用「录音转写」页签中的设置；同一文件重复执行时会复用上次识别结果，只重新对齐。
+          识别参数沿用「通用设置」页签中的设置；同一文件重复执行时会复用上次识别结果，只重新对齐。
         </p>
       </div>
 

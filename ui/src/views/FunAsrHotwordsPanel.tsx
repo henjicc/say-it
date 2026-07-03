@@ -81,7 +81,7 @@ export function FunAsrHotwordsPanel() {
 
   return (
     <>
-      <Field label="Fun-ASR 热词（每行一个，格式：热词,权重；权重 1-5，可省略默认 4）">
+      <Field label="热词（每行一个，格式：热词,权重；权重 1-5，可省略默认 4）">
         <Textarea
           rows={8}
           placeholder={"示例：\n说吧,4\nFun-ASR,3\n阿里云百炼,4"}
