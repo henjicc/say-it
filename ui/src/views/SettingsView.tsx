@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { SettingsProviderPanel } from "@/views/SettingsProviderPanel";
 import { SettingsStartupPanel } from "@/views/SettingsStartupPanel";
@@ -20,8 +21,14 @@ export function SettingsView() {
   const [tab, setTab] = useState<TabKey>("provider");
 
   return (
-    <div className="flex flex-col gap-4 py-2">
+    <div className="flex flex-col gap-7">
+      <PageHeader
+        title="设置"
+        description="配置识别密钥、录音处理、启动方式、麦克风与提示音以及界面外观。"
+      />
+
       <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
+
       {tab === "provider" && <SettingsProviderPanel />}
       {tab === "audio" && <AudioView />}
       {tab === "startup" && <SettingsStartupPanel />}

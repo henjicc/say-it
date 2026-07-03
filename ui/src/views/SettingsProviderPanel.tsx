@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/Button";
 import { Field, CheckField } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
 import { Slider } from "@/components/ui/Slider";
+import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
 
-const NESTED_COLLAPSE_CLASS = "border-white/10 bg-black/20";
+const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
 const NESTED_BODY_CLASS = "px-3 py-3";
 
@@ -174,13 +175,13 @@ export function SettingsProviderPanel() {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <SettingsSection title="识别供应商">
       <Collapse
         title={funasr?.displayName || "Fun-ASR"}
         subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}
         defaultOpen
       >
-        <p className="text-xs text-white/45">
+        <p className="text-xs text-[var(--color-fg-subtle)]">
           <button
             type="button"
             onClick={openApiKeyPage}
@@ -211,13 +212,13 @@ export function SettingsProviderPanel() {
               aria-label={apiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
               onClick={toggleApiKeyVisibility}
               disabled={(!apiKey && !savedApiKey && !hasApiKey) || apiKeyLoading}
-              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_45%,transparent)] disabled:cursor-not-allowed disabled:opacity-35"
+              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
             >
               <EyeIcon visible={apiKeyVisible} />
             </button>
           </div>
         </div>
-        <p className="mt-2 text-xs text-white/45">
+        <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
           当前状态：{hasApiKey ? "已配置 API Key" : "未配置 API Key"}
           {apiKeySaving ? " · 正在自动保存..." : providerStatus ? ` · ${providerStatus}` : ""}
         </p>
@@ -239,7 +240,7 @@ export function SettingsProviderPanel() {
             bodyClassName={NESTED_BODY_CLASS}
           >
             <div>
-              <p className="text-xs text-white/50">语种提示（language_hints）</p>
+              <p className="text-xs text-[var(--color-fg-subtle)]">语种提示（language_hints）</p>
               <div className="mt-1.5 flex gap-4">
                 {[
                   { value: "zh", label: "中文" },
@@ -301,8 +302,8 @@ export function SettingsProviderPanel() {
           </Collapse>
         </div>
 
-        {message && <p className="mt-3 text-xs text-white/50">{message}</p>}
+        {message && <p className="mt-3 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       </Collapse>
-    </div>
+    </SettingsSection>
   );
 }
