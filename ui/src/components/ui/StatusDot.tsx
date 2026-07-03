@@ -3,11 +3,11 @@ import { cn } from "@/lib/cn";
 type Tone = "ok" | "err" | "warn" | "idle" | "rec";
 
 const tones: Record<Tone, string> = {
-  ok: "bg-[#25c36f]",
-  err: "bg-[#ff6b6b]",
-  warn: "bg-[#ffd166]",
-  idle: "bg-white/30",
-  rec: "bg-[#ff4d4f]",
+  ok: "bg-[var(--color-ok)]",
+  err: "bg-[var(--color-err)]",
+  warn: "bg-[var(--color-warn)]",
+  idle: "bg-[var(--color-fg-faint)]",
+  rec: "bg-[var(--color-rec)]",
 };
 
 export function StatusDot({ tone = "idle", className }: { tone?: Tone; className?: string }) {

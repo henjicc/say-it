@@ -8,12 +8,12 @@ export function Sidebar() {
   const setView = useUiStore((s) => s.setView);
 
   return (
-    <aside className="flex w-56 flex-none flex-col gap-2 border-r border-white/5 bg-white/[0.02] p-3 backdrop-blur-md">
-      <div className="flex items-center gap-2.5 px-2 py-3">
-        <img src={appIcon} alt="说吧！" className="h-9 w-9 rounded-xl" />
+    <aside className="flex w-[var(--sidebar-w)] flex-none flex-col gap-2 border-r border-[var(--color-line)] bg-[var(--color-bg-sidebar)] p-3">
+      <div className="flex items-center gap-3 px-2 py-4">
+        <img src={appIcon} alt="说吧！" className="h-10 w-10 rounded-[var(--radius-lg)]" />
         <div className="flex flex-col leading-tight">
-          <strong className="text-sm font-semibold text-white">说吧！</strong>
-          <span className="text-[11px] text-white/40">Say it !</span>
+          <strong className="text-[15px] font-semibold text-[var(--color-fg)]">说吧！</strong>
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">Say it !</span>
         </div>
       </div>
 
@@ -26,15 +26,14 @@ export function Sidebar() {
               type="button"
               onClick={() => setView(item.view)}
               className={cn(
-                "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors",
+                "group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-3 text-sm transition-colors duration-[var(--dur-fast)]",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                 active
-                  ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] font-medium text-white ring-1 ring-[color-mix(in_srgb,var(--color-accent)_24%,transparent)]"
-                  : "text-white/55 hover:bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] hover:text-white/90",
+                  ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
+                  : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
               )}
             >
-              <span className={cn("grid h-5 w-5 place-items-center", active && "text-[var(--color-accent-light)]")}>
-                {item.icon}
-              </span>
+              <span className="grid h-5 w-5 flex-none place-items-center">{item.icon}</span>
               <span>{item.label}</span>
             </button>
           );

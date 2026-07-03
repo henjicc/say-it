@@ -11,11 +11,11 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-[var(--color-accent)] text-[var(--color-accent-contrast)] font-medium hover:bg-[var(--color-accent-light)] disabled:bg-white/40 disabled:text-black/50",
+    "bg-[var(--color-accent)] text-[var(--color-accent-contrast)] font-medium hover:bg-[var(--color-accent-light)] active:bg-[var(--color-accent-dark)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
   ghost:
-    "bg-white/5 text-white border border-white/10 backdrop-blur-[2px] hover:border-[color-mix(in_srgb,var(--color-accent)_42%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_13%,transparent)] disabled:opacity-40",
+    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[var(--accent-ring)] hover:bg-[var(--accent-soft)] active:bg-[var(--accent-soft-strong)] disabled:opacity-40",
   danger:
-    "bg-[#ff4d4f]/15 text-[#ff8589] border border-[#ff4d4f]/30 hover:bg-[#ff4d4f]/25 disabled:opacity-40",
+    "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[#ff8589] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
 };
 
 const sizes: Record<Size, string> = {
@@ -30,8 +30,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         type={type}
         className={cn(
-          "inline-flex items-center justify-center gap-2 rounded-full transition-colors",
-          "focus:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--color-accent)_55%,transparent)]",
+          "inline-flex items-center justify-center gap-2 rounded-[var(--radius-md)] transition-colors duration-[var(--dur-fast)]",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
           "disabled:cursor-not-allowed",
           variants[variant],
           sizes[size],

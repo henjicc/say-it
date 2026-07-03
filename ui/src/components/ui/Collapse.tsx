@@ -41,7 +41,7 @@ export function Collapse({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className={cn("rounded-xl border border-white/10 bg-white/[0.03]", className)}>
+    <div className={cn("rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]", className)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -51,10 +51,10 @@ export function Collapse({
         )}
       >
         <span className="flex min-w-0 flex-1 items-center gap-3">
-          <span className="truncate text-sm font-medium text-white/85">{title}</span>
-          {subtitle && <span className="truncate text-xs text-white/40">{subtitle}</span>}
+          <span className="truncate text-sm font-medium text-[var(--color-fg)]">{title}</span>
+          {subtitle && <span className="truncate text-xs text-[var(--color-fg-subtle)]">{subtitle}</span>}
         </span>
-        <span className="flex items-center gap-2 text-white/50">
+        <span className="flex items-center gap-2 text-[var(--color-fg-subtle)]">
           {headerRight}
           <ChevronIcon open={open} />
         </span>
@@ -66,7 +66,7 @@ export function Collapse({
         )}
       >
         <div className="overflow-hidden">
-          <div className={cn("border-t border-white/10 px-4 py-4", bodyClassName)}>{children}</div>
+          <div className={cn("border-t border-[var(--color-line)] px-4 py-4", bodyClassName)}>{children}</div>
         </div>
       </div>
     </div>

@@ -14,9 +14,9 @@ export function Field({
 }) {
   return (
     <label className={cn("flex flex-col gap-1.5", className)}>
-      {label && <span className="text-xs font-medium text-white/60">{label}</span>}
+      {label && <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>}
       {children}
-      {hint && <span className="text-xs text-white/40">{hint}</span>}
+      {hint && <span className="text-xs text-[var(--color-fg-subtle)]">{hint}</span>}
     </label>
   );
 }
@@ -38,7 +38,7 @@ export function CheckField({
   return (
     <label
       className={cn(
-        "inline-flex cursor-pointer items-center gap-2.5 text-sm text-white/80 select-none",
+        "inline-flex cursor-pointer items-center gap-2.5 text-sm text-[var(--color-fg-muted)] select-none",
         disabled && "cursor-not-allowed opacity-50",
         className,
       )}

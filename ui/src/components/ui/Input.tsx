@@ -2,9 +2,9 @@ import { Children, forwardRef, isValidElement, useEffect, useId, useMemo, useRef
 import { cn } from "@/lib/cn";
 
 const fieldBase =
-  "w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white " +
-  "placeholder:text-white/30 backdrop-blur-[1px] transition-colors " +
-  "focus:outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_58%,transparent)] disabled:opacity-50";
+  "w-full min-h-[var(--control-h)] rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-sm text-[var(--color-fg)] " +
+  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
+  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
 
 export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
@@ -52,7 +52,7 @@ function ChevronDownIcon({ open }: { open: boolean }) {
       strokeWidth={1.8}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn("h-4 w-4 text-white/55 transition-transform duration-200", open && "rotate-180 text-white/80")}
+      className={cn("h-4 w-4 text-[var(--color-fg-subtle)] transition-transform duration-200", open && "rotate-180 text-[var(--color-fg-muted)]")}
       aria-hidden
     >
       <path d="m5 7.5 5 5 5-5" />
@@ -194,8 +194,8 @@ export function Select({
         className={cn(
           fieldBase,
           "flex items-center justify-between gap-3 pr-3 text-left",
-          "hover:border-white/18 hover:bg-white/[0.06]",
-          open && "border-white/30 bg-white/[0.06]",
+          "hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-hover)]",
+          open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
           disabled && "cursor-not-allowed opacity-50",
         )}
         disabled={disabled}
@@ -217,10 +217,10 @@ export function Select({
           id={listboxId}
           role="listbox"
           aria-labelledby={buttonId}
-          className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-[19.5rem] overflow-hidden rounded-xl border border-white/12 bg-[#101010]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+          className="absolute left-0 right-0 top-[calc(100%+6px)] z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]"
         >
           {searchable && (
-            <div className="border-b border-white/10 p-1.5">
+            <div className="border-b border-[var(--color-line)] p-1.5">
               <input
                 ref={searchInputRef}
                 type="text"
@@ -228,13 +228,13 @@ export function Select({
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={handleListKeyDown}
                 placeholder={searchPlaceholder}
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_58%,transparent)]"
+                className="w-full rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-faint)] focus:outline-none focus:border-[var(--accent-ring)]"
               />
             </div>
           )}
           <div className="max-h-64 overflow-auto p-1.5">
           {visibleOptions.length === 0 && (
-            <div className="px-3 py-2 text-sm text-white/40">无匹配结果</div>
+            <div className="px-3 py-2 text-sm text-[var(--color-fg-subtle)]">无匹配结果</div>
           )}
           {visibleOptions.map((option) => {
             const selected = option.value === selectedOption?.value;
@@ -248,10 +248,10 @@ export function Select({
                 disabled={option.disabled}
                 onClick={() => commitValue(option.value)}
                 className={cn(
-                  "flex min-h-9 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                  "flex min-h-9 w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors",
                   selected
                     ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
-                    : "text-white/72 hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] hover:text-white",
+                    : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
                   option.disabled && "cursor-not-allowed opacity-40",
                 )}
               >

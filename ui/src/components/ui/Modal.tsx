@@ -29,19 +29,19 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-[var(--z-modal)] grid place-items-center bg-black/60 p-6 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
         className={cn(
-          "flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0a]/90 shadow-2xl backdrop-blur-xl",
+          "flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
           className,
         )}
         onClick={(e) => e.stopPropagation()}
       >
         {(title || onClose) && (
-          <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-            <h3 className="text-base font-semibold text-white">{title}</h3>
+          <div className="flex items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
+            <h3 className="text-base font-semibold text-[var(--color-fg)]">{title}</h3>
             <Button size="sm" onClick={onClose}>
               关闭
             </Button>

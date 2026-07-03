@@ -9,7 +9,7 @@ export function Card({
   return (
     <section
       className={cn(
-        "border-t border-white/10 pt-6 first:border-t-0 first:pt-0",
+        "border-t border-[var(--color-line)] pt-6 first:border-t-0 first:pt-0",
         className,
       )}
       {...props}
@@ -25,7 +25,7 @@ export function CardTitle({
   ...props
 }: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h2 className={cn("text-lg font-semibold tracking-tight text-white", className)} {...props}>
+    <h2 className={cn("text-lg font-semibold tracking-tight text-[var(--color-fg)]", className)} {...props}>
       {children}
     </h2>
   );
@@ -37,7 +37,7 @@ export function CardDescription({
   ...props
 }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <p className={cn("mt-1 text-sm leading-relaxed text-white/50", className)} {...props}>
+    <p className={cn("mt-1 text-sm leading-relaxed text-[var(--color-fg-subtle)]", className)} {...props}>
       {children}
     </p>
   );

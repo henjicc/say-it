@@ -63,8 +63,8 @@ export default function App() {
       <Titlebar />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <main className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-          <div className="mx-auto w-full max-w-5xl">{VIEWS[view]}</div>
+        <main className="min-h-0 flex-1 overflow-y-auto px-9 py-8">
+          <div className="mx-auto w-full max-w-[1180px]">{VIEWS[view]}</div>
         </main>
       </div>
     </div>

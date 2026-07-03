@@ -31,7 +31,7 @@ export function Titlebar() {
   return (
     <div
       data-tauri-drag-region
-      className="relative z-[100] flex h-9 flex-none items-center justify-end border-b border-white/5 bg-black/40 backdrop-blur-md select-none"
+      className="relative z-[var(--z-titlebar)] flex h-[var(--titlebar-h)] flex-none items-center justify-end border-b border-[var(--color-line)] bg-[var(--color-bg-titlebar)] select-none"
     >
       <div className="flex h-full items-stretch">
         <TitleBtn label="最小化" onClick={() => appWindow.minimize()}>
@@ -73,8 +73,10 @@ function TitleBtn({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "no-drag grid w-[46px] place-items-center text-white/50 transition-colors",
-        close ? "hover:bg-[#e1394b] hover:text-white" : "hover:bg-white/10 hover:text-white",
+        "no-drag grid h-full w-[46px] place-items-center text-[var(--color-fg-subtle)] transition-colors duration-[var(--dur-fast)]",
+        close
+          ? "hover:bg-[#e1394b] hover:text-white"
+          : "hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)]",
       )}
     >
       <svg
