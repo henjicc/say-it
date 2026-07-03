@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { dspDefaults, dspParamsFromPrefs, type DspParams } from "@/lib/audio-dsp";
 import { CMD, cmdSilent } from "@/lib/tauri";
+import { DEFAULT_REALTIME_ASR_MODEL } from "@/features/asr/modelOptions";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -10,6 +11,8 @@ import {
 export type CueKind = "none" | "beep-up" | "beep-down" | "beep-double" | "custom";
 
 export interface DictPrefs extends DspParams {
+  /** 语音输入默认使用的实时识别模型。 */
+  asrModel: string;
   keepAliveMs: number;
   cueEnabled: boolean;
   cueStart: CueKind;
@@ -25,6 +28,7 @@ const DICT_PREFS_KEY = "sayItDictPrefs";
 
 function defaults(): DictPrefs {
   return {
+    asrModel: DEFAULT_REALTIME_ASR_MODEL,
     keepAliveMs: 60000,
     cueEnabled: true,
     cueStart: "beep-up",

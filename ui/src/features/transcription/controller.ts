@@ -1,5 +1,6 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
+import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 import { cuesFromOptimizedSegments } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -27,7 +28,7 @@ function providerHasApiKey() {
 
 function normalizeParams(params: TranscriptionParams) {
   return {
-    model: params.model || "fun-asr",
+    model: params.model || DEFAULT_FILE_ASR_MODEL,
     vocabularyId: params.vocabularyId.trim(),
     languageHints: params.languageHints.filter(Boolean),
     diarizationEnabled: params.diarizationEnabled,

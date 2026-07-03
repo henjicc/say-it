@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AlignedResultCue } from "@/features/transcription/subtitles";
+import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 
 export type TranscriptionTab = "transcribe" | "align";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
@@ -103,7 +104,7 @@ export interface TranscriptionEventPayload {
 }
 
 export const DEFAULT_TRANSCRIPTION_PARAMS: TranscriptionParams = {
-  model: "fun-asr",
+  model: DEFAULT_FILE_ASR_MODEL,
   vocabularyId: "",
   languageHints: [],
   diarizationEnabled: false,

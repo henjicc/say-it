@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import {
+  REALTIME_ASR_MODEL_OPTIONS,
+  realtimeModelSummary,
+} from "@/features/asr/modelOptions";
 import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, setInjectMethod } from "@/features/dictation/controller";
 
@@ -11,6 +15,7 @@ const DEFAULT_INPUT_VALUE = "";
 
 export function DictationShortcutsPanel() {
   const { capturing, shortcutLabel, injectMethod } = useDictationStore();
+  const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
   const patchDictPrefs = useDictPrefs((s) => s.patch);
   const { inputs } = useAudioDevices();
@@ -19,6 +24,16 @@ export function DictationShortcutsPanel() {
     <>
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="flex flex-col gap-3">
+          <Field label="识别模型">
+            <Select value={asrModel} onChange={(e) => patchDictPrefs({ asrModel: e.target.value })}>
+              {REALTIME_ASR_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1.5 text-xs text-white/40">{realtimeModelSummary(asrModel)}</p>
+          </Field>
           <Field label="全局快捷键">
             <div className="flex gap-2">
               <Input

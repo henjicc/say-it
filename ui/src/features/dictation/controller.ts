@@ -117,6 +117,7 @@ async function startDictation() {
 
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
+    modelOverride: useDictPrefs.getState().prefs.asrModel,
     sampleRate: getBackendMicSampleRate() || 48000,
     params: dspParams(),
   });

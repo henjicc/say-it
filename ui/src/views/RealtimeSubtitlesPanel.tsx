@@ -23,6 +23,10 @@ import {
 } from "@/store/useSubtitleStore";
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import {
+  REALTIME_ASR_MODEL_OPTIONS,
+  realtimeModelSummary,
+} from "@/features/asr/modelOptions";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 
@@ -136,6 +140,20 @@ export function RealtimeSubtitlesPanel() {
       <p className={cn("mt-3 text-sm", toneClass[statusTone])}>{statusText}</p>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="识别模型">
+          <Select
+            value={prefs.asrModel}
+            disabled={running}
+            onChange={(event) => patch({ asrModel: event.target.value })}
+          >
+            {REALTIME_ASR_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+          <p className="mt-1.5 text-xs text-white/40">{realtimeModelSummary(prefs.asrModel)}</p>
+        </Field>
         <Field label="全局快捷键">
           <div className="flex gap-2">
             <Input

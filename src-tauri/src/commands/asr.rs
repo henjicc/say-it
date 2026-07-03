@@ -6,7 +6,9 @@ use crate::state::*;
 const ASR_FINISH_TIMEOUT: Duration = Duration::from_secs(8);
 
 struct FunAsrProtocol {
-    task_id: String,
+    task_id: Option<String>,
+    family: RealtimeAsrFamily,
+    model: String,
     started: bool,
     pending: Vec<Vec<u8>>,
 }
@@ -16,6 +18,7 @@ pub(crate) async fn start_asr_stream(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
     provider_id: Option<String>,
+    model_override: Option<String>,
     sample_rate: Option<u32>,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
@@ -31,19 +34,38 @@ pub(crate) async fn start_asr_stream(
     let funasr_params: FunAsrParams =
         serde_json::from_value(profile.config.clone()).map_err(|e| e.to_string())?;
     if funasr_params.api_key.trim().is_empty() {
-        return Err("请先在设置中填写 Fun-ASR 的 API Key".to_string());
+        return Err("请先在设置中填写阿里云百炼 API Key".to_string());
     }
-    let req = funasr_ws_request(&funasr_params.api_key)?;
+    let model = funasr_params.realtime_model(model_override.as_deref());
+    let family = realtime_asr_family(&model);
+    let req = match family {
+        RealtimeAsrFamily::DashscopeDuplex => funasr_ws_request(&funasr_params.api_key)?,
+        RealtimeAsrFamily::QwenRealtime => qwen_realtime_request(&funasr_params.api_key, &model)?,
+    };
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
     let (mut writer, mut reader) = ws_stream.split();
-    let task_id = Uuid::new_v4().to_string();
-    writer
-        .send(build_run_task_message(&task_id, &funasr_params))
-        .await
-        .map_err(|e| e.to_string())?;
+    let task_id = match family {
+        RealtimeAsrFamily::DashscopeDuplex => {
+            let task_id = Uuid::new_v4().to_string();
+            writer
+                .send(build_run_task_message(&task_id, &funasr_params, &model))
+                .await
+                .map_err(|e| e.to_string())?;
+            Some(task_id)
+        }
+        RealtimeAsrFamily::QwenRealtime => {
+            writer
+                .send(build_qwen_session_update_message(&funasr_params))
+                .await
+                .map_err(|e| e.to_string())?;
+            None
+        }
+    };
 
     let mut protocol = FunAsrProtocol {
         task_id,
+        family,
+        model,
         started: false,
         pending: Vec::new(),
     };
@@ -80,7 +102,8 @@ pub(crate) async fn start_asr_stream(
             &task_session_id,
             "opened",
             json!({
-                "message": "funasr websocket opened",
+                "message": "asr websocket opened",
+                "model": &protocol.model,
                 "dsp_enabled": dsp.is_some(),
                 "dsp": dsp_info,
             }),
@@ -145,7 +168,7 @@ pub(crate) async fn start_asr_stream(
                             secs
                         );
                         if let Err(err) =
-                            writer.send(build_finish_task_message(&protocol.task_id)).await
+                            send_finish(&mut writer, &protocol).await
                         {
                             emit_asr_stream_event(
                                 &app_handle,
@@ -191,13 +214,13 @@ pub(crate) async fn start_asr_stream(
                 break;
             };
             match message {
-                Ok(Message::Text(text)) => match parse_funasr_message(&text) {
+                Ok(Message::Text(text)) => match parse_realtime_asr_message(&text, &protocol.model) {
                     FunAsrEvent::Started => {
                         protocol.started = true;
                         let queued = std::mem::take(&mut protocol.pending);
                         let mut flush_failed = false;
                         for bytes in queued {
-                            if let Err(err) = writer.send(Message::Binary(bytes.into())).await {
+                            if let Err(err) = send_audio_message(&mut writer, &protocol, bytes).await {
                                 emit_asr_stream_event(
                                     &app_handle,
                                     &task_session_id,
@@ -215,7 +238,7 @@ pub(crate) async fn start_asr_stream(
                             &app_handle,
                             &task_session_id,
                             "event",
-                            json!({ "message": "funasr task-started" }),
+                            json!({ "message": "asr task-started", "model": &protocol.model }),
                         );
                     }
                     FunAsrEvent::Partial(text) => {
@@ -303,7 +326,7 @@ async fn send_or_queue_audio(
         return Ok(());
     }
     let n = bytes.len();
-    if let Err(err) = writer.send(Message::Binary(bytes.into())).await {
+    if let Err(err) = send_audio_message(writer, protocol, bytes).await {
         emit_asr_stream_event(
             app,
             session_id,
@@ -315,6 +338,37 @@ async fn send_or_queue_audio(
     *audio_chunks += 1;
     *audio_bytes += n as u64;
     Ok(())
+}
+
+async fn send_audio_message(
+    writer: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    protocol: &FunAsrProtocol,
+    bytes: Vec<u8>,
+) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+    match protocol.family {
+        RealtimeAsrFamily::DashscopeDuplex => writer.send(Message::Binary(bytes.into())).await,
+        RealtimeAsrFamily::QwenRealtime => writer.send(build_qwen_audio_message(&bytes)).await,
+    }
+}
+
+async fn send_finish(
+    writer: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    protocol: &FunAsrProtocol,
+) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+    match protocol.family {
+        RealtimeAsrFamily::DashscopeDuplex => writer
+            .send(build_finish_task_message(
+                protocol.task_id.as_deref().unwrap_or_default(),
+            ))
+            .await,
+        RealtimeAsrFamily::QwenRealtime => writer.send(build_qwen_finish_message()).await,
+    }
 }
 
 #[tauri::command]
@@ -424,7 +478,12 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
     let funasr_params: FunAsrParams =
         serde_json::from_value(profile.config.clone()).map_err(|e| e.to_string())?;
     if funasr_params.api_key.trim().is_empty() {
-        return Err("请先在设置中填写 Fun-ASR 的 API Key".to_string());
+        return Err("请先在设置中填写阿里云百炼 API Key".to_string());
+    }
+    let model = funasr_params.realtime_model(None);
+    let family = realtime_asr_family(&model);
+    if family == RealtimeAsrFamily::QwenRealtime {
+        return Err("当前静音测试仅支持 Fun-ASR / Paraformer 实时模型".to_string());
     }
     let req = funasr_ws_request(&funasr_params.api_key)?;
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
@@ -432,7 +491,7 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
 
     let task_id = Uuid::new_v4().to_string();
     writer
-        .send(build_run_task_message(&task_id, &funasr_params))
+        .send(build_run_task_message(&task_id, &funasr_params, &model))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -449,7 +508,7 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
         let Some(message) = next else { break };
         let message = message.map_err(|e| e.to_string())?;
         let Message::Text(text) = message else { continue };
-        match parse_funasr_message(&text) {
+        match parse_realtime_asr_message(&text, &model) {
             FunAsrEvent::Started => {
                 started = true;
                 for chunk in silence.chunks(4096) {

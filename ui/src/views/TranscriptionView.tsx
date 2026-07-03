@@ -20,6 +20,11 @@ import {
   useFilePick,
 } from "@/features/transcription/filePicker";
 import { buildCues, cueText, formatSrtTime, plainText, toSrt } from "@/features/transcription/subtitles";
+import {
+  FILE_ASR_MODEL_OPTIONS,
+  fileModelSummary,
+  isFunAsrFileModel,
+} from "@/features/asr/modelOptions";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -32,14 +37,6 @@ import {
 const TABS: TabItem<TranscriptionTab>[] = [
   { key: "transcribe", label: "录音转写" },
   { key: "align", label: "文稿对齐" },
-];
-
-const MODEL_OPTIONS = [
-  { value: "fun-asr", label: "fun-asr（推荐）" },
-  { value: "fun-asr-2025-11-07", label: "fun-asr-2025-11-07" },
-  { value: "fun-asr-2025-08-25", label: "fun-asr-2025-08-25" },
-  { value: "fun-asr-mtl", label: "fun-asr-mtl" },
-  { value: "fun-asr-mtl-2025-08-25", label: "fun-asr-mtl-2025-08-25" },
 ];
 
 const LANGUAGE_OPTIONS = [
@@ -112,6 +109,7 @@ export function TranscriptionView() {
   const textResult = useMemo(() => plainText(result), [result]);
   const cues = useMemo(() => buildCues(result), [result]);
   const srt = useMemo(() => toSrt(cues), [cues]);
+  const supportsFunAsrVocabulary = isFunAsrFileModel(params.model);
 
   const toggleLanguageHint = (value: string) => {
     const next = params.languageHints.includes(value)
@@ -180,7 +178,7 @@ export function TranscriptionView() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle>录音转写</CardTitle>
-              <CardDescription>选择一个本地音视频文件，上传到临时 OSS 后提交 Fun-ASR 录音文件识别。</CardDescription>
+              <CardDescription>选择一个本地音视频文件，上传到临时 OSS 后提交阿里云百炼录音识别。</CardDescription>
             </div>
             {selectedFile && (
               <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
@@ -197,6 +195,19 @@ export function TranscriptionView() {
             message={message}
             onPick={pickFile}
           />
+
+          <div className="mt-4 rounded-xl border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/8 p-4">
+            <Field label="识别模型">
+              <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
+                {FILE_ASR_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <p className="mt-2 text-xs text-white/55">{fileModelSummary(params.model)}</p>
+          </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Button variant="primary" onClick={startTranscription} disabled={!selectedFile || running}>
@@ -234,20 +245,19 @@ export function TranscriptionView() {
 
           <Collapse title="识别参数" subtitle="默认配置适合大多数录音" className="mt-4">
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="模型版本">
-                <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
-                  {MODEL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="热词 ID" hint="实时识别热词不自动复用到录音识别；需要时手动填写 fun-asr 词表 ID。">
+              <Field
+                label="热词 ID"
+                hint={
+                  supportsFunAsrVocabulary
+                    ? "实时识别热词不自动复用到录音识别；需要时手动填写 Fun-ASR 词表 ID。"
+                    : "当前模型不复用现有 Fun-ASR 热词词表，留空即可。"
+                }
+              >
                 <Input
                   value={params.vocabularyId}
                   onChange={(event) => setParams({ vocabularyId: event.target.value })}
                   placeholder="留空"
+                  disabled={!supportsFunAsrVocabulary}
                 />
               </Field>
             </div>

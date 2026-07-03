@@ -177,6 +177,7 @@ async function ensureBackendSystemAudio(deviceName: string | undefined) {
 async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
+    modelOverride: prefs.asrModel,
     sampleRate,
     params: useDictPrefs.getState().dspParams(),
   });

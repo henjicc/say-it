@@ -9,12 +9,13 @@ pub use customization::{
     HotwordEntry, VOCABULARY_PREFIX,
 };
 pub use protocol::{
-    build_finish_task_message, build_run_task_message, parse_server_message, FunAsrEvent,
-    FunAsrParams,
+    build_finish_task_message, build_qwen_audio_message, build_qwen_finish_message,
+    build_qwen_session_update_message, build_run_task_message, parse_server_message,
+    realtime_asr_family, FunAsrEvent, FunAsrParams, RealtimeAsrFamily,
 };
 pub use transcription::{
     fetch_transcription_result, query_transcription_task, submit_transcription_task,
     TranscriptionParams, TranscriptionTaskStatus,
 };
 pub use uploads::upload_for_model;
-pub use urls::ws_request;
+pub use urls::{qwen_realtime_request, ws_request};

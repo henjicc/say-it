@@ -6,6 +6,13 @@ const TRANSCRIPTION_URL: &str =
 const TASK_URL_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks";
 const DEFAULT_TRANSCRIPTION_MODEL: &str = "fun-asr";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TranscriptionModelFamily {
+    FunAsr,
+    Paraformer,
+    QwenFiletrans,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionParams {
@@ -49,9 +56,9 @@ impl TranscriptionParams {
         }
     }
 
-    fn parameters_value(&self) -> Value {
+    fn parameters_value(&self, family: TranscriptionModelFamily) -> Value {
         let mut parameters = Map::new();
-        if !self.vocabulary_id.trim().is_empty() {
+        if family == TranscriptionModelFamily::FunAsr && !self.vocabulary_id.trim().is_empty() {
             parameters.insert(
                 "vocabulary_id".to_string(),
                 json!(self.vocabulary_id.trim()),
@@ -63,21 +70,41 @@ impl TranscriptionParams {
             .map(|hint| hint.trim())
             .filter(|hint| !hint.is_empty())
             .collect::<Vec<_>>();
-        if !language_hints.is_empty() {
+        if matches!(
+            family,
+            TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
+        ) && !language_hints.is_empty() {
             parameters.insert("language_hints".to_string(), json!(language_hints));
+        } else if family == TranscriptionModelFamily::QwenFiletrans
+            && language_hints.len() == 1
+        {
+            parameters.insert("language".to_string(), json!(language_hints[0]));
         }
-        if let Some(enabled) = self.diarization_enabled {
-            parameters.insert("diarization_enabled".to_string(), json!(enabled));
-        }
-        if let Some(count) = self.speaker_count.filter(|count| *count > 0) {
-            parameters.insert("speaker_count".to_string(), json!(count));
+        if matches!(
+            family,
+            TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
+        ) {
+            if let Some(enabled) = self.diarization_enabled {
+                parameters.insert("diarization_enabled".to_string(), json!(enabled));
+            }
+            if let Some(count) = self.speaker_count.filter(|count| *count > 0) {
+                parameters.insert("speaker_count".to_string(), json!(count));
+            }
         }
         if let Some(channel_id) = &self.channel_id {
             if !channel_id.is_null() {
                 parameters.insert("channel_id".to_string(), channel_id.clone());
             }
         }
-        if !self.special_word_filter.trim().is_empty() {
+        if family == TranscriptionModelFamily::QwenFiletrans {
+            parameters.insert("enable_words".to_string(), json!(true));
+            parameters.insert("enable_itn".to_string(), json!(false));
+        }
+        if matches!(
+            family,
+            TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
+        ) && !self.special_word_filter.trim().is_empty()
+        {
             parameters.insert(
                 "special_word_filter".to_string(),
                 json!(self.special_word_filter.trim()),
@@ -202,6 +229,8 @@ struct TaskResponse {
 struct TaskOutput {
     task_status: String,
     #[serde(default)]
+    result: Option<TranscriptionTaskResult>,
+    #[serde(default)]
     results: Vec<TranscriptionTaskResult>,
     #[serde(default)]
     code: Option<String>,
@@ -236,12 +265,11 @@ pub async fn submit_transcription_task(
     }
 
     let model = params.model_id();
+    let family = transcription_model_family(&model);
     let body = json!({
         "model": model,
-        "input": {
-            "file_urls": [file_url.trim()],
-        },
-        "parameters": params.parameters_value(),
+        "input": transcription_input_value(family, file_url),
+        "parameters": params.parameters_value(family),
     });
     let client = reqwest::Client::new();
     let mut request = client
@@ -283,9 +311,13 @@ pub async fn query_transcription_task(
     let value = read_json_response(resp, "查询录音识别任务").await?;
     let response: TaskResponse =
         serde_json::from_value(value).map_err(|e| format!("解析录音识别任务响应失败：{e}"))?;
+    let result = response
+        .output
+        .result
+        .or_else(|| response.output.results.into_iter().next());
     Ok(TranscriptionTaskStatus {
         task_status: response.output.task_status,
-        result: response.output.results.into_iter().next(),
+        result,
         code: response.output.code,
         message: response.output.message,
     })
@@ -312,6 +344,28 @@ pub async fn fetch_transcription_result(url: &str) -> Result<TranscriptionResult
 
 fn default_transcription_model() -> String {
     DEFAULT_TRANSCRIPTION_MODEL.to_string()
+}
+
+fn transcription_model_family(model: &str) -> TranscriptionModelFamily {
+    let model = model.trim();
+    if model.starts_with("qwen3-asr-flash-filetrans") {
+        TranscriptionModelFamily::QwenFiletrans
+    } else if model.starts_with("paraformer") {
+        TranscriptionModelFamily::Paraformer
+    } else {
+        TranscriptionModelFamily::FunAsr
+    }
+}
+
+fn transcription_input_value(family: TranscriptionModelFamily, file_url: &str) -> Value {
+    match family {
+        TranscriptionModelFamily::QwenFiletrans => json!({
+            "file_url": file_url.trim(),
+        }),
+        TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer => json!({
+            "file_urls": [file_url.trim()],
+        }),
+    }
 }
 
 async fn read_json_response(resp: reqwest::Response, action: &str) -> Result<Value, String> {

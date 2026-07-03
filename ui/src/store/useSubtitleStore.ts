@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { DEFAULT_REALTIME_ASR_MODEL } from "@/features/asr/modelOptions";
 
 /**
  * 声音来源用一个字符串 id 表达："mic:default" / "system:default" 是最上面的
@@ -27,6 +28,7 @@ export type SubtitleMode = "scroll" | "replace";
 
 export interface SubtitlePrefs {
   source: SubtitleSource;
+  asrModel: string;
   mode: SubtitleMode;
   fontFamily: string;
   /** 字号，屏幕高度的百分比 */
@@ -65,6 +67,7 @@ const SUBTITLE_PREFS_KEY = "sayItSubtitlePrefs";
 
 const defaults = (): SubtitlePrefs => ({
   source: DEFAULT_SUBTITLE_SOURCE,
+  asrModel: DEFAULT_REALTIME_ASR_MODEL,
   mode: "replace",
   fontFamily: "Microsoft YaHei",
   fontSizePercent: 2.6,
@@ -133,4 +136,3 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   },
   setRuntime: (partial) => set(partial),
 }));
-
