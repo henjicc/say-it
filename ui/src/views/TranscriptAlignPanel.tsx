@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
+import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
 import {
@@ -16,9 +17,14 @@ import {
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
-import { cuesFromAlignedLines, formatSrtTime, toSrt } from "@/features/transcription/subtitles";
+import {
+  cuesFromAlignedLines,
+  formatSrtTime,
+  shouldUseAsrText,
+  toSrt,
+} from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useTranscriptionStore } from "@/store/useTranscriptionStore";
+import { useTranscriptionStore, type AlignResultView } from "@/store/useTranscriptionStore";
 
 /** 低于该匹配率的行视为与音频不符，黄色提示。 */
 const LOW_MATCH_THRESHOLD = 0.6;
@@ -31,6 +37,8 @@ export function TranscriptAlignPanel() {
     alignStatusText,
     alignErrorMessage,
     alignedLines,
+    alignOptimizedCues,
+    alignResultView,
     alignSaveMessage,
     setAlignFile,
     setScriptText,
@@ -49,21 +57,28 @@ export function TranscriptAlignPanel() {
     if (!alignedLines || alignedLines.length === 0) return null;
     const avg = alignedLines.reduce((sum, line) => sum + line.matchRatio, 0) / alignedLines.length;
     const low = alignedLines.filter((line) => line.matchRatio < LOW_MATCH_THRESHOLD || line.interpolated).length;
-    return { avg, low };
+    const replaced = alignedLines.filter(shouldUseAsrText).length;
+    return { avg, low, replaced };
   }, [alignedLines]);
 
   const exportSrt = async () => {
-    if (!alignedLines || alignedLines.length === 0) {
+    const cues =
+      alignResultView === "optimized"
+        ? alignOptimizedCues || []
+        : alignedLines
+          ? cuesFromAlignedLines(alignedLines)
+          : [];
+    if (cues.length === 0) {
       setRuntime({ alignSaveMessage: "当前没有可导出的字幕。" });
       return;
     }
     try {
       const path = await save({
-        defaultPath: defaultSrtName(alignFile, ".对齐"),
+        defaultPath: defaultSrtName(alignFile, alignResultView === "optimized" ? ".对齐修正" : ".对齐"),
         filters: [{ name: "SRT 字幕", extensions: ["srt"] }],
       });
       if (!path) return;
-      await cmd(CMD.saveTextFile, { path, content: toSrt(cuesFromAlignedLines(alignedLines)) });
+      await cmd(CMD.saveTextFile, { path, content: toSrt(cues) });
       setRuntime({ alignSaveMessage: `已导出：${path}` });
     } catch (error) {
       setRuntime({ alignSaveMessage: `导出失败：${String(error)}` });
@@ -142,43 +157,95 @@ export function TranscriptAlignPanel() {
       {alignedLines && alignedLines.length > 0 && (
         <div className="mt-5 border-t border-white/10 pt-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-white/60">
-              共 {alignedLines.length} 行，平均匹配率 {stats ? Math.round(stats.avg * 100) : 0}%
-              {stats && stats.low > 0 && (
-                <span className="text-[#f5c56f]">，{stats.low} 行匹配度低（已黄色标注，时间为估算）</span>
-              )}
-            </p>
+            <Tabs<AlignResultView>
+              tabs={[
+                { key: "script", label: "完全按文稿" },
+                { key: "optimized", label: `识别修正${stats && stats.replaced > 0 ? `（${stats.replaced} 行）` : ""}` },
+              ]}
+              active={alignResultView}
+              onChange={(value) => setRuntime({ alignResultView: value })}
+            />
             <Button size="sm" onClick={exportSrt}>
               导出 SRT
             </Button>
           </div>
 
-          <div className="mt-4 max-h-[34rem] overflow-auto rounded-xl border border-white/10 bg-white/[0.035]">
-            {alignedLines.map((line, index) => {
-              const low = line.matchRatio < LOW_MATCH_THRESHOLD || line.interpolated;
-              return (
-                <div
-                  key={line.lineIndex}
-                  className={cn(
-                    "grid gap-2 border-b border-white/8 px-4 py-3 last:border-b-0 md:grid-cols-[3rem_15rem_4.5rem_1fr]",
-                    low && "bg-[#f5c56f]/[0.08]",
-                  )}
-                >
-                  <span className="text-xs tabular-nums text-white/35">{index + 1}</span>
-                  <span className="font-mono text-xs text-white/50">
-                    {formatSrtTime(line.beginMs)} → {formatSrtTime(line.endMs)}
-                  </span>
-                  <span
-                    className={cn("text-xs tabular-nums", low ? "text-[#f5c56f]" : "text-white/45")}
-                    title={low ? "该行与音频匹配度低，时间为估算，建议核对" : undefined}
+          {alignResultView === "script" ? (
+            <>
+              <p className="mt-3 text-sm text-white/60">
+                共 {alignedLines.length} 行，平均匹配率 {stats ? Math.round(stats.avg * 100) : 0}%
+                {stats && stats.low > 0 && (
+                  <span className="text-[#f5c56f]">，{stats.low} 行匹配度低（已黄色标注，时间为估算）</span>
+                )}
+              </p>
+              <div className="mt-3 max-h-[34rem] overflow-auto rounded-xl border border-white/10 bg-white/[0.035]">
+                {alignedLines.map((line, index) => {
+                  const low = line.matchRatio < LOW_MATCH_THRESHOLD || line.interpolated;
+                  return (
+                    <div
+                      key={line.lineIndex}
+                      className={cn(
+                        "grid gap-2 border-b border-white/8 px-4 py-3 last:border-b-0 md:grid-cols-[3rem_15rem_4.5rem_1fr]",
+                        low && "bg-[#f5c56f]/[0.08]",
+                      )}
+                    >
+                      <span className="text-xs tabular-nums text-white/35">{index + 1}</span>
+                      <span className="font-mono text-xs text-white/50">
+                        {formatSrtTime(line.beginMs)} → {formatSrtTime(line.endMs)}
+                      </span>
+                      <span
+                        className={cn("text-xs tabular-nums", low ? "text-[#f5c56f]" : "text-white/45")}
+                        title={low ? "该行与音频匹配度低，时间为估算，建议核对" : undefined}
+                      >
+                        {line.interpolated ? "估算" : `${Math.round(line.matchRatio * 100)}%`}
+                      </span>
+                      <span className="text-sm leading-6 text-white/82">{line.text}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mt-3 text-sm text-white/60">
+                {stats && stats.replaced > 0 ? (
+                  <>
+                    与音频差异过大的 {stats.replaced} 行文稿已改用识别文本（
+                    <span className="text-[#6fc7f5]">蓝色标注</span>
+                    ），其余行仍完全按文稿输出。
+                  </>
+                ) : (
+                  "所有文稿行与音频匹配良好，无需修正，与「完全按文稿」结果一致。"
+                )}
+              </p>
+              <div className="mt-3 max-h-[34rem] overflow-auto rounded-xl border border-white/10 bg-white/[0.035]">
+                {(alignOptimizedCues || []).map((cue) => (
+                  <div
+                    key={cue.index}
+                    className={cn(
+                      "grid gap-2 border-b border-white/8 px-4 py-3 last:border-b-0 md:grid-cols-[3rem_15rem_4.5rem_1fr]",
+                      cue.source === "asr" && "bg-[#6fc7f5]/[0.08]",
+                    )}
                   >
-                    {line.interpolated ? "估算" : `${Math.round(line.matchRatio * 100)}%`}
-                  </span>
-                  <span className="text-sm leading-6 text-white/82">{line.text}</span>
-                </div>
-              );
-            })}
-          </div>
+                    <span className="text-xs tabular-nums text-white/35">{cue.index}</span>
+                    <span className="font-mono text-xs text-white/50">
+                      {formatSrtTime(cue.beginMs)} → {formatSrtTime(cue.endMs)}
+                    </span>
+                    <span
+                      className={cn("text-xs tabular-nums", cue.source === "asr" ? "text-[#6fc7f5]" : "text-white/45")}
+                      title={cue.source === "asr" ? "该段文稿与音频差异过大，已改用识别文本" : undefined}
+                    >
+                      {cue.source === "asr" ? "识别" : `${Math.round((cue.matchRatio ?? 0) * 100)}%`}
+                    </span>
+                    <span className="text-sm leading-6 text-white/82">{cue.text}</span>
+                  </div>
+                ))}
+                {(alignOptimizedCues || []).length === 0 && (
+                  <p className="p-4 text-sm text-white/45">修正结果为空：文稿与音频均无可保留内容。</p>
+                )}
+              </div>
+            </>
+          )}
 
           {alignSaveMessage && <p className="mt-2 text-xs text-white/45">{alignSaveMessage}</p>}
         </div>
