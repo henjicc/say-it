@@ -1,6 +1,9 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
-import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
+import {
+  DEFAULT_FILE_ASR_MODEL,
+  supportsAlignmentTimestamps,
+} from "@/features/asr/modelOptions";
 import { cuesFromOptimizedSegments } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -292,6 +295,15 @@ export async function startAlignment() {
       alignStage: "error",
       alignStatusText: "缺少 API Key。",
       alignErrorMessage: "请先在设置中保存阿里云百炼 API Key。",
+    });
+    return;
+  }
+
+  if (!supportsAlignmentTimestamps(store.params.model)) {
+    store.setRuntime({
+      alignStage: "error",
+      alignStatusText: "当前模型不适合文稿对齐。",
+      alignErrorMessage: "文稿对齐需要带时间戳的识别结果，请切换到 Fun-ASR 或 Qwen3-ASR-Flash-Filetrans。",
     });
     return;
   }

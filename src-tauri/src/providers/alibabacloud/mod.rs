@@ -14,8 +14,9 @@ pub use protocol::{
     realtime_asr_family, FunAsrEvent, FunAsrParams, RealtimeAsrFamily,
 };
 pub use transcription::{
-    fetch_transcription_result, query_transcription_task, submit_transcription_task,
-    TranscriptionParams, TranscriptionTaskStatus,
+    fetch_transcription_result, query_transcription_task, recognize_short_audio,
+    submit_transcription_task, uses_async_transcription_task, TranscriptionParams,
+    TranscriptionTaskStatus,
 };
 pub use uploads::upload_for_model;
 pub use urls::{qwen_realtime_request, ws_request};
