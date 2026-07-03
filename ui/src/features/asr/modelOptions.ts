@@ -51,29 +51,14 @@ export function isFunAsrFlashFileModel(model: string) {
 
 export function supportsFunAsrVocabularyId(model: string) {
   const value = model.trim();
-  return value === "fun-asr" || value.startsWith("fun-asr-20") || value.startsWith("fun-asr-mtl");
+  return (
+    value === "fun-asr" ||
+    value.startsWith("fun-asr-20") ||
+    value.startsWith("fun-asr-mtl") ||
+    value.startsWith("paraformer")
+  );
 }
 
 export function supportsAlignmentTimestamps(model: string) {
   return model.trim() === "fun-asr" || isQwenFileModel(model);
-}
-
-export function realtimeModelSummary(model: string) {
-  if (isQwenRealtimeModel(model)) {
-    return "按百炼 realtime 协议调用；当前不复用 Fun-ASR 热词词表。";
-  }
-  return "支持现有 Fun-ASR 热词词表与实时高级参数。";
-}
-
-export function fileModelSummary(model: string) {
-  if (isFunAsrFlashFileModel(model)) {
-    return "短音频同步识别，适合 5 分钟以内文件；默认优先使用这个模型。";
-  }
-  if (isQwenShortAudioFileModel(model)) {
-    return "短音频同步识别，适合 5 分钟以内文件；当前不复用 Fun-ASR 热词词表。";
-  }
-  if (isQwenFileModel(model)) {
-    return "异步长音频转写，返回完整结果与时间戳；当前不复用 Fun-ASR 热词词表。";
-  }
-  return "异步录音转写；可手动填写当前 Fun-ASR 词表 ID。";
 }

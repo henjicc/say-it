@@ -23,10 +23,7 @@ import {
 } from "@/store/useSubtitleStore";
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import {
-  REALTIME_ASR_MODEL_OPTIONS,
-  realtimeModelSummary,
-} from "@/features/asr/modelOptions";
+import { REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 
@@ -152,7 +149,6 @@ export function RealtimeSubtitlesPanel() {
               </option>
             ))}
           </Select>
-          <p className="mt-1.5 text-xs text-white/40">{realtimeModelSummary(prefs.asrModel)}</p>
         </Field>
         <Field label="全局快捷键">
           <div className="flex gap-2">

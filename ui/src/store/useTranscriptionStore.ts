@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AlignedResultCue } from "@/features/transcription/subtitles";
 import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 
-export type TranscriptionTab = "transcribe" | "align";
+export type TranscriptionTab = "transcribe" | "align" | "settings";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
 export type AlignStage = TranscriptionStage | "aligning";
 export type TranscriptionResultView = "text" | "subtitles";

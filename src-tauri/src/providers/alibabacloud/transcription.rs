@@ -64,7 +64,11 @@ impl TranscriptionParams {
 
     fn parameters_value(&self, family: TranscriptionModelFamily) -> Value {
         let mut parameters = Map::new();
-        if family == TranscriptionModelFamily::FunAsr && !self.vocabulary_id.trim().is_empty() {
+        if matches!(
+            family,
+            TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
+        ) && !self.vocabulary_id.trim().is_empty()
+        {
             parameters.insert(
                 "vocabulary_id".to_string(),
                 json!(self.vocabulary_id.trim()),

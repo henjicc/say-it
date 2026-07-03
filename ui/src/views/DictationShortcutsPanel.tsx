@@ -4,10 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import {
-  REALTIME_ASR_MODEL_OPTIONS,
-  realtimeModelSummary,
-} from "@/features/asr/modelOptions";
+import { REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, setInjectMethod } from "@/features/dictation/controller";
 
@@ -32,7 +29,6 @@ export function DictationShortcutsPanel() {
                 </option>
               ))}
             </Select>
-            <p className="mt-1.5 text-xs text-white/40">{realtimeModelSummary(asrModel)}</p>
           </Field>
           <Field label="全局快捷键">
             <div className="flex gap-2">

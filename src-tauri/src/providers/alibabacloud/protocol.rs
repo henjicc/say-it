@@ -82,7 +82,10 @@ pub fn build_run_task_message(task_id: &str, params: &FunAsrParams, model: &str)
         "sample_rate": 16000,
         "max_sentence_silence": params.max_sentence_silence,
     });
-    if model.trim().starts_with("fun-asr") && !params.vocabulary_id.trim().is_empty() {
+    let model = model.trim();
+    if (model.starts_with("fun-asr") || model.starts_with("paraformer"))
+        && !params.vocabulary_id.trim().is_empty()
+    {
         parameters["vocabulary_id"] = json!(params.vocabulary_id.trim());
     }
     if !params.language_hints.is_empty() {
