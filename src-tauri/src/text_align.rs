@@ -1,12 +1,18 @@
-//! 文稿对齐纯算法：把 ASR 词级时间戳映射到用户文稿行，产出行级字幕时间轴。
-//! 本模块不依赖 tauri，可独立单元测试。
+//! 文稿对齐纯算法：把 ASR 词级时间戳映射到用户文稿行，产出行级字幕时间轴，
+//! 并在此基础上生成一份“智能修正”结果。本模块不依赖 tauri，可独立单元测试。
 //!
 //! 思路（forced alignment 的文本域近似）：
 //! 1. 两侧文本规整成 token 序列（CJK 单字、拉丁连串、数字逐字符，中文数字字符等价为阿拉伯数字）；
-//! 2. 半全局对齐（ASR 侧首尾 gap 免罚，容忍音频里存在文稿之外的片头/片尾内容）：
-//!    小段直接 Needleman-Wunsch，大段先用唯一 n-gram 锚点分治，无锚点时带宽 DP 兜底；
-//! 3. 行时间取该行命中 token（匹配或替换对）的首尾时间，命中太少的行按相邻行内插；
-//! 4. 后处理保证时间轴单调、不重叠、非空行不短于最小时长。
+//! 2. 半全局仿射 gap 对齐（Gotoh 三状态，ASR 侧首尾 gap 免罚，容忍音频里存在文稿之外的
+//!    片头/片尾内容）：小段直接跑满矩阵，大段先用唯一 n-gram 锚点分治，无锚点时带宽 DP 兜底；
+//! 3. “完全按文稿”结果：每行时间取该行命中 token（匹配或替换对）的首尾时间，
+//!    命中太少的行按相邻行内插；
+//! 4. “识别修正”结果：不再以整行为最小单位。文稿 token 按连续坏段（长度 ≥ 阈值的
+//!    非匹配 token 串）拆出需要丢弃的片段，保留片段仍取原文稿文本；同时，凡是没有被
+//!    任何保留片段认领的 ASR 词（无论是坏段自身对应的音频，还是夹在两个完全匹配片段
+//!    之间、文稿压根没写的即兴内容）都会被收集为“识别插入”片段一并输出，按时间与
+//!    保留片段交织排列。
+//! 5. 后处理保证时间轴单调、不重叠、非空行不短于最小时长。
 
 use std::collections::HashMap;
 
@@ -14,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// 每条字幕的最小展示时长。
 pub const MIN_LINE_DURATION_MS: u64 = 300;
-/// 段内直接跑全矩阵 Needleman-Wunsch 的规模上限（单元格数，u8 回溯矩阵约 4MB）。
+/// 段内直接跑全矩阵对齐的规模上限（单元格数，回溯矩阵每格 1 字节）。
 const FULL_NW_CELL_LIMIT: usize = 4_000_000;
 /// 带宽兜底 DP 在长度差之外的带宽余量。
 const BAND_MARGIN: usize = 128;
@@ -30,6 +36,15 @@ const SCORE_MISMATCH: i32 = -4;
 const GAP_OPEN: i32 = -6;
 const GAP_EXTEND: i32 = -1;
 const NEG: i32 = i32::MIN / 4;
+
+/// “识别修正”结果里，连续多少个非完全匹配的文稿 token 才认定为内容确实不同
+/// （而非孤立的 ASR 误听），触发丢弃该片段并改用识别文本。取 4：正常 ASR 错字
+/// 多为孤立 1~2 字误听，3 字以内更可能是罕见词/专有名词的连续误听（此时文稿更可信，
+/// 不应被替换）；只有 4 字以上的连续偏差才足够说明这段内容本身就不同。
+const MIN_BAD_RUN_TO_REPLACE: usize = 4;
+/// 未被任何文稿片段认领的音频片段，时长达到该阈值才作为“识别插入”片段输出，
+/// 过滤掉对齐过程中天然存在的极短间隙（呼吸、极短语气词误差等噪声）。
+const MIN_ASR_INSERTION_MS: u64 = 500;
 
 /// 三个对齐状态：0=M（对角）、1=Ix（文稿 token 落空）、2=Iy（跳过 ASR token）。
 fn best3(m: i32, ix: i32, iy: i32) -> (i32, u8) {
@@ -54,7 +69,7 @@ pub struct AlignWord {
     pub text: String,
 }
 
-/// 对齐输出的行级字幕。
+/// 对齐输出的行级字幕（“完全按文稿”结果，文本 100% 等于用户文稿）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlignedLine {
@@ -64,15 +79,39 @@ pub struct AlignedLine {
     pub end_ms: u64,
     /// 真匹配 token 数 / 行 token 数，供界面提示文稿与音频不符的行。
     pub match_ratio: f32,
-    /// 行与其命中音频区间的双向相似度（Dice：2×匹配 / (行 token + 区间 ASR token)）。
-    /// 与 match_ratio 的差别：音频区间里说了大量文稿之外的内容时也会显著降低，
-    /// 供“差异过大的行改用识别文本”决策使用。
-    pub similarity: f32,
     /// 行时间来自相邻行内插而非自身命中。
     pub interpolated: bool,
-    /// 行命中（匹配或替换对）覆盖的 ASR 词范围，为输入 words 的下标（含两端）；无命中为 None。
-    pub asr_word_begin: Option<usize>,
-    pub asr_word_end: Option<usize>,
+}
+
+/// “识别修正”结果的一个片段：要么原样保留文稿某一行的（部分）文本，
+/// 要么是一段未被文稿认领的音频，需要由调用方按词范围重建识别文本与时间
+/// （复用现有的字幕切分逻辑，故这里只给词范围，不重复生成文本）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "source", rename_all = "lowercase")]
+pub enum OptimizedSegment {
+    #[serde(rename_all = "camelCase")]
+    Script {
+        line_index: usize,
+        text: String,
+        begin_ms: u64,
+        end_ms: u64,
+        match_ratio: f32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Asr {
+        /// 输入 words 的下标范围（含两端）。
+        word_begin: usize,
+        word_end: usize,
+    },
+}
+
+/// `align_script` 的完整输出：“完全按文稿”与“识别修正”两份结果一次算出，
+/// 避免重复跑一遍对齐。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlignOutput {
+    pub lines: Vec<AlignedLine>,
+    pub optimized_segments: Vec<OptimizedSegment>,
 }
 
 /// 文稿 token 与 ASR token 的对应关系。
@@ -94,10 +133,11 @@ struct AsrToken {
     word_index: usize,
 }
 
-/// 对齐主入口：`script_lines` 一行一句，输出与输入行一一对应。
-pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<AlignedLine>, String> {
+/// 对齐主入口：`script_lines` 一行一句，输出与输入行一一对应的“完全按文稿”结果，
+/// 以及片段化的“识别修正”结果。
+pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<AlignOutput, String> {
     if script_lines.is_empty() {
-        return Ok(Vec::new());
+        return Ok(AlignOutput { lines: Vec::new(), optimized_segments: Vec::new() });
     }
     let asr_tokens = build_asr_tokens(words);
     if asr_tokens.is_empty() {
@@ -105,21 +145,37 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
     }
 
     let mut script_texts: Vec<String> = Vec::new();
+    let mut token_spans: Vec<(usize, usize)> = Vec::new();
     let mut line_ranges: Vec<(usize, usize)> = Vec::with_capacity(script_lines.len());
     for line in script_lines {
         let start = script_texts.len();
-        script_texts.extend(tokenize_text(line));
+        for (token, span_start, span_end) in tokenize_with_spans(line) {
+            script_texts.push(token);
+            token_spans.push((span_start, span_end));
+        }
         line_ranges.push((start, script_texts.len()));
     }
 
     let (script_ids, asr_ids) = intern_ids(&script_texts, &asr_tokens);
     let links = align_tokens(&script_ids, &asr_ids);
 
+    let lines = build_aligned_lines(&links, &line_ranges, script_lines, &asr_tokens);
+    let optimized_segments =
+        build_optimized_segments(&links, &line_ranges, &token_spans, script_lines, &asr_tokens);
+
+    Ok(AlignOutput { lines, optimized_segments })
+}
+
+/// 计算“完全按文稿”结果：每行取自身命中 token 的时间，命中不足则相邻内插。
+fn build_aligned_lines(
+    links: &[TokenLink],
+    line_ranges: &[(usize, usize)],
+    script_lines: &[String],
+    asr_tokens: &[AsrToken],
+) -> Vec<AlignedLine> {
     let mut timings: Vec<Option<(u64, u64)>> = Vec::with_capacity(line_ranges.len());
     let mut ratios: Vec<f32> = Vec::with_capacity(line_ranges.len());
-    let mut similarities: Vec<f32> = Vec::with_capacity(line_ranges.len());
-    let mut word_ranges: Vec<Option<(usize, usize)>> = Vec::with_capacity(line_ranges.len());
-    for &(start, end) in &line_ranges {
+    for &(start, end) in line_ranges {
         let tokens = end - start;
         let mut match_count = 0usize;
         let mut hit_count = 0usize;
@@ -142,26 +198,7 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
                 last_hit = Some(j);
             }
         }
-        ratios.push(if tokens == 0 {
-            0.0
-        } else {
-            match_count as f32 / tokens as f32
-        });
-        match (first_hit, last_hit) {
-            (Some(first), Some(last)) => {
-                // 双向相似度：命中区间内未匹配的 ASR token（音频里多说的内容）同样拉低相似度
-                let span_tokens = last - first + 1;
-                similarities.push(2.0 * match_count as f32 / (tokens + span_tokens) as f32);
-                word_ranges.push(Some((
-                    asr_tokens[first].word_index,
-                    asr_tokens[last].word_index,
-                )));
-            }
-            _ => {
-                similarities.push(0.0);
-                word_ranges.push(None);
-            }
-        }
+        ratios.push(if tokens == 0 { 0.0 } else { match_count as f32 / tokens as f32 });
         // 命中太少的行不信任自身命中（CJK 常见字在差异区可能随机配对导致边界漂移），改用内插
         let reliable = (hit_count >= 2 && hit_count * 5 >= tokens)
             || (tokens > 0 && tokens <= 3 && match_count >= 1);
@@ -183,7 +220,7 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
     let non_empty: Vec<bool> = weights.iter().map(|&w| w > 0).collect();
     post_process(&mut resolved, &non_empty);
 
-    Ok(script_lines
+    script_lines
         .iter()
         .enumerate()
         .map(|(i, line)| AlignedLine {
@@ -192,12 +229,200 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Vec<
             begin_ms: resolved[i].0,
             end_ms: resolved[i].1,
             match_ratio: ratios[i],
-            similarity: similarities[i],
             interpolated: interpolated[i],
-            asr_word_begin: word_ranges[i].map(|(begin, _)| begin),
-            asr_word_end: word_ranges[i].map(|(_, end)| end),
         })
-        .collect())
+        .collect()
+}
+
+/// 计算“识别修正”结果：见模块头注释思路第 4 点。
+fn build_optimized_segments(
+    links: &[TokenLink],
+    line_ranges: &[(usize, usize)],
+    token_spans: &[(usize, usize)],
+    script_lines: &[String],
+    asr_tokens: &[AsrToken],
+) -> Vec<OptimizedSegment> {
+    let total = links.len();
+    let mut claimed = vec![false; asr_tokens.len()];
+    let mut tagged: Vec<(u64, OptimizedSegment)> = Vec::new();
+
+    if total > 0 {
+        let mut bad: Vec<bool> = links.iter().map(|l| !matches!(l, TokenLink::Match(_))).collect();
+        reclassify_short_bad_runs(&mut bad);
+        reclassify_hitless_good_runs(&mut bad, links);
+
+        let mut idx = 0;
+        while idx < total {
+            if bad[idx] {
+                // 坏段直接跳过，不产出文稿文本；其覆盖的音频词稍后由“未被认领”扫描统一补齐
+                let mut end = idx;
+                while end < total && bad[end] {
+                    end += 1;
+                }
+                idx = end;
+                continue;
+            }
+            let line_idx = line_ranges.partition_point(|&(_, e)| e <= idx);
+            let line_range = line_ranges[line_idx];
+            let mut end = idx;
+            while end < total && !bad[end] && end < line_range.1 {
+                end += 1;
+            }
+            let (segment, begin_ms) = build_keep_segment(
+                links,
+                token_spans,
+                script_lines,
+                line_idx,
+                line_range,
+                idx,
+                end,
+                asr_tokens,
+                &mut claimed,
+            );
+            tagged.push((begin_ms, segment));
+            idx = end;
+        }
+    }
+
+    tagged.extend(collect_orphan_segments(asr_tokens, &claimed));
+    tagged.sort_by_key(|(key, _)| *key);
+    tagged.into_iter().map(|(_, seg)| seg).collect()
+}
+
+/// 把长度小于阈值的“坏”token 连续段重新判为“好”（保留文稿）：孤立的短偏差
+/// 大概率是 ASR 噪声或罕见词误听，不构成需要替换的内容差异。
+fn reclassify_short_bad_runs(bad: &mut [bool]) {
+    let n = bad.len();
+    let mut i = 0;
+    while i < n {
+        if !bad[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && bad[j] {
+            j += 1;
+        }
+        if (j - i) < MIN_BAD_RUN_TO_REPLACE {
+            for k in i..j {
+                bad[k] = false;
+            }
+        }
+        i = j;
+    }
+}
+
+/// 把命中数为零的“好”token 连续段重新判为“坏”：既然拿不到任何时间信息，
+/// 与其保留一段无法定位时间的文稿，不如并入相邻的丢弃区间统一处理。
+fn reclassify_hitless_good_runs(bad: &mut [bool], links: &[TokenLink]) {
+    let n = bad.len();
+    let mut i = 0;
+    while i < n {
+        if bad[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        let mut has_hit = false;
+        while j < n && !bad[j] {
+            if !matches!(links[j], TokenLink::None) {
+                has_hit = true;
+            }
+            j += 1;
+        }
+        if !has_hit {
+            for k in i..j {
+                bad[k] = true;
+            }
+        }
+        i = j;
+    }
+}
+
+fn hit_asr_index(link: &TokenLink) -> Option<usize> {
+    match link {
+        TokenLink::Match(j) | TokenLink::Sub(j) => Some(*j),
+        TokenLink::None => None,
+    }
+}
+
+/// 为一段“好”token 区间 [start,end) 构建保留片段：文本直接切原始文稿子串
+/// （首段延伸到行首、末段延伸到行尾，衔接处的标点随前一段保留），时间取区间内
+/// 命中 token 的首尾；同时把这些命中标记为“已认领”，供孤儿音频扫描排除。
+fn build_keep_segment(
+    links: &[TokenLink],
+    token_spans: &[(usize, usize)],
+    script_lines: &[String],
+    line_index: usize,
+    line_range: (usize, usize),
+    start: usize,
+    end: usize,
+    asr_tokens: &[AsrToken],
+    claimed: &mut [bool],
+) -> (OptimizedSegment, u64) {
+    let (line_start, line_end) = line_range;
+    let text_start = if start == line_start { 0 } else { token_spans[start].0 };
+    let text_end = if end == line_end {
+        script_lines[line_index].len()
+    } else {
+        token_spans[end].0
+    };
+    let text = script_lines[line_index][text_start..text_end].trim().to_string();
+
+    let mut match_count = 0usize;
+    let mut begin_ms: Option<u64> = None;
+    let mut end_ms: Option<u64> = None;
+    for k in start..end {
+        if let Some(asr_idx) = hit_asr_index(&links[k]) {
+            claimed[asr_idx] = true;
+            let token = &asr_tokens[asr_idx];
+            begin_ms = Some(begin_ms.map_or(token.begin_ms, |b: u64| b.min(token.begin_ms)));
+            end_ms = Some(end_ms.map_or(token.end_ms, |e: u64| e.max(token.end_ms)));
+        }
+        if matches!(links[k], TokenLink::Match(_)) {
+            match_count += 1;
+        }
+    }
+    let begin_ms = begin_ms.expect("kept 段经过 reclassify_hitless_good_runs 保证至少一个命中");
+    let end_ms = end_ms.expect("kept 段经过 reclassify_hitless_good_runs 保证至少一个命中");
+    (
+        OptimizedSegment::Script {
+            line_index,
+            text,
+            begin_ms,
+            end_ms,
+            match_ratio: match_count as f32 / (end - start) as f32,
+        },
+        begin_ms,
+    )
+}
+
+/// 扫描未被任何保留片段认领的 ASR token（按时间连续），时长达标的合并为一段
+/// “识别插入”。既覆盖被丢弃坏段对应的音频，也覆盖夹在两个好段之间、文稿里
+/// 完全没写但音频确实说了的即兴内容——两者对这一步是同一件事。
+fn collect_orphan_segments(asr_tokens: &[AsrToken], claimed: &[bool]) -> Vec<(u64, OptimizedSegment)> {
+    let mut out = Vec::new();
+    let n = asr_tokens.len();
+    let mut i = 0;
+    while i < n {
+        if claimed[i] {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && !claimed[j] {
+            j += 1;
+        }
+        let begin_ms = asr_tokens[i].begin_ms;
+        let end_ms = asr_tokens[j - 1].end_ms;
+        if end_ms.saturating_sub(begin_ms) >= MIN_ASR_INSERTION_MS {
+            let word_begin = asr_tokens[i..j].iter().map(|t| t.word_index).min().unwrap();
+            let word_end = asr_tokens[i..j].iter().map(|t| t.word_index).max().unwrap();
+            out.push((begin_ms, OptimizedSegment::Asr { word_begin, word_end }));
+        }
+        i = j;
+    }
+    out
 }
 
 /// 把 ASR 词按时间排序后拆成 token，多 token 词内部按字符数线性内插时间。
@@ -234,26 +459,36 @@ fn build_asr_tokens(words: &[AlignWord]) -> Vec<AsrToken> {
 /// 规整并切分文本：CJK 单字一 token、连续拉丁字母一 token、数字逐字符一 token，
 /// 标点/空白/符号只作分隔。
 fn tokenize_text(text: &str) -> Vec<String> {
+    tokenize_with_spans(text).into_iter().map(|(t, _, _)| t).collect()
+}
+
+/// 同 `tokenize_text`，额外返回每个 token 在原始字符串中的字节范围
+/// （用于“识别修正”结果按保留片段直接切原文子串，保留标点/间距原样）。
+fn tokenize_with_spans(text: &str) -> Vec<(String, usize, usize)> {
     let mut tokens = Vec::new();
     let mut latin = String::new();
-    for raw in text.chars() {
+    let mut latin_start = 0usize;
+    for (byte_idx, raw) in text.char_indices() {
         let c = canonical_char(raw);
         if c.is_ascii_digit() || is_cjk(c) {
-            flush_latin(&mut latin, &mut tokens);
-            tokens.push(c.to_string());
+            flush_latin_spans(&mut latin, latin_start, byte_idx, &mut tokens);
+            tokens.push((c.to_string(), byte_idx, byte_idx + raw.len_utf8()));
         } else if c.is_alphabetic() {
+            if latin.is_empty() {
+                latin_start = byte_idx;
+            }
             latin.push(c);
         } else {
-            flush_latin(&mut latin, &mut tokens);
+            flush_latin_spans(&mut latin, latin_start, byte_idx, &mut tokens);
         }
     }
-    flush_latin(&mut latin, &mut tokens);
+    flush_latin_spans(&mut latin, latin_start, text.len(), &mut tokens);
     tokens
 }
 
-fn flush_latin(latin: &mut String, tokens: &mut Vec<String>) {
+fn flush_latin_spans(latin: &mut String, start: usize, end: usize, tokens: &mut Vec<(String, usize, usize)>) {
     if !latin.is_empty() {
-        tokens.push(std::mem::take(latin));
+        tokens.push((std::mem::take(latin), start, end));
     }
 }
 
@@ -801,6 +1036,22 @@ mod tests {
         }
     }
 
+    fn as_script(seg: &OptimizedSegment) -> (usize, &str, u64, u64, f32) {
+        match seg {
+            OptimizedSegment::Script { line_index, text, begin_ms, end_ms, match_ratio } => {
+                (*line_index, text.as_str(), *begin_ms, *end_ms, *match_ratio)
+            }
+            OptimizedSegment::Asr { .. } => panic!("expected script segment, got asr"),
+        }
+    }
+
+    fn as_asr(seg: &OptimizedSegment) -> (usize, usize) {
+        match seg {
+            OptimizedSegment::Asr { word_begin, word_end } => (*word_begin, *word_end),
+            OptimizedSegment::Script { .. } => panic!("expected asr segment, got script"),
+        }
+    }
+
     #[test]
     fn exact_match_uses_word_times() {
         let words = vec![
@@ -810,16 +1061,13 @@ mod tests {
             w("明天", 2000, 2600),
             w("再见", 2600, 3200),
         ];
-        let out = align_script(&words, &lines(&["今天天气很好", "明天再见"])).unwrap();
+        let out = align_script(&words, &lines(&["今天天气很好", "明天再见"])).unwrap().lines;
         assert_eq!(out.len(), 2);
         assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 1800));
         assert_eq!((out[1].begin_ms, out[1].end_ms), (2000, 3200));
         assert!(out
             .iter()
             .all(|l| (l.match_ratio - 1.0).abs() < f32::EPSILON && !l.interpolated));
-        assert!(out.iter().all(|l| (l.similarity - 1.0).abs() < f32::EPSILON));
-        assert_eq!((out[0].asr_word_begin, out[0].asr_word_end), (Some(0), Some(2)));
-        assert_eq!((out[1].asr_word_begin, out[1].asr_word_end), (Some(3), Some(4)));
         assert_timeline_valid(&out);
     }
 
@@ -827,7 +1075,7 @@ mod tests {
     fn script_extra_chars_keep_line_times() {
         // 文稿比音频多字（ASR 漏识别），仍按已匹配 token 取行时间
         let words = char_words("今天天气很好", 0, 100);
-        let out = align_script(&words, &lines(&["今天天气真的很好"])).unwrap();
+        let out = align_script(&words, &lines(&["今天天气真的很好"])).unwrap().lines;
         assert_eq!(out[0].begin_ms, 0);
         assert_eq!(out[0].end_ms, 600);
         assert!(out[0].match_ratio < 1.0 && out[0].match_ratio >= 0.7);
@@ -838,7 +1086,7 @@ mod tests {
     fn asr_fillers_are_skipped() {
         // ASR 里的语气词/口头语不拉偏行时间
         let words = char_words("嗯今天那个天气很好", 0, 100);
-        let out = align_script(&words, &lines(&["今天天气很好"])).unwrap();
+        let out = align_script(&words, &lines(&["今天天气很好"])).unwrap().lines;
         assert_eq!(out[0].begin_ms, 100);
         assert_eq!(out[0].end_ms, 900);
         assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
@@ -848,7 +1096,7 @@ mod tests {
     fn substitution_keeps_timing_and_lowers_ratio() {
         // 识别错字（替换对）不影响行时间，但拉低匹配率
         let words = char_words("今天天汽很好", 0, 100);
-        let out = align_script(&words, &lines(&["今天天气很好"])).unwrap();
+        let out = align_script(&words, &lines(&["今天天气很好"])).unwrap().lines;
         assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 600));
         assert!(out[0].match_ratio < 1.0);
         assert!(!out[0].interpolated);
@@ -862,30 +1110,19 @@ mod tests {
             &words,
             &lines(&["第一句话说完了", "完全无关的内容啊", "第三句话开始了"]),
         )
-        .unwrap();
+        .unwrap()
+        .lines;
         assert!(out[1].interpolated);
         assert!(out[1].match_ratio < 0.3);
-        assert!(out[1].similarity < 0.4, "整行不匹配的行相似度应显著偏低");
-        assert!(out[0].similarity > 0.8 && out[2].similarity > 0.8);
         assert!(out[1].begin_ms >= out[0].end_ms);
         assert!(out[1].end_ms <= out[2].begin_ms);
         assert_timeline_valid(&out);
     }
 
     #[test]
-    fn similarity_drops_when_audio_says_more() {
-        // 行内 token 全部匹配，但该行音频区间里说了大量文稿之外的内容：
-        // match_ratio 仍为 1，similarity 必须显著下降（双向相似度的意义所在）
-        let words = char_words("开场白其实这里即兴发挥了非常非常多的内容结束语", 0, 100);
-        let out = align_script(&words, &lines(&["开场白结束语"])).unwrap();
-        assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
-        assert!(out[0].similarity < 0.6, "similarity={}", out[0].similarity);
-    }
-
-    #[test]
     fn mixed_cjk_latin() {
         let words = vec![w("我用", 0, 600), w("github", 600, 1200), w("写代码", 1200, 1800)];
-        let out = align_script(&words, &lines(&["我用 GitHub 写代码"])).unwrap();
+        let out = align_script(&words, &lines(&["我用 GitHub 写代码"])).unwrap().lines;
         assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 1800));
         assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
     }
@@ -893,7 +1130,7 @@ mod tests {
     #[test]
     fn chinese_digits_match_arabic() {
         let words = char_words("二零二四年发布", 0, 100);
-        let out = align_script(&words, &lines(&["2024年发布"])).unwrap();
+        let out = align_script(&words, &lines(&["2024年发布"])).unwrap().lines;
         assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
         assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 700));
     }
@@ -901,7 +1138,7 @@ mod tests {
     #[test]
     fn min_duration_is_enforced() {
         let words = vec![w("好", 1000, 1050)];
-        let out = align_script(&words, &lines(&["好"])).unwrap();
+        let out = align_script(&words, &lines(&["好"])).unwrap().lines;
         assert_eq!(out[0].begin_ms, 1000);
         assert!(out[0].end_ms - out[0].begin_ms >= MIN_LINE_DURATION_MS);
     }
@@ -910,7 +1147,7 @@ mod tests {
     fn leading_audio_junk_is_free() {
         // 片头与文稿无关的内容不产生罚分，也不拉偏第一行时间（半全局对齐）
         let words = char_words("废话闲聊几句吧正文从这里开始", 0, 100);
-        let out = align_script(&words, &lines(&["正文从这里开始"])).unwrap();
+        let out = align_script(&words, &lines(&["正文从这里开始"])).unwrap().lines;
         assert_eq!(out[0].begin_ms, 700);
         assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
     }
@@ -918,13 +1155,13 @@ mod tests {
     #[test]
     fn empty_inputs() {
         assert!(align_script(&[], &lines(&["你好"])).is_err());
-        assert!(align_script(&[w("你好", 0, 100)], &[]).unwrap().is_empty());
+        assert!(align_script(&[w("你好", 0, 100)], &[]).unwrap().lines.is_empty());
     }
 
     #[test]
     fn blank_line_gets_zero_width_slot() {
         let words = char_words("今天天气很好明天再见", 0, 100);
-        let out = align_script(&words, &lines(&["今天天气很好", "", "明天再见"])).unwrap();
+        let out = align_script(&words, &lines(&["今天天气很好", "", "明天再见"])).unwrap().lines;
         assert!(out[1].interpolated);
         assert_eq!(out[1].begin_ms, out[1].end_ms);
         assert_timeline_valid(&out);
@@ -932,7 +1169,7 @@ mod tests {
 
     #[test]
     fn large_input_uses_anchors() {
-        // 超过全矩阵 NW 规模上限，走锚点分治路径
+        // 超过全矩阵对齐规模上限，走锚点分治路径
         let text: String = (0..2100u32)
             .map(|i| char::from_u32(0x4E00 + i).unwrap())
             .collect();
@@ -943,7 +1180,7 @@ mod tests {
             .chunks(50)
             .map(|c| c.iter().collect())
             .collect();
-        let out = align_script(&words, &script).unwrap();
+        let out = align_script(&words, &script).unwrap().lines;
         assert_eq!(out.len(), 42);
         assert!(out
             .iter()
@@ -969,8 +1206,130 @@ mod tests {
             .chunks(50)
             .map(|c| c.iter().collect())
             .collect();
-        let out = align_script(&words, &script).unwrap();
+        let out = align_script(&words, &script).unwrap().lines;
         assert!(out.iter().all(|l| l.match_ratio == 0.0));
         assert_timeline_valid(&out);
+    }
+
+    #[test]
+    fn optimized_matches_script_when_fully_aligned() {
+        let words = vec![
+            w("今天", 0, 600),
+            w("天气", 600, 1200),
+            w("很好", 1200, 1800),
+            w("明天", 2000, 2600),
+            w("再见", 2600, 3200),
+        ];
+        let out = align_script(&words, &lines(&["今天天气很好", "明天再见"])).unwrap();
+        assert_eq!(out.optimized_segments.len(), 2);
+        let (line0, text0, begin0, end0, ratio0) = as_script(&out.optimized_segments[0]);
+        assert_eq!((line0, text0, begin0, end0), (0, "今天天气很好", 0, 1800));
+        assert!((ratio0 - 1.0).abs() < f32::EPSILON);
+        let (line1, text1, begin1, end1, _) = as_script(&out.optimized_segments[1]);
+        assert_eq!((line1, text1, begin1, end1), (1, "明天再见", 2000, 3200));
+    }
+
+    #[test]
+    fn optimized_keeps_line_on_isolated_substitution() {
+        // 单个误听字（长度 1，低于阈值）不足以触发替换，整行仍原样保留
+        let words = char_words("今天天汽很好", 0, 100);
+        let out = align_script(&words, &lines(&["今天天气很好"])).unwrap();
+        assert_eq!(out.optimized_segments.len(), 1);
+        let (_, text, begin, end, ratio) = as_script(&out.optimized_segments[0]);
+        assert_eq!((text, begin, end), ("今天天气很好", 0, 600));
+        assert!(ratio < 1.0);
+    }
+
+    #[test]
+    fn optimized_drops_unspoken_line_with_nothing_to_fill() {
+        // 中间一行文稿写了但音频完全没说：既不保留该行文本，也没有可填充的音频（正确丢弃）
+        let mut words = char_words("第一句话说完了", 0, 100);
+        words.extend(char_words("第三句话开始了", 2000, 100));
+        let out = align_script(
+            &words,
+            &lines(&["第一句话说完了", "完全无关的内容啊", "第三句话开始了"]),
+        )
+        .unwrap();
+        assert_eq!(out.optimized_segments.len(), 2);
+        assert_eq!(as_script(&out.optimized_segments[0]).0, 0);
+        assert_eq!(as_script(&out.optimized_segments[1]).0, 2);
+    }
+
+    #[test]
+    fn optimized_splits_line_on_long_internal_mismatch() {
+        // 一行内部有一段足够长（>=4 token）的内容音频里完全没有，其余部分正常匹配：
+        // 应该拆成“保留头部”+“保留尾部”，中间因音频无对应内容而彻底消失（无可填充）
+        let words = char_words("开头正确结尾正确", 0, 100);
+        let out = align_script(&words, &lines(&["开头正确这段完全不存在结尾正确"])).unwrap();
+        assert_eq!(out.optimized_segments.len(), 2);
+        let (line0, text0, begin0, end0, _) = as_script(&out.optimized_segments[0]);
+        assert_eq!((line0, text0, begin0, end0), (0, "开头正确", 0, 400));
+        let (line1, text1, begin1, end1, _) = as_script(&out.optimized_segments[1]);
+        assert_eq!((line1, text1, begin1, end1), (0, "结尾正确", 400, 800));
+    }
+
+    #[test]
+    fn optimized_inserts_pure_audio_only_content() {
+        // 两行文稿各自与音频完全吻合，但音频中间还说了一段文稿里完全没有的内容：
+        // 应该在两个保留段之间插入一段识别文本
+        let audio_text = "开头完全一致这里是文稿没有写的额外插入内容结尾完全一致";
+        let words = char_words(audio_text, 0, 100);
+        let out = align_script(&words, &lines(&["开头完全一致", "结尾完全一致"])).unwrap();
+        let segs = out.optimized_segments;
+        assert_eq!(segs.len(), 3, "{segs:?}");
+        assert_eq!(as_script(&segs[0]).1, "开头完全一致");
+        let (word_begin, word_end) = as_asr(&segs[1]);
+        assert!(word_end >= word_begin);
+        assert_eq!(as_script(&segs[2]).1, "结尾完全一致");
+    }
+
+    #[test]
+    fn optimized_skips_tiny_orphan_gap() {
+        // 两行之间只有极短的未认领音频（远低于 500ms 阈值），不应产出识别插入段
+        let audio_text = "开头完全一致啊结尾完全一致";
+        let words = char_words(audio_text, 0, 100);
+        let out = align_script(&words, &lines(&["开头完全一致", "结尾完全一致"])).unwrap();
+        assert_eq!(out.optimized_segments.len(), 2);
+    }
+
+    #[test]
+    fn optimized_merges_replacement_across_line_boundary() {
+        // 连续两行文稿音频里说的是完全不同的内容（且各自都不短），应合并为一段识别插入，
+        // 而不是分别产出两段
+        let head = "开场白导入语";
+        let real_middle: String = (0..30u32).map(|i| char::from_u32(0x9000 + i).unwrap()).collect();
+        let tail = "结束语收尾";
+        let audio_text = format!("{head}{real_middle}{tail}");
+        let words = char_words(&audio_text, 0, 100);
+        let fake_line_a: String = (0..15u32).map(|i| char::from_u32(0x6000 + i).unwrap()).collect();
+        let fake_line_b: String = (0..15u32).map(|i| char::from_u32(0x6100 + i).unwrap()).collect();
+        let out = align_script(&words, &lines(&[head, &fake_line_a, &fake_line_b, tail])).unwrap();
+        let segs = out.optimized_segments;
+        assert_eq!(segs.len(), 3, "{segs:?}");
+        assert_eq!(as_script(&segs[0]).1, head);
+        let (word_begin, word_end) = as_asr(&segs[1]);
+        assert_eq!(word_end - word_begin + 1, real_middle.chars().count());
+        assert_eq!(as_script(&segs[2]).1, tail);
+    }
+
+    #[test]
+    fn optimized_blank_line_produces_no_segment() {
+        let words = char_words("今天天气很好明天再见", 0, 100);
+        let out = align_script(&words, &lines(&["今天天气很好", "", "明天再见"])).unwrap();
+        let line_indices: Vec<usize> = out
+            .optimized_segments
+            .iter()
+            .filter_map(|seg| match seg {
+                OptimizedSegment::Script { line_index, .. } => Some(*line_index),
+                OptimizedSegment::Asr { .. } => None,
+            })
+            .collect();
+        assert_eq!(line_indices, vec![0, 2]);
+    }
+
+    #[test]
+    fn optimized_empty_script_has_no_segments() {
+        let out = align_script(&[w("你好", 0, 100)], &[]).unwrap();
+        assert!(out.optimized_segments.is_empty());
     }
 }

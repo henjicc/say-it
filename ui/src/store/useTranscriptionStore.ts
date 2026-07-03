@@ -53,12 +53,31 @@ export interface AlignedLine {
   beginMs: number;
   endMs: number;
   matchRatio: number;
-  /** 行与其命中音频区间的双向相似度（Dice），供“差异过大改用识别文本”决策。 */
-  similarity: number;
   interpolated: boolean;
-  /** 行命中覆盖的 ASR 词范围（words 数组下标，含两端）；无命中为 null。 */
-  asrWordBegin: number | null;
-  asrWordEnd: number | null;
+}
+
+/**
+ * “识别修正”结果的一个片段：保留文稿某一行的（部分）原文，或一段未被文稿
+ * 认领的音频（按词范围给出，前端负责用现有的字幕切分逻辑生成实际文本/时间）。
+ */
+export type OptimizedSegment =
+  | {
+      source: "script";
+      lineIndex: number;
+      text: string;
+      beginMs: number;
+      endMs: number;
+      matchRatio: number;
+    }
+  | {
+      source: "asr";
+      wordBegin: number;
+      wordEnd: number;
+    };
+
+export interface AlignOutput {
+  lines: AlignedLine[];
+  optimizedSegments: OptimizedSegment[];
 }
 
 export type AlignResultView = "script" | "optimized";

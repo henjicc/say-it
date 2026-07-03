@@ -17,12 +17,7 @@ import {
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
-import {
-  cuesFromAlignedLines,
-  formatSrtTime,
-  shouldUseAsrText,
-  toSrt,
-} from "@/features/transcription/subtitles";
+import { cuesFromAlignedLines, formatSrtTime, toSrt } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useTranscriptionStore, type AlignResultView } from "@/store/useTranscriptionStore";
 
@@ -57,9 +52,9 @@ export function TranscriptAlignPanel() {
     if (!alignedLines || alignedLines.length === 0) return null;
     const avg = alignedLines.reduce((sum, line) => sum + line.matchRatio, 0) / alignedLines.length;
     const low = alignedLines.filter((line) => line.matchRatio < LOW_MATCH_THRESHOLD || line.interpolated).length;
-    const replaced = alignedLines.filter(shouldUseAsrText).length;
+    const replaced = (alignOptimizedCues || []).filter((cue) => cue.source === "asr").length;
     return { avg, low, replaced };
-  }, [alignedLines]);
+  }, [alignedLines, alignOptimizedCues]);
 
   const exportSrt = async () => {
     const cues =
@@ -160,7 +155,7 @@ export function TranscriptAlignPanel() {
             <Tabs<AlignResultView>
               tabs={[
                 { key: "script", label: "完全按文稿" },
-                { key: "optimized", label: `识别修正${stats && stats.replaced > 0 ? `（${stats.replaced} 行）` : ""}` },
+                { key: "optimized", label: `识别修正${stats && stats.replaced > 0 ? `（${stats.replaced} 处）` : ""}` },
               ]}
               active={alignResultView}
               onChange={(value) => setRuntime({ alignResultView: value })}
@@ -210,12 +205,12 @@ export function TranscriptAlignPanel() {
               <p className="mt-3 text-sm text-white/60">
                 {stats && stats.replaced > 0 ? (
                   <>
-                    与音频差异过大的 {stats.replaced} 行文稿已改用识别文本（
+                    与音频差异过大的片段已改用识别文本，音频中文稿没写但确实说了的内容也已补入（
                     <span className="text-[#6fc7f5]">蓝色标注</span>
-                    ），其余行仍完全按文稿输出。
+                    ，共 {stats.replaced} 处），其余部分仍完全按文稿输出，不再死板按整行取舍。
                   </>
                 ) : (
-                  "所有文稿行与音频匹配良好，无需修正，与「完全按文稿」结果一致。"
+                  "所有文稿内容与音频匹配良好，无需修正，与「完全按文稿」结果一致。"
                 )}
               </p>
               <div className="mt-3 max-h-[34rem] overflow-auto rounded-xl border border-white/10 bg-white/[0.035]">
@@ -233,7 +228,7 @@ export function TranscriptAlignPanel() {
                     </span>
                     <span
                       className={cn("text-xs tabular-nums", cue.source === "asr" ? "text-[#6fc7f5]" : "text-white/45")}
-                      title={cue.source === "asr" ? "该段文稿与音频差异过大，已改用识别文本" : undefined}
+                      title={cue.source === "asr" ? "该段内容来自识别文本：或是文稿与音频差异过大被替换，或是音频里说了但文稿没写" : undefined}
                     >
                       {cue.source === "asr" ? "识别" : `${Math.round((cue.matchRatio ?? 0) * 100)}%`}
                     </span>

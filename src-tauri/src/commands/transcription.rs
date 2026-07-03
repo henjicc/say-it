@@ -8,7 +8,7 @@ use crate::providers::alibabacloud::{
     upload_for_model, TranscriptionParams, TranscriptionTaskStatus,
 };
 use crate::state::*;
-use crate::text_align::{align_script, AlignWord, AlignedLine};
+use crate::text_align::{align_script, AlignOutput, AlignWord};
 
 const TRANSCRIPTION_EVENT: &str = "transcription-event";
 const FIRST_POLL_DELAY: Duration = Duration::from_secs(2);
@@ -74,7 +74,7 @@ pub(crate) async fn save_text_file(path: String, content: String) -> Result<(), 
 pub(crate) fn align_transcript(
     words: Vec<AlignWord>,
     script_lines: Vec<String>,
-) -> Result<Vec<AlignedLine>, String> {
+) -> Result<AlignOutput, String> {
     if script_lines.iter().all(|line| line.trim().is_empty()) {
         return Err("请先输入文稿内容".to_string());
     }
