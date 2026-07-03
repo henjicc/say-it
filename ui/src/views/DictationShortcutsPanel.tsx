@@ -1,6 +1,8 @@
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
+import { FormGrid } from "@/components/ui/FormGrid";
+import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -18,9 +20,9 @@ export function DictationShortcutsPanel() {
   const { inputs } = useAudioDevices();
 
   return (
-    <>
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-8">
+      <SettingsSection title="识别设置">
+        <FormGrid>
           <Field label="识别模型">
             <Select value={asrModel} onChange={(e) => patchDictPrefs({ asrModel: e.target.value })}>
               {REALTIME_ASR_MODEL_OPTIONS.map((option) => (
@@ -29,19 +31,6 @@ export function DictationShortcutsPanel() {
                 </option>
               ))}
             </Select>
-          </Field>
-          <Field label="全局快捷键">
-            <div className="flex gap-2">
-              <Input
-                readOnly
-                value={capturing ? "请按下按键…" : shortcutLabel}
-                placeholder="未设置"
-                className={cn(capturing && "border-white/40")}
-              />
-              <Button className="shrink-0" onClick={startShortcutCapture}>
-                {capturing ? "取消" : "修改"}
-              </Button>
-            </div>
           </Field>
           <Field label="声音来源">
             <Select
@@ -58,6 +47,24 @@ export function DictationShortcutsPanel() {
               ))}
             </Select>
           </Field>
+        </FormGrid>
+      </SettingsSection>
+
+      <SettingsSection title="输入行为">
+        <FormGrid>
+          <Field label="全局快捷键">
+            <div className="flex gap-2">
+              <Input
+                readOnly
+                value={capturing ? "请按下按键…" : shortcutLabel}
+                placeholder="未设置"
+                className={cn(capturing && "border-[var(--accent-ring)]")}
+              />
+              <Button className="shrink-0" onClick={startShortcutCapture}>
+                {capturing ? "取消" : "修改"}
+              </Button>
+            </div>
+          </Field>
           <Field label="注入方式">
             <Select
               value={injectMethod}
@@ -67,12 +74,12 @@ export function DictationShortcutsPanel() {
               <option value="type">模拟逐字输入</option>
             </Select>
           </Field>
-        </div>
-      </div>
-      <p className="mt-2 text-xs text-white/40">
-        点击「修改」后按下想用的按键即可（按 Esc 取消）。默认使用 Caps Lock（大写锁定键），
-        用作语音键时不会切换大小写。
-      </p>
-    </>
+        </FormGrid>
+        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+          按下此快捷键开始/停止语音输入，过程中按 Esc 可取消。默认使用 Caps Lock（大写锁定键），
+          用作语音键时不会切换大小写。点击「修改」后按下想用的按键即可。
+        </p>
+      </SettingsSection>
+    </div>
   );
 }

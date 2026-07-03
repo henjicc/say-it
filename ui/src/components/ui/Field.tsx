@@ -1,17 +1,37 @@
 import { cn } from "@/lib/cn";
 
-/** 表单字段：标签在上、控件在下。 */
+/**
+ * 表单字段。
+ * - layout="stack"（默认）：标签在上、控件在下，适合信息密度低的页面。
+ * - layout="row"：标签在左、控件在右，适合高密度设置面板（如实时字幕基础设置）。
+ */
 export function Field({
   label,
   hint,
   className,
+  layout = "stack",
   children,
 }: {
   label?: React.ReactNode;
   hint?: React.ReactNode;
   className?: string;
+  layout?: "stack" | "row";
   children: React.ReactNode;
 }) {
+  if (layout === "row") {
+    return (
+      <div className={cn("grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5", className)}>
+        {label && (
+          <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>
+        )}
+        <div className="min-w-0">{children}</div>
+        {hint && (
+          <span className="col-start-2 text-xs text-[var(--color-fg-subtle)]">{hint}</span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <label className={cn("flex flex-col gap-1.5", className)}>
       {label && <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>}

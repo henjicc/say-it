@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import { CheckField } from "@/components/ui/Field";
 import { LogPanel } from "@/components/ui/LogPanel";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { LocalRulesPanel } from "@/views/LocalRulesPanel";
 import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
@@ -12,9 +13,9 @@ import { useDictPrefs } from "@/store/useDictPrefs";
 import { toggleDictation, clearDictLog } from "@/features/dictation/controller";
 
 const toneClass: Record<string, string> = {
-  "": "text-white/60",
-  ok: "text-[#25c36f]",
-  err: "text-[#ff6b6b]",
+  "": "text-[var(--color-fg-muted)]",
+  ok: "text-[var(--color-ok)]",
+  err: "text-[var(--color-err)]",
 };
 
 type TabKey = "basic" | "local" | "debug";
@@ -32,27 +33,27 @@ export function DictationView() {
   const patch = useDictPrefs((s) => s.patch);
 
   return (
-    <div className="flex flex-col gap-4 py-2">
-      <div>
-        <h1 className="text-xl font-semibold text-white">语音输入</h1>
-        <p className="mt-1 text-sm text-white/45">
-          按快捷键说话，再次按下停止并注入到当前光标位置。
-        </p>
-      </div>
+    <div className="flex flex-col gap-7">
+      <PageHeader
+        title="语音输入"
+        description="按快捷键说话，再次按下停止并注入到当前光标位置。"
+      />
 
       <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "basic" && <DictationShortcutsPanel />}
       {tab === "local" && <LocalRulesPanel />}
       {tab === "debug" && (
-        <div className="mt-4">
-          <Button variant={recording ? "danger" : "primary"} onClick={toggleDictation}>
-            {recording ? "停止并注入" : "手动开始"}
-          </Button>
-          <p className={cn("mt-2 text-sm", toneClass[statusTone])}>{statusText}</p>
+        <div className="flex flex-col gap-3">
+          <div>
+            <Button variant={recording ? "danger" : "primary"} onClick={toggleDictation}>
+              {recording ? "停止并注入" : "手动开始"}
+            </Button>
+            <p className={cn("mt-2 text-sm", toneClass[statusTone])}>{statusText}</p>
+          </div>
 
-          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-sm font-medium text-white">最近识别</p>
+          <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
+            <p className="text-sm font-medium text-[var(--color-fg)]">最近识别</p>
             <Textarea
               className="mt-3"
               rows={3}
@@ -72,7 +73,6 @@ export function DictationView() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
