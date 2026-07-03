@@ -1,15 +1,21 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 const TRANSCRIPTION_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const TASK_URL_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks";
+const MULTIMODAL_GENERATION_URL: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const DEFAULT_TRANSCRIPTION_MODEL: &str = "fun-asr";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TranscriptionModelFamily {
     FunAsr,
+    FunAsrFlash,
     Paraformer,
+    QwenFlash,
     QwenFiletrans,
 }
 
@@ -294,6 +300,96 @@ pub async fn submit_transcription_task(
     Ok(response.output.task_id)
 }
 
+pub async fn recognize_short_audio(
+    api_key: &str,
+    file_url: &str,
+    file_path: &str,
+    params: &TranscriptionParams,
+) -> Result<TranscriptionResult, String> {
+    if api_key.trim().is_empty() {
+        return Err("请先保存阿里云百炼 API Key".to_string());
+    }
+    if file_url.trim().is_empty() {
+        return Err("录音识别文件 URL 不能为空".to_string());
+    }
+    let model = params.model_id();
+    let family = transcription_model_family(&model);
+    let body = match family {
+        TranscriptionModelFamily::FunAsrFlash => {
+            let format = guess_audio_format(file_path);
+            let sample_rate = guess_audio_sample_rate(file_path).to_string();
+            json!({
+                "model": model,
+                "input": {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": file_url.trim(),
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "parameters": {
+                    "format": format,
+                    "sample_rate": sample_rate,
+                }
+            })
+        }
+        TranscriptionModelFamily::QwenFlash => {
+            let mut asr_options = json!({
+                "enable_itn": false,
+            });
+            if let Some(language) = params
+                .language_hints
+                .iter()
+                .map(|item| item.trim())
+                .find(|item| !item.is_empty())
+            {
+                asr_options["language"] = json!(language);
+            }
+            json!({
+                "model": model,
+                "input": {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": [{ "text": "" }]
+                        },
+                        {
+                            "role": "user",
+                            "content": [{ "audio": file_url.trim() }]
+                        }
+                    ]
+                },
+                "parameters": {
+                    "asr_options": asr_options,
+                }
+            })
+        }
+        other => {
+            return Err(format!("模型 {other:?} 不支持同步短音频识别"));
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(MULTIMODAL_GENERATION_URL)
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("提交短音频识别失败：{e}"))?;
+    let value = read_json_response(resp, "提交短音频识别").await?;
+    parse_short_audio_result(value)
+}
+
 pub async fn query_transcription_task(
     api_key: &str,
     task_id: &str,
@@ -346,10 +442,23 @@ fn default_transcription_model() -> String {
     DEFAULT_TRANSCRIPTION_MODEL.to_string()
 }
 
+pub fn uses_async_transcription_task(model: &str) -> bool {
+    matches!(
+        transcription_model_family(model),
+        TranscriptionModelFamily::FunAsr
+            | TranscriptionModelFamily::Paraformer
+            | TranscriptionModelFamily::QwenFiletrans
+    )
+}
+
 fn transcription_model_family(model: &str) -> TranscriptionModelFamily {
     let model = model.trim();
     if model.starts_with("qwen3-asr-flash-filetrans") {
         TranscriptionModelFamily::QwenFiletrans
+    } else if model == "qwen3-asr-flash" || model == "qwen3-asr-flash-2026-02-10" {
+        TranscriptionModelFamily::QwenFlash
+    } else if model == "fun-asr-flash-2026-06-15" {
+        TranscriptionModelFamily::FunAsrFlash
     } else if model.starts_with("paraformer") {
         TranscriptionModelFamily::Paraformer
     } else {
@@ -365,7 +474,70 @@ fn transcription_input_value(family: TranscriptionModelFamily, file_url: &str) -
         TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer => json!({
             "file_urls": [file_url.trim()],
         }),
+        TranscriptionModelFamily::FunAsrFlash | TranscriptionModelFamily::QwenFlash => {
+            unreachable!("同步短音频模型不应走异步 transcription 接口")
+        }
     }
+}
+
+fn parse_short_audio_result(value: Value) -> Result<TranscriptionResult, String> {
+    let content = value
+        .pointer("/output/choices/0/message/content")
+        .ok_or_else(|| "短音频识别响应缺少 output.choices[0].message.content".to_string())?;
+
+    let text = match content {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(short_audio_content_text)
+            .collect::<Vec<_>>()
+            .join(""),
+        other => short_audio_content_text(other).unwrap_or_default(),
+    }
+    .trim()
+    .to_string();
+
+    if text.is_empty() {
+        return Err("短音频识别成功但响应里没有可用文本".to_string());
+    }
+
+    Ok(TranscriptionResult {
+        duration_ms: None,
+        transcripts: vec![TranscriptionTranscript {
+            channel_id: None,
+            text,
+            sentences: Vec::new(),
+        }],
+    })
+}
+
+fn short_audio_content_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.to_string()),
+        Value::Object(map) => map
+            .get("text")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .or_else(|| {
+                map.get("input_audio_transcription")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            }),
+        _ => None,
+    }
+}
+
+fn guess_audio_format(file_path: &str) -> String {
+    Path::new(file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.trim().to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or_else(|| "wav".to_string())
+}
+
+fn guess_audio_sample_rate(file_path: &str) -> u32 {
+    let _ = file_path;
+    16_000
 }
 
 async fn read_json_response(resp: reqwest::Response, action: &str) -> Result<Value, String> {

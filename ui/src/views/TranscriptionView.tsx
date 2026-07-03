@@ -23,7 +23,8 @@ import { buildCues, cueText, formatSrtTime, plainText, toSrt } from "@/features/
 import {
   FILE_ASR_MODEL_OPTIONS,
   fileModelSummary,
-  isFunAsrFileModel,
+  isSupportedFileModel,
+  supportsFunAsrVocabularyId,
 } from "@/features/asr/modelOptions";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -50,7 +51,10 @@ function normalizeStoredParams(value: unknown): TranscriptionParams {
   const speakerCount = Number(source.speakerCount);
   return {
     ...DEFAULT_TRANSCRIPTION_PARAMS,
-    model: typeof source.model === "string" && source.model ? source.model : DEFAULT_TRANSCRIPTION_PARAMS.model,
+    model:
+      typeof source.model === "string" && isSupportedFileModel(source.model)
+        ? source.model
+        : DEFAULT_TRANSCRIPTION_PARAMS.model,
     vocabularyId: typeof source.vocabularyId === "string" ? source.vocabularyId : "",
     languageHints: Array.isArray(source.languageHints) ? source.languageHints.filter((item): item is string => typeof item === "string") : [],
     diarizationEnabled: !!source.diarizationEnabled,
@@ -109,7 +113,7 @@ export function TranscriptionView() {
   const textResult = useMemo(() => plainText(result), [result]);
   const cues = useMemo(() => buildCues(result), [result]);
   const srt = useMemo(() => toSrt(cues), [cues]);
-  const supportsFunAsrVocabulary = isFunAsrFileModel(params.model);
+  const supportsFunAsrVocabulary = supportsFunAsrVocabularyId(params.model);
 
   const toggleLanguageHint = (value: string) => {
     const next = params.languageHints.includes(value)

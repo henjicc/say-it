@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::alibabacloud::{
-    fetch_transcription_result, query_transcription_task, submit_transcription_task,
-    upload_for_model, TranscriptionParams, TranscriptionTaskStatus,
+    fetch_transcription_result, query_transcription_task, recognize_short_audio,
+    submit_transcription_task, upload_for_model, uses_async_transcription_task,
+    TranscriptionParams, TranscriptionTaskStatus,
 };
 use crate::state::*;
 use crate::text_align::{align_script, AlignOutput, AlignWord};
@@ -180,6 +181,32 @@ async fn run_transcription_job(
     );
     let file_url = upload_for_model(&api_key, &model, &file_path).await?;
     if is_cancelled(&cancel) {
+        return Ok(());
+    }
+
+    if !uses_async_transcription_task(&model) {
+        emit_transcription_event(
+            &app,
+            &job_id,
+            "submitted",
+            json!({
+                "taskId": "",
+                "fileUrl": &file_url,
+            }),
+        );
+        let result = recognize_short_audio(&api_key, &file_url, &file_path, &params).await?;
+        if is_cancelled(&cancel) {
+            return Ok(());
+        }
+        emit_transcription_event(
+            &app,
+            &job_id,
+            "completed",
+            json!({
+                "taskId": "",
+                "result": result,
+            }),
+        );
         return Ok(());
     }
 

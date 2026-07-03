@@ -1,5 +1,8 @@
 import { create } from "zustand";
-import { DEFAULT_REALTIME_ASR_MODEL } from "@/features/asr/modelOptions";
+import {
+  DEFAULT_REALTIME_ASR_MODEL,
+  isSupportedRealtimeModel,
+} from "@/features/asr/modelOptions";
 
 /**
  * 声音来源用一个字符串 id 表达："mic:default" / "system:default" 是最上面的
@@ -92,6 +95,7 @@ function migrateLegacySource(source: string): string {
 function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
   return {
     ...prefs,
+    asrModel: isSupportedRealtimeModel(prefs.asrModel) ? prefs.asrModel : DEFAULT_REALTIME_ASR_MODEL,
     source: migrateLegacySource(prefs.source),
     fontSizePercent: Math.min(6, Math.max(1.5, Number(prefs.fontSizePercent) || 2.6)),
     lineCount: Math.min(4, Math.max(1, Math.round(Number(prefs.lineCount) || 1))),

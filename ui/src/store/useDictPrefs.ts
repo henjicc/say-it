@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import { dspDefaults, dspParamsFromPrefs, type DspParams } from "@/lib/audio-dsp";
 import { CMD, cmdSilent } from "@/lib/tauri";
-import { DEFAULT_REALTIME_ASR_MODEL } from "@/features/asr/modelOptions";
+import {
+  DEFAULT_REALTIME_ASR_MODEL,
+  isSupportedRealtimeModel,
+} from "@/features/asr/modelOptions";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -48,6 +51,9 @@ function readStored(): DictPrefs {
     if (raw) Object.assign(base, JSON.parse(raw));
   } catch {
     /* noop */
+  }
+  if (!isSupportedRealtimeModel(base.asrModel)) {
+    base.asrModel = DEFAULT_REALTIME_ASR_MODEL;
   }
   base.localRules = mergeLocalRules(base.localRules);
   return base;
