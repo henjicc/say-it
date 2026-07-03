@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["sync", "time"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["default-tls", "rustls-tls", "gzip", "json", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["default-tls", "rustls-tls", "gzip", "json", "stream", "http2", "multipart"] }
 enigo = "0.3"
 arboard = "3"
 cpal = "0.15"
