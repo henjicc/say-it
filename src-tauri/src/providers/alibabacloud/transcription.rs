@@ -382,15 +382,47 @@ pub async fn recognize_short_audio(
     };
 
     let client = reqwest::Client::new();
-    let resp = client
+    let mut request = client
         .post(MULTIMODAL_GENERATION_URL)
         .header("Authorization", format!("Bearer {}", api_key.trim()))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    // fun-asr-flash 的非流式响应只返回“最后一句”的 sentence.words，无法还原多句音频的完整
+    // 逐词时间戳（详见音频规格文档的 SSE 累积处理说明）；改用流式模式，累积每个
+    // sentence_end=true 事件即可拿到完整的分句/逐词时间戳。qwen3-asr-flash 的响应本身就不含
+    // 时间戳字段（无论流式与否都一样），维持非流式即可。
+    if family == TranscriptionModelFamily::FunAsrFlash {
+        request = request.header("X-DashScope-SSE", "enable");
+    }
+    let resp = request
         .json(&body)
         .send()
         .await
         .map_err(|e| format!("提交短音频识别失败：{e}"))?;
+
+    if family == TranscriptionModelFamily::FunAsrFlash {
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取短音频识别响应失败：{e}"))?;
+        if crate::debug_log_enabled() {
+            let short = truncate(&text, 2000);
+            crate::dlog!("[recognize_short_audio family={family:?}] response={short}");
+        }
+        if !status.is_success() {
+            return Err(format!(
+                "提交短音频识别返回 {status}：{}",
+                extract_sse_error_message(&text)
+            ));
+        }
+        return parse_fun_asr_flash_sse(&text);
+    }
+
     let value = read_json_response(resp, "提交短音频识别").await?;
+    if crate::debug_log_enabled() {
+        let short = truncate(&value.to_string(), 2000);
+        crate::dlog!("[recognize_short_audio family={family:?}] response={short}");
+    }
     parse_short_audio_result(value)
 }
 
@@ -481,6 +513,79 @@ fn transcription_input_value(family: TranscriptionModelFamily, file_url: &str) -
         TranscriptionModelFamily::FunAsrFlash | TranscriptionModelFamily::QwenFlash => {
             unreachable!("同步短音频模型不应走异步 transcription 接口")
         }
+    }
+}
+
+/// 解析 fun-asr-flash 的 SSE 流式响应。每个事件的 `data:` 行是一个独立 JSON 对象；
+/// 当 `output.sentence.sentence_end` 为 true 时该句已定稿，把它累积成一个
+/// [`TranscriptionSentence`]（含逐词时间戳）。最后一个事件的 `output.text` 是整段音频的
+/// 完整识别文本，直接作为 transcript 的 text。
+fn parse_fun_asr_flash_sse(text: &str) -> Result<TranscriptionResult, String> {
+    let mut sentences: Vec<TranscriptionSentence> = Vec::new();
+    let mut final_text = String::new();
+    let mut duration_ms: Option<u64> = None;
+    let mut channel_id: Option<Value> = None;
+    let mut saw_event = false;
+
+    for line in text.lines() {
+        let Some(data) = line.trim().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        saw_event = true;
+
+        if let Some(text) = event.pointer("/output/text").and_then(Value::as_str) {
+            final_text = text.to_string();
+        }
+        if let Some(seconds) = event.pointer("/usage/duration").and_then(Value::as_u64) {
+            duration_ms = Some(seconds.saturating_mul(1000));
+        }
+
+        let Some(sentence_val) = event.pointer("/output/sentence") else {
+            continue;
+        };
+        let sentence_end = sentence_val
+            .get("sentence_end")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !sentence_end {
+            continue;
+        }
+        if channel_id.is_none() {
+            channel_id = sentence_val.get("channel_id").cloned();
+        }
+        let sentence: TranscriptionSentence = serde_json::from_value(sentence_val.clone())
+            .map_err(|e| format!("解析录音识别句子失败：{e}"))?;
+        sentences.push(sentence);
+    }
+
+    if !saw_event {
+        return Err("短音频识别响应为空或格式不正确".to_string());
+    }
+    if final_text.trim().is_empty() && sentences.is_empty() {
+        return Err("短音频识别成功但响应里没有可用文本".to_string());
+    }
+
+    Ok(TranscriptionResult {
+        duration_ms,
+        transcripts: vec![TranscriptionTranscript {
+            channel_id,
+            text: final_text,
+            sentences,
+        }],
+    })
+}
+
+fn extract_sse_error_message(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
+        Ok(value) => extract_error_message(&value, text),
+        Err(_) => truncate(text, 200),
     }
 }
 
@@ -651,6 +756,45 @@ mod tests {
     /// 5 秒 44.1kHz 立体声 16-bit PCM 原始体积，用作压缩率的参照基准。
     fn raw_pcm_bytes(seconds: f32, rate: u32) -> usize {
         (rate as f32 * seconds) as usize * 4
+    }
+
+    /// 取自文档《Fun-ASR录音文件识别HTTP API参考.md》里 fun-asr-flash 流式响应的原样示例。
+    const FUN_ASR_FLASH_SSE_SAMPLE: &str = concat!(
+        "id:1\n",
+        "event:result\n",
+        ":HTTP_STATUS/200\n",
+        "data:{\"output\":{\"sentence\":{\"sentence_id\":1,\"sentence_end\":true,\"end_time\":3800,",
+        "\"words\":[",
+        "{\"end_time\":1040,\"punctuation\":\"\",\"begin_time\":760,\"fixed\":true,\"text\":\"Hello\"},",
+        "{\"end_time\":1240,\"punctuation\":\"，\",\"begin_time\":1040,\"fixed\":true,\"text\":\" World\"},",
+        "{\"end_time\":1880,\"punctuation\":\"\",\"begin_time\":1360,\"fixed\":true,\"text\":\"这里是\"},",
+        "{\"end_time\":2520,\"punctuation\":\"\",\"begin_time\":1880,\"fixed\":true,\"text\":\"阿里巴巴\"},",
+        "{\"end_time\":2840,\"punctuation\":\"\",\"begin_time\":2520,\"fixed\":true,\"text\":\"语音\"},",
+        "{\"end_time\":3800,\"punctuation\":\"。\",\"begin_time\":2840,\"fixed\":true,\"text\":\"实验室\"}",
+        "],\"begin_time\":760,\"text\":\"Hello World，这里是阿里巴巴语音实验室。\",\"channel_id\":0},",
+        "\"text\":\"Hello World，这里是阿里巴巴语音实验室。\"},",
+        "\"usage\":{\"duration\":4},",
+        "\"request_id\":\"fc1582e4-935c-9fc2-a482-a98bf43daa69\"}\n",
+        "\n",
+    );
+
+    #[test]
+    fn parses_fun_asr_flash_sse_sample_from_docs() {
+        let result = parse_fun_asr_flash_sse(FUN_ASR_FLASH_SSE_SAMPLE)
+            .expect("doc sample should parse");
+        assert_eq!(result.duration_ms, Some(4000));
+        assert_eq!(result.transcripts.len(), 1);
+        let transcript = &result.transcripts[0];
+        assert_eq!(transcript.text, "Hello World，这里是阿里巴巴语音实验室。");
+        assert_eq!(transcript.channel_id, Some(json!(0)));
+        assert_eq!(transcript.sentences.len(), 1);
+        let sentence = &transcript.sentences[0];
+        assert_eq!(sentence.begin_time, 760);
+        assert_eq!(sentence.end_time, 3800);
+        assert_eq!(sentence.words.len(), 6);
+        assert_eq!(sentence.words[0].text, "Hello");
+        assert_eq!(sentence.words[5].text, "实验室");
+        assert_eq!(sentence.words[5].punctuation.as_deref(), Some("。"));
     }
 
     #[test]
