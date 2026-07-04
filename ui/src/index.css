@@ -20,8 +20,8 @@
 
   /* 文字层级 */
   --color-fg: #ffffff;
-  --color-fg-muted: rgba(255, 255, 255, 0.64);
-  --color-fg-subtle: rgba(255, 255, 255, 0.42);
+  --color-fg-muted: rgba(255, 255, 255, 0.78);
+  --color-fg-subtle: rgba(255, 255, 255, 0.5);
   --color-fg-faint: rgba(255, 255, 255, 0.3);
 
   /* 状态色 */
@@ -50,8 +50,13 @@
   /* 动效 */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
+  /* 优先第三方黑体（中英文同源，装了才生效），依次回退到系统字体。
+   * HarmonyOS Sans SC / MiSans 单一 family 即含拉丁+中文；思源黑体用标准 Web 名兜底。
+   * 都没有时回落 Segoe UI + 雅黑，与悬浮窗保持一致。 */
   --font-sans:
-    "Microsoft YaHei", "PingFang SC", system-ui, "Segoe UI", sans-serif;
+    "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
+    system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
 }
 
@@ -96,7 +101,6 @@ body {
   font-size: 14px;
   line-height: 1.5;
   overflow: hidden;
-  -webkit-font-smoothing: antialiased;
 }
 
 /* Tauri 拖拽区域 */
@@ -173,5 +177,28 @@ input[type="radio"] {
 }
 
 [data-ui-tone="light"] button.text-\[var\(--color-accent-contrast\)\] {
-  color: var(--color-accent-contrast) !important;
+  color: #ffffff !important;
+}
+
+/* 下拉弹层进入/离开动画（自 transform-origin: top 展开） */
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dropdown-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
 }

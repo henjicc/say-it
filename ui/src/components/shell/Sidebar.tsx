@@ -29,7 +29,7 @@ export function Sidebar() {
                 "group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-3 text-sm transition-colors duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                 active
-                  ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
+                  ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
                   : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
               )}
             >

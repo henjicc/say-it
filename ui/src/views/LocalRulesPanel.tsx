@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
 import { CheckField } from "@/components/ui/Field";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -140,11 +141,9 @@ export function LocalRulesPanel() {
               key={rule.id}
               className="flex items-center gap-2 border-b border-[var(--color-line)] px-3 py-2 last:border-b-0"
             >
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={rule.enabled}
                 onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
-                className="h-4 w-4 shrink-0 [accent-color:var(--color-accent)]"
                 title={rule.enabled ? "已启用" : "已停用"}
               />
               <Input
@@ -166,11 +165,10 @@ export function LocalRulesPanel() {
                 title="忽略大小写"
                 className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--color-fg-subtle)]"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
+                  size="sm"
                   checked={rule.flags?.includes("i") ?? false}
                   onChange={(e) => updateRule(rule.id, { flags: e.target.checked ? "gi" : "g" })}
-                  className="h-3.5 w-3.5 [accent-color:var(--color-accent)]"
                 />
                 Aa
               </label>
@@ -200,11 +198,9 @@ export function LocalRulesPanel() {
             return (
               <div key={rule.id} className="border-b border-[var(--color-line)] last:border-b-0">
                 <div className="flex items-center gap-2.5 px-3 py-2">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={rule.enabled}
                     onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
-                    className="h-4 w-4 shrink-0 [accent-color:var(--color-accent)]"
                     title={rule.enabled ? "已启用" : "已停用"}
                   />
                   <button

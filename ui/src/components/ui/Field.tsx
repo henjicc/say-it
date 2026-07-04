@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { Checkbox } from "./Checkbox";
 
 /**
  * 表单字段。
@@ -63,12 +64,10 @@ export function CheckField({
         className,
       )}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 [accent-color:var(--color-accent)]"
       />
       {children}
     </label>

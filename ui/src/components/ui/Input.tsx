@@ -80,6 +80,8 @@ export function Select({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
+  // 弹层挂载状态：打开时立即挂载，关闭时保留到离开动画结束再卸载
+  const [rendered, setRendered] = useState(false);
   const [query, setQuery] = useState("");
   const [internalValue, setInternalValue] = useState(defaultValue || "");
   const selectedValue = value ?? internalValue;
@@ -115,6 +117,10 @@ export function Select({
     if (selectedValue || !options[0]) return;
     setInternalValue(options[0].value);
   }, [options, selectedValue]);
+
+  useEffect(() => {
+    if (open) setRendered(true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -212,12 +218,21 @@ export function Select({
         <ChevronDownIcon open={open} />
       </button>
 
-      {open && (
+      {rendered && (
         <div
           id={listboxId}
           role="listbox"
           aria-labelledby={buttonId}
-          className="absolute left-0 right-0 top-[calc(100%+6px)] z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]"
+          onAnimationEnd={() => {
+            if (!open) setRendered(false);
+          }}
+          style={{ transformOrigin: "top" }}
+          className={cn(
+            "absolute left-0 right-0 top-[calc(100%+6px)] z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+            open
+              ? "animate-[dropdown-in_140ms_var(--ease-out)]"
+              : "pointer-events-none animate-[dropdown-out_110ms_var(--ease-out)_forwards]",
+          )}
         >
           {searchable && (
             <div className="border-b border-[var(--color-line)] p-1.5">
