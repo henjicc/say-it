@@ -39,7 +39,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
   {
     view: "transcription",
-    label: "录音识别",
+    label: "字幕转写",
     icon: (
       <svg {...iconProps}>
         <path d="M7 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20v-3.5" />

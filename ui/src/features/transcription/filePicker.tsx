@@ -50,7 +50,7 @@ export function validateFile(file: SelectedTranscriptionFile) {
 }
 
 export function defaultSrtName(file: SelectedTranscriptionFile | null, suffix = "") {
-  const name = file?.name || "录音识别结果";
+  const name = file?.name || "字幕转写结果";
   const dot = name.lastIndexOf(".");
   return `${dot > 0 ? name.slice(0, dot) : name}${suffix}.srt`;
 }

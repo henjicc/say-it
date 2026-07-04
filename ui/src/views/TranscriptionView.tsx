@@ -160,7 +160,7 @@ export function TranscriptionView() {
   return (
     <div className="flex flex-col gap-7">
       <PageHeader
-        title="录音识别"
+        title="字幕转写"
         description="处理本地音视频文件，生成转写文本或用于文稿对齐的时间轴。"
       />
 
