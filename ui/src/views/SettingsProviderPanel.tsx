@@ -177,7 +177,7 @@ export function SettingsProviderPanel() {
   return (
     <SettingsSection title="识别供应商">
       <Collapse
-        title={funasr?.displayName || "Fun-ASR"}
+        title={funasr?.displayName || "阿里云百炼"}
         subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}
         defaultOpen
       >

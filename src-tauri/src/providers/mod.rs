@@ -90,7 +90,7 @@ pub fn funasr_profile() -> ProviderProfile {
     ProviderProfile {
         id: FUNASR_PROVIDER_ID.to_string(),
         kind: "alibabacloud-funasr".to_string(),
-        display_name: "Fun-ASR（阿里云百炼）".to_string(),
+        display_name: "阿里云百炼".to_string(),
         auth_kind: "api-key".to_string(),
         capabilities: vec!["asr".to_string()],
         enabled: true,
@@ -123,9 +123,7 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
 
     settings.profiles.retain(|profile| profile.id == FUNASR_PROVIDER_ID);
     for profile in &mut settings.profiles {
-        if profile.display_name.trim().is_empty() {
-            profile.display_name = "Fun-ASR（阿里云百炼）".to_string();
-        }
+        profile.display_name = "阿里云百炼".to_string();
         profile.enabled = true;
         profile.capabilities = vec!["asr".to_string()];
     }
