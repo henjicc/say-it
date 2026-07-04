@@ -22,11 +22,11 @@ export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
 ];
 
 export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
-  { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash（停止后识别）" },
-  { value: "qwen3-asr-flash", label: "Qwen3-ASR-Flash（停止后识别）" },
-  { value: "qwen3-asr-flash-2026-02-10", label: "Qwen3-ASR-Flash 最新版（停止后识别）" },
-  { value: "fun-asr", label: "Fun-ASR（停止后识别）" },
-  { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans（停止后识别）" },
+  { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash（非实时）" },
+  { value: "qwen3-asr-flash", label: "Qwen3-ASR-Flash（非实时）" },
+  { value: "qwen3-asr-flash-2026-02-10", label: "Qwen3-ASR-Flash 最新版（非实时）" },
+  { value: "fun-asr", label: "Fun-ASR（非实时）" },
+  { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans（非实时）" },
 ];
 
 export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [
