@@ -212,17 +212,6 @@ export function buildCues(result: TranscriptionResult | null, options: BuildCueO
   return normalizeTimeline(merged);
 }
 
-export function cuesFromAlignedLines(lines: AlignedLine[]): SubtitleCue[] {
-  return lines
-    .filter((line) => line.text.trim())
-    .map((line, index) => ({
-      index: index + 1,
-      beginMs: line.beginMs,
-      endMs: line.endMs,
-      text: line.text,
-    }));
-}
-
 /** 「识别修正」结果的字幕条目：来自文稿行原文，或未被文稿认领的识别文本。 */
 export interface AlignedResultCue extends SubtitleCue {
   source: "script" | "asr";
@@ -257,6 +246,129 @@ export function cuesFromOptimizedSegments(
     }
   }
   return normalizeTimeline(raw);
+}
+
+/** 低于该匹配率的对齐行视为与音频不符，编辑器中黄色标注。 */
+export const LOW_MATCH_THRESHOLD = 0.6;
+
+export interface CueBadge {
+  tone: "warn" | "accent";
+  label: string;
+  title?: string;
+}
+
+/** 字幕编辑器的工作副本条目：稳定 id 供 React key / 拖拽定位，badge 保留来源标注。 */
+export interface EditableCue {
+  id: string;
+  beginMs: number;
+  endMs: number;
+  text: string;
+  speakerId?: string;
+  badge?: CueBadge;
+}
+
+let cueIdSeed = 0;
+export function newCueId() {
+  cueIdSeed += 1;
+  return `cue-${Date.now().toString(36)}-${cueIdSeed}`;
+}
+
+export function editableFromCues(cues: SubtitleCue[]): EditableCue[] {
+  return cues.map((cue) => ({
+    id: newCueId(),
+    beginMs: cue.beginMs,
+    endMs: cue.endMs,
+    text: cueText(cue),
+  }));
+}
+
+export function editableFromAlignedLines(lines: AlignedLine[]): EditableCue[] {
+  return lines
+    .filter((line) => line.text.trim())
+    .map((line) => {
+      const low = line.matchRatio < LOW_MATCH_THRESHOLD || line.interpolated;
+      return {
+        id: newCueId(),
+        beginMs: line.beginMs,
+        endMs: line.endMs,
+        text: line.text,
+        badge: low
+          ? {
+              tone: "warn" as const,
+              label: line.interpolated ? "估算" : `${Math.round(line.matchRatio * 100)}%`,
+              title: "该行与音频匹配度低，时间为估算，建议核对",
+            }
+          : undefined,
+      };
+    });
+}
+
+export function editableFromAlignedResultCues(cues: AlignedResultCue[]): EditableCue[] {
+  return cues.map((cue) => ({
+    id: newCueId(),
+    beginMs: cue.beginMs,
+    endMs: cue.endMs,
+    text: cue.text,
+    badge:
+      cue.source === "asr"
+        ? {
+            tone: "accent" as const,
+            label: "识别",
+            title: "该段内容来自识别文本：或是文稿与音频差异过大被替换，或是音频里说了但文稿没写",
+          }
+        : undefined,
+  }));
+}
+
+export function editableToSrt(cues: EditableCue[]) {
+  return toSrt(
+    cues
+      .filter((cue) => cue.text.trim())
+      .slice()
+      .sort((a, b) => a.beginMs - b.beginMs || a.endMs - b.endMs)
+      .map((cue, index) => ({
+        index: index + 1,
+        beginMs: cue.beginMs,
+        endMs: cue.endMs,
+        text: cue.text.trim(),
+      })),
+  );
+}
+
+export function editablePlainText(cues: EditableCue[]) {
+  return cues
+    .map((cue) => cue.text.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** `mm:ss.mmm`（超过 1 小时为 `h:mm:ss.mmm`）——编辑器展示/输入用的短时间格式。 */
+export function formatClock(ms: number) {
+  const value = Math.max(0, Math.round(ms));
+  const hours = Math.floor(value / 3_600_000);
+  const minutes = Math.floor((value % 3_600_000) / 60_000);
+  const seconds = Math.floor((value % 60_000) / 1000);
+  const milliseconds = value % 1000;
+  const tail = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+  return hours > 0 ? `${hours}:${tail}` : tail;
+}
+
+/** 解析 `formatClock` 及常见变体（`ss.mmm`、`mm:ss`、逗号毫秒）；非法输入返回 null。 */
+export function parseClock(text: string): number | null {
+  const trimmed = text.trim().replace(",", ".");
+  if (!trimmed) return null;
+  const parts = trimmed.split(":");
+  if (parts.length > 3) return null;
+  let seconds = 0;
+  let scale = 1;
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i].trim();
+    if (!part || !/^\d+(\.\d+)?$/.test(part)) return null;
+    seconds += Number(part) * scale;
+    scale *= 60;
+  }
+  if (!Number.isFinite(seconds)) return null;
+  return Math.max(0, Math.round(seconds * 1000));
 }
 
 export function formatSrtTime(ms: number) {

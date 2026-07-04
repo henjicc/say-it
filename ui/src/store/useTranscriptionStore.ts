@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AlignedResultCue } from "@/features/transcription/subtitles";
+import type { EditableCue } from "@/features/transcription/subtitles";
 import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 
 export type TranscriptionTab = "transcribe" | "align" | "settings";
@@ -122,6 +122,8 @@ interface TranscriptionState {
   statusText: string;
   errorMessage: string;
   result: TranscriptionResult | null;
+  /** 「字幕」视图的可编辑工作副本；识别完成时从派生 cue 初始化。 */
+  editorCues: EditableCue[] | null;
   saveMessage: string;
   alignFile: SelectedTranscriptionFile | null;
   scriptText: string;
@@ -130,7 +132,8 @@ interface TranscriptionState {
   alignStatusText: string;
   alignErrorMessage: string;
   alignedLines: AlignedLine[] | null;
-  alignOptimizedCues: AlignedResultCue[] | null;
+  /** 两个对齐视图各自的可编辑工作副本，切换视图互不覆盖。 */
+  alignEditorCues: { script: EditableCue[]; optimized: EditableCue[] } | null;
   alignResultView: AlignResultView;
   alignSaveMessage: string;
   alignRecognition: AlignRecognitionCache | null;
@@ -155,6 +158,7 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   statusText: "",
   errorMessage: "",
   result: null,
+  editorCues: null,
   saveMessage: "",
   alignFile: null,
   scriptText: "",
@@ -163,7 +167,7 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   alignStatusText: "",
   alignErrorMessage: "",
   alignedLines: null,
-  alignOptimizedCues: null,
+  alignEditorCues: null,
   alignResultView: "script",
   alignSaveMessage: "",
   alignRecognition: null,
@@ -182,6 +186,7 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
       statusText: "",
       errorMessage: "",
       result: null,
+      editorCues: null,
       saveMessage: "",
     }),
 }));

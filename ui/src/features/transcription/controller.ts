@@ -5,7 +5,13 @@ import {
   supportsFunAsrVocabularyId,
   supportsAlignmentTimestamps,
 } from "@/features/asr/modelOptions";
-import { cuesFromOptimizedSegments } from "@/features/transcription/subtitles";
+import {
+  buildCues,
+  cuesFromOptimizedSegments,
+  editableFromAlignedLines,
+  editableFromAlignedResultCues,
+  editableFromCues,
+} from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
@@ -91,12 +97,14 @@ function handleTranscribeEvent(payload: TranscriptionEventPayload) {
     return;
   }
   if (payload.stage === "completed") {
+    const result = payload.result || null;
     store.setRuntime({
       stage: "completed",
       taskId: payload.taskId || store.taskId,
       statusText: "识别完成。",
       errorMessage: "",
-      result: payload.result || null,
+      result,
+      editorCues: editableFromCues(buildCues(result)),
       resultView: "text",
     });
     stopListening();
@@ -180,10 +188,14 @@ async function runAlign(result: TranscriptionResult, scriptLines: string[]) {
   try {
     const words = flattenWords(result);
     const output = await cmd<AlignOutput>(CMD.alignTranscript, { words, scriptLines });
+    const optimizedCues = cuesFromOptimizedSegments(output.optimizedSegments, words);
     useTranscriptionStore.getState().setRuntime({
       alignStage: "completed",
       alignedLines: output.lines,
-      alignOptimizedCues: cuesFromOptimizedSegments(output.optimizedSegments, words),
+      alignEditorCues: {
+        script: editableFromAlignedLines(output.lines),
+        optimized: editableFromAlignedResultCues(optimizedCues),
+      },
       alignStatusText: "对齐完成。",
       alignErrorMessage: "",
     });
@@ -233,6 +245,7 @@ export async function startTranscription() {
     jobId: "",
     taskId: "",
     result: null,
+    editorCues: null,
     errorMessage: "",
     saveMessage: "",
     statusText: "正在准备识别任务…",
@@ -322,7 +335,7 @@ export async function startAlignment() {
   if (cache && cache.filePath === file.path && cache.paramsKey === paramsKey) {
     store.setRuntime({
       alignedLines: null,
-      alignOptimizedCues: null,
+      alignEditorCues: null,
       alignErrorMessage: "",
       alignSaveMessage: "",
       alignStatusText: "复用上次识别结果…",
@@ -336,7 +349,7 @@ export async function startAlignment() {
     alignStage: "uploading",
     alignJobId: "",
     alignedLines: null,
-    alignOptimizedCues: null,
+    alignEditorCues: null,
     alignErrorMessage: "",
     alignSaveMessage: "",
     alignStatusText: "正在准备识别任务…",

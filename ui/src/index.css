@@ -192,6 +192,16 @@ input[type="radio"] {
   }
 }
 
+/* 不确定态进度条：亮带在轨道内循环滑动（上传/云端识别没有字节级进度时使用） */
+@keyframes progress-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
 @keyframes dropdown-out {
   from {
     opacity: 1;
