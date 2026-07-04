@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_dsp;
+mod audio_prep;
 mod commands;
 mod desktop;
 mod hotkey;

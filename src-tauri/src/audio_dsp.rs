@@ -213,10 +213,15 @@ fn rms(samples: &[f32]) -> f32 {
 
 /// 简单线性重采样到 48kHz（仅在麦克风非 48k 时用；离线一次性版本）。
 fn resample_to_48k(input: &[f32], in_rate: u32) -> Vec<f32> {
-    if in_rate == RATE_48K || input.is_empty() {
+    resample_linear(input, in_rate, RATE_48K)
+}
+
+/// 简单线性重采样（离线一次性版本，非流式）。供录音识别等离线场景复用。
+pub(crate) fn resample_linear(input: &[f32], in_rate: u32, out_rate: u32) -> Vec<f32> {
+    if in_rate == out_rate || input.is_empty() {
         return input.to_vec();
     }
-    let ratio = RATE_48K as f64 / in_rate as f64;
+    let ratio = out_rate as f64 / in_rate as f64;
     let out_len = ((input.len() as f64) * ratio).round() as usize;
     let mut out = Vec::with_capacity(out_len);
     for k in 0..out_len {
