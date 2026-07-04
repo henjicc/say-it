@@ -26,7 +26,7 @@ export function SettingsView() {
     <div className="flex flex-col gap-7">
       <PageHeader
         title="设置"
-        description="配置识别密钥、录音处理、启动方式、麦克风与提示音以及界面外观。"
+        description="配置识别密钥、录音调整、启动方式、麦克风与提示音、界面外观，并支持多模型效果对比。"
       />
 
       <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />

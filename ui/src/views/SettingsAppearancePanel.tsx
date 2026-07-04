@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
-import { defaultAccentTheme, useThemeStore } from "@/store/useThemeStore";
+import { useThemeStore } from "@/store/useThemeStore";
 
 function isHexColor(value: string) {
   return /^#?[0-9a-fA-F]{3}$/.test(value.trim()) || /^#?[0-9a-fA-F]{6}$/.test(value.trim());
@@ -68,10 +68,6 @@ export function SettingsAppearancePanel() {
 
   return (
     <SettingsSection title="外观">
-      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-        只保留整体色调和强调色。默认强调色为 {defaultAccentTheme.accent}。
-      </p>
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
         <div className="grid gap-3">
           <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
@@ -105,7 +101,7 @@ export function SettingsAppearancePanel() {
           <AccentColorField value={theme.accent} onChange={(value) => patch({ accent: value })} />
         </div>
 
-        <div className="rounded-[var(--radius-xl)] border border-[var(--color-line)] bg-[radial-gradient(circle_at_30%_20%,color-mix(in_srgb,var(--color-accent-light)_24%,transparent),transparent_42%),linear-gradient(145deg,var(--color-surface-strong),var(--color-surface))] p-4">
+        <div className="rounded-[var(--radius-xl)] border border-[var(--color-line)] bg-[var(--color-surface-strong)] p-4">
           <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3">
             <p className="text-xs text-[var(--color-fg-subtle)]">预览</p>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -115,7 +111,7 @@ export function SettingsAppearancePanel() {
               <Button size="sm">次要操作</Button>
             </div>
             <div className="mt-4 h-2 rounded-full bg-[var(--color-surface-strong)]">
-              <div className="h-full w-2/3 rounded-full bg-[linear-gradient(90deg,var(--color-accent-dark),var(--color-accent-light))]" />
+              <div className="h-full w-2/3 rounded-full bg-[var(--color-accent)]" />
             </div>
             <div className="mt-4 flex items-center gap-2 rounded-[var(--radius-lg)] bg-[var(--accent-soft-strong)] px-3 py-2 text-sm ring-1 ring-[var(--accent-ring)]">
               <span className="h-2 w-2 rounded-full bg-[var(--color-accent-light)]" />

@@ -1,3 +1,11 @@
+:root {
+  /* 与 ui/src/index.css 的 --font-sans 保持一致，改动时两处同步 */
+  --font-sans:
+    "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
+    system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", sans-serif;
+}
+
 html,
 body,
 #indicator-root {
@@ -39,7 +47,7 @@ body,
   border-radius: 18px;
   background: rgba(12, 16, 24, 0.94);
   color: #fff;
-  font: 13px/1.2 system-ui, "Segoe UI", sans-serif;
+  font: 13px/1.2 var(--font-sans);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(14px);
@@ -83,7 +91,7 @@ body,
   border-radius: 12px;
   background: rgba(12, 16, 24, 0.96);
   color: #eaf0ff;
-  font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+  font: 14px/1.5 var(--font-sans);
   box-shadow:
     0 12px 28px rgba(0, 0, 0, 0.34),
     inset 0 0 0 1px rgba(255, 255, 255, 0.04);
@@ -200,9 +208,7 @@ body,
   color: var(--subtitle-text, #fff);
   font:
     600 var(--subtitle-font-size, 28px) / 1.38 var(--subtitle-font),
-    "Microsoft YaHei",
-    "Segoe UI",
-    sans-serif;
+    var(--font-sans);
   text-align: center;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.66);
   box-shadow:

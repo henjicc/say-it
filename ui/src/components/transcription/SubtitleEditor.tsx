@@ -11,6 +11,9 @@ import {
 const BASE_PX_PER_SEC = 60;
 const MIN_CUE_MS = 100;
 const NUDGE_MS = 100;
+/** 默认间隙合并阈值：参考 Netflix 字幕规范「相邻字幕至少间隔 2 帧」（24~30fps 约 66~83ms），
+ * 小于该间隔人眼会感知为闪烁而非有意的切换停顿；留出余量取 200ms 作为默认阈值。 */
+const DEFAULT_GAP_MERGE_MS = 200;
 const SNAP_DISTANCE_PX = 8;
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5];
 const TIMELINE_ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
@@ -24,6 +27,10 @@ const CUE_LANE_HEIGHT = 26;
 const CUE_BLOCK_TOP = 81;
 const MIN_WAVEFORM_BUCKETS = 240;
 const MAX_WAVEFORM_BUCKETS = 6000;
+/** 播放头与媒体时钟漂移超过该值视为主动 seek 等真实跳变，直接硬对齐。 */
+const PLAYHEAD_HARD_SNAP_MS = 300;
+/** 每帧允许用于追平漂移的速度占比：0.15 表示播放头最快以 0.85x/1.15x 的速度缓慢校准，视觉不可察觉。 */
+const PLAYHEAD_MAX_CORRECTION_RATIO = 0.15;
 
 type DragMode = "move" | "left" | "right";
 
@@ -62,7 +69,9 @@ function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tagName = target.tagName;
-  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT" || tagName === "BUTTON";
+  // 不含 BUTTON：编辑页内空格键始终用于播放/暂停，不应被"此前点过的按钮仍持有焦点"劫持
+  // （典型场景：点击窗口标题栏的最大化按钮后再按空格，浏览器会把空格当成对该按钮的默认点击）。
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
 }
 
 function isInteractiveTarget(target: EventTarget | null) {
@@ -70,7 +79,17 @@ function isInteractiveTarget(target: EventTarget | null) {
     && !!target.closest("button, input, textarea, select, a, label");
 }
 
-function buildWaveformColumns(buffer: AudioBuffer, bucketCount: number) {
+const MAIN_THREAD_YIELD_BUDGET_MS = 8;
+
+function yieldToMain() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+/** 逐采样点扫描 min/max 是纯同步计算，长音频会连续占用主线程数百毫秒，
+ * 期间驱动播放头的 requestAnimationFrame 会被阻塞、错过多帧，
+ * 解除阻塞后一次性读到已经前进很多的 currentTime，观感上就是播放头卡顿后突然前跳。
+ * 因此按耗时切片，定期让出主线程，避免播放头同步被压住。 */
+async function buildWaveformColumns(buffer: AudioBuffer, bucketCount: number, signal?: AbortSignal) {
   const channelCount = Math.max(1, buffer.numberOfChannels);
   const channels = Array.from({ length: channelCount }, (_, index) => buffer.getChannelData(index));
   const sampleCount = channels[0]?.length || 0;
@@ -80,6 +99,7 @@ function buildWaveformColumns(buffer: AudioBuffer, bucketCount: number) {
   const samplesPerBucket = Math.max(1, Math.floor(sampleCount / safeBucketCount));
   const columns: WaveformColumn[] = new Array(safeBucketCount);
   let globalMax = 0;
+  let sliceStartedAt = performance.now();
 
   for (let bucketIndex = 0; bucketIndex < safeBucketCount; bucketIndex += 1) {
     const start = bucketIndex * samplesPerBucket;
@@ -96,6 +116,12 @@ function buildWaveformColumns(buffer: AudioBuffer, bucketCount: number) {
     const absPeak = Math.max(Math.abs(min), Math.abs(max));
     if (absPeak > globalMax) globalMax = absPeak;
     columns[bucketIndex] = { min, max };
+
+    if (performance.now() - sliceStartedAt > MAIN_THREAD_YIELD_BUDGET_MS) {
+      await yieldToMain();
+      if (signal?.aborted) return [];
+      sliceStartedAt = performance.now();
+    }
   }
 
   if (globalMax <= 0) {
@@ -295,6 +321,7 @@ export function SubtitleEditor({
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<PanState | null>(null);
   const renderFrameRef = useRef(0);
+  const playheadClockRef = useRef<{ displayMs: number; frameAt: number } | null>(null);
   const zoomAnchorRef = useRef<{ timeMs: number; offsetX: number } | null>(null);
   const cueTextRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
@@ -308,6 +335,7 @@ export function SubtitleEditor({
   const [playbackError, setPlaybackError] = useState(false);
   const [waveformColumns, setWaveformColumns] = useState<WaveformColumn[]>([]);
   const [waveformLoading, setWaveformLoading] = useState(false);
+  const [gapMergeMs, setGapMergeMs] = useState(DEFAULT_GAP_MERGE_MS);
 
   const mediaSrc = useMemo(() => (mediaPath ? convertFileSrc(mediaPath) : ""), [mediaPath]);
   const lastEndMs = useMemo(() => cues.reduce((max, cue) => Math.max(max, cue.endMs), 0), [cues]);
@@ -329,15 +357,34 @@ export function SubtitleEditor({
   }, [totalMs]);
 
   const stopPlayheadSync = () => {
+    playheadClockRef.current = null;
     if (!renderFrameRef.current) return;
     cancelAnimationFrame(renderFrameRef.current);
     renderFrameRef.current = 0;
   };
 
-  const syncPlayhead = () => {
+  /** 播放头不直接镜像 audio.currentTime：Chromium 暂停后再 play() 需要重启音频输出管线，
+   * 期间媒体时钟先停滞（约 50~200ms），管线就绪后又带补偿地跳步前进；从 0 首播因管线已预热而无此现象。
+   * 直接镜像的观感就是"暂停后再播放，播放头先顿一下再突然跳到前面"，且无法靠改读取时机修复。
+   * 因此播放期间用 rAF 壁钟推进播放头，媒体时钟只作为漂移校准源：
+   * 小漂移每帧限幅缓慢追平（同时吸收 currentTime 偶发的几毫秒微小回退），
+   * 只有超过 PLAYHEAD_HARD_SNAP_MS 的真实跳变（主动 seek 等）才硬对齐。 */
+  const syncPlayhead = (frameAt: number) => {
     const audio = audioRef.current;
     if (!audio) return;
-    setCurrentMs(audio.currentTime * 1000);
+    const audioMs = audio.currentTime * 1000;
+    const clock = playheadClockRef.current ?? { displayMs: audioMs, frameAt };
+    const elapsedMs = Math.max(0, frameAt - clock.frameAt);
+    let displayMs = clock.displayMs + elapsedMs * audio.playbackRate;
+    const driftMs = audioMs - displayMs;
+    if (Math.abs(driftMs) > PLAYHEAD_HARD_SNAP_MS) {
+      displayMs = audioMs;
+    } else {
+      const maxCorrection = elapsedMs * audio.playbackRate * PLAYHEAD_MAX_CORRECTION_RATIO;
+      displayMs += clamp(driftMs, -maxCorrection, maxCorrection);
+    }
+    playheadClockRef.current = { displayMs, frameAt };
+    setCurrentMs(displayMs);
     if (!audio.paused && !audio.ended) {
       renderFrameRef.current = requestAnimationFrame(syncPlayhead);
     } else {
@@ -357,6 +404,8 @@ export function SubtitleEditor({
 
   const seek = (ms: number) => {
     const target = Math.max(0, totalMs > 0 ? Math.min(ms, totalMs) : ms);
+    // 主动 seek 后壁钟锚点已失效，置空让下一帧从新的 currentTime 重新起步
+    playheadClockRef.current = null;
     setCurrentMs(target);
     const audio = audioRef.current;
     if (audio && !playbackError && Number.isFinite(audio.duration)) {
@@ -539,6 +588,23 @@ export function SubtitleEditor({
     setSelectedCueId(merged.id);
   };
 
+  const mergeGaps = () => {
+    const threshold = Math.max(0, gapMergeMs);
+    let changed = false;
+    const next = cues.map((cue, index) => {
+      const nextCue = cues[index + 1];
+      if (nextCue) {
+        const gap = nextCue.beginMs - cue.endMs;
+        if (gap > 0 && gap < threshold) {
+          changed = true;
+          return { ...cue, endMs: nextCue.beginMs };
+        }
+      }
+      return cue;
+    });
+    if (changed) onCuesChange(next);
+  };
+
   const insertAfter = (cue: EditableCue) => {
     const index = cueIndexOf(cue.id);
     if (index < 0) return;
@@ -669,7 +735,9 @@ export function SubtitleEditor({
               ),
             ),
           );
-          setWaveformColumns(buildWaveformColumns(buffer, bucketCount));
+          const nextColumns = await buildWaveformColumns(buffer, bucketCount, controller.signal);
+          if (disposed) return;
+          setWaveformColumns(nextColumns);
           setDurationMs((current) => current || Math.round(buffer.duration * 1000));
         } finally {
           void audioContext.close().catch(() => {});
@@ -736,10 +804,10 @@ export function SubtitleEditor({
     if (!playing || !timelineRef.current) return;
     const container = timelineRef.current;
     if (playheadLeft < container.scrollLeft + 48 || playheadLeft > container.scrollLeft + container.clientWidth - 88) {
-      container.scrollTo({
-        left: Math.max(0, playheadLeft - container.clientWidth / 3),
-        behavior: "smooth",
-      });
+      // 播放期间该 effect 会随播放头每帧变化重复触发；用 "smooth" 会在这个高频调用下
+      // 反复打断、重启浏览器原生的滚动缓动动画，表现为播放头突然"跳"一下。
+      // 改为瞬时跳转后，连续高频的小步纠正在视觉上本身就是连贯的，不需要额外动画。
+      container.scrollLeft = Math.max(0, playheadLeft - container.clientWidth / 3);
     }
   }, [playing, playheadLeft]);
 
@@ -802,6 +870,24 @@ export function SubtitleEditor({
           波形 {formatZoom(waveformZoom)}
           <span className="text-[var(--color-fg-subtle)]">Alt+滚轮</span>
         </span>
+        <span
+          className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1"
+          title="小于该阈值的相邻字幕间隙会被合并（前一条延伸至后一条开始），避免烧录成片后字幕出现闪烁"
+        >
+          <span className="text-[11px] text-[var(--color-fg-faint)]">间隙 ≤</span>
+          <input
+            type="number"
+            min={0}
+            step={10}
+            value={gapMergeMs}
+            onChange={(event) => setGapMergeMs(Math.max(0, Number(event.target.value) || 0))}
+            className="h-6 w-14 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] text-center font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)] focus:outline-none focus:border-[var(--accent-ring)]"
+          />
+          <span className="text-[11px] text-[var(--color-fg-faint)]">ms</span>
+        </span>
+        <Button size="sm" onClick={mergeGaps} disabled={cues.length < 2}>
+          合并字幕间隙
+        </Button>
         <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
           Space 播放/暂停
         </span>
