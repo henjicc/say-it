@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -306,18 +307,17 @@ pub async fn submit_transcription_task(
 
 pub async fn recognize_short_audio(
     api_key: &str,
-    file_url: &str,
     file_path: &str,
     params: &TranscriptionParams,
 ) -> Result<TranscriptionResult, String> {
     if api_key.trim().is_empty() {
         return Err("请先保存阿里云百炼 API Key".to_string());
     }
-    if file_url.trim().is_empty() {
-        return Err("录音识别文件 URL 不能为空".to_string());
-    }
     let model = params.model_id();
     let family = transcription_model_family(&model);
+    // 同步短音频接口（multimodal-generation）不支持解析 OSS 临时上传返回的 oss:// 私有资源地址，
+    // 必须直接传入公网 URL 或 Base64 Data URI；本地文件走 Data URI。
+    let data_uri = build_audio_data_uri(file_path)?;
     let body = match family {
         TranscriptionModelFamily::FunAsrFlash => {
             let format = guess_audio_format(file_path);
@@ -332,7 +332,7 @@ pub async fn recognize_short_audio(
                                 {
                                     "type": "input_audio",
                                     "input_audio": {
-                                        "data": file_url.trim(),
+                                        "data": data_uri,
                                     }
                                 }
                             ]
@@ -367,7 +367,7 @@ pub async fn recognize_short_audio(
                         },
                         {
                             "role": "user",
-                            "content": [{ "audio": file_url.trim() }]
+                            "content": [{ "audio": data_uri }]
                         }
                     ]
                 },
@@ -527,6 +527,27 @@ fn short_audio_content_text(value: &Value) -> Option<String> {
                     .map(ToString::to_string)
             }),
         _ => None,
+    }
+}
+
+fn build_audio_data_uri(file_path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(file_path)
+        .map_err(|e| format!("读取待识别音频文件失败：{file_path}（{e}）"))?;
+    let mime = guess_audio_mime_type(file_path);
+    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+}
+
+fn guess_audio_mime_type(file_path: &str) -> &'static str {
+    match guess_audio_format(file_path).as_str() {
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/opus",
+        "webm" => "audio/webm",
+        "amr" => "audio/amr",
+        _ => "audio/wav",
     }
 }
 

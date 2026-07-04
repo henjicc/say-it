@@ -179,22 +179,19 @@ async fn run_transcription_job(
             "model": &model,
         }),
     );
-    let file_url = upload_for_model(&api_key, &model, &file_path).await?;
-    if is_cancelled(&cancel) {
-        return Ok(());
-    }
 
     if !uses_async_transcription_task(&model) {
+        // 同步短音频接口（fun-asr-flash / qwen3-asr-flash）直接读取本地文件识别，
+        // 不经过临时 OSS 上传：OSS 返回的 oss:// 资源地址仅异步转写接口能解析。
         emit_transcription_event(
             &app,
             &job_id,
             "submitted",
             json!({
                 "taskId": "",
-                "fileUrl": &file_url,
             }),
         );
-        let result = recognize_short_audio(&api_key, &file_url, &file_path, &params).await?;
+        let result = recognize_short_audio(&api_key, &file_path, &params).await?;
         if is_cancelled(&cancel) {
             return Ok(());
         }
@@ -207,6 +204,11 @@ async fn run_transcription_job(
                 "result": result,
             }),
         );
+        return Ok(());
+    }
+
+    let file_url = upload_for_model(&api_key, &model, &file_path).await?;
+    if is_cancelled(&cancel) {
         return Ok(());
     }
 
