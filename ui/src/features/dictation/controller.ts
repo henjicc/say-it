@@ -263,7 +263,7 @@ async function startFileDictation(model: string) {
   cmdSilent(CMD.setIndicatorLayout, DICTATION_INDICATOR_LAYOUT);
   cmdSilent(CMD.setIndicatorState, { state: "recording" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
-  setDictationStatus("正在录音…（停止后识别并注入）", "ok");
+  setDictationStatus("正在录音…（非实时）", "ok");
 }
 
 async function stopDictationAndInject() {
