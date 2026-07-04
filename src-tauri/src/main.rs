@@ -241,7 +241,9 @@ fn main() {
             transcription_cancel,
             align_transcript,
             list_system_fonts,
-            list_audio_devices
+            list_audio_devices,
+            encode_mono_wav_file,
+            decode_audio_file_pcm
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

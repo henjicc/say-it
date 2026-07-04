@@ -26,6 +26,7 @@ import {
   handleForwardedSubtitleKeydown,
   handleForwardedSubtitleKeyup,
 } from "@/features/subtitles/controller";
+import { hardAbortCompare } from "@/features/compare/controller";
 
 export function useTauriBridge() {
   useTauriEvent(EVT.asrStreamEvent, (data) => {
@@ -72,6 +73,7 @@ export function useTauriBridge() {
     const onUnload = () => {
       shutdownSubtitles();
       shutdownDictationMic();
+      hardAbortCompare();
     };
     window.addEventListener("beforeunload", onUnload);
     return () => {

@@ -32,7 +32,7 @@ let pendingScriptLines: string[] = [];
 let pendingAlignFilePath = "";
 let pendingAlignParamsKey = "";
 
-function providerHasApiKey() {
+export function providerHasApiKey() {
   return !!useProviderStore.getState().profiles.find((profile) => profile.id === "funasr")?.status?.hasApiKey;
 }
 
@@ -208,7 +208,7 @@ async function runAlign(result: TranscriptionResult, scriptLines: string[]) {
   }
 }
 
-async function ensureProviderReady() {
+export async function ensureProviderReady() {
   if (useProviderStore.getState().profiles.length === 0) {
     await useProviderStore.getState().load();
   }

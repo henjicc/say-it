@@ -47,6 +47,8 @@ export const CMD = {
   setDebugLog: "set_debug_log",
   listSystemFonts: "list_system_fonts",
   listAudioDevices: "list_audio_devices",
+  encodeMonoWavFile: "encode_mono_wav_file",
+  decodeAudioFilePcm: "decode_audio_file_pcm",
 } as const;
 
 export const EVT = {

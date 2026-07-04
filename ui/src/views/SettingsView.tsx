@@ -6,8 +6,9 @@ import { SettingsStartupPanel } from "@/views/SettingsStartupPanel";
 import { SettingsMicCuePanel } from "@/views/SettingsMicCuePanel";
 import { AudioView } from "@/views/AudioView";
 import { SettingsAppearancePanel } from "@/views/SettingsAppearancePanel";
+import { SettingsComparePanel } from "@/views/SettingsComparePanel";
 
-type TabKey = "provider" | "audio" | "startup" | "mic" | "appearance";
+type TabKey = "provider" | "audio" | "startup" | "mic" | "appearance" | "compare";
 
 const TABS: TabItem<TabKey>[] = [
   { key: "provider", label: "密钥与识别" },
@@ -15,6 +16,7 @@ const TABS: TabItem<TabKey>[] = [
   { key: "startup", label: "启动设置" },
   { key: "mic", label: "麦克风与提示音" },
   { key: "appearance", label: "外观" },
+  { key: "compare", label: "对比" },
 ];
 
 export function SettingsView() {
@@ -34,6 +36,7 @@ export function SettingsView() {
       {tab === "startup" && <SettingsStartupPanel />}
       {tab === "mic" && <SettingsMicCuePanel />}
       {tab === "appearance" && <SettingsAppearancePanel />}
+      {tab === "compare" && <SettingsComparePanel />}
     </div>
   );
 }
