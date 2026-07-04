@@ -30,6 +30,7 @@ export function IndicatorApp() {
   const [phase, setPhase] = useState<Phase>("hidden");
   const [mode, setMode] = useState<IndicatorMode>("dictation");
   const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
+  const [waveform, setWaveform] = useState({ active: false, level: 0, tick: 0 });
   const textElRef = useRef<HTMLDivElement>(null);
   const textFlowRef = useRef<HTMLDivElement>(null);
   const textContentRef = useRef<HTMLDivElement>(null);
@@ -133,11 +134,20 @@ export function IndicatorApp() {
   useTauriEvent<{ state?: Phase }>(EVT.indicatorState, (payload) => {
     const next = payload.state || "hidden";
     setPhase(next);
-    if (next === "hidden") resetText();
+    if (next === "hidden") {
+      resetText();
+      setWaveform({ active: false, level: 0, tick: 0 });
+    }
   });
 
   useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
     payload.fade ? swapText(payload.text || "") : renderText(payload.text || "");
+  });
+
+  useTauriEvent<{ active?: boolean; level?: number }>(EVT.indicatorWaveform, (payload) => {
+    const active = !!payload.active;
+    const level = Math.max(0, Math.min(1, Number(payload.level) || 0));
+    setWaveform((prev) => ({ active, level, tick: active ? prev.tick + 1 : 0 }));
   });
 
   useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
@@ -181,6 +191,7 @@ export function IndicatorApp() {
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
   const visible = phase !== "hidden";
+  const showWaveform = mode === "dictation" && pillPhase === "recording" && waveform.active;
   const subtitleStyle =
     mode === "subtitle"
       ? ({
@@ -206,6 +217,33 @@ export function IndicatorApp() {
           <div id="text-content" ref={textContentRef} />
         </div>
       </div>
+      {showWaveform && (
+        <div
+          id="waveform"
+          style={
+            {
+              "--wave-level": waveform.level,
+              "--wave-tick": waveform.tick,
+            } as React.CSSProperties
+          }
+        >
+          <div className="wave-bars" aria-hidden="true">
+            {Array.from({ length: 22 }, (_, index) => {
+              const phaseOffset = (waveform.tick + index * 2.15) * 0.52;
+              const motion = (Math.sin(phaseOffset) + 1) / 2;
+              const center = 1 - Math.abs(index - 10.5) / 10.5;
+              const height = 12 + (waveform.level * 46 + motion * 18) * (0.35 + center * 0.65);
+              return (
+                <span
+                  key={index}
+                  className="wave-bar"
+                  style={{ "--bar-height": `${Math.max(8, Math.min(72, height))}px` } as React.CSSProperties}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
       {pillPhase !== "subtitle" && (
         <div className={`pill ${pillPhase}`} id="pill">
           <span className="dot" />

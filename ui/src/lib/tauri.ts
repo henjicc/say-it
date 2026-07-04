@@ -61,6 +61,7 @@ export const EVT = {
   subtitleShortcutError: "subtitle-shortcut-error",
   indicatorState: "dictation-indicator-state",
   indicatorText: "dictation-indicator-text",
+  indicatorWaveform: "dictation-indicator-waveform",
   indicatorConfig: "dictation-indicator-config",
   indicatorKeydown: "dictation-indicator-keydown",
   indicatorKeyup: "dictation-indicator-keyup",

@@ -6,7 +6,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import { REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, setInjectMethod } from "@/features/dictation/controller";
 
@@ -25,7 +25,7 @@ export function DictationShortcutsPanel() {
         <FormGrid>
           <Field label="识别模型">
             <Select value={asrModel} onChange={(e) => patchDictPrefs({ asrModel: e.target.value })}>
-              {REALTIME_ASR_MODEL_OPTIONS.map((option) => (
+              {DICTATION_ASR_MODEL_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

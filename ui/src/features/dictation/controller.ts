@@ -1,8 +1,12 @@
-import { CMD, cmd, cmdSilent } from "@/lib/tauri";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { CMD, EVT, cmd, cmdSilent, on } from "@/lib/tauri";
 import { compactLogJson } from "@/lib/format";
+import { base64ToFloat32, float32ToBase64, measure } from "@/lib/audio-dsp";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useProviderStore } from "@/store/useProviderStore";
+import type { TranscriptionEventPayload } from "@/store/useTranscriptionStore";
+import { isDictationFileModel } from "@/features/asr/modelOptions";
 import { playCue } from "@/lib/cues";
 import { runLocalRules } from "./localRules";
 import {
@@ -17,7 +21,7 @@ import {
   installFocusHotkeyFallback,
   loadDictationSettings,
 } from "./hotkeys";
-import { pushIndicatorText, resetIndicatorPreview } from "./indicatorBridge";
+import { pushIndicatorText, pushIndicatorWaveform, resetIndicatorPreview } from "./indicatorBridge";
 import { clearMicShutdownTimer, ensureMic, getBackendMicSampleRate, scheduleMicShutdown, shutdownMic } from "./micSession";
 
 export {
@@ -42,6 +46,11 @@ let dictFinalized = false;
 let dictResultCount = 0;
 let dictStartedAt = 0;
 let dictFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
+let dictMode: "realtime" | "file" | null = null;
+let dictRawUnlisten: UnlistenFn | null = null;
+let dictRawChunks: Float32Array[] = [];
+let dictRawSampleRate = 48000;
+let dictFileJobId = "";
 
 function dspParams() {
   return useDictPrefs.getState().dspParams();
@@ -58,6 +67,50 @@ function pushDictLog(message: string) {
   const prev = useDictationStore.getState().log;
   const next = `${prev ? `${prev}\n` : ""}${line}`.split("\n").slice(-40).join("\n");
   useDictationStore.setState({ log: next });
+}
+
+async function ensureDictationProviderReady() {
+  if (useProviderStore.getState().profiles.length === 0) {
+    await useProviderStore.getState().load();
+  }
+  return !!useProviderStore
+    .getState()
+    .profiles.find((profile) => profile.id === "funasr")?.status?.hasApiKey;
+}
+
+function buildFileModelParams(model: string) {
+  return { model, languageHints: [] as string[], diarizationEnabled: false, speakerCount: null };
+}
+
+function mergeRawChunks() {
+  let total = 0;
+  for (const chunk of dictRawChunks) total += chunk.length;
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of dictRawChunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  dictRawChunks = [];
+  return merged;
+}
+
+function waitForMicCaptureEnded(timeoutMs = 1000): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    let unlisten: UnlistenFn | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      unlisten?.();
+      resolve();
+    };
+    on(EVT.backendMicRawEnded, finish).then((fn) => {
+      if (done) fn();
+      else unlisten = fn;
+    });
+    setTimeout(finish, timeoutMs);
+  });
 }
 
 export function clearDictLog() {
@@ -109,19 +162,33 @@ async function startDictation() {
   dictAwaitingFinal = false;
   dictResultCount = 0;
   dictStartedAt = Date.now();
+  dictMode = null;
+  dictFileJobId = "";
+  dictRawChunks = [];
   resetIndicatorPreview();
 
+  const model = useDictPrefs.getState().prefs.asrModel;
+  if (isDictationFileModel(model)) {
+    await startFileDictation(model);
+    return;
+  }
+
+  await startRealtimeDictation(model);
+}
+
+async function startRealtimeDictation(model: string) {
   const t0 = Date.now();
   await ensureMic(pushDictLog);
   const micMs = Date.now() - t0;
 
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
-    modelOverride: useDictPrefs.getState().prefs.asrModel,
+    modelOverride: model,
     sampleRate: getBackendMicSampleRate() || 48000,
     params: dspParams(),
   });
   dictSessionId = session.session_id;
+  dictMode = "realtime";
   const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicToAsr, {
     sessionId: dictSessionId,
   });
@@ -137,8 +204,45 @@ async function startDictation() {
   setDictationStatus("正在聆听…（再次按快捷键停止并注入）", "ok");
 }
 
+async function startFileDictation(model: string) {
+  if (!(await ensureDictationProviderReady())) {
+    throw new Error("请先在设置中保存阿里云百炼 API Key");
+  }
+
+  const t0 = Date.now();
+  await ensureMic(pushDictLog);
+  const micMs = Date.now() - t0;
+  dictRawSampleRate = getBackendMicSampleRate() || 48000;
+  dictRawChunks = [];
+
+  dictRawUnlisten = await on<string>(EVT.backendMicRawChunk, (base64) => {
+    const samples = base64ToFloat32(base64);
+    dictRawChunks.push(samples);
+    const { peak } = measure(samples);
+    pushIndicatorWaveform(Math.min(1, peak * 1.8));
+  });
+  const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicRawCapture);
+
+  dictMode = "file";
+  dictRecording = true;
+  useDictationStore.setState({ recording: true });
+  pushDictLog(
+    `开始非实时录音 model=${model}（后端麦克风就绪 ${micMs}ms，补发 ${attach.flushedChunks || 0} 块）`,
+  );
+
+  playCue("start");
+  cmdSilent(CMD.setIndicatorState, { state: "recording" });
+  cmdSilent(CMD.setIndicatorText, { text: "" });
+  pushIndicatorWaveform(0.08, true);
+  setDictationStatus("正在录音…（停止后识别并注入）", "ok");
+}
+
 async function stopDictationAndInject() {
   if (!dictRecording) return;
+  if (dictMode === "file") {
+    await stopFileDictationAndRecognize();
+    return;
+  }
   dictRecording = false;
   useDictationStore.setState({ recording: false });
   try {
@@ -172,19 +276,76 @@ async function stopDictationAndInject() {
   scheduleDictFinalize(8000);
 }
 
+async function stopFileDictationAndRecognize() {
+  dictRecording = false;
+  useDictationStore.setState({ recording: false });
+  const ended = waitForMicCaptureEnded();
+  try {
+    await cmd(CMD.pauseBackendMic);
+  } catch (error) {
+    pushDictLog(`暂停后端采集失败，仍继续处理录音：${String(error)}`);
+  }
+  await ended;
+  dictRawUnlisten?.();
+  dictRawUnlisten = null;
+  scheduleMicShutdown(pushDictLog);
+  pushIndicatorWaveform(0, false);
+
+  const samples = mergeRawChunks();
+  const durationSec = (samples.length / Math.max(1, dictRawSampleRate)).toFixed(1);
+  pushDictLog(`停止非实时录音：时长≈${durationSec}s，样本=${samples.length}`);
+  cmdSilent(CMD.setIndicatorState, { state: "processing" });
+  cmdSilent(CMD.setIndicatorText, { text: "" });
+  setDictationStatus("识别中，正在处理完整录音…");
+  dictAwaitingFinal = true;
+
+  if (samples.length === 0) {
+    dictAwaitingFinal = false;
+    dictFinalized = true;
+    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
+    setDictationStatus("未录到音频。", "err");
+    playCue("end");
+    return;
+  }
+
+  try {
+    const wavPath = await cmd<string>(CMD.encodeMonoWavFile, {
+      samplesBase64: float32ToBase64(samples),
+      sampleRate: dictRawSampleRate,
+    });
+    const response = await cmd<{ jobId: string }>(CMD.transcriptionStart, {
+      filePath: wavPath,
+      params: buildFileModelParams(useDictPrefs.getState().prefs.asrModel),
+    });
+    dictFileJobId = response.jobId;
+    pushDictLog(`非实时识别任务已启动 job=${dictFileJobId.slice(0, 8)}`);
+  } catch (error) {
+    dictAwaitingFinal = false;
+    dictFinalized = true;
+    dictFileJobId = "";
+    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
+    setDictationStatus(`识别启动失败：${String(error)}`, "err");
+    playCue("end");
+  }
+}
+
 export async function onCancelKey() {
   await cancelDictation();
 }
 
 export async function cancelDictation() {
-  if (!dictRecording && !dictAwaitingFinal && !dictSessionId) return;
+  if (!dictRecording && !dictAwaitingFinal && !dictSessionId && !dictFileJobId) return;
   const session = dictSessionId;
+  const fileJobId = dictFileJobId;
   dictRecording = false;
   dictAwaitingFinal = false;
   dictFinalized = true;
   dictSessionId = null;
+  dictFileJobId = "";
+  dictMode = null;
   dictCommitted = "";
   dictSegment = "";
+  dictRawChunks = [];
   useDictationStore.setState({ recording: false });
   resetIndicatorPreview();
   if (dictFinalizeTimer) {
@@ -193,32 +354,17 @@ export async function cancelDictation() {
   }
   scheduleMicShutdown(pushDictLog);
   cmdSilent(CMD.pauseBackendMic);
+  dictRawUnlisten?.();
+  dictRawUnlisten = null;
   cmdSilent(CMD.setIndicatorState, { state: "hidden" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
   if (session) cmdSilent(CMD.stopAsrStream, { sessionId: session });
+  if (fileJobId) cmdSilent(CMD.transcriptionCancel, { jobId: fileJobId });
   pushDictLog("已按 ESC 取消语音输入，识别文本已丢弃。");
   setDictationStatus(`已取消语音输入，快捷键：${comboLabel()}`);
 }
 
-async function finalizeDictation() {
-  if (dictFinalized || !dictAwaitingFinal) return;
-  dictFinalized = true;
-  dictAwaitingFinal = false;
-  if (dictFinalizeTimer) {
-    clearTimeout(dictFinalizeTimer);
-    dictFinalizeTimer = null;
-  }
-  const text = (dictCommitted + dictSegment).trim();
-  pushDictLog(
-    `收尾：最终 ${text.length} 字（累计段 ${dictCommitted.length} + 当前段 ${dictSegment.length}），共 ${dictResultCount} 条结果`,
-  );
-  const session = dictSessionId;
-  if (session) {
-    await cmdSilent(CMD.stopAsrStream, { sessionId: session });
-  }
-  dictSessionId = null;
-  resetIndicatorPreview();
-
+async function injectFinalText(text: string) {
   if (!text) {
     cmdSilent(CMD.setIndicatorState, { state: "hidden" });
     pushDictLog("最终文本为空。");
@@ -245,8 +391,34 @@ async function finalizeDictation() {
   playCue("end");
 }
 
+async function finalizeDictation() {
+  if (dictFinalized || !dictAwaitingFinal) return;
+  dictFinalized = true;
+  dictAwaitingFinal = false;
+  if (dictFinalizeTimer) {
+    clearTimeout(dictFinalizeTimer);
+    dictFinalizeTimer = null;
+  }
+  const text = (dictCommitted + dictSegment).trim();
+  pushDictLog(
+    `收尾：最终 ${text.length} 字（累计段 ${dictCommitted.length} + 当前段 ${dictSegment.length}），共 ${dictResultCount} 条结果`,
+  );
+  const session = dictSessionId;
+  if (session) {
+    await cmdSilent(CMD.stopAsrStream, { sessionId: session });
+  }
+  dictSessionId = null;
+  dictMode = null;
+  resetIndicatorPreview();
+  await injectFinalText(text);
+}
+
 export async function toggleDictation() {
   if (dictBusy) return;
+  if (dictAwaitingFinal) {
+    setDictationStatus("正在等待识别完成，按 Esc 可取消。");
+    return;
+  }
   dictBusy = true;
   try {
     if (!dictRecording) await startDictation();
@@ -254,8 +426,12 @@ export async function toggleDictation() {
   } catch (error) {
     dictRecording = false;
     dictAwaitingFinal = false;
+    dictMode = null;
     useDictationStore.setState({ recording: false });
     await shutdownMic();
+    dictRawUnlisten?.();
+    dictRawUnlisten = null;
+    dictRawChunks = [];
     cmdSilent(CMD.setIndicatorState, { state: "hidden" });
     if (dictSessionId) {
       cmdSilent(CMD.stopAsrStream, { sessionId: dictSessionId });
@@ -310,6 +486,48 @@ export function handleDictAsrEvent(data: {
   return true;
 }
 
+function textFromTranscriptionResult(result: TranscriptionEventPayload["result"]) {
+  return (result?.transcripts || [])
+    .map((transcript) => transcript.text)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+async function finalizeFileDictation(text: string) {
+  if (dictFinalized || !dictAwaitingFinal) return;
+  dictFinalized = true;
+  dictAwaitingFinal = false;
+  dictFileJobId = "";
+  dictMode = null;
+  resetIndicatorPreview();
+  pushDictLog(`非实时识别完成：最终 ${text.length} 字`);
+  await injectFinalText(text);
+}
+
+export function handleDictTranscriptionEvent(payload: TranscriptionEventPayload): boolean {
+  if (!payload.jobId || payload.jobId !== dictFileJobId) return false;
+  if (payload.stage === "uploading") {
+    setDictationStatus("正在准备完整录音识别…");
+  } else if (payload.stage === "submitted") {
+    setDictationStatus("识别任务已提交，正在等待云端处理…");
+  } else if (payload.stage === "polling") {
+    setDictationStatus(`云端识别中${payload.pollCount ? `（第 ${payload.pollCount} 次查询）` : ""}…`);
+  } else if (payload.stage === "completed") {
+    void finalizeFileDictation(textFromTranscriptionResult(payload.result));
+  } else if (payload.stage === "error") {
+    dictAwaitingFinal = false;
+    dictFinalized = true;
+    dictFileJobId = "";
+    dictMode = null;
+    resetIndicatorPreview();
+    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
+    setDictationStatus(payload.cancelled ? "识别已取消。" : `识别失败：${payload.message || "未知错误"}`, "err");
+    playCue("end");
+  }
+  return true;
+}
+
 export function handleShortcutError(payload: { key_code?: string; message?: string }) {
   setDictationStatus(
     `快捷键注册失败（${payload.key_code || "?"}）：${payload.message || "未知错误"}`,
@@ -318,5 +536,13 @@ export function handleShortcutError(payload: { key_code?: string; message?: stri
 }
 
 export function shutdownDictationMic() {
+  if (dictFileJobId) {
+    cmdSilent(CMD.transcriptionCancel, { jobId: dictFileJobId });
+    dictFileJobId = "";
+  }
+  dictRawUnlisten?.();
+  dictRawUnlisten = null;
+  dictRawChunks = [];
+  dictMode = null;
   shutdownMic();
 }

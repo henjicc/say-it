@@ -21,8 +21,25 @@ export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
   { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans" },
 ];
 
+export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
+  { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash（停止后识别）" },
+  { value: "qwen3-asr-flash", label: "Qwen3-ASR-Flash（停止后识别）" },
+  { value: "qwen3-asr-flash-2026-02-10", label: "Qwen3-ASR-Flash 最新版（停止后识别）" },
+  { value: "fun-asr", label: "Fun-ASR（停止后识别）" },
+  { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans（停止后识别）" },
+];
+
+export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [
+  ...REALTIME_ASR_MODEL_OPTIONS,
+  ...DICTATION_FILE_ASR_MODEL_OPTIONS,
+];
+
 const REALTIME_MODEL_SET = new Set(REALTIME_ASR_MODEL_OPTIONS.map((option) => option.value));
 const FILE_MODEL_SET = new Set(FILE_ASR_MODEL_OPTIONS.map((option) => option.value));
+const DICTATION_FILE_MODEL_SET = new Set(
+  DICTATION_FILE_ASR_MODEL_OPTIONS.map((option) => option.value),
+);
+const DICTATION_MODEL_SET = new Set(DICTATION_ASR_MODEL_OPTIONS.map((option) => option.value));
 
 export function isSupportedRealtimeModel(model: string) {
   return REALTIME_MODEL_SET.has(model.trim());
@@ -30,6 +47,14 @@ export function isSupportedRealtimeModel(model: string) {
 
 export function isSupportedFileModel(model: string) {
   return FILE_MODEL_SET.has(model.trim());
+}
+
+export function isSupportedDictationModel(model: string) {
+  return DICTATION_MODEL_SET.has(model.trim());
+}
+
+export function isDictationFileModel(model: string) {
+  return DICTATION_FILE_MODEL_SET.has(model.trim());
 }
 
 export function isQwenRealtimeModel(model: string) {

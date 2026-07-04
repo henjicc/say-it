@@ -7,6 +7,7 @@ import {
   toggleDictation,
   onCancelKey,
   handleDictAsrEvent,
+  handleDictTranscriptionEvent,
   handleShortcutError,
   loadDictationSettings,
   isCapturing,
@@ -34,6 +35,10 @@ export function useTauriBridge() {
     if (!payload.session_id) return;
     if (handleSubtitleAsrEvent(payload as never)) return;
     handleDictAsrEvent(payload as never);
+  });
+
+  useTauriEvent(EVT.transcriptionEvent, (data) => {
+    handleDictTranscriptionEvent((data || {}) as never);
   });
 
   useTauriEvent(EVT.dictationToggle, () => {

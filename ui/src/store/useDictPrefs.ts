@@ -3,7 +3,7 @@ import { dspDefaults, dspParamsFromPrefs, type DspParams } from "@/lib/audio-dsp
 import { CMD, cmdSilent } from "@/lib/tauri";
 import {
   DEFAULT_REALTIME_ASR_MODEL,
-  isSupportedRealtimeModel,
+  isSupportedDictationModel,
 } from "@/features/asr/modelOptions";
 import {
   defaultLocalRules,
@@ -14,7 +14,7 @@ import {
 export type CueKind = "none" | "beep-up" | "beep-down" | "beep-double" | "custom";
 
 export interface DictPrefs extends DspParams {
-  /** 语音输入默认使用的实时识别模型。 */
+  /** 语音输入使用的识别模型：实时模型边说边出字，非实时模型停止后再识别。 */
   asrModel: string;
   keepAliveMs: number;
   cueEnabled: boolean;
@@ -52,7 +52,7 @@ function readStored(): DictPrefs {
   } catch {
     /* noop */
   }
-  if (!isSupportedRealtimeModel(base.asrModel)) {
+  if (!isSupportedDictationModel(base.asrModel)) {
     base.asrModel = DEFAULT_REALTIME_ASR_MODEL;
   }
   base.localRules = mergeLocalRules(base.localRules);

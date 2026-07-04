@@ -1,4 +1,4 @@
-import { CMD, cmdSilent } from "@/lib/tauri";
+import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import {
   DICT_INDICATOR_INTERVAL_MS,
   DICT_INDICATOR_WINDOW_KEEP,
@@ -35,6 +35,7 @@ export function resetIndicatorPreview() {
   dictIndicatorWindowStart = 0;
   dictIndicatorTextTimer = 0;
   dictIndicatorDisplayText = "";
+  emitEvent(EVT.indicatorWaveform, { active: false, level: 0 }).catch(() => {});
 }
 
 function flushIndicatorText() {
@@ -66,4 +67,11 @@ export function pushIndicatorText(text: string, options: { force?: boolean; fade
   } else if (!dictIndicatorTrailTimer) {
     dictIndicatorTrailTimer = setTimeout(flushIndicatorText, DICT_INDICATOR_INTERVAL_MS - elapsed);
   }
+}
+
+export function pushIndicatorWaveform(level: number, active = true) {
+  emitEvent(EVT.indicatorWaveform, {
+    active,
+    level: Math.max(0, Math.min(1, Number(level) || 0)),
+  }).catch(() => {});
 }
