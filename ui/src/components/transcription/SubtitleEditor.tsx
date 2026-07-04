@@ -9,12 +9,17 @@ import {
 } from "@/features/transcription/subtitles";
 
 /** 时间轴缩放：每秒对应的像素宽度。 */
-const PX_PER_SEC = 60;
+const BASE_PX_PER_SEC = 60;
 /** 字幕条目的最短时长（毫秒），拖拽/输入时间时的下限。 */
 const MIN_CUE_MS = 100;
 /** 时间微调步长（毫秒）。 */
 const NUDGE_MS = 100;
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5];
+const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
+const WAVEFORM_HEIGHT = 48;
+const WAVEFORM_VERTICAL_PADDING = 6;
+const MIN_WAVEFORM_BUCKETS = 120;
+const MAX_WAVEFORM_BUCKETS = 2400;
 
 type DragMode = "move" | "left" | "right";
 
@@ -28,6 +33,46 @@ interface DragState {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function formatZoom(scale: number) {
+  return `${Math.round(scale * 100)}%`;
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tagName = target.tagName;
+  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT" || tagName === "BUTTON";
+}
+
+function buildWaveformPeaks(buffer: AudioBuffer, bucketCount: number) {
+  const channelCount = Math.max(1, buffer.numberOfChannels);
+  const channels = Array.from({ length: channelCount }, (_, index) => buffer.getChannelData(index));
+  const sampleCount = channels[0]?.length || 0;
+  if (sampleCount === 0) return [];
+
+  const safeBucketCount = Math.max(1, Math.min(bucketCount, sampleCount));
+  const samplesPerBucket = Math.max(1, Math.floor(sampleCount / safeBucketCount));
+  const peaks = new Array<number>(safeBucketCount).fill(0);
+  let globalMax = 0;
+
+  for (let bucketIndex = 0; bucketIndex < safeBucketCount; bucketIndex += 1) {
+    const start = bucketIndex * samplesPerBucket;
+    const end = bucketIndex === safeBucketCount - 1 ? sampleCount : Math.min(sampleCount, start + samplesPerBucket);
+    let peak = 0;
+    for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+      for (const channel of channels) {
+        const value = Math.abs(channel[sampleIndex] || 0);
+        if (value > peak) peak = value;
+      }
+    }
+    peaks[bucketIndex] = peak;
+    if (peak > globalMax) globalMax = peak;
+  }
+
+  if (globalMax <= 0) return peaks.map(() => 0);
+  return peaks.map((peak) => Math.min(1, Math.sqrt(peak / globalMax)));
 }
 
 /** 合并两段文本：英文/数字相接时补空格，中文直接拼接。 */
@@ -167,27 +212,139 @@ export function SubtitleEditor({
   const listRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const renderFrameRef = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
   const [rate, setRate] = useState(1);
+  const [zoomScale, setZoomScale] = useState(1);
   const [playbackError, setPlaybackError] = useState(false);
+  const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
+  const [waveformLoading, setWaveformLoading] = useState(false);
 
   const mediaSrc = useMemo(() => (mediaPath ? convertFileSrc(mediaPath) : ""), [mediaPath]);
   const lastEndMs = useMemo(() => cues.reduce((max, cue) => Math.max(max, cue.endMs), 0), [cues]);
   const totalMs = Math.max(durationMs, lastEndMs);
+  const pxPerSec = BASE_PX_PER_SEC * zoomScale;
+  const playheadLeft = (currentMs / 1000) * pxPerSec;
+  const timelineWidth = Math.max(320, Math.ceil((totalMs / 1000) * pxPerSec) + 80);
+  const zoomIndex = ZOOM_LEVELS.indexOf(zoomScale);
   const activeCueId = useMemo(() => {
     const active = cues.find((cue) => currentMs >= cue.beginMs && currentMs < cue.endMs);
     return active?.id ?? null;
   }, [cues, currentMs]);
+  const waveformPath = useMemo(() => {
+    if (waveformPeaks.length === 0) return "";
+    const width = Math.max(1, timelineWidth);
+    const centerY = WAVEFORM_HEIGHT / 2;
+    const amplitude = centerY - WAVEFORM_VERTICAL_PADDING;
+    if (waveformPeaks.length === 1) {
+      const y = centerY - waveformPeaks[0] * amplitude;
+      return `M 0 ${centerY} L 0 ${y} L ${width} ${y} L ${width} ${centerY} Z`;
+    }
+    const top = waveformPeaks
+      .map((peak, index) => {
+        const x = (index / (waveformPeaks.length - 1)) * width;
+        const y = centerY - peak * amplitude;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(" ");
+    const bottom = waveformPeaks
+      .map((peak, index) => {
+        const reverseIndex = waveformPeaks.length - 1 - index;
+        const x = (reverseIndex / (waveformPeaks.length - 1)) * width;
+        const y = centerY + waveformPeaks[reverseIndex] * amplitude;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(" ");
+    return `M 0 ${centerY} L ${top} L ${bottom} Z`;
+  }, [timelineWidth, waveformPeaks]);
+
+  const syncPlayhead = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    setCurrentMs(audio.currentTime * 1000);
+    if (!audio.paused && !audio.ended) {
+      renderFrameRef.current = requestAnimationFrame(syncPlayhead);
+    } else {
+      renderFrameRef.current = 0;
+    }
+  };
+
+  const stopPlayheadSync = () => {
+    if (!renderFrameRef.current) return;
+    cancelAnimationFrame(renderFrameRef.current);
+    renderFrameRef.current = 0;
+  };
 
   // 切换媒体文件时重置播放状态
   useEffect(() => {
+    stopPlayheadSync();
     setPlaying(false);
     setCurrentMs(0);
     setDurationMs(0);
     setPlaybackError(false);
+    setWaveformPeaks([]);
+    setWaveformLoading(false);
   }, [mediaSrc]);
+
+  useEffect(() => {
+    if (!mediaSrc) return;
+    let disposed = false;
+    const controller = new AbortController();
+    const loadWaveform = async () => {
+      setWaveformLoading(true);
+      try {
+        const response = await fetch(mediaSrc, { signal: controller.signal });
+        const bytes = await response.arrayBuffer();
+        if (disposed) return;
+        const audioContext = new AudioContext();
+        try {
+          const buffer = await audioContext.decodeAudioData(bytes.slice(0));
+          if (disposed) return;
+          const bucketCount = Math.max(
+            MIN_WAVEFORM_BUCKETS,
+            Math.min(
+              MAX_WAVEFORM_BUCKETS,
+              Math.round((buffer.duration * BASE_PX_PER_SEC * ZOOM_LEVELS[ZOOM_LEVELS.length - 1]) / 4),
+            ),
+          );
+          setWaveformPeaks(buildWaveformPeaks(buffer, bucketCount));
+          setDurationMs((current) => current || Math.round(buffer.duration * 1000));
+        } finally {
+          void audioContext.close().catch(() => {});
+        }
+      } catch {
+        if (!disposed) setWaveformPeaks([]);
+      } finally {
+        if (!disposed) setWaveformLoading(false);
+      }
+    };
+    void loadWaveform();
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
+  }, [mediaSrc]);
+
+  useEffect(() => () => stopPlayheadSync(), []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.playbackRate = rate;
+  }, [rate]);
+
+  useEffect(() => {
+    const onWindowKeydown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (isTypingTarget(event.target)) return;
+      if (!mediaSrc || playbackError) return;
+      event.preventDefault();
+      void togglePlay();
+    };
+    window.addEventListener("keydown", onWindowKeydown, true);
+    return () => window.removeEventListener("keydown", onWindowKeydown, true);
+  }, [mediaSrc, playbackError, playing, rate]);
 
   // 播放中让当前字幕行保持可见
   useEffect(() => {
@@ -202,11 +359,10 @@ export function SubtitleEditor({
     if (!playing) return;
     const container = timelineRef.current;
     if (!container) return;
-    const x = (currentMs / 1000) * PX_PER_SEC;
-    if (x < container.scrollLeft + 40 || x > container.scrollLeft + container.clientWidth - 80) {
-      container.scrollLeft = Math.max(0, x - container.clientWidth / 3);
+    if (playheadLeft < container.scrollLeft + 40 || playheadLeft > container.scrollLeft + container.clientWidth - 80) {
+      container.scrollLeft = Math.max(0, playheadLeft - container.clientWidth / 3);
     }
-  }, [playing, currentMs]);
+  }, [playing, playheadLeft]);
 
   const seek = (ms: number) => {
     const target = Math.max(0, totalMs > 0 ? Math.min(ms, totalMs) : ms);
@@ -236,6 +392,16 @@ export function SubtitleEditor({
     const next = RATE_OPTIONS[(RATE_OPTIONS.indexOf(rate) + 1) % RATE_OPTIONS.length];
     setRate(next);
     if (audioRef.current) audioRef.current.playbackRate = next;
+  };
+
+  const zoomOut = () => {
+    if (zoomIndex <= 0) return;
+    setZoomScale(ZOOM_LEVELS[zoomIndex - 1]);
+  };
+
+  const zoomIn = () => {
+    if (zoomIndex >= ZOOM_LEVELS.length - 1) return;
+    setZoomScale(ZOOM_LEVELS[zoomIndex + 1]);
   };
 
   const updateCue = (id: string, patch: Partial<EditableCue>) => {
@@ -311,7 +477,7 @@ export function SubtitleEditor({
   const onBlockPointerMove = (event: React.PointerEvent) => {
     const drag = dragRef.current;
     if (!drag) return;
-    const deltaMs = ((event.clientX - drag.startX) / PX_PER_SEC) * 1000;
+    const deltaMs = ((event.clientX - drag.startX) / pxPerSec) * 1000;
     const duration = drag.endMs - drag.beginMs;
     if (drag.mode === "move") {
       const beginMs = Math.max(0, Math.round(drag.beginMs + deltaMs));
@@ -332,10 +498,9 @@ export function SubtitleEditor({
     if (!container) return;
     const rect = container.getBoundingClientRect();
     const x = event.clientX - rect.left + container.scrollLeft;
-    seek((x / PX_PER_SEC) * 1000);
+    seek((x / pxPerSec) * 1000);
   };
 
-  const timelineWidth = Math.max(320, Math.ceil((totalMs / 1000) * PX_PER_SEC) + 80);
   const secondLabels = useMemo(() => {
     const labels: number[] = [];
     for (let s = 0; s <= Math.ceil(totalMs / 1000); s += 10) labels.push(s);
@@ -358,10 +523,24 @@ export function SubtitleEditor({
             const duration = event.currentTarget.duration;
             if (Number.isFinite(duration)) setDurationMs(Math.round(duration * 1000));
           }}
-          onTimeUpdate={(event) => setCurrentMs(Math.round(event.currentTarget.currentTime * 1000))}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
+          onTimeUpdate={(event) => {
+            if (!playing) setCurrentMs(event.currentTarget.currentTime * 1000);
+          }}
+          onPlay={() => {
+            setPlaying(true);
+            stopPlayheadSync();
+            renderFrameRef.current = requestAnimationFrame(syncPlayhead);
+          }}
+          onPause={(event) => {
+            stopPlayheadSync();
+            setPlaying(false);
+            setCurrentMs(event.currentTarget.currentTime * 1000);
+          }}
+          onEnded={(event) => {
+            stopPlayheadSync();
+            setPlaying(false);
+            setCurrentMs(event.currentTarget.currentTime * 1000);
+          }}
           onError={() => setPlaybackError(true)}
         />
       )}
@@ -380,6 +559,37 @@ export function SubtitleEditor({
         <Button size="sm" onClick={cycleRate} disabled={!mediaSrc || playbackError} title="播放速度" className="w-14 font-mono tabular-nums">
           {rate}×
         </Button>
+        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-1 py-1">
+          <button
+            type="button"
+            onClick={zoomOut}
+            disabled={zoomIndex <= 0}
+            title="缩小波形与时间轴"
+            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-sm text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] disabled:opacity-35"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoomScale(1)}
+            title="重置缩放"
+            className="min-w-12 rounded-[var(--radius-sm)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]"
+          >
+            {formatZoom(zoomScale)}
+          </button>
+          <button
+            type="button"
+            onClick={zoomIn}
+            disabled={zoomIndex >= ZOOM_LEVELS.length - 1}
+            title="放大波形与时间轴"
+            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-sm text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] disabled:opacity-35"
+          >
+            +
+          </button>
+        </span>
+        <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
+          Space 播放/暂停
+        </span>
         <span className="font-mono text-xs tabular-nums text-[var(--color-fg-subtle)]">
           {formatClock(currentMs)} / {formatClock(totalMs)}
         </span>
@@ -387,7 +597,7 @@ export function SubtitleEditor({
           type="range"
           min={0}
           max={Math.max(1, totalMs)}
-          step={100}
+          step={10}
           value={clamp(currentMs, 0, Math.max(1, totalMs))}
           onChange={(event) => seek(Number(event.target.value))}
           disabled={totalMs === 0}
@@ -408,36 +618,60 @@ export function SubtitleEditor({
         className="relative overflow-x-auto border-b border-[var(--color-line)] bg-[var(--color-bg)]"
         onPointerDown={onTimelinePointerDown}
       >
-        <div className="relative h-20 select-none" style={{ width: `${timelineWidth}px` }}>
+        <div className="relative h-24 select-none" style={{ width: `${timelineWidth}px` }}>
           {/* 秒刻度：细线由渐变生成，数字每 10 秒一个 */}
           <div
             className="absolute inset-x-0 top-0 h-5 border-b border-[var(--color-line)]"
             style={{
               backgroundImage:
-                "repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px " + `${PX_PER_SEC}px)`,
+                "repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px " + `${pxPerSec}px)`,
             }}
           >
             {secondLabels.map((s) => (
               <span
                 key={s}
                 className="absolute top-0.5 font-mono text-[10px] tabular-nums text-[var(--color-fg-faint)]"
-                style={{ left: `${s * PX_PER_SEC + 3}px` }}
+                style={{ left: `${s * pxPerSec + 3}px` }}
               >
                 {formatClock(s * 1000).replace(/\.\d+$/, "")}
               </span>
             ))}
           </div>
 
+          <div className="pointer-events-none absolute inset-x-0 top-6 h-12 overflow-hidden rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-line)_72%,transparent)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--color-surface)_70%,transparent),color-mix(in_srgb,var(--color-bg)_92%,transparent))]">
+            {waveformPath ? (
+              <svg
+                width={timelineWidth}
+                height={WAVEFORM_HEIGHT}
+                viewBox={`0 0 ${timelineWidth} ${WAVEFORM_HEIGHT}`}
+                preserveAspectRatio="none"
+                className="absolute inset-0 h-full w-full"
+                aria-hidden
+              >
+                <path
+                  d={waveformPath}
+                  fill="color-mix(in srgb, var(--color-accent) 24%, transparent)"
+                  stroke="color-mix(in srgb, var(--color-accent-light) 55%, transparent)"
+                  strokeWidth="1"
+                />
+              </svg>
+            ) : (
+              <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-faint)]">
+                {waveformLoading ? "正在生成波形…" : "当前文件暂不支持波形预览"}
+              </div>
+            )}
+          </div>
+
           {/* 字幕块 */}
           {cues.map((cue) => {
-            const left = (cue.beginMs / 1000) * PX_PER_SEC;
-            const width = Math.max(8, ((cue.endMs - cue.beginMs) / 1000) * PX_PER_SEC);
+            const left = (cue.beginMs / 1000) * pxPerSec;
+            const width = Math.max(8, ((cue.endMs - cue.beginMs) / 1000) * pxPerSec);
             const isActive = cue.id === activeCueId;
             return (
               <div
                 key={cue.id}
                 className={cn(
-                  "absolute top-7 flex h-10 cursor-grab items-center overflow-hidden rounded-[var(--radius-sm)] border px-1.5 active:cursor-grabbing",
+                  "absolute top-9 flex h-10 cursor-grab items-center overflow-hidden rounded-[var(--radius-sm)] border px-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.24)] active:cursor-grabbing",
                   isActive
                     ? "border-[var(--color-accent)] bg-[var(--accent-soft-strong)]"
                     : "border-[var(--color-line-strong)] bg-[var(--color-surface-strong)] hover:border-[var(--accent-ring)]",
@@ -470,7 +704,10 @@ export function SubtitleEditor({
           {/* 播放头 */}
           <span
             className="pointer-events-none absolute inset-y-0 w-px bg-[var(--color-accent)]"
-            style={{ left: `${(currentMs / 1000) * PX_PER_SEC}px` }}
+            style={{
+              left: `${playheadLeft}px`,
+              boxShadow: "0 0 18px color-mix(in srgb, var(--color-accent) 70%, transparent)",
+            }}
             aria-hidden
           />
         </div>
