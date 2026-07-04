@@ -2,7 +2,6 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import {
   DEFAULT_FILE_ASR_MODEL,
-  supportsFunAsrVocabularyId,
   supportsAlignmentTimestamps,
 } from "@/features/asr/modelOptions";
 import {
@@ -38,12 +37,8 @@ export function providerHasApiKey() {
 
 function normalizeParams(params: TranscriptionParams) {
   const model = params.model || DEFAULT_FILE_ASR_MODEL;
-  const profile = useProviderStore.getState().profiles.find((item) => item.id === "funasr");
-  const providerVocabularyId =
-    typeof profile?.config?.vocabularyId === "string" ? profile.config.vocabularyId.trim() : "";
   return {
     model,
-    vocabularyId: supportsFunAsrVocabularyId(model) ? providerVocabularyId : "",
     languageHints: params.languageHints.filter(Boolean),
     diarizationEnabled: params.diarizationEnabled,
     speakerCount: params.diarizationEnabled ? params.speakerCount || null : null,

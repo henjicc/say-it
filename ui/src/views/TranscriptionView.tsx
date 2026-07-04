@@ -57,7 +57,6 @@ function normalizeStoredParams(value: unknown): TranscriptionParams {
       typeof source.model === "string" && isSupportedFileModel(source.model)
         ? source.model
         : DEFAULT_TRANSCRIPTION_PARAMS.model,
-    vocabularyId: "",
     languageHints: Array.isArray(source.languageHints) ? source.languageHints.filter((item): item is string => typeof item === "string") : [],
     diarizationEnabled: !!source.diarizationEnabled,
     speakerCount: Number.isFinite(speakerCount) && speakerCount > 0 ? speakerCount : null,

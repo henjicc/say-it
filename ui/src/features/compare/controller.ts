@@ -57,7 +57,7 @@ function buildActiveCells(): ActiveCell[] {
 }
 
 function buildFileModelParams(model: string) {
-  return { model, vocabularyId: "", languageHints: [] as string[], diarizationEnabled: false, speakerCount: null };
+  return { model, languageHints: [] as string[], diarizationEnabled: false, speakerCount: null };
 }
 
 /** 等后端麦克风原始音频 channel 真正关闭，保证尾块已经通过事件送达前端。参照 features/audio/lab.ts 的同名逻辑。 */

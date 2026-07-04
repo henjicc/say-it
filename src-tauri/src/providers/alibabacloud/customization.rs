@@ -1,12 +1,18 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::protocol::FUN_ASR_MODEL;
-
 /// 定制热词列表所用的固定接口地址（华北2/北京）。
 const CUSTOMIZATION_URL: &str = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/customization";
-/// 热词列表前缀，仅允许数字和小写字母、长度不超过 10 个字符。
-pub const VOCABULARY_PREFIX: &str = "deskhw";
+
+/// 需要建热词表的模型（与 target_model 一一对应）及各自的列表前缀。
+/// 阿里云要求识别时使用的模型必须与词表创建时的 target_model 完全一致，否则热词静默不生效，
+/// 因此每个模型各建一份独立词表；前缀各不相同，方便按前缀从云端精确恢复某个模型对应的词表。
+/// 需与 `ui/src/features/asr/modelOptions.ts` 里支持 vocabulary_id 的模型列表保持一致。
+pub const VOCABULARY_TARGETS: &[(&str, &str)] = &[
+    ("fun-asr-realtime-2026-02-28", "deskhwrl"),
+    ("fun-asr-realtime", "deskhwrs"),
+    ("fun-asr", "deskhwfa"),
+];
 
 /// 单条热词（文本 + 权重），用于创建/更新热词列表。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,13 +60,18 @@ fn truncate(text: &str, max_chars: usize) -> String {
 }
 
 /// 创建一个新热词列表，返回服务端分配的 `vocabulary_id`。
-pub async fn create_vocabulary(api_key: &str, vocabulary: &[HotwordEntry]) -> Result<String, String> {
+pub async fn create_vocabulary(
+    api_key: &str,
+    target_model: &str,
+    prefix: &str,
+    vocabulary: &[HotwordEntry],
+) -> Result<String, String> {
     let body = json!({
         "model": "speech-biasing",
         "input": {
             "action": "create_vocabulary",
-            "target_model": FUN_ASR_MODEL,
-            "prefix": VOCABULARY_PREFIX,
+            "target_model": target_model,
+            "prefix": prefix,
             "vocabulary": vocabulary,
         }
     });

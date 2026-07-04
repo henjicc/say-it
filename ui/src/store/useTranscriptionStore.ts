@@ -15,7 +15,6 @@ export interface SelectedTranscriptionFile {
 
 export interface TranscriptionParams {
   model: string;
-  vocabularyId: string;
   languageHints: string[];
   diarizationEnabled: boolean;
   speakerCount: number | null;
@@ -105,7 +104,6 @@ export interface TranscriptionEventPayload {
 
 export const DEFAULT_TRANSCRIPTION_PARAMS: TranscriptionParams = {
   model: DEFAULT_FILE_ASR_MODEL,
-  vocabularyId: "",
   languageHints: [],
   diarizationEnabled: false,
   speakerCount: null,

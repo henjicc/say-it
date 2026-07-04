@@ -2,6 +2,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use super::customization::HotwordEntry;
+
 const TRANSCRIPTION_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const TASK_URL_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks";
@@ -24,8 +26,6 @@ pub struct TranscriptionParams {
     #[serde(default = "default_transcription_model")]
     pub model: String,
     #[serde(default)]
-    pub vocabulary_id: String,
-    #[serde(default)]
     pub language_hints: Vec<String>,
     #[serde(default)]
     pub diarization_enabled: Option<bool>,
@@ -41,7 +41,6 @@ impl Default for TranscriptionParams {
     fn default() -> Self {
         Self {
             model: default_transcription_model(),
-            vocabulary_id: String::new(),
             language_hints: Vec::new(),
             diarization_enabled: None,
             speaker_count: None,
@@ -61,16 +60,16 @@ impl TranscriptionParams {
         }
     }
 
-    fn parameters_value(&self, family: TranscriptionModelFamily) -> Value {
+    fn parameters_value(&self, family: TranscriptionModelFamily, vocabulary_id: &str) -> Value {
         let mut parameters = Map::new();
         if matches!(
             family,
             TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
-        ) && !self.vocabulary_id.trim().is_empty()
+        ) && !vocabulary_id.trim().is_empty()
         {
             parameters.insert(
                 "vocabulary_id".to_string(),
-                json!(self.vocabulary_id.trim()),
+                json!(vocabulary_id.trim()),
             );
         }
         let language_hints = self
@@ -265,6 +264,7 @@ pub async fn submit_transcription_task(
     api_key: &str,
     file_url: &str,
     params: &TranscriptionParams,
+    vocabulary_id: &str,
 ) -> Result<String, String> {
     if api_key.trim().is_empty() {
         return Err("请先保存阿里云百炼 API Key".to_string());
@@ -278,7 +278,7 @@ pub async fn submit_transcription_task(
     let body = json!({
         "model": model,
         "input": transcription_input_value(family, file_url),
-        "parameters": params.parameters_value(family),
+        "parameters": params.parameters_value(family, vocabulary_id),
     });
     let client = reqwest::Client::new();
     let mut request = client
@@ -307,6 +307,7 @@ pub async fn recognize_short_audio(
     api_key: &str,
     file_path: &str,
     params: &TranscriptionParams,
+    hotwords: &[HotwordEntry],
 ) -> Result<TranscriptionResult, String> {
     if api_key.trim().is_empty() {
         return Err("请先保存阿里云百炼 API Key".to_string());
@@ -321,22 +322,40 @@ pub async fn recognize_short_audio(
     let body = match family {
         TranscriptionModelFamily::FunAsrFlash => {
             let data_uri = build_opus_data_uri(file_path)?;
+            let mut messages = Vec::new();
+            // fun-asr-flash 不支持 vocabulary_id，改用文档里的“上下文增强”：把热词词表拼成一条
+            // input_text 消息放在音频消息之前，模型据此提升这些词的识别概率。
+            if !hotwords.is_empty() {
+                let vocabulary_text = hotwords
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                messages.push(json!({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": vocabulary_text,
+                        }
+                    ]
+                }));
+            }
+            messages.push(json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": data_uri,
+                        }
+                    }
+                ]
+            }));
             json!({
                 "model": model,
                 "input": {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "input_audio",
-                                    "input_audio": {
-                                        "data": data_uri,
-                                    }
-                                }
-                            ]
-                        }
-                    ]
+                    "messages": messages
                 },
                 "parameters": {
                     "format": "opus",

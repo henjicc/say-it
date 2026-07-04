@@ -96,7 +96,7 @@ pub fn funasr_profile() -> ProviderProfile {
         enabled: true,
         config: json!({
             "apiKey": "",
-            "vocabularyId": "",
+            "vocabularyIds": {},
             "hotwords": [],
             "languageHints": [],
             "semanticPunctuationEnabled": false,

@@ -49,16 +49,6 @@ export function isFunAsrFlashFileModel(model: string) {
   return model.trim() === "fun-asr-flash-2026-06-15";
 }
 
-export function supportsFunAsrVocabularyId(model: string) {
-  const value = model.trim();
-  return (
-    value === "fun-asr" ||
-    value.startsWith("fun-asr-20") ||
-    value.startsWith("fun-asr-mtl") ||
-    value.startsWith("paraformer")
-  );
-}
-
 export function supportsAlignmentTimestamps(model: string) {
   return model.trim() === "fun-asr" || isQwenFileModel(model) || isFunAsrFlashFileModel(model);
 }

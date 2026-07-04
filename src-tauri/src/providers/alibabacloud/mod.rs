@@ -6,7 +6,7 @@ mod urls;
 
 pub use customization::{
     create_vocabulary, delete_vocabulary, list_vocabulary, query_vocabulary, update_vocabulary,
-    HotwordEntry, VOCABULARY_PREFIX,
+    HotwordEntry, VOCABULARY_TARGETS,
 };
 pub use protocol::{
     build_finish_task_message, build_qwen_audio_message, build_qwen_finish_message,

@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tokio_tungstenite::tungstenite::Message;
 
 /// 从 `ProviderProfile.config` 反序列化出的实时识别参数。
@@ -11,8 +12,9 @@ pub struct FunAsrParams {
     pub api_key: String,
     #[serde(default)]
     pub model: String,
+    /// 按 target_model 索引的热词列表 ID（一个模型对应一份词表，见 customization.rs）。
     #[serde(default)]
-    pub vocabulary_id: String,
+    pub vocabulary_ids: HashMap<String, String>,
     #[serde(default)]
     pub language_hints: Vec<String>,
     #[serde(default)]
@@ -38,13 +40,11 @@ fn default_max_sentence_silence() -> u32 {
 }
 
 fn default_realtime_model() -> String {
-    HOTWORD_TARGET_MODEL.to_string()
+    DEFAULT_REALTIME_MODEL.to_string()
 }
 
-/// 创建/更新热词列表时的 target_model 必须与此完全一致，
-/// 否则阿里云接口不会报错但热词会静默不生效（见 customization.rs）。
-pub const HOTWORD_TARGET_MODEL: &str = "fun-asr-realtime";
-pub const FUN_ASR_MODEL: &str = HOTWORD_TARGET_MODEL;
+/// 未指定实时模型时的兜底默认值。
+pub const DEFAULT_REALTIME_MODEL: &str = "fun-asr-realtime";
 
 pub enum FunAsrEvent {
     Started,
@@ -83,10 +83,11 @@ pub fn build_run_task_message(task_id: &str, params: &FunAsrParams, model: &str)
         "max_sentence_silence": params.max_sentence_silence,
     });
     let model = model.trim();
+    let vocabulary_id = params.vocabulary_ids.get(model).map(String::as_str).unwrap_or("");
     if (model.starts_with("fun-asr") || model.starts_with("paraformer"))
-        && !params.vocabulary_id.trim().is_empty()
+        && !vocabulary_id.trim().is_empty()
     {
-        parameters["vocabulary_id"] = json!(params.vocabulary_id.trim());
+        parameters["vocabulary_id"] = json!(vocabulary_id.trim());
     }
     if !params.language_hints.is_empty() {
         parameters["language_hints"] = json!(params.language_hints);

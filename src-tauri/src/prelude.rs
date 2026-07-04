@@ -22,7 +22,7 @@ pub(crate) use crate::providers::alibabacloud::{
     qwen_realtime_request, query_vocabulary as funasr_query_vocabulary,
     realtime_asr_family, update_vocabulary as funasr_update_vocabulary,
     ws_request as funasr_ws_request, FunAsrEvent, FunAsrParams, HotwordEntry, RealtimeAsrFamily,
-    VOCABULARY_PREFIX as FUNASR_VOCABULARY_PREFIX,
+    VOCABULARY_TARGETS as FUNASR_VOCABULARY_TARGETS,
 };
 pub(crate) use base64::{engine::general_purpose::STANDARD, Engine as _};
 pub(crate) use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

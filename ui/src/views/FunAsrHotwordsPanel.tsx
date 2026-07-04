@@ -29,7 +29,6 @@ export function FunAsrHotwordsPanel() {
   const funasr = providers.find((p) => p.id === "funasr");
 
   const [hotwordsText, setHotwordsText] = useState("");
-  const [vocabularyId, setVocabularyId] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -39,7 +38,6 @@ export function FunAsrHotwordsPanel() {
   useEffect(() => {
     const config = funasr?.config;
     if (!config) return;
-    setVocabularyId(String(config.vocabularyId ?? ""));
     const hotwords = Array.isArray(config.hotwords)
       ? (config.hotwords as { text: string; weight: number }[])
       : [];
@@ -96,10 +94,9 @@ export function FunAsrHotwordsPanel() {
         <Button size="sm" onClick={handleSync}>
           从云端同步
         </Button>
-        <Button size="sm" onClick={handleClear} disabled={!vocabularyId && !hotwordsText.trim()}>
+        <Button size="sm" onClick={handleClear} disabled={!hotwordsText.trim()}>
           清除热词
         </Button>
-        {vocabularyId && <span className="text-xs text-[var(--color-fg-subtle)]">词表 ID：{vocabularyId}</span>}
       </div>
       {message && <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
     </>

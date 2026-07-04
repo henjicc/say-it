@@ -94,6 +94,7 @@ pub(crate) async fn transcription_start(
     }
 
     let api_key_result = funasr_api_key(&state);
+    let hotword_state_result = funasr_hotword_state(&state);
     let params = params.unwrap_or_default();
     let job_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -108,20 +109,22 @@ pub(crate) async fn transcription_start(
     let jobs = state.transcriptions.clone();
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn(async move {
-        let result = match api_key_result {
-            Ok(api_key) if !api_key.is_empty() => {
+        let result = match (api_key_result, hotword_state_result) {
+            (Ok(api_key), Ok((vocabulary_ids, hotwords))) if !api_key.is_empty() => {
                 run_transcription_job(
                     app.clone(),
                     task_job_id.clone(),
                     api_key,
                     file_path,
                     params,
+                    vocabulary_ids,
+                    hotwords,
                     cancel,
                 )
                 .await
             }
-            Ok(_) => Err("请先保存阿里云百炼 API Key".to_string()),
-            Err(err) => Err(err),
+            (Ok(_), Ok(_)) => Err("请先保存阿里云百炼 API Key".to_string()),
+            (Err(err), _) | (_, Err(err)) => Err(err),
         };
         if let Err(message) = result {
             emit_transcription_event(&app, &task_job_id, "error", json!({ "message": message }));
@@ -167,6 +170,8 @@ async fn run_transcription_job(
     api_key: String,
     file_path: String,
     params: TranscriptionParams,
+    vocabulary_ids: HashMap<String, String>,
+    hotwords: Vec<HotwordEntry>,
     cancel: CancelFlag,
 ) -> Result<(), String> {
     let model = params.model_id();
@@ -191,7 +196,7 @@ async fn run_transcription_job(
                 "taskId": "",
             }),
         );
-        let result = recognize_short_audio(&api_key, &file_path, &params).await?;
+        let result = recognize_short_audio(&api_key, &file_path, &params, &hotwords).await?;
         if is_cancelled(&cancel) {
             return Ok(());
         }
@@ -212,7 +217,8 @@ async fn run_transcription_job(
         return Ok(());
     }
 
-    let task_id = submit_transcription_task(&api_key, &file_url, &params).await?;
+    let vocabulary_id = vocabulary_ids.get(&model).cloned().unwrap_or_default();
+    let task_id = submit_transcription_task(&api_key, &file_url, &params, &vocabulary_id).await?;
     emit_transcription_event(
         &app,
         &job_id,
@@ -306,6 +312,28 @@ fn funasr_api_key(state: &tauri::State<'_, RuntimeState>) -> Result<String, Stri
         .unwrap_or("")
         .trim()
         .to_string())
+}
+
+/// 读取本地保存的热词状态：target_model -> vocabulary_id 映射，以及用户维护的热词文本列表。
+/// 请求识别时按实际使用的 model 从映射里查出对应词表 ID，或直接把热词文本用于上下文增强，
+/// 前端不需要（也不再能够）指定使用哪个词表。
+fn funasr_hotword_state(
+    state: &tauri::State<'_, RuntimeState>,
+) -> Result<(HashMap<String, String>, Vec<HotwordEntry>), String> {
+    let settings = read_provider_settings(state)?;
+    let profile = find_profile(&settings, FUNASR_PROVIDER_ID)
+        .ok_or_else(|| "未找到 Fun-ASR 供应商配置".to_string())?;
+    let vocabulary_ids = profile
+        .config
+        .get("vocabularyIds")
+        .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value.clone()).ok())
+        .unwrap_or_default();
+    let hotwords = profile
+        .config
+        .get("hotwords")
+        .and_then(|value| serde_json::from_value::<Vec<HotwordEntry>>(value.clone()).ok())
+        .unwrap_or_default();
+    Ok((vocabulary_ids, hotwords))
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {
