@@ -13,10 +13,10 @@ body,
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 24px 36px 32px;
+  gap: 10px;
+  padding: 18px 24px 24px;
   box-sizing: border-box;
-  height: 220px;
+  height: 188px;
   justify-content: flex-end;
   animation: wrapIn 0.24s ease-out both;
 }
@@ -33,15 +33,16 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  height: 40px;
+  height: 36px;
   box-sizing: border-box;
-  padding: 0 16px;
-  border-radius: 20px;
-  background: #12141c;
+  padding: 0 14px;
+  border-radius: 18px;
+  background: rgba(12, 16, 24, 0.94);
   color: #fff;
   font: 13px/1.2 system-ui, "Segoe UI", sans-serif;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
 }
 
 .dot {
@@ -57,11 +58,9 @@ body,
 }
 
 .processing .dot {
-  background: #faad14;
-  animation: spin 0.9s linear infinite;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #faad14;
-  box-sizing: border-box;
+  background: #6daeff;
+  box-shadow: 0 0 0 5px rgba(81, 153, 255, 0.15);
+  animation: processingPulse 1.35s ease-in-out infinite;
 }
 
 .subtitle .dot {
@@ -75,17 +74,19 @@ body,
 
 #text {
   --text-line-height: 22.5px;
-  width: 440px;
+  width: 396px;
   box-sizing: border-box;
-  max-width: 440px;
-  height: calc(var(--text-line-height) * 3 + 20px);
+  max-width: 396px;
+  height: calc(var(--text-line-height) * 3 + 18px);
   overflow: hidden;
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: #0f121a;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(15, 20, 30, 0.96), rgba(10, 13, 20, 0.98));
   color: #eaf0ff;
-  font: 15px/1.5 system-ui, "Segoe UI", sans-serif;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   text-align: left;
   word-break: break-word;
@@ -118,40 +119,76 @@ body,
   display: none;
 }
 
-#waveform {
-  width: 440px;
-  max-width: 440px;
-  height: 88px;
+#signal-panel {
+  width: 368px;
+  max-width: 368px;
+  height: 66px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 18px;
+  padding: 10px 16px;
   border-radius: 14px;
-  background: #0f121a;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  background:
+    radial-gradient(circle at top, rgba(88, 142, 255, 0.16), transparent 60%),
+    linear-gradient(180deg, rgba(14, 19, 29, 0.96), rgba(9, 12, 18, 0.98));
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.34),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
 
 .wave-bars {
   width: 100%;
-  height: 64px;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
 }
 
 .wave-bar {
-  width: 6px;
+  width: 8px;
   height: var(--bar-height, 12px);
   min-height: 8px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #f8fbff 0%, #8fb8ff 54%, #2f6df6 100%);
-  box-shadow: 0 0 18px rgba(91, 141, 255, 0.32);
+  background: linear-gradient(180deg, #ebf4ff 0%, #8cbcff 48%, #3e7dff 100%);
+  box-shadow:
+    0 0 18px rgba(76, 129, 255, 0.26),
+    0 0 calc(10px + var(--wave-level, 0) * 16px) rgba(76, 129, 255, 0.12);
   transform-origin: center;
-  transition: height 0.08s ease-out;
+  transition: height 0.08s ease-out, box-shadow 0.12s ease-out;
+}
+
+.loader-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  height: 100%;
+}
+
+.loader-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #9fc4ff;
+  box-shadow: 0 0 0 0 rgba(110, 169, 255, 0.48);
+  animation: loaderPulse 1.5s infinite ease-in-out;
+}
+
+.loader-dot:nth-child(1) {
+  animation-delay: -0.24s;
+}
+
+.loader-dot:nth-child(2) {
+  animation-delay: -0.08s;
+}
+
+.loader-dot:nth-child(3) {
+  animation-delay: 0.08s;
 }
 
 .subtitle-mode #text {
@@ -230,9 +267,29 @@ body,
   }
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@keyframes processingPulse {
+  0%,
+  100% {
+    transform: scale(0.88);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes loaderPulse {
+  0%,
+  100% {
+    transform: scale(0.82);
+    background: #9fc4ff;
+    box-shadow: 0 0 0 0 rgba(110, 169, 255, 0.45);
+  }
+  50% {
+    transform: scale(1.22);
+    background: #4c92ff;
+    box-shadow: 0 0 0 10px rgba(110, 169, 255, 0);
   }
 }
 
@@ -246,7 +303,8 @@ body,
   .fresh,
   .swap-in,
   .recording .dot,
-  .processing .dot {
+  .processing .dot,
+  .loader-dot {
     animation: none;
   }
 }

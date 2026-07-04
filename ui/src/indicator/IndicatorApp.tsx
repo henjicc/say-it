@@ -25,12 +25,14 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
 const MAX_RENDER_CHARS = 20000;
 const FRESH_FADE_MAX = 10;
 const OVERLAP_SEARCH_MAX = 200;
+const WAVE_BAR_COUNT = 24;
 
 export function IndicatorApp() {
   const [phase, setPhase] = useState<Phase>("hidden");
   const [mode, setMode] = useState<IndicatorMode>("dictation");
   const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
-  const [waveform, setWaveform] = useState({ active: false, level: 0, tick: 0 });
+  const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
+  const [hasText, setHasText] = useState(false);
   const textElRef = useRef<HTMLDivElement>(null);
   const textFlowRef = useRef<HTMLDivElement>(null);
   const textContentRef = useRef<HTMLDivElement>(null);
@@ -86,6 +88,7 @@ export function IndicatorApp() {
   const resetText = () => {
     pendingText.current = "";
     displayedText.current = "";
+    setHasText(false);
     if (textContentRef.current) {
       textContentRef.current.textContent = "";
       textContentRef.current.classList.remove("swap-in");
@@ -116,6 +119,7 @@ export function IndicatorApp() {
       resetText();
       return;
     }
+    setHasText(true);
     pendingText.current =
       nextText.length > MAX_RENDER_CHARS
         ? nextText.slice(-MAX_RENDER_CHARS).replace(/^\s+/, "")
@@ -136,7 +140,7 @@ export function IndicatorApp() {
     setPhase(next);
     if (next === "hidden") {
       resetText();
-      setWaveform({ active: false, level: 0, tick: 0 });
+      setWaveform({ active: false, level: 0, peaks: [] });
     }
   });
 
@@ -144,10 +148,17 @@ export function IndicatorApp() {
     payload.fade ? swapText(payload.text || "") : renderText(payload.text || "");
   });
 
-  useTauriEvent<{ active?: boolean; level?: number }>(EVT.indicatorWaveform, (payload) => {
+  useTauriEvent<{ active?: boolean; level?: number; peaks?: number[] }>(EVT.indicatorWaveform, (payload) => {
     const active = !!payload.active;
     const level = Math.max(0, Math.min(1, Number(payload.level) || 0));
-    setWaveform((prev) => ({ active, level, tick: active ? prev.tick + 1 : 0 }));
+    const peaks = Array.isArray(payload.peaks)
+      ? payload.peaks.map((value) => Math.max(0, Math.min(1, Number(value) || 0)))
+      : [];
+    setWaveform((prev) => ({
+      active,
+      level,
+      peaks: active ? [...prev.peaks, ...peaks].slice(-WAVE_BAR_COUNT) : [],
+    }));
   });
 
   useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
@@ -191,7 +202,9 @@ export function IndicatorApp() {
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
   const visible = phase !== "hidden";
-  const showWaveform = mode === "dictation" && pillPhase === "recording" && waveform.active;
+  const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
+  const showProcessingPanel = mode === "dictation" && phase === "processing" && !hasText;
+  const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
   const subtitleStyle =
     mode === "subtitle"
       ? ({
@@ -217,31 +230,29 @@ export function IndicatorApp() {
           <div id="text-content" ref={textContentRef} />
         </div>
       </div>
-      {showWaveform && (
+      {(showWaveform || showProcessingPanel) && (
         <div
-          id="waveform"
-          style={
-            {
-              "--wave-level": waveform.level,
-              "--wave-tick": waveform.tick,
-            } as React.CSSProperties
-          }
+          id="signal-panel"
+          className={showProcessingPanel ? "processing" : "recording"}
+          style={{ "--wave-level": waveform.level } as React.CSSProperties}
         >
-          <div className="wave-bars" aria-hidden="true">
-            {Array.from({ length: 22 }, (_, index) => {
-              const phaseOffset = (waveform.tick + index * 2.15) * 0.52;
-              const motion = (Math.sin(phaseOffset) + 1) / 2;
-              const center = 1 - Math.abs(index - 10.5) / 10.5;
-              const height = 12 + (waveform.level * 46 + motion * 18) * (0.35 + center * 0.65);
-              return (
+          {showWaveform ? (
+            <div className="wave-bars" aria-hidden="true">
+              {waveformBars.map((value, index) => (
                 <span
                   key={index}
                   className="wave-bar"
-                  style={{ "--bar-height": `${Math.max(8, Math.min(72, height))}px` } as React.CSSProperties}
+                  style={{ "--bar-height": `${Math.max(8, 8 + value * 34)}px` } as React.CSSProperties}
                 />
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="loader-dots" aria-hidden="true">
+              <span className="loader-dot" />
+              <span className="loader-dot" />
+              <span className="loader-dot" />
+            </div>
+          )}
         </div>
       )}
       {pillPhase !== "subtitle" && (

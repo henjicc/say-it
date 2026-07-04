@@ -138,7 +138,7 @@ export async function showSubtitlePreview(prefs: SubtitlePrefs) {
 export async function hideSubtitlePreview() {
   if (useSubtitleStore.getState().running) return;
   await emitEvent(EVT.indicatorConfig, { mode: "dictation" });
-  await cmdSilent(CMD.setIndicatorLayout, { width: 520, height: 220, anchor: "bottom", offsetY: 36 });
+  await cmdSilent(CMD.setIndicatorLayout, { width: 460, height: 188, anchor: "bottom", offsetY: 36 });
   await cmdSilent(CMD.setIndicatorState, { state: "hidden" });
   await cmdSilent(CMD.setIndicatorText, { text: "" });
 }
@@ -276,7 +276,7 @@ async function stopSubtitles() {
   await cmdSilent(CMD.releaseBackendSystemAudio);
   if (session) await cmdSilent(CMD.stopAsrStream, { sessionId: session });
   await emitEvent(EVT.indicatorConfig, { mode: "dictation" });
-  await cmdSilent(CMD.setIndicatorLayout, { width: 520, height: 220, anchor: "bottom", offsetY: 36 });
+  await cmdSilent(CMD.setIndicatorLayout, { width: 460, height: 188, anchor: "bottom", offsetY: 36 });
   await cmdSilent(CMD.setIndicatorState, { state: "hidden" });
   await cmdSilent(CMD.setIndicatorText, { text: "" });
   useSubtitleStore.getState().setRuntime({

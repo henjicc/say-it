@@ -35,7 +35,7 @@ export function resetIndicatorPreview() {
   dictIndicatorWindowStart = 0;
   dictIndicatorTextTimer = 0;
   dictIndicatorDisplayText = "";
-  emitEvent(EVT.indicatorWaveform, { active: false, level: 0 }).catch(() => {});
+  emitEvent(EVT.indicatorWaveform, { active: false, level: 0, peaks: [] }).catch(() => {});
 }
 
 function flushIndicatorText() {
@@ -69,9 +69,10 @@ export function pushIndicatorText(text: string, options: { force?: boolean; fade
   }
 }
 
-export function pushIndicatorWaveform(level: number, active = true) {
+export function pushIndicatorWaveform(level: number, active = true, peaks: number[] = []) {
   emitEvent(EVT.indicatorWaveform, {
     active,
     level: Math.max(0, Math.min(1, Number(level) || 0)),
+    peaks: peaks.map((value) => Math.max(0, Math.min(1, Number(value) || 0))),
   }).catch(() => {});
 }

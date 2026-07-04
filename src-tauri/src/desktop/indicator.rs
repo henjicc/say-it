@@ -29,8 +29,8 @@ extern "system" {
 }
 
 const DICTATION_INDICATOR_LABEL: &str = "dictation-indicator";
-const DEFAULT_INDICATOR_WIDTH: f64 = 520.0;
-const DEFAULT_INDICATOR_HEIGHT: f64 = 220.0;
+const DEFAULT_INDICATOR_WIDTH: f64 = 460.0;
+const DEFAULT_INDICATOR_HEIGHT: f64 = 188.0;
 
 fn place_indicator_window(
     window: &tauri::WebviewWindow,
