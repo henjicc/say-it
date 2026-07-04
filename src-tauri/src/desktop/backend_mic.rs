@@ -2,6 +2,13 @@ use crate::prelude::*;
 use crate::state::*;
 
 const BACKEND_MIC_CHUNK_FRAMES: usize = 4096;
+const PREVIEW_SAMPLE_RATE: u32 = OUTPUT_RATE;
+
+fn pcm16le_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes.chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
+        .collect()
+}
 
 pub(crate) fn push_backend_mic_samples(
     mic: &Arc<Mutex<BackendMicState>>,
@@ -350,16 +357,20 @@ pub(crate) fn start_backend_mic(
 pub(crate) fn attach_backend_mic_raw_capture(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
+    preview_params: Option<DspParams>,
 ) -> Result<BackendMicAttachResponse, String> {
-    let worker = {
+    let (worker, sample_rate) = {
         let guard = state
             .backend_mic
             .lock()
             .map_err(|_| "Backend mic lock failed".to_string())?;
-        guard
-            .worker
-            .clone()
-            .ok_or_else(|| "后端麦克风未启动".to_string())?
+        (
+            guard
+                .worker
+                .clone()
+                .ok_or_else(|| "后端麦克风未启动".to_string())?,
+            guard.sample_rate,
+        )
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
@@ -376,9 +387,19 @@ pub(crate) fn attach_backend_mic_raw_capture(
         .map_err(|_| "后端麦克风绑定超时".to_string())??;
 
     tauri::async_runtime::spawn(async move {
+        let mut preview_dsp = preview_params.map(|params| StreamDsp::new(params, sample_rate));
         while let Some(input) = rx.recv().await {
             if let AsrStreamInput::RawF32(samples) = input {
                 let _ = app.emit("backend-mic-raw-chunk", encode_f32_base64(&samples));
+                if let Some(dsp) = preview_dsp.as_mut() {
+                    let preview = pcm16le_to_f32(&dsp.process(&samples));
+                    if !preview.is_empty() {
+                        let _ = app.emit("backend-mic-preview-chunk", json!({
+                            "sampleRate": PREVIEW_SAMPLE_RATE,
+                            "samplesBase64": encode_f32_base64(&preview),
+                        }));
+                    }
+                }
             }
         }
         let _ = app.emit("backend-mic-raw-ended", ());

@@ -66,6 +66,7 @@ export const EVT = {
   indicatorKeydown: "dictation-indicator-keydown",
   indicatorKeyup: "dictation-indicator-keyup",
   backendMicRawChunk: "backend-mic-raw-chunk",
+  backendMicPreviewChunk: "backend-mic-preview-chunk",
   backendMicRawEnded: "backend-mic-raw-ended",
 } as const;
 

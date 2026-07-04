@@ -48,9 +48,28 @@ let dictStartedAt = 0;
 let dictFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
 let dictMode: "realtime" | "file" | null = null;
 let dictRawUnlisten: UnlistenFn | null = null;
+let dictPreviewUnlisten: UnlistenFn | null = null;
 let dictRawChunks: Float32Array[] = [];
 let dictRawSampleRate = 48000;
 let dictFileJobId = "";
+const FILE_WAVEFORM_BUCKETS_PER_CHUNK = 4;
+const DICTATION_INDICATOR_LAYOUT = { width: 460, height: 188, anchor: "bottom", offsetY: 36 as const };
+
+function summarizeWaveformPeaks(samples: Float32Array, bucketCount = FILE_WAVEFORM_BUCKETS_PER_CHUNK) {
+  if (!samples.length || bucketCount <= 0) return [];
+  const peaks: number[] = [];
+  const bucketSize = Math.max(1, Math.floor(samples.length / bucketCount));
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = bucket * bucketSize;
+    const end = bucket === bucketCount - 1 ? samples.length : Math.min(samples.length, start + bucketSize);
+    let peak = 0;
+    for (let index = start; index < end; index += 1) {
+      peak = Math.max(peak, Math.abs(samples[index] || 0));
+    }
+    peaks.push(peak);
+  }
+  return peaks;
+}
 
 function dspParams() {
   return useDictPrefs.getState().dspParams();
@@ -199,6 +218,7 @@ async function startRealtimeDictation(model: string) {
   );
 
   playCue("start");
+  cmdSilent(CMD.setIndicatorLayout, DICTATION_INDICATOR_LAYOUT);
   cmdSilent(CMD.setIndicatorState, { state: "recording" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
   setDictationStatus("正在聆听…（再次按快捷键停止并注入）", "ok");
@@ -218,10 +238,19 @@ async function startFileDictation(model: string) {
   dictRawUnlisten = await on<string>(EVT.backendMicRawChunk, (base64) => {
     const samples = base64ToFloat32(base64);
     dictRawChunks.push(samples);
-    const { peak } = measure(samples);
-    pushIndicatorWaveform(Math.min(1, peak * 1.8));
   });
-  const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicRawCapture);
+  dictPreviewUnlisten = await on<{ sampleRate?: number; samplesBase64?: string }>(
+    EVT.backendMicPreviewChunk,
+    (payload) => {
+      const samples = base64ToFloat32(payload.samplesBase64 || "");
+      if (!samples.length) return;
+      const { peak } = measure(samples);
+      pushIndicatorWaveform(Math.min(1, peak * 1.15), true, summarizeWaveformPeaks(samples));
+    },
+  );
+  const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicRawCapture, {
+    previewParams: dspParams(),
+  });
 
   dictMode = "file";
   dictRecording = true;
@@ -231,9 +260,9 @@ async function startFileDictation(model: string) {
   );
 
   playCue("start");
+  cmdSilent(CMD.setIndicatorLayout, DICTATION_INDICATOR_LAYOUT);
   cmdSilent(CMD.setIndicatorState, { state: "recording" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
-  pushIndicatorWaveform(0.08, true);
   setDictationStatus("正在录音…（停止后识别并注入）", "ok");
 }
 
@@ -288,14 +317,16 @@ async function stopFileDictationAndRecognize() {
   await ended;
   dictRawUnlisten?.();
   dictRawUnlisten = null;
+  dictPreviewUnlisten?.();
+  dictPreviewUnlisten = null;
   scheduleMicShutdown(pushDictLog);
-  pushIndicatorWaveform(0, false);
 
   const samples = mergeRawChunks();
   const durationSec = (samples.length / Math.max(1, dictRawSampleRate)).toFixed(1);
   pushDictLog(`停止非实时录音：时长≈${durationSec}s，样本=${samples.length}`);
   cmdSilent(CMD.setIndicatorState, { state: "processing" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
+  pushIndicatorWaveform(0, false);
   setDictationStatus("识别中，正在处理完整录音…");
   dictAwaitingFinal = true;
 
@@ -356,6 +387,8 @@ export async function cancelDictation() {
   cmdSilent(CMD.pauseBackendMic);
   dictRawUnlisten?.();
   dictRawUnlisten = null;
+  dictPreviewUnlisten?.();
+  dictPreviewUnlisten = null;
   cmdSilent(CMD.setIndicatorState, { state: "hidden" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
   if (session) cmdSilent(CMD.stopAsrStream, { sessionId: session });
@@ -431,6 +464,8 @@ export async function toggleDictation() {
     await shutdownMic();
     dictRawUnlisten?.();
     dictRawUnlisten = null;
+    dictPreviewUnlisten?.();
+    dictPreviewUnlisten = null;
     dictRawChunks = [];
     cmdSilent(CMD.setIndicatorState, { state: "hidden" });
     if (dictSessionId) {
@@ -542,6 +577,8 @@ export function shutdownDictationMic() {
   }
   dictRawUnlisten?.();
   dictRawUnlisten = null;
+  dictPreviewUnlisten?.();
+  dictPreviewUnlisten = null;
   dictRawChunks = [];
   dictMode = null;
   shutdownMic();
