@@ -303,7 +303,7 @@ export async function startAlignment() {
     store.setRuntime({
       alignStage: "error",
       alignStatusText: "任务冲突。",
-      alignErrorMessage: "录音转写正在进行中，请等待完成或先取消。",
+      alignErrorMessage: "字幕转写正在进行中，请等待完成或先取消。",
     });
     return;
   }

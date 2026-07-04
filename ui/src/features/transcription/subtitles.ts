@@ -222,7 +222,7 @@ export interface AlignedResultCue extends SubtitleCue {
 /**
  * 把后端算好的片段（保留原文的文稿段 + 只给词范围的识别插入段）渲染成字幕：
  * 文稿段直接使用；识别段复用 splitWords 按词范围生成实际文本与时间
- * （与「录音转写」的句级切分同一套逻辑，保证长段落也能正常拆行）。
+ * （与「字幕转写」的句级切分同一套逻辑，保证长段落也能正常拆行）。
  */
 export function cuesFromOptimizedSegments(
   segments: OptimizedSegment[],

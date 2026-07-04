@@ -562,11 +562,11 @@ fn parse_fun_asr_flash_sse(text: &str) -> Result<TranscriptionResult, String> {
         }
         let sentence: TranscriptionSentence = serde_json::from_value(sentence_val.clone())
             .map_err(|e| format!("解析录音识别句子失败：{e}"))?;
-        // 同一个 sentence_id 可能会多次以 sentence_end=true 触发（每加稳一个词就重发一次当前句子的
-        // 全部内容），此时应覆盖上一条而不是当作新句子追加，否则同一句话会按“词级刷新”的节奏
-        // 被拆成一串重复、极短的字幕行（begin/end 逐词递增，文本却是整句重复）。
+        // fun-asr-flash 真实返回里可能反复把“同一句正在定稿中的整句”重发为 sentence_end=true。
+        // 已观察到两种变体：同一个 sentence_id 重发，或 sentence_id 变化但 begin/channel
+        // 不变、文本只是向后增长。两种情况都应该覆盖上一条，而不是追加成多条极短重复字幕。
         match sentences.last_mut() {
-            Some(last) if last.sentence_id == sentence.sentence_id => *last = sentence,
+            Some(last) if should_replace_last_sentence(last, &sentence) => *last = sentence,
             _ => sentences.push(sentence),
         }
     }
@@ -586,6 +586,32 @@ fn parse_fun_asr_flash_sse(text: &str) -> Result<TranscriptionResult, String> {
             sentences,
         }],
     })
+}
+
+fn should_replace_last_sentence(
+    last: &TranscriptionSentence,
+    next: &TranscriptionSentence,
+) -> bool {
+    if last.sentence_id.is_some() && last.sentence_id == next.sentence_id {
+        return true;
+    }
+
+    if last.begin_time != next.begin_time || last.end_time > next.end_time {
+        return false;
+    }
+    if last.speaker_id != next.speaker_id {
+        return false;
+    }
+
+    let last_text = last.text.trim();
+    let next_text = next.text.trim();
+    if last_text.is_empty() || next_text.is_empty() {
+        return false;
+    }
+
+    next_text == last_text
+        || next_text.starts_with(last_text)
+        || last_text.starts_with(next_text)
 }
 
 fn extract_sse_error_message(text: &str) -> String {
@@ -831,6 +857,41 @@ mod tests {
             transcript.sentences.len(),
             2,
             "repeated sentence_end for the same sentence_id must collapse into one entry"
+        );
+        assert_eq!(
+            transcript.sentences[0].text,
+            "那为什么这些格式转换APP要么一堆广告"
+        );
+        assert_eq!(transcript.sentences[0].end_time, 5400);
+        assert_eq!(transcript.sentences[1].text, "我就寻思着");
+    }
+
+    #[test]
+    fn dedups_repeated_sentence_end_events_even_if_sentence_id_changes() {
+        let events = concat!(
+            "data:{\"output\":{\"sentence\":{\"sentence_id\":11,\"sentence_end\":true,",
+            "\"channel_id\":0,\"begin_time\":4200,\"end_time\":4500,\"text\":\"那为什么\",",
+            "\"words\":[{\"begin_time\":4200,\"end_time\":4500,\"text\":\"那为什么\",\"punctuation\":\"\"}]},",
+            "\"text\":\"那为什么\"},\"request_id\":\"r1\"}\n",
+            "\n",
+            "data:{\"output\":{\"sentence\":{\"sentence_id\":12,\"sentence_end\":true,",
+            "\"channel_id\":0,\"begin_time\":4200,\"end_time\":5400,\"text\":\"那为什么这些格式转换APP要么一堆广告\",",
+            "\"words\":[{\"begin_time\":4200,\"end_time\":5400,\"text\":\"那为什么这些格式转换APP要么一堆广告\",\"punctuation\":\"\"}]},",
+            "\"text\":\"那为什么这些格式转换APP要么一堆广告\"},\"request_id\":\"r1\"}\n",
+            "\n",
+            "data:{\"output\":{\"sentence\":{\"sentence_id\":13,\"sentence_end\":true,",
+            "\"channel_id\":0,\"begin_time\":5400,\"end_time\":7400,\"text\":\"我就寻思着\",",
+            "\"words\":[{\"begin_time\":5400,\"end_time\":7400,\"text\":\"我就寻思着\",\"punctuation\":\"\"}]},",
+            "\"text\":\"那为什么这些格式转换APP要么一堆广告 我就寻思着\"},",
+            "\"usage\":{\"duration\":7},\"request_id\":\"r1\"}\n",
+            "\n",
+        );
+        let result = parse_fun_asr_flash_sse(events).expect("should parse");
+        let transcript = &result.transcripts[0];
+        assert_eq!(
+            transcript.sentences.len(),
+            2,
+            "adjacent final events with same begin/channel and growing text must collapse"
         );
         assert_eq!(
             transcript.sentences[0].text,
