@@ -114,7 +114,7 @@ function handleTranscribeEvent(payload: TranscriptionEventPayload) {
     store.setRuntime({
       stage: "error",
       statusText: payload.cancelled ? "识别已取消。" : "识别失败。",
-      errorMessage: payload.message || "录音识别失败",
+      errorMessage: payload.message || "字幕转写失败",
     });
     stopListening();
   }
@@ -164,7 +164,7 @@ function handleAlignEvent(payload: TranscriptionEventPayload) {
     store.setRuntime({
       alignStage: "error",
       alignStatusText: payload.cancelled ? "已取消。" : "识别失败。",
-      alignErrorMessage: payload.message || "录音识别失败",
+      alignErrorMessage: payload.message || "字幕转写失败",
     });
     stopListening();
   }
@@ -321,7 +321,7 @@ export async function startAlignment() {
     store.setRuntime({
       alignStage: "error",
       alignStatusText: "当前模型不适合文稿对齐。",
-      alignErrorMessage: "文稿对齐需要带时间戳的识别结果，请切换到 Fun-ASR 或 Qwen3-ASR-Flash-Filetrans。",
+      alignErrorMessage: "文稿对齐需要带时间戳的识别结果，请切换到 Fun-ASR、Fun-ASR-Flash 或 Qwen3-ASR-Flash-Filetrans。",
     });
     return;
   }

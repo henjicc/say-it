@@ -13,11 +13,11 @@ export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = [
   { value: "qwen3-asr-flash-realtime", label: "Qwen3-ASR-Flash-Realtime 稳定版" },
 ];
 
+// qwen3-asr-flash（同步短音频）不在这个列表里：它的响应里没有任何时间戳字段（无论流式与否），
+// 生成不了字幕，字幕转写/文稿对齐都用不上，所以从识别模型下拉菜单里去掉，避免选中后没有字幕。
 export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
   { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash" },
   { value: "fun-asr", label: "Fun-ASR" },
-  { value: "qwen3-asr-flash-2026-02-10", label: "Qwen3-ASR-Flash 最新版" },
-  { value: "qwen3-asr-flash", label: "Qwen3-ASR-Flash 稳定版" },
   { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans" },
 ];
 
@@ -60,5 +60,5 @@ export function supportsFunAsrVocabularyId(model: string) {
 }
 
 export function supportsAlignmentTimestamps(model: string) {
-  return model.trim() === "fun-asr" || isQwenFileModel(model);
+  return model.trim() === "fun-asr" || isQwenFileModel(model) || isFunAsrFlashFileModel(model);
 }
