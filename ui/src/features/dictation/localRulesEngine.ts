@@ -15,6 +15,50 @@ export interface LocalRule {
   find?: string; // mode "find" 时的查找文本（字面量，非正则）
 }
 
+const LEGACY_DEDUPE_PUNCT_PATTERN = "([，。！？、])\\1+";
+const ADJACENT_PUNCT_PATTERN =
+  "(?:…{2}|[，。！？、；：．,.!?;:])(?:[ \\t]*(?:…{2}|[，。！？、；：．,.!?;:]))+";
+const ADJACENT_PUNCT_FLAGS = "g";
+const BUILTIN_PUNCT_REPLACEMENT = "$1";
+const BUILTIN_PUNCT_NOTE =
+  "把没有正文夹在中间的连续标点合并成更自然的结果，如“，。”→“。”；会保留“……”以及“！？”这类常见合法组合。";
+
+const ELLIPSIS_TOKENS = new Set(["……", "..."]);
+const QUESTION_TOKENS = new Set(["？", "?"]);
+const EXCLAMATION_TOKENS = new Set(["！", "!"]);
+const PUNCT_PRIORITY = new Map<string, number>([
+  ["，", 1],
+  [",", 1],
+  ["、", 1],
+  ["；", 2],
+  [";", 2],
+  ["：", 2],
+  [":", 2],
+  ["。", 3],
+  ["．", 3],
+  [".", 3],
+]);
+const BUILTIN_PUNCT_RULE_SNAPSHOTS: Array<
+  Pick<LocalRule, "name" | "pattern" | "flags" | "replacement" | "note" | "mode">
+> = [
+  {
+    name: "合并连续重复标点",
+    pattern: LEGACY_DEDUPE_PUNCT_PATTERN,
+    flags: "g",
+    replacement: "$1",
+    note: undefined,
+    mode: undefined,
+  },
+  {
+    name: "合并连续标点",
+    pattern: ADJACENT_PUNCT_PATTERN,
+    flags: ADJACENT_PUNCT_FLAGS,
+    replacement: BUILTIN_PUNCT_REPLACEMENT,
+    note: BUILTIN_PUNCT_NOTE,
+    mode: undefined,
+  },
+];
+
 // ---- 预置规则（保守默认：易误伤的项默认关闭）----
 // 顺序即执行顺序：先清理语气词/口头禅，再规范空格标点，最后补句末标点。
 function presets(): LocalRule[] {
@@ -62,10 +106,11 @@ function presets(): LocalRule[] {
       id: "dedupe-punct",
       enabled: true,
       builtin: true,
-      name: "合并连续重复标点",
-      pattern: "([，。！？、])\\1+",
-      flags: "g",
-      replacement: "$1",
+      name: "合并连续标点",
+      pattern: ADJACENT_PUNCT_PATTERN,
+      flags: ADJACENT_PUNCT_FLAGS,
+      replacement: BUILTIN_PUNCT_REPLACEMENT,
+      note: BUILTIN_PUNCT_NOTE,
     },
     {
       id: "punct-space",
@@ -159,19 +204,151 @@ export function validateRule(pattern: string, flags: string): string | null {
   }
 }
 
+function tokenizePunctuationCluster(cluster: string): string[] {
+  const tokens: string[] = [];
+  for (let i = 0; i < cluster.length; ) {
+    if (cluster.startsWith("……", i)) {
+      tokens.push("……");
+      i += 2;
+      continue;
+    }
+    if (cluster.startsWith("...", i)) {
+      tokens.push("...");
+      i += 3;
+      continue;
+    }
+    const ch = cluster[i];
+    if (ch === " " || ch === "\t") {
+      i += 1;
+      continue;
+    }
+    tokens.push(ch);
+    i += 1;
+  }
+  return tokens;
+}
+
+function buildExpressiveSuffix(tokens: string[]): string {
+  let sawQuestion = false;
+  let sawExclamation = false;
+  let suffix = "";
+
+  for (const token of tokens) {
+    if (QUESTION_TOKENS.has(token)) {
+      if (!sawQuestion) suffix += token;
+      sawQuestion = true;
+      continue;
+    }
+    if (EXCLAMATION_TOKENS.has(token)) {
+      if (!sawExclamation) suffix += token;
+      sawExclamation = true;
+    }
+  }
+
+  return suffix;
+}
+
+function pickStrongestPlainPunctuation(tokens: string[]): string {
+  let winner = "";
+  let bestRank = -1;
+
+  for (const token of tokens) {
+    const rank = PUNCT_PRIORITY.get(token) ?? -1;
+    if (rank >= bestRank) {
+      winner = token;
+      bestRank = rank;
+    }
+  }
+
+  return winner;
+}
+
+function normalizePunctuationCluster(cluster: string): string {
+  const tokens = tokenizePunctuationCluster(cluster);
+  if (tokens.length <= 1) return cluster.replace(/[ \t]+/g, "");
+
+  if (tokens.some((token) => ELLIPSIS_TOKENS.has(token))) {
+    let out = "";
+    let sawQuestion = false;
+    let sawExclamation = false;
+
+    for (const token of tokens) {
+      if (ELLIPSIS_TOKENS.has(token)) {
+        out += token;
+        continue;
+      }
+      if (QUESTION_TOKENS.has(token)) {
+        if (!sawQuestion) out += token;
+        sawQuestion = true;
+        continue;
+      }
+      if (EXCLAMATION_TOKENS.has(token)) {
+        if (!sawExclamation) out += token;
+        sawExclamation = true;
+      }
+    }
+
+    return out;
+  }
+
+  const expressiveSuffix = buildExpressiveSuffix(tokens);
+  if (expressiveSuffix) return expressiveSuffix;
+
+  return pickStrongestPlainPunctuation(tokens);
+}
+
+function isBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
+  return (
+    rule.id === "dedupe-punct" &&
+    rule.mode !== "find" &&
+    rule.flags === ADJACENT_PUNCT_FLAGS &&
+    rule.replacement === BUILTIN_PUNCT_REPLACEMENT &&
+    (rule.pattern === LEGACY_DEDUPE_PUNCT_PATTERN || rule.pattern === ADJACENT_PUNCT_PATTERN)
+  );
+}
+
+function shouldUpgradeBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
+  return (
+    rule.id === "dedupe-punct" &&
+    rule.builtin === true &&
+    BUILTIN_PUNCT_RULE_SNAPSHOTS.some(
+      (snapshot) =>
+        rule.name === snapshot.name &&
+        rule.pattern === snapshot.pattern &&
+        rule.flags === snapshot.flags &&
+        rule.replacement === snapshot.replacement &&
+        rule.note === snapshot.note &&
+        rule.mode === snapshot.mode,
+    )
+  );
+}
+
+function upgradeBuiltinRule(rule: LocalRule, preset: LocalRule): LocalRule {
+  if (!shouldUpgradeBuiltinPunctuationMergeRule(rule)) return { ...rule };
+  return {
+    ...preset,
+    enabled: rule.enabled,
+  };
+}
+
 /**
  * 升级合并：保留用户已存的规则（含其开关 / 编辑 / 顺序），把本次版本新增的内置预置补到末尾。
  * 不覆盖用户对已知内置规则的改动。
  */
 export function mergeLocalRules(stored: LocalRule[] | undefined): LocalRule[] {
   if (!Array.isArray(stored) || stored.length === 0) return defaultLocalRules();
-  const presetIds = new Set(presets().map((p) => p.id));
+  const presetRules = presets();
+  const presetIds = new Set(presetRules.map((p) => p.id));
+  const presetById = new Map(presetRules.map((p) => [p.id, p] as const));
   // 保留自定义规则与仍然存在的内置规则；丢弃已被产品移除的旧内置规则（如 end-period）。
   const merged = stored
     .filter((r) => !r.builtin || presetIds.has(r.id))
-    .map((r) => ({ ...r }));
+    .map((r) => {
+      const preset = r.builtin ? presetById.get(r.id) : null;
+      return preset ? upgradeBuiltinRule(r, preset) : { ...r };
+    });
   const known = new Set(merged.map((r) => r.id));
-  for (const preset of presets()) {
+  for (const preset of presetRules) {
     if (!known.has(preset.id)) merged.push({ ...preset });
   }
   return merged;
@@ -205,7 +382,9 @@ export function applyRulesPure(text: string, rules: LocalRule[]): string {
       replacement = r.replacement ?? "";
     }
     try {
-      out = out.replace(re, replacement);
+      out = isBuiltinPunctuationMergeRule(r)
+        ? out.replace(re, normalizePunctuationCluster)
+        : out.replace(re, replacement);
     } catch {
       continue; // 替换异常（如非法 $ 引用）：跳过
     }
