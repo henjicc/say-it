@@ -37,7 +37,7 @@ import {
 } from "@/store/useTranscriptionStore";
 
 const TABS: TabItem<TranscriptionTab>[] = [
-  { key: "transcribe", label: "录音转写" },
+  { key: "transcribe", label: "字幕转写" },
   { key: "align", label: "文稿对齐" },
   { key: "settings", label: "通用设置" },
 ];
@@ -260,7 +260,7 @@ export function TranscriptionView() {
       ) : (
         <SettingsSection title="通用设置">
           <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            录音转写与文稿对齐共用这些识别设置。
+            字幕转写与文稿对齐共用这些识别设置。
           </p>
 
           <FormGrid>
