@@ -45,7 +45,7 @@ export function AboutDialog({
           <img
             src={appIcon}
             alt={appName}
-            className="h-[72px] w-[72px] flex-none rounded-[14px] shadow-[0_10px_28px_rgba(0,0,0,0.26)]"
+            className="h-[72px] w-[72px] flex-none rounded-[14px]"
           />
 
           <div className="flex min-h-[72px] min-w-0 flex-1 flex-col justify-center">
