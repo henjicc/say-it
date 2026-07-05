@@ -11,6 +11,7 @@ import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, setInjectMethod } from "@/features/dictation/controller";
 
 const DEFAULT_INPUT_VALUE = "";
+const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
 
 export function DictationShortcutsPanel() {
   const { capturing, shortcutLabel, injectMethod } = useDictationStore();
@@ -53,14 +54,14 @@ export function DictationShortcutsPanel() {
       <SettingsSection title="输入行为">
         <FormGrid>
           <Field label="全局快捷键">
-            <div className="flex gap-2">
+            <div className="flex items-stretch gap-2">
               <Input
                 readOnly
                 value={capturing ? "请按下按键…" : shortcutLabel}
                 placeholder="未设置"
                 className={cn(capturing && "border-[var(--accent-ring)]")}
               />
-              <Button className="shrink-0" onClick={startShortcutCapture}>
+              <Button className={shortcutActionButtonClassName} onClick={startShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
             </div>

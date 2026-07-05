@@ -30,6 +30,7 @@ import { useDictPrefs } from "@/store/useDictPrefs";
 import { REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
+const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
 
 let cachedSystemFonts: string[] | null = null;
 
@@ -169,18 +170,18 @@ export function RealtimeSubtitlesPanel() {
             </Select>
           </Field>
           <Field layout="row" label="全局快捷键">
-            <div className="flex gap-2">
+            <div className="flex items-stretch gap-2">
               <Input
                 readOnly
                 value={capturing ? "请按下按键…" : shortcutLabel}
                 placeholder="未设置"
                 className={cn(capturing && "border-[var(--accent-ring)]")}
               />
-              <Button className="shrink-0" onClick={startSubtitleShortcutCapture}>
+              <Button className={shortcutActionButtonClassName} onClick={startSubtitleShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
               {!capturing && shortcutLabel && (
-                <Button className="shrink-0" onClick={clearSubtitleShortcut}>
+                <Button className={shortcutActionButtonClassName} onClick={clearSubtitleShortcut}>
                   清除
                 </Button>
               )}
