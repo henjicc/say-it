@@ -38,25 +38,24 @@ export function AboutDialog({
       onClose={onClose}
       scope="container"
       ariaLabel="关于说吧"
-      overlayClassName="bg-black/45"
-      className="max-w-[400px] rounded-[14px] border-white/10 bg-[#05070b] text-[#f8fafc] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+      className="max-w-[400px] rounded-[14px] border-[var(--color-line-strong)] bg-[var(--color-overlay)] text-[var(--color-fg)] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
     >
       <div className="p-5">
         <div className="flex items-center gap-4">
           <img
             src={appIcon}
             alt={appName}
-            className="h-[72px] w-[72px] flex-none rounded-[14px] shadow-[0_10px_28px_rgba(0,0,0,0.38)]"
+            className="h-[72px] w-[72px] flex-none rounded-[14px] shadow-[0_10px_28px_rgba(0,0,0,0.26)]"
           />
 
           <div className="flex min-h-[72px] min-w-0 flex-1 flex-col justify-center">
-            <h2 className="truncate text-[23px] font-semibold leading-7 tracking-normal text-[#f8fafc]">
+            <h2 className="truncate text-[23px] font-semibold leading-7 tracking-normal text-[var(--color-fg)]">
               {appName}
             </h2>
-            <p className="truncate text-[13px] leading-[22px] text-[#cbd5e1]">
+            <p className="truncate text-[13px] leading-[22px] text-[var(--color-fg-muted)]">
               作者：{AUTHOR_NAME}
             </p>
-            <p className="truncate text-[13px] leading-[22px] text-[#94a3b8]">
+            <p className="truncate text-[13px] leading-[22px] text-[var(--color-fg-subtle)]">
               版本：{appVersion}
             </p>
           </div>
@@ -73,7 +72,7 @@ export function AboutDialog({
           <Button
             size="sm"
             onClick={onClose}
-            className="border-white/10 bg-white/5 text-[#e2e8f0] hover:bg-white/10 hover:text-white"
+            className="border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]"
           >
             关闭
           </Button>

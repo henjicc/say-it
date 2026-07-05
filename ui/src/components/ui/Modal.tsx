@@ -51,7 +51,7 @@ export function Modal({
   return (
     <div
       className={cn(
-        "inset-0 z-[var(--z-modal)] grid place-items-center bg-black/55 p-6 backdrop-blur-[2px]",
+        "inset-0 z-[var(--z-modal)] grid place-items-center bg-black/70 p-6 backdrop-blur-[3px]",
         open ? "animate-[modal-overlay-in_160ms_var(--ease-out)_both]" : "animate-[modal-overlay-out_160ms_ease-in_both]",
         scope === "viewport" ? "fixed" : "absolute",
         overlayClassName,
