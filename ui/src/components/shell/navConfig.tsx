@@ -16,7 +16,7 @@ const iconProps = {
   "aria-hidden": true,
 };
 
-export const NAV_ITEMS: NavItem[] = [
+export const MAIN_NAV_ITEMS: NavItem[] = [
   {
     view: "dictation",
     label: "语音输入",
@@ -60,6 +60,19 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+export const SECONDARY_NAV_ITEMS: NavItem[] = [
+  {
+    view: "about",
+    label: "关于",
+    icon: (
+      <svg {...iconProps}>
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 10.25h.01M11.25 13h1.5v3h-1.5" />
+      </svg>
+    ),
+  },
+];
+
 export const VIEW_TITLES: Record<ViewKey, string> = Object.fromEntries(
-  NAV_ITEMS.map((i) => [i.view, i.label]),
+  [...MAIN_NAV_ITEMS, ...SECONDARY_NAV_ITEMS].map((i) => [i.view, i.label]),
 ) as Record<ViewKey, string>;

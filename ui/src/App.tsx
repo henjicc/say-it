@@ -11,12 +11,14 @@ import { DictationView } from "@/views/DictationView";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { TranscriptionView } from "@/views/TranscriptionView";
 import { SettingsView } from "@/views/SettingsView";
+import { AboutView } from "@/views/AboutView";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
   subtitles: <RealtimeSubtitlesPanel />,
   transcription: <TranscriptionView />,
   settings: <SettingsView />,
+  about: <AboutView />,
 };
 
 export default function App() {

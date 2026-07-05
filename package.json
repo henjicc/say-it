@@ -1,6 +1,7 @@
 {
   "name": "say-it",
   "version": "0.2.0",
+  "author": "痕继痕迹",
   "private": true,
   "type": "module",
   "scripts": {

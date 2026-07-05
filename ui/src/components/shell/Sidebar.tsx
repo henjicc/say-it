@@ -1,7 +1,39 @@
 import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/cn";
-import { NAV_ITEMS } from "./navConfig";
+import { MAIN_NAV_ITEMS, SECONDARY_NAV_ITEMS, type NavItem } from "./navConfig";
 import appIcon from "../../../../src-tauri/icons/icon.png";
+
+function NavButton({
+  item,
+  active,
+  subtle = false,
+  onClick,
+}: {
+  item: NavItem;
+  active: boolean;
+  subtle?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "group flex items-center gap-3 rounded-[var(--radius-md)] transition-colors duration-[var(--dur-fast)]",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+        subtle ? "px-2.5 py-2 text-xs" : "px-3 py-3 text-sm",
+        active
+          ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+          : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
+      )}
+    >
+      <span className={cn("grid flex-none place-items-center", subtle ? "h-4 w-4" : "h-5 w-5")}>
+        {item.icon}
+      </span>
+      <span>{item.label}</span>
+    </button>
+  );
+}
 
 export function Sidebar() {
   const view = useUiStore((s) => s.view);
@@ -18,27 +50,27 @@ export function Sidebar() {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {NAV_ITEMS.map((item) => {
-          const active = view === item.view;
-          return (
-            <button
-              key={item.view}
-              type="button"
-              onClick={() => setView(item.view)}
-              className={cn(
-                "group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-3 text-sm transition-colors duration-[var(--dur-fast)]",
-                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-                active
-                  ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
-                  : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
-              )}
-            >
-              <span className="grid h-5 w-5 flex-none place-items-center">{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+        {MAIN_NAV_ITEMS.map((item) => (
+          <NavButton
+            key={item.view}
+            item={item}
+            active={view === item.view}
+            onClick={() => setView(item.view)}
+          />
+        ))}
       </nav>
+
+      <div className="border-t border-[var(--color-line)] pt-2">
+        {SECONDARY_NAV_ITEMS.map((item) => (
+          <NavButton
+            key={item.view}
+            item={item}
+            active={view === item.view}
+            subtle
+            onClick={() => setView(item.view)}
+          />
+        ))}
+      </div>
     </aside>
   );
 }
