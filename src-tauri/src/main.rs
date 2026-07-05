@@ -166,7 +166,7 @@ fn main() {
                     &app.handle(),
                     window.is_minimized().unwrap_or(false),
                     window.outer_position(),
-                    window.outer_size(),
+                    window.inner_size(),
                 );
                 if start_hidden {
                     park_main_window(&app.handle());
@@ -185,7 +185,7 @@ fn main() {
                             &window.app_handle(),
                             window.is_minimized().unwrap_or(false),
                             window.outer_position(),
-                            window.outer_size(),
+                            window.inner_size(),
                         );
                     }
                     WindowEvent::CloseRequested { api, .. } => {

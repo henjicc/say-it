@@ -5,6 +5,8 @@ pub(crate) fn is_normal_window_position(position: tauri::PhysicalPosition<i32>) 
     position.x > -10000 && position.y > -10000
 }
 
+/// `size` 必须传 `inner_size`:恢复时用的 `set_size` 设置的是内容区尺寸,
+/// 而 Windows 无边框窗口的 `outer_size` 含不可见调整边框,混用会导致窗口每次恢复都变大。
 pub(crate) fn remember_main_window_placement(
     app: &tauri::AppHandle,
     minimized: bool,
@@ -35,7 +37,7 @@ pub(crate) fn park_main_window(app: &tauri::AppHandle) {
             app,
             window.is_minimized().unwrap_or(false),
             window.outer_position(),
-            window.outer_size(),
+            window.inner_size(),
         );
 
         let _ = window.unminimize();
