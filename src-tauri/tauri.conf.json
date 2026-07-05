@@ -3,7 +3,7 @@
   "productName": "说吧！",
   "mainBinaryName": "SayIt",
   "version": "0.2.0",
-  "identifier": "com.vibecode.sayit",
+  "identifier": "com.henjicc.sayit",
   "build": {
     "devUrl": "http://localhost:5155",
     "beforeDevCommand": "npm run ui:dev",

@@ -1,6 +1,9 @@
 use crate::prelude::*;
 use crate::state::*;
 
+const STATE_FILE_NAME: &str = "say-it-state.json";
+const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.vibecode.sayit"];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedData {
     #[serde(default)]
@@ -16,7 +19,18 @@ pub(crate) struct PersistedData {
 pub(crate) fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("say-it-state.json"))
+    Ok(dir.join(STATE_FILE_NAME))
+}
+
+fn legacy_state_file_paths(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
+    let current_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let parent = current_dir
+        .parent()
+        .ok_or_else(|| "无法定位应用数据目录父级".to_string())?;
+    Ok(LEGACY_APP_IDENTIFIERS
+        .iter()
+        .map(|identifier| parent.join(identifier).join(STATE_FILE_NAME))
+        .collect())
 }
 
 pub(crate) fn save_persisted_state(
@@ -56,10 +70,17 @@ pub(crate) fn save_persisted_state(
 
 pub(crate) fn load_persisted_state(app: &tauri::AppHandle) -> Result<Option<PersistedData>, String> {
     let file = state_file_path(app)?;
-    if !file.exists() {
+    let source = if file.exists() {
+        Some(file)
+    } else {
+        legacy_state_file_paths(app)?
+            .into_iter()
+            .find(|legacy| legacy.exists())
+    };
+    let Some(source) = source else {
         return Ok(None);
-    }
-    let text = fs::read_to_string(file).map_err(|e| e.to_string())?;
+    };
+    let text = fs::read_to_string(source).map_err(|e| e.to_string())?;
     let mut data = serde_json::from_str::<PersistedData>(&text).map_err(|e| e.to_string())?;
     data.providers = normalize_settings(data.providers);
     Ok(Some(data))

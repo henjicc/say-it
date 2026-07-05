@@ -9,6 +9,15 @@ pub(crate) fn open_api_key_page() -> Result<(), String> {
     open_external_url(API_KEY_PAGE_URL)
 }
 
+#[tauri::command]
+pub(crate) fn open_external_link(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("仅支持打开 http 或 https 链接".to_string());
+    }
+    open_external_url(url)
+}
+
 fn open_external_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let status = std::process::Command::new("cmd")

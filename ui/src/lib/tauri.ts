@@ -42,6 +42,7 @@ export const CMD = {
   alignTranscript: "align_transcript",
   processAudioOffline: "process_audio_offline",
   openApiKeyPage: "open_api_key_page",
+  openExternalLink: "open_external_link",
   getStartupSettings: "get_startup_settings",
   setStartupSettings: "set_startup_settings",
   setDebugLog: "set_debug_log",
