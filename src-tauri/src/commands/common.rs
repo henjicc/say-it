@@ -1,44 +1,28 @@
 use crate::prelude::*;
 use crate::state::*;
+use tauri_plugin_opener::OpenerExt;
 
 const API_KEY_PAGE_URL: &str =
     "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key";
 
 #[tauri::command]
-pub(crate) fn open_api_key_page() -> Result<(), String> {
-    open_external_url(API_KEY_PAGE_URL)
+pub(crate) fn open_api_key_page(app: tauri::AppHandle) -> Result<(), String> {
+    open_external_url(&app, API_KEY_PAGE_URL)
 }
 
 #[tauri::command]
-pub(crate) fn open_external_link(url: String) -> Result<(), String> {
+pub(crate) fn open_external_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let url = url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("仅支持打开 http 或 https 链接".to_string());
     }
-    open_external_url(url)
+    open_external_url(&app, url)
 }
 
-fn open_external_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .status();
-
-    #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("open").arg(url).status();
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let status = std::process::Command::new("xdg-open").arg(url).status();
-
-    status
+fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    app.opener()
+        .open_url(url, None::<&str>)
         .map_err(|err| format!("打开浏览器失败：{err}"))
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("打开浏览器失败，退出码：{status}"))
-            }
-        })
 }
 
 pub(crate) fn read_provider_settings(

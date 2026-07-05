@@ -54,6 +54,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
             if let Some(persisted) = load_persisted_state(&app.handle())? {
