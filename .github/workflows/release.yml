@@ -49,13 +49,22 @@ jobs:
           Rename-Item -LiteralPath $installers[0].FullName -NewName $installerName
 
           $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
-          @"
-          ## 更新内容
+          $changelogPath = Join-Path $PWD "CHANGELOG.md"
 
-          - 初始发布版本。
+          if (-not (Test-Path -LiteralPath $changelogPath)) {
+            throw "CHANGELOG.md not found."
+          }
 
-          下载对应安装包进行安装。
-          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+          $changelog = Get-Content -LiteralPath $changelogPath -Raw -Encoding utf8
+          $escapedVersion = [regex]::Escape($version)
+          $pattern = "(?ms)^## \[$escapedVersion\].*?(?=^## \[|\z)"
+          $match = [regex]::Match($changelog, $pattern)
+
+          if (-not $match.Success) {
+            throw "Release notes for version $version were not found in CHANGELOG.md."
+          }
+
+          $match.Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
 
           gh release view "${{ github.ref_name }}" *> $null
           if ($LASTEXITCODE -eq 0) {
