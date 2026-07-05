@@ -222,6 +222,7 @@ fn main() {
             release_backend_system_audio,
             process_audio_offline,
             open_api_key_page,
+            open_external_link,
             get_dictation_settings,
             set_dictation_settings,
             get_subtitle_shortcut,
