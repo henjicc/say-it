@@ -38,7 +38,7 @@ export function AboutDialog({
       onClose={onClose}
       scope="container"
       ariaLabel="关于说吧"
-      className="max-w-[400px] rounded-[14px] border-[var(--color-line-strong)] bg-[var(--color-overlay)] text-[var(--color-fg)] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
+      className="about-dialog max-w-[400px] rounded-[14px] border-[var(--color-line-strong)] bg-[var(--color-overlay)] text-[var(--color-fg)] shadow-[0_24px_70px_rgba(0,0,0,0.58)]"
     >
       <div className="p-5">
         <div className="flex items-center gap-4">
