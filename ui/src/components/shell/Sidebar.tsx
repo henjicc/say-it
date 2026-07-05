@@ -1,6 +1,6 @@
 import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/cn";
-import { MAIN_NAV_ITEMS, SECONDARY_NAV_ITEMS, type NavItem } from "./navConfig";
+import { MAIN_NAV_ITEMS, SECONDARY_NAV_ITEMS, type NavItem, type SecondaryNavItem } from "./navConfig";
 import appIcon from "../../../../src-tauri/icons/icon.png";
 
 function NavButton({
@@ -9,7 +9,7 @@ function NavButton({
   subtle = false,
   onClick,
 }: {
-  item: NavItem;
+  item: NavItem | SecondaryNavItem;
   active: boolean;
   subtle?: boolean;
   onClick: () => void;
@@ -38,6 +38,8 @@ function NavButton({
 export function Sidebar() {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
+  const aboutOpen = useUiStore((s) => s.aboutOpen);
+  const openAbout = useUiStore((s) => s.openAbout);
 
   return (
     <aside className="flex w-[var(--sidebar-w)] flex-none flex-col gap-2 border-r border-[var(--color-line)] bg-[var(--color-bg-sidebar)] p-3">
@@ -63,11 +65,11 @@ export function Sidebar() {
       <div className="border-t border-[var(--color-line)] pt-2">
         {SECONDARY_NAV_ITEMS.map((item) => (
           <NavButton
-            key={item.view}
+            key={item.id}
             item={item}
-            active={view === item.view}
+            active={aboutOpen}
             subtle
-            onClick={() => setView(item.view)}
+            onClick={openAbout}
           />
         ))}
       </div>

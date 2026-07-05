@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "subtitles" | "transcription" | "settings" | "about";
+export type ViewKey = "dictation" | "subtitles" | "transcription" | "settings";
 
 export interface SessionStatus {
   default_asr_provider?: string;
@@ -11,6 +11,9 @@ export interface SessionStatus {
 interface UiState {
   view: ViewKey;
   setView: (view: ViewKey) => void;
+  aboutOpen: boolean;
+  openAbout: () => void;
+  closeAbout: () => void;
   session: SessionStatus | null;
   setSession: (status: SessionStatus | null) => void;
 }
@@ -18,6 +21,9 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   view: "dictation",
   setView: (view) => set({ view }),
+  aboutOpen: false,
+  openAbout: () => set({ aboutOpen: true }),
+  closeAbout: () => set({ aboutOpen: false }),
   session: null,
   setSession: (session) => set({ session }),
 }));

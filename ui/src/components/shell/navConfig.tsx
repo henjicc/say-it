@@ -6,6 +6,12 @@ export interface NavItem {
   icon: React.ReactNode;
 }
 
+export interface SecondaryNavItem {
+  id: "about";
+  label: string;
+  icon: React.ReactNode;
+}
+
 const iconProps = {
   viewBox: "0 0 24 24",
   fill: "none",
@@ -60,9 +66,9 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export const SECONDARY_NAV_ITEMS: NavItem[] = [
+export const SECONDARY_NAV_ITEMS: SecondaryNavItem[] = [
   {
-    view: "about",
+    id: "about",
     label: "关于",
     icon: (
       <svg {...iconProps}>
@@ -74,5 +80,5 @@ export const SECONDARY_NAV_ITEMS: NavItem[] = [
 ];
 
 export const VIEW_TITLES: Record<ViewKey, string> = Object.fromEntries(
-  [...MAIN_NAV_ITEMS, ...SECONDARY_NAV_ITEMS].map((i) => [i.view, i.label]),
+  MAIN_NAV_ITEMS.map((i) => [i.view, i.label]),
 ) as Record<ViewKey, string>;
