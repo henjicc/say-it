@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { Button } from "./Button";
 
@@ -24,6 +24,8 @@ export function Modal({
   showHeader?: boolean;
   ariaLabel?: string;
 }) {
+  const [rendered, setRendered] = useState(open);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -33,14 +35,24 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  useEffect(() => {
+    if (open) {
+      setRendered(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setRendered(false), 180);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
+  if (!rendered) return null;
 
   const shouldShowHeader = showHeader ?? Boolean(title);
 
   return (
     <div
       className={cn(
-        "inset-0 z-[var(--z-modal)] grid place-items-center bg-black/60 p-6",
+        "inset-0 z-[var(--z-modal)] grid place-items-center bg-black/55 p-6 backdrop-blur-[2px]",
+        open ? "animate-[modal-overlay-in_160ms_var(--ease-out)_both]" : "animate-[modal-overlay-out_160ms_ease-in_both]",
         scope === "viewport" ? "fixed" : "absolute",
         overlayClassName,
       )}
@@ -52,6 +64,7 @@ export function Modal({
         aria-label={ariaLabel}
         className={cn(
           "flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+          open ? "animate-[modal-panel-in_180ms_var(--ease-out)_both]" : "animate-[modal-panel-out_140ms_ease-in_both]",
           className,
         )}
         onClick={(e) => e.stopPropagation()}
