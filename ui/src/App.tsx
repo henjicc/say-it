@@ -11,18 +11,19 @@ import { DictationView } from "@/views/DictationView";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { TranscriptionView } from "@/views/TranscriptionView";
 import { SettingsView } from "@/views/SettingsView";
-import { AboutView } from "@/views/AboutView";
+import { AboutDialog } from "@/views/AboutView";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
   subtitles: <RealtimeSubtitlesPanel />,
   transcription: <TranscriptionView />,
   settings: <SettingsView />,
-  about: <AboutView />,
 };
 
 export default function App() {
   const view = useUiStore((s) => s.view);
+  const aboutOpen = useUiStore((s) => s.aboutOpen);
+  const closeAbout = useUiStore((s) => s.closeAbout);
   const setSession = useUiStore((s) => s.setSession);
   const theme = useThemeStore((s) => s.theme);
 
@@ -61,11 +62,12 @@ export default function App() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg)] text-[var(--color-fg)]">
       <Titlebar />
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <Sidebar />
         <main className="min-h-0 flex-1 overflow-y-auto px-9 py-8">
           <div className="mx-auto w-full max-w-[1180px]">{VIEWS[view]}</div>
         </main>
+        <AboutDialog open={aboutOpen} onClose={closeAbout} />
       </div>
     </div>
   );
