@@ -38,7 +38,6 @@ function NavButton({
 export function Sidebar() {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
-  const aboutOpen = useUiStore((s) => s.aboutOpen);
   const openAbout = useUiStore((s) => s.openAbout);
 
   return (
@@ -67,7 +66,7 @@ export function Sidebar() {
           <NavButton
             key={item.id}
             item={item}
-            active={aboutOpen}
+            active={false}
             subtle
             onClick={openAbout}
           />
