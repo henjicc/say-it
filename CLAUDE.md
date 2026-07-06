@@ -151,3 +151,4 @@
 - 必需环境变量或平台限制：开发端口固定为 `5155` 且 `strictPort: true`；Tauri 配置的 `devUrl` 依赖该端口。
 - 已知陷阱和非显而易见行为：`vite.config.ts` 以 `ui/` 为 root，并配置 `main` 与 `indicator` 两个打包入口；`tauri.conf.json` 中主窗口初始 `visible: false`、`decorations: false`，窗口显示逻辑在后端控制；`ui/dist/`、`src-tauri/target/` 不应手工维护；主题为运行时切换——`App.tsx` 根据 `useThemeStore` 在 `<html>` 上写 `data-ui-tone` 并覆写 `--color-*` 令牌，`index.css` 靠 `[data-ui-tone="light"]` 选择器补齐亮色，暗色为主要方向、亮色仅保证可用不破版。
 - 发布流程：先同步更新 `src-tauri/tauri.conf.json` 和 `package.json` 的 `version`，提交后推送 `v*.*.*` 格式的 tag，会触发 `.github/workflows/release.yml` 自动构建并直接发布 GitHub Release。
+- 新增/扩展识别模型、协议族或供应商时，先读取 `docs/rules/新增供应商与模型操作手册.md` 按场景执行，不要重新摸索。
