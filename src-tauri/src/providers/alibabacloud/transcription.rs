@@ -581,10 +581,15 @@ fn parse_fun_asr_flash_sse(text: &str) -> Result<TranscriptionResult, String> {
         let sentence: TranscriptionSentence = serde_json::from_value(sentence_val.clone())
             .map_err(|e| format!("解析录音识别句子失败：{e}"))?;
         // fun-asr-flash 真实返回里可能反复把“同一句正在定稿中的整句”重发为 sentence_end=true。
-        // 已观察到两种变体：同一个 sentence_id 重发，或 sentence_id 变化但 begin/channel
-        // 不变、文本只是向后增长。两种情况都应该覆盖上一条，而不是追加成多条极短重复字幕。
+        // 已观察到三种变体：同一个 sentence_id 重发；sentence_id 变化但 begin_time/channel
+        // 不变、文本只是向后增长；上一句刚定稿完，紧接着又原样/前缀重发一遍且 begin_time
+        // 顺移到了上一句的 end_time。前两种应覆盖上一条，第三种应只把时间范围并入上一条，
+        // 保留上一条本身更准确的文本与逐词时间戳，而不是追加成多条重复字幕。
         match sentences.last_mut() {
-            Some(last) if should_replace_last_sentence(last, &sentence) => *last = sentence,
+            Some(last) if last_sentence_still_finalizing(last, &sentence) => *last = sentence,
+            Some(last) if next_sentence_is_stale_echo(last, &sentence) => {
+                last.end_time = last.end_time.max(sentence.end_time);
+            }
             _ => sentences.push(sentence),
         }
     }
@@ -606,7 +611,8 @@ fn parse_fun_asr_flash_sse(text: &str) -> Result<TranscriptionResult, String> {
     })
 }
 
-fn should_replace_last_sentence(
+/// 同一句仍在“继续定稿”：begin_time 不变，文本只是向后增长（或反复重发同一整句）。
+fn last_sentence_still_finalizing(
     last: &TranscriptionSentence,
     next: &TranscriptionSentence,
 ) -> bool {
@@ -621,8 +627,25 @@ fn should_replace_last_sentence(
         return false;
     }
 
-    let last_text = last.text.trim();
-    let next_text = next.text.trim();
+    is_duplicate_sentence_text(&last.text, &next.text)
+}
+
+/// 上一句刚定稿完（begin_time != next.begin_time），紧接着又原样/前缀重发了一遍，
+/// 且这次的 begin_time 顺移到了上一句的 end_time——是同一句的过期回声，而不是新句子。
+fn next_sentence_is_stale_echo(last: &TranscriptionSentence, next: &TranscriptionSentence) -> bool {
+    if next.begin_time != last.end_time {
+        return false;
+    }
+    if last.speaker_id != next.speaker_id {
+        return false;
+    }
+
+    is_duplicate_sentence_text(&last.text, &next.text)
+}
+
+fn is_duplicate_sentence_text(last_text: &str, next_text: &str) -> bool {
+    let last_text = last_text.trim();
+    let next_text = next_text.trim();
     if last_text.is_empty() || next_text.is_empty() {
         return false;
     }
@@ -917,6 +940,42 @@ mod tests {
         );
         assert_eq!(transcript.sentences[0].end_time, 5400);
         assert_eq!(transcript.sentences[1].text, "我就寻思着");
+    }
+
+    /// 上一句刚定稿完（begin_time 不同），紧接着原样重发一遍且 begin_time 顺移到了
+    /// 上一句的 end_time——应把这段时间并入上一句，而不是追加成一条极短的重复字幕。
+    #[test]
+    fn dedups_stale_echo_sentence_whose_begin_time_shifts_to_previous_end_time() {
+        let events = concat!(
+            "data:{\"output\":{\"sentence\":{\"sentence_id\":4,\"sentence_end\":true,",
+            "\"begin_time\":4940,\"end_time\":7220,",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\",",
+            "\"words\":[{\"begin_time\":4940,\"end_time\":7220,",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\",\"punctuation\":\"\"}]},",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\"},\"request_id\":\"r1\"}\n",
+            "\n",
+            "data:{\"output\":{\"sentence\":{\"sentence_id\":5,\"sentence_end\":true,",
+            "\"begin_time\":7220,\"end_time\":7520,",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\",",
+            "\"words\":[{\"begin_time\":7220,\"end_time\":7520,",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\",\"punctuation\":\"\"}]},",
+            "\"text\":\"那怎么用手机拍出这样的效果呢？哎，非常简单。\"},",
+            "\"usage\":{\"duration\":8},\"request_id\":\"r1\"}\n",
+            "\n",
+        );
+        let result = parse_fun_asr_flash_sse(events).expect("should parse");
+        let transcript = &result.transcripts[0];
+        assert_eq!(
+            transcript.sentences.len(),
+            1,
+            "stale echo sentence with shifted begin_time must merge into the previous sentence"
+        );
+        assert_eq!(transcript.sentences[0].begin_time, 4940);
+        assert_eq!(transcript.sentences[0].end_time, 7520);
+        assert_eq!(
+            transcript.sentences[0].text,
+            "那怎么用手机拍出这样的效果呢？哎，非常简单。"
+        );
     }
 
     #[test]
