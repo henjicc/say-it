@@ -92,9 +92,9 @@ async function ensureDictationProviderReady() {
   if (useProviderStore.getState().profiles.length === 0) {
     await useProviderStore.getState().load();
   }
-  return !!useProviderStore
-    .getState()
-    .profiles.find((profile) => profile.id === "funasr")?.status?.hasApiKey;
+  const state = useProviderStore.getState();
+  const providerId = state.effective("asr");
+  return !!state.profiles.find((profile) => profile.id === providerId)?.status?.hasApiKey;
 }
 
 function buildFileModelParams(model: string) {

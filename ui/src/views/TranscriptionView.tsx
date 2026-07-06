@@ -86,13 +86,14 @@ export function TranscriptionView() {
     setRuntime,
   } = useTranscriptionStore();
   const providers = useProviderStore((s) => s.profiles);
+  const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const hydratedRef = useRef(false);
   const lastSavedParamsRef = useRef("");
 
-  const funasr = providers.find((profile) => profile.id === "funasr");
-  const hasApiKey = !!funasr?.status?.hasApiKey;
+  const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
+  const hasApiKey = !!asrProvider?.status?.hasApiKey;
   const running = stage === "uploading" || stage === "recognizing";
   const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile);
   const dragActive = useFileDrop(loadFileInfo, tab === "transcribe");
@@ -128,20 +129,20 @@ export function TranscriptionView() {
   }, [loadProviders]);
 
   useEffect(() => {
-    const stored = normalizeStoredParams(funasr?.config?.transcription);
+    const stored = normalizeStoredParams(asrProvider?.config?.transcription);
     const key = JSON.stringify(stored);
     lastSavedParamsRef.current = key;
     hydratedRef.current = true;
     if (!sameParams(params, stored)) replaceParams(stored);
-  }, [funasr?.config?.transcription]);
+  }, [asrProvider?.config?.transcription]);
 
   useEffect(() => {
-    if (!hydratedRef.current) return;
+    if (!hydratedRef.current || !asrProvider) return;
     const key = JSON.stringify(params);
     if (key === lastSavedParamsRef.current) return;
     const timer = window.setTimeout(async () => {
       try {
-        await updateProviderConfig("funasr", { transcription: params });
+        await updateProviderConfig(asrProvider.id, { transcription: params });
         lastSavedParamsRef.current = key;
         setRuntime({ saveMessage: "识别参数已保存。" });
       } catch (error) {
@@ -149,7 +150,7 @@ export function TranscriptionView() {
       }
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [params, updateProviderConfig, setRuntime]);
+  }, [params, updateProviderConfig, setRuntime, asrProvider]);
 
   const statusTone: FileCardStatusTone =
     stage === "completed" ? "ok" : stage === "error" ? "err" : running ? "running" : "idle";

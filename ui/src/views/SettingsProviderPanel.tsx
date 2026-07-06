@@ -54,8 +54,9 @@ export function SettingsProviderPanel() {
   const [heartbeat, setHeartbeat] = useState(false);
   const [noiseThreshold, setNoiseThreshold] = useState("");
 
-  const funasr = providers.find((p) => p.id === "funasr");
-  const hasApiKey = !!funasr?.status?.hasApiKey;
+  // 设置页渲染"当前配置的 ASR 供应商"，目前只有一个，取第一个即可（等价于 optionsFor("asr")[0]）。
+  const provider = providers.find((p) => p.enabled && p.capabilities.includes("asr"));
+  const hasApiKey = !!provider?.status?.hasApiKey;
   const saveRequestRef = useRef(0);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   const showStoredApiKey = !apiKey && (savedApiKey || hasApiKey);
@@ -66,7 +67,7 @@ export function SettingsProviderPanel() {
   }, [loadProviders]);
 
   useEffect(() => {
-    const config = funasr?.config;
+    const config = provider?.config;
     if (!config) return;
     setLanguageHints(Array.isArray(config.languageHints) ? (config.languageHints as string[]) : []);
     setSemanticPunctuation(!!config.semanticPunctuationEnabled);
@@ -78,7 +79,7 @@ export function SettingsProviderPanel() {
         ? ""
         : String(config.speechNoiseThreshold),
     );
-  }, [funasr?.config]);
+  }, [provider?.config]);
 
   useEffect(() => {
     if (!apiKeyDirty) return;
@@ -93,8 +94,9 @@ export function SettingsProviderPanel() {
       const requestId = saveRequestRef.current + 1;
       saveRequestRef.current = requestId;
 
+      if (!provider) return;
       try {
-        await updateProviderConfig("funasr", { apiKey: nextApiKey });
+        await updateProviderConfig(provider.id, { apiKey: nextApiKey });
         if (saveRequestRef.current !== requestId) return;
         setSavedApiKey(nextApiKey);
         setApiKeyDirty(false);
@@ -111,7 +113,7 @@ export function SettingsProviderPanel() {
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [apiKey, apiKeyDirty, updateProviderConfig]);
+  }, [apiKey, apiKeyDirty, updateProviderConfig, provider]);
 
   const beginApiKeyEdit = () => {
     if (!apiKey && showStoredApiKey) {
@@ -127,10 +129,10 @@ export function SettingsProviderPanel() {
   };
 
   const toggleApiKeyVisibility = async () => {
-    if (!apiKeyVisible && !apiKey && !savedApiKey && hasApiKey) {
+    if (!apiKeyVisible && !apiKey && !savedApiKey && hasApiKey && provider) {
       setApiKeyLoading(true);
       try {
-        const realApiKey = await cmd<string>(CMD.getProviderApiKey, { providerId: "funasr" });
+        const realApiKey = await cmd<string>(CMD.getProviderApiKey, { providerId: provider.id });
         setSavedApiKey(realApiKey);
         setApiKeyVisible(true);
       } catch (error) {
@@ -158,9 +160,10 @@ export function SettingsProviderPanel() {
   };
 
   const saveAdvanced = async () => {
+    if (!provider) return;
     try {
       const threshold = noiseThreshold.trim();
-      await updateProviderConfig("funasr", {
+      await updateProviderConfig(provider.id, {
         languageHints,
         semanticPunctuationEnabled: semanticPunctuation,
         maxSentenceSilence,
@@ -177,7 +180,7 @@ export function SettingsProviderPanel() {
   return (
     <SettingsSection title="识别供应商">
       <Collapse
-        title={funasr?.displayName || "阿里云百炼"}
+        title={provider?.displayName || "阿里云百炼"}
         subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}
         defaultOpen
       >
@@ -224,14 +227,16 @@ export function SettingsProviderPanel() {
         </p>
 
         <div className="mt-4 flex flex-col gap-3">
-          <Collapse
-            title="热词"
-            className={NESTED_COLLAPSE_CLASS}
-            headerClassName={NESTED_HEADER_CLASS}
-            bodyClassName={NESTED_BODY_CLASS}
-          >
-            <FunAsrHotwordsPanel />
-          </Collapse>
+          {provider?.id === "funasr" && (
+            <Collapse
+              title="热词"
+              className={NESTED_COLLAPSE_CLASS}
+              headerClassName={NESTED_HEADER_CLASS}
+              bodyClassName={NESTED_BODY_CLASS}
+            >
+              <FunAsrHotwordsPanel />
+            </Collapse>
+          )}
 
           <Collapse
             title="高级参数"

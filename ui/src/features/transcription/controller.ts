@@ -32,7 +32,9 @@ let pendingAlignFilePath = "";
 let pendingAlignParamsKey = "";
 
 export function providerHasApiKey() {
-  return !!useProviderStore.getState().profiles.find((profile) => profile.id === "funasr")?.status?.hasApiKey;
+  const state = useProviderStore.getState();
+  const providerId = state.effective("asr");
+  return !!state.profiles.find((profile) => profile.id === providerId)?.status?.hasApiKey;
 }
 
 function normalizeParams(params: TranscriptionParams) {

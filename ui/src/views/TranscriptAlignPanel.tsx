@@ -43,7 +43,8 @@ export function TranscriptAlignPanel() {
     setRuntime,
   } = useTranscriptionStore();
   const providers = useProviderStore((s) => s.profiles);
-  const hasApiKey = !!providers.find((profile) => profile.id === "funasr")?.status?.hasApiKey;
+  const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
+  const hasApiKey = !!providers.find((profile) => profile.id === effectiveAsrId)?.status?.hasApiKey;
 
   const { pickState, message, loadFileInfo, pickFile } = useFilePick(setAlignFile);
   const running = alignStage === "uploading" || alignStage === "recognizing" || alignStage === "aligning";

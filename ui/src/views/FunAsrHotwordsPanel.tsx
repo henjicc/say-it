@@ -26,6 +26,7 @@ export function FunAsrHotwordsPanel() {
   const saveFunasrHotwords = useProviderStore((s) => s.saveFunasrHotwords);
   const syncFunasrHotwords = useProviderStore((s) => s.syncFunasrHotwords);
   const clearFunasrHotwords = useProviderStore((s) => s.clearFunasrHotwords);
+  // 热词是阿里云百炼专属能力，本面板天然绑定 funasr profile，不需要按当前生效供应商派生。
   const funasr = providers.find((p) => p.id === "funasr");
 
   const [hotwordsText, setHotwordsText] = useState("");

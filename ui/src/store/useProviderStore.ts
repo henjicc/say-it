@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CMD, cmd } from "@/lib/tauri";
 
-export type ProviderCapability = "asr";
+export type ProviderCapability = "asr" | "llm";
 
 export interface ProviderStatus {
   hasApiKey?: boolean;
@@ -21,6 +21,8 @@ export interface ProviderProfile {
 
 export interface ProviderDefaults {
   asr: string;
+  // 预留给 LLM 后处理能力，当前未使用，空串表示未设置。
+  llm: string;
 }
 
 interface ProviderResponse {
@@ -48,7 +50,8 @@ interface ProviderState {
 }
 
 const FALLBACK_DEFAULTS: ProviderDefaults = {
-  asr: "funasr",
+  asr: "",
+  llm: "",
 };
 
 function normalize(response: ProviderResponse): Pick<ProviderState, "profiles" | "defaults"> {
@@ -114,7 +117,13 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
     });
   },
 
-  effective: (capability) => get().overrides[capability] || get().defaults[capability] || "funasr",
+  effective: (capability) =>
+    get().overrides[capability] ||
+    get().defaults[capability] ||
+    get()
+      .profiles.find((profile) => profile.enabled && profile.capabilities.includes(capability))
+      ?.id ||
+    "",
 
   optionsFor: (capability) =>
     get().profiles.filter((profile) => profile.enabled && profile.capabilities.includes(capability)),
