@@ -11,8 +11,12 @@ static REGISTRY: Lazy<Vec<ModelInfo>> = Lazy::new(|| {
     serde_json::from_str(REGISTRY_JSON).expect("模型注册表 shared/asr-models.json 解析失败")
 });
 
+/// 模型元数据。字段与 `shared/asr-models.json` 及前端 `modelRegistry.ts` 的 `ModelInfo`
+/// 一一对应，是前后端共享的数据契约：部分字段（如 `label`、`scenes`）仅前端消费，Rust 侧
+/// 只需完整解析以保证注册表可加载，因此整体允许 dead_code。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ModelInfo {
     pub id: String,
     pub label: String,
@@ -62,6 +66,8 @@ pub fn supports_vocabulary(model: &str) -> bool {
 }
 
 /// 判断模型是否支持对齐时间戳（文稿对齐场景需要）。
+/// 目前该判断由前端 `modelRegistry.ts` 消费，后端保留同名查询以保持注册表 API 完整并被单测锁定。
+#[allow(dead_code)]
 pub fn supports_alignment_timestamps(model: &str) -> bool {
     model_info(model)
         .map(|info| info.supports_alignment_timestamps)
