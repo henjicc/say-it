@@ -48,18 +48,6 @@
     "isDefaultFile": false
   },
   {
-    "id": "paraformer-realtime-v2",
-    "label": "Paraformer-Realtime-V2",
-    "providerKind": "funasr",
-    "category": "realtime",
-    "protocol": "dashscope-duplex",
-    "supportsVocabulary": true,
-    "supportsAlignmentTimestamps": false,
-    "scenes": ["dictationRealtime", "subtitles"],
-    "isDefaultRealtime": false,
-    "isDefaultFile": false
-  },
-  {
     "id": "fun-asr-flash-2026-06-15",
     "label": "Fun-ASR-Flash",
     "providerKind": "funasr",
