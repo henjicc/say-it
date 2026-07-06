@@ -4478,6 +4478,7 @@ dependencies = [
  "mp3lame-encoder",
  "nnnoiseless",
  "ogg-opus",
+ "once_cell",
  "reqwest 0.12.28",
  "rustls",
  "serde",

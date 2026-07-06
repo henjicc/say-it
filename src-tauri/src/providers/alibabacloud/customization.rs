@@ -7,7 +7,10 @@ const CUSTOMIZATION_URL: &str = "https://dashscope.aliyuncs.com/api/v1/services/
 /// 需要建热词表的模型（与 target_model 一一对应）及各自的列表前缀。
 /// 阿里云要求识别时使用的模型必须与词表创建时的 target_model 完全一致，否则热词静默不生效，
 /// 因此每个模型各建一份独立词表；前缀各不相同，方便按前缀从云端精确恢复某个模型对应的词表。
-/// 需与 `ui/src/features/asr/modelOptions.ts` 里支持 vocabulary_id 的模型列表保持一致。
+///
+/// 与模型注册表的一致性关系：本表列出的模型必须是注册表中 `supportsVocabulary: true` 的模型；
+/// 注册表中标记支持热词的模型未必都出现在这里（例如 paraformer 系列支持 vocabulary_id 参数，
+/// 但本应用未为其建独立词表）。两者一致性由单元测试确保。
 pub const VOCABULARY_TARGETS: &[(&str, &str)] = &[
     ("fun-asr-realtime-2026-02-28", "deskhwrl"),
     ("fun-asr-realtime", "deskhwrs"),

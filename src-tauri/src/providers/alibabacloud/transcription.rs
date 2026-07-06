@@ -9,7 +9,7 @@ const TRANSCRIPTION_URL: &str =
 const TASK_URL_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks";
 const MULTIMODAL_GENERATION_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const DEFAULT_TRANSCRIPTION_MODEL: &str = "fun-asr";
+const DEFAULT_TRANSCRIPTION_MODEL: &str = "fun-asr-flash-2026-06-15";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TranscriptionModelFamily {
@@ -498,26 +498,26 @@ fn default_transcription_model() -> String {
 }
 
 pub fn uses_async_transcription_task(model: &str) -> bool {
-    matches!(
-        transcription_model_family(model),
-        TranscriptionModelFamily::FunAsr
-            | TranscriptionModelFamily::Paraformer
-            | TranscriptionModelFamily::QwenFiletrans
-    )
+    crate::providers::registry::uses_async_transcription_task(model)
 }
 
 fn transcription_model_family(model: &str) -> TranscriptionModelFamily {
-    let model = model.trim();
-    if model.starts_with("qwen3-asr-flash-filetrans") {
-        TranscriptionModelFamily::QwenFiletrans
-    } else if model == "qwen3-asr-flash" || model == "qwen3-asr-flash-2026-02-10" {
-        TranscriptionModelFamily::QwenFlash
-    } else if model == "fun-asr-flash-2026-06-15" {
-        TranscriptionModelFamily::FunAsrFlash
-    } else if model.starts_with("paraformer") {
-        TranscriptionModelFamily::Paraformer
-    } else {
-        TranscriptionModelFamily::FunAsr
+    use crate::providers::registry::{file_transcription_route, FileTranscriptionRoute};
+
+    match file_transcription_route(model) {
+        FileTranscriptionRoute::AsyncOss => {
+            // AsyncOss 需要进一步区分 FunAsr / Paraformer / QwenFiletrans
+            let normalized = model.trim();
+            if normalized.starts_with("qwen3-asr-flash-filetrans") {
+                TranscriptionModelFamily::QwenFiletrans
+            } else if normalized.starts_with("paraformer") {
+                TranscriptionModelFamily::Paraformer
+            } else {
+                TranscriptionModelFamily::FunAsr
+            }
+        }
+        FileTranscriptionRoute::SyncFunAsrFlash => TranscriptionModelFamily::FunAsrFlash,
+        FileTranscriptionRoute::SyncQwen => TranscriptionModelFamily::QwenFlash,
     }
 }
 
