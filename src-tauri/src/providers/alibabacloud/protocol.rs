@@ -40,11 +40,8 @@ fn default_max_sentence_silence() -> u32 {
 }
 
 fn default_realtime_model() -> String {
-    DEFAULT_REALTIME_MODEL.to_string()
+    crate::providers::registry::default_realtime_model().to_string()
 }
-
-/// 未指定实时模型时的兜底默认值。
-pub const DEFAULT_REALTIME_MODEL: &str = "fun-asr-realtime-2026-02-28";
 
 pub enum FunAsrEvent {
     Started,

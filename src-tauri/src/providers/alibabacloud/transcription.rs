@@ -9,7 +9,6 @@ const TRANSCRIPTION_URL: &str =
 const TASK_URL_PREFIX: &str = "https://dashscope.aliyuncs.com/api/v1/tasks";
 const MULTIMODAL_GENERATION_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const DEFAULT_TRANSCRIPTION_MODEL: &str = "fun-asr-flash-2026-06-15";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TranscriptionModelFamily {
@@ -494,7 +493,7 @@ pub async fn fetch_transcription_result(url: &str) -> Result<TranscriptionResult
 }
 
 fn default_transcription_model() -> String {
-    DEFAULT_TRANSCRIPTION_MODEL.to_string()
+    crate::providers::registry::default_file_model().to_string()
 }
 
 pub fn uses_async_transcription_task(model: &str) -> bool {
