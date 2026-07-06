@@ -14,6 +14,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(dirname, "ui/src"),
+      "~shared": resolve(dirname, "shared"),
     },
   },
   clearScreen: false,

@@ -1,39 +1,32 @@
-export interface AsrModelOption {
-  value: string;
-  label: string;
-}
+// 本文件从模型注册表派生所有模型选项与能力判断，保持原有导出名称以确保消费方零改动。
+import {
+  optionsForScene,
+  defaultRealtimeModel,
+  defaultFileModel,
+  supportsAlignmentTimestamps as registrySupportsAlignmentTimestamps,
+  isQwenRealtimeModel as registryIsQwenRealtimeModel,
+  isQwenFileModel as registryIsQwenFileModel,
+  isQwenShortAudioFileModel as registryIsQwenShortAudioFileModel,
+  isFunAsrFlashFileModel as registryIsFunAsrFlashFileModel,
+  type AsrModelOption,
+} from "./modelRegistry";
 
-export const DEFAULT_REALTIME_ASR_MODEL = "fun-asr-realtime-2026-02-28";
-export const DEFAULT_FILE_ASR_MODEL = "fun-asr-flash-2026-06-15";
+export type { AsrModelOption };
 
-export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = [
-  { value: "fun-asr-realtime-2026-02-28", label: "Fun-ASR-Realtime 最新版" },
-  { value: "fun-asr-realtime", label: "Fun-ASR-Realtime 稳定版" },
-  { value: "qwen3-asr-flash-realtime-2026-02-10", label: "Qwen3-ASR-Flash-Realtime 最新版" },
-  { value: "qwen3-asr-flash-realtime", label: "Qwen3-ASR-Flash-Realtime 稳定版" },
-];
+// 默认模型从注册表派生
+export const DEFAULT_REALTIME_ASR_MODEL = defaultRealtimeModel();
+export const DEFAULT_FILE_ASR_MODEL = defaultFileModel();
 
-// qwen3-asr-flash（同步短音频）不在这个列表里：它的响应里没有任何时间戳字段（无论流式与否），
-// 生成不了字幕，字幕转写/文稿对齐都用不上，所以从识别模型下拉菜单里去掉，避免选中后没有字幕。
-export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
-  { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash" },
-  { value: "fun-asr", label: "Fun-ASR" },
-  { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans" },
-];
-
-export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [
-  { value: "fun-asr-flash-2026-06-15", label: "Fun-ASR-Flash（非实时）" },
-  { value: "qwen3-asr-flash", label: "Qwen3-ASR-Flash（非实时）" },
-  { value: "qwen3-asr-flash-2026-02-10", label: "Qwen3-ASR-Flash 最新版（非实时）" },
-  { value: "fun-asr", label: "Fun-ASR（非实时）" },
-  { value: "qwen3-asr-flash-filetrans", label: "Qwen3-ASR-Flash-Filetrans（非实时）" },
-];
-
+// 模型下拉选项从注册表派生
+export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationRealtime");
+export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("transcription");
+export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationFile");
 export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [
   ...REALTIME_ASR_MODEL_OPTIONS,
   ...DICTATION_FILE_ASR_MODEL_OPTIONS,
 ];
 
+// 场景支持判断
 const REALTIME_MODEL_SET = new Set(REALTIME_ASR_MODEL_OPTIONS.map((option) => option.value));
 const FILE_MODEL_SET = new Set(FILE_ASR_MODEL_OPTIONS.map((option) => option.value));
 const DICTATION_FILE_MODEL_SET = new Set(
@@ -57,23 +50,23 @@ export function isDictationFileModel(model: string) {
   return DICTATION_FILE_MODEL_SET.has(model.trim());
 }
 
+// 协议族与能力判断，从注册表派生
 export function isQwenRealtimeModel(model: string) {
-  return model.trim().startsWith("qwen3-asr-flash-realtime");
+  return registryIsQwenRealtimeModel(model);
 }
 
 export function isQwenFileModel(model: string) {
-  return model.trim().startsWith("qwen3-asr-flash-filetrans");
+  return registryIsQwenFileModel(model);
 }
 
 export function isQwenShortAudioFileModel(model: string) {
-  const value = model.trim();
-  return value === "qwen3-asr-flash" || value === "qwen3-asr-flash-2026-02-10";
+  return registryIsQwenShortAudioFileModel(model);
 }
 
 export function isFunAsrFlashFileModel(model: string) {
-  return model.trim() === "fun-asr-flash-2026-06-15";
+  return registryIsFunAsrFlashFileModel(model);
 }
 
 export function supportsAlignmentTimestamps(model: string) {
-  return model.trim() === "fun-asr" || isQwenFileModel(model) || isFunAsrFlashFileModel(model);
+  return registrySupportsAlignmentTimestamps(model);
 }
