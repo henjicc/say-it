@@ -26,17 +26,11 @@ pub(crate) async fn start_asr_stream(
     let profile = find_profile(&settings, &provider_id)
         .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    if profile.kind != "alibabacloud-funasr" {
-        return Err(format!("当前版本不支持供应商类型：{}", profile.kind));
-    }
-
-    let funasr_params: FunAsrParams =
-        serde_json::from_value(profile.config.clone()).map_err(|e| e.to_string())?;
-    if funasr_params.api_key.trim().is_empty() {
-        return Err("请先在设置中填写阿里云百炼 API Key".to_string());
-    }
-    let model = funasr_params.realtime_model(model_override.as_deref());
-    let connector = realtime_connector(&funasr_params, &model);
+    let (connector, model) = crate::providers::realtime_connector_for(
+        &profile.kind,
+        &profile.config,
+        model_override.as_deref(),
+    )?;
     let req = connector.connect_request()?;
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
     let (mut writer, mut reader) = ws_stream.split();
@@ -442,20 +436,15 @@ pub(crate) async fn run_asr_silence_test(
     let profile = find_profile(&settings, &provider_id)
         .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    run_funasr_silence_test(&profile).await
+    run_realtime_silence_test(&profile).await
 }
 
-async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrResponse, String> {
-    let funasr_params: FunAsrParams =
-        serde_json::from_value(profile.config.clone()).map_err(|e| e.to_string())?;
-    if funasr_params.api_key.trim().is_empty() {
-        return Err("请先在设置中填写阿里云百炼 API Key".to_string());
-    }
-    let model = funasr_params.realtime_model(None);
+async fn run_realtime_silence_test(profile: &ProviderProfile) -> Result<AsrResponse, String> {
+    let (connector, model) =
+        crate::providers::realtime_connector_for(&profile.kind, &profile.config, None)?;
     if !crate::providers::registry::realtime_family_supports_silence_test(&model) {
         return Err("当前静音测试仅支持 Fun-ASR / Paraformer 实时模型".to_string());
     }
-    let connector = realtime_connector(&funasr_params, &model);
     let req = connector.connect_request()?;
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
     let (mut writer, mut reader) = ws_stream.split();
