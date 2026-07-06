@@ -93,8 +93,8 @@ pub(crate) async fn transcription_start(
         return Err("请选择要识别的音视频文件".to_string());
     }
 
-    let api_key_result = funasr_api_key(&state);
-    let hotword_state_result = funasr_hotword_state(&state);
+    let api_key_result = asr_provider_api_key(&state);
+    let hotword_state_result = asr_provider_hotword_state(&state);
     let params = params.unwrap_or_default();
     let job_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -301,10 +301,24 @@ fn is_cancelled(cancel: &CancelFlag) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
-fn funasr_api_key(state: &tauri::State<'_, RuntimeState>) -> Result<String, String> {
+/// 解析出当前默认 ASR 供应商 profile；文件转写目前只有阿里云百炼一条实现，
+/// 其余 kind 明确报错而不是静默按 funasr 处理。
+fn resolve_asr_transcription_profile(
+    state: &tauri::State<'_, RuntimeState>,
+) -> Result<ProviderProfile, String> {
     let settings = read_provider_settings(state)?;
-    let profile = find_profile(&settings, FUNASR_PROVIDER_ID)
-        .ok_or_else(|| "未找到 Fun-ASR 供应商配置".to_string())?;
+    let provider_id = resolve_provider_id(state, "asr", None)?;
+    let profile = find_profile(&settings, &provider_id)
+        .cloned()
+        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    if profile.kind != "alibabacloud-funasr" {
+        return Err(format!("当前版本录音识别仅支持阿里云百炼供应商，当前默认供应商类型：{}", profile.kind));
+    }
+    Ok(profile)
+}
+
+fn asr_provider_api_key(state: &tauri::State<'_, RuntimeState>) -> Result<String, String> {
+    let profile = resolve_asr_transcription_profile(state)?;
     Ok(profile
         .config
         .get("apiKey")
@@ -317,12 +331,10 @@ fn funasr_api_key(state: &tauri::State<'_, RuntimeState>) -> Result<String, Stri
 /// 读取本地保存的热词状态：target_model -> vocabulary_id 映射，以及用户维护的热词文本列表。
 /// 请求识别时按实际使用的 model 从映射里查出对应词表 ID，或直接把热词文本用于上下文增强，
 /// 前端不需要（也不再能够）指定使用哪个词表。
-fn funasr_hotword_state(
+fn asr_provider_hotword_state(
     state: &tauri::State<'_, RuntimeState>,
 ) -> Result<(HashMap<String, String>, Vec<HotwordEntry>), String> {
-    let settings = read_provider_settings(state)?;
-    let profile = find_profile(&settings, FUNASR_PROVIDER_ID)
-        .ok_or_else(|| "未找到 Fun-ASR 供应商配置".to_string())?;
+    let profile = resolve_asr_transcription_profile(state)?;
     let vocabulary_ids = profile
         .config
         .get("vocabularyIds")

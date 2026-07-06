@@ -3,6 +3,10 @@ use crate::persistence::save_persisted_state;
 use crate::prelude::*;
 use crate::state::*;
 
+// 本模块是有意的"供应商专属命令"：热词（vocabulary_id）是阿里云百炼的专属能力，
+// 不是所有 ASR 供应商都支持，因此直接按 FUNASR_PROVIDER_ID 定位 profile，
+// 不走通用的 resolve_provider_id 能力解析。
+
 fn funasr_config_str(config: &Value, key: &str) -> String {
     config
         .get(key)

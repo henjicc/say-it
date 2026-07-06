@@ -17,7 +17,7 @@ pub(crate) use crate::providers::{
 pub(crate) use crate::providers::alibabacloud::{
     create_vocabulary as funasr_create_vocabulary, delete_vocabulary as funasr_delete_vocabulary,
     list_vocabulary as funasr_list_vocabulary, query_vocabulary as funasr_query_vocabulary,
-    realtime_connector, update_vocabulary as funasr_update_vocabulary, FunAsrParams, HotwordEntry,
+    update_vocabulary as funasr_update_vocabulary, HotwordEntry,
     VOCABULARY_TARGETS as FUNASR_VOCABULARY_TARGETS,
 };
 pub(crate) use crate::providers::connector::{AsrEvent, RealtimeAsrConnector};
