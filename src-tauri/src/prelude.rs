@@ -15,15 +15,12 @@ pub(crate) use crate::providers::{
     FUNASR_PROVIDER_ID,
 };
 pub(crate) use crate::providers::alibabacloud::{
-    build_finish_task_message, build_qwen_audio_message, build_qwen_finish_message,
-    build_qwen_session_update_message, build_run_task_message,
     create_vocabulary as funasr_create_vocabulary, delete_vocabulary as funasr_delete_vocabulary,
-    list_vocabulary as funasr_list_vocabulary, parse_server_message as parse_realtime_asr_message,
-    qwen_realtime_request, query_vocabulary as funasr_query_vocabulary,
-    realtime_asr_family, update_vocabulary as funasr_update_vocabulary,
-    ws_request as funasr_ws_request, FunAsrEvent, FunAsrParams, HotwordEntry, RealtimeAsrFamily,
+    list_vocabulary as funasr_list_vocabulary, query_vocabulary as funasr_query_vocabulary,
+    realtime_connector, update_vocabulary as funasr_update_vocabulary, FunAsrParams, HotwordEntry,
     VOCABULARY_TARGETS as FUNASR_VOCABULARY_TARGETS,
 };
+pub(crate) use crate::providers::connector::{AsrEvent, RealtimeAsrConnector};
 pub(crate) use base64::{engine::general_purpose::STANDARD, Engine as _};
 pub(crate) use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 pub(crate) use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};

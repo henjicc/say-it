@@ -5,9 +5,8 @@ use crate::state::*;
 
 const ASR_FINISH_TIMEOUT: Duration = Duration::from_secs(8);
 
-struct FunAsrProtocol {
-    task_id: Option<String>,
-    family: RealtimeAsrFamily,
+struct AsrSession {
+    connector: Box<dyn RealtimeAsrConnector>,
     model: String,
     started: bool,
     pending: Vec<Vec<u8>>,
@@ -37,34 +36,16 @@ pub(crate) async fn start_asr_stream(
         return Err("请先在设置中填写阿里云百炼 API Key".to_string());
     }
     let model = funasr_params.realtime_model(model_override.as_deref());
-    let family = realtime_asr_family(&model);
-    let req = match family {
-        RealtimeAsrFamily::DashscopeDuplex => funasr_ws_request(&funasr_params.api_key)?,
-        RealtimeAsrFamily::QwenRealtime => qwen_realtime_request(&funasr_params.api_key, &model)?,
-    };
+    let connector = realtime_connector(&funasr_params, &model);
+    let req = connector.connect_request()?;
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
     let (mut writer, mut reader) = ws_stream.split();
-    let task_id = match family {
-        RealtimeAsrFamily::DashscopeDuplex => {
-            let task_id = Uuid::new_v4().to_string();
-            writer
-                .send(build_run_task_message(&task_id, &funasr_params, &model))
-                .await
-                .map_err(|e| e.to_string())?;
-            Some(task_id)
-        }
-        RealtimeAsrFamily::QwenRealtime => {
-            writer
-                .send(build_qwen_session_update_message(&funasr_params))
-                .await
-                .map_err(|e| e.to_string())?;
-            None
-        }
-    };
+    for message in connector.start_messages() {
+        writer.send(message).await.map_err(|e| e.to_string())?;
+    }
 
-    let mut protocol = FunAsrProtocol {
-        task_id,
-        family,
+    let mut protocol = AsrSession {
+        connector,
         model,
         started: false,
         pending: Vec::new(),
@@ -214,8 +195,8 @@ pub(crate) async fn start_asr_stream(
                 break;
             };
             match message {
-                Ok(Message::Text(text)) => match parse_realtime_asr_message(&text, &protocol.model) {
-                    FunAsrEvent::Started => {
+                Ok(Message::Text(text)) => match protocol.connector.parse_message(&text) {
+                    AsrEvent::Started => {
                         protocol.started = true;
                         let queued = std::mem::take(&mut protocol.pending);
                         let mut flush_failed = false;
@@ -241,7 +222,7 @@ pub(crate) async fn start_asr_stream(
                             json!({ "message": "asr task-started", "model": &protocol.model }),
                         );
                     }
-                    FunAsrEvent::Partial(text) => {
+                    AsrEvent::Partial(text) => {
                         emit_asr_stream_event(
                             &app_handle,
                             &task_session_id,
@@ -249,7 +230,7 @@ pub(crate) async fn start_asr_stream(
                             json!({ "text": text, "final": false }),
                         );
                     }
-                    FunAsrEvent::Final(text) => {
+                    AsrEvent::Final(text) => {
                         emit_asr_stream_event(
                             &app_handle,
                             &task_session_id,
@@ -257,11 +238,11 @@ pub(crate) async fn start_asr_stream(
                             json!({ "text": text, "final": true }),
                         );
                     }
-                    FunAsrEvent::TaskFinished => {
+                    AsrEvent::TaskFinished => {
                         emit_asr_stream_event(&app_handle, &task_session_id, "finish", json!({}));
                         break;
                     }
-                    FunAsrEvent::TaskFailed { code, message } => {
+                    AsrEvent::TaskFailed { code, message } => {
                         emit_asr_stream_event(
                             &app_handle,
                             &task_session_id,
@@ -270,7 +251,7 @@ pub(crate) async fn start_asr_stream(
                         );
                         break;
                     }
-                    FunAsrEvent::Other(value) => {
+                    AsrEvent::Other(value) => {
                         emit_asr_stream_event(&app_handle, &task_session_id, "event", value);
                     }
                 },
@@ -314,7 +295,7 @@ async fn send_or_queue_audio(
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
         Message,
     >,
-    protocol: &mut FunAsrProtocol,
+    protocol: &mut AsrSession,
     bytes: Vec<u8>,
     app: &tauri::AppHandle,
     session_id: &str,
@@ -345,13 +326,10 @@ async fn send_audio_message(
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
         Message,
     >,
-    protocol: &FunAsrProtocol,
+    protocol: &AsrSession,
     bytes: Vec<u8>,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
-    match protocol.family {
-        RealtimeAsrFamily::DashscopeDuplex => writer.send(Message::Binary(bytes.into())).await,
-        RealtimeAsrFamily::QwenRealtime => writer.send(build_qwen_audio_message(&bytes)).await,
-    }
+    writer.send(protocol.connector.audio_message(bytes)).await
 }
 
 async fn send_finish(
@@ -359,16 +337,9 @@ async fn send_finish(
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
         Message,
     >,
-    protocol: &FunAsrProtocol,
+    protocol: &AsrSession,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
-    match protocol.family {
-        RealtimeAsrFamily::DashscopeDuplex => writer
-            .send(build_finish_task_message(
-                protocol.task_id.as_deref().unwrap_or_default(),
-            ))
-            .await,
-        RealtimeAsrFamily::QwenRealtime => writer.send(build_qwen_finish_message()).await,
-    }
+    writer.send(protocol.connector.finish_message()).await
 }
 
 #[tauri::command]
@@ -481,19 +452,16 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
         return Err("请先在设置中填写阿里云百炼 API Key".to_string());
     }
     let model = funasr_params.realtime_model(None);
-    let family = realtime_asr_family(&model);
-    if family == RealtimeAsrFamily::QwenRealtime {
+    if !crate::providers::registry::realtime_family_supports_silence_test(&model) {
         return Err("当前静音测试仅支持 Fun-ASR / Paraformer 实时模型".to_string());
     }
-    let req = funasr_ws_request(&funasr_params.api_key)?;
+    let connector = realtime_connector(&funasr_params, &model);
+    let req = connector.connect_request()?;
     let (ws_stream, _) = connect_async(req).await.map_err(|e| e.to_string())?;
     let (mut writer, mut reader) = ws_stream.split();
-
-    let task_id = Uuid::new_v4().to_string();
-    writer
-        .send(build_run_task_message(&task_id, &funasr_params, &model))
-        .await
-        .map_err(|e| e.to_string())?;
+    for message in connector.start_messages() {
+        writer.send(message).await.map_err(|e| e.to_string())?;
+    }
 
     let mut events: Vec<Value> = Vec::new();
     let mut partials: Vec<String> = Vec::new();
@@ -508,35 +476,35 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
         let Some(message) = next else { break };
         let message = message.map_err(|e| e.to_string())?;
         let Message::Text(text) = message else { continue };
-        match parse_realtime_asr_message(&text, &model) {
-            FunAsrEvent::Started => {
+        match connector.parse_message(&text) {
+            AsrEvent::Started => {
                 started = true;
                 for chunk in silence.chunks(4096) {
                     writer
-                        .send(Message::Binary(chunk.to_vec().into()))
+                        .send(connector.audio_message(chunk.to_vec()))
                         .await
                         .map_err(|e| e.to_string())?;
                     sleep(Duration::from_millis(40)).await;
                 }
                 writer
-                    .send(build_finish_task_message(&task_id))
+                    .send(connector.finish_message())
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            FunAsrEvent::Partial(text) => {
+            AsrEvent::Partial(text) => {
                 if !text.is_empty() {
                     partials.push(text);
                 }
             }
-            FunAsrEvent::Final(text) => {
+            AsrEvent::Final(text) => {
                 if !text.is_empty() {
                     final_text = text.clone();
                     partials.push(text);
                 }
             }
-            FunAsrEvent::TaskFinished if started => break,
-            FunAsrEvent::TaskFinished => break,
-            FunAsrEvent::TaskFailed { code, message } => {
+            AsrEvent::TaskFinished if started => break,
+            AsrEvent::TaskFinished => break,
+            AsrEvent::TaskFailed { code, message } => {
                 return Err(format!("Fun-ASR 上游错误 [{code}]: {message}"));
             }
             other => events.push(funasr_event_to_value(other)),
@@ -552,19 +520,19 @@ async fn run_funasr_silence_test(profile: &ProviderProfile) -> Result<AsrRespons
     })
 }
 
-fn funasr_event_to_value(event: FunAsrEvent) -> Value {
+fn funasr_event_to_value(event: AsrEvent) -> Value {
     match event {
-        FunAsrEvent::Started => json!({ "event": "task-started" }),
-        FunAsrEvent::Partial(text) => {
+        AsrEvent::Started => json!({ "event": "task-started" }),
+        AsrEvent::Partial(text) => {
             json!({ "event": "result-generated", "text": text, "final": false })
         }
-        FunAsrEvent::Final(text) => {
+        AsrEvent::Final(text) => {
             json!({ "event": "result-generated", "text": text, "final": true })
         }
-        FunAsrEvent::TaskFinished => json!({ "event": "task-finished" }),
-        FunAsrEvent::TaskFailed { code, message } => {
+        AsrEvent::TaskFinished => json!({ "event": "task-finished" }),
+        AsrEvent::TaskFailed { code, message } => {
             json!({ "event": "task-failed", "code": code, "message": message })
         }
-        FunAsrEvent::Other(value) => value,
+        AsrEvent::Other(value) => value,
     }
 }
