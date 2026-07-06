@@ -60,6 +60,30 @@
     "isDefaultFile": true
   },
   {
+    "id": "qwen3-asr-flash",
+    "label": "Qwen3-ASR-Flash",
+    "providerKind": "funasr",
+    "category": "file",
+    "protocol": "file-sync-qwen",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "scenes": ["dictationFile"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
+    "id": "qwen3-asr-flash-2026-02-10",
+    "label": "Qwen3-ASR-Flash 最新版",
+    "providerKind": "funasr",
+    "category": "file",
+    "protocol": "file-sync-qwen",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "scenes": ["dictationFile"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
     "id": "fun-asr",
     "label": "Fun-ASR",
     "providerKind": "funasr",
@@ -80,30 +104,6 @@
     "supportsVocabulary": false,
     "supportsAlignmentTimestamps": true,
     "scenes": ["dictationFile", "transcription"],
-    "isDefaultRealtime": false,
-    "isDefaultFile": false
-  },
-  {
-    "id": "qwen3-asr-flash",
-    "label": "Qwen3-ASR-Flash（非实时）",
-    "providerKind": "funasr",
-    "category": "file",
-    "protocol": "file-sync-qwen",
-    "supportsVocabulary": false,
-    "supportsAlignmentTimestamps": false,
-    "scenes": ["dictationFile"],
-    "isDefaultRealtime": false,
-    "isDefaultFile": false
-  },
-  {
-    "id": "qwen3-asr-flash-2026-02-10",
-    "label": "Qwen3-ASR-Flash 最新版（非实时）",
-    "providerKind": "funasr",
-    "category": "file",
-    "protocol": "file-sync-qwen",
-    "supportsVocabulary": false,
-    "supportsAlignmentTimestamps": false,
-    "scenes": ["dictationFile"],
     "isDefaultRealtime": false,
     "isDefaultFile": false
   }

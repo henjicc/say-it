@@ -22,6 +22,9 @@ export interface AsrModelOption {
 // 类型安全的注册表访问
 const REGISTRY: ModelInfo[] = registryData as ModelInfo[];
 
+/** 非实时（文件）模型在听写下拉里需要标注的后缀，用于和实时模型区分。 */
+const NON_REALTIME_SUFFIX = "（非实时）";
+
 /**
  * 从注册表查询模型信息；表外模型返回 undefined。
  */
@@ -32,11 +35,19 @@ export function modelInfo(id: string): ModelInfo | undefined {
 
 /**
  * 按场景过滤模型，返回下拉选项列表。
+ *
+ * 听写场景（dictationFile）会把实时与非实时模型混在同一个下拉里，因此这里根据 `category`
+ * 字段为非实时（file）模型的 label 追加"（非实时）"后缀加以区分；录音识别（transcription）
+ * 场景全是文件模型，无需标注，直接用注册表基础 label。
  */
 export function optionsForScene(scene: string): AsrModelOption[] {
+  const annotateNonRealtime = scene === "dictationFile";
   return REGISTRY.filter((info) => info.scenes.includes(scene)).map((info) => ({
     value: info.id,
-    label: info.label,
+    label:
+      annotateNonRealtime && info.category === "file"
+        ? `${info.label}${NON_REALTIME_SUFFIX}`
+        : info.label,
   }));
 }
 
