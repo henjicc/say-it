@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod alibabacloud;
+pub mod registry;
 
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
 

@@ -44,7 +44,7 @@ fn default_realtime_model() -> String {
 }
 
 /// 未指定实时模型时的兜底默认值。
-pub const DEFAULT_REALTIME_MODEL: &str = "fun-asr-realtime";
+pub const DEFAULT_REALTIME_MODEL: &str = "fun-asr-realtime-2026-02-28";
 
 pub enum FunAsrEvent {
     Started,
@@ -68,11 +68,7 @@ impl FunAsrParams {
 }
 
 pub fn realtime_asr_family(model: &str) -> RealtimeAsrFamily {
-    if model.trim().starts_with("qwen3-asr-flash-realtime") {
-        RealtimeAsrFamily::QwenRealtime
-    } else {
-        RealtimeAsrFamily::DashscopeDuplex
-    }
+    crate::providers::registry::realtime_asr_family(model)
 }
 
 /// 复用现有 `StreamDsp` 固定输出的 PCM 16kHz 单声道 16bit 格式，因此 format/sample_rate 不需要可配置。
@@ -84,7 +80,7 @@ pub fn build_run_task_message(task_id: &str, params: &FunAsrParams, model: &str)
     });
     let model = model.trim();
     let vocabulary_id = params.vocabulary_ids.get(model).map(String::as_str).unwrap_or("");
-    if (model.starts_with("fun-asr") || model.starts_with("paraformer"))
+    if crate::providers::registry::supports_vocabulary(model)
         && !vocabulary_id.trim().is_empty()
     {
         parameters["vocabulary_id"] = json!(vocabulary_id.trim());
