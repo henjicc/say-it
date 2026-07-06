@@ -154,8 +154,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 验证现有 9 个模型都在表内
-        assert_eq!(REGISTRY.len(), 9, "当前应有 9 个模型");
+        // 验证现有 10 个模型都在表内（含验证用的 paraformer-realtime-v2）
+        assert_eq!(REGISTRY.len(), 10, "当前应有 10 个模型");
     }
 
     #[test]
