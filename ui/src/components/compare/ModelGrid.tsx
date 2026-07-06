@@ -4,7 +4,7 @@ import { ResultCard } from "@/components/compare/ResultCard";
 import { mergedModelOptions, type CompareModelKind } from "@/features/compare/models";
 import { COMPARE_COLS, COMPARE_MAX_ROWS, COMPARE_MIN_ROWS, useCompareStore } from "@/store/useCompareStore";
 
-const KIND_LABEL: Record<CompareModelKind, string> = { realtime: "实时", file: "文件" };
+const KIND_LABEL: Record<CompareModelKind, string> = { realtime: "实时", file: "非实时" };
 
 export function ModelGrid() {
   const cellModels = useCompareStore((s) => s.prefs.cellModels);
