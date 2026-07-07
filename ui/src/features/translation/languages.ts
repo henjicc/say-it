@@ -48,5 +48,5 @@ export const TRANSLATION_SOURCE_LANGUAGE_OPTIONS: TranslationLanguageOption[] = 
   ...COMMON_LANGUAGES,
 ];
 
-export const DEFAULT_TRANSLATION_TARGET_LANG = "en";
+export const DEFAULT_TRANSLATION_TARGET_LANG = "zh";
 export const DEFAULT_TRANSLATION_SOURCE_LANG = "auto";
