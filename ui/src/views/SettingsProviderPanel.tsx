@@ -29,7 +29,7 @@ function EyeIcon({ visible }: { visible: boolean }) {
     >
       <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z" />
       <circle cx="12" cy="12" r="2.8" />
-      {!visible && <path d="M4 4 20 20" />}
+      {visible && <path d="M4 4 20 20" />}
     </svg>
   );
 }
@@ -120,6 +120,9 @@ export function SettingsProviderPanel() {
   }, [apiKey, apiKeyDirty, updateProviderConfig, provider]);
 
   const beginApiKeyEdit = () => {
+    // 明文展示态下点击输入框只是定位光标/选中复制，不应重新打码；
+    // 仅当前仍是掩码展示（未展示明文）时，聚焦才代表"开始输入新 Key"，需要清空占位掩码。
+    if (apiKeyVisible) return;
     if (!apiKey && showStoredApiKey) {
       setSavedApiKey("");
       setApiKeyVisible(false);
