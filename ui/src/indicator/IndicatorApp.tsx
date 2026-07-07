@@ -37,17 +37,16 @@ const FRESH_FADE_MAX = 10;
 const OVERLAP_SEARCH_MAX = 200;
 const WAVE_BAR_COUNT = 24;
 
-export function IndicatorApp() {
-  const [phase, setPhase] = useState<Phase>("hidden");
-  const [mode, setMode] = useState<IndicatorMode>("dictation");
-  const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
-  const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
-  const [hasText, setHasText] = useState(false);
-  const [translationText, setTranslationText] = useState("");
+/**
+ * 一路独立的字幕文本轨道：管理"稳定前缀 + 新增高亮 + 滚动/平移定位"的整套渲染逻辑。
+ * 原文、译文各用一份自己的轨道（各自的 DOM/状态互不影响），行为完全一致。
+ */
+function useTextTrack(isReplaceMode: boolean) {
   const textElRef = useRef<HTMLDivElement>(null);
   const textFlowRef = useRef<HTMLDivElement>(null);
   const textContentRef = useRef<HTMLDivElement>(null);
 
+  const [hasText, setHasText] = useState(false);
   const pendingText = useRef("");
   const displayedText = useRef("");
   const renderFrame = useRef(0);
@@ -128,18 +127,6 @@ export function IndicatorApp() {
     textElRef.current?.classList.add("empty");
   };
 
-  const swapText = (nextText: string) => {
-    const content = textContentRef.current;
-    displayedText.current = "";
-    if (content) {
-      content.textContent = "";
-      content.classList.remove("swap-in");
-      void content.offsetWidth;
-      content.classList.add("swap-in");
-    }
-    renderText(nextText);
-  };
-
   const renderText = (nextText: string) => {
     if (!nextText) {
       if (renderFrame.current) {
@@ -166,22 +153,54 @@ export function IndicatorApp() {
     });
   };
 
+  const swapText = (nextText: string) => {
+    const content = textContentRef.current;
+    displayedText.current = "";
+    if (content) {
+      content.textContent = "";
+      content.classList.remove("swap-in");
+      void content.offsetWidth;
+      content.classList.add("swap-in");
+    }
+    renderText(nextText);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (renderFrame.current) cancelAnimationFrame(renderFrame.current);
+    };
+  }, []);
+
+  return { textElRef, textFlowRef, textContentRef, hasText, renderText, swapText, resetText };
+}
+
+export function IndicatorApp() {
+  const [phase, setPhase] = useState<Phase>("hidden");
+  const [mode, setMode] = useState<IndicatorMode>("dictation");
+  const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
+  const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
+
+  const isReplaceMode = mode === "subtitle" && subtitleConfig.displayMode === "replace";
+  // 双语模式下译文与原文共用同一套"滚动累积/单句替换"规则，行为保持一致。
+  const original = useTextTrack(isReplaceMode);
+  const translation = useTextTrack(isReplaceMode);
+
   useTauriEvent<{ state?: Phase }>(EVT.indicatorState, (payload) => {
     const next = payload.state || "hidden";
     setPhase(next);
     if (next === "hidden") {
-      resetText();
+      original.resetText();
+      translation.resetText();
       setWaveform({ active: false, level: 0, peaks: [] });
-      setTranslationText("");
     }
   });
 
   useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
-    payload.fade ? swapText(payload.text || "") : renderText(payload.text || "");
+    payload.fade ? original.swapText(payload.text || "") : original.renderText(payload.text || "");
   });
 
   useTauriEvent<{ text?: string }>(EVT.indicatorTranslation, (payload) => {
-    setTranslationText(payload.text || "");
+    translation.renderText(payload.text || "");
   });
 
   useTauriEvent<{ active?: boolean; level?: number; peaks?: number[] }>(EVT.indicatorWaveform, (payload) => {
@@ -201,12 +220,6 @@ export function IndicatorApp() {
     setMode(payload.mode || "dictation");
     if (payload.subtitle) setSubtitleConfig(payload.subtitle);
   });
-
-  useEffect(() => {
-    return () => {
-      if (renderFrame.current) cancelAnimationFrame(renderFrame.current);
-    };
-  }, []);
 
   useEffect(() => {
     const isMod = (code: string) =>
@@ -238,17 +251,13 @@ export function IndicatorApp() {
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
   const visible = phase !== "hidden";
-  const isReplaceMode = mode === "subtitle" && subtitleConfig.displayMode === "replace";
   const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
   const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
-  const showProcessingPanel = mode === "dictation" && phase === "processing" && !hasText;
+  const showProcessingPanel = mode === "dictation" && phase === "processing" && !original.hasText;
   const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
   const showTranslationRow =
-    mode === "subtitle" &&
-    subtitleConfig.translationEnabled &&
-    subtitleConfig.translationLayout === "bilingual" &&
-    !!translationText;
+    mode === "subtitle" && subtitleConfig.translationEnabled && subtitleConfig.translationLayout === "bilingual";
   const translationFirst = subtitleConfig.translationOrder === "translationFirst";
   const subtitleStyle =
     mode === "subtitle"
@@ -266,8 +275,17 @@ export function IndicatorApp() {
           "--subtitle-fade-duration": `${subtitleConfig.fadeDurationMs ?? 180}ms`,
           "--subtitle-fade-easing": subtitleConfig.fadeEasing || "ease-out",
           "--subtitle-translation-font-size": `${subtitleConfig.translationFontSize || 22}px`,
+          "--subtitle-translation-line-height": `${Math.round((subtitleConfig.translationFontSize || 22) * 1.38)}px`,
         } as React.CSSProperties)
       : undefined;
+
+  const translationBlock = showTranslationRow && (
+    <div id="translation-text" ref={translation.textElRef} className="empty">
+      <div id="translation-text-flow" ref={translation.textFlowRef}>
+        <div id="translation-text-content" ref={translation.textContentRef} />
+      </div>
+    </div>
+  );
 
   return (
     <div
@@ -279,13 +297,13 @@ export function IndicatorApp() {
       }
       style={{ display: visible ? "flex" : "none", ...subtitleStyle }}
     >
-      {showTranslationRow && translationFirst && <div id="translation-text">{translationText}</div>}
-      <div id="text" ref={textElRef} className="empty">
-        <div id="text-flow" ref={textFlowRef}>
-          <div id="text-content" ref={textContentRef} />
+      {translationFirst && translationBlock}
+      <div id="text" ref={original.textElRef} className="empty">
+        <div id="text-flow" ref={original.textFlowRef}>
+          <div id="text-content" ref={original.textContentRef} />
         </div>
       </div>
-      {showTranslationRow && !translationFirst && <div id="translation-text">{translationText}</div>}
+      {!translationFirst && translationBlock}
       {(showWaveform || showProcessingPanel) && (
         <div
           id="signal-panel"

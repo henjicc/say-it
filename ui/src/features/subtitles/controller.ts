@@ -49,14 +49,21 @@ const REPLACE_LINE_MAX_CHARS = 1800;
 const REPLACE_LINE_SEPARATOR = " ";
 
 // 字幕翻译：每次开始字幕分配一个新的会话代次（requestId），停止/重开后旧代次的迟到译文事件
-// 一律丢弃，避免串场。segmentSeq 按定稿句单调递增，用于把乱序到达的译文事件放回正确位置。
+// 一律丢弃，避免串场。segmentSeq 按分句单调递增，用于把乱序到达的译文事件放回正确位置。
 let translationRequestId: string | null = null;
 let translationEpochCounter = 0;
 let translationSegmentSeq = 0;
 let translations: Map<number, string> = new Map();
-// 与 committedLines / replaceModeLine 分组一一对应的句子序号，供 renderTranslation() 按序拼出译文。
-let committedSegmentSeqs: number[] = [];
-let replaceLineSegmentSeqs: number[] = [];
+// 不整句等 ASR 判定 final 才翻译：currentSegment 里每出现一个分句切分点（标点/字数上限）就
+// 立即派发翻译，partialTranslateOffset 记录 currentSegment 内已经切出去过的字符数，避免重复翻译。
+let partialTranslateOffset = 0;
+// 当前这句（尚未 final）已派发翻译的分句 seq，按顺序拼起来（不加分隔符）就是这句的完整译文；
+// ASR 判定 final 时整体封存进下面两个结构之一，随后清空开始下一句。
+let currentTranslationGroup: number[] = [];
+// 与 committedLines 逐行一一对应（滚动模式用），每个元素是该行内各分句 seq 的列表。
+let committedTranslationGroups: number[][] = [];
+// 与 replaceModeLine 当前这组一一对应（单句替换模式用），组内多句原文按同样的续接/清空规则累积。
+let replaceTranslationGroups: number[][] = [];
 let translationDisplayText = "";
 
 const MAX_RECONNECT_ATTEMPTS = 6;
@@ -67,6 +74,10 @@ let backendSystemAudioSampleRate = 48000;
 
 const SUBTITLE_SHADOW_GUTTER = 56;
 const SUBTITLE_PANEL_VERTICAL_PADDING = 28;
+// 与 indicator.css 里 #translation-text 的 padding（10px 22px）、#wrap.subtitle-mode 的 gap（10px）对应，
+// 双语模式下必须按这两个值预留窗口高度，否则译文行会被窗口边界裁掉。
+const TRANSLATION_PANEL_VERTICAL_PADDING = 20;
+const SUBTITLE_ROW_GAP = 10;
 const LEGACY_SUBTITLE_TOP_PADDING = 18;
 const LEGACY_SUBTITLE_BOTTOM_PADDING = 24;
 
@@ -121,12 +132,15 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
   const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
   const lineHeight = Math.round(fontSize * 1.38);
   const windowWidth = width + SUBTITLE_SHADOW_GUTTER * 2;
-  // 双语模式需要给译文行额外留一行高度；仅译文模式复用主通道，不需要额外空间。
+  // 双语模式下译文行和原文用同样的行数（effectiveLines），高度预留必须与 indicator.css 的
+  // #translation-text 实际渲染尺寸一致，否则内容会被窗口边界裁掉；仅译文模式复用主通道，不需要额外空间。
   const translationEnabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
   const showsTranslationRow = translationEnabled && prefs.translationLayout === "bilingual";
   const translationFontSize = Math.round(fontSize * 0.82);
   const translationLineHeight = Math.round(translationFontSize * 1.38);
-  const extraHeight = showsTranslationRow ? translationLineHeight + 6 : 0;
+  const extraHeight = showsTranslationRow
+    ? translationLineHeight * effectiveLines + TRANSLATION_PANEL_VERTICAL_PADDING + SUBTITLE_ROW_GAP
+    : 0;
   const height = Math.max(
     136,
     lineHeight * effectiveLines + extraHeight + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2,
@@ -219,19 +233,34 @@ function renderSubtitle(nextSegment = currentSegment) {
   pushIndicatorChannels();
 }
 
-/** 按 segmentSeq 顺序拼出译文显示串：自动按已知最新译文重建，与到达顺序无关，天然纠正乱序/增量。 */
+/** 把一个分句组内各 seq 的已知译文按顺序拼接（不加分隔符，组内本就是同一句话的连续片段）。 */
+function joinTranslationGroup(group: number[]): string {
+  return group
+    .map((seq) => translations.get(seq))
+    .filter((text): text is string => !!text)
+    .join("");
+}
+
+/** 按分组顺序拼出译文显示串：自动按已知最新译文重建，与到达顺序无关，天然纠正乱序/增量。 */
 function renderTranslation() {
   const prefs = useSubtitleStore.getState().prefs;
-  const seqs = prefs.mode === "replace" ? replaceLineSegmentSeqs : committedSegmentSeqs;
-  const parts = seqs
-    .map((seq) => translations.get(seq))
-    .filter((text): text is string => !!text);
-  const next = prefs.mode === "replace" ? parts.join(REPLACE_LINE_SEPARATOR) : parts.join("\n");
+  let next: string;
+  if (prefs.mode === "replace") {
+    next = [...replaceTranslationGroups, currentTranslationGroup]
+      .map(joinTranslationGroup)
+      .filter(Boolean)
+      .join(REPLACE_LINE_SEPARATOR);
+    if (next.length > REPLACE_LINE_MAX_CHARS) next = next.slice(-REPLACE_LINE_MAX_CHARS);
+  } else {
+    next = [...committedTranslationGroups.map(joinTranslationGroup), joinTranslationGroup(currentTranslationGroup)]
+      .filter(Boolean)
+      .join("\n");
+  }
   translationDisplayText = next.length > 1800 ? next.slice(-1800).replace(/^\s+/, "") : next;
   pushIndicatorChannels();
 }
 
-/** 对一句已定稿的原文发起翻译；未开启翻译或字幕未在运行（无有效会话代次）时直接跳过。 */
+/** 对一段文本发起翻译；未开启翻译或字幕未在运行（无有效会话代次）时直接跳过。 */
 function requestSubtitleTranslation(text: string, segmentSeq: number) {
   const prefs = useSubtitleStore.getState().prefs;
   if (prefs.translationModel === TRANSLATION_MODEL_NONE || !translationRequestId) return;
@@ -245,6 +274,64 @@ function requestSubtitleTranslation(text: string, segmentSeq: number) {
       targetLang: prefs.translationTargetLang,
     },
   });
+}
+
+const CLAUSE_HARD_END_RE = /[。！？；….!?]/;
+/** 找不到标点时，累计到这个字符数也强制切一段，避免长句子/不带标点的识别结果一直等不到翻译。 */
+const CLAUSE_MAX_CHARS = 60;
+
+/**
+ * 在 tail 里找一个"可以先送去翻译"的切分点：优先句末标点（。！？；…. ! ?）；
+ * 其次退而求其次，累计到第二个逗号也切一次；再退一步，字数超过上限也强制切。
+ * 用分句代替"整句等 ASR 判定 final 才翻译"，明显降低可感知的翻译延迟。
+ */
+function findClauseCut(tail: string): number {
+  let lastHardEnd = -1;
+  for (let i = 0; i < tail.length; i += 1) {
+    if (CLAUSE_HARD_END_RE.test(tail[i])) lastHardEnd = i;
+  }
+  if (lastHardEnd >= 0) return lastHardEnd + 1;
+  let commaCount = 0;
+  for (let i = 0; i < tail.length; i += 1) {
+    if (tail[i] === "，" || tail[i] === ",") {
+      commaCount += 1;
+      if (commaCount >= 2) return i + 1;
+    }
+  }
+  if (tail.length >= CLAUSE_MAX_CHARS) return tail.length;
+  return -1;
+}
+
+/**
+ * 扫描 currentSegment 里新出现、还没送去翻译的部分，按标点切出可翻译的分句立即派发。
+ * isFinal=true（ASR 已判定整句定稿）时把剩余尾巴也当作最后一个分句送出去，不再等标点。
+ * ASR 的 partial 结果存在小概率回改早前文字的情况，这里按"标点处基本已经稳定"的假设
+ * 换取更快的翻译速度，偶发的极小概率回改不做特殊处理。
+ */
+function dispatchClauseTranslations(isFinal: boolean) {
+  const prefs = useSubtitleStore.getState().prefs;
+  if (prefs.translationModel === TRANSLATION_MODEL_NONE || !translationRequestId) return;
+  let tail = currentSegment.slice(partialTranslateOffset);
+  for (;;) {
+    const cut = findClauseCut(tail);
+    if (cut <= 0) break;
+    const clause = tail.slice(0, cut).trim();
+    partialTranslateOffset += cut;
+    tail = tail.slice(cut);
+    if (!clause) continue;
+    const segSeq = ++translationSegmentSeq;
+    currentTranslationGroup.push(segSeq);
+    requestSubtitleTranslation(clause, segSeq);
+  }
+  if (isFinal) {
+    partialTranslateOffset = currentSegment.length;
+    const rest = tail.trim();
+    if (rest) {
+      const segSeq = ++translationSegmentSeq;
+      currentTranslationGroup.push(segSeq);
+      requestSubtitleTranslation(rest, segSeq);
+    }
+  }
 }
 
 /** 接收后端流式回传的译文事件；requestId 不匹配当前会话代次（已停止/重开）的一律丢弃。 */
@@ -352,8 +439,10 @@ async function startSubtitles() {
   replaceModeLine = "";
   replaceModeLineAt = 0;
   reconnectAttempts = 0;
-  committedSegmentSeqs = [];
-  replaceLineSegmentSeqs = [];
+  partialTranslateOffset = 0;
+  currentTranslationGroup = [];
+  committedTranslationGroups = [];
+  replaceTranslationGroups = [];
   translations = new Map();
   translationSegmentSeq = 0;
   translationDisplayText = "";
@@ -391,8 +480,10 @@ async function stopSubtitles() {
   replaceModeLine = "";
   replaceModeLineAt = 0;
   translationRequestId = null;
-  committedSegmentSeqs = [];
-  replaceLineSegmentSeqs = [];
+  partialTranslateOffset = 0;
+  currentTranslationGroup = [];
+  committedTranslationGroups = [];
+  replaceTranslationGroups = [];
   translations = new Map();
   translationDisplayText = "";
   await cmdSilent(CMD.pauseBackendMic);
@@ -455,14 +546,17 @@ export function handleSubtitleAsrEvent(data: {
       }
       currentSegment = text;
       renderSubtitle(text);
+      // 不等整句 final：按标点把已经出现的分句立即送去翻译，明显降低可感知延迟。
+      dispatchClauseTranslations(false);
     }
     if (data.payload?.final && currentSegment.trim()) {
       const finished = currentSegment.trim();
-      const segSeq = ++translationSegmentSeq;
+      // 收尾：把还没被标点切出去的尾巴也当作最后一个分句送去翻译。
+      dispatchClauseTranslations(true);
       committedLines.push(finished);
       committedLines = committedLines.slice(-12);
-      committedSegmentSeqs.push(segSeq);
-      committedSegmentSeqs = committedSegmentSeqs.slice(-12);
+      committedTranslationGroups.push(currentTranslationGroup);
+      committedTranslationGroups = committedTranslationGroups.slice(-12);
       if (useSubtitleStore.getState().prefs.mode === "replace") {
         // 与原文 replaceModeLine 的分组决策保持一致：本轮开始前 replaceModeLine 已被清空
         // 说明这是新的一组（停顿超过阈值），否则是接着上一组继续。
@@ -472,11 +566,14 @@ export function handleSubtitleAsrEvent(data: {
           replaceModeLine = replaceModeLine.slice(-REPLACE_LINE_MAX_CHARS);
         }
         replaceModeLineAt = Date.now();
-        replaceLineSegmentSeqs = continuingGroup ? [...replaceLineSegmentSeqs, segSeq] : [segSeq];
+        replaceTranslationGroups = continuingGroup
+          ? [...replaceTranslationGroups, currentTranslationGroup]
+          : [currentTranslationGroup];
       }
       currentSegment = "";
+      partialTranslateOffset = 0;
+      currentTranslationGroup = [];
       renderSubtitle("");
-      requestSubtitleTranslation(finished, segSeq);
     }
   } else if (data.kind === "error") {
     // 上游 ASR 出错后 Rust 侧总会紧接着断开并触发下面的 "ended"，由那里统一负责自动重连，

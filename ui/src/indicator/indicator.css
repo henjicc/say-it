@@ -220,11 +220,15 @@ body,
   height: calc(var(--text-line-height) * var(--subtitle-lines, 2));
 }
 
-/* 字幕翻译的第二行：独立于原文那套滚动/替换动画，只做简单的淡入淡出。 */
-#translation-text {
-  box-sizing: border-box;
+/* 字幕翻译的第二行：结构和动画机制与 #text 完全一致（同一套滚动累积/单句替换规则），
+   只是字号略小、透明度略低，用来和原文区分主次。 */
+.subtitle-mode #translation-text {
+  --text-line-height: var(--subtitle-translation-line-height, 30px);
   width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
   max-width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
+  box-sizing: border-box;
+  height: calc(var(--text-line-height) * var(--subtitle-lines, 2) + 20px);
+  overflow: hidden;
   padding: 10px 22px;
   border-radius: var(--subtitle-radius, 18px);
   background: var(--subtitle-bg, rgba(5, 7, 10, 0.72));
@@ -238,23 +242,46 @@ body,
     0 18px 48px rgba(0, 0, 0, 0.28),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   opacity: 0.92;
-  white-space: pre-wrap;
+  word-break: break-word;
   overflow-wrap: anywhere;
-  animation: freshIn var(--subtitle-fade-duration, 180ms) var(--subtitle-fade-easing, ease-out) both;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: content;
 }
 
-.no-fade #translation-text {
-  animation: none;
+.subtitle-mode #translation-text-flow {
+  position: relative;
+  height: calc(var(--text-line-height) * var(--subtitle-lines, 2));
+  overflow: hidden;
+}
+
+#translation-text-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transform: translate3d(0, 0, 0);
+  transition: transform var(--subtitle-motion-duration, 120ms) var(--subtitle-motion-easing, ease-out);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+#translation-text.empty {
+  display: none;
 }
 
 /* 单句替换：强制单行不换行，宽度随内容撑开，由 JS 计算左右平移代替换行后的上下滚动 */
-.subtitle-replace #text-content {
+.subtitle-replace #text-content,
+.subtitle-replace #translation-text-content {
   right: auto;
   white-space: nowrap;
 }
 
 /* 关闭"位移动画"：内容更新时直接落位，不做过渡滑动 */
-.no-motion #text-content {
+.no-motion #text-content,
+.no-motion #translation-text-content {
   transition: none;
 }
 
@@ -341,7 +368,8 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #text-content {
+  #text-content,
+  #translation-text-content {
     transition: none;
   }
   #wrap {
