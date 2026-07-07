@@ -32,6 +32,23 @@ import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
 
+function ClearIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden
+    >
+      <path d="M6 6 18 18M18 6 6 18" />
+    </svg>
+  );
+}
+
 let cachedSystemFonts: string[] | null = null;
 
 function useSystemFonts() {
@@ -171,20 +188,30 @@ export function RealtimeSubtitlesPanel() {
           </Field>
           <Field layout="row" label="全局快捷键">
             <div className="flex items-stretch gap-2">
-              <Input
-                readOnly
-                value={capturing ? "请按下按键…" : shortcutLabel}
-                placeholder="未设置"
-                className={cn(capturing && "border-[var(--accent-ring)]")}
-              />
+              <div className="relative min-w-0 flex-1">
+                <Input
+                  readOnly
+                  value={capturing ? "请按下按键…" : shortcutLabel}
+                  placeholder="未设置"
+                  className={cn(
+                    capturing && "border-[var(--accent-ring)]",
+                    !capturing && shortcutLabel && "pr-9",
+                  )}
+                />
+                {!capturing && shortcutLabel && (
+                  <button
+                    type="button"
+                    aria-label="清除快捷键"
+                    onClick={clearSubtitleShortcut}
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+                  >
+                    <ClearIcon />
+                  </button>
+                )}
+              </div>
               <Button className={shortcutActionButtonClassName} onClick={startSubtitleShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
-              {!capturing && shortcutLabel && (
-                <Button className={shortcutActionButtonClassName} onClick={clearSubtitleShortcut}>
-                  清除
-                </Button>
-              )}
             </div>
           </Field>
           <Field layout="row" label="声音来源">
