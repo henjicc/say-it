@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
+import { ClearIcon } from "@/components/ui/icons";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -31,23 +32,6 @@ import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
-
-function ClearIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-      aria-hidden
-    >
-      <path d="M6 6 18 18M18 6 6 18" />
-    </svg>
-  );
-}
 
 let cachedSystemFonts: string[] | null = null;
 

@@ -19,9 +19,6 @@ pub(crate) fn set_dictation_settings(
     settings: DictationSettings,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<(), String> {
-    if settings.key_code.trim().is_empty() {
-        return Err("快捷键不能为空".to_string());
-    }
     {
         let subtitle = state
             .subtitle_shortcut

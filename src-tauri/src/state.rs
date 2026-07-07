@@ -122,7 +122,12 @@ pub(crate) fn dictation_mods(settings: &DictationSettings) -> u8 {
     mods
 }
 
+/// 应用语音输入热键；key_code 为空表示未设置，直接清除即可。
 pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(), String> {
+    if settings.key_code.trim().is_empty() {
+        hotkey::clear_hotkey();
+        return Ok(());
+    }
     let vk = hotkey::code_to_vk(&settings.key_code)
         .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
     hotkey::set_hotkey(vk, dictation_mods(settings));

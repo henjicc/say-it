@@ -138,6 +138,24 @@ export function startShortcutCapture() {
   window.addEventListener("keydown", onCaptureKeydown, true);
 }
 
+export async function clearShortcut() {
+  const prev = { dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta };
+  dictKeyCode = "";
+  dictCtrl = false;
+  dictShift = false;
+  dictAlt = false;
+  dictMeta = false;
+  updateShortcutDisplay();
+  try {
+    await saveDictationSettings();
+    hooks.setStatus("已清除语音输入快捷键，语音输入将无法通过全局快捷键触发。");
+  } catch (error) {
+    ({ dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta } = prev);
+    updateShortcutDisplay();
+    hooks.setStatus(`清除失败：${String(error)}`, "err");
+  }
+}
+
 export function isCapturing() {
   return dictCapturing;
 }
@@ -173,6 +191,7 @@ export interface KeySig {
 
 function matchesDictHotkey(e: KeySig): boolean {
   return (
+    !!dictKeyCode &&
     e.code === dictKeyCode &&
     !!e.ctrlKey === dictCtrl &&
     !!e.shiftKey === dictShift &&
@@ -236,7 +255,7 @@ export async function loadDictationSettings() {
       meta?: boolean;
       inject_method?: "paste" | "type";
     }>(CMD.getDictationSettings);
-    dictKeyCode = d.key_code || "CapsLock";
+    dictKeyCode = d.key_code ?? "";
     dictCtrl = !!d.ctrl;
     dictShift = !!d.shift;
     dictAlt = !!d.alt;
@@ -244,7 +263,7 @@ export async function loadDictationSettings() {
     dictInjectMethod = d.inject_method || "paste";
     useDictationStore.setState({ injectMethod: dictInjectMethod });
     updateShortcutDisplay();
-    hooks.setStatus(`速记就绪，快捷键：${comboLabel()}`);
+    hooks.setStatus(dictKeyCode ? `速记就绪，快捷键：${comboLabel()}` : "速记就绪，当前未设置全局快捷键。");
   } catch (error) {
     hooks.setStatus(`读取速记设置失败：${String(error)}`, "err");
   }

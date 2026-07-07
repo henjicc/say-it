@@ -26,6 +26,7 @@ import { clearMicShutdownTimer, ensureMic, getBackendMicSampleRate, scheduleMicS
 
 export {
   startShortcutCapture,
+  clearShortcut,
   isCapturing,
   setInjectMethod,
   handleForwardedKeydown,

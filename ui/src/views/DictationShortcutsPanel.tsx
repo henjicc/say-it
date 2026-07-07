@@ -1,5 +1,6 @@
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
+import { ClearIcon } from "@/components/ui/icons";
 import { Button } from "@/components/ui/Button";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
@@ -8,7 +9,7 @@ import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useAudioDevices } from "@/features/audio/devices";
-import { startShortcutCapture, setInjectMethod } from "@/features/dictation/controller";
+import { startShortcutCapture, clearShortcut, setInjectMethod } from "@/features/dictation/controller";
 
 const DEFAULT_INPUT_VALUE = "";
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
@@ -55,12 +56,27 @@ export function DictationShortcutsPanel() {
         <FormGrid>
           <Field label="全局快捷键">
             <div className="flex items-stretch gap-2">
-              <Input
-                readOnly
-                value={capturing ? "请按下按键…" : shortcutLabel}
-                placeholder="未设置"
-                className={cn(capturing && "border-[var(--accent-ring)]")}
-              />
+              <div className="relative min-w-0 flex-1">
+                <Input
+                  readOnly
+                  value={capturing ? "请按下按键…" : shortcutLabel}
+                  placeholder="未设置"
+                  className={cn(
+                    capturing && "border-[var(--accent-ring)]",
+                    !capturing && shortcutLabel && "pr-9",
+                  )}
+                />
+                {!capturing && shortcutLabel && (
+                  <button
+                    type="button"
+                    aria-label="清除快捷键"
+                    onClick={clearShortcut}
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+                  >
+                    <ClearIcon />
+                  </button>
+                )}
+              </div>
               <Button className={shortcutActionButtonClassName} onClick={startShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
@@ -78,7 +94,8 @@ export function DictationShortcutsPanel() {
         </FormGrid>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
           按下此快捷键开始/停止语音输入，过程中按 Esc 可取消。默认使用 Caps Lock（大写锁定键），
-          用作语音键时不会切换大小写。点击「修改」后按下想用的按键即可。
+          用作语音键时不会切换大小写。点击「修改」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
+          清除后无法用全局快捷键触发，仍可在"语音输入"页手动点击开始/停止触发。
         </p>
       </SettingsSection>
     </div>

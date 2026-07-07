@@ -166,6 +166,13 @@ pub fn set_hotkey(vk: u16, mods: u8) {
     }
 }
 
+/// 清除语音输入热键（恢复未设置状态，语音输入将无法通过全局快捷键触发）。
+pub fn clear_hotkey() {
+    TARGET_VK.store(0, Ordering::SeqCst);
+    TARGET_MODS.store(0, Ordering::SeqCst);
+    TRIGGERED.store(false, Ordering::SeqCst);
+}
+
 /// 设置实时字幕专用热键（与语音输入完全独立）。
 pub fn set_subtitle_hotkey(vk: u16, mods: u8) {
     SUB_TARGET_VK.store(vk, Ordering::SeqCst);
@@ -281,7 +288,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         let target = TARGET_VK.load(Ordering::SeqCst);
         let mods = TARGET_MODS.load(Ordering::SeqCst);
 
-        if vk == target {
+        if target != 0 && vk == target {
             let lock = is_lock_key(target);
             if is_down {
                 if modifiers_match(mods) {
