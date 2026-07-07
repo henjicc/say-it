@@ -20,6 +20,10 @@ interface SubtitleConfig {
   fadeEnabled?: boolean;
   fadeDurationMs?: number;
   fadeEasing?: string;
+  translationEnabled?: boolean;
+  translationLayout?: "bilingual" | "translationOnly";
+  translationOrder?: "sourceFirst" | "translationFirst";
+  translationFontSize?: number;
 }
 
 const LABELS: Record<Exclude<Phase, "hidden">, string> = {
@@ -39,6 +43,7 @@ export function IndicatorApp() {
   const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
   const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
   const [hasText, setHasText] = useState(false);
+  const [translationText, setTranslationText] = useState("");
   const textElRef = useRef<HTMLDivElement>(null);
   const textFlowRef = useRef<HTMLDivElement>(null);
   const textContentRef = useRef<HTMLDivElement>(null);
@@ -167,11 +172,16 @@ export function IndicatorApp() {
     if (next === "hidden") {
       resetText();
       setWaveform({ active: false, level: 0, peaks: [] });
+      setTranslationText("");
     }
   });
 
   useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
     payload.fade ? swapText(payload.text || "") : renderText(payload.text || "");
+  });
+
+  useTauriEvent<{ text?: string }>(EVT.indicatorTranslation, (payload) => {
+    setTranslationText(payload.text || "");
   });
 
   useTauriEvent<{ active?: boolean; level?: number; peaks?: number[] }>(EVT.indicatorWaveform, (payload) => {
@@ -234,6 +244,12 @@ export function IndicatorApp() {
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
   const showProcessingPanel = mode === "dictation" && phase === "processing" && !hasText;
   const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
+  const showTranslationRow =
+    mode === "subtitle" &&
+    subtitleConfig.translationEnabled &&
+    subtitleConfig.translationLayout === "bilingual" &&
+    !!translationText;
+  const translationFirst = subtitleConfig.translationOrder === "translationFirst";
   const subtitleStyle =
     mode === "subtitle"
       ? ({
@@ -249,6 +265,7 @@ export function IndicatorApp() {
           "--subtitle-motion-easing": subtitleConfig.motionEasing || "ease-out",
           "--subtitle-fade-duration": `${subtitleConfig.fadeDurationMs ?? 180}ms`,
           "--subtitle-fade-easing": subtitleConfig.fadeEasing || "ease-out",
+          "--subtitle-translation-font-size": `${subtitleConfig.translationFontSize || 22}px`,
         } as React.CSSProperties)
       : undefined;
 
@@ -262,11 +279,13 @@ export function IndicatorApp() {
       }
       style={{ display: visible ? "flex" : "none", ...subtitleStyle }}
     >
+      {showTranslationRow && translationFirst && <div id="translation-text">{translationText}</div>}
       <div id="text" ref={textElRef} className="empty">
         <div id="text-flow" ref={textFlowRef}>
           <div id="text-content" ref={textContentRef} />
         </div>
       </div>
+      {showTranslationRow && !translationFirst && <div id="translation-text">{translationText}</div>}
       {(showWaveform || showProcessingPanel) && (
         <div
           id="signal-panel"

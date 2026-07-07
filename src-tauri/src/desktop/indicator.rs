@@ -130,6 +130,16 @@ pub(crate) fn set_indicator_text(app: tauri::AppHandle, text: String, fade: Opti
     Ok(())
 }
 
+/// 字幕翻译的第二行文本通道，与 `set_indicator_text`（原文）相互独立，
+/// 便于双语字幕分别控制各自内容而不互相打断动画。
+#[tauri::command]
+pub(crate) fn set_indicator_translation(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+        let _ = window.emit("dictation-indicator-translation", json!({ "text": text }));
+    }
+    Ok(())
+}
+
 /// 返回指示器窗口所在显示器的逻辑尺寸，供前端把百分比换算成像素。
 #[tauri::command]
 pub(crate) fn get_indicator_monitor_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {

@@ -100,7 +100,8 @@ pub fn funasr_profile() -> ProviderProfile {
         kind: "alibabacloud-funasr".to_string(),
         display_name: "阿里云百炼".to_string(),
         auth_kind: "api-key".to_string(),
-        capabilities: vec!["asr".to_string()],
+        // 同一把百炼 Key 同时供 ASR 识别与 Qwen-MT 翻译（llm 能力）使用，不新增独立供应商。
+        capabilities: vec!["asr".to_string(), "llm".to_string()],
         enabled: true,
         config: json!({
             "apiKey": "",
@@ -254,7 +255,9 @@ mod tests {
         assert_eq!(profile.config["hotwords"][0]["text"], "说吧");
         assert_eq!(profile.config["vocabularyIds"]["fun-asr-realtime"], "vocab-123");
         assert_eq!(normalized.defaults.asr, "funasr");
-        assert_eq!(normalized.defaults.llm, "");
+        // funasr 现在也带 llm 能力，未设置过 defaults.llm 的旧状态会自动回落到它，
+        // 这样 resolve_provider_id(_, "llm", None) 才能直接找到可用供应商。
+        assert_eq!(normalized.defaults.llm, "funasr");
     }
 
     #[test]
@@ -279,11 +282,15 @@ mod tests {
     fn capability_helpers_are_generic_and_not_hardcoded_to_asr() {
         let settings = ProviderSettings::default();
         assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "asr"));
-        assert!(!has_capability(&settings, FUNASR_PROVIDER_ID, "llm"));
+        // funasr（阿里云百炼）同时承担 Qwen-MT 翻译，带 llm 能力。
+        assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "llm"));
         assert_eq!(default_provider_id(&settings, "llm"), "");
 
         let mut settings = settings;
-        let err = set_default_provider(&mut settings, "llm", FUNASR_PROVIDER_ID).unwrap_err();
+        set_default_provider(&mut settings, "llm", FUNASR_PROVIDER_ID).unwrap();
+        assert_eq!(default_provider_id(&settings, "llm"), FUNASR_PROVIDER_ID);
+
+        let err = set_default_provider(&mut settings, "llm", "unknown-provider").unwrap_err();
         assert!(err.contains("不支持"));
     }
 

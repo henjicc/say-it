@@ -3,6 +3,11 @@ import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedRealtimeModel,
 } from "@/features/asr/modelOptions";
+import { TRANSLATION_MODEL_NONE, isSupportedTranslationModel } from "@/features/translation/models";
+import {
+  DEFAULT_TRANSLATION_SOURCE_LANG,
+  DEFAULT_TRANSLATION_TARGET_LANG,
+} from "@/features/translation/languages";
 
 /**
  * 声音来源用一个字符串 id 表达："mic:default" / "system:default" 是最上面的
@@ -29,6 +34,10 @@ export function parseSubtitleSource(source: SubtitleSource): { kind: SubtitleSou
 export type SubtitleAnchor = "top" | "center" | "bottom";
 export type SubtitleMode = "scroll" | "replace";
 export type SubtitleAnimationEasing = "ease-out" | "ease-in-out" | "linear" | "ease-in";
+/** 双语时的显示范围：bilingual = 原文+译文都显示；translationOnly = 只显示译文。 */
+export type SubtitleTranslationLayout = "bilingual" | "translationOnly";
+/** 双语时的上下顺序。 */
+export type SubtitleTranslationOrder = "sourceFirst" | "translationFirst";
 
 export interface SubtitlePrefs {
   source: SubtitleSource;
@@ -55,6 +64,12 @@ export interface SubtitlePrefs {
   fadeEnabled: boolean;
   fadeDurationMs: number;
   fadeEasing: SubtitleAnimationEasing;
+  /** 字幕翻译所用的 Qwen-MT 模型；空串表示关闭翻译。 */
+  translationModel: string;
+  translationSourceLang: string;
+  translationTargetLang: string;
+  translationLayout: SubtitleTranslationLayout;
+  translationOrder: SubtitleTranslationOrder;
 }
 
 type Tone = "" | "ok" | "err";
@@ -97,6 +112,11 @@ const defaults = (): SubtitlePrefs => ({
   fadeEnabled: true,
   fadeDurationMs: 180,
   fadeEasing: "ease-out",
+  translationModel: TRANSLATION_MODEL_NONE,
+  translationSourceLang: DEFAULT_TRANSLATION_SOURCE_LANG,
+  translationTargetLang: DEFAULT_TRANSLATION_TARGET_LANG,
+  translationLayout: "bilingual",
+  translationOrder: "sourceFirst",
 });
 
 const SUBTITLE_ANIMATION_EASINGS: SubtitleAnimationEasing[] = ["ease-out", "ease-in-out", "linear", "ease-in"];
@@ -132,6 +152,13 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     fadeEnabled: prefs.fadeEnabled !== false,
     fadeDurationMs: Math.min(500, Math.max(60, Number(prefs.fadeDurationMs) || 180)),
     fadeEasing: clampEasing(prefs.fadeEasing, "ease-out"),
+    translationModel: isSupportedTranslationModel(prefs.translationModel)
+      ? prefs.translationModel
+      : TRANSLATION_MODEL_NONE,
+    translationSourceLang: prefs.translationSourceLang || DEFAULT_TRANSLATION_SOURCE_LANG,
+    translationTargetLang: prefs.translationTargetLang || DEFAULT_TRANSLATION_TARGET_LANG,
+    translationLayout: prefs.translationLayout === "translationOnly" ? "translationOnly" : "bilingual",
+    translationOrder: prefs.translationOrder === "translationFirst" ? "translationFirst" : "sourceFirst",
   };
 }
 

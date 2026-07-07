@@ -2,6 +2,7 @@ mod customization;
 mod protocol;
 mod realtime;
 mod transcription;
+mod translation;
 mod uploads;
 mod urls;
 
@@ -16,4 +17,5 @@ pub use transcription::{
     submit_transcription_task, uses_async_transcription_task, TranscriptionParams,
     TranscriptionTaskStatus,
 };
+pub use translation::translate_streaming;
 pub use uploads::upload_for_model;
