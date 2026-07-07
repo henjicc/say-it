@@ -7,301 +7,39 @@ import {
   parseClock,
   type EditableCue,
 } from "@/features/transcription/subtitles";
-
-const BASE_PX_PER_SEC = 60;
-const MIN_CUE_MS = 100;
-const NUDGE_MS = 100;
-/** 默认间隙合并阈值：参考 Netflix 字幕规范「相邻字幕至少间隔 2 帧」（24~30fps 约 66~83ms），
- * 小于该间隔人眼会感知为闪烁而非有意的切换停顿；留出余量取 200ms 作为默认阈值。 */
-const DEFAULT_GAP_MERGE_MS = 200;
-const SNAP_DISTANCE_PX = 8;
-const RATE_OPTIONS = [0.75, 1, 1.25, 1.5];
-const TIMELINE_ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
-const WAVEFORM_ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
-const TIMELINE_HEIGHT = 118;
-const WAVEFORM_HEIGHT = 52;
-const WAVEFORM_TOP = 24;
-const WAVEFORM_PADDING = 7;
-const CUE_LANE_TOP = 82;
-const CUE_LANE_HEIGHT = 26;
-const CUE_BLOCK_TOP = 81;
-const MIN_WAVEFORM_BUCKETS = 240;
-const MAX_WAVEFORM_BUCKETS = 6000;
-/** 播放头与媒体时钟漂移超过该值视为主动 seek 等真实跳变，直接硬对齐。 */
-const PLAYHEAD_HARD_SNAP_MS = 300;
-/** 每帧允许用于追平漂移的速度占比：0.15 表示播放头最快以 0.85x/1.15x 的速度缓慢校准，视觉不可察觉。 */
-const PLAYHEAD_MAX_CORRECTION_RATIO = 0.15;
-
-type DragMode = "move" | "left" | "right";
-
-interface DragState {
-  id: string;
-  mode: DragMode;
-  startX: number;
-  beginMs: number;
-  endMs: number;
-}
-
-interface PanState {
-  startX: number;
-  startScrollLeft: number;
-}
-
-interface WaveformColumn {
-  min: number;
-  max: number;
-}
-
-interface CueNeighbors {
-  prevEnd: number;
-  nextBegin: number;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function formatZoom(scale: number) {
-  return `${Math.round(scale * 100)}%`;
-}
-
-function isTypingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tagName = target.tagName;
-  // 不含 BUTTON：编辑页内空格键始终用于播放/暂停，不应被"此前点过的按钮仍持有焦点"劫持
-  // （典型场景：点击窗口标题栏的最大化按钮后再按空格，浏览器会把空格当成对该按钮的默认点击）。
-  return tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT";
-}
-
-function isInteractiveTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement
-    && !!target.closest("button, input, textarea, select, a, label");
-}
-
-const MAIN_THREAD_YIELD_BUDGET_MS = 8;
-
-function yieldToMain() {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
-/** 逐采样点扫描 min/max 是纯同步计算，长音频会连续占用主线程数百毫秒，
- * 期间驱动播放头的 requestAnimationFrame 会被阻塞、错过多帧，
- * 解除阻塞后一次性读到已经前进很多的 currentTime，观感上就是播放头卡顿后突然前跳。
- * 因此按耗时切片，定期让出主线程，避免播放头同步被压住。 */
-async function buildWaveformColumns(buffer: AudioBuffer, bucketCount: number, signal?: AbortSignal) {
-  const channelCount = Math.max(1, buffer.numberOfChannels);
-  const channels = Array.from({ length: channelCount }, (_, index) => buffer.getChannelData(index));
-  const sampleCount = channels[0]?.length || 0;
-  if (sampleCount === 0) return [];
-
-  const safeBucketCount = Math.max(1, Math.min(bucketCount, sampleCount));
-  const samplesPerBucket = Math.max(1, Math.floor(sampleCount / safeBucketCount));
-  const columns: WaveformColumn[] = new Array(safeBucketCount);
-  let globalMax = 0;
-  let sliceStartedAt = performance.now();
-
-  for (let bucketIndex = 0; bucketIndex < safeBucketCount; bucketIndex += 1) {
-    const start = bucketIndex * samplesPerBucket;
-    const end = bucketIndex === safeBucketCount - 1 ? sampleCount : Math.min(sampleCount, start + samplesPerBucket);
-    let min = 1;
-    let max = -1;
-    for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
-      for (const channel of channels) {
-        const value = channel[sampleIndex] || 0;
-        if (value < min) min = value;
-        if (value > max) max = value;
-      }
-    }
-    const absPeak = Math.max(Math.abs(min), Math.abs(max));
-    if (absPeak > globalMax) globalMax = absPeak;
-    columns[bucketIndex] = { min, max };
-
-    if (performance.now() - sliceStartedAt > MAIN_THREAD_YIELD_BUDGET_MS) {
-      await yieldToMain();
-      if (signal?.aborted) return [];
-      sliceStartedAt = performance.now();
-    }
-  }
-
-  if (globalMax <= 0) {
-    return columns.map(() => ({ min: 0, max: 0 }));
-  }
-
-  return columns.map((column) => ({
-    min: clamp(column.min / globalMax, -1, 1),
-    max: clamp(column.max / globalMax, -1, 1),
-  }));
-}
-
-function drawWaveformCanvas(
-  canvas: HTMLCanvasElement | null,
-  columns: WaveformColumn[],
-  cssWidth: number,
-  cssHeight: number,
-  waveformScale: number,
-) {
-  if (!canvas) return;
-  const width = Math.max(1, Math.round(cssWidth));
-  const height = Math.max(1, Math.round(cssHeight));
-  if (canvas.width !== width) canvas.width = width;
-  if (canvas.height !== height) canvas.height = height;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(10, 13, 19, 0.94)";
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, height / 2);
-  ctx.lineTo(width, height / 2);
-  ctx.stroke();
-
-  if (columns.length === 0) return;
-
-  ctx.strokeStyle = "rgba(139, 171, 255, 0.92)";
-  ctx.lineWidth = 1;
-  const amplitude = Math.max(1, (height / 2 - WAVEFORM_PADDING) * waveformScale);
-  const bucketSize = columns.length / width;
-  for (let x = 0; x < width; x += 1) {
-    const begin = Math.floor(x * bucketSize);
-    const end = Math.max(begin + 1, Math.floor((x + 1) * bucketSize));
-    let min = 1;
-    let max = -1;
-    for (let i = begin; i < end && i < columns.length; i += 1) {
-      min = Math.min(min, columns[i].min);
-      max = Math.max(max, columns[i].max);
-    }
-    const y1 = height / 2 - max * amplitude;
-    const y2 = height / 2 - min * amplitude;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, y1);
-    ctx.lineTo(x + 0.5, y2);
-    ctx.stroke();
-  }
-}
-
-function joinTexts(a: string, b: string) {
-  const left = a.trimEnd();
-  const right = b.trimStart();
-  if (!left) return right;
-  if (!right) return left;
-  return /[a-zA-Z0-9]$/.test(left) && /^[a-zA-Z0-9]/.test(right) ? `${left} ${right}` : `${left}${right}`;
-}
-
-function TimeInput({
-  valueMs,
-  onCommit,
-  title,
-}: {
-  valueMs: number;
-  onCommit: (ms: number) => void;
-  title: string;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  return (
-    <input
-      type="text"
-      title={title}
-      value={draft ?? formatClock(valueMs)}
-      onChange={(event) => setDraft(event.target.value)}
-      onFocus={(event) => event.target.select()}
-      onBlur={() => {
-        if (draft !== null) {
-          const ms = parseClock(draft);
-          if (ms !== null) onCommit(ms);
-          setDraft(null);
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") event.currentTarget.blur();
-        if (event.key === "Escape") {
-          setDraft(null);
-          event.currentTarget.blur();
-        }
-      }}
-      className={cn(
-        "h-7 w-[5.75rem] rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)]",
-        "text-center font-mono text-xs tabular-nums text-[var(--color-fg-muted)]",
-        "transition-colors duration-[var(--dur-fast)] focus:outline-none focus:border-[var(--accent-ring)]",
-      )}
-    />
-  );
-}
-
-function CueTextarea({
-  value,
-  onChange,
-  textareaRef,
-}: {
-  value: string;
-  onChange: (text: string) => void;
-  textareaRef?: (node: HTMLTextAreaElement | null) => void;
-}) {
-  const localRef = useRef<HTMLTextAreaElement | null>(null);
-  useEffect(() => {
-    const el = localRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
-
-  return (
-    <textarea
-      ref={(node) => {
-        localRef.current = node;
-        textareaRef?.(node);
-      }}
-      value={value}
-      rows={1}
-      onChange={(event) => onChange(event.target.value)}
-      placeholder="（空字幕）"
-      className={cn(
-        "mt-1.5 w-full resize-none overflow-hidden rounded-[var(--radius-sm)] border border-transparent bg-transparent px-2 py-1 text-sm leading-6",
-        "text-[var(--color-fg-muted)] transition-colors duration-[var(--dur-fast)] placeholder:text-[var(--color-fg-faint)]",
-        "hover:border-[var(--color-line)] focus:border-[var(--accent-ring)] focus:bg-[var(--color-surface)] focus:outline-none",
-      )}
-    />
-  );
-}
-
-function TimeControl({
-  label,
-  valueMs,
-  onCommit,
-  onSetPlayhead,
-}: {
-  label: string;
-  valueMs: number;
-  onCommit: (ms: number) => void;
-  onSetPlayhead: () => void;
-}) {
-  const iconButton =
-    "flex h-7 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-xs " +
-    "text-[var(--color-fg-subtle)] transition-colors duration-[var(--dur-fast)] hover:border-[var(--color-line)] " +
-    "hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]";
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      <TimeInput valueMs={valueMs} onCommit={onCommit} title={`${label}时间（mm:ss.mmm，回车确认）`} />
-      <button type="button" title={`${label}设为播放头位置`} className={iconButton} onClick={onSetPlayhead}>
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" className="h-3.5 w-3.5" aria-hidden>
-          <path d="M8 2v12" />
-          <circle cx="8" cy="8" r="3.2" />
-        </svg>
-      </button>
-      <button type="button" title={`${label} -0.1 秒`} className={iconButton} onClick={() => onCommit(Math.max(0, valueMs - NUDGE_MS))}>
-        −
-      </button>
-      <button type="button" title={`${label} +0.1 秒`} className={iconButton} onClick={() => onCommit(valueMs + NUDGE_MS)}>
-        +
-      </button>
-    </span>
-  );
-}
+import {
+  BASE_PX_PER_SEC,
+  MIN_CUE_MS,
+  DEFAULT_GAP_MERGE_MS,
+  SNAP_DISTANCE_PX,
+  RATE_OPTIONS,
+  TIMELINE_ZOOM_LEVELS,
+  WAVEFORM_ZOOM_LEVELS,
+  TIMELINE_HEIGHT,
+  WAVEFORM_HEIGHT,
+  WAVEFORM_TOP,
+  CUE_LANE_TOP,
+  CUE_LANE_HEIGHT,
+  CUE_BLOCK_TOP,
+  MIN_WAVEFORM_BUCKETS,
+  MAX_WAVEFORM_BUCKETS,
+  PLAYHEAD_HARD_SNAP_MS,
+  PLAYHEAD_MAX_CORRECTION_RATIO,
+} from "./subtitle-editor/constants";
+import {
+  clamp,
+  formatZoom,
+  isTypingTarget,
+  isInteractiveTarget,
+  joinTexts,
+  type DragMode,
+  type DragState,
+  type PanState,
+  type CueNeighbors,
+} from "./subtitle-editor/utils";
+import { buildWaveformColumns, drawWaveformCanvas, type WaveformColumn } from "./subtitle-editor/waveform";
+import { CueTextarea } from "./subtitle-editor/CueTextarea";
+import { TimeControl } from "./subtitle-editor/TimeControl";
 
 export function SubtitleEditor({
   mediaPath,
