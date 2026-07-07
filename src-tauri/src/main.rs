@@ -30,6 +30,11 @@ fn set_debug_log(enabled: bool) {
     DEBUG_LOG.store(enabled, Ordering::Relaxed);
 }
 
+#[tauri::command]
+fn set_hotkey_capturing(active: bool) {
+    hotkey::set_capturing(active);
+}
+
 #[macro_export]
 macro_rules! dlog {
     ($($arg:tt)*) => {{
@@ -236,6 +241,7 @@ fn main() {
             set_indicator_layout,
             get_indicator_monitor_metrics,
             set_debug_log,
+            set_hotkey_capturing,
             run_asr_silence_test,
             get_local_file_info,
             save_text_file,

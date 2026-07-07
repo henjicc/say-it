@@ -20,6 +20,7 @@ import {
   handleForwardedKeyup,
   installFocusHotkeyFallback,
   loadDictationSettings,
+  handleCaptureLockKey,
 } from "./hotkeys";
 import { pushIndicatorText, pushIndicatorWaveform, resetIndicatorPreview } from "./indicatorBridge";
 import { clearMicShutdownTimer, ensureMic, getBackendMicSampleRate, scheduleMicShutdown, shutdownMic } from "./micSession";
@@ -33,6 +34,7 @@ export {
   handleForwardedKeyup,
   installFocusHotkeyFallback,
   loadDictationSettings,
+  handleCaptureLockKey,
 } from "./hotkeys";
 
 type Tone = "" | "ok" | "err";

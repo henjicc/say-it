@@ -118,7 +118,7 @@ body,
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   transform: translate3d(0, 0, 0);
-  transition: transform 0.12s ease-out;
+  transition: transform var(--subtitle-motion-duration, 120ms) var(--subtitle-motion-easing, ease-out);
   will-change: transform;
   backface-visibility: hidden;
 }
@@ -220,8 +220,24 @@ body,
   height: calc(var(--text-line-height) * var(--subtitle-lines, 2));
 }
 
+/* 单句替换：强制单行不换行，宽度随内容撑开，由 JS 计算左右平移代替换行后的上下滚动 */
+.subtitle-replace #text-content {
+  right: auto;
+  white-space: nowrap;
+}
+
+/* 关闭"位移动画"：内容更新时直接落位，不做过渡滑动 */
+.no-motion #text-content {
+  transition: none;
+}
+
 .fresh {
-  animation: freshIn 0.18s ease-out both;
+  animation: freshIn var(--subtitle-fade-duration, 180ms) var(--subtitle-fade-easing, ease-out) both;
+}
+
+/* 关闭"淡入动画"：新内容直接显示，不做不透明度过渡 */
+.no-fade .fresh {
+  animation: none;
 }
 
 .swap-in {

@@ -1,4 +1,4 @@
-import { CMD, cmd } from "@/lib/tauri";
+import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useDictationStore } from "@/store/useDictationStore";
 
 type Tone = "" | "ok" | "err";
@@ -87,10 +87,36 @@ async function saveDictationSettings() {
 }
 
 // ---- 快捷键捕获 ----
+// 捕获期间通知 Rust 侧：任意锁定键（CapsLock/NumLock/ScrollLock）一律吞掉、只上报，
+// 不会真的切换大小写等状态——否则拿 CapsLock 绑快捷键时，按下的瞬间会先切换一次
+// 大小写，绑定后该键又被永久吞掉，导致没法再用它把状态切回去。
 function stopShortcutCapture() {
   dictCapturing = false;
   useDictationStore.setState({ capturing: false });
   window.removeEventListener("keydown", onCaptureKeydown, true);
+  cmdSilent(CMD.setHotkeyCapturing, { active: false });
+}
+
+async function completeCapture(
+  code: string,
+  mods: { ctrl: boolean; shift: boolean; alt: boolean; meta: boolean },
+) {
+  const prev = { dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta };
+  dictKeyCode = code;
+  dictCtrl = mods.ctrl;
+  dictShift = mods.shift;
+  dictAlt = mods.alt;
+  dictMeta = mods.meta;
+  stopShortcutCapture();
+  updateShortcutDisplay();
+  try {
+    await saveDictationSettings();
+    hooks.setStatus(`快捷键已设为：${comboLabel()}（在任意软件中按下即可）`, "ok");
+  } catch (error) {
+    ({ dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta } = prev);
+    updateShortcutDisplay();
+    hooks.setStatus(`设置失败：${String(error)}`, "err");
+  }
 }
 
 async function onCaptureKeydown(event: KeyboardEvent) {
@@ -109,22 +135,27 @@ async function onCaptureKeydown(event: KeyboardEvent) {
     return;
   }
 
-  const prev = { dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta };
-  dictKeyCode = event.code;
-  dictCtrl = event.ctrlKey;
-  dictShift = event.shiftKey;
-  dictAlt = event.altKey;
-  dictMeta = event.metaKey;
-  stopShortcutCapture();
-  updateShortcutDisplay();
-  try {
-    await saveDictationSettings();
-    hooks.setStatus(`快捷键已设为：${comboLabel()}（在任意软件中按下即可）`, "ok");
-  } catch (error) {
-    ({ dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta } = prev);
-    updateShortcutDisplay();
-    hooks.setStatus(`设置失败：${String(error)}`, "err");
-  }
+  await completeCapture(event.code, {
+    ctrl: event.ctrlKey,
+    shift: event.shiftKey,
+    alt: event.altKey,
+    meta: event.metaKey,
+  });
+}
+
+// 锁定键被 Rust 侧吞掉后不会产生 DOM keydown 事件，只能靠这个上报的虚拟键码识别；
+// 这几个键的绑定几乎总是单独使用，因此不追加修饰键状态。
+const LOCK_KEY_VK_TO_CODE: Record<number, string> = {
+  0x14: "CapsLock",
+  0x90: "NumLock",
+  0x91: "ScrollLock",
+};
+
+export function handleCaptureLockKey(vk: number) {
+  if (!dictCapturing) return;
+  const code = LOCK_KEY_VK_TO_CODE[vk];
+  if (!code) return;
+  completeCapture(code, { ctrl: false, shift: false, alt: false, meta: false });
 }
 
 export function startShortcutCapture() {
@@ -136,6 +167,7 @@ export function startShortcutCapture() {
   dictCapturing = true;
   useDictationStore.setState({ capturing: true });
   window.addEventListener("keydown", onCaptureKeydown, true);
+  cmdSilent(CMD.setHotkeyCapturing, { active: true });
 }
 
 export async function clearShortcut() {

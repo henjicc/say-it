@@ -25,6 +25,7 @@ import {
   parseSubtitleSource,
   type SubtitleAnchor,
   type SubtitleMode,
+  type SubtitleAnimationEasing,
 } from "@/store/useSubtitleStore";
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -59,6 +60,13 @@ const anchorLabel: Record<SubtitleAnchor, string> = {
   center: "屏幕中部",
   top: "屏幕顶部",
 };
+
+const ANIMATION_EASING_OPTIONS: { value: SubtitleAnimationEasing; label: string }[] = [
+  { value: "ease-out", label: "缓出（先快后慢）" },
+  { value: "ease-in-out", label: "缓入缓出" },
+  { value: "linear", label: "匀速" },
+  { value: "ease-in", label: "缓入（先慢后快）" },
+];
 
 function MonitorIcon() {
   return (
@@ -303,6 +311,72 @@ export function RealtimeSubtitlesPanel() {
         <FormGrid>
           <ColorField label="字体颜色" value={prefs.textColor} onChange={(textColor) => patch({ textColor })} />
           <ColorField label="背景颜色" value={prefs.backgroundColor} onChange={(backgroundColor) => patch({ backgroundColor })} />
+        </FormGrid>
+      </SettingsSection>
+
+      <SettingsSection title="字幕动画">
+        <p className="text-xs text-[var(--color-fg-subtle)]">
+          位移动画用于单句替换的左右平移、滚动累积的上下滚动；淡入动画用于新增文字出现时的不透明度过渡。
+        </p>
+        <FormGrid>
+          <Field layout="row" label="位移动画">
+            <Switch
+              checked={prefs.motionEnabled}
+              onChange={(motionEnabled) => patch({ motionEnabled })}
+              label="位移动画"
+            />
+          </Field>
+          <Field layout="row" label="淡入动画">
+            <Switch checked={prefs.fadeEnabled} onChange={(fadeEnabled) => patch({ fadeEnabled })} label="淡入动画" />
+          </Field>
+        </FormGrid>
+
+        <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+          <Slider
+            label="位移时长"
+            min={60}
+            max={400}
+            step={10}
+            value={prefs.motionDurationMs}
+            onChange={(motionDurationMs) => patch({ motionDurationMs })}
+            format={(v) => `${v}ms`}
+          />
+          <Slider
+            label="淡入时长"
+            min={60}
+            max={500}
+            step={10}
+            value={prefs.fadeDurationMs}
+            onChange={(fadeDurationMs) => patch({ fadeDurationMs })}
+            format={(v) => `${v}ms`}
+          />
+        </div>
+
+        <FormGrid>
+          <Field layout="row" label="位移曲线">
+            <Select
+              value={prefs.motionEasing}
+              onChange={(event) => patch({ motionEasing: event.target.value as SubtitleAnimationEasing })}
+            >
+              {ANIMATION_EASING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field layout="row" label="淡入曲线">
+            <Select
+              value={prefs.fadeEasing}
+              onChange={(event) => patch({ fadeEasing: event.target.value as SubtitleAnimationEasing })}
+            >
+              {ANIMATION_EASING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
         </FormGrid>
       </SettingsSection>
     </div>

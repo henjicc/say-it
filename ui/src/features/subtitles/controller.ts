@@ -18,6 +18,7 @@ import {
   installSubtitleFocusHotkeyFallback,
   handleForwardedSubtitleKeydown,
   handleForwardedSubtitleKeyup,
+  handleSubtitleCaptureLockKey,
 } from "./hotkeys";
 
 export {
@@ -28,6 +29,7 @@ export {
   installSubtitleFocusHotkeyFallback,
   handleForwardedSubtitleKeydown,
   handleForwardedSubtitleKeyup,
+  handleSubtitleCaptureLockKey,
 } from "./hotkeys";
 
 let subtitleSessionId: string | null = null;
@@ -36,6 +38,14 @@ let busy = false;
 let committedLines: string[] = [];
 let currentSegment = "";
 let displayText = "";
+
+// 单句替换模式下，当前这一行里"已经说完、确定不会再变"的文本——可能是跨了好几次
+// 断句（说话中间停顿）拼起来的，只有停顿时间超过 REPLACE_LINE_CONTINUE_GAP_MS 才清空重开一行。
+let replaceModeLine = "";
+let replaceModeLineAt = 0;
+const REPLACE_LINE_CONTINUE_GAP_MS = 2500;
+const REPLACE_LINE_MAX_CHARS = 1800;
+const REPLACE_LINE_SEPARATOR = " ";
 
 const MAX_RECONNECT_ATTEMPTS = 6;
 let reconnecting = false;
@@ -120,6 +130,12 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
       backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
       rounded: prefs.rounded,
       width,
+      motionEnabled: prefs.motionEnabled,
+      motionDurationMs: prefs.motionDurationMs,
+      motionEasing: prefs.motionEasing,
+      fadeEnabled: prefs.fadeEnabled,
+      fadeDurationMs: prefs.fadeDurationMs,
+      fadeEasing: prefs.fadeEasing,
     },
   });
 }
@@ -148,7 +164,11 @@ function renderSubtitle(nextSegment = currentSegment) {
   const stable = committedLines.join("\n");
   const next =
     prefs.mode === "replace"
-      ? nextSegment || committedLines[committedLines.length - 1] || ""
+      ? nextSegment
+        ? replaceModeLine
+          ? `${replaceModeLine}${REPLACE_LINE_SEPARATOR}${nextSegment}`
+          : nextSegment
+        : replaceModeLine
       : [stable, nextSegment].filter(Boolean).join(stable && nextSegment ? "\n" : "");
   displayText = next.length > 1800 ? next.slice(-1800).replace(/^\s+/, "") : next;
   useSubtitleStore.getState().setRuntime({ latestText: displayText });
@@ -239,6 +259,8 @@ async function startSubtitles() {
   committedLines = [];
   currentSegment = "";
   displayText = "";
+  replaceModeLine = "";
+  replaceModeLineAt = 0;
   reconnectAttempts = 0;
   clearMicShutdownTimer();
   await syncSubtitleIndicator(prefs);
@@ -270,6 +292,8 @@ async function stopSubtitles() {
   subtitleSessionId = null;
   currentSegment = "";
   committedLines = [];
+  replaceModeLine = "";
+  replaceModeLineAt = 0;
   await cmdSilent(CMD.pauseBackendMic);
   scheduleMicShutdown(pushLog);
   await cmdSilent(CMD.pauseBackendSystemAudio);
@@ -321,12 +345,25 @@ export function handleSubtitleAsrEvent(data: {
     reconnectAttempts = 0;
     const text = data.payload?.text || "";
     if (text) {
+      if (!currentSegment && useSubtitleStore.getState().prefs.mode === "replace") {
+        // 新一句话的第一个 partial：停顿超过阈值才当作新话题清空重开一行，
+        // 否则接着贴在上一行后面，避免说话中间一停顿整行就被顶掉。
+        if (Date.now() - replaceModeLineAt > REPLACE_LINE_CONTINUE_GAP_MS) replaceModeLine = "";
+      }
       currentSegment = text;
       renderSubtitle(text);
     }
     if (data.payload?.final && currentSegment.trim()) {
-      committedLines.push(currentSegment.trim());
+      const finished = currentSegment.trim();
+      committedLines.push(finished);
       committedLines = committedLines.slice(-12);
+      if (useSubtitleStore.getState().prefs.mode === "replace") {
+        replaceModeLine = replaceModeLine ? `${replaceModeLine}${REPLACE_LINE_SEPARATOR}${finished}` : finished;
+        if (replaceModeLine.length > REPLACE_LINE_MAX_CHARS) {
+          replaceModeLine = replaceModeLine.slice(-REPLACE_LINE_MAX_CHARS);
+        }
+        replaceModeLineAt = Date.now();
+      }
       currentSegment = "";
       renderSubtitle("");
     }

@@ -46,12 +46,17 @@ static SUB_TARGET_VK: AtomicU16 = AtomicU16::new(0);
 static SUB_TARGET_MODS: AtomicU8 = AtomicU8::new(0);
 static SUB_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
+// 正在“设置快捷键”界面等待用户按键：此时任意锁定键（CapsLock/NumLock/ScrollLock）
+// 一律吞掉、只上报按键，不让它真的切换锁定状态——避免设置过程中意外切换大小写。
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+
 static APP: OnceLock<AppHandle> = OnceLock::new();
 // 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
 // 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
 static TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
@@ -86,6 +91,14 @@ pub fn init(app: AppHandle) {
     std::thread::spawn(move || {
         while sub_rx.recv().is_ok() {
             emit_subtitle_toggle();
+        }
+    });
+
+    let (capture_tx, capture_rx) = channel::<u16>();
+    let _ = CAPTURE_TX.set(Mutex::new(capture_tx));
+    std::thread::spawn(move || {
+        while let Ok(vk) = capture_rx.recv() {
+            emit_capture_lock_key(vk);
         }
     });
 
@@ -190,6 +203,12 @@ pub fn clear_subtitle_hotkey() {
     SUB_TRIGGERED.store(false, Ordering::SeqCst);
 }
 
+/// 前端“设置快捷键”界面开始/结束等待按键时调用。开启期间锁定键一律被钩子吞掉，
+/// 只上报按了哪个键，不会真的切换大小写/NumLock/ScrollLock。
+pub fn set_capturing(active: bool) {
+    CAPTURING.store(active, Ordering::SeqCst);
+}
+
 fn is_lock_key(vk: u16) -> bool {
     vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL
 }
@@ -258,6 +277,20 @@ fn emit_subtitle_toggle() {
     }
 }
 
+fn emit_capture_lock_key(vk: u16) {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("hotkey-capture-lock-key", json!({ "vk": vk }));
+    }
+}
+
+fn signal_capture_lock_key(vk: u16) {
+    if let Some(lock) = CAPTURE_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(vk);
+        }
+    }
+}
+
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -271,6 +304,15 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         let message = wparam.0 as u32;
         let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
         let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
+
+        // 正在设置快捷键：锁定键一律吞掉、只上报，不让它真的切换大小写等状态，
+        // 避免用户拿 CapsLock 之类的锁定键绑定快捷键时意外触发/卡死锁定状态。
+        if CAPTURING.load(Ordering::SeqCst) && is_lock_key(vk) {
+            if is_down {
+                signal_capture_lock_key(vk);
+            }
+            return LRESULT(1);
+        }
 
         if vk == VK_ESCAPE {
             if is_down && DICTATION_ACTIVE.load(Ordering::SeqCst) {

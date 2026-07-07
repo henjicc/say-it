@@ -14,6 +14,12 @@ interface SubtitleConfig {
   backgroundColor?: string;
   rounded?: number;
   width?: number;
+  motionEnabled?: boolean;
+  motionDurationMs?: number;
+  motionEasing?: string;
+  fadeEnabled?: boolean;
+  fadeDurationMs?: number;
+  fadeEasing?: string;
 }
 
 const LABELS: Record<Exclude<Phase, "hidden">, string> = {
@@ -70,18 +76,37 @@ export function IndicatorApp() {
     displayedText.current = next;
   };
 
-  const applyScroll = () => {
+  const applyScroll = (skipAnimation = false) => {
     const content = textContentRef.current;
     const flow = textFlowRef.current;
     if (!content || !flow) return;
-    // 单句替换模式框高只留 1 行，但一句话说久了内容仍可能换行溢出；
-    // 这里统一按溢出量向上滚动，让最新说的内容始终留在可见行内，不会被锁在框顶而"卡住不更新"。
-    const overflow = content.scrollHeight - flow.clientHeight;
-    const offset = overflow > 0 ? overflow : 0;
-    const next = `translate3d(0, ${-offset}px, 0)`;
+    let next: string;
+    if (isReplaceMode) {
+      // 单句替换模式强制单行不换行，靠左右平移展示：句子短时居中，
+      // 超出框宽后贴右边显示最新内容、旧内容向左流出，避免像滚动模式那样整句被上下顶掉。
+      const overflow = content.scrollWidth - flow.clientWidth;
+      const offset = overflow > 0 ? -overflow : (flow.clientWidth - content.scrollWidth) / 2;
+      next = `translate3d(${offset}px, 0, 0)`;
+    } else {
+      // 滚动累积模式框高只留固定行数，但内容可能超出；
+      // 这里统一按溢出量向上滚动，让最新说的内容始终留在可见区域内，不会被锁在框顶而"卡住不更新"。
+      const overflow = content.scrollHeight - flow.clientHeight;
+      const offset = overflow > 0 ? overflow : 0;
+      next = `translate3d(0, ${-offset}px, 0)`;
+    }
     if (next !== lastTransform.current) {
       lastTransform.current = next;
-      content.style.transform = next;
+      if (skipAnimation) {
+        // 从空白刚出现第一个词时，直接落位到目标位置（如居中），不要让 CSS transition
+        // 把它从上一次残留的 transform（左对齐的 0,0）动画着"飞"过去。
+        const prevTransition = content.style.transition;
+        content.style.transition = "none";
+        content.style.transform = next;
+        void content.offsetWidth;
+        content.style.transition = prevTransition;
+      } else {
+        content.style.transform = next;
+      }
     }
   };
 
@@ -128,10 +153,11 @@ export function IndicatorApp() {
     if (renderFrame.current) return;
     renderFrame.current = requestAnimationFrame(() => {
       renderFrame.current = 0;
+      const isFirstPaint = !displayedText.current && !!pendingText.current;
       if (displayedText.current !== pendingText.current) {
         paintText(pendingText.current);
       }
-      applyScroll();
+      applyScroll(isFirstPaint);
     });
   };
 
@@ -202,6 +228,9 @@ export function IndicatorApp() {
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
   const visible = phase !== "hidden";
+  const isReplaceMode = mode === "subtitle" && subtitleConfig.displayMode === "replace";
+  const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
+  const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
   const showProcessingPanel = mode === "dictation" && phase === "processing" && !hasText;
   const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
@@ -216,13 +245,21 @@ export function IndicatorApp() {
           "--subtitle-bg": subtitleConfig.backgroundColor || "rgba(5, 7, 10, 0.72)",
           "--subtitle-radius": `${subtitleConfig.rounded ?? 18}px`,
           "--subtitle-font": subtitleConfig.fontFamily || "Microsoft YaHei",
+          "--subtitle-motion-duration": `${subtitleConfig.motionDurationMs ?? 120}ms`,
+          "--subtitle-motion-easing": subtitleConfig.motionEasing || "ease-out",
+          "--subtitle-fade-duration": `${subtitleConfig.fadeDurationMs ?? 180}ms`,
+          "--subtitle-fade-easing": subtitleConfig.fadeEasing || "ease-out",
         } as React.CSSProperties)
       : undefined;
 
   return (
     <div
       id="wrap"
-      className={mode === "subtitle" ? "subtitle-mode" : "dictation-mode"}
+      className={
+        mode === "subtitle"
+          ? `subtitle-mode${isReplaceMode ? " subtitle-replace" : ""}${isNoMotion ? " no-motion" : ""}${isNoFade ? " no-fade" : ""}`
+          : "dictation-mode"
+      }
       style={{ display: visible ? "flex" : "none", ...subtitleStyle }}
     >
       <div id="text" ref={textElRef} className="empty">
