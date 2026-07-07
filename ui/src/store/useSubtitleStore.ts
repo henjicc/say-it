@@ -106,17 +106,17 @@ const defaults = (): SubtitlePrefs => ({
   backgroundColor: "#05070a",
   backgroundOpacity: 72,
   rounded: 18,
-  motionEnabled: true,
+  motionEnabled: false,
   motionDurationMs: 120,
   motionEasing: "ease-out",
-  fadeEnabled: true,
+  fadeEnabled: false,
   fadeDurationMs: 180,
   fadeEasing: "ease-out",
   translationModel: TRANSLATION_MODEL_NONE,
   translationSourceLang: DEFAULT_TRANSLATION_SOURCE_LANG,
   translationTargetLang: DEFAULT_TRANSLATION_TARGET_LANG,
   translationLayout: "bilingual",
-  translationOrder: "sourceFirst",
+  translationOrder: "translationFirst",
 });
 
 const SUBTITLE_ANIMATION_EASINGS: SubtitleAnimationEasing[] = ["ease-out", "ease-in-out", "linear", "ease-in"];
