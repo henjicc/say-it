@@ -220,10 +220,10 @@ body,
   height: calc(var(--text-line-height) * var(--subtitle-lines, 2));
 }
 
-/* 字幕翻译的第二行：结构和动画机制与 #text 完全一致（同一套滚动累积/单句替换规则），
-   只是字号略小、透明度略低，用来和原文区分主次。 */
+/* 字幕翻译的第二行：结构、动画机制、字体和字号都与 #text 完全一致（同一套滚动累积/单句替换规则），
+   只用透明度做很轻的区分，不影响两者读起来的大小/字体一致。 */
 .subtitle-mode #translation-text {
-  --text-line-height: var(--subtitle-translation-line-height, 30px);
+  --text-line-height: var(--subtitle-line-height, 39px);
   width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
   max-width: min(var(--subtitle-width, 880px), calc(100vw - 112px));
   box-sizing: border-box;
@@ -234,7 +234,7 @@ body,
   background: var(--subtitle-bg, rgba(5, 7, 10, 0.72));
   color: var(--subtitle-text, #fff);
   font:
-    500 var(--subtitle-translation-font-size, 22px) / 1.38 var(--subtitle-font),
+    600 var(--subtitle-font-size, 28px) / 1.38 var(--subtitle-font),
     var(--font-sans);
   text-align: center;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.66);

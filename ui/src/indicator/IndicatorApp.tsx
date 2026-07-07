@@ -23,7 +23,6 @@ interface SubtitleConfig {
   translationEnabled?: boolean;
   translationLayout?: "bilingual" | "translationOnly";
   translationOrder?: "sourceFirst" | "translationFirst";
-  translationFontSize?: number;
 }
 
 const LABELS: Record<Exclude<Phase, "hidden">, string> = {
@@ -274,8 +273,6 @@ export function IndicatorApp() {
           "--subtitle-motion-easing": subtitleConfig.motionEasing || "ease-out",
           "--subtitle-fade-duration": `${subtitleConfig.fadeDurationMs ?? 180}ms`,
           "--subtitle-fade-easing": subtitleConfig.fadeEasing || "ease-out",
-          "--subtitle-translation-font-size": `${subtitleConfig.translationFontSize || 22}px`,
-          "--subtitle-translation-line-height": `${Math.round((subtitleConfig.translationFontSize || 22) * 1.38)}px`,
         } as React.CSSProperties)
       : undefined;
 
