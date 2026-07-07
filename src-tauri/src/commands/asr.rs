@@ -455,7 +455,6 @@ async fn run_realtime_silence_test(profile: &ProviderProfile) -> Result<AsrRespo
     let mut events: Vec<Value> = Vec::new();
     let mut partials: Vec<String> = Vec::new();
     let mut final_text = String::new();
-    let mut started = false;
     let silence = vec![0_u8; 8192];
 
     loop {
@@ -467,7 +466,6 @@ async fn run_realtime_silence_test(profile: &ProviderProfile) -> Result<AsrRespo
         let Message::Text(text) = message else { continue };
         match connector.parse_message(&text) {
             AsrEvent::Started => {
-                started = true;
                 for chunk in silence.chunks(4096) {
                     writer
                         .send(connector.audio_message(chunk.to_vec()))
@@ -491,12 +489,14 @@ async fn run_realtime_silence_test(profile: &ProviderProfile) -> Result<AsrRespo
                     partials.push(text);
                 }
             }
-            AsrEvent::TaskFinished if started => break,
             AsrEvent::TaskFinished => break,
             AsrEvent::TaskFailed { code, message } => {
-                return Err(format!("Fun-ASR 上游错误 [{code}]: {message}"));
+                return Err(format!(
+                    "{} 上游错误 [{code}]: {message}",
+                    profile.display_name
+                ));
             }
-            other => events.push(funasr_event_to_value(other)),
+            other => events.push(asr_event_to_value(other)),
         }
     }
 
@@ -509,7 +509,7 @@ async fn run_realtime_silence_test(profile: &ProviderProfile) -> Result<AsrRespo
     })
 }
 
-fn funasr_event_to_value(event: AsrEvent) -> Value {
+fn asr_event_to_value(event: AsrEvent) -> Value {
     match event {
         AsrEvent::Started => json!({ "event": "task-started" }),
         AsrEvent::Partial(text) => {

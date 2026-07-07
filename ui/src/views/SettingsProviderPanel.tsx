@@ -39,6 +39,7 @@ export function SettingsProviderPanel() {
   const providerStatus = useProviderStore((s) => s.statusText);
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
+  const effectiveAsrProviderId = useProviderStore((s) => s.effective("asr"));
 
   const [apiKey, setApiKey] = useState("");
   const [savedApiKey, setSavedApiKey] = useState("");
@@ -54,8 +55,11 @@ export function SettingsProviderPanel() {
   const [heartbeat, setHeartbeat] = useState(false);
   const [noiseThreshold, setNoiseThreshold] = useState("");
 
-  // 设置页渲染"当前配置的 ASR 供应商"，目前只有一个，取第一个即可（等价于 optionsFor("asr")[0]）。
-  const provider = providers.find((p) => p.enabled && p.capabilities.includes("asr"));
+  // 设置页渲染"生效的 ASR 供应商"：优先取 effective("asr") 对应的 profile，
+  // 找不到（如未设置默认值）再回退第一个 enabled 的 asr profile。
+  const provider =
+    providers.find((p) => p.id === effectiveAsrProviderId) ||
+    providers.find((p) => p.enabled && p.capabilities.includes("asr"));
   const hasApiKey = !!provider?.status?.hasApiKey;
   const saveRequestRef = useRef(0);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
