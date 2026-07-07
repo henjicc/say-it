@@ -28,6 +28,7 @@ export function parseSubtitleSource(source: SubtitleSource): { kind: SubtitleSou
 
 export type SubtitleAnchor = "top" | "center" | "bottom";
 export type SubtitleMode = "scroll" | "replace";
+export type SubtitleAnimationEasing = "ease-out" | "ease-in-out" | "linear" | "ease-in";
 
 export interface SubtitlePrefs {
   source: SubtitleSource;
@@ -46,6 +47,14 @@ export interface SubtitlePrefs {
   backgroundColor: string;
   backgroundOpacity: number;
   rounded: number;
+  /** 位移动画：内容更新时的左右平移（单句替换）/上下滚动（滚动累积）。 */
+  motionEnabled: boolean;
+  motionDurationMs: number;
+  motionEasing: SubtitleAnimationEasing;
+  /** 淡入动画：新增文字出现时的不透明度过渡。 */
+  fadeEnabled: boolean;
+  fadeDurationMs: number;
+  fadeEasing: SubtitleAnimationEasing;
 }
 
 type Tone = "" | "ok" | "err";
@@ -82,7 +91,21 @@ const defaults = (): SubtitlePrefs => ({
   backgroundColor: "#05070a",
   backgroundOpacity: 72,
   rounded: 18,
+  motionEnabled: true,
+  motionDurationMs: 120,
+  motionEasing: "ease-out",
+  fadeEnabled: true,
+  fadeDurationMs: 180,
+  fadeEasing: "ease-out",
 });
+
+const SUBTITLE_ANIMATION_EASINGS: SubtitleAnimationEasing[] = ["ease-out", "ease-in-out", "linear", "ease-in"];
+
+function clampEasing(value: unknown, fallback: SubtitleAnimationEasing): SubtitleAnimationEasing {
+  return SUBTITLE_ANIMATION_EASINGS.includes(value as SubtitleAnimationEasing)
+    ? (value as SubtitleAnimationEasing)
+    : fallback;
+}
 
 // 旧版本只存 "microphone"/"system" 两个粗粒度值，迁移成新的 "kind:default" 格式，
 // 避免下拉框因为找不到匹配项而显示成原始字符串。
@@ -103,6 +126,12 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     offsetYPercent: Math.min(20, Math.max(-17, Number(prefs.offsetYPercent) || 6)),
     backgroundOpacity: Math.min(100, Math.max(0, Number(prefs.backgroundOpacity) || 72)),
     rounded: Math.min(36, Math.max(0, Number(prefs.rounded) || 18)),
+    motionEnabled: prefs.motionEnabled !== false,
+    motionDurationMs: Math.min(400, Math.max(60, Number(prefs.motionDurationMs) || 120)),
+    motionEasing: clampEasing(prefs.motionEasing, "ease-out"),
+    fadeEnabled: prefs.fadeEnabled !== false,
+    fadeDurationMs: Math.min(500, Math.max(60, Number(prefs.fadeDurationMs) || 180)),
+    fadeEasing: clampEasing(prefs.fadeEasing, "ease-out"),
   };
 }
 

@@ -15,6 +15,7 @@ import {
   installFocusHotkeyFallback,
   handleForwardedKeydown,
   handleForwardedKeyup,
+  handleCaptureLockKey,
 } from "@/features/dictation/controller";
 import {
   handleSubtitleAsrEvent,
@@ -26,6 +27,7 @@ import {
   installSubtitleFocusHotkeyFallback,
   handleForwardedSubtitleKeydown,
   handleForwardedSubtitleKeyup,
+  handleSubtitleCaptureLockKey,
 } from "@/features/subtitles/controller";
 import { hardAbortCompare } from "@/features/compare/controller";
 
@@ -56,6 +58,13 @@ export function useTauriBridge() {
     toggleSubtitles();
   });
   useTauriEvent(EVT.subtitleShortcutError, (payload) => handleSubtitleShortcutError(payload as never));
+
+  useTauriEvent(EVT.hotkeyCaptureLockKey, (payload) => {
+    const vk = ((payload || {}) as { vk?: number }).vk;
+    if (typeof vk !== "number") return;
+    handleCaptureLockKey(vk);
+    handleSubtitleCaptureLockKey(vk);
+  });
 
   useTauriEvent(EVT.indicatorKeydown, (payload) => {
     if (!isCapturing()) handleForwardedKeydown((payload || {}) as never);

@@ -82,6 +82,8 @@ export function Select({
   const [open, setOpen] = useState(false);
   // 弹层挂载状态：打开时立即挂载，关闭时保留到离开动画结束再卸载
   const [rendered, setRendered] = useState(false);
+  // 打开前测一次按钮离视口上下边缘的距离：下方放不下且上方空间更大时，弹层改往上展开
+  const [openUpward, setOpenUpward] = useState(false);
   const [query, setQuery] = useState("");
   const [internalValue, setInternalValue] = useState(defaultValue || "");
   const selectedValue = value ?? internalValue;
@@ -141,6 +143,24 @@ export function Select({
     if (searchable) searchInputRef.current?.focus();
   }, [open, searchable]);
 
+  // 弹层高度受 max-h-[19.5rem] 限制，这里用一个估算值（含搜索框）判断是否需要往上开，
+  // 不用等实际渲染出来再量，避免打开瞬间的位置跳变。
+  const openDropdown = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const estimatedHeight = 312 + (searchable ? 54 : 0);
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      setOpenUpward(spaceBelow < estimatedHeight && spaceAbove > spaceBelow);
+    }
+    setOpen(true);
+  };
+
+  const toggleDropdown = () => {
+    if (!open) openDropdown();
+    else setOpen(false);
+  };
+
   const commitValue = (nextValue: string, close = true) => {
     if (disabled) return;
     if (value === undefined) setInternalValue(nextValue);
@@ -160,7 +180,7 @@ export function Select({
 
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (!open) setOpen(true);
+      if (!open) openDropdown();
       else moveSelection(event.key === "ArrowDown" ? 1 : -1);
       return;
     }
@@ -172,14 +192,14 @@ export function Select({
         const target = activeInList ?? enabledOptions[0];
         if (target) commitValue(target.value);
       } else {
-        setOpen((current) => !current);
+        toggleDropdown();
       }
       return;
     }
 
     if (event.key === " " && !searchable) {
       event.preventDefault();
-      setOpen((current) => !current);
+      toggleDropdown();
       return;
     }
 
@@ -210,7 +230,7 @@ export function Select({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={selectedOption ? `${listboxId}-${selectedOption.value}` : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleDropdown}
         onKeyDown={handleListKeyDown}
         {...props}
       >
@@ -226,9 +246,10 @@ export function Select({
           onAnimationEnd={() => {
             if (!open) setRendered(false);
           }}
-          style={{ transformOrigin: "top" }}
+          style={{ transformOrigin: openUpward ? "bottom" : "top" }}
           className={cn(
-            "absolute left-0 right-0 top-[calc(100%+6px)] z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+            "absolute left-0 right-0 z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+            openUpward ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
             open
               ? "animate-[dropdown-in_140ms_var(--ease-out)]"
               : "pointer-events-none animate-[dropdown-out_110ms_var(--ease-out)_forwards]",
