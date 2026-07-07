@@ -1,8 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
-import { toggleSubtitles } from "@/features/subtitles/controller";
+import { Switch } from "@/components/ui/Switch";
+import {
+  toggleSubtitles,
+  syncSubtitleIndicator,
+  showSubtitlePreview,
+  hideSubtitlePreview,
+} from "@/features/subtitles/controller";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { SubtitleGeneralPanel } from "@/views/SubtitleGeneralPanel";
 import { SubtitleStylePanel } from "@/views/SubtitleStylePanel";
@@ -18,7 +24,27 @@ const TABS: TabItem<TabKey>[] = [
 
 export function RealtimeSubtitlesPanel() {
   const [tab, setTab] = useState<TabKey>("general");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const running = useSubtitleStore((s) => s.running);
+  const prefs = useSubtitleStore((s) => s.prefs);
+
+  // 开关状态放在这一层（而不是某个 tab 内部），这样切通用设置/字幕样式/字幕翻译
+  // 之间的任意 tab 时预览都不会中断，方便边看效果边调整各处设置；
+  // 真正运行、或预览开着时，持续把最新设置同步到悬浮窗。
+  useEffect(() => {
+    if (running || previewOpen) syncSubtitleIndicator(prefs);
+  }, [prefs, running, previewOpen]);
+
+  // 预览开关的显示/隐藏生命周期：打开时在桌面实际位置模拟播放示例内容；
+  // 关闭、真正开始字幕、或离开实时字幕这个页面（本组件卸载）时都自动收起。
+  useEffect(() => {
+    if (running || !previewOpen) return undefined;
+    // 只在开关/运行状态变化时触发一次；样式跟随交给上面那个 effect。
+    showSubtitlePreview(prefs);
+    return () => {
+      hideSubtitlePreview();
+    };
+  }, [previewOpen, running]);
 
   return (
     <div className="flex flex-col gap-7">
@@ -26,9 +52,18 @@ export function RealtimeSubtitlesPanel() {
         title="实时字幕"
         description="持续识别语音并在屏幕上显示字幕，适合会议、网课、视频和临时转写。"
         actions={
-          <Button variant={running ? "danger" : "primary"} onClick={toggleSubtitles}>
-            {running ? "停止字幕" : "开始字幕"}
-          </Button>
+          <>
+            <label
+              className="flex items-center gap-2 text-sm text-[var(--color-fg-muted)]"
+              title="打开后会在桌面实际位置模拟播放示例内容（含滚动/替换动画，开启翻译时同步演示译文），不会启动麦克风识别、也不产生真实翻译请求；离开实时字幕页面会自动关闭。"
+            >
+              字幕预览
+              <Switch checked={previewOpen} onChange={setPreviewOpen} disabled={running} label="字幕预览" />
+            </label>
+            <Button variant={running ? "danger" : "primary"} onClick={toggleSubtitles}>
+              {running ? "停止字幕" : "开始字幕"}
+            </Button>
+          </>
         }
       />
 

@@ -9,9 +9,9 @@ export interface TranslationModelOption {
 export const TRANSLATION_MODEL_NONE = "";
 
 export const TRANSLATION_MODEL_OPTIONS: TranslationModelOption[] = [
-  { value: "qwen-mt-flash", label: "qwen-mt-flash（推荐，速度快）", supportsIncremental: true },
-  { value: "qwen-mt-plus", label: "qwen-mt-plus（质量最高）", supportsIncremental: false },
-  { value: "qwen-mt-lite", label: "qwen-mt-lite（延迟最低）", supportsIncremental: true },
+  { value: "qwen-mt-flash", label: "Qwen-MT-Flash（推荐，速度快）", supportsIncremental: true },
+  { value: "qwen-mt-plus", label: "Qwen-MT-Plus（质量最高）", supportsIncremental: false },
+  { value: "qwen-mt-lite", label: "Qwen-MT-Lite（延迟最低）", supportsIncremental: true },
 ];
 
 const TRANSLATION_MODEL_SET = new Set(TRANSLATION_MODEL_OPTIONS.map((option) => option.value));

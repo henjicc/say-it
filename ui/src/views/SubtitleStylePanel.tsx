@@ -6,7 +6,6 @@ import { Switch } from "@/components/ui/Switch";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { CMD, cmd } from "@/lib/tauri";
-import { syncSubtitleIndicator, showSubtitlePreview, hideSubtitlePreview } from "@/features/subtitles/controller";
 import {
   useSubtitleStore,
   type SubtitleAnchor,
@@ -49,24 +48,6 @@ const ANIMATION_EASING_OPTIONS: { value: SubtitleAnimationEasing; label: string 
   { value: "ease-in", label: "缓入（先慢后快）" },
 ];
 
-function MonitorIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-      aria-hidden
-    >
-      <rect x="3" y="4" width="18" height="12" rx="2" />
-      <path d="M8 20h8M12 16v4" />
-    </svg>
-  );
-}
-
 function ColorField({
   label,
   value,
@@ -93,49 +74,12 @@ function ColorField({
 }
 
 export function SubtitleStylePanel() {
-  const { prefs, running, patch } = useSubtitleStore();
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const { prefs, patch } = useSubtitleStore();
   const systemFonts = useSystemFonts();
-
-  // 真正运行、或预览开着时，持续把样式变化同步到悬浮窗。
-  useEffect(() => {
-    if (running || previewOpen) syncSubtitleIndicator(prefs);
-  }, [prefs, running, previewOpen]);
-
-  // 预览开关的显示/隐藏生命周期：打开时在桌面实际位置模拟播放示例内容；
-  // 关闭、真正开始字幕、或离开本页面时都要收起悬浮窗（不影响正在运行的真实字幕）。
-  useEffect(() => {
-    if (running || !previewOpen) return undefined;
-    // 只在开关/运行状态变化时触发一次；样式跟随交给上面那个 effect。
-    showSubtitlePreview(prefs);
-    return () => {
-      hideSubtitlePreview();
-    };
-  }, [previewOpen, running]);
 
   return (
     <div className="flex flex-col gap-7">
       <SettingsSection title="字幕样式">
-        <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-          <span className="flex-none text-[var(--color-fg-subtle)]">
-            <MonitorIcon />
-          </span>
-          <span className="flex-none text-sm font-medium text-[var(--color-fg)]">调整预览</span>
-          <span
-            className="min-w-0 flex-1 truncate text-xs text-[var(--color-fg-subtle)]"
-            title={
-              running
-                ? "字幕运行中，桌面悬浮窗已实时显示真实内容。"
-                : "打开后会在桌面实际位置模拟播放示例内容（含滚动/替换动画，开启翻译时同步演示译文），不会启动麦克风识别、也不产生真实翻译请求。"
-            }
-          >
-            {running
-              ? "字幕运行中，桌面悬浮窗已实时显示真实内容。"
-              : "打开后会在桌面实际位置模拟播放示例内容（含滚动/替换动画，开启翻译时同步演示译文），不会启动麦克风识别、也不产生真实翻译请求。"}
-          </span>
-          <Switch checked={previewOpen} onChange={setPreviewOpen} disabled={running} label="调整预览" />
-        </div>
-
         <FormGrid>
           <Field layout="row" label="字体">
             <Select
@@ -165,7 +109,7 @@ export function SubtitleStylePanel() {
           </Field>
         </FormGrid>
 
-        <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+        <FormGrid>
           <Slider label="字号" min={1.5} max={6} step={0.1} value={prefs.fontSizePercent} onChange={(fontSizePercent) => patch({ fontSizePercent })} format={(v) => `${v.toFixed(1)}%`} />
           {prefs.mode === "scroll" && (
             <Slider label="显示行数" min={1} max={4} step={1} value={prefs.lineCount} onChange={(lineCount) => patch({ lineCount })} format={(v) => `${v} 行`} />
@@ -174,7 +118,7 @@ export function SubtitleStylePanel() {
           <Slider label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
           <Slider label="背景不透明" min={0} max={100} step={1} value={prefs.backgroundOpacity} onChange={(backgroundOpacity) => patch({ backgroundOpacity })} format={(v) => `${v}%`} />
           <Slider label="圆角" min={0} max={36} step={1} value={prefs.rounded} onChange={(rounded) => patch({ rounded })} format={(v) => `${v}px`} />
-        </div>
+        </FormGrid>
 
         <FormGrid>
           <ColorField label="字体颜色" value={prefs.textColor} onChange={(textColor) => patch({ textColor })} />
@@ -199,7 +143,7 @@ export function SubtitleStylePanel() {
           </Field>
         </FormGrid>
 
-        <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+        <FormGrid>
           <Slider
             label="位移时长"
             min={60}
@@ -218,7 +162,7 @@ export function SubtitleStylePanel() {
             onChange={(fadeDurationMs) => patch({ fadeDurationMs })}
             format={(v) => `${v}ms`}
           />
-        </div>
+        </FormGrid>
 
         <FormGrid>
           <Field layout="row" label="位移曲线">

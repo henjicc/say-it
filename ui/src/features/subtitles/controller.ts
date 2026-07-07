@@ -173,10 +173,10 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
   });
 }
 
-// ---------------- 调整预览：模拟播放 ----------------
+// ---------------- 字幕预览：模拟播放 ----------------
 // 预览不启动麦克风/识别、也不发起真实翻译请求（不产生网络调用和费用），而是用打字机式的
 // 定时器模拟"识别中逐字增长→定稿→（如果开着翻译）译文流式吐出"的完整过程，复用与真实字幕
-// 完全相同的显示状态（committedLines/replaceModeLine/翻译分组等）和渲染函数，这样调整预览时
+// 完全相同的显示状态（committedLines/replaceModeLine/翻译分组等）和渲染函数，这样字幕预览时
 // 看到的动画效果（滚动、平移、淡入等）与真实使用时完全一致，多句循环播放也能看出滚动模式的
 // 多行滚动效果。
 const PREVIEW_SCRIPT: { source: string; translation: string }[] = [
