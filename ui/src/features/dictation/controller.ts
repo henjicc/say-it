@@ -226,7 +226,11 @@ async function startRealtimeDictation(model: string) {
 
 async function startFileDictation(model: string) {
   if (!(await ensureDictationProviderReady())) {
-    throw new Error("请先在设置中保存阿里云百炼 API Key");
+    const providerId = useProviderStore.getState().effective("asr");
+    const message = providerId
+      ? `请先在设置中保存 ${useProviderStore.getState().labelFor(providerId)} API Key`
+      : "请先在设置中配置识别供应商 API Key";
+    throw new Error(message);
   }
 
   const t0 = Date.now();
