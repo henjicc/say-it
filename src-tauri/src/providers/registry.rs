@@ -20,7 +20,8 @@ static REGISTRY: Lazy<Vec<ModelInfo>> = Lazy::new(|| {
 pub struct ModelInfo {
     pub id: String,
     pub label: String,
-    pub provider_kind: String,
+    /// 对应 `ProviderProfile.id`（如 `FUNASR_PROVIDER_ID`），不是 profile 的 `kind`。
+    pub provider_id: String,
     pub category: String,
     pub protocol: String,
     pub supports_vocabulary: bool,

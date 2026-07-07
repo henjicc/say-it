@@ -27,7 +27,7 @@ import {
 } from "@/store/useSubtitleStore";
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import { REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 
 const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
@@ -162,7 +162,7 @@ export function RealtimeSubtitlesPanel() {
               disabled={running}
               onChange={(event) => patch({ asrModel: event.target.value })}
             >
-              {REALTIME_ASR_MODEL_OPTIONS.map((option) => (
+              {SUBTITLE_ASR_MODEL_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

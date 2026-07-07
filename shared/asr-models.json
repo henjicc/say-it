@@ -2,7 +2,7 @@
   {
     "id": "fun-asr-realtime-2026-02-28",
     "label": "Fun-ASR-Realtime 最新版",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "realtime",
     "protocol": "dashscope-duplex",
     "supportsVocabulary": true,
@@ -14,7 +14,7 @@
   {
     "id": "fun-asr-realtime",
     "label": "Fun-ASR-Realtime 稳定版",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "realtime",
     "protocol": "dashscope-duplex",
     "supportsVocabulary": true,
@@ -26,7 +26,7 @@
   {
     "id": "qwen3-asr-flash-realtime-2026-02-10",
     "label": "Qwen3-ASR-Flash-Realtime 最新版",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "realtime",
     "protocol": "qwen-realtime",
     "supportsVocabulary": false,
@@ -38,7 +38,7 @@
   {
     "id": "qwen3-asr-flash-realtime",
     "label": "Qwen3-ASR-Flash-Realtime 稳定版",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "realtime",
     "protocol": "qwen-realtime",
     "supportsVocabulary": false,
@@ -50,7 +50,7 @@
   {
     "id": "fun-asr-flash-2026-06-15",
     "label": "Fun-ASR-Flash",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "file",
     "protocol": "file-sync-funasr-flash",
     "supportsVocabulary": false,
@@ -62,7 +62,7 @@
   {
     "id": "qwen3-asr-flash",
     "label": "Qwen3-ASR-Flash",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "file",
     "protocol": "file-sync-qwen",
     "supportsVocabulary": false,
@@ -74,7 +74,7 @@
   {
     "id": "qwen3-asr-flash-2026-02-10",
     "label": "Qwen3-ASR-Flash 最新版",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "file",
     "protocol": "file-sync-qwen",
     "supportsVocabulary": false,
@@ -86,7 +86,7 @@
   {
     "id": "fun-asr",
     "label": "Fun-ASR",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "file",
     "protocol": "file-async-oss",
     "supportsVocabulary": true,
@@ -98,7 +98,7 @@
   {
     "id": "qwen3-asr-flash-filetrans",
     "label": "Qwen3-ASR-Flash-Filetrans",
-    "providerKind": "funasr",
+    "providerId": "funasr",
     "category": "file",
     "protocol": "file-async-oss",
     "supportsVocabulary": false,

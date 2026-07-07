@@ -19,6 +19,7 @@ export const DEFAULT_FILE_ASR_MODEL = defaultFileModel();
 
 // 模型下拉选项从注册表派生
 export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationRealtime");
+export const SUBTITLE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("subtitles");
 export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("transcription");
 export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationFile");
 export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [

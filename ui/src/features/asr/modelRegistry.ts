@@ -4,7 +4,7 @@ import registryData from "~shared/asr-models.json";
 export interface ModelInfo {
   id: string;
   label: string;
-  providerKind: string;
+  providerId: string;
   category: string;
   protocol: string;
   supportsVocabulary: boolean;
