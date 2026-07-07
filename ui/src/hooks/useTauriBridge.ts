@@ -19,6 +19,7 @@ import {
 } from "@/features/dictation/controller";
 import {
   handleSubtitleAsrEvent,
+  handleSubtitleTranslationEvent,
   shutdownSubtitles,
   toggleSubtitles,
   handleSubtitleShortcutError,
@@ -58,6 +59,7 @@ export function useTauriBridge() {
     toggleSubtitles();
   });
   useTauriEvent(EVT.subtitleShortcutError, (payload) => handleSubtitleShortcutError(payload as never));
+  useTauriEvent(EVT.subtitleTranslationEvent, (payload) => handleSubtitleTranslationEvent(payload as never));
 
   useTauriEvent(EVT.hotkeyCaptureLockKey, (payload) => {
     const vk = ((payload || {}) as { vk?: number }).vk;

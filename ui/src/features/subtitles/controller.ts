@@ -2,6 +2,7 @@ import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useSubtitleStore, parseSubtitleSource, type SubtitlePrefs } from "@/store/useSubtitleStore";
+import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import {
   clearMicShutdownTimer,
   ensureMic,
@@ -46,6 +47,17 @@ let replaceModeLineAt = 0;
 const REPLACE_LINE_CONTINUE_GAP_MS = 2500;
 const REPLACE_LINE_MAX_CHARS = 1800;
 const REPLACE_LINE_SEPARATOR = " ";
+
+// 字幕翻译：每次开始字幕分配一个新的会话代次（requestId），停止/重开后旧代次的迟到译文事件
+// 一律丢弃，避免串场。segmentSeq 按定稿句单调递增，用于把乱序到达的译文事件放回正确位置。
+let translationRequestId: string | null = null;
+let translationEpochCounter = 0;
+let translationSegmentSeq = 0;
+let translations: Map<number, string> = new Map();
+// 与 committedLines / replaceModeLine 分组一一对应的句子序号，供 renderTranslation() 按序拼出译文。
+let committedSegmentSeqs: number[] = [];
+let replaceLineSegmentSeqs: number[] = [];
+let translationDisplayText = "";
 
 const MAX_RECONNECT_ATTEMPTS = 6;
 let reconnecting = false;
@@ -109,9 +121,15 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
   const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
   const lineHeight = Math.round(fontSize * 1.38);
   const windowWidth = width + SUBTITLE_SHADOW_GUTTER * 2;
+  // 双语模式需要给译文行额外留一行高度；仅译文模式复用主通道，不需要额外空间。
+  const translationEnabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  const showsTranslationRow = translationEnabled && prefs.translationLayout === "bilingual";
+  const translationFontSize = Math.round(fontSize * 0.82);
+  const translationLineHeight = Math.round(translationFontSize * 1.38);
+  const extraHeight = showsTranslationRow ? translationLineHeight + 6 : 0;
   const height = Math.max(
     136,
-    lineHeight * effectiveLines + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2,
+    lineHeight * effectiveLines + extraHeight + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2,
   );
   await cmdSilent(CMD.setIndicatorLayout, {
     width: windowWidth,
@@ -136,6 +154,10 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
       fadeEnabled: prefs.fadeEnabled,
       fadeDurationMs: prefs.fadeDurationMs,
       fadeEasing: prefs.fadeEasing,
+      translationEnabled,
+      translationLayout: prefs.translationLayout,
+      translationOrder: prefs.translationOrder,
+      translationFontSize,
     },
   });
 }
@@ -159,6 +181,28 @@ export async function hideSubtitlePreview() {
   await cmdSilent(CMD.setIndicatorText, { text: "" });
 }
 
+/**
+ * 把当前原文/译文按显示配置分别推给悬浮窗的两个文本通道：
+ * - 未开启翻译：主通道=原文，副通道清空。
+ * - 双语：主通道=原文，副通道=译文。
+ * - 仅译文：主通道直接改发译文（复用原文那套富渲染动画），副通道清空。
+ */
+function pushIndicatorChannels() {
+  const prefs = useSubtitleStore.getState().prefs;
+  if (prefs.translationModel === TRANSLATION_MODEL_NONE) {
+    cmdSilent(CMD.setIndicatorText, { text: displayText });
+    cmdSilent(CMD.setIndicatorTranslation, { text: "" });
+    return;
+  }
+  if (prefs.translationLayout === "translationOnly") {
+    cmdSilent(CMD.setIndicatorText, { text: translationDisplayText });
+    cmdSilent(CMD.setIndicatorTranslation, { text: "" });
+    return;
+  }
+  cmdSilent(CMD.setIndicatorText, { text: displayText });
+  cmdSilent(CMD.setIndicatorTranslation, { text: translationDisplayText });
+}
+
 function renderSubtitle(nextSegment = currentSegment) {
   const prefs = useSubtitleStore.getState().prefs;
   const stable = committedLines.join("\n");
@@ -172,7 +216,53 @@ function renderSubtitle(nextSegment = currentSegment) {
       : [stable, nextSegment].filter(Boolean).join(stable && nextSegment ? "\n" : "");
   displayText = next.length > 1800 ? next.slice(-1800).replace(/^\s+/, "") : next;
   useSubtitleStore.getState().setRuntime({ latestText: displayText });
-  cmdSilent(CMD.setIndicatorText, { text: displayText });
+  pushIndicatorChannels();
+}
+
+/** 按 segmentSeq 顺序拼出译文显示串：自动按已知最新译文重建，与到达顺序无关，天然纠正乱序/增量。 */
+function renderTranslation() {
+  const prefs = useSubtitleStore.getState().prefs;
+  const seqs = prefs.mode === "replace" ? replaceLineSegmentSeqs : committedSegmentSeqs;
+  const parts = seqs
+    .map((seq) => translations.get(seq))
+    .filter((text): text is string => !!text);
+  const next = prefs.mode === "replace" ? parts.join(REPLACE_LINE_SEPARATOR) : parts.join("\n");
+  translationDisplayText = next.length > 1800 ? next.slice(-1800).replace(/^\s+/, "") : next;
+  pushIndicatorChannels();
+}
+
+/** 对一句已定稿的原文发起翻译；未开启翻译或字幕未在运行（无有效会话代次）时直接跳过。 */
+function requestSubtitleTranslation(text: string, segmentSeq: number) {
+  const prefs = useSubtitleStore.getState().prefs;
+  if (prefs.translationModel === TRANSLATION_MODEL_NONE || !translationRequestId) return;
+  cmdSilent(CMD.translateSubtitleStart, {
+    request: {
+      requestId: translationRequestId,
+      segmentSeq,
+      text,
+      model: prefs.translationModel,
+      sourceLang: prefs.translationSourceLang,
+      targetLang: prefs.translationTargetLang,
+    },
+  });
+}
+
+/** 接收后端流式回传的译文事件；requestId 不匹配当前会话代次（已停止/重开）的一律丢弃。 */
+export function handleSubtitleTranslationEvent(data: {
+  requestId?: string;
+  segmentSeq?: number;
+  text?: string;
+  done?: boolean;
+  error?: string;
+}) {
+  if (!data.requestId || data.requestId !== translationRequestId) return;
+  if (typeof data.segmentSeq !== "number") return;
+  if (data.error) {
+    pushLog(`字幕翻译失败：${data.error}`);
+    return;
+  }
+  translations.set(data.segmentSeq, data.text || "");
+  renderTranslation();
 }
 
 /** 原生 loopback 采集系统音频（把选定的播放设备当输入设备打开），不依赖浏览器共享屏幕弹窗。 */
@@ -262,6 +352,12 @@ async function startSubtitles() {
   replaceModeLine = "";
   replaceModeLineAt = 0;
   reconnectAttempts = 0;
+  committedSegmentSeqs = [];
+  replaceLineSegmentSeqs = [];
+  translations = new Map();
+  translationSegmentSeq = 0;
+  translationDisplayText = "";
+  translationRequestId = String(++translationEpochCounter);
   clearMicShutdownTimer();
   await syncSubtitleIndicator(prefs);
 
@@ -294,6 +390,11 @@ async function stopSubtitles() {
   committedLines = [];
   replaceModeLine = "";
   replaceModeLineAt = 0;
+  translationRequestId = null;
+  committedSegmentSeqs = [];
+  replaceLineSegmentSeqs = [];
+  translations = new Map();
+  translationDisplayText = "";
   await cmdSilent(CMD.pauseBackendMic);
   scheduleMicShutdown(pushLog);
   await cmdSilent(CMD.pauseBackendSystemAudio);
@@ -303,6 +404,7 @@ async function stopSubtitles() {
   await cmdSilent(CMD.setIndicatorLayout, { width: 460, height: 188, anchor: "bottom", offsetY: 36 });
   await cmdSilent(CMD.setIndicatorState, { state: "hidden" });
   await cmdSilent(CMD.setIndicatorText, { text: "" });
+  await cmdSilent(CMD.setIndicatorTranslation, { text: "" });
   useSubtitleStore.getState().setRuntime({
     running: false,
     statusText: "实时字幕已停止",
@@ -319,6 +421,7 @@ export async function toggleSubtitles() {
   } catch (error) {
     const session = subtitleSessionId;
     subtitleSessionId = null;
+    translationRequestId = null;
     await shutdownMic();
     await cmdSilent(CMD.releaseBackendSystemAudio);
     if (session) await cmdSilent(CMD.stopAsrStream, { sessionId: session });
@@ -355,17 +458,25 @@ export function handleSubtitleAsrEvent(data: {
     }
     if (data.payload?.final && currentSegment.trim()) {
       const finished = currentSegment.trim();
+      const segSeq = ++translationSegmentSeq;
       committedLines.push(finished);
       committedLines = committedLines.slice(-12);
+      committedSegmentSeqs.push(segSeq);
+      committedSegmentSeqs = committedSegmentSeqs.slice(-12);
       if (useSubtitleStore.getState().prefs.mode === "replace") {
+        // 与原文 replaceModeLine 的分组决策保持一致：本轮开始前 replaceModeLine 已被清空
+        // 说明这是新的一组（停顿超过阈值），否则是接着上一组继续。
+        const continuingGroup = !!replaceModeLine;
         replaceModeLine = replaceModeLine ? `${replaceModeLine}${REPLACE_LINE_SEPARATOR}${finished}` : finished;
         if (replaceModeLine.length > REPLACE_LINE_MAX_CHARS) {
           replaceModeLine = replaceModeLine.slice(-REPLACE_LINE_MAX_CHARS);
         }
         replaceModeLineAt = Date.now();
+        replaceLineSegmentSeqs = continuingGroup ? [...replaceLineSegmentSeqs, segSeq] : [segSeq];
       }
       currentSegment = "";
       renderSubtitle("");
+      requestSubtitleTranslation(finished, segSeq);
     }
   } else if (data.kind === "error") {
     // 上游 ASR 出错后 Rust 侧总会紧接着断开并触发下面的 "ended"，由那里统一负责自动重连，
