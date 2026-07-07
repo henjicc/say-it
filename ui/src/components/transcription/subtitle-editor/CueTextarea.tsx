@@ -4,10 +4,14 @@ import { cn } from "@/lib/cn";
 export function CueTextarea({
   value,
   onChange,
+  onFocus,
+  onBlur,
   textareaRef,
 }: {
   value: string;
   onChange: (text: string) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
   textareaRef?: (node: HTMLTextAreaElement | null) => void;
 }) {
   const localRef = useRef<HTMLTextAreaElement | null>(null);
@@ -27,6 +31,8 @@ export function CueTextarea({
       value={value}
       rows={1}
       onChange={(event) => onChange(event.target.value)}
+      onFocus={onFocus}
+      onBlur={onBlur}
       placeholder="（空字幕）"
       className={cn(
         "mt-1.5 w-full resize-none overflow-hidden rounded-[var(--radius-sm)] border border-transparent bg-transparent px-2 py-1 text-sm leading-6",

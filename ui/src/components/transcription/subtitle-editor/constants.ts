@@ -1,10 +1,10 @@
 export const BASE_PX_PER_SEC = 60;
 export const MIN_CUE_MS = 100;
 export const NUDGE_MS = 100;
-/** 默认间隙合并阈值：参考 Netflix 字幕规范「相邻字幕至少间隔 2 帧」（24~30fps 约 66~83ms），
- * 小于该间隔人眼会感知为闪烁而非有意的切换停顿；留出余量取 200ms 作为默认阈值。 */
-export const DEFAULT_GAP_MERGE_MS = 200;
+/** 默认间隙合并阈值：小于该间隔的相邻字幕间隙视为切分产生的碎片停顿，默认合并。 */
+export const DEFAULT_GAP_MERGE_MS = 500;
 export const SNAP_DISTANCE_PX = 8;
+export const MAX_UNDO_HISTORY = 100;
 export const RATE_OPTIONS = [0.75, 1, 1.25, 1.5];
 export const TIMELINE_ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
 export const WAVEFORM_ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];

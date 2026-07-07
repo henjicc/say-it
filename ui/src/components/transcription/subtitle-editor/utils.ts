@@ -1,3 +1,5 @@
+import type { EditableCue } from "@/features/transcription/subtitles";
+
 export type DragMode = "move" | "left" | "right";
 
 export interface DragState {
@@ -6,6 +8,8 @@ export interface DragState {
   startX: number;
   beginMs: number;
   endMs: number;
+  /** 拖动开始前的字幕数组快照，供拖动结束时判断是否需要写入一条撤销历史。 */
+  beforeCues: EditableCue[];
 }
 
 export interface PanState {

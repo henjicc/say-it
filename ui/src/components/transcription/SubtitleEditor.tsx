@@ -12,6 +12,7 @@ import {
   MIN_CUE_MS,
   DEFAULT_GAP_MERGE_MS,
   SNAP_DISTANCE_PX,
+  MAX_UNDO_HISTORY,
   RATE_OPTIONS,
   TIMELINE_ZOOM_LEVELS,
   WAVEFORM_ZOOM_LEVELS,
@@ -52,6 +53,7 @@ export function SubtitleEditor({
   onCuesChange: (next: EditableCue[]) => void;
   footer?: React.ReactNode;
 }) {
+  const editorRootRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -62,6 +64,9 @@ export function SubtitleEditor({
   const playheadClockRef = useRef<{ displayMs: number; frameAt: number } | null>(null);
   const zoomAnchorRef = useRef<{ timeMs: number; offsetX: number } | null>(null);
   const cueTextRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const historyRef = useRef<{ past: EditableCue[][]; future: EditableCue[][] }>({ past: [], future: [] });
+  const expectedCuesRef = useRef<EditableCue[] | null>(null);
+  const textEditSnapshotRef = useRef<EditableCue[] | null>(null);
 
   const [playing, setPlaying] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
@@ -190,8 +195,43 @@ export function SubtitleEditor({
     nextBegin: index < cues.length - 1 ? cues[index + 1].beginMs : Number.POSITIVE_INFINITY,
   });
 
+  /** 提交一次字幕数组变更；同时记下这是「自己触发的」变更，供下面的 effect 区分外部切换（换文件/切 Tab）。 */
+  const applyCues = (next: EditableCue[]) => {
+    expectedCuesRef.current = next;
+    onCuesChange(next);
+  };
+
+  /** 将变更前的快照压入撤销栈，并清空重做栈；用于拖动/文本编辑等连续操作的收尾，以及各类一次性操作。 */
+  const pushHistory = (before: EditableCue[] = cues) => {
+    const history = historyRef.current;
+    history.past.push(before);
+    if (history.past.length > MAX_UNDO_HISTORY) history.past.shift();
+    history.future = [];
+  };
+
+  const undo = () => {
+    const history = historyRef.current;
+    const previous = history.past.pop();
+    if (!previous) return;
+    history.future.push(cues);
+    applyCues(previous);
+  };
+
+  const redo = () => {
+    const history = historyRef.current;
+    const next = history.future.pop();
+    if (!next) return;
+    history.past.push(cues);
+    applyCues(next);
+  };
+
+  const undoRef = useRef(undo);
+  undoRef.current = undo;
+  const redoRef = useRef(redo);
+  redoRef.current = redo;
+
   const setCueWindow = (index: number, beginMs: number, endMs: number) => {
-    onCuesChange(
+    applyCues(
       cues.map((cue, cueIndex) => (cueIndex === index ? { ...cue, beginMs, endMs } : cue)),
     );
   };
@@ -240,7 +280,7 @@ export function SubtitleEditor({
   };
 
   const updateCueText = (cueId: string, patch: Partial<EditableCue>) => {
-    onCuesChange(cues.map((cue) => (cue.id === cueId ? { ...cue, ...patch } : cue)));
+    applyCues(cues.map((cue) => (cue.id === cueId ? { ...cue, ...patch } : cue)));
   };
 
   const togglePlay = async () => {
@@ -284,7 +324,8 @@ export function SubtitleEditor({
   };
 
   const deleteCue = (cueId: string) => {
-    onCuesChange(cues.filter((cue) => cue.id !== cueId));
+    pushHistory();
+    applyCues(cues.filter((cue) => cue.id !== cueId));
     if (selectedCueId === cueId) setSelectedCueId(null);
   };
 
@@ -304,7 +345,8 @@ export function SubtitleEditor({
       text: chars.slice(cut).join("").trim(),
       badge: undefined,
     };
-    onCuesChange([
+    pushHistory();
+    applyCues([
       ...cues.slice(0, index),
       first,
       second,
@@ -322,7 +364,8 @@ export function SubtitleEditor({
       endMs: Math.max(cue.endMs, next.endMs),
       text: joinTexts(cue.text, next.text),
     };
-    onCuesChange([...cues.slice(0, index), merged, ...cues.slice(index + 2)]);
+    pushHistory();
+    applyCues([...cues.slice(0, index), merged, ...cues.slice(index + 2)]);
     setSelectedCueId(merged.id);
   };
 
@@ -340,7 +383,10 @@ export function SubtitleEditor({
       }
       return cue;
     });
-    if (changed) onCuesChange(next);
+    if (changed) {
+      pushHistory();
+      applyCues(next);
+    }
   };
 
   const insertAfter = (cue: EditableCue) => {
@@ -357,7 +403,8 @@ export function SubtitleEditor({
       endMs,
       text: "",
     };
-    onCuesChange([...cues.slice(0, index + 1), inserted, ...cues.slice(index + 1)]);
+    pushHistory();
+    applyCues([...cues.slice(0, index + 1), inserted, ...cues.slice(index + 1)]);
     setSelectedCueId(inserted.id);
     requestAnimationFrame(() => focusCueEditor(inserted.id));
   };
@@ -377,6 +424,7 @@ export function SubtitleEditor({
       startX: event.clientX,
       beginMs: cue.beginMs,
       endMs: cue.endMs,
+      beforeCues: cues,
     };
     setSelectedCueId(cue.id);
   };
@@ -420,11 +468,17 @@ export function SubtitleEditor({
   };
 
   const onTimelinePointerUp = () => {
+    const drag = dragRef.current;
+    if (drag && drag.beforeCues !== cues) pushHistory(drag.beforeCues);
     dragRef.current = null;
     panRef.current = null;
   };
 
-  const onTimelineWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+  /** Ctrl/Alt+滚轮缩放时间轴/波形；挂在编辑面板根节点上，面板内任意位置滚动都能触发，无需精确悬停在时间轴条上。
+   * React 的 onWheel 在原生层以 passive 方式注册，其中调用 preventDefault 不会真正拦下浏览器的默认滚动，
+   * 因此改用下方 effect 里的原生 addEventListener + { passive: false } 来阻止误触发的页面/列表滚动。 */
+  const onEditorWheelRef = useRef<(event: WheelEvent) => void>(() => {});
+  onEditorWheelRef.current = (event: WheelEvent) => {
     if (event.ctrlKey) {
       event.preventDefault();
       changeTimelineZoom(event.deltaY < 0 ? 1 : -1, event.clientX);
@@ -437,6 +491,25 @@ export function SubtitleEditor({
   };
 
   useEffect(() => {
+    const node = editorRootRef.current;
+    if (!node) return;
+    const handleWheel = (event: WheelEvent) => onEditorWheelRef.current(event);
+    node.addEventListener("wheel", handleWheel, { passive: false });
+    return () => node.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  /** WebView2/Chromium 对单独按下 Alt 键有默认的"进入系统菜单/加速键"处理，会打乱之后鼠标滚轮的
+   * 默认滚动判定，表现为 Alt+滚轮缩放一次之后，页面/列表滚轮整体失灵，要点一下别处才恢复。
+   * 阻止 Alt 键 keydown 的默认动作即可避免触发该系统行为，不影响 wheel 事件里正常读取 altKey。 */
+  useEffect(() => {
+    const onAltKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Alt") event.preventDefault();
+    };
+    window.addEventListener("keydown", onAltKeydown, true);
+    return () => window.removeEventListener("keydown", onAltKeydown, true);
+  }, []);
+
+  useEffect(() => {
     stopPlayheadSync();
     setPlaying(false);
     setCurrentMs(0);
@@ -446,6 +519,15 @@ export function SubtitleEditor({
     setWaveformLoading(false);
     setSelectedCueId(null);
   }, [mediaSrc]);
+
+  /** cues 由外部替换（切换文件、切换文稿对齐的「完全按文稿/识别修正」Tab、重新识别等）而非
+   * 本组件内部编辑动作触发时，历史栈会指向已不存在的数据，直接清空避免撤销/重做串到别处。 */
+  useEffect(() => {
+    if (cues !== expectedCuesRef.current) {
+      historyRef.current = { past: [], future: [] };
+      expectedCuesRef.current = cues;
+    }
+  }, [cues]);
 
   useEffect(() => {
     if (!mediaSrc) return;
@@ -532,6 +614,22 @@ export function SubtitleEditor({
   }, [mediaSrc, playbackError, playing, rate]);
 
   useEffect(() => {
+    const onUndoRedoKeydown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoRef.current();
+      } else if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redoRef.current();
+      }
+    };
+    window.addEventListener("keydown", onUndoRedoKeydown, true);
+    return () => window.removeEventListener("keydown", onUndoRedoKeydown, true);
+  }, []);
+
+  useEffect(() => {
     if (!playing || !activeCueId) return;
     listRef.current
       ?.querySelector(`[data-cue-id="${activeCueId}"]`)
@@ -555,7 +653,10 @@ export function SubtitleEditor({
     "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35";
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
+    <div
+      ref={editorRootRef}
+      className="flex flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]"
+    >
       {mediaSrc && (
         <audio
           ref={audioRef}
@@ -632,6 +733,9 @@ export function SubtitleEditor({
         <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
           中键拖动时间轴
         </span>
+        <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
+          Ctrl+Z 撤销 / Ctrl+Y 重做
+        </span>
         <span className="font-mono text-xs tabular-nums text-[var(--color-fg-subtle)]">
           {formatClock(currentMs)} / {formatClock(totalMs)}
         </span>
@@ -661,7 +765,6 @@ export function SubtitleEditor({
         onPointerMove={onTimelinePointerMove}
         onPointerUp={onTimelinePointerUp}
         onPointerCancel={onTimelinePointerUp}
-        onWheel={onTimelineWheel}
       >
         <div className="relative select-none" style={{ width: `${timelineWidth}px`, height: `${TIMELINE_HEIGHT}px` }}>
           <div
@@ -807,15 +910,27 @@ export function SubtitleEditor({
                 <TimeControl
                   label="开始"
                   valueMs={cue.beginMs}
-                  onCommit={(ms) => resizeCueLeft(cueIndex, ms)}
-                  onSetPlayhead={() => resizeCueLeft(cueIndex, currentMs)}
+                  onCommit={(ms) => {
+                    pushHistory();
+                    resizeCueLeft(cueIndex, ms);
+                  }}
+                  onSetPlayhead={() => {
+                    pushHistory();
+                    resizeCueLeft(cueIndex, currentMs);
+                  }}
                 />
                 <span className="text-xs text-[var(--color-fg-faint)]">→</span>
                 <TimeControl
                   label="结束"
                   valueMs={cue.endMs}
-                  onCommit={(ms) => resizeCueRight(cueIndex, ms)}
-                  onSetPlayhead={() => resizeCueRight(cueIndex, currentMs)}
+                  onCommit={(ms) => {
+                    pushHistory();
+                    resizeCueRight(cueIndex, ms);
+                  }}
+                  onSetPlayhead={() => {
+                    pushHistory();
+                    resizeCueRight(cueIndex, currentMs);
+                  }}
                 />
                 <span className="flex-1" />
                 <span className="flex items-center gap-0.5">
@@ -868,6 +983,14 @@ export function SubtitleEditor({
               <CueTextarea
                 value={cue.text}
                 onChange={(text) => updateCueText(cue.id, { text })}
+                onFocus={() => {
+                  textEditSnapshotRef.current = cues;
+                }}
+                onBlur={() => {
+                  const before = textEditSnapshotRef.current;
+                  textEditSnapshotRef.current = null;
+                  if (before && before !== cues) pushHistory(before);
+                }}
                 textareaRef={(node) => {
                   cueTextRefs.current[cue.id] = node;
                 }}

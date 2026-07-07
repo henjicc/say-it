@@ -75,7 +75,6 @@ export function useFilePick(onFile: (file: SelectedTranscriptionFile) => void) {
   };
 
   const pickFile = async () => {
-    setPickState("loading");
     setMessage("");
     try {
       const selected = await open({
