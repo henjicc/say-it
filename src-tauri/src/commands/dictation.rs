@@ -48,6 +48,7 @@ pub(crate) fn set_dictation_settings(
         } else {
             "paste".to_string()
         };
+        guard.press_hold_mode = settings.press_hold_mode;
     }
     save_persisted_state(&app, &state)?;
     Ok(())
