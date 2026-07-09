@@ -58,6 +58,9 @@ export function useTauriBridge() {
     if (isSubtitleCapturing()) return;
     toggleSubtitles();
   });
+  useTauriEvent(EVT.subtitleCloseRequested, () => {
+    shutdownSubtitles();
+  });
   useTauriEvent(EVT.subtitleShortcutError, (payload) => handleSubtitleShortcutError(payload as never));
   useTauriEvent(EVT.subtitleTranslationEvent, (payload) => handleSubtitleTranslationEvent(payload as never));
 

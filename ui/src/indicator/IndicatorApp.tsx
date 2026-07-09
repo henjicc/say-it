@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { EVT, emitEvent } from "@/lib/tauri";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 
 type Phase = "hidden" | "recording" | "processing" | "subtitle";
@@ -14,6 +15,10 @@ interface SubtitleConfig {
   backgroundColor?: string;
   rounded?: number;
   width?: number;
+  windowWidth?: number;
+  windowHeight?: number;
+  anchor?: "top" | "center" | "bottom";
+  offsetY?: number;
   motionEnabled?: boolean;
   motionDurationMs?: number;
   motionEasing?: string;
@@ -177,6 +182,7 @@ export function IndicatorApp() {
   const [phase, setPhase] = useState<Phase>("hidden");
   const [mode, setMode] = useState<IndicatorMode>("dictation");
   const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
+  const [subtitleLocked, setSubtitleLocked] = useState(false);
   const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
 
   const isReplaceMode = mode === "subtitle" && subtitleConfig.displayMode === "replace";
@@ -218,6 +224,7 @@ export function IndicatorApp() {
   useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
     setMode(payload.mode || "dictation");
     if (payload.subtitle) setSubtitleConfig(payload.subtitle);
+    if (payload.mode !== "subtitle") setSubtitleLocked(false);
   });
 
   useEffect(() => {
@@ -284,6 +291,27 @@ export function IndicatorApp() {
     </div>
   );
 
+  const handleSubtitlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (mode !== "subtitle" || subtitleLocked || event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(".subtitle-controls")) return;
+    getCurrentWindow().startDragging();
+  };
+
+  const resetSubtitlePosition = () => {
+    if (!subtitleConfig.windowWidth || !subtitleConfig.windowHeight) return;
+    cmdSilent(CMD.setIndicatorLayout, {
+      width: subtitleConfig.windowWidth,
+      height: subtitleConfig.windowHeight,
+      anchor: subtitleConfig.anchor || "bottom",
+      offsetY: subtitleConfig.offsetY ?? 36,
+    });
+  };
+
+  const closeSubtitles = () => {
+    emitEvent(EVT.subtitleCloseRequested);
+  };
+
   return (
     <div
       id="wrap"
@@ -295,7 +323,36 @@ export function IndicatorApp() {
       style={{ display: visible ? "flex" : "none", ...subtitleStyle }}
     >
       {translationFirst && translationBlock}
-      <div id="text" ref={original.textElRef} className="empty">
+      <div id="text" ref={original.textElRef} className="empty" onPointerDown={handleSubtitlePointerDown}>
+        {mode === "subtitle" && original.hasText && (
+          <div className="subtitle-controls" aria-label="实时字幕控制">
+            <button
+              type="button"
+              className={subtitleLocked ? "active" : ""}
+              aria-label={subtitleLocked ? "解锁字幕条位置" : "锁定字幕条位置"}
+              title={subtitleLocked ? "解锁" : "锁定"}
+              onClick={() => setSubtitleLocked((locked) => !locked)}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                {subtitleLocked ? (
+                  <path d="M4.5 7V5.5a3.5 3.5 0 0 1 7 0V7M4 7.5h8v6H4z" />
+                ) : (
+                  <path d="M4.5 7V5.5a3.5 3.5 0 0 1 6.5-1.8M4 7.5h8v6H4z" />
+                )}
+              </svg>
+            </button>
+            <button type="button" aria-label="重置字幕条位置" title="重置" onClick={resetSubtitlePosition}>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M3.5 7a4.5 4.5 0 1 1 1.3 3.2M3.5 7H1.8M3.5 7V5.3" />
+              </svg>
+            </button>
+            <button type="button" aria-label="关闭实时字幕" title="关闭" onClick={closeSubtitles}>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+              </svg>
+            </button>
+          </div>
+        )}
         <div id="text-flow" ref={original.textFlowRef}>
           <div id="text-content" ref={original.textContentRef} />
         </div>
