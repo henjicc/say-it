@@ -7,6 +7,8 @@ use crate::state::*;
 
 use session::AsrSession;
 
+const MODEL_CALL_DEBUG_ENABLED: bool = false;
+
 #[tauri::command]
 pub(crate) async fn start_asr_stream(
     app: tauri::AppHandle,
@@ -35,12 +37,18 @@ pub(crate) async fn start_asr_stream(
 
     let protocol = AsrSession {
         connector,
-        model,
+        model: model.clone(),
         started: false,
         pending: Vec::new(),
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     let session_id = Uuid::new_v4().to_string();
+    eprintln!(
+        "[model-call] ON session={} provider={} model={}",
+        session_id.get(..8).unwrap_or(&session_id),
+        provider_id,
+        model
+    );
 
     {
         let mut streams = state
@@ -166,6 +174,12 @@ pub(crate) fn stop_asr_stream(
         guard.remove(&session_id)
     };
     if let Some(handle) = handle {
+        if MODEL_CALL_DEBUG_ENABLED {
+            eprintln!(
+                "[model-call] OFF requested session={}",
+                session_id.get(..8).unwrap_or(&session_id)
+            );
+        }
         let _ = handle.tx.send(AsrStreamInput::Stop);
     }
     Ok(())

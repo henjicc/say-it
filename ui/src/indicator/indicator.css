@@ -187,6 +187,10 @@ body,
   display: none;
 }
 
+#wrap.subtitle-mode #text.empty {
+  display: block;
+}
+
 #signal-panel {
   width: 368px;
   max-width: 368px;

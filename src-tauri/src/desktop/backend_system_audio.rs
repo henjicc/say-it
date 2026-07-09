@@ -195,6 +195,16 @@ pub(crate) fn start_backend_system_audio(
                     })();
                     let _ = reply.send(result);
                 }
+                BackendMicCommand::AttachRaw { tx, reply } => {
+                    let result = (|| {
+                        let mut guard = system_audio
+                            .lock()
+                            .map_err(|_| "Backend system audio lock failed".to_string())?;
+                        guard.raw_txs.push(tx);
+                        Ok(BackendMicAttachResponse { flushed_chunks: 0 })
+                    })();
+                    let _ = reply.send(result);
+                }
                 BackendMicCommand::Pause { reply } => {
                     let result = (|| {
                         let mut guard = system_audio
@@ -221,6 +231,7 @@ pub(crate) fn start_backend_system_audio(
             guard.channels = 0;
             guard.session_id = None;
             guard.tx = None;
+            guard.raw_txs.clear();
             guard.pending.clear();
             guard.buffer.clear();
             guard.chunk_count = 0;
@@ -244,6 +255,7 @@ pub(crate) fn start_backend_system_audio(
     guard.pending.clear();
     guard.buffer.clear();
     guard.chunk_count = 0;
+    guard.last_rms = 0.0;
     guard.current_device = resolved_device_name.clone();
     dlog!(
         "[backend-system-audio] 已启动系统音频采集 sample_rate={sample_rate} channels={channels} device={resolved_device_name:?}"
@@ -255,6 +267,46 @@ pub(crate) fn start_backend_system_audio(
         device_name: resolved_device_name,
         fallback,
     })
+}
+
+#[tauri::command]
+pub(crate) fn attach_backend_system_audio_raw_capture(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<BackendMicAttachResponse, String> {
+    let worker = {
+        let guard = state
+            .backend_system_audio
+            .lock()
+            .map_err(|_| "Backend system audio lock failed".to_string())?;
+        guard
+            .worker
+            .clone()
+            .ok_or_else(|| "系统音频采集未启动".to_string())?
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    worker
+        .send(BackendMicCommand::AttachRaw {
+            tx,
+            reply: reply_tx,
+        })
+        .map_err(|_| "系统音频采集线程已停止".to_string())?;
+    let response = reply_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "系统音频采集绑定超时".to_string())??;
+
+    tauri::async_runtime::spawn(async move {
+        while let Some(input) = rx.recv().await {
+            if let AsrStreamInput::RawF32(samples) = input {
+                let _ = app.emit("backend-system-audio-raw-chunk", encode_f32_base64(&samples));
+            }
+        }
+        let _ = app.emit("backend-system-audio-raw-ended", ());
+    });
+
+    Ok(response)
 }
 
 #[tauri::command]
@@ -350,11 +402,24 @@ pub(crate) fn release_backend_system_audio(
         .map_err(|_| "Backend system audio lock failed".to_string())?;
     guard.session_id = None;
     guard.tx = None;
+    guard.raw_txs.clear();
     guard.pending.clear();
     guard.sample_rate = 0;
     guard.channels = 0;
     guard.chunk_count = 0;
     guard.current_device = None;
+    guard.last_rms = 0.0;
     dlog!("[backend-system-audio] 已释放系统音频采集");
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_backend_system_audio_level(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<f32, String> {
+    let guard = state
+        .backend_system_audio
+        .lock()
+        .map_err(|_| "Backend system audio lock failed".to_string())?;
+    Ok(guard.last_rms)
 }
