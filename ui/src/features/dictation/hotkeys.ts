@@ -8,6 +8,8 @@ interface HotkeyHooks {
   getRecording: () => boolean;
   isAssistantActive: () => boolean;
   toggleDictation: () => void | Promise<void>;
+  startDictation: () => void | Promise<void>;
+  stopDictation: () => void | Promise<void>;
   onCancelKey: () => void | Promise<void>;
 }
 
@@ -16,6 +18,8 @@ let hooks: HotkeyHooks = {
   getRecording: () => false,
   isAssistantActive: () => false,
   toggleDictation: () => {},
+  startDictation: () => {},
+  stopDictation: () => {},
   onCancelKey: () => {},
 };
 
@@ -26,6 +30,7 @@ let dictShift = false;
 let dictAlt = false;
 let dictMeta = false;
 let dictInjectMethod: "paste" | "type" = "paste";
+let dictPressHoldMode = false;
 let dictCapturing = false;
 
 export function configureHotkeys(next: HotkeyHooks) {
@@ -82,6 +87,7 @@ async function saveDictationSettings() {
       alt: dictAlt,
       meta: dictMeta,
       inject_method: dictInjectMethod,
+      press_hold_mode: dictPressHoldMode,
     },
   });
 }
@@ -210,8 +216,24 @@ export async function setInjectMethod(method: "paste" | "type") {
   }
 }
 
+export async function setPressHoldMode(enabled: boolean) {
+  const prev = dictPressHoldMode;
+  dictPressHoldMode = enabled;
+  useDictationStore.setState({ pressHoldMode: dictPressHoldMode });
+  try {
+    await saveDictationSettings();
+    hooks.setStatus(enabled ? "已启用长按输入：按住快捷键开始，松开结束。" : "已切换为按一次开始、再按一次结束。", "ok");
+  } catch (error) {
+    dictPressHoldMode = prev;
+    useDictationStore.setState({ pressHoldMode: dictPressHoldMode });
+    hooks.setStatus(`保存失败：${String(error)}`, "err");
+  }
+}
+
 // ---- 焦点在本应用窗口时的热键兜底 ----
+const PRESS_HOLD_START_MS = 260;
 let focusHotkeyDown = false;
+let focusPressHoldTimer: number | null = null;
 
 export interface KeySig {
   code?: string;
@@ -245,11 +267,25 @@ function handleHotkeyKeydown(e: KeySig, preventDefault?: () => void) {
   preventDefault?.();
   if (focusHotkeyDown) return;
   focusHotkeyDown = true;
-  hooks.toggleDictation();
+  if (!dictPressHoldMode) {
+    hooks.toggleDictation();
+    return;
+  }
+  focusPressHoldTimer = window.setTimeout(() => {
+    focusPressHoldTimer = null;
+    if (focusHotkeyDown) hooks.startDictation();
+  }, PRESS_HOLD_START_MS);
 }
 
 function handleHotkeyKeyup(code?: string) {
-  if (code === dictKeyCode) focusHotkeyDown = false;
+  if (code !== dictKeyCode) return;
+  focusHotkeyDown = false;
+  if (focusPressHoldTimer !== null) {
+    window.clearTimeout(focusPressHoldTimer);
+    focusPressHoldTimer = null;
+    return;
+  }
+  if (dictPressHoldMode) hooks.stopDictation();
 }
 
 function onFocusHotkeyKeydown(e: KeyboardEvent) {
@@ -286,6 +322,7 @@ export async function loadDictationSettings() {
       alt?: boolean;
       meta?: boolean;
       inject_method?: "paste" | "type";
+      press_hold_mode?: boolean;
     }>(CMD.getDictationSettings);
     dictKeyCode = d.key_code ?? "";
     dictCtrl = !!d.ctrl;
@@ -293,7 +330,8 @@ export async function loadDictationSettings() {
     dictAlt = !!d.alt;
     dictMeta = !!d.meta;
     dictInjectMethod = d.inject_method || "paste";
-    useDictationStore.setState({ injectMethod: dictInjectMethod });
+    dictPressHoldMode = !!d.press_hold_mode;
+    useDictationStore.setState({ injectMethod: dictInjectMethod, pressHoldMode: dictPressHoldMode });
     updateShortcutDisplay();
     hooks.setStatus(dictKeyCode ? `速记就绪，快捷键：${comboLabel()}` : "速记就绪，当前未设置全局快捷键。");
   } catch (error) {

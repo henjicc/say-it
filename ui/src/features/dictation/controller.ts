@@ -8,6 +8,7 @@ import {
   isCapturing,
   startShortcutCapture,
   setInjectMethod,
+  setPressHoldMode,
   handleForwardedKeydown,
   handleForwardedKeyup,
   installFocusHotkeyFallback,
@@ -25,6 +26,7 @@ export {
   clearShortcut,
   isCapturing,
   setInjectMethod,
+  setPressHoldMode,
   handleForwardedKeydown,
   handleForwardedKeyup,
   installFocusHotkeyFallback,
@@ -40,6 +42,8 @@ configureHotkeys({
   getRecording: () => useDictationStore.getState().recording,
   isAssistantActive: () => false,
   toggleDictation: () => toggleDictation(),
+  startDictation: () => startDictationByShortcut(),
+  stopDictation: () => stopDictationByShortcut(),
   onCancelKey: () => onCancelKey(),
 });
 
@@ -101,6 +105,45 @@ export async function cancelDictation() {
   if (fileJobId) cmdSilent(CMD.transcriptionCancel, { jobId: fileJobId });
   pushDictLog("已按 ESC 取消语音输入，识别文本已丢弃。");
   setDictationStatus(`已取消语音输入，快捷键：${comboLabel()}`);
+}
+
+async function waitForShortcutBusy() {
+  while (dictSession.busy) {
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+  }
+}
+
+export async function startDictationByShortcut() {
+  if (dictSession.busy || dictSession.recording || dictSession.awaitingFinal) return;
+  dictSession.busy = true;
+  try {
+    await startDictation();
+  } catch (error) {
+    dictSession.recording = false;
+    dictSession.awaitingFinal = false;
+    dictSession.mode = null;
+    useDictationStore.setState({ recording: false });
+    await shutdownMic();
+    dictSession.rawUnlisten?.();
+    dictSession.rawUnlisten = null;
+    dictSession.previewUnlisten?.();
+    dictSession.previewUnlisten = null;
+    dictSession.rawChunks = [];
+    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
+    if (dictSession.sessionId) {
+      cmdSilent(CMD.stopAsrStream, { sessionId: dictSession.sessionId });
+      dictSession.sessionId = null;
+    }
+    setDictationStatus(`语音输入出错：${String(error)}`, "err");
+  } finally {
+    dictSession.busy = false;
+  }
+}
+
+export async function stopDictationByShortcut() {
+  if (!dictSession.recording && !dictSession.busy) return;
+  await waitForShortcutBusy();
+  if (dictSession.recording) await toggleDictation();
 }
 
 export async function toggleDictation() {

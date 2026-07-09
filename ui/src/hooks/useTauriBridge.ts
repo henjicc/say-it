@@ -6,6 +6,8 @@ import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { syncDebugLogToBackend } from "@/store/useDictPrefs";
 import {
   toggleDictation,
+  startDictationByShortcut,
+  stopDictationByShortcut,
   onCancelKey,
   handleDictAsrEvent,
   handleDictTranscriptionEvent,
@@ -48,6 +50,14 @@ export function useTauriBridge() {
   useTauriEvent(EVT.dictationToggle, () => {
     if (isCapturing()) return;
     toggleDictation();
+  });
+  useTauriEvent(EVT.dictationPressStart, () => {
+    if (isCapturing()) return;
+    startDictationByShortcut();
+  });
+  useTauriEvent(EVT.dictationPressEnd, () => {
+    if (isCapturing()) return;
+    stopDictationByShortcut();
   });
   useTauriEvent(EVT.dictationCancel, () => {
     if (isCapturing()) return;
