@@ -1,4 +1,4 @@
-import { CMD, cmd, cmdSilent } from "@/lib/tauri";
+import { CMD, EVT, cmd, cmdSilent, on } from "@/lib/tauri";
 import { compactLogJson } from "@/lib/format";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -8,12 +8,14 @@ import { ensureMic, getBackendMicSampleRate, scheduleMicShutdown } from "./micSe
 import { dictSession, DICTATION_INDICATOR_LAYOUT, dspParams, pushDictLog, setDictationStatus } from "./session";
 import { finalizeDictation } from "./inject";
 import { stopFileDictationAndRecognize } from "./fileFlow";
+import { rawChunkRms, silenceDisconnectPrefs } from "@/features/audio/silenceDisconnect";
 
-export async function startRealtimeDictation(model: string) {
-  const t0 = Date.now();
-  await ensureMic(pushDictLog);
-  const micMs = Date.now() - t0;
+const MODEL_CALL_DEBUG_ENABLED = false;
 
+let dictationSilenceStartedAt = 0;
+let dictationLastLevelLogAt = 0;
+
+async function openDictationAsrStream(model: string) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
     modelOverride: model,
@@ -21,20 +23,120 @@ export async function startRealtimeDictation(model: string) {
     params: dspParams(),
   });
   dictSession.sessionId = session.session_id;
-  dictSession.mode = "realtime";
-  const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicToAsr, {
-    sessionId: dictSession.sessionId,
+  return cmd<{ flushedChunks?: number }>(CMD.attachBackendMicToAsr, { sessionId: dictSession.sessionId });
+}
+
+function clearDictationSilenceTimer() {
+  if (dictSession.silenceTimer) {
+    clearTimeout(dictSession.silenceTimer);
+    dictSession.silenceTimer = null;
+  }
+  dictationSilenceStartedAt = 0;
+}
+
+async function disconnectDictationAsrForSilence() {
+  if (!dictSession.recording || !dictSession.sessionId || dictSession.silenceDisconnecting) return;
+  dictSession.silenceDisconnecting = true;
+  const session = dictSession.sessionId;
+  dictSession.sessionId = null;
+  await cmdSilent(CMD.stopAsrStream, { sessionId: session });
+  dictSession.segment = "";
+  pushIndicatorText(dictSession.committed, { force: true });
+  setDictationStatus("已因音量低于阈值断开 ASR 流，等待再次说话…", "ok");
+  if (MODEL_CALL_DEBUG_ENABLED) console.log(`[model-call] 语音输入 OFF 音量低于阈值断流 session=${session.slice(0, 8)}`);
+  cmdSilent(CMD.debugModelCallState, { message: `语音输入 OFF 音量低于阈值断流 session=${session.slice(0, 8)}` });
+  pushDictLog(`音量低于阈值达到时长，已断开 ASR 流 session=${session.slice(0, 8)}`);
+  dictSession.silenceDisconnecting = false;
+}
+
+async function connectDictationAsrOnVoice(model: string) {
+  if (!dictSession.recording || dictSession.sessionId || dictSession.streamStarting) return;
+  dictSession.streamStarting = true;
+  try {
+    const attach = await openDictationAsrStream(model);
+    const shortSession = dictSession.sessionId?.slice(0, 8) || "?";
+    if (MODEL_CALL_DEBUG_ENABLED) console.log(`[model-call] 语音输入 ON session=${shortSession}`);
+    cmdSilent(CMD.debugModelCallState, { message: `语音输入 ON session=${shortSession}` });
+    pushDictLog(`检测到声音，已连接 ASR session=${dictSession.sessionId?.slice(0, 8)}，补发 ${attach.flushedChunks || 0} 块`);
+    setDictationStatus("正在聆听…（静音会自动断开流）", "ok");
+  } catch (error) {
+    setDictationStatus(`连接 ASR 失败：${String(error)}`, "err");
+    pushDictLog(`检测到声音后连接 ASR 失败：${String(error)}`);
+  } finally {
+    dictSession.streamStarting = false;
+  }
+}
+
+async function startRealtimeSilenceGate(model: string, micMs: number) {
+  const prefs = silenceDisconnectPrefs();
+  dictSession.rawUnlisten?.();
+  dictSession.rawUnlisten = await on<string>(EVT.backendMicRawChunk, (base64) => {
+    const rms = rawChunkRms(base64);
+    const now = Date.now();
+    if (rms > prefs.dictationSilenceThreshold) {
+      clearDictationSilenceTimer();
+      if (now - dictationLastLevelLogAt >= 1000) {
+        dictationLastLevelLogAt = now;
+        cmdSilent(CMD.debugModelCallState, { message: `语音输入 音量=${rms.toFixed(4)} > 阈值 ${prefs.dictationSilenceThreshold.toFixed(4)}，正在调用模型` });
+      }
+      void connectDictationAsrOnVoice(model);
+      return;
+    }
+    if (dictSession.sessionId) {
+      if (!dictationSilenceStartedAt) dictationSilenceStartedAt = now;
+      const remainingMs = Math.max(0, prefs.dictationSilenceDisconnectMs - (now - dictationSilenceStartedAt));
+      if (now - dictationLastLevelLogAt >= 1000) {
+        dictationLastLevelLogAt = now;
+        cmdSilent(CMD.debugModelCallState, { message: `语音输入 音量=${rms.toFixed(4)} <= 阈值 ${prefs.dictationSilenceThreshold.toFixed(4)}，约 ${(remainingMs / 1000).toFixed(1)}s 后断流` });
+      }
+      if (!dictSession.silenceTimer) {
+        dictSession.silenceTimer = setTimeout(() => {
+          dictSession.silenceTimer = null;
+          void disconnectDictationAsrForSilence();
+        }, remainingMs);
+      }
+    } else if (now - dictationLastLevelLogAt >= 1000) {
+      dictationLastLevelLogAt = now;
+      cmdSilent(CMD.debugModelCallState, { message: `语音输入 音量=${rms.toFixed(4)} <= 阈值 ${prefs.dictationSilenceThreshold.toFixed(4)}，未调用模型` });
+    }
   });
+  await cmd(CMD.attachBackendMicRawCapture);
+  pushDictLog(`开始录音（音量低于阈值断流已开启，后端麦克风就绪 ${micMs}ms，阈值 ${prefs.dictationSilenceThreshold.toFixed(3)}）`);
+  setDictationStatus("正在等待声音…（再次按快捷键停止并注入）", "ok");
+}
+
+export async function startRealtimeDictation(model: string) {
+  const t0 = Date.now();
+  await ensureMic(pushDictLog);
+  const micMs = Date.now() - t0;
+
+  dictSession.mode = "realtime";
   dictSession.recording = true;
   useDictationStore.setState({ recording: true });
-  pushDictLog(
-    `开始录音 session=${dictSession.sessionId.slice(0, 8)}（后端麦克风就绪 ${micMs}ms，补发 ${attach.flushedChunks || 0} 块）`,
-  );
-
   playCue("start");
   cmdSilent(CMD.setIndicatorLayout, DICTATION_INDICATOR_LAYOUT);
   cmdSilent(CMD.setIndicatorState, { state: "recording" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
+
+  if (silenceDisconnectPrefs().dictationSilenceDisconnectEnabled) {
+    cmdSilent(CMD.debugModelCallState, { message: "语音输入 WAIT 本地检测中，未调用模型" });
+    await startRealtimeSilenceGate(model, micMs);
+    return;
+  }
+
+  dictSession.rawUnlisten?.();
+  dictSession.rawUnlisten = await on<string>(EVT.backendMicRawChunk, (base64) => {
+    const now = Date.now();
+    if (now - dictationLastLevelLogAt < 1000) return;
+    dictationLastLevelLogAt = now;
+    const rms = rawChunkRms(base64);
+    cmdSilent(CMD.debugModelCallState, { message: `语音输入 音量=${rms.toFixed(4)}，正在调用模型` });
+  });
+  await cmd(CMD.attachBackendMicRawCapture);
+  const attach = await openDictationAsrStream(model);
+  pushDictLog(
+    `开始录音 session=${dictSession.sessionId?.slice(0, 8)}（后端麦克风就绪 ${micMs}ms，补发 ${attach.flushedChunks || 0} 块）`,
+  );
   setDictationStatus("正在聆听…（再次按快捷键停止并注入）", "ok");
 }
 
@@ -56,6 +158,11 @@ export async function stopDictationAndInject() {
   }
   dictSession.recording = false;
   useDictationStore.setState({ recording: false });
+  clearDictationSilenceTimer();
+  dictSession.rawUnlisten?.();
+  dictSession.rawUnlisten = null;
+  dictSession.streamStarting = false;
+  dictSession.silenceDisconnecting = false;
   try {
     await cmd(CMD.pauseBackendMic);
   } catch (error) {
@@ -117,6 +224,12 @@ export function handleDictAsrEvent(data: {
     handleDictSegmentEnd(data.session_id);
   } else if (data.kind === "ended" || data.kind === "closed") {
     pushDictLog(`连接 ${data.kind}：${compactLogJson(data.payload)}`);
+    if (silenceDisconnectPrefs().dictationSilenceDisconnectEnabled && dictSession.recording && !dictSession.awaitingFinal) {
+      dictSession.sessionId = null;
+      clearDictationSilenceTimer();
+      setDictationStatus("ASR 流已断开，等待再次说话…", "ok");
+      return true;
+    }
     if (dictSession.awaitingFinal) handleDictSegmentEnd(data.session_id);
   } else if (data.kind === "error") {
     pushDictLog(`ASR 错误：${compactLogJson(data.payload)}`);

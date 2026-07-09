@@ -6,6 +6,7 @@ use crate::prelude::*;
 use crate::state::*;
 
 const ASR_FINISH_TIMEOUT: Duration = Duration::from_secs(8);
+const MODEL_CALL_DEBUG_ENABLED: bool = false;
 
 type WsWriter = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -230,6 +231,14 @@ pub(super) async fn run_asr_session(
                 break;
             }
         }
+    }
+    if MODEL_CALL_DEBUG_ENABLED {
+        eprintln!(
+            "[model-call] OFF session={} chunks={} bytes={}",
+            task_session_id.get(..8).unwrap_or(&task_session_id),
+            audio_chunks,
+            audio_bytes
+        );
     }
     if let Ok(mut guard) = streams.lock() {
         guard.remove(&task_session_id);

@@ -25,9 +25,11 @@ pub(crate) struct BackendMicState {
     pub(crate) channels: usize,
     pub(crate) session_id: Option<String>,
     pub(crate) tx: Option<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
+    pub(crate) raw_txs: Vec<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
     pub(crate) pending: VecDeque<Vec<f32>>,
     pub(crate) buffer: Vec<f32>,
     pub(crate) chunk_count: u64,
+    pub(crate) last_rms: f32,
     /// 当前 worker 实际打开的设备名；`None` 表示用的是系统默认设备。
     pub(crate) current_device: Option<String>,
 }
@@ -35,6 +37,10 @@ pub(crate) struct BackendMicState {
 pub(crate) enum BackendMicCommand {
     Attach {
         session_id: String,
+        tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
+    },
+    AttachRaw {
         tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
