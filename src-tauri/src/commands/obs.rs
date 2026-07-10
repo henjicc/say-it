@@ -66,6 +66,17 @@ pub(crate) struct ObsSavedConnection {
     pub(crate) has_password: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObsOverlayLayoutRequest {
+    pub(crate) display_mode: String,
+    pub(crate) width_percent: f64,
+    pub(crate) font_size_percent: f64,
+    pub(crate) line_count: u32,
+    pub(crate) translation_enabled: bool,
+    pub(crate) translation_layout: String,
+}
+
 #[tauri::command]
 pub(crate) fn get_obs_connection_settings(
     state: tauri::State<'_, RuntimeState>,
@@ -103,6 +114,45 @@ pub(crate) fn publish_obs_overlay_snapshot(
     state: tauri::State<'_, RuntimeState>,
 ) {
     publish_snapshot(&state, snapshot);
+}
+
+#[tauri::command]
+pub(crate) async fn sync_obs_overlay_layout(
+    app: tauri::AppHandle,
+    request: ObsOverlayLayoutRequest,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<(), String> {
+    let mut settings = state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())?
+        .clone();
+    let Some(input_uuid) = settings
+        .input_uuid
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return Ok(());
+    };
+    let connection = ObsConnectionRequest {
+        host: settings.obs_host.clone(),
+        port: settings.obs_port,
+        password: Some(settings.obs_password.clone()),
+    };
+    let client = connect(&connection).await?;
+    let video = client.config().video_settings().await.map_err(obs_error)?;
+    let (width, height) = overlay_source_dimensions(video.base_width, video.base_height, &request);
+    settings.obs_canvas_height = video.base_height;
+    client
+        .inputs()
+        .set_settings(SetSettings {
+            input: InputId::Uuid(input_uuid),
+            settings: &browser_source_settings(&overlay_url(&settings), width, height),
+            overlay: Some(true),
+        })
+        .await
+        .map_err(obs_error)?;
+    save_obs_overlay_settings(&app, &state, settings)
 }
 
 #[tauri::command]
@@ -432,6 +482,35 @@ fn browser_source_settings(url: &str, width: u32, height: u32) -> Value {
     })
 }
 
+fn overlay_source_dimensions(
+    canvas_width: u32,
+    canvas_height: u32,
+    request: &ObsOverlayLayoutRequest,
+) -> (u32, u32) {
+    let width_percent = request.width_percent.clamp(20.0, 70.0);
+    let font_percent = request.font_size_percent.clamp(1.5, 6.0);
+    let lines = if request.display_mode == "scroll" {
+        request.line_count.clamp(1, 4)
+    } else {
+        1
+    };
+    let rows = if request.translation_enabled && request.translation_layout == "bilingual" {
+        2
+    } else {
+        1
+    };
+    let font_size = canvas_height as f64 * font_percent / 100.0 * 1.8;
+    let width = (canvas_width as f64 * width_percent / 100.0).round() as u32;
+    let height = (font_size * 1.38 * lines as f64 * rows as f64
+        + 20.0 * rows as f64
+        + if rows > 1 { 10.0 } else { 0.0 })
+        .ceil() as u32;
+    (
+        width.clamp(160, canvas_width.max(160)),
+        height.clamp(72, canvas_height.max(72)),
+    )
+}
+
 fn unique_source_name(inputs: &[obws::responses::inputs::Input]) -> String {
     let exists = |name: &str| inputs.iter().any(|input| input.id.name == name);
     if !exists(OBS_SOURCE_BASE_NAME) {
@@ -477,5 +556,25 @@ mod tests {
         let value = serde_json::to_value(status).unwrap();
         assert_eq!(value["hasPassword"], true);
         assert!(value.get("password").is_none());
+    }
+
+    #[test]
+    fn overlay_dimensions_follow_mode_lines_and_translation_rows() {
+        let mut request = ObsOverlayLayoutRequest {
+            display_mode: "replace".into(),
+            width_percent: 46.0,
+            font_size_percent: 2.6,
+            line_count: 4,
+            translation_enabled: false,
+            translation_layout: "bilingual".into(),
+        };
+        let replace = overlay_source_dimensions(1920, 1080, &request);
+        request.display_mode = "scroll".into();
+        let scroll = overlay_source_dimensions(1920, 1080, &request);
+        request.translation_enabled = true;
+        let bilingual = overlay_source_dimensions(1920, 1080, &request);
+        assert_eq!(replace.0, 883);
+        assert!(scroll.1 > replace.1);
+        assert!(bilingual.1 > scroll.1);
     }
 }

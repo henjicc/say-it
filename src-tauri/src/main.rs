@@ -284,6 +284,7 @@ fn main() {
             get_obs_connection_settings,
             get_obs_password,
             publish_obs_overlay_snapshot,
+            sync_obs_overlay_layout,
             connect_obs,
             install_obs_overlay,
             uninstall_obs_overlay

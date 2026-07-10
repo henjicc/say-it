@@ -59,6 +59,7 @@ export const CMD = {
   getObsConnectionSettings: "get_obs_connection_settings",
   getObsPassword: "get_obs_password",
   publishObsOverlaySnapshot: "publish_obs_overlay_snapshot",
+  syncObsOverlayLayout: "sync_obs_overlay_layout",
   connectObs: "connect_obs",
   installObsOverlay: "install_obs_overlay",
   uninstallObsOverlay: "uninstall_obs_overlay",

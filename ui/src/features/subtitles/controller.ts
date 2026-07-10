@@ -71,6 +71,12 @@ let reconnecting = false;
 let reconnectAttempts = 0;
 let obsOutputMonitor: ReturnType<typeof setInterval> | null = null;
 let obsOutputActive = false;
+let obsOutputMonitorEpoch = 0;
+let obsLayoutForcedForMonitor = false;
+let obsDisconnectedPolls = 0;
+let obsLayoutSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let lastObsLayoutSignature = "";
+let obsSnapshotQueued = false;
 
 let backendSystemAudioSampleRate = 48000;
 
@@ -122,6 +128,8 @@ export function rgba(hex: string, opacity: number) {
 }
 
 export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleStore.getState().prefs) {
+  scheduleObsOverlayLayout(prefs);
+  syncObsOverlay();
   const { width: monitorWidth, height: monitorHeight } = await cmd<{ width: number; height: number }>(
     CMD.getIndicatorMonitorMetrics,
   ).catch(() => ({ width: 1920, height: 1080 }));
@@ -172,62 +180,111 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
       translationOrder: prefs.translationOrder,
     },
   });
-  syncObsOverlay();
+  if (useSubtitleStore.getState().running || previewActive) {
+    renderSubtitle(currentSegment);
+    renderTranslation();
+  }
 }
 
-async function refreshObsOutputTarget() {
+function obsOverlayLayoutRequest(prefs: SubtitlePrefs) {
+  return {
+    displayMode: prefs.mode,
+    widthPercent: prefs.widthPercent,
+    fontSizePercent: prefs.fontSizePercent,
+    lineCount: prefs.lineCount,
+    translationEnabled: prefs.translationModel !== TRANSLATION_MODEL_NONE,
+    translationLayout: prefs.translationLayout,
+  };
+}
+
+function scheduleObsOverlayLayout(prefs: SubtitlePrefs, force = false) {
+  const request = obsOverlayLayoutRequest(prefs);
+  const signature = JSON.stringify(request);
+  if (!force && signature === lastObsLayoutSignature) return;
+  lastObsLayoutSignature = signature;
+  if (obsLayoutSyncTimer) clearTimeout(obsLayoutSyncTimer);
+  obsLayoutSyncTimer = setTimeout(() => {
+    obsLayoutSyncTimer = null;
+    cmdSilent(CMD.syncObsOverlayLayout, { request });
+  }, force ? 0 : 320);
+}
+
+async function refreshObsOutputTarget(epoch = obsOutputMonitorEpoch) {
   const status = await cmd<{ ready: boolean; connected: boolean }>(CMD.getObsOverlayStatus).catch(() => ({
     ready: false,
     connected: false,
   }));
-  const nextActive = status.ready && status.connected;
-  if (nextActive === obsOutputActive) return;
+  if (epoch !== obsOutputMonitorEpoch) return;
+  const rawActive = status.ready && status.connected;
+  if (rawActive) obsDisconnectedPolls = 0;
+  else obsDisconnectedPolls += 1;
+  const nextActive = rawActive || (obsOutputActive && obsDisconnectedPolls < 2);
+  const becameActive = nextActive && !obsOutputActive;
   obsOutputActive = nextActive;
-  if (useSubtitleStore.getState().running) {
+  if (becameActive && !obsLayoutForcedForMonitor) {
+    obsLayoutForcedForMonitor = true;
+    scheduleObsOverlayLayout(useSubtitleStore.getState().prefs, true);
+  }
+  if (useSubtitleStore.getState().running || previewActive) {
     await cmdSilent(CMD.setIndicatorState, { state: obsOutputActive ? "hidden" : "subtitle" });
   }
 }
 
 function startObsOutputMonitor() {
   if (obsOutputMonitor) clearInterval(obsOutputMonitor);
+  const epoch = ++obsOutputMonitorEpoch;
+  obsLayoutForcedForMonitor = false;
+  obsDisconnectedPolls = 0;
   obsOutputMonitor = setInterval(() => {
-    void refreshObsOutputTarget();
+    void refreshObsOutputTarget(epoch);
   }, 1000);
+  return epoch;
 }
 
 function stopObsOutputMonitor() {
   if (obsOutputMonitor) clearInterval(obsOutputMonitor);
   obsOutputMonitor = null;
+  obsOutputMonitorEpoch += 1;
+  obsLayoutForcedForMonitor = false;
+  obsDisconnectedPolls = 0;
   obsOutputActive = false;
 }
 
 function syncObsOverlay() {
-  const prefs = useSubtitleStore.getState().prefs;
-  const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
-  cmdSilent(CMD.publishObsOverlaySnapshot, {
-    snapshot: {
-      originalText: displayText,
-      translationText: translationDisplayText,
-      style: {
-        fontFamily: prefs.fontFamily,
-        fontSize: Math.round(1080 * (prefs.fontSizePercent / 100)),
-        fontSizePercent: prefs.fontSizePercent,
-        lineCount: effectiveLines,
-        widthPercent: prefs.widthPercent,
-        textColor: prefs.textColor,
-        backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
-        rounded: prefs.rounded,
-        motionEnabled: prefs.motionEnabled,
-        motionDurationMs: prefs.motionDurationMs,
-        motionEasing: prefs.motionEasing,
-        fadeEnabled: prefs.fadeEnabled,
-        fadeDurationMs: prefs.fadeDurationMs,
-        fadeEasing: prefs.fadeEasing,
-        translationEnabled: prefs.translationModel !== TRANSLATION_MODEL_NONE,
-        translationLayout: prefs.translationLayout,
-        translationOrder: prefs.translationOrder,
+  if (obsSnapshotQueued) return;
+  obsSnapshotQueued = true;
+  // 用微任务合并同一轮里原文/译文各自触发的推送；不要用 requestAnimationFrame——
+  // 主窗口最小化时 WebView2 会暂停 rAF，直播中 OBS 字幕会整个冻结。
+  queueMicrotask(() => {
+    obsSnapshotQueued = false;
+    const prefs = useSubtitleStore.getState().prefs;
+    const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
+    cmdSilent(CMD.publishObsOverlaySnapshot, {
+      snapshot: {
+        originalText: displayText,
+        translationText: translationDisplayText,
+        style: {
+          displayMode: prefs.mode,
+          fontFamily: prefs.fontFamily,
+          fontSize: Math.round(1080 * (prefs.fontSizePercent / 100)),
+          fontSizePercent: prefs.fontSizePercent,
+          lineCount: effectiveLines,
+          widthPercent: prefs.widthPercent,
+          textColor: prefs.textColor,
+          backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
+          rounded: prefs.rounded,
+          motionEnabled: prefs.motionEnabled,
+          motionDurationMs: prefs.motionDurationMs,
+          motionEasing: prefs.motionEasing,
+          fadeEnabled: prefs.fadeEnabled,
+          fadeDurationMs: prefs.fadeDurationMs,
+          fadeEasing: prefs.fadeEasing,
+          translationEnabled: prefs.translationModel !== TRANSLATION_MODEL_NONE,
+          translationLayout: prefs.translationLayout,
+          translationOrder: prefs.translationOrder,
+        },
       },
-    },
+    });
   });
 }
 
@@ -250,46 +307,54 @@ const PREVIEW_LOOP_GAP_MS = 3000;
 const PREVIEW_TRANSLATE_DELAY_MS = 260;
 const PREVIEW_TRANSLATE_CHAR_INTERVAL_MS = 26;
 
-let previewTimer: ReturnType<typeof setTimeout> | null = null;
+const previewTimers = new Set<ReturnType<typeof setTimeout>>();
 let previewActive = false;
 let previewScriptIndex = 0;
+let previewGeneration = 0;
 
-function clearPreviewTimer() {
-  if (previewTimer) {
-    clearTimeout(previewTimer);
-    previewTimer = null;
-  }
+function clearPreviewTimers() {
+  for (const timer of previewTimers) clearTimeout(timer);
+  previewTimers.clear();
+}
+
+function schedulePreview(callback: () => void, delay: number, generation: number) {
+  const timer = setTimeout(() => {
+    previewTimers.delete(timer);
+    if (!previewActive || generation !== previewGeneration) return;
+    callback();
+  }, delay);
+  previewTimers.add(timer);
 }
 
 /** 模拟译文"流式吐字"：从第 1 个字符逐步增长到完整译文，效果与真实分句翻译陆续到达时一致。 */
-function playPreviewTranslation(text: string, group: number[]) {
+function playPreviewTranslation(text: string, group: number[], generation: number) {
   let pos = 0;
   const segSeq = ++translationSegmentSeq;
   group.push(segSeq);
   const tick = () => {
-    if (!previewActive) return;
+    if (!previewActive || generation !== previewGeneration) return;
     pos += 1;
     translations.set(segSeq, text.slice(0, pos));
     renderTranslation();
-    if (pos < text.length) previewTimer = setTimeout(tick, PREVIEW_TRANSLATE_CHAR_INTERVAL_MS);
+    if (pos < text.length) schedulePreview(tick, PREVIEW_TRANSLATE_CHAR_INTERVAL_MS, generation);
   };
-  previewTimer = setTimeout(tick, PREVIEW_TRANSLATE_DELAY_MS);
+  schedulePreview(tick, PREVIEW_TRANSLATE_DELAY_MS, generation);
 }
 
 /** 模拟原文"识别中逐字增长"，定稿后按当前模式归档（与 handleSubtitleAsrEvent 的定稿分支逻辑保持一致），
  * 再视情况模拟这句的译文，然后进入下一句、循环播放。 */
-function playPreviewSentence() {
-  if (!previewActive) return;
+function playPreviewSentence(generation: number) {
+  if (!previewActive || generation !== previewGeneration) return;
   const item = PREVIEW_SCRIPT[previewScriptIndex % PREVIEW_SCRIPT.length];
   let pos = 0;
   const typeChar = () => {
-    if (!previewActive) return;
+    if (!previewActive || generation !== previewGeneration) return;
     pos += 1;
     const partial = item.source.slice(0, pos);
     currentSegment = partial;
     renderSubtitle(partial);
     if (pos < item.source.length) {
-      previewTimer = setTimeout(typeChar, PREVIEW_CHAR_INTERVAL_MS);
+      schedulePreview(typeChar, PREVIEW_CHAR_INTERVAL_MS, generation);
       return;
     }
     const prefs = useSubtitleStore.getState().prefs;
@@ -315,17 +380,21 @@ function playPreviewSentence() {
     renderSubtitle("");
 
     if (prefs.translationModel !== TRANSLATION_MODEL_NONE) {
-      playPreviewTranslation(item.translation, sealedGroup);
+      playPreviewTranslation(item.translation, sealedGroup, generation);
     }
 
     const isLastOfLoop = previewScriptIndex % PREVIEW_SCRIPT.length === PREVIEW_SCRIPT.length - 1;
     previewScriptIndex += 1;
-    previewTimer = setTimeout(playPreviewSentence, isLastOfLoop ? PREVIEW_LOOP_GAP_MS : PREVIEW_SENTENCE_GAP_MS);
+    schedulePreview(
+      () => playPreviewSentence(generation),
+      isLastOfLoop ? PREVIEW_LOOP_GAP_MS : PREVIEW_SENTENCE_GAP_MS,
+      generation,
+    );
   };
-  previewTimer = setTimeout(typeChar, PREVIEW_CHAR_INTERVAL_MS);
+  schedulePreview(typeChar, PREVIEW_CHAR_INTERVAL_MS, generation);
 }
 
-function startPreviewSimulation() {
+function startPreviewSimulation(generation: number) {
   previewActive = true;
   previewScriptIndex = 0;
   committedLines = [];
@@ -340,20 +409,26 @@ function startPreviewSimulation() {
   translations = new Map();
   translationSegmentSeq = 0;
   translationDisplayText = "";
-  playPreviewSentence();
+  playPreviewSentence(generation);
 }
 
 function stopPreviewSimulation() {
+  previewGeneration += 1;
   previewActive = false;
-  clearPreviewTimer();
+  clearPreviewTimers();
 }
 
 /** 在桌面悬浮窗里按当前样式模拟播放示例内容，不启动麦克风/识别、不产生真实翻译请求。真正开着字幕时不干预。 */
 export async function showSubtitlePreview(prefs: SubtitlePrefs) {
   if (useSubtitleStore.getState().running) return;
+  const generation = ++previewGeneration;
+  previewActive = false;
+  clearPreviewTimers();
   await syncSubtitleIndicator(prefs);
-  cmdSilent(CMD.setIndicatorState, { state: "subtitle" });
-  startPreviewSimulation();
+  if (generation !== previewGeneration || useSubtitleStore.getState().running) return;
+  startPreviewSimulation(generation);
+  const monitorEpoch = startObsOutputMonitor();
+  await refreshObsOutputTarget(monitorEpoch);
 }
 
 /** 关闭预览悬浮窗，恢复到指示器的默认（隐藏）状态。 */
@@ -362,6 +437,17 @@ export async function hideSubtitlePreview() {
   // 否则模拟定时器会继续往 committedLines/currentSegment 等共享状态里写东西，和真实识别打架。
   stopPreviewSimulation();
   if (useSubtitleStore.getState().running) return;
+  stopObsOutputMonitor();
+  currentSegment = "";
+  committedLines = [];
+  replaceModeLine = "";
+  currentTranslationGroup = [];
+  committedTranslationGroups = [];
+  replaceTranslationGroups = [];
+  translations = new Map();
+  displayText = "";
+  translationDisplayText = "";
+  syncObsOverlay();
   await emitEvent(EVT.indicatorConfig, { mode: "dictation" });
   await cmdSilent(CMD.setIndicatorLayout, { width: 460, height: 188, anchor: "bottom", offsetY: 36 });
   await cmdSilent(CMD.setIndicatorState, { state: "hidden" });
@@ -397,13 +483,14 @@ function pushIndicatorChannels() {
 function renderSubtitle(nextSegment = currentSegment) {
   const prefs = useSubtitleStore.getState().prefs;
   const stable = committedLines.join("\n");
+  const replaceStable = replaceModeLine || committedLines[committedLines.length - 1] || "";
   const next =
     prefs.mode === "replace"
       ? nextSegment
-        ? replaceModeLine
-          ? `${replaceModeLine}${REPLACE_LINE_SEPARATOR}${nextSegment}`
+        ? replaceStable
+          ? `${replaceStable}${REPLACE_LINE_SEPARATOR}${nextSegment}`
           : nextSegment
-        : replaceModeLine
+        : replaceStable
       : [stable, nextSegment].filter(Boolean).join(stable && nextSegment ? "\n" : "");
   displayText = next.length > 1800 ? next.slice(-1800).replace(/^\s+/, "") : next;
   useSubtitleStore.getState().setRuntime({ latestText: displayText });
@@ -423,7 +510,10 @@ function renderTranslation() {
   const prefs = useSubtitleStore.getState().prefs;
   let next: string;
   if (prefs.mode === "replace") {
-    next = [...replaceTranslationGroups, currentTranslationGroup]
+    const stableGroups = replaceTranslationGroups.length
+      ? replaceTranslationGroups
+      : committedTranslationGroups.slice(-1);
+    next = [...stableGroups, currentTranslationGroup]
       .map(joinTranslationGroup)
       .filter(Boolean)
       .join(REPLACE_LINE_SEPARATOR);
@@ -612,6 +702,7 @@ async function startSubtitles() {
   // 保险起见：无论调用方是否已经通过 hideSubtitlePreview 关掉预览，真会话开始前一律先停掉
   // 模拟播放的定时器，避免它继续往下面这些共享状态里写东西、和真实识别的写入互相打架。
   stopPreviewSimulation();
+  stopObsOutputMonitor();
   const prefs = useSubtitleStore.getState().prefs;
   committedLines = [];
   currentSegment = "";

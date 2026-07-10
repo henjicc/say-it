@@ -281,7 +281,7 @@ export function ObsOverlayPanel() {
           <Button variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
         </div>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          自动安装会读取并匹配 OBS 当前画布尺寸。手动添加 Browser Source 时，建议设置为画布尺寸；无法确认时可先使用 1920×1080，并保持透明背景。
+          安装后，字幕模式、字号、宽度、行数、翻译布局、颜色和动画会实时同步，无需重复点击“更新字幕源”；在 OBS 中手动调整的位置、缩放、裁切和层级会保留。
           {overlay.installed && overlay.sourceName ? ` 当前受管理的源：${overlay.sourceName}。` : ""}
         </p>
       </SettingsSection>
