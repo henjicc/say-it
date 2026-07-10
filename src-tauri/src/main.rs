@@ -49,7 +49,9 @@ fn main() {
 
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required",
+        // 透明字幕窗口使用 GPU 合成时，部分 Windows 10 环境下 OBS 的窗口采集只能得到黑帧。
+        // 强制 WebView2 走软件渲染，保证字幕窗口能被常见的窗口采集链路读取。
+        "--disable-gpu --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required",
     );
 
     tauri::Builder::default()
