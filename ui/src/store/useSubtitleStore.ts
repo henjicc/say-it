@@ -85,12 +85,17 @@ interface SubtitleState {
   latestText: string;
   capturing: boolean;
   shortcutLabel: string;
+  /** 字幕当前是否实际输出到 OBS（连接就绪且"输出到 OBS"开关打开），用于界面隐藏不适用的样式项。 */
+  obsOutputActive: boolean;
   patch: (partial: Partial<SubtitlePrefs>) => void;
   loadTranslationModel: () => Promise<void>;
   setTranslationModel: (model: string) => Promise<void>;
   setRuntime: (
     partial: Partial<
-      Pick<SubtitleState, "running" | "statusText" | "statusTone" | "latestText" | "capturing" | "shortcutLabel">
+      Pick<
+        SubtitleState,
+        "running" | "statusText" | "statusTone" | "latestText" | "capturing" | "shortcutLabel" | "obsOutputActive"
+      >
     >,
   ) => void;
 }
@@ -194,6 +199,7 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   latestText: "",
   capturing: false,
   shortcutLabel: "",
+  obsOutputActive: false,
   patch: (partial) => {
     const next = clampPrefs({ ...get().prefs, ...partial });
     persist(next);

@@ -74,12 +74,17 @@ function ColorField({
 }
 
 export function SubtitleStylePanel() {
-  const { prefs, patch } = useSubtitleStore();
+  const { prefs, patch, obsOutputActive } = useSubtitleStore();
   const systemFonts = useSystemFonts();
 
   return (
     <div className="flex flex-col gap-7">
       <SettingsSection title="字幕样式">
+        {obsOutputActive && (
+          <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+            正在输出到 OBS：字幕位置直接在 OBS 画布中拖动调整，"位置"与"位置偏移"已隐藏；其余样式实时同步到 OBS。
+          </p>
+        )}
         <FormGrid>
           <Field layout="row" label="字体">
             <Select
@@ -95,18 +100,20 @@ export function SubtitleStylePanel() {
               ))}
             </Select>
           </Field>
-          <Field layout="row" label="位置">
-            <Select
-              value={prefs.anchor}
-              onChange={(event) => patch({ anchor: event.target.value as SubtitleAnchor })}
-            >
-              {Object.entries(anchorLabel).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          {!obsOutputActive && (
+            <Field layout="row" label="位置">
+              <Select
+                value={prefs.anchor}
+                onChange={(event) => patch({ anchor: event.target.value as SubtitleAnchor })}
+              >
+                {Object.entries(anchorLabel).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
         </FormGrid>
 
         <FormGrid>
@@ -115,7 +122,9 @@ export function SubtitleStylePanel() {
             <Slider label="显示行数" min={1} max={4} step={1} value={prefs.lineCount} onChange={(lineCount) => patch({ lineCount })} format={(v) => `${v} 行`} />
           )}
           <Slider label="字幕宽度" min={20} max={70} step={1} value={prefs.widthPercent} onChange={(widthPercent) => patch({ widthPercent })} format={(v) => `${v}%`} />
-          <Slider label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
+          {!obsOutputActive && (
+            <Slider label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
+          )}
           <Slider label="背景不透明" min={0} max={100} step={1} value={prefs.backgroundOpacity} onChange={(backgroundOpacity) => patch({ backgroundOpacity })} format={(v) => `${v}%`} />
           <Slider label="圆角" min={0} max={36} step={1} value={prefs.rounded} onChange={(rounded) => patch({ rounded })} format={(v) => `${v}px`} />
         </FormGrid>
