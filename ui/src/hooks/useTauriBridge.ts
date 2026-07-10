@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { EVT } from "@/lib/tauri";
 import { useTauriEvent } from "./useTauriEvent";
 import { useProviderStore } from "@/store/useProviderStore";
+import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { syncDebugLogToBackend } from "@/store/useDictPrefs";
 import {
   toggleDictation,
@@ -85,6 +86,7 @@ export function useTauriBridge() {
     syncDebugLogToBackend();
     loadDictationSettings();
     loadSubtitleShortcut();
+    void useSubtitleStore.getState().loadTranslationModel().catch(() => undefined);
     useProviderStore.getState().load();
 
     const uninstallHotkeyFallback = installFocusHotkeyFallback();

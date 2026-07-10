@@ -1,5 +1,5 @@
 import { Field } from "@/components/ui/Field";
-import { NativeSelect, Select } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { FormGrid } from "@/components/ui/FormGrid";
 import {
@@ -15,6 +15,7 @@ import {
 
 export function SubtitleTranslationPanel() {
   const { prefs, patch } = useSubtitleStore();
+  const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
 
   return (
@@ -25,9 +26,9 @@ export function SubtitleTranslationPanel() {
         </p>
         <FormGrid>
           <Field layout="row" label="翻译模型">
-            <NativeSelect
+            <Select
               value={prefs.translationModel}
-              onChange={(event) => patch({ translationModel: event.target.value })}
+              onChange={(event) => void setTranslationModel(event.target.value)}
             >
               <option value={TRANSLATION_MODEL_NONE}>无（不翻译）</option>
               {TRANSLATION_MODEL_OPTIONS.map((option) => (
@@ -35,7 +36,7 @@ export function SubtitleTranslationPanel() {
                   {option.label}
                 </option>
               ))}
-            </NativeSelect>
+            </Select>
           </Field>
         </FormGrid>
       </SettingsSection>

@@ -13,10 +13,16 @@ pub(crate) struct PersistedData {
     pub(crate) dictation: DictationSettings,
     #[serde(default)]
     pub(crate) subtitle_shortcut: SubtitleShortcutSettings,
+    #[serde(default = "default_subtitle_translation_model")]
+    pub(crate) subtitle_translation_model: String,
     #[serde(default)]
     pub(crate) startup: StartupSettings,
     #[serde(default)]
     pub(crate) obs_overlay: ObsOverlaySettings,
+}
+
+fn default_subtitle_translation_model() -> String {
+    "none".to_string()
 }
 
 pub(crate) fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -55,6 +61,11 @@ pub(crate) fn save_persisted_state(
         .lock()
         .map_err(|_| "Subtitle shortcut lock failed".to_string())?
         .clone();
+    let subtitle_translation_model = state
+        .subtitle_translation_model
+        .lock()
+        .map_err(|_| "Subtitle translation model lock failed".to_string())?
+        .clone();
     let startup = state
         .startup
         .lock()
@@ -69,6 +80,11 @@ pub(crate) fn save_persisted_state(
         providers: normalize_settings(providers),
         dictation,
         subtitle_shortcut,
+        subtitle_translation_model: if subtitle_translation_model.trim().is_empty() {
+            default_subtitle_translation_model()
+        } else {
+            subtitle_translation_model
+        },
         startup,
         obs_overlay,
     };
@@ -95,4 +111,15 @@ pub(crate) fn load_persisted_state(
     let mut data = serde_json::from_str::<PersistedData>(&text).map_err(|e| e.to_string())?;
     data.providers = normalize_settings(data.providers);
     Ok(Some(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_state_defaults_subtitle_translation_to_none() {
+        let data: PersistedData = serde_json::from_str("{}").unwrap();
+        assert_eq!(data.subtitle_translation_model, "none");
+    }
 }

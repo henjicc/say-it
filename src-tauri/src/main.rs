@@ -89,6 +89,12 @@ fn main() {
                     *subtitle_shortcut = persisted.subtitle_shortcut;
                 }
                 {
+                    let mut translation_model = state.subtitle_translation_model.lock().map_err(|_| {
+                        std::io::Error::other("subtitle translation model lock failed while loading persisted data")
+                    })?;
+                    *translation_model = persisted.subtitle_translation_model;
+                }
+                {
                     let mut startup = state.startup.lock().map_err(|_| {
                         std::io::Error::other("startup lock failed while loading persisted data")
                     })?;
@@ -251,6 +257,8 @@ fn main() {
             set_dictation_settings,
             get_subtitle_shortcut,
             set_subtitle_shortcut,
+            get_subtitle_translation_model,
+            set_subtitle_translation_model,
             get_startup_settings,
             set_startup_settings,
             inject_text,

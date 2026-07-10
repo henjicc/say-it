@@ -8,6 +8,7 @@ pub(crate) struct RuntimeState {
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
+    pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
