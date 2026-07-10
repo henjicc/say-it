@@ -243,13 +243,52 @@ async fn connect(request: &ObsConnectionRequest) -> Result<Client, String> {
     if host.is_empty() {
         return Err("OBS 地址不能为空。".to_string());
     }
+    if request.port == 0 {
+        return Err("OBS WebSocket 端口必须在 1 到 65535 之间。".to_string());
+    }
     Client::connect(
         host,
         request.port,
         (!request.password.is_empty()).then_some(request.password.as_str()),
     )
     .await
-    .map_err(obs_error)
+    .map_err(|error| obs_connect_error(error, host, request.port))
+}
+
+fn obs_connect_error(error: obws::error::Error, host: &str, port: u16) -> String {
+    let endpoint = format!("ws://{host}:{port}");
+    let detail = error_chain(&error);
+    let guidance = match &error {
+        obws::error::Error::Connect(_) => {
+            "无法建立网络连接。请确认 OBS 已启动，并在“工具 → WebSocket 服务器设置”中启用 WebSocket 服务器，且端口与此处一致。"
+        }
+        obws::error::Error::Timeout => {
+            "连接超时。请检查地址、端口、防火墙，以及 OBS WebSocket 服务器是否已启用。"
+        }
+        obws::error::Error::Handshake(_) => {
+            "已连接到目标端口，但 OBS WebSocket 握手失败。请检查 WebSocket 密码，并确认该端口确实属于 OBS 28 或更新版本。"
+        }
+        obws::error::Error::InvalidUri(_) => "地址格式无效，请填写 IP 地址或主机名，不要包含 ws://、路径或端口。",
+        obws::error::Error::ObsStudioVersion(_, _)
+        | obws::error::Error::ObsWebsocketVersion(_, _) => {
+            "OBS 或 obs-websocket 版本不兼容，请升级到 OBS 28 或更新版本。"
+        }
+        _ => "连接 OBS WebSocket 时发生异常。",
+    };
+    format!("无法连接 OBS WebSocket（{endpoint}）。{guidance}\n技术详情：{detail}")
+}
+
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(current) = source {
+        let message = current.to_string();
+        if !messages.iter().any(|existing| existing == &message) {
+            messages.push(message);
+        }
+        source = current.source();
+    }
+    messages.join(": ")
 }
 
 async fn ensure_obs_support(client: &Client) -> Result<(), String> {
@@ -298,4 +337,18 @@ fn unique_source_name(inputs: &[obws::responses::inputs::Input]) -> String {
 
 fn obs_error(error: impl std::fmt::Display) -> String {
     format!("无法连接或操作 OBS：{error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_timeout_includes_endpoint_and_actionable_guidance() {
+        let message = obs_connect_error(obws::error::Error::Timeout, "127.0.0.1", 4455);
+        assert!(message.contains("ws://127.0.0.1:4455"));
+        assert!(message.contains("连接超时"));
+        assert!(message.contains("防火墙"));
+        assert!(message.contains("技术详情"));
+    }
 }

@@ -171,7 +171,7 @@ export function ObsOverlayPanel() {
       </SettingsSection>
 
       {(message || error) && (
-        <p className={error ? "text-sm text-[#ff8589]" : "text-sm text-[var(--color-good)]"} role={error ? "alert" : "status"}>
+        <p className={error ? "whitespace-pre-line text-sm text-[#ff8589]" : "text-sm text-[var(--color-good)]"} role={error ? "alert" : "status"}>
           {error || message}
         </p>
       )}
