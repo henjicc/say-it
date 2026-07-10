@@ -3,7 +3,7 @@ import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedRealtimeModel,
 } from "@/features/asr/modelOptions";
-import { TRANSLATION_MODEL_NONE, isSupportedTranslationModel } from "@/features/translation/models";
+import { TRANSLATION_MODEL_NONE, normalizeTranslationModel } from "@/features/translation/models";
 import {
   DEFAULT_TRANSLATION_SOURCE_LANG,
   DEFAULT_TRANSLATION_TARGET_LANG,
@@ -152,9 +152,7 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     fadeEnabled: prefs.fadeEnabled !== false,
     fadeDurationMs: Math.min(500, Math.max(60, Number(prefs.fadeDurationMs) || 180)),
     fadeEasing: clampEasing(prefs.fadeEasing, "ease-out"),
-    translationModel: isSupportedTranslationModel(prefs.translationModel)
-      ? prefs.translationModel
-      : TRANSLATION_MODEL_NONE,
+    translationModel: normalizeTranslationModel(prefs.translationModel),
     translationSourceLang: prefs.translationSourceLang || DEFAULT_TRANSLATION_SOURCE_LANG,
     translationTargetLang: prefs.translationTargetLang || DEFAULT_TRANSLATION_TARGET_LANG,
     translationLayout: prefs.translationLayout === "translationOnly" ? "translationOnly" : "bilingual",

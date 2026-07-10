@@ -6,6 +6,8 @@ import { FormGrid } from "@/components/ui/FormGrid";
 import { Input, Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
+import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
+import { useSubtitleStore } from "@/store/useSubtitleStore";
 
 interface ObsOverlayStatus {
   ready: boolean;
@@ -21,6 +23,8 @@ interface ObsConnectionStatus {
   websocketVersion: string;
   browserSourceAvailable: boolean;
   scenes: { name: string }[];
+  canvasWidth: number;
+  canvasHeight: number;
 }
 
 const defaultStatus: ObsOverlayStatus = { ready: false, connected: false, url: "", installed: false };
@@ -41,6 +45,7 @@ export function ObsOverlayPanel() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const subtitlePrefs = useSubtitleStore((state) => state.prefs);
 
   const connectionArgs = () => ({
     host: host.trim(),
@@ -136,15 +141,29 @@ export function ObsOverlayPanel() {
     setError("");
     setMessage("");
     try {
+      const canvasWidth = connection?.canvasWidth || 1920;
+      const canvasHeight = connection?.canvasHeight || 1080;
+      const fontSize = canvasHeight * (subtitlePrefs.fontSizePercent / 100) * 1.8;
+      const effectiveLines = subtitlePrefs.mode === "replace" ? 1 : subtitlePrefs.lineCount;
+      const translationRows =
+        subtitlePrefs.translationModel !== TRANSLATION_MODEL_NONE && subtitlePrefs.translationLayout === "bilingual"
+          ? 2
+          : 1;
+      const sourceWidth = Math.round(canvasWidth * (subtitlePrefs.widthPercent / 100));
+      const sourceHeight = Math.ceil(
+        fontSize * 1.38 * effectiveLines * translationRows + 20 * translationRows + (translationRows > 1 ? 10 : 0),
+      );
       const next = await cmd<ObsOverlayStatus>(CMD.installObsOverlay, {
         request: {
           ...connectionArgs(),
           sceneName,
+          sourceWidth,
+          sourceHeight,
         },
       });
       setOverlay(next);
       commitSavedPassword();
-      setMessage("OBS 字幕源已安装。后续请在 OBS 中拖拽、缩放和调整图层。 ");
+      setMessage("OBS 字幕源已按当前字幕框尺寸更新，并放置在画布底部。 ");
     } catch (reason) {
       setError(String(reason));
     } finally {

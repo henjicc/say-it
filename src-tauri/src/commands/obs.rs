@@ -37,6 +37,8 @@ pub(crate) struct ObsInstallRequest {
     #[serde(flatten)]
     pub(crate) connection: ObsConnectionRequest,
     pub(crate) scene_name: String,
+    pub(crate) source_width: u32,
+    pub(crate) source_height: u32,
 }
 
 #[derive(Serialize)]
@@ -52,6 +54,8 @@ pub(crate) struct ObsConnectionStatus {
     pub(crate) websocket_version: String,
     pub(crate) scenes: Vec<ObsSceneInfo>,
     pub(crate) browser_source_available: bool,
+    pub(crate) canvas_width: u32,
+    pub(crate) canvas_height: u32,
 }
 
 #[derive(Serialize)]
@@ -124,6 +128,7 @@ pub(crate) async fn connect_obs(
         .iter()
         .any(|kind| kind == OBS_BROWSER_SOURCE_KIND);
     let scenes = client.scenes().list().await.map_err(obs_error)?.scenes;
+    let video = client.config().video_settings().await.map_err(obs_error)?;
     let status = ObsConnectionStatus {
         obs_version: version.obs_studio_version.to_string(),
         websocket_version: version.obs_web_socket_version.to_string(),
@@ -134,6 +139,8 @@ pub(crate) async fn connect_obs(
             })
             .collect(),
         browser_source_available,
+        canvas_width: video.base_width,
+        canvas_height: video.base_height,
     };
     save_connection_settings(&app, &state, &request)?;
     Ok(status)
@@ -175,9 +182,12 @@ pub(crate) async fn install_obs_overlay(
         .map_err(|_| "OBS overlay settings lock failed".to_string())?
         .clone();
     let video = client.config().video_settings().await.map_err(obs_error)?;
-    let browser_settings =
-        browser_source_settings(&overlay_url(&settings), video.base_width, video.base_height);
+    settings.obs_canvas_height = video.base_height;
+    let source_width = request.source_width.clamp(160, video.base_width.max(160));
+    let source_height = request.source_height.clamp(72, video.base_height.max(72));
+    let browser_settings = browser_source_settings(&overlay_url(&settings), source_width, source_height);
     let inputs = client.inputs().list(None).await.map_err(obs_error)?;
+    let scene_item_id;
     if let Some(input_uuid) = settings
         .input_uuid
         .as_deref()
@@ -199,6 +209,19 @@ pub(crate) async fn install_obs_overlay(
             })
             .await
             .map_err(obs_error)?;
+        let source_name = settings
+            .source_name
+            .as_deref()
+            .ok_or_else(|| "已保存的 OBS 字幕源名称无效，请先卸载后重新安装。".to_string())?;
+        scene_item_id = client
+            .scene_items()
+            .list(SceneId::Uuid(selected_scene_uuid))
+            .await
+            .map_err(obs_error)?
+            .into_iter()
+            .find(|item| item.source_name == source_name)
+            .map(|item| item.id)
+            .ok_or_else(|| "无法在目标场景中定位现有字幕源，请先卸载后重新安装。".to_string())?;
     } else {
         let source_name = unique_source_name(&inputs);
         let created = client
@@ -212,26 +235,27 @@ pub(crate) async fn install_obs_overlay(
             })
             .await
             .map_err(obs_error)?;
-        client
-            .scene_items()
-            .set_transform(SetTransform {
-                scene: SceneId::Uuid(selected_scene_uuid),
-                item_id: created.scene_item_id,
-                transform: SceneItemTransform {
-                    alignment: Some(Alignment::LEFT | Alignment::TOP),
-                    position: Some(Position {
-                        x: Some(0.0),
-                        y: Some(0.0),
-                    }),
-                    ..Default::default()
-                },
-            })
-            .await
-            .map_err(obs_error)?;
+        scene_item_id = created.scene_item_id;
         settings.input_uuid = Some(created.input_uuid.to_string());
         settings.source_name = Some(source_name);
         settings.scene_uuid = Some(selected_scene_uuid.to_string());
     }
+    client
+        .scene_items()
+        .set_transform(SetTransform {
+            scene: SceneId::Uuid(selected_scene_uuid),
+            item_id: scene_item_id,
+            transform: SceneItemTransform {
+                alignment: Some(Alignment::CENTER | Alignment::BOTTOM),
+                position: Some(Position {
+                    x: Some(video.base_width as f32 / 2.0),
+                    y: Some((video.base_height as f32 - 48.0).max(0.0)),
+                }),
+                ..Default::default()
+            },
+        })
+        .await
+        .map_err(obs_error)?;
     settings.obs_host = connection.host;
     settings.obs_port = connection.port;
     settings.obs_password = connection.password.unwrap_or_default();
@@ -437,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_source_uses_obs_canvas_dimensions() {
+    fn browser_source_uses_requested_dimensions() {
         let settings = browser_source_settings("http://localhost/overlay", 2560, 1440);
         assert_eq!(settings["width"], 2560);
         assert_eq!(settings["height"], 1440);
