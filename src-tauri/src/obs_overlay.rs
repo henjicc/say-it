@@ -202,10 +202,25 @@ pub(crate) fn start_obs_overlay_server(
     Ok(())
 }
 
+/// 页面内容指纹。OBS 的 Browser Source 页面常驻运行：应用升级重启后，OBS 里仍是旧页面在
+/// 自行重连、按旧逻辑渲染，永远不会主动重新加载。把指纹拼进 URL，页面代码一变 URL 就变，
+/// 下次同步字幕源设置时 OBS 检测到 URL 变化会自动重载页面；同版本内 URL 稳定，不会反复刷新。
+fn overlay_page_version() -> u64 {
+    OVERLAY_PAGE
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
 pub(crate) fn overlay_url(settings: &ObsOverlaySettings) -> String {
     format!(
-        "http://127.0.0.1:{}{}?token={}&canvasHeight={}",
-        settings.port, OBS_OVERLAY_PATH, settings.token, settings.obs_canvas_height
+        "http://127.0.0.1:{}{}?token={}&canvasHeight={}&v={:x}",
+        settings.port,
+        OBS_OVERLAY_PATH,
+        settings.token,
+        settings.obs_canvas_height,
+        overlay_page_version()
     )
 }
 
@@ -356,10 +371,10 @@ mod tests {
             obs_canvas_height: 1080,
             ..Default::default()
         };
-        assert_eq!(
-            overlay_url(&settings),
-            "http://127.0.0.1:12345/obs/overlay?token=secret&canvasHeight=1080"
-        );
+        let url = overlay_url(&settings);
+        assert!(url.starts_with("http://127.0.0.1:12345/obs/overlay?token=secret&canvasHeight=1080&v="));
+        // 同一份页面内容的版本指纹必须稳定，否则每次同步都会触发 OBS 重载页面、字幕闪断。
+        assert_eq!(url, overlay_url(&settings));
     }
 
     #[test]
