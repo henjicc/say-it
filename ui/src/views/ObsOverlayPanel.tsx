@@ -55,7 +55,9 @@ export function ObsOverlayPanel() {
     setError("");
     setMessage("");
     try {
-      const status = await cmd<ObsConnectionStatus>(CMD.connectObs, connectionArgs());
+      const status = await cmd<ObsConnectionStatus>(CMD.connectObs, {
+        request: connectionArgs(),
+      });
       setConnection(status);
       setSceneName((current) => current || status.scenes[0]?.name || "");
       if (!status.browserSourceAvailable) {
@@ -81,8 +83,10 @@ export function ObsOverlayPanel() {
     setMessage("");
     try {
       const next = await cmd<ObsOverlayStatus>(CMD.installObsOverlay, {
-        connection: connectionArgs(),
-        sceneName,
+        request: {
+          ...connectionArgs(),
+          sceneName,
+        },
       });
       setOverlay(next);
       setMessage("OBS 字幕源已安装。后续请在 OBS 中拖拽、缩放和调整图层。 ");
@@ -98,7 +102,9 @@ export function ObsOverlayPanel() {
     setError("");
     setMessage("");
     try {
-      const next = await cmd<ObsOverlayStatus>(CMD.uninstallObsOverlay, connectionArgs());
+      const next = await cmd<ObsOverlayStatus>(CMD.uninstallObsOverlay, {
+        request: connectionArgs(),
+      });
       setOverlay(next);
       setMessage("已删除说吧！创建的 OBS 字幕源。 ");
     } catch (reason) {
