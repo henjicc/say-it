@@ -120,6 +120,7 @@ export function rgba(hex: string, opacity: number) {
 }
 
 export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleStore.getState().prefs) {
+  await cmdSilent(CMD.ensureObsSubtitleCaptureWindow);
   const { width: monitorWidth, height: monitorHeight } = await cmd<{ width: number; height: number }>(
     CMD.getIndicatorMonitorMetrics,
   ).catch(() => ({ width: 1920, height: 1080 }));

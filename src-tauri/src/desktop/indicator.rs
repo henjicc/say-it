@@ -29,8 +29,10 @@ extern "system" {
 }
 
 const DICTATION_INDICATOR_LABEL: &str = "dictation-indicator";
+const OBS_SUBTITLE_CAPTURE_LABEL: &str = "obs-subtitle-capture";
 const DEFAULT_INDICATOR_WIDTH: f64 = 460.0;
 const DEFAULT_INDICATOR_HEIGHT: f64 = 188.0;
+const OBS_CAPTURE_POSITION: i32 = -10_000;
 
 fn place_indicator_window(
     window: &tauri::WebviewWindow,
@@ -84,6 +86,42 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     Ok(window)
 }
 
+/// 创建一个专供 OBS 窗口采集的非透明字幕镜像窗口。
+/// Windows 的窗口采集对透明 WebView2 窗口可能只输出黑帧，因此该窗口用绿幕背景输出，
+/// 同时放在屏幕外，避免影响桌面上的正常透明字幕条。
+#[tauri::command]
+pub(crate) fn ensure_obs_subtitle_capture_window(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if app.get_webview_window(OBS_SUBTITLE_CAPTURE_LABEL).is_some() {
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(
+        &app,
+        OBS_SUBTITLE_CAPTURE_LABEL,
+        WebviewUrl::App("indicator.html?obs-capture=1".into()),
+    )
+    .title("说吧！OBS 字幕采集")
+    .inner_size(DEFAULT_INDICATOR_WIDTH, DEFAULT_INDICATOR_HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .focused(false)
+    .shadow(false)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("创建 OBS 字幕采集窗口失败: {e}"))?;
+    Ok(())
+}
+
+fn place_obs_capture_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    let _ = window.set_position(tauri::PhysicalPosition::new(
+        OBS_CAPTURE_POSITION,
+        OBS_CAPTURE_POSITION,
+    ));
+}
+
 pub(crate) fn raise_indicator_window(window: &tauri::WebviewWindow) {
     let _ = window.set_always_on_top(true);
     let _ = window.show();
@@ -116,13 +154,25 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
         raise_indicator_window(&window);
     }
     let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
+
+    if let Some(obs_window) = app.get_webview_window(OBS_SUBTITLE_CAPTURE_LABEL) {
+        if state == "subtitle" {
+            let _ = obs_window.show();
+        } else {
+            let _ = obs_window.hide();
+        }
+        let _ = obs_window.emit("dictation-indicator-state", json!({ "state": state }));
+    }
     Ok(())
 }
 
 
 #[tauri::command]
 pub(crate) fn set_indicator_text(app: tauri::AppHandle, text: String, fade: Option<bool>) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+    for label in [DICTATION_INDICATOR_LABEL, OBS_SUBTITLE_CAPTURE_LABEL] {
+        let Some(window) = app.get_webview_window(label) else {
+            continue;
+        };
         let _ = window.emit(
             "dictation-indicator-text",
             json!({ "text": text, "fade": fade.unwrap_or(false) }),
@@ -135,7 +185,10 @@ pub(crate) fn set_indicator_text(app: tauri::AppHandle, text: String, fade: Opti
 /// 便于双语字幕分别控制各自内容而不互相打断动画。
 #[tauri::command]
 pub(crate) fn set_indicator_translation(app: tauri::AppHandle, text: String) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+    for label in [DICTATION_INDICATOR_LABEL, OBS_SUBTITLE_CAPTURE_LABEL] {
+        let Some(window) = app.get_webview_window(label) else {
+            continue;
+        };
         let _ = window.emit("dictation-indicator-translation", json!({ "text": text }));
     }
     Ok(())
@@ -171,6 +224,9 @@ pub(crate) fn set_indicator_layout(
     let anchor = anchor.unwrap_or_else(|| "bottom".to_string());
     let offset_y = offset_y.unwrap_or(36.0).clamp(-240.0, 240.0);
     place_indicator_window(&window, width, height, &anchor, offset_y);
+    if let Some(obs_window) = app.get_webview_window(OBS_SUBTITLE_CAPTURE_LABEL) {
+        place_obs_capture_window(&obs_window, width, height);
+    }
     Ok(())
 }
 
