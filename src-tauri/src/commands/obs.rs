@@ -142,6 +142,7 @@ pub(crate) async fn sync_obs_overlay_layout(
     let client = connect(&connection).await?;
     let video = client.config().video_settings().await.map_err(obs_error)?;
     let (width, height) = overlay_source_dimensions(video.base_width, video.base_height, &request);
+    settings.obs_canvas_width = video.base_width;
     settings.obs_canvas_height = video.base_height;
     client
         .inputs()
@@ -232,6 +233,7 @@ pub(crate) async fn install_obs_overlay(
         .map_err(|_| "OBS overlay settings lock failed".to_string())?
         .clone();
     let video = client.config().video_settings().await.map_err(obs_error)?;
+    settings.obs_canvas_width = video.base_width;
     settings.obs_canvas_height = video.base_height;
     let source_width = request.source_width.clamp(160, video.base_width.max(160));
     let source_height = request.source_height.clamp(72, video.base_height.max(72));

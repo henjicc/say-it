@@ -224,6 +224,9 @@ async function refreshObsOutputTarget(epoch = obsOutputMonitorEpoch) {
     (rawActive || (obsOutputActive && obsDisconnectedPolls < 2));
   const becameActive = nextActive && !obsOutputActive;
   obsOutputActive = nextActive;
+  if (useSubtitleStore.getState().obsOutputActive !== nextActive) {
+    useSubtitleStore.getState().setRuntime({ obsOutputActive: nextActive });
+  }
   if (becameActive && !obsLayoutForcedForMonitor) {
     obsLayoutForcedForMonitor = true;
     scheduleObsOverlayLayout(useSubtitleStore.getState().prefs, true);
@@ -257,6 +260,9 @@ function stopObsOutputMonitor() {
   obsLayoutForcedForMonitor = false;
   obsDisconnectedPolls = 0;
   obsOutputActive = false;
+  if (useSubtitleStore.getState().obsOutputActive) {
+    useSubtitleStore.getState().setRuntime({ obsOutputActive: false });
+  }
 }
 
 function syncObsOverlay() {

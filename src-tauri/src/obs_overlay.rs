@@ -44,6 +44,8 @@ pub(crate) struct ObsOverlaySettings {
     pub(crate) obs_port: u16,
     #[serde(default)]
     pub(crate) obs_password: String,
+    #[serde(default = "default_obs_canvas_width")]
+    pub(crate) obs_canvas_width: u32,
     #[serde(default = "default_obs_canvas_height")]
     pub(crate) obs_canvas_height: u32,
 }
@@ -58,6 +60,10 @@ fn default_obs_host() -> String {
 
 fn default_obs_port() -> u16 {
     4455
+}
+
+fn default_obs_canvas_width() -> u32 {
+    1920
 }
 
 fn default_obs_canvas_height() -> u32 {
@@ -147,6 +153,10 @@ pub(crate) fn ensure_obs_overlay_settings(
         settings.obs_port = default_obs_port();
         changed = true;
     }
+    if settings.obs_canvas_width == 0 {
+        settings.obs_canvas_width = default_obs_canvas_width();
+        changed = true;
+    }
     if settings.obs_canvas_height == 0 {
         settings.obs_canvas_height = default_obs_canvas_height();
         changed = true;
@@ -215,10 +225,11 @@ fn overlay_page_version() -> u64 {
 
 pub(crate) fn overlay_url(settings: &ObsOverlaySettings) -> String {
     format!(
-        "http://127.0.0.1:{}{}?token={}&canvasHeight={}&v={:x}",
+        "http://127.0.0.1:{}{}?token={}&canvasWidth={}&canvasHeight={}&v={:x}",
         settings.port,
         OBS_OVERLAY_PATH,
         settings.token,
+        settings.obs_canvas_width,
         settings.obs_canvas_height,
         overlay_page_version()
     )
@@ -344,10 +355,10 @@ const OVERLAY_PAGE: &str = r#"<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 html,body,#root{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}body{font-family:"Microsoft YaHei",sans-serif}#root{box-sizing:border-box;display:flex;align-items:center;justify-content:center}.stack{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px}.caption{box-sizing:border-box;width:100%;max-width:100%;overflow:hidden;padding:10px 22px;text-align:center;word-break:break-word;font-weight:600;line-height:1.38;text-shadow:0 2px 8px rgba(0,0,0,.66);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)}.caption.empty{display:none}.flow{position:relative;overflow:hidden}.content{position:absolute;left:0;right:0;top:0;white-space:pre-wrap;overflow-wrap:anywhere;transform:translate3d(0,0,0);transition:transform var(--motion-duration,120ms) var(--motion-easing,ease-out);will-change:transform}.caption.replace .content{right:auto;white-space:nowrap}.caption.no-motion .content{transition:none}.fresh{animation:fresh-in var(--fade-duration,180ms) var(--fade-easing,ease-out) both}@keyframes fresh-in{from{opacity:0}to{opacity:1}}
 </style></head><body><div id="root"><div class="stack" id="stack"><div class="caption empty" id="original"><div class="flow"><div class="content"></div></div></div><div class="caption empty" id="translation"><div class="flow"><div class="content"></div></div></div></div></div><script>
-const q=new URLSearchParams(location.search),token=q.get('token')||'',canvasHeight=Math.max(360,Number(q.get('canvasHeight'))||1080),original=document.getElementById('original'),translation=document.getElementById('translation'),stack=document.getElementById('stack'),channelState=new WeakMap();let retry=500;
+const q=new URLSearchParams(location.search),token=q.get('token')||'',canvasWidth=Math.max(640,Number(q.get('canvasWidth'))||1920),canvasHeight=Math.max(360,Number(q.get('canvasHeight'))||1080),original=document.getElementById('original'),translation=document.getElementById('translation'),stack=document.getElementById('stack'),channelState=new WeakMap();let retry=500;
 function visibleText(value,style){const mode=style.displayMode==='scroll'?'scroll':'replace',lines=Math.max(1,Number(style.lineCount)||1),parts=String(value||'').split('\n');return mode==='scroll'?parts.slice(-lines).join('\n'):(parts.at(-1)||'')}
 function updateContent(content,text,fade){const previous=channelState.get(content)||'',limit=Math.min(previous.length,text.length);let prefix=0;while(prefix<limit&&previous[prefix]===text[prefix])prefix++;content.textContent='';if(prefix)content.appendChild(document.createTextNode(text.slice(0,prefix)));const suffix=text.slice(prefix);if(suffix){const node=document.createElement('span');if(fade&&suffix.length<=10)node.className='fresh';node.textContent=suffix;content.appendChild(node)}channelState.set(content,text)}
-function paint(el,raw,style){const text=visibleText(raw,style),mode=style.displayMode==='scroll'?'scroll':'replace',flow=el.querySelector('.flow'),content=el.querySelector('.content'),percent=Number(style.fontSizePercent)||0,base=percent>0?canvasHeight*percent/100:(Number(style.fontSize)||28),fontSize=Math.max(18,Math.round(base*1.8)),lines=mode==='scroll'?Math.max(1,Number(style.lineCount)||1):1,changed=(channelState.get(content)||'')!==text;el.className='caption '+mode+(text?'':' empty')+(style.motionEnabled===false?' no-motion':'');el.style.fontFamily=style.fontFamily||'Microsoft YaHei';el.style.fontSize=fontSize+'px';el.style.color=style.textColor||'#fff';el.style.background=style.backgroundColor||'rgba(5,7,10,.72)';el.style.borderRadius=Math.max(0,Number(style.rounded)||18)+'px';el.style.setProperty('--motion-duration',(Number(style.motionDurationMs)||120)+'ms');el.style.setProperty('--motion-easing',style.motionEasing||'ease-out');el.style.setProperty('--fade-duration',(Number(style.fadeDurationMs)||180)+'ms');el.style.setProperty('--fade-easing',style.fadeEasing||'ease-out');flow.style.height=Math.round(fontSize*1.38*lines)+'px';if(changed)updateContent(content,text,style.fadeEnabled!==false);requestAnimationFrame(()=>{const overflow=mode==='replace'?content.scrollWidth-flow.clientWidth:content.scrollHeight-flow.clientHeight;content.style.transform=mode==='replace'?`translate3d(${overflow>0?-overflow:(flow.clientWidth-content.scrollWidth)/2}px,0,0)`:`translate3d(0,${-(overflow>0?overflow:0)}px,0)`})}
+function paint(el,raw,style){const text=visibleText(raw,style),mode=style.displayMode==='scroll'?'scroll':'replace',flow=el.querySelector('.flow'),content=el.querySelector('.content'),percent=Number(style.fontSizePercent)||0,base=percent>0?canvasHeight*percent/100:(Number(style.fontSize)||28),fontSize=Math.max(18,Math.round(base*1.8)),lines=mode==='scroll'?Math.max(1,Number(style.lineCount)||1):1,changed=(channelState.get(content)||'')!==text;el.className='caption '+mode+(text?'':' empty')+(style.motionEnabled===false?' no-motion':'');const widthPct=Number(style.widthPercent)||0;el.style.width=widthPct>0?Math.round(canvasWidth*widthPct/100)+'px':'100%';el.style.fontFamily=style.fontFamily||'Microsoft YaHei';el.style.fontSize=fontSize+'px';el.style.color=style.textColor||'#fff';el.style.background=style.backgroundColor||'rgba(5,7,10,.72)';el.style.borderRadius=Math.max(0,Number(style.rounded)||18)+'px';el.style.setProperty('--motion-duration',(Number(style.motionDurationMs)||120)+'ms');el.style.setProperty('--motion-easing',style.motionEasing||'ease-out');el.style.setProperty('--fade-duration',(Number(style.fadeDurationMs)||180)+'ms');el.style.setProperty('--fade-easing',style.fadeEasing||'ease-out');flow.style.height=Math.round(fontSize*1.38*lines)+'px';if(changed)updateContent(content,text,style.fadeEnabled!==false);requestAnimationFrame(()=>{const overflow=mode==='replace'?content.scrollWidth-flow.clientWidth:content.scrollHeight-flow.clientHeight;content.style.transform=mode==='replace'?`translate3d(${overflow>0?-overflow:(flow.clientWidth-content.scrollWidth)/2}px,0,0)`:`translate3d(0,${-(overflow>0?overflow:0)}px,0)`})}
 function render(data){const s=data.style||{},bilingual=s.translationEnabled&&s.translationLayout==='bilingual',translationOnly=s.translationEnabled&&s.translationLayout==='translationOnly',first=s.translationOrder==='translationFirst';paint(original,translationOnly?'':data.originalText,s);paint(translation,translationOnly?data.translationText:(bilingual?data.translationText:''),s);if(first&&translation.parentElement===stack)stack.insertBefore(translation,original);if(!first&&original.parentElement===stack)stack.insertBefore(original,translation)}
 function connect(){const scheme=location.protocol==='https:'?'wss':'ws',ws=new WebSocket(scheme+'://'+location.host+'/obs/caption-stream?token='+encodeURIComponent(token));ws.onopen=()=>{retry=500};ws.onmessage=e=>{try{render(JSON.parse(e.data))}catch{}};ws.onclose=()=>{setTimeout(connect,retry);retry=Math.min(10000,retry*2)};ws.onerror=()=>ws.close()}connect();
 </script></body></html>"#;
@@ -368,11 +379,13 @@ mod tests {
         let settings = ObsOverlaySettings {
             port: 12_345,
             token: "secret".into(),
+            obs_canvas_width: 1920,
             obs_canvas_height: 1080,
             ..Default::default()
         };
         let url = overlay_url(&settings);
-        assert!(url.starts_with("http://127.0.0.1:12345/obs/overlay?token=secret&canvasHeight=1080&v="));
+        assert!(url
+            .starts_with("http://127.0.0.1:12345/obs/overlay?token=secret&canvasWidth=1920&canvasHeight=1080&v="));
         // 同一份页面内容的版本指纹必须稳定，否则每次同步都会触发 OBS 重载页面、字幕闪断。
         assert_eq!(url, overlay_url(&settings));
     }
@@ -394,6 +407,7 @@ mod tests {
         let settings: ObsOverlaySettings = serde_json::from_str(r#"{"port":57321}"#).unwrap();
         assert_eq!(settings.obs_host, "127.0.0.1");
         assert_eq!(settings.obs_port, 4455);
+        assert_eq!(settings.obs_canvas_width, 1920);
         assert_eq!(settings.obs_canvas_height, 1080);
         assert!(settings.obs_password.is_empty());
     }
