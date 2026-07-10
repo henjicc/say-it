@@ -69,6 +69,8 @@ let translationDisplayText = "";
 const MAX_RECONNECT_ATTEMPTS = 6;
 let reconnecting = false;
 let reconnectAttempts = 0;
+let obsOutputMonitor: ReturnType<typeof setInterval> | null = null;
+let obsOutputActive = false;
 
 let backendSystemAudioSampleRate = 48000;
 
@@ -171,6 +173,32 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
     },
   });
   syncObsOverlay();
+}
+
+async function refreshObsOutputTarget() {
+  const status = await cmd<{ ready: boolean; connected: boolean }>(CMD.getObsOverlayStatus).catch(() => ({
+    ready: false,
+    connected: false,
+  }));
+  const nextActive = status.ready && status.connected;
+  if (nextActive === obsOutputActive) return;
+  obsOutputActive = nextActive;
+  if (useSubtitleStore.getState().running) {
+    await cmdSilent(CMD.setIndicatorState, { state: obsOutputActive ? "hidden" : "subtitle" });
+  }
+}
+
+function startObsOutputMonitor() {
+  if (obsOutputMonitor) clearInterval(obsOutputMonitor);
+  obsOutputMonitor = setInterval(() => {
+    void refreshObsOutputTarget();
+  }, 1000);
+}
+
+function stopObsOutputMonitor() {
+  if (obsOutputMonitor) clearInterval(obsOutputMonitor);
+  obsOutputMonitor = null;
+  obsOutputActive = false;
 }
 
 function syncObsOverlay() {
@@ -601,6 +629,7 @@ async function startSubtitles() {
   translationRequestId = String(++translationEpochCounter);
   clearMicShutdownTimer();
   await syncSubtitleIndicator(prefs);
+  await refreshObsOutputTarget();
 
   subtitleSampleRate = 48000;
   const { kind, deviceName } = parseSubtitleSource(prefs.source);
@@ -620,11 +649,13 @@ async function startSubtitles() {
     statusTone: "ok",
     latestText: "",
   });
-  cmdSilent(CMD.setIndicatorState, { state: "subtitle" });
+  cmdSilent(CMD.setIndicatorState, { state: obsOutputActive ? "hidden" : "subtitle" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
+  startObsOutputMonitor();
 }
 
 async function stopSubtitles() {
+  stopObsOutputMonitor();
   const session = subtitleSessionId;
   subtitleSessionId = null;
   currentSegment = "";
@@ -664,6 +695,7 @@ export async function toggleSubtitles() {
     if (useSubtitleStore.getState().running) await stopSubtitles();
     else await startSubtitles();
   } catch (error) {
+    stopObsOutputMonitor();
     const session = subtitleSessionId;
     subtitleSessionId = null;
     translationRequestId = null;

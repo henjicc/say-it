@@ -189,6 +189,7 @@ pub(crate) fn overlay_status(state: &RuntimeState) -> Result<ObsOverlayStatus, S
         .clone();
     Ok(ObsOverlayStatus {
         ready: state.obs_overlay_runtime.started.load(Ordering::Relaxed) && error.is_none(),
+        connected: state.obs_overlay_runtime.snapshot_tx.receiver_count() > 0,
         url: overlay_url(&settings),
         installed: settings.input_uuid.is_some() && settings.scene_uuid.is_some(),
         source_name: settings.source_name,
@@ -219,6 +220,7 @@ pub(crate) fn save_obs_overlay_settings(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ObsOverlayStatus {
     pub(crate) ready: bool,
+    pub(crate) connected: bool,
     pub(crate) url: String,
     pub(crate) installed: bool,
     pub(crate) source_name: Option<String>,
@@ -291,7 +293,7 @@ async fn send_snapshot(socket: &mut WebSocket, snapshot: &ObsOverlaySnapshot) ->
 
 const OVERLAY_PAGE: &str = r#"<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-html,body,#root{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}body{font-family:"Microsoft YaHei",sans-serif}#root{display:flex;align-items:center;justify-content:center}.stack{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px}.caption{box-sizing:border-box;max-width:100%;padding:10px 22px;text-align:center;white-space:pre-wrap;word-break:break-word;font-weight:600;line-height:1.38;transition:opacity 180ms ease-out,transform 120ms ease-out}.caption.empty{visibility:hidden}.caption.fade{animation:fade 180ms ease-out}.caption.motion{transform:translateY(0)}@keyframes fade{from{opacity:.18;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+html,body,#root{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}body{font-family:"Microsoft YaHei",sans-serif}#root{box-sizing:border-box;display:flex;align-items:flex-end;justify-content:center;padding-bottom:48px}.stack{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px}.caption{box-sizing:border-box;max-width:100%;padding:10px 22px;text-align:center;white-space:pre-wrap;word-break:break-word;font-weight:600;line-height:1.38;transition:opacity 180ms ease-out,transform 120ms ease-out}.caption.empty{visibility:hidden}.caption.fade{animation:fade 180ms ease-out}.caption.motion{transform:translateY(0)}@keyframes fade{from{opacity:.18;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 </style></head><body><div id="root"><div class="stack" id="stack"><div class="caption" id="original"></div><div class="caption" id="translation"></div></div></div><script>
 const q=new URLSearchParams(location.search), token=q.get('token')||'', original=document.getElementById('original'), translation=document.getElementById('translation'), stack=document.getElementById('stack'); let retry=500;
 function paint(el,text,style){el.textContent=text||'';el.className='caption'+(text?'':' empty')+(style.fadeEnabled&&text?' fade':'')+(style.motionEnabled?' motion':'');el.style.width=Math.max(20,Math.min(100,Number(style.widthPercent)||70))+'%';el.style.fontFamily=style.fontFamily||'Microsoft YaHei';el.style.fontSize=Math.max(12,Number(style.fontSize)||28)+'px';el.style.color=style.textColor||'#fff';el.style.background=style.backgroundColor||'rgba(5,7,10,.72)';el.style.borderRadius=Math.max(0,Number(style.rounded)||18)+'px';el.style.transitionDuration=(style.motionEnabled?(Number(style.motionDurationMs)||120):0)+'ms';}
@@ -331,6 +333,7 @@ mod tests {
             ..Default::default()
         });
         let receiver = runtime.snapshot_tx.subscribe();
+        assert_eq!(runtime.snapshot_tx.receiver_count(), 1);
         assert_eq!(receiver.borrow().original_text, "最新字幕");
     }
 }

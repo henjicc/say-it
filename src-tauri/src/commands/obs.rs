@@ -21,8 +21,6 @@ use uuid::Uuid;
 
 const OBS_BROWSER_SOURCE_KIND: &str = "browser_source";
 const OBS_SOURCE_BASE_NAME: &str = "说吧！实时字幕";
-const OBS_OVERLAY_WIDTH: u32 = 1280;
-const OBS_OVERLAY_HEIGHT: u32 = 360;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +135,9 @@ pub(crate) async fn install_obs_overlay(
         .lock()
         .map_err(|_| "OBS overlay settings lock failed".to_string())?
         .clone();
-    let browser_settings = browser_source_settings(&overlay_url(&settings));
+    let video = client.config().video_settings().await.map_err(obs_error)?;
+    let browser_settings =
+        browser_source_settings(&overlay_url(&settings), video.base_width, video.base_height);
     let inputs = client.inputs().list(None).await.map_err(obs_error)?;
     if let Some(input_uuid) = settings
         .input_uuid
@@ -173,17 +173,16 @@ pub(crate) async fn install_obs_overlay(
             })
             .await
             .map_err(obs_error)?;
-        let video = client.config().video_settings().await.map_err(obs_error)?;
         client
             .scene_items()
             .set_transform(SetTransform {
                 scene: SceneId::Uuid(selected_scene_uuid),
                 item_id: created.scene_item_id,
                 transform: SceneItemTransform {
-                    alignment: Some(Alignment::CENTER | Alignment::BOTTOM),
+                    alignment: Some(Alignment::LEFT | Alignment::TOP),
                     position: Some(Position {
-                        x: Some(video.base_width as f32 / 2.0),
-                        y: Some((video.base_height as f32 - 48.0).max(0.0)),
+                        x: Some(0.0),
+                        y: Some(0.0),
                     }),
                     ..Default::default()
                 },
@@ -312,11 +311,11 @@ async fn ensure_obs_support(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
-fn browser_source_settings(url: &str) -> Value {
+fn browser_source_settings(url: &str, width: u32, height: u32) -> Value {
     json!({
         "url": url,
-        "width": OBS_OVERLAY_WIDTH,
-        "height": OBS_OVERLAY_HEIGHT,
+        "width": width.max(1),
+        "height": height.max(1),
         "fps": 30,
         "shutdown": false,
         "restart_when_active": false,
@@ -350,5 +349,12 @@ mod tests {
         assert!(message.contains("连接超时"));
         assert!(message.contains("防火墙"));
         assert!(message.contains("技术详情"));
+    }
+
+    #[test]
+    fn browser_source_uses_obs_canvas_dimensions() {
+        let settings = browser_source_settings("http://localhost/overlay", 2560, 1440);
+        assert_eq!(settings["width"], 2560);
+        assert_eq!(settings["height"], 1440);
     }
 }

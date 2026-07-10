@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -8,6 +9,7 @@ import { CMD, cmd } from "@/lib/tauri";
 
 interface ObsOverlayStatus {
   ready: boolean;
+  connected: boolean;
   url: string;
   installed: boolean;
   sourceName?: string;
@@ -21,7 +23,7 @@ interface ObsConnectionStatus {
   scenes: { name: string }[];
 }
 
-const defaultStatus: ObsOverlayStatus = { ready: false, url: "", installed: false };
+const defaultStatus: ObsOverlayStatus = { ready: false, connected: false, url: "", installed: false };
 
 export function ObsOverlayPanel() {
   const [host, setHost] = useState("127.0.0.1");
@@ -131,9 +133,18 @@ export function ObsOverlayPanel() {
         </p>
         <FormGrid columns={1}>
           <Field layout="row" label="字幕源 URL">
-            <div className="flex gap-2">
-              <Input readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
-              <Button size="sm" onClick={copyUrl} disabled={!overlay.url}>复制</Button>
+            <div className="relative">
+              <Input className="pr-12" readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={copyUrl}
+                disabled={!overlay.url}
+                aria-label="复制字幕源 URL"
+                title="复制字幕源 URL"
+              >
+                <Copy className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+              </button>
             </div>
           </Field>
         </FormGrid>
@@ -165,7 +176,7 @@ export function ObsOverlayPanel() {
           <Button variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
         </div>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          未能自动安装时，可在 OBS 添加 Browser Source，粘贴上方 URL，设置为 1280×360，保持透明背景。
+          自动安装会读取并匹配 OBS 当前画布尺寸。手动添加 Browser Source 时，建议设置为画布尺寸；无法确认时可先使用 1920×1080，并保持透明背景。
           {overlay.installed && overlay.sourceName ? ` 当前受管理的源：${overlay.sourceName}。` : ""}
         </p>
       </SettingsSection>
