@@ -3,12 +3,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 
-const isObsCaptureWindow = new URLSearchParams(window.location.search).has("obs-capture");
-
-if (isObsCaptureWindow) {
-  document.documentElement.dataset.obsCapture = "true";
-}
-
 type Phase = "hidden" | "recording" | "processing" | "subtitle";
 type IndicatorMode = "dictation" | "subtitle";
 
@@ -234,7 +228,6 @@ export function IndicatorApp() {
   });
 
   useEffect(() => {
-    if (isObsCaptureWindow) return;
     const isMod = (code: string) =>
       code.startsWith("Control") ||
       code.startsWith("Shift") ||
@@ -299,7 +292,7 @@ export function IndicatorApp() {
   );
 
   const handleSubtitlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (isObsCaptureWindow || mode !== "subtitle" || subtitleLocked || event.button !== 0) return;
+    if (mode !== "subtitle" || subtitleLocked || event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (target.closest(".subtitle-controls")) return;
     getCurrentWindow().startDragging();
@@ -331,7 +324,7 @@ export function IndicatorApp() {
     >
       {translationFirst && translationBlock}
       <div id="text" ref={original.textElRef} className="empty" onPointerDown={handleSubtitlePointerDown}>
-        {!isObsCaptureWindow && mode === "subtitle" && original.hasText && (
+        {mode === "subtitle" && original.hasText && (
           <div className="subtitle-controls" aria-label="实时字幕控制">
             <button
               type="button"
