@@ -72,7 +72,7 @@ let reconnectAttempts = 0;
 
 let backendSystemAudioSampleRate = 48000;
 
-const SUBTITLE_SHADOW_GUTTER = 56;
+const SUBTITLE_SHADOW_GUTTER = 0;
 const SUBTITLE_PANEL_VERTICAL_PADDING = 28;
 // 与 indicator.css 里 #translation-text 的 padding（10px 22px）、#wrap.subtitle-mode 的 gap（10px）对应，
 // 双语模式下必须按这两个值预留窗口高度，否则译文行会被窗口边界裁掉。
@@ -81,9 +81,7 @@ const SUBTITLE_ROW_GAP = 10;
 const LEGACY_SUBTITLE_TOP_PADDING = 18;
 const LEGACY_SUBTITLE_BOTTOM_PADDING = 24;
 
-function subtitleWindowOffset(anchor: SubtitlePrefs["anchor"], offsetY: number) {
-  if (anchor === "top") return offsetY - (SUBTITLE_SHADOW_GUTTER - LEGACY_SUBTITLE_TOP_PADDING);
-  if (anchor === "bottom") return offsetY - (SUBTITLE_SHADOW_GUTTER - LEGACY_SUBTITLE_BOTTOM_PADDING);
+function subtitleWindowOffset(_anchor: SubtitlePrefs["anchor"], offsetY: number) {
   return offsetY;
 }
 
@@ -139,10 +137,7 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
   const extraHeight = showsTranslationRow
     ? lineHeight * effectiveLines + TRANSLATION_PANEL_VERTICAL_PADDING + SUBTITLE_ROW_GAP
     : 0;
-  const height = Math.max(
-    136,
-    lineHeight * effectiveLines + extraHeight + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2,
-  );
+  const height = lineHeight * effectiveLines + extraHeight + SUBTITLE_PANEL_VERTICAL_PADDING + SUBTITLE_SHADOW_GUTTER * 2;
   await cmdSilent(CMD.setIndicatorLayout, {
     width: windowWidth,
     height,
@@ -160,6 +155,10 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
       backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
       rounded: prefs.rounded,
       width,
+      windowWidth,
+      windowHeight: height,
+      anchor: prefs.anchor,
+      offsetY: subtitleWindowOffset(prefs.anchor, offsetY),
       motionEnabled: prefs.motionEnabled,
       motionDurationMs: prefs.motionDurationMs,
       motionEasing: prefs.motionEasing,

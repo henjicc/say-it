@@ -62,6 +62,7 @@ export const EVT = {
   dictationCancel: "dictation-cancel",
   dictationShortcutError: "dictation-shortcut-error",
   subtitleToggle: "subtitle-toggle",
+  subtitleCloseRequested: "subtitle-close-requested",
   subtitleShortcutError: "subtitle-shortcut-error",
   subtitleTranslationEvent: "subtitle-translation-event",
   hotkeyCaptureLockKey: "hotkey-capture-lock-key",
