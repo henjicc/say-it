@@ -71,6 +71,8 @@ export interface SubtitlePrefs {
   translationTargetLang: string;
   translationLayout: SubtitleTranslationLayout;
   translationOrder: SubtitleTranslationOrder;
+  /** 输出到 OBS：关闭后即使 OBS 字幕源在线，字幕也回到桌面悬浮窗显示（不断开 OBS 连接）。 */
+  obsOutputEnabled: boolean;
 }
 
 type Tone = "" | "ok" | "err";
@@ -120,6 +122,7 @@ const defaults = (): SubtitlePrefs => ({
   translationTargetLang: DEFAULT_TRANSLATION_TARGET_LANG,
   translationLayout: "bilingual",
   translationOrder: "translationFirst",
+  obsOutputEnabled: true,
 });
 
 const SUBTITLE_ANIMATION_EASINGS: SubtitleAnimationEasing[] = ["ease-out", "ease-in-out", "linear", "ease-in"];
@@ -160,6 +163,7 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     translationTargetLang: prefs.translationTargetLang || DEFAULT_TRANSLATION_TARGET_LANG,
     translationLayout: prefs.translationLayout === "translationOnly" ? "translationOnly" : "bilingual",
     translationOrder: prefs.translationOrder === "translationFirst" ? "translationFirst" : "sourceFirst",
+    obsOutputEnabled: prefs.obsOutputEnabled !== false,
   };
 }
 

@@ -218,7 +218,10 @@ async function refreshObsOutputTarget(epoch = obsOutputMonitorEpoch) {
   const rawActive = status.ready && status.connected;
   if (rawActive) obsDisconnectedPolls = 0;
   else obsDisconnectedPolls += 1;
-  const nextActive = rawActive || (obsOutputActive && obsDisconnectedPolls < 2);
+  // 断线用两次探测的滞回避免瞬断闪烁；用户手动关闭"输出到 OBS"则立即切回桌面，不走滞回。
+  const nextActive =
+    useSubtitleStore.getState().prefs.obsOutputEnabled &&
+    (rawActive || (obsOutputActive && obsDisconnectedPolls < 2));
   const becameActive = nextActive && !obsOutputActive;
   obsOutputActive = nextActive;
   if (becameActive && !obsLayoutForcedForMonitor) {
@@ -228,6 +231,12 @@ async function refreshObsOutputTarget(epoch = obsOutputMonitorEpoch) {
   if (useSubtitleStore.getState().running || previewActive) {
     await cmdSilent(CMD.setIndicatorState, { state: obsOutputActive ? "hidden" : "subtitle" });
   }
+}
+
+/** 切换"输出到 OBS"后立即重算输出目标并刷新 OBS 快照，不等监测轮询，实现秒切。 */
+export async function applyObsOutputRouting() {
+  syncObsOverlay();
+  await refreshObsOutputTarget();
 }
 
 function startObsOutputMonitor() {
@@ -261,8 +270,9 @@ function syncObsOverlay() {
     const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
     cmdSilent(CMD.publishObsOverlaySnapshot, {
       snapshot: {
-        originalText: displayText,
-        translationText: translationDisplayText,
+        // 关闭"输出到 OBS"时推空文本：OBS 侧立即清空，避免和桌面悬浮窗重复显示。
+        originalText: prefs.obsOutputEnabled ? displayText : "",
+        translationText: prefs.obsOutputEnabled ? translationDisplayText : "",
         style: {
           displayMode: prefs.mode,
           fontFamily: prefs.fontFamily,
