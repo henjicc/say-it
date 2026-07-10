@@ -145,8 +145,6 @@ pub(crate) fn start_obs_overlay_server(
     std_listener
         .set_nonblocking(true)
         .map_err(|error| format!("设置 OBS 字幕服务为非阻塞模式失败：{error}"))?;
-    let listener = tokio::net::TcpListener::from_std(std_listener)
-        .map_err(|error| format!("启动 OBS 字幕服务失败：{error}"))?;
     let server_state = OverlayServerState {
         token: settings.token,
         snapshot_tx: state.obs_overlay_runtime.snapshot_tx.clone(),
@@ -160,6 +158,11 @@ pub(crate) fn start_obs_overlay_server(
         .route(OBS_STREAM_PATH, get(overlay_stream))
         .with_state(server_state);
     tauri::async_runtime::spawn(async move {
+        // Tokio listener registration requires an active runtime context. Tauri's setup hook is
+        // synchronous, so perform the conversion inside the task managed by Tauri's async runtime.
+        let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else {
+            return;
+        };
         let _ = axum::serve(listener, app).await;
     });
     Ok(())
