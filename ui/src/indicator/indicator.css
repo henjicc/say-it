@@ -17,6 +17,12 @@ body,
   -webkit-user-select: none;
 }
 
+html[data-obs-capture],
+html[data-obs-capture] body,
+html[data-obs-capture] #indicator-root {
+  background: #00ff00;
+}
+
 #wrap {
   display: flex;
   flex-direction: column;
@@ -35,6 +41,18 @@ body,
   justify-content: flex-end;
   gap: 10px;
   padding: 0;
+}
+
+html[data-obs-capture] #wrap.subtitle-mode {
+  background: #00ff00;
+}
+
+html[data-obs-capture] .subtitle-mode #text,
+html[data-obs-capture] .subtitle-mode #translation-text {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  cursor: default;
 }
 
 .pill {

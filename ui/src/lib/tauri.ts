@@ -33,6 +33,7 @@ export const CMD = {
   setIndicatorText: "set_indicator_text",
   setIndicatorTranslation: "set_indicator_translation",
   setIndicatorLayout: "set_indicator_layout",
+  ensureObsSubtitleCaptureWindow: "ensure_obs_subtitle_capture_window",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   translateSubtitleStart: "translate_subtitle_start",
   injectText: "inject_text",
