@@ -5,10 +5,8 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { Input, Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd } from "@/lib/tauri";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
-import { applyObsOutputRouting } from "@/features/subtitles/controller";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 
 interface ObsOverlayStatus {
@@ -48,7 +46,6 @@ export function ObsOverlayPanel() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const subtitlePrefs = useSubtitleStore((state) => state.prefs);
-  const patchSubtitlePrefs = useSubtitleStore((state) => state.patch);
 
   const connectionArgs = () => ({
     host: host.trim(),
@@ -284,25 +281,9 @@ export function ObsOverlayPanel() {
           <Button variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
         </div>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          安装后，字幕模式、字号、宽度、行数、翻译布局、颜色和动画会实时同步，无需重复点击“更新字幕源”；在 OBS 中手动调整的位置、缩放、裁切和层级会保留。
+          安装后，字幕模式、字号、宽度、行数、翻译布局、颜色和动画会实时同步，无需重复点击“更新字幕源”；在 OBS 中手动调整的位置、缩放、裁切和层级会保留。字幕输出位置可随时用右上角的“输出到桌面 / 输出到 OBS”切换，不会断开连接。
           {overlay.installed && overlay.sourceName ? ` 当前受管理的源：${overlay.sourceName}。` : ""}
         </p>
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-[var(--color-fg)]">输出到 OBS</p>
-            <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              关闭后字幕立即回到桌面悬浮窗显示，不断开 OBS 连接、不删除字幕源；再打开即切回 OBS。
-            </p>
-          </div>
-          <Switch
-            checked={subtitlePrefs.obsOutputEnabled}
-            onChange={(obsOutputEnabled) => {
-              patchSubtitlePrefs({ obsOutputEnabled });
-              void applyObsOutputRouting();
-            }}
-            label="输出到 OBS"
-          />
-        </div>
       </SettingsSection>
 
       {(message || error) && (

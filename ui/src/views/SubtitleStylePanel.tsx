@@ -5,6 +5,8 @@ import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { FormGrid } from "@/components/ui/FormGrid";
+import { Modal } from "@/components/ui/Modal";
+import { Button } from "@/components/ui/Button";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   useSubtitleStore,
@@ -74,15 +76,22 @@ function ColorField({
 }
 
 export function SubtitleStylePanel() {
-  const { prefs, patch, obsOutputActive } = useSubtitleStore();
+  const { prefs, patch } = useSubtitleStore();
   const systemFonts = useSystemFonts();
+  const outputToObs = prefs.obsOutputEnabled;
+  const [obsPositionNoticeOpen, setObsPositionNoticeOpen] = useState(false);
+  const obsPositionHint = "当前输出到 OBS，请在 OBS 画布中调整字幕的位置。";
+
+  const showObsPositionNotice = () => {
+    if (outputToObs) setObsPositionNoticeOpen(true);
+  };
 
   return (
     <div className="flex flex-col gap-7">
       <SettingsSection title="字幕样式">
-        {obsOutputActive && (
+        {outputToObs && (
           <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            正在输出到 OBS：字幕位置直接在 OBS 画布中拖动调整，"位置"与"位置偏移"已隐藏；其余样式实时同步到 OBS。
+            输出目标为 OBS：“位置”与“位置偏移”需要在 OBS 画布中调整；其余样式实时同步到 OBS。
           </p>
         )}
         <FormGrid>
@@ -100,10 +109,13 @@ export function SubtitleStylePanel() {
               ))}
             </Select>
           </Field>
-          {!obsOutputActive && (
+          <div
+            className="relative"
+          >
             <Field layout="row" label="位置">
               <Select
                 value={prefs.anchor}
+                disabled={outputToObs}
                 onChange={(event) => patch({ anchor: event.target.value as SubtitleAnchor })}
               >
                 {Object.entries(anchorLabel).map(([value, label]) => (
@@ -113,7 +125,10 @@ export function SubtitleStylePanel() {
                 ))}
               </Select>
             </Field>
-          )}
+            {outputToObs && (
+              <button type="button" className="absolute inset-0 cursor-not-allowed" title={obsPositionHint} aria-label={obsPositionHint} onClick={showObsPositionNotice} />
+            )}
+          </div>
         </FormGrid>
 
         <FormGrid>
@@ -122,9 +137,14 @@ export function SubtitleStylePanel() {
             <Slider label="显示行数" min={1} max={4} step={1} value={prefs.lineCount} onChange={(lineCount) => patch({ lineCount })} format={(v) => `${v} 行`} />
           )}
           <Slider label="字幕宽度" min={20} max={70} step={1} value={prefs.widthPercent} onChange={(widthPercent) => patch({ widthPercent })} format={(v) => `${v}%`} />
-          {!obsOutputActive && (
-            <Slider label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
-          )}
+          <div
+            className="relative"
+          >
+            <Slider disabled={outputToObs} label="位置偏移" min={-17} max={20} step={0.5} value={prefs.offsetYPercent} onChange={(offsetYPercent) => patch({ offsetYPercent })} format={(v) => `${v.toFixed(1)}%`} />
+            {outputToObs && (
+              <button type="button" className="absolute inset-0 cursor-not-allowed" title={obsPositionHint} aria-label={obsPositionHint} onClick={showObsPositionNotice} />
+            )}
+          </div>
           <Slider label="背景不透明" min={0} max={100} step={1} value={prefs.backgroundOpacity} onChange={(backgroundOpacity) => patch({ backgroundOpacity })} format={(v) => `${v}%`} />
           <Slider label="圆角" min={0} max={36} step={1} value={prefs.rounded} onChange={(rounded) => patch({ rounded })} format={(v) => `${v}px`} />
         </FormGrid>
@@ -134,6 +154,24 @@ export function SubtitleStylePanel() {
           <ColorField label="背景颜色" value={prefs.backgroundColor} onChange={(backgroundColor) => patch({ backgroundColor })} />
         </FormGrid>
       </SettingsSection>
+
+      <Modal
+        open={obsPositionNoticeOpen}
+        onClose={() => setObsPositionNoticeOpen(false)}
+        showHeader={false}
+        ariaLabel="请在 OBS 中调整字幕位置"
+        className="max-w-md"
+      >
+        <div className="p-5">
+          <h3 className="text-base font-semibold text-[var(--color-fg)]">请在 OBS 中调整字幕位置</h3>
+          <p className="mt-4 text-sm leading-6 text-[var(--color-fg-muted)]">
+            当前字幕输出目标为 OBS，因此“位置”和“位置偏移”由 OBS 画布控制。请在 OBS 中选中字幕源后，通过拖动、缩放或变换设置调整位置。
+          </p>
+          <div className="mt-5 flex justify-end">
+            <Button variant="primary" onClick={() => setObsPositionNoticeOpen(false)}>关闭</Button>
+          </div>
+        </div>
+      </Modal>
 
       <SettingsSection title="字幕动画">
         <p className="text-xs text-[var(--color-fg-subtle)]">

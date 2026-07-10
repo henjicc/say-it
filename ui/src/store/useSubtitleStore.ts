@@ -127,7 +127,7 @@ const defaults = (): SubtitlePrefs => ({
   translationTargetLang: DEFAULT_TRANSLATION_TARGET_LANG,
   translationLayout: "bilingual",
   translationOrder: "translationFirst",
-  obsOutputEnabled: true,
+  obsOutputEnabled: false,
 });
 
 const SUBTITLE_ANIMATION_EASINGS: SubtitleAnimationEasing[] = ["ease-out", "ease-in-out", "linear", "ease-in"];
@@ -168,7 +168,7 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     translationTargetLang: prefs.translationTargetLang || DEFAULT_TRANSLATION_TARGET_LANG,
     translationLayout: prefs.translationLayout === "translationOnly" ? "translationOnly" : "bilingual",
     translationOrder: prefs.translationOrder === "translationFirst" ? "translationFirst" : "sourceFirst",
-    obsOutputEnabled: prefs.obsOutputEnabled !== false,
+    obsOutputEnabled: prefs.obsOutputEnabled === true,
   };
 }
 
