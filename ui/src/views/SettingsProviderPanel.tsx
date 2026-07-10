@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { Collapse } from "@/components/ui/Collapse";
 import { Button } from "@/components/ui/Button";
 import { Field, CheckField } from "@/components/ui/Field";
@@ -14,25 +15,6 @@ const NESTED_HEADER_CLASS = "px-3 py-2.5";
 const NESTED_BODY_CLASS = "px-3 py-3";
 
 const API_KEY_MASK = "•".repeat(32);
-
-function EyeIcon({ visible }: { visible: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-      aria-hidden
-    >
-      <path d="M2.1 12s3.6-6.5 9.9-6.5 9.9 6.5 9.9 6.5-3.6 6.5-9.9 6.5S2.1 12 2.1 12Z" />
-      <circle cx="12" cy="12" r="2.8" />
-      {visible && <path d="M4 4 20 20" />}
-    </svg>
-  );
-}
 
 export function SettingsProviderPanel() {
   const providers = useProviderStore((s) => s.profiles);
@@ -224,7 +206,7 @@ export function SettingsProviderPanel() {
               disabled={(!apiKey && !savedApiKey && !hasApiKey) || apiKeyLoading}
               className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
             >
-              <EyeIcon visible={apiKeyVisible} />
+              {apiKeyVisible ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
             </button>
           </div>
         </div>

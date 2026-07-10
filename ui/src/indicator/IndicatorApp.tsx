@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Lock, LockOpen, RotateCw, X } from "lucide-react";
 import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 
@@ -333,23 +334,13 @@ export function IndicatorApp() {
               title={subtitleLocked ? "解锁" : "锁定"}
               onClick={() => setSubtitleLocked((locked) => !locked)}
             >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                {subtitleLocked ? (
-                  <path d="M4.5 7V5.5a3.5 3.5 0 0 1 7 0V7M4 7.5h8v6H4z" />
-                ) : (
-                  <path d="M4.5 7V5.5a3.5 3.5 0 0 1 6.5-1.8M4 7.5h8v6H4z" />
-                )}
-              </svg>
+              {subtitleLocked ? <Lock className="h-4 w-4" aria-hidden /> : <LockOpen className="h-4 w-4" aria-hidden />}
             </button>
             <button type="button" aria-label="重置字幕条位置" title="重置" onClick={resetSubtitlePosition}>
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M3.5 7a4.5 4.5 0 1 1 1.3 3.2M3.5 7H1.8M3.5 7V5.3" />
-              </svg>
+              <RotateCw className="h-4 w-4" aria-hidden />
             </button>
             <button type="button" aria-label="关闭实时字幕" title="关闭" onClick={closeSubtitles}>
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
-              </svg>
+              <X className="h-4 w-4" aria-hidden />
             </button>
           </div>
         )}

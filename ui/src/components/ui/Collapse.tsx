@@ -1,21 +1,9 @@
 import { useState, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open && "rotate-180")}
-      aria-hidden
-    >
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
+  return <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform duration-200", open && "rotate-180")} strokeWidth={1.8} aria-hidden />;
 }
 
 /** 可折叠区块：点击标题展开/收起内容，用于按供应商/分组组织设置项。 */

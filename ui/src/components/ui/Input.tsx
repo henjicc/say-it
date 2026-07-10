@@ -1,4 +1,5 @@
 import { Children, forwardRef, isValidElement, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const fieldBase =
@@ -44,20 +45,7 @@ export interface SelectProps
 }
 
 function ChevronDownIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={cn("h-4 w-4 text-[var(--color-fg-subtle)] transition-transform duration-200", open && "rotate-180 text-[var(--color-fg-muted)]")}
-      aria-hidden
-    >
-      <path d="m5 7.5 5 5 5-5" />
-    </svg>
-  );
+  return <ChevronDown className={cn("h-4 w-4 text-[var(--color-fg-subtle)] transition-transform duration-200", open && "rotate-180 text-[var(--color-fg-muted)]")} strokeWidth={1.8} aria-hidden />;
 }
 
 export function Select({

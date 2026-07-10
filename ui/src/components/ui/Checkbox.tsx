@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { Check } from "lucide-react";
 
 interface CheckboxProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type" | "size"> {
@@ -32,17 +33,7 @@ export function Checkbox({ className, size = "md", ...props }: CheckboxProps) {
           "peer-checked:[&>svg]:scale-100 peer-checked:[&>svg]:opacity-100",
         )}
       >
-        <svg
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2.4}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-[72%] w-[72%] text-[var(--color-accent-contrast)]"
-        >
-          <path d="m3.5 8.5 3 3 6-7" />
-        </svg>
+        <Check className="h-[72%] w-[72%] text-[var(--color-accent-contrast)]" strokeWidth={2.4} aria-hidden />
       </span>
     </span>
   );

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { FileAudio, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
 import type { SelectedTranscriptionFile } from "@/store/useTranscriptionStore";
@@ -196,11 +197,7 @@ export function FileCard(props: {
           )}
         >
           <span className="flex h-11 w-11 items-center justify-center rounded-full border border-[var(--color-line)] bg-[var(--color-surface-strong)] text-[var(--color-fg-muted)]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
-              <path d="M12 16V4" />
-              <path d="m7 9 5-5 5 5" />
-              <path d="M5 18.5h14" />
-            </svg>
+            <Upload className="h-5 w-5" strokeWidth={1.8} aria-hidden />
           </span>
           <span className="mt-3 text-base font-medium text-[var(--color-fg)]">
             {pickState === "loading" ? "正在读取文件信息…" : "选择或拖放音视频文件"}
@@ -224,11 +221,7 @@ export function FileCard(props: {
       {/* 文件信息行 */}
       <div className="flex items-center gap-3 px-4 py-3">
         <span className="flex h-10 w-10 flex-none items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface-strong)] text-[var(--color-fg-muted)]">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" className="h-4.5 w-4.5" aria-hidden>
-            <path d="M9 18V6l10-2v11" />
-            <circle cx="6.5" cy="18" r="2.5" />
-            <circle cx="16.5" cy="15" r="2.5" />
-          </svg>
+          <FileAudio className="h-4.5 w-4.5" strokeWidth={1.6} aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-[var(--color-fg)]">

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { Combine, Plus, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import {
@@ -938,10 +939,7 @@ export function SubtitleEditor({
                     event.stopPropagation();
                     splitCue(cue);
                   }}>
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" className="h-3.5 w-3.5" aria-hidden>
-                      <path d="M8 2v12" strokeDasharray="2 2" />
-                      <path d="M3 4.5 6 8l-3 3.5M13 4.5 10 8l3 3.5" />
-                    </svg>
+                    <Split className="h-3.5 w-3.5" strokeWidth={1.4} aria-hidden />
                   </button>
                   <button
                     type="button"
@@ -953,17 +951,13 @@ export function SubtitleEditor({
                       mergeWithNext(cue);
                     }}
                   >
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden>
-                      <path d="M8 3v4M8 13V9M5 5.5 8 8l3-2.5M5 10.5 8 8l3 2.5" />
-                    </svg>
+                    <Combine className="h-3.5 w-3.5" strokeWidth={1.4} aria-hidden />
                   </button>
                   <button type="button" title="在下方插入一条" className={rowIconButton} onClick={(event) => {
                     event.stopPropagation();
                     insertAfter(cue);
                   }}>
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" className="h-3.5 w-3.5" aria-hidden>
-                      <path d="M8 3.5v9M3.5 8h9" />
-                    </svg>
+                    <Plus className="h-3.5 w-3.5" strokeWidth={1.4} aria-hidden />
                   </button>
                   <button
                     type="button"
@@ -974,9 +968,7 @@ export function SubtitleEditor({
                       deleteCue(cue.id);
                     }}
                   >
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" className="h-3.5 w-3.5" aria-hidden>
-                      <path d="M3 4.5h10M6.5 4V3h3v1M5 4.5l.6 8.5h4.8l.6-8.5" />
-                    </svg>
+                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.4} aria-hidden />
                   </button>
                 </span>
               </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Copy, Minus, Square, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const appWindow = getCurrentWindow();
@@ -48,21 +49,14 @@ export function Titlebar() {
             appWindow.minimize();
           }}
         >
-          <path d="M2 6h8" />
+          <Minus className="h-3 w-3" strokeWidth={1.4} aria-hidden />
         </TitleBtn>
         <TitleBtn
           label="最大化"
           hoverMuted={hoverMuted}
           onClick={() => appWindow.toggleMaximize()}
         >
-          {maximized ? (
-            <>
-              <path d="M3.5 3.5V2.5h6v6H8.5" />
-              <rect x="2.5" y="3.5" width="6" height="6" rx="1" />
-            </>
-          ) : (
-            <rect x="2.5" y="2.5" width="7" height="7" rx="1" />
-          )}
+          {maximized ? <Copy className="h-3 w-3" strokeWidth={1.25} aria-hidden /> : <Square className="h-3 w-3" strokeWidth={1.25} aria-hidden />}
         </TitleBtn>
         <TitleBtn
           label="关闭"
@@ -73,7 +67,7 @@ export function Titlebar() {
             appWindow.close();
           }}
         >
-          <path d="M3 3l6 6M9 3l-6 6" />
+          <X className="h-3 w-3" strokeWidth={1.4} aria-hidden />
         </TitleBtn>
       </div>
     </div>
@@ -107,18 +101,7 @@ function TitleBtn({
             : "hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)]"),
       )}
     >
-      <svg
-        viewBox="0 0 12 12"
-        className="h-3 w-3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        {children}
-      </svg>
+      {children}
     </button>
   );
 }
