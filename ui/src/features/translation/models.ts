@@ -6,7 +6,7 @@ export interface TranslationModelOption {
 }
 
 /** 关闭字幕翻译时 SubtitlePrefs.translationModel 的取值。 */
-export const TRANSLATION_MODEL_NONE = "";
+export const TRANSLATION_MODEL_NONE = "none";
 
 export const TRANSLATION_MODEL_OPTIONS: TranslationModelOption[] = [
   { value: "qwen-mt-flash", label: "Qwen-MT-Flash（推荐，速度快）", supportsIncremental: true },
@@ -16,6 +16,7 @@ export const TRANSLATION_MODEL_OPTIONS: TranslationModelOption[] = [
 
 const TRANSLATION_MODEL_SET = new Set(TRANSLATION_MODEL_OPTIONS.map((option) => option.value));
 
-export function isSupportedTranslationModel(model: string) {
-  return model === TRANSLATION_MODEL_NONE || TRANSLATION_MODEL_SET.has(model.trim());
+export function normalizeTranslationModel(model: string | undefined) {
+  if (!model || model === TRANSLATION_MODEL_NONE) return TRANSLATION_MODEL_NONE;
+  return TRANSLATION_MODEL_SET.has(model.trim()) ? model.trim() : TRANSLATION_MODEL_NONE;
 }
