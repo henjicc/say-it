@@ -1,3 +1,4 @@
+use crate::obs_overlay::{ObsOverlayRuntime, ObsOverlaySettings};
 use crate::prelude::*;
 
 #[derive(Default)]
@@ -12,6 +13,8 @@ pub(crate) struct RuntimeState {
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
     pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
+    pub(crate) obs_overlay_settings: Mutex<ObsOverlaySettings>,
+    pub(crate) obs_overlay_runtime: ObsOverlayRuntime,
 }
 
 #[derive(Default)]

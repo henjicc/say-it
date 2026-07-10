@@ -1,3 +1,4 @@
+use crate::obs_overlay::ObsOverlaySettings;
 use crate::prelude::*;
 use crate::state::*;
 
@@ -14,6 +15,8 @@ pub(crate) struct PersistedData {
     pub(crate) subtitle_shortcut: SubtitleShortcutSettings,
     #[serde(default)]
     pub(crate) startup: StartupSettings,
+    #[serde(default)]
+    pub(crate) obs_overlay: ObsOverlaySettings,
 }
 
 pub(crate) fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -57,18 +60,26 @@ pub(crate) fn save_persisted_state(
         .lock()
         .map_err(|_| "Startup lock failed".to_string())?
         .clone();
+    let obs_overlay = state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())?
+        .clone();
     let data = PersistedData {
         providers: normalize_settings(providers),
         dictation,
         subtitle_shortcut,
         startup,
+        obs_overlay,
     };
     let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
     let file = state_file_path(app)?;
     fs::write(file, bytes).map_err(|e| e.to_string())
 }
 
-pub(crate) fn load_persisted_state(app: &tauri::AppHandle) -> Result<Option<PersistedData>, String> {
+pub(crate) fn load_persisted_state(
+    app: &tauri::AppHandle,
+) -> Result<Option<PersistedData>, String> {
     let file = state_file_path(app)?;
     let source = if file.exists() {
         Some(file)

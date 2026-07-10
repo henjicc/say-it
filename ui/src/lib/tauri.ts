@@ -53,6 +53,11 @@ export const CMD = {
   listAudioDevices: "list_audio_devices",
   encodeMonoWavFile: "encode_mono_wav_file",
   decodeAudioFilePcm: "decode_audio_file_pcm",
+  getObsOverlayStatus: "get_obs_overlay_status",
+  publishObsOverlaySnapshot: "publish_obs_overlay_snapshot",
+  connectObs: "connect_obs",
+  installObsOverlay: "install_obs_overlay",
+  uninstallObsOverlay: "uninstall_obs_overlay",
 } as const;
 
 export const EVT = {

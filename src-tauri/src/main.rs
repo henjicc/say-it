@@ -5,6 +5,7 @@ mod audio_prep;
 mod commands;
 mod desktop;
 mod hotkey;
+mod obs_overlay;
 mod persistence;
 mod prelude;
 mod providers;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use commands::*;
 use desktop::*;
+use obs_overlay::*;
 use persistence::*;
 use state::*;
 
@@ -92,7 +94,22 @@ fn main() {
                     })?;
                     *startup = persisted.startup;
                 }
+                {
+                    let mut obs_overlay = state.obs_overlay_settings.lock().map_err(|_| {
+                        std::io::Error::other(
+                            "OBS overlay settings lock failed while loading persisted data",
+                        )
+                    })?;
+                    *obs_overlay = persisted.obs_overlay;
+                }
             }
+
+            let state = app.state::<RuntimeState>();
+            if ensure_obs_overlay_settings(&state)? {
+                save_persisted_state(&app.handle(), &state)?;
+            }
+            // OBS 接入是可选能力；本地端口被占用时不影响既有桌面字幕功能，状态会在前端显示。
+            let _ = start_obs_overlay_server(&state);
 
             hotkey::init(app.handle().clone());
             let dictation_settings = {
@@ -112,7 +129,9 @@ fn main() {
             let subtitle_shortcut_settings = {
                 let state = app.state::<RuntimeState>();
                 let guard = state.subtitle_shortcut.lock().map_err(|_| {
-                    std::io::Error::other("subtitle shortcut lock failed while registering shortcut")
+                    std::io::Error::other(
+                        "subtitle shortcut lock failed while registering shortcut",
+                    )
                 })?;
                 guard.clone()
             };
@@ -154,8 +173,7 @@ fn main() {
             }
             tray.build(app)?;
 
-            let launched_via_autostart =
-                std::env::args().any(|arg| arg == AUTOSTART_ARG);
+            let launched_via_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
             let silent_start = {
                 let state = app.state::<RuntimeState>();
                 let guard = state
@@ -253,7 +271,12 @@ fn main() {
             list_system_fonts,
             list_audio_devices,
             encode_mono_wav_file,
-            decode_audio_file_pcm
+            decode_audio_file_pcm,
+            get_obs_overlay_status,
+            publish_obs_overlay_snapshot,
+            connect_obs,
+            install_obs_overlay,
+            uninstall_obs_overlay
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

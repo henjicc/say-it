@@ -170,6 +170,36 @@ export async function syncSubtitleIndicator(prefs: SubtitlePrefs = useSubtitleSt
       translationOrder: prefs.translationOrder,
     },
   });
+  syncObsOverlay();
+}
+
+function syncObsOverlay() {
+  const prefs = useSubtitleStore.getState().prefs;
+  const effectiveLines = prefs.mode === "replace" ? 1 : prefs.lineCount;
+  cmdSilent(CMD.publishObsOverlaySnapshot, {
+    snapshot: {
+      originalText: displayText,
+      translationText: translationDisplayText,
+      style: {
+        fontFamily: prefs.fontFamily,
+        fontSize: Math.round(1080 * (prefs.fontSizePercent / 100)),
+        lineCount: effectiveLines,
+        widthPercent: prefs.widthPercent,
+        textColor: prefs.textColor,
+        backgroundColor: rgba(prefs.backgroundColor, prefs.backgroundOpacity),
+        rounded: prefs.rounded,
+        motionEnabled: prefs.motionEnabled,
+        motionDurationMs: prefs.motionDurationMs,
+        motionEasing: prefs.motionEasing,
+        fadeEnabled: prefs.fadeEnabled,
+        fadeDurationMs: prefs.fadeDurationMs,
+        fadeEasing: prefs.fadeEasing,
+        translationEnabled: prefs.translationModel !== TRANSLATION_MODEL_NONE,
+        translationLayout: prefs.translationLayout,
+        translationOrder: prefs.translationOrder,
+      },
+    },
+  });
 }
 
 // ---------------- 字幕预览：模拟播放 ----------------
@@ -321,15 +351,18 @@ function pushIndicatorChannels() {
   if (prefs.translationModel === TRANSLATION_MODEL_NONE) {
     cmdSilent(CMD.setIndicatorText, { text: displayText });
     cmdSilent(CMD.setIndicatorTranslation, { text: "" });
+    syncObsOverlay();
     return;
   }
   if (prefs.translationLayout === "translationOnly") {
     cmdSilent(CMD.setIndicatorText, { text: translationDisplayText });
     cmdSilent(CMD.setIndicatorTranslation, { text: "" });
+    syncObsOverlay();
     return;
   }
   cmdSilent(CMD.setIndicatorText, { text: displayText });
   cmdSilent(CMD.setIndicatorTranslation, { text: translationDisplayText });
+  syncObsOverlay();
 }
 
 function renderSubtitle(nextSegment = currentSegment) {
@@ -564,6 +597,7 @@ async function startSubtitles() {
   translations = new Map();
   translationSegmentSeq = 0;
   translationDisplayText = "";
+  syncObsOverlay();
   translationRequestId = String(++translationEpochCounter);
   clearMicShutdownTimer();
   await syncSubtitleIndicator(prefs);
@@ -604,6 +638,8 @@ async function stopSubtitles() {
   replaceTranslationGroups = [];
   translations = new Map();
   translationDisplayText = "";
+  displayText = "";
+  syncObsOverlay();
   await cmdSilent(CMD.pauseBackendMic);
   scheduleMicShutdown(pushLog);
   await cmdSilent(CMD.pauseBackendSystemAudio);

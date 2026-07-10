@@ -13,13 +13,15 @@ import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { SubtitleGeneralPanel } from "@/views/SubtitleGeneralPanel";
 import { SubtitleStylePanel } from "@/views/SubtitleStylePanel";
 import { SubtitleTranslationPanel } from "@/views/SubtitleTranslationPanel";
+import { ObsOverlayPanel } from "@/views/ObsOverlayPanel";
 
-type TabKey = "general" | "style" | "translation";
+type TabKey = "general" | "style" | "translation" | "obs";
 
 const TABS: TabItem<TabKey>[] = [
   { key: "general", label: "通用设置" },
   { key: "style", label: "字幕样式" },
   { key: "translation", label: "字幕翻译" },
+  { key: "obs", label: "OBS 接入" },
 ];
 
 export function RealtimeSubtitlesPanel() {
@@ -72,6 +74,7 @@ export function RealtimeSubtitlesPanel() {
       {tab === "general" && <SubtitleGeneralPanel />}
       {tab === "style" && <SubtitleStylePanel />}
       {tab === "translation" && <SubtitleTranslationPanel />}
+      {tab === "obs" && <ObsOverlayPanel />}
     </div>
   );
 }
