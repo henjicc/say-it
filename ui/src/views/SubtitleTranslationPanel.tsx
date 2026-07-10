@@ -1,5 +1,5 @@
 import { Field } from "@/components/ui/Field";
-import { Select } from "@/components/ui/Input";
+import { NativeSelect, Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { FormGrid } from "@/components/ui/FormGrid";
 import {
@@ -25,7 +25,7 @@ export function SubtitleTranslationPanel() {
         </p>
         <FormGrid>
           <Field layout="row" label="翻译模型">
-            <Select
+            <NativeSelect
               value={prefs.translationModel}
               onChange={(event) => patch({ translationModel: event.target.value })}
             >
@@ -35,7 +35,7 @@ export function SubtitleTranslationPanel() {
                   {option.label}
                 </option>
               ))}
-            </Select>
+            </NativeSelect>
           </Field>
         </FormGrid>
       </SettingsSection>
