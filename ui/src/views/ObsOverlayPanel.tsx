@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy } from "lucide-react";
+import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -24,11 +24,17 @@ interface ObsConnectionStatus {
 }
 
 const defaultStatus: ObsOverlayStatus = { ready: false, connected: false, url: "", installed: false };
+const PASSWORD_MASK = "•".repeat(16);
 
 export function ObsOverlayPanel() {
   const [host, setHost] = useState("127.0.0.1");
   const [port, setPort] = useState("4455");
   const [password, setPassword] = useState("");
+  const [savedPassword, setSavedPassword] = useState("");
+  const [hasSavedPassword, setHasSavedPassword] = useState(false);
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [passwordDirty, setPasswordDirty] = useState(false);
+  const [passwordEditing, setPasswordEditing] = useState(false);
   const [overlay, setOverlay] = useState<ObsOverlayStatus>(defaultStatus);
   const [connection, setConnection] = useState<ObsConnectionStatus | null>(null);
   const [sceneName, setSceneName] = useState("");
@@ -39,8 +45,27 @@ export function ObsOverlayPanel() {
   const connectionArgs = () => ({
     host: host.trim(),
     port: Math.max(1, Math.min(65535, Number(port) || 4455)),
-    password,
+    ...(passwordDirty ? { password } : {}),
   });
+
+  const passwordInputValue = passwordDirty || passwordEditing
+    ? password
+    : hasSavedPassword
+      ? passwordVisible
+        ? savedPassword
+        : PASSWORD_MASK
+      : "";
+
+  const commitSavedPassword = () => {
+    if (passwordDirty) {
+      setSavedPassword(password);
+      setHasSavedPassword(!!password);
+    }
+    setPassword("");
+    setPasswordDirty(false);
+    setPasswordEditing(false);
+    setPasswordVisible(false);
+  };
 
   const refreshOverlay = async () => {
     const status = await cmd<ObsOverlayStatus>(CMD.getObsOverlayStatus);
@@ -50,7 +75,33 @@ export function ObsOverlayPanel() {
 
   useEffect(() => {
     refreshOverlay().catch((reason) => setError(`读取 OBS 字幕服务状态失败：${String(reason)}`));
+    cmd<{ host: string; port: number; hasPassword: boolean }>(CMD.getObsConnectionSettings)
+      .then((settings) => {
+        setHost(settings.host || "127.0.0.1");
+        setPort(String(settings.port || 4455));
+        setHasSavedPassword(settings.hasPassword);
+      })
+      .catch((reason) => setError(`读取 OBS 连接设置失败：${String(reason)}`));
   }, []);
+
+  const togglePasswordVisibility = async () => {
+    if (passwordDirty) {
+      setPasswordVisible((current) => !current);
+      return;
+    }
+    if (!passwordVisible && hasSavedPassword && !savedPassword) {
+      try {
+        setSavedPassword(await cmd<string>(CMD.getObsPassword));
+        setPasswordEditing(false);
+        setPasswordVisible(true);
+      } catch (reason) {
+        setError(`读取 OBS 密码失败：${String(reason)}`);
+      }
+      return;
+    }
+    setPasswordEditing(false);
+    setPasswordVisible((current) => !current);
+  };
 
   const connect = async () => {
     setBusy(true);
@@ -61,6 +112,7 @@ export function ObsOverlayPanel() {
         request: connectionArgs(),
       });
       setConnection(status);
+      commitSavedPassword();
       setSceneName((current) => current || status.scenes[0]?.name || "");
       if (!status.browserSourceAvailable) {
         setError("OBS 已连接，但未检测到 Browser Source，无法自动安装字幕源。");
@@ -91,6 +143,7 @@ export function ObsOverlayPanel() {
         },
       });
       setOverlay(next);
+      commitSavedPassword();
       setMessage("OBS 字幕源已安装。后续请在 OBS 中拖拽、缩放和调整图层。 ");
     } catch (reason) {
       setError(String(reason));
@@ -108,6 +161,7 @@ export function ObsOverlayPanel() {
         request: connectionArgs(),
       });
       setOverlay(next);
+      commitSavedPassword();
       setMessage("已删除说吧！创建的 OBS 字幕源。 ");
     } catch (reason) {
       setError(String(reason));
@@ -159,8 +213,40 @@ export function ObsOverlayPanel() {
           <Field layout="row" label="端口">
             <Input value={port} inputMode="numeric" onChange={(event) => setPort(event.target.value)} placeholder="4455" disabled={busy} />
           </Field>
-          <Field layout="row" label="WebSocket 密码">
-            <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="仅用于本次连接，不会保存" disabled={busy} />
+          <Field layout="row" label="密码">
+            <div className="relative">
+              <Input
+                type={passwordVisible ? "text" : "password"}
+                value={passwordInputValue}
+                onFocus={() => {
+                  if (hasSavedPassword && !passwordVisible && !passwordDirty) {
+                    setPassword("");
+                    setPasswordEditing(true);
+                  }
+                }}
+                onBlur={() => {
+                  if (!passwordDirty) setPasswordEditing(false);
+                }}
+                onChange={(event) => {
+                  setPassword(event.target.value);
+                  setPasswordDirty(true);
+                  setPasswordEditing(true);
+                }}
+                placeholder={hasSavedPassword ? "输入新密码可覆盖当前配置" : "未启用认证可留空"}
+                className="pr-11"
+                disabled={busy}
+              />
+              <button
+                type="button"
+                aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
+                title={passwordVisible ? "隐藏密码" : "显示密码"}
+                onClick={togglePasswordVisibility}
+                disabled={busy || (!hasSavedPassword && !passwordDirty)}
+                className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                {passwordVisible ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
+              </button>
+            </div>
           </Field>
           <Field layout="row" label="安装场景">
             <Select value={sceneName} onChange={(event) => setSceneName(event.target.value)} disabled={busy || !connection?.browserSourceAvailable}>

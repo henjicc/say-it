@@ -38,10 +38,24 @@ pub(crate) struct ObsOverlaySettings {
     pub(crate) scene_uuid: Option<String>,
     #[serde(default)]
     pub(crate) source_name: Option<String>,
+    #[serde(default = "default_obs_host")]
+    pub(crate) obs_host: String,
+    #[serde(default = "default_obs_port")]
+    pub(crate) obs_port: u16,
+    #[serde(default)]
+    pub(crate) obs_password: String,
 }
 
 fn default_overlay_port() -> u16 {
     OBS_OVERLAY_PORT
+}
+
+fn default_obs_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_obs_port() -> u16 {
+    4455
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -49,6 +63,7 @@ fn default_overlay_port() -> u16 {
 pub(crate) struct ObsOverlayStyle {
     pub(crate) font_family: String,
     pub(crate) font_size: u32,
+    pub(crate) font_size_percent: f64,
     pub(crate) line_count: u32,
     pub(crate) width_percent: f64,
     pub(crate) text_color: String,
@@ -115,6 +130,14 @@ pub(crate) fn ensure_obs_overlay_settings(
     }
     if settings.token.trim().is_empty() {
         settings.token = Uuid::new_v4().simple().to_string();
+        changed = true;
+    }
+    if settings.obs_host.trim().is_empty() {
+        settings.obs_host = default_obs_host();
+        changed = true;
+    }
+    if settings.obs_port == 0 {
+        settings.obs_port = default_obs_port();
         changed = true;
     }
     Ok(changed)
@@ -296,7 +319,7 @@ const OVERLAY_PAGE: &str = r#"<!doctype html>
 html,body,#root{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}body{font-family:"Microsoft YaHei",sans-serif}#root{box-sizing:border-box;display:flex;align-items:flex-end;justify-content:center;padding-bottom:48px}.stack{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px}.caption{box-sizing:border-box;max-width:100%;padding:10px 22px;text-align:center;white-space:pre-wrap;word-break:break-word;font-weight:600;line-height:1.38;transition:opacity 180ms ease-out,transform 120ms ease-out}.caption.empty{visibility:hidden}.caption.fade{animation:fade 180ms ease-out}.caption.motion{transform:translateY(0)}@keyframes fade{from{opacity:.18;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 </style></head><body><div id="root"><div class="stack" id="stack"><div class="caption" id="original"></div><div class="caption" id="translation"></div></div></div><script>
 const q=new URLSearchParams(location.search), token=q.get('token')||'', original=document.getElementById('original'), translation=document.getElementById('translation'), stack=document.getElementById('stack'); let retry=500;
-function paint(el,text,style){el.textContent=text||'';el.className='caption'+(text?'':' empty')+(style.fadeEnabled&&text?' fade':'')+(style.motionEnabled?' motion':'');el.style.width=Math.max(20,Math.min(100,Number(style.widthPercent)||70))+'%';el.style.fontFamily=style.fontFamily||'Microsoft YaHei';el.style.fontSize=Math.max(12,Number(style.fontSize)||28)+'px';el.style.color=style.textColor||'#fff';el.style.background=style.backgroundColor||'rgba(5,7,10,.72)';el.style.borderRadius=Math.max(0,Number(style.rounded)||18)+'px';el.style.transitionDuration=(style.motionEnabled?(Number(style.motionDurationMs)||120):0)+'ms';}
+function paint(el,text,style){el.textContent=text||'';el.className='caption'+(text?'':' empty')+(style.fadeEnabled&&text?' fade':'')+(style.motionEnabled?' motion':'');el.style.width=Math.max(20,Math.min(100,Number(style.widthPercent)||70))+'%';el.style.fontFamily=style.fontFamily||'Microsoft YaHei';const percent=Number(style.fontSizePercent)||0,base=percent>0?innerHeight*percent/100:(Number(style.fontSize)||28);el.style.fontSize=Math.max(16,Math.round(base*1.45))+'px';el.style.color=style.textColor||'#fff';el.style.background=style.backgroundColor||'rgba(5,7,10,.72)';el.style.borderRadius=Math.max(0,Number(style.rounded)||18)+'px';el.style.transitionDuration=(style.motionEnabled?(Number(style.motionDurationMs)||120):0)+'ms';}
 function render(data){const s=data.style||{}; const bilingual=s.translationEnabled&&s.translationLayout==='bilingual'; const translationOnly=s.translationEnabled&&s.translationLayout==='translationOnly'; const first=s.translationOrder==='translationFirst'; paint(original,translationOnly?'':data.originalText,s); paint(translation,translationOnly?data.translationText:(bilingual?data.translationText:''),s); if(first&&translation.parentElement===stack)stack.insertBefore(translation,original); if(!first&&original.parentElement===stack)stack.insertBefore(original,translation);}
 function connect(){const scheme=location.protocol==='https:'?'wss':'ws';const ws=new WebSocket(scheme+'://'+location.host+'/obs/caption-stream?token='+encodeURIComponent(token));ws.onopen=()=>{retry=500};ws.onmessage=e=>{try{render(JSON.parse(e.data))}catch{}};ws.onclose=()=>{setTimeout(connect,retry);retry=Math.min(10000,retry*2)};ws.onerror=()=>ws.close()};connect();
 </script></body></html>"#;
@@ -335,5 +358,13 @@ mod tests {
         let receiver = runtime.snapshot_tx.subscribe();
         assert_eq!(runtime.snapshot_tx.receiver_count(), 1);
         assert_eq!(receiver.borrow().original_text, "最新字幕");
+    }
+
+    #[test]
+    fn legacy_overlay_settings_receive_obs_connection_defaults() {
+        let settings: ObsOverlaySettings = serde_json::from_str(r#"{"port":57321}"#).unwrap();
+        assert_eq!(settings.obs_host, "127.0.0.1");
+        assert_eq!(settings.obs_port, 4455);
+        assert!(settings.obs_password.is_empty());
     }
 }

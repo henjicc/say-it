@@ -22,12 +22,13 @@ use uuid::Uuid;
 const OBS_BROWSER_SOURCE_KIND: &str = "browser_source";
 const OBS_SOURCE_BASE_NAME: &str = "说吧！实时字幕";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ObsConnectionRequest {
     pub(crate) host: String,
     pub(crate) port: u16,
-    pub(crate) password: String,
+    #[serde(default)]
+    pub(crate) password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +54,38 @@ pub(crate) struct ObsConnectionStatus {
     pub(crate) browser_source_available: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObsSavedConnection {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) has_password: bool,
+}
+
+#[tauri::command]
+pub(crate) fn get_obs_connection_settings(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<ObsSavedConnection, String> {
+    let settings = state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())?;
+    Ok(ObsSavedConnection {
+        host: settings.obs_host.clone(),
+        port: settings.obs_port,
+        has_password: !settings.obs_password.is_empty(),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_obs_password(state: tauri::State<'_, RuntimeState>) -> Result<String, String> {
+    state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())
+        .map(|settings| settings.obs_password.clone())
+}
+
 #[tauri::command]
 pub(crate) fn get_obs_overlay_status(
     state: tauri::State<'_, RuntimeState>,
@@ -70,8 +103,11 @@ pub(crate) fn publish_obs_overlay_snapshot(
 
 #[tauri::command]
 pub(crate) async fn connect_obs(
+    app: tauri::AppHandle,
     request: ObsConnectionRequest,
+    state: tauri::State<'_, RuntimeState>,
 ) -> Result<ObsConnectionStatus, String> {
+    let request = resolve_connection_request(&state, request)?;
     let client = connect(&request).await?;
     let version = client.general().version().await.map_err(obs_error)?;
     if version.obs_studio_version.major < 28 {
@@ -88,7 +124,7 @@ pub(crate) async fn connect_obs(
         .iter()
         .any(|kind| kind == OBS_BROWSER_SOURCE_KIND);
     let scenes = client.scenes().list().await.map_err(obs_error)?.scenes;
-    Ok(ObsConnectionStatus {
+    let status = ObsConnectionStatus {
         obs_version: version.obs_studio_version.to_string(),
         websocket_version: version.obs_web_socket_version.to_string(),
         scenes: scenes
@@ -98,7 +134,9 @@ pub(crate) async fn connect_obs(
             })
             .collect(),
         browser_source_available,
-    })
+    };
+    save_connection_settings(&app, &state, &request)?;
+    Ok(status)
 }
 
 #[tauri::command]
@@ -117,7 +155,8 @@ pub(crate) async fn install_obs_overlay(
     if scene_name.is_empty() {
         return Err("请选择要安装字幕源的 OBS 场景。".to_string());
     }
-    let client = connect(&request.connection).await?;
+    let connection = resolve_connection_request(&state, request.connection.clone())?;
+    let client = connect(&connection).await?;
     ensure_obs_support(&client).await?;
     let selected_scene = client
         .scenes()
@@ -193,6 +232,9 @@ pub(crate) async fn install_obs_overlay(
         settings.source_name = Some(source_name);
         settings.scene_uuid = Some(selected_scene_uuid.to_string());
     }
+    settings.obs_host = connection.host;
+    settings.obs_port = connection.port;
+    settings.obs_password = connection.password.unwrap_or_default();
     save_obs_overlay_settings(&app, &state, settings)?;
     read_overlay_status(&state)
 }
@@ -215,6 +257,7 @@ pub(crate) async fn uninstall_obs_overlay(
         .and_then(|value| {
             Uuid::parse_str(value).map_err(|_| "已保存的 OBS 字幕源记录无效。".to_string())
         })?;
+    let request = resolve_connection_request(&state, request)?;
     let client = connect(&request).await?;
     let exists = client
         .inputs()
@@ -233,6 +276,9 @@ pub(crate) async fn uninstall_obs_overlay(
     settings.input_uuid = None;
     settings.scene_uuid = None;
     settings.source_name = None;
+    settings.obs_host = request.host;
+    settings.obs_port = request.port;
+    settings.obs_password = request.password.unwrap_or_default();
     save_obs_overlay_settings(&app, &state, settings)?;
     read_overlay_status(&state)
 }
@@ -248,10 +294,49 @@ async fn connect(request: &ObsConnectionRequest) -> Result<Client, String> {
     Client::connect(
         host,
         request.port,
-        (!request.password.is_empty()).then_some(request.password.as_str()),
+        request
+            .password
+            .as_deref()
+            .filter(|password| !password.is_empty()),
     )
     .await
     .map_err(|error| obs_connect_error(error, host, request.port))
+}
+
+fn resolve_connection_request(
+    state: &tauri::State<'_, RuntimeState>,
+    mut request: ObsConnectionRequest,
+) -> Result<ObsConnectionRequest, String> {
+    let settings = state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())?;
+    if request.host.trim().is_empty() {
+        request.host = settings.obs_host.clone();
+    }
+    if request.port == 0 {
+        request.port = settings.obs_port;
+    }
+    if request.password.is_none() {
+        request.password = Some(settings.obs_password.clone());
+    }
+    Ok(request)
+}
+
+fn save_connection_settings(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, RuntimeState>,
+    request: &ObsConnectionRequest,
+) -> Result<(), String> {
+    let mut settings = state
+        .obs_overlay_settings
+        .lock()
+        .map_err(|_| "OBS overlay settings lock failed".to_string())?
+        .clone();
+    settings.obs_host = request.host.clone();
+    settings.obs_port = request.port;
+    settings.obs_password = request.password.clone().unwrap_or_default();
+    save_obs_overlay_settings(app, state, settings)
 }
 
 fn obs_connect_error(error: obws::error::Error, host: &str, port: u16) -> String {
@@ -356,5 +441,17 @@ mod tests {
         let settings = browser_source_settings("http://localhost/overlay", 2560, 1440);
         assert_eq!(settings["width"], 2560);
         assert_eq!(settings["height"], 1440);
+    }
+
+    #[test]
+    fn saved_connection_status_does_not_serialize_password() {
+        let status = ObsSavedConnection {
+            host: "127.0.0.1".into(),
+            port: 4455,
+            has_password: true,
+        };
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["hasPassword"], true);
+        assert!(value.get("password").is_none());
     }
 }

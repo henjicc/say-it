@@ -273,6 +273,8 @@ fn main() {
             encode_mono_wav_file,
             decode_audio_file_pcm,
             get_obs_overlay_status,
+            get_obs_connection_settings,
+            get_obs_password,
             publish_obs_overlay_snapshot,
             connect_obs,
             install_obs_overlay,

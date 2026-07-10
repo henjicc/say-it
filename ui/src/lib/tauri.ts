@@ -54,6 +54,8 @@ export const CMD = {
   encodeMonoWavFile: "encode_mono_wav_file",
   decodeAudioFilePcm: "decode_audio_file_pcm",
   getObsOverlayStatus: "get_obs_overlay_status",
+  getObsConnectionSettings: "get_obs_connection_settings",
+  getObsPassword: "get_obs_password",
   publishObsOverlaySnapshot: "publish_obs_overlay_snapshot",
   connectObs: "connect_obs",
   installObsOverlay: "install_obs_overlay",

@@ -211,6 +211,7 @@ function syncObsOverlay() {
       style: {
         fontFamily: prefs.fontFamily,
         fontSize: Math.round(1080 * (prefs.fontSizePercent / 100)),
+        fontSizePercent: prefs.fontSizePercent,
         lineCount: effectiveLines,
         widthPercent: prefs.widthPercent,
         textColor: prefs.textColor,
