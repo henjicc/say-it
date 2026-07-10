@@ -7,6 +7,8 @@ export const CMD = {
   setDictationSettings: "set_dictation_settings",
   getSubtitleShortcut: "get_subtitle_shortcut",
   setSubtitleShortcut: "set_subtitle_shortcut",
+  getSubtitleTranslationModel: "get_subtitle_translation_model",
+  setSubtitleTranslationModel: "set_subtitle_translation_model",
   listProviders: "list_providers",
   getProviderSettings: "get_provider_settings",
   saveProviderSettings: "save_provider_settings",

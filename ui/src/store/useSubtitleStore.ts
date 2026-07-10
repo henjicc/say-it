@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { CMD, cmd } from "@/lib/tauri";
 import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedRealtimeModel,
@@ -83,6 +84,8 @@ interface SubtitleState {
   capturing: boolean;
   shortcutLabel: string;
   patch: (partial: Partial<SubtitlePrefs>) => void;
+  loadTranslationModel: () => Promise<void>;
+  setTranslationModel: (model: string) => Promise<void>;
   setRuntime: (
     partial: Partial<
       Pick<SubtitleState, "running" | "statusText" | "statusTone" | "latestText" | "capturing" | "shortcutLabel">
@@ -191,6 +194,19 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
     const next = clampPrefs({ ...get().prefs, ...partial });
     persist(next);
     set({ prefs: next });
+  },
+  loadTranslationModel: async () => {
+    const model = await cmd<string>(CMD.getSubtitleTranslationModel);
+    const prefs = clampPrefs({ ...get().prefs, translationModel: model });
+    persist(prefs);
+    set({ prefs });
+  },
+  setTranslationModel: async (model) => {
+    const normalized = normalizeTranslationModel(model);
+    await cmd(CMD.setSubtitleTranslationModel, { model: normalized });
+    const prefs = clampPrefs({ ...get().prefs, translationModel: normalized });
+    persist(prefs);
+    set({ prefs });
   },
   setRuntime: (partial) => set(partial),
 }));
