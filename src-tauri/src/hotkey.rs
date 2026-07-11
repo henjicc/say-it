@@ -59,9 +59,13 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 // 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
 // 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
 static TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
-static PRESS_START_TX: OnceLock<Mutex<Sender<(u32, u32)>>> = OnceLock::new();
-static PRESS_END_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static PRESS_TX: OnceLock<Mutex<Sender<PressSignal>>> = OnceLock::new();
 static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+
+enum PressSignal {
+    Start { sequence: u32, delay_ms: u32 },
+    End,
+}
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -85,19 +89,14 @@ pub fn init(app: AppHandle) {
         }
     });
 
-    let (press_start_tx, press_start_rx) = channel::<(u32, u32)>();
-    let _ = PRESS_START_TX.set(Mutex::new(press_start_tx));
+    let (press_tx, press_rx) = channel::<PressSignal>();
+    let _ = PRESS_TX.set(Mutex::new(press_tx));
     std::thread::spawn(move || {
-        while let Ok((sequence, delay_ms)) = press_start_rx.recv() {
-            emit_press_start(sequence, delay_ms);
-        }
-    });
-
-    let (press_end_tx, press_end_rx) = channel::<()>();
-    let _ = PRESS_END_TX.set(Mutex::new(press_end_tx));
-    std::thread::spawn(move || {
-        while press_end_rx.recv().is_ok() {
-            emit_press_end();
+        while let Ok(signal) = press_rx.recv() {
+            match signal {
+                PressSignal::Start { sequence, delay_ms } => emit_press_start(sequence, delay_ms),
+                PressSignal::End => emit_press_end(),
+            }
         }
     });
 
@@ -168,17 +167,17 @@ fn signal_toggle() {
 }
 
 fn signal_press_start(sequence: u32, delay_ms: u32) {
-    if let Some(lock) = PRESS_START_TX.get() {
+    if let Some(lock) = PRESS_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send((sequence, delay_ms));
+            let _ = tx.send(PressSignal::Start { sequence, delay_ms });
         }
     }
 }
 
 fn signal_press_end() {
-    if let Some(lock) = PRESS_END_TX.get() {
+    if let Some(lock) = PRESS_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(());
+            let _ = tx.send(PressSignal::End);
         }
     }
 }
@@ -417,7 +416,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             } else if is_up {
                 let was_triggered = TRIGGERED.swap(false, Ordering::SeqCst);
                 let press_hold_started = PRESS_HOLD_STARTED.swap(false, Ordering::SeqCst);
-                if was_triggered && press_hold_mode && press_hold_started {
+                if was_triggered && press_hold_mode {
                     crate::dlog!("[hotkey] 触发长按结束 (vk={vk:#04x})");
                     signal_press_end();
                 }
