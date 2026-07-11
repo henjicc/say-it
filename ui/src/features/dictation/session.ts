@@ -23,6 +23,7 @@ export const dictSession = {
   silenceTimer: null as ReturnType<typeof setTimeout> | null,
   silenceDisconnecting: false,
   streamStarting: false,
+  streamEpoch: 0,
   rawChunks: [] as Float32Array[],
   rawSampleRate: 48000,
   fileJobId: "",

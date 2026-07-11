@@ -43,12 +43,14 @@ pub(crate) async fn start_asr_stream(
     };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     let session_id = Uuid::new_v4().to_string();
-    eprintln!(
-        "[model-call] ON session={} provider={} model={}",
-        session_id.get(..8).unwrap_or(&session_id),
-        provider_id,
-        model
-    );
+    if MODEL_CALL_DEBUG_ENABLED {
+        eprintln!(
+            "[model-call] ON session={} provider={} model={}",
+            session_id.get(..8).unwrap_or(&session_id),
+            provider_id,
+            model
+        );
+    }
 
     {
         let mut streams = state

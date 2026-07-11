@@ -75,6 +75,7 @@ export async function cancelDictation() {
   const session = dictSession.sessionId;
   const fileJobId = dictSession.fileJobId;
   dictSession.recording = false;
+  dictSession.streamEpoch += 1;
   dictSession.awaitingFinal = false;
   dictSession.finalized = true;
   dictSession.sessionId = null;
@@ -121,6 +122,7 @@ export async function toggleDictation() {
     else await stopDictationAndInject();
   } catch (error) {
     dictSession.recording = false;
+    dictSession.streamEpoch += 1;
     dictSession.awaitingFinal = false;
     dictSession.mode = null;
     if (dictSession.silenceTimer) {
