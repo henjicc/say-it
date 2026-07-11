@@ -1,6 +1,6 @@
 [package]
 name = "say-it"
-version = "0.3.2"
+version = "0.3.3"
 description = "说吧！"
 authors = ["痕继痕迹"]
 license = ""
