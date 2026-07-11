@@ -15,15 +15,29 @@ const MODEL_CALL_DEBUG_ENABLED = false;
 let dictationSilenceStartedAt = 0;
 let dictationLastLevelLogAt = 0;
 
-async function openDictationAsrStream(model: string) {
+function isDictationStreamCurrent(epoch: number) {
+  return dictSession.recording && dictSession.streamEpoch === epoch;
+}
+
+async function openDictationAsrStream(model: string, epoch: number) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
     modelOverride: model,
     sampleRate: getBackendMicSampleRate() || 48000,
     params: dspParams(),
   });
+  if (!isDictationStreamCurrent(epoch)) {
+    await cmdSilent(CMD.stopAsrStream, { sessionId: session.session_id });
+    return null;
+  }
   dictSession.sessionId = session.session_id;
-  return cmd<{ flushedChunks?: number }>(CMD.attachBackendMicToAsr, { sessionId: dictSession.sessionId });
+  const attach = await cmd<{ flushedChunks?: number }>(CMD.attachBackendMicToAsr, { sessionId: session.session_id });
+  if (!isDictationStreamCurrent(epoch)) {
+    if (dictSession.sessionId === session.session_id) dictSession.sessionId = null;
+    await cmdSilent(CMD.stopAsrStream, { sessionId: session.session_id });
+    return null;
+  }
+  return { sessionId: session.session_id, attach };
 }
 
 function clearDictationSilenceTimer() {
@@ -51,19 +65,22 @@ async function disconnectDictationAsrForSilence() {
 
 async function connectDictationAsrOnVoice(model: string) {
   if (!dictSession.recording || dictSession.sessionId || dictSession.streamStarting) return;
+  const epoch = dictSession.streamEpoch;
   dictSession.streamStarting = true;
   try {
-    const attach = await openDictationAsrStream(model);
-    const shortSession = dictSession.sessionId?.slice(0, 8) || "?";
+    const opened = await openDictationAsrStream(model, epoch);
+    if (!opened) return;
+    const shortSession = opened.sessionId.slice(0, 8);
     if (MODEL_CALL_DEBUG_ENABLED) console.log(`[model-call] 语音输入 ON session=${shortSession}`);
     cmdSilent(CMD.debugModelCallState, { message: `语音输入 ON session=${shortSession}` });
-    pushDictLog(`检测到声音，已连接 ASR session=${dictSession.sessionId?.slice(0, 8)}，补发 ${attach.flushedChunks || 0} 块`);
+    pushDictLog(`检测到声音，已连接 ASR session=${shortSession}，补发 ${opened.attach.flushedChunks || 0} 块`);
     setDictationStatus("正在聆听…（静音会自动断开流）", "ok");
   } catch (error) {
+    if (!isDictationStreamCurrent(epoch)) return;
     setDictationStatus(`连接 ASR 失败：${String(error)}`, "err");
     pushDictLog(`检测到声音后连接 ASR 失败：${String(error)}`);
   } finally {
-    dictSession.streamStarting = false;
+    if (dictSession.streamEpoch === epoch) dictSession.streamStarting = false;
   }
 }
 
@@ -107,7 +124,9 @@ async function startRealtimeSilenceGate(model: string, micMs: number) {
 
 export async function startRealtimeDictation(model: string) {
   const t0 = Date.now();
+  const epoch = ++dictSession.streamEpoch;
   await ensureMic(pushDictLog);
+  if (dictSession.streamEpoch !== epoch) return;
   const micMs = Date.now() - t0;
 
   dictSession.mode = "realtime";
@@ -133,9 +152,11 @@ export async function startRealtimeDictation(model: string) {
     cmdSilent(CMD.debugModelCallState, { message: `语音输入 音量=${rms.toFixed(4)}，正在调用模型` });
   });
   await cmd(CMD.attachBackendMicRawCapture);
-  const attach = await openDictationAsrStream(model);
+  if (!isDictationStreamCurrent(epoch)) return;
+  const opened = await openDictationAsrStream(model, epoch);
+  if (!opened) return;
   pushDictLog(
-    `开始录音 session=${dictSession.sessionId?.slice(0, 8)}（后端麦克风就绪 ${micMs}ms，补发 ${attach.flushedChunks || 0} 块）`,
+    `开始录音 session=${opened.sessionId.slice(0, 8)}（后端麦克风就绪 ${micMs}ms，补发 ${opened.attach.flushedChunks || 0} 块）`,
   );
   setDictationStatus("正在聆听…（再次按快捷键停止并注入）", "ok");
 }
@@ -157,6 +178,7 @@ export async function stopDictationAndInject() {
     return;
   }
   dictSession.recording = false;
+  dictSession.streamEpoch += 1;
   useDictationStore.setState({ recording: false });
   clearDictationSilenceTimer();
   dictSession.rawUnlisten?.();

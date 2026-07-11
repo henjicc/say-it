@@ -40,6 +40,10 @@ export function SettingsDisconnectPanel() {
     const tick = async () => {
       try {
         const started = await cmd<{ reused?: boolean }>(CMD.startBackendMic, { deviceName: dictPrefs.micDeviceId || undefined });
+        if (cancelled) {
+          if (!started.reused) cmdSilent(CMD.releaseBackendMic);
+          return;
+        }
         if (!started.reused) ownsMic = true;
         const level = await cmd<number>(CMD.getBackendMicLevel);
         if (!cancelled) setDictationLevel(level || 0);
@@ -68,6 +72,10 @@ export function SettingsDisconnectPanel() {
           if (!cancelled) setSubtitleLevel(level || 0);
         } else {
           const started = await cmd<{ reused?: boolean }>(CMD.startBackendSystemAudio, { deviceName });
+          if (cancelled) {
+            if (!started.reused) cmdSilent(CMD.releaseBackendSystemAudio);
+            return;
+          }
           if (!started.reused) ownsSystemAudio = true;
           const level = await cmd<number>(CMD.getBackendSystemAudioLevel);
           if (!cancelled) setSubtitleLevel(level || 0);
