@@ -95,6 +95,8 @@ export async function startFileDictation(model: string) {
   dictSession.previewUnlisten = await on<{ sampleRate?: number; samplesBase64?: string }>(
     EVT.backendMicPreviewChunk,
     (payload) => {
+      // 取消监听前已经进入事件队列的预览块仍可能迟到；切到实时识别后不能再让它重新激活波纹界面。
+      if (dictSession.mode !== "file" || !dictSession.recording) return;
       const samples = base64ToFloat32(payload.samplesBase64 || "");
       if (!samples.length) return;
       const { peak } = measure(samples);
