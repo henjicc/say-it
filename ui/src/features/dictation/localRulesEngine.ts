@@ -103,6 +103,16 @@ function presets(): LocalRule[] {
       note: "这些词常有正常用法（“那个人”），仅在句首出现时删除，默认关闭，请按需开启。",
     },
     {
+      id: "start-strip-punct",
+      enabled: true,
+      builtin: true,
+      name: "删除句首标点",
+      pattern: "^[ \\t]*[，。！？、；：．,.!?;:…]+[ \\t]*",
+      flags: "g",
+      replacement: "",
+      note: "清理由句首语气词或口头禅被删除后遗留的逗号、句号等标点；保留引号和括号等有配对含义的符号。",
+    },
+    {
       id: "dedupe-punct",
       enabled: true,
       builtin: true,
