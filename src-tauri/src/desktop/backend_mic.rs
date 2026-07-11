@@ -318,6 +318,7 @@ pub(crate) fn start_backend_mic(
                         let flushed = flush_backend_mic_buffer(&mut guard)?;
                         guard.session_id = None;
                         guard.tx = None;
+                        guard.raw_txs.clear();
                         guard.pending.clear();
                         Ok(flushed)
                     })();
@@ -498,6 +499,7 @@ pub(crate) fn pause_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result
         .map_err(|_| "Backend mic lock failed".to_string())?;
     guard.session_id = None;
     guard.tx = None;
+    guard.raw_txs.clear();
     guard.pending.clear();
     guard.buffer.clear();
     Ok(())
