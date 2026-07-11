@@ -195,16 +195,19 @@ export async function stopDictationAndInject() {
 
   const durationSec = ((Date.now() - dictSession.startedAt) / 1000).toFixed(1);
   pushDictLog(`停止录音：时长≈${durationSec}s，已累计 ${dictSession.committed.length} 字`);
+  dictSession.awaitingFinal = true;
+
+  // 快速按下再松开时，静音检测可能尚未建立 ASR 会话。此时没有云端结果需要等待，
+  // 直接按当前文本收尾，避免短暂闪出只属于等待识别阶段的加载界面。
+  if (!session) {
+    pushDictLog("停止时没有有效 ASR 会话，使用已累计文本立即收尾。");
+    await finalizeDictation();
+    return;
+  }
+
   cmdSilent(CMD.setIndicatorState, { state: "processing" });
   pushIndicatorText(dictSession.committed + dictSession.segment, { force: true });
   setDictationStatus("识别中，正在等待完整文本…");
-  dictSession.awaitingFinal = true;
-
-  if (!session) {
-    pushDictLog("停止时没有有效 ASR 会话，使用已累计文本收尾。");
-    scheduleDictFinalize(800);
-    return;
-  }
 
   try {
     pushDictLog("已停止后端采集，发送 finish，等待最终结果…");
