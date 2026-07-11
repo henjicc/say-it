@@ -7,9 +7,10 @@
 //! 低级钩子（`WH_KEYBOARD_LL`）可以捕获任意按键，并在命中目标键时“吞掉”事件，
 //! 这样把 CapsLock 用作语音输入键时不会真的切换大小写。
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -39,6 +40,10 @@ static TARGET_VK: AtomicU16 = AtomicU16::new(VK_CAPITAL);
 static TARGET_MODS: AtomicU8 = AtomicU8::new(0);
 // 目标键当前是否处于“已触发未释放”，用于长按去重和成对吞掉 keyup。
 static TRIGGERED: AtomicBool = AtomicBool::new(false);
+static PRESS_HOLD_MODE: AtomicBool = AtomicBool::new(false);
+static PRESS_HOLD_STARTED: AtomicBool = AtomicBool::new(false);
+static PRESS_HOLD_START_MS: AtomicU32 = AtomicU32::new(260);
+static PRESS_HOLD_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 // 实时字幕专用的第二路目标键，与语音输入完全独立。0 表示未设置。
@@ -54,7 +59,13 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 // 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
 // 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
 static TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static PRESS_TX: OnceLock<Mutex<Sender<PressSignal>>> = OnceLock::new();
 static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+
+enum PressSignal {
+    Start { sequence: u32, delay_ms: u32 },
+    End,
+}
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -75,6 +86,17 @@ pub fn init(app: AppHandle) {
     std::thread::spawn(move || {
         while rx.recv().is_ok() {
             emit_toggle();
+        }
+    });
+
+    let (press_tx, press_rx) = channel::<PressSignal>();
+    let _ = PRESS_TX.set(Mutex::new(press_tx));
+    std::thread::spawn(move || {
+        while let Ok(signal) = press_rx.recv() {
+            match signal {
+                PressSignal::Start { sequence, delay_ms } => emit_press_start(sequence, delay_ms),
+                PressSignal::End => emit_press_end(),
+            }
         }
     });
 
@@ -144,6 +166,22 @@ fn signal_toggle() {
     }
 }
 
+fn signal_press_start(sequence: u32, delay_ms: u32) {
+    if let Some(lock) = PRESS_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(PressSignal::Start { sequence, delay_ms });
+        }
+    }
+}
+
+fn signal_press_end() {
+    if let Some(lock) = PRESS_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(PressSignal::End);
+        }
+    }
+}
+
 fn signal_cancel() {
     if let Some(lock) = CANCEL_TX.get() {
         if let Ok(tx) = lock.lock() {
@@ -168,13 +206,14 @@ pub fn set_dictation_active(active: bool) {
 }
 
 /// 更新当前热键（仅改原子，钩子已常驻）。
-pub fn set_hotkey(vk: u16, mods: u8) {
+pub fn set_hotkey(vk: u16, mods: u8, press_hold_mode: bool) {
     TARGET_VK.store(vk, Ordering::SeqCst);
     TARGET_MODS.store(mods, Ordering::SeqCst);
+    PRESS_HOLD_MODE.store(press_hold_mode, Ordering::SeqCst);
+    PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
     TRIGGERED.store(false, Ordering::SeqCst);
-    // 若把锁定键（如 CapsLock）设为热键，启动/切换时先把它的开关状态强制关掉，
-    // 之后钩子会无条件吞掉该键，状态便永久保持关闭。
-    if is_lock_key(vk) {
+    // 普通模式下锁定键会被无条件吞掉，因此先关闭锁定状态，避免卡在开启。
+    if is_lock_key(vk) && !press_hold_mode {
         force_lock_off(vk);
     }
 }
@@ -183,6 +222,8 @@ pub fn set_hotkey(vk: u16, mods: u8) {
 pub fn clear_hotkey() {
     TARGET_VK.store(0, Ordering::SeqCst);
     TARGET_MODS.store(0, Ordering::SeqCst);
+    PRESS_HOLD_MODE.store(false, Ordering::SeqCst);
+    PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
     TRIGGERED.store(false, Ordering::SeqCst);
 }
 
@@ -265,6 +306,25 @@ fn emit_toggle() {
     }
 }
 
+fn emit_press_start(sequence: u32, delay_ms: u32) {
+    std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+    if !TRIGGERED.load(Ordering::SeqCst)
+        || PRESS_HOLD_SEQUENCE.load(Ordering::SeqCst) != sequence
+    {
+        return;
+    }
+    PRESS_HOLD_STARTED.store(true, Ordering::SeqCst);
+    if let Some(app) = APP.get() {
+        let _ = app.emit("dictation-press-start", json!({}));
+    }
+}
+
+fn emit_press_end() {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("dictation-press-end", json!({}));
+    }
+}
+
 fn emit_cancel() {
     if let Some(app) = APP.get() {
         let _ = app.emit("dictation-cancel", json!({}));
@@ -332,22 +392,38 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
         if target != 0 && vk == target {
             let lock = is_lock_key(target);
+            let press_hold_mode = PRESS_HOLD_MODE.load(Ordering::SeqCst);
             if is_down {
                 if modifiers_match(mods) {
                     // 长按只在第一次按下触发一次。
                     if !TRIGGERED.swap(true, Ordering::SeqCst) {
-                        crate::dlog!("[hotkey] 触发 toggle (vk={vk:#04x})");
-                        signal_toggle();
+                        if press_hold_mode {
+                            PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
+                            let sequence = PRESS_HOLD_SEQUENCE.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                            let delay_ms = PRESS_HOLD_START_MS.load(Ordering::SeqCst);
+                            crate::dlog!("[hotkey] 触发长按开始候选 (vk={vk:#04x})");
+                            signal_press_start(sequence, delay_ms);
+                        } else {
+                            crate::dlog!("[hotkey] 触发 toggle (vk={vk:#04x})");
+                            signal_toggle();
+                        }
                     }
                 }
                 if lock {
-                    // 锁定键无条件吞掉 keydown（toggle 发生在 keydown），
-                    // 无论修饰键是否匹配，彻底阻止切换大小写 / NumLock 等。
+                    // 普通模式吞掉锁定键；长按模式先吞掉，若短按释放再模拟一次系统点击。
                     return LRESULT(1);
                 }
             } else if is_up {
-                TRIGGERED.store(false, Ordering::SeqCst);
+                let was_triggered = TRIGGERED.swap(false, Ordering::SeqCst);
+                let press_hold_started = PRESS_HOLD_STARTED.swap(false, Ordering::SeqCst);
+                if was_triggered && press_hold_mode {
+                    crate::dlog!("[hotkey] 触发长按结束 (vk={vk:#04x})");
+                    signal_press_end();
+                }
                 if lock {
+                    if press_hold_mode && was_triggered && !press_hold_started {
+                        unsafe { tap_key(vk) };
+                    }
                     // 成对吞掉 keyup，避免下游收到孤立的 keyup。
                     return LRESULT(1);
                 }
