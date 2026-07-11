@@ -12,8 +12,6 @@ import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, clearShortcut, setInjectMethod, setPressHoldMode } from "@/features/dictation/controller";
 
 const DEFAULT_INPUT_VALUE = "";
-const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
-
 export function DictationShortcutsPanel() {
   const { capturing, shortcutLabel, injectMethod, pressHoldMode } = useDictationStore();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
@@ -77,18 +75,19 @@ export function DictationShortcutsPanel() {
                   </button>
                 )}
               </div>
-              <Button className={shortcutActionButtonClassName} onClick={startShortcutCapture}>
+              <Button className="min-h-[var(--control-h)] shrink-0 self-stretch" onClick={startShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
-              <Button
-                className={cn(shortcutActionButtonClassName, "w-16")}
-                variant={pressHoldMode ? "primary" : "ghost"}
-                aria-pressed={pressHoldMode}
-                onClick={() => setPressHoldMode(!pressHoldMode)}
-              >
-                长按
-              </Button>
             </div>
+          </Field>
+          <Field label="触发方式">
+            <Select
+              value={pressHoldMode ? "press-hold" : "toggle"}
+              onChange={(e) => setPressHoldMode(e.target.value === "press-hold")}
+            >
+              <option value="toggle">单击切换</option>
+              <option value="press-hold">长按说话</option>
+            </Select>
           </Field>
           <Field label="注入方式">
             <Select
@@ -101,8 +100,8 @@ export function DictationShortcutsPanel() {
           </Field>
         </FormGrid>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          默认按一次快捷键开始、再按一次结束。开启「长按」后，按住快捷键开始，松手结束；Caps Lock
-          单点仍保留系统大小写切换。过程中按 Esc 可取消。点击「修改」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
+          「单击切换」为按一次开始、再按一次结束；「长按说话」为按住开始、松手结束，Caps Lock
+          短按仍保留系统大小写切换。过程中按 Esc 可取消。点击「修改」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
           清除后无法用全局快捷键触发，仍可在"语音输入"页手动点击开始/停止触发。
         </p>
       </SettingsSection>
