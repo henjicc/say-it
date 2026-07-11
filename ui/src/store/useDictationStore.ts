@@ -11,6 +11,7 @@ interface DictationState {
   capturing: boolean;
   shortcutLabel: string;
   injectMethod: "paste" | "type";
+  pressHoldMode: boolean;
 }
 
 export const useDictationStore = create<DictationState>(() => ({
@@ -22,4 +23,5 @@ export const useDictationStore = create<DictationState>(() => ({
   capturing: false,
   shortcutLabel: "",
   injectMethod: "paste",
+  pressHoldMode: false,
 }));

@@ -94,6 +94,8 @@ pub(crate) struct DictationSettings {
     pub(crate) meta: bool,
     #[serde(default = "default_inject_method")]
     pub(crate) inject_method: String,
+    #[serde(default)]
+    pub(crate) press_hold_mode: bool,
 }
 
 impl Default for DictationSettings {
@@ -105,6 +107,7 @@ impl Default for DictationSettings {
             alt: false,
             meta: false,
             inject_method: default_inject_method(),
+            press_hold_mode: false,
         }
     }
 }
@@ -134,7 +137,7 @@ pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(),
     }
     let vk = hotkey::code_to_vk(&settings.key_code)
         .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
-    hotkey::set_hotkey(vk, dictation_mods(settings));
+    hotkey::set_hotkey(vk, dictation_mods(settings), settings.press_hold_mode);
     Ok(())
 }
 

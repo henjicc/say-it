@@ -69,6 +69,8 @@ export const EVT = {
   asrStreamEvent: "asr-stream-event",
   transcriptionEvent: "transcription-event",
   dictationToggle: "dictation-toggle",
+  dictationPressStart: "dictation-press-start",
+  dictationPressEnd: "dictation-press-end",
   dictationCancel: "dictation-cancel",
   dictationShortcutError: "dictation-shortcut-error",
   subtitleToggle: "subtitle-toggle",
