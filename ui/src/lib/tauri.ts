@@ -24,10 +24,13 @@ export const CMD = {
   asrStreamPushF32Chunk: "asr_stream_push_f32_chunk",
   attachBackendMicToAsr: "attach_backend_mic_to_asr",
   attachBackendMicRawCapture: "attach_backend_mic_raw_capture",
+  getBackendMicLevel: "get_backend_mic_level",
   startBackendMic: "start_backend_mic",
   pauseBackendMic: "pause_backend_mic",
   releaseBackendMic: "release_backend_mic",
   attachBackendSystemAudioToAsr: "attach_backend_system_audio_to_asr",
+  attachBackendSystemAudioRawCapture: "attach_backend_system_audio_raw_capture",
+  getBackendSystemAudioLevel: "get_backend_system_audio_level",
   startBackendSystemAudio: "start_backend_system_audio",
   pauseBackendSystemAudio: "pause_backend_system_audio",
   releaseBackendSystemAudio: "release_backend_system_audio",
@@ -51,6 +54,7 @@ export const CMD = {
   setStartupSettings: "set_startup_settings",
   setDebugLog: "set_debug_log",
   setHotkeyCapturing: "set_hotkey_capturing",
+  debugModelCallState: "debug_model_call_state",
   listSystemFonts: "list_system_fonts",
   listAudioDevices: "list_audio_devices",
   encodeMonoWavFile: "encode_mono_wav_file",
@@ -88,6 +92,8 @@ export const EVT = {
   backendMicRawChunk: "backend-mic-raw-chunk",
   backendMicPreviewChunk: "backend-mic-preview-chunk",
   backendMicRawEnded: "backend-mic-raw-ended",
+  backendSystemAudioRawChunk: "backend-system-audio-raw-chunk",
+  backendSystemAudioRawEnded: "backend-system-audio-raw-ended",
 } as const;
 
 export function cmd<T = unknown>(

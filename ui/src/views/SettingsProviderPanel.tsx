@@ -22,7 +22,6 @@ export function SettingsProviderPanel() {
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const effectiveAsrProviderId = useProviderStore((s) => s.effective("asr"));
-
   const [apiKey, setApiKey] = useState("");
   const [savedApiKey, setSavedApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -36,6 +35,8 @@ export function SettingsProviderPanel() {
   const [multiThresholdMode, setMultiThresholdMode] = useState(false);
   const [heartbeat, setHeartbeat] = useState(false);
   const [noiseThreshold, setNoiseThreshold] = useState("");
+  const [dictationLevel, setDictationLevel] = useState(0);
+  const [subtitleLevel, setSubtitleLevel] = useState(0);
 
   // 设置页渲染"生效的 ASR 供应商"：优先取 effective("asr") 对应的 profile，
   // 找不到（如未设置默认值）再回退第一个 enabled 的 asr profile。

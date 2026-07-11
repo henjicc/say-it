@@ -25,6 +25,12 @@ export interface DictPrefs extends DspParams {
   localRules: LocalRule[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
   micDeviceId: string;
+  dictationSilenceDisconnectEnabled: boolean;
+  dictationSilenceDisconnectMs: number;
+  dictationSilenceThreshold: number;
+  subtitleSilenceDisconnectEnabled: boolean;
+  subtitleSilenceDisconnectMs: number;
+  subtitleSilenceThreshold: number;
 }
 
 const DICT_PREFS_KEY = "sayItDictPrefs";
@@ -40,6 +46,12 @@ function defaults(): DictPrefs {
     localRulesEnabled: false,
     localRules: defaultLocalRules(),
     micDeviceId: "",
+    dictationSilenceDisconnectEnabled: true,
+    dictationSilenceDisconnectMs: 5000,
+    dictationSilenceThreshold: 0.0001,
+    subtitleSilenceDisconnectEnabled: true,
+    subtitleSilenceDisconnectMs: 5000,
+    subtitleSilenceThreshold: 0.0001,
     ...dspDefaults,
   };
 }
@@ -52,6 +64,19 @@ function readStored(): DictPrefs {
   } catch {
     /* noop */
   }
+  const legacy = base as DictPrefs & {
+    silenceDisconnectEnabled?: boolean;
+    silenceThreshold?: number;
+  };
+  if (typeof legacy.silenceDisconnectEnabled === "boolean") {
+    base.dictationSilenceDisconnectEnabled = legacy.silenceDisconnectEnabled;
+    base.subtitleSilenceDisconnectEnabled = legacy.silenceDisconnectEnabled;
+  }
+  if (typeof legacy.silenceThreshold === "number") {
+    base.dictationSilenceThreshold = legacy.silenceThreshold;
+  }
+  base.dictationSilenceThreshold = Math.min(0.1, Math.max(0.0001, Number(base.dictationSilenceThreshold) || 0.0001));
+  base.subtitleSilenceThreshold = Math.min(0.1, Math.max(0.0001, Number(base.subtitleSilenceThreshold) || 0.0001));
   if (!isSupportedDictationModel(base.asrModel)) {
     base.asrModel = DEFAULT_REALTIME_ASR_MODEL;
   }

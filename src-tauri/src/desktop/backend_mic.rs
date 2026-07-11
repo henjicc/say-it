@@ -10,6 +10,14 @@ fn pcm16le_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum = samples.iter().map(|s| s * s).sum::<f32>();
+    (sum / samples.len() as f32).sqrt()
+}
+
 pub(crate) fn push_backend_mic_samples(
     mic: &Arc<Mutex<BackendMicState>>,
     input: Vec<f32>,
@@ -20,13 +28,17 @@ pub(crate) fn push_backend_mic_samples(
     let Ok(mut guard) = mic.lock() else {
         return;
     };
-    if guard.tx.is_none() && guard.session_id.is_none() {
+    guard.last_rms = rms_f32(&input);
+    if guard.tx.is_none() && guard.session_id.is_none() && guard.raw_txs.is_empty() {
         return;
     }
     guard.buffer.extend_from_slice(&input);
     while guard.buffer.len() >= BACKEND_MIC_CHUNK_FRAMES {
         let chunk: Vec<f32> = guard.buffer.drain(..BACKEND_MIC_CHUNK_FRAMES).collect();
         guard.chunk_count += 1;
+        guard
+            .raw_txs
+            .retain(|tx| tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok());
         if let Some(tx) = guard.tx.as_ref() {
             if tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok() {
                 continue;
@@ -288,6 +300,16 @@ pub(crate) fn start_backend_mic(
                     })();
                     let _ = reply.send(result);
                 }
+                BackendMicCommand::AttachRaw { tx, reply } => {
+                    let result = (|| {
+                        let mut guard = mic
+                            .lock()
+                            .map_err(|_| "Backend mic lock failed".to_string())?;
+                        guard.raw_txs.push(tx);
+                        Ok(BackendMicAttachResponse { flushed_chunks: 0 })
+                    })();
+                    let _ = reply.send(result);
+                }
                 BackendMicCommand::Pause { reply } => {
                     let result = (|| {
                         let mut guard = mic
@@ -314,6 +336,7 @@ pub(crate) fn start_backend_mic(
             guard.channels = 0;
             guard.session_id = None;
             guard.tx = None;
+            guard.raw_txs.clear();
             guard.pending.clear();
             guard.buffer.clear();
             guard.chunk_count = 0;
@@ -334,9 +357,11 @@ pub(crate) fn start_backend_mic(
     guard.channels = channels;
     guard.session_id = None;
     guard.tx = None;
+    guard.raw_txs.clear();
     guard.pending.clear();
     guard.buffer.clear();
     guard.chunk_count = 0;
+    guard.last_rms = 0.0;
     guard.current_device = resolved_device_name.clone();
     dlog!("[backend-mic] 已启动后端麦克风 sample_rate={sample_rate} channels={channels} device={resolved_device_name:?}");
     Ok(BackendMicStartResponse {
@@ -376,8 +401,7 @@ pub(crate) fn attach_backend_mic_raw_capture(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
-        .send(BackendMicCommand::Attach {
-            session_id: "lab-raw-preview".to_string(),
+        .send(BackendMicCommand::AttachRaw {
             tx,
             reply: reply_tx,
         })
@@ -497,12 +521,23 @@ pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Resu
         .map_err(|_| "Backend mic lock failed".to_string())?;
     guard.session_id = None;
     guard.tx = None;
+    guard.raw_txs.clear();
     guard.pending.clear();
     guard.sample_rate = 0;
     guard.channels = 0;
     guard.chunk_count = 0;
     guard.current_device = None;
+    guard.last_rms = 0.0;
     dlog!("[backend-mic] 已释放后端麦克风");
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_backend_mic_level(state: tauri::State<'_, RuntimeState>) -> Result<f32, String> {
+    let guard = state
+        .backend_mic
+        .lock()
+        .map_err(|_| "Backend mic lock failed".to_string())?;
+    Ok(guard.last_rms)
 }
 

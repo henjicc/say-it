@@ -1,4 +1,5 @@
-import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { CMD, EVT, cmd, cmdSilent, emitEvent, on } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useSubtitleStore, parseSubtitleSource, type SubtitlePrefs } from "@/store/useSubtitleStore";
@@ -21,6 +22,7 @@ import {
   handleForwardedSubtitleKeyup,
   handleSubtitleCaptureLockKey,
 } from "./hotkeys";
+import { rawChunkRms, silenceDisconnectPrefs } from "@/features/audio/silenceDisconnect";
 
 export {
   startSubtitleShortcutCapture,
@@ -79,6 +81,15 @@ let lastObsLayoutSignature = "";
 let obsSnapshotQueued = false;
 
 let backendSystemAudioSampleRate = 48000;
+let subtitleRawUnlisten: UnlistenFn | null = null;
+let subtitleSilenceTimer: ReturnType<typeof setTimeout> | null = null;
+let subtitleStreamStarting = false;
+let subtitleSilenceDisconnecting = false;
+let subtitleStreamEpoch = 0;
+const MODEL_CALL_DEBUG_ENABLED = false;
+
+let subtitleSilenceStartedAt = 0;
+let subtitleLastLevelLogAt = 0;
 
 const SUBTITLE_SHADOW_GUTTER = 0;
 const SUBTITLE_PANEL_VERTICAL_PADDING = 28;
@@ -654,20 +665,42 @@ async function ensureBackendSystemAudio(deviceName: string | undefined) {
 }
 
 /** 开一路新的 ASR 会话，并把已在跑的对应后端音频采集（麦克风/系统音频）接过来。不动 committedLines/currentSegment，供首次启动和断线重连共用。 */
-async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number) {
+function clearSubtitleSilenceTimer() {
+  if (subtitleSilenceTimer) {
+    clearTimeout(subtitleSilenceTimer);
+    subtitleSilenceTimer = null;
+  }
+  subtitleSilenceStartedAt = 0;
+}
+
+function isSubtitleStreamCurrent(epoch: number) {
+  return useSubtitleStore.getState().running && subtitleStreamEpoch === epoch;
+}
+
+async function openAsrSession(prefs: SubtitlePrefs, sampleRate: number, epoch: number) {
   const session = await cmd<{ session_id: string }>(CMD.startAsrStream, {
     providerId: useProviderStore.getState().effective("asr"),
     modelOverride: prefs.asrModel,
     sampleRate,
     params: useDictPrefs.getState().dspParams(),
   });
+  if (!isSubtitleStreamCurrent(epoch)) {
+    await cmdSilent(CMD.stopAsrStream, { sessionId: session.session_id });
+    return null;
+  }
   subtitleSessionId = session.session_id;
   const { kind } = parseSubtitleSource(prefs.source);
   if (kind === "mic") {
-    await cmd(CMD.attachBackendMicToAsr, { sessionId: subtitleSessionId });
+    await cmd(CMD.attachBackendMicToAsr, { sessionId: session.session_id });
   } else {
-    await cmd(CMD.attachBackendSystemAudioToAsr, { sessionId: subtitleSessionId });
+    await cmd(CMD.attachBackendSystemAudioToAsr, { sessionId: session.session_id });
   }
+  if (!isSubtitleStreamCurrent(epoch)) {
+    if (subtitleSessionId === session.session_id) subtitleSessionId = null;
+    await cmdSilent(CMD.stopAsrStream, { sessionId: session.session_id });
+    return null;
+  }
+  return session.session_id;
 }
 
 /**
@@ -689,17 +722,12 @@ async function reconnectSubtitleSession() {
     if (reconnectAttempts > 1) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(2000, 300 * reconnectAttempts)));
     }
+    const epoch = subtitleStreamEpoch;
     pushLog(`ASR 连接已结束，正在自动重连（第 ${reconnectAttempts} 次）…`);
     setStatus("实时字幕重新连接中…");
     const prefs = useSubtitleStore.getState().prefs;
-    await openAsrSession(prefs, subtitleSampleRate);
-    if (!useSubtitleStore.getState().running) {
-      // 重连期间用户已手动停止，收掉刚建好的会话，不要留成孤儿连接。
-      const orphan = subtitleSessionId;
-      subtitleSessionId = null;
-      if (orphan) await cmdSilent(CMD.stopAsrStream, { sessionId: orphan });
-      return;
-    }
+    const sessionId = await openAsrSession(prefs, subtitleSampleRate, epoch);
+    if (!sessionId) return;
     pushLog("ASR 会话已自动重连。");
     setStatus(
       parseSubtitleSource(prefs.source).kind === "mic" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频",
@@ -712,6 +740,79 @@ async function reconnectSubtitleSession() {
   } finally {
     reconnecting = false;
   }
+}
+
+async function disconnectSubtitleAsrForSilence() {
+  if (!useSubtitleStore.getState().running || !subtitleSessionId || subtitleSilenceDisconnecting) return;
+  subtitleSilenceDisconnecting = true;
+  const session = subtitleSessionId;
+  subtitleSessionId = null;
+  clearSubtitleSilenceTimer();
+  await cmdSilent(CMD.stopAsrStream, { sessionId: session });
+  setStatus("实时字幕已因音量低于阈值断开 ASR 流，等待再次有声音…", "ok");
+  if (MODEL_CALL_DEBUG_ENABLED) console.log(`[model-call] 实时字幕 OFF 音量低于阈值断流 session=${session.slice(0, 8)}`);
+  cmdSilent(CMD.debugModelCallState, { message: `实时字幕 OFF 音量低于阈值断流 session=${session.slice(0, 8)}` });
+  pushLog(`音量低于阈值达到时长，已断开字幕 ASR 流 session=${session.slice(0, 8)}`);
+  subtitleSilenceDisconnecting = false;
+}
+
+async function connectSubtitleAsrOnVoice() {
+  if (!useSubtitleStore.getState().running || subtitleSessionId || subtitleStreamStarting) return;
+  const epoch = subtitleStreamEpoch;
+  subtitleStreamStarting = true;
+  try {
+    const prefs = useSubtitleStore.getState().prefs;
+    const sessionId = await openAsrSession(prefs, subtitleSampleRate, epoch);
+    if (!sessionId) return;
+    reconnectAttempts = 0;
+    setStatus(parseSubtitleSource(prefs.source).kind === "mic" ? "实时字幕已开启：麦克风" : "实时字幕已开启：系统音频", "ok");
+    if (MODEL_CALL_DEBUG_ENABLED) console.log(`[model-call] 实时字幕 ON session=${sessionId.slice(0, 8)}`);
+    pushLog(`检测到声音，已连接字幕 ASR session=${sessionId.slice(0, 8)}`);
+  } catch (error) {
+    if (!isSubtitleStreamCurrent(epoch)) return;
+    setStatus(`实时字幕连接 ASR 失败：${String(error)}`, "err");
+    pushLog(`检测到声音后连接字幕 ASR 失败：${String(error)}`);
+  } finally {
+    if (subtitleStreamEpoch === epoch) subtitleStreamStarting = false;
+  }
+}
+
+async function startSubtitleSilenceGate(kind: "mic" | "system") {
+  const prefs = silenceDisconnectPrefs();
+  subtitleRawUnlisten?.();
+  const eventName = kind === "mic" ? EVT.backendMicRawChunk : EVT.backendSystemAudioRawChunk;
+  subtitleRawUnlisten = await on<string>(eventName, (base64) => {
+    const rms = rawChunkRms(base64);
+    const now = Date.now();
+    if (rms > prefs.subtitleSilenceThreshold) {
+      clearSubtitleSilenceTimer();
+      if (now - subtitleLastLevelLogAt >= 1000) {
+        subtitleLastLevelLogAt = now;
+        cmdSilent(CMD.debugModelCallState, { message: `实时字幕 音量=${rms.toFixed(4)} > 阈值 ${prefs.subtitleSilenceThreshold.toFixed(4)}，正在调用模型` });
+      }
+      void connectSubtitleAsrOnVoice();
+      return;
+    }
+    if (subtitleSessionId) {
+      if (!subtitleSilenceStartedAt) subtitleSilenceStartedAt = now;
+      const remainingMs = Math.max(0, prefs.subtitleSilenceDisconnectMs - (now - subtitleSilenceStartedAt));
+      if (now - subtitleLastLevelLogAt >= 1000) {
+        subtitleLastLevelLogAt = now;
+        cmdSilent(CMD.debugModelCallState, { message: `实时字幕 level=${rms.toFixed(4)} <= 阈值 ${prefs.subtitleSilenceThreshold.toFixed(4)}，约 ${(remainingMs / 1000).toFixed(1)}s 后断流` });
+      }
+      if (!subtitleSilenceTimer) {
+        subtitleSilenceTimer = setTimeout(() => {
+          subtitleSilenceTimer = null;
+          void disconnectSubtitleAsrForSilence();
+        }, remainingMs);
+      }
+    } else if (now - subtitleLastLevelLogAt >= 1000) {
+      subtitleLastLevelLogAt = now;
+      cmdSilent(CMD.debugModelCallState, { message: `实时字幕 level=${rms.toFixed(4)} <= 阈值 ${prefs.subtitleSilenceThreshold.toFixed(4)}，未调用模型` });
+    }
+  });
+  await cmd(kind === "mic" ? CMD.attachBackendMicRawCapture : CMD.attachBackendSystemAudioRawCapture);
+  pushLog(`实时字幕音量低于阈值断流已开启，阈值 ${prefs.subtitleSilenceThreshold.toFixed(3)}`);
 }
 
 async function startSubtitles() {
@@ -735,21 +836,24 @@ async function startSubtitles() {
   translationDisplayText = "";
   syncObsOverlay();
   translationRequestId = String(++translationEpochCounter);
+  const epoch = ++subtitleStreamEpoch;
   clearMicShutdownTimer();
   await syncSubtitleIndicator(prefs);
+  if (subtitleStreamEpoch !== epoch) return;
   await refreshObsOutputTarget();
+  if (subtitleStreamEpoch !== epoch) return;
 
   subtitleSampleRate = 48000;
   const { kind, deviceName } = parseSubtitleSource(prefs.source);
   if (kind === "mic") {
     await ensureMic(pushLog);
+    if (subtitleStreamEpoch !== epoch) return;
     subtitleSampleRate = getBackendMicSampleRate() || 48000;
   } else {
     await ensureBackendSystemAudio(deviceName);
+    if (subtitleStreamEpoch !== epoch) return;
     subtitleSampleRate = backendSystemAudioSampleRate;
   }
-
-  await openAsrSession(prefs, subtitleSampleRate);
 
   useSubtitleStore.getState().setRuntime({
     running: true,
@@ -759,13 +863,40 @@ async function startSubtitles() {
   });
   cmdSilent(CMD.setIndicatorState, { state: obsOutputActive ? "hidden" : "subtitle" });
   cmdSilent(CMD.setIndicatorText, { text: "" });
+  cmdSilent(CMD.setIndicatorTranslation, { text: "" });
   startObsOutputMonitor();
+
+  if (silenceDisconnectPrefs().subtitleSilenceDisconnectEnabled) {
+    setStatus("实时字幕已开启，正在等待声音…", "ok");
+    await startSubtitleSilenceGate(kind);
+    if (subtitleStreamEpoch !== epoch) return;
+    return;
+  }
+
+  subtitleRawUnlisten?.();
+  const eventName = kind === "mic" ? EVT.backendMicRawChunk : EVT.backendSystemAudioRawChunk;
+  subtitleRawUnlisten = await on<string>(eventName, (base64) => {
+    const now = Date.now();
+    if (now - subtitleLastLevelLogAt < 1000) return;
+    subtitleLastLevelLogAt = now;
+    const rms = rawChunkRms(base64);
+    cmdSilent(CMD.debugModelCallState, { message: `实时字幕 音量=${rms.toFixed(4)}，正在调用模型` });
+  });
+  await cmd(kind === "mic" ? CMD.attachBackendMicRawCapture : CMD.attachBackendSystemAudioRawCapture);
+  if (!isSubtitleStreamCurrent(epoch)) return;
+  await openAsrSession(prefs, subtitleSampleRate, epoch);
 }
 
 async function stopSubtitles() {
+  subtitleStreamEpoch += 1;
   stopObsOutputMonitor();
   const session = subtitleSessionId;
   subtitleSessionId = null;
+  subtitleRawUnlisten?.();
+  subtitleRawUnlisten = null;
+  clearSubtitleSilenceTimer();
+  subtitleStreamStarting = false;
+  subtitleSilenceDisconnecting = false;
   currentSegment = "";
   committedLines = [];
   replaceModeLine = "";
@@ -803,10 +934,16 @@ export async function toggleSubtitles() {
     if (useSubtitleStore.getState().running) await stopSubtitles();
     else await startSubtitles();
   } catch (error) {
+    subtitleStreamEpoch += 1;
     stopObsOutputMonitor();
     const session = subtitleSessionId;
     subtitleSessionId = null;
     translationRequestId = null;
+    subtitleRawUnlisten?.();
+    subtitleRawUnlisten = null;
+    clearSubtitleSilenceTimer();
+    subtitleStreamStarting = false;
+    subtitleSilenceDisconnecting = false;
     await shutdownMic();
     await cmdSilent(CMD.releaseBackendSystemAudio);
     if (session) await cmdSilent(CMD.stopAsrStream, { sessionId: session });
@@ -874,6 +1011,12 @@ export function handleSubtitleAsrEvent(data: {
     // 这里只记日志，避免每次瞬时错误都在界面上闪一次刺眼的红色提示。
     pushLog(`实时字幕 ASR 错误：${data.payload?.message || "未知错误"}`);
   } else if (data.kind === "ended") {
+    if (silenceDisconnectPrefs().subtitleSilenceDisconnectEnabled && useSubtitleStore.getState().running) {
+      subtitleSessionId = null;
+      clearSubtitleSilenceTimer();
+      setStatus("ASR 流已断开，等待再次有声音…", "ok");
+      return true;
+    }
     if (useSubtitleStore.getState().running) reconnectSubtitleSession();
   }
   return true;
