@@ -37,6 +37,15 @@ fn set_hotkey_capturing(active: bool) {
     hotkey::set_capturing(active);
 }
 
+const MODEL_CALL_DEBUG_ENABLED: bool = false;
+
+#[tauri::command]
+fn debug_model_call_state(message: String) {
+    if MODEL_CALL_DEBUG_ENABLED {
+        eprintln!("[model-call] {message}");
+    }
+}
+
 #[macro_export]
 macro_rules! dlog {
     ($($arg:tt)*) => {{
@@ -244,10 +253,13 @@ fn main() {
             start_backend_mic,
             attach_backend_mic_to_asr,
             attach_backend_mic_raw_capture,
+            get_backend_mic_level,
             pause_backend_mic,
             release_backend_mic,
             start_backend_system_audio,
             attach_backend_system_audio_to_asr,
+            attach_backend_system_audio_raw_capture,
+            get_backend_system_audio_level,
             pause_backend_system_audio,
             release_backend_system_audio,
             process_audio_offline,
@@ -270,6 +282,7 @@ fn main() {
             translate_subtitle_start,
             set_debug_log,
             set_hotkey_capturing,
+            debug_model_call_state,
             run_asr_silence_test,
             get_local_file_info,
             save_text_file,

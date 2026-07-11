@@ -79,6 +79,7 @@ export async function cancelDictation() {
   const session = dictSession.sessionId;
   const fileJobId = dictSession.fileJobId;
   dictSession.recording = false;
+  dictSession.streamEpoch += 1;
   dictSession.awaitingFinal = false;
   dictSession.finalized = true;
   dictSession.sessionId = null;
@@ -93,6 +94,12 @@ export async function cancelDictation() {
     clearTimeout(dictSession.finalizeTimer);
     dictSession.finalizeTimer = null;
   }
+  if (dictSession.silenceTimer) {
+    clearTimeout(dictSession.silenceTimer);
+    dictSession.silenceTimer = null;
+  }
+  dictSession.streamStarting = false;
+  dictSession.silenceDisconnecting = false;
   scheduleMicShutdown(pushDictLog);
   cmdSilent(CMD.pauseBackendMic);
   dictSession.rawUnlisten?.();
@@ -158,8 +165,15 @@ export async function toggleDictation() {
     else await stopDictationAndInject();
   } catch (error) {
     dictSession.recording = false;
+    dictSession.streamEpoch += 1;
     dictSession.awaitingFinal = false;
     dictSession.mode = null;
+    if (dictSession.silenceTimer) {
+      clearTimeout(dictSession.silenceTimer);
+      dictSession.silenceTimer = null;
+    }
+    dictSession.streamStarting = false;
+    dictSession.silenceDisconnecting = false;
     useDictationStore.setState({ recording: false });
     await shutdownMic();
     dictSession.rawUnlisten?.();
@@ -196,6 +210,12 @@ export function shutdownDictationMic() {
   dictSession.rawUnlisten = null;
   dictSession.previewUnlisten?.();
   dictSession.previewUnlisten = null;
+  if (dictSession.silenceTimer) {
+    clearTimeout(dictSession.silenceTimer);
+    dictSession.silenceTimer = null;
+  }
+  dictSession.streamStarting = false;
+  dictSession.silenceDisconnecting = false;
   dictSession.rawChunks = [];
   dictSession.mode = null;
   shutdownMic();
