@@ -42,8 +42,7 @@ pub(crate) fn park_main_window(app: &tauri::AppHandle) {
 
         let _ = window.unminimize();
         let _ = window.set_skip_taskbar(true);
-        let _ = window.set_position(tauri::PhysicalPosition::new(-32000, -32000));
-        let _ = window.show();
+        let _ = window.hide();
     }
 }
 
