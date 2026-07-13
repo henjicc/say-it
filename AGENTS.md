@@ -147,6 +147,7 @@
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
 - UI 设计系统：视觉走「深蓝黑桌面风格」，令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
 - 不可违反的架构边界：业务与平台能力优先放在 `src-tauri/src` 的明确模块中；React 组件避免直接承载复杂业务流程；UI 改造不得破坏现有 store、`features` controller、Tauri invoke/event 和桌面交互；多入口页面需同时考虑 `ui/index.html` 主窗口和 `ui/indicator.html` 悬浮窗。
+- 最终运行时边界：持久化、听写、字幕/翻译/OBS、转写、模型对比和音频调校均以 Rust `application/` 为唯一权威；前端只能调用领域命令并投影快照/`domain-event`，不得恢复 raw PCM、ASR 流、供应商专属命令或前端会话状态机。0.3.x 的 `localStorage` 仅保留双写回退镜像，不能作为读取权威或新增持久化入口。
 - 自动生成文件及其生成命令：`ui/dist/` 由 `npm run ui:build` 生成；`src-tauri/target/` 由 Cargo/Tauri 生成；`src-tauri/gen/schemas/` 为 Tauri 生成 schema，通常不要手工改。
 - 必需环境变量或平台限制：开发端口固定为 `5155` 且 `strictPort: true`；Tauri 配置的 `devUrl` 依赖该端口。
 - 已知陷阱和非显而易见行为：`vite.config.ts` 以 `ui/` 为 root，并配置 `main` 与 `indicator` 两个打包入口；`tauri.conf.json` 中主窗口初始 `visible: false`、`decorations: false`，窗口显示逻辑在后端控制；`ui/dist/`、`src-tauri/target/` 不应手工维护；主题为运行时切换——`App.tsx` 根据 `useThemeStore` 在 `<html>` 上写 `data-ui-tone` 并覆写 `--color-*` 令牌，`index.css` 靠 `[data-ui-tone="light"]` 选择器补齐亮色，暗色为主要方向、亮色仅保证可用不破版。

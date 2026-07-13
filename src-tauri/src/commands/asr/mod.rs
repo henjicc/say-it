@@ -1,5 +1,4 @@
 mod session;
-mod silence_test;
 
 use crate::commands::common::*;
 use crate::prelude::*;
@@ -8,26 +7,6 @@ use crate::state::*;
 use session::AsrSession;
 
 const MODEL_CALL_DEBUG_ENABLED: bool = false;
-
-#[tauri::command]
-pub(crate) async fn start_asr_stream(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-    provider_id: Option<String>,
-    model_override: Option<String>,
-    sample_rate: Option<u32>,
-    params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
-    start_asr_stream_inner(
-        app,
-        &state,
-        provider_id,
-        model_override,
-        sample_rate,
-        params,
-    )
-    .await
-}
 
 pub(crate) async fn start_asr_stream_inner(
     app: tauri::AppHandle,
@@ -110,78 +89,6 @@ pub(crate) async fn start_asr_stream_inner(
     Ok(AsrStreamStartResponse { session_id })
 }
 
-#[tauri::command]
-pub(crate) fn asr_stream_push_chunk(
-    session_id: String,
-    audio_base64: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
-    let bytes = STANDARD
-        .decode(audio_base64.trim())
-        .map_err(|e| format!("invalid base64 audio chunk: {e}"))?;
-    if bytes.is_empty() {
-        return Ok(());
-    }
-    let tx = {
-        let guard = state
-            .asr_streams
-            .lock()
-            .map_err(|_| "ASR stream lock failed".to_string())?;
-        guard
-            .get(&session_id)
-            .ok_or_else(|| "ASR stream not found".to_string())?
-            .tx
-            .clone()
-    };
-    tx.send(AsrStreamInput::Audio(bytes))
-        .map_err(|_| "ASR stream channel closed".to_string())
-}
-
-#[tauri::command]
-pub(crate) fn asr_stream_push_f32_chunk(
-    session_id: String,
-    audio_base64: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
-    let samples = decode_f32_base64(&audio_base64)?;
-    if samples.is_empty() {
-        return Ok(());
-    }
-    let tx = {
-        let guard = state
-            .asr_streams
-            .lock()
-            .map_err(|_| "ASR stream lock failed".to_string())?;
-        guard
-            .get(&session_id)
-            .ok_or_else(|| "ASR stream not found".to_string())?
-            .tx
-            .clone()
-    };
-    tx.send(AsrStreamInput::RawF32(samples))
-        .map_err(|_| "ASR stream channel closed".to_string())
-}
-
-#[tauri::command]
-pub(crate) fn asr_stream_finish(
-    session_id: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
-    let tx = {
-        let guard = state
-            .asr_streams
-            .lock()
-            .map_err(|_| "ASR stream lock failed".to_string())?;
-        guard
-            .get(&session_id)
-            .ok_or_else(|| "ASR stream not found".to_string())?
-            .tx
-            .clone()
-    };
-    tx.send(AsrStreamInput::Finish)
-        .map_err(|_| "ASR stream channel closed".to_string())
-}
-
 pub(crate) fn asr_stream_finish_inner(
     session_id: &str,
     state: &RuntimeState,
@@ -198,30 +105,6 @@ pub(crate) fn asr_stream_finish_inner(
         .map_err(|_| "ASR stream channel closed".to_string())
 }
 
-#[tauri::command]
-pub(crate) fn stop_asr_stream(
-    session_id: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
-    let handle = {
-        let mut guard = state
-            .asr_streams
-            .lock()
-            .map_err(|_| "ASR stream lock failed".to_string())?;
-        guard.remove(&session_id)
-    };
-    if let Some(handle) = handle {
-        if MODEL_CALL_DEBUG_ENABLED {
-            eprintln!(
-                "[model-call] OFF requested session={}",
-                session_id.get(..8).unwrap_or(&session_id)
-            );
-        }
-        let _ = handle.tx.send(AsrStreamInput::Stop);
-    }
-    Ok(())
-}
-
 pub(crate) fn stop_asr_stream_inner(session_id: &str, state: &RuntimeState) -> Result<(), String> {
     let handle = state
         .asr_streams
@@ -232,17 +115,4 @@ pub(crate) fn stop_asr_stream_inner(session_id: &str, state: &RuntimeState) -> R
         let _ = handle.tx.send(AsrStreamInput::Stop);
     }
     Ok(())
-}
-
-#[tauri::command]
-pub(crate) async fn run_asr_silence_test(
-    state: tauri::State<'_, RuntimeState>,
-    provider_id: Option<String>,
-) -> Result<AsrResponse, String> {
-    let provider_id = resolve_provider_id(&state, "asr", provider_id)?;
-    let settings = read_provider_settings(&state)?;
-    let profile = find_profile(&settings, &provider_id)
-        .cloned()
-        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    silence_test::run_realtime_silence_test(&profile).await
 }

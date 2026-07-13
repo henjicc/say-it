@@ -75,3 +75,9 @@
 - `ui/src/App.tsx`、`hooks/useTauriBridge.ts`、`lib/tauri.ts`：ready 握手、快照/订阅/revision 稳定校正及仅 UI 监听卸载。
 - `ui/src/indicator/IndicatorApp.tsx`：字幕关闭直接调用 Rust `subtitle_stop`，无主窗口时仍生效。
 - `docs/task/业务后端化与托盘轻量化/`：同步 3.3 计划、状态、决策、交接、测试和最终人工清单。
+
+## 2026-07-13 · 5.1
+
+- `src-tauri/src/{main.rs,commands/,desktop/{backend_mic,backend_system_audio}.rs,state.rs,prelude.rs}`：移除无消费者的迁移兼容命令、WebView raw PCM/旧 ASR 事件转发及其状态类型，保留 Rust 内部应用服务路径。
+- `ui/src/lib/tauri.ts`、`ui/src/features/audio/{micSession,silenceDisconnect}.ts`：删除未使用的兼容命令/事件常量与旧前端音频会话工具。
+- `docs/rules/新增供应商与模型操作手册.md`、`AGENTS.md`、TASK_DIR 记录：同步最终供应商、前端边界、兼容策略和自动/人工验收状态。

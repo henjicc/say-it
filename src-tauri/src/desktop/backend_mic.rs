@@ -2,13 +2,6 @@ use crate::prelude::*;
 use crate::state::*;
 
 const BACKEND_MIC_CHUNK_FRAMES: usize = 4096;
-const PREVIEW_SAMPLE_RATE: u32 = OUTPUT_RATE;
-
-fn pcm16le_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes.chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
-        .collect()
-}
 
 fn rms_f32(samples: &[f32]) -> f32 {
     if samples.is_empty() {
@@ -406,73 +399,6 @@ pub(crate) fn start_backend_mic_inner(
     })
 }
 
-/// 供设置里的"录音调教"面板试听录音用：把后端麦克风原始音频直接以事件形式转发给前端，
-/// 不经过浏览器 `getUserMedia`（那会弹网页式录音权限提示，和桌面应用的其它录音入口不一致）。
-/// 复用 `start_backend_mic` 起的采集流，通过 `BackendMicCommand::Attach` 拿到一路独立的原始音频，
-/// 每个分片作为 `backend-mic-raw-chunk` 事件推给前端；采集被 `pause_backend_mic`/`release_backend_mic`
-/// 停止、channel 关闭后，发一个 `backend-mic-raw-ended` 事件收尾。
-#[tauri::command]
-pub(crate) fn attach_backend_mic_raw_capture(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-    preview_params: Option<DspParams>,
-) -> Result<BackendMicAttachResponse, String> {
-    let (worker, sample_rate) = {
-        let guard = state
-            .backend_mic
-            .lock()
-            .map_err(|_| "Backend mic lock failed".to_string())?;
-        (
-            guard
-                .worker
-                .clone()
-                .ok_or_else(|| "后端麦克风未启动".to_string())?,
-            guard.sample_rate,
-        )
-    };
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    worker
-        .send(BackendMicCommand::AttachRaw {
-            tx,
-            reply: reply_tx,
-        })
-        .map_err(|_| "后端麦克风线程已停止".to_string())?;
-    let response = reply_rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "后端麦克风绑定超时".to_string())??;
-
-    tauri::async_runtime::spawn(async move {
-        let mut preview_dsp = preview_params.map(|params| StreamDsp::new(params, sample_rate));
-        while let Some(input) = rx.recv().await {
-            if let AsrStreamInput::RawF32(samples) = input {
-                let _ = app.emit("backend-mic-raw-chunk", encode_f32_base64(&samples));
-                if let Some(dsp) = preview_dsp.as_mut() {
-                    let preview = pcm16le_to_f32(&dsp.process(&samples));
-                    if !preview.is_empty() {
-                        let _ = app.emit("backend-mic-preview-chunk", json!({
-                            "sampleRate": PREVIEW_SAMPLE_RATE,
-                            "samplesBase64": encode_f32_base64(&preview),
-                        }));
-                    }
-                }
-            }
-        }
-        let _ = app.emit("backend-mic-raw-ended", ());
-    });
-
-    Ok(response)
-}
-
-#[tauri::command]
-pub(crate) fn attach_backend_mic_to_asr(
-    session_id: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<BackendMicAttachResponse, String> {
-    attach_backend_mic_to_asr_inner(&session_id, &state)
-}
-
 /// 应用服务直接消费原始 PCM，避免完整音频经过 WebView 事件往返。
 pub(crate) fn attach_backend_mic_raw_inner(
     state: &RuntimeState,
@@ -542,11 +468,6 @@ pub(crate) fn attach_backend_mic_to_asr_inner(
     reply_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| "后端麦克风绑定超时".to_string())?
-}
-
-#[tauri::command]
-pub(crate) fn pause_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
-    pause_backend_mic_inner(&state)
 }
 
 pub(crate) fn pause_backend_mic_inner(state: &RuntimeState) -> Result<(), String> {

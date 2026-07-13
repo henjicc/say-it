@@ -22,31 +22,6 @@ pub(crate) fn list_providers(
 }
 
 #[tauri::command]
-pub(crate) fn get_provider_settings(
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettingsResponse, String> {
-    list_providers(state)
-}
-
-#[tauri::command]
-pub(crate) fn save_provider_settings(
-    app: tauri::AppHandle,
-    settings: ProviderSettings,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettingsResponse, String> {
-    let settings = normalize_settings(settings);
-    {
-        let mut guard = state
-            .providers
-            .lock()
-            .map_err(|_| "Provider settings lock failed".to_string())?;
-        *guard = settings.clone();
-    }
-    save_persisted_state(&app, &state)?;
-    Ok(provider_settings_response(settings))
-}
-
-#[tauri::command]
 pub(crate) fn set_default_provider(
     app: tauri::AppHandle,
     request: SetDefaultProviderRequest,

@@ -109,11 +109,6 @@ pub(crate) fn set_startup_settings(
 /// 把文本注入当前拥有键盘焦点的窗口。
 /// - paste：备份剪贴板 → 写入文本 → 模拟 Ctrl+V → 还原剪贴板（更适合长中文）。
 /// - type：逐字 Unicode 模拟输入。
-#[tauri::command]
-pub(crate) async fn inject_text(text: String, method: Option<String>) -> Result<(), String> {
-    inject_text_inner(text, method).await
-}
-
 pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> Result<(), String> {
     let text = text.trim_end_matches(['\r', '\n']).to_string();
     if text.is_empty() {

@@ -65,15 +65,6 @@ fn apply_provider_patch(
 /// 各自维护一份独立词表（已有则更新，没有则新建），全部结果保存到本地配置。
 /// 用户只维护这一份热词文本，具体建几份词表、绑定哪个 target_model 完全是内部实现细节。
 #[tauri::command]
-pub(crate) async fn funasr_save_hotwords(
-    app: tauri::AppHandle,
-    hotwords: Vec<HotwordEntry>,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettingsResponse, String> {
-    provider_save_hotwords(app, FUNASR_PROVIDER_ID.to_string(), hotwords, state).await
-}
-
-#[tauri::command]
 pub(crate) async fn provider_save_hotwords(
     app: tauri::AppHandle,
     provider_id: String,
@@ -130,14 +121,6 @@ pub(crate) async fn provider_save_hotwords(
 
 /// 从阿里云百炼账号下按各模型对应的前缀分别拉取词表（各取修改时间最新一份），覆盖本地保存的热词配置。
 #[tauri::command]
-pub(crate) async fn funasr_sync_hotwords(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettingsResponse, String> {
-    provider_sync_hotwords(app, FUNASR_PROVIDER_ID.to_string(), state).await
-}
-
-#[tauri::command]
 pub(crate) async fn provider_sync_hotwords(
     app: tauri::AppHandle,
     provider_id: String,
@@ -190,14 +173,6 @@ pub(crate) async fn provider_sync_hotwords(
 
 /// 删除阿里云端所有模型对应的热词列表并清空本地保存的热词配置；任一模型删除失败则整体返回
 /// 错误、不清本地状态，避免出现本地记录丢失但云端词表仍存在的孤儿数据。
-#[tauri::command]
-pub(crate) async fn funasr_clear_hotwords(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettingsResponse, String> {
-    provider_clear_hotwords(app, FUNASR_PROVIDER_ID.to_string(), state).await
-}
-
 #[tauri::command]
 pub(crate) async fn provider_clear_hotwords(
     app: tauri::AppHandle,

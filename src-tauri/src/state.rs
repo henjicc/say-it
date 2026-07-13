@@ -226,20 +226,12 @@ pub(crate) struct SessionStatus {
     pub(crate) default_asr_provider: String,
 }
 
-#[derive(Serialize)]
-pub(crate) struct AsrResponse {
-    pub(crate) text: String,
-    pub(crate) partials: Vec<String>,
-    pub(crate) events: Vec<Value>,
-}
-
 #[derive(Clone)]
 pub(crate) struct AsrStreamHandle {
     pub(crate) tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
 }
 
 pub(crate) enum AsrStreamInput {
-    Audio(Vec<u8>),
     RawF32(Vec<f32>),
     Finish,
     Stop,
@@ -248,14 +240,6 @@ pub(crate) enum AsrStreamInput {
 #[derive(Serialize)]
 pub(crate) struct AsrStreamStartResponse {
     pub(crate) session_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AudioProcessRequest {
-    pub(crate) samples_base64: String,
-    pub(crate) sample_rate: u32,
-    pub(crate) params: DspParams,
 }
 
 pub(crate) fn decode_f32_base64(input: &str) -> Result<Vec<f32>, String> {
@@ -272,12 +256,4 @@ pub(crate) fn decode_f32_base64(input: &str) -> Result<Vec<f32>, String> {
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect())
-}
-
-pub(crate) fn encode_f32_base64(samples: &[f32]) -> String {
-    let mut bytes = Vec::with_capacity(samples.len() * 4);
-    for &s in samples {
-        bytes.extend_from_slice(&s.to_le_bytes());
-    }
-    STANDARD.encode(bytes)
 }
