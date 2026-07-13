@@ -1,7 +1,7 @@
 use crate::commands::common::*;
 use crate::persistence::save_persisted_state;
 use crate::prelude::*;
-use crate::providers::capabilities::{customization_for, CustomizationProvider};
+use crate::providers::capabilities::{customization_for_with_plugin, CustomizationProvider};
 use crate::state::*;
 
 fn funasr_config_vocabulary_ids(config: &Value) -> HashMap<String, String> {
@@ -18,7 +18,13 @@ fn customization_context_for(
     let settings = read_provider_settings(state)?;
     let profile = find_profile(&settings, provider_id)
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    let provider = customization_for(profile).map_err(|error| error.to_string())?;
+    let plugin = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .process_for_provider(provider_id)?;
+    let provider =
+        customization_for_with_plugin(profile, plugin).map_err(|error| error.to_string())?;
     Ok((
         profile.id.clone(),
         provider,
@@ -77,6 +83,16 @@ pub(crate) async fn provider_save_hotwords(
     let (provider_id, provider, existing_ids) = customization_context_for(&state, &provider_id)?;
     provider.ensure_ready()?;
 
+    if provider.is_plugin() {
+        provider.set_hotwords(&hotwords).await?;
+        return apply_provider_patch(
+            &app,
+            &state,
+            &provider_id,
+            json!({ "hotwords": serde_json::to_value(&hotwords).map_err(|e| e.to_string())? }),
+        );
+    }
+
     let mut vocabulary_ids = HashMap::new();
     let mut failures = Vec::new();
     for (target_model, prefix) in provider.targets() {
@@ -129,6 +145,16 @@ pub(crate) async fn provider_sync_hotwords(
     let (provider_id, provider, _) = customization_context_for(&state, &provider_id)?;
     provider.ensure_ready()?;
 
+    if provider.is_plugin() {
+        let hotwords = provider.get_hotwords().await?;
+        return apply_provider_patch(
+            &app,
+            &state,
+            &provider_id,
+            json!({ "hotwords": serde_json::to_value(hotwords).map_err(|e| e.to_string())? }),
+        );
+    }
+
     let mut vocabulary_ids = HashMap::new();
     let mut hotwords: Option<Vec<HotwordEntry>> = None;
     let mut query_err: Option<String> = None;
@@ -180,6 +206,15 @@ pub(crate) async fn provider_clear_hotwords(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
     let (provider_id, provider, vocabulary_ids) = customization_context_for(&state, &provider_id)?;
+    if provider.is_plugin() {
+        provider.clear_hotwords().await?;
+        return apply_provider_patch(
+            &app,
+            &state,
+            &provider_id,
+            json!({ "vocabularyIds": {}, "hotwords": [] }),
+        );
+    }
     if !vocabulary_ids.is_empty() {
         for vocabulary_id in vocabulary_ids.values() {
             provider.delete(vocabulary_id).await?;

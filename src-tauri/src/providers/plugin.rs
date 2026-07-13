@@ -8,12 +8,12 @@ use tauri::Manager;
 use super::registry::ModelInfo;
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
 
-pub const PLUGIN_API_VERSION: u32 = 1;
-pub const PROCESS_PROTOCOL_VERSION: u32 = 1;
+pub const PLUGIN_API_VERSION: u32 = 2;
+pub const PROCESS_PROTOCOL_VERSION: u32 = 2;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies"];
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
     pub api_version: u32,
@@ -24,9 +24,44 @@ pub struct PluginManifest {
     #[serde(default)]
     pub models: Vec<ModelInfo>,
     pub runtime: PluginRuntimeManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session: Option<PluginBrowserSessionManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<PluginIntegrityManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<PluginSignatureManifest>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginBrowserSessionManifest {
+    pub login_url: String,
+    pub allowed_urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initialization_script: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginIntegrityManifest {
+    pub algorithm: String,
+    pub files: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSignatureManifest {
+    pub algorithm: String,
+    pub key_id: String,
+    pub public_key: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginProviderManifest {
     pub id: String,
@@ -43,7 +78,7 @@ pub struct PluginProviderManifest {
     pub actions: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginRuntimeManifest {
     #[serde(default = "default_runtime_kind")]
@@ -61,6 +96,7 @@ pub struct PluginRuntimeManifest {
 pub struct InstalledPlugin {
     pub root: PathBuf,
     pub manifest: PluginManifest,
+    pub trust: String,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +106,9 @@ pub struct PluginProcessSpec {
     pub entrypoint: PathBuf,
     pub args: Vec<String>,
     pub permissions: Vec<String>,
+    pub data_dir: PathBuf,
+    pub protocol_version: u32,
+    pub trust: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -94,6 +133,9 @@ pub struct PluginSummary {
     pub provider_id: String,
     pub permissions: Vec<String>,
     pub models: Vec<String>,
+    pub trust: String,
+    pub actions: Vec<String>,
+    pub has_browser_session: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -128,10 +170,19 @@ pub fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {
-    load_registry_from(&plugins_dir(app)?)
+    let trusted = super::plugin_package::load_trusted_keys(app)?;
+    load_registry_from_with_trust(&plugins_dir(app)?, &trusted)
 }
 
+#[cfg(test)]
 pub fn load_registry_from(root: &Path) -> Result<PluginRegistry, String> {
+    load_registry_from_with_trust(root, &HashMap::new())
+}
+
+fn load_registry_from_with_trust(
+    root: &Path,
+    trusted: &HashMap<String, String>,
+) -> Result<PluginRegistry, String> {
     std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
     let mut registry = PluginRegistry::default();
     let mut ids = HashSet::new();
@@ -156,7 +207,7 @@ pub fn load_registry_from(root: &Path) -> Result<PluginRegistry, String> {
         if !manifest_path.exists() {
             continue;
         }
-        match load_manifest(&plugin_root, &manifest_path) {
+        match load_manifest(&plugin_root, &manifest_path, trusted) {
             Ok(plugin) => {
                 let manifest = &plugin.manifest;
                 let duplicate = ids.contains(&manifest.id)
@@ -186,19 +237,34 @@ pub fn load_registry_from(root: &Path) -> Result<PluginRegistry, String> {
     Ok(registry)
 }
 
-fn load_manifest(plugin_root: &Path, manifest_path: &Path) -> Result<InstalledPlugin, String> {
+fn load_manifest(
+    plugin_root: &Path,
+    manifest_path: &Path,
+    trusted: &HashMap<String, String>,
+) -> Result<InstalledPlugin, String> {
     let text = std::fs::read_to_string(manifest_path).map_err(|error| error.to_string())?;
     let manifest: PluginManifest =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
     validate_manifest(plugin_root, &manifest)?;
+    let trust = super::plugin_package::verify_installation(plugin_root, &manifest, trusted)?;
     Ok(InstalledPlugin {
         root: plugin_root.to_path_buf(),
         manifest,
+        trust,
     })
 }
 
+pub(crate) fn validate_plugin_dir(root: &Path) -> Result<PluginManifest, String> {
+    let path = root.join(MANIFEST_FILE_NAME);
+    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let manifest: PluginManifest =
+        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    validate_manifest(root, &manifest)?;
+    Ok(manifest)
+}
+
 fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
-    if manifest.api_version != PLUGIN_API_VERSION {
+    if !(1..=PLUGIN_API_VERSION).contains(&manifest.api_version) {
         return Err(format!("不支持的插件 API 版本：{}", manifest.api_version));
     }
     validate_id("插件", &manifest.id)?;
@@ -210,9 +276,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         .provider
         .capabilities
         .iter()
-        .any(|capability| capability == "asr")
+        .any(|capability| matches!(capability.as_str(), "asr" | "translation" | "customization"))
     {
-        return Err("插件供应商必须声明 asr 能力".into());
+        return Err("插件供应商未声明受支持的能力".into());
     }
     if !manifest.provider.config.is_object() {
         return Err("provider.config 必须是 JSON 对象".into());
@@ -232,10 +298,17 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             ));
         }
     }
+    let mut actions = HashSet::new();
+    for action in &manifest.provider.actions {
+        validate_action_id(action)?;
+        if !actions.insert(action) {
+            return Err(format!("插件操作重复：{action}"));
+        }
+    }
     if manifest.runtime.kind != "process" {
         return Err(format!("不支持的插件运行时：{}", manifest.runtime.kind));
     }
-    if manifest.runtime.protocol_version != PROCESS_PROTOCOL_VERSION {
+    if !(1..=PROCESS_PROTOCOL_VERSION).contains(&manifest.runtime.protocol_version) {
         return Err(format!(
             "不支持的进程协议版本：{}",
             manifest.runtime.protocol_version
@@ -244,6 +317,45 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     for permission in &manifest.runtime.permissions {
         if !ALLOWED_PERMISSIONS.contains(&permission.as_str()) {
             return Err(format!("未知插件权限：{permission}"));
+        }
+    }
+    if let Some(browser) = &manifest.browser_session {
+        if !manifest
+            .runtime
+            .permissions
+            .iter()
+            .any(|permission| permission == "browserSession")
+            || !manifest
+                .runtime
+                .permissions
+                .iter()
+                .any(|permission| permission == "cookies")
+        {
+            return Err("browserSession 配置必须同时声明 browserSession 与 cookies 权限".into());
+        }
+        validate_https_url("loginUrl", &browser.login_url)?;
+        if browser.allowed_urls.is_empty() {
+            return Err("browserSession.allowedUrls 不能为空".into());
+        }
+        for value in &browser.allowed_urls {
+            validate_https_url("allowedUrls", value)?;
+        }
+        if browser
+            .initialization_script
+            .as_ref()
+            .is_some_and(|script| script.len() > 64 * 1024)
+        {
+            return Err("browserSession.initializationScript 超过 64 KiB".into());
+        }
+        for required in ["openLogin", "syncSession", "clearSession"] {
+            if !manifest
+                .provider
+                .actions
+                .iter()
+                .any(|action| action == required)
+            {
+                return Err(format!("browserSession 插件必须声明操作：{required}"));
+            }
         }
     }
     let entrypoint = safe_entrypoint(root, &manifest.runtime.entrypoint)?;
@@ -272,19 +384,61 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                 model.id, manifest.provider.id
             ));
         }
-        if model.category != "realtime" || model.protocol != "process-jsonl-v1" {
-            return Err(format!(
-                "第一版插件仅支持 realtime/process-jsonl-v1：{}",
-                model.id
-            ));
+        let valid_model = match model.category.as_str() {
+            "realtime" => {
+                manifest
+                    .provider
+                    .capabilities
+                    .iter()
+                    .any(|value| value == "asr")
+                    && matches!(
+                        model.protocol.as_str(),
+                        "process-jsonl-v1" | "process-jsonl-v2"
+                    )
+                    && model
+                        .scenes
+                        .iter()
+                        .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
+            }
+            "file" => {
+                manifest.api_version >= 2
+                    && manifest
+                        .provider
+                        .capabilities
+                        .iter()
+                        .any(|value| value == "asr")
+                    && model.protocol == "process-file-v2"
+                    && model
+                        .scenes
+                        .iter()
+                        .any(|scene| scene == "dictationFile" || scene == "transcription")
+            }
+            "translation" => {
+                manifest.api_version >= 2
+                    && manifest
+                        .provider
+                        .capabilities
+                        .iter()
+                        .any(|value| value == "translation")
+                    && model.protocol == "process-translation-v2"
+                    && model
+                        .scenes
+                        .iter()
+                        .any(|scene| scene == "subtitleTranslation")
+            }
+            _ => false,
+        };
+        if !valid_model {
+            return Err(format!("模型 {} 的类别、协议或场景组合不受支持", model.id));
         }
-        if !model
-            .scenes
-            .iter()
-            .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
-        {
-            return Err(format!("模型 {} 未声明可用的实时场景", model.id));
-        }
+    }
+    Ok(())
+}
+
+fn validate_https_url(label: &str, value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|error| format!("{label} 不是合法 URL：{error}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(format!("{label} 必须是带主机名的 HTTPS URL"));
     }
     Ok(())
 }
@@ -300,6 +454,21 @@ fn validate_id(label: &str, id: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "{label} ID 只能包含小写字母、数字、点和连字符：{id}"
+        ))
+    }
+}
+
+fn validate_action_id(id: &str) -> Result<(), String> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "操作 ID 只能包含 ASCII 字母、数字、点和连字符：{id}"
         ))
     }
 }
@@ -347,6 +516,9 @@ impl PluginRegistry {
                         .iter()
                         .map(|model| model.id.clone())
                         .collect(),
+                    trust: plugin.trust.clone(),
+                    actions: plugin.manifest.provider.actions.clone(),
+                    has_browser_session: plugin.manifest.browser_session.is_some(),
                 })
                 .collect(),
             errors: self.errors.clone(),
@@ -384,7 +556,23 @@ impl PluginRegistry {
             entrypoint: safe_entrypoint(&plugin.root, &plugin.manifest.runtime.entrypoint)?,
             args: plugin.manifest.runtime.args.clone(),
             permissions: plugin.manifest.runtime.permissions.clone(),
+            data_dir: plugin
+                .root
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or(&plugin.root)
+                .join("plugin-data")
+                .join(&plugin.manifest.id),
+            protocol_version: plugin.manifest.runtime.protocol_version,
+            trust: plugin.trust.clone(),
         }))
+    }
+
+    pub fn browser_for_provider(&self, provider_id: &str) -> Option<PluginBrowserSessionManifest> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.manifest.provider.id == provider_id)
+            .and_then(|plugin| plugin.manifest.browser_session.clone())
     }
 
     pub fn merge_provider_profiles(&self, settings: &mut ProviderSettings) {
@@ -445,7 +633,7 @@ mod tests {
 
     #[test]
     fn plugin_ids_are_portable() {
-        assert!(validate_id("插件", "doubao-web.1").is_ok());
+        assert!(validate_id("插件", "web-provider.1").is_ok());
         assert!(validate_id("插件", "豆包").is_err());
         assert!(validate_id("插件", "Upper").is_err());
     }
@@ -500,6 +688,43 @@ mod tests {
             .unwrap();
         assert_eq!(profile.kind, "plugin:test-provider");
         assert_eq!(profile.config_fields[0].key, "token");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loads_v2_privileged_multicapability_manifest_without_provider_specific_code() {
+        let root = std::env::temp_dir().join(format!("sayit-plugin-v2-{}", uuid::Uuid::new_v4()));
+        let plugin = root.join("web-provider");
+        std::fs::create_dir_all(plugin.join("bin")).unwrap();
+        std::fs::write(plugin.join("bin/connector.exe"), b"test").unwrap();
+        std::fs::write(
+            plugin.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": 2,
+                "id": "web-provider", "name": "Web Provider", "version": "1.0.0",
+                "provider": {
+                    "id": "web-provider", "displayName": "Web Provider",
+                    "capabilities": ["asr", "translation", "customization"], "config": {},
+                    "actions": ["openLogin", "syncSession", "clearSession", "diagnose"]
+                },
+                "models": [
+                    {"id":"web-live","label":"Live","providerId":"web-provider","category":"realtime","protocol":"process-jsonl-v2","supportsVocabulary":true,"supportsAlignmentTimestamps":false,"scenes":["dictationRealtime","subtitles"],"isDefaultRealtime":false,"isDefaultFile":false},
+                    {"id":"web-file","label":"File","providerId":"web-provider","category":"file","protocol":"process-file-v2","supportsVocabulary":true,"supportsAlignmentTimestamps":true,"scenes":["dictationFile","transcription"],"isDefaultRealtime":false,"isDefaultFile":false},
+                    {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"process-translation-v2","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
+                ],
+                "runtime": {"entrypoint":"bin/connector.exe","protocolVersion":2,"permissions":["network","browserSession","cookies"]},
+                "browserSession": {"loginUrl":"https://vendor.example/login","allowedUrls":["https://vendor.example/"],"initializationScript":"window.__capture = true;"}
+            })).unwrap(),
+        ).unwrap();
+        let registry = load_registry_from(&root).unwrap();
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.plugins.len(), 1);
+        assert!(snapshot.plugins[0].has_browser_session);
+        assert_eq!(registry.models().count(), 3);
+        assert_eq!(
+            registry.model("web-translation").unwrap().category,
+            "translation"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

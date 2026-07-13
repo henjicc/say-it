@@ -9,6 +9,33 @@ fn emit(value: Value) {
     stdout.flush().expect("flush protocol event");
 }
 
+fn invoke(message: &Value) {
+    let operation = message.get("operation").and_then(Value::as_str).unwrap_or_default();
+    let payload = message.get("payload").cloned().unwrap_or_else(|| json!({}));
+    match operation {
+        "transcribeFile" => emit(json!({
+            "type": "completed",
+            "result": { "durationMs": 0, "transcripts": [] }
+        })),
+        "translate" => emit(json!({
+            "type": "completed",
+            "result": { "text": payload.get("text").and_then(Value::as_str).unwrap_or_default() }
+        })),
+        "setHotwords" | "clearHotwords" => {
+            emit(json!({ "type": "completed", "result": {} }))
+        }
+        "getHotwords" => emit(json!({
+            "type": "completed", "result": { "hotwords": [] }
+        })),
+        "action" => emit(json!({
+            "type": "completed", "result": { "status": "ok", "message": "diagnostic completed" }
+        })),
+        _ => emit(json!({
+            "type": "error", "code": "unsupported_operation", "message": operation
+        })),
+    }
+}
+
 fn main() {
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -20,9 +47,13 @@ fn main() {
             }
         };
         match message.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "invoke" => {
+                invoke(&message);
+                break;
+            }
             "start" => emit(json!({ "type": "ready" })),
             "audio" => {
-                // Decode pcm16Base64 and forward it to the provider's realtime ASR transport.
+                // Decode pcm16Base64 and forward it to the provider's realtime transport.
             }
             "finish" => {
                 emit(json!({ "type": "finished" }));

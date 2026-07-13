@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 ID = re.compile(r"^[a-z0-9.-]{1,64}$")
+ACTION_ID = re.compile(r"^[A-Za-z0-9.-]{1,64}$")
 PERMISSIONS = {"network", "browserSession", "cookies"}
-SCENES = {"dictationRealtime", "subtitles"}
 BUILTIN_PROVIDERS = {"funasr"}
 BUILTIN_MODELS = {
     "fun-asr-realtime-2026-02-28", "fun-asr-realtime", "qwen3-asr-flash-realtime-2026-02-10",
@@ -20,13 +24,77 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
+def normalized_manifest(data: dict) -> dict:
+    value = json.loads(json.dumps(data))
+    provider = value.setdefault("provider", {})
+    provider.setdefault("authKind", "custom")
+    provider.setdefault("capabilities", ["asr"])
+    provider.setdefault("config", {})
+    provider.setdefault("configFields", [])
+    provider.setdefault("actions", [])
+    value.setdefault("models", [])
+    runtime = value.setdefault("runtime", {})
+    runtime.setdefault("kind", "process")
+    runtime.setdefault("args", [])
+    runtime.setdefault("protocolVersion", 2)
+    runtime.setdefault("permissions", [])
+    return value
+
+
+def signing_payload(data: dict) -> bytes:
+    value = normalized_manifest(data)
+    if "signature" in value:
+        value["signature"]["value"] = ""
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return b"sayit-plugin-signature-v1\n" + canonical.encode("utf-8")
+
+
+def package_files(root: Path) -> set[str]:
+    files = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            fail(f"插件包不能包含符号链接：{path}")
+        if path.is_file() and path.name != "manifest.json":
+            files.add(path.relative_to(root).as_posix())
+    return files
+
+
+def validate_integrity(root: Path, data: dict) -> str:
+    integrity = data.get("integrity")
+    signature = data.get("signature")
+    if not integrity:
+        if signature:
+            fail("签名插件必须提供 integrity")
+        return "unsigned"
+    if integrity.get("algorithm", "").lower() != "sha256":
+        fail("integrity.algorithm 必须为 sha256")
+    declared = integrity.get("files")
+    if not isinstance(declared, dict) or not declared:
+        fail("integrity.files 不能为空")
+    actual = package_files(root)
+    if actual != set(declared):
+        fail(f"完整性清单与文件不一致：未声明={sorted(actual - set(declared))}，不存在={sorted(set(declared) - actual)}")
+    for relative, expected in declared.items():
+        digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        if digest.lower() != str(expected).strip().lower():
+            fail(f"文件哈希不匹配：{relative}")
+    if not signature:
+        return "integrity-only"
+    if signature.get("algorithm", "").lower() != "ed25519":
+        fail("signature.algorithm 必须为 ed25519")
+    public = base64.b64decode(signature.get("publicKey", ""), validate=True)
+    signed = base64.b64decode(signature.get("value", ""), validate=True)
+    Ed25519PublicKey.from_public_bytes(public).verify(signed, signing_payload(data))
+    return "signed"
+
+
 def validate(root: Path) -> dict:
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
         fail("manifest.json 不存在")
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if data.get("apiVersion") != 1:
-        fail("apiVersion 必须为 1")
+    if data.get("apiVersion") not in {1, 2}:
+        fail("apiVersion 必须为 1 或 2")
     for label, value in (("插件", data.get("id")), ("供应商", data.get("provider", {}).get("id"))):
         if not isinstance(value, str) or not ID.fullmatch(value):
             fail(f"{label} ID 不合法：{value!r}")
@@ -35,8 +103,9 @@ def validate(root: Path) -> dict:
     provider = data.get("provider") or {}
     if provider.get("id") in BUILTIN_PROVIDERS:
         fail("插件供应商 ID 不能覆盖内置供应商")
-    if provider.get("capabilities") != ["asr"] and "asr" not in provider.get("capabilities", []):
-        fail("provider.capabilities 必须包含 asr")
+    capabilities = set(provider.get("capabilities", []))
+    if not capabilities & {"asr", "translation", "customization"}:
+        fail("provider.capabilities 未声明受支持能力")
     if not isinstance(provider.get("config", {}), dict):
         fail("provider.config 必须是 JSON 对象")
     field_keys = set()
@@ -47,13 +116,16 @@ def validate(root: Path) -> dict:
         field_keys.add(key)
         if field.get("fieldType") not in {"text", "password", "number", "boolean"}:
             fail(f"配置字段 {key} 的 fieldType 不受支持")
+    actions = provider.get("actions", [])
+    if len(actions) != len(set(actions)) or any(not isinstance(action, str) or not ACTION_ID.fullmatch(action) for action in actions):
+        fail("provider.actions 包含非法或重复操作 ID")
     runtime = data.get("runtime") or {}
-    if runtime.get("kind") != "process" or runtime.get("protocolVersion", 1) != 1:
-        fail("runtime 必须为 process/protocolVersion 1")
-    permissions = runtime.get("permissions", [])
-    unknown = set(permissions) - PERMISSIONS
-    if unknown:
-        fail(f"未知权限：{sorted(unknown)}")
+    protocol = runtime.get("protocolVersion", 2)
+    if runtime.get("kind", "process") != "process" or protocol not in {1, 2}:
+        fail("runtime 必须为 process/protocolVersion 1 或 2")
+    permissions = set(runtime.get("permissions", []))
+    if permissions - PERMISSIONS:
+        fail(f"未知权限：{sorted(permissions - PERMISSIONS)}")
     entrypoint = runtime.get("entrypoint")
     if not isinstance(entrypoint, str) or not entrypoint:
         fail("runtime.entrypoint 不能为空")
@@ -67,6 +139,18 @@ def validate(root: Path) -> dict:
         fail("entrypoint 不能通过符号链接跳出插件目录")
     if not resolved_entry.is_file():
         fail(f"插件入口不存在：{entrypoint}")
+    browser = data.get("browserSession")
+    if browser:
+        if not {"browserSession", "cookies"}.issubset(permissions):
+            fail("browserSession 配置必须声明 browserSession 和 cookies 权限")
+        urls = [browser.get("loginUrl"), *browser.get("allowedUrls", [])]
+        if len(urls) < 2 or any(not isinstance(url, str) or not url.startswith("https://") for url in urls):
+            fail("网页登录 URL 必须是 HTTPS，且 allowedUrls 不能为空")
+        if len(browser.get("initializationScript", "")) > 64 * 1024:
+            fail("initializationScript 超过 64 KiB")
+        required = {"openLogin", "syncSession", "clearSession"}
+        if not required.issubset(actions):
+            fail(f"browserSession 必须声明操作：{sorted(required)}")
     models = data.get("models")
     if not isinstance(models, list) or not models:
         fail("至少声明一个模型")
@@ -80,10 +164,20 @@ def validate(root: Path) -> dict:
         seen.add(model_id)
         if model.get("providerId") != provider.get("id"):
             fail(f"模型 {model_id} 的 providerId 不匹配")
-        if model.get("category") != "realtime" or model.get("protocol") != "process-jsonl-v1":
-            fail(f"模型 {model_id} 必须使用 realtime/process-jsonl-v1")
-        if not (set(model.get("scenes", [])) & SCENES):
-            fail(f"模型 {model_id} 没有可用实时场景")
+        category, model_protocol, scenes = model.get("category"), model.get("protocol"), set(model.get("scenes", []))
+        valid = (
+            category == "realtime" and "asr" in capabilities and model_protocol in {"process-jsonl-v1", "process-jsonl-v2"}
+            and bool(scenes & {"dictationRealtime", "subtitles"})
+        ) or (
+            data["apiVersion"] >= 2 and category == "file" and "asr" in capabilities
+            and model_protocol == "process-file-v2" and bool(scenes & {"dictationFile", "transcription"})
+        ) or (
+            data["apiVersion"] >= 2 and category == "translation" and "translation" in capabilities
+            and model_protocol == "process-translation-v2" and "subtitleTranslation" in scenes
+        )
+        if not valid:
+            fail(f"模型 {model_id} 的类别、协议或场景组合不受支持")
+    data["_trust"] = validate_integrity(root, data)
     return data
 
 
@@ -93,10 +187,10 @@ def main() -> int:
     args = parser.parse_args()
     try:
         data = validate(args.plugin_dir.resolve())
-    except (OSError, json.JSONDecodeError, ValueError) as error:
+    except Exception as error:
         print(f"INVALID: {error}", file=sys.stderr)
         return 1
-    print(f"VALID: {data['id']} {data['version']} ({len(data['models'])} models)")
+    print(f"VALID: {data['id']} {data['version']} ({len(data['models'])} models, {data['_trust']})")
     return 0
 
 

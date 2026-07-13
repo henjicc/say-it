@@ -5,7 +5,8 @@ use crate::application::subtitle_document::{to_srt, SubtitleCue};
 use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::capabilities::{
-    file_recognition_for, FileRecognitionProvider, TranscriptionParams, TranscriptionTaskStatus,
+    file_recognition_for_with_plugin, FileRecognitionProvider, TranscriptionParams,
+    TranscriptionTaskStatus,
 };
 use crate::state::*;
 use crate::text_align::{align_script, AlignOutput, AlignWord};
@@ -211,10 +212,13 @@ async fn run_transcription_job(
                 "taskId": "",
             }),
         );
-        let result = provider.recognize_short(&file_path, &params).await?;
+        let result = provider
+            .recognize_short(&file_path, &params, Some(cancel.clone()))
+            .await;
         if is_cancelled(&cancel) {
             return Ok(());
         }
+        let result = result?;
         emit_transcription_event(
             &app,
             &job_id,
@@ -320,12 +324,23 @@ fn resolve_file_recognition_provider(
     model: &str,
 ) -> Result<FileRecognitionProvider, String> {
     let settings = read_provider_settings(state)?;
+    let plugin_model_provider = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .provider_id_for_model(model);
     let model_provider = crate::providers::registry::model_info(model)
-        .map(|model| model.provider_id.clone());
+        .map(|model| model.provider_id.clone())
+        .or(plugin_model_provider);
     let provider_id = resolve_provider_id(state, "asr", model_provider)?;
     let profile = find_profile(&settings, &provider_id)
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    file_recognition_for(profile).map_err(|error| error.to_string())
+    let plugin = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .process_for_provider(&provider_id)?;
+    file_recognition_for_with_plugin(profile, plugin).map_err(|error| error.to_string())
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {

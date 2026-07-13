@@ -54,10 +54,7 @@ impl TranscriptionParams {
             TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
         ) && !vocabulary_id.trim().is_empty()
         {
-            parameters.insert(
-                "vocabulary_id".to_string(),
-                json!(vocabulary_id.trim()),
-            );
+            parameters.insert("vocabulary_id".to_string(), json!(vocabulary_id.trim()));
         }
         let language_hints = self
             .language_hints
@@ -68,11 +65,10 @@ impl TranscriptionParams {
         if matches!(
             family,
             TranscriptionModelFamily::FunAsr | TranscriptionModelFamily::Paraformer
-        ) && !language_hints.is_empty() {
-            parameters.insert("language_hints".to_string(), json!(language_hints));
-        } else if family == TranscriptionModelFamily::QwenFiletrans
-            && language_hints.len() == 1
+        ) && !language_hints.is_empty()
         {
+            parameters.insert("language_hints".to_string(), json!(language_hints));
+        } else if family == TranscriptionModelFamily::QwenFiletrans && language_hints.len() == 1 {
             parameters.insert("language".to_string(), json!(language_hints[0]));
         }
         if matches!(
@@ -157,7 +153,7 @@ impl TranscriptionTaskStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionResult {
     pub duration_ms: Option<u64>,

@@ -18,5 +18,11 @@ const TRANSLATION_MODEL_SET = new Set(TRANSLATION_MODEL_OPTIONS.map((option) => 
 
 export function normalizeTranslationModel(model: string | undefined) {
   if (!model || model === TRANSLATION_MODEL_NONE) return TRANSLATION_MODEL_NONE;
-  return TRANSLATION_MODEL_SET.has(model.trim()) ? model.trim() : TRANSLATION_MODEL_NONE;
+  const normalized = model.trim();
+  const pluginModel = modelInfo(normalized);
+  return TRANSLATION_MODEL_SET.has(normalized) ||
+    (pluginModel?.category === "translation" && pluginModel.scenes.includes("subtitleTranslation"))
+    ? normalized
+    : TRANSLATION_MODEL_NONE;
 }
+import { modelInfo } from "@/features/asr/modelRegistry";
