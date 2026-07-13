@@ -4,6 +4,7 @@ import { useTauriEvent } from "./useTauriEvent";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { syncDebugLogToBackend } from "@/store/useDictPrefs";
+import { playCue } from "@/lib/cues";
 import {
   applyDictationRuntime,
   loadDictationRuntime,
@@ -36,6 +37,9 @@ export function useTauriBridge() {
     if (typeof vk !== "number") return;
     handleCaptureLockKey(vk);
     handleSubtitleCaptureLockKey(vk);
+  });
+  useTauriEvent<{ which?: "start" | "end" }>(EVT.dictationPlayCue, (payload) => {
+    if (payload.which === "start" || payload.which === "end") playCue(payload.which);
   });
 
   useTauriEvent(EVT.indicatorKeydown, (payload) => {

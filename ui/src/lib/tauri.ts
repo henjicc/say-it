@@ -125,6 +125,7 @@ export const EVT = {
   subtitleCloseRequested: "subtitle-close-requested",
   subtitleShortcutError: "subtitle-shortcut-error",
   hotkeyCaptureLockKey: "hotkey-capture-lock-key",
+  dictationPlayCue: "dictation-play-cue",
   indicatorState: "dictation-indicator-state",
   indicatorText: "dictation-indicator-text",
   indicatorTranslation: "dictation-indicator-translation",

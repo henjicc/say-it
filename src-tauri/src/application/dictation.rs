@@ -1051,14 +1051,19 @@ fn schedule_release(app: AppHandle, epoch: u64, generation: u64, delay: u64) {
 }
 
 fn publish_state(app: &AppHandle, error: Option<String>) {
-    let text = app
+    let (text, show_in_indicator) = app
         .state::<RuntimeState>()
         .dictation_runtime
         .session
         .lock()
-        .map(|s| format!("{}{}", s.committed, s.segment))
+        .map(|s| {
+            (
+                format!("{}{}", s.committed, s.segment),
+                should_show_final_text_in_indicator(s.mode),
+            )
+        })
         .unwrap_or_default();
-    publish_state_with_text(app, error, text, true);
+    publish_state_with_text(app, error, text, show_in_indicator);
 }
 fn publish_state_with_text(
     app: &AppHandle,
@@ -1324,129 +1329,9 @@ fn play_cue_async(app: AppHandle, which: &'static str, prefs: &DictationPrefs) {
     if kind == "none" {
         return;
     }
-    let custom = if kind == "custom" {
-        let state = app.state::<RuntimeState>();
-        state.app_settings.lock().ok().and_then(|s| {
-            if which == "start" {
-                s.custom_cue_start.clone()
-            } else {
-                s.custom_cue_end.clone()
-            }
-        })
-    } else {
-        None
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = (|| {
-            let samples = if kind == "custom" {
-                let file = custom.ok_or_else(|| format!("未配置{which}自定义提示音"))?;
-                let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-                crate::audio_prep::decode_to_mono_16k(
-                    dir.join(file.relative_path).to_string_lossy().as_ref(),
-                )?
-            } else {
-                cue_samples(&kind, 16_000)
-            };
-            play_samples(samples, 16_000)
-        })();
-        if let Err(error) = result {
-            let state = app.state::<RuntimeState>();
-            let revision = next_revision(&state.snapshot_revision);
-            let _ = app.emit(
-                DOMAIN_EVENT,
-                DomainEventEnvelope {
-                    revision,
-                    domain: "dictation".into(),
-                    event_type: "cueError".into(),
-                    session_id: None,
-                    payload: json!({"error":error}),
-                },
-            );
-        }
-    });
-}
-fn cue_samples(kind: &str, rate: u32) -> Vec<f32> {
-    let (freqs, dur, gap): (&[f32], f32, f32) = match kind {
-        "beep-up" => (&[660., 990.], 0.10, 0.02),
-        "beep-down" => (&[880., 520.], 0.12, 0.02),
-        "beep-double" => (&[880., 880.], 0.07, 0.05),
-        _ => (&[770.], 0.12, 0.02),
-    };
-    let mut out = Vec::new();
-    for f in freqs {
-        let n = (rate as f32 * dur) as usize;
-        for i in 0..n {
-            let t = i as f32 / rate as f32;
-            out.push((t * f * std::f32::consts::TAU).sin() * legacy_cue_envelope(t, dur));
-        }
-        out.extend(std::iter::repeat(0.0).take((rate as f32 * gap) as usize));
-    }
-    out
-}
-
-/// 与迁移前 Web Audio 版本保持同一组时长、频率和指数音量包络；
-/// 只把输出设备从 WebView 改为原生 CPAL，保证主窗口销毁后仍能播放。
-fn legacy_cue_envelope(t: f32, dur: f32) -> f32 {
-    const FLOOR: f32 = 0.0001;
-    const PEAK: f32 = 0.25;
-    const ATTACK: f32 = 0.012;
-    if t <= ATTACK {
-        FLOOR * (PEAK / FLOOR).powf((t / ATTACK).clamp(0.0, 1.0))
-    } else {
-        PEAK * (FLOOR / PEAK).powf(((t - ATTACK) / (dur - ATTACK)).clamp(0.0, 1.0))
-    }
-}
-fn play_samples(samples: Vec<f32>, source_rate: u32) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("未找到默认音频输出设备")?;
-    let config = device.default_output_config().map_err(|e| e.to_string())?;
-    let rate = config.sample_rate().0;
-    let data = Arc::new(crate::audio_dsp::resample_linear(
-        &samples,
-        source_rate,
-        rate,
-    ));
-    let cursor = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let channels = config.channels() as usize;
-    let err = |e| dlog!("[cue] 输出错误: {e}");
-    macro_rules! build {
-        ($ty:ty,$map:expr) => {{
-            let d = data.clone();
-            let c = cursor.clone();
-            device
-                .build_output_stream(
-                    &config.clone().into(),
-                    move |out: &mut [$ty], _| {
-                        for frame in out.chunks_mut(channels) {
-                            let i = c.fetch_add(1, Ordering::Relaxed);
-                            let v = d.get(i).copied().unwrap_or(0.0);
-                            for x in frame {
-                                *x = $map(v);
-                            }
-                        }
-                    },
-                    err,
-                    None,
-                )
-                .map_err(|e| e.to_string())?
-        }};
-    }
-    let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => build!(f32, |v: f32| v),
-        cpal::SampleFormat::I16 => build!(i16, |v: f32| (v * i16::MAX as f32) as i16),
-        cpal::SampleFormat::U16 => build!(u16, |v: f32| ((v + 1.0) * 0.5 * u16::MAX as f32) as u16),
-        f => return Err(format!("不支持的输出格式: {f:?}")),
-    };
-    stream.play().map_err(|e| e.to_string())?;
-    // CPAL 的回调会先写入设备缓冲区；过早释放流会截断尚未播放的尾音，
-    // 在部分扬声器驱动上表现为开始或结束时的破音。
-    const OUTPUT_DRAIN_MARGIN: Duration = Duration::from_millis(180);
-    std::thread::sleep(
-        Duration::from_secs_f32(data.len() as f32 / rate as f32) + OUTPUT_DRAIN_MARGIN,
-    );
-    Ok(())
+    // 内置音回到 Web Audio：它使用持久的 AudioContext，不会在每次提示时
+    // 打开/关闭 WASAPI 输出流，从而避免部分扬声器驱动产生破音。
+    let _ = app.emit("dictation-play-cue", json!({ "which": which, "kind": kind }));
 }
 
 #[cfg(test)]
@@ -1483,14 +1368,6 @@ mod tests {
         let mut s = Session::default();
         s.epoch = 2;
         assert!(!s.is_current(1));
-    }
-    #[test]
-    fn builtin_cues_keep_legacy_durations_and_exponential_envelope() {
-        assert_eq!(cue_samples("beep-up", 1_000).len(), 240);
-        assert_eq!(cue_samples("beep-down", 1_000).len(), 280);
-        assert_eq!(cue_samples("beep-double", 1_000).len(), 240);
-        assert!(legacy_cue_envelope(0.012, 0.1) > 0.249);
-        assert!(legacy_cue_envelope(0.1, 0.1) < 0.001);
     }
     #[test]
     fn waveform_is_reserved_for_file_dictation() {
