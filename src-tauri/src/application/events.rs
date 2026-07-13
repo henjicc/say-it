@@ -60,7 +60,9 @@ mod tests {
             payload: serde_json::json!({}),
         });
         match receiver.recv().await.unwrap() {
-            BackendEvent::Asr { session_id, kind, .. } => {
+            BackendEvent::Asr {
+                session_id, kind, ..
+            } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(kind, "finish");
             }
