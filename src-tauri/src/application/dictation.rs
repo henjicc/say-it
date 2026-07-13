@@ -438,11 +438,14 @@ fn spawn_raw_consumer(
     done: Arc<tokio::sync::Notify>,
 ) {
     tauri::async_runtime::spawn(async move {
+        // 文件听写不建立 ASR 流，因此单独持有一份流式 DSP 只供波形预览使用。
+        // 原始 PCM 仍完整保留给文件识别上传，避免预览链路改变识别输入。
+        let mut waveform_dsp: Option<StreamDsp> = None;
         while let Some(input) = rx.recv().await {
             let AsrStreamInput::RawF32(samples) = input else {
                 continue;
             };
-            let (need_open, need_close, show_waveform, peaks, level) = {
+            let (need_open, need_close, waveform_config) = {
                 let state = app.state::<RuntimeState>();
                 let Ok(mut s) = state.dictation_runtime.session.lock() else {
                     break;
@@ -461,7 +464,6 @@ fn spawn_raw_consumer(
                     s.raw_samples.extend_from_slice(&samples);
                 }
                 let level = rms(&samples);
-                let peaks = summarize_peaks(&samples, 6);
                 let mut need_open = false;
                 let mut need_close = false;
                 if s.mode == Some(DictationMode::Realtime)
@@ -489,16 +491,18 @@ fn spawn_raw_consumer(
                         need_close = true;
                     }
                 }
-                (
-                    need_open,
-                    need_close,
-                    should_show_waveform(s.mode),
-                    peaks,
-                    level,
-                )
+                let waveform_config = should_show_waveform(s.mode)
+                    .then(|| (s.prefs.dsp.clone(), s.sample_rate));
+                (need_open, need_close, waveform_config)
             };
-            if show_waveform {
-                emit_waveform(&app, level, peaks);
+            if let Some((params, sample_rate)) = waveform_config {
+                let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
+                let processed = pcm16le_to_f32(&dsp.process(&samples));
+                if !processed.is_empty() {
+                    let level = rms(&processed);
+                    let peaks = summarize_peaks(&processed, 6);
+                    emit_waveform(&app, level, peaks);
+                }
             }
             if need_close {
                 disconnect_silent_asr(app.clone(), epoch);
@@ -1085,6 +1089,13 @@ fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
 fn should_show_waveform(mode: Option<DictationMode>) -> bool {
     mode == Some(DictationMode::File)
 }
+
+fn pcm16le_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
+        .collect()
+}
 fn rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         0.0
@@ -1468,5 +1479,12 @@ mod tests {
         assert!(should_show_waveform(Some(DictationMode::File)));
         assert!(!should_show_waveform(Some(DictationMode::Realtime)));
         assert!(!should_show_waveform(None));
+    }
+    #[test]
+    fn waveform_preview_decodes_processed_pcm() {
+        assert_eq!(
+            pcm16le_to_f32(&[0, 0, 255, 127, 0, 128]),
+            vec![0.0, i16::MAX as f32 / 32768.0, -1.0]
+        );
     }
 }
