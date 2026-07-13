@@ -99,17 +99,20 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   },
 
   saveFunasrHotwords: async (hotwords) => {
-    const response = await cmd<ProviderResponse>(CMD.funasrSaveHotwords, { hotwords });
+    const providerId = get().defaults.asr;
+    const response = await cmd<ProviderResponse>(CMD.providerSaveHotwords, { providerId, hotwords });
     set({ ...normalize(response), statusText: "热词已保存到阿里云百炼。", statusTone: "ok" });
   },
 
   syncFunasrHotwords: async () => {
-    const response = await cmd<ProviderResponse>(CMD.funasrSyncHotwords);
+    const providerId = get().defaults.asr;
+    const response = await cmd<ProviderResponse>(CMD.providerSyncHotwords, { providerId });
     set({ ...normalize(response), statusText: "热词已从阿里云百炼同步。", statusTone: "ok" });
   },
 
   clearFunasrHotwords: async () => {
-    const response = await cmd<ProviderResponse>(CMD.funasrClearHotwords);
+    const providerId = get().defaults.asr;
+    const response = await cmd<ProviderResponse>(CMD.providerClearHotwords, { providerId });
     set({ ...normalize(response), statusText: "热词已清除。", statusTone: "ok" });
   },
 

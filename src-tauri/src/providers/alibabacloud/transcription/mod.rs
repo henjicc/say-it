@@ -10,9 +10,7 @@ use serde_json::json;
 use super::customization::HotwordEntry;
 
 pub use async_oss::{fetch_transcription_result, query_transcription_task, submit_transcription_task};
-pub use types::{TranscriptionParams, TranscriptionTaskStatus};
-
-use types::TranscriptionResult;
+pub use types::{TranscriptionParams, TranscriptionResult, TranscriptionTaskStatus};
 
 const MULTIMODAL_GENERATION_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";

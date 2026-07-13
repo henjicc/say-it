@@ -14,7 +14,7 @@ pub use protocol::{FunAsrParams, RealtimeAsrFamily};
 pub use realtime::realtime_connector;
 pub use transcription::{
     fetch_transcription_result, query_transcription_task, recognize_short_audio,
-    submit_transcription_task, uses_async_transcription_task, TranscriptionParams,
+    submit_transcription_task, uses_async_transcription_task, TranscriptionParams, TranscriptionResult,
     TranscriptionTaskStatus,
 };
 pub use translation::translate_streaming;

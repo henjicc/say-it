@@ -48,3 +48,17 @@
 ### 当前结论
 
 - 2.1 自动验收通过；页面选项和供应商设置交互加入最终人工清单，不阻塞 2.2。
+
+## 2026-07-13 · 2.2
+
+### 自动验证
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，76/76；含能力缺失、fake 同步完成/异步进度、取消迟到结果、翻译增量与流错误。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过，无 warning。
+- `npm run ui:build`：通过，Vite 主窗口与 indicator 双入口构建成功。
+- 命令层扫描：转写、翻译、热词业务命令不再直接调用 `providers::alibabacloud`。
+- `git diff --check`：通过，仅有 Git 的 LF/CRLF 工作区提示。
+
+### 当前结论
+
+- 2.2 自动验收通过；真实文件识别、翻译和热词云端行为加入最终人工清单，不阻塞 3.1。
