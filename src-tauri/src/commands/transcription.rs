@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::application::subtitle_document::{to_srt, SubtitleCue};
 use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::capabilities::{
@@ -67,6 +68,11 @@ pub(crate) async fn save_text_file(path: String, content: String) -> Result<(), 
     tokio::fs::write(path, content)
         .await
         .map_err(|err| format!("写入文件失败：{err}"))
+}
+
+#[tauri::command]
+pub(crate) async fn save_subtitle_srt(path: String, cues: Vec<SubtitleCue>) -> Result<(), String> {
+    save_text_file(path, to_srt(cues)).await
 }
 
 #[tauri::command]
@@ -337,6 +343,9 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
         dlog!("[transcription {short}] {summary}");
     }
     if let Some(state) = app.try_state::<RuntimeState>() {
+        state
+            .transcription_runtime
+            .apply_event(job_id, stage, value.clone());
         state
             .backend_events
             .publish(crate::application::events::BackendEvent::Transcription {

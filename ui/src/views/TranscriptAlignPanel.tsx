@@ -22,7 +22,6 @@ import {
 import {
   LOW_MATCH_THRESHOLD,
   editablePlainText,
-  editableToSrt,
 } from "@/features/transcription/subtitles";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useTranscriptionStore, type AlignResultView } from "@/store/useTranscriptionStore";
@@ -79,7 +78,7 @@ export function TranscriptAlignPanel() {
         filters: [{ name: "SRT 字幕", extensions: ["srt"] }],
       });
       if (!path) return;
-      await cmd(CMD.saveTextFile, { path, content: editableToSrt(currentCues) });
+      await cmd(CMD.saveSubtitleSrt, { path, cues: currentCues });
       setRuntime({ alignSaveMessage: `已导出：${path}` });
     } catch (error) {
       setRuntime({ alignSaveMessage: `导出失败：${String(error)}` });
