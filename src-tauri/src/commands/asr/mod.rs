@@ -1,4 +1,5 @@
 mod session;
+mod plugin_session;
 
 use crate::commands::common::*;
 use crate::prelude::*;
@@ -16,11 +17,49 @@ pub(crate) async fn start_asr_stream_inner(
     sample_rate: Option<u32>,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
-    let provider_id = resolve_provider_id(&state, "asr", provider_id)?;
+    let provider_id = match provider_id {
+        Some(provider_id) if !provider_id.trim().is_empty() => {
+            resolve_provider_id(&state, "asr", Some(provider_id))?
+        }
+        _ => {
+            let model_provider = model_override.as_deref().and_then(|model| {
+                crate::providers::registry::model_info(model)
+                    .map(|info| info.provider_id.clone())
+                    .or_else(|| {
+                        state
+                            .plugin_registry
+                            .lock()
+                            .ok()
+                            .and_then(|plugins| plugins.provider_id_for_model(model))
+                    })
+            });
+            resolve_provider_id(&state, "asr", model_provider)?
+        }
+    };
     let settings = read_provider_settings(&state)?;
     let profile = find_profile(&settings, &provider_id)
         .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let plugin = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .process_for_provider(&provider_id)?;
+    if let Some(plugin) = plugin {
+        let model = model_override
+            .filter(|model| !model.trim().is_empty())
+            .ok_or_else(|| "插件实时识别必须指定模型".to_string())?;
+        return plugin_session::start_plugin_asr_stream(
+            app,
+            state,
+            plugin,
+            profile,
+            model,
+            sample_rate.unwrap_or(48_000),
+            params,
+        )
+        .await;
+    }
     let (connector, model) = crate::providers::realtime_connector_for(
         &profile.kind,
         &profile.config,

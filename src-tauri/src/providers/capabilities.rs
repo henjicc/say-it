@@ -248,6 +248,8 @@ mod tests {
             capabilities: vec!["asr".into()],
             enabled: true,
             config: json!({}),
+            config_fields: vec![],
+            actions: vec![],
         }
     }
     #[test]

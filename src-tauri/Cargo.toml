@@ -23,7 +23,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-tokio = { version = "1", features = ["net", "sync", "time"] }
+tokio = { version = "1", features = ["net", "sync", "time", "process", "io-util"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["v4"] }

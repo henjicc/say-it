@@ -2,10 +2,11 @@ use serde::Serialize;
 
 use crate::commands::common::{provider_settings_response, read_provider_settings};
 use crate::providers::registry::{self, FileTranscriptionRoute};
+use crate::providers::plugin::PluginRegistry;
 use crate::providers::ProviderSettingsResponse;
 use crate::state::RuntimeState;
 
-pub const CATALOG_VERSION: u32 = 1;
+pub const CATALOG_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,9 +37,10 @@ pub struct ModelCatalog {
     pub providers: ProviderSettingsResponse,
 }
 
-pub fn build_catalog(providers: ProviderSettingsResponse) -> ModelCatalog {
+pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegistry) -> ModelCatalog {
     let models = registry::models()
         .iter()
+        .chain(plugins.models())
         .map(|model| {
             let route = registry::file_transcription_route(&model.id);
             ModelCatalogItem {
@@ -75,9 +77,11 @@ pub fn build_catalog(providers: ProviderSettingsResponse) -> ModelCatalog {
 pub(crate) fn get_model_catalog(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ModelCatalog, String> {
-    Ok(build_catalog(provider_settings_response(
-        read_provider_settings(&state)?,
-    )))
+    let plugins = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
+    Ok(build_catalog(
+        provider_settings_response(read_provider_settings(&state)?),
+        &plugins,
+    ))
 }
 
 #[cfg(test)]
@@ -87,9 +91,10 @@ mod tests {
 
     #[test]
     fn catalog_is_complete_and_defaults_exist() {
-        let catalog = build_catalog(provider_settings_response(normalize_settings(
-            ProviderSettings::default(),
-        )));
+        let catalog = build_catalog(
+            provider_settings_response(normalize_settings(ProviderSettings::default())),
+            &PluginRegistry::default(),
+        );
         assert_eq!(catalog.models.len(), 9);
         assert!(catalog
             .models
@@ -115,8 +120,13 @@ mod tests {
             capabilities: vec!["asr".into()],
             enabled: true,
             config: serde_json::json!({}),
+            config_fields: vec![],
+            actions: vec![],
         });
-        let catalog = build_catalog(provider_settings_response(normalize_settings(settings)));
+        let catalog = build_catalog(
+            provider_settings_response(normalize_settings(settings)),
+            &PluginRegistry::default(),
+        );
         let effective = catalog
             .providers
             .profiles

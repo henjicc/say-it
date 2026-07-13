@@ -22,6 +22,7 @@ use application::audio_lab::{audio_lab_audio_path, audio_lab_reprocess, audio_la
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::dictation::{dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime, preview_dictation_cue};
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
+use application::plugin_management::{list_provider_plugins, reload_provider_plugins};
 use application::subtitles::{apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle, sync_subtitle_presentation};
 use application::transcription::get_transcription_runtime;
 use commands::*;
@@ -136,6 +137,8 @@ fn main() {
                     *obs_overlay = persisted.obs_overlay;
                 }
             }
+
+            application::plugin_management::initialize(&app.handle())?;
 
             let state = app.state::<RuntimeState>();
             if ensure_obs_overlay_settings(&state)? {
@@ -257,6 +260,8 @@ fn main() {
             get_app_snapshot,
             main_window_ready,
             get_model_catalog,
+            list_provider_plugins,
+            reload_provider_plugins,
             import_legacy_settings,
             update_app_settings,
             update_custom_cue,

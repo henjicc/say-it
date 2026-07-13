@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
-import { useProviderStore } from "@/store/useProviderStore";
+import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
 import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
 
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
@@ -16,12 +16,79 @@ const NESTED_BODY_CLASS = "px-3 py-3";
 
 const API_KEY_MASK = "•".repeat(32);
 
+function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
+  const updateProviderConfig = useProviderStore((state) => state.updateConfig);
+  const setDefault = useProviderStore((state) => state.setDefault);
+  const effective = useProviderStore((state) => state.effective("asr"));
+  const [draft, setDraft] = useState<Record<string, unknown>>({});
+  const [message, setMessage] = useState("");
+  const hasSecretField = (provider.configFields || []).some((field) => field.secret);
+
+  useEffect(() => setDraft(provider.config || {}), [provider.config]);
+
+  const save = async () => {
+    const patch: Record<string, unknown> = {};
+    for (const field of provider.configFields || []) {
+      const value = draft[field.key];
+      if (field.secret && (value === undefined || value === "")) continue;
+      patch[field.key] = field.fieldType === "number" && value !== "" ? Number(value) : value;
+    }
+    try {
+      await updateProviderConfig(provider.id, patch);
+      setMessage("插件配置已保存。");
+    } catch (error) {
+      setMessage(`保存失败：${String(error)}`);
+    }
+  };
+
+  return (
+    <Collapse
+      title={provider.displayName}
+      subtitle={`${provider.kind} · ${hasSecretField ? (provider.status?.hasApiKey ? "凭据已配置" : "待配置") : "无需凭据"}`}
+    >
+      <div className="flex flex-col gap-3">
+        {(provider.configFields || []).map((field) =>
+          field.fieldType === "boolean" ? (
+            <CheckField
+              key={field.key}
+              checked={Boolean(draft[field.key])}
+              onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
+            >
+              {field.label}
+            </CheckField>
+          ) : (
+            <Field key={field.key} label={field.label}>
+              <Input
+                type={field.secret ? "password" : field.fieldType === "number" ? "number" : "text"}
+                value={String(draft[field.key] ?? "")}
+                placeholder={field.secret && provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, [field.key]: event.target.value }))
+                }
+              />
+            </Field>
+          ),
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" onClick={save}>保存插件配置</Button>
+          {provider.capabilities.includes("asr") && effective !== provider.id && (
+            <Button size="sm" onClick={() => void setDefault("asr", provider.id)}>
+              设为默认识别供应商
+            </Button>
+          )}
+        </div>
+        {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      </div>
+    </Collapse>
+  );
+}
+
 export function SettingsProviderPanel() {
   const providers = useProviderStore((s) => s.profiles);
   const providerStatus = useProviderStore((s) => s.statusText);
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
-  const effectiveAsrProviderId = useProviderStore((s) => s.effective("asr"));
+  const pluginProviders = providers.filter((item) => item.enabled && item.kind.startsWith("plugin:"));
   const [apiKey, setApiKey] = useState("");
   const [savedApiKey, setSavedApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -38,8 +105,7 @@ export function SettingsProviderPanel() {
   const [dictationLevel, setDictationLevel] = useState(0);
   const [subtitleLevel, setSubtitleLevel] = useState(0);
 
-  // 有效供应商由 Rust 目录决定；前端不再自行按 profile 能力回退选择。
-  const provider = providers.find((p) => p.id === effectiveAsrProviderId);
+  const provider = providers.find((p) => p.id === "funasr");
   const hasApiKey = !!provider?.status?.hasApiKey;
   const saveRequestRef = useRef(0);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
@@ -296,6 +362,9 @@ export function SettingsProviderPanel() {
 
         {message && <p className="mt-3 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       </Collapse>
+      {pluginProviders.map((plugin) => (
+        <PluginProviderConfig key={plugin.id} provider={plugin} />
+      ))}
     </SettingsSection>
   );
 }

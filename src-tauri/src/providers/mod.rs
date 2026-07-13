@@ -6,6 +6,7 @@ use connector::RealtimeAsrConnector;
 pub mod alibabacloud;
 pub mod capabilities;
 pub mod connector;
+pub mod plugin;
 pub mod registry;
 #[cfg(test)]
 mod testing;
@@ -23,6 +24,10 @@ pub struct ProviderProfile {
     pub enabled: bool,
     #[serde(default)]
     pub config: Value,
+    #[serde(default)]
+    pub config_fields: Vec<ProviderConfigField>,
+    #[serde(default)]
+    pub actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,7 +83,7 @@ pub struct ProviderListItem {
     pub config: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfigField {
     pub key: String,
@@ -88,6 +93,9 @@ pub struct ProviderConfigField {
 }
 
 pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> {
+    if !profile.config_fields.is_empty() {
+        return profile.config_fields.clone();
+    }
     match profile.kind.as_str() {
         "alibabacloud-funasr" => vec![ProviderConfigField {
             key: "apiKey".into(), label: "API Key".into(), field_type: "password".into(), secret: true,
@@ -97,16 +105,24 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
 }
 
 pub fn actions_for(profile: &ProviderProfile) -> Vec<String> {
+    if !profile.actions.is_empty() {
+        return profile.actions.clone();
+    }
     match profile.kind.as_str() {
         "alibabacloud-funasr" => vec!["manageHotwords".into(), "testRealtimeAsr".into()],
         _ => Vec::new(),
     }
 }
 
-pub fn sanitized_config(config: &Value) -> Value {
-    let mut sanitized = config.clone();
+pub fn sanitized_config(profile: &ProviderProfile) -> Value {
+    let mut sanitized = profile.config.clone();
     if let Some(obj) = sanitized.as_object_mut() {
         obj.remove("apiKey");
+        for field in config_fields_for(profile) {
+            if field.secret {
+                obj.remove(&field.key);
+            }
+        }
     }
     sanitized
 }
@@ -145,6 +161,8 @@ pub fn funasr_profile() -> ProviderProfile {
             "heartbeat": false,
             "speechNoiseThreshold": null
         }),
+        config_fields: vec![],
+        actions: vec![],
     }
 }
 
@@ -302,6 +320,8 @@ mod tests {
             capabilities: vec!["llm".to_string()],
             enabled: true,
             config: json!({}),
+            config_fields: vec![],
+            actions: vec![],
         });
 
         let normalized = normalize_settings(settings);
