@@ -61,6 +61,24 @@ impl TranscriptionRuntime {
     pub(crate) fn get(&self, job_id: &str) -> Option<TranscriptionJobSnapshot> {
         self.jobs.lock().ok()?.get(job_id).cloned()
     }
+
+    /// 返回全部未过期任务及其最后一次事件。窗口重建时由此恢复投影，
+    /// 而不是依赖 WebView 存活期间碰巧收到的事件。
+    pub(crate) fn snapshots(&self) -> Vec<TranscriptionJobSnapshot> {
+        let Ok(jobs) = self.jobs.lock() else {
+            return Vec::new();
+        };
+        let mut snapshots = jobs.values().cloned().collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.job_id.cmp(&right.job_id));
+        snapshots
+    }
+}
+
+#[tauri::command]
+pub(crate) fn get_transcription_runtime(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+) -> Vec<TranscriptionJobSnapshot> {
+    state.transcription_runtime.snapshots()
 }
 
 #[cfg(test)]
@@ -83,5 +101,20 @@ mod tests {
         );
         assert_eq!(runtime.domain_snapshot().state, DomainRunState::Idle);
         assert_eq!(runtime.get("job-1").unwrap().stage, "completed");
+    }
+
+    #[test]
+    fn snapshots_are_stably_sorted_for_window_recovery() {
+        let runtime = TranscriptionRuntime::default();
+        runtime.apply_event("job-b", "uploading", serde_json::json!({}));
+        runtime.apply_event("job-a", "completed", serde_json::json!({}));
+        assert_eq!(
+            runtime
+                .snapshots()
+                .into_iter()
+                .map(|job| job.job_id)
+                .collect::<Vec<_>>(),
+            vec!["job-a", "job-b"]
+        );
     }
 }

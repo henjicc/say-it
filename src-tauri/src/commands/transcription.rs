@@ -346,6 +346,17 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
         state
             .transcription_runtime
             .apply_event(job_id, stage, value.clone());
+        let revision = crate::application::contract::next_revision(&state.snapshot_revision);
+        let _ = app.emit(
+            "domain-event",
+            crate::application::contract::DomainEventEnvelope {
+                revision,
+                domain: "transcription".into(),
+                event_type: "jobUpdated".into(),
+                session_id: Some(job_id.to_string()),
+                payload: value.clone(),
+            },
+        );
         state
             .backend_events
             .publish(crate::application::events::BackendEvent::Transcription {
