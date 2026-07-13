@@ -28,3 +28,13 @@
 - `ui/src/features/asr/{modelRegistry.ts,modelOptions.ts}`、`features/compare/models.ts`：改为消费后端目录，移除 JSON import 与协议推断。
 - `ui/src/App.tsx`、`features/settings/settingsBridge.ts`、`store/useProviderStore.ts`、`views/SettingsProviderPanel.tsx`、`lib/tauri.ts`：启动目录加载门禁、供应商目录 hydrate、action 驱动面板和命令契约。
 - `docs/rules/新增供应商与模型操作手册.md` 与 TASK_DIR 记录：同步新目录机制和验收状态。
+
+## 2026-07-13 · 2.2
+
+- `src-tauri/src/providers/capabilities.rs`：文件识别、翻译、customization 能力 facade、工厂和结构化能力错误。
+- `src-tauri/src/providers/testing.rs`：无网络 fake provider 标准事件测试。
+- `src-tauri/src/providers/{mod.rs,alibabacloud/mod.rs,alibabacloud/transcription/mod.rs}`、`prelude.rs`：注册能力模块并公开必要标准类型。
+- `src-tauri/src/commands/{transcription.rs,translation.rs,funasr.rs}`：业务命令改走通用能力，新增通用热词入口并保留兼容代理。
+- `src-tauri/src/main.rs`、`ui/src/lib/tauri.ts`、`ui/src/store/useProviderStore.ts`：注册通用命令并让前端携带 provider ID 调用。
+- `docs/rules/新增供应商与模型操作手册.md`：更新文件识别、翻译和 customization 的真实扩展步骤。
+- `docs/task/业务后端化与托盘轻量化/`：同步阶段状态、决策、交接、测试及最终人工清单。

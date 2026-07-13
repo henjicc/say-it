@@ -1,20 +1,8 @@
 use crate::commands::common::*;
 use crate::persistence::save_persisted_state;
 use crate::prelude::*;
+use crate::providers::capabilities::{customization_for, CustomizationProvider};
 use crate::state::*;
-
-// 本模块是有意的"供应商专属命令"：热词（vocabulary_id）是阿里云百炼的专属能力，
-// 不是所有 ASR 供应商都支持，因此直接按 FUNASR_PROVIDER_ID 定位 profile，
-// 不走通用的 resolve_provider_id 能力解析。
-
-fn funasr_config_str(config: &Value, key: &str) -> String {
-    config
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
 
 fn funasr_config_vocabulary_ids(config: &Value) -> HashMap<String, String> {
     config
@@ -23,23 +11,26 @@ fn funasr_config_vocabulary_ids(config: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// 返回 (apiKey, target_model -> vocabulary_id 映射)。
-fn funasr_credentials(
+fn customization_context_for(
     state: &tauri::State<'_, RuntimeState>,
-) -> Result<(String, HashMap<String, String>), String> {
+    provider_id: &str,
+) -> Result<(String, CustomizationProvider, HashMap<String, String>), String> {
     let settings = read_provider_settings(state)?;
-    let profile = find_profile(&settings, FUNASR_PROVIDER_ID)
-        .ok_or_else(|| "未找到 Fun-ASR 供应商配置".to_string())?;
+    let profile = find_profile(&settings, provider_id)
+        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let provider = customization_for(profile).map_err(|error| error.to_string())?;
     Ok((
-        funasr_config_str(&profile.config, "apiKey"),
+        profile.id.clone(),
+        provider,
         funasr_config_vocabulary_ids(&profile.config),
     ))
 }
 
 /// 用 patch 覆盖 alibabacloud profile 的 config 字段并落盘，返回最新的供应商设置。
-fn apply_funasr_patch(
+fn apply_provider_patch(
     app: &tauri::AppHandle,
     state: &tauri::State<'_, RuntimeState>,
+    provider_id: &str,
     patch: Value,
 ) -> Result<ProviderSettingsResponse, String> {
     let settings = {
@@ -51,8 +42,8 @@ fn apply_funasr_patch(
         let profile = settings
             .profiles
             .iter_mut()
-            .find(|profile| profile.id == FUNASR_PROVIDER_ID)
-            .ok_or_else(|| "未找到 Fun-ASR 供应商配置".to_string())?;
+            .find(|profile| profile.id == provider_id)
+            .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
         let patch_obj = patch
             .as_object()
             .ok_or_else(|| "patch 必须是 JSON 对象".to_string())?;
@@ -79,25 +70,33 @@ pub(crate) async fn funasr_save_hotwords(
     hotwords: Vec<HotwordEntry>,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
+    provider_save_hotwords(app, FUNASR_PROVIDER_ID.to_string(), hotwords, state).await
+}
+
+#[tauri::command]
+pub(crate) async fn provider_save_hotwords(
+    app: tauri::AppHandle,
+    provider_id: String,
+    hotwords: Vec<HotwordEntry>,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<ProviderSettingsResponse, String> {
     if hotwords.is_empty() {
         return Err("请至少添加一个热词".to_string());
     }
-    let (api_key, existing_ids) = funasr_credentials(&state)?;
-    if api_key.is_empty() {
-        return Err("请先保存阿里云百炼 API Key".to_string());
-    }
+    let (provider_id, provider, existing_ids) = customization_context_for(&state, &provider_id)?;
+    provider.ensure_ready()?;
 
     let mut vocabulary_ids = HashMap::new();
     let mut failures = Vec::new();
-    for (target_model, prefix) in FUNASR_VOCABULARY_TARGETS {
+    for (target_model, prefix) in provider.targets() {
         let existing = existing_ids.get(*target_model).cloned().unwrap_or_default();
         let result = if existing.is_empty() {
-            funasr_create_vocabulary(&api_key, target_model, prefix, &hotwords).await
+            provider.create(target_model, prefix, &hotwords).await
         } else {
-            match funasr_update_vocabulary(&api_key, &existing, &hotwords).await {
+            match provider.update(&existing, &hotwords).await {
                 Ok(()) => Ok(existing),
                 // 已保存的词表 ID 可能已失效（例如被在阿里云控制台删除），回退为新建。
-                Err(_) => funasr_create_vocabulary(&api_key, target_model, prefix, &hotwords).await,
+                Err(_) => provider.create(target_model, prefix, &hotwords).await,
             }
         };
         match result {
@@ -110,9 +109,10 @@ pub(crate) async fn funasr_save_hotwords(
 
     let hotwords_value = serde_json::to_value(&hotwords).map_err(|e| e.to_string())?;
     let vocabulary_ids_value = serde_json::to_value(&vocabulary_ids).map_err(|e| e.to_string())?;
-    let response = apply_funasr_patch(
+    let response = apply_provider_patch(
         &app,
         &state,
+        &provider_id,
         json!({
             "vocabularyIds": vocabulary_ids_value,
             "hotwords": hotwords_value,
@@ -134,17 +134,24 @@ pub(crate) async fn funasr_sync_hotwords(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
-    let (api_key, _) = funasr_credentials(&state)?;
-    if api_key.is_empty() {
-        return Err("请先保存阿里云百炼 API Key".to_string());
-    }
+    provider_sync_hotwords(app, FUNASR_PROVIDER_ID.to_string(), state).await
+}
+
+#[tauri::command]
+pub(crate) async fn provider_sync_hotwords(
+    app: tauri::AppHandle,
+    provider_id: String,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<ProviderSettingsResponse, String> {
+    let (provider_id, provider, _) = customization_context_for(&state, &provider_id)?;
+    provider.ensure_ready()?;
 
     let mut vocabulary_ids = HashMap::new();
     let mut hotwords: Option<Vec<HotwordEntry>> = None;
     let mut query_err: Option<String> = None;
     let mut found_any_id = false;
-    for (target_model, prefix) in FUNASR_VOCABULARY_TARGETS {
-        let Ok(ids) = funasr_list_vocabulary(&api_key, prefix).await else {
+    for (target_model, prefix) in provider.targets() {
+        let Ok(ids) = provider.list(prefix).await else {
             continue;
         };
         let Some(vocabulary_id) = ids.into_iter().next() else {
@@ -152,7 +159,7 @@ pub(crate) async fn funasr_sync_hotwords(
         };
         found_any_id = true;
         if hotwords.is_none() {
-            match funasr_query_vocabulary(&api_key, &vocabulary_id).await {
+            match provider.query(&vocabulary_id).await {
                 Ok(content) => hotwords = Some(content),
                 Err(err) => query_err = Some(err),
             }
@@ -170,9 +177,10 @@ pub(crate) async fn funasr_sync_hotwords(
 
     let hotwords_value = serde_json::to_value(&hotwords).map_err(|e| e.to_string())?;
     let vocabulary_ids_value = serde_json::to_value(&vocabulary_ids).map_err(|e| e.to_string())?;
-    apply_funasr_patch(
+    apply_provider_patch(
         &app,
         &state,
+        &provider_id,
         json!({
             "vocabularyIds": vocabulary_ids_value,
             "hotwords": hotwords_value,
@@ -187,15 +195,25 @@ pub(crate) async fn funasr_clear_hotwords(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
-    let (api_key, vocabulary_ids) = funasr_credentials(&state)?;
-    if !vocabulary_ids.is_empty() && !api_key.is_empty() {
+    provider_clear_hotwords(app, FUNASR_PROVIDER_ID.to_string(), state).await
+}
+
+#[tauri::command]
+pub(crate) async fn provider_clear_hotwords(
+    app: tauri::AppHandle,
+    provider_id: String,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<ProviderSettingsResponse, String> {
+    let (provider_id, provider, vocabulary_ids) = customization_context_for(&state, &provider_id)?;
+    if !vocabulary_ids.is_empty() {
         for vocabulary_id in vocabulary_ids.values() {
-            funasr_delete_vocabulary(&api_key, vocabulary_id).await?;
+            provider.delete(vocabulary_id).await?;
         }
     }
-    apply_funasr_patch(
+    apply_provider_patch(
         &app,
         &state,
+        &provider_id,
         json!({
             "vocabularyIds": {},
             "hotwords": [],

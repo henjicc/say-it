@@ -14,12 +14,7 @@ pub(crate) use crate::providers::{
     ProviderSettings, ProviderSettingsResponse, ProviderStatus, SetDefaultProviderRequest,
     FUNASR_PROVIDER_ID, config_fields_for, actions_for,
 };
-pub(crate) use crate::providers::alibabacloud::{
-    create_vocabulary as funasr_create_vocabulary, delete_vocabulary as funasr_delete_vocabulary,
-    list_vocabulary as funasr_list_vocabulary, query_vocabulary as funasr_query_vocabulary,
-    update_vocabulary as funasr_update_vocabulary, HotwordEntry,
-    VOCABULARY_TARGETS as FUNASR_VOCABULARY_TARGETS,
-};
+pub(crate) use crate::providers::alibabacloud::HotwordEntry;
 pub(crate) use crate::providers::connector::{AsrEvent, RealtimeAsrConnector};
 pub(crate) use base64::{engine::general_purpose::STANDARD, Engine as _};
 pub(crate) use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

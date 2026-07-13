@@ -3,10 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::commands::common::*;
 use crate::prelude::*;
-use crate::providers::alibabacloud::{
-    fetch_transcription_result, query_transcription_task, recognize_short_audio,
-    submit_transcription_task, upload_for_model, uses_async_transcription_task,
-    TranscriptionParams, TranscriptionTaskStatus,
+use crate::providers::capabilities::{
+    file_recognition_for, FileRecognitionProvider, TranscriptionParams, TranscriptionTaskStatus,
 };
 use crate::state::*;
 use crate::text_align::{align_script, AlignOutput, AlignWord};
@@ -93,8 +91,7 @@ pub(crate) async fn transcription_start(
         return Err("请选择要识别的音视频文件".to_string());
     }
 
-    let api_key_result = asr_provider_api_key(&state);
-    let hotword_state_result = asr_provider_hotword_state(&state);
+    let provider_result = resolve_file_recognition_provider(&state);
     let params = params.unwrap_or_default();
     let job_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -109,22 +106,19 @@ pub(crate) async fn transcription_start(
     let jobs = state.transcriptions.clone();
     let task_job_id = job_id.clone();
     tauri::async_runtime::spawn(async move {
-        let result = match (api_key_result, hotword_state_result) {
-            (Ok(api_key), Ok((vocabulary_ids, hotwords))) if !api_key.is_empty() => {
+        let result = match provider_result {
+            Ok(provider) => {
                 run_transcription_job(
                     app.clone(),
                     task_job_id.clone(),
-                    api_key,
+                    provider,
                     file_path,
                     params,
-                    vocabulary_ids,
-                    hotwords,
                     cancel,
                 )
                 .await
             }
-            (Ok(_), Ok(_)) => Err("请先保存阿里云百炼 API Key".to_string()),
-            (Err(err), _) | (_, Err(err)) => Err(err),
+            Err(err) => Err(err),
         };
         if let Err(message) = result {
             emit_transcription_event(&app, &task_job_id, "error", json!({ "message": message }));
@@ -167,11 +161,9 @@ pub(crate) fn transcription_cancel(
 async fn run_transcription_job(
     app: tauri::AppHandle,
     job_id: String,
-    api_key: String,
+    provider: FileRecognitionProvider,
     file_path: String,
     params: TranscriptionParams,
-    vocabulary_ids: HashMap<String, String>,
-    hotwords: Vec<HotwordEntry>,
     cancel: CancelFlag,
 ) -> Result<(), String> {
     let model = params.model_id();
@@ -185,7 +177,7 @@ async fn run_transcription_job(
         }),
     );
 
-    if !uses_async_transcription_task(&model) {
+    if !provider.uses_async_task(&model) {
         // 同步短音频接口（fun-asr-flash / qwen3-asr-flash）直接读取本地文件识别，
         // 不经过临时 OSS 上传：OSS 返回的 oss:// 资源地址仅异步转写接口能解析。
         emit_transcription_event(
@@ -196,7 +188,7 @@ async fn run_transcription_job(
                 "taskId": "",
             }),
         );
-        let result = recognize_short_audio(&api_key, &file_path, &params, &hotwords).await?;
+        let result = provider.recognize_short(&file_path, &params).await?;
         if is_cancelled(&cancel) {
             return Ok(());
         }
@@ -212,13 +204,12 @@ async fn run_transcription_job(
         return Ok(());
     }
 
-    let file_url = upload_for_model(&api_key, &model, &file_path).await?;
+    let file_url = provider.upload(&model, &file_path).await?;
     if is_cancelled(&cancel) {
         return Ok(());
     }
 
-    let vocabulary_id = vocabulary_ids.get(&model).cloned().unwrap_or_default();
-    let task_id = submit_transcription_task(&api_key, &file_url, &params, &vocabulary_id).await?;
+    let task_id = provider.submit(&model, &file_url, &params).await?;
     emit_transcription_event(
         &app,
         &job_id,
@@ -240,7 +231,7 @@ async fn run_transcription_job(
             return Err("录音识别任务轮询超时，请稍后重试".to_string());
         }
         poll_count += 1;
-        let status = query_transcription_task(&api_key, &task_id).await?;
+        let status = provider.query(&task_id).await?;
         emit_transcription_event(
             &app,
             &job_id,
@@ -256,7 +247,7 @@ async fn run_transcription_job(
             "PENDING" | "RUNNING" => sleep(POLL_INTERVAL).await,
             "SUCCEEDED" => {
                 let result_url = status.successful_transcription_url()?;
-                let result = fetch_transcription_result(&result_url).await?;
+                let result = provider.fetch(&result_url).await?;
                 if is_cancelled(&cancel) {
                     return Ok(());
                 }
@@ -301,51 +292,14 @@ fn is_cancelled(cancel: &CancelFlag) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
-/// 解析出当前默认 ASR 供应商 profile；文件转写目前只有阿里云百炼一条实现，
-/// 其余 kind 明确报错而不是静默按 funasr 处理。
-fn resolve_asr_transcription_profile(
+fn resolve_file_recognition_provider(
     state: &tauri::State<'_, RuntimeState>,
-) -> Result<ProviderProfile, String> {
+) -> Result<FileRecognitionProvider, String> {
     let settings = read_provider_settings(state)?;
     let provider_id = resolve_provider_id(state, "asr", None)?;
     let profile = find_profile(&settings, &provider_id)
-        .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    if profile.kind != "alibabacloud-funasr" {
-        return Err(format!("当前版本录音识别仅支持阿里云百炼供应商，当前默认供应商类型：{}", profile.kind));
-    }
-    Ok(profile)
-}
-
-fn asr_provider_api_key(state: &tauri::State<'_, RuntimeState>) -> Result<String, String> {
-    let profile = resolve_asr_transcription_profile(state)?;
-    Ok(profile
-        .config
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string())
-}
-
-/// 读取本地保存的热词状态：target_model -> vocabulary_id 映射，以及用户维护的热词文本列表。
-/// 请求识别时按实际使用的 model 从映射里查出对应词表 ID，或直接把热词文本用于上下文增强，
-/// 前端不需要（也不再能够）指定使用哪个词表。
-fn asr_provider_hotword_state(
-    state: &tauri::State<'_, RuntimeState>,
-) -> Result<(HashMap<String, String>, Vec<HotwordEntry>), String> {
-    let profile = resolve_asr_transcription_profile(state)?;
-    let vocabulary_ids = profile
-        .config
-        .get("vocabularyIds")
-        .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value.clone()).ok())
-        .unwrap_or_default();
-    let hotwords = profile
-        .config
-        .get("hotwords")
-        .and_then(|value| serde_json::from_value::<Vec<HotwordEntry>>(value.clone()).ok())
-        .unwrap_or_default();
-    Ok((vocabulary_ids, hotwords))
+    file_recognition_for(profile).map_err(|error| error.to_string())
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {

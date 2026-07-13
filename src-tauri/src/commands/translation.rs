@@ -1,5 +1,6 @@
 use crate::commands::common::*;
 use crate::prelude::*;
+use crate::providers::capabilities::translation_for;
 use crate::state::*;
 
 #[derive(Deserialize)]
@@ -52,15 +53,7 @@ pub(crate) fn translate_subtitle_start(
     let settings = read_provider_settings(&state)?;
     let profile = find_profile(&settings, &provider_id)
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-    let api_key = profile
-        .config
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if api_key.trim().is_empty() {
-        return Err("请先在设置中填写阿里云百炼 API Key".to_string());
-    }
+    let provider = translation_for(profile).map_err(|error| error.to_string())?;
 
     let TranslateSubtitleRequest {
         request_id,
@@ -74,13 +67,8 @@ pub(crate) fn translate_subtitle_start(
     tauri::async_runtime::spawn(async move {
         let delta_app = app.clone();
         let delta_request_id = request_id.clone();
-        let result = crate::providers::alibabacloud::translate_streaming(
-            &api_key,
-            &model,
-            &text,
-            &source_lang,
-            &target_lang,
-            move |partial| {
+        let result = provider
+            .translate_streaming(&model, &text, &source_lang, &target_lang, move |partial| {
                 emit_subtitle_translation_event(
                     &delta_app,
                     &delta_request_id,
@@ -89,15 +77,28 @@ pub(crate) fn translate_subtitle_start(
                     false,
                     None,
                 );
-            },
-        )
-        .await;
+            })
+            .await;
         match result {
             Ok(full_text) => {
-                emit_subtitle_translation_event(&app, &request_id, segment_seq, &full_text, true, None);
+                emit_subtitle_translation_event(
+                    &app,
+                    &request_id,
+                    segment_seq,
+                    &full_text,
+                    true,
+                    None,
+                );
             }
             Err(err) => {
-                emit_subtitle_translation_event(&app, &request_id, segment_seq, "", true, Some(err));
+                emit_subtitle_translation_event(
+                    &app,
+                    &request_id,
+                    segment_seq,
+                    "",
+                    true,
+                    Some(err),
+                );
             }
         }
     });

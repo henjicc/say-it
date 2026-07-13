@@ -4,8 +4,11 @@ use serde_json::{json, Value};
 use connector::RealtimeAsrConnector;
 
 pub mod alibabacloud;
+pub mod capabilities;
 pub mod connector;
 pub mod registry;
+#[cfg(test)]
+mod testing;
 
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
 
