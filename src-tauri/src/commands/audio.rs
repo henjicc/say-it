@@ -16,26 +16,4 @@ pub(crate) fn emit_asr_stream_event(app: &tauri::AppHandle, session_id: &str, ki
             session_id: session_id.to_string(), kind: kind.to_string(), payload: payload.clone(),
         });
     }
-    let _ = app.emit(
-        "asr-stream-event",
-        json!({
-          "session_id": session_id,
-          "kind": kind,
-          "payload": payload
-        }),
-    );
 }
-
-
-
-#[tauri::command]
-pub(crate) fn process_audio_offline(request: AudioProcessRequest) -> Result<OfflineResult, String> {
-    let samples = decode_f32_base64(&request.samples_base64)?;
-    Ok(process_offline(
-        &samples,
-        request.sample_rate,
-        &request.params,
-    ))
-}
-
-

@@ -6,13 +6,13 @@ pub(crate) use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use crate::audio_dsp::{process_offline, DspParams, OfflineResult, StreamDsp, OUTPUT_RATE};
+pub(crate) use crate::audio_dsp::{DspParams, StreamDsp, OUTPUT_RATE};
 pub(crate) use crate::{debug_log_enabled, dlog, hotkey};
 pub(crate) use crate::providers::{
     default_provider_id, find_profile, has_capability, normalize_settings, sanitized_config,
-    set_default_provider as set_default_provider_value, ProviderListItem, ProviderProfile,
+    set_default_provider as set_default_provider_value, ProviderListItem,
     ProviderSettings, ProviderSettingsResponse, ProviderStatus, SetDefaultProviderRequest,
-    FUNASR_PROVIDER_ID, config_fields_for, actions_for,
+    config_fields_for, actions_for,
 };
 pub(crate) use crate::providers::alibabacloud::HotwordEntry;
 pub(crate) use crate::providers::connector::{AsrEvent, RealtimeAsrConnector};

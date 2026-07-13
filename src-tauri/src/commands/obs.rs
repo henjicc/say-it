@@ -1,8 +1,7 @@
 use crate::{
     obs_overlay::{
         overlay_status as read_overlay_status, overlay_url,
-        publish_overlay_snapshot as publish_snapshot, save_obs_overlay_settings,
-        ObsOverlaySnapshot, ObsOverlayStatus,
+        save_obs_overlay_settings, ObsOverlayStatus,
     },
     state::RuntimeState,
 };
@@ -108,15 +107,6 @@ pub(crate) fn get_obs_overlay_status(
     read_overlay_status(&state)
 }
 
-#[tauri::command]
-pub(crate) fn publish_obs_overlay_snapshot(
-    snapshot: ObsOverlaySnapshot,
-    state: tauri::State<'_, RuntimeState>,
-) {
-    publish_snapshot(&state, snapshot);
-}
-
-#[tauri::command]
 pub(crate) async fn sync_obs_overlay_layout(
     app: tauri::AppHandle,
     request: ObsOverlayLayoutRequest,

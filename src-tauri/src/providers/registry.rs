@@ -59,12 +59,6 @@ pub fn realtime_asr_family(model: &str) -> RealtimeAsrFamily {
     }
 }
 
-/// 静音测试目前只支持 DashScope duplex 协议：Qwen realtime 依赖真实语音触发
-/// VAD 断句，静音音频无法驱动完整的 task-started → task-finished 流程。
-pub fn realtime_family_supports_silence_test(model: &str) -> bool {
-    !matches!(realtime_asr_family(model), RealtimeAsrFamily::QwenRealtime)
-}
-
 /// 判断模型是否支持热词（vocabulary_id）。表内模型查表，表外模型按前缀兜底。
 pub fn supports_vocabulary(model: &str) -> bool {
     if let Some(info) = model_info(model) {

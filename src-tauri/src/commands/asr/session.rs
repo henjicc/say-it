@@ -53,23 +53,6 @@ pub(super) async fn run_asr_session(
     loop {
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                AsrStreamInput::Audio(bytes) => {
-                    if send_or_queue_audio(
-                        &mut writer,
-                        &mut protocol,
-                        bytes,
-                        &app_handle,
-                        &task_session_id,
-                        &mut audio_chunks,
-                        &mut audio_bytes,
-                    )
-                    .await
-                    .is_err()
-                    {
-                        should_exit = true;
-                        break;
-                    }
-                }
                 AsrStreamInput::RawF32(samples) => {
                     let bytes = if let Some(dsp) = dsp.as_mut() {
                         dsp.process(&samples)

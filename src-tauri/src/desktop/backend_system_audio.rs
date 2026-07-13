@@ -276,54 +276,6 @@ pub(crate) fn start_backend_system_audio_inner(
     })
 }
 
-#[tauri::command]
-pub(crate) fn attach_backend_system_audio_raw_capture(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<BackendMicAttachResponse, String> {
-    let worker = {
-        let guard = state
-            .backend_system_audio
-            .lock()
-            .map_err(|_| "Backend system audio lock failed".to_string())?;
-        guard
-            .worker
-            .clone()
-            .ok_or_else(|| "系统音频采集未启动".to_string())?
-    };
-
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-    worker
-        .send(BackendMicCommand::AttachRaw {
-            tx,
-            reply: reply_tx,
-        })
-        .map_err(|_| "系统音频采集线程已停止".to_string())?;
-    let response = reply_rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "系统音频采集绑定超时".to_string())??;
-
-    tauri::async_runtime::spawn(async move {
-        while let Some(input) = rx.recv().await {
-            if let AsrStreamInput::RawF32(samples) = input {
-                let _ = app.emit("backend-system-audio-raw-chunk", encode_f32_base64(&samples));
-            }
-        }
-        let _ = app.emit("backend-system-audio-raw-ended", ());
-    });
-
-    Ok(response)
-}
-
-#[tauri::command]
-pub(crate) fn attach_backend_system_audio_to_asr(
-    session_id: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<BackendMicAttachResponse, String> {
-    attach_backend_system_audio_to_asr_inner(&session_id, &state)
-}
-
 pub(crate) fn attach_backend_system_audio_to_asr_inner(
     session_id: &str,
     state: &RuntimeState,
@@ -362,13 +314,6 @@ pub(crate) fn attach_backend_system_audio_to_asr_inner(
     reply_rx
         .recv_timeout(Duration::from_secs(2))
         .map_err(|_| "系统音频采集绑定超时".to_string())?
-}
-
-#[tauri::command]
-pub(crate) fn pause_backend_system_audio(
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
-    pause_backend_system_audio_inner(&state)
 }
 
 /// 字幕应用服务直接消费系统 loopback PCM，避免完整音频经过 WebView。

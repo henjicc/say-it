@@ -134,3 +134,22 @@
 ### 当前结论
 
 - 3.3 自动验收通过；人工窗口、后台连续性和性能项目按用户决定不阻塞 4.1。
+
+## 2026-07-13 · 5.1
+
+### 自动验证
+
+- `npm run ui:build`：通过，Vite 主窗口与 indicator 双入口构建成功。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过，无 warning。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，98/98。
+- `npx tsc --noEmit --lib ES2022,DOM,DOM.Iterable`：通过。`cargo fmt --check` 未通过，原因是仓库既有大量未格式化文件；未执行全仓格式化，避免任务外差异。
+- 静态扫描：前端未消费 `asr-stream-event`、`subtitle-translation-event`、`backend-*-raw-*`，未直接导入 `asr-models.json`，未保留 `funasr_*` 或旧 ASR stream 公共命令；后端对应 Tauri 注册已删除。
+- fake provider 演练：`providers::testing` 的无网络测试覆盖协议无关文件成功/异步进度、取消后的迟到完成、翻译增量与错误；业务状态机未按供应商分支。
+
+### 未自动验证
+
+- 必须由用户完成 `manual-test-checklist.md` 的真实设备、快捷键、窗口、OBS、升级回退、资源和时延项目；该限制由桌面 UI 与外部服务决定。
+
+### 当前结论
+
+- 5.1 代码和自动验收通过，整体计划处于待验证状态。
