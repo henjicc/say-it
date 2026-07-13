@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn plugin_ids_are_portable() {
         assert!(validate_id("插件", "web-provider.1").is_ok());
-        assert!(validate_id("插件", "豆包").is_err());
+        assert!(validate_id("插件", "供应商").is_err());
         assert!(validate_id("插件", "Upper").is_err());
     }
 
