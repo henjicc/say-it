@@ -21,6 +21,7 @@ use application::catalog::get_model_catalog;
 use application::dictation::{dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime, preview_dictation_cue};
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::subtitles::{apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle, sync_subtitle_presentation};
+use application::transcription::get_transcription_runtime;
 use commands::*;
 use desktop::*;
 use obs_overlay::*;
@@ -291,6 +292,7 @@ fn main() {
             open_external_link,
             get_dictation_settings,
             get_dictation_runtime,
+            get_transcription_runtime,
             dictation_toggle,
             dictation_start,
             dictation_stop,

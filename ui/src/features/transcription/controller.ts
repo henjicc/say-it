@@ -117,6 +117,27 @@ function handleTranscribeEvent(payload: TranscriptionEventPayload) {
   }
 }
 
+/** 后端任务的最后事件投影。窗口重建后不依赖旧事件监听器，也能恢复普通转写的进度或结果。 */
+export function applyTranscriptionRuntime(payload: TranscriptionEventPayload) {
+  const store = useTranscriptionStore.getState();
+  if (!payload.jobId) return;
+  if (store.alignJobId && payload.jobId === store.alignJobId) {
+    handleAlignEvent(payload);
+    return;
+  }
+  if (!store.jobId || payload.jobId === store.jobId) {
+    store.setRuntime({ jobId: payload.jobId });
+    handleTranscribeEvent(payload);
+  }
+}
+
+export async function loadTranscriptionRuntime() {
+  const jobs = await cmd<Array<{ jobId: string; stage: string; active: boolean; payload: TranscriptionEventPayload }>>(CMD.getTranscriptionRuntime);
+  // 运行中的任务优先；若仅有已结束任务，恢复最近返回的一项，供窗口重建后查看结果。
+  const current = jobs.find((job) => job.active) || jobs.at(-1);
+  if (current) applyTranscriptionRuntime({ ...current.payload, jobId: current.jobId, stage: current.stage });
+}
+
 function handleAlignEvent(payload: TranscriptionEventPayload) {
   const store = useTranscriptionStore.getState();
 

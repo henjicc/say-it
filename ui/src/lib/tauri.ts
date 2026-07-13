@@ -12,6 +12,7 @@ export const CMD = {
   getDictationSettings: "get_dictation_settings",
   setDictationSettings: "set_dictation_settings",
   getDictationRuntime: "get_dictation_runtime",
+  getTranscriptionRuntime: "get_transcription_runtime",
   dictationToggle: "dictation_toggle",
   dictationStart: "dictation_start",
   dictationStop: "dictation_stop",

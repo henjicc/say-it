@@ -22,6 +22,7 @@ import {
   handleForwardedSubtitleKeyup,
   handleSubtitleCaptureLockKey,
 } from "@/features/subtitles/controller";
+import { applyTranscriptionRuntime, loadTranscriptionRuntime } from "@/features/transcription/controller";
 
 export function useTauriBridge() {
   const [ready, setReady] = useState(false);
@@ -52,6 +53,7 @@ export function useTauriBridge() {
     const applyDomainEvent = (event: DomainEventEnvelope) => {
       if (event.domain === "dictation") applyDictationRuntime((event.payload || {}) as never);
       if (event.domain === "subtitles") applySubtitleRuntime((event.payload || {}) as never);
+      if (event.domain === "transcription") applyTranscriptionRuntime((event.payload || {}) as never);
     };
 
     void (async () => {
@@ -81,7 +83,7 @@ export function useTauriBridge() {
         // 若加载期间发生领域变化就重试，避免较旧的命令响应覆盖刚收到的事件。
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const before = await cmd<AppSnapshot>(CMD.getAppSnapshot);
-          await Promise.all([loadDictationRuntime(), loadSubtitleRuntime()]);
+          await Promise.all([loadDictationRuntime(), loadSubtitleRuntime(), loadTranscriptionRuntime()]);
           const corrected = await cmd<AppSnapshot>(CMD.getAppSnapshot);
           if (corrected.revision === before.revision) {
             appliedRevision = Math.max(appliedRevision, corrected.revision);
