@@ -106,6 +106,16 @@ pub(crate) fn raise_indicator_window(window: &tauri::WebviewWindow) {
     }
 }
 
+/// 听写和实时字幕共用同一个悬浮窗口。每次听写启动都必须显式清掉字幕配置，
+/// 否则上一次字幕会话留下的样式会被下一次听写复用。
+pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_indicator_window(app)?;
+    let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
+    let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
+    let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
+    Ok(())
+}
+
 /// 切换指示器内容。state: "recording" | "processing" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
