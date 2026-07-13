@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use application::contract::get_app_snapshot;
 use application::catalog::get_model_catalog;
 use application::audio_lab::{audio_lab_audio_path, audio_lab_reprocess, audio_lab_start, audio_lab_stop, get_audio_lab_runtime};
+use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::dictation::{dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime, preview_dictation_cue};
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::subtitles::{apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle, sync_subtitle_presentation};
@@ -146,6 +147,7 @@ fn main() {
             hotkey::init(app.handle().clone());
             application::dictation::initialize(app.handle().clone());
             application::subtitles::initialize(app.handle().clone());
+            application::compare::initialize(app.handle().clone());
             let dictation_settings = {
                 let state = app.state::<RuntimeState>();
                 let guard = state.dictation.lock().map_err(|_| {
@@ -298,6 +300,10 @@ fn main() {
             audio_lab_reprocess,
             audio_lab_audio_path,
             get_audio_lab_runtime,
+            compare_start,
+            compare_stop,
+            compare_cancel,
+            get_compare_runtime,
             get_transcription_runtime,
             dictation_toggle,
             dictation_start,
