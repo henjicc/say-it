@@ -75,6 +75,21 @@ impl AudioLabRuntime {
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
         match self.state.lock() { Ok(state) => DomainSnapshot { state: if state.recording { DomainRunState::Running } else { DomainRunState::Idle }, session_id: None }, Err(_) => DomainSnapshot { state: DomainRunState::Failed, session_id: None } }
     }
+    pub(crate) fn write_wav(&self, processed: bool) -> Result<String, String> {
+        let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        let samples = if processed { &state.processed } else { &state.raw };
+        if samples.is_empty() { return Err("没有可播放的音频".into()); }
+        let rate = if processed { 48_000 } else { state.sample_rate };
+        let data_len = (samples.len() * 2) as u32;
+        let mut bytes = Vec::with_capacity(44 + data_len as usize);
+        bytes.extend_from_slice(b"RIFF"); bytes.extend_from_slice(&(36 + data_len).to_le_bytes()); bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes()); bytes.extend_from_slice(&1u16.to_le_bytes()); bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes()); bytes.extend_from_slice(&(rate * 2).to_le_bytes()); bytes.extend_from_slice(&2u16.to_le_bytes()); bytes.extend_from_slice(&16u16.to_le_bytes()); bytes.extend_from_slice(b"data"); bytes.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples { bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes()); }
+        let path = std::env::temp_dir().join(format!("say-it-audio-lab-{}.wav", if processed { "processed" } else { "raw" }));
+        std::fs::write(&path, bytes).map_err(|error| format!("写入试听文件失败：{error}"))?;
+        path.to_str().map(str::to_owned).ok_or_else(|| "试听文件路径无效".into())
+    }
 }
 
 #[tauri::command]
@@ -106,6 +121,9 @@ pub(crate) fn audio_lab_reprocess(state: tauri::State<'_, crate::state::RuntimeS
 
 #[tauri::command]
 pub(crate) fn get_audio_lab_runtime(state: tauri::State<'_, crate::state::RuntimeState>) -> Result<AudioLabSnapshot, String> { state.audio_lab_runtime.snapshot() }
+
+#[tauri::command]
+pub(crate) fn audio_lab_audio_path(state: tauri::State<'_, crate::state::RuntimeState>, processed: bool) -> Result<String, String> { state.audio_lab_runtime.write_wav(processed) }
 
 fn snapshot(state: &AudioLabState) -> AudioLabSnapshot {
     AudioLabSnapshot { recording: state.recording, sample_rate: state.sample_rate, duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64, raw_waveform: summarize(&state.raw), processed_waveform: summarize(&state.processed), stats: state.stats.clone() }
