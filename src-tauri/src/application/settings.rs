@@ -75,6 +75,7 @@ pub(crate) fn import_legacy_settings(app: AppHandle, state: State<'_, RuntimeSta
 #[tauri::command]
 pub(crate) fn update_app_settings(app: AppHandle, state: State<'_, RuntimeState>, domain: String, value: Value) -> Result<AppSettings, String> {
     valid_object(&value)?;
+    if domain == "dictation" { crate::application::dictation::validate_dictation_settings_value(&value)?; }
     let mut next = state.app_settings.lock().map_err(|_| "应用配置锁失败")?.clone();
     match domain.as_str() {
         "dictation" => next.dictation_prefs = value,

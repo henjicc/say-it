@@ -4,7 +4,7 @@ import { CMD, EVT, cmd, cmdSilent, on } from "@/lib/tauri";
 import { base64ToFloat32, float32ToBase64 } from "@/lib/audio-dsp";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
-import { ensureMic, getBackendMicSampleRate, shutdownMic } from "@/features/dictation/micSession";
+import { ensureMic, getBackendMicSampleRate, shutdownMic } from "@/features/audio/micSession";
 import { ensureProviderReady } from "@/features/transcription/controller";
 import { modelKind, type CompareModelKind } from "@/features/compare/models";
 import { useCompareStore } from "@/store/useCompareStore";

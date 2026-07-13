@@ -18,6 +18,25 @@ pub(crate) async fn start_asr_stream(
     sample_rate: Option<u32>,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
+    start_asr_stream_inner(
+        app,
+        &state,
+        provider_id,
+        model_override,
+        sample_rate,
+        params,
+    )
+    .await
+}
+
+pub(crate) async fn start_asr_stream_inner(
+    app: tauri::AppHandle,
+    state: &RuntimeState,
+    provider_id: Option<String>,
+    model_override: Option<String>,
+    sample_rate: Option<u32>,
+    params: Option<DspParams>,
+) -> Result<AsrStreamStartResponse, String> {
     let provider_id = resolve_provider_id(&state, "asr", provider_id)?;
     let settings = read_provider_settings(&state)?;
     let profile = find_profile(&settings, &provider_id)
@@ -163,6 +182,22 @@ pub(crate) fn asr_stream_finish(
         .map_err(|_| "ASR stream channel closed".to_string())
 }
 
+pub(crate) fn asr_stream_finish_inner(
+    session_id: &str,
+    state: &RuntimeState,
+) -> Result<(), String> {
+    let tx = state
+        .asr_streams
+        .lock()
+        .map_err(|_| "ASR stream lock failed".to_string())?
+        .get(session_id)
+        .ok_or_else(|| "ASR stream not found".to_string())?
+        .tx
+        .clone();
+    tx.send(AsrStreamInput::Finish)
+        .map_err(|_| "ASR stream channel closed".to_string())
+}
+
 #[tauri::command]
 pub(crate) fn stop_asr_stream(
     session_id: String,
@@ -182,6 +217,18 @@ pub(crate) fn stop_asr_stream(
                 session_id.get(..8).unwrap_or(&session_id)
             );
         }
+        let _ = handle.tx.send(AsrStreamInput::Stop);
+    }
+    Ok(())
+}
+
+pub(crate) fn stop_asr_stream_inner(session_id: &str, state: &RuntimeState) -> Result<(), String> {
+    let handle = state
+        .asr_streams
+        .lock()
+        .map_err(|_| "ASR stream lock failed".to_string())?
+        .remove(session_id);
+    if let Some(handle) = handle {
         let _ = handle.tx.send(AsrStreamInput::Stop);
     }
     Ok(())

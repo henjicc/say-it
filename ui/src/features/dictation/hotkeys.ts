@@ -5,22 +5,10 @@ type Tone = "" | "ok" | "err";
 
 interface HotkeyHooks {
   setStatus: (text: string, tone?: Tone) => void;
-  getRecording: () => boolean;
-  isAssistantActive: () => boolean;
-  toggleDictation: () => void | Promise<void>;
-  startDictation: () => void | Promise<void>;
-  stopDictation: () => void | Promise<void>;
-  onCancelKey: () => void | Promise<void>;
 }
 
 let hooks: HotkeyHooks = {
   setStatus: () => {},
-  getRecording: () => false,
-  isAssistantActive: () => false,
-  toggleDictation: () => {},
-  startDictation: () => {},
-  stopDictation: () => {},
-  onCancelKey: () => {},
 };
 
 // ---- 快捷键 ----
@@ -228,89 +216,6 @@ export async function setPressHoldMode(enabled: boolean) {
     useDictationStore.setState({ pressHoldMode: dictPressHoldMode });
     hooks.setStatus(`保存失败：${String(error)}`, "err");
   }
-}
-
-// ---- 焦点在本应用窗口时的热键兜底 ----
-const PRESS_HOLD_START_MS = 260;
-let focusHotkeyDown = false;
-let focusPressHoldTimer: number | null = null;
-
-export interface KeySig {
-  code?: string;
-  ctrlKey?: boolean;
-  shiftKey?: boolean;
-  altKey?: boolean;
-  metaKey?: boolean;
-}
-
-function matchesDictHotkey(e: KeySig): boolean {
-  return (
-    !!dictKeyCode &&
-    e.code === dictKeyCode &&
-    !!e.ctrlKey === dictCtrl &&
-    !!e.shiftKey === dictShift &&
-    !!e.altKey === dictAlt &&
-    !!e.metaKey === dictMeta
-  );
-}
-
-function handleHotkeyKeydown(e: KeySig, preventDefault?: () => void) {
-  if (dictCapturing) return;
-  if (e.code === "Escape") {
-    if (hooks.getRecording() || hooks.isAssistantActive()) {
-      preventDefault?.();
-      hooks.onCancelKey();
-    }
-    return;
-  }
-  if (!dictKeyCode || !matchesDictHotkey(e)) return;
-  preventDefault?.();
-  if (focusHotkeyDown) return;
-  focusHotkeyDown = true;
-  if (!dictPressHoldMode) {
-    hooks.toggleDictation();
-    return;
-  }
-  focusPressHoldTimer = window.setTimeout(() => {
-    focusPressHoldTimer = null;
-    if (focusHotkeyDown) hooks.startDictation();
-  }, PRESS_HOLD_START_MS);
-}
-
-function handleHotkeyKeyup(code?: string) {
-  if (code !== dictKeyCode) return;
-  focusHotkeyDown = false;
-  if (focusPressHoldTimer !== null) {
-    window.clearTimeout(focusPressHoldTimer);
-    focusPressHoldTimer = null;
-    return;
-  }
-  if (dictPressHoldMode) hooks.stopDictation();
-}
-
-function onFocusHotkeyKeydown(e: KeyboardEvent) {
-  handleHotkeyKeydown(e, () => e.preventDefault());
-}
-
-function onFocusHotkeyKeyup(e: KeyboardEvent) {
-  handleHotkeyKeyup(e.code);
-}
-
-export function handleForwardedKeydown(e: KeySig) {
-  handleHotkeyKeydown(e);
-}
-
-export function handleForwardedKeyup(code?: string) {
-  handleHotkeyKeyup(code);
-}
-
-export function installFocusHotkeyFallback(): () => void {
-  window.addEventListener("keydown", onFocusHotkeyKeydown, true);
-  window.addEventListener("keyup", onFocusHotkeyKeyup, true);
-  return () => {
-    window.removeEventListener("keydown", onFocusHotkeyKeydown, true);
-    window.removeEventListener("keyup", onFocusHotkeyKeyup, true);
-  };
 }
 
 export async function loadDictationSettings() {

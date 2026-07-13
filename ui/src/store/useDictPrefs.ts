@@ -94,19 +94,18 @@ function persist(prefs: DictPrefs) {
 
 interface DictPrefsState {
   prefs: DictPrefs;
-  patch: (partial: Partial<DictPrefs>) => void;
+  patch: (partial: Partial<DictPrefs>) => Promise<void>;
   resetLocalRules: () => void;
   dspParams: () => DspParams;
 }
 
 export const useDictPrefs = create<DictPrefsState>((set, get) => ({
   prefs: readStored(),
-  patch: (partial) => {
+  patch: async (partial) => {
     const next = { ...get().prefs, ...partial };
-    void cmd(CMD.updateAppSettings, { domain: "dictation", value: next }).then(() => {
-      persist(next); set({ prefs: next });
-      if ("debugLog" in partial) cmdSilent(CMD.setDebugLog, { enabled: !!next.debugLog });
-    });
+    await cmd(CMD.updateAppSettings, { domain: "dictation", value: next });
+    persist(next); set({ prefs: next });
+    if ("debugLog" in partial) cmdSilent(CMD.setDebugLog, { enabled: !!next.debugLog });
   },
   resetLocalRules: () => get().patch({ localRules: defaultLocalRules() }),
   dspParams: () => dspParamsFromPrefs(get().prefs),

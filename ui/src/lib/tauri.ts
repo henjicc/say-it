@@ -10,6 +10,12 @@ export const CMD = {
   getSessionStatus: "get_session_status",
   getDictationSettings: "get_dictation_settings",
   setDictationSettings: "set_dictation_settings",
+  getDictationRuntime: "get_dictation_runtime",
+  dictationToggle: "dictation_toggle",
+  dictationStart: "dictation_start",
+  dictationStop: "dictation_stop",
+  dictationCancel: "dictation_cancel",
+  previewDictationCue: "preview_dictation_cue",
   getSubtitleShortcut: "get_subtitle_shortcut",
   setSubtitleShortcut: "set_subtitle_shortcut",
   getSubtitleTranslationModel: "get_subtitle_translation_model",
@@ -120,6 +126,7 @@ export interface DomainEventEnvelope<T = unknown> {
 }
 
 export const EVT = {
+  domainEvent: "domain-event",
   asrStreamEvent: "asr-stream-event",
   transcriptionEvent: "transcription-event",
   dictationToggle: "dictation-toggle",

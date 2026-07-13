@@ -11,6 +11,11 @@ pub(crate) fn emit_asr_stream_event(app: &tauri::AppHandle, session_id: &str, ki
         }
         dlog!("[asr {short}] {kind} {summary}");
     }
+    if let Some(state) = app.try_state::<RuntimeState>() {
+        state.backend_events.publish(crate::application::events::BackendEvent::Asr {
+            session_id: session_id.to_string(), kind: kind.to_string(), payload: payload.clone(),
+        });
+    }
     let _ = app.emit(
         "asr-stream-event",
         json!({
