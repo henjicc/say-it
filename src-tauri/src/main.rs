@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod application;
 mod audio_dsp;
 mod audio_prep;
 mod commands;
@@ -15,6 +16,7 @@ mod text_align;
 use prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use application::contract::get_app_snapshot;
 use commands::*;
 use desktop::*;
 use obs_overlay::*;
@@ -235,6 +237,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_app_snapshot,
             get_session_status,
             list_providers,
             get_provider_settings,

@@ -1,8 +1,10 @@
 use crate::obs_overlay::{ObsOverlayRuntime, ObsOverlaySettings};
 use crate::prelude::*;
+use std::sync::atomic::AtomicU64;
 
 #[derive(Default)]
 pub(crate) struct RuntimeState {
+    pub(crate) snapshot_revision: AtomicU64,
     pub(crate) providers: Mutex<ProviderSettings>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
