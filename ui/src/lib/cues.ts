@@ -34,20 +34,24 @@ function beepPreset(kind: string) {
   else beep([770], 0.12);
 }
 
+export function playCueKind(kind: string, which: "start" | "end") {
+  if (kind === "custom") {
+    const data = localStorage.getItem(which === "start" ? "dictCueStartData" : "dictCueEndData");
+    if (data) {
+      const audio = new Audio(data);
+      audio.volume = 0.85;
+      void audio.play().catch(() => {});
+      return;
+    }
+  }
+  beepPreset(kind);
+}
+
 /** 复用迁移前的 Web Audio 提示音，避免原生短流播放产生设备破音。 */
 export function playCue(which: "start" | "end") {
   const prefs = useDictPrefs.getState().prefs;
   if (!prefs.cueEnabled) return;
   const kind = which === "start" ? prefs.cueStart : prefs.cueEnd;
   if (!kind || kind === "none") return;
-  if (kind === "custom") {
-    const data = localStorage.getItem(which === "start" ? "dictCueStartData" : "dictCueEndData");
-    if (data) {
-      const audio = new Audio(data);
-      audio.volume = 0.85;
-      void audio.play();
-      return;
-    }
-  }
-  beepPreset(kind);
+  playCueKind(kind, which);
 }

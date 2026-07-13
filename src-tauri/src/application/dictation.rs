@@ -44,6 +44,12 @@ enum DictationMode {
     File,
 }
 
+#[derive(Clone, Copy)]
+enum CuePlaybackTarget {
+    MainWindow,
+    IndicatorWindow,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalRule {
@@ -246,7 +252,12 @@ pub(crate) fn preview_dictation_cue(
             .clone(),
     )
     .map_err(|e| format!("听写配置无效：{e}"))?;
-    play_cue_async(app, if which == "start" { "start" } else { "end" }, &prefs);
+    play_cue_async(
+        app,
+        if which == "start" { "start" } else { "end" },
+        &prefs,
+        CuePlaybackTarget::MainWindow,
+    );
     Ok(())
 }
 
@@ -396,8 +407,6 @@ async fn start(app: AppHandle) -> Result<(), String> {
             return Err(error);
         }
     }
-    play_cue_async(app.clone(), "start", &prefs);
-    publish_state(&app, None);
     let _ = prepare_dictation_indicator(&app);
     let _ = crate::desktop::set_indicator_layout(
         app.clone(),
@@ -406,7 +415,9 @@ async fn start(app: AppHandle) -> Result<(), String> {
         Some("bottom".into()),
         Some(36.0),
     );
-    let _ = crate::desktop::set_indicator_state(app, "recording".into());
+    let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
+    play_cue_async(app.clone(), "start", &prefs, CuePlaybackTarget::IndicatorWindow);
+    publish_state(&app, None);
     Ok(())
 }
 
@@ -972,7 +983,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
-    play_cue_async(app.clone(), "end", &prefs);
+    play_cue_async(app.clone(), "end", &prefs, CuePlaybackTarget::IndicatorWindow);
     publish_state_with_text(
         &app,
         None,
@@ -1317,7 +1328,12 @@ fn expand_replacement(replacement: &str, caps: &Captures<'_>, source: &str) -> S
     out
 }
 
-fn play_cue_async(app: AppHandle, which: &'static str, prefs: &DictationPrefs) {
+fn play_cue_async(
+    app: AppHandle,
+    which: &'static str,
+    prefs: &DictationPrefs,
+    target: CuePlaybackTarget,
+) {
     if !prefs.cue_enabled {
         return;
     }
@@ -1329,9 +1345,23 @@ fn play_cue_async(app: AppHandle, which: &'static str, prefs: &DictationPrefs) {
     if kind == "none" {
         return;
     }
-    // 内置音回到 Web Audio：它使用持久的 AudioContext，不会在每次提示时
-    // 打开/关闭 WASAPI 输出流，从而避免部分扬声器驱动产生破音。
-    let _ = app.emit("dictation-play-cue", json!({ "which": which, "kind": kind }));
+    let event = match target {
+        CuePlaybackTarget::MainWindow => "dictation-play-cue",
+        CuePlaybackTarget::IndicatorWindow => "dictation-indicator-play-cue",
+    };
+    tauri::async_runtime::spawn(async move {
+        // 第一次创建悬浮窗时，给它的 WebView 留出注册事件监听器的时间。
+        if matches!(target, CuePlaybackTarget::IndicatorWindow) {
+            sleep(Duration::from_millis(100)).await;
+        }
+        if let CuePlaybackTarget::IndicatorWindow = target {
+            if let Some(window) = app.get_webview_window("dictation-indicator") {
+                let _ = window.emit(event, json!({ "which": which, "kind": kind }));
+                return;
+            }
+        }
+        let _ = app.emit(event, json!({ "which": which, "kind": kind }));
+    });
 }
 
 #[cfg(test)]
