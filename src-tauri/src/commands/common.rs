@@ -25,9 +25,7 @@ fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
         .map_err(|err| format!("打开浏览器失败：{err}"))
 }
 
-pub(crate) fn read_provider_settings(
-    state: &tauri::State<'_, RuntimeState>,
-) -> Result<ProviderSettings, String> {
+pub(crate) fn read_provider_settings(state: &RuntimeState) -> Result<ProviderSettings, String> {
     state
         .providers
         .lock()
@@ -36,7 +34,7 @@ pub(crate) fn read_provider_settings(
 }
 
 pub(crate) fn resolve_provider_id(
-    state: &tauri::State<'_, RuntimeState>,
+    state: &RuntimeState,
     capability: &str,
     provider_id: Option<String>,
 ) -> Result<String, String> {

@@ -1,25 +1,15 @@
-import { CMD, cmdSilent } from "@/lib/tauri";
-import { useDictPrefs } from "@/store/useDictPrefs";
+import { CMD, cmd } from "@/lib/tauri";
 import { useDictationStore } from "@/store/useDictationStore";
-import { isDictationFileModel } from "@/features/asr/modelOptions";
 import {
-  configureHotkeys,
-  comboLabel,
-  isCapturing,
   startShortcutCapture,
+  clearShortcut,
+  isCapturing,
   setInjectMethod,
   setPressHoldMode,
-  handleForwardedKeydown,
-  handleForwardedKeyup,
-  installFocusHotkeyFallback,
   loadDictationSettings,
   handleCaptureLockKey,
+  configureHotkeys,
 } from "./hotkeys";
-import { resetIndicatorPreview } from "./indicatorBridge";
-import { clearMicShutdownTimer, scheduleMicShutdown, shutdownMic } from "./micSession";
-import { dictSession, clearDictLog, pushDictLog, setDictationStatus } from "./session";
-import { startFileDictation, handleDictTranscriptionEvent } from "./fileFlow";
-import { startRealtimeDictation, stopDictationAndInject, handleDictAsrEvent } from "./realtimeFlow";
 
 export {
   startShortcutCapture,
@@ -27,196 +17,58 @@ export {
   isCapturing,
   setInjectMethod,
   setPressHoldMode,
-  handleForwardedKeydown,
-  handleForwardedKeyup,
-  installFocusHotkeyFallback,
   loadDictationSettings,
   handleCaptureLockKey,
 } from "./hotkeys";
-export { clearDictLog } from "./session";
-export { handleDictAsrEvent } from "./realtimeFlow";
-export { handleDictTranscriptionEvent } from "./fileFlow";
+
+type RuntimePayload = {
+  phase?: "idle" | "waitingForVoice" | "recording" | "finishing" | "processingFile" | "injecting" | "failed";
+  recording?: boolean;
+  text?: string;
+  error?: string | null;
+};
+
+const labels: Record<string, string> = {
+  idle: "速记就绪",
+  waitingForVoice: "正在等待声音…（再次按快捷键停止并注入）",
+  recording: "正在聆听…（再次按快捷键停止并注入）",
+  finishing: "识别中，正在等待完整文本…",
+  processingFile: "识别中，正在处理完整录音…",
+  injecting: "识别完成，正在注入…",
+  failed: "语音输入出错",
+};
 
 configureHotkeys({
-  setStatus: setDictationStatus,
-  getRecording: () => useDictationStore.getState().recording,
-  isAssistantActive: () => false,
-  toggleDictation: () => toggleDictation(),
-  startDictation: () => startDictationByShortcut(),
-  stopDictation: () => stopDictationByShortcut(),
-  onCancelKey: () => onCancelKey(),
+  setStatus: (statusText, statusTone = "") => useDictationStore.setState({ statusText, statusTone }),
 });
 
-async function startDictation() {
-  if (dictSession.recording) return;
-  clearMicShutdownTimer();
-  dictSession.committed = "";
-  dictSession.segment = "";
-  dictSession.finalized = false;
-  dictSession.awaitingFinal = false;
-  dictSession.resultCount = 0;
-  dictSession.startedAt = Date.now();
-  dictSession.mode = null;
-  dictSession.fileJobId = "";
-  dictSession.rawChunks = [];
-  resetIndicatorPreview();
-
-  const model = useDictPrefs.getState().prefs.asrModel;
-  if (isDictationFileModel(model)) {
-    await startFileDictation(model);
-    return;
-  }
-
-  await startRealtimeDictation(model);
+export function applyDictationRuntime(payload: RuntimePayload) {
+  const phase = payload.phase || "idle";
+  const error = payload.error || "";
+  useDictationStore.setState({
+    recording: !!payload.recording,
+    latestText: payload.text || useDictationStore.getState().latestText,
+    statusText: error ? `语音输入出错：${error}` : labels[phase] || labels.idle,
+    statusTone: error || phase === "failed" ? "err" : phase === "idle" ? "" : "ok",
+  });
 }
 
-export async function onCancelKey() {
-  await cancelDictation();
+export async function loadDictationRuntime() {
+  const runtime = await cmd<RuntimePayload>(CMD.getDictationRuntime);
+  applyDictationRuntime({ ...runtime, recording: runtime.phase === "recording" || runtime.phase === "waitingForVoice" });
 }
 
-export async function cancelDictation() {
-  if (!dictSession.recording && !dictSession.awaitingFinal && !dictSession.sessionId && !dictSession.fileJobId) return;
-  const session = dictSession.sessionId;
-  const fileJobId = dictSession.fileJobId;
-  dictSession.recording = false;
-  dictSession.streamEpoch += 1;
-  dictSession.awaitingFinal = false;
-  dictSession.finalized = true;
-  dictSession.sessionId = null;
-  dictSession.fileJobId = "";
-  dictSession.mode = null;
-  dictSession.committed = "";
-  dictSession.segment = "";
-  dictSession.rawChunks = [];
-  useDictationStore.setState({ recording: false });
-  resetIndicatorPreview();
-  if (dictSession.finalizeTimer) {
-    clearTimeout(dictSession.finalizeTimer);
-    dictSession.finalizeTimer = null;
-  }
-  if (dictSession.silenceTimer) {
-    clearTimeout(dictSession.silenceTimer);
-    dictSession.silenceTimer = null;
-  }
-  dictSession.streamStarting = false;
-  dictSession.silenceDisconnecting = false;
-  scheduleMicShutdown(pushDictLog);
-  cmdSilent(CMD.pauseBackendMic);
-  dictSession.rawUnlisten?.();
-  dictSession.rawUnlisten = null;
-  dictSession.previewUnlisten?.();
-  dictSession.previewUnlisten = null;
-  cmdSilent(CMD.setIndicatorState, { state: "hidden" });
-  cmdSilent(CMD.setIndicatorText, { text: "" });
-  if (session) cmdSilent(CMD.stopAsrStream, { sessionId: session });
-  if (fileJobId) cmdSilent(CMD.transcriptionCancel, { jobId: fileJobId });
-  pushDictLog("已按 ESC 取消语音输入，识别文本已丢弃。");
-  setDictationStatus(`已取消语音输入，快捷键：${comboLabel()}`);
+async function invokeRuntime(command: string) {
+  try { await cmd(command); }
+  catch (error) { useDictationStore.setState({ statusText: `语音输入出错：${String(error)}`, statusTone: "err" }); }
 }
-
-async function waitForShortcutBusy() {
-  while (dictSession.busy) {
-    await new Promise((resolve) => window.setTimeout(resolve, 20));
-  }
-}
-
-export async function startDictationByShortcut() {
-  if (dictSession.busy || dictSession.recording || dictSession.awaitingFinal) return;
-  dictSession.busy = true;
-  try {
-    await startDictation();
-  } catch (error) {
-    dictSession.recording = false;
-    dictSession.awaitingFinal = false;
-    dictSession.mode = null;
-    useDictationStore.setState({ recording: false });
-    await shutdownMic();
-    dictSession.rawUnlisten?.();
-    dictSession.rawUnlisten = null;
-    dictSession.previewUnlisten?.();
-    dictSession.previewUnlisten = null;
-    dictSession.rawChunks = [];
-    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
-    if (dictSession.sessionId) {
-      cmdSilent(CMD.stopAsrStream, { sessionId: dictSession.sessionId });
-      dictSession.sessionId = null;
-    }
-    setDictationStatus(`语音输入出错：${String(error)}`, "err");
-  } finally {
-    dictSession.busy = false;
-  }
-}
-
-export async function stopDictationByShortcut() {
-  if (!dictSession.recording && !dictSession.busy) return;
-  await waitForShortcutBusy();
-  if (dictSession.recording) await toggleDictation();
-}
-
-export async function toggleDictation() {
-  if (dictSession.busy) return;
-  if (dictSession.awaitingFinal) {
-    setDictationStatus("正在等待识别完成，按 Esc 可取消。");
-    return;
-  }
-  dictSession.busy = true;
-  try {
-    if (!dictSession.recording) await startDictation();
-    else await stopDictationAndInject();
-  } catch (error) {
-    dictSession.recording = false;
-    dictSession.streamEpoch += 1;
-    dictSession.awaitingFinal = false;
-    dictSession.mode = null;
-    if (dictSession.silenceTimer) {
-      clearTimeout(dictSession.silenceTimer);
-      dictSession.silenceTimer = null;
-    }
-    dictSession.streamStarting = false;
-    dictSession.silenceDisconnecting = false;
-    useDictationStore.setState({ recording: false });
-    await shutdownMic();
-    dictSession.rawUnlisten?.();
-    dictSession.rawUnlisten = null;
-    dictSession.previewUnlisten?.();
-    dictSession.previewUnlisten = null;
-    dictSession.rawChunks = [];
-    cmdSilent(CMD.setIndicatorState, { state: "hidden" });
-    if (dictSession.sessionId) {
-      cmdSilent(CMD.stopAsrStream, { sessionId: dictSession.sessionId });
-      dictSession.sessionId = null;
-    }
-    setDictationStatus(`语音输入出错：${String(error)}`, "err");
-  } finally {
-    setTimeout(() => {
-      dictSession.busy = false;
-    }, 350);
-  }
-}
-
+export async function toggleDictation() { await invokeRuntime(CMD.dictationToggle); }
+export async function startDictationByShortcut() { await cmd(CMD.dictationStart); }
+export async function stopDictationByShortcut() { await cmd(CMD.dictationStop); }
+export async function onCancelKey() { await cmd(CMD.dictationCancel); }
+export async function cancelDictation() { await cmd(CMD.dictationCancel); }
+export function shutdownDictationMic() { /* 生命周期由 Rust 服务持有，不随 WebView 卸载。 */ }
+export function clearDictLog() { useDictationStore.setState({ log: "" }); }
 export function handleShortcutError(payload: { key_code?: string; message?: string }) {
-  setDictationStatus(
-    `快捷键注册失败（${payload.key_code || "?"}）：${payload.message || "未知错误"}`,
-    "err",
-  );
-}
-
-export function shutdownDictationMic() {
-  if (dictSession.fileJobId) {
-    cmdSilent(CMD.transcriptionCancel, { jobId: dictSession.fileJobId });
-    dictSession.fileJobId = "";
-  }
-  dictSession.rawUnlisten?.();
-  dictSession.rawUnlisten = null;
-  dictSession.previewUnlisten?.();
-  dictSession.previewUnlisten = null;
-  if (dictSession.silenceTimer) {
-    clearTimeout(dictSession.silenceTimer);
-    dictSession.silenceTimer = null;
-  }
-  dictSession.streamStarting = false;
-  dictSession.silenceDisconnecting = false;
-  dictSession.rawChunks = [];
-  dictSession.mode = null;
-  shutdownMic();
+  useDictationStore.setState({ statusText: `快捷键注册失败（${payload.key_code || "?"}）：${payload.message || "未知错误"}`, statusTone: "err" });
 }

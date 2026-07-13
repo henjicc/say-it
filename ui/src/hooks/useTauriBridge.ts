@@ -5,19 +5,12 @@ import { useProviderStore } from "@/store/useProviderStore";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { syncDebugLogToBackend } from "@/store/useDictPrefs";
 import {
-  toggleDictation,
-  startDictationByShortcut,
-  stopDictationByShortcut,
-  onCancelKey,
-  handleDictAsrEvent,
-  handleDictTranscriptionEvent,
+  applyDictationRuntime,
+  loadDictationRuntime,
   handleShortcutError,
   loadDictationSettings,
   isCapturing,
   shutdownDictationMic,
-  installFocusHotkeyFallback,
-  handleForwardedKeydown,
-  handleForwardedKeyup,
   handleCaptureLockKey,
 } from "@/features/dictation/controller";
 import {
@@ -39,29 +32,12 @@ export function useTauriBridge() {
   useTauriEvent(EVT.asrStreamEvent, (data) => {
     const payload = (data || {}) as { session_id?: string };
     if (!payload.session_id) return;
-    if (handleSubtitleAsrEvent(payload as never)) return;
-    handleDictAsrEvent(payload as never);
+    handleSubtitleAsrEvent(payload as never);
   });
 
-  useTauriEvent(EVT.transcriptionEvent, (data) => {
-    handleDictTranscriptionEvent((data || {}) as never);
-  });
-
-  useTauriEvent(EVT.dictationToggle, () => {
-    if (isCapturing()) return;
-    toggleDictation();
-  });
-  useTauriEvent(EVT.dictationPressStart, () => {
-    if (isCapturing()) return;
-    startDictationByShortcut();
-  });
-  useTauriEvent(EVT.dictationPressEnd, () => {
-    if (isCapturing()) return;
-    stopDictationByShortcut();
-  });
-  useTauriEvent(EVT.dictationCancel, () => {
-    if (isCapturing()) return;
-    onCancelKey();
+  useTauriEvent(EVT.domainEvent, (data) => {
+    const event = (data || {}) as { domain?: string; payload?: unknown };
+    if (event.domain === "dictation") applyDictationRuntime((event.payload || {}) as never);
   });
   useTauriEvent(EVT.dictationShortcutError, (payload) => handleShortcutError(payload as never));
 
@@ -83,23 +59,21 @@ export function useTauriBridge() {
   });
 
   useTauriEvent(EVT.indicatorKeydown, (payload) => {
-    if (!isCapturing()) handleForwardedKeydown((payload || {}) as never);
     if (!isSubtitleCapturing()) handleForwardedSubtitleKeydown((payload || {}) as never);
   });
   useTauriEvent(EVT.indicatorKeyup, (payload) => {
     const code = ((payload || {}) as { code?: string }).code;
-    handleForwardedKeyup(code);
     handleForwardedSubtitleKeyup(code);
   });
 
   useEffect(() => {
     syncDebugLogToBackend();
     loadDictationSettings();
+    void loadDictationRuntime().catch(() => undefined);
     loadSubtitleShortcut();
     void useSubtitleStore.getState().loadTranslationModel().catch(() => undefined);
     useProviderStore.getState().load();
 
-    const uninstallHotkeyFallback = installFocusHotkeyFallback();
     const uninstallSubtitleHotkeyFallback = installSubtitleFocusHotkeyFallback();
     const onUnload = () => {
       shutdownSubtitles();
@@ -108,7 +82,6 @@ export function useTauriBridge() {
     };
     window.addEventListener("beforeunload", onUnload);
     return () => {
-      uninstallHotkeyFallback();
       uninstallSubtitleHotkeyFallback();
       window.removeEventListener("beforeunload", onUnload);
     };

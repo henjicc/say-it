@@ -176,6 +176,38 @@ pub(crate) fn start_backend_mic(
     device_name: Option<String>,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<BackendMicStartResponse, String> {
+    let lease = {
+        let mut current = state
+            .legacy_audio_lease
+            .lock()
+            .map_err(|_| "音频会话锁失败")?;
+        if current.is_none() {
+            *current = Some(
+                state
+                    .audio_session
+                    .acquire(crate::application::audio_session::AudioOwner::Legacy)?,
+            );
+        }
+        current.clone()
+    };
+    match start_backend_mic_inner(device_name, &state) {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            if let Some(lease) = lease {
+                let _ = state.audio_session.release(&lease);
+            }
+            if let Ok(mut current) = state.legacy_audio_lease.lock() {
+                *current = None;
+            }
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn start_backend_mic_inner(
+    device_name: Option<String>,
+    state: &RuntimeState,
+) -> Result<BackendMicStartResponse, String> {
     let requested = device_name.and_then(|s| {
         let trimmed = s.trim().to_string();
         if trimmed.is_empty() {
@@ -438,13 +470,51 @@ pub(crate) fn attach_backend_mic_to_asr(
     session_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<BackendMicAttachResponse, String> {
+    attach_backend_mic_to_asr_inner(&session_id, &state)
+}
+
+/// 应用服务直接消费原始 PCM，避免完整音频经过 WebView 事件往返。
+pub(crate) fn attach_backend_mic_raw_inner(
+    state: &RuntimeState,
+) -> Result<
+    (
+        BackendMicAttachResponse,
+        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    ),
+    String,
+> {
+    let worker = state
+        .backend_mic
+        .lock()
+        .map_err(|_| "Backend mic lock failed".to_string())?
+        .worker
+        .clone()
+        .ok_or_else(|| "后端麦克风未启动".to_string())?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    worker
+        .send(BackendMicCommand::AttachRaw {
+            tx,
+            reply: reply_tx,
+        })
+        .map_err(|_| "后端麦克风线程已停止".to_string())?;
+    let response = reply_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "后端麦克风绑定超时".to_string())??;
+    Ok((response, rx))
+}
+
+pub(crate) fn attach_backend_mic_to_asr_inner(
+    session_id: &str,
+    state: &RuntimeState,
+) -> Result<BackendMicAttachResponse, String> {
     let tx = {
         let guard = state
             .asr_streams
             .lock()
             .map_err(|_| "ASR stream lock failed".to_string())?;
         guard
-            .get(&session_id)
+            .get(session_id)
             .ok_or_else(|| "ASR stream not found".to_string())?
             .tx
             .clone()
@@ -464,7 +534,7 @@ pub(crate) fn attach_backend_mic_to_asr(
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::Attach {
-            session_id,
+            session_id: session_id.to_string(),
             tx,
             reply: reply_tx,
         })
@@ -476,6 +546,10 @@ pub(crate) fn attach_backend_mic_to_asr(
 
 #[tauri::command]
 pub(crate) fn pause_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+    pause_backend_mic_inner(&state)
+}
+
+pub(crate) fn pause_backend_mic_inner(state: &RuntimeState) -> Result<(), String> {
     let worker = {
         let guard = state
             .backend_mic
@@ -507,6 +581,19 @@ pub(crate) fn pause_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result
 
 #[tauri::command]
 pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+    release_backend_mic_inner(&state)?;
+    if let Some(lease) = state
+        .legacy_audio_lease
+        .lock()
+        .map_err(|_| "音频会话锁失败")?
+        .take()
+    {
+        state.audio_session.release(&lease)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn release_backend_mic_inner(state: &RuntimeState) -> Result<(), String> {
     let worker = {
         let mut guard = state
             .backend_mic
@@ -542,4 +629,3 @@ pub(crate) fn get_backend_mic_level(state: tauri::State<'_, RuntimeState>) -> Re
         .map_err(|_| "Backend mic lock failed".to_string())?;
     Ok(guard.last_rms)
 }
-

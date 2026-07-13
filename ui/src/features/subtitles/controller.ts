@@ -10,7 +10,7 @@ import {
   getBackendMicSampleRate,
   scheduleMicShutdown,
   shutdownMic,
-} from "@/features/dictation/micSession";
+} from "@/features/audio/micSession";
 import {
   configureSubtitleHotkeys,
   startSubtitleShortcutCapture,

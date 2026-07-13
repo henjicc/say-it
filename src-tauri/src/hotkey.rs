@@ -302,7 +302,7 @@ fn modifiers_match(mods: u8) -> bool {
 
 fn emit_toggle() {
     if let Some(app) = APP.get() {
-        let _ = app.emit("dictation-toggle", json!({}));
+        crate::application::dictation::request_toggle(app.clone());
     }
 }
 
@@ -315,19 +315,19 @@ fn emit_press_start(sequence: u32, delay_ms: u32) {
     }
     PRESS_HOLD_STARTED.store(true, Ordering::SeqCst);
     if let Some(app) = APP.get() {
-        let _ = app.emit("dictation-press-start", json!({}));
+        crate::application::dictation::request_start(app.clone());
     }
 }
 
 fn emit_press_end() {
     if let Some(app) = APP.get() {
-        let _ = app.emit("dictation-press-end", json!({}));
+        crate::application::dictation::request_stop(app.clone());
     }
 }
 
 fn emit_cancel() {
     if let Some(app) = APP.get() {
-        let _ = app.emit("dictation-cancel", json!({}));
+        crate::application::dictation::request_cancel(app.clone());
     }
 }
 

@@ -87,6 +87,15 @@ pub(crate) async fn transcription_start(
     file_path: String,
     params: Option<TranscriptionParams>,
 ) -> Result<TranscriptionStartResponse, String> {
+    transcription_start_inner(app, &state, file_path, params).await
+}
+
+pub(crate) async fn transcription_start_inner(
+    app: tauri::AppHandle,
+    state: &RuntimeState,
+    file_path: String,
+    params: Option<TranscriptionParams>,
+) -> Result<TranscriptionStartResponse, String> {
     if file_path.trim().is_empty() {
         return Err("请选择要识别的音视频文件".to_string());
     }
@@ -137,18 +146,26 @@ pub(crate) fn transcription_cancel(
     state: tauri::State<'_, RuntimeState>,
     job_id: String,
 ) -> Result<(), String> {
+    transcription_cancel_inner(&app, &state, &job_id)
+}
+
+pub(crate) fn transcription_cancel_inner(
+    app: &tauri::AppHandle,
+    state: &RuntimeState,
+    job_id: &str,
+) -> Result<(), String> {
     let flag = {
         let guard = state
             .transcriptions
             .lock()
             .map_err(|_| "录音识别任务表锁定失败".to_string())?;
-        guard.get(&job_id).cloned()
+        guard.get(job_id).cloned()
     }
     .ok_or_else(|| "未找到录音识别任务".to_string())?;
     flag.store(true, Ordering::Relaxed);
     emit_transcription_event(
-        &app,
-        &job_id,
+        app,
+        job_id,
         "error",
         json!({
             "message": "录音识别已取消：仅停止本地轮询，云端任务可能仍在继续",
@@ -293,7 +310,7 @@ fn is_cancelled(cancel: &CancelFlag) -> bool {
 }
 
 fn resolve_file_recognition_provider(
-    state: &tauri::State<'_, RuntimeState>,
+    state: &RuntimeState,
 ) -> Result<FileRecognitionProvider, String> {
     let settings = read_provider_settings(state)?;
     let provider_id = resolve_provider_id(state, "asr", None)?;
@@ -318,6 +335,15 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
             summary = summary.chars().take(300).collect::<String>() + "…";
         }
         dlog!("[transcription {short}] {summary}");
+    }
+    if let Some(state) = app.try_state::<RuntimeState>() {
+        state
+            .backend_events
+            .publish(crate::application::events::BackendEvent::Transcription {
+                job_id: job_id.to_string(),
+                stage: stage.to_string(),
+                payload: value.clone(),
+            });
     }
     let _ = app.emit(TRANSCRIPTION_EVENT, value);
 }

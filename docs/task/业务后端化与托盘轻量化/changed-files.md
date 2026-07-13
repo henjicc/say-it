@@ -38,3 +38,19 @@
 - `src-tauri/src/main.rs`、`ui/src/lib/tauri.ts`、`ui/src/store/useProviderStore.ts`：注册通用命令并让前端携带 provider ID 调用。
 - `docs/rules/新增供应商与模型操作手册.md`：更新文件识别、翻译和 customization 的真实扩展步骤。
 - `docs/task/业务后端化与托盘轻量化/`：同步阶段状态、决策、交接、测试及最终人工清单。
+
+## 2026-07-13 · 3.1（阻塞现场）
+
+- 源码：无最终保留改动；未接入原型已撤回，避免留下 dead_code 和半套运行时。
+- `docs/task/业务后端化与托盘轻量化/`：记录阻塞原因、验证结果和后续接入顺序。
+
+## 2026-07-13 · 3.1（恢复完成）
+
+- `src-tauri/src/application/{events,audio_session,dictation}.rs`：内部事件总线、音频租约协调器与完整听写应用服务。
+- `src-tauri/src/{state.rs,main.rs,hotkey.rs,application/{mod,contract,settings}.rs}`：注册运行时、命令、快照、快捷键直连和规则保存校验。
+- `src-tauri/src/commands/{audio,asr/mod,common,dictation,transcription}.rs`、`desktop/backend_mic.rs`：提取应用层可调用内部能力，异步结果双发内部事件与兼容 WebView 事件，旧麦克风命令接入协调器。
+- `src-tauri/{Cargo.toml,Cargo.lock}`：增加 MIT `fancy-regex 0.14.0`，用于有界回溯、反向引用和前后查找规则。
+- `ui/src/features/dictation/controller.ts`、`hooks/useTauriBridge.ts`、`lib/{tauri,cues}.ts`：改为命令代理、领域事件投影和原生提示音试听。
+- `ui/src/store/useDictPrefs.ts`、`views/SettingsMicCuePanel.tsx`、`features/settings/settingsBridge.ts`：配置保存改为可等待，确保自定义提示音落盘并切换为 custom 后才调用 Rust 试听。
+- 删除 `ui/src/features/dictation/{session,realtimeFlow,fileFlow,inject,indicatorBridge}.ts`，并将仍供字幕/对比使用的 `micSession.ts` 移至 `features/audio/`：移除前端听写运行时、计时器和 PCM 缓冲。
+- `docs/task/业务后端化与托盘轻量化/`：同步完成状态、决策、交接、测试与最终人工清单。

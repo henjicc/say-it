@@ -111,6 +111,10 @@ pub(crate) fn set_startup_settings(
 /// - type：逐字 Unicode 模拟输入。
 #[tauri::command]
 pub(crate) async fn inject_text(text: String, method: Option<String>) -> Result<(), String> {
+    inject_text_inner(text, method).await
+}
+
+pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> Result<(), String> {
     let text = text.trim_end_matches(['\r', '\n']).to_string();
     if text.is_empty() {
         return Ok(());

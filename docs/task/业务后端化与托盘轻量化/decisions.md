@@ -28,3 +28,14 @@
 - 文件识别公共边界保留提交、查询、获取结果等生命周期操作，但 task ID 和上传 URL 只作为 opaque 值传递，不在业务层解释供应商协议。
 - customization 是可选能力；不支持时由工厂返回带 provider ID、capability 和 message 的结构化错误，业务层不按供应商名分支。
 - 旧 `funasr_*` 命令保留到 5.1，内部只代理通用命令；前端现已调用携带 provider ID 的通用入口。
+
+## 2026-07-13 · 3.1
+
+- 共享麦克风采用 generation lease 校验所有 attach/pause/release，过期 lease 明确失败；延迟释放可取消。
+- 听写运行时以 epoch 隔离迟到 ASR/文件结果，并在状态机内记录已注入 epoch，保证同一会话最多注入一次。
+- 临时基础结构未接入生产路径，不以单元测试通过冒充业务迁移完成；原型已撤回并保持任务阻塞，避免 Rust 与 TypeScript 双权威。
+- 后续若恢复 3.1，须先建立 Rust 内部领域事件端口，让 ASR/转写同时发布到应用服务和既有 WebView 适配器；不能继续以 Tauri 前端事件作为应用层输入。
+- 恢复实施后已建立 `BackendEventHub`：ASR/转写先发布 Rust 内部事件，既有 WebView 事件仅保留为未迁移领域的兼容适配器。
+- 本地规则选用 `fancy-regex 0.14.0`（MIT，源码约 373 KiB）：支持默认规则需要的回溯、反向引用和前后查找，并设置 backtrack limit；不支持的 JS flag/表达式在保存或启动时明确拒绝，不静默跳过。
+- 提示音复用 CPAL 默认输出与 Symphonia 解码；内置音由 Rust 生成，自定义文件从应用数据目录读取，解码/输出失败通过领域事件明确上报，不再回退 Web Audio。
+- 麦克风旧命令统一以 `Legacy` owner 接入协调器，3.2/4.2 迁移时再替换为对应强类型 owner；延迟释放同时校验 epoch 和 audio generation，不能关闭后来接管设备的领域。

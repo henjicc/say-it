@@ -39,13 +39,17 @@ export function SettingsMicCuePanel() {
     const target = cueTargetRef.current;
     if (!file || !target) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = String(reader.result || "");
       const key = target === "start" ? "dictCueStartData" : "dictCueEndData";
-      void cmd(CMD.updateCustomCue, { which: target, dataUrl }).then(() => {
+      try {
+        await cmd(CMD.updateCustomCue, { which: target, dataUrl });
         localStorage.setItem(key, dataUrl);
-        patch(target === "start" ? { cueStart: "custom" } : { cueEnd: "custom" }); playCue(target); cueTargetRef.current = null;
-      });
+        await patch(target === "start" ? { cueStart: "custom" } : { cueEnd: "custom" });
+        playCue(target);
+      } finally {
+        cueTargetRef.current = null;
+      }
     };
     reader.readAsDataURL(file);
   };

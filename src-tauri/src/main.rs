@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use application::contract::get_app_snapshot;
 use application::catalog::get_model_catalog;
+use application::dictation::{dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime, preview_dictation_cue};
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use commands::*;
 use desktop::*;
@@ -135,6 +136,7 @@ fn main() {
             let _ = start_obs_overlay_server(&state);
 
             hotkey::init(app.handle().clone());
+            application::dictation::initialize(app.handle().clone());
             let dictation_settings = {
                 let state = app.state::<RuntimeState>();
                 let guard = state.dictation.lock().map_err(|_| {
@@ -282,6 +284,12 @@ fn main() {
             open_api_key_page,
             open_external_link,
             get_dictation_settings,
+            get_dictation_runtime,
+            dictation_toggle,
+            dictation_start,
+            dictation_stop,
+            dictation_cancel,
+            preview_dictation_cue,
             set_dictation_settings,
             get_subtitle_shortcut,
             set_subtitle_shortcut,

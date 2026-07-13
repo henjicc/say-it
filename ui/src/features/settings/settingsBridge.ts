@@ -15,7 +15,7 @@ function json(key: string): Record<string, unknown> | undefined {
 function apply(settings: AppSettings) {
   hydrateDictPrefs(settings.dictationPrefs); hydrateSubtitlePrefs(settings.subtitlePrefs);
   hydrateComparePrefs(settings.comparePrefs); hydrateTheme(settings.theme);
-  // 播放仍由 Web Audio 兼容路径完成；旧 Data URL 保留到 3.1 接入原生文件播放。
+  // 旧 Data URL 仅作迁移兼容镜像；运行时和设置页试听均由 Rust 原生播放。
 }
 
 export async function initializeSettings(): Promise<void> {
