@@ -8,7 +8,7 @@ use crate::commands::dictation::inject_text_inner;
 use crate::commands::transcription::{transcription_cancel_inner, transcription_start_inner};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner, pause_backend_mic_inner,
-    release_backend_mic_inner, start_backend_mic_inner,
+    prepare_dictation_indicator, release_backend_mic_inner, start_backend_mic_inner,
 };
 use crate::prelude::*;
 use crate::providers::alibabacloud::TranscriptionParams;
@@ -398,6 +398,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
     }
     play_cue_async(app.clone(), "start", &prefs);
     publish_state(&app, None);
+    let _ = prepare_dictation_indicator(&app);
     let _ = crate::desktop::set_indicator_layout(
         app.clone(),
         Some(460.0),
@@ -1327,26 +1328,35 @@ fn play_cue_async(app: AppHandle, which: &'static str, prefs: &DictationPrefs) {
     });
 }
 fn cue_samples(kind: &str, rate: u32) -> Vec<f32> {
-    let freqs: &[f32] = match kind {
-        "beep-up" => &[660., 990.],
-        "beep-down" => &[880., 520.],
-        "beep-double" => &[880., 880.],
-        _ => &[770.],
+    let (freqs, dur, gap): (&[f32], f32, f32) = match kind {
+        "beep-up" => (&[660., 990.], 0.10, 0.02),
+        "beep-down" => (&[880., 520.], 0.12, 0.02),
+        "beep-double" => (&[880., 880.], 0.07, 0.05),
+        _ => (&[770.], 0.12, 0.02),
     };
-    let dur = if kind == "beep-double" { 0.07 } else { 0.11 };
-    let gap = if kind == "beep-double" { 0.05 } else { 0.02 };
     let mut out = Vec::new();
     for f in freqs {
         let n = (rate as f32 * dur) as usize;
         for i in 0..n {
             let t = i as f32 / rate as f32;
-            let env = (i as f32 / (rate as f32 * 0.012)).min(1.0)
-                * ((n - i) as f32 / (rate as f32 * 0.025)).min(1.0);
-            out.push((t * f * std::f32::consts::TAU).sin() * 0.25 * env);
+            out.push((t * f * std::f32::consts::TAU).sin() * legacy_cue_envelope(t, dur));
         }
         out.extend(std::iter::repeat(0.0).take((rate as f32 * gap) as usize));
     }
     out
+}
+
+/// 与迁移前 Web Audio 版本保持同一组时长、频率和指数音量包络；
+/// 只把输出设备从 WebView 改为原生 CPAL，保证主窗口销毁后仍能播放。
+fn legacy_cue_envelope(t: f32, dur: f32) -> f32 {
+    const FLOOR: f32 = 0.0001;
+    const PEAK: f32 = 0.25;
+    const ATTACK: f32 = 0.012;
+    if t <= ATTACK {
+        FLOOR * (PEAK / FLOOR).powf((t / ATTACK).clamp(0.0, 1.0))
+    } else {
+        PEAK * (FLOOR / PEAK).powf(((t - ATTACK) / (dur - ATTACK)).clamp(0.0, 1.0))
+    }
 }
 fn play_samples(samples: Vec<f32>, source_rate: u32) -> Result<(), String> {
     let host = cpal::default_host();
@@ -1432,5 +1442,13 @@ mod tests {
         let mut s = Session::default();
         s.epoch = 2;
         assert!(!s.is_current(1));
+    }
+    #[test]
+    fn builtin_cues_keep_legacy_durations_and_exponential_envelope() {
+        assert_eq!(cue_samples("beep-up", 1_000).len(), 240);
+        assert_eq!(cue_samples("beep-down", 1_000).len(), 280);
+        assert_eq!(cue_samples("beep-double", 1_000).len(), 240);
+        assert!(legacy_cue_envelope(0.012, 0.1) > 0.249);
+        assert!(legacy_cue_envelope(0.1, 0.1) < 0.001);
     }
 }
