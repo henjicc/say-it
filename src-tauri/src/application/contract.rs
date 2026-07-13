@@ -125,7 +125,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         subtitles: crate::application::subtitles::domain_snapshot(&state)?,
         transcription: state.transcription_runtime.domain_snapshot(),
         comparison: frontend_owned(),
-        audio_lab: frontend_owned(),
+        audio_lab: state.audio_lab_runtime.domain_snapshot(),
     })
 }
 

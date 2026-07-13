@@ -1,4 +1,5 @@
 pub(crate) mod audio_session;
+pub(crate) mod audio_lab;
 pub(crate) mod catalog;
 pub(crate) mod contract;
 pub(crate) mod dictation;
