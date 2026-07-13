@@ -1,0 +1,4 @@
+interface:
+  display_name: "适配说吧供应商"
+  short_description: "Build and install SayIt realtime ASR provider plugins"
+  default_prompt: "Use $adapt-sayit-provider to adapt a new ASR provider into a validated SayIt plugin package."

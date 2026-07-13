@@ -341,6 +341,14 @@ async fn start(app: AppHandle) -> Result<(), String> {
         .fetch_add(1, Ordering::AcqRel)
         + 1;
     let info = crate::providers::registry::model_info(&prefs.asr_model)
+        .cloned()
+        .or_else(|| {
+            state
+                .plugin_registry
+                .lock()
+                .ok()
+                .and_then(|plugins| plugins.model(&prefs.asr_model).cloned())
+        })
         .ok_or_else(|| format!("听写模型未登记：{}", prefs.asr_model))?;
     let mode = if info.scenes.iter().any(|s| s == "dictationFile") {
         DictationMode::File

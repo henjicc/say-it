@@ -5,6 +5,8 @@ export const CMD = {
   getAppSnapshot: "get_app_snapshot",
   mainWindowReady: "main_window_ready",
   getModelCatalog: "get_model_catalog",
+  listProviderPlugins: "list_provider_plugins",
+  reloadProviderPlugins: "reload_provider_plugins",
   importLegacySettings: "import_legacy_settings",
   updateAppSettings: "update_app_settings",
   updateCustomCue: "update_custom_cue",

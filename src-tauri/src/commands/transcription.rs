@@ -106,8 +106,8 @@ pub(crate) async fn transcription_start_inner(
         return Err("请选择要识别的音视频文件".to_string());
     }
 
-    let provider_result = resolve_file_recognition_provider(&state);
     let params = params.unwrap_or_default();
+    let provider_result = resolve_file_recognition_provider(&state, &params.model);
     let job_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -317,9 +317,12 @@ fn is_cancelled(cancel: &CancelFlag) -> bool {
 
 fn resolve_file_recognition_provider(
     state: &RuntimeState,
+    model: &str,
 ) -> Result<FileRecognitionProvider, String> {
     let settings = read_provider_settings(state)?;
-    let provider_id = resolve_provider_id(state, "asr", None)?;
+    let model_provider = crate::providers::registry::model_info(model)
+        .map(|model| model.provider_id.clone());
+    let provider_id = resolve_provider_id(state, "asr", model_provider)?;
     let profile = find_profile(&settings, &provider_id)
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
     file_recognition_for(profile).map_err(|error| error.to_string())

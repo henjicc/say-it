@@ -5,6 +5,7 @@ pub(crate) mod compare;
 pub(crate) mod contract;
 pub(crate) mod dictation;
 pub(crate) mod events;
+pub(crate) mod plugin_management;
 pub(crate) mod settings;
 pub(crate) mod subtitle_document;
 pub(crate) mod subtitles;

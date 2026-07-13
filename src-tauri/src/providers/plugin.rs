@@ -1,0 +1,505 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tauri::Manager;
+
+use super::registry::ModelInfo;
+use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
+
+pub const PLUGIN_API_VERSION: u32 = 1;
+pub const PROCESS_PROTOCOL_VERSION: u32 = 1;
+const MANIFEST_FILE_NAME: &str = "manifest.json";
+const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies"];
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifest {
+    pub api_version: u32,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub provider: PluginProviderManifest,
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
+    pub runtime: PluginRuntimeManifest,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginProviderManifest {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default = "default_auth_kind")]
+    pub auth_kind: String,
+    #[serde(default = "default_capabilities")]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub config: Value,
+    #[serde(default)]
+    pub config_fields: Vec<ProviderConfigField>,
+    #[serde(default)]
+    pub actions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRuntimeManifest {
+    #[serde(default = "default_runtime_kind")]
+    pub kind: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_process_protocol_version")]
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstalledPlugin {
+    pub root: PathBuf,
+    pub manifest: PluginManifest,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginProcessSpec {
+    pub plugin_id: String,
+    pub root: PathBuf,
+    pub entrypoint: PathBuf,
+    pub args: Vec<String>,
+    pub permissions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PluginRegistry {
+    plugins: Vec<InstalledPlugin>,
+    errors: Vec<PluginLoadError>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginLoadError {
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSummary {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub provider_id: String,
+    pub permissions: Vec<String>,
+    pub models: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRegistrySnapshot {
+    pub api_version: u32,
+    pub plugins: Vec<PluginSummary>,
+    pub errors: Vec<PluginLoadError>,
+}
+
+fn default_auth_kind() -> String {
+    "custom".into()
+}
+fn default_capabilities() -> Vec<String> {
+    vec!["asr".into()]
+}
+fn default_runtime_kind() -> String {
+    "process".into()
+}
+fn default_process_protocol_version() -> u32 {
+    PROCESS_PROTOCOL_VERSION
+}
+
+pub fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugins");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {
+    load_registry_from(&plugins_dir(app)?)
+}
+
+pub fn load_registry_from(root: &Path) -> Result<PluginRegistry, String> {
+    std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    let mut registry = PluginRegistry::default();
+    let mut ids = HashSet::new();
+    let mut provider_ids = super::builtin_profiles()
+        .into_iter()
+        .map(|profile| profile.id)
+        .collect::<HashSet<_>>();
+    let mut model_ids = super::registry::models()
+        .iter()
+        .map(|model| model.id.clone())
+        .collect::<HashSet<_>>();
+    let mut entries = std::fs::read_dir(root)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let plugin_root = entry.path();
+        let manifest_path = plugin_root.join(MANIFEST_FILE_NAME);
+        if !manifest_path.exists() {
+            continue;
+        }
+        match load_manifest(&plugin_root, &manifest_path) {
+            Ok(plugin) => {
+                let manifest = &plugin.manifest;
+                let duplicate = ids.contains(&manifest.id)
+                    || provider_ids.contains(&manifest.provider.id)
+                    || manifest
+                        .models
+                        .iter()
+                        .any(|model| model_ids.contains(&model.id));
+                if duplicate {
+                    registry.errors.push(PluginLoadError {
+                        path: manifest_path.display().to_string(),
+                        message: "插件、供应商或模型 ID 与已加载插件重复".into(),
+                    });
+                } else {
+                    ids.insert(manifest.id.clone());
+                    provider_ids.insert(manifest.provider.id.clone());
+                    model_ids.extend(manifest.models.iter().map(|model| model.id.clone()));
+                    registry.plugins.push(plugin);
+                }
+            }
+            Err(message) => registry.errors.push(PluginLoadError {
+                path: manifest_path.display().to_string(),
+                message,
+            }),
+        }
+    }
+    Ok(registry)
+}
+
+fn load_manifest(plugin_root: &Path, manifest_path: &Path) -> Result<InstalledPlugin, String> {
+    let text = std::fs::read_to_string(manifest_path).map_err(|error| error.to_string())?;
+    let manifest: PluginManifest =
+        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    validate_manifest(plugin_root, &manifest)?;
+    Ok(InstalledPlugin {
+        root: plugin_root.to_path_buf(),
+        manifest,
+    })
+}
+
+fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
+    if manifest.api_version != PLUGIN_API_VERSION {
+        return Err(format!("不支持的插件 API 版本：{}", manifest.api_version));
+    }
+    validate_id("插件", &manifest.id)?;
+    validate_id("供应商", &manifest.provider.id)?;
+    if manifest.name.trim().is_empty() || manifest.version.trim().is_empty() {
+        return Err("插件名称和版本不能为空".into());
+    }
+    if !manifest
+        .provider
+        .capabilities
+        .iter()
+        .any(|capability| capability == "asr")
+    {
+        return Err("插件供应商必须声明 asr 能力".into());
+    }
+    if !manifest.provider.config.is_object() {
+        return Err("provider.config 必须是 JSON 对象".into());
+    }
+    let mut config_keys = HashSet::new();
+    for field in &manifest.provider.config_fields {
+        if field.key.trim().is_empty() || !config_keys.insert(field.key.clone()) {
+            return Err(format!("配置字段 key 为空或重复：{}", field.key));
+        }
+        if !matches!(
+            field.field_type.as_str(),
+            "text" | "password" | "number" | "boolean"
+        ) {
+            return Err(format!(
+                "配置字段 {} 使用了未知类型：{}",
+                field.key, field.field_type
+            ));
+        }
+    }
+    if manifest.runtime.kind != "process" {
+        return Err(format!("不支持的插件运行时：{}", manifest.runtime.kind));
+    }
+    if manifest.runtime.protocol_version != PROCESS_PROTOCOL_VERSION {
+        return Err(format!(
+            "不支持的进程协议版本：{}",
+            manifest.runtime.protocol_version
+        ));
+    }
+    for permission in &manifest.runtime.permissions {
+        if !ALLOWED_PERMISSIONS.contains(&permission.as_str()) {
+            return Err(format!("未知插件权限：{permission}"));
+        }
+    }
+    let entrypoint = safe_entrypoint(root, &manifest.runtime.entrypoint)?;
+    if !entrypoint.is_file() {
+        return Err(format!("插件入口不存在：{}", entrypoint.display()));
+    }
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let canonical_entrypoint = entrypoint
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canonical_entrypoint.starts_with(&canonical_root) {
+        return Err("插件入口不能通过符号链接跳出插件目录".into());
+    }
+    if manifest.models.is_empty() {
+        return Err("插件至少需要声明一个模型".into());
+    }
+    let mut model_ids = HashSet::new();
+    for model in &manifest.models {
+        validate_id("模型", &model.id)?;
+        if !model_ids.insert(model.id.clone()) {
+            return Err(format!("模型 ID 重复：{}", model.id));
+        }
+        if model.provider_id != manifest.provider.id {
+            return Err(format!(
+                "模型 {} 的 providerId 必须为 {}",
+                model.id, manifest.provider.id
+            ));
+        }
+        if model.category != "realtime" || model.protocol != "process-jsonl-v1" {
+            return Err(format!(
+                "第一版插件仅支持 realtime/process-jsonl-v1：{}",
+                model.id
+            ));
+        }
+        if !model
+            .scenes
+            .iter()
+            .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
+        {
+            return Err(format!("模型 {} 未声明可用的实时场景", model.id));
+        }
+    }
+    Ok(())
+}
+
+fn validate_id(label: &str, id: &str) -> Result<(), String> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} ID 只能包含小写字母、数字、点和连字符：{id}"
+        ))
+    }
+}
+
+fn safe_entrypoint(root: &Path, value: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(value);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("插件入口必须是插件目录内的相对路径".into());
+    }
+    Ok(root.join(relative))
+}
+
+fn merge_missing_config(target: &mut Value, defaults: &Value) {
+    let (Some(target), Some(defaults)) = (target.as_object_mut(), defaults.as_object()) else {
+        return;
+    };
+    for (key, value) in defaults {
+        target.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+impl PluginRegistry {
+    pub fn snapshot(&self) -> PluginRegistrySnapshot {
+        PluginRegistrySnapshot {
+            api_version: PLUGIN_API_VERSION,
+            plugins: self
+                .plugins
+                .iter()
+                .map(|plugin| PluginSummary {
+                    id: plugin.manifest.id.clone(),
+                    name: plugin.manifest.name.clone(),
+                    version: plugin.manifest.version.clone(),
+                    provider_id: plugin.manifest.provider.id.clone(),
+                    permissions: plugin.manifest.runtime.permissions.clone(),
+                    models: plugin
+                        .manifest
+                        .models
+                        .iter()
+                        .map(|model| model.id.clone())
+                        .collect(),
+                })
+                .collect(),
+            errors: self.errors.clone(),
+        }
+    }
+
+    pub fn models(&self) -> impl Iterator<Item = &ModelInfo> {
+        self.plugins
+            .iter()
+            .flat_map(|plugin| plugin.manifest.models.iter())
+    }
+
+    pub fn model(&self, id: &str) -> Option<&ModelInfo> {
+        self.models().find(|model| model.id == id.trim())
+    }
+
+    pub fn provider_id_for_model(&self, model: &str) -> Option<String> {
+        self.model(model).map(|model| model.provider_id.clone())
+    }
+
+    pub fn process_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<PluginProcessSpec>, String> {
+        let Some(plugin) = self
+            .plugins
+            .iter()
+            .find(|plugin| plugin.manifest.provider.id == provider_id)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(PluginProcessSpec {
+            plugin_id: plugin.manifest.id.clone(),
+            root: plugin.root.clone(),
+            entrypoint: safe_entrypoint(&plugin.root, &plugin.manifest.runtime.entrypoint)?,
+            args: plugin.manifest.runtime.args.clone(),
+            permissions: plugin.manifest.runtime.permissions.clone(),
+        }))
+    }
+
+    pub fn merge_provider_profiles(&self, settings: &mut ProviderSettings) {
+        let installed: HashMap<_, _> = self
+            .plugins
+            .iter()
+            .map(|plugin| (plugin.manifest.provider.id.clone(), plugin))
+            .collect();
+        for profile in &mut settings.profiles {
+            if profile.kind.starts_with("plugin:") && !installed.contains_key(&profile.id) {
+                profile.enabled = false;
+            }
+        }
+        for (provider_id, plugin) in installed {
+            let provider = &plugin.manifest.provider;
+            match settings
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == provider_id)
+            {
+                Some(profile) => {
+                    profile.kind = format!("plugin:{}", plugin.manifest.id);
+                    profile.display_name = provider.display_name.clone();
+                    profile.auth_kind = provider.auth_kind.clone();
+                    profile.capabilities = provider.capabilities.clone();
+                    profile.enabled = true;
+                    profile.config_fields = provider.config_fields.clone();
+                    profile.actions = provider.actions.clone();
+                    merge_missing_config(&mut profile.config, &provider.config);
+                }
+                None => settings.profiles.push(ProviderProfile {
+                    id: provider.id.clone(),
+                    kind: format!("plugin:{}", plugin.manifest.id),
+                    display_name: provider.display_name.clone(),
+                    auth_kind: provider.auth_kind.clone(),
+                    capabilities: provider.capabilities.clone(),
+                    enabled: true,
+                    config: provider.config.clone(),
+                    config_fields: provider.config_fields.clone(),
+                    actions: provider.actions.clone(),
+                }),
+            }
+        }
+        *settings = super::normalize_settings(settings.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_entrypoint_escape() {
+        let root = std::env::temp_dir();
+        assert!(safe_entrypoint(&root, "../bad.exe").is_err());
+        assert!(safe_entrypoint(&root, "bin/good.exe").is_ok());
+    }
+
+    #[test]
+    fn plugin_ids_are_portable() {
+        assert!(validate_id("插件", "doubao-web.1").is_ok());
+        assert!(validate_id("插件", "豆包").is_err());
+        assert!(validate_id("插件", "Upper").is_err());
+    }
+
+    #[test]
+    fn loads_manifest_and_merges_provider_profile() {
+        let root = std::env::temp_dir().join(format!("sayit-plugin-test-{}", std::process::id()));
+        let plugin = root.join("test-provider");
+        let bin = plugin.join("bin");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("connector.exe"), b"test").unwrap();
+        std::fs::write(
+            plugin.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": 1,
+                "id": "test-provider",
+                "name": "Test Provider",
+                "version": "1.0.0",
+                "provider": {
+                    "id": "test-provider",
+                    "displayName": "Test Provider",
+                    "capabilities": ["asr"],
+                    "config": { "token": "" },
+                    "configFields": [{ "key": "token", "label": "Token", "fieldType": "password", "secret": true }]
+                },
+                "models": [{
+                    "id": "test-realtime",
+                    "label": "Test Realtime",
+                    "providerId": "test-provider",
+                    "category": "realtime",
+                    "protocol": "process-jsonl-v1",
+                    "supportsVocabulary": false,
+                    "supportsAlignmentTimestamps": false,
+                    "scenes": ["dictationRealtime"],
+                    "isDefaultRealtime": false,
+                    "isDefaultFile": false
+                }],
+                "runtime": { "kind": "process", "entrypoint": "bin/connector.exe", "protocolVersion": 1, "permissions": ["network"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = load_registry_from(&root).unwrap();
+        assert_eq!(registry.snapshot().plugins.len(), 1);
+        let mut settings = ProviderSettings::default();
+        registry.merge_provider_profiles(&mut settings);
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "test-provider")
+            .unwrap();
+        assert_eq!(profile.kind, "plugin:test-provider");
+        assert_eq!(profile.config_fields[0].key, "token");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

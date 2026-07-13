@@ -54,12 +54,12 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
         .profiles
         .iter()
         .map(|profile| {
-            let has_key = profile
-                .config
-                .get("apiKey")
-                .and_then(Value::as_str)
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
+            let fields = config_fields_for(profile);
+            let has_key = fields.iter().filter(|field| field.secret).any(|field| {
+                profile.config.get(&field.key).is_some_and(|value| {
+                    value.as_str().map(|value| !value.trim().is_empty()).unwrap_or(true)
+                })
+            });
             ProviderListItem {
                 id: profile.id.clone(),
                 kind: profile.kind.clone(),
@@ -71,12 +71,12 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
                 effective_capabilities: profile.capabilities.iter().filter(|capability| {
                     default_provider_id(&settings, capability) == profile.id
                 }).cloned().collect(),
-                config_fields: config_fields_for(profile),
+                config_fields: fields,
                 actions: actions_for(profile),
                 status: Some(ProviderStatus {
                     has_api_key: Some(has_key),
                 }),
-                config: sanitized_config(&profile.config),
+                config: sanitized_config(profile),
             }
         })
         .collect::<Vec<_>>();
