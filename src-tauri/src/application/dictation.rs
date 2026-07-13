@@ -442,7 +442,7 @@ fn spawn_raw_consumer(
             let AsrStreamInput::RawF32(samples) = input else {
                 continue;
             };
-            let (need_open, need_close, peaks, level) = {
+            let (need_open, need_close, show_waveform, peaks, level) = {
                 let state = app.state::<RuntimeState>();
                 let Ok(mut s) = state.dictation_runtime.session.lock() else {
                     break;
@@ -489,9 +489,17 @@ fn spawn_raw_consumer(
                         need_close = true;
                     }
                 }
-                (need_open, need_close, peaks, level)
+                (
+                    need_open,
+                    need_close,
+                    should_show_waveform(s.mode),
+                    peaks,
+                    level,
+                )
             };
-            emit_waveform(&app, level, peaks);
+            if show_waveform {
+                emit_waveform(&app, level, peaks);
+            }
             if need_close {
                 disconnect_silent_asr(app.clone(), epoch);
             }
@@ -1073,6 +1081,10 @@ fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
         );
     }
 }
+
+fn should_show_waveform(mode: Option<DictationMode>) -> bool {
+    mode == Some(DictationMode::File)
+}
 fn rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         0.0
@@ -1450,5 +1462,11 @@ mod tests {
         assert_eq!(cue_samples("beep-double", 1_000).len(), 240);
         assert!(legacy_cue_envelope(0.012, 0.1) > 0.249);
         assert!(legacy_cue_envelope(0.1, 0.1) < 0.001);
+    }
+    #[test]
+    fn waveform_is_reserved_for_file_dictation() {
+        assert!(should_show_waveform(Some(DictationMode::File)));
+        assert!(!should_show_waveform(Some(DictationMode::Realtime)));
+        assert!(!should_show_waveform(None));
     }
 }
