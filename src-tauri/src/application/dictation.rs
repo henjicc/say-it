@@ -760,6 +760,7 @@ async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
             stage,
             payload,
         } => handle_file_event(app, job_id, stage, payload).await,
+        BackendEvent::SubtitleTranslation { .. } => {}
     }
 }
 

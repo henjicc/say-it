@@ -39,3 +39,11 @@
 - 本地规则选用 `fancy-regex 0.14.0`（MIT，源码约 373 KiB）：支持默认规则需要的回溯、反向引用和前后查找，并设置 backtrack limit；不支持的 JS flag/表达式在保存或启动时明确拒绝，不静默跳过。
 - 提示音复用 CPAL 默认输出与 Symphonia 解码；内置音由 Rust 生成，自定义文件从应用数据目录读取，解码/输出失败通过领域事件明确上报，不再回退 Web Audio。
 - 麦克风旧命令统一以 `Legacy` owner 接入协调器，3.2/4.2 迁移时再替换为对应强类型 owner；延迟释放同时校验 epoch 和 audio generation，不能关闭后来接管设备的领域。
+
+## 2026-07-13 · 3.2
+
+- 字幕麦克风和系统 loopback 均使用 `AudioOwner::Subtitles` 租约；系统音频补齐与麦克风对称的内部 start/attach/pause/release 入口，不通过 Tauri 命令拼应用服务。
+- ASR 结果继续通过 `BackendEventHub` 分发；字幕翻译新增同一内部事件通道，以 runtime epoch + segment seq 丢弃停止/重启后的迟到结果并按序重建译文。
+- OBS 文本快照在每次领域文本变化时由 Rust 直接发布，连接状态由 Rust 轻量监控；断开后保留 2 秒滞回再回落桌面，前端不持有 monitor、layout timer 或 snapshot queue。
+- 设置页预览保留在前端，但使用独立文本、分组和计时器，不读写 Rust 真实字幕会话、不采集 PCM、不调用翻译、也不输出到 OBS。
+- 旧 WebView ASR/翻译事件和通用底层命令暂留供未迁移领域兼容，3.2 已无消费者；5.1 结合 4.2 的消费情况统一删除，避免提前破坏其他页面。

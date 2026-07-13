@@ -123,7 +123,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         },
         settings,
         dictation: crate::application::dictation::domain_snapshot(&state)?,
-        subtitles: frontend_owned(),
+        subtitles: crate::application::subtitles::domain_snapshot(&state)?,
         transcription: DomainSnapshot {
             state: if active_transcriptions == 0 {
                 DomainRunState::Idle

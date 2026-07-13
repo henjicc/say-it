@@ -96,3 +96,21 @@
 ### 当前结论
 
 - 3.1 自动验收通过；人工项目保留到全部任务完成后统一执行，可以进入 3.2。
+
+## 2026-07-13 · 3.2
+
+### 自动验证
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，87/87；新增覆盖替换模式 2.5 秒续接/超时重开、滚动行裁剪、标点/逗号/60 字强制分句、翻译乱序重建及 epoch 隔离。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过，无 warning。
+- `npm run ui:build`：通过，Vite 主窗口与 indicator 双入口构建成功。
+- 源码扫描：前端字幕目录和 Tauri bridge 不再存在真实 session ID、translation request/epoch、重连计数器、OBS monitor 或 `backend-*-raw-chunk` 消费。
+- `git diff --check`：通过，仅有 Git 的 LF/CRLF 工作区提示。
+
+### 未自动验证
+
+- 真实麦克风/系统 loopback、云端 ASR/翻译、OBS Browser Source、字幕悬浮窗拖动和主 WebView 销毁后的连续运行涉及设备、外部服务或 UI 操作，按用户决定统一列入 `manual-test-checklist.md`。
+
+### 当前结论
+
+- 3.2 自动验收通过；真实设备、网络、OBS 和交互项目不阻塞 3.3。
