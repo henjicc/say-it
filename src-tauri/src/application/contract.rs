@@ -80,13 +80,6 @@ pub(crate) trait EventPublisherPort {
     fn publish(&self, event: DomainEventEnvelope) -> Result<(), ApplicationError>;
 }
 
-fn frontend_owned() -> DomainSnapshot {
-    DomainSnapshot {
-        state: DomainRunState::FrontendOwned,
-        session_id: None,
-    }
-}
-
 #[tauri::command]
 pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnapshot, String> {
     let providers = state
@@ -124,7 +117,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         dictation: crate::application::dictation::domain_snapshot(&state)?,
         subtitles: crate::application::subtitles::domain_snapshot(&state)?,
         transcription: state.transcription_runtime.domain_snapshot(),
-        comparison: frontend_owned(),
+        comparison: state.compare_runtime.domain_snapshot(),
         audio_lab: state.audio_lab_runtime.domain_snapshot(),
     })
 }
@@ -156,13 +149,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_serializes_frontend_owned_state_and_monotonic_revision() {
+    fn snapshot_serializes_domain_state_and_monotonic_revision() {
         let revision = AtomicU64::new(0);
         assert_eq!(next_revision(&revision), 1);
         assert_eq!(next_revision(&revision), 2);
         assert_eq!(
-            serde_json::to_value(frontend_owned()).unwrap(),
-            json!({"state":"frontendOwned"})
+            serde_json::to_value(DomainSnapshot { state: DomainRunState::Idle, session_id: None }).unwrap(),
+            json!({"state":"idle"})
         );
     }
 }

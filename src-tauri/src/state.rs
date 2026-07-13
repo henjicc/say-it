@@ -20,6 +20,7 @@ pub(crate) struct RuntimeState {
     pub(crate) dictation_runtime: crate::application::dictation::DictationRuntime,
     pub(crate) subtitle_runtime: crate::application::subtitles::SubtitleRuntime,
     pub(crate) transcription_runtime: crate::application::transcription::TranscriptionRuntime,
+    pub(crate) compare_runtime: crate::application::compare::CompareRuntime,
     pub(crate) audio_lab_runtime: crate::application::audio_lab::AudioLabRuntime,
     pub(crate) audio_lab_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) main_window_lifecycle:
