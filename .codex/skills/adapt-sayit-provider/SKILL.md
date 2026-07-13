@@ -1,6 +1,6 @@
 ---
 name: adapt-sayit-provider
-description: Adapt a new speech-recognition model or provider into a SayIt (说吧！) installable provider plugin without modifying the SayIt source tree. Use when Codex must research an ASR API or an existing reverse-engineered provider project, implement the SayIt process-jsonl-v2 connector, create manifest.json, validate/package/install the plugin, or diagnose an installed provider plugin.
+description: Create an isolated, manually installable SayIt (说吧！) speech-provider plugin in a user-specified external workspace. Use when Codex must research an ASR API or an existing reverse-engineered provider project, implement the SayIt process-jsonl-v2 connector, create manifest.json, validate and package it. Never read, modify, or install into the SayIt source repository unless the user explicitly asks for installation.
 ---
 
 # Adapt a SayIt provider
@@ -8,21 +8,30 @@ description: Adapt a new speech-recognition model or provider into a SayIt (说�
 Build an isolated provider package. Never patch the installed SayIt executable or copy provider-specific state machines into its frontend.
 The validation/signing tools require Python 3 and the `cryptography` package.
 
+## Non-negotiable workspace boundary
+
+Before inspecting a provider or creating any file, obtain an absolute `PLUGIN_WORKSPACE` from the user. It must be a new or empty directory **outside** the SayIt repository. If no suitable path was supplied, stop and ask for one; do not infer the current directory.
+
+- Treat the SayIt repository as forbidden: do not read, search, list, create, edit, build, or write anywhere below it. The only permitted exception is reading this Skill's own files under `.codex/skills/adapt-sayit-provider/`.
+- Never create `plugins/`, `src-tauri/`, `ui/`, `docs/`, `skills/`, source files, build outputs, or package artifacts in the SayIt repository.
+- Run every provider command with its working directory set to `PLUGIN_WORKSPACE` or an explicitly user-supplied external provider project. Never run provider build tools from SayIt's working directory.
+- The deliverable is a self-contained directory at `PLUGIN_WORKSPACE/dist/<plugin-id>-<version>/`. Do not copy it into SayIt's local plugin directory and do not invoke an installer unless the user separately asks to install it.
+- A packaged directory is the installable artifact. It may additionally be zipped for transfer, but SayIt's current plugin manager installs the extracted directory selected by the user.
+
 ## Workflow
 
-1. Inspect the provider's official API documentation or the user-supplied implementation. Identify authentication, streaming transport, PCM requirements, partial/final semantics, finish behavior, and session renewal.
-2. Read [references/plugin-api.md](references/plugin-api.md) completely before creating files.
-3. For login WebViews, cookies, captured browser parameters, or unofficial endpoints, also read [references/privileged-providers.md](references/privileged-providers.md).
-4. Copy `assets/plugin-template/` into a new working directory. Do not edit the template in place.
-5. Replace every placeholder in `manifest.json`. Keep IDs stable, lowercase, and globally unique.
-6. Implement the connector as a standalone executable. Keep credentials in `start.config`; never print them to stdout or stderr.
-7. Build the release executable to the manifest's `runtime.entrypoint`.
-8. Start with `python scripts/smoke_test_plugin.py <source-dir>`, then exercise every declared operation locally, including malformed input, cancellation, timeout, and upstream disconnect.
-9. Create a minimal runtime package: `python scripts/package_plugin.py <source-dir> <package-dir>`.
-10. Sign it: `python scripts/sign_plugin.py <package-dir> --private-key <publisher.pem> --key-id <stable-publisher-id>`. Never put the private key inside the package.
-11. Run `python scripts/validate_plugin.py <package-dir>`.
-12. Install through SayIt's plugin manager. For CLI installation, use `python scripts/install_plugin.py <package-dir> --trust-key` only after verifying the publisher fingerprint. Use `--allow-unsigned` only for an intentional local development package.
-13. Reload providers, configure the provider, then test each declared model and action with the main window both open and closed.
+1. Set `SKILL_DIR` to this Skill directory. Initialize the external workspace before any provider work:
+   `python "$SKILL_DIR/scripts/init_plugin_workspace.py" "$PLUGIN_WORKSPACE" --template "$SKILL_DIR/assets/plugin-template" --forbid-root "<absolute SayIt repository path>"`.
+2. Work only in `PLUGIN_WORKSPACE/source/`. Inspect the provider's official documentation or a user-supplied external implementation. Identify authentication, streaming transport, PCM requirements, partial/final semantics, finish behavior, and session renewal.
+3. Read [references/plugin-api.md](references/plugin-api.md) completely before creating files. For login WebViews, cookies, captured browser parameters, or unofficial endpoints, also read [references/privileged-providers.md](references/privileged-providers.md).
+4. Replace every placeholder in `source/manifest.json`. Keep IDs stable, lowercase, and globally unique.
+5. Implement the connector only under `source/` as a standalone executable. Keep credentials in `start.config`; never print them to stdout or stderr.
+6. Build the release executable to `source/<runtime.entrypoint>`.
+7. Start with `python "$SKILL_DIR/scripts/smoke_test_plugin.py" "$PLUGIN_WORKSPACE/source"`, then exercise every declared operation locally, including malformed input, cancellation, timeout, and upstream disconnect.
+8. Create the installable artifact only under `dist/`: `python "$SKILL_DIR/scripts/package_plugin.py" "$PLUGIN_WORKSPACE/source" "$PLUGIN_WORKSPACE/dist/<plugin-id>-<version>" --workspace "$PLUGIN_WORKSPACE" --forbid-root "<absolute SayIt repository path>"`.
+9. Sign it: `python "$SKILL_DIR/scripts/sign_plugin.py" "$PLUGIN_WORKSPACE/dist/<plugin-id>-<version>" --private-key "$PLUGIN_WORKSPACE/keys/publisher.pem" --key-id <stable-publisher-id> --workspace "$PLUGIN_WORKSPACE" --forbid-root "<absolute SayIt repository path>"`. Never put the private key inside the package.
+10. Run `python "$SKILL_DIR/scripts/validate_plugin.py" "$PLUGIN_WORKSPACE/dist/<plugin-id>-<version>"` and report that directory as the sole deliverable.
+11. Only if the user explicitly asks to install, tell them to select that directory in SayIt's plugin manager, or then use `install_plugin.py`. Never install automatically as part of adaptation.
 
 ## Current host boundary
 
@@ -46,4 +55,4 @@ The validation/signing tools require Python 3 and the `cryptography` package.
 
 ## Completion gate
 
-Do not report success until the manifest validator and signature check pass, the release entrypoint exists, every declared operation has a smoke test, privileged sessions have expiry/clear tests when applicable, and the installed directory contains only required runtime files.
+Do not report success until the manifest validator and signature check pass, the release entrypoint exists, every declared operation has a smoke test, privileged sessions have expiry/clear tests when applicable, and `PLUGIN_WORKSPACE/dist/` contains the only runtime artifact. Report the artifact path and explicitly state that it has not been installed.
