@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 #[derive(Default)]
 pub(crate) struct RuntimeState {
     pub(crate) snapshot_revision: AtomicU64,
+    pub(crate) app_settings: Mutex<crate::application::settings::AppSettings>,
     pub(crate) providers: Mutex<ProviderSettings>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,

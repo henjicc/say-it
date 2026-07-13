@@ -45,6 +45,7 @@ pub(crate) struct ConfigurationSummary {
 pub(crate) struct AppSnapshot {
     pub(crate) revision: u64,
     pub(crate) configuration: ConfigurationSummary,
+    pub(crate) settings: crate::application::settings::AppSettings,
     pub(crate) dictation: DomainSnapshot,
     pub(crate) subtitles: DomainSnapshot,
     pub(crate) transcription: DomainSnapshot,
@@ -110,6 +111,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         .map_err(|_| "transcription state lock failed")?
         .len();
     let revision = state.snapshot_revision.load(Ordering::Acquire);
+    let settings = state.app_settings.lock().map_err(|_| "app settings lock failed")?.clone();
 
     Ok(AppSnapshot {
         revision,
@@ -119,6 +121,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
             subtitle_shortcut: subtitle.key_code.clone(),
             startup_silent: startup.silent_start,
         },
+        settings,
         dictation: frontend_owned(),
         subtitles: frontend_owned(),
         transcription: DomainSnapshot {

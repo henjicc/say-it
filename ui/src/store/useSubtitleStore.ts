@@ -202,8 +202,7 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   obsOutputActive: false,
   patch: (partial) => {
     const next = clampPrefs({ ...get().prefs, ...partial });
-    persist(next);
-    set({ prefs: next });
+    void cmd(CMD.updateAppSettings, { domain: "subtitles", value: next }).then(() => { persist(next); set({ prefs: next }); });
   },
   loadTranslationModel: async () => {
     const model = await cmd<string>(CMD.getSubtitleTranslationModel);
@@ -220,3 +219,7 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   },
   setRuntime: (partial) => set(partial),
 }));
+
+export function hydrateSubtitlePrefs(value: Record<string, unknown>) {
+  const next = clampPrefs({ ...readStored(), ...value } as SubtitlePrefs); persist(next); useSubtitleStore.setState({ prefs: next });
+}

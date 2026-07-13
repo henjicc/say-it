@@ -8,6 +8,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useDictPrefs, type CueKind } from "@/store/useDictPrefs";
 import { playCue } from "@/lib/cues";
 import { useAudioDevices } from "@/features/audio/devices";
+import { CMD, cmd } from "@/lib/tauri";
 
 const DEFAULT_INPUT_VALUE = "";
 
@@ -41,14 +42,10 @@ export function SettingsMicCuePanel() {
     reader.onload = () => {
       const dataUrl = String(reader.result || "");
       const key = target === "start" ? "dictCueStartData" : "dictCueEndData";
-      try {
+      void cmd(CMD.updateCustomCue, { which: target, dataUrl }).then(() => {
         localStorage.setItem(key, dataUrl);
-      } catch {
-        return;
-      }
-      patch(target === "start" ? { cueStart: "custom" } : { cueEnd: "custom" });
-      playCue(target);
-      cueTargetRef.current = null;
+        patch(target === "start" ? { cueStart: "custom" } : { cueEnd: "custom" }); playCue(target); cueTargetRef.current = null;
+      });
     };
     reader.readAsDataURL(file);
   };
