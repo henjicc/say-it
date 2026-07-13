@@ -67,9 +67,37 @@ pub struct ProviderListItem {
     pub capabilities: Vec<String>,
     pub enabled: bool,
     pub is_default_asr: bool,
+    pub effective_capabilities: Vec<String>,
+    pub config_fields: Vec<ProviderConfigField>,
+    pub actions: Vec<String>,
     pub status: Option<ProviderStatus>,
     /// 非密钥配置（如热词、语种提示等），用于前端回显；apiKey 等密钥字段会被剔除。
     pub config: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfigField {
+    pub key: String,
+    pub label: String,
+    pub field_type: String,
+    pub secret: bool,
+}
+
+pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> {
+    match profile.kind.as_str() {
+        "alibabacloud-funasr" => vec![ProviderConfigField {
+            key: "apiKey".into(), label: "API Key".into(), field_type: "password".into(), secret: true,
+        }],
+        _ => Vec::new(),
+    }
+}
+
+pub fn actions_for(profile: &ProviderProfile) -> Vec<String> {
+    match profile.kind.as_str() {
+        "alibabacloud-funasr" => vec!["manageHotwords".into(), "testRealtimeAsr".into()],
+        _ => Vec::new(),
+    }
 }
 
 pub fn sanitized_config(config: &Value) -> Value {

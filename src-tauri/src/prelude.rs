@@ -12,7 +12,7 @@ pub(crate) use crate::providers::{
     default_provider_id, find_profile, has_capability, normalize_settings, sanitized_config,
     set_default_provider as set_default_provider_value, ProviderListItem, ProviderProfile,
     ProviderSettings, ProviderSettingsResponse, ProviderStatus, SetDefaultProviderRequest,
-    FUNASR_PROVIDER_ID,
+    FUNASR_PROVIDER_ID, config_fields_for, actions_for,
 };
 pub(crate) use crate::providers::alibabacloud::{
     create_vocabulary as funasr_create_vocabulary, delete_vocabulary as funasr_delete_vocabulary,

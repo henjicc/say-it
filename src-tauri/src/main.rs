@@ -17,6 +17,7 @@ use prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use application::contract::get_app_snapshot;
+use application::catalog::get_model_catalog;
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use commands::*;
 use desktop::*;
@@ -243,6 +244,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            get_model_catalog,
             import_legacy_settings,
             update_app_settings,
             update_custom_cue,

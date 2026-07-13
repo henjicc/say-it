@@ -1,5 +1,5 @@
 use once_cell::sync::Lazy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::alibabacloud::RealtimeAsrFamily;
 
@@ -14,7 +14,7 @@ static REGISTRY: Lazy<Vec<ModelInfo>> = Lazy::new(|| {
 /// 模型元数据。字段与 `shared/asr-models.json` 及前端 `modelRegistry.ts` 的 `ModelInfo`
 /// 一一对应，是前后端共享的数据契约：部分字段（如 `label`、`scenes`）仅前端消费，Rust 侧
 /// 只需完整解析以保证注册表可加载，因此整体允许 dead_code。
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct ModelInfo {
@@ -29,6 +29,10 @@ pub struct ModelInfo {
     pub scenes: Vec<String>,
     pub is_default_realtime: bool,
     pub is_default_file: bool,
+}
+
+pub fn models() -> &'static [ModelInfo] {
+    REGISTRY.as_slice()
 }
 
 /// 从注册表查询模型信息；表外模型返回 None。

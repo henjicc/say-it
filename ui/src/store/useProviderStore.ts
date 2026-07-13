@@ -15,6 +15,9 @@ export interface ProviderProfile {
   capabilities: ProviderCapability[];
   enabled: boolean;
   isDefaultAsr?: boolean;
+  effectiveCapabilities?: ProviderCapability[];
+  configFields?: { key: string; label: string; fieldType: string; secret: boolean }[];
+  actions?: string[];
   status?: ProviderStatus;
   config?: Record<string, unknown>;
 }
@@ -25,7 +28,7 @@ export interface ProviderDefaults {
   llm: string;
 }
 
-interface ProviderResponse {
+export interface ProviderResponse {
   profiles?: ProviderProfile[];
   defaults?: ProviderDefaults;
 }
@@ -36,6 +39,7 @@ interface ProviderState {
   overrides: Partial<Record<ProviderCapability, string>>;
   statusText: string;
   statusTone: "" | "ok" | "err";
+  hydrateCatalog: (response: unknown) => void;
 
   load: () => Promise<void>;
   setDefault: (capability: ProviderCapability, providerId: string) => Promise<void>;
@@ -67,6 +71,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   overrides: {},
   statusText: "",
   statusTone: "",
+  hydrateCatalog: (response) => set(normalize(response as ProviderResponse)),
 
   load: async () => {
     try {
@@ -119,9 +124,8 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
   effective: (capability) =>
     get().overrides[capability] ||
-    get().defaults[capability] ||
     get()
-      .profiles.find((profile) => profile.enabled && profile.capabilities.includes(capability))
+      .profiles.find((profile) => profile.effectiveCapabilities?.includes(capability))
       ?.id ||
     "",
 
