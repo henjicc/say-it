@@ -896,7 +896,7 @@ fn spawn_finalize_timeout(app: AppHandle, epoch: u64) {
 }
 
 async fn finalize(app: AppHandle, epoch: u64) {
-    let (text, prefs, method, lease, asr, temp_path) = {
+    let (text, prefs, method, mode, lease, asr, temp_path) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
             return;
@@ -923,6 +923,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             format!("{}{}", s.committed, s.segment).trim().to_string(),
             s.prefs.clone(),
             method,
+            s.mode,
             s.lease.take(),
             s.asr_session_id.take(),
             s.temp_audio_path.take(),
@@ -972,7 +973,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
     play_cue_async(app.clone(), "end", &prefs);
-    publish_state_with_text(&app, None, processed);
+    publish_state_with_text(
+        &app,
+        None,
+        processed,
+        should_show_final_text_in_indicator(mode),
+    );
 }
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
@@ -1052,9 +1058,14 @@ fn publish_state(app: &AppHandle, error: Option<String>) {
         .lock()
         .map(|s| format!("{}{}", s.committed, s.segment))
         .unwrap_or_default();
-    publish_state_with_text(app, error, text);
+    publish_state_with_text(app, error, text, true);
 }
-fn publish_state_with_text(app: &AppHandle, error: Option<String>, text: String) {
+fn publish_state_with_text(
+    app: &AppHandle,
+    error: Option<String>,
+    text: String,
+    show_in_indicator: bool,
+) {
     let state = app.state::<RuntimeState>();
     let Ok(s) = state.dictation_runtime.session.lock() else {
         return;
@@ -1072,7 +1083,7 @@ fn publish_state_with_text(app: &AppHandle, error: Option<String>, text: String)
         DictationPhase::Idle | DictationPhase::Failed
     ));
     let _ = app.emit(DOMAIN_EVENT, event);
-    if !text.is_empty() {
+    if show_in_indicator && !text.is_empty() {
         let _ = crate::desktop::set_indicator_text(app.clone(), text, Some(false));
     }
 }
@@ -1088,6 +1099,10 @@ fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
 
 fn should_show_waveform(mode: Option<DictationMode>) -> bool {
     mode == Some(DictationMode::File)
+}
+
+fn should_show_final_text_in_indicator(mode: Option<DictationMode>) -> bool {
+    mode != Some(DictationMode::File)
 }
 
 fn pcm16le_to_f32(bytes: &[u8]) -> Vec<f32> {
@@ -1425,9 +1440,12 @@ fn play_samples(samples: Vec<f32>, source_rate: u32) -> Result<(), String> {
         f => return Err(format!("不支持的输出格式: {f:?}")),
     };
     stream.play().map_err(|e| e.to_string())?;
-    std::thread::sleep(Duration::from_secs_f32(
-        data.len() as f32 / rate as f32 + 0.05,
-    ));
+    // CPAL 的回调会先写入设备缓冲区；过早释放流会截断尚未播放的尾音，
+    // 在部分扬声器驱动上表现为开始或结束时的破音。
+    const OUTPUT_DRAIN_MARGIN: Duration = Duration::from_millis(180);
+    std::thread::sleep(
+        Duration::from_secs_f32(data.len() as f32 / rate as f32) + OUTPUT_DRAIN_MARGIN,
+    );
     Ok(())
 }
 
@@ -1479,6 +1497,15 @@ mod tests {
         assert!(should_show_waveform(Some(DictationMode::File)));
         assert!(!should_show_waveform(Some(DictationMode::Realtime)));
         assert!(!should_show_waveform(None));
+    }
+    #[test]
+    fn file_dictation_never_projects_final_text_to_indicator() {
+        assert!(!should_show_final_text_in_indicator(Some(
+            DictationMode::File
+        )));
+        assert!(should_show_final_text_in_indicator(Some(
+            DictationMode::Realtime
+        )));
     }
     #[test]
     fn waveform_preview_decodes_processed_pcm() {
