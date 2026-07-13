@@ -3,6 +3,7 @@ import { emit, listen, type Event, type UnlistenFn } from "@tauri-apps/api/event
 
 export const CMD = {
   getAppSnapshot: "get_app_snapshot",
+  getModelCatalog: "get_model_catalog",
   importLegacySettings: "import_legacy_settings",
   updateAppSettings: "update_app_settings",
   updateCustomCue: "update_custom_cue",

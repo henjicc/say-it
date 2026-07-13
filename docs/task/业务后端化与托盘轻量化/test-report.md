@@ -34,3 +34,17 @@
 ### 当前结论
 
 - 1.2 自动验收通过；人工项目不阻塞后续阶段。
+
+## 2026-07-13 · 2.1
+
+### 自动验证
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，71/71。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `npm run ui:build`：通过，Vite 主窗口与 indicator 双入口构建成功。
+- 源码/构建产物扫描：前端无 `asr-models.json` import，无按协议或模型名前缀判断。
+- `git diff --check`：通过，仅有 Git 的 LF/CRLF 工作区提示。
+
+### 当前结论
+
+- 2.1 自动验收通过；页面选项和供应商设置交互加入最终人工清单，不阻塞 2.2。

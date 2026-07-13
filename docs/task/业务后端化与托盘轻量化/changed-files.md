@@ -19,3 +19,12 @@
 - `ui/src/features/settings/settingsBridge.ts`、`ui/src/App.tsx`：启动导入与快照 hydrate。
 - `ui/src/lib/tauri.ts`、四个配置 store、`SettingsMicCuePanel.tsx`：命令代理、成功后缓存及旧键兼容镜像。
 - `docs/task/业务后端化与托盘轻量化/`：同步计划、状态、决策、交接和测试记录。
+
+## 2026-07-13 · 2.1
+
+- `src-tauri/src/application/catalog.rs`：版本化模型/供应商目录及完整性测试。
+- `src-tauri/src/providers/{registry.rs,mod.rs}`、`commands/common.rs`：公开模型数据，输出有效能力、配置字段和 action。
+- `src-tauri/src/{application/mod.rs,main.rs,prelude.rs}`：注册目录模块与命令。
+- `ui/src/features/asr/{modelRegistry.ts,modelOptions.ts}`、`features/compare/models.ts`：改为消费后端目录，移除 JSON import 与协议推断。
+- `ui/src/App.tsx`、`features/settings/settingsBridge.ts`、`store/useProviderStore.ts`、`views/SettingsProviderPanel.tsx`、`lib/tauri.ts`：启动目录加载门禁、供应商目录 hydrate、action 驱动面板和命令契约。
+- `docs/rules/新增供应商与模型操作手册.md` 与 TASK_DIR 记录：同步新目录机制和验收状态。

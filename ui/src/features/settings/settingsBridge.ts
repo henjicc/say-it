@@ -3,6 +3,10 @@ import { hydrateDictPrefs, useDictPrefs } from "@/store/useDictPrefs";
 import { hydrateSubtitlePrefs, useSubtitleStore } from "@/store/useSubtitleStore";
 import { hydrateComparePrefs, useCompareStore } from "@/store/useCompareStore";
 import { hydrateTheme, useThemeStore } from "@/store/useThemeStore";
+import { loadModelCatalog } from "@/features/asr/modelRegistry";
+import { hydrateModelOptions, DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
+import { useProviderStore } from "@/store/useProviderStore";
+import { useTranscriptionStore } from "@/store/useTranscriptionStore";
 
 function json(key: string): Record<string, unknown> | undefined {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
@@ -15,6 +19,12 @@ function apply(settings: AppSettings) {
 }
 
 export async function initializeSettings(): Promise<void> {
+  const catalog = await loadModelCatalog();
+  hydrateModelOptions();
+  useProviderStore.getState().hydrateCatalog(catalog.providers);
+  if (!useTranscriptionStore.getState().params.model) {
+    useTranscriptionStore.getState().setParams({ model: DEFAULT_FILE_ASR_MODEL });
+  }
   await cmd(CMD.importLegacySettings, { legacy: {
     dictationPrefs: json("sayItDictPrefs") ?? useDictPrefs.getState().prefs,
     subtitlePrefs: json("sayItSubtitlePrefs") ?? useSubtitleStore.getState().prefs,

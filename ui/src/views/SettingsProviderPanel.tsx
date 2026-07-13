@@ -38,11 +38,8 @@ export function SettingsProviderPanel() {
   const [dictationLevel, setDictationLevel] = useState(0);
   const [subtitleLevel, setSubtitleLevel] = useState(0);
 
-  // 设置页渲染"生效的 ASR 供应商"：优先取 effective("asr") 对应的 profile，
-  // 找不到（如未设置默认值）再回退第一个 enabled 的 asr profile。
-  const provider =
-    providers.find((p) => p.id === effectiveAsrProviderId) ||
-    providers.find((p) => p.enabled && p.capabilities.includes("asr"));
+  // 有效供应商由 Rust 目录决定；前端不再自行按 profile 能力回退选择。
+  const provider = providers.find((p) => p.id === effectiveAsrProviderId);
   const hasApiKey = !!provider?.status?.hasApiKey;
   const saveRequestRef = useRef(0);
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
@@ -217,7 +214,7 @@ export function SettingsProviderPanel() {
         </p>
 
         <div className="mt-4 flex flex-col gap-3">
-          {provider?.id === "funasr" && (
+          {provider?.actions?.includes("manageHotwords") && (
             <Collapse
               title="热词"
               className={NESTED_COLLAPSE_CLASS}

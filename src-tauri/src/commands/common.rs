@@ -70,6 +70,11 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
                 capabilities: profile.capabilities.clone(),
                 enabled: profile.enabled,
                 is_default_asr: profile.id == settings.defaults.asr,
+                effective_capabilities: profile.capabilities.iter().filter(|capability| {
+                    default_provider_id(&settings, capability) == profile.id
+                }).cloned().collect(),
+                config_fields: config_fields_for(profile),
+                actions: actions_for(profile),
                 status: Some(ProviderStatus {
                     has_api_key: Some(has_key),
                 }),

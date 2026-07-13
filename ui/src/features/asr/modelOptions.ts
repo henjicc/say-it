@@ -13,27 +13,37 @@ import {
 
 export type { AsrModelOption };
 
-// 默认模型从注册表派生
-export const DEFAULT_REALTIME_ASR_MODEL = defaultRealtimeModel();
-export const DEFAULT_FILE_ASR_MODEL = defaultFileModel();
+// 启动桥在渲染业务页面前从后端填充；数组保持同一引用，避免消费方缓存失效。
+export let DEFAULT_REALTIME_ASR_MODEL = "";
+export let DEFAULT_FILE_ASR_MODEL = "";
 
 // 模型下拉选项从注册表派生
-export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationRealtime");
-export const SUBTITLE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("subtitles");
-export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("transcription");
-export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = optionsForScene("dictationFile");
-export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [
-  ...REALTIME_ASR_MODEL_OPTIONS,
-  ...DICTATION_FILE_ASR_MODEL_OPTIONS,
-];
+export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
+export const SUBTITLE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
+export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
+export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
+export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
 
 // 场景支持判断
-const REALTIME_MODEL_SET = new Set(REALTIME_ASR_MODEL_OPTIONS.map((option) => option.value));
-const FILE_MODEL_SET = new Set(FILE_ASR_MODEL_OPTIONS.map((option) => option.value));
-const DICTATION_FILE_MODEL_SET = new Set(
-  DICTATION_FILE_ASR_MODEL_OPTIONS.map((option) => option.value),
-);
-const DICTATION_MODEL_SET = new Set(DICTATION_ASR_MODEL_OPTIONS.map((option) => option.value));
+const REALTIME_MODEL_SET = new Set<string>();
+const FILE_MODEL_SET = new Set<string>();
+const DICTATION_FILE_MODEL_SET = new Set<string>();
+const DICTATION_MODEL_SET = new Set<string>();
+
+function replace<T>(target: T[], values: T[]) { target.splice(0, target.length, ...values); }
+function fillSet(target: Set<string>, values: AsrModelOption[]) { target.clear(); values.forEach((item) => target.add(item.value)); }
+
+export function hydrateModelOptions() {
+  DEFAULT_REALTIME_ASR_MODEL = defaultRealtimeModel();
+  DEFAULT_FILE_ASR_MODEL = defaultFileModel();
+  replace(REALTIME_ASR_MODEL_OPTIONS, optionsForScene("dictationRealtime"));
+  replace(SUBTITLE_ASR_MODEL_OPTIONS, optionsForScene("subtitles"));
+  replace(FILE_ASR_MODEL_OPTIONS, optionsForScene("transcription"));
+  replace(DICTATION_FILE_ASR_MODEL_OPTIONS, optionsForScene("dictationFile"));
+  replace(DICTATION_ASR_MODEL_OPTIONS, [...REALTIME_ASR_MODEL_OPTIONS, ...DICTATION_FILE_ASR_MODEL_OPTIONS]);
+  fillSet(REALTIME_MODEL_SET, REALTIME_ASR_MODEL_OPTIONS); fillSet(FILE_MODEL_SET, FILE_ASR_MODEL_OPTIONS);
+  fillSet(DICTATION_FILE_MODEL_SET, DICTATION_FILE_ASR_MODEL_OPTIONS); fillSet(DICTATION_MODEL_SET, DICTATION_ASR_MODEL_OPTIONS);
+}
 
 export function isSupportedRealtimeModel(model: string) {
   return REALTIME_MODEL_SET.has(model.trim());

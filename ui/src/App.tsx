@@ -31,7 +31,11 @@ export default function App() {
 
   useTauriBridge();
 
-  useEffect(() => { void initializeSettings().finally(() => setSettingsReady(true)); }, []);
+  useEffect(() => {
+    void initializeSettings()
+      .then(() => setSettingsReady(true))
+      .catch((error) => console.error("应用目录与设置初始化失败", error));
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
