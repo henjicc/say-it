@@ -12,11 +12,13 @@ tauri-build = { version = "2.0.1", features = [] }
 
 [dependencies]
 base64 = "0.22.1"
+ed25519-dalek = "2.2"
 futures-util = "0.3.31"
 axum = { version = "0.8.9", features = ["ws"] }
 obws = "0.15.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 rustls = { version = "0.23.37", features = ["ring"] }
 tauri = { version = "2.10.3", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-autostart = "2"
@@ -45,6 +47,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Storage_FileSystem",
+    "Win32_Security_Cryptography",
 ] }
 winreg = "0.52"
 

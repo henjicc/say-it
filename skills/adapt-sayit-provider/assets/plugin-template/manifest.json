@@ -1,5 +1,5 @@
 {
-  "apiVersion": 1,
+  "apiVersion": 2,
   "id": "replace-provider-id",
   "name": "Replace Provider Name",
   "version": "0.1.0",
@@ -7,12 +7,12 @@
     "id": "replace-provider-id",
     "displayName": "Replace Provider Name",
     "authKind": "api-key",
-    "capabilities": ["asr"],
+    "capabilities": ["asr", "translation", "customization"],
     "config": { "apiKey": "" },
     "configFields": [
       { "key": "apiKey", "label": "API Key", "fieldType": "password", "secret": true }
     ],
-    "actions": []
+    "actions": ["manageHotwords", "diagnose"]
   },
   "models": [
     {
@@ -20,10 +20,34 @@
       "label": "Replace Realtime Model",
       "providerId": "replace-provider-id",
       "category": "realtime",
-      "protocol": "process-jsonl-v1",
-      "supportsVocabulary": false,
+      "protocol": "process-jsonl-v2",
+      "supportsVocabulary": true,
       "supportsAlignmentTimestamps": false,
       "scenes": ["dictationRealtime", "subtitles"],
+      "isDefaultRealtime": false,
+      "isDefaultFile": false
+    },
+    {
+      "id": "replace-file-model",
+      "label": "Replace File Model",
+      "providerId": "replace-provider-id",
+      "category": "file",
+      "protocol": "process-file-v2",
+      "supportsVocabulary": true,
+      "supportsAlignmentTimestamps": true,
+      "scenes": ["dictationFile", "transcription"],
+      "isDefaultRealtime": false,
+      "isDefaultFile": false
+    },
+    {
+      "id": "replace-translation-model",
+      "label": "Replace Translation Model",
+      "providerId": "replace-provider-id",
+      "category": "translation",
+      "protocol": "process-translation-v2",
+      "supportsVocabulary": false,
+      "supportsAlignmentTimestamps": false,
+      "scenes": ["subtitleTranslation"],
       "isDefaultRealtime": false,
       "isDefaultFile": false
     }
@@ -32,7 +56,7 @@
     "kind": "process",
     "entrypoint": "bin/connector.exe",
     "args": [],
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "permissions": ["network"]
   }
 }

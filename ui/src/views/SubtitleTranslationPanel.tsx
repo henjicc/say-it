@@ -8,6 +8,7 @@ import {
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
 import { TRANSLATION_MODEL_NONE, TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
+import { optionsForScene } from "@/features/asr/modelRegistry";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
   TRANSLATION_TARGET_LANGUAGE_OPTIONS,
@@ -17,6 +18,7 @@ export function SubtitleTranslationPanel() {
   const { prefs, patch } = useSubtitleStore();
   const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  const pluginOptions = optionsForScene("subtitleTranslation");
 
   return (
     <div className="flex flex-col gap-7">
@@ -32,6 +34,11 @@ export function SubtitleTranslationPanel() {
             >
               <option value={TRANSLATION_MODEL_NONE}>无（不翻译）</option>
               {TRANSLATION_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+              {pluginOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

@@ -1,131 +1,116 @@
-# SayIt provider plugin API v1
+# SayIt provider plugin API v2
 
-## Package layout
+## Runtime boundary
+
+SayIt owns microphone capture, DSP, model/provider selection, task state, file paths, subtitles and text injection. A provider plugin is an isolated executable that implements vendor authentication and transport, then returns normalized JSONL events. API v1 realtime plugins remain loadable; all new plugins should use API/protocol v2.
+
+Package layout after packaging:
 
 ```text
 <plugin-id>/
 ├── manifest.json
 └── bin/
-    └── connector.exe
+    ├── connector.exe
+    └── required-runtime-files
 ```
 
-SayIt scans `%LOCALAPPDATA%\com.henjicc.sayit\plugins\*/manifest.json` at startup. A malformed plugin is isolated and reported without preventing the application from starting.
+The host scans `%LOCALAPPDATA%\com.henjicc.sayit\plugins`. IDs use lowercase ASCII letters, digits, dots and hyphens, up to 64 characters. The entrypoint and integrity paths must remain inside the package and symlinks are rejected.
 
-## Manifest
+## Manifest capabilities and models
+
+- `asr`: realtime and/or file ASR.
+- `translation`: subtitle translation.
+- `customization`: set/get/clear hotwords.
+- Realtime model: category `realtime`, protocol `process-jsonl-v2`, scene `dictationRealtime` and/or `subtitles`.
+- File model: category `file`, protocol `process-file-v2`, scene `dictationFile` and/or `transcription`.
+- Translation model: category `translation`, protocol `process-translation-v2`, scene `subtitleTranslation`.
+
+Use the template manifest as the complete ordinary-provider example. Supported config field types are `text`, `password`, `number` and `boolean`. Secret fields are removed from frontend snapshots. Supported permissions are `network`, `browserSession` and `cookies`.
+
+## Realtime stream
+
+Every message is one UTF-8 JSON object followed by `\n`. `start` is first:
 
 ```json
-{
-  "apiVersion": 1,
-  "id": "vendor-asr",
-  "name": "Vendor ASR",
-  "version": "1.0.0",
-  "provider": {
-    "id": "vendor-asr",
-    "displayName": "Vendor ASR",
-    "authKind": "api-key",
-    "capabilities": ["asr"],
-    "config": { "apiKey": "", "region": "" },
-    "configFields": [
-      { "key": "apiKey", "label": "API Key", "fieldType": "password", "secret": true },
-      { "key": "region", "label": "Region", "fieldType": "text", "secret": false }
-    ],
-    "actions": []
-  },
-  "models": [
-    {
-      "id": "vendor-realtime-v1",
-      "label": "Vendor Realtime V1",
-      "providerId": "vendor-asr",
-      "category": "realtime",
-      "protocol": "process-jsonl-v1",
-      "supportsVocabulary": false,
-      "supportsAlignmentTimestamps": false,
-      "scenes": ["dictationRealtime", "subtitles"],
-      "isDefaultRealtime": false,
-      "isDefaultFile": false
-    }
-  ],
-  "runtime": {
-    "kind": "process",
-    "entrypoint": "bin/connector.exe",
-    "args": [],
-    "protocolVersion": 1,
-    "permissions": ["network"]
-  }
-}
+{"type":"start","protocolVersion":2,"sessionId":"uuid","providerId":"vendor","model":"vendor-live","sampleRate":16000,"config":{},"session":null,"permissions":["network"]}
 ```
 
-IDs accept lowercase ASCII letters, digits, dots, and hyphens; maximum length is 64. The entrypoint must be a relative path inside the plugin directory. Supported permissions are `network`, `browserSession`, and `cookies`.
-
-Supported `fieldType` values in the generic UI are `text`, `password`, `number`, and `boolean`. Secret fields are stored by the backend and omitted from frontend snapshots.
-
-## Host-to-plugin JSONL
-
-Every message is a single UTF-8 JSON object followed by `\n`.
-
-Start is always first:
-
-```json
-{"type":"start","protocolVersion":1,"sessionId":"uuid","providerId":"vendor-asr","model":"vendor-realtime-v1","sampleRate":16000,"config":{"apiKey":"..."},"permissions":["network"]}
-```
-
-Audio may repeat:
+The host then sends repeated Base64 PCM16 little-endian mono 16 kHz audio messages, followed by `finish` or `stop`:
 
 ```json
 {"type":"audio","pcm16Base64":"AAABAP//"}
-```
-
-Normal completion:
-
-```json
 {"type":"finish"}
 ```
 
-Immediate cancellation:
-
-```json
-{"type":"stop"}
-```
-
-## Plugin-to-host JSONL
-
-After upstream readiness:
+The plugin emits `ready`, `partial`, `final`, then `finished`; fatal errors use `error`:
 
 ```json
 {"type":"ready"}
-```
-
-Recognition events:
-
-```json
 {"type":"partial","text":"临时结果"}
 {"type":"final","text":"最终结果"}
-```
-
-After all final results following `finish`:
-
-```json
 {"type":"finished"}
-```
-
-Fatal failure:
-
-```json
 {"type":"error","code":"auth_failed","message":"认证失败"}
 ```
 
-Optional diagnostic event:
+## One-shot invoke protocol
+
+For non-realtime capabilities the host starts a fresh connector and sends exactly one `invoke`; stdin then closes. `config` contains provider configuration, `session` contains an OS-protected browser session only when the user explicitly synchronized one, and `payload` is operation-specific.
 
 ```json
-{"type":"event","name":"reconnected"}
+{"type":"invoke","protocolVersion":2,"requestId":"uuid","operation":"translate","providerId":"vendor","config":{},"session":null,"permissions":["network"],"payload":{}}
 ```
 
-SayIt terminates the process after `finished`, `error`, cancellation, stdout closure, invalid JSON, or an eight-second finish timeout.
+The plugin may emit `progress`, `delta` or `event`, then exactly one `completed`; or terminate with `error`.
+If the user cancels a file task, the host terminates the one-shot connector process; do not rely on receiving an additional JSON message after stdin closes.
 
-## Audio and result rules
+```json
+{"type":"delta","text":"新增译文"}
+{"type":"completed","result":{}}
+{"type":"error","code":"upstream_changed","message":"上游协议已变化"}
+```
 
-- Decode `pcm16Base64` into mono signed PCM16 little-endian at the declared 16 kHz rate.
-- Do not reinterpret it as float samples or add a container header unless the upstream API requires one.
-- Map unstable hypotheses to `partial` and committed sentences to `final`.
-- Emit `finished` only after all upstream final messages have been forwarded.
-- Never include protocol logs on stdout.
+Operations:
+
+| operation | payload | completed.result |
+|---|---|---|
+| `transcribeFile` | `filePath`, `params` | `TranscriptionResult` |
+| `translate` | `model`, `text`, `source`, `target` | `{ "text": "..." }` |
+| `setHotwords` | `hotwords[]` | object |
+| `getHotwords` | object | `{ "hotwords": [...] }` |
+| `clearHotwords` | object | object |
+| `action` | `action` | object with optional `status`/`message` |
+
+`TranscriptionResult` uses camelCase:
+
+```json
+{
+  "durationMs": 1200,
+  "transcripts": [{
+    "channelId": null,
+    "text": "完整文本",
+    "sentences": [{
+      "beginTime": 0,
+      "endTime": 1200,
+      "text": "完整文本",
+      "sentenceId": null,
+      "speakerId": null,
+      "words": [{"beginTime":0,"endTime":500,"text":"完整","punctuation":null}]
+    }]
+  }]
+}
+```
+
+## Package trust and updates
+
+`integrity.files` must list every package file except `manifest.json`, using SHA-256. `signature` is Ed25519 over `sayit-plugin-signature-v1\n` plus canonical JSON of the normalized manifest with `signature.value` empty. The supplied signer implements the exact algorithm.
+
+The host distinguishes `trusted`, `signed-untrusted`, `integrity-only` and `unsigned`. New keys and unsigned packages require explicit confirmation. Updates are staged and verified before activation; the prior version is moved to `plugin-backups` and can be rolled back.
+An installed `signed-untrusted` plugin is visible for diagnosis but cannot run until its publisher key is explicitly trusted. Copying an unsigned directory directly into the plugins folder is a local developer escape hatch; normal distribution must use the plugin manager or installer confirmation flow.
+
+## Protocol discipline
+
+- stdout is protocol-only; sanitized diagnostics go to stderr.
+- Never log credentials, cookies, tokens, audio payloads or user text.
+- Validate malformed host messages and return structured errors.
+- Close upstream resources on host cancellation, timeout and disconnect.
+- Do not access files outside the explicit input path and plugin data directory.

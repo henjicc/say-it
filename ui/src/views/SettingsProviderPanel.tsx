@@ -9,12 +9,20 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
 import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
+import { PluginManagerPanel } from "@/views/PluginManagerPanel";
 
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
 const NESTED_BODY_CLASS = "px-3 py-3";
 
 const API_KEY_MASK = "•".repeat(32);
+
+const PLUGIN_ACTION_LABELS: Record<string, string> = {
+  openLogin: "打开登录窗口",
+  syncSession: "获取并保护登录会话",
+  clearSession: "清除登录会话",
+  diagnose: "运行诊断",
+};
 
 function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
@@ -38,6 +46,22 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
       setMessage("插件配置已保存。");
     } catch (error) {
       setMessage(`保存失败：${String(error)}`);
+    }
+  };
+
+  const runAction = async (action: string) => {
+    if (
+      ["openLogin", "syncSession", "clearSession"].includes(action) &&
+      !window.confirm(`插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`)
+    ) return;
+    try {
+      const result = await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, {
+        providerId: provider.id,
+        action,
+      });
+      setMessage(String(result.message || result.status || "操作完成。"));
+    } catch (error) {
+      setMessage(`操作失败：${String(error)}`);
     }
   };
 
@@ -76,7 +100,17 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
               设为默认识别供应商
             </Button>
           )}
+          {(provider.actions || []).filter((action) => action !== "manageHotwords").map((action) => (
+            <Button key={action} size="sm" onClick={() => void runAction(action)}>
+              {PLUGIN_ACTION_LABELS[action] || action}
+            </Button>
+          ))}
         </div>
+        {(provider.capabilities.includes("customization") || provider.actions?.includes("manageHotwords")) && (
+          <Collapse title="热词" className={NESTED_COLLAPSE_CLASS}>
+            <FunAsrHotwordsPanel providerId={provider.id} />
+          </Collapse>
+        )}
         {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       </div>
     </Collapse>
@@ -232,6 +266,7 @@ export function SettingsProviderPanel() {
 
   return (
     <SettingsSection title="识别供应商">
+      <PluginManagerPanel />
       <Collapse
         title={provider?.displayName || "阿里云百炼"}
         subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}

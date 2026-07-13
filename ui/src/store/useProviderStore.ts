@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CMD, cmd } from "@/lib/tauri";
 
-export type ProviderCapability = "asr" | "llm";
+export type ProviderCapability = "asr" | "llm" | "translation" | "customization";
 
 export interface ProviderStatus {
   hasApiKey?: boolean;
@@ -26,6 +26,7 @@ export interface ProviderDefaults {
   asr: string;
   // 预留给 LLM 后处理能力，当前未使用，空串表示未设置。
   llm: string;
+  translation: string;
 }
 
 export interface ProviderResponse {
@@ -47,6 +48,9 @@ interface ProviderState {
   saveFunasrHotwords: (hotwords: { text: string; weight: number }[]) => Promise<void>;
   syncFunasrHotwords: () => Promise<void>;
   clearFunasrHotwords: () => Promise<void>;
+  saveHotwords: (providerId: string, hotwords: { text: string; weight: number }[]) => Promise<void>;
+  syncHotwords: (providerId: string) => Promise<void>;
+  clearHotwords: (providerId: string) => Promise<void>;
   setOverride: (capability: ProviderCapability, providerId: string) => void;
   effective: (capability: ProviderCapability) => string;
   optionsFor: (capability: ProviderCapability) => ProviderProfile[];
@@ -56,6 +60,7 @@ interface ProviderState {
 const FALLBACK_DEFAULTS: ProviderDefaults = {
   asr: "",
   llm: "",
+  translation: "",
 };
 
 function normalize(response: ProviderResponse): Pick<ProviderState, "profiles" | "defaults"> {
@@ -110,6 +115,21 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
 
   clearFunasrHotwords: async () => {
     const response = await cmd<ProviderResponse>(CMD.providerClearHotwords, { providerId: "funasr" });
+    set({ ...normalize(response), statusText: "热词已清除。", statusTone: "ok" });
+  },
+
+  saveHotwords: async (providerId, hotwords) => {
+    const response = await cmd<ProviderResponse>(CMD.providerSaveHotwords, { providerId, hotwords });
+    set({ ...normalize(response), statusText: "热词已保存。", statusTone: "ok" });
+  },
+
+  syncHotwords: async (providerId) => {
+    const response = await cmd<ProviderResponse>(CMD.providerSyncHotwords, { providerId });
+    set({ ...normalize(response), statusText: "热词已同步。", statusTone: "ok" });
+  },
+
+  clearHotwords: async (providerId) => {
+    const response = await cmd<ProviderResponse>(CMD.providerClearHotwords, { providerId });
     set({ ...normalize(response), statusText: "热词已清除。", statusTone: "ok" });
   },
 

@@ -7,6 +7,9 @@ pub mod alibabacloud;
 pub mod capabilities;
 pub mod connector;
 pub mod plugin;
+pub mod plugin_package;
+pub mod plugin_runtime;
+pub mod plugin_secrets;
 pub mod registry;
 #[cfg(test)]
 mod testing;
@@ -37,6 +40,8 @@ pub struct ProviderDefaults {
     /// 预留给 LLM 后处理能力的默认供应商；空串表示未设置。旧 JSON 没有这个字段，靠 `#[serde(default)]` 兼容。
     #[serde(default)]
     pub llm: String,
+    #[serde(default)]
+    pub translation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +58,7 @@ impl Default for ProviderSettings {
             defaults: ProviderDefaults {
                 asr: FUNASR_PROVIDER_ID.to_string(),
                 llm: String::new(),
+                translation: FUNASR_PROVIDER_ID.to_string(),
             },
         }
     }
@@ -98,7 +104,10 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
     }
     match profile.kind.as_str() {
         "alibabacloud-funasr" => vec![ProviderConfigField {
-            key: "apiKey".into(), label: "API Key".into(), field_type: "password".into(), secret: true,
+            key: "apiKey".into(),
+            label: "API Key".into(),
+            field_type: "password".into(),
+            secret: true,
         }],
         _ => Vec::new(),
     }
@@ -148,7 +157,11 @@ pub fn funasr_profile() -> ProviderProfile {
         display_name: "阿里云百炼".to_string(),
         auth_kind: "api-key".to_string(),
         // 同一把百炼 Key 同时供 ASR 识别与 Qwen-MT 翻译（llm 能力）使用，不新增独立供应商。
-        capabilities: vec!["asr".to_string(), "llm".to_string()],
+        capabilities: vec![
+            "asr".to_string(),
+            "llm".to_string(),
+            "translation".to_string(),
+        ],
         enabled: true,
         config: json!({
             "apiKey": "",
@@ -194,6 +207,8 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
 
     settings.defaults.asr = valid_or_fallback(&settings, &settings.defaults.asr, "asr");
     settings.defaults.llm = valid_or_fallback(&settings, &settings.defaults.llm, "llm");
+    settings.defaults.translation =
+        valid_or_fallback(&settings, &settings.defaults.translation, "translation");
 
     settings
 }
@@ -229,6 +244,7 @@ pub fn default_provider_id(settings: &ProviderSettings, capability: &str) -> Str
     match capability {
         "asr" => settings.defaults.asr.clone(),
         "llm" => settings.defaults.llm.clone(),
+        "translation" => settings.defaults.translation.clone(),
         _ => String::new(),
     }
 }
@@ -244,6 +260,7 @@ pub fn set_default_provider(
     match capability {
         "asr" => settings.defaults.asr = provider_id.to_string(),
         "llm" => settings.defaults.llm = provider_id.to_string(),
+        "translation" => settings.defaults.translation = provider_id.to_string(),
         _ => return Err(format!("不支持的能力类型：{capability}")),
     }
     Ok(())
@@ -302,7 +319,10 @@ mod tests {
         let profile = find_profile(&normalized, FUNASR_PROVIDER_ID).unwrap();
         assert_eq!(profile.config["apiKey"], "sk-legacy-key");
         assert_eq!(profile.config["hotwords"][0]["text"], "说吧");
-        assert_eq!(profile.config["vocabularyIds"]["fun-asr-realtime"], "vocab-123");
+        assert_eq!(
+            profile.config["vocabularyIds"]["fun-asr-realtime"],
+            "vocab-123"
+        );
         assert_eq!(normalized.defaults.asr, "funasr");
         // funasr 现在也带 llm 能力，未设置过 defaults.llm 的旧状态会自动回落到它，
         // 这样 resolve_provider_id(_, "llm", None) 才能直接找到可用供应商。

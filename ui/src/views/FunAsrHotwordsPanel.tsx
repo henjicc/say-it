@@ -20,14 +20,13 @@ function parseHotwordsInput(text: string): { text: string; weight: number }[] {
     .filter((item) => item.text.length > 0);
 }
 
-export function FunAsrHotwordsPanel() {
+export function FunAsrHotwordsPanel({ providerId = "funasr" }: { providerId?: string }) {
   const providers = useProviderStore((s) => s.profiles);
   const loadProviders = useProviderStore((s) => s.load);
-  const saveFunasrHotwords = useProviderStore((s) => s.saveFunasrHotwords);
-  const syncFunasrHotwords = useProviderStore((s) => s.syncFunasrHotwords);
-  const clearFunasrHotwords = useProviderStore((s) => s.clearFunasrHotwords);
-  // 热词是阿里云百炼专属能力，本面板天然绑定 funasr profile，不需要按当前生效供应商派生。
-  const funasr = providers.find((p) => p.id === "funasr");
+  const saveHotwords = useProviderStore((s) => s.saveHotwords);
+  const syncHotwords = useProviderStore((s) => s.syncHotwords);
+  const clearHotwords = useProviderStore((s) => s.clearHotwords);
+  const provider = providers.find((p) => p.id === providerId);
 
   const [hotwordsText, setHotwordsText] = useState("");
   const [message, setMessage] = useState("");
@@ -37,13 +36,13 @@ export function FunAsrHotwordsPanel() {
   }, [loadProviders]);
 
   useEffect(() => {
-    const config = funasr?.config;
+    const config = provider?.config;
     if (!config) return;
     const hotwords = Array.isArray(config.hotwords)
       ? (config.hotwords as { text: string; weight: number }[])
       : [];
     setHotwordsText(hotwords.map((item) => `${item.text},${item.weight}`).join("\n"));
-  }, [funasr?.config]);
+  }, [provider?.config]);
 
   const handleSave = async () => {
     const hotwords = parseHotwordsInput(hotwordsText);
@@ -52,8 +51,8 @@ export function FunAsrHotwordsPanel() {
       return;
     }
     try {
-      await saveFunasrHotwords(hotwords);
-      setMessage("热词已保存到阿里云百炼。");
+      await saveHotwords(providerId, hotwords);
+      setMessage("热词已保存。");
     } catch (error) {
       setMessage(`保存失败：${String(error)}`);
     }
@@ -61,8 +60,8 @@ export function FunAsrHotwordsPanel() {
 
   const handleSync = async () => {
     try {
-      await syncFunasrHotwords();
-      setMessage("热词已从阿里云百炼同步。");
+      await syncHotwords(providerId);
+      setMessage("热词已从供应商同步。");
     } catch (error) {
       setMessage(`同步失败：${String(error)}`);
     }
@@ -70,7 +69,7 @@ export function FunAsrHotwordsPanel() {
 
   const handleClear = async () => {
     try {
-      await clearFunasrHotwords();
+      await clearHotwords(providerId);
       setHotwordsText("");
       setMessage("热词已清除。");
     } catch (error) {
@@ -90,7 +89,7 @@ export function FunAsrHotwordsPanel() {
       </Field>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" variant="primary" onClick={handleSave} disabled={!hotwordsText.trim()}>
-          保存热词到阿里云
+          保存热词
         </Button>
         <Button size="sm" onClick={handleSync}>
           从云端同步

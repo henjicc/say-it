@@ -7,7 +7,8 @@ use tokio::process::{ChildStdin, Command};
 
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
-use crate::providers::plugin::{PluginProcessSpec, PROCESS_PROTOCOL_VERSION};
+use crate::providers::plugin::PluginProcessSpec;
+use crate::providers::plugin_secrets;
 use crate::providers::ProviderProfile;
 use crate::state::*;
 
@@ -22,7 +23,15 @@ pub(super) async fn start_plugin_asr_stream(
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
+    if plugin.trust == "signed-untrusted" {
+        return Err(format!(
+            "插件 {} 的签名密钥尚未受信任，请从插件管理重新安装并确认发布者",
+            plugin.plugin_id
+        ));
+    }
     let mut command = Command::new(&plugin.entrypoint);
+    std::fs::create_dir_all(&plugin.data_dir).map_err(|error| error.to_string())?;
+    let protected_session = plugin_secrets::load_session(&plugin)?;
     command
         .args(&plugin.args)
         .current_dir(&plugin.root)
@@ -30,10 +39,8 @@ pub(super) async fn start_plugin_asr_stream(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("SAYIT_PLUGIN_ID", &plugin.plugin_id)
-        .env(
-            "SAYIT_PLUGIN_PROTOCOL",
-            PROCESS_PROTOCOL_VERSION.to_string(),
-        );
+        .env("SAYIT_PLUGIN_PROTOCOL", plugin.protocol_version.to_string())
+        .env("SAYIT_PLUGIN_DATA_DIR", &plugin.data_dir);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -51,12 +58,13 @@ pub(super) async fn start_plugin_asr_stream(
         &mut stdin,
         json!({
             "type": "start",
-            "protocolVersion": PROCESS_PROTOCOL_VERSION,
+            "protocolVersion": plugin.protocol_version,
             "sessionId": session_id,
             "providerId": profile.id,
             "model": model,
             "sampleRate": OUTPUT_RATE,
             "config": profile.config,
+            "session": protected_session,
             "permissions": plugin.permissions,
         }),
     )
