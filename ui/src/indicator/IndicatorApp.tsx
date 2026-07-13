@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Lock, LockOpen, RotateCw, X } from "lucide-react";
 import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { playCueKind } from "@/lib/cues";
 
 type Phase = "hidden" | "recording" | "processing" | "subtitle";
 type IndicatorMode = "dictation" | "subtitle";
@@ -198,6 +199,12 @@ export function IndicatorApp() {
       original.resetText();
       translation.resetText();
       setWaveform({ active: false, level: 0, peaks: [] });
+    }
+  });
+
+  useTauriEvent<{ which?: "start" | "end"; kind?: string }>(EVT.indicatorPlayCue, (payload) => {
+    if ((payload.which === "start" || payload.which === "end") && payload.kind) {
+      playCueKind(payload.kind, payload.which);
     }
   });
 
