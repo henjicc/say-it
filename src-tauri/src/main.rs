@@ -70,6 +70,11 @@ fn main() {
     );
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Err(error) = ensure_main_window(app) {
+                eprintln!("[window] 单实例唤起主窗口失败: {error}");
+            }
+        }))
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .args([AUTOSTART_ARG])
@@ -181,7 +186,11 @@ fn main() {
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => show_main_window(app),
+                    "show" => {
+                        if let Err(error) = ensure_main_window(app) {
+                            eprintln!("[window] 托盘打开主窗口失败: {error}");
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -192,7 +201,9 @@ fn main() {
                         ..
                     } = event
                     {
-                        show_main_window(tray.app_handle());
+                        if let Err(error) = ensure_main_window(tray.app_handle()) {
+                            eprintln!("[window] 托盘点击打开主窗口失败: {error}");
+                        }
                     }
                 });
             if let Some(icon) = app.default_window_icon() {
@@ -211,18 +222,13 @@ fn main() {
             };
             let start_hidden = launched_via_autostart && silent_start;
 
-            if let Some(window) = app.get_webview_window("main") {
-                remember_main_window_placement(
-                    &app.handle(),
-                    window.is_minimized().unwrap_or(false),
-                    window.outer_position(),
-                    window.inner_size(),
-                );
-                if start_hidden {
-                    park_main_window(&app.handle());
-                } else {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+            if app.get_webview_window("main").is_some() {
+                remember_main_window_placement(&app.handle());
+            }
+            register_initial_main_window(&app.handle(), !start_hidden);
+            if start_hidden {
+                if let Err(error) = destroy_main_window(&app.handle()) {
+                    eprintln!("[window] 静默启动销毁主窗口失败: {error}");
                 }
             }
             Ok(())
@@ -231,16 +237,13 @@ fn main() {
             if window.label() == "main" {
                 match event {
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                        remember_main_window_placement(
-                            &window.app_handle(),
-                            window.is_minimized().unwrap_or(false),
-                            window.outer_position(),
-                            window.inner_size(),
-                        );
+                        remember_main_window_placement(&window.app_handle());
                     }
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        park_main_window(&window.app_handle());
+                        if let Err(error) = destroy_main_window(&window.app_handle()) {
+                            eprintln!("[window] 关闭主窗口失败: {error}");
+                        }
                     }
                     _ => {}
                 }
@@ -248,6 +251,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            main_window_ready,
             get_model_catalog,
             import_legacy_settings,
             update_app_settings,

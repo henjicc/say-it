@@ -64,3 +64,14 @@
 - `ui/src/features/subtitles/controller.ts`：删除真实字幕/翻译/OBS/PCM 编排，收敛为命令、领域投影、热键设置和隔离预览。
 - `ui/src/hooks/useTauriBridge.ts`、`lib/tauri.ts`、`store/useSubtitleStore.ts`：消费字幕领域事件、注册命令、设置持久化后同步后端展示。
 - `docs/task/业务后端化与托盘轻量化/`：同步 3.2 状态、决策、交接、测试与最终人工清单。
+
+## 2026-07-13 · 3.3
+
+- `src-tauri/src/application/window_lifecycle.rs`、`application/mod.rs`、`state.rs`：新增主窗口五态生命周期、幂等/失败恢复逻辑、代次保护及单元测试，并扩展位置尺寸/最大化状态。
+- `src-tauri/src/desktop/window.rs`：实现统一按需创建、ready 后显示、保存与恢复逻辑内容尺寸、多屏位置校验、销毁及失败回退隐藏。
+- `src-tauri/src/desktop/indicator.rs`：指示器初始不可见，`hidden` 状态真正隐藏原生窗口，显示态保持不抢焦点提升。
+- `src-tauri/src/main.rs`：托盘菜单/点击、第二实例和启动路径接入统一生命周期；关闭请求改为销毁；注册 ready 命令。
+- `src-tauri/Cargo.toml`、`Cargo.lock`：增加官方 `tauri-plugin-single-instance 2.4.2`。
+- `ui/src/App.tsx`、`hooks/useTauriBridge.ts`、`lib/tauri.ts`：ready 握手、快照/订阅/revision 稳定校正及仅 UI 监听卸载。
+- `ui/src/indicator/IndicatorApp.tsx`：字幕关闭直接调用 Rust `subtitle_stop`，无主窗口时仍生效。
+- `docs/task/业务后端化与托盘轻量化/`：同步 3.3 计划、状态、决策、交接、测试和最终人工清单。

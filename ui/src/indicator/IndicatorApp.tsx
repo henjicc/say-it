@@ -310,7 +310,7 @@ export function IndicatorApp() {
   };
 
   const closeSubtitles = () => {
-    emitEvent(EVT.subtitleCloseRequested);
+    void cmdSilent(CMD.subtitleStop);
   };
 
   return (

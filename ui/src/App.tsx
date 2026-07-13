@@ -29,13 +29,20 @@ export default function App() {
   const theme = useThemeStore((s) => s.theme);
   const [settingsReady, setSettingsReady] = useState(false);
 
-  useTauriBridge();
+  const bridgeReady = useTauriBridge();
 
   useEffect(() => {
     void initializeSettings()
-      .then(() => setSettingsReady(true))
-      .catch((error) => console.error("应用目录与设置初始化失败", error));
+      .catch((error) => console.error("应用目录与设置初始化失败", error))
+      .finally(() => setSettingsReady(true));
   }, []);
+
+  useEffect(() => {
+    if (!settingsReady || !bridgeReady) return;
+    void cmd(CMD.mainWindowReady).catch((error) => {
+      console.error("主窗口 ready 握手失败", error);
+    });
+  }, [bridgeReady, settingsReady]);
 
   useEffect(() => {
     const root = document.documentElement;

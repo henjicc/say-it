@@ -5,3 +5,4 @@ pub(crate) mod dictation;
 pub(crate) mod events;
 pub(crate) mod settings;
 pub(crate) mod subtitles;
+pub(crate) mod window_lifecycle;
