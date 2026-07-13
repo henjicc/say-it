@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 
 export const CMD = {
+  getAppSnapshot: "get_app_snapshot",
   getSessionStatus: "get_session_status",
   getDictationSettings: "get_dictation_settings",
   setDictationSettings: "set_dictation_settings",
@@ -68,6 +69,36 @@ export const CMD = {
   installObsOverlay: "install_obs_overlay",
   uninstallObsOverlay: "uninstall_obs_overlay",
 } as const;
+
+export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";
+
+export interface DomainSnapshot {
+  state: DomainRunState;
+  sessionId?: string;
+}
+
+export interface AppSnapshot {
+  revision: number;
+  configuration: {
+    defaultProviderId: string;
+    dictationShortcut: string;
+    subtitleShortcut: string;
+    startupSilent: boolean;
+  };
+  dictation: DomainSnapshot;
+  subtitles: DomainSnapshot;
+  transcription: DomainSnapshot;
+  comparison: DomainSnapshot;
+  audioLab: DomainSnapshot;
+}
+
+export interface DomainEventEnvelope<T = unknown> {
+  revision: number;
+  domain: string;
+  eventType: string;
+  sessionId?: string;
+  payload: T;
+}
 
 export const EVT = {
   asrStreamEvent: "asr-stream-event",
