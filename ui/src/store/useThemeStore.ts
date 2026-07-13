@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { CMD, cmd } from "@/lib/tauri";
 
 export interface AccentTheme {
   tone: "dark" | "light";
@@ -110,11 +111,11 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   theme: readStored(),
   patch: (partial) => {
     const next = normalizeTheme({ ...get().theme, ...partial });
-    persist(next);
-    set({ theme: next });
+    void cmd(CMD.updateAppSettings, { domain: "theme", value: next }).then(() => { persist(next); set({ theme: next }); });
   },
   reset: () => {
-    persist(defaultAccentTheme);
-    set({ theme: defaultAccentTheme });
+    void cmd(CMD.updateAppSettings, { domain: "theme", value: defaultAccentTheme }).then(() => { persist(defaultAccentTheme); set({ theme: defaultAccentTheme }); });
   },
 }));
+
+export function hydrateTheme(value: Record<string, unknown>) { const next = normalizeTheme(value as Partial<AccentTheme>); persist(next); useThemeStore.setState({ theme: next }); }

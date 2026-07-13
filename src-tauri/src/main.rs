@@ -17,6 +17,7 @@ use prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use application::contract::get_app_snapshot;
+use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use commands::*;
 use desktop::*;
 use obs_overlay::*;
@@ -77,6 +78,10 @@ fn main() {
         .setup(|app| {
             if let Some(persisted) = load_persisted_state(&app.handle())? {
                 let state = app.state::<RuntimeState>();
+                {
+                    let mut settings = state.app_settings.lock().map_err(|_| std::io::Error::other("app settings lock failed while loading persisted data"))?;
+                    *settings = persisted.app_settings.clone();
+                }
                 {
                     let mut providers = state.providers.lock().map_err(|_| {
                         std::io::Error::other(
@@ -238,6 +243,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            import_legacy_settings,
+            update_app_settings,
+            update_custom_cue,
             get_session_status,
             list_providers,
             get_provider_settings,

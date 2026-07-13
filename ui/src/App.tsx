@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
@@ -6,6 +6,7 @@ import { CMD, cmd } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
 import { accentDark, accentLight, useThemeStore } from "@/store/useThemeStore";
+import { initializeSettings } from "@/features/settings/settingsBridge";
 
 import { DictationView } from "@/views/DictationView";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
@@ -26,8 +27,11 @@ export default function App() {
   const closeAbout = useUiStore((s) => s.closeAbout);
   const setSession = useUiStore((s) => s.setSession);
   const theme = useThemeStore((s) => s.theme);
+  const [settingsReady, setSettingsReady] = useState(false);
 
   useTauriBridge();
+
+  useEffect(() => { void initializeSettings().finally(() => setSettingsReady(true)); }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -61,6 +65,7 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg)] text-[var(--color-fg)]">
+      {!settingsReady ? null : <>
       <Titlebar />
       <div className="relative flex min-h-0 flex-1">
         <Sidebar />
@@ -69,6 +74,7 @@ export default function App() {
         </main>
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
       </div>
+      </>}
     </div>
   );
 }

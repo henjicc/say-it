@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { dspDefaults, dspParamsFromPrefs, type DspParams } from "@/lib/audio-dsp";
-import { CMD, cmdSilent } from "@/lib/tauri";
+import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedDictationModel,
@@ -103,15 +103,18 @@ export const useDictPrefs = create<DictPrefsState>((set, get) => ({
   prefs: readStored(),
   patch: (partial) => {
     const next = { ...get().prefs, ...partial };
-    persist(next);
-    set({ prefs: next });
-    if ("debugLog" in partial) {
-      cmdSilent(CMD.setDebugLog, { enabled: !!next.debugLog });
-    }
+    void cmd(CMD.updateAppSettings, { domain: "dictation", value: next }).then(() => {
+      persist(next); set({ prefs: next });
+      if ("debugLog" in partial) cmdSilent(CMD.setDebugLog, { enabled: !!next.debugLog });
+    });
   },
   resetLocalRules: () => get().patch({ localRules: defaultLocalRules() }),
   dspParams: () => dspParamsFromPrefs(get().prefs),
 }));
+
+export function hydrateDictPrefs(value: Record<string, unknown>) {
+  const next = readStored(); Object.assign(next, value); persist(next); useDictPrefs.setState({ prefs: next });
+}
 
 export function syncDebugLogToBackend() {
   cmdSilent(CMD.setDebugLog, { enabled: !!useDictPrefs.getState().prefs.debugLog });

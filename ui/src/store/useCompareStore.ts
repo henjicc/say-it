@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { CMD, cmd } from "@/lib/tauri";
 import type { SelectedTranscriptionFile } from "@/store/useTranscriptionStore";
 
 export type CompareSourceMode = "record" | "upload";
@@ -100,30 +101,26 @@ export const useCompareStore = create<CompareState>((set, get) => ({
 
   patch: (partial) => {
     const next = clampPrefs({ ...get().prefs, ...partial });
-    persist(next);
-    set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) });
+    void save(next, () => set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) }));
   },
   setCellModel: (index, value) => {
     const cellModels = get().prefs.cellModels.slice();
     if (index < 0 || index >= cellModels.length) return;
     cellModels[index] = value;
     const next = clampPrefs({ ...get().prefs, cellModels });
-    persist(next);
-    set({ prefs: next });
+    void save(next, () => set({ prefs: next }));
   },
   addRow: () => {
     const { cellModels } = get().prefs;
     if (cellModels.length / COMPARE_COLS >= COMPARE_MAX_ROWS) return;
     const next = clampPrefs({ ...get().prefs, cellModels: [...cellModels, ...Array(COMPARE_COLS).fill("")] });
-    persist(next);
-    set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) });
+    void save(next, () => set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) }));
   },
   removeRow: () => {
     const { cellModels } = get().prefs;
     if (cellModels.length / COMPARE_COLS <= COMPARE_MIN_ROWS) return;
     const next = clampPrefs({ ...get().prefs, cellModels: cellModels.slice(0, cellModels.length - COMPARE_COLS) });
-    persist(next);
-    set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) });
+    void save(next, () => set({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) }));
   },
   setSelectedFile: (file) => set({ selectedFile: file }),
   setRuntime: (partial) => set(partial),
@@ -142,3 +139,6 @@ export const useCompareStore = create<CompareState>((set, get) => ({
       cellRuntime: state.prefs.cellModels.map(emptyCellRuntime),
     })),
 }));
+
+async function save(next: ComparePrefs, commit: () => void) { await cmd(CMD.updateAppSettings, { domain: "comparison", value: next }); persist(next); commit(); }
+export function hydrateComparePrefs(value: Record<string, unknown>) { const next = clampPrefs({ ...readStored(), ...value } as ComparePrefs); persist(next); useCompareStore.setState({ prefs: next, cellRuntime: next.cellModels.map(emptyCellRuntime) }); }

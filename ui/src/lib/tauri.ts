@@ -3,6 +3,9 @@ import { emit, listen, type Event, type UnlistenFn } from "@tauri-apps/api/event
 
 export const CMD = {
   getAppSnapshot: "get_app_snapshot",
+  importLegacySettings: "import_legacy_settings",
+  updateAppSettings: "update_app_settings",
+  updateCustomCue: "update_custom_cue",
   getSessionStatus: "get_session_status",
   getDictationSettings: "get_dictation_settings",
   setDictationSettings: "set_dictation_settings",
@@ -85,11 +88,23 @@ export interface AppSnapshot {
     subtitleShortcut: string;
     startupSilent: boolean;
   };
+  settings: AppSettings;
   dictation: DomainSnapshot;
   subtitles: DomainSnapshot;
   transcription: DomainSnapshot;
   comparison: DomainSnapshot;
   audioLab: DomainSnapshot;
+}
+
+export interface AppSettings {
+  schemaVersion: number;
+  legacyImported: boolean;
+  dictationPrefs: Record<string, unknown>;
+  subtitlePrefs: Record<string, unknown>;
+  comparePrefs: Record<string, unknown>;
+  theme: Record<string, unknown>;
+  customCueStart?: { relativePath: string; mimeType: string };
+  customCueEnd?: { relativePath: string; mimeType: string };
 }
 
 export interface DomainEventEnvelope<T = unknown> {
