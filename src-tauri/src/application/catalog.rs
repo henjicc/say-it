@@ -37,26 +37,47 @@ pub struct ModelCatalog {
 }
 
 pub fn build_catalog(providers: ProviderSettingsResponse) -> ModelCatalog {
-    let models = registry::models().iter().map(|model| {
-        let route = registry::file_transcription_route(&model.id);
-        ModelCatalogItem {
-            id: model.id.clone(), label: model.label.clone(), provider_id: model.provider_id.clone(),
-            category: model.category.clone(), protocol: model.protocol.clone(), scenes: model.scenes.clone(),
-            supports_vocabulary: model.supports_vocabulary,
-            supports_alignment_timestamps: model.supports_alignment_timestamps,
-            is_default_realtime: model.is_default_realtime, is_default_file: model.is_default_file,
-            is_qwen_realtime: matches!(registry::realtime_asr_family(&model.id), crate::providers::alibabacloud::RealtimeAsrFamily::QwenRealtime),
-            is_qwen_file: model.id.starts_with("qwen3-asr-flash-filetrans"),
-            is_qwen_short_audio_file: route == FileTranscriptionRoute::SyncQwen,
-            is_funasr_flash_file: route == FileTranscriptionRoute::SyncFunAsrFlash,
-        }
-    }).collect();
-    ModelCatalog { version: CATALOG_VERSION, default_realtime_model: registry::default_realtime_model().into(), default_file_model: registry::default_file_model().into(), models, providers }
+    let models = registry::models()
+        .iter()
+        .map(|model| {
+            let route = registry::file_transcription_route(&model.id);
+            ModelCatalogItem {
+                id: model.id.clone(),
+                label: model.label.clone(),
+                provider_id: model.provider_id.clone(),
+                category: model.category.clone(),
+                protocol: model.protocol.clone(),
+                scenes: model.scenes.clone(),
+                supports_vocabulary: model.supports_vocabulary,
+                supports_alignment_timestamps: model.supports_alignment_timestamps,
+                is_default_realtime: model.is_default_realtime,
+                is_default_file: model.is_default_file,
+                is_qwen_realtime: matches!(
+                    registry::realtime_asr_family(&model.id),
+                    crate::providers::alibabacloud::RealtimeAsrFamily::QwenRealtime
+                ),
+                is_qwen_file: model.id.starts_with("qwen3-asr-flash-filetrans"),
+                is_qwen_short_audio_file: route == FileTranscriptionRoute::SyncQwen,
+                is_funasr_flash_file: route == FileTranscriptionRoute::SyncFunAsrFlash,
+            }
+        })
+        .collect();
+    ModelCatalog {
+        version: CATALOG_VERSION,
+        default_realtime_model: registry::default_realtime_model().into(),
+        default_file_model: registry::default_file_model().into(),
+        models,
+        providers,
+    }
 }
 
 #[tauri::command]
-pub(crate) fn get_model_catalog(state: tauri::State<'_, RuntimeState>) -> Result<ModelCatalog, String> {
-    Ok(build_catalog(provider_settings_response(read_provider_settings(&state)?)))
+pub(crate) fn get_model_catalog(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<ModelCatalog, String> {
+    Ok(build_catalog(provider_settings_response(
+        read_provider_settings(&state)?,
+    )))
 }
 
 #[cfg(test)]
@@ -66,10 +87,18 @@ mod tests {
 
     #[test]
     fn catalog_is_complete_and_defaults_exist() {
-        let catalog = build_catalog(provider_settings_response(normalize_settings(ProviderSettings::default())));
+        let catalog = build_catalog(provider_settings_response(normalize_settings(
+            ProviderSettings::default(),
+        )));
         assert_eq!(catalog.models.len(), 9);
-        assert!(catalog.models.iter().any(|m| m.id == catalog.default_realtime_model && m.is_default_realtime));
-        assert!(catalog.models.iter().any(|m| m.id == catalog.default_file_model && m.is_default_file));
+        assert!(catalog
+            .models
+            .iter()
+            .any(|m| m.id == catalog.default_realtime_model && m.is_default_realtime));
+        assert!(catalog
+            .models
+            .iter()
+            .any(|m| m.id == catalog.default_file_model && m.is_default_file));
         assert!(catalog.models.iter().all(|m| !m.scenes.is_empty()));
     }
 
@@ -79,12 +108,20 @@ mod tests {
         settings.profiles[0].enabled = false;
         settings.defaults.asr = "missing".into();
         settings.profiles.push(crate::providers::ProviderProfile {
-            id: "fallback".into(), kind: "test".into(), display_name: "Fallback".into(),
-            auth_kind: "none".into(), capabilities: vec!["asr".into()], enabled: true,
+            id: "fallback".into(),
+            kind: "test".into(),
+            display_name: "Fallback".into(),
+            auth_kind: "none".into(),
+            capabilities: vec!["asr".into()],
+            enabled: true,
             config: serde_json::json!({}),
         });
         let catalog = build_catalog(provider_settings_response(normalize_settings(settings)));
-        let effective = catalog.providers.profiles.iter().find(|p| p.effective_capabilities.iter().any(|c| c == "asr"));
+        let effective = catalog
+            .providers
+            .profiles
+            .iter()
+            .find(|p| p.effective_capabilities.iter().any(|c| c == "asr"));
         assert_eq!(effective.map(|p| p.id.as_str()), Some("funasr"));
     }
 }
