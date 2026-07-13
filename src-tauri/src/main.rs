@@ -321,6 +321,7 @@ fn main() {
             run_asr_silence_test,
             get_local_file_info,
             save_text_file,
+            save_subtitle_srt,
             transcription_start,
             transcription_cancel,
             align_transcript,

@@ -105,13 +105,12 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         .startup
         .lock()
         .map_err(|_| "startup settings lock failed")?;
-    let active_transcriptions = state
-        .transcriptions
-        .lock()
-        .map_err(|_| "transcription state lock failed")?
-        .len();
     let revision = state.snapshot_revision.load(Ordering::Acquire);
-    let settings = state.app_settings.lock().map_err(|_| "app settings lock failed")?.clone();
+    let settings = state
+        .app_settings
+        .lock()
+        .map_err(|_| "app settings lock failed")?
+        .clone();
 
     Ok(AppSnapshot {
         revision,
@@ -124,14 +123,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         settings,
         dictation: crate::application::dictation::domain_snapshot(&state)?,
         subtitles: crate::application::subtitles::domain_snapshot(&state)?,
-        transcription: DomainSnapshot {
-            state: if active_transcriptions == 0 {
-                DomainRunState::Idle
-            } else {
-                DomainRunState::Running
-            },
-            session_id: None,
-        },
+        transcription: state.transcription_runtime.domain_snapshot(),
         comparison: frontend_owned(),
         audio_lab: frontend_owned(),
     })

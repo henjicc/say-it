@@ -22,7 +22,7 @@ import {
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
-import { editablePlainText, editableToSrt, plainText } from "@/features/transcription/subtitles";
+import { editablePlainText, plainText } from "@/features/transcription/subtitles";
 import {
   FILE_ASR_MODEL_OPTIONS,
   isSupportedFileModel,
@@ -117,7 +117,7 @@ export function TranscriptionView() {
         filters: [{ name: "SRT 字幕", extensions: ["srt"] }],
       });
       if (!path) return;
-      await cmd(CMD.saveTextFile, { path, content: editableToSrt(editorCues) });
+      await cmd(CMD.saveSubtitleSrt, { path, cues: editorCues });
       setRuntime({ saveMessage: `已导出：${path}` });
     } catch (error) {
       setRuntime({ saveMessage: `导出失败：${String(error)}` });

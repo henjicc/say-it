@@ -64,6 +64,7 @@ export const CMD = {
   runAsrSilenceTest: "run_asr_silence_test",
   getLocalFileInfo: "get_local_file_info",
   saveTextFile: "save_text_file",
+  saveSubtitleSrt: "save_subtitle_srt",
   transcriptionStart: "transcription_start",
   transcriptionCancel: "transcription_cancel",
   alignTranscript: "align_transcript",

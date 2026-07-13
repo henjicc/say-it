@@ -4,5 +4,7 @@ pub(crate) mod contract;
 pub(crate) mod dictation;
 pub(crate) mod events;
 pub(crate) mod settings;
+pub(crate) mod subtitle_document;
 pub(crate) mod subtitles;
+pub(crate) mod transcription;
 pub(crate) mod window_lifecycle;
