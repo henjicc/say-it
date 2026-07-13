@@ -72,6 +72,7 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     .always_on_top(true)
     .skip_taskbar(true)
     .focused(false)
+    .visible(false)
     .shadow(false)
     .transparent(true)
     .build()
@@ -110,11 +111,19 @@ pub(crate) fn raise_indicator_window(window: &tauri::WebviewWindow) {
 #[tauri::command]
 pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
     hotkey::set_dictation_active(state == "recording" || state == "processing");
+    if state == "hidden" {
+        if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+            let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
+            let _ = window.set_ignore_cursor_events(true);
+            window
+                .hide()
+                .map_err(|error| format!("隐藏指示器窗口失败: {error}"))?;
+        }
+        return Ok(());
+    }
     let window = ensure_indicator_window(&app)?;
     let _ = window.set_ignore_cursor_events(state != "subtitle");
-    if state != "hidden" {
-        raise_indicator_window(&window);
-    }
+    raise_indicator_window(&window);
     let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
     Ok(())
 }

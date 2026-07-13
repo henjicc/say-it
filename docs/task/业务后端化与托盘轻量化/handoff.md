@@ -52,3 +52,12 @@
 - 前端 `features/subtitles/controller.ts` 只保留命令、状态投影、热键设置和完全隔离的预览；真实 ASR、translation epoch、重连、OBS monitor 与 PCM 消费均已删除。
 - 旧 `asr-stream-event`、`subtitle-translation-event`、`translate_subtitle_start` 和底层 raw capture 命令仍可能被 4.2/调试页使用，5.1 须先扫描消费者再清理。
 - 真实设备、云端翻译、OBS、拖动与窗口销毁连续性统一留在 `manual-test-checklist.md`，自动验证不能替代这些结果。
+
+## 3.3 → 4.1/4.2/5.1
+
+- `desktop::ensure_main_window` 是托盘、单实例和后续显式打开主窗口的唯一入口；不要直接 `show()` 或另建 `main` WebView。
+- 主窗口关闭现在调用 `destroy_main_window`，只保存窗口状态并销毁 WebView；4.1/4.2 的后台任务不能依赖 `beforeunload` 收尾，必须由 Rust runtime 自己持有并通过命令显式取消。
+- 新窗口在 `main_window_ready` 前保持不可见；`useTauriBridge` 已建立 revision 校正和听写/字幕完整运行时恢复，4.1/4.2 接管领域后需把其完整 runtime 投影加入同一恢复流程。
+- `MainWindowPlacement` 保存逻辑内容尺寸、物理位置和最大化标记；多屏断开回退居中。不要恢复 outer size，避免无边框窗口反复变大。
+- 指示器 WebView仍常驻，但空闲时原生窗口已隐藏；最终性能采样未证明需要进一步销毁前，不要增加指示器冷启动路径。
+- 真实销毁后的进程数/内存、后台听写字幕连续性和窗口恢复体验统一见 `manual-test-checklist.md`，最终验收前不能仅凭单元测试宣称性能达标。

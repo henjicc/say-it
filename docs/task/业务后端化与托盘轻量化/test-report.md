@@ -114,3 +114,23 @@
 ### 当前结论
 
 - 3.2 自动验收通过；真实设备、网络、OBS 和交互项目不阻塞 3.3。
+
+## 2026-07-13 · 3.3
+
+### 自动验证
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，93/93；新增覆盖静默初始窗口、重复打开只创建一次、创建失败可重试、关闭状态边界、负坐标副屏和断屏回退。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过，无 warning。
+- `npm run ui:build`：通过，Vite 主窗口与 indicator 双入口构建成功。
+- `npx tsc --noEmit --lib ES2022,DOM,DOM.Iterable`：通过；项目默认 `npx tsc --noEmit` 仍被既有 ES2020 配置与 `Array.prototype.at` 冲突阻塞，错误位于未改动的 `features/subtitles/controller.ts:135`。
+- 生命周期静态复查：关闭路径不调用 `dictation_stop`、`subtitle_stop` 或 OBS shutdown；托盘菜单、托盘左键和单实例均调用 `ensure_main_window`；前端不再注册 `beforeunload` 业务清理。
+- `git diff --check`：通过，仅有 Git 的 LF/CRLF 工作区提示。
+
+### 未自动验证
+
+- 主 renderer 实际退出、连续托盘点击、关闭/恢复动画、位置/尺寸/最大化、多屏 DPI、全局快捷键及字幕/OBS 后台连续性需要桌面 UI 或外部服务，统一列入 `manual-test-checklist.md`。
+- 前台、托盘 10/60/300 秒、听写后和字幕运行中的进程树资源与恢复时延需在真实构建运行时采样，统一留到最终人工验收。
+
+### 当前结论
+
+- 3.3 自动验收通过；人工窗口、后台连续性和性能项目按用户决定不阻塞 4.1。
