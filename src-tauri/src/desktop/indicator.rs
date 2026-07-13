@@ -113,6 +113,7 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
     let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
     let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
     let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
+    let _ = window.emit("dictation-indicator-waveform", json!({ "active": false, "level": 0, "peaks": [] }));
     Ok(())
 }
 
