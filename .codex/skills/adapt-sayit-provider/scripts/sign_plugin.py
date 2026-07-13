@@ -30,14 +30,32 @@ def load_or_create_key(path: Path) -> Ed25519PrivateKey:
     return key
 
 
+def ensure_within(path: Path, workspace: Path, label: str) -> None:
+    try:
+        path.relative_to(workspace)
+    except ValueError as error:
+        raise SystemExit(f"{label} 必须位于外部插件工作目录内：{workspace}") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Hash and Ed25519-sign a SayIt plugin package")
     parser.add_argument("plugin_dir", type=Path)
     parser.add_argument("--private-key", type=Path, required=True)
     parser.add_argument("--key-id", required=True)
+    parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--forbid-root", type=Path, required=True)
     args = parser.parse_args()
+    workspace = args.workspace.resolve()
+    forbidden = args.forbid_root.resolve()
+    try:
+        workspace.relative_to(forbidden)
+        raise SystemExit(f"插件工作目录不能位于 SayIt 仓库内：{forbidden}")
+    except ValueError:
+        pass
     root = args.plugin_dir.resolve()
     private_key_path = args.private_key.resolve()
+    ensure_within(root, workspace, "plugin_dir")
+    ensure_within(private_key_path, workspace, "private-key")
     try:
         private_key_path.relative_to(root)
         raise SystemExit("私钥不能放在插件包目录内")

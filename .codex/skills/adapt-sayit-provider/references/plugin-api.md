@@ -14,7 +14,7 @@ Package layout after packaging:
     └── required-runtime-files
 ```
 
-The host scans `%LOCALAPPDATA%\com.henjicc.sayit\plugins`. IDs use lowercase ASCII letters, digits, dots and hyphens, up to 64 characters. The entrypoint and integrity paths must remain inside the package and symlinks are rejected.
+The host scans `%LOCALAPPDATA%\com.henjicc.sayit\plugins` only after the user manually installs an extracted package. Build and package in an external workspace; never use a SayIt source repository as a package or build directory. IDs use lowercase ASCII letters, digits, dots and hyphens, up to 64 characters. The entrypoint and integrity paths must remain inside the package and symlinks are rejected.
 
 ## Manifest capabilities and models
 
