@@ -202,7 +202,11 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   obsOutputActive: false,
   patch: (partial) => {
     const next = clampPrefs({ ...get().prefs, ...partial });
-    void cmd(CMD.updateAppSettings, { domain: "subtitles", value: next }).then(() => { persist(next); set({ prefs: next }); });
+    persist(next);
+    set({ prefs: next });
+    void cmd(CMD.updateAppSettings, { domain: "subtitles", value: next }).then(async () => {
+      if (get().running) await cmd(CMD.syncSubtitlePresentation).catch(() => undefined);
+    });
   },
   loadTranslationModel: async () => {
     const model = await cmd<string>(CMD.getSubtitleTranslationModel);
@@ -214,8 +218,10 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
     const normalized = normalizeTranslationModel(model);
     await cmd(CMD.setSubtitleTranslationModel, { model: normalized });
     const prefs = clampPrefs({ ...get().prefs, translationModel: normalized });
+    await cmd(CMD.updateAppSettings, { domain: "subtitles", value: prefs });
     persist(prefs);
     set({ prefs });
+    if (get().running) await cmd(CMD.syncSubtitlePresentation).catch(() => undefined);
   },
   setRuntime: (partial) => set(partial),
 }));

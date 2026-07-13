@@ -43,3 +43,12 @@
 - 听写快捷键已直接驱动 Rust，前端只调用 `dictation_*` 命令和消费 `domain-event`；不得恢复 `dictation-toggle` 的前端状态机监听。
 - 指示器现在由后端发状态、文本和摘要波形；完整 PCM 仅在旧字幕/对比/调试路径按需广播，3.2/4.2 应继续移除各自广播消费者。
 - 真实设备、云端、规则样本和提示音交互仍须最终人工清单验证；自动验证通过不代表外部服务实测通过。
+
+## 3.2 → 3.3/4.2/5.1
+
+- `RuntimeState.subtitle_runtime` 是真实字幕、翻译和 OBS 路由唯一权威；3.3 销毁主窗口时不得调用 `subtitle_stop`，窗口重建后用 `get_subtitle_runtime` 加 `domain-event` 恢复投影。
+- 字幕快捷键已直接调用 Rust `request_toggle`，主 WebView 不再监听 `subtitle-toggle`；不要恢复前端快捷键状态机。
+- 麦克风与系统音频都使用 `AudioOwner::Subtitles`；4.2 必须使用自己的 owner，不能借用 Legacy 或绕过协调器。
+- 前端 `features/subtitles/controller.ts` 只保留命令、状态投影、热键设置和完全隔离的预览；真实 ASR、translation epoch、重连、OBS monitor 与 PCM 消费均已删除。
+- 旧 `asr-stream-event`、`subtitle-translation-event`、`translate_subtitle_start` 和底层 raw capture 命令仍可能被 4.2/调试页使用，5.1 须先扫描消费者再清理。
+- 真实设备、云端翻译、OBS、拖动与窗口销毁连续性统一留在 `manual-test-checklist.md`，自动验证不能替代这些结果。

@@ -54,3 +54,13 @@
 - `ui/src/store/useDictPrefs.ts`、`views/SettingsMicCuePanel.tsx`、`features/settings/settingsBridge.ts`：配置保存改为可等待，确保自定义提示音落盘并切换为 custom 后才调用 Rust 试听。
 - 删除 `ui/src/features/dictation/{session,realtimeFlow,fileFlow,inject,indicatorBridge}.ts`，并将仍供字幕/对比使用的 `micSession.ts` 移至 `features/audio/`：移除前端听写运行时、计时器和 PCM 缓冲。
 - `docs/task/业务后端化与托盘轻量化/`：同步完成状态、决策、交接、测试与最终人工清单。
+
+## 2026-07-13 · 3.2
+
+- `src-tauri/src/application/subtitles/mod.rs`：字幕状态机、纯文档/翻译模型、音频与 ASR 生命周期、供应商翻译、OBS 路由、指示器更新及单元测试。
+- `src-tauri/src/application/{events,contract,mod}.rs`、`state.rs`：内部翻译事件、字幕快照权威、模块和 runtime 注册。
+- `src-tauri/src/desktop/backend_system_audio.rs`：补齐系统 loopback 供应用服务直接使用的 start/raw/ASR/pause/release 内部接口。
+- `src-tauri/src/{hotkey.rs,main.rs}`：字幕快捷键直连 Rust 服务，注册初始化和运行时命令。
+- `ui/src/features/subtitles/controller.ts`：删除真实字幕/翻译/OBS/PCM 编排，收敛为命令、领域投影、热键设置和隔离预览。
+- `ui/src/hooks/useTauriBridge.ts`、`lib/tauri.ts`、`store/useSubtitleStore.ts`：消费字幕领域事件、注册命令、设置持久化后同步后端展示。
+- `docs/task/业务后端化与托盘轻量化/`：同步 3.2 状态、决策、交接、测试与最终人工清单。

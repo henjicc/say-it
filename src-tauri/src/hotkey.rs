@@ -333,7 +333,7 @@ fn emit_cancel() {
 
 fn emit_subtitle_toggle() {
     if let Some(app) = APP.get() {
-        let _ = app.emit("subtitle-toggle", json!({}));
+        crate::application::subtitles::request_toggle(app.clone());
     }
 }
 

@@ -14,10 +14,9 @@ import {
   handleCaptureLockKey,
 } from "@/features/dictation/controller";
 import {
-  handleSubtitleAsrEvent,
-  handleSubtitleTranslationEvent,
+  applySubtitleRuntime,
+  loadSubtitleRuntime,
   shutdownSubtitles,
-  toggleSubtitles,
   handleSubtitleShortcutError,
   isSubtitleCapturing,
   loadSubtitleShortcut,
@@ -29,27 +28,17 @@ import {
 import { hardAbortCompare } from "@/features/compare/controller";
 
 export function useTauriBridge() {
-  useTauriEvent(EVT.asrStreamEvent, (data) => {
-    const payload = (data || {}) as { session_id?: string };
-    if (!payload.session_id) return;
-    handleSubtitleAsrEvent(payload as never);
-  });
-
   useTauriEvent(EVT.domainEvent, (data) => {
     const event = (data || {}) as { domain?: string; payload?: unknown };
     if (event.domain === "dictation") applyDictationRuntime((event.payload || {}) as never);
+    if (event.domain === "subtitles") applySubtitleRuntime((event.payload || {}) as never);
   });
   useTauriEvent(EVT.dictationShortcutError, (payload) => handleShortcutError(payload as never));
 
-  useTauriEvent(EVT.subtitleToggle, () => {
-    if (isSubtitleCapturing()) return;
-    toggleSubtitles();
-  });
   useTauriEvent(EVT.subtitleCloseRequested, () => {
     shutdownSubtitles();
   });
   useTauriEvent(EVT.subtitleShortcutError, (payload) => handleSubtitleShortcutError(payload as never));
-  useTauriEvent(EVT.subtitleTranslationEvent, (payload) => handleSubtitleTranslationEvent(payload as never));
 
   useTauriEvent(EVT.hotkeyCaptureLockKey, (payload) => {
     const vk = ((payload || {}) as { vk?: number }).vk;
@@ -71,12 +60,12 @@ export function useTauriBridge() {
     loadDictationSettings();
     void loadDictationRuntime().catch(() => undefined);
     loadSubtitleShortcut();
+    void loadSubtitleRuntime().catch(() => undefined);
     void useSubtitleStore.getState().loadTranslationModel().catch(() => undefined);
     useProviderStore.getState().load();
 
     const uninstallSubtitleHotkeyFallback = installSubtitleFocusHotkeyFallback();
     const onUnload = () => {
-      shutdownSubtitles();
       shutdownDictationMic();
       hardAbortCompare();
     };

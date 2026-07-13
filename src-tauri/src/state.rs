@@ -18,6 +18,7 @@ pub(crate) struct RuntimeState {
     pub(crate) audio_session: crate::application::audio_session::AudioSessionCoordinator,
     pub(crate) legacy_audio_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) dictation_runtime: crate::application::dictation::DictationRuntime,
+    pub(crate) subtitle_runtime: crate::application::subtitles::SubtitleRuntime,
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
     pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,

@@ -12,6 +12,13 @@ pub(crate) enum BackendEvent {
         stage: String,
         payload: Value,
     },
+    SubtitleTranslation {
+        epoch: u64,
+        segment_seq: u64,
+        text: String,
+        done: bool,
+        error: Option<String>,
+    },
 }
 
 pub(crate) struct BackendEventHub {
@@ -32,6 +39,10 @@ impl BackendEventHub {
 
     pub(crate) fn publish(&self, event: BackendEvent) {
         let _ = self.sender.send(event);
+    }
+
+    pub(crate) fn sender_clone(&self) -> tokio::sync::broadcast::Sender<BackendEvent> {
+        self.sender.clone()
     }
 }
 
