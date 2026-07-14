@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
+import { loadModelCatalog } from "@/features/asr/modelRegistry";
+import { hydrateModelOptions } from "@/features/asr/modelOptions";
 
 interface PluginSummary {
   id: string;
@@ -35,10 +37,16 @@ export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
 
+  const refreshPluginCatalog = async () => {
+    await loadModelCatalog();
+    hydrateModelOptions();
+    await loadProviders();
+  };
+
   const reload = async () => {
     const next = await cmd<PluginSnapshot>(CMD.reloadProviderPlugins);
     setSnapshot(next);
-    await loadProviders();
+    await refreshPluginCatalog();
   };
 
   useEffect(() => {
@@ -61,7 +69,7 @@ export function PluginManagerPanel() {
         trustSigningKey: false,
       });
       setSnapshot(next);
-      await loadProviders();
+      await refreshPluginCatalog();
       setMessage("插件已安装并加载。");
     } catch (error) {
       const reason = String(error);
@@ -77,7 +85,7 @@ export function PluginManagerPanel() {
           trustSigningKey: true,
         });
         setSnapshot(next);
-        await loadProviders();
+        await refreshPluginCatalog();
         setMessage("插件已在明确授权后安装。");
       } catch (retryError) {
         setMessage(`安装失败：${String(retryError)}`);
@@ -90,7 +98,7 @@ export function PluginManagerPanel() {
     try {
       const next = await cmd<PluginSnapshot>(CMD.rollbackProviderPlugin, { pluginId: plugin.id });
       setSnapshot(next);
-      await loadProviders();
+      await refreshPluginCatalog();
       setMessage("插件已回滚。");
     } catch (error) {
       setMessage(`回滚失败：${String(error)}`);

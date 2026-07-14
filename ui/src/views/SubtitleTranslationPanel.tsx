@@ -8,13 +8,14 @@ import {
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
 import { TRANSLATION_MODEL_NONE, TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
-import { optionsForScene } from "@/features/asr/modelRegistry";
+import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
   TRANSLATION_TARGET_LANGUAGE_OPTIONS,
 } from "@/features/translation/languages";
 
 export function SubtitleTranslationPanel() {
+  useModelCatalogRevision();
   const { prefs, patch } = useSubtitleStore();
   const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;

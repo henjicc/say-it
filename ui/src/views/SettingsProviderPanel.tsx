@@ -26,17 +26,16 @@ const PLUGIN_ACTION_LABELS: Record<string, string> = {
 
 function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
-  const setDefault = useProviderStore((state) => state.setDefault);
-  const effective = useProviderStore((state) => state.effective("asr"));
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [message, setMessage] = useState("");
-  const hasSecretField = (provider.configFields || []).some((field) => field.secret);
+  const configFields = provider.configFields || [];
+  const hasSecretField = configFields.some((field) => field.secret);
 
   useEffect(() => setDraft(provider.config || {}), [provider.config]);
 
   const save = async () => {
     const patch: Record<string, unknown> = {};
-    for (const field of provider.configFields || []) {
+    for (const field of configFields) {
       const value = draft[field.key];
       if (field.secret && (value === undefined || value === "")) continue;
       patch[field.key] = field.fieldType === "number" && value !== "" ? Number(value) : value;
@@ -71,7 +70,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
       subtitle={`${provider.kind} · ${hasSecretField ? (provider.status?.hasApiKey ? "凭据已配置" : "待配置") : "无需凭据"}`}
     >
       <div className="flex flex-col gap-3">
-        {(provider.configFields || []).map((field) =>
+        {configFields.map((field) =>
           field.fieldType === "boolean" ? (
             <CheckField
               key={field.key}
@@ -94,12 +93,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
           ),
         )}
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={save}>保存插件配置</Button>
-          {provider.capabilities.includes("asr") && effective !== provider.id && (
-            <Button size="sm" onClick={() => void setDefault("asr", provider.id)}>
-              设为默认识别供应商
-            </Button>
-          )}
+          {configFields.length > 0 && <Button size="sm" onClick={save}>保存插件配置</Button>}
           {(provider.actions || []).filter((action) => action !== "manageHotwords").map((action) => (
             <Button key={action} size="sm" onClick={() => void runAction(action)}>
               {PLUGIN_ACTION_LABELS[action] || action}
