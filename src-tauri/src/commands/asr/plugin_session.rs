@@ -1,75 +1,27 @@
 use std::collections::HashMap;
-use std::process::Stdio;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, Command};
 
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
-use crate::providers::plugin::PluginProcessSpec;
-use crate::providers::plugin_secrets;
+use crate::providers::plugin::PluginRuntimeSpec;
+use crate::providers::plugin_runtime::JsProviderRuntime;
 use crate::providers::ProviderProfile;
 use crate::state::*;
 
 const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
+const SESSION_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
 
 pub(super) async fn start_plugin_asr_stream(
     app: tauri::AppHandle,
     state: &RuntimeState,
-    plugin: PluginProcessSpec,
+    plugin: PluginRuntimeSpec,
     profile: ProviderProfile,
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
-    if plugin.trust == "signed-untrusted" {
-        return Err(format!(
-            "插件 {} 的签名密钥尚未受信任，请从插件管理重新安装并确认发布者",
-            plugin.plugin_id
-        ));
-    }
-    let mut command = Command::new(&plugin.entrypoint);
-    std::fs::create_dir_all(&plugin.data_dir).map_err(|error| error.to_string())?;
-    let protected_session = plugin_secrets::load_session(&plugin)?;
-    command
-        .args(&plugin.args)
-        .current_dir(&plugin.root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("SAYIT_PLUGIN_ID", &plugin.plugin_id)
-        .env("SAYIT_PLUGIN_PROTOCOL", plugin.protocol_version.to_string())
-        .env("SAYIT_PLUGIN_DATA_DIR", &plugin.data_dir);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.as_std_mut().creation_flags(0x0800_0000);
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("启动插件 {} 失败：{error}", plugin.plugin_id))?;
-    let mut stdin = child.stdin.take().ok_or("插件标准输入不可用")?;
-    let stdout = child.stdout.take().ok_or("插件标准输出不可用")?;
-    let stderr = child.stderr.take().ok_or("插件标准错误不可用")?;
     let session_id = Uuid::new_v4().to_string();
-
-    write_message(
-        &mut stdin,
-        json!({
-            "type": "start",
-            "protocolVersion": plugin.protocol_version,
-            "sessionId": session_id,
-            "providerId": profile.id,
-            "model": model,
-            "sampleRate": OUTPUT_RATE,
-            "config": profile.config,
-            "session": protected_session,
-            "permissions": plugin.permissions,
-        }),
-    )
-    .await?;
-
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     state
         .asr_streams
@@ -79,104 +31,116 @@ pub(super) async fn start_plugin_asr_stream(
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut stderr_lines = BufReader::new(stderr).lines();
-        let stderr_plugin_id = plugin.plugin_id.clone();
-        tauri::async_runtime::spawn(async move {
-            while let Ok(Some(line)) = stderr_lines.next_line().await {
-                dlog!("[plugin {stderr_plugin_id}] {line}");
-            }
-        });
+    tauri::async_runtime::spawn_blocking(move || {
         run_plugin_session(
             app,
             task_id,
             streams,
-            child,
-            stdin,
-            BufReader::new(stdout).lines(),
             rx,
             params.map(|params| StreamDsp::new(params, input_sample_rate)),
             model,
-            plugin.plugin_id,
-        )
-        .await;
+            plugin,
+            profile,
+        );
     });
 
     Ok(AsrStreamStartResponse { session_id })
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_plugin_session(
+fn run_plugin_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut child: tokio::process::Child,
-    mut stdin: ChildStdin,
-    mut stdout: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
     mut dsp: Option<StreamDsp>,
     model: String,
-    plugin_id: String,
+    plugin: PluginRuntimeSpec,
+    profile: ProviderProfile,
 ) {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let runtime = match JsProviderRuntime::create(
+        plugin.clone(),
+        &profile,
+        SESSION_TIMEOUT,
+        cancelled,
+        HashMap::new(),
+    ) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+            cleanup_stream(&streams, &session_id);
+            return;
+        }
+    };
+    if let Err(error) = runtime.call(
+        "realtimeStart",
+        &json!({
+            "providerId": profile.id,
+            "model": model,
+            "sampleRate": OUTPUT_RATE,
+            "config": profile.config,
+        }),
+        Duration::from_secs(30),
+    ) {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        cleanup_stream(&streams, &session_id);
+        return;
+    }
+
     emit_asr_stream_event(
         &app,
         &session_id,
         "opened",
-        json!({ "message": "plugin process opened", "model": model, "pluginId": plugin_id }),
+        json!({ "message": "JavaScript plugin opened", "model": model, "pluginId": plugin.plugin_id }),
     );
-    let mut finish_sent_at: Option<Instant> = None;
+    flush_events(&runtime, &app, &session_id);
+    let mut finishing_at = None;
     let mut stop = false;
 
     while !stop {
-        while let Ok(command) = rx.try_recv() {
-            match command {
-                AsrStreamInput::RawF32(samples) => {
-                    let bytes = dsp
-                        .as_mut()
-                        .map(|dsp| dsp.process(&samples))
-                        .unwrap_or_default();
-                    if !bytes.is_empty()
-                        && write_message(
-                            &mut stdin,
-                            json!({ "type": "audio", "pcm16Base64": STANDARD.encode(bytes) }),
-                        )
-                        .await
-                        .is_err()
-                    {
-                        emit_asr_stream_event(
-                            &app,
-                            &session_id,
-                            "error",
-                            json!({ "message": "向插件发送音频失败" }),
-                        );
-                        stop = true;
-                        break;
-                    }
-                }
-                AsrStreamInput::Finish => {
-                    if let Err(error) = write_message(&mut stdin, json!({ "type": "finish" })).await
-                    {
+        match rx.try_recv() {
+            Ok(AsrStreamInput::RawF32(samples)) => {
+                let bytes = dsp
+                    .as_mut()
+                    .map(|dsp| dsp.process(&samples))
+                    .unwrap_or_default();
+                if !bytes.is_empty() {
+                    if let Err(error) = runtime.call_audio(bytes) {
                         emit_asr_stream_event(
                             &app,
                             &session_id,
                             "error",
                             json!({ "message": error }),
                         );
-                        stop = true;
-                    } else {
-                        finish_sent_at = Some(Instant::now());
+                        break;
                     }
                 }
-                AsrStreamInput::Stop => {
-                    let _ = write_message(&mut stdin, json!({ "type": "stop" })).await;
-                    stop = true;
+            }
+            Ok(AsrStreamInput::Finish) => {
+                if let Err(error) = runtime.call("realtimeFinish", &Value::Null, FINISH_TIMEOUT) {
+                    emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                    break;
                 }
+                finishing_at = Some(Instant::now());
+            }
+            Ok(AsrStreamInput::Stop) => {
+                let _ = runtime.call("realtimeStop", &Value::Null, Duration::from_secs(3));
+                stop = true;
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
-        if stop {
+        if let Err(error) = runtime.dispatch_host_events() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             break;
         }
-        if finish_sent_at.is_some_and(|started| started.elapsed() >= FINISH_TIMEOUT) {
+        if flush_events(&runtime, &app, &session_id) {
+            break;
+        }
+        if finishing_at.is_some_and(|started| started.elapsed() >= FINISH_TIMEOUT) {
             emit_asr_stream_event(
                 &app,
                 &session_id,
@@ -185,50 +149,24 @@ async fn run_plugin_session(
             );
             break;
         }
-        match tokio::time::timeout(Duration::from_millis(50), stdout.next_line()).await {
-            Ok(Ok(Some(line))) => {
-                if handle_plugin_event(&app, &session_id, &line) {
-                    break;
-                }
-            }
-            Ok(Ok(None)) => break,
-            Ok(Err(error)) => {
-                emit_asr_stream_event(
-                    &app,
-                    &session_id,
-                    "error",
-                    json!({ "message": error.to_string() }),
-                );
-                break;
-            }
-            Err(_) => {}
-        }
     }
-    let _ = child.kill().await;
-    if let Ok(mut streams) = streams.lock() {
-        streams.remove(&session_id);
-    }
+    cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(
         &app,
         &session_id,
         "ended",
-        json!({ "message": "plugin process ended" }),
+        json!({ "message": "JavaScript plugin ended" }),
     );
 }
 
-fn handle_plugin_event(app: &tauri::AppHandle, session_id: &str, line: &str) -> bool {
-    let value: Value = match serde_json::from_str(line) {
-        Ok(value) => value,
-        Err(error) => {
-            emit_asr_stream_event(
-                app,
-                session_id,
-                "error",
-                json!({ "message": format!("插件输出不是合法 JSON：{error}") }),
-            );
-            return true;
-        }
-    };
+fn flush_events(runtime: &JsProviderRuntime, app: &tauri::AppHandle, session_id: &str) -> bool {
+    runtime
+        .take_events()
+        .into_iter()
+        .any(|event| handle_plugin_event(app, session_id, &event))
+}
+
+fn handle_plugin_event(app: &tauri::AppHandle, session_id: &str, value: &Value) -> bool {
     match value
         .get("type")
         .and_then(Value::as_str)
@@ -268,7 +206,7 @@ fn handle_plugin_event(app: &tauri::AppHandle, session_id: &str, line: &str) -> 
             );
             return true;
         }
-        "event" => emit_asr_stream_event(app, session_id, "event", value),
+        "event" => emit_asr_stream_event(app, session_id, "event", value.clone()),
         other => emit_asr_stream_event(
             app,
             session_id,
@@ -279,14 +217,10 @@ fn handle_plugin_event(app: &tauri::AppHandle, session_id: &str, line: &str) -> 
     false
 }
 
-async fn write_message(stdin: &mut ChildStdin, value: Value) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    stdin
-        .write_all(&bytes)
-        .await
-        .map_err(|error| error.to_string())?;
-    stdin.flush().await.map_err(|error| error.to_string())
+fn cleanup_stream(streams: &Arc<Mutex<HashMap<String, AsrStreamHandle>>>, session_id: &str) {
+    if let Ok(mut streams) = streams.lock() {
+        streams.remove(session_id);
+    }
 }
 
 #[cfg(test)]
@@ -294,8 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn process_protocol_messages_are_json_lines() {
-        let bytes = serde_json::to_vec(&json!({ "type": "finish" })).unwrap();
-        assert_eq!(String::from_utf8(bytes).unwrap(), r#"{"type":"finish"}"#);
+    fn realtime_events_keep_existing_frontend_contract() {
+        assert_eq!(FINISH_TIMEOUT, Duration::from_secs(8));
     }
 }

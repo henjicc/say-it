@@ -1,129 +1,115 @@
-# 「说吧！」供应商插件 API v2
+# 「说吧！」供应商插件 API v3
 
-## 运行时边界
-
-「说吧！」负责麦克风采集、DSP、模型与供应商选择、任务状态、文件路径、字幕和文本注入。供应商插件是独立可执行程序，只负责供应商鉴权与传输，并返回标准 JSONL 事件。v1 实时插件仍可加载；新插件必须使用 API/协议 v2。
-
-最终分发物是一个 `.sayit` 文件。它是 ZIP 压缩包，宿主解压后根目录必须如下：
+## 包结构
 
 ```text
-<说吧包根目录>/
+provider.sayit
 ├── sayit-package.json
 ├── manifest.json
-└── bin/
-    ├── connector.exe
-    └── 运行所需的其他文件
+└── connector/
+    ├── index.js
+    └── 可选的相对导入模块与数据资源
 ```
 
-`sayit-package.json` 是统一类型声明。当前供应商插件必须声明：
+`.sayit` 是 ZIP 格式，但只能包含声明、清单、可阅读 JavaScript 与必要数据资源。禁止 EXE、DLL、SO、DYLIB、Node 原生模块、Mach-O、ELF、PE、WASM 和符号链接。
+
+## 清单
+
+`sayit-package.json` 固定为：
+
+```json
+{"formatVersion":1,"kind":"provider-plugin","entry":"manifest.json"}
+```
+
+`manifest.json` 的运行时固定为：
 
 ```json
 {
-  "formatVersion": 1,
-  "kind": "provider-plugin",
-  "entry": "manifest.json"
+  "apiVersion": 3,
+  "runtime": {
+    "kind": "javascript",
+    "entrypoint": "connector/index.js",
+    "hostApiVersion": 1,
+    "permissions": ["network"],
+    "network": { "allowedHosts": ["api.example.com", "*.example.com"] }
+  }
 }
 ```
 
-`.sayit` 文件允许未来承载其他「说吧！」类型；宿主先读取 `kind` 再分派。目前仅支持 `provider-plugin`。宿主从插件管理器接收该文件，解压到私有暂存目录，验证后才安装到 `%LOCALAPPDATA%\com.henjicc.sayit\plugins`。
+权限只有 `network`、`browserSession`、`cookies`。声明 `network` 时白名单不能为空；仅允许精确主机或 `*.` 开头的子域规则，不写协议、端口和路径。
 
-构建必须位于当前工作根目录的 `sayit-plugin-work/` 中。除非用户明确给出外部路径，不得访问当前工作目录外的文件。ID 使用全小写 ASCII 字母、数字、点和连字符，最长 64 个字符。入口与完整性路径必须留在包内，禁止符号链接。
+模型协议与场景：
 
-## 清单能力与模型
+- `plugin-realtime-v1`：`realtime`，场景含 `dictationRealtime` 或 `subtitles`。
+- `plugin-file-v1`：`file`，场景含 `dictationFile` 或 `transcription`。
+- `plugin-translation-v1`：`translation`，场景含 `subtitleTranslation`。
 
-- `asr`：实时和/或文件语音识别。
-- `translation`：字幕翻译。
-- `customization`：设置、读取、清除热词。
-- 实时模型：`category` 为 `realtime`，`protocol` 为 `process-jsonl-v2`，场景为 `dictationRealtime` 和/或 `subtitles`。
-- 文件模型：`category` 为 `file`，`protocol` 为 `process-file-v2`，场景为 `dictationFile` 和/或 `transcription`。
-- 翻译模型：`category` 为 `translation`，`protocol` 为 `process-translation-v2`，场景为 `subtitleTranslation`。
+## 入口接口
 
-普通供应商应以模板 `manifest.json` 为完整示例。配置字段类型支持 `text`、`password`、`number`、`boolean`。密钥字段不会出现在前端快照中。权限支持 `network`、`browserSession`、`cookies`。
+入口模块默认导出同步工厂函数：
 
-## 实时流协议
-
-每条消息是一个 UTF-8 JSON 对象并以 `\n` 结尾。第一条为 `start`：
-
-```json
-{"type":"start","protocolVersion":2,"sessionId":"uuid","providerId":"vendor","model":"vendor-live","sampleRate":16000,"config":{},"session":null,"permissions":["network"]}
-```
-
-随后宿主连续发送 Base64 编码的 PCM16 小端序、单声道 16 kHz 音频，最后发送 `finish` 或 `stop`：
-
-```json
-{"type":"audio","pcm16Base64":"AAABAP//"}
-{"type":"finish"}
-```
-
-连接器依次输出 `ready`、`partial`、`final`、`finished`；致命错误使用 `error`：
-
-```json
-{"type":"ready"}
-{"type":"partial","text":"临时结果"}
-{"type":"final","text":"最终结果"}
-{"type":"finished"}
-{"type":"error","code":"auth_failed","message":"认证失败"}
-```
-
-## 一次性调用协议
-
-对于非实时能力，宿主每次启动一个新的连接器，只发送一个 `invoke`，然后关闭 stdin。`config` 是供应商配置；`session` 仅在用户显式同步后包含受系统保护的浏览器会话；`payload` 按操作定义。
-
-```json
-{"type":"invoke","protocolVersion":2,"requestId":"uuid","operation":"translate","providerId":"vendor","config":{},"session":null,"permissions":["network"],"payload":{}}
-```
-
-连接器可以输出 `progress`、`delta`、`event`，最后恰好输出一个 `completed`；也可输出 `error`。用户取消文件任务时，宿主会终止连接器进程；stdin 关闭后不得依赖还能收到额外 JSON 消息。
-
-```json
-{"type":"delta","text":"新增译文"}
-{"type":"completed","result":{}}
-{"type":"error","code":"upstream_changed","message":"上游协议已变化"}
-```
-
-操作定义：
-
-| 操作 | `payload` | `completed.result` |
-|---|---|---|
-| `transcribeFile` | `filePath`、`params` | `TranscriptionResult` |
-| `translate` | `model`、`text`、`source`、`target` | `{ "text": "..." }` |
-| `setHotwords` | `hotwords[]` | 对象 |
-| `getHotwords` | 对象 | `{ "hotwords": [...] }` |
-| `clearHotwords` | 对象 | 对象 |
-| `action` | `action` | 可包含 `status` / `message` 的对象 |
-
-`TranscriptionResult` 使用 camelCase：
-
-```json
-{
-  "durationMs": 1200,
-  "transcripts": [{
-    "channelId": null,
-    "text": "完整文本",
-    "sentences": [{
-      "beginTime": 0,
-      "endTime": 1200,
-      "text": "完整文本",
-      "sentenceId": null,
-      "speakerId": null,
-      "words": [{"beginTime":0,"endTime":500,"text":"完整","punctuation":null}]
-    }]
-  }]
+```js
+export default function createProvider(host) {
+  return {
+    initialize(request) {},
+    realtimeStart(request) {},
+    realtimeAudio(pcm16) {},
+    realtimeFinish() {},
+    realtimeStop() {},
+    invoke(request) {},
+    onHostEvent(event) {},
+  };
 }
 ```
 
-## 包信任与更新
+方法可以返回普通值或 Promise。每个实时会话和一次性调用使用独立上下文，模块全局状态不能跨会话共享。`initialize` 可选，接收供应商配置、受保护会话和权限快照。
 
-`integrity.files` 必须列出除 `manifest.json` 外的每个包内文件，并使用 SHA-256。`signature` 使用 Ed25519，对 `sayit-plugin-signature-v1\n` 加上规范化清单 JSON 签名；计算时 `signature.value` 为空。随 Skill 提供的签名器实现了同一算法。
+`realtimeAudio` 接收单声道 16 kHz PCM16 小端序的 `Uint8Array`。插件不得自行采集麦克风、处理系统设备或注入文本。
 
-宿主状态包括 `trusted`、`signed-untrusted`、`integrity-only`、`unsigned`。新密钥和未签名包都需要用户明确确认。更新先在暂存目录完成验证，再启用新版本；旧版本会移入 `plugin-backups`，可回滚。签名有效但密钥未信任的插件仅可诊断，不能执行。
+一次性调用统一进入 `invoke({ operation, payload })`。常见操作为 `transcribeFile`、`translate`、`setHotwords`、`getHotwords`、`clearHotwords` 和 `action`。文件操作的 `payload.input` 只有 `id`、`name`、`size`；上传时把 `input.id` 交给宿主 HTTP 请求的 `inputId`，不能获得真实路径。
 
-把未签名目录直接复制进插件目录仅用于本地开发兼容；正常分发必须由用户在插件管理器中手动选择 `.sayit` 文件并确认信任。
+## 宿主 API
 
-## 协议纪律
+```js
+host.http.request({ method, url, headers, bodyText, bodyBase64, inputId })
+host.websocket.open({ url, headers })
+host.websocket.send(connectionId, stringOrUint8Array)
+host.websocket.close(connectionId)
+host.base64.encode(bytes)
+host.base64.decode(text)
+host.crypto.randomBytes(size)
+host.crypto.sha256(textOrBytes)
+host.crypto.hmacSha256(key, data)
+host.time.now()
+host.time.sleep(milliseconds)
+host.storage.get(key)
+host.storage.set(key, value)
+host.storage.delete(key)
+host.resource.readBytes(relativePath)
+host.resource.readText(relativePath)
+host.cancellation.isCancelled()
+host.emit(event)
+host.log(level, message)
+```
 
-- stdout 只能传协议；脱敏诊断写入 stderr。
-- 不得记录凭据、Cookie、令牌、音频载荷或用户文本。
-- 校验畸形宿主消息，并返回结构化错误。
-- 在取消、超时和断连时关闭上游资源。
-- 不得访问显式输入文件与插件数据目录之外的文件。
+HTTP 返回 `{ status, headers, bodyText, bodyBase64 }`。请求、重定向与 WebSocket 都受白名单限制。WebSocket 事件串行交给 `onHostEvent`，类型为 `websocketOpen`、`websocketMessage`、`websocketError`、`websocketClose`，并包含 `connectionId`。
+
+`host.storage` 仅保存非敏感、小型 JSON 状态。`host.resource` 只能读取包内不超过 1 MiB 的相对资源。密钥、Cookie 和令牌应来自配置或会话，不得写入存储或资源。取消或超时会中断 JavaScript，并关闭宿主管理的网络资源。
+
+## 标准事件
+
+实时识别通过 `host.emit` 发出：
+
+```js
+host.emit({ type: "ready" });
+host.emit({ type: "partial", text: "临时文本" });
+host.emit({ type: "final", text: "最终文本" });
+host.emit({ type: "finished" });
+host.emit({ type: "error", code: "upstream_error", message: "可诊断信息" });
+```
+
+一次性调用的进度或增量也用 `host.emit({ type: "progress" | "delta" | "event", ... })`，最终值由 `invoke` 返回。错误应抛出 `Error`，不要伪造成功结果。
+
+## 不存在的能力
+
+运行时没有 Node、DOM、`fetch`、文件系统、环境变量、进程、Shell、原生模块、Tauri IPC、主窗口或悬浮窗访问能力。模块只能相对导入插件目录内的 `.js`/`.mjs`；裸模块、绝对路径和目录穿越都会被拒绝。

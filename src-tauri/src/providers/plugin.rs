@@ -8,8 +8,8 @@ use tauri::Manager;
 use super::registry::ModelInfo;
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
 
-pub const PLUGIN_API_VERSION: u32 = 2;
-pub const PROCESS_PROTOCOL_VERSION: u32 = 2;
+pub const PLUGIN_API_VERSION: u32 = 3;
+pub const PLUGIN_HOST_API_VERSION: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies"];
 
@@ -84,12 +84,19 @@ pub struct PluginRuntimeManifest {
     #[serde(default = "default_runtime_kind")]
     pub kind: String,
     pub entrypoint: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default = "default_process_protocol_version")]
-    pub protocol_version: u32,
+    #[serde(default = "default_host_api_version")]
+    pub host_api_version: u32,
     #[serde(default)]
     pub permissions: Vec<String>,
+    #[serde(default)]
+    pub network: PluginNetworkManifest,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginNetworkManifest {
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,14 +107,13 @@ pub struct InstalledPlugin {
 }
 
 #[derive(Clone, Debug)]
-pub struct PluginProcessSpec {
+pub struct PluginRuntimeSpec {
     pub plugin_id: String,
     pub root: PathBuf,
     pub entrypoint: PathBuf,
-    pub args: Vec<String>,
     pub permissions: Vec<String>,
+    pub allowed_hosts: Vec<String>,
     pub data_dir: PathBuf,
-    pub protocol_version: u32,
     pub trust: String,
 }
 
@@ -153,10 +159,10 @@ fn default_capabilities() -> Vec<String> {
     vec!["asr".into()]
 }
 fn default_runtime_kind() -> String {
-    "process".into()
+    "javascript".into()
 }
-fn default_process_protocol_version() -> u32 {
-    PROCESS_PROTOCOL_VERSION
+fn default_host_api_version() -> u32 {
+    PLUGIN_HOST_API_VERSION
 }
 
 pub fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -264,7 +270,10 @@ pub(crate) fn validate_plugin_dir(root: &Path) -> Result<PluginManifest, String>
 }
 
 fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
-    if !(1..=PLUGIN_API_VERSION).contains(&manifest.api_version) {
+    if manifest.api_version < PLUGIN_API_VERSION {
+        return Err("旧进程插件不兼容，请用新版 Skill 重新生成".into());
+    }
+    if manifest.api_version != PLUGIN_API_VERSION {
         return Err(format!("不支持的插件 API 版本：{}", manifest.api_version));
     }
     validate_id("插件", &manifest.id)?;
@@ -305,19 +314,31 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             return Err(format!("插件操作重复：{action}"));
         }
     }
-    if manifest.runtime.kind != "process" {
+    if manifest.runtime.kind != "javascript" {
         return Err(format!("不支持的插件运行时：{}", manifest.runtime.kind));
     }
-    if !(1..=PROCESS_PROTOCOL_VERSION).contains(&manifest.runtime.protocol_version) {
+    if manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
         return Err(format!(
-            "不支持的进程协议版本：{}",
-            manifest.runtime.protocol_version
+            "不支持的宿主 API 版本：{}",
+            manifest.runtime.host_api_version
         ));
     }
     for permission in &manifest.runtime.permissions {
         if !ALLOWED_PERMISSIONS.contains(&permission.as_str()) {
             return Err(format!("未知插件权限：{permission}"));
         }
+    }
+    if manifest
+        .runtime
+        .permissions
+        .iter()
+        .any(|value| value == "network")
+        && manifest.runtime.network.allowed_hosts.is_empty()
+    {
+        return Err("声明 network 权限时 runtime.network.allowedHosts 不能为空".into());
+    }
+    for host in &manifest.runtime.network.allowed_hosts {
+        validate_allowed_host(host)?;
     }
     if let Some(browser) = &manifest.browser_session {
         if !manifest
@@ -362,6 +383,12 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if !entrypoint.is_file() {
         return Err(format!("插件入口不存在：{}", entrypoint.display()));
     }
+    if !matches!(
+        entrypoint.extension().and_then(|value| value.to_str()),
+        Some("js" | "mjs")
+    ) {
+        return Err("JavaScript 插件入口必须使用 .js 或 .mjs 后缀".into());
+    }
     let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
     let canonical_entrypoint = entrypoint
         .canonicalize()
@@ -391,36 +418,31 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                     .capabilities
                     .iter()
                     .any(|value| value == "asr")
-                    && matches!(
-                        model.protocol.as_str(),
-                        "process-jsonl-v1" | "process-jsonl-v2"
-                    )
+                    && model.protocol == "plugin-realtime-v1"
                     && model
                         .scenes
                         .iter()
                         .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
             }
             "file" => {
-                manifest.api_version >= 2
-                    && manifest
-                        .provider
-                        .capabilities
-                        .iter()
-                        .any(|value| value == "asr")
-                    && model.protocol == "process-file-v2"
+                manifest
+                    .provider
+                    .capabilities
+                    .iter()
+                    .any(|value| value == "asr")
+                    && model.protocol == "plugin-file-v1"
                     && model
                         .scenes
                         .iter()
                         .any(|scene| scene == "dictationFile" || scene == "transcription")
             }
             "translation" => {
-                manifest.api_version >= 2
-                    && manifest
-                        .provider
-                        .capabilities
-                        .iter()
-                        .any(|value| value == "translation")
-                    && model.protocol == "process-translation-v2"
+                manifest
+                    .provider
+                    .capabilities
+                    .iter()
+                    .any(|value| value == "translation")
+                    && model.protocol == "plugin-translation-v1"
                     && model
                         .scenes
                         .iter()
@@ -431,6 +453,22 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         if !valid_model {
             return Err(format!("模型 {} 的类别、协议或场景组合不受支持", model.id));
         }
+    }
+    Ok(())
+}
+
+fn validate_allowed_host(value: &str) -> Result<(), String> {
+    let host = value.strip_prefix("*.").unwrap_or(value);
+    if host.is_empty()
+        || host.contains('/')
+        || host.contains(':')
+        || host.starts_with('.')
+        || host.ends_with('.')
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+    {
+        return Err(format!("非法网络白名单主机：{value}"));
     }
     Ok(())
 }
@@ -539,10 +577,10 @@ impl PluginRegistry {
         self.model(model).map(|model| model.provider_id.clone())
     }
 
-    pub fn process_for_provider(
+    pub fn runtime_for_provider(
         &self,
         provider_id: &str,
-    ) -> Result<Option<PluginProcessSpec>, String> {
+    ) -> Result<Option<PluginRuntimeSpec>, String> {
         let Some(plugin) = self
             .plugins
             .iter()
@@ -550,12 +588,12 @@ impl PluginRegistry {
         else {
             return Ok(None);
         };
-        Ok(Some(PluginProcessSpec {
+        Ok(Some(PluginRuntimeSpec {
             plugin_id: plugin.manifest.id.clone(),
             root: plugin.root.clone(),
             entrypoint: safe_entrypoint(&plugin.root, &plugin.manifest.runtime.entrypoint)?,
-            args: plugin.manifest.runtime.args.clone(),
             permissions: plugin.manifest.runtime.permissions.clone(),
+            allowed_hosts: plugin.manifest.runtime.network.allowed_hosts.clone(),
             data_dir: plugin
                 .root
                 .parent()
@@ -563,7 +601,6 @@ impl PluginRegistry {
                 .unwrap_or(&plugin.root)
                 .join("plugin-data")
                 .join(&plugin.manifest.id),
-            protocol_version: plugin.manifest.runtime.protocol_version,
             trust: plugin.trust.clone(),
         }))
     }
@@ -627,8 +664,8 @@ mod tests {
     #[test]
     fn rejects_entrypoint_escape() {
         let root = std::env::temp_dir();
-        assert!(safe_entrypoint(&root, "../bad.exe").is_err());
-        assert!(safe_entrypoint(&root, "bin/good.exe").is_ok());
+        assert!(safe_entrypoint(&root, "../bad.js").is_err());
+        assert!(safe_entrypoint(&root, "connector/index.js").is_ok());
     }
 
     #[test]
@@ -642,14 +679,14 @@ mod tests {
     fn loads_manifest_and_merges_provider_profile() {
         let root = std::env::temp_dir().join(format!("sayit-plugin-test-{}", std::process::id()));
         let plugin = root.join("test-provider");
-        let bin = plugin.join("bin");
+        let connector = plugin.join("connector");
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("connector.exe"), b"test").unwrap();
+        std::fs::create_dir_all(&connector).unwrap();
+        std::fs::write(connector.join("index.js"), b"export default () => ({})").unwrap();
         std::fs::write(
             plugin.join("manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "apiVersion": 1,
+                "apiVersion": 3,
                 "id": "test-provider",
                 "name": "Test Provider",
                 "version": "1.0.0",
@@ -665,14 +702,14 @@ mod tests {
                     "label": "Test Realtime",
                     "providerId": "test-provider",
                     "category": "realtime",
-                    "protocol": "process-jsonl-v1",
+                    "protocol": "plugin-realtime-v1",
                     "supportsVocabulary": false,
                     "supportsAlignmentTimestamps": false,
                     "scenes": ["dictationRealtime"],
                     "isDefaultRealtime": false,
                     "isDefaultFile": false
                 }],
-                "runtime": { "kind": "process", "entrypoint": "bin/connector.exe", "protocolVersion": 1, "permissions": ["network"] }
+                "runtime": { "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1, "permissions": ["network"], "network": {"allowedHosts": ["api.example.com"]} }
             }))
             .unwrap(),
         )
@@ -692,15 +729,19 @@ mod tests {
     }
 
     #[test]
-    fn loads_v2_privileged_multicapability_manifest_without_provider_specific_code() {
+    fn loads_v3_privileged_multicapability_manifest_without_provider_specific_code() {
         let root = std::env::temp_dir().join(format!("sayit-plugin-v2-{}", uuid::Uuid::new_v4()));
         let plugin = root.join("web-provider");
-        std::fs::create_dir_all(plugin.join("bin")).unwrap();
-        std::fs::write(plugin.join("bin/connector.exe"), b"test").unwrap();
+        std::fs::create_dir_all(plugin.join("connector")).unwrap();
+        std::fs::write(
+            plugin.join("connector/index.js"),
+            b"export default () => ({})",
+        )
+        .unwrap();
         std::fs::write(
             plugin.join("manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "apiVersion": 2,
+                "apiVersion": 3,
                 "id": "web-provider", "name": "Web Provider", "version": "1.0.0",
                 "provider": {
                     "id": "web-provider", "displayName": "Web Provider",
@@ -708,11 +749,11 @@ mod tests {
                     "actions": ["openLogin", "syncSession", "clearSession", "diagnose"]
                 },
                 "models": [
-                    {"id":"web-live","label":"Live","providerId":"web-provider","category":"realtime","protocol":"process-jsonl-v2","supportsVocabulary":true,"supportsAlignmentTimestamps":false,"scenes":["dictationRealtime","subtitles"],"isDefaultRealtime":false,"isDefaultFile":false},
-                    {"id":"web-file","label":"File","providerId":"web-provider","category":"file","protocol":"process-file-v2","supportsVocabulary":true,"supportsAlignmentTimestamps":true,"scenes":["dictationFile","transcription"],"isDefaultRealtime":false,"isDefaultFile":false},
-                    {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"process-translation-v2","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
+                    {"id":"web-live","label":"Live","providerId":"web-provider","category":"realtime","protocol":"plugin-realtime-v1","supportsVocabulary":true,"supportsAlignmentTimestamps":false,"scenes":["dictationRealtime","subtitles"],"isDefaultRealtime":false,"isDefaultFile":false},
+                    {"id":"web-file","label":"File","providerId":"web-provider","category":"file","protocol":"plugin-file-v1","supportsVocabulary":true,"supportsAlignmentTimestamps":true,"scenes":["dictationFile","transcription"],"isDefaultRealtime":false,"isDefaultFile":false},
+                    {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"plugin-translation-v1","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
                 ],
-                "runtime": {"entrypoint":"bin/connector.exe","protocolVersion":2,"permissions":["network","browserSession","cookies"]},
+                "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1,"permissions":["network","browserSession","cookies"],"network":{"allowedHosts":["vendor.example"]}},
                 "browserSession": {"loginUrl":"https://vendor.example/login","allowedUrls":["https://vendor.example/"],"initializationScript":"window.__capture = true;"}
             })).unwrap(),
         ).unwrap();
@@ -725,6 +766,17 @@ mod tests {
             registry.model("web-translation").unwrap().category,
             "translation"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_legacy_process_plugin_with_actionable_message() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-plugin-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("manifest.json"), r#"{"apiVersion":2,"id":"legacy","name":"Legacy","version":"1","provider":{"id":"legacy","displayName":"Legacy"},"models":[],"runtime":{"kind":"process","entrypoint":"connector.exe"}}"#).unwrap();
+        let error = validate_plugin_dir(&root).unwrap_err();
+        assert!(error.contains("旧进程插件不兼容"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

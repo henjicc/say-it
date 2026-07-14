@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { ClearIcon } from "@/components/ui/icons";
@@ -12,6 +13,7 @@ import { useDictPrefs } from "@/store/useDictPrefs";
 import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
+const systemAudioSupported = !navigator.userAgent.includes("Macintosh");
 
 export function SubtitleGeneralPanel() {
   const { prefs, running, capturing, shortcutLabel, patch } = useSubtitleStore();
@@ -22,6 +24,11 @@ export function SubtitleGeneralPanel() {
   // 麦克风设备是语音输入和实时字幕共用的全局偏好（同一个后端采集单例），
   // 这里下拉框选中的"麦克风"具体设备始终跟着这个全局值走，而不是自己单独存一份。
   const parsedSource = parseSubtitleSource(prefs.source);
+  useEffect(() => {
+    if (!systemAudioSupported && parsedSource.kind === "system") {
+      patch({ source: buildSubtitleSource("mic") });
+    }
+  }, [parsedSource.kind, patch]);
   const sourceSelectValue =
     parsedSource.kind === "mic" ? buildSubtitleSource("mic", micDeviceId || undefined) : prefs.source;
   const onSourceChange = (nextValue: string) => {
@@ -84,7 +91,9 @@ export function SubtitleGeneralPanel() {
               onChange={(event) => onSourceChange(event.target.value)}
             >
               <option value={buildSubtitleSource("mic")}>麦克风（默认）</option>
-              <option value={buildSubtitleSource("system")}>系统音频（默认）</option>
+              <option value={buildSubtitleSource("system")} disabled={!systemAudioSupported}>
+                {systemAudioSupported ? "系统音频（默认）" : "系统音频（macOS 暂不支持）"}
+              </option>
               {inputs.length > 0 && (
                 <option value="__group_inputs" disabled>
                   — 输入设备 —
@@ -95,12 +104,12 @@ export function SubtitleGeneralPanel() {
                   {device.name}
                 </option>
               ))}
-              {outputs.length > 0 && (
+              {systemAudioSupported && outputs.length > 0 && (
                 <option value="__group_outputs" disabled>
                   — 输出设备 —
                 </option>
               )}
-              {outputs.map((device) => (
+              {systemAudioSupported && outputs.map((device) => (
                 <option key={`out:${device.name}`} value={buildSubtitleSource("system", device.name)}>
                   {device.name}
                 </option>

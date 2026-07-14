@@ -1,46 +1,23 @@
-# 特权与逆向供应商
+# 网页逆向与特权供应商
 
-当供应商需要官方网站登录、Cookie、页面运行时生成的设备参数或非官方浏览器接口时，使用本宿主路径。不得把供应商专属登录逻辑写入「说吧！」应用。
+仅在用户明确授权并提供项目、接口或测试账号时处理非官方网页接口。先确认使用条款、账号风险和接口稳定性；不得绕过验证码、设备校验、风控、付费限制或访问控制。
 
-## 通用宿主契约
+## 登录与会话
 
-在清单中声明 `browserSession`，并同时声明 `browserSession` 与 `cookies` 权限：
+- 清单同时声明 `browserSession`、`cookies` 权限和 `openLogin`、`syncSession`、`clearSession` 操作。
+- `loginUrl` 与 `allowedUrls` 必须为 HTTPS，并尽量缩小范围。
+- 登录由宿主创建独立 WebView；插件不能读取主窗口、悬浮窗或任意浏览器数据。
+- 宿主只提取白名单 URL 对应的 Cookie，并在 Windows 系统凭据存储或 macOS Keychain 中保护会话。
+- 插件只能通过 `initialize` 收到当前供应商的会话快照。日志、错误和事件不得包含 Cookie 值。
 
-```json
-{
-  "provider": {
-    "actions": ["openLogin", "syncSession", "clearSession", "diagnose"]
-  },
-  "runtime": {
-    "permissions": ["network", "browserSession", "cookies"]
-  },
-  "browserSession": {
-    "loginUrl": "https://vendor.example/login",
-    "allowedUrls": ["https://vendor.example/", "https://ws.vendor.example/"],
-    "windowTitle": "供应商登录",
-    "userAgent": "可选的精确浏览器 UA",
-    "initializationScript": "可选的捕获脚本，最大 64 KiB"
-  }
-}
-```
+## 逆向协议实现
 
-- `openLogin` 创建专用且持久的 WebView，绝不会使用「说吧！」主窗口或悬浮窗的 WebView。
-- `syncSession` 只读取声明的 HTTPS URL 对应 Cookie，序列化时不把值暴露给 React，并使用当前 Windows 用户的 DPAPI 加密保存。
-- 解密后的会话仅通过 JSONL stdin 的 `session` 传给连接器，绝不放入配置、命令行参数或环境变量。
-- `clearSession` 删除加密快照并清除专用 WebView 数据。
-- 其他已声明操作以 `action` 调用传给连接器。
+- 把签名算法、请求序列、WebSocket 帧、心跳、重连、临时/最终结果解析全部放进 JavaScript 连接器。
+- 优先使用 `host.crypto`、`host.http` 与 `host.websocket`，不要尝试引入 Node 包或浏览器脚本环境。
+- 对网页版本、固定字段和端点假设写成集中常量；上游改变时返回明确的兼容性错误。
+- 会话过期应提示用户重新登录，不自动重放密码或规避登录步骤。
+- 网络白名单必须覆盖实际端点及合法重定向目标，但不能使用过宽的顶级域规则。
 
-初始化脚本可以观察页面自身 fetch/XHR 的查询参数，并写入一个短期第一方标记 Cookie。标记含义必须由连接器解释，不能由宿主硬编码。脚本仅限已声明供应商域名，绝不能收集无关浏览数据。
+## 测试
 
-## 逆向供应商约束
-
-- 只使用用户显式登录建立的会话；不得静默导入其他浏览器配置。
-- 分离长期 Cookie、短期令牌和捕获到的设备/请求参数。
-- 检测会话过期并返回清晰的重新登录错误。
-- 固定端点与数据结构假设，并提供 `diagnose` 操作来报告兼容性，诊断不得泄露秘密。
-- 不得自动解验证码、伪造指纹、绕过风控、创建账号或收集凭据。
-- 非官方 URL 构造、签名、WebSocket 解析与上游回退必须全部留在连接器可执行文件内。
-
-## 验收测试
-
-确认登录窗口隔离、允许域名 Cookie 收集、DPAPI 在「说吧！」重启后仍可读取、会话清除、主窗口关闭后的 ASR、上游结构变化诊断，以及 stdout/stderr/领域事件中零秘密泄露。
+烟雾测试只验证模块和接口形状。真实网络测试必须使用用户授权的测试会话，并覆盖登录过期、Cookie 清除、服务端断连、协议变化、取消与超时。完成后清理测试凭据，不把抓包、Cookie 或私钥写入插件包。

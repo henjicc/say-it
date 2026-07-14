@@ -74,7 +74,8 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     .focused(false)
     .visible(false)
     .shadow(false)
-    .transparent(true)
+    // macOS 保持公开 API 可支持的不透明窗口，避免启用 macOSPrivateApi。
+    .transparent(!cfg!(target_os = "macos"))
     .build()
     .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
 
@@ -193,5 +194,4 @@ pub(crate) fn set_indicator_layout(
     place_indicator_window(&window, width, height, &anchor, offset_y);
     Ok(())
 }
-
 

@@ -1,5 +1,9 @@
 pub(crate) mod audio_devices;
 pub(crate) mod backend_mic;
+#[cfg(windows)]
+pub(crate) mod backend_system_audio;
+#[cfg(not(windows))]
+#[path = "backend_system_audio_unsupported.rs"]
 pub(crate) mod backend_system_audio;
 pub(crate) mod indicator;
 pub(crate) mod system_fonts;

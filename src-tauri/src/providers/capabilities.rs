@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::plugin::PluginProcessSpec;
+use super::plugin::PluginRuntimeSpec;
 use super::plugin_runtime;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub enum FileRecognitionProvider {
         hotwords: Vec<HotwordEntry>,
     },
     Plugin {
-        spec: PluginProcessSpec,
+        spec: PluginRuntimeSpec,
         profile: ProviderProfile,
     },
 }
@@ -63,7 +63,7 @@ pub fn file_recognition_for(
 }
 pub fn file_recognition_for_with_plugin(
     profile: &ProviderProfile,
-    plugin: Option<PluginProcessSpec>,
+    plugin: Option<PluginRuntimeSpec>,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
     if let Some(spec) = plugin {
         return Ok(FileRecognitionProvider::Plugin {
@@ -181,7 +181,7 @@ pub enum TranslationProvider {
         api_key: String,
     },
     Plugin {
-        spec: PluginProcessSpec,
+        spec: PluginRuntimeSpec,
         profile: ProviderProfile,
     },
 }
@@ -191,7 +191,7 @@ pub fn translation_for(profile: &ProviderProfile) -> Result<TranslationProvider,
 }
 pub fn translation_for_with_plugin(
     profile: &ProviderProfile,
-    plugin: Option<PluginProcessSpec>,
+    plugin: Option<PluginRuntimeSpec>,
 ) -> Result<TranslationProvider, CapabilityError> {
     if let Some(spec) = plugin {
         return Ok(TranslationProvider::Plugin {
@@ -260,7 +260,7 @@ pub enum CustomizationProvider {
         api_key: String,
     },
     Plugin {
-        spec: PluginProcessSpec,
+        spec: PluginRuntimeSpec,
         profile: ProviderProfile,
     },
 }
@@ -272,7 +272,7 @@ pub fn customization_for(
 }
 pub fn customization_for_with_plugin(
     profile: &ProviderProfile,
-    plugin: Option<PluginProcessSpec>,
+    plugin: Option<PluginRuntimeSpec>,
 ) -> Result<CustomizationProvider, CapabilityError> {
     if let Some(spec) = plugin {
         return Ok(CustomizationProvider::Plugin {

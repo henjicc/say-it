@@ -139,14 +139,19 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
 
         let mut enigo =
             Enigo::new(&EnigoSettings::default()).map_err(|e| format!("初始化输入失败: {e}"))?;
+        let paste_modifier = if cfg!(target_os = "macos") {
+            Key::Meta
+        } else {
+            Key::Control
+        };
         enigo
-            .key(Key::Control, Direction::Press)
+            .key(paste_modifier, Direction::Press)
             .map_err(|e| format!("模拟粘贴失败: {e}"))?;
         enigo
             .key(Key::Unicode('v'), Direction::Click)
             .map_err(|e| format!("模拟粘贴失败: {e}"))?;
         enigo
-            .key(Key::Control, Direction::Release)
+            .key(paste_modifier, Direction::Release)
             .map_err(|e| format!("模拟粘贴失败: {e}"))?;
 
         // 等目标窗口完成粘贴后再还原剪贴板，避免把内容清掉。
@@ -164,4 +169,3 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
     }
     result
 }
-

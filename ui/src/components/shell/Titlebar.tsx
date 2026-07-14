@@ -4,6 +4,7 @@ import { Copy, Minus, Square, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const appWindow = getCurrentWindow();
+const isMacOS = navigator.userAgent.includes("Macintosh");
 
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);
@@ -37,7 +38,7 @@ export function Titlebar() {
       data-tauri-drag-region
       className="relative z-[var(--z-titlebar)] flex h-[var(--titlebar-h)] flex-none items-center justify-end border-b border-[var(--color-line)] bg-[var(--color-bg-titlebar)] select-none"
     >
-      <div
+      {!isMacOS && <div
         className="flex h-full items-stretch"
         onPointerMove={hoverMuted ? () => setHoverMuted(false) : undefined}
       >
@@ -69,7 +70,7 @@ export function Titlebar() {
         >
           <X className="h-3 w-3" strokeWidth={1.4} aria-hidden />
         </TitleBtn>
-      </div>
+      </div>}
     </div>
   );
 }

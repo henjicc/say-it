@@ -1,10 +1,14 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod application;
 mod audio_dsp;
 mod audio_prep;
 mod commands;
 mod desktop;
+#[cfg(windows)]
+mod hotkey;
+#[cfg(not(windows))]
+#[path = "hotkey_portable.rs"]
 mod hotkey;
 mod obs_overlay;
 mod persistence;
@@ -80,12 +84,17 @@ macro_rules! dlog {
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    #[cfg(windows)]
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required",
     );
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(not(windows))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
+    builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Err(error) = ensure_main_window(app) {
                 eprintln!("[window] 单实例唤起主窗口失败: {error}");
