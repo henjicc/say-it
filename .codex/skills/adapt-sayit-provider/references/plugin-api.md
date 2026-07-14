@@ -64,7 +64,7 @@ export default function createProvider(host) {
 }
 ```
 
-方法可以返回普通值或 Promise。每个实时会话和一次性调用使用独立上下文，模块全局状态不能跨会话共享。`initialize` 可选，接收供应商配置、受保护会话和权限快照。
+方法可以返回普通值或 Promise。每个实时会话和一次性调用使用独立上下文，模块全局状态不能跨会话共享。`initialize` 可选，接收供应商配置、受保护会话和权限快照；实时方法的请求不保证再次附带 `session`，需要在 `initialize` 时把当前会话保留在该会话上下文中，不能用空请求覆盖它。
 
 `realtimeAudio` 接收单声道 16 kHz PCM16 小端序的 `Uint8Array`。插件不得自行采集麦克风、处理系统设备或注入文本。
 
