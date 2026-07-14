@@ -14,7 +14,6 @@ use zip::ZipArchive;
 use super::plugin::{plugins_dir, validate_plugin_dir, PluginManifest, PluginSignatureManifest};
 
 const TRUST_FILE: &str = "trusted-plugin-keys.json";
-const BACKUPS_DIR: &str = "plugin-backups";
 pub const SAYIT_PACKAGE_EXTENSION: &str = "sayit";
 const PACKAGE_DECLARATION_FILE: &str = "sayit-package.json";
 const MAX_ARCHIVE_ENTRIES: usize = 256;
@@ -35,15 +34,6 @@ pub struct InstallResult {
     pub version: String,
     pub trust: String,
     pub replaced_version: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginBackup {
-    pub plugin_id: String,
-    pub version: String,
-    pub directory: String,
-    pub created_at_ms: u64,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -223,25 +213,28 @@ pub fn install_from_directory(
         }
     };
 
-    let mut previous_backup = None;
+    let mut displaced = None;
     let replaced_version = if target.exists() {
         let (current_id, current_version) = installed_identity(&target)?;
         if current_id != manifest.id {
             return Err("已安装插件目录与新插件 ID 不一致".into());
         }
-        let backup = backup_path(app, &current_id, &current_version)?;
-        std::fs::rename(&target, &backup).map_err(|error| error.to_string())?;
-        previous_backup = Some(backup);
+        let temporary = plugins.join(format!(".replace-{}-{}", manifest.id, Uuid::new_v4()));
+        std::fs::rename(&target, &temporary).map_err(|error| error.to_string())?;
+        displaced = Some(temporary);
         Some(current_version)
     } else {
         None
     };
     if let Err(error) = std::fs::rename(&stage, &target) {
         let _ = std::fs::remove_dir_all(&stage);
-        if let Some(backup) = previous_backup {
-            let _ = std::fs::rename(backup, &target);
+        if let Some(previous) = displaced {
+            let _ = std::fs::rename(previous, &target);
         }
         return Err(format!("启用新插件失败：{error}"));
+    }
+    if let Some(previous) = displaced {
+        std::fs::remove_dir_all(previous).map_err(|error| error.to_string())?;
     }
     Ok(InstallResult {
         plugin_id: manifest.id,
@@ -360,67 +353,28 @@ fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String
     Ok(())
 }
 
-pub fn list_backups(app: &tauri::AppHandle) -> Result<Vec<PluginBackup>, String> {
-    let root = backups_dir(app)?;
-    let mut backups = Vec::new();
-    for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
-            continue;
-        }
-        if let Ok((plugin_id, version)) = installed_identity(&entry.path()) {
-            backups.push(PluginBackup {
-                plugin_id,
-                version,
-                directory: entry.file_name().to_string_lossy().into_owned(),
-                created_at_ms: entry
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .ok()
-                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or(0),
-            });
-        }
+pub fn uninstall(app: &tauri::AppHandle, plugin_id: &str) -> Result<(), String> {
+    let plugins = plugins_dir(app)?;
+    let target = plugins.join(plugin_id);
+    if !target.is_dir() {
+        return Err(format!("插件 {plugin_id} 不存在"));
     }
-    backups.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
-    Ok(backups)
-}
+    let (installed_id, _) = installed_identity(&target)?;
+    if installed_id != plugin_id {
+        return Err("已安装插件目录与插件 ID 不一致".into());
+    }
+    std::fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
 
-pub fn rollback(app: &tauri::AppHandle, plugin_id: &str) -> Result<InstallResult, String> {
-    let backup = list_backups(app)?
-        .into_iter()
-        .find(|backup| backup.plugin_id == plugin_id)
-        .ok_or_else(|| format!("插件 {plugin_id} 没有可回滚版本"))?;
-    let backup_root = backups_dir(app)?.join(&backup.directory);
-    install_from_directory(app, &backup_root, true, false)
-}
-
-fn backups_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let root = app
+    let data_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|error| error.to_string())?
-        .join(BACKUPS_DIR);
-    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-    Ok(root)
-}
-
-fn backup_path(app: &tauri::AppHandle, id: &str, version: &str) -> Result<PathBuf, String> {
-    Ok(backups_dir(app)?.join(format!(
-        "{}--{}--{}--{}",
-        id,
-        version.replace(|character: char| !character.is_ascii_alphanumeric(), "-"),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0),
-        Uuid::new_v4()
-    )))
+        .join("plugin-data")
+        .join(plugin_id);
+    if data_dir.exists() {
+        std::fs::remove_dir_all(data_dir).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn installed_identity(root: &Path) -> Result<(String, String), String> {

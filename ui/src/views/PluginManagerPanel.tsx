@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
@@ -7,7 +8,6 @@ import {
   installPluginPackage,
   refreshPluginConsumers,
   requiresExplicitTrust,
-  type PluginBackup,
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
@@ -22,17 +22,12 @@ const TRUST_LABEL: Record<PluginSummary["trust"], string> = {
 
 export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
-  const [backups, setBackups] = useState<PluginBackup[]>([]);
   const [message, setMessage] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
 
   const loadSnapshot = async () => {
-    const [next, nextBackups] = await Promise.all([
-      cmd<PluginSnapshot>(CMD.listProviderPlugins),
-      cmd<PluginBackup[]>(CMD.listProviderPluginBackups),
-    ]);
+    const next = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
     setSnapshot(next);
-    setBackups(nextBackups);
   };
 
   useEffect(() => {
@@ -100,18 +95,18 @@ export function PluginManagerPanel() {
     }
   };
 
-  const restore = async (plugin: PluginSummary) => {
-    if (!window.confirm(`确认将 ${plugin.name} 恢复到最近的备份版本吗？`)) return;
+  const uninstall = async (plugin: PluginSummary) => {
+    if (!window.confirm(`确认卸载 ${plugin.name} 吗？这会移除插件及其本地配置，无法恢复。`)) return;
     setBusyPluginId(plugin.id);
     setMessage("");
     try {
-      const next = await cmd<PluginSnapshot>(CMD.rollbackProviderPlugin, { pluginId: plugin.id });
+      const next = await cmd<PluginSnapshot>(CMD.uninstallProviderPlugin, { pluginId: plugin.id });
       setSnapshot(next);
       await refreshPluginConsumers();
       await loadSnapshot();
-      setMessage("插件已恢复到上一版本。");
+      setMessage("插件已卸载。");
     } catch (error) {
-      setMessage(`恢复上一版本失败：${String(error)}`);
+      setMessage(`卸载失败：${String(error)}`);
     } finally {
       setBusyPluginId("");
     }
@@ -122,14 +117,13 @@ export function PluginManagerPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
         <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理识别供应商插件；登录、密钥与其他配置请在「密钥与识别」中完成。</p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" onClick={() => void install()}>安装 .sayit 插件</Button>
+          <Button size="sm" variant="primary" onClick={() => void install()}>安装插件</Button>
           <Button size="sm" onClick={() => void reload()}>重新扫描</Button>
         </div>
       </div>
 
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
         {snapshot?.plugins.map((plugin, index) => {
-          const hasBackup = backups.some((backup) => backup.pluginId === plugin.id);
           const busy = busyPluginId === plugin.id;
           return (
             <div
@@ -147,9 +141,6 @@ export function PluginManagerPanel() {
                     权限：{plugin.permissions.join("、") || "无"}
                   </p>
                 </div>
-                {hasBackup && (
-                  <Button size="sm" disabled={busy} onClick={() => void restore(plugin)}>恢复上一版本</Button>
-                )}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
                   <Switch
@@ -158,6 +149,17 @@ export function PluginManagerPanel() {
                     label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
                     onChange={(enabled) => void setEnabled(plugin, enabled)}
                   />
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={busy}
+                    aria-label={`卸载${plugin.name}`}
+                    title="卸载插件"
+                    className="w-8 px-0"
+                    onClick={() => void uninstall(plugin)}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                  </Button>
                 </div>
               </div>
             </div>

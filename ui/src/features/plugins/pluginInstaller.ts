@@ -22,13 +22,6 @@ export interface PluginSnapshot {
   errors: { path: string; message: string }[];
 }
 
-export interface PluginBackup {
-  pluginId: string;
-  version: string;
-  directory: string;
-  createdAtMs: number;
-}
-
 export function requiresExplicitTrust(error: unknown) {
   const reason = String(error);
   return reason.includes("未签名") || reason.includes("尚未受信任");
