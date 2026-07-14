@@ -10,7 +10,8 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    Context, Ctx, Error as JsError, Function, Module, Object, Promise, Runtime, TypedArray,
+    CaughtError, Context, Ctx, Error as JsError, Function, Module, Object, Promise, Runtime,
+    TypedArray,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -183,6 +184,9 @@ impl HostState {
                     .map_err(|error| format!("Base64 解码失败：{error}"))?;
                 Ok(json!(bytes))
             }
+            "text.decodeUtf8" => String::from_utf8(payload_bytes(&payload)?)
+                .map(Value::String)
+                .map_err(|_| "UTF-8 解码失败".into()),
             "crypto.randomBytes" => {
                 let size = payload
                     .get("size")
@@ -674,8 +678,10 @@ impl JsProviderRuntime {
             });
             let promise: Promise = init
                 .call((serde_json::to_string(&request).map_err(|error| error.to_string())?,))
-                .map_err(js_error)?;
-            promise.finish::<String>().map_err(js_error)?;
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            promise
+                .finish::<String>()
+                .map_err(|error| js_error_with_context(&ctx, error))?;
             Ok(())
         })?;
         Ok(Self {
@@ -700,7 +706,7 @@ impl JsProviderRuntime {
                     method,
                     serde_json::to_string(payload).map_err(|error| error.to_string())?,
                 ))
-                .map_err(js_error)?;
+                .map_err(|error| js_error_with_context(&ctx, error))?;
             let result = self.finish_promise_with_host_events(&ctx, promise)?;
             serde_json::from_str(&result)
                 .map_err(|error| format!("插件返回值不是合法 JSON：{error}"))
@@ -713,7 +719,9 @@ impl JsProviderRuntime {
         self.context.with(|ctx| {
             let call: Function = ctx.globals().get("__sayitAudio").map_err(js_error)?;
             let audio = TypedArray::<u8>::new(ctx.clone(), bytes).map_err(js_error)?;
-            let promise: Promise = call.call((audio,)).map_err(js_error)?;
+            let promise: Promise = call
+                .call((audio,))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
             self.finish_promise_with_host_events(&ctx, promise)?;
             Ok(())
         })
@@ -726,7 +734,7 @@ impl JsProviderRuntime {
     ) -> Result<String, String> {
         loop {
             if let Some(result) = promise.result::<String>() {
-                return result.map_err(js_error);
+                return result.map_err(|error| js_error_with_context(ctx, error));
             }
             let mut progressed = false;
             while ctx.execute_pending_job() {
@@ -745,8 +753,10 @@ impl JsProviderRuntime {
                         "onHostEvent",
                         serde_json::to_string(&event).map_err(|error| error.to_string())?,
                     ))
-                    .map_err(js_error)?;
-                callback.finish::<String>().map_err(js_error)?;
+                    .map_err(|error| js_error_with_context(ctx, error))?;
+                callback
+                    .finish::<String>()
+                    .map_err(|error| js_error_with_context(ctx, error))?;
             }
             if self.cancelled.load(Ordering::Relaxed) {
                 return Err("插件操作已取消".into());
@@ -1002,6 +1012,13 @@ fn js_error(error: impl std::fmt::Display) -> String {
     format!("JavaScript 插件执行失败：{error}")
 }
 
+fn js_error_with_context(ctx: &Ctx<'_>, error: JsError) -> String {
+    format!(
+        "JavaScript 插件执行失败：{}",
+        CaughtError::from_error(ctx, error)
+    )
+}
+
 const HOST_BOOTSTRAP: &str = r#"
 (() => {
   const call = (operation, payload = {}) => {
@@ -1020,6 +1037,7 @@ const HOST_BOOTSTRAP: &str = r#"
       close: connectionId => call('websocket.close', { connectionId }),
     }),
     base64: Object.freeze({ encode: value => call('base64.encode', { value: bytes(value) }), decode: value => new Uint8Array(call('base64.decode', { value })) }),
+    text: Object.freeze({ decodeUtf8: value => call('text.decodeUtf8', { value: bytes(value) }) }),
     crypto: Object.freeze({
       randomBytes: size => new Uint8Array(call('crypto.randomBytes', { size })),
       sha256: value => call('crypto.sha256', { value: typeof value === 'string' ? value : bytes(value) }),
@@ -1032,6 +1050,17 @@ const HOST_BOOTSTRAP: &str = r#"
     emit: event => call('emit', { event }),
     log: (level, message) => call('log', { level, message: String(message) }),
   });
+  // QuickJS 不内置浏览器的 TextDecoder。这里仅补齐 UTF-8 兼容层；新插件应优先使用 host.text.decodeUtf8。
+  if (typeof globalThis.TextDecoder !== 'function') {
+    globalThis.TextDecoder = class TextDecoder {
+      constructor(label = 'utf-8') {
+        if (!/^utf-?8$/i.test(String(label))) throw new RangeError('仅支持 UTF-8 TextDecoder');
+      }
+      decode(value = new Uint8Array()) {
+        return globalThis.__sayitHost.text.decodeUtf8(value);
+      }
+    };
+  }
   globalThis.__sayitInitialize = async requestJson => {
     const request = JSON.parse(requestJson);
     if (typeof globalThis.__sayitProvider.initialize === 'function') await globalThis.__sayitProvider.initialize(request);
@@ -1132,6 +1161,28 @@ mod tests {
             .unwrap();
         assert_eq!(result["text"], "hello-done");
         assert_eq!(runtime.take_events()[0]["text"], "ok");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provides_utf8_decoder_for_plugin_base64_data() {
+        let (root, spec, profile) = fixture(
+            "export default host => ({ invoke() { const bytes = host.base64.decode('5rWL6K+V'); return { text: new TextDecoder().decode(bytes), direct: host.text.decodeUtf8(bytes) }; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        let result = runtime
+            .call("invoke", &json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["text"], "测试");
+        assert_eq!(result["direct"], "测试");
         std::fs::remove_dir_all(root).unwrap();
     }
 
