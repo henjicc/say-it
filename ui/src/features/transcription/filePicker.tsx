@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { FileAudio, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
+import { extensionOf } from "@/features/fileDrop/routes";
 import type { SelectedTranscriptionFile } from "@/store/useTranscriptionStore";
 
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
@@ -36,10 +37,7 @@ export function formatSize(size: number) {
   return `${size} B`;
 }
 
-export function extensionOf(name: string) {
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
+export { extensionOf };
 
 export function validateFile(file: SelectedTranscriptionFile) {
   const extension = extensionOf(file.name || file.path);
@@ -124,7 +122,7 @@ export function useFileDrop(onPath: (path: string) => void, enabled = true) {
         if (payload.type === "drop") {
           setDragActive(false);
           const firstPath = payload.paths[0];
-          if (firstPath) onPathRef.current(firstPath);
+          if (firstPath && extensionOf(firstPath) !== "sayit") onPathRef.current(firstPath);
         }
       })
       .then((fn) => {

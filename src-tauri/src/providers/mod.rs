@@ -366,6 +366,27 @@ mod tests {
     }
 
     #[test]
+    fn disabling_provider_excludes_it_and_restores_a_valid_default() {
+        let mut settings = ProviderSettings::default();
+        settings.profiles.push(ProviderProfile {
+            id: "plugin-provider".to_string(),
+            kind: "plugin:plugin-provider".to_string(),
+            display_name: "插件供应商".to_string(),
+            auth_kind: "none".to_string(),
+            capabilities: vec!["asr".to_string()],
+            enabled: false,
+            config: json!({}),
+            config_fields: vec![],
+            actions: vec![],
+        });
+        settings.defaults.asr = "plugin-provider".to_string();
+
+        let normalized = normalize_settings(settings);
+        assert_eq!(normalized.defaults.asr, FUNASR_PROVIDER_ID);
+        assert!(!has_capability(&normalized, "plugin-provider", "asr"));
+    }
+
+    #[test]
     fn realtime_connector_for_rejects_unknown_kind() {
         match realtime_connector_for("unknown-kind", &json!({}), None) {
             Err(err) => assert!(err.contains("不支持供应商类型")),

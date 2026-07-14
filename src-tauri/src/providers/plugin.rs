@@ -145,6 +145,7 @@ pub struct PluginSummary {
     pub trust: String,
     pub actions: Vec<String>,
     pub has_browser_session: bool,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -570,7 +571,10 @@ fn merge_missing_config(target: &mut Value, defaults: &Value) {
 }
 
 impl PluginRegistry {
-    pub fn snapshot(&self) -> PluginRegistrySnapshot {
+    pub fn snapshot_with_provider_settings(
+        &self,
+        settings: Option<&super::ProviderSettings>,
+    ) -> PluginRegistrySnapshot {
         PluginRegistrySnapshot {
             api_version: PLUGIN_API_VERSION,
             plugins: self
@@ -591,6 +595,15 @@ impl PluginRegistry {
                     trust: plugin.trust.clone(),
                     actions: plugin.manifest.provider.actions.clone(),
                     has_browser_session: plugin.manifest.browser_session.is_some(),
+                    enabled: settings
+                        .and_then(|settings| {
+                            settings
+                                .profiles
+                                .iter()
+                                .find(|profile| profile.id == plugin.manifest.provider.id)
+                        })
+                        .map(|profile| profile.enabled)
+                        .unwrap_or(true),
                 })
                 .collect(),
             errors: self.errors.clone(),
@@ -646,6 +659,13 @@ impl PluginRegistry {
             .and_then(|plugin| plugin.manifest.browser_session.clone())
     }
 
+    pub fn provider_id_for_plugin(&self, plugin_id: &str) -> Option<&str> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == plugin_id)
+            .map(|plugin| plugin.manifest.provider.id.as_str())
+    }
+
     pub fn merge_provider_profiles(&self, settings: &mut ProviderSettings) {
         let installed: HashMap<_, _> = self
             .plugins
@@ -669,7 +689,6 @@ impl PluginRegistry {
                     profile.display_name = provider.display_name.clone();
                     profile.auth_kind = provider.auth_kind.clone();
                     profile.capabilities = provider.capabilities.clone();
-                    profile.enabled = true;
                     profile.config_fields = provider.config_fields.clone();
                     profile.actions = provider.actions.clone();
                     merge_missing_config(&mut profile.config, &provider.config);
@@ -749,16 +768,28 @@ mod tests {
         )
         .unwrap();
         let registry = load_registry_from(&root).unwrap();
-        assert_eq!(registry.snapshot().plugins.len(), 1);
+        assert_eq!(registry.snapshot_with_provider_settings(None).plugins.len(), 1);
         let mut settings = ProviderSettings::default();
         registry.merge_provider_profiles(&mut settings);
-        let profile = settings
+        {
+            let profile = settings
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == "test-provider")
+                .unwrap();
+            assert_eq!(profile.kind, "plugin:test-provider");
+            assert_eq!(profile.config_fields[0].key, "token");
+            profile.enabled = false;
+        }
+        registry.merge_provider_profiles(&mut settings);
+        let disabled = settings
             .profiles
             .iter()
             .find(|profile| profile.id == "test-provider")
             .unwrap();
-        assert_eq!(profile.kind, "plugin:test-provider");
-        assert_eq!(profile.config_fields[0].key, "token");
+        assert!(!disabled.enabled);
+        let snapshot = registry.snapshot_with_provider_settings(Some(&settings));
+        assert!(!snapshot.plugins[0].enabled);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -792,7 +823,7 @@ mod tests {
             })).unwrap(),
         ).unwrap();
         let registry = load_registry_from(&root).unwrap();
-        let snapshot = registry.snapshot();
+        let snapshot = registry.snapshot_with_provider_settings(None);
         assert_eq!(snapshot.plugins.len(), 1);
         assert!(snapshot.plugins[0].has_browser_session);
         assert_eq!(

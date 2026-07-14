@@ -31,11 +31,16 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn list_provider_plugins(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "供应商配置锁失败".to_string())?
+        .clone();
     state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())
-        .map(|registry| registry.snapshot())
+        .map(|registry| registry.snapshot_with_provider_settings(Some(&providers)))
 }
 
 #[tauri::command]
@@ -51,11 +56,20 @@ pub(crate) fn reload_provider_plugins(
             .map_err(|_| "供应商配置锁失败".to_string())?;
         registry.merge_provider_profiles(&mut providers);
     }
-    let snapshot = registry.snapshot();
     *state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())? = registry;
+    let providers = state
+        .providers
+        .lock()
+        .map_err(|_| "供应商配置锁失败".to_string())?
+        .clone();
+    let snapshot = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .snapshot_with_provider_settings(Some(&providers));
     save_persisted_state(&app, &state)?;
     Ok(snapshot)
 }
@@ -92,6 +106,44 @@ pub(crate) fn rollback_provider_plugin(
 ) -> Result<PluginRegistrySnapshot, String> {
     plugin_package::rollback(&app, &plugin_id)?;
     reload_provider_plugins(app, state)
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_plugin_enabled(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    enabled: bool,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<PluginRegistrySnapshot, String> {
+    let provider_id = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .provider_id_for_plugin(&plugin_id)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
+
+    let providers = {
+        let mut providers = state
+            .providers
+            .lock()
+            .map_err(|_| "供应商配置锁失败".to_string())?;
+        let profile = providers
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == provider_id && profile.kind.starts_with("plugin:"))
+            .ok_or_else(|| format!("插件 {plugin_id} 的供应商配置不存在"))?;
+        profile.enabled = enabled;
+        *providers = crate::providers::normalize_settings(providers.clone());
+        providers.clone()
+    };
+    let snapshot = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .snapshot_with_provider_settings(Some(&providers));
+    save_persisted_state(&app, &state)?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
