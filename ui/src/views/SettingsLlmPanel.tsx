@@ -4,7 +4,9 @@ import { Collapse } from "@/components/ui/Collapse";
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { SecretInput } from "@/components/ui/SecretInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
 
 const PRESETS = [
@@ -64,12 +66,19 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
       defaultOpen={isDefault}
     >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="API Key" hint={profile.status?.hasApiKey ? "已保存；留空表示不修改" : undefined}>
-          <Input
-            type="password"
-            value={apiKey}
+        <Field
+          label="API Key"
+          controlId={`llm-api-key-${profile.id}`}
+          hint={profile.status?.hasApiKey ? "已保存；留空表示不修改" : undefined}
+        >
+          <SecretInput
+            id={`llm-api-key-${profile.id}`}
+            draftValue={apiKey}
+            hasStoredValue={Boolean(profile.status?.hasApiKey)}
             placeholder={profile.status?.hasApiKey ? "输入新 Key 可覆盖" : "输入 API Key"}
-            onChange={(event) => setApiKey(event.target.value)}
+            onDraftChange={setApiKey}
+            revealStoredValue={() => cmd<string>(CMD.getProviderApiKey, { providerId: profile.id })}
+            onRevealError={(error) => setMessage(`读取 API Key 失败：${String(error)}`)}
           />
         </Field>
         <Field label="模型" hint="可填写该供应商支持的任意模型名称">
@@ -133,16 +142,18 @@ export function SettingsLlmPanel() {
 
   return (
     <SettingsSection title="大语言模型">
-      <div className="mb-3 flex items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
-        <Field className="min-w-0 flex-1" label="默认模型供应商" hint="智能文本处理会使用这里选中的供应商">
-          <Select value={defaults.llm} onChange={(event) => void setDefault("llm", event.target.value)}>
+      <Field
+        label="默认模型供应商"
+        controlId="default-llm-provider"
+        hint="智能文本处理会使用这里选中的供应商"
+        actions={<Button variant="primary" onClick={() => setOpen(true)}>+ 添加</Button>}
+      >
+          <Select id="default-llm-provider" value={defaults.llm} onChange={(event) => void setDefault("llm", event.target.value)}>
             {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName}</option>)}
           </Select>
-        </Field>
-        <Button variant="primary" onClick={() => setOpen(true)}>+ 添加</Button>
-      </div>
+      </Field>
 
-      <div className="flex flex-col gap-3">
+      <div className="mt-3 flex flex-col gap-3">
         {profiles.map((profile) => <LlmProfileEditor key={profile.id} profile={profile} />)}
       </div>
 

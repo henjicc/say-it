@@ -34,21 +34,33 @@ export function SettingsView() {
         description="配置识别密钥、插件、录音调整、启动方式、麦克风与提示音、界面外观，并支持多模型效果对比。"
       />
 
-      <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
+      <Tabs<TabKey>
+        id="settings-tabs"
+        ariaLabel="设置分类"
+        tabs={TABS}
+        active={tab}
+        onChange={setTab}
+      />
 
-      {tab === "provider" && (
-        <div className="flex flex-col gap-7">
-          <SettingsProviderPanel />
-          <SettingsLlmPanel />
-        </div>
-      )}
-      {tab === "plugins" && <PluginManagerPanel />}
-      {tab === "audio" && <AudioView />}
-      {tab === "disconnect" && <SettingsDisconnectPanel />}
-      {tab === "startup" && <SettingsStartupPanel />}
-      {tab === "mic" && <SettingsMicCuePanel />}
-      {tab === "appearance" && <SettingsAppearancePanel />}
-      {tab === "compare" && <SettingsComparePanel />}
+      <div
+        id={`settings-tabs-${tab}-panel`}
+        role="tabpanel"
+        aria-labelledby={`settings-tabs-${tab}-tab`}
+      >
+        {tab === "provider" && (
+          <div className="flex flex-col gap-7">
+            <SettingsProviderPanel />
+            <SettingsLlmPanel />
+          </div>
+        )}
+        {tab === "plugins" && <PluginManagerPanel />}
+        {tab === "audio" && <AudioView />}
+        {tab === "disconnect" && <SettingsDisconnectPanel />}
+        {tab === "startup" && <SettingsStartupPanel />}
+        {tab === "mic" && <SettingsMicCuePanel />}
+        {tab === "appearance" && <SettingsAppearancePanel />}
+        {tab === "compare" && <SettingsComparePanel />}
+      </div>
     </div>
   );
 }

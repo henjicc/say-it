@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Input";
-import { CheckField } from "@/components/ui/Field";
+import { CheckField, Field } from "@/components/ui/Field";
+import { FormGrid } from "@/components/ui/FormGrid";
+import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
@@ -106,33 +108,32 @@ export function LocalRulesPanel() {
   };
 
   return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
-      <div className="flex items-center gap-4">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-[var(--color-fg)]">本地处理</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            每条规则按顺序对文本做一次查找替换。点规则名展开编辑，替换内容留空即为删除。
-            规则在独立线程运行并带超时保护，写错正则也不会卡住听写。
-          </p>
-        </div>
-        <Switch
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="本地处理"
+        right={<Switch
           checked={prefs.localRulesEnabled}
           onChange={(v) => patch({ localRulesEnabled: v })}
           label="启用本地快速处理"
-        />
-      </div>
+        />}
+      >
+        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+          每条规则按顺序对文本做一次查找替换。点规则名展开编辑，替换内容留空即为删除。
+          规则在独立线程运行并带超时保护，写错正则也不会卡住听写。
+        </p>
+      </SettingsSection>
 
       <div
         className={cn(
-          "mt-4 transition-opacity",
+          "flex flex-col gap-8 transition-opacity",
           !prefs.localRulesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        <p className="text-xs font-medium text-[var(--color-fg-muted)]">查找替换</p>
-        <p className="mt-1 text-[11px] text-[var(--color-fg-subtle)]">
-          按词整体匹配：英文词紧贴中文（无空格）或被空格 / 标点围绕都能识别到。
-        </p>
-        <div className="mt-2 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+        <SettingsSection title="查找替换">
+          <p className="text-xs text-[var(--color-fg-subtle)]">
+            按词整体匹配：英文词紧贴中文（无空格）或被空格 / 标点围绕都能识别到。
+          </p>
+          <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {findRules.length === 0 && (
             <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无查找替换规则</p>
           )}
@@ -184,14 +185,15 @@ export function LocalRulesPanel() {
             </div>
           ))}
         </div>
-        <div className="mt-2.5">
+          <div>
           <Button size="sm" onClick={addFindRule}>
             + 添加查找替换
           </Button>
-        </div>
+          </div>
+        </SettingsSection>
 
-        <p className="mt-4 text-xs font-medium text-[var(--color-fg-muted)]">正则规则</p>
-        <div className="mt-2 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+        <SettingsSection title="正则规则">
+          <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {regexRules.map((rule, i) => {
             const err = validateRule(rule.pattern, rule.flags);
             const open = editingId === rule.id;
@@ -312,7 +314,7 @@ export function LocalRulesPanel() {
           })}
         </div>
 
-        <div className="mt-2.5 flex items-center gap-2">
+          <div className="flex items-center gap-2">
           <Button size="sm" onClick={addRule}>
             + 添加正则规则
           </Button>
@@ -320,20 +322,20 @@ export function LocalRulesPanel() {
             恢复内置默认
           </Button>
           <span className="text-xs text-[var(--color-fg-subtle)]">恢复默认会清除自定义规则。</span>
-        </div>
+          </div>
+        </SettingsSection>
 
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-[var(--color-fg-muted)]">试运行 · 输入</span>
+        <SettingsSection title="试运行">
+          <FormGrid className="gap-y-3">
+          <Field label="输入">
             <Textarea
               rows={3}
               spellCheck={false}
               value={previewIn}
               onChange={(e) => setPreviewIn(e.target.value)}
             />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-[var(--color-fg-muted)]">试运行 · 输出</span>
+          </Field>
+          <Field label="输出">
             <Textarea
               rows={3}
               readOnly
@@ -341,9 +343,10 @@ export function LocalRulesPanel() {
               value={previewOut}
               className="bg-[var(--color-bg)]"
             />
-          </label>
-        </div>
-        {previewNote && <p className="mt-1 text-[11px] text-[var(--color-err)]">{previewNote}</p>}
+          </Field>
+          </FormGrid>
+          {previewNote && <p className="text-[11px] text-[var(--color-err)]">{previewNote}</p>}
+        </SettingsSection>
       </div>
     </div>
   );

@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { FormGrid } from "@/components/ui/FormGrid";
 import { Input, Select, Textarea } from "@/components/ui/Input";
+import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd } from "@/lib/tauri";
 import {
@@ -64,37 +66,42 @@ export function SmartTextPanel() {
   };
 
   return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
-      <div className="flex items-center gap-4">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-[var(--color-fg)]">智能处理</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            识别结束后先执行本地处理，再把文本交给默认大语言模型，最终注入模型返回的内容。
-          </p>
-        </div>
-        <Switch
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="智能处理"
+        right={<Switch
           checked={prefs.smartProcessingEnabled}
           onChange={(value) => void patch({ smartProcessingEnabled: value })}
           label="启用智能处理"
-        />
-      </div>
+        />}
+      >
+        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+          识别结束后先执行本地处理，再把文本交给默认大语言模型，最终注入模型返回的内容。
+        </p>
+      </SettingsSection>
 
-      <div className="mt-4 flex flex-col gap-3">
-        <div className="flex items-end gap-2">
-          <Field className="min-w-0 flex-1" label="处理模板">
+      <SettingsSection title="处理模板">
+        <Field
+          label="当前模板"
+          controlId="smart-text-template"
+          actions={
+            <>
+              <Button onClick={addTemplate}>+ 新建</Button>
+              <Button variant="danger" disabled={templates.length <= 1} onClick={deleteTemplate}>删除</Button>
+            </>
+          }
+        >
             <Select
+              id="smart-text-template"
               value={active?.id ?? ""}
               onChange={(event) => void patch({ smartTemplateId: event.target.value })}
             >
               {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
             </Select>
-          </Field>
-          <Button size="sm" onClick={addTemplate}>+ 新建</Button>
-          <Button size="sm" variant="danger" disabled={templates.length <= 1} onClick={deleteTemplate}>删除</Button>
-        </div>
+        </Field>
 
         {active && (
-          <>
+          <div className="mt-1 flex flex-col gap-4">
             <Field label="模板名称">
               <Input value={active.name} onChange={(event) => updateTemplate({ name: event.target.value })} />
             </Field>
@@ -116,24 +123,26 @@ export function SmartTextPanel() {
             >
               插入文本占位符
             </Button>
-          </>
+          </div>
         )}
+      </SettingsSection>
 
-        <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <SettingsSection title="试运行">
+        <FormGrid className="gap-y-3">
           <Field label="试运行 · 输入">
             <Textarea rows={4} value={previewInput} onChange={(event) => setPreviewInput(event.target.value)} />
           </Field>
           <Field label="试运行 · 输出">
             <Textarea rows={4} readOnly value={previewOutput} className="bg-[var(--color-bg)]" />
           </Field>
-        </div>
+        </FormGrid>
         <div className="flex items-center gap-3">
           <Button size="sm" variant="primary" disabled={previewing || !active} onClick={preview}>
             {previewing ? "处理中..." : "使用默认模型试运行"}
           </Button>
           {message && <p className="text-xs text-[var(--color-err)]">{message}</p>}
         </div>
-      </div>
+      </SettingsSection>
     </div>
   );
 }
