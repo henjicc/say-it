@@ -1,7 +1,7 @@
 import { forwardRef } from "react";
 import { cn } from "@/lib/cn";
 
-type Variant = "primary" | "ghost" | "danger";
+type Variant = "primary" | "ghost" | "danger" | "dangerHover";
 type Size = "sm" | "md";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -16,6 +16,8 @@ const variants: Record<Variant, string> = {
     "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[var(--accent-ring)] hover:bg-[var(--accent-soft)] active:bg-[var(--accent-soft-strong)] disabled:opacity-40",
   danger:
     "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[#ff8589] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
+  dangerHover:
+    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] hover:text-[#ff8589] active:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
 };
 
 const sizes: Record<Size, string> = {
