@@ -201,42 +201,62 @@ pub(crate) async fn run_provider_plugin_action(
             let window = app
                 .get_webview_window(&login_window_label(&provider_id))
                 .ok_or("找不到插件登录窗口，请先打开登录窗口")?;
-            let mut cookies = HashMap::new();
-            for value in &browser.allowed_urls {
-                let url = url::Url::parse(value).map_err(|error| error.to_string())?;
-                for cookie in window
-                    .cookies_for_url(url)
-                    .map_err(|error| error.to_string())?
-                {
-                    let domain = cookie.domain().unwrap_or_default().to_string();
-                    let path = cookie.path().unwrap_or("/").to_string();
-                    cookies.insert(
-                        format!("{}|{}|{}", cookie.name(), domain, path),
-                        json!({
-                            "name": cookie.name(),
-                            "value": cookie.value(),
-                            "domain": domain,
-                            "path": path,
-                            "httpOnly": cookie.http_only(),
-                            "secure": cookie.secure(),
-                        }),
-                    );
+            let read_cookies = || -> Result<Vec<Value>, String> {
+                let mut cookies = HashMap::new();
+                for value in &browser.allowed_urls {
+                    let url = url::Url::parse(value).map_err(|error| error.to_string())?;
+                    for cookie in window
+                        .cookies_for_url(url)
+                        .map_err(|error| error.to_string())?
+                    {
+                        let domain = cookie.domain().unwrap_or_default().to_string();
+                        let path = cookie.path().unwrap_or("/").to_string();
+                        cookies.insert(
+                            format!("{}|{}|{}", cookie.name(), domain, path),
+                            json!({
+                                "name": cookie.name(),
+                                "value": cookie.value(),
+                                "domain": domain,
+                                "path": path,
+                                "httpOnly": cookie.http_only(),
+                                "secure": cookie.secure(),
+                            }),
+                        );
+                    }
+                }
+                Ok(cookies.into_values().collect::<Vec<_>>())
+            };
+            let missing_required = |cookies: &[Value]| -> Vec<String> {
+                let cookie_names = cookies
+                    .iter()
+                    .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
+                    .collect::<HashSet<_>>();
+                browser
+                    .required_cookie_names
+                    .iter()
+                    .filter(|name| !cookie_names.contains(name.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if let Some(script) = browser.initialization_script.as_deref() {
+                window.eval(script).map_err(|error| error.to_string())?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                loop {
+                    let cookies = read_cookies()?;
+                    if !cookies.is_empty() && missing_required(&cookies).is_empty() {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }
             }
-            let cookies = cookies.into_values().collect::<Vec<_>>();
+            let cookies = read_cookies()?;
             if cookies.is_empty() {
                 return Err("未读取到允许域名的 Cookie，请确认已完成登录".into());
             }
-            let cookie_names = cookies
-                .iter()
-                .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
-                .collect::<HashSet<_>>();
-            let missing = browser
-                .required_cookie_names
-                .iter()
-                .filter(|name| !cookie_names.contains(name.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
+            let missing = missing_required(&cookies);
             if !missing.is_empty() {
                 return Err(format!(
                     "登录会话未完整，缺少必要 Cookie：{}。请在登录窗口中确认账号已登录、等待页面加载完成后再次获取登录会话",
