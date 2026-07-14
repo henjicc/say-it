@@ -77,6 +77,7 @@ host.websocket.send(connectionId, stringOrUint8Array)
 host.websocket.close(connectionId)
 host.base64.encode(bytes)
 host.base64.decode(text)
+host.text.decodeUtf8(bytes)
 host.crypto.randomBytes(size)
 host.crypto.sha256(textOrBytes)
 host.crypto.hmacSha256(key, data)
@@ -95,6 +96,8 @@ host.log(level, message)
 HTTP 返回 `{ status, headers, bodyText, bodyBase64 }`。请求、重定向与 WebSocket 都受白名单限制。WebSocket 事件串行交给 `onHostEvent`，类型为 `websocketOpen`、`websocketMessage`、`websocketError`、`websocketClose`，并包含 `connectionId`。
 
 `host.storage` 仅保存非敏感、小型 JSON 状态。`host.resource` 只能读取包内不超过 1 MiB 的相对资源。密钥、Cookie 和令牌应来自配置或会话，不得写入存储或资源。取消或超时会中断 JavaScript，并关闭宿主管理的网络资源。
+
+QuickJS 不提供 Node 或浏览器 DOM。需要把 UTF-8 字节转为文本时，使用 `host.text.decodeUtf8(bytes)`；为兼容旧插件，运行时仅提供 UTF-8 版 `TextDecoder`，不要依赖其它浏览器 API 或 `TextDecoder` 的流式/编码选项。
 
 ## 标准事件
 
