@@ -48,7 +48,11 @@ export function PluginManagerPanel() {
   }, []);
 
   const install = async () => {
-    const selected = await open({ directory: true, multiple: false, title: "选择供应商插件目录" });
+    const selected = await open({
+      multiple: false,
+      title: "选择说吧包",
+      filters: [{ name: "说吧包", extensions: ["sayit"] }],
+    });
     if (!selected || Array.isArray(selected)) return;
     try {
       const next = await cmd<PluginSnapshot>(CMD.installProviderPlugin, {
@@ -96,7 +100,7 @@ export function PluginManagerPanel() {
   return (
     <Collapse title="插件管理" subtitle={`宿主 API v${snapshot?.apiVersion ?? 2}`}>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => void install()}>从目录安装插件</Button>
+        <Button size="sm" onClick={() => void install()}>安装 .sayit 包</Button>
         <Button size="sm" onClick={() => void reload()}>重新扫描</Button>
       </div>
       <div className="mt-3 flex flex-col gap-2">

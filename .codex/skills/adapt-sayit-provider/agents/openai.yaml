@@ -1,4 +1,4 @@
 interface:
   display_name: "说吧！适配供应商"
-  short_description: "Build signed SayIt speech-provider plugins"
-  default_prompt: "Use $adapt-sayit-provider to produce a signed SayIt v2 plugin in my external workspace. Do not read or modify SayIt source, and do not install the plugin."
+  short_description: "创建并签名说吧供应商插件包"
+  default_prompt: "使用 $adapt-sayit-provider 在当前工作目录中适配供应商，生成一个已签名的 .sayit 文件；不要自动安装。"

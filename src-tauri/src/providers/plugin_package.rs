@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -7,11 +8,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 use uuid::Uuid;
+use zip::ZipArchive;
 
 use super::plugin::{plugins_dir, validate_plugin_dir, PluginManifest, PluginSignatureManifest};
 
 const TRUST_FILE: &str = "trusted-plugin-keys.json";
 const BACKUPS_DIR: &str = "plugin-backups";
+pub const SAYIT_PACKAGE_EXTENSION: &str = "sayit";
+const PACKAGE_DECLARATION_FILE: &str = "sayit-package.json";
+const MAX_ARCHIVE_ENTRIES: usize = 256;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SayItPackageDeclaration {
+    format_version: u32,
+    kind: String,
+    entry: String,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +245,108 @@ pub fn install_from_directory(
     })
 }
 
+pub fn install_from_path(
+    app: &tauri::AppHandle,
+    source: &Path,
+    allow_unsigned: bool,
+    trust_signing_key: bool,
+) -> Result<InstallResult, String> {
+    let source = source
+        .canonicalize()
+        .map_err(|error| format!("插件包不存在：{error}"))?;
+    if source.is_dir() {
+        return install_from_directory(app, &source, allow_unsigned, trust_signing_key);
+    }
+    if !source.is_file()
+        || !source
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(SAYIT_PACKAGE_EXTENSION))
+    {
+        return Err(format!(
+            "请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包或开发目录"
+        ));
+    }
+    let plugins = plugins_dir(app)?;
+    let extracted = plugins.join(format!(".archive-{}", Uuid::new_v4()));
+    let result = extract_archive(&source, &extracted)
+        .and_then(|_| dispatch_sayit_package(&extracted, app, allow_unsigned, trust_signing_key));
+    let _ = std::fs::remove_dir_all(&extracted);
+    result
+}
+
+fn dispatch_sayit_package(
+    root: &Path,
+    app: &tauri::AppHandle,
+    allow_unsigned: bool,
+    trust_signing_key: bool,
+) -> Result<InstallResult, String> {
+    let declaration_path = root.join(PACKAGE_DECLARATION_FILE);
+    let declaration_text = std::fs::read_to_string(&declaration_path)
+        .map_err(|_| format!("说吧包缺少 {PACKAGE_DECLARATION_FILE}"))?;
+    let declaration: SayItPackageDeclaration = serde_json::from_str(&declaration_text)
+        .map_err(|error| format!("说吧包声明格式错误：{error}"))?;
+    if declaration.format_version != 1 {
+        return Err(format!(
+            "不支持的说吧包格式版本：{}",
+            declaration.format_version
+        ));
+    }
+    match declaration.kind.as_str() {
+        "provider-plugin" if declaration.entry == "manifest.json" => {
+            install_from_directory(app, root, allow_unsigned, trust_signing_key)
+        }
+        "provider-plugin" => Err("供应商插件包入口必须是 manifest.json".into()),
+        kind => Err(format!("当前版本不支持的说吧包类型：{kind}")),
+    }
+}
+
+fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| format!("插件包不是有效 ZIP：{error}"))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!("插件包文件数量超过上限：{MAX_ARCHIVE_ENTRIES}"));
+    }
+    let declared_size = (0..archive.len()).try_fold(0_u64, |total, index| {
+        let entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        total
+            .checked_add(entry.size())
+            .ok_or_else(|| "插件包解压大小溢出".to_string())
+    })?;
+    if declared_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err("插件包解压后超过 512 MB 上限".into());
+    }
+    std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    let mut paths = std::collections::HashSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        if entry.is_symlink() {
+            return Err("插件包不能包含符号链接".into());
+        }
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| "插件包包含越界路径".to_string())?;
+        if relative.as_os_str().is_empty() {
+            return Err("插件包包含空路径".into());
+        }
+        let key = relative.to_string_lossy().replace('\\', "/");
+        if !paths.insert(key) {
+            return Err("插件包包含重复路径".into());
+        }
+        let target = destination.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
+            continue;
+        }
+        let parent = target.parent().ok_or("插件包文件路径无效")?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let mut output = std::fs::File::create(target).map_err(|error| error.to_string())?;
+        std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+        output.flush().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn list_backups(app: &tauri::AppHandle) -> Result<Vec<PluginBackup>, String> {
     let root = backups_dir(app)?;
     let mut backups = Vec::new();
@@ -375,6 +491,52 @@ fn copy_directory(source: &Path, target: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    #[test]
+    fn extracts_single_file_plugin_archive_without_path_escape() {
+        let root = std::env::temp_dir().join(format!("sayit-plugin-archive-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("plugin.sayit");
+        let mut writer = ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        writer
+            .start_file(PACKAGE_DECLARATION_FILE, SimpleFileOptions::default())
+            .unwrap();
+        writer
+            .write_all(br#"{"formatVersion":1,"kind":"provider-plugin","entry":"manifest.json"}"#)
+            .unwrap();
+        writer
+            .start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"{}").unwrap();
+        writer
+            .start_file("bin/connector.exe", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"connector").unwrap();
+        writer.finish().unwrap();
+        let extracted = root.join("extracted");
+        extract_archive(&archive_path, &extracted).unwrap();
+        assert_eq!(
+            std::fs::read(extracted.join("bin/connector.exe")).unwrap(),
+            b"connector"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_archive_path_escape() {
+        let root = std::env::temp_dir().join(format!("sayit-plugin-archive-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("malicious.sayit");
+        let mut writer = ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        writer
+            .start_file("../outside.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"nope").unwrap();
+        writer.finish().unwrap();
+        assert!(extract_archive(&archive_path, &root.join("extracted")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn signing_payload_is_stable_across_hash_map_order() {
