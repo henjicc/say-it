@@ -1,7 +1,10 @@
-use crate::providers::{default_provider_id, find_profile, normalize_settings, ProviderProfile};
+use crate::providers::{
+    default_provider_id, find_profile, llm_models_from_config, normalize_llm_endpoint,
+    normalize_settings, ProviderProfile,
+};
 use crate::state::RuntimeState;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort};
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use tauri::State;
@@ -66,7 +69,7 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         let target_resolver = ServiceTargetResolver::from_resolver_fn(
             move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
                 Ok(ServiceTarget {
-                    endpoint: Endpoint::from_owned(endpoint.clone()),
+                    endpoint: Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
                     auth: AuthData::from_single(api_key.clone()),
                     model: ModelIden::new(AdapterKind::OpenAI, target.model.model_name),
                 })
@@ -96,6 +99,39 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
     ))
 }
 
+fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
+    let model_name = profile_value(profile, "model");
+    let model = llm_models_from_config(&profile.config)
+        .into_iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
+    let mut options = ChatOptions::default();
+    if let Some(temperature) = model.temperature {
+        if !(0.0..=2.0).contains(&temperature) {
+            return Err("模型温度必须在 0 到 2 之间".to_string());
+        }
+        options = options.with_temperature(temperature);
+    }
+    if let Some(max_tokens) = model.max_tokens {
+        if max_tokens == 0 {
+            return Err("最大输出 Token 必须是正整数".to_string());
+        }
+        options = options.with_max_tokens(max_tokens);
+    }
+    let reasoning = match model.reasoning_effort.as_str() {
+        "auto" | "" => None,
+        "zero" => Some(ReasoningEffort::Zero),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        value => return Err(format!("不支持的推理强度：{value}")),
+    };
+    if let Some(reasoning) = reasoning {
+        options = options.with_reasoning_effort(reasoning);
+    }
+    Ok(options)
+}
+
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
     text: &str,
@@ -110,7 +146,7 @@ pub(crate) async fn process_smart_text(
     let request = ChatRequest::default()
         .with_system(SYSTEM_PROMPT)
         .append_message(ChatMessage::user(prompt));
-    let options = ChatOptions::default().with_temperature(0.1);
+    let options = chat_options(&profile)?;
     let response = timeout(
         REQUEST_TIMEOUT,
         client.exec_chat(&model, request, Some(&options)),
@@ -152,5 +188,62 @@ mod tests {
         assert!(render_prompt("帮我整理", "你好")
             .unwrap_err()
             .contains(TEXT_PLACEHOLDER));
+    }
+
+    #[test]
+    fn legacy_model_uses_existing_temperature_default() {
+        let profile = ProviderProfile {
+            id: "test".into(),
+            kind: "llm:groq".into(),
+            display_name: "Test".into(),
+            auth_kind: "api-key".into(),
+            capabilities: vec!["llm".into()],
+            enabled: true,
+            config: serde_json::json!({"model": "demo"}),
+            config_fields: vec![],
+            actions: vec![],
+        };
+        let options = chat_options(&profile).unwrap();
+        assert_eq!(options.temperature, Some(0.1));
+        assert!(options.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn model_options_apply_reasoning_temperature_and_max_tokens() {
+        let profile = ProviderProfile {
+            id: "test".into(),
+            kind: "llm:groq".into(),
+            display_name: "Test".into(),
+            auth_kind: "api-key".into(),
+            capabilities: vec!["llm".into()],
+            enabled: true,
+            config: serde_json::json!({
+                "model": "demo",
+                "models": [{
+                    "name": "demo",
+                    "source": "remote",
+                    "availability": "available",
+                    "reasoningEffort": "high",
+                    "temperature": null,
+                    "maxTokens": 512
+                }]
+            }),
+            config_fields: vec![],
+            actions: vec![],
+        };
+        let options = chat_options(&profile).unwrap();
+        assert_eq!(options.temperature, None);
+        assert_eq!(options.max_tokens, Some(512));
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(ReasoningEffort::High)
+        ));
+    }
+
+    #[test]
+    fn invalid_model_options_are_rejected() {
+        let mut profile = crate::providers::groq_llm_profile();
+        profile.config["models"][0]["temperature"] = serde_json::json!(2.5);
+        assert!(chat_options(&profile).unwrap_err().contains("0 到 2"));
     }
 }

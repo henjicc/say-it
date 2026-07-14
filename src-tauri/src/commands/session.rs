@@ -141,8 +141,8 @@ pub(crate) fn add_llm_provider(
     }
     let display_name = request.display_name.trim();
     let model = request.model.trim();
-    if display_name.is_empty() || model.is_empty() {
-        return Err("供应商名称和模型不能为空".to_string());
+    if display_name.is_empty() {
+        return Err("供应商名称不能为空".to_string());
     }
     let endpoint = request.endpoint.trim();
     if adapter == "custom"
@@ -158,6 +158,11 @@ pub(crate) fn add_llm_provider(
             .map_err(|_| "Provider settings lock failed".to_string())?;
         let mut settings = normalize_settings(guard.clone());
         let id = format!("llm-{}", Uuid::new_v4().simple());
+        let models = if model.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::providers::LlmModelConfig::manual(model)]
+        };
         settings.profiles.push(ProviderProfile {
             id: id.clone(),
             kind: format!("llm:{adapter}"),
@@ -169,6 +174,7 @@ pub(crate) fn add_llm_provider(
                 "apiKey": request.api_key.trim(),
                 "model": model,
                 "endpoint": endpoint,
+                "models": models,
             }),
             config_fields: vec![],
             actions: vec![],

@@ -35,6 +35,19 @@ export interface ProviderResponse {
   defaults?: ProviderDefaults;
 }
 
+export type LlmReasoningEffort = "auto" | "zero" | "low" | "medium" | "high";
+export type LlmModelSource = "remote" | "manual";
+export type LlmModelAvailability = "available" | "missing" | "unknown";
+
+export interface LlmModelConfig {
+  name: string;
+  source: LlmModelSource;
+  availability: LlmModelAvailability;
+  reasoningEffort: LlmReasoningEffort;
+  temperature: number | null;
+  maxTokens: number | null;
+}
+
 interface ProviderState {
   profiles: ProviderProfile[];
   defaults: ProviderDefaults;
@@ -45,14 +58,15 @@ interface ProviderState {
 
   load: () => Promise<void>;
   setDefault: (capability: ProviderCapability, providerId: string) => Promise<void>;
-  updateConfig: (providerId: string, config: Record<string, unknown>) => Promise<void>;
+  updateConfig: (providerId: string, config: Record<string, unknown>) => Promise<ProviderProfile>;
   addLlmProvider: (request: {
     adapter: string;
     displayName: string;
     model: string;
     apiKey: string;
     endpoint: string;
-  }) => Promise<void>;
+  }) => Promise<ProviderProfile>;
+  refreshLlmModels: (providerId: string) => Promise<ProviderProfile>;
   removeLlmProvider: (providerId: string) => Promise<void>;
   saveFunasrHotwords: (hotwords: { text: string; weight: number }[]) => Promise<void>;
   syncFunasrHotwords: () => Promise<void>;
@@ -110,11 +124,32 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       config,
     });
     set({ ...normalize(response), statusText: "供应商配置已保存。", statusTone: "ok" });
+    const profile = response.profiles?.find((item) => item.id === providerId);
+    if (!profile) throw new Error(`供应商 ${providerId} 不存在`);
+    return profile;
   },
 
   addLlmProvider: async (request) => {
+    const existingIds = new Set(get().profiles.map((profile) => profile.id));
     const response = await cmd<ProviderResponse>(CMD.addLlmProvider, { request });
     set({ ...normalize(response), statusText: "大语言模型已添加。", statusTone: "ok" });
+    const profile = response.profiles?.find((item) => !existingIds.has(item.id));
+    if (!profile) throw new Error("没有找到刚添加的大语言模型供应商");
+    return profile;
+  },
+
+  refreshLlmModels: async (providerId) => {
+    try {
+      const response = await cmd<ProviderResponse>(CMD.refreshLlmModels, { providerId });
+      set({ ...normalize(response), statusText: "模型列表已更新。", statusTone: "ok" });
+      const profile = response.profiles?.find((item) => item.id === providerId);
+      if (!profile) throw new Error(`供应商 ${providerId} 不存在`);
+      return profile;
+    } catch (error) {
+      const response = await cmd<ProviderResponse>(CMD.listProviders);
+      set({ ...normalize(response), statusText: `模型列表更新失败：${String(error)}`, statusTone: "err" });
+      throw error;
+    }
   },
 
   removeLlmProvider: async (providerId) => {
