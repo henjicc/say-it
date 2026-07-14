@@ -37,6 +37,9 @@ pub struct PluginManifest {
 pub struct PluginBrowserSessionManifest {
     pub login_url: String,
     pub allowed_urls: Vec<String>,
+    /// 同步会话前必须能读取到的 Cookie 名称。由插件声明，宿主只做通用完整性校验。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_cookie_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,6 +363,37 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         }
         for value in &browser.allowed_urls {
             validate_https_url("allowedUrls", value)?;
+        }
+        let mut required_cookie_names = HashSet::new();
+        for name in &browser.required_cookie_names {
+            if name.is_empty()
+                || name.len() > 128
+                || !name.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(
+                            byte,
+                            b'!' | b'#'
+                                | b'$'
+                                | b'%'
+                                | b'&'
+                                | b'\''
+                                | b'*'
+                                | b'+'
+                                | b'-'
+                                | b'.'
+                                | b'^'
+                                | b'_'
+                                | b'`'
+                                | b'|'
+                                | b'~'
+                        )
+                })
+                || !required_cookie_names.insert(name)
+            {
+                return Err(format!(
+                    "browserSession.requiredCookieNames 包含非法或重复 Cookie 名：{name}"
+                ));
+            }
         }
         if browser
             .initialization_script
@@ -754,13 +788,20 @@ mod tests {
                     {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"plugin-translation-v1","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
                 ],
                 "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1,"permissions":["network","browserSession","cookies"],"network":{"allowedHosts":["vendor.example"]}},
-                "browserSession": {"loginUrl":"https://vendor.example/login","allowedUrls":["https://vendor.example/"],"initializationScript":"window.__capture = true;"}
+                "browserSession": {"loginUrl":"https://vendor.example/login","allowedUrls":["https://vendor.example/"],"requiredCookieNames":["sessionid"],"initializationScript":"window.__capture = true;"}
             })).unwrap(),
         ).unwrap();
         let registry = load_registry_from(&root).unwrap();
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.plugins.len(), 1);
         assert!(snapshot.plugins[0].has_browser_session);
+        assert_eq!(
+            registry
+                .browser_for_provider("web-provider")
+                .unwrap()
+                .required_cookie_names,
+            vec!["sessionid"]
+        );
         assert_eq!(registry.models().count(), 3);
         assert_eq!(
             registry.model("web-translation").unwrap().category,

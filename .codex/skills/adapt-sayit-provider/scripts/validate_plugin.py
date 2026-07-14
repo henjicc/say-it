@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ID = re.compile(r"^[a-z0-9.-]{1,64}$")
 ACTION_ID = re.compile(r"^[A-Za-z0-9.-]{1,64}$")
+COOKIE_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$")
 HOST = re.compile(r"^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 PERMISSIONS = {"network", "browserSession", "cookies"}
 NATIVE_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".com", ".scr", ".msi", ".node", ".wasm"}
@@ -174,6 +175,13 @@ def validate(root: Path) -> dict:
             fail("网页登录 URL 必须是 HTTPS，且 allowedUrls 不能为空")
         if len(browser.get("initializationScript", "")) > 64 * 1024:
             fail("initializationScript 超过 64 KiB")
+        required_cookie_names = browser.get("requiredCookieNames", [])
+        if (
+            not isinstance(required_cookie_names, list)
+            or len(required_cookie_names) != len(set(required_cookie_names))
+            or any(not isinstance(name, str) or not COOKIE_NAME.fullmatch(name) for name in required_cookie_names)
+        ):
+            fail("requiredCookieNames 只能包含不重复的合法 Cookie 名")
         required = {"openLogin", "syncSession", "clearSession"}
         if not required.issubset(actions):
             fail(f"browserSession 必须声明操作：{sorted(required)}")

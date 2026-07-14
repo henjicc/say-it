@@ -18,6 +18,7 @@ const host = Object.freeze({
   http: Object.freeze({ request() { throw new Error('烟雾测试禁止真实网络'); } }),
   websocket: Object.freeze({ open() { throw new Error('烟雾测试禁止真实网络'); }, send() {}, close() {} }),
   base64: Object.freeze({ encode: value => Buffer.from(value).toString('base64'), decode: value => new Uint8Array(Buffer.from(value, 'base64')) }),
+  text: Object.freeze({ decodeUtf8: value => new TextDecoder().decode(value) }),
   crypto: Object.freeze({ randomBytes: size => new Uint8Array(size), sha256: () => '0'.repeat(64), hmacSha256: () => '0'.repeat(64) }),
   time: Object.freeze({ now: () => 0, sleep: () => {} }),
   storage: Object.freeze({ get: () => null, set: () => {}, delete: () => {} }),
