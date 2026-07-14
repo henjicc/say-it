@@ -137,6 +137,7 @@
 ## 项目专属信息
 
 - 项目目标：桌面端语音/听写应用「说吧！」，包含主窗口与悬浮指示窗口。
+- 项目内 `测试/` 是插件测试目录，插件开发与测试产物均在此目录进行。
 - 技术栈与运行环境：Tauri 2 + Rust 2021 后端，React 19 + TypeScript + Vite 6 + Tailwind CSS 4 前端，Windows 为主要打包目标（NSIS）。
 - 包管理器：npm，锁文件为 `package-lock.json`。
 - 安装命令：`npm install`。
