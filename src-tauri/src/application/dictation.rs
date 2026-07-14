@@ -68,6 +68,14 @@ struct LocalRule {
     #[serde(default)]
     replacement: String,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmartTemplate {
+    id: String,
+    name: String,
+    prompt: String,
+}
 fn default_flags() -> String {
     "g".into()
 }
@@ -82,6 +90,9 @@ struct DictationPrefs {
     cue_end: String,
     local_rules_enabled: bool,
     local_rules: Vec<LocalRule>,
+    smart_processing_enabled: bool,
+    smart_template_id: String,
+    smart_templates: Vec<SmartTemplate>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
     dictation_silence_disconnect_ms: u64,
@@ -99,6 +110,9 @@ impl Default for DictationPrefs {
             cue_end: "beep-down".into(),
             local_rules_enabled: false,
             local_rules: vec![],
+            smart_processing_enabled: false,
+            smart_template_id: String::new(),
+            smart_templates: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
             dictation_silence_disconnect_ms: 5_000,
@@ -961,7 +975,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
     }
-    let processed = match apply_rules(&text, &prefs) {
+    let local_processed = match apply_rules(&text, &prefs) {
         Ok(v) => v,
         Err(e) => {
             let state = app.state::<RuntimeState>();
@@ -972,6 +986,41 @@ async fn finalize(app: AppHandle, epoch: u64) {
             let _ = fail(app, epoch, e).await;
             return;
         }
+    };
+    let processed = if prefs.smart_processing_enabled && !local_processed.is_empty() {
+        let Some(template) = prefs
+            .smart_templates
+            .iter()
+            .find(|template| template.id == prefs.smart_template_id)
+        else {
+            let state = app.state::<RuntimeState>();
+            if let Some(lease) = &lease {
+                let _ = state.audio_session.release(lease);
+            }
+            remove_temp(temp_path.clone());
+            let _ = fail(app, epoch, "当前智能处理模板不存在".to_string()).await;
+            return;
+        };
+        let state = app.state::<RuntimeState>();
+        match crate::application::smart_text::process_smart_text(
+            &state,
+            &local_processed,
+            &template.prompt,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(lease) = &lease {
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let _ = fail(app, epoch, error).await;
+                return;
+            }
+        }
+    } else {
+        local_processed
     };
     let result = if processed.is_empty() {
         Ok(())
@@ -1173,10 +1222,29 @@ fn validate_rules(prefs: &DictationPrefs) -> Result<(), String> {
     }
     Ok(())
 }
+fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
+    if !prefs.smart_processing_enabled {
+        return Ok(());
+    }
+    if prefs.smart_templates.len() > 50 {
+        return Err("智能处理模板不能超过 50 个".to_string());
+    }
+    let template = prefs
+        .smart_templates
+        .iter()
+        .find(|template| template.id == prefs.smart_template_id)
+        .ok_or_else(|| "请选择有效的智能处理模板".to_string())?;
+    if template.name.trim().is_empty() {
+        return Err("智能处理模板名称不能为空".to_string());
+    }
+    crate::application::smart_text::render_prompt(&template.prompt, "验证文本")?;
+    Ok(())
+}
 pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), String> {
     let prefs: DictationPrefs =
         serde_json::from_value(value.clone()).map_err(|e| format!("听写配置无效：{e}"))?;
-    validate_rules(&prefs)
+    validate_rules(&prefs)?;
+    validate_smart_processing(&prefs)
 }
 fn compile_rule(rule: &LocalRule) -> Result<fancy_regex::Regex, String> {
     let pattern = if rule.mode == "find" {

@@ -6,6 +6,7 @@ import { LogPanel } from "@/components/ui/LogPanel";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { LocalRulesPanel } from "@/views/LocalRulesPanel";
+import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
@@ -18,11 +19,12 @@ const toneClass: Record<string, string> = {
   err: "text-[var(--color-err)]",
 };
 
-type TabKey = "basic" | "local" | "debug";
+type TabKey = "basic" | "local" | "smart" | "debug";
 
 const TABS: TabItem<TabKey>[] = [
   { key: "basic", label: "通用设置" },
-  { key: "local", label: "文本处理" },
+  { key: "local", label: "本地处理" },
+  { key: "smart", label: "智能处理" },
   { key: "debug", label: "调试" },
 ];
 
@@ -43,6 +45,7 @@ export function DictationView() {
 
       {tab === "basic" && <DictationShortcutsPanel />}
       {tab === "local" && <LocalRulesPanel />}
+      {tab === "smart" && <SmartTextPanel />}
       {tab === "debug" && (
         <div className="flex flex-col gap-3">
           <div>
