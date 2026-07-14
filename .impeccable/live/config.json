@@ -1,0 +1,9 @@
+{
+  "files": [
+    "ui/index.html",
+    "ui/indicator.html"
+  ],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
