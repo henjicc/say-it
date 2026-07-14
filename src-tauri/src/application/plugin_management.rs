@@ -257,11 +257,7 @@ pub(crate) async fn run_provider_plugin_action(
         }
         "clearSession" => {
             plugin_secrets::clear_session(&spec)?;
-            if let Some(window) = app.get_webview_window(&login_window_label(&provider_id)) {
-                window
-                    .clear_all_browsing_data()
-                    .map_err(|error| error.to_string())?;
-            }
+            reset_login_webview_profile(&app, &provider_id, &spec.plugin_id)?;
             Ok(json!({ "status": "cleared" }))
         }
         other => {
@@ -312,6 +308,28 @@ fn open_login_window(
         builder = builder.initialization_script(script);
     }
     builder.build().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reset_login_webview_profile(
+    app: &tauri::AppHandle,
+    provider_id: &str,
+    plugin_id: &str,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&login_window_label(provider_id)) {
+        window.close().map_err(|error| error.to_string())?;
+    }
+
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugin-webviews")
+        .join(plugin_id);
+    if data_dir.exists() {
+        std::fs::remove_dir_all(&data_dir)
+            .map_err(|error| format!("清除插件登录浏览数据失败：{error}"))?;
+    }
     Ok(())
 }
 
