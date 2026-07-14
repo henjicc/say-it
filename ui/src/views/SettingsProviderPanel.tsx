@@ -25,6 +25,7 @@ const PLUGIN_ACTION_LABELS: Record<string, string> = {
 
 function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
+  const loadProviders = useProviderStore((state) => state.load);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [message, setMessage] = useState("");
   const configFields = provider.configFields || [];
@@ -56,6 +57,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
         providerId: provider.id,
         action,
       });
+      await loadProviders();
       setMessage(String(result.message || result.status || "操作完成。"));
     } catch (error) {
       setMessage(`操作失败：${String(error)}`);
@@ -65,7 +67,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   return (
     <Collapse
       title={provider.displayName}
-      subtitle={provider.status?.hasApiKey ? "已配置" : "未配置"}
+      subtitle={provider.status?.configured ? "已配置" : "未配置"}
     >
       <div className="flex flex-col gap-3">
         {configFields.map((field) =>
@@ -260,7 +262,7 @@ export function SettingsProviderPanel() {
     <SettingsSection title="识别供应商">
       <Collapse
         title={provider?.displayName || "阿里云百炼"}
-        subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}
+        subtitle={hasApiKey ? "已配置" : "未配置"}
         defaultOpen
       >
         <p className="text-xs text-[var(--color-fg-subtle)]">
@@ -301,7 +303,7 @@ export function SettingsProviderPanel() {
           </div>
         </div>
         <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-          当前状态：{hasApiKey ? "已配置 API Key" : "未配置 API Key"}
+          当前状态：{hasApiKey ? "已配置" : "未配置"}
           {apiKeySaving ? " · 正在自动保存..." : providerStatus ? ` · ${providerStatus}` : ""}
         </p>
 

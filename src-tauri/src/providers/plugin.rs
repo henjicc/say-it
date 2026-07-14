@@ -666,6 +666,19 @@ impl PluginRegistry {
             .map(|plugin| plugin.manifest.provider.id.as_str())
     }
 
+    pub fn runtime_for_provider_id_by_plugin(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<(String, PluginRuntimeSpec)>, String> {
+        let Some(plugin) = self.plugins.iter().find(|plugin| plugin.manifest.id == plugin_id) else {
+            return Ok(None);
+        };
+        let provider_id = plugin.manifest.provider.id.clone();
+        Ok(self
+            .runtime_for_provider(&provider_id)?
+            .map(|spec| (provider_id, spec)))
+    }
+
     pub fn merge_provider_profiles(&self, settings: &mut ProviderSettings) {
         let installed: HashMap<_, _> = self
             .plugins

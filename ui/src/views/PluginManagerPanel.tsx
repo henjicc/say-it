@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import {
@@ -24,6 +25,7 @@ export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
+  const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
 
   const loadSnapshot = async () => {
     const next = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
@@ -96,7 +98,6 @@ export function PluginManagerPanel() {
   };
 
   const uninstall = async (plugin: PluginSummary) => {
-    if (!window.confirm(`确认卸载 ${plugin.name} 吗？这会移除插件及其本地配置，无法恢复。`)) return;
     setBusyPluginId(plugin.id);
     setMessage("");
     try {
@@ -105,6 +106,7 @@ export function PluginManagerPanel() {
       await refreshPluginConsumers();
       await loadSnapshot();
       setMessage("插件已卸载。");
+      setPendingUninstall(undefined);
     } catch (error) {
       setMessage(`卸载失败：${String(error)}`);
     } finally {
@@ -151,12 +153,12 @@ export function PluginManagerPanel() {
                   />
                   <Button
                     size="sm"
-                    variant="danger"
+                    variant="ghost"
                     disabled={busy}
                     aria-label={`卸载${plugin.name}`}
                     title="卸载插件"
-                    className="w-8 px-0"
-                    onClick={() => void uninstall(plugin)}
+                    className="w-8 border-transparent bg-transparent px-0 text-[#ff8589] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] hover:text-[#ff8589]"
+                    onClick={() => setPendingUninstall(plugin)}
                   >
                     <Trash2 className="h-4 w-4" aria-hidden />
                   </Button>
@@ -174,6 +176,24 @@ export function PluginManagerPanel() {
         <p key={error.path} className="text-xs text-[var(--color-err)]">{error.path}：{error.message}</p>
       ))}
       {message && <p className="text-sm text-[var(--color-fg-subtle)]">{message}</p>}
+      <Modal
+        open={Boolean(pendingUninstall)}
+        onClose={() => !busyPluginId && setPendingUninstall(undefined)}
+        title="确认卸载插件"
+        className="max-w-[430px]"
+      >
+        <div className="p-5">
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            确认卸载“{pendingUninstall?.name}”吗？插件配置、登录会话、Cookie 与浏览数据都会一并删除，无法恢复。
+          </p>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button size="sm" disabled={Boolean(busyPluginId)} onClick={() => setPendingUninstall(undefined)}>取消</Button>
+            <Button size="sm" variant="danger" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>
+              {busyPluginId ? "正在卸载..." : "卸载插件"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </SettingsSection>
   );
 }

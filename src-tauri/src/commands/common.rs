@@ -75,6 +75,7 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
                 actions: actions_for(profile),
                 status: Some(ProviderStatus {
                     has_api_key: Some(has_key),
+                    configured: Some(has_key),
                 }),
                 config: sanitized_config(profile),
             }
