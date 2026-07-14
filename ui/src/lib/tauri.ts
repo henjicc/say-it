@@ -47,6 +47,7 @@ export const CMD = {
   updateProviderConfig: "update_provider_config",
   getProviderApiKey: "get_provider_api_key",
   addLlmProvider: "add_llm_provider",
+  refreshLlmModels: "refresh_llm_models",
   removeLlmProvider: "remove_llm_provider",
   previewSmartText: "preview_smart_text",
   providerSaveHotwords: "provider_save_hotwords",

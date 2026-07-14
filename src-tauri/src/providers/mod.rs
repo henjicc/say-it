@@ -17,6 +17,78 @@ mod testing;
 
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
+pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmModelConfig {
+    pub name: String,
+    #[serde(default)]
+    pub source: LlmModelSource,
+    #[serde(default)]
+    pub availability: LlmModelAvailability,
+    #[serde(default = "default_reasoning_effort")]
+    pub reasoning_effort: String,
+    #[serde(default = "default_llm_temperature")]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+impl LlmModelConfig {
+    pub fn manual(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: LlmModelSource::Manual,
+            availability: LlmModelAvailability::Unknown,
+            reasoning_effort: default_reasoning_effort(),
+            temperature: default_llm_temperature(),
+            max_tokens: None,
+        }
+    }
+
+    pub fn remote(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: LlmModelSource::Remote,
+            availability: LlmModelAvailability::Available,
+            reasoning_effort: default_reasoning_effort(),
+            temperature: default_llm_temperature(),
+            max_tokens: None,
+        }
+    }
+
+    pub fn has_custom_options(&self) -> bool {
+        self.reasoning_effort != "auto"
+            || self.temperature != Some(DEFAULT_LLM_TEMPERATURE)
+            || self.max_tokens.is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LlmModelSource {
+    Remote,
+    #[default]
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LlmModelAvailability {
+    Available,
+    Missing,
+    #[default]
+    Unknown,
+}
+
+fn default_reasoning_effort() -> String {
+    "auto".to_string()
+}
+
+fn default_llm_temperature() -> Option<f64> {
+    Some(DEFAULT_LLM_TEMPERATURE)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -207,7 +279,8 @@ pub fn groq_llm_profile() -> ProviderProfile {
         enabled: true,
         config: json!({
             "apiKey": "",
-            "model": "openai/gpt-oss-20b"
+            "model": "openai/gpt-oss-20b",
+            "models": [LlmModelConfig::manual("openai/gpt-oss-20b")]
         }),
         config_fields: vec![],
         actions: vec![],
@@ -221,6 +294,67 @@ pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a 
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
     vec![funasr_profile(), groq_llm_profile()]
+}
+
+pub fn llm_models_from_config(config: &Value) -> Vec<LlmModelConfig> {
+    let mut models = config
+        .get("models")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<LlmModelConfig>>(value).ok())
+        .unwrap_or_default();
+    models.retain(|model| !model.name.trim().is_empty());
+    for model in &mut models {
+        model.name = model.name.trim().to_string();
+    }
+    let mut unique = Vec::with_capacity(models.len());
+    for model in models {
+        if !unique
+            .iter()
+            .any(|item: &LlmModelConfig| item.name == model.name)
+        {
+            unique.push(model);
+        }
+    }
+    let current = config
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !current.is_empty() && !unique.iter().any(|item| item.name == current) {
+        unique.push(LlmModelConfig::manual(current));
+    }
+    unique
+}
+
+pub fn set_llm_models(config: &mut Value, models: &[LlmModelConfig]) -> Result<(), String> {
+    let target = config
+        .as_object_mut()
+        .ok_or_else(|| "大语言模型配置格式异常".to_string())?;
+    target.insert(
+        "models".to_string(),
+        serde_json::to_value(models).map_err(|error| error.to_string())?,
+    );
+    Ok(())
+}
+
+pub fn normalize_llm_endpoint(endpoint: &str) -> String {
+    let endpoint = endpoint.trim();
+    if endpoint.ends_with('/') {
+        endpoint.to_string()
+    } else {
+        format!("{endpoint}/")
+    }
+}
+
+fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
+    if !profile.kind.starts_with("llm:") {
+        return;
+    }
+    if !profile.config.is_object() {
+        profile.config = json!({});
+    }
+    let models = llm_models_from_config(&profile.config);
+    let _ = set_llm_models(&mut profile.config, &models);
 }
 
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
@@ -242,6 +376,9 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
     }
     if migrate_legacy_llm_default {
         settings.defaults.llm = GROQ_LLM_PROVIDER_ID.to_string();
+    }
+    for profile in &mut settings.profiles {
+        normalize_llm_profile_config(profile);
     }
     // 未知 id 的 profile（用户手工配置或未来供应商）原样保留，不再删除。
 
@@ -369,6 +506,27 @@ mod tests {
         assert_eq!(normalized.defaults.asr, "funasr");
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
+    }
+
+    #[test]
+    fn normalize_settings_migrates_legacy_single_model_config() {
+        let mut settings = ProviderSettings::default();
+        let profile = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        profile.config = json!({
+            "apiKey": "secret",
+            "model": "legacy-model"
+        });
+
+        let normalized = normalize_settings(settings);
+        let profile = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
+        let models = llm_models_from_config(&profile.config);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0], LlmModelConfig::manual("legacy-model"));
+        assert_eq!(profile.config["apiKey"], "secret");
     }
 
     #[test]

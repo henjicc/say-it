@@ -31,6 +31,7 @@ use application::dictation::{
     dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime,
     preview_dictation_cue,
 };
+use application::llm_models::refresh_llm_models;
 use application::plugin_management::{
     install_provider_plugin, list_provider_plugins, reload_provider_plugins, run_provider_plugin_action,
     set_provider_plugin_enabled, uninstall_provider_plugin,
@@ -297,6 +298,7 @@ fn main() {
             update_provider_config,
             get_provider_api_key,
             add_llm_provider,
+            refresh_llm_models,
             remove_llm_provider,
             preview_smart_text,
             provider_save_hotwords,
