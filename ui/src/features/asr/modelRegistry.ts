@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { CMD, cmd } from "@/lib/tauri";
 
 export interface ModelInfo {
@@ -13,11 +14,29 @@ export interface ModelCatalogResponse {
 }
 
 let catalog: ModelCatalogResponse | null = null;
+let catalogRevision = 0;
+const catalogListeners = new Set<() => void>();
 
 export async function loadModelCatalog(): Promise<ModelCatalogResponse> {
   catalog = await cmd<ModelCatalogResponse>(CMD.getModelCatalog);
   if (!catalog.models.length) throw new Error("后端模型目录为空");
   return catalog;
+}
+
+export function notifyModelCatalogUpdated() {
+  catalogRevision += 1;
+  catalogListeners.forEach((listener) => listener());
+}
+
+export function useModelCatalogRevision() {
+  return useSyncExternalStore(
+    (listener) => {
+      catalogListeners.add(listener);
+      return () => catalogListeners.delete(listener);
+    },
+    () => catalogRevision,
+    () => catalogRevision,
+  );
 }
 export function currentCatalog(): ModelCatalogResponse {
   if (!catalog) throw new Error("模型目录尚未加载");

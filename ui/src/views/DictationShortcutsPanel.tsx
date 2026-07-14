@@ -8,11 +8,13 @@ import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, clearShortcut, setInjectMethod, setPressHoldMode } from "@/features/dictation/controller";
 
 const DEFAULT_INPUT_VALUE = "";
 export function DictationShortcutsPanel() {
+  useModelCatalogRevision();
   const { capturing, shortcutLabel, injectMethod, pressHoldMode } = useDictationStore();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);

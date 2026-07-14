@@ -27,6 +27,7 @@ import {
   FILE_ASR_MODEL_OPTIONS,
   isSupportedFileModel,
 } from "@/features/asr/modelOptions";
+import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -68,6 +69,7 @@ function sameParams(a: TranscriptionParams, b: TranscriptionParams) {
 }
 
 export function TranscriptionView() {
+  useModelCatalogRevision();
   const {
     tab,
     selectedFile,

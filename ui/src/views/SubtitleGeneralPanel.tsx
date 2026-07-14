@@ -11,11 +11,13 @@ import { useSubtitleStore, buildSubtitleSource, parseSubtitleSource, type Subtit
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 
 const shortcutActionButtonClassName = "min-h-[var(--control-h)] shrink-0 self-stretch";
 const systemAudioSupported = !navigator.userAgent.includes("Macintosh");
 
 export function SubtitleGeneralPanel() {
+  useModelCatalogRevision();
   const { prefs, running, capturing, shortcutLabel, patch } = useSubtitleStore();
   const { inputs, outputs } = useAudioDevices();
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);

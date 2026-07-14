@@ -8,6 +8,7 @@ import {
   isQwenFileModel as registryIsQwenFileModel,
   isQwenShortAudioFileModel as registryIsQwenShortAudioFileModel,
   isFunAsrFlashFileModel as registryIsFunAsrFlashFileModel,
+  notifyModelCatalogUpdated,
   type AsrModelOption,
 } from "./modelRegistry";
 
@@ -43,6 +44,7 @@ export function hydrateModelOptions() {
   replace(DICTATION_ASR_MODEL_OPTIONS, [...REALTIME_ASR_MODEL_OPTIONS, ...DICTATION_FILE_ASR_MODEL_OPTIONS]);
   fillSet(REALTIME_MODEL_SET, REALTIME_ASR_MODEL_OPTIONS); fillSet(FILE_MODEL_SET, FILE_ASR_MODEL_OPTIONS);
   fillSet(DICTATION_FILE_MODEL_SET, DICTATION_FILE_ASR_MODEL_OPTIONS); fillSet(DICTATION_MODEL_SET, DICTATION_ASR_MODEL_OPTIONS);
+  notifyModelCatalogUpdated();
 }
 
 export function isSupportedRealtimeModel(model: string) {
