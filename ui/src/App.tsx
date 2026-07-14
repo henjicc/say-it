@@ -13,6 +13,7 @@ import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { TranscriptionView } from "@/views/TranscriptionView";
 import { SettingsView } from "@/views/SettingsView";
 import { AboutDialog } from "@/views/AboutView";
+import { PluginDropInstaller } from "@/components/PluginDropInstaller";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
@@ -84,6 +85,7 @@ export default function App() {
           <div className="mx-auto w-full max-w-[1180px]">{VIEWS[view]}</div>
         </main>
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
+        <PluginDropInstaller />
       </div>
       </>}
     </div>

@@ -8,6 +8,7 @@ export const CMD = {
   listProviderPlugins: "list_provider_plugins",
   reloadProviderPlugins: "reload_provider_plugins",
   installProviderPlugin: "install_provider_plugin",
+  setProviderPluginEnabled: "set_provider_plugin_enabled",
   listProviderPluginBackups: "list_provider_plugin_backups",
   rollbackProviderPlugin: "rollback_provider_plugin",
   runProviderPluginAction: "run_provider_plugin_action",

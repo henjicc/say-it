@@ -2,6 +2,7 @@ import { useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { SettingsProviderPanel } from "@/views/SettingsProviderPanel";
+import { PluginManagerPanel } from "@/views/PluginManagerPanel";
 import { SettingsStartupPanel } from "@/views/SettingsStartupPanel";
 import { SettingsMicCuePanel } from "@/views/SettingsMicCuePanel";
 import { AudioView } from "@/views/AudioView";
@@ -9,10 +10,11 @@ import { SettingsAppearancePanel } from "@/views/SettingsAppearancePanel";
 import { SettingsComparePanel } from "@/views/SettingsComparePanel";
 import { SettingsDisconnectPanel } from "@/views/SettingsDisconnectPanel";
 
-type TabKey = "provider" | "audio" | "disconnect" | "startup" | "mic" | "appearance" | "compare";
+type TabKey = "provider" | "plugins" | "audio" | "disconnect" | "startup" | "mic" | "appearance" | "compare";
 
 const TABS: TabItem<TabKey>[] = [
   { key: "provider", label: "密钥与识别" },
+  { key: "plugins", label: "插件管理" },
   { key: "audio", label: "录音调整" },
   { key: "disconnect", label: "断流设置" },
   { key: "startup", label: "启动设置" },
@@ -28,12 +30,13 @@ export function SettingsView() {
     <div className="flex flex-col gap-7">
       <PageHeader
         title="设置"
-        description="配置识别密钥、录音调整、启动方式、麦克风与提示音、界面外观，并支持多模型效果对比。"
+        description="配置识别密钥、插件、录音调整、启动方式、麦克风与提示音、界面外观，并支持多模型效果对比。"
       />
 
       <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "provider" && <SettingsProviderPanel />}
+      {tab === "plugins" && <PluginManagerPanel />}
       {tab === "audio" && <AudioView />}
       {tab === "disconnect" && <SettingsDisconnectPanel />}
       {tab === "startup" && <SettingsStartupPanel />}

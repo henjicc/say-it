@@ -9,7 +9,6 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
 import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
-import { PluginManagerPanel } from "@/views/PluginManagerPanel";
 
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
@@ -116,7 +115,7 @@ export function SettingsProviderPanel() {
   const providerStatus = useProviderStore((s) => s.statusText);
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
-  const pluginProviders = providers.filter((item) => item.enabled && item.kind.startsWith("plugin:"));
+  const pluginProviders = providers.filter((item) => item.kind.startsWith("plugin:"));
   const [apiKey, setApiKey] = useState("");
   const [savedApiKey, setSavedApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -260,7 +259,6 @@ export function SettingsProviderPanel() {
 
   return (
     <SettingsSection title="识别供应商">
-      <PluginManagerPanel />
       <Collapse
         title={provider?.displayName || "阿里云百炼"}
         subtitle={hasApiKey ? "已配置 API Key" : "未配置 API Key"}
