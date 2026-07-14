@@ -896,7 +896,7 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
             .plugin_registry
             .lock()
             .map_err(|_| "插件注册表锁失败")?
-            .process_for_provider(&provider_id)?;
+            .runtime_for_provider(&provider_id)?;
         let provider =
             translation_for_with_plugin(profile, plugin).map_err(|error| error.to_string())?;
         Ok((

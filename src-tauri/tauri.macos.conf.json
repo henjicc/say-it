@@ -1,0 +1,28 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "说吧！",
+        "width": 1080,
+        "height": 860,
+        "center": true,
+        "resizable": true,
+        "visible": false,
+        "decorations": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {"x": 14, "y": 18},
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

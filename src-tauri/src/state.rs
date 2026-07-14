@@ -95,7 +95,11 @@ pub(crate) struct MainWindowPlacement {
 }
 
 pub(crate) fn default_key_code() -> String {
-    "CapsLock".to_string()
+    if cfg!(target_os = "macos") {
+        "Space".to_string()
+    } else {
+        "CapsLock".to_string()
+    }
 }
 
 pub(crate) fn default_inject_method() -> String {
@@ -125,9 +129,9 @@ impl Default for DictationSettings {
         Self {
             key_code: default_key_code(),
             ctrl: false,
-            shift: false,
+            shift: cfg!(target_os = "macos"),
             alt: false,
-            meta: false,
+            meta: cfg!(target_os = "macos"),
             inject_method: default_inject_method(),
             press_hold_mode: false,
         }

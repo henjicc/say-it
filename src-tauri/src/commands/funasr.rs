@@ -22,7 +22,7 @@ fn customization_context_for(
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .process_for_provider(provider_id)?;
+        .runtime_for_provider(provider_id)?;
     let provider =
         customization_for_with_plugin(profile, plugin).map_err(|error| error.to_string())?;
     Ok((

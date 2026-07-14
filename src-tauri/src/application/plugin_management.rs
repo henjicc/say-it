@@ -107,8 +107,8 @@ pub(crate) async fn run_provider_plugin_action(
             .lock()
             .map_err(|_| "插件注册表锁失败".to_string())?;
         let spec = registry
-            .process_for_provider(&provider_id)?
-            .ok_or_else(|| format!("供应商 {provider_id} 不是进程插件"))?;
+            .runtime_for_provider(&provider_id)?
+            .ok_or_else(|| format!("供应商 {provider_id} 不是 JavaScript 插件"))?;
         let browser = registry.browser_for_provider(&provider_id);
         let settings = read_provider_settings(&state)?;
         let profile = find_profile(&settings, &provider_id)

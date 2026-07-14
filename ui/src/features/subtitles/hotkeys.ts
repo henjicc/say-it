@@ -20,6 +20,7 @@ let subShift = false;
 let subAlt = false;
 let subMeta = false;
 let subCapturing = false;
+const metaKeyLabel = navigator.userAgent.includes("Macintosh") ? "⌘" : "Win";
 
 export function configureSubtitleHotkeys(next: SubtitleHotkeyHooks) {
   hooks = next;
@@ -58,7 +59,7 @@ export function subtitleComboLabel(): string {
   if (subCtrl) parts.push("Ctrl");
   if (subAlt) parts.push("Alt");
   if (subShift) parts.push("Shift");
-  if (subMeta) parts.push("Win");
+  if (subMeta) parts.push(metaKeyLabel);
   parts.push(prettyKeyName(subKeyCode));
   return parts.join(" + ");
 }

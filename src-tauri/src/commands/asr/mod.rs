@@ -44,7 +44,7 @@ pub(crate) async fn start_asr_stream_inner(
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .process_for_provider(&provider_id)?;
+        .runtime_for_provider(&provider_id)?;
     if let Some(plugin) = plugin {
         let model = model_override
             .filter(|model| !model.trim().is_empty())

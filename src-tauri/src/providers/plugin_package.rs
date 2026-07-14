@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 use uuid::Uuid;
@@ -87,6 +88,7 @@ pub fn verify_installation(
     manifest: &PluginManifest,
     trusted: &HashMap<String, String>,
 ) -> Result<String, String> {
+    ensure_no_native_files(root)?;
     let Some(integrity) = &manifest.integrity else {
         if manifest.signature.is_some() {
             return Err("签名插件必须提供 integrity 文件清单".into());
@@ -185,6 +187,7 @@ pub fn install_from_directory(
         return Err("插件安装源必须是目录".into());
     }
     let manifest = validate_plugin_dir(&source)?;
+    ensure_no_native_files(&source)?;
     let mut trusted = load_trusted_keys(app)?;
     let trust = verify_installation(&source, &manifest, &trusted)?;
     match trust.as_str() {
@@ -222,11 +225,14 @@ pub fn install_from_directory(
 
     let mut previous_backup = None;
     let replaced_version = if target.exists() {
-        let current = validate_plugin_dir(&target)?;
-        let backup = backup_path(app, &current.id, &current.version)?;
+        let (current_id, current_version) = installed_identity(&target)?;
+        if current_id != manifest.id {
+            return Err("已安装插件目录与新插件 ID 不一致".into());
+        }
+        let backup = backup_path(app, &current_id, &current_version)?;
         std::fs::rename(&target, &backup).map_err(|error| error.to_string())?;
         previous_backup = Some(backup);
-        Some(current.version)
+        Some(current_version)
     } else {
         None
     };
@@ -330,17 +336,24 @@ fn extract_archive(archive_path: &Path, destination: &Path) -> Result<(), String
             return Err("插件包包含空路径".into());
         }
         let key = relative.to_string_lossy().replace('\\', "/");
-        if !paths.insert(key) {
+        if !paths.insert(key.clone()) {
             return Err("插件包包含重复路径".into());
         }
-        let target = destination.join(relative);
+        let target = destination.join(&relative);
         if entry.is_dir() {
             std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
             continue;
         }
         let parent = target.parent().ok_or("插件包文件路径无效")?;
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        reject_native_extension(&relative)?;
+        let mut prefix = [0_u8; 4];
+        let prefix_len = entry.read(&mut prefix).map_err(|error| error.to_string())?;
+        reject_native_magic(&prefix[..prefix_len], &key)?;
         let mut output = std::fs::File::create(target).map_err(|error| error.to_string())?;
+        output
+            .write_all(&prefix[..prefix_len])
+            .map_err(|error| error.to_string())?;
         std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
         output.flush().map_err(|error| error.to_string())?;
     }
@@ -359,10 +372,10 @@ pub fn list_backups(app: &tauri::AppHandle) -> Result<Vec<PluginBackup>, String>
         {
             continue;
         }
-        if let Ok(manifest) = validate_plugin_dir(&entry.path()) {
+        if let Ok((plugin_id, version)) = installed_identity(&entry.path()) {
             backups.push(PluginBackup {
-                plugin_id: manifest.id,
-                version: manifest.version,
+                plugin_id,
+                version,
                 directory: entry.file_name().to_string_lossy().into_owned(),
                 created_at_ms: entry
                     .metadata()
@@ -410,6 +423,22 @@ fn backup_path(app: &tauri::AppHandle, id: &str, version: &str) -> Result<PathBu
     )))
 }
 
+fn installed_identity(root: &Path) -> Result<(String, String), String> {
+    let value: Value = serde_json::from_slice(
+        &std::fs::read(root.join("manifest.json")).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("已安装插件清单损坏：{error}"))?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("已安装插件缺少 id")?;
+    let version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or("已安装插件缺少 version")?;
+    Ok((id.to_string(), version.to_string()))
+}
+
 fn safe_package_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let relative = Path::new(relative);
     if relative.is_absolute()
@@ -428,6 +457,73 @@ fn safe_package_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
 fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn ensure_no_native_files(root: &Path) -> Result<(), String> {
+    fn visit(root: &Path, directory: &Path) -> Result<(), String> {
+        for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_symlink() {
+                return Err(format!(
+                    "插件包不能包含符号链接：{}",
+                    entry.path().display()
+                ));
+            }
+            if kind.is_dir() {
+                visit(root, &entry.path())?;
+                continue;
+            }
+            if kind.is_file() {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+                reject_native_extension(relative)?;
+                let mut file =
+                    std::fs::File::open(entry.path()).map_err(|error| error.to_string())?;
+                let mut prefix = [0_u8; 4];
+                let size = file.read(&mut prefix).map_err(|error| error.to_string())?;
+                reject_native_magic(&prefix[..size], &relative.to_string_lossy())?;
+            }
+        }
+        Ok(())
+    }
+    visit(root, root)
+}
+
+fn reject_native_extension(path: &Path) -> Result<(), String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "exe" | "dll" | "so" | "dylib" | "com" | "scr" | "msi" | "node"
+    ) {
+        return Err(format!(
+            ".sayit 不能包含原生可执行文件或动态库：{}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn reject_native_magic(prefix: &[u8], path: &str) -> Result<(), String> {
+    let is_pe = prefix.starts_with(b"MZ");
+    let is_elf = prefix.starts_with(b"\x7fELF");
+    let is_macho = matches!(
+        prefix,
+        [0xfe, 0xed, 0xfa, 0xce, ..]
+            | [0xce, 0xfa, 0xed, 0xfe, ..]
+            | [0xfe, 0xed, 0xfa, 0xcf, ..]
+            | [0xcf, 0xfa, 0xed, 0xfe, ..]
+            | [0xca, 0xfe, 0xba, 0xbe, ..]
+            | [0xbe, 0xba, 0xfe, 0xca, ..]
+    );
+    if is_pe || is_elf || is_macho {
+        return Err(format!(".sayit 检测到原生二进制文件：{path}"));
+    }
+    Ok(())
 }
 
 fn package_files(root: &Path) -> Result<std::collections::HashSet<String>, String> {
@@ -494,7 +590,7 @@ mod tests {
     use zip::{write::SimpleFileOptions, ZipWriter};
 
     #[test]
-    fn extracts_single_file_plugin_archive_without_path_escape() {
+    fn rejects_native_executable_in_archive() {
         let root = std::env::temp_dir().join(format!("sayit-plugin-archive-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let archive_path = root.join("plugin.sayit");
@@ -515,11 +611,7 @@ mod tests {
         writer.write_all(b"connector").unwrap();
         writer.finish().unwrap();
         let extracted = root.join("extracted");
-        extract_archive(&archive_path, &extracted).unwrap();
-        assert_eq!(
-            std::fs::read(extracted.join("bin/connector.exe")).unwrap(),
-            b"connector"
-        );
+        assert!(extract_archive(&archive_path, &extracted).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -541,11 +633,11 @@ mod tests {
     #[test]
     fn signing_payload_is_stable_across_hash_map_order() {
         let mut left: PluginManifest = serde_json::from_value(serde_json::json!({
-            "apiVersion": 2,
+            "apiVersion": 3,
             "id": "test", "name": "Test", "version": "1.0.0",
             "provider": {"id":"test","displayName":"Test","config":{}},
             "models": [],
-            "runtime": {"entrypoint":"bin/test.exe"},
+            "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1},
             "integrity": {"algorithm":"sha256","files":{"b":"02","a":"01"}}
         }))
         .unwrap();
@@ -564,20 +656,24 @@ mod tests {
     #[test]
     fn signed_package_detects_tampering_and_trusts_pinned_key() {
         let root = std::env::temp_dir().join(format!("sayit-signed-plugin-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("bin/connector.exe"), b"connector-v1").unwrap();
+        std::fs::create_dir_all(root.join("connector")).unwrap();
+        std::fs::write(
+            root.join("connector/index.js"),
+            b"export default () => ({})",
+        )
+        .unwrap();
         let mut manifest: PluginManifest = serde_json::from_value(serde_json::json!({
-            "apiVersion": 2,
+            "apiVersion": 3,
             "id": "signed-test", "name": "Signed Test", "version": "1.0.0",
             "provider": {"id":"signed-test","displayName":"Signed Test","capabilities":["asr"],"config":{}},
             "models": [{
                 "id":"signed-live","label":"Signed Live","providerId":"signed-test",
-                "category":"realtime","protocol":"process-jsonl-v2",
+                "category":"realtime","protocol":"plugin-realtime-v1",
                 "supportsVocabulary":false,"supportsAlignmentTimestamps":false,
                 "scenes":["dictationRealtime"],"isDefaultRealtime":false,"isDefaultFile":false
             }],
-            "runtime": {"entrypoint":"bin/connector.exe","protocolVersion":2},
-            "integrity": {"algorithm":"sha256","files":{"bin/connector.exe": sha256_file(&root.join("bin/connector.exe")).unwrap()}},
+            "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1},
+            "integrity": {"algorithm":"sha256","files":{"connector/index.js": sha256_file(&root.join("connector/index.js")).unwrap()}},
             "signature": {"algorithm":"ed25519","keyId":"test-key","publicKey":"","value":""}
         })).unwrap();
         let signing = SigningKey::from_bytes(&[7_u8; 32]);
@@ -590,32 +686,17 @@ mod tests {
             verify_installation(&root, &manifest, &trusted).unwrap(),
             "trusted"
         );
-        std::fs::write(root.join("bin/connector.exe"), b"tampered").unwrap();
+        std::fs::write(root.join("connector/index.js"), b"tampered").unwrap();
         assert!(verify_installation(&root, &manifest, &trusted).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn python_signer_payload_matches_host_verifier() {
-        let root = std::env::temp_dir().join(format!("sayit-python-signature-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("bin/connector.exe"), b"python-fixture").unwrap();
-        let manifest: PluginManifest = serde_json::from_str(r#"{
-          "apiVersion":2,"id":"python-signed","name":"Python Signed","version":"1.0.0",
-          "provider":{"id":"python-signed","displayName":"Python Signed","capabilities":["asr"],"config":{}},
-          "models":[{"id":"python-live","label":"Python Live","providerId":"python-signed","category":"realtime","protocol":"process-jsonl-v2","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["dictationRealtime"],"isDefaultRealtime":false,"isDefaultFile":false}],
-          "runtime":{"entrypoint":"bin/connector.exe","protocolVersion":2},
-          "integrity":{"algorithm":"sha256","files":{"bin/connector.exe":"10d10dfc24cff9166b12e8ff731a30684c7ebe50b5d6cebc6d65b37d1e4fc751"}},
-          "signature":{"algorithm":"ed25519","keyId":"python-key","publicKey":"/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=","value":"9XbIwWIRWYyeiNs2E6T8QY9ES48u1MXrILx4p2YHr1sbjgtYFFSGDZyCgCCOQi1Ql7qTnoClfdkebTAalZVjDA=="}
-        }"#).unwrap();
-        let trusted = HashMap::from([(
-            "python-key".into(),
-            "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=".into(),
-        )]);
-        assert_eq!(
-            verify_installation(&root, &manifest, &trusted).unwrap(),
-            "trusted"
-        );
+    fn rejects_native_magic_without_executable_extension() {
+        let root = std::env::temp_dir().join(format!("sayit-native-magic-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("connector.bin"), b"\x7fELFpayload").unwrap();
+        assert!(ensure_no_native_files(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

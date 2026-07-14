@@ -25,7 +25,8 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-tokio = { version = "1", features = ["net", "sync", "time", "process", "io-util"] }
+tokio = { version = "1", features = ["net", "sync", "time", "process", "io-util", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5.7"
 uuid = { version = "1.18.1", features = ["v4"] }
@@ -41,6 +42,11 @@ mp3lame-encoder = "0.2.4"
 once_cell = "1.20"
 fancy-regex = "0.14"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+rquickjs = { version = "0.12.1", features = ["futures", "loader", "macro"] }
+hmac = "0.12"
+rand = "0.9"
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native"] }
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

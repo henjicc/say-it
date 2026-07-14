@@ -20,6 +20,7 @@ let dictMeta = false;
 let dictInjectMethod: "paste" | "type" = "paste";
 let dictPressHoldMode = false;
 let dictCapturing = false;
+const metaKeyLabel = navigator.userAgent.includes("Macintosh") ? "⌘" : "Win";
 
 export function configureHotkeys(next: HotkeyHooks) {
   hooks = next;
@@ -57,7 +58,7 @@ export function comboLabel(): string {
   if (dictCtrl) parts.push("Ctrl");
   if (dictAlt) parts.push("Alt");
   if (dictShift) parts.push("Shift");
-  if (dictMeta) parts.push("Win");
+  if (dictMeta) parts.push(metaKeyLabel);
   parts.push(prettyKeyName(dictKeyCode));
   return parts.join(" + ");
 }
