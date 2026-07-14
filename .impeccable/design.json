@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-14T22:14:49Z",
+  "title": "Design System: 说吧！",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "工作台蓝", "canonical": "#5199FF", "tonalRamp": ["#0B1F3A", "#123764", "#1C5594", "#2675C7", "#5199FF", "#77AFFF", "#A8CCFF", "#DCEBFF"] },
+      "background": { "role": "neutral", "displayName": "深蓝黑底", "canonical": "#0A0E16", "tonalRamp": ["#05070B", "#0A0E16", "#151C29", "#253044", "#3E4B62", "#66738A", "#A4ADBC", "#E5E8ED"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "页面标题", "purpose": "主窗口页面标题。" },
+      "body": { "displayName": "界面正文", "purpose": "表单、说明和常规内容。" },
+      "label": { "displayName": "字段标签", "purpose": "字段名称、提示与状态。" }
+    },
+    "shadows": [
+      { "name": "popover", "value": "0 18px 48px rgba(0, 0, 0, 0.55)", "purpose": "下拉菜单和临时浮层。" }
+    ],
+    "motion": [
+      { "name": "fast", "value": "120ms", "purpose": "悬浮、焦点和按压反馈。" },
+      { "name": "base", "value": "200ms", "purpose": "普通状态过渡。" }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "44px 高的桌面主要操作。",
+      "html": "<button class=\"ds-button-primary\">保存设置</button>",
+      "css": ".ds-button-primary{height:var(--control-h);padding:0 16px;border:0;border-radius:var(--radius-md);background:var(--color-accent);color:var(--color-accent-contrast);font:500 14px var(--font-sans);transition:background var(--dur-fast)}.ds-button-primary:hover{background:var(--color-accent-light)}.ds-button-primary:focus-visible{outline:2px solid var(--accent-ring);outline-offset:2px}.ds-button-primary:active{background:var(--color-accent-dark)}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "带细边框的普通桌面操作。",
+      "html": "<button class=\"ds-button-secondary\">取消</button>",
+      "css": ".ds-button-secondary{height:var(--control-h);padding:0 16px;border:1px solid var(--color-line);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-fg);font:400 14px var(--font-sans);transition:background var(--dur-fast),border-color var(--dur-fast)}.ds-button-secondary:hover{background:var(--accent-soft);border-color:var(--accent-ring)}.ds-button-secondary:focus-visible{outline:2px solid var(--accent-ring);outline-offset:2px}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "与标准按钮等高的单行输入框。",
+      "html": "<input class=\"ds-input\" value=\"通用润色\" />",
+      "css": ".ds-input{box-sizing:border-box;width:100%;height:var(--control-h);padding:0 16px;border:1px solid var(--color-line);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-fg);font:400 14px var(--font-sans)}.ds-input:hover{border-color:var(--color-line-strong)}.ds-input:focus{outline:0;border-color:var(--accent-ring)}"
+    },
+    {
+      "name": "Settings Section",
+      "kind": "custom",
+      "description": "用标题、分隔线和留白组织设置，不使用整页外卡片。",
+      "html": "<section class=\"ds-section\"><header><span></span><h2>处理模板</h2><i></i></header><div class=\"ds-section-body\">设置内容</div></section>",
+      "css": ".ds-section{display:flex;flex-direction:column;gap:16px;color:var(--color-fg);font-family:var(--font-sans)}.ds-section header{display:flex;align-items:center;gap:12px}.ds-section header span{width:4px;height:16px;border-radius:999px;background:var(--color-accent)}.ds-section h2{margin:0;font-size:15px;font-weight:600}.ds-section header i{height:1px;flex:1;background:var(--color-line)}.ds-section-body{color:var(--color-fg-muted);font-size:14px}"
+    },
+    {
+      "name": "Secret Input",
+      "kind": "input",
+      "description": "持久化密钥默认掩码，显式操作后才显示明文。",
+      "html": "<div class=\"ds-secret\"><input aria-label=\"API Key\" placeholder=\"••••••••••••••••\" type=\"password\" /><button aria-label=\"显示密钥\">◉</button></div>",
+      "css": ".ds-secret{position:relative}.ds-secret input{box-sizing:border-box;width:100%;height:var(--control-h);padding:0 44px 0 16px;border:1px solid var(--color-line);border-radius:var(--radius-md);background:var(--color-surface);color:var(--color-fg)}.ds-secret input:focus{outline:0;border-color:var(--accent-ring)}.ds-secret button{position:absolute;right:8px;top:50%;width:32px;height:32px;transform:translateY(-50%);border:0;border-radius:var(--radius-md);background:transparent;color:var(--color-fg-subtle)}.ds-secret button:hover{background:var(--color-surface-strong);color:var(--color-fg)}.ds-secret button:focus-visible{outline:2px solid var(--accent-ring)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "精密语音工作台",
+    "overview": "克制的深蓝黑桌面界面，以排版、留白、分隔线和一致控件帮助用户完成高频语音工作流。",
+    "keyCharacteristics": ["44px 标准控件", "34px 紧凑控件", "扁平设置分区", "单一蓝色强调", "敏感信息默认打码"],
+    "rules": [
+      { "name": "Restrained Accent", "body": "蓝色只表达主操作、当前选择和焦点。", "section": "colors" },
+      { "name": "Flat by default", "body": "普通页面分区无阴影，结构依赖留白和分隔线。", "section": "elevation" }
+    ],
+    "dos": ["使用共享控件和设计令牌。", "用扁平分区组织复杂设置。", "持久化密钥默认打码。"],
+    "donts": ["不要用巨型卡片包住整个 Tab。", "不要让相邻控件高度不一致。", "不要复制页面私有密钥实现。"]
+  }
+}
