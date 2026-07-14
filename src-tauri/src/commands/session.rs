@@ -18,7 +18,28 @@ pub(crate) fn list_providers(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
     let settings = read_provider_settings(&state)?;
-    Ok(provider_settings_response(settings))
+    let mut response = provider_settings_response(settings);
+    let registry = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?;
+    for provider in &mut response.profiles {
+        if !provider.kind.starts_with("plugin:") || registry.browser_for_provider(&provider.id).is_none() {
+            continue;
+        }
+        let configured = registry
+            .runtime_for_provider(&provider.id)?
+            .map(|spec| {
+                crate::providers::plugin_secrets::load_session(&spec)
+                    .map(|session| !session.is_null())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if let Some(status) = &mut provider.status {
+            status.configured = Some(configured);
+        }
+    }
+    Ok(response)
 }
 
 #[tauri::command]

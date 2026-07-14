@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::commands::common::{provider_settings_response, read_provider_settings};
 use crate::providers::registry::{self, FileTranscriptionRoute};
@@ -38,9 +39,16 @@ pub struct ModelCatalog {
 }
 
 pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegistry) -> ModelCatalog {
+    let enabled_provider_ids = providers
+        .profiles
+        .iter()
+        .filter(|provider| provider.enabled)
+        .map(|provider| provider.id.as_str())
+        .collect::<HashSet<_>>();
     let models = registry::models()
         .iter()
         .chain(plugins.models())
+        .filter(|model| enabled_provider_ids.contains(model.provider_id.as_str()))
         .map(|model| {
             let route = registry::file_transcription_route(&model.id);
             ModelCatalogItem {

@@ -5,6 +5,7 @@ export type ProviderCapability = "asr" | "llm" | "translation" | "customization"
 
 export interface ProviderStatus {
   hasApiKey?: boolean;
+  configured?: boolean;
 }
 
 export interface ProviderProfile {

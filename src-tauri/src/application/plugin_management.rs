@@ -135,13 +135,19 @@ pub(crate) fn uninstall_provider_plugin(
     plugin_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
-    let provider_id = state
+    let (provider_id, spec) = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .provider_id_for_plugin(&plugin_id)
-        .map(str::to_owned)
+        .runtime_for_provider_id_by_plugin(&plugin_id)?
         .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
+    plugin_secrets::clear_session(&spec)?;
+    if let Some(window) = app.get_webview_window(&login_window_label(&provider_id)) {
+        window
+            .clear_all_browsing_data()
+            .map_err(|error| format!("清除插件浏览数据失败：{error}"))?;
+        window.close().map_err(|error| error.to_string())?;
+    }
     plugin_package::uninstall(&app, &plugin_id)?;
     {
         let mut providers = state

@@ -374,6 +374,16 @@ pub fn uninstall(app: &tauri::AppHandle, plugin_id: &str) -> Result<(), String> 
     if data_dir.exists() {
         std::fs::remove_dir_all(data_dir).map_err(|error| error.to_string())?;
     }
+
+    let webview_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("plugin-webviews")
+        .join(plugin_id);
+    if webview_data_dir.exists() {
+        std::fs::remove_dir_all(webview_data_dir).map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

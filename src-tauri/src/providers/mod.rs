@@ -69,6 +69,8 @@ impl Default for ProviderSettings {
 pub struct ProviderStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_api_key: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
