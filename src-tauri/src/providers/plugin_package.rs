@@ -160,8 +160,28 @@ pub fn signing_payload(manifest: &PluginManifest) -> Vec<u8> {
     }
     let mut payload = b"sayit-plugin-signature-v1\n".to_vec();
     let value = serde_json::to_value(&signable).expect("plugin manifest is serializable");
+    let value = canonical_json_value(value);
     payload.extend(serde_json::to_vec(&value).expect("plugin manifest value is serializable"));
     payload
+}
+
+fn canonical_json_value(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.into_iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonical_json_value(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(canonical_json_value).collect())
+        }
+        value => value,
+    }
 }
 
 pub fn install_from_directory(
