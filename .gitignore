@@ -5,3 +5,4 @@ src-tauri/bundle-assets/
 npm-debug.log*
 .env
 docs/others
+测试/

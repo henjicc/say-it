@@ -3,12 +3,20 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::commands::common::read_provider_settings;
+use crate::providers::browser_session_capture::{
+    requires_capture, validate_capture_for_sync,
+};
 use crate::providers::find_profile;
-use crate::providers::plugin::{load_registry, PluginRegistrySnapshot};
+use crate::providers::plugin::{
+    load_registry, PluginBrowserSessionManifest, PluginRegistrySnapshot, PluginRuntimeSpec,
+};
 use crate::providers::{plugin_package, plugin_runtime, plugin_secrets};
 use crate::state::RuntimeState;
 use serde_json::{json, Value};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+const BROWSER_SYNC_TIMEOUT_MS: u64 = 3_000;
+const CAPTURE_SYNC_TIMEOUT_MS: u64 = 10_000;
 
 pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     let registry = load_registry(app)?;
@@ -201,79 +209,7 @@ pub(crate) async fn run_provider_plugin_action(
             let window = app
                 .get_webview_window(&login_window_label(&provider_id))
                 .ok_or("找不到插件登录窗口，请先打开登录窗口")?;
-            let read_cookies = || -> Result<Vec<Value>, String> {
-                let mut cookies = HashMap::new();
-                for value in &browser.allowed_urls {
-                    let url = url::Url::parse(value).map_err(|error| error.to_string())?;
-                    for cookie in window
-                        .cookies_for_url(url)
-                        .map_err(|error| error.to_string())?
-                    {
-                        let domain = cookie.domain().unwrap_or_default().to_string();
-                        let path = cookie.path().unwrap_or("/").to_string();
-                        cookies.insert(
-                            format!("{}|{}|{}", cookie.name(), domain, path),
-                            json!({
-                                "name": cookie.name(),
-                                "value": cookie.value(),
-                                "domain": domain,
-                                "path": path,
-                                "httpOnly": cookie.http_only(),
-                                "secure": cookie.secure(),
-                            }),
-                        );
-                    }
-                }
-                Ok(cookies.into_values().collect::<Vec<_>>())
-            };
-            let missing_required = |cookies: &[Value]| -> Vec<String> {
-                let cookie_names = cookies
-                    .iter()
-                    .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
-                    .collect::<HashSet<_>>();
-                browser
-                    .required_cookie_names
-                    .iter()
-                    .filter(|name| !cookie_names.contains(name.as_str()))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            if let Some(script) = browser.initialization_script.as_deref() {
-                window.eval(script).map_err(|error| error.to_string())?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                loop {
-                    let cookies = read_cookies()?;
-                    if !cookies.is_empty() && missing_required(&cookies).is_empty() {
-                        break;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                }
-            }
-            let cookies = read_cookies()?;
-            if cookies.is_empty() {
-                return Err("未读取到允许域名的 Cookie，请确认已完成登录".into());
-            }
-            let missing = missing_required(&cookies);
-            if !missing.is_empty() {
-                return Err(format!(
-                    "登录会话未完整，缺少必要 Cookie：{}。请在登录窗口中确认账号已登录、等待页面加载完成后再次获取登录会话",
-                    missing.join("、")
-                ));
-            }
-            let cookie_count = cookies.len();
-            plugin_secrets::save_session(
-                &spec,
-                &json!({ "cookies": cookies, "capturedAtMs": now_epoch_ms() }),
-            )?;
-            Ok(json!({
-                "status": "saved",
-                "message": format!("已保护 {cookie_count} 个 Cookie，登录会话已验证。"),
-                "cookieCount": cookie_count,
-                "protected": true
-            }))
+            refresh_and_save_browser_session(&window, &browser, &spec, "sync").await
         }
         "clearSession" => {
             plugin_secrets::clear_session(&spec)?;
@@ -294,17 +230,244 @@ pub(crate) async fn run_provider_plugin_action(
     }
 }
 
+pub(crate) async fn refresh_browser_session_before_runtime(
+    app: &tauri::AppHandle,
+    state: &RuntimeState,
+    provider_id: &str,
+    spec: &PluginRuntimeSpec,
+) -> Result<(), String> {
+    let browser = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .browser_for_provider(provider_id)
+        .ok_or("插件没有声明 browserSession")?;
+    if !requires_capture(&browser) {
+        return Ok(());
+    }
+    let window = ensure_login_window(app, provider_id, &spec.plugin_id, &browser, false)?;
+    refresh_and_save_browser_session(&window, &browser, spec, "auto-sync")
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            format!("浏览器临时会话自动续期失败：{error}。请打开登录窗口确认登录状态后重试")
+        })
+}
+
+pub(crate) async fn refresh_browser_session_before_recording(
+    app: &tauri::AppHandle,
+    state: &RuntimeState,
+    model_id: &str,
+) -> Result<(), String> {
+    let target = {
+        let registry = state
+            .plugin_registry
+            .lock()
+            .map_err(|_| "插件注册表锁失败".to_string())?;
+        let Some(provider_id) = registry.provider_id_for_model(model_id) else {
+            return Ok(());
+        };
+        let spec = registry.runtime_for_provider(&provider_id)?;
+        spec.map(|spec| (provider_id, spec))
+    };
+    let Some((provider_id, spec)) = target else {
+        return Ok(());
+    };
+    refresh_browser_session_before_runtime(app, state, &provider_id, &spec).await
+}
+
+async fn refresh_and_save_browser_session(
+    window: &WebviewWindow,
+    browser: &PluginBrowserSessionManifest,
+    spec: &PluginRuntimeSpec,
+    trace_scope: &str,
+) -> Result<Value, String> {
+    let sync_started_ms = now_epoch_ms();
+    let trace = |_message: &str| {};
+    let capture_status = |cookies: &[Value]| -> Result<(), String> {
+        validate_capture_for_sync(browser, cookies, sync_started_ms, now_epoch_ms())
+    };
+    if trace_scope == "auto-sync" {
+        let cookies = read_browser_cookies(window, browser)?;
+        if missing_required_cookies(&cookies, browser).is_empty()
+            && capture_status(&cookies).is_ok()
+        {
+            trace("reuse recently refreshed capture");
+            return save_protected_browser_session(spec, cookies);
+        }
+    }
+    trace(&format!(
+        "start required=[{}] allowedUrls={}",
+        browser.required_cookie_names.join(","),
+        browser.allowed_urls.len()
+    ));
+    if let Some(script) = browser.initialization_script.as_deref() {
+        trace("eval initialization script");
+        window.eval(script).map_err(|error| error.to_string())?;
+        let timeout_ms = if requires_capture(browser) {
+            CAPTURE_SYNC_TIMEOUT_MS
+        } else {
+            BROWSER_SYNC_TIMEOUT_MS
+        };
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let cookies = read_browser_cookies(window, browser)?;
+            let missing = missing_required_cookies(&cookies, browser);
+            let capture_result = capture_status(&cookies).err().unwrap_or_default();
+            trace(&format!(
+                "poll cookies={} names=[{}] missing=[{}]{}",
+                cookies.len(),
+                browser_cookie_names(&cookies).join(","),
+                missing.join(","),
+                if capture_result.is_empty() {
+                    String::new()
+                } else {
+                    format!(" capture={capture_result}")
+                }
+            ));
+            if !cookies.is_empty()
+                && missing.is_empty()
+                && capture_status(&cookies).is_ok()
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                trace("poll timeout");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+    let cookies = read_browser_cookies(window, browser)?;
+    trace(&format!(
+        "final cookies={} names=[{}]",
+        cookies.len(),
+        browser_cookie_names(&cookies).join(",")
+    ));
+    if cookies.is_empty() {
+        trace("failed: no cookies");
+        return Err("未读取到允许域名的 Cookie，请确认已完成登录".into());
+    }
+    let missing = missing_required_cookies(&cookies, browser);
+    if !missing.is_empty() {
+        trace(&format!(
+            "failed: missing required cookies [{}]",
+            missing.join(",")
+        ));
+        return Err(format!(
+            "登录会话未完整，缺少必要 Cookie：{}。请在登录窗口中确认账号已登录、等待页面加载完成后再次获取登录会话",
+            missing.join("、")
+        ));
+    }
+    if let Err(reason) = capture_status(&cookies) {
+        trace(&format!("failed: invalid captured URL cookie [{reason}]"));
+        return Err(format!(
+            "浏览器临时会话凭据尚未刷新完成：{reason}。请等待页面完全加载后重试"
+        ));
+    }
+    let cookie_count = cookies.len();
+    let result = save_protected_browser_session(spec, cookies)?;
+    trace(&format!("saved cookieCount={cookie_count}"));
+    Ok(result)
+}
+
+fn read_browser_cookies(
+    window: &WebviewWindow,
+    browser: &PluginBrowserSessionManifest,
+) -> Result<Vec<Value>, String> {
+    let mut cookies = HashMap::new();
+    for value in &browser.allowed_urls {
+        let url = url::Url::parse(value).map_err(|error| error.to_string())?;
+        for cookie in window
+            .cookies_for_url(url)
+            .map_err(|error| error.to_string())?
+        {
+            let domain = cookie.domain().unwrap_or_default().to_string();
+            let path = cookie.path().unwrap_or("/").to_string();
+            cookies.insert(
+                format!("{}|{}|{}", cookie.name(), domain, path),
+                json!({
+                    "name": cookie.name(),
+                    "value": cookie.value(),
+                    "domain": domain,
+                    "path": path,
+                    "httpOnly": cookie.http_only(),
+                    "secure": cookie.secure(),
+                }),
+            );
+        }
+    }
+    Ok(cookies.into_values().collect())
+}
+
+fn browser_cookie_names(cookies: &[Value]) -> Vec<String> {
+    let mut names = cookies
+        .iter()
+        .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn missing_required_cookies(
+    cookies: &[Value],
+    browser: &PluginBrowserSessionManifest,
+) -> Vec<String> {
+    let cookie_names = cookies
+        .iter()
+        .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    browser
+        .required_cookie_names
+        .iter()
+        .filter(|name| !cookie_names.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn save_protected_browser_session(
+    spec: &PluginRuntimeSpec,
+    cookies: Vec<Value>,
+) -> Result<Value, String> {
+    let cookie_count = cookies.len();
+    plugin_secrets::save_session(
+        spec,
+        &json!({ "cookies": cookies, "capturedAtMs": now_epoch_ms() }),
+    )?;
+    Ok(json!({
+        "status": "saved",
+        "message": format!("已保护 {cookie_count} 个 Cookie，登录会话已验证。"),
+        "cookieCount": cookie_count,
+        "protected": true
+    }))
+}
+
 fn open_login_window(
     app: &tauri::AppHandle,
     provider_id: &str,
     plugin_id: &str,
-    browser: &crate::providers::plugin::PluginBrowserSessionManifest,
+    browser: &PluginBrowserSessionManifest,
 ) -> Result<(), String> {
+    ensure_login_window(app, provider_id, plugin_id, browser, true).map(|_| ())
+}
+
+fn ensure_login_window(
+    app: &tauri::AppHandle,
+    provider_id: &str,
+    plugin_id: &str,
+    browser: &PluginBrowserSessionManifest,
+    visible: bool,
+) -> Result<WebviewWindow, String> {
     let label = login_window_label(provider_id);
     if let Some(window) = app.get_webview_window(&label) {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+        if visible {
+            window.show().map_err(|error| error.to_string())?;
+            window.set_focus().map_err(|error| error.to_string())?;
+        }
+        return Ok(window);
     }
     let url = url::Url::parse(&browser.login_url).map_err(|error| error.to_string())?;
     let data_dir = app
@@ -317,8 +480,8 @@ fn open_login_window(
         .title(browser.window_title.as_deref().unwrap_or("供应商登录"))
         .inner_size(1200.0, 860.0)
         .resizable(true)
-        .focused(true)
-        .visible(true)
+        .focused(visible)
+        .visible(visible)
         .decorations(true)
         .data_directory(data_dir);
     if let Some(user_agent) = browser.user_agent.as_deref() {
@@ -327,8 +490,7 @@ fn open_login_window(
     if let Some(script) = browser.initialization_script.as_deref() {
         builder = builder.initialization_script(script);
     }
-    builder.build().map_err(|error| error.to_string())?;
-    Ok(())
+    builder.build().map_err(|error| error.to_string())
 }
 
 fn reset_login_webview_profile(

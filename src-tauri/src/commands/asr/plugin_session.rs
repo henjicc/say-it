@@ -21,6 +21,13 @@ pub(super) async fn start_plugin_asr_stream(
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
+    crate::application::plugin_management::refresh_browser_session_before_runtime(
+        &app,
+        state,
+        &profile.id,
+        &plugin,
+    )
+    .await?;
     let session_id = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     state

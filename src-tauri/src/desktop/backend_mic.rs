@@ -51,9 +51,18 @@ pub(crate) fn flush_backend_mic_buffer(guard: &mut BackendMicState) -> Result<us
     if !guard.buffer.is_empty() {
         let chunk = std::mem::take(&mut guard.buffer);
         guard.chunk_count += 1;
+        let mut delivered = false;
+        guard.raw_txs.retain(|tx| {
+            let sent = tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok();
+            delivered |= sent;
+            sent
+        });
         if let Some(tx) = guard.tx.as_ref() {
             tx.send(AsrStreamInput::RawF32(chunk))
                 .map_err(|_| "ASR stream channel closed".to_string())?;
+            delivered = true;
+        }
+        if delivered {
             flushed += 1;
         }
     }
@@ -549,4 +558,44 @@ pub(crate) fn get_backend_mic_level(state: tauri::State<'_, RuntimeState>) -> Re
         .lock()
         .map_err(|_| "Backend mic lock failed".to_string())?;
     Ok(guard.last_rms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flush_sends_partial_tail_to_raw_subscribers() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = BackendMicState {
+            raw_txs: vec![tx],
+            buffer: vec![0.25, -0.5, 0.75],
+            ..Default::default()
+        };
+
+        assert_eq!(flush_backend_mic_buffer(&mut state).unwrap(), 1);
+        assert!(state.buffer.is_empty());
+        match rx.try_recv().unwrap() {
+            AsrStreamInput::RawF32(samples) => {
+                assert_eq!(samples, vec![0.25, -0.5, 0.75]);
+            }
+            _ => panic!("expected raw PCM tail"),
+        }
+    }
+
+    #[test]
+    fn flush_does_not_replay_pending_chunks_to_raw_subscribers() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = BackendMicState {
+            raw_txs: vec![tx],
+            pending: VecDeque::from([vec![0.25, -0.5]]),
+            ..Default::default()
+        };
+
+        assert_eq!(flush_backend_mic_buffer(&mut state).unwrap(), 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
 }

@@ -236,6 +236,7 @@ mod tests {
             entrypoint: std::path::PathBuf::new(),
             permissions: Vec::new(),
             allowed_hosts: Vec::new(),
+            browser_session: None,
             data_dir: std::env::temp_dir().join(format!("sayit-session-test-{nonce}")),
             trust: "trusted".into(),
         }

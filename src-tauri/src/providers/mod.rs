@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use connector::RealtimeAsrConnector;
 
 pub mod alibabacloud;
+pub mod browser_session_capture;
 pub mod capabilities;
 pub mod connector;
 pub mod plugin;

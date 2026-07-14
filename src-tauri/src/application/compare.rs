@@ -74,6 +74,7 @@ struct CompareState {
     models: HashMap<usize, String>,
     raw: Vec<f32>,
     sample_rate: u32,
+    recording_drain: Option<tokio::sync::oneshot::Receiver<()>>,
     lease: Option<AudioLease>,
     playback_progress: Option<PlaybackProgress>,
     error: String,
@@ -212,17 +213,13 @@ pub(crate) async fn compare_start(
         if model.trim().is_empty() {
             continue;
         }
-        if crate::providers::registry::model_info(model).is_none() {
+        let Some(info) = resolve_model_info(&state, model) else {
             state
                 .compare_runtime
                 .update_cell(index, "error", None, Some("模型未登记".into()));
             continue;
-        }
-        if crate::providers::registry::model_info(model)
-            .unwrap()
-            .category
-            == "realtime"
-        {
+        };
+        if info.category == "realtime" {
             let opened = start_asr_stream_inner(
                 app.clone(),
                 &state,
@@ -282,6 +279,7 @@ fn start_recording(
     state.audio_session.attach(&lease, "comparison")?;
     let mic = start_backend_mic_inner(device_name, state)?;
     let (_, mut receiver) = attach_backend_mic_raw_inner(state)?;
+    let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
     {
         let mut compare = state
             .compare_runtime
@@ -290,6 +288,7 @@ fn start_recording(
             .map_err(|_| "模型对比状态锁失败")?;
         compare.phase = "recording".into();
         compare.sample_rate = mic.sample_rate;
+        compare.recording_drain = Some(drain_rx);
         compare.lease = Some(lease);
     }
     tauri::async_runtime::spawn(async move {
@@ -319,6 +318,7 @@ fn start_recording(
                 }
             }
         }
+        let _ = drain_tx.send(());
     });
     Ok(())
 }
@@ -328,8 +328,22 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
     let state = app.state::<RuntimeState>();
     let snapshot = state.compare_runtime.snapshot();
     if snapshot.phase == "recording" {
-        let _ = pause_backend_mic_inner(&state);
-        let _ = release_backend_mic_inner(&state);
+        pause_backend_mic_inner(&state)?;
+        release_backend_mic_inner(&state)?;
+        let recording_drain = state
+            .compare_runtime
+            .inner
+            .lock()
+            .map_err(|_| "模型对比状态锁失败")?
+            .recording_drain
+            .take();
+        if let Some(recording_drain) = recording_drain {
+            tokio::time::timeout(std::time::Duration::from_secs(2), recording_drain)
+                .await
+                .map_err(|_| "模型对比尾部音频排空超时".to_string())?
+                .map_err(|_| "模型对比尾部音频任务提前结束".to_string())?;
+            crate::dlog!("[compare] 尾部音频扇出已排空，开始结束 ASR 会话");
+        }
         let (raw, rate, sessions, file_indices) = {
             let mut compare = state
                 .compare_runtime
@@ -343,7 +357,7 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                 .models
                 .iter()
                 .filter_map(|(index, model)| {
-                    crate::providers::registry::model_info(model)
+                    resolve_model_info(&state, model)
                         .filter(|info| info.category == "file")
                         .map(|_| *index)
                 })
@@ -414,6 +428,21 @@ pub(crate) fn get_compare_runtime(state: tauri::State<'_, RuntimeState>) -> Comp
     state.compare_runtime.snapshot()
 }
 
+fn resolve_model_info(
+    state: &RuntimeState,
+    model: &str,
+) -> Option<crate::providers::registry::ModelInfo> {
+    crate::providers::registry::model_info(model)
+        .cloned()
+        .or_else(|| {
+            state
+                .plugin_registry
+                .lock()
+                .ok()
+                .and_then(|plugins| plugins.model(model).cloned())
+        })
+}
+
 async fn start_upload(
     app: tauri::AppHandle,
     state: &RuntimeState,
@@ -426,7 +455,7 @@ async fn start_upload(
         .iter()
         .enumerate()
         .filter(|(_, model)| {
-            crate::providers::registry::model_info(model)
+            resolve_model_info(state, model)
                 .map(|info| info.category == "file")
                 .unwrap_or(false)
         })

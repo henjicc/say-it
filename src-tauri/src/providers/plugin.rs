@@ -46,6 +46,29 @@ pub struct PluginBrowserSessionManifest {
     pub initialization_script: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_title: Option<String>,
+    /// 可选的短时 URL 捕获规则。捕获 Cookie 的值为 Base64URL 编码 JSON，包含 `issuedAt` 与 `url`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_url_cookie: Option<PluginCapturedUrlCookieManifest>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCapturedUrlCookieManifest {
+    pub cookie_name: String,
+    pub max_age_ms: u64,
+    #[serde(default)]
+    pub freshness_slack_ms: u64,
+    pub url: PluginCapturedUrlManifest,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCapturedUrlManifest {
+    pub scheme: String,
+    pub host: String,
+    pub path: String,
+    #[serde(default)]
+    pub required_query_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,6 +139,7 @@ pub struct PluginRuntimeSpec {
     pub entrypoint: PathBuf,
     pub permissions: Vec<String>,
     pub allowed_hosts: Vec<String>,
+    pub browser_session: Option<PluginBrowserSessionManifest>,
     pub data_dir: PathBuf,
     pub trust: String,
 }
@@ -367,33 +391,21 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         }
         let mut required_cookie_names = HashSet::new();
         for name in &browser.required_cookie_names {
-            if name.is_empty()
-                || name.len() > 128
-                || !name.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric()
-                        || matches!(
-                            byte,
-                            b'!' | b'#'
-                                | b'$'
-                                | b'%'
-                                | b'&'
-                                | b'\''
-                                | b'*'
-                                | b'+'
-                                | b'-'
-                                | b'.'
-                                | b'^'
-                                | b'_'
-                                | b'`'
-                                | b'|'
-                                | b'~'
-                        )
-                })
+            if !valid_cookie_name(name)
                 || !required_cookie_names.insert(name)
             {
                 return Err(format!(
                     "browserSession.requiredCookieNames 包含非法或重复 Cookie 名：{name}"
                 ));
+            }
+        }
+        if let Some(capture) = &browser.captured_url_cookie {
+            validate_captured_url_cookie(capture)?;
+            if !required_cookie_names.contains(&capture.cookie_name) {
+                return Err(
+                    "browserSession.capturedUrlCookie.cookieName 必须同时声明在 requiredCookieNames"
+                        .into(),
+                );
             }
         }
         if browser
@@ -487,6 +499,71 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         };
         if !valid_model {
             return Err(format!("模型 {} 的类别、协议或场景组合不受支持", model.id));
+        }
+    }
+    Ok(())
+}
+
+fn valid_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn validate_captured_url_cookie(capture: &PluginCapturedUrlCookieManifest) -> Result<(), String> {
+    if !valid_cookie_name(&capture.cookie_name) {
+        return Err("browserSession.capturedUrlCookie.cookieName 非法".into());
+    }
+    if capture.max_age_ms == 0 || capture.max_age_ms > 24 * 60 * 60 * 1_000 {
+        return Err("browserSession.capturedUrlCookie.maxAgeMs 必须介于 1ms 和 24 小时之间".into());
+    }
+    if capture.freshness_slack_ms > capture.max_age_ms {
+        return Err("browserSession.capturedUrlCookie.freshnessSlackMs 不能大于 maxAgeMs".into());
+    }
+    if !matches!(capture.url.scheme.as_str(), "https" | "wss") {
+        return Err("browserSession.capturedUrlCookie.url.scheme 仅支持 https 或 wss".into());
+    }
+    if capture.url.host.starts_with("*.") {
+        return Err("browserSession.capturedUrlCookie.url.host 不支持通配符".into());
+    }
+    validate_allowed_host(&capture.url.host)?;
+    if !capture.url.path.starts_with('/')
+        || capture.url.path.contains('?')
+        || capture.url.path.contains('#')
+    {
+        return Err("browserSession.capturedUrlCookie.url.path 必须是不含查询参数的绝对路径".into());
+    }
+    let mut query_names = HashSet::new();
+    for name in &capture.url.required_query_names {
+        if name.is_empty()
+            || name.len() > 128
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || !query_names.insert(name)
+        {
+            return Err(format!(
+                "browserSession.capturedUrlCookie.url.requiredQueryNames 包含非法或重复参数：{name}"
+            ));
         }
     }
     Ok(())
@@ -641,6 +718,7 @@ impl PluginRegistry {
             entrypoint: safe_entrypoint(&plugin.root, &plugin.manifest.runtime.entrypoint)?,
             permissions: plugin.manifest.runtime.permissions.clone(),
             allowed_hosts: plugin.manifest.runtime.network.allowed_hosts.clone(),
+            browser_session: plugin.manifest.browser_session.clone(),
             data_dir: plugin
                 .root
                 .parent()
@@ -832,7 +910,18 @@ mod tests {
                     {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"plugin-translation-v1","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
                 ],
                 "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1,"permissions":["network","browserSession","cookies"],"network":{"allowedHosts":["vendor.example"]}},
-                "browserSession": {"loginUrl":"https://vendor.example/login","allowedUrls":["https://vendor.example/"],"requiredCookieNames":["sessionid"],"initializationScript":"window.__capture = true;"}
+                "browserSession": {
+                    "loginUrl":"https://vendor.example/login",
+                    "allowedUrls":["https://vendor.example/"],
+                    "requiredCookieNames":["sessionid","temporary-url"],
+                    "initializationScript":"window.__capture = true;",
+                    "capturedUrlCookie": {
+                        "cookieName":"temporary-url",
+                        "maxAgeMs":60000,
+                        "freshnessSlackMs":5000,
+                        "url": {"scheme":"wss","host":"stream.vendor.example","path":"/v1/live","requiredQueryNames":["signature"]}
+                    }
+                }
             })).unwrap(),
         ).unwrap();
         let registry = load_registry_from(&root).unwrap();
@@ -844,7 +933,20 @@ mod tests {
                 .browser_for_provider("web-provider")
                 .unwrap()
                 .required_cookie_names,
-            vec!["sessionid"]
+            vec!["sessionid", "temporary-url"]
+        );
+        assert_eq!(
+            registry
+                .runtime_for_provider("web-provider")
+                .unwrap()
+                .unwrap()
+                .browser_session
+                .unwrap()
+                .captured_url_cookie
+                .unwrap()
+                .url
+                .host,
+            "stream.vendor.example"
         );
         assert_eq!(registry.models().count(), 3);
         assert_eq!(
