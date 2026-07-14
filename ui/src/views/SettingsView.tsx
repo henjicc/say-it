@@ -2,6 +2,7 @@ import { useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { SettingsProviderPanel } from "@/views/SettingsProviderPanel";
+import { SettingsLlmPanel } from "@/views/SettingsLlmPanel";
 import { PluginManagerPanel } from "@/views/PluginManagerPanel";
 import { SettingsStartupPanel } from "@/views/SettingsStartupPanel";
 import { SettingsMicCuePanel } from "@/views/SettingsMicCuePanel";
@@ -35,7 +36,12 @@ export function SettingsView() {
 
       <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
 
-      {tab === "provider" && <SettingsProviderPanel />}
+      {tab === "provider" && (
+        <div className="flex flex-col gap-7">
+          <SettingsProviderPanel />
+          <SettingsLlmPanel />
+        </div>
+      )}
       {tab === "plugins" && <PluginManagerPanel />}
       {tab === "audio" && <AudioView />}
       {tab === "disconnect" && <SettingsDisconnectPanel />}

@@ -36,6 +36,7 @@ use application::plugin_management::{
     set_provider_plugin_enabled, uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
+use application::smart_text::preview_smart_text;
 use application::subtitles::{
     apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle,
     sync_subtitle_presentation,
@@ -295,6 +296,9 @@ fn main() {
             set_default_provider,
             update_provider_config,
             get_provider_api_key,
+            add_llm_provider,
+            remove_llm_provider,
+            preview_smart_text,
             provider_save_hotwords,
             provider_sync_hotwords,
             provider_clear_hotwords,

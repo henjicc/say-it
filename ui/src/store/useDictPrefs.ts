@@ -13,6 +13,34 @@ import {
 
 export type CueKind = "none" | "beep-up" | "beep-down" | "beep-double" | "custom";
 
+export interface SmartTextTemplate {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+export const SMART_TEXT_PLACEHOLDER = "{{text}}";
+
+export function defaultSmartTextTemplates(): SmartTextTemplate[] {
+  return [
+    {
+      id: "polish",
+      name: "通用润色",
+      prompt: `请整理下面的语音识别文本：修正错别字和标点，去除无意义口头禅与重复，但保留原意、语气和信息，不要擅自补充内容。\n\n${SMART_TEXT_PLACEHOLDER}`,
+    },
+    {
+      id: "concise",
+      name: "精简表达",
+      prompt: `将下面的语音识别文本改写得简洁、自然、清晰，删除冗余表达，但保留全部关键信息。只输出改写后的文本。\n\n${SMART_TEXT_PLACEHOLDER}`,
+    },
+    {
+      id: "formal",
+      name: "正式表达",
+      prompt: `将下面的语音识别文本改写为专业、正式、适合工作沟通的表达。保持事实与意图不变，只输出改写后的文本。\n\n${SMART_TEXT_PLACEHOLDER}`,
+    },
+  ];
+}
+
 export interface DictPrefs extends DspParams {
   /** 语音输入使用的识别模型：实时模型边说边出字，非实时模型停止后再识别。 */
   asrModel: string;
@@ -23,6 +51,9 @@ export interface DictPrefs extends DspParams {
   debugLog: boolean;
   localRulesEnabled: boolean;
   localRules: LocalRule[];
+  smartProcessingEnabled: boolean;
+  smartTemplateId: string;
+  smartTemplates: SmartTextTemplate[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
   micDeviceId: string;
   dictationSilenceDisconnectEnabled: boolean;
@@ -45,6 +76,9 @@ function defaults(): DictPrefs {
     debugLog: false,
     localRulesEnabled: false,
     localRules: defaultLocalRules(),
+    smartProcessingEnabled: false,
+    smartTemplateId: "polish",
+    smartTemplates: defaultSmartTextTemplates(),
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,
     dictationSilenceDisconnectMs: 5000,

@@ -46,6 +46,14 @@ interface ProviderState {
   load: () => Promise<void>;
   setDefault: (capability: ProviderCapability, providerId: string) => Promise<void>;
   updateConfig: (providerId: string, config: Record<string, unknown>) => Promise<void>;
+  addLlmProvider: (request: {
+    adapter: string;
+    displayName: string;
+    model: string;
+    apiKey: string;
+    endpoint: string;
+  }) => Promise<void>;
+  removeLlmProvider: (providerId: string) => Promise<void>;
   saveFunasrHotwords: (hotwords: { text: string; weight: number }[]) => Promise<void>;
   syncFunasrHotwords: () => Promise<void>;
   clearFunasrHotwords: () => Promise<void>;
@@ -102,6 +110,16 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       config,
     });
     set({ ...normalize(response), statusText: "供应商配置已保存。", statusTone: "ok" });
+  },
+
+  addLlmProvider: async (request) => {
+    const response = await cmd<ProviderResponse>(CMD.addLlmProvider, { request });
+    set({ ...normalize(response), statusText: "大语言模型已添加。", statusTone: "ok" });
+  },
+
+  removeLlmProvider: async (providerId) => {
+    const response = await cmd<ProviderResponse>(CMD.removeLlmProvider, { providerId });
+    set({ ...normalize(response), statusText: "大语言模型已删除。", statusTone: "ok" });
   },
 
   saveFunasrHotwords: async (hotwords) => {

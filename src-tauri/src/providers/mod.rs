@@ -16,6 +16,7 @@ pub mod registry;
 mod testing;
 
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
+pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,10 +56,10 @@ pub struct ProviderSettings {
 impl Default for ProviderSettings {
     fn default() -> Self {
         Self {
-            profiles: vec![funasr_profile()],
+            profiles: vec![funasr_profile(), groq_llm_profile()],
             defaults: ProviderDefaults {
                 asr: FUNASR_PROVIDER_ID.to_string(),
-                llm: String::new(),
+                llm: GROQ_LLM_PROVIDER_ID.to_string(),
                 translation: FUNASR_PROVIDER_ID.to_string(),
             },
         }
@@ -112,6 +113,20 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
             field_type: "password".into(),
             secret: true,
         }],
+        kind if kind.starts_with("llm:") => vec![
+            ProviderConfigField {
+                key: "apiKey".into(),
+                label: "API Key".into(),
+                field_type: "password".into(),
+                secret: true,
+            },
+            ProviderConfigField {
+                key: "model".into(),
+                label: "模型".into(),
+                field_type: "text".into(),
+                secret: false,
+            },
+        ],
         _ => Vec::new(),
     }
 }
@@ -182,16 +197,35 @@ pub fn funasr_profile() -> ProviderProfile {
     }
 }
 
+pub fn groq_llm_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: GROQ_LLM_PROVIDER_ID.to_string(),
+        kind: "llm:groq".to_string(),
+        display_name: "Groq".to_string(),
+        auth_kind: "api-key".to_string(),
+        capabilities: vec!["llm".to_string()],
+        enabled: true,
+        config: json!({
+            "apiKey": "",
+            "model": "openai/gpt-oss-20b"
+        }),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
 pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a ProviderProfile> {
     settings.profiles.iter().find(|profile| profile.id == id)
 }
 
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
-    vec![funasr_profile()]
+    vec![funasr_profile(), groq_llm_profile()]
 }
 
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
+    let migrate_legacy_llm_default = settings.defaults.llm.is_empty()
+        || settings.defaults.llm == FUNASR_PROVIDER_ID;
     for builtin in builtin_profiles() {
         match settings.profiles.iter_mut().find(|p| p.id == builtin.id) {
             Some(existing) => {
@@ -205,6 +239,9 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
             }
             None => settings.profiles.push(builtin),
         }
+    }
+    if migrate_legacy_llm_default {
+        settings.defaults.llm = GROQ_LLM_PROVIDER_ID.to_string();
     }
     // 未知 id 的 profile（用户手工配置或未来供应商）原样保留，不再删除。
 
@@ -225,6 +262,9 @@ fn valid_or_fallback(settings: &ProviderSettings, provider_id: &str, capability:
 }
 
 fn fallback_provider_for(settings: &ProviderSettings, capability: &str) -> String {
+    if capability == "llm" && has_capability(settings, GROQ_LLM_PROVIDER_ID, capability) {
+        return GROQ_LLM_PROVIDER_ID.to_string();
+    }
     settings
         .profiles
         .iter()
@@ -327,9 +367,8 @@ mod tests {
             "vocab-123"
         );
         assert_eq!(normalized.defaults.asr, "funasr");
-        // funasr 现在也带 llm 能力，未设置过 defaults.llm 的旧状态会自动回落到它，
-        // 这样 resolve_provider_id(_, "llm", None) 才能直接找到可用供应商。
-        assert_eq!(normalized.defaults.llm, "funasr");
+        // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
+        assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
     }
 
     #[test]
@@ -358,7 +397,7 @@ mod tests {
         assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "asr"));
         // funasr（阿里云百炼）同时承担 Qwen-MT 翻译，带 llm 能力。
         assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "llm"));
-        assert_eq!(default_provider_id(&settings, "llm"), "");
+        assert_eq!(default_provider_id(&settings, "llm"), GROQ_LLM_PROVIDER_ID);
 
         let mut settings = settings;
         set_default_provider(&mut settings, "llm", FUNASR_PROVIDER_ID).unwrap();
