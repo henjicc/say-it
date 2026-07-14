@@ -21,6 +21,7 @@ use tokio_util::io::ReaderStream;
 use url::Url;
 
 use super::plugin::PluginRuntimeSpec;
+use super::browser_session_capture::validate_capture_for_runtime;
 use super::plugin_secrets;
 use super::ProviderProfile;
 
@@ -278,12 +279,13 @@ impl HostState {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                crate::dlog!(
+                let line = format!(
                     "[plugin {}][{}] {}",
                     self.spec.plugin_id,
                     level,
                     redact(message)
                 );
+                crate::dlog!("{line}");
                 Ok(Value::Null)
             }
             _ => Err(format!("未知宿主 API：{operation}")),
@@ -629,6 +631,18 @@ impl JsProviderRuntime {
             deadline.clone(),
         )));
         let session = plugin_secrets::load_session(&spec)?;
+        if let Err(reason) = validate_capture_for_runtime(
+            spec.browser_session.as_ref(),
+            &session,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_millis() as u64)
+                .unwrap_or_default(),
+        ) {
+            return Err(format!(
+                "浏览器临时会话凭据已失效：{reason}。请打开登录窗口并重新同步会话"
+            ));
+        }
         context.with(|ctx| -> Result<(), String> {
             let host_call_state = host.clone();
             let host_call = Function::new(
@@ -1104,6 +1118,7 @@ mod tests {
             entrypoint: root.join("connector/index.js"),
             permissions: vec![],
             allowed_hosts: vec![],
+            browser_session: None,
             data_dir: root.join("data"),
             trust: "unsigned".into(),
         };
@@ -1129,6 +1144,7 @@ mod tests {
             entrypoint: PathBuf::new(),
             permissions: vec!["network".into()],
             allowed_hosts: vec!["api.example.com".into(), "*.vendor.test".into()],
+            browser_session: None,
             data_dir: PathBuf::new(),
             trust: "unsigned".into(),
         };

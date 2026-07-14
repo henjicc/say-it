@@ -355,6 +355,14 @@ async fn start(app: AppHandle) -> Result<(), String> {
     } else {
         DictationMode::Realtime
     };
+    if mode == DictationMode::Realtime {
+        crate::application::plugin_management::refresh_browser_session_before_recording(
+            &app,
+            &state,
+            &prefs.asr_model,
+        )
+        .await?;
+    }
     let lease = state.audio_session.acquire(AudioOwner::Dictation)?;
     state.audio_session.attach(&lease, "dictation")?;
     let mic = match start_backend_mic_inner(

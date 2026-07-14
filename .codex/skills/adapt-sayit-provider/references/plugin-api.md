@@ -40,6 +40,31 @@ provider.sayit
 
 网页会话插件可在 `browserSession` 中声明 `requiredCookieNames`。它是会话完整性校验用的非敏感 Cookie 名列表；宿主在保存前必须能从 `allowedUrls` 读取所有名称，否则拒绝覆盖原有受保护会话。`allowedUrls` 要覆盖实际登录页及需要读取路径级 Cookie 的页面，例如登录页为 `/chat` 时不要只写站点根路径。
 
+若网页会话还依赖页面运行时生成的短时 URL（例如签名 WebSocket URL），在同一对象中声明 `capturedUrlCookie`，不要为该供应商修改宿主代码。该 Cookie 值必须是 Base64URL 编码 JSON，包含 `issuedAt`（毫秒时间戳）与 `url`：
+
+```json
+{
+  "browserSession": {
+    "loginUrl": "https://vendor.example/login",
+    "allowedUrls": ["https://vendor.example/"],
+    "requiredCookieNames": ["session", "temporary-url"],
+    "capturedUrlCookie": {
+      "cookieName": "temporary-url",
+      "maxAgeMs": 240000,
+      "freshnessSlackMs": 15000,
+      "url": {
+        "scheme": "wss",
+        "host": "stream.vendor.example",
+        "path": "/v1/live",
+        "requiredQueryNames": ["client", "signature"]
+      }
+    }
+  }
+}
+```
+
+`cookieName` 必须同时出现在 `requiredCookieNames`。宿主会在同步会话和每次运行前按此规则校验短时凭据的格式、时效、目标 URL 与必要参数；任何插件都可使用这项声明。
+
 模型协议与场景：
 
 - `plugin-realtime-v1`：`realtime`，场景含 `dictationRealtime` 或 `subtitles`。
