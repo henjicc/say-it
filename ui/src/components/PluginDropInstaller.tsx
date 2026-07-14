@@ -100,7 +100,7 @@ export function PluginDropInstaller() {
             <>
               <p className="text-sm text-[var(--color-fg-subtle)]">即将安装以下 .sayit 插件包：</p>
               <p className="mt-2 break-all text-sm font-medium text-[var(--color-fg)]">{sourcePath && fileName(sourcePath)}</p>
-              <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">安装时会校验插件包和签名；如安装同 ID 的新版本，当前版本会保留为可恢复的备份。</p>
+              <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">安装时会校验插件包和签名；如安装同 ID 的新版本，会直接替换当前插件。</p>
             </>
           )}
           {message && <p className={message.startsWith("安装失败") ? "mt-4 text-sm text-[var(--color-err)]" : "mt-4 text-sm text-[var(--color-ok)]"}>{message}</p>}

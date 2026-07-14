@@ -28,7 +28,6 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [message, setMessage] = useState("");
   const configFields = provider.configFields || [];
-  const hasSecretField = configFields.some((field) => field.secret);
 
   useEffect(() => setDraft(provider.config || {}), [provider.config]);
 
@@ -66,7 +65,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   return (
     <Collapse
       title={provider.displayName}
-      subtitle={`${provider.kind} · ${hasSecretField ? (provider.status?.hasApiKey ? "凭据已配置" : "待配置") : "无需凭据"}`}
+      subtitle={provider.status?.hasApiKey ? "已配置" : "未配置"}
     >
       <div className="flex flex-col gap-3">
         {configFields.map((field) =>

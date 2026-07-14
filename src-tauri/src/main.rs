@@ -32,9 +32,8 @@ use application::dictation::{
     preview_dictation_cue,
 };
 use application::plugin_management::{
-    install_provider_plugin, list_provider_plugin_backups, list_provider_plugins,
-    reload_provider_plugins, rollback_provider_plugin, run_provider_plugin_action,
-    set_provider_plugin_enabled,
+    install_provider_plugin, list_provider_plugins, reload_provider_plugins, run_provider_plugin_action,
+    set_provider_plugin_enabled, uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::subtitles::{
@@ -285,9 +284,8 @@ fn main() {
             list_provider_plugins,
             reload_provider_plugins,
             install_provider_plugin,
-            list_provider_plugin_backups,
-            rollback_provider_plugin,
             set_provider_plugin_enabled,
+            uninstall_provider_plugin,
             run_provider_plugin_action,
             import_legacy_settings,
             update_app_settings,

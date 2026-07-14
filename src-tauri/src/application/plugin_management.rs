@@ -92,23 +92,6 @@ pub(crate) fn install_provider_plugin(
 }
 
 #[tauri::command]
-pub(crate) fn list_provider_plugin_backups(
-    app: tauri::AppHandle,
-) -> Result<Vec<plugin_package::PluginBackup>, String> {
-    plugin_package::list_backups(&app)
-}
-
-#[tauri::command]
-pub(crate) fn rollback_provider_plugin(
-    app: tauri::AppHandle,
-    plugin_id: String,
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<PluginRegistrySnapshot, String> {
-    plugin_package::rollback(&app, &plugin_id)?;
-    reload_provider_plugins(app, state)
-}
-
-#[tauri::command]
 pub(crate) fn set_provider_plugin_enabled(
     app: tauri::AppHandle,
     plugin_id: String,
@@ -144,6 +127,33 @@ pub(crate) fn set_provider_plugin_enabled(
         .snapshot_with_provider_settings(Some(&providers));
     save_persisted_state(&app, &state)?;
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub(crate) fn uninstall_provider_plugin(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<PluginRegistrySnapshot, String> {
+    let provider_id = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .provider_id_for_plugin(&plugin_id)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
+    plugin_package::uninstall(&app, &plugin_id)?;
+    {
+        let mut providers = state
+            .providers
+            .lock()
+            .map_err(|_| "供应商配置锁失败".to_string())?;
+        providers.profiles.retain(|profile| {
+            profile.id != provider_id || !profile.kind.starts_with("plugin:")
+        });
+        *providers = crate::providers::normalize_settings(providers.clone());
+    }
+    reload_provider_plugins(app, state)
 }
 
 #[tauri::command]
