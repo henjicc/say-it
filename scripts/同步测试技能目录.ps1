@@ -1,30 +1,20 @@
-param(
-    [string]$TestRoot
-)
+$repositoryRoot = Join-Path $PSScriptRoot ".."
+Push-Location -LiteralPath $repositoryRoot
+try {
+    if (-not (Test-Path -LiteralPath ".codex" -PathType Container)) {
+        throw "找不到源技能目录：.codex"
+    }
+    if (-not (Test-Path -LiteralPath "测试" -PathType Container)) {
+        throw "找不到项目测试目录：测试"
+    }
 
-$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ([string]::IsNullOrWhiteSpace($TestRoot)) {
-    $TestRoot = Join-Path (Split-Path $repositoryRoot -Parent) "测试"
-}
+    if (Test-Path -LiteralPath "测试\.codex") {
+        Remove-Item -LiteralPath "测试\.codex" -Recurse -Force
+    }
 
-$source = Join-Path $repositoryRoot ".codex"
-if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-    throw "找不到源技能目录：$source"
+    Copy-Item -LiteralPath ".codex" -Destination "测试\.codex" -Recurse -Force
+    Write-Output "已同步技能目录：.codex -> 测试\.codex"
 }
-if (-not (Test-Path -LiteralPath $TestRoot -PathType Container)) {
-    throw "找不到测试目录：$TestRoot"
+finally {
+    Pop-Location
 }
-
-$resolvedTestRoot = (Resolve-Path -LiteralPath $TestRoot).Path
-$target = Join-Path $resolvedTestRoot ".codex"
-$resolvedSource = (Resolve-Path -LiteralPath $source).Path
-if ($target -eq $resolvedSource) {
-    throw "测试目录不能指向当前项目的 .codex 目录"
-}
-
-if (Test-Path -LiteralPath $target) {
-    Remove-Item -LiteralPath $target -Recurse -Force
-}
-
-Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
-Write-Output "已同步技能目录：$resolvedSource -> $target"
