@@ -180,6 +180,7 @@ export function PluginManagerPanel() {
         open={Boolean(pendingUninstall)}
         onClose={() => !busyPluginId && setPendingUninstall(undefined)}
         title="确认卸载插件"
+        showCloseButton={false}
         className="max-w-[430px]"
       >
         <div className="p-5">
@@ -187,10 +188,10 @@ export function PluginManagerPanel() {
             确认卸载“{pendingUninstall?.name}”吗？插件配置、登录会话、Cookie 与浏览数据都会一并删除，无法恢复。
           </p>
           <div className="mt-6 flex justify-end gap-2">
-            <Button size="sm" disabled={Boolean(busyPluginId)} onClick={() => setPendingUninstall(undefined)}>取消</Button>
-            <Button size="sm" variant="danger" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>
-              {busyPluginId ? "正在卸载..." : "卸载插件"}
+            <Button size="sm" variant="dangerHover" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>
+              {busyPluginId ? "正在卸载..." : "卸载"}
             </Button>
+            <Button size="sm" variant="primary" autoFocus disabled={Boolean(busyPluginId)} onClick={() => setPendingUninstall(undefined)}>取消</Button>
           </div>
         </div>
       </Modal>

@@ -12,6 +12,7 @@ export function Modal({
   overlayClassName,
   scope = "viewport",
   showHeader,
+  showCloseButton = true,
   ariaLabel,
 }: {
   open: boolean;
@@ -22,6 +23,7 @@ export function Modal({
   overlayClassName?: string;
   scope?: "viewport" | "container";
   showHeader?: boolean;
+  showCloseButton?: boolean;
   ariaLabel?: string;
 }) {
   const [rendered, setRendered] = useState(open);
@@ -72,9 +74,11 @@ export function Modal({
         {shouldShowHeader && (
           <div className="flex items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
             <h3 className="text-base font-semibold text-[var(--color-fg)]">{title}</h3>
-            <Button size="sm" onClick={onClose}>
-              关闭
-            </Button>
+            {showCloseButton && (
+              <Button size="sm" onClick={onClose}>
+                关闭
+              </Button>
+            )}
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
