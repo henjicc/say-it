@@ -1,5 +1,5 @@
 use crate::persistence::save_persisted_state;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::commands::common::read_provider_settings;
@@ -159,12 +159,33 @@ pub(crate) async fn run_provider_plugin_action(
             if cookies.is_empty() {
                 return Err("未读取到允许域名的 Cookie，请确认已完成登录".into());
             }
+            let cookie_names = cookies
+                .iter()
+                .filter_map(|cookie| cookie.get("name").and_then(Value::as_str))
+                .collect::<HashSet<_>>();
+            let missing = browser
+                .required_cookie_names
+                .iter()
+                .filter(|name| !cookie_names.contains(name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "登录会话未完整，缺少必要 Cookie：{}。请在登录窗口中确认账号已登录、等待页面加载完成后再次获取登录会话",
+                    missing.join("、")
+                ));
+            }
             let cookie_count = cookies.len();
             plugin_secrets::save_session(
                 &spec,
                 &json!({ "cookies": cookies, "capturedAtMs": now_epoch_ms() }),
             )?;
-            Ok(json!({ "status": "saved", "cookieCount": cookie_count, "protected": true }))
+            Ok(json!({
+                "status": "saved",
+                "message": format!("已保护 {cookie_count} 个 Cookie，登录会话已验证。"),
+                "cookieCount": cookie_count,
+                "protected": true
+            }))
         }
         "clearSession" => {
             plugin_secrets::clear_session(&spec)?;

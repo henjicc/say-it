@@ -38,6 +38,8 @@ provider.sayit
 
 权限只有 `network`、`browserSession`、`cookies`。声明 `network` 时白名单不能为空；仅允许精确主机或 `*.` 开头的子域规则，不写协议、端口和路径。
 
+网页会话插件可在 `browserSession` 中声明 `requiredCookieNames`。它是会话完整性校验用的非敏感 Cookie 名列表；宿主在保存前必须能从 `allowedUrls` 读取所有名称，否则拒绝覆盖原有受保护会话。`allowedUrls` 要覆盖实际登录页及需要读取路径级 Cookie 的页面，例如登录页为 `/chat` 时不要只写站点根路径。
+
 模型协议与场景：
 
 - `plugin-realtime-v1`：`realtime`，场景含 `dictationRealtime` 或 `subtitles`。

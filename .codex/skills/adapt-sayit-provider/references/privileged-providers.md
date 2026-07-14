@@ -6,6 +6,7 @@
 
 - 清单同时声明 `browserSession`、`cookies` 权限和 `openLogin`、`syncSession`、`clearSession` 操作。
 - `loginUrl` 与 `allowedUrls` 必须为 HTTPS，并尽量缩小范围。
+- 对实际鉴权必需的 Cookie，在 `browserSession.requiredCookieNames` 中声明名称；同步返回成功前，宿主会确认这些 Cookie 已从允许 URL 读取到，避免把未完成登录时的普通 Cookie 覆盖成“已保存会话”。
 - 登录由宿主创建独立 WebView；插件不能读取主窗口、悬浮窗或任意浏览器数据。
 - 宿主只提取白名单 URL 对应的 Cookie，并在 Windows 系统凭据存储或 macOS Keychain 中保护会话。
 - 插件只能通过 `initialize` 收到当前供应商的会话快照。日志、错误和事件不得包含 Cookie 值。
