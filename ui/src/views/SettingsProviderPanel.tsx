@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
 import { Collapse } from "@/components/ui/Collapse";
 import { Button } from "@/components/ui/Button";
 import { Field, CheckField } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
+import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
@@ -13,8 +13,6 @@ import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
 const NESTED_BODY_CLASS = "px-3 py-3";
-
-const API_KEY_MASK = "•".repeat(32);
 
 const PLUGIN_ACTION_LABELS: Record<string, string> = {
   openLogin: "打开登录窗口",
@@ -118,11 +116,8 @@ export function SettingsProviderPanel() {
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const pluginProviders = providers.filter((item) => item.kind.startsWith("plugin:"));
   const [apiKey, setApiKey] = useState("");
-  const [savedApiKey, setSavedApiKey] = useState("");
-  const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
   const [apiKeySaving, setApiKeySaving] = useState(false);
-  const [apiKeyLoading, setApiKeyLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [languageHints, setLanguageHints] = useState<string[]>([]);
   const [semanticPunctuation, setSemanticPunctuation] = useState(false);
@@ -136,9 +131,6 @@ export function SettingsProviderPanel() {
   const provider = providers.find((p) => p.id === "funasr");
   const hasApiKey = !!provider?.status?.hasApiKey;
   const saveRequestRef = useRef(0);
-  const apiKeyInputRef = useRef<HTMLInputElement>(null);
-  const showStoredApiKey = !apiKey && (savedApiKey || hasApiKey);
-  const apiKeyInputValue = apiKey || (showStoredApiKey ? (apiKeyVisible && savedApiKey ? savedApiKey : API_KEY_MASK) : "");
 
   useEffect(() => {
     loadProviders();
@@ -176,12 +168,8 @@ export function SettingsProviderPanel() {
       try {
         await updateProviderConfig(provider.id, { apiKey: nextApiKey });
         if (saveRequestRef.current !== requestId) return;
-        setSavedApiKey(nextApiKey);
         setApiKeyDirty(false);
-        if (document.activeElement !== apiKeyInputRef.current) {
-          setApiKey("");
-          setApiKeyVisible(false);
-        }
+        setApiKey("");
         setMessage("API Key 已自动保存。");
       } catch (error) {
         if (saveRequestRef.current === requestId) setMessage(`保存失败：${String(error)}`);
@@ -192,39 +180,6 @@ export function SettingsProviderPanel() {
 
     return () => window.clearTimeout(timer);
   }, [apiKey, apiKeyDirty, updateProviderConfig, provider]);
-
-  const beginApiKeyEdit = () => {
-    // 明文展示态下点击输入框只是定位光标/选中复制，不应重新打码；
-    // 仅当前仍是掩码展示（未展示明文）时，聚焦才代表"开始输入新 Key"，需要清空占位掩码。
-    if (apiKeyVisible) return;
-    if (!apiKey && showStoredApiKey) {
-      setSavedApiKey("");
-      setApiKeyVisible(false);
-    }
-  };
-
-  const finishApiKeyEdit = () => {
-    if (!apiKey.trim() || apiKeyDirty) return;
-    setApiKey("");
-    setApiKeyVisible(false);
-  };
-
-  const toggleApiKeyVisibility = async () => {
-    if (!apiKeyVisible && !apiKey && !savedApiKey && hasApiKey && provider) {
-      setApiKeyLoading(true);
-      try {
-        const realApiKey = await cmd<string>(CMD.getProviderApiKey, { providerId: provider.id });
-        setSavedApiKey(realApiKey);
-        setApiKeyVisible(true);
-      } catch (error) {
-        setMessage(`读取 API Key 失败：${String(error)}`);
-      } finally {
-        setApiKeyLoading(false);
-      }
-      return;
-    }
-    setApiKeyVisible((current) => !current);
-  };
 
   const openApiKeyPage = async () => {
     try {
@@ -276,31 +231,20 @@ export function SettingsProviderPanel() {
         </p>
 
         <div className="mt-3">
-          <div className="relative">
-            <Input
-              ref={apiKeyInputRef}
-              type={apiKeyVisible && (apiKey || savedApiKey) ? "text" : "password"}
-              placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
-              value={apiKeyInputValue}
-              onFocus={beginApiKeyEdit}
-              onBlur={finishApiKeyEdit}
-              onChange={(event) => {
-                setApiKey(event.target.value);
-                setApiKeyDirty(true);
-                setSavedApiKey("");
-              }}
-              className="pr-11"
-            />
-            <button
-              type="button"
-              aria-label={apiKeyVisible ? "隐藏 API Key" : "显示 API Key"}
-              onClick={toggleApiKeyVisibility}
-              disabled={(!apiKey && !savedApiKey && !hasApiKey) || apiKeyLoading}
-              className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              {apiKeyVisible ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
-            </button>
-          </div>
+          <SecretInput
+            id="funasr-api-key"
+            aria-label="阿里云百炼 API Key"
+            draftValue={apiKey}
+            hasStoredValue={hasApiKey}
+            placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
+            onDraftChange={(value) => {
+              setApiKey(value);
+              setApiKeyDirty(true);
+            }}
+            revealStoredValue={() => cmd<string>(CMD.getProviderApiKey, { providerId: provider?.id ?? "funasr" })}
+            onRevealError={(error) => setMessage(`读取 API Key 失败：${String(error)}`)}
+            disabled={!provider}
+          />
         </div>
         <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
           当前状态：{hasApiKey ? "已配置" : "未配置"}

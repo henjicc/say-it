@@ -3,6 +3,11 @@ import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const fieldBase =
+  "w-full h-[var(--control-h)] rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-sm text-[var(--color-fg)] " +
+  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
+  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
+
+const textareaBase =
   "w-full min-h-[var(--control-h)] rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-sm text-[var(--color-fg)] " +
   "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
   "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
@@ -18,7 +23,7 @@ export const Textarea = forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
 >(({ className, ...props }, ref) => (
-  <textarea ref={ref} className={cn(fieldBase, "resize-y leading-relaxed", className)} {...props} />
+  <textarea ref={ref} className={cn(textareaBase, "resize-y leading-relaxed", className)} {...props} />
 ));
 Textarea.displayName = "Textarea";
 

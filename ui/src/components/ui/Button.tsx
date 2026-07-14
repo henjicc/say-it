@@ -15,14 +15,14 @@ const variants: Record<Variant, string> = {
   ghost:
     "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[var(--accent-ring)] hover:bg-[var(--accent-soft)] active:bg-[var(--accent-soft-strong)] disabled:opacity-40",
   danger:
-    "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[#ff8589] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
+    "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[var(--color-err)] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
   dangerHover:
-    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] hover:text-[#ff8589] active:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
+    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] hover:text-[var(--color-err)] active:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
 };
 
 const sizes: Record<Size, string> = {
-  sm: "h-8 px-3 text-xs",
-  md: "h-10 px-4 text-sm",
+  sm: "h-[var(--control-h-sm)] px-3 text-xs",
+  md: "h-[var(--control-h)] px-4 text-sm",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(

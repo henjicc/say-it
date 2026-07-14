@@ -77,7 +77,7 @@ export function DictationShortcutsPanel() {
                   </button>
                 )}
               </div>
-              <Button className="min-h-[var(--control-h)] shrink-0 self-stretch" onClick={startShortcutCapture}>
+              <Button className="shrink-0 self-stretch" onClick={startShortcutCapture}>
                 {capturing ? "取消" : "修改"}
               </Button>
             </div>

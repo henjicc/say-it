@@ -41,13 +41,24 @@ export function DictationView() {
         description="按快捷键说话，再次按下停止并注入到当前光标位置。"
       />
 
-      <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
+      <Tabs<TabKey>
+        id="dictation-tabs"
+        ariaLabel="语音输入设置"
+        tabs={TABS}
+        active={tab}
+        onChange={setTab}
+      />
 
-      {tab === "basic" && <DictationShortcutsPanel />}
-      {tab === "local" && <LocalRulesPanel />}
-      {tab === "smart" && <SmartTextPanel />}
-      {tab === "debug" && (
-        <div className="flex flex-col gap-3">
+      <div
+        id={`dictation-tabs-${tab}-panel`}
+        role="tabpanel"
+        aria-labelledby={`dictation-tabs-${tab}-tab`}
+      >
+        {tab === "basic" && <DictationShortcutsPanel />}
+        {tab === "local" && <LocalRulesPanel />}
+        {tab === "smart" && <SmartTextPanel />}
+        {tab === "debug" && (
+          <div className="flex flex-col gap-3">
           <div>
             <Button variant={recording ? "danger" : "primary"} onClick={toggleDictation}>
               {recording ? "停止并注入" : "手动开始"}
@@ -74,8 +85,9 @@ export function DictationView() {
             </div>
             <LogPanel className="mt-2">{log}</LogPanel>
           </div>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
