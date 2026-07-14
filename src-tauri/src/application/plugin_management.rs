@@ -68,7 +68,7 @@ pub(crate) fn install_provider_plugin(
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
-    plugin_package::install_from_directory(
+    plugin_package::install_from_path(
         &app,
         Path::new(&source_path),
         allow_unsigned,

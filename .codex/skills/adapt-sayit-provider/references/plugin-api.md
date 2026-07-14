@@ -1,48 +1,61 @@
-# SayIt provider plugin API v2
+# 「说吧！」供应商插件 API v2
 
-## Runtime boundary
+## 运行时边界
 
-SayIt owns microphone capture, DSP, model/provider selection, task state, file paths, subtitles and text injection. A provider plugin is an isolated executable that implements vendor authentication and transport, then returns normalized JSONL events. API v1 realtime plugins remain loadable; all new plugins should use API/protocol v2.
+「说吧！」负责麦克风采集、DSP、模型与供应商选择、任务状态、文件路径、字幕和文本注入。供应商插件是独立可执行程序，只负责供应商鉴权与传输，并返回标准 JSONL 事件。v1 实时插件仍可加载；新插件必须使用 API/协议 v2。
 
-Package layout after packaging:
+最终分发物是一个 `.sayit` 文件。它是 ZIP 压缩包，宿主解压后根目录必须如下：
 
 ```text
-<plugin-id>/
+<说吧包根目录>/
+├── sayit-package.json
 ├── manifest.json
 └── bin/
     ├── connector.exe
-    └── required-runtime-files
+    └── 运行所需的其他文件
 ```
 
-The host scans `%LOCALAPPDATA%\com.henjicc.sayit\plugins` only after the user manually installs an extracted package. Build and package in an external workspace; never use a SayIt source repository as a package or build directory. IDs use lowercase ASCII letters, digits, dots and hyphens, up to 64 characters. The entrypoint and integrity paths must remain inside the package and symlinks are rejected.
+`sayit-package.json` 是统一类型声明。当前供应商插件必须声明：
 
-## Manifest capabilities and models
+```json
+{
+  "formatVersion": 1,
+  "kind": "provider-plugin",
+  "entry": "manifest.json"
+}
+```
 
-- `asr`: realtime and/or file ASR.
-- `translation`: subtitle translation.
-- `customization`: set/get/clear hotwords.
-- Realtime model: category `realtime`, protocol `process-jsonl-v2`, scene `dictationRealtime` and/or `subtitles`.
-- File model: category `file`, protocol `process-file-v2`, scene `dictationFile` and/or `transcription`.
-- Translation model: category `translation`, protocol `process-translation-v2`, scene `subtitleTranslation`.
+`.sayit` 文件允许未来承载其他「说吧！」类型；宿主先读取 `kind` 再分派。目前仅支持 `provider-plugin`。宿主从插件管理器接收该文件，解压到私有暂存目录，验证后才安装到 `%LOCALAPPDATA%\com.henjicc.sayit\plugins`。
 
-Use the template manifest as the complete ordinary-provider example. Supported config field types are `text`, `password`, `number` and `boolean`. Secret fields are removed from frontend snapshots. Supported permissions are `network`, `browserSession` and `cookies`.
+构建必须位于当前工作根目录的 `sayit-plugin-work/` 中。除非用户明确给出外部路径，不得访问当前工作目录外的文件。ID 使用全小写 ASCII 字母、数字、点和连字符，最长 64 个字符。入口与完整性路径必须留在包内，禁止符号链接。
 
-## Realtime stream
+## 清单能力与模型
 
-Every message is one UTF-8 JSON object followed by `\n`. `start` is first:
+- `asr`：实时和/或文件语音识别。
+- `translation`：字幕翻译。
+- `customization`：设置、读取、清除热词。
+- 实时模型：`category` 为 `realtime`，`protocol` 为 `process-jsonl-v2`，场景为 `dictationRealtime` 和/或 `subtitles`。
+- 文件模型：`category` 为 `file`，`protocol` 为 `process-file-v2`，场景为 `dictationFile` 和/或 `transcription`。
+- 翻译模型：`category` 为 `translation`，`protocol` 为 `process-translation-v2`，场景为 `subtitleTranslation`。
+
+普通供应商应以模板 `manifest.json` 为完整示例。配置字段类型支持 `text`、`password`、`number`、`boolean`。密钥字段不会出现在前端快照中。权限支持 `network`、`browserSession`、`cookies`。
+
+## 实时流协议
+
+每条消息是一个 UTF-8 JSON 对象并以 `\n` 结尾。第一条为 `start`：
 
 ```json
 {"type":"start","protocolVersion":2,"sessionId":"uuid","providerId":"vendor","model":"vendor-live","sampleRate":16000,"config":{},"session":null,"permissions":["network"]}
 ```
 
-The host then sends repeated Base64 PCM16 little-endian mono 16 kHz audio messages, followed by `finish` or `stop`:
+随后宿主连续发送 Base64 编码的 PCM16 小端序、单声道 16 kHz 音频，最后发送 `finish` 或 `stop`：
 
 ```json
 {"type":"audio","pcm16Base64":"AAABAP//"}
 {"type":"finish"}
 ```
 
-The plugin emits `ready`, `partial`, `final`, then `finished`; fatal errors use `error`:
+连接器依次输出 `ready`、`partial`、`final`、`finished`；致命错误使用 `error`：
 
 ```json
 {"type":"ready"}
@@ -52,16 +65,15 @@ The plugin emits `ready`, `partial`, `final`, then `finished`; fatal errors use 
 {"type":"error","code":"auth_failed","message":"认证失败"}
 ```
 
-## One-shot invoke protocol
+## 一次性调用协议
 
-For non-realtime capabilities the host starts a fresh connector and sends exactly one `invoke`; stdin then closes. `config` contains provider configuration, `session` contains an OS-protected browser session only when the user explicitly synchronized one, and `payload` is operation-specific.
+对于非实时能力，宿主每次启动一个新的连接器，只发送一个 `invoke`，然后关闭 stdin。`config` 是供应商配置；`session` 仅在用户显式同步后包含受系统保护的浏览器会话；`payload` 按操作定义。
 
 ```json
 {"type":"invoke","protocolVersion":2,"requestId":"uuid","operation":"translate","providerId":"vendor","config":{},"session":null,"permissions":["network"],"payload":{}}
 ```
 
-The plugin may emit `progress`, `delta` or `event`, then exactly one `completed`; or terminate with `error`.
-If the user cancels a file task, the host terminates the one-shot connector process; do not rely on receiving an additional JSON message after stdin closes.
+连接器可以输出 `progress`、`delta`、`event`，最后恰好输出一个 `completed`；也可输出 `error`。用户取消文件任务时，宿主会终止连接器进程；stdin 关闭后不得依赖还能收到额外 JSON 消息。
 
 ```json
 {"type":"delta","text":"新增译文"}
@@ -69,18 +81,18 @@ If the user cancels a file task, the host terminates the one-shot connector proc
 {"type":"error","code":"upstream_changed","message":"上游协议已变化"}
 ```
 
-Operations:
+操作定义：
 
-| operation | payload | completed.result |
+| 操作 | `payload` | `completed.result` |
 |---|---|---|
-| `transcribeFile` | `filePath`, `params` | `TranscriptionResult` |
-| `translate` | `model`, `text`, `source`, `target` | `{ "text": "..." }` |
-| `setHotwords` | `hotwords[]` | object |
-| `getHotwords` | object | `{ "hotwords": [...] }` |
-| `clearHotwords` | object | object |
-| `action` | `action` | object with optional `status`/`message` |
+| `transcribeFile` | `filePath`、`params` | `TranscriptionResult` |
+| `translate` | `model`、`text`、`source`、`target` | `{ "text": "..." }` |
+| `setHotwords` | `hotwords[]` | 对象 |
+| `getHotwords` | 对象 | `{ "hotwords": [...] }` |
+| `clearHotwords` | 对象 | 对象 |
+| `action` | `action` | 可包含 `status` / `message` 的对象 |
 
-`TranscriptionResult` uses camelCase:
+`TranscriptionResult` 使用 camelCase：
 
 ```json
 {
@@ -100,17 +112,18 @@ Operations:
 }
 ```
 
-## Package trust and updates
+## 包信任与更新
 
-`integrity.files` must list every package file except `manifest.json`, using SHA-256. `signature` is Ed25519 over `sayit-plugin-signature-v1\n` plus canonical JSON of the normalized manifest with `signature.value` empty. The supplied signer implements the exact algorithm.
+`integrity.files` 必须列出除 `manifest.json` 外的每个包内文件，并使用 SHA-256。`signature` 使用 Ed25519，对 `sayit-plugin-signature-v1\n` 加上规范化清单 JSON 签名；计算时 `signature.value` 为空。随 Skill 提供的签名器实现了同一算法。
 
-The host distinguishes `trusted`, `signed-untrusted`, `integrity-only` and `unsigned`. New keys and unsigned packages require explicit confirmation. Updates are staged and verified before activation; the prior version is moved to `plugin-backups` and can be rolled back.
-An installed `signed-untrusted` plugin is visible for diagnosis but cannot run until its publisher key is explicitly trusted. Copying an unsigned directory directly into the plugins folder is a local developer escape hatch; normal distribution must use the plugin manager or installer confirmation flow.
+宿主状态包括 `trusted`、`signed-untrusted`、`integrity-only`、`unsigned`。新密钥和未签名包都需要用户明确确认。更新先在暂存目录完成验证，再启用新版本；旧版本会移入 `plugin-backups`，可回滚。签名有效但密钥未信任的插件仅可诊断，不能执行。
 
-## Protocol discipline
+把未签名目录直接复制进插件目录仅用于本地开发兼容；正常分发必须由用户在插件管理器中手动选择 `.sayit` 文件并确认信任。
 
-- stdout is protocol-only; sanitized diagnostics go to stderr.
-- Never log credentials, cookies, tokens, audio payloads or user text.
-- Validate malformed host messages and return structured errors.
-- Close upstream resources on host cancellation, timeout and disconnect.
-- Do not access files outside the explicit input path and plugin data directory.
+## 协议纪律
+
+- stdout 只能传协议；脱敏诊断写入 stderr。
+- 不得记录凭据、Cookie、令牌、音频载荷或用户文本。
+- 校验畸形宿主消息，并返回结构化错误。
+- 在取消、超时和断连时关闭上游资源。
+- 不得访问显式输入文件与插件数据目录之外的文件。

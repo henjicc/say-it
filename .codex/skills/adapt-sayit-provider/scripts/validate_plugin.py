@@ -18,10 +18,27 @@ BUILTIN_MODELS = {
     "qwen3-asr-flash-realtime", "fun-asr-flash-2026-06-15", "qwen3-asr-flash",
     "qwen3-asr-flash-2026-02-10", "fun-asr", "qwen3-asr-flash-filetrans",
 }
+PACKAGE_DECLARATION = "sayit-package.json"
 
 
 def fail(message: str) -> None:
     raise ValueError(message)
+
+
+def validate_sayit_package_declaration(root: Path) -> None:
+    path = root / PACKAGE_DECLARATION
+    if not path.is_file():
+        fail(f"说吧包缺少 {PACKAGE_DECLARATION}")
+    try:
+        declaration = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"说吧包声明格式错误：{error}")
+    if declaration != {
+        "formatVersion": 1,
+        "kind": "provider-plugin",
+        "entry": "manifest.json",
+    }:
+        fail("当前供应商插件必须声明 formatVersion=1、kind=provider-plugin、entry=manifest.json")
 
 
 def normalized_manifest(data: dict) -> dict:

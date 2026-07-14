@@ -34,24 +34,17 @@ def ensure_within(path: Path, workspace: Path, label: str) -> None:
     try:
         path.relative_to(workspace)
     except ValueError as error:
-        raise SystemExit(f"{label} 必须位于外部插件工作目录内：{workspace}") from error
+        raise SystemExit(f"{label} 必须位于当前工作目录内：{workspace}") from error
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Hash and Ed25519-sign a SayIt plugin package")
+    parser = argparse.ArgumentParser(description="计算哈希并使用 Ed25519 签名说吧插件包")
     parser.add_argument("plugin_dir", type=Path)
     parser.add_argument("--private-key", type=Path, required=True)
     parser.add_argument("--key-id", required=True)
-    parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--forbid-root", type=Path, required=True)
+    parser.add_argument("--work-root", type=Path, required=True)
     args = parser.parse_args()
-    workspace = args.workspace.resolve()
-    forbidden = args.forbid_root.resolve()
-    try:
-        workspace.relative_to(forbidden)
-        raise SystemExit(f"插件工作目录不能位于 SayIt 仓库内：{forbidden}")
-    except ValueError:
-        pass
+    workspace = args.work_root.resolve()
     root = args.plugin_dir.resolve()
     private_key_path = args.private_key.resolve()
     ensure_within(root, workspace, "plugin_dir")
