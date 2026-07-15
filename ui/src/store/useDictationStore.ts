@@ -6,12 +6,15 @@ export type ActiveAppContextStatus =
   | "captured"
   | "empty"
   | "blocked"
+  | "sensitive"
   | "timedOut"
   | "unsupported"
   | "failed";
 
 export interface ActiveAppContextSummary {
   status: ActiveAppContextStatus;
+  captureMethod: "nativeText" | "ocr";
+  source?: "ia2Text" | "uiaTextPattern" | "win32Message" | "officeNative" | "msaa" | "clipboardDeep" | "ocr" | null;
   appName: string;
   processName: string;
   windowTitle?: string | null;

@@ -94,6 +94,8 @@ struct DictationPrefs {
     smart_processing_enabled: bool,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
+    active_app_context_extraction_method:
+        crate::active_app_context::ActiveAppContextExtractionMethod,
     active_app_context_blocked_apps: Vec<String>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -115,6 +117,8 @@ impl Default for DictationPrefs {
             smart_processing_enabled: false,
             smart_template_id: String::new(),
             smart_templates: vec![],
+            active_app_context_extraction_method:
+                crate::active_app_context::ActiveAppContextExtractionMethod::NativeText,
             active_app_context_blocked_apps: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -379,9 +383,11 @@ async fn start(
             })
             .and_then(|_| activation_target)
             .map(|target| {
-                state
-                    .active_app_context
-                    .begin_capture(target, prefs.active_app_context_blocked_apps.clone())
+                state.active_app_context.begin_capture(
+                    target,
+                    prefs.active_app_context_blocked_apps.clone(),
+                    prefs.active_app_context_extraction_method,
+                )
             })
     } else {
         None
@@ -1312,6 +1318,14 @@ pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), Str
         serde_json::from_value(value.clone()).map_err(|e| format!("听写配置无效：{e}"))?;
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)
+}
+
+pub(crate) fn active_app_context_extraction_method_from_value(
+    value: &Value,
+) -> crate::active_app_context::ActiveAppContextExtractionMethod {
+    serde_json::from_value::<DictationPrefs>(value.clone())
+        .map(|prefs| prefs.active_app_context_extraction_method)
+        .unwrap_or_default()
 }
 fn compile_rule(rule: &LocalRule) -> Result<fancy_regex::Regex, String> {
     let pattern = if rule.mode == "find" {

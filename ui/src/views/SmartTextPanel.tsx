@@ -18,23 +18,12 @@ import {
   type DeletedSmartTextTemplate,
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
-import { useDictationStore, type ActiveAppContextStatus } from "@/store/useDictationStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
 const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n窗口可见文字：Tauri；OCR；上下文捕获";
-const CONTEXT_STATUS_LABELS: Record<ActiveAppContextStatus, string> = {
-  captured: "已捕获",
-  empty: "未获取到可用文本",
-  blocked: "已按黑名单跳过",
-  timedOut: "捕获超时",
-  unsupported: "当前系统暂不支持",
-  failed: "捕获失败",
-};
-
 export function SmartTextPanel() {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
-  const latestContext = useDictationStore((state) => state.activeAppContext);
   const templates = prefs.smartTemplates;
   const active = templates.find((template) => template.id === prefs.smartTemplateId) ?? templates[0];
   const [previewInput, setPreviewInput] = useState(PREVIEW_SAMPLE);
@@ -359,49 +348,48 @@ export function SmartTextPanel() {
       </SettingsSection>
 
       <SettingsSection title="当前软件上下文">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          只有启用智能处理且当前模板包含 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 时，才会在全局快捷键触发瞬间截取当前激活窗口并在本机执行整窗 OCR，将清洗后的文字随提示词发送。截图不会保存或上传，界面按钮启动不会捕获。
-        </p>
-        <p className="max-w-[75ch] text-xs leading-relaxed text-[var(--color-warn)]">
-          整窗 OCR 会读取窗口内所有可见文字，无法自动识别密码区域；请务必将密码管理器、隐私聊天等敏感应用加入黑名单。
-        </p>
-        {latestContext ? (
-          <div className="flex flex-col gap-2 text-sm text-[var(--color-fg-subtle)]">
-            <p>
-              最近捕获：{CONTEXT_STATUS_LABELS[latestContext.status]} · {latestContext.appName || latestContext.processName || "未知应用"} · {latestContext.elapsedMs} ms
-              {latestContext.truncated ? " · 已裁剪" : ""}
-            </p>
-            {latestContext.windowTitle && <p>窗口：{latestContext.windowTitle}</p>}
-            {latestContext.preview && (
-              <Textarea rows={5} readOnly value={latestContext.preview} className="bg-[var(--color-bg)]" />
-            )}
-            {latestContext.processName && !prefs.activeAppContextBlockedApps.includes(latestContext.processName.toLowerCase()) && (
-              <Button size="sm" className="self-start" onClick={() => void addBlockedApp(latestContext.processName)}>
-                屏蔽此应用
-              </Button>
-            )}
-          </div>
-        ) : (
-          <p className="text-sm text-[var(--color-fg-faint)]">尚无捕获记录。</p>
-        )}
+        <Field
+          label="提取方式"
+          hint={prefs.activeAppContextExtractionMethod === "ocr"
+            ? "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
+            : "通过应用文本接口读取相关内容，不加载 OCR 模型，内存占用更低。"}
+        >
+          <Select
+            value={prefs.activeAppContextExtractionMethod}
+            onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
+          >
+            <option value="nativeText">文本提取（低内存）</option>
+            <option value="ocr">窗口 OCR（高覆盖率）</option>
+          </Select>
+        </Field>
 
-        <Field label="应用黑名单" hint="按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。">
-          <div className="flex gap-2">
-            <Input
-              value={blockedAppInput}
-              placeholder="example.exe"
-              onChange={(event) => setBlockedAppInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void addBlockedApp();
-                }
-              }}
-            />
-            <Button disabled={!blockedAppInput.trim()} onClick={() => void addBlockedApp()}>
+        <Field
+          label="应用黑名单"
+          controlId="active-app-context-blocked-app"
+          hint="按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"
+          actions={(
+            <Button
+              variant="primary"
+              className="whitespace-nowrap"
+              disabled={!blockedAppInput.trim()}
+              onClick={() => void addBlockedApp()}
+            >
               添加
             </Button>
-          </div>
+          )}
+        >
+          <Input
+            id="active-app-context-blocked-app"
+            value={blockedAppInput}
+            placeholder="example.exe"
+            onChange={(event) => setBlockedAppInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void addBlockedApp();
+              }
+            }}
+          />
         </Field>
         {prefs.activeAppContextBlockedApps.length > 0 && (
           <div className="flex flex-col gap-2">
