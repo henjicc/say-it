@@ -6,7 +6,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Pipes::PeekNamedPipe;
@@ -15,6 +15,7 @@ use super::model::{ActivationTarget, CaptureStatus, CapturedActiveAppContext, Co
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CONNECT_POLL: Duration = Duration::from_millis(10);
+const CLIENT_LOCK_POLL: Duration = Duration::from_millis(5);
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
 
 static PROBE_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -30,6 +31,7 @@ struct ProbeRequest {
     pid: u32,
     max_chars: usize,
     deep_clipboard: bool,
+    reader_budget_ms: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -244,11 +246,24 @@ pub(crate) fn capture(
         pid: target.process_id,
         max_chars,
         deep_clipboard: true,
+        // 给管道回传和 Rust 的终止/重启留出余量，避免末尾的深度读取挤占整个 800ms 硬截止。
+        reader_budget_ms: 650,
     };
-    let mut client = CLIENT
-        .get_or_init(|| Mutex::new(ProbeClient::default()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let client = CLIENT.get_or_init(|| Mutex::new(ProbeClient::default()));
+    // 前一条跨进程请求即使卡住，也不能让新会话无限阻塞在 Mutex 上。
+    // 到达本次截止后由调用者使用已同步读取的窗口元信息保底。
+    let mut client = loop {
+        match client.try_lock() {
+            Ok(client) => break client,
+            Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    return Ok(CaptureStatus::TimedOut);
+                }
+                std::thread::sleep(CLIENT_LOCK_POLL);
+            }
+        }
+    };
     if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Ok(CaptureStatus::TimedOut);
     }

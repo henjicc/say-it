@@ -50,6 +50,8 @@ pub(crate) struct ContextCaptureHandle {
     deadline: std::time::Instant,
     receiver: Option<oneshot::Receiver<CapturedActiveAppContext>>,
     cancelled: Arc<AtomicBool>,
+    /// 正文读取在独立线程/进程中执行，超时不能抹去已同步获得的窗口元信息。
+    fallback: CapturedActiveAppContext,
 }
 
 pub(crate) struct ContextCaptureService {
@@ -125,17 +127,26 @@ impl ContextCaptureService {
         let timeout = options.method.timeout();
         let started = options.deadline - timeout;
         let deadline = options.deadline;
+        #[cfg(windows)]
+        let fallback = windows::baseline_context(target, &blocked_apps, options.method);
+        #[cfg(not(windows))]
+        let fallback = CapturedActiveAppContext {
+            capture_method: options.method,
+            process_id: target.process_id,
+            ..Default::default()
+        };
         let (reply, receiver) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let Some(permit) = try_acquire_capture(&self.in_flight) else {
-            let _ = reply.send(CapturedActiveAppContext::with_status(
-                CaptureStatus::TimedOut,
-            ));
+            let mut fallback = fallback;
+            let _ = fallback.use_metadata_fallback("上下文任务繁忙，仅使用基础窗口信息。 ");
+            let _ = reply.send(fallback);
             return ContextCaptureHandle {
                 started,
                 deadline,
                 receiver: Some(receiver),
                 cancelled,
+                fallback: CapturedActiveAppContext::default(),
             };
         };
         let request = CaptureRequest {
@@ -173,6 +184,7 @@ impl ContextCaptureService {
             deadline,
             receiver: Some(receiver),
             cancelled,
+            fallback,
         }
     }
 
@@ -195,6 +207,7 @@ impl ContextCaptureService {
     ) -> CapturedActiveAppContext {
         let started = handle.started;
         let deadline = handle.deadline;
+        let fallback = handle.fallback.clone();
         let mut receiver = handle
             .receiver
             .take()
@@ -228,14 +241,14 @@ impl ContextCaptureService {
                     "active-app-context",
                     "上下文工作线程在返回结果前断开",
                 );
-                CapturedActiveAppContext::with_status(CaptureStatus::Failed)
+                metadata_fallback(fallback, "上下文工作线程在返回结果前断开，仅使用基础窗口信息。")
             }
             Err(TryRecvError::Empty) if remaining.is_zero() => {
                 crate::development_debug_log(
                     "active-app-context",
-                    "等待上下文时已到总截止且任务尚未完成；本次听写不会使用它",
+                    "等待正文时已到总截止且任务尚未完成；本次使用已取得的基础窗口信息",
                 );
-                CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+                metadata_fallback(fallback, "正文读取已到截止，仅使用基础窗口信息。")
             }
             Err(TryRecvError::Empty) => {
                 match tokio::time::timeout(remaining, &mut receiver).await {
@@ -245,17 +258,17 @@ impl ContextCaptureService {
                             "active-app-context",
                             "上下文工作线程在返回结果前断开",
                         );
-                        CapturedActiveAppContext::with_status(CaptureStatus::Failed)
+                            metadata_fallback(fallback, "上下文工作线程在返回结果前断开，仅使用基础窗口信息。")
                     }
                     Err(_) => {
                         crate::development_debug_log(
                         "active-app-context",
                         format_args!(
-                            "本次等待 {} ms 后仍未获得上下文；后台 OCR 可能仍在运行，本次听写将不使用它",
+                            "本次等待 {} ms 后仍未获得正文；后台上下文任务可能仍在结束，本次使用基础窗口信息",
                             remaining.as_millis(),
                         ),
                     );
-                        CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+                        metadata_fallback(fallback, "正文读取等待超时，仅使用基础窗口信息。")
                     }
                 }
             }
@@ -282,6 +295,19 @@ impl ContextCaptureService {
     pub(crate) fn latest_summary(&self) -> Option<ActiveAppContextSummary> {
         self.latest.lock().ok().and_then(|value| value.clone())
     }
+}
+
+fn metadata_fallback(
+    mut fallback: CapturedActiveAppContext,
+    reason: impl Into<String>,
+) -> CapturedActiveAppContext {
+    if fallback.status == CaptureStatus::Blocked {
+        return fallback;
+    }
+    if !fallback.use_metadata_fallback(reason) {
+        fallback.status = CaptureStatus::TimedOut;
+    }
+    fallback
 }
 
 pub(crate) fn configure_ocr_model_root(path: PathBuf) {
@@ -337,6 +363,7 @@ mod tests {
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
                 cancelled: Arc::new(AtomicBool::new(false)),
+                fallback: CapturedActiveAppContext::default(),
             })
             .await;
         assert_eq!(result.status, CaptureStatus::TimedOut);
@@ -365,6 +392,7 @@ mod tests {
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
                 cancelled: Arc::new(AtomicBool::new(false)),
+                fallback: CapturedActiveAppContext::default(),
             })
             .await;
 
@@ -372,6 +400,31 @@ mod tests {
         assert_eq!(
             result.format_for_prompt(),
             "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_uses_synchronously_captured_window_metadata() {
+        let service = ContextCaptureService::default();
+        let (_sender, receiver) = oneshot::channel();
+        let result = service
+            .resolve(ContextCaptureHandle {
+                started: std::time::Instant::now(),
+                deadline: std::time::Instant::now() + std::time::Duration::from_millis(1),
+                receiver: Some(receiver),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                fallback: CapturedActiveAppContext {
+                    app_name: "msedge".into(),
+                    window_title: Some("文档 - Microsoft Edge".into()),
+                    ..Default::default()
+                },
+            })
+            .await;
+
+        assert_eq!(result.status, CaptureStatus::Captured);
+        assert_eq!(
+            result.format_for_prompt(),
+            "应用：msedge\n窗口：文档 - Microsoft Edge"
         );
     }
 
@@ -385,6 +438,7 @@ mod tests {
                 + ActiveAppContextExtractionMethod::NativeText.timeout(),
             receiver: Some(receiver),
             cancelled: Arc::clone(&cancelled),
+            fallback: CapturedActiveAppContext::default(),
         };
 
         drop(handle);
