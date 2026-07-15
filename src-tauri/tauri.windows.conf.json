@@ -15,6 +15,10 @@
   },
   "bundle": {
     "targets": ["nsis"],
+    "resources": [
+      "resources/ocr/**/*",
+      "resources/licenses/**/*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

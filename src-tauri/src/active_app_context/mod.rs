@@ -1,12 +1,17 @@
 mod debug;
 mod model;
 mod normalize;
+#[cfg(windows)]
+mod ocr;
+#[cfg(windows)]
+mod screen_capture;
 #[cfg(not(windows))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;
 
-use model::CAPTURE_TIMEOUT;
+use model::{CAPTURE_TIMEOUT, DICTATION_RESOLVE_WAIT};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -82,7 +87,25 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
     ) -> ContextCaptureHandle {
-        let options = CaptureOptions::default();
+        self.begin_capture_inner(target, blocked_apps, false)
+    }
+
+    pub(crate) fn begin_debug_capture(
+        &self,
+        target: ActivationTarget,
+        blocked_apps: Vec<String>,
+    ) -> ContextCaptureHandle {
+        self.begin_capture_inner(target, blocked_apps, true)
+    }
+
+    fn begin_capture_inner(
+        &self,
+        target: ActivationTarget,
+        blocked_apps: Vec<String>,
+        debug: bool,
+    ) -> ContextCaptureHandle {
+        let mut options = CaptureOptions::default();
+        options.debug = debug;
         let started = options.deadline - CAPTURE_TIMEOUT;
         let deadline = options.deadline;
         let (reply, receiver) = oneshot::channel();
@@ -122,12 +145,29 @@ impl ContextCaptureService {
     }
 
     pub(crate) async fn resolve(&self, handle: ContextCaptureHandle) -> CapturedActiveAppContext {
+        self.resolve_with_wait(handle, CAPTURE_TIMEOUT).await
+    }
+
+    pub(crate) async fn resolve_for_dictation(
+        &self,
+        handle: ContextCaptureHandle,
+    ) -> CapturedActiveAppContext {
+        self.resolve_with_wait(handle, DICTATION_RESOLVE_WAIT).await
+    }
+
+    async fn resolve_with_wait(
+        &self,
+        handle: ContextCaptureHandle,
+        max_wait: std::time::Duration,
+    ) -> CapturedActiveAppContext {
         let ContextCaptureHandle {
             started,
             deadline,
             receiver,
         } = handle;
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(max_wait);
         let mut result = if remaining.is_zero() {
             CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
         } else {
@@ -154,6 +194,13 @@ impl ContextCaptureService {
     }
 }
 
+pub(crate) fn configure_ocr_model_root(path: PathBuf) {
+    #[cfg(windows)]
+    ocr::configure_model_root(path);
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
 pub(crate) fn activation_target() -> Option<ActivationTarget> {
     #[cfg(windows)]
     {
@@ -175,7 +222,9 @@ mod tests {
         let (_sender, receiver) = oneshot::channel();
         let result = service
             .resolve(ContextCaptureHandle {
-                started: std::time::Instant::now() - std::time::Duration::from_millis(801),
+                started: std::time::Instant::now()
+                    - CAPTURE_TIMEOUT
+                    - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver,
             })

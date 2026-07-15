@@ -1,0 +1,30 @@
+# Cross-compilation configuration for Linux targets
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+
+[target.i686-unknown-linux-gnu]
+linker = "gcc"
+rustflags = ["-C", "link-arg=-m32"]
+
+# Environment variables for cross-compilation
+[env]
+# For aarch64
+CC_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-gcc"
+CXX_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-g++"
+AR_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-ar"
+
+# For armv7
+CC_armv7_unknown_linux_gnueabihf = "arm-linux-gnueabihf-gcc"
+CXX_armv7_unknown_linux_gnueabihf = "arm-linux-gnueabihf-g++"
+AR_armv7_unknown_linux_gnueabihf = "arm-linux-gnueabihf-ar"
+
+# For i686
+CC_i686_unknown_linux_gnu = "gcc"
+CXX_i686_unknown_linux_gnu = "g++"
+AR_i686_unknown_linux_gnu = "ar"
+CFLAGS_i686_unknown_linux_gnu = "-m32"
+CXXFLAGS_i686_unknown_linux_gnu = "-m32"

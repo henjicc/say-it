@@ -1,0 +1,29 @@
+激活窗口 OCR 第三方组件声明
+
+本功能在 Windows 上使用以下第三方组件：
+
+- ocr-rs 2.3.2，Apache License 2.0
+  https://github.com/GreatV/ocr-rs
+- MNN，Apache License 2.0
+  https://github.com/alibaba/MNN
+- PaddleOCR / PP-OCRv6 tiny 模型，Apache License 2.0
+  https://github.com/PaddlePaddle/PaddleOCR
+- windows-capture 2.0.0，MIT License
+  https://github.com/NiiightmareXD/windows-capture
+
+随包模型文件校验值（SHA-256）：
+
+- PP-OCRv6_tiny_det.mnn
+  7FAB7B858F136BC93A760BDCA66AAF25F0FF10ACCABB31E6EF853A897FB9CFEC
+- PP-OCRv6_tiny_rec.mnn
+  0A43C3C979A98B905F5E84913209998F510189419B5A5D4152BBB01CE8D17A93
+- ppocr_keys_v6_tiny.txt
+  C5CBE34EF40C29C4DF07ED012BF96569CB69A2D2A01A07027E9F13CB832BD9CD
+
+构建用 Windows x64 MNN 静态预编译包校验值（SHA-256）：
+
+- mnn-dev-windows-x86_64.zip
+  A777AD47EEF1F9AA7246BF5F15B9739A3BE1733717FA64422EFBDC02F08E2D1C
+
+各组件的完整许可文本随相应源代码发行版提供；MIT 与 Apache-2.0
+许可文本也随安装资源一并分发。
