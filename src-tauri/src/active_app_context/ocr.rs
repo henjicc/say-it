@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use image::codecs::png::PngEncoder;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ColorType, DynamicImage, ImageEncoder};
 use ocr_rs::{DetOptions, OcrEngine, OcrEngineConfig};
 use sha2::{Digest, Sha256};
@@ -17,6 +17,7 @@ use super::normalize::normalize_text;
 
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
+const MAX_RECOGNIZED_REGIONS: usize = 96;
 const DET_MODEL: &str = "PP-OCRv6_tiny_det.mnn";
 const REC_MODEL: &str = "PP-OCRv6_tiny_rec.mnn";
 const CHARSET: &str = "ppocr_keys_v6_tiny.txt";
@@ -104,7 +105,7 @@ fn recognize_full_window(image: &DynamicImage) -> Result<Vec<OcrTextBlock>, Stri
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let results = guard
-        .recognize(image)
+        .recognize_limited(image, MAX_RECOGNIZED_REGIONS)
         .map_err(|error| format!("OCR 识别失败：{error}"))?;
     drop(guard);
 
@@ -240,7 +241,7 @@ pub(crate) fn run_full_window(
 pub(crate) fn png_data_url(image: &DynamicImage) -> Result<String, String> {
     let rgba = image.to_rgba8();
     let mut bytes = Vec::new();
-    PngEncoder::new(&mut bytes)
+    PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, PngFilterType::Adaptive)
         .write_image(
             rgba.as_raw(),
             rgba.width(),

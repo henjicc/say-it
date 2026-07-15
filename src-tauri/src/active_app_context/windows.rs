@@ -105,12 +105,14 @@ fn capture_and_recognize(
     context.screenshot_width = captured.image.width();
     context.screenshot_height = captured.image.height();
     context.screenshot_elapsed_ms = captured.elapsed_ms;
-    if debug {
-        context.screenshot_data_url = ocr::png_data_url(&captured.image).ok();
-    }
+    let debug_image = debug.then(|| captured.image.clone());
 
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let output = ocr::run_full_window(captured.image, remaining)?;
+    let output_result = ocr::run_full_window(captured.image, remaining);
+    if let Some(image) = debug_image {
+        context.screenshot_data_url = ocr::png_data_url(&image).ok();
+    }
+    let output = output_result?;
     context.ocr_text = output.text;
     context.ocr_blocks = output.blocks;
     context.model_init_ms = output.model_init_ms;
