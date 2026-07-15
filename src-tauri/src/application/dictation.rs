@@ -19,6 +19,7 @@ use tauri::AppHandle;
 
 const DOMAIN_EVENT: &str = "domain-event";
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
+const MAX_SMART_TEMPLATES: usize = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1223,11 +1224,11 @@ fn validate_rules(prefs: &DictationPrefs) -> Result<(), String> {
     Ok(())
 }
 fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
+    if prefs.smart_templates.len() > MAX_SMART_TEMPLATES {
+        return Err(format!("智能处理模板不能超过 {MAX_SMART_TEMPLATES} 个"));
+    }
     if !prefs.smart_processing_enabled {
         return Ok(());
-    }
-    if prefs.smart_templates.len() > 50 {
-        return Err("智能处理模板不能超过 50 个".to_string());
     }
     let template = prefs
         .smart_templates
@@ -1497,6 +1498,18 @@ mod tests {
         assert!(should_show_final_text_in_indicator(Some(
             DictationMode::Realtime
         )));
+    }
+    #[test]
+    fn smart_template_limit_applies_while_processing_is_disabled() {
+        let mut prefs = DictationPrefs::default();
+        prefs.smart_templates = (0..=MAX_SMART_TEMPLATES)
+            .map(|index| SmartTemplate {
+                id: format!("template-{index}"),
+                name: format!("模板 {index}"),
+                prompt: "{{text}}".into(),
+            })
+            .collect();
+        assert!(validate_smart_processing(&prefs).is_err());
     }
     #[test]
     fn waveform_preview_decodes_processed_pcm() {
