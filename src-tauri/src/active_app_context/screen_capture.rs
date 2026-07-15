@@ -9,8 +9,8 @@ use windows::Win32::Foundation::{HANDLE, HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DwmFlush, DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HGDIOBJ,
-    SRCCOPY,
+    SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+    DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IsIconic, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
@@ -20,6 +20,8 @@ pub(crate) struct CapturedWindowImage {
     pub(crate) image: DynamicImage,
     pub(crate) elapsed_ms: u64,
 }
+
+const MAX_CAPTURE_SIDE: u32 = 1_600;
 
 struct HiddenWindowGuard {
     window: HWND,
@@ -74,12 +76,19 @@ pub(crate) fn capture_window(
         return Err("目标窗口截图尺寸无效".into());
     }
 
-    let mut pixels = capture_screen_rect(bounds, width, height)?;
+    let (capture_width, capture_height) = scaled_dimensions(width as u32, height as u32);
+    let mut pixels = capture_screen_rect(
+        bounds,
+        width,
+        height,
+        capture_width as i32,
+        capture_height as i32,
+    )?;
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
-    let image = RgbaImage::from_raw(width as u32, height as u32, pixels)
+    let image = RgbaImage::from_raw(capture_width, capture_height, pixels)
         .map(DynamicImage::ImageRgba8)
         .ok_or_else(|| "无法构造窗口截图".to_string())?;
 
@@ -87,6 +96,18 @@ pub(crate) fn capture_window(
         image,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+fn scaled_dimensions(width: u32, height: u32) -> (u32, u32) {
+    let longest_side = width.max(height);
+    if longest_side <= MAX_CAPTURE_SIDE {
+        return (width, height);
+    }
+    let scale = MAX_CAPTURE_SIDE as f64 / longest_side as f64;
+    (
+        (width as f64 * scale).round().max(1.0) as u32,
+        (height as f64 * scale).round().max(1.0) as u32,
+    )
 }
 
 fn window_bounds(window: HWND) -> Result<RECT, String> {
@@ -106,7 +127,13 @@ fn window_bounds(window: HWND) -> Result<RECT, String> {
     Ok(bounds)
 }
 
-fn capture_screen_rect(bounds: RECT, width: i32, height: i32) -> Result<Vec<u8>, String> {
+fn capture_screen_rect(
+    bounds: RECT,
+    source_width: i32,
+    source_height: i32,
+    target_width: i32,
+    target_height: i32,
+) -> Result<Vec<u8>, String> {
     let screen_dc = unsafe { GetDC(HWND::default()) };
     if screen_dc.is_invalid() {
         return Err("获取屏幕设备上下文失败".into());
@@ -123,9 +150,9 @@ fn capture_screen_rect(bounds: RECT, width: i32, height: i32) -> Result<Vec<u8>,
     let mut bitmap_info = BITMAPINFO::default();
     bitmap_info.bmiHeader = BITMAPINFOHEADER {
         biSize: size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: width,
+        biWidth: target_width,
         // 负高度创建自上而下的 DIB，省去整张图的垂直翻转。
-        biHeight: -height,
+        biHeight: -target_height,
         biPlanes: 1,
         biBitCount: 32,
         biCompression: BI_RGB.0,
@@ -163,20 +190,38 @@ fn capture_screen_rect(bounds: RECT, width: i32, height: i32) -> Result<Vec<u8>,
         return Err("将截图位图选入内存设备上下文失败".into());
     }
     let capture_result = unsafe {
-        BitBlt(
-            memory_dc,
-            0,
-            0,
-            width,
-            height,
-            screen_dc,
-            bounds.left,
-            bounds.top,
-            SRCCOPY | CAPTUREBLT,
-        )
+        if source_width == target_width && source_height == target_height {
+            BitBlt(
+                memory_dc,
+                0,
+                0,
+                target_width,
+                target_height,
+                screen_dc,
+                bounds.left,
+                bounds.top,
+                SRCCOPY | CAPTUREBLT,
+            )
+        } else {
+            SetStretchBltMode(memory_dc, HALFTONE);
+            StretchBlt(
+                memory_dc,
+                0,
+                0,
+                target_width,
+                target_height,
+                screen_dc,
+                bounds.left,
+                bounds.top,
+                source_width,
+                source_height,
+                SRCCOPY | CAPTUREBLT,
+            )
+            .ok()
+        }
     };
     let pixels = if capture_result.is_ok() && !bits.is_null() {
-        let byte_len = width as usize * height as usize * 4;
+        let byte_len = target_width as usize * target_height as usize * 4;
         Some(unsafe { slice::from_raw_parts(bits.cast::<u8>(), byte_len) }.to_vec())
     } else {
         None
@@ -195,6 +240,8 @@ fn capture_screen_rect(bounds: RECT, width: i32, height: i32) -> Result<Vec<u8>,
 
 #[cfg(test)]
 mod tests {
+    use super::scaled_dimensions;
+
     #[test]
     fn top_down_bgra_pixels_convert_to_opaque_rgba() {
         let mut pixels = vec![3, 2, 1, 0, 30, 20, 10, 128];
@@ -203,5 +250,13 @@ mod tests {
             pixel[3] = 255;
         }
         assert_eq!(pixels, vec![1, 2, 3, 255, 10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn capture_dimensions_bound_large_windows_without_changing_aspect_ratio() {
+        assert_eq!(scaled_dimensions(1_280, 720), (1_280, 720));
+        assert_eq!(scaled_dimensions(1_920, 1_080), (1_600, 900));
+        assert_eq!(scaled_dimensions(3_862, 2_122), (1_600, 879));
+        assert_eq!(scaled_dimensions(2_160, 3_840), (900, 1_600));
     }
 }

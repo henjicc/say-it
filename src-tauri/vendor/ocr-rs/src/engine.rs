@@ -390,6 +390,22 @@ impl OcrEngine {
     /// # Returns
     /// List of OCR results, each result contains text, confidence and bounding box
     pub fn recognize(&self, image: &DynamicImage) -> OcrResult<Vec<OcrResult_>> {
+        self.recognize_limited(image, usize::MAX)
+    }
+
+    /// Perform complete OCR recognition while bounding recognition work.
+    ///
+    /// Detection still covers the entire image. When more regions are found than
+    /// `max_regions`, the highest-confidence regions are recognized and the final
+    /// results are restored to reading order.
+    pub fn recognize_limited(
+        &self,
+        image: &DynamicImage,
+        max_regions: usize,
+    ) -> OcrResult<Vec<OcrResult_>> {
+        if max_regions == 0 {
+            return Ok(Vec::new());
+        }
         // 0. Orientation correction for full image (optional)
         let corrected_image = if let Some(ori_model) = self.ori_model.as_ref() {
             self.correct_orientation_with_model(ori_model, image.clone())
@@ -398,11 +414,12 @@ impl OcrEngine {
         };
 
         // 1. Detect text regions
-        let boxes = self.det_model.detect_expanded(&corrected_image)?;
+        let mut boxes = self.det_model.detect_expanded(&corrected_image)?;
 
         if boxes.is_empty() {
             return Ok(Vec::new());
         }
+        limit_recognition_regions(&mut boxes, max_regions);
 
         // 2. Recognize directly from source image regions. This avoids materializing
         // DynamicImage crops and a second resize before recognition preprocessing.
@@ -476,6 +493,31 @@ impl OcrEngine {
 
         rotate_by_angle(&image, result.angle)
     }
+}
+
+fn limit_recognition_regions(boxes: &mut Vec<TextBox>, max_regions: usize) {
+    if boxes.len() <= max_regions {
+        return;
+    }
+    boxes.sort_by(|a, b| {
+        let a_score = if a.score.is_finite() {
+            a.score
+        } else {
+            f32::NEG_INFINITY
+        };
+        let b_score = if b.score.is_finite() {
+            b.score
+        } else {
+            f32::NEG_INFINITY
+        };
+        b_score
+            .total_cmp(&a_score)
+            .then_with(|| b.area().cmp(&a.area()))
+            .then_with(|| a.rect.top().cmp(&b.rect.top()))
+            .then_with(|| a.rect.left().cmp(&b.rect.left()))
+    });
+    boxes.truncate(max_regions);
+    boxes.sort_by_key(|text_box| (text_box.rect.top(), text_box.rect.left()));
 }
 
 /// Builder for OCR engine
@@ -663,5 +705,26 @@ mod tests {
 
         assert_eq!(result.text, "Hello");
         assert_eq!(result.confidence, 0.95);
+    }
+
+    #[test]
+    fn region_limit_keeps_high_confidence_boxes_then_restores_reading_order() {
+        let mut boxes = vec![
+            TextBox::new(imageproc::rect::Rect::at(30, 20).of_size(20, 10), 0.8),
+            TextBox::new(imageproc::rect::Rect::at(50, 0).of_size(20, 10), 0.9),
+            TextBox::new(imageproc::rect::Rect::at(0, 40).of_size(20, 10), f32::NAN),
+            TextBox::new(imageproc::rect::Rect::at(10, 0).of_size(20, 10), 0.7),
+        ];
+
+        limit_recognition_regions(&mut boxes, 3);
+
+        assert_eq!(boxes.len(), 3);
+        assert_eq!(
+            boxes
+                .iter()
+                .map(|text_box| (text_box.rect.left(), text_box.rect.top()))
+                .collect::<Vec<_>>(),
+            vec![(10, 0), (50, 0), (30, 20)]
+        );
     }
 }
