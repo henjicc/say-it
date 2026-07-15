@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
-  ChevronDown,
-  ChevronUp,
   GripVertical,
   RotateCcw,
   Trash2,
@@ -125,7 +123,6 @@ export function SmartTemplateManager({
     setNotice(undefined);
     try {
       await patch({ smartTemplates: next });
-      report({ tone: "ok", text: "模板顺序已更新。" });
     } catch (error) {
       setOrderedTemplates(previous);
       report({ tone: "err", text: `调整顺序失败：${String(error)}` });
@@ -368,7 +365,7 @@ export function SmartTemplateManager({
             )}
 
             <div className="min-h-0 flex-1 overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-              {orderedTemplates.map((template, index) => {
+              {orderedTemplates.map((template) => {
                 const selected = selectedTemplateIds.has(template.id);
                 const isActive = template.id === prefs.smartTemplateId;
                 const isDragTarget = dragOverId === template.id && draggedId !== template.id;
@@ -401,25 +398,6 @@ export function SmartTemplateManager({
                       aria-label={`选择模板“${template.name}”`}
                       onChange={() => setSelectedTemplateIds((current) => selectionAfterToggle(current, template.id))}
                     />
-                    <button
-                      type="button"
-                      draggable={!busy}
-                      disabled={busy}
-                      aria-label={`拖动“${template.name}”调整顺序`}
-                      title="拖动调整顺序"
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", template.id);
-                        setDraggedId(template.id);
-                      }}
-                      onDragEnd={() => {
-                        setDraggedId("");
-                        setDragOverId("");
-                      }}
-                      className="cursor-grab rounded-[var(--radius-sm)] p-1.5 text-[var(--color-fg-faint)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <GripVertical className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
@@ -435,30 +413,36 @@ export function SmartTemplateManager({
                         {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
                       </p>
                     </div>
-                    <div className="flex shrink-0 gap-1">
-                      <IconButton
-                        label={`上移“${template.name}”`}
-                        size="sm"
-                        disabled={busy || index === 0}
-                        onClick={() => moveTemplate(template.id, -1)}
-                      >
-                        <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                      </IconButton>
-                      <IconButton
-                        label={`下移“${template.name}”`}
-                        size="sm"
-                        disabled={busy || index === orderedTemplates.length - 1}
-                        onClick={() => moveTemplate(template.id, 1)}
-                      >
-                        <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                      </IconButton>
-                    </div>
+                    <button
+                      type="button"
+                      draggable={!busy}
+                      disabled={busy}
+                      aria-label={`拖动“${template.name}”调整顺序`}
+                      title="拖动调整顺序；聚焦后可用上下方向键"
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", template.id);
+                        setDraggedId(template.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedId("");
+                        setDragOverId("");
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                        event.preventDefault();
+                        moveTemplate(template.id, event.key === "ArrowUp" ? -1 : 1);
+                      }}
+                      className="flex h-[var(--control-h-sm)] w-[var(--control-h-sm)] shrink-0 cursor-grab items-center justify-center rounded-[var(--radius-md)] border border-transparent text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] hover:border-[var(--color-line)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <GripVertical className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                    </button>
                   </div>
                 );
               })}
             </div>
             <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
-              拖动手柄调整模板顺序；键盘操作可使用每行右侧的上移和下移按钮。
+              拖动每行右侧的手柄调整模板顺序。
             </p>
           </div>
         ) : (
