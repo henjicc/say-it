@@ -1,4 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   Archive,
   ArchiveRestore,
@@ -35,26 +52,111 @@ function formatDeletedAt(timestamp: number): string {
   return Number.isFinite(timestamp) ? deletedAtFormatter.format(timestamp) : "未知时间";
 }
 
-function reorderTemplates(
-  templates: SmartTextTemplate[],
-  sourceId: string,
-  targetId: string,
-): SmartTextTemplate[] {
-  const sourceIndex = templates.findIndex((template) => template.id === sourceId);
-  const targetIndex = templates.findIndex((template) => template.id === targetId);
-  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return templates;
-  const next = [...templates];
-  const [moved] = next.splice(sourceIndex, 1);
-  next.splice(targetIndex, 0, moved);
-  return next;
-}
-
 function selectionAfterToggle(current: Set<string>, id: string): Set<string> {
   const next = new Set(current);
   if (next.has(id)) next.delete(id);
   else next.add(id);
   return next;
 }
+
+const sortableAccessibility = {
+  screenReaderInstructions: {
+    draggable: "按空格键或回车键抓取模板，使用上下方向键调整位置，再次按空格键或回车键放下，按 Esc 取消。",
+  },
+  announcements: {
+    onDragStart: () => "已抓取模板。",
+    onDragOver: ({ over }: { over: { id: string | number } | null }) =>
+      over ? "模板位置已更新。" : "模板已离开可排序区域。",
+    onDragEnd: ({ over }: { over: { id: string | number } | null }) =>
+      over ? "模板排序完成。" : "模板位置未改变。",
+    onDragCancel: () => "已取消模板排序。",
+  },
+};
+
+const SortableTemplateRow = memo(function SortableTemplateRow({
+  template,
+  selected,
+  isActive,
+  busy,
+  onToggle,
+}: {
+  template: SmartTextTemplate;
+  selected: boolean;
+  isActive: boolean;
+  busy: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: template.id,
+    disabled: busy,
+    transition: {
+      duration: 180,
+      easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+    },
+  });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 2 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "smart-template-sortable-row relative flex min-h-[66px] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2.5 last:border-b-0",
+        selected && "bg-[var(--accent-soft)]",
+        isDragging && "bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+      )}
+    >
+      <Checkbox
+        checked={selected}
+        disabled={busy}
+        aria-label={`选择模板“${template.name}”`}
+        onChange={() => onToggle(template.id)}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
+            {template.name || "未命名模板"}
+          </span>
+          {isActive && (
+            <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
+              当前
+            </span>
+          )}
+        </div>
+        <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
+          {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
+        </p>
+      </div>
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        disabled={busy}
+        {...attributes}
+        {...listeners}
+        aria-label={`拖动“${template.name}”调整顺序`}
+        title="拖动调整顺序；也可按空格键抓取后使用方向键移动"
+        className={cn(
+          "flex h-[var(--control-h-sm)] w-[var(--control-h-sm)] shrink-0 touch-none items-center justify-center rounded-[var(--radius-md)] border border-transparent text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] hover:border-[var(--color-line)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-40",
+          isDragging ? "cursor-grabbing" : "cursor-grab",
+        )}
+      >
+        <GripVertical className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+      </button>
+    </div>
+  );
+});
 
 export function SmartTemplateManager({
   open,
@@ -73,11 +175,17 @@ export function SmartTemplateManager({
   const [orderedTemplates, setOrderedTemplates] = useState(templates);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(new Set());
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(new Set());
-  const [draggedId, setDraggedId] = useState("");
-  const [dragOverId, setDragOverId] = useState("");
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const sortableTemplateIds = useMemo(
+    () => orderedTemplates.map((template) => template.id),
+    [orderedTemplates],
+  );
 
   const missingDefaultTemplates = useMemo(
     () => defaultSmartTextTemplates().filter(
@@ -106,8 +214,6 @@ export function SmartTemplateManager({
     setSelectedTrashIds(new Set());
     setConfirmAction(undefined);
     setNotice(undefined);
-    setDraggedId("");
-    setDragOverId("");
   }, [open]);
 
   const report = (nextNotice: Notice, share = false) => {
@@ -131,11 +237,17 @@ export function SmartTemplateManager({
     }
   };
 
-  const moveTemplate = (id: string, offset: -1 | 1) => {
-    const index = orderedTemplates.findIndex((template) => template.id === id);
-    const target = orderedTemplates[index + offset];
-    if (index < 0 || !target) return;
-    void persistOrder(reorderTemplates(orderedTemplates, id, target.id));
+  const toggleTemplateSelection = useCallback((id: string) => {
+    setSelectedTemplateIds((current) => selectionAfterToggle(current, id));
+  }, []);
+
+  const finishSorting = (event: DragEndEvent) => {
+    const { active: dragged, over } = event;
+    if (!over || dragged.id === over.id) return;
+    const sourceIndex = orderedTemplates.findIndex((template) => template.id === dragged.id);
+    const targetIndex = orderedTemplates.findIndex((template) => template.id === over.id);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    void persistOrder(arrayMove(orderedTemplates, sourceIndex, targetIndex));
   };
 
   const deleteSelectedTemplates = async () => {
@@ -364,83 +476,27 @@ export function SmartTemplateManager({
               </div>
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-              {orderedTemplates.map((template) => {
-                const selected = selectedTemplateIds.has(template.id);
-                const isActive = template.id === prefs.smartTemplateId;
-                const isDragTarget = dragOverId === template.id && draggedId !== template.id;
-                return (
-                  <div
-                    key={template.id}
-                    onDragOver={(event) => {
-                      if (!draggedId || busy) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragOverId(template.id);
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      const sourceId = event.dataTransfer.getData("text/plain") || draggedId;
-                      setDraggedId("");
-                      setDragOverId("");
-                      if (sourceId) void persistOrder(reorderTemplates(orderedTemplates, sourceId, template.id));
-                    }}
-                    className={cn(
-                      "flex min-h-[66px] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2.5 transition-colors duration-[var(--dur-fast)] last:border-b-0",
-                      selected && "bg-[var(--accent-soft)]",
-                      isDragTarget && "bg-[var(--accent-soft-strong)]",
-                      draggedId === template.id && "opacity-45",
-                    )}
-                  >
-                    <Checkbox
-                      checked={selected}
-                      disabled={busy}
-                      aria-label={`选择模板“${template.name}”`}
-                      onChange={() => setSelectedTemplateIds((current) => selectionAfterToggle(current, template.id))}
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              accessibility={sortableAccessibility}
+              onDragEnd={finishSorting}
+            >
+              <SortableContext items={sortableTemplateIds} strategy={verticalListSortingStrategy}>
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+                  {orderedTemplates.map((template) => (
+                    <SortableTemplateRow
+                      key={template.id}
+                      template={template}
+                      selected={selectedTemplateIds.has(template.id)}
+                      isActive={template.id === prefs.smartTemplateId}
+                      busy={busy}
+                      onToggle={toggleTemplateSelection}
                     />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
-                          {template.name || "未命名模板"}
-                        </span>
-                        {isActive && (
-                          <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
-                            当前
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
-                        {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      draggable={!busy}
-                      disabled={busy}
-                      aria-label={`拖动“${template.name}”调整顺序`}
-                      title="拖动调整顺序；聚焦后可用上下方向键"
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", template.id);
-                        setDraggedId(template.id);
-                      }}
-                      onDragEnd={() => {
-                        setDraggedId("");
-                        setDragOverId("");
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-                        event.preventDefault();
-                        moveTemplate(template.id, event.key === "ArrowUp" ? -1 : 1);
-                      }}
-                      className="flex h-[var(--control-h-sm)] w-[var(--control-h-sm)] shrink-0 cursor-grab items-center justify-center rounded-[var(--radius-md)] border border-transparent text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] hover:border-[var(--color-line)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <GripVertical className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
             <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
               拖动每行右侧的手柄调整模板顺序。
             </p>
