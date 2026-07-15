@@ -73,6 +73,7 @@
   --z-popover: 50;
   --z-titlebar: 100;
   --z-modal: 200;
+  --z-portal-popover: 210;
 
   /* 强调色的柔和背景，用于选中/悬浮态 */
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
