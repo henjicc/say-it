@@ -5,16 +5,23 @@ use std::time::Instant;
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
 };
 
-use super::model::{ActivationTarget, CaptureOptions, CaptureStatus, CapturedActiveAppContext};
+use super::model::{
+    ActivationTarget, ActiveAppContextExtractionMethod, CaptureOptions, CaptureStatus,
+    CapturedActiveAppContext, ContextSource,
+};
 use super::normalize::{enforce_total_budget, normalize_text};
-use super::{ocr, screen_capture, ActiveAppContextProvider};
+use super::{native_probe, ocr, screen_capture, ActiveAppContextProvider};
 
 pub(crate) struct WindowsActiveAppContextProvider;
 
@@ -50,21 +57,18 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             .unwrap_or(&process_name)
             .to_string();
         let mut context = CapturedActiveAppContext {
+            capture_method: options.method,
             app_name,
             process_name,
             process_id: target.process_id,
-            window_title: window_title(target.window_handle),
             ..Default::default()
         };
 
         crate::development_debug_log(
             "active-app-context",
             format_args!(
-                "开始捕获：HWND=0x{:X}，PID={}，应用={}，窗口={}",
-                target.window_handle,
-                target.process_id,
-                context.app_name,
-                context.window_title.as_deref().unwrap_or("（无标题）"),
+                "开始捕获：HWND=0x{:X}，PID={}，应用={}，方式={:?}",
+                target.window_handle, target.process_id, context.app_name, options.method,
             ),
         );
 
@@ -89,29 +93,67 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             return context;
         }
 
-        context.status = match capture_and_recognize(
-            &mut context,
-            target.window_handle,
-            options.debug,
-            options.occluding_window_handle,
-            options.deadline,
-            cancelled,
-        ) {
-            Ok(()) if context.ocr_text.is_empty() => {
+        match focused_target_is_password(target) {
+            Ok(true) => {
+                context.status = CaptureStatus::Sensitive;
                 context
                     .diagnostics
-                    .push("整窗截图成功，但 OCR 没有识别到文字。".into());
-                CaptureStatus::Empty
+                    .push("焦点位于受保护输入控件，已停止上下文读取。".into());
+                context.elapsed_ms = started.elapsed().as_millis() as u64;
+                return context;
             }
-            Ok(()) => CaptureStatus::Captured,
-            Err(error) => {
-                context.diagnostics.push(error);
-                if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
-                    CaptureStatus::TimedOut
-                } else {
-                    CaptureStatus::Failed
+            Ok(false) => {}
+            Err(error) => context.diagnostics.push(error),
+        }
+        context.window_title = window_title(target.window_handle);
+
+        context.status = match options.method {
+            ActiveAppContextExtractionMethod::NativeText => {
+                match native_probe::capture(
+                    target,
+                    &mut context,
+                    options.deadline,
+                    options.max_chars,
+                    cancelled,
+                ) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        context.diagnostics.push(error);
+                        if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                            CaptureStatus::TimedOut
+                        } else {
+                            CaptureStatus::Failed
+                        }
+                    }
                 }
             }
+            ActiveAppContextExtractionMethod::Ocr => match capture_and_recognize(
+                &mut context,
+                target.window_handle,
+                options.debug,
+                options.occluding_window_handle,
+                options.deadline,
+                cancelled,
+            ) {
+                Ok(()) if context.ocr_text.is_empty() => {
+                    context
+                        .diagnostics
+                        .push("整窗截图成功，但 OCR 没有识别到文字。".into());
+                    CaptureStatus::Empty
+                }
+                Ok(()) => {
+                    context.source = Some(ContextSource::Ocr);
+                    CaptureStatus::Captured
+                }
+                Err(error) => {
+                    context.diagnostics.push(error);
+                    if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                        CaptureStatus::TimedOut
+                    } else {
+                        CaptureStatus::Failed
+                    }
+                }
+            },
         };
         enforce_total_budget(&mut context, options.max_chars);
         context.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -182,6 +224,34 @@ fn is_blocked(context: &CapturedActiveAppContext, blocked_apps: &[String]) -> bo
 
 fn expired(deadline: Instant) -> bool {
     Instant::now() >= deadline
+}
+
+fn focused_target_is_password(target: ActivationTarget) -> Result<bool, String> {
+    unsafe {
+        let initialized_here = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|error| format!("无法初始化 UI Automation 密码检查：{error}"))?;
+            let focused = automation
+                .GetFocusedElement()
+                .map_err(|error| format!("无法读取焦点控件用于密码检查：{error}"))?;
+            let process_id = focused
+                .CurrentProcessId()
+                .map_err(|error| format!("无法确认焦点控件进程：{error}"))?;
+            if process_id != target.process_id as i32 {
+                return Ok(false);
+            }
+            focused
+                .CurrentIsPassword()
+                .map(|value| value.as_bool())
+                .map_err(|error| format!("无法检查焦点控件是否受保护：{error}"))
+        })();
+        if initialized_here {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 fn process_name(process_id: u32) -> Option<String> {

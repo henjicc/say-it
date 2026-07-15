@@ -27,6 +27,7 @@ export interface DeletedSmartTextTemplate {
 
 export const SMART_TEXT_PLACEHOLDER = "{{text}}";
 export const ACTIVE_APP_CONTEXT_PLACEHOLDER = "{{active_app_context}}";
+export type ActiveAppContextExtractionMethod = "nativeText" | "ocr";
 export const MAX_SMART_TEXT_TEMPLATES = 50;
 export const SMART_TEMPLATE_CATALOG_VERSION = 2;
 
@@ -220,6 +221,7 @@ export interface DictPrefs extends DspParams {
   smartTemplates: SmartTextTemplate[];
   smartTemplateTrash: DeletedSmartTextTemplate[];
   smartTemplateCatalogVersion: number;
+  activeAppContextExtractionMethod: ActiveAppContextExtractionMethod;
   activeAppContextBlockedApps: string[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
   micDeviceId: string;
@@ -248,6 +250,7 @@ function defaults(): DictPrefs {
     smartTemplates: defaultSmartTextTemplates(),
     smartTemplateTrash: [],
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
+    activeAppContextExtractionMethod: "nativeText",
     activeAppContextBlockedApps: [],
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,
@@ -296,6 +299,7 @@ function readStored(): DictPrefs {
   base.smartTemplates = migrateSmartTemplateCatalog(base.smartTemplates, storedCatalogVersion);
   base.smartTemplateTrash = normalizeSmartTemplateTrash(base.smartTemplateTrash);
   base.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
+  base.activeAppContextExtractionMethod = base.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
   base.activeAppContextBlockedApps = normalizeBlockedApps(base.activeAppContextBlockedApps);
   if (!base.smartTemplates.some((template) => template.id === base.smartTemplateId)) {
     base.smartTemplateId = base.smartTemplates[0]?.id ?? "polish";
@@ -338,6 +342,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     ? value.smartTemplateCatalogVersion
     : 1;
   const storedBlockedApps = value.activeAppContextBlockedApps;
+  const storedContextMethod = value.activeAppContextExtractionMethod;
   const next = readStored();
   Object.assign(next, value);
   next.localRules = mergeLocalRules(next.localRules);
@@ -345,6 +350,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   next.smartTemplates = migrateSmartTemplateCatalog(next.smartTemplates, storedCatalogVersion);
   next.smartTemplateTrash = normalizeSmartTemplateTrash(next.smartTemplateTrash);
   next.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
+  next.activeAppContextExtractionMethod = next.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
   next.activeAppContextBlockedApps = normalizeBlockedApps(next.activeAppContextBlockedApps);
   if (!next.smartTemplates.some((template) => template.id === next.smartTemplateId)) {
     next.smartTemplateId = next.smartTemplates[0]?.id ?? "polish";
@@ -356,6 +362,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     JSON.stringify(storedTrash) !== JSON.stringify(next.smartTemplateTrash) ||
     storedTemplateId !== next.smartTemplateId ||
     storedCatalogVersion !== next.smartTemplateCatalogVersion ||
+    storedContextMethod !== next.activeAppContextExtractionMethod ||
     JSON.stringify(storedBlockedApps ?? []) !== JSON.stringify(next.activeAppContextBlockedApps)
   );
 }

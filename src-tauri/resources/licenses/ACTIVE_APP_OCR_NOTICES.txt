@@ -1,4 +1,4 @@
-激活窗口 OCR 第三方组件声明
+激活窗口上下文第三方组件声明
 
 本功能在 Windows 上使用以下第三方组件：
 
@@ -24,3 +24,12 @@
   A777AD47EEF1F9AA7246BF5F15B9739A3BE1733717FA64422EFBDC02F08E2D1C
 
 各组件的完整许可文本随相应源代码发行版提供；Apache-2.0 许可文本也随安装资源一并分发。
+
+原生文本探针还使用或借鉴以下组件：
+
+- IAccessible2 1.3 接口定义，BSD-3-Clause
+  https://github.com/LinuxA11y/IAccessible2
+- selection-hook 的焦点祖先查找和剪贴板保护思路，MIT
+  https://github.com/0xfullex/selection-hook
+
+对应许可文本见 IAccessible2-BSD-3-Clause.txt 与 selection-hook-MIT.txt。

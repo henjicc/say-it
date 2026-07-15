@@ -2,6 +2,7 @@ node_modules/
 ui/dist/
 src-tauri/target/
 src-tauri/bundle-assets/
+src-tauri/binaries/*.exe
 npm-debug.log*
 .env
 docs/others

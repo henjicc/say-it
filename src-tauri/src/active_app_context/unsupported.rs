@@ -10,10 +10,14 @@ impl ActiveAppContextProvider for UnsupportedActiveAppContextProvider {
         &self,
         _target: ActivationTarget,
         _blocked_apps: &[String],
-        _options: CaptureOptions,
+        options: CaptureOptions,
         _cancelled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> CapturedActiveAppContext {
-        CapturedActiveAppContext::with_status(CaptureStatus::Unsupported)
+        CapturedActiveAppContext {
+            status: CaptureStatus::Unsupported,
+            capture_method: options.method,
+            ..Default::default()
+        }
     }
 }
 

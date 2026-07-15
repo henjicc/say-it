@@ -149,6 +149,11 @@ pub(crate) fn update_app_settings(
         .lock()
         .map_err(|_| "应用配置锁失败")?
         .clone();
+    let previous_context_method = (domain == "dictation").then(|| {
+        crate::application::dictation::active_app_context_extraction_method_from_value(
+            &next.dictation_prefs,
+        )
+    });
     match domain.as_str() {
         "dictation" => next.dictation_prefs = value,
         "subtitles" => next.subtitle_prefs = value,
@@ -157,6 +162,14 @@ pub(crate) fn update_app_settings(
         _ => return Err(format!("未知配置领域：{domain}")),
     }
     save_settings_then_commit(&app, &state, next.clone())?;
+    if previous_context_method
+        == Some(crate::active_app_context::ActiveAppContextExtractionMethod::Ocr)
+        && crate::application::dictation::active_app_context_extraction_method_from_value(
+            &next.dictation_prefs,
+        ) == crate::active_app_context::ActiveAppContextExtractionMethod::NativeText
+    {
+        crate::active_app_context::release_ocr_engine();
+    }
     Ok(next)
 }
 

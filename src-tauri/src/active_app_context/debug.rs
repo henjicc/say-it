@@ -48,25 +48,33 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
-        let blocked_apps = state
+        let (blocked_apps, method) = state
             .app_settings
             .lock()
             .ok()
-            .and_then(|settings| {
-                settings
+            .map(|settings| {
+                let blocked_apps = settings
                     .dictation_prefs
                     .get("activeAppContextBlockedApps")
                     .and_then(Value::as_array)
                     .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+                let method =
+                    crate::application::dictation::active_app_context_extraction_method_from_value(
+                        &settings.dictation_prefs,
+                    );
+                (blocked_apps, method)
             })
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect();
-        let handle =
-            state
-                .active_app_context
-                .begin_debug_capture(target, blocked_apps, debug_window_handle);
+            .unwrap_or_default();
+        let handle = state.active_app_context.begin_debug_capture(
+            target,
+            blocked_apps,
+            debug_window_handle,
+            method,
+        );
         let context = state.active_app_context.resolve(handle).await;
         if DEBUG_CAPTURE_EPOCH.load(Ordering::Acquire) != epoch {
             return;

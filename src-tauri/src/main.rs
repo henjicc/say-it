@@ -107,7 +107,7 @@ fn main() {
     #[cfg(not(windows))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
-    builder
+    let result = builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Err(error) = ensure_main_window(app) {
                 eprintln!("[window] 单实例唤起主窗口失败: {error}");
@@ -143,6 +143,16 @@ fn main() {
                         .join("ocr")
                 };
                 active_app_context::configure_ocr_model_root(model_root);
+                let development_probe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries")
+                    .join("context-probe-x86_64-pc-windows-msvc.exe");
+                let installed_probe = std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(|parent| parent.join("context-probe.exe")));
+                let probe_path = installed_probe
+                    .filter(|path| path.is_file())
+                    .unwrap_or(development_probe);
+                active_app_context::configure_native_probe_path(probe_path);
             }
             if let Some(persisted) = load_persisted_state(&app.handle())? {
                 let state = app.state::<RuntimeState>();
@@ -403,6 +413,7 @@ fn main() {
             install_obs_overlay,
             uninstall_obs_overlay
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+    active_app_context::shutdown();
+    result.expect("error while running tauri application");
 }

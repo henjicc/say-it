@@ -1,5 +1,7 @@
 mod debug;
 mod model;
+#[cfg(windows)]
+mod native_probe;
 mod normalize;
 #[cfg(windows)]
 mod ocr;
@@ -10,7 +12,7 @@ mod unsupported;
 #[cfg(windows)]
 mod windows;
 
-use model::{CAPTURE_TIMEOUT, DICTATION_RESOLVE_WAIT};
+use model::DICTATION_RESOLVE_WAIT;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,8 +23,8 @@ const MAX_CONCURRENT_CAPTURES: usize = 4;
 
 pub(crate) use debug::{request_debug_capture, reset_debug_capture, DEBUG_STATE_EVENT};
 pub(crate) use model::{
-    ActivationTarget, ActiveAppContextSummary, CaptureOptions, CaptureStatus,
-    CapturedActiveAppContext,
+    ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, CaptureOptions,
+    CaptureStatus, CapturedActiveAppContext,
 };
 
 pub(crate) trait ActiveAppContextProvider: Send + Sync + 'static {
@@ -96,8 +98,9 @@ impl ContextCaptureService {
         &self,
         target: ActivationTarget,
         blocked_apps: Vec<String>,
+        method: ActiveAppContextExtractionMethod,
     ) -> ContextCaptureHandle {
-        self.begin_capture_inner(target, blocked_apps, CaptureOptions::default())
+        self.begin_capture_inner(target, blocked_apps, CaptureOptions::for_method(method))
     }
 
     pub(crate) fn begin_debug_capture(
@@ -105,8 +108,9 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
         debug_window_handle: Option<isize>,
+        method: ActiveAppContextExtractionMethod,
     ) -> ContextCaptureHandle {
-        let mut options = CaptureOptions::default();
+        let mut options = CaptureOptions::for_method(method);
         options.debug = true;
         options.occluding_window_handle = debug_window_handle;
         self.begin_capture_inner(target, blocked_apps, options)
@@ -118,7 +122,8 @@ impl ContextCaptureService {
         blocked_apps: Vec<String>,
         options: CaptureOptions,
     ) -> ContextCaptureHandle {
-        let started = options.deadline - CAPTURE_TIMEOUT;
+        let timeout = options.method.timeout();
+        let started = options.deadline - timeout;
         let deadline = options.deadline;
         let (reply, receiver) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -155,13 +160,12 @@ impl ContextCaptureService {
                 let provider = windows::WindowsActiveAppContextProvider;
                 #[cfg(not(windows))]
                 let provider = unsupported::UnsupportedActiveAppContextProvider;
-                let result =
-                    provider.capture(
-                        request.target,
-                        &request.blocked_apps,
-                        request.options,
-                        &request.cancelled,
-                    );
+                let result = provider.capture(
+                    request.target,
+                    &request.blocked_apps,
+                    request.options,
+                    &request.cancelled,
+                );
                 let _ = request.reply.send(result);
             });
         ContextCaptureHandle {
@@ -173,7 +177,8 @@ impl ContextCaptureService {
     }
 
     pub(crate) async fn resolve(&self, handle: ContextCaptureHandle) -> CapturedActiveAppContext {
-        self.resolve_with_wait(handle, CAPTURE_TIMEOUT).await
+        let max_wait = handle.deadline.saturating_duration_since(handle.started);
+        self.resolve_with_wait(handle, max_wait).await
     }
 
     pub(crate) async fn resolve_for_dictation(
@@ -232,26 +237,28 @@ impl ContextCaptureService {
                 );
                 CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
             }
-            Err(TryRecvError::Empty) => match tokio::time::timeout(remaining, &mut receiver).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => {
-                    crate::development_debug_log(
-                        "active-app-context",
-                        "上下文工作线程在返回结果前断开",
-                    );
-                    CapturedActiveAppContext::with_status(CaptureStatus::Failed)
-                }
-                Err(_) => {
-                    crate::development_debug_log(
+            Err(TryRecvError::Empty) => {
+                match tokio::time::timeout(remaining, &mut receiver).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => {
+                        crate::development_debug_log(
+                            "active-app-context",
+                            "上下文工作线程在返回结果前断开",
+                        );
+                        CapturedActiveAppContext::with_status(CaptureStatus::Failed)
+                    }
+                    Err(_) => {
+                        crate::development_debug_log(
                         "active-app-context",
                         format_args!(
                             "本次等待 {} ms 后仍未获得上下文；后台 OCR 可能仍在运行，本次听写将不使用它",
                             remaining.as_millis(),
                         ),
                     );
-                    CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+                        CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+                    }
                 }
-            },
+            }
         };
         if result.status == CaptureStatus::TimedOut {
             result.elapsed_ms = deadline.saturating_duration_since(started).as_millis() as u64;
@@ -284,6 +291,26 @@ pub(crate) fn configure_ocr_model_root(path: PathBuf) {
     let _ = path;
 }
 
+pub(crate) fn configure_native_probe_path(path: PathBuf) {
+    #[cfg(windows)]
+    native_probe::configure_path(path);
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+pub(crate) fn release_ocr_engine() {
+    #[cfg(windows)]
+    ocr::release_engine();
+}
+
+pub(crate) fn shutdown() {
+    #[cfg(windows)]
+    {
+        native_probe::shutdown();
+        ocr::shutdown();
+    }
+}
+
 pub(crate) fn activation_target() -> Option<ActivationTarget> {
     #[cfg(windows)]
     {
@@ -303,18 +330,17 @@ mod tests {
     async fn expired_capture_returns_timeout_without_updating_latest_summary() {
         let service = ContextCaptureService::default();
         let (_sender, receiver) = oneshot::channel();
+        let timeout = ActiveAppContextExtractionMethod::NativeText.timeout();
         let result = service
             .resolve(ContextCaptureHandle {
-                started: std::time::Instant::now()
-                    - CAPTURE_TIMEOUT
-                    - std::time::Duration::from_millis(1),
+                started: std::time::Instant::now() - timeout - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
                 cancelled: Arc::new(AtomicBool::new(false)),
             })
             .await;
         assert_eq!(result.status, CaptureStatus::TimedOut);
-        assert_eq!(result.elapsed_ms, CAPTURE_TIMEOUT.as_millis() as u64);
+        assert_eq!(result.elapsed_ms, timeout.as_millis() as u64);
         assert!(service.latest_summary().is_none());
     }
 
@@ -334,7 +360,7 @@ mod tests {
         let result = service
             .resolve_for_dictation(ContextCaptureHandle {
                 started: std::time::Instant::now()
-                    - CAPTURE_TIMEOUT
+                    - ActiveAppContextExtractionMethod::Ocr.timeout()
                     - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
@@ -343,7 +369,10 @@ mod tests {
             .await;
 
         assert_eq!(result.status, CaptureStatus::Captured);
-        assert_eq!(result.format_for_prompt(), "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容");
+        assert_eq!(
+            result.format_for_prompt(),
+            "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容"
+        );
     }
 
     #[test]
@@ -352,7 +381,8 @@ mod tests {
         let (_sender, receiver) = oneshot::channel();
         let handle = ContextCaptureHandle {
             started: std::time::Instant::now(),
-            deadline: std::time::Instant::now() + CAPTURE_TIMEOUT,
+            deadline: std::time::Instant::now()
+                + ActiveAppContextExtractionMethod::NativeText.timeout(),
             receiver: Some(receiver),
             cancelled: Arc::clone(&cancelled),
         };
