@@ -2,6 +2,25 @@ import { create } from "zustand";
 
 type Tone = "" | "ok" | "err";
 
+export type ActiveAppContextStatus =
+  | "captured"
+  | "empty"
+  | "blocked"
+  | "accessDenied"
+  | "timedOut"
+  | "unsupported"
+  | "failed";
+
+export interface ActiveAppContextSummary {
+  status: ActiveAppContextStatus;
+  appName: string;
+  processName: string;
+  windowTitle?: string | null;
+  preview: string;
+  elapsedMs: number;
+  truncated: boolean;
+}
+
 interface DictationState {
   statusText: string;
   statusTone: Tone;
@@ -12,6 +31,7 @@ interface DictationState {
   shortcutLabel: string;
   injectMethod: "paste" | "type";
   pressHoldMode: boolean;
+  activeAppContext?: ActiveAppContextSummary;
 }
 
 export const useDictationStore = create<DictationState>(() => ({
@@ -24,4 +44,5 @@ export const useDictationStore = create<DictationState>(() => ({
   shortcutLabel: "",
   injectMethod: "paste",
   pressHoldMode: false,
+  activeAppContext: undefined,
 }));

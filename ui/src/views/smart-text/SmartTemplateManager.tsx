@@ -418,7 +418,7 @@ export function SmartTemplateManager({
 
   const restoreDefaultTemplates = async () => {
     if (missingDefaultTemplates.length === 0) {
-      report({ tone: "ok", text: "三个内置模板均已保留，无需补回。" });
+      report({ tone: "ok", text: "当前版本的内置模板均已保留，无需补回。" });
       return;
     }
     const currentPrefs = useDictPrefs.getState().prefs;
@@ -612,7 +612,7 @@ export function SmartTemplateManager({
                 <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
                   {missingDefaultTemplates.length > 0
                     ? `发现 ${missingDefaultTemplates.length} 个缺失项，可按当前版本补回。`
-                    : "三个内置模板均已保留。"}
+                    : `当前版本的 ${defaultSmartTextTemplates().length} 个内置模板均已保留。`}
                 </p>
               </div>
               <Button size="sm" disabled={busy} onClick={() => void restoreDefaultTemplates()}>
