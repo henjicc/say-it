@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cwctype>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -68,6 +69,8 @@ struct Request {
     size_t maxChars = 3000;
     bool deepClipboard = true;
     uint32_t readerBudgetMs = 650;
+    bool hasCursor = false;
+    POINT cursor{};
 };
 
 struct Result {
@@ -169,6 +172,21 @@ std::optional<uint64_t> jsonUnsigned(const std::string& json, const char* key) {
     catch (...) { return std::nullopt; }
 }
 
+std::optional<int64_t> jsonSigned(const std::string& json, const char* key) {
+    const std::string marker = std::string("\"") + key + "\":";
+    size_t position = json.find(marker);
+    if (position == std::string::npos) return std::nullopt;
+    position += marker.size();
+    while (position < json.size() && json[position] == ' ') ++position;
+    size_t end = position;
+    if (end < json.size() && json[end] == '-') ++end;
+    const size_t digits = end;
+    while (end < json.size() && json[end] >= '0' && json[end] <= '9') ++end;
+    if (end == digits) return std::nullopt;
+    try { return std::stoll(json.substr(position, end - position)); }
+    catch (...) { return std::nullopt; }
+}
+
 bool jsonBool(const std::string& json, const char* key, bool fallback) {
     const std::string marker = std::string("\"") + key + "\":";
     size_t position = json.find(marker);
@@ -188,6 +206,8 @@ std::optional<Request> parseRequest(const std::string& json) {
     auto pid = jsonUnsigned(json, "pid");
     auto maxChars = jsonUnsigned(json, "maxChars");
     auto readerBudgetMs = jsonUnsigned(json, "readerBudgetMs");
+    auto cursorX = jsonSigned(json, "cursorX");
+    auto cursorY = jsonSigned(json, "cursorY");
     if (!protocol || !requestId || !hwnd || !pid || !maxChars) return std::nullopt;
     request.protocolVersion = static_cast<uint32_t>(*protocol);
     request.requestId = *requestId;
@@ -196,6 +216,13 @@ std::optional<Request> parseRequest(const std::string& json) {
     request.maxChars = std::clamp<size_t>(static_cast<size_t>(*maxChars), 1, 6000);
     request.deepClipboard = jsonBool(json, "deepClipboard", true);
     request.readerBudgetMs = static_cast<uint32_t>(std::clamp<uint64_t>(readerBudgetMs.value_or(650), 50, 700));
+    if (cursorX && cursorY
+        && *cursorX >= std::numeric_limits<LONG>::min() && *cursorX <= std::numeric_limits<LONG>::max()
+        && *cursorY >= std::numeric_limits<LONG>::min() && *cursorY <= std::numeric_limits<LONG>::max()) {
+        request.hasCursor = true;
+        request.cursor.x = static_cast<LONG>(*cursorX);
+        request.cursor.y = static_cast<LONG>(*cursorY);
+    }
     return request;
 }
 
@@ -311,16 +338,8 @@ bool focusMatchesTarget(IUIAutomationElement* element, DWORD pid, const std::wst
         && sameExecutable(static_cast<DWORD>(focusedPid), pid, targetName);
 }
 
-bool readIa2(IUIAutomationElement* element, Result& result, size_t maxChars) {
-    if (!element) return false;
-    ComPtr<IUIAutomationLegacyIAccessiblePattern> legacy;
-    if (FAILED(element->GetCurrentPatternAs(UIA_LegacyIAccessiblePatternId,
-            __uuidof(IUIAutomationLegacyIAccessiblePattern), reinterpret_cast<void**>(legacy.put()))) || !legacy) {
-        return false;
-    }
-    ComPtr<IAccessible> accessible;
-    if (FAILED(legacy->GetIAccessible(accessible.put())) || !accessible) return false;
-
+bool readIa2Accessible(IAccessible* accessible, Result& result, size_t maxChars, const POINT* point = nullptr) {
+    if (!accessible) return false;
     ComPtr<IAccessibleText> text;
     ComPtr<IServiceProvider> service;
     if (SUCCEEDED(accessible->QueryInterface(IID_PPV_ARGS(service.put()))) && service) {
@@ -343,7 +362,12 @@ bool readIa2(IUIAutomationElement* element, Result& result, size_t maxChars) {
     long count = 0;
     if (FAILED(text->get_nCharacters(&count)) || count <= 0) return !result.selectedText.empty();
     long caret = -1;
-    if (SUCCEEDED(text->get_caretOffset(&caret)) && caret >= 0) {
+    const bool hasCaret = SUCCEEDED(text->get_caretOffset(&caret)) && caret >= 0;
+    if (!hasCaret && point) {
+        // 浏览器中的焦点有时落在容器；IA2 的定点偏移可直接回到用户刚点击的文本位置。
+        text->get_offsetAtPoint(point->x, point->y, IA2_COORDTYPE_SCREEN_RELATIVE, &caret);
+    }
+    if (caret >= 0) {
         long start = std::max<long>(0, caret - 500);
         long end = std::min<long>(count, caret + 500);
         BSTR context = nullptr;
@@ -361,6 +385,18 @@ bool readIa2(IUIAutomationElement* element, Result& result, size_t maxChars) {
     }
     if (textSize(result) > 0) result.source = "ia2Text";
     return textSize(result) > 0;
+}
+
+bool readIa2(IUIAutomationElement* element, Result& result, size_t maxChars) {
+    if (!element) return false;
+    ComPtr<IUIAutomationLegacyIAccessiblePattern> legacy;
+    if (FAILED(element->GetCurrentPatternAs(UIA_LegacyIAccessiblePatternId,
+            __uuidof(IUIAutomationLegacyIAccessiblePattern), reinterpret_cast<void**>(legacy.put()))) || !legacy) {
+        return false;
+    }
+    ComPtr<IAccessible> accessible;
+    if (FAILED(legacy->GetIAccessible(accessible.put())) || !accessible) return false;
+    return readIa2Accessible(accessible.get(), result, maxChars);
 }
 
 bool readTextPattern(IUIAutomationElement* element, Result& result, size_t maxChars, bool documentFallback) {
@@ -432,6 +468,65 @@ ComPtr<IUIAutomationElement> focusedElement(HWND target, DWORD pid, const std::w
     if (!focusMatchesTarget(focused.get(), pid, targetName)) return {};
     (void)target;
     return focused;
+}
+
+bool pointBelongsToTarget(HWND target, POINT point) {
+    HWND hit = WindowFromPoint(point);
+    if (!hit) return false;
+    return GetAncestor(hit, GA_ROOT) == target;
+}
+
+ComPtr<IUIAutomationElement> elementAtPoint(POINT point, DWORD pid, const std::wstring& targetName) {
+    if (!gAutomation) return {};
+    ComPtr<IUIAutomationElement> element;
+    if (FAILED(gAutomation->ElementFromPoint(point, element.put())) || !element) return {};
+    return focusMatchesTarget(element.get(), pid, targetName) ? std::move(element) : ComPtr<IUIAutomationElement>{};
+}
+
+ComPtr<IAccessible> accessibleAtPoint(POINT point) {
+    ComPtr<IAccessible> parent;
+    VARIANT child;
+    VariantInit(&child);
+    if (FAILED(AccessibleObjectFromPoint(point, parent.put(), &child)) || !parent) {
+        VariantClear(&child);
+        return {};
+    }
+    // 定点 API 可能返回父级对象和一个子项 ID；若实际子项可取得 IAccessible，优先它。
+    if (child.vt == VT_DISPATCH && child.pdispVal) {
+        ComPtr<IAccessible> actual;
+        if (SUCCEEDED(child.pdispVal->QueryInterface(IID_PPV_ARGS(actual.put()))) && actual) {
+            VariantClear(&child);
+            return actual;
+        }
+    }
+    if (child.vt == VT_I4 && child.lVal != CHILDID_SELF) {
+        ComPtr<IDispatch> childDispatch;
+        if (SUCCEEDED(parent->get_accChild(child, childDispatch.put())) && childDispatch) {
+            ComPtr<IAccessible> actual;
+            if (SUCCEEDED(childDispatch->QueryInterface(IID_PPV_ARGS(actual.put()))) && actual) {
+                VariantClear(&child);
+                return actual;
+            }
+        }
+    }
+    VariantClear(&child);
+    return parent;
+}
+
+bool accessibleIsPassword(IAccessible* accessible) {
+    if (!accessible) return false;
+    VARIANT self;
+    VariantInit(&self);
+    self.vt = VT_I4;
+    self.lVal = CHILDID_SELF;
+    VARIANT state;
+    VariantInit(&state);
+    const HRESULT hr = accessible->get_accState(self, &state);
+    const bool protectedField = SUCCEEDED(hr)
+        && state.vt == VT_I4
+        && (state.lVal & STATE_SYSTEM_PROTECTED) != 0;
+    VariantClear(&state);
+    return protectedField;
 }
 
 bool readUiaWithAncestors(IUIAutomationElement* focused, Result& result, size_t maxChars) {
@@ -575,6 +670,13 @@ std::wstring accessibleString(IAccessible* accessible, bool value) {
     return trim(output);
 }
 
+bool readMsaaAccessible(IAccessible* accessible, Result& result) {
+    result.focusedText = accessibleString(accessible, true);
+    if (result.focusedText.empty()) result.focusedText = accessibleString(accessible, false);
+    if (!result.focusedText.empty()) result.source = "msaa";
+    return !result.focusedText.empty();
+}
+
 bool readMsaa(HWND target, Result& result) {
     ComPtr<IAccessible> root;
     if (FAILED(AccessibleObjectFromWindow(target, static_cast<DWORD>(OBJID_CLIENT), IID_IAccessible, reinterpret_cast<void**>(root.put()))) || !root) return false;
@@ -586,10 +688,7 @@ bool readMsaa(HWND target, Result& result) {
     }
     VariantClear(&focus);
     IAccessible* candidate = focused ? focused.get() : root.get();
-    result.focusedText = accessibleString(candidate, true);
-    if (result.focusedText.empty()) result.focusedText = accessibleString(candidate, false);
-    if (!result.focusedText.empty()) result.source = "msaa";
-    return !result.focusedText.empty();
+    return readMsaaAccessible(candidate, result);
 }
 
 void sendKey(WORD virtualKey, bool down) {
@@ -767,17 +866,75 @@ Result capture(const Request& request) {
         return result;
     }
     const std::wstring process = processName(actualPid);
-    auto focused = focusedElement(target, actualPid, process);
-    if (focused && elementIsPassword(focused.get())) {
-        result.status = "sensitive";
-        result.diagnostics.push_back(L"焦点位于密码控件，已停止读取。 ");
-        return result;
-    }
     const std::wstring title = windowTitle(target);
-
-    bool sensitive = false;
     const bool browser = isBrowserOrElectron(process);
     const bool office = isOffice(process);
+    bool sensitive = false;
+
+    // 全局 GetFocusedElement 在 Chromium/Electron 中偶尔会被其多进程辅助功能桥拖慢。
+    // 快捷键刚触发时鼠标通常仍位于用户点击的编辑区，先用定点 MSAA/IA2 读取，可绕开全局焦点查询。
+    const bool cursorOnTarget = request.hasCursor && pointBelongsToTarget(target, request.cursor);
+    ComPtr<IUIAutomationElement> pointed;
+    if (cursorOnTarget) {
+        const size_t before = textSize(result);
+        const auto pointStarted = Clock::now();
+        auto accessible = accessibleAtPoint(request.cursor);
+        if (accessible && accessibleIsPassword(accessible.get())) {
+            sensitive = true;
+            result.diagnostics.push_back(L"鼠标所在控件为受保护输入框，已停止读取。 ");
+        } else if (accessible) {
+            if (browser) readIa2Accessible(accessible.get(), result, request.maxChars, &request.cursor);
+            if (textSize(result) == before) readMsaaAccessible(accessible.get(), result);
+        }
+        const auto pointMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - pointStarted).count();
+        std::wostringstream diagnostic;
+        diagnostic << L"鼠标定点 MSAA/IA2："
+                   << (textSize(result) > before ? L"读取成功" : L"无可用内容")
+                   << L"，耗时 " << pointMs << L" ms。 ";
+        result.diagnostics.push_back(diagnostic.str());
+        if (textSize(result) > before) {
+            auto& stats = gReaderStats[process];
+            stats.source = result.source.empty() ? "msaa" : result.source;
+            const double elapsed = static_cast<double>(pointMs);
+            stats.averageMs = stats.samples == 0 ? elapsed : (stats.averageMs * stats.samples + elapsed) / (stats.samples + 1);
+            ++stats.samples;
+        }
+    }
+    if (sensitive) {
+        result.status = "sensitive";
+        return result;
+    }
+    if (cursorOnTarget && textSize(result) < kMinimumUsefulChars && Clock::now() < readerDeadline) {
+        pointed = elementAtPoint(request.cursor, actualPid, process);
+        if (pointed && elementIsPassword(pointed.get())) {
+            result.status = "sensitive";
+            result.diagnostics.push_back(L"鼠标所在 UIA 控件为受保护输入框，已停止读取。 ");
+            return result;
+        }
+        if (pointed) {
+            const size_t before = textSize(result);
+            const auto pointStarted = Clock::now();
+            if (browser) readIa2(pointed.get(), result, request.maxChars);
+            if (textSize(result) < kMinimumUsefulChars) readTextPattern(pointed.get(), result, request.maxChars, true);
+            const auto pointMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - pointStarted).count();
+            std::wostringstream diagnostic;
+            diagnostic << L"鼠标定点 UIA："
+                       << (textSize(result) > before ? L"读取成功" : L"无可用内容")
+                       << L"，耗时 " << pointMs << L" ms。 ";
+            result.diagnostics.push_back(diagnostic.str());
+        }
+    }
+
+    // 定点通道已取得足够正文时，不再调用可能慢的全局焦点 API。
+    ComPtr<IUIAutomationElement> focused;
+    if (textSize(result) < kMinimumUsefulChars && Clock::now() < readerDeadline) {
+        focused = focusedElement(target, actualPid, process);
+        if (focused && elementIsPassword(focused.get())) {
+            result.status = "sensitive";
+            result.diagnostics.push_back(L"焦点位于密码控件，已停止读取。 ");
+            return result;
+        }
+    }
     auto tryReader = [&](const std::string& reader) {
         if (textSize(result) >= kMinimumUsefulChars || sensitive) return;
         if (Clock::now() >= readerDeadline) {
@@ -839,7 +996,7 @@ Result capture(const Request& request) {
         }
     }
     if (request.deepClipboard && textSize(result) < kMinimumUsefulChars && Clock::now() < readerDeadline) {
-        readClipboardDeep(target, focused.get(), result);
+        readClipboardDeep(target, focused ? focused.get() : pointed.get(), result);
     } else if (request.deepClipboard && textSize(result) < kMinimumUsefulChars) {
         result.diagnostics.push_back(L"原生读取预算已用尽，跳过深度剪贴板读取。 ");
     }
@@ -893,9 +1050,10 @@ bool selfTestRequested() {
 
 int runSelfTests() {
     const auto request = parseRequest(
-        R"({"protocolVersion":1,"requestId":42,"hwnd":123,"pid":456,"maxChars":3000,"deepClipboard":true})");
+        R"({"protocolVersion":1,"requestId":42,"hwnd":123,"pid":456,"maxChars":3000,"deepClipboard":true,"cursorX":-320,"cursorY":480})");
     if (!request || request->requestId != 42 || request->hwnd != 123 || request->pid != 456
-        || request->maxChars != 3000 || !request->deepClipboard) return 10;
+        || request->maxChars != 3000 || !request->deepClipboard || !request->hasCursor
+        || request->cursor.x != -320 || request->cursor.y != 480) return 10;
     if (parseRequest(R"({"protocolVersion":1})")) return 11;
 
     Result budget;

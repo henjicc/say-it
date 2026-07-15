@@ -42,6 +42,9 @@ impl ActiveAppContextExtractionMethod {
 pub(crate) struct ActivationTarget {
     pub(crate) window_handle: isize,
     pub(crate) process_id: u32,
+    /// 全局快捷键触发时鼠标仍通常停在刚点击的输入区。该坐标仅在本次捕获中用于
+    /// 定点定位辅助功能元素，不会持久化或发送到模型。
+    pub(crate) cursor_position: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
