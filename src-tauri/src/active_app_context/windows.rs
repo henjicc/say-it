@@ -41,6 +41,33 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     })
 }
 
+/// 只读取本进程可直接取得的窗口元信息。它必须在探针或 UIA 发生跨进程调用前完成，
+/// 以便正文读取超时仍有稳定的场景保底。
+pub(crate) fn baseline_context(
+    target: ActivationTarget,
+    blocked_apps: &[String],
+    method: ActiveAppContextExtractionMethod,
+) -> CapturedActiveAppContext {
+    let process_name = process_name(target.process_id).unwrap_or_default();
+    let app_name = Path::new(&process_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&process_name)
+        .to_string();
+    let mut context = CapturedActiveAppContext {
+        capture_method: method,
+        app_name,
+        process_name,
+        process_id: target.process_id,
+        window_title: window_title(target.window_handle),
+        ..Default::default()
+    };
+    if is_blocked(&context, blocked_apps) {
+        context.status = CaptureStatus::Blocked;
+    }
+    context
+}
+
 impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
     fn capture(
         &self,
@@ -50,19 +77,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         cancelled: &Arc<AtomicBool>,
     ) -> CapturedActiveAppContext {
         let started = Instant::now();
-        let process_name = process_name(target.process_id).unwrap_or_default();
-        let app_name = Path::new(&process_name)
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or(&process_name)
-            .to_string();
-        let mut context = CapturedActiveAppContext {
-            capture_method: options.method,
-            app_name,
-            process_name,
-            process_id: target.process_id,
-            ..Default::default()
-        };
+        let mut context = baseline_context(target, blocked_apps, options.method);
 
         crate::development_debug_log(
             "active-app-context",
@@ -78,8 +93,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             return context;
         }
 
-        if is_blocked(&context, blocked_apps) {
-            context.status = CaptureStatus::Blocked;
+        if context.status == CaptureStatus::Blocked {
             context.elapsed_ms = started.elapsed().as_millis() as u64;
             crate::development_debug_log(
                 "active-app-context",
@@ -93,30 +107,61 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             return context;
         }
 
-        match focused_target_is_password(target) {
-            Ok(true) => {
-                context.status = CaptureStatus::Sensitive;
-                context
-                    .diagnostics
-                    .push("焦点位于受保护输入控件，已停止上下文读取。".into());
-                context.elapsed_ms = started.elapsed().as_millis() as u64;
-                return context;
-            }
-            Ok(false) => {}
-            Err(error) => context.diagnostics.push(error),
-        }
-        context.window_title = window_title(target.window_handle);
-
         context.status = match options.method {
-            ActiveAppContextExtractionMethod::NativeText => {
-                match native_probe::capture(
+            // 原生探针会在读取正文前自行检查密码控件。这里不重复执行全局 UIA
+            // GetFocusedElement，因为该调用在 Chromium/Electron 上可能耗尽整个 800ms 配额。
+            ActiveAppContextExtractionMethod::NativeText => match native_probe::capture(
                     target,
                     &mut context,
                     options.deadline,
                     options.max_chars,
                     cancelled,
                 ) {
-                    Ok(status) => status,
+                Ok(status) => status,
+                Err(error) => {
+                    context.diagnostics.push(error);
+                    if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                        CaptureStatus::TimedOut
+                    } else {
+                        CaptureStatus::Failed
+                    }
+                }
+            },
+            ActiveAppContextExtractionMethod::Ocr => {
+                match focused_target_is_password(target) {
+                    Ok(true) => {
+                        context
+                            .diagnostics
+                            .push("焦点位于受保护输入控件，已停止上下文读取。".into());
+                        CaptureStatus::Sensitive
+                    }
+                    Ok(false) => match capture_and_recognize(
+                        &mut context,
+                        target.window_handle,
+                        options.debug,
+                        options.occluding_window_handle,
+                        options.deadline,
+                        cancelled,
+                    ) {
+                        Ok(()) if context.ocr_text.is_empty() => {
+                            context
+                                .diagnostics
+                                .push("整窗截图成功，但 OCR 没有识别到文字。".into());
+                            CaptureStatus::Empty
+                        }
+                        Ok(()) => {
+                            context.source = Some(ContextSource::Ocr);
+                            CaptureStatus::Captured
+                        }
+                        Err(error) => {
+                            context.diagnostics.push(error);
+                            if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                                CaptureStatus::TimedOut
+                            } else {
+                                CaptureStatus::Failed
+                            }
+                        }
+                    },
                     Err(error) => {
                         context.diagnostics.push(error);
                         if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
@@ -127,34 +172,18 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                     }
                 }
             }
-            ActiveAppContextExtractionMethod::Ocr => match capture_and_recognize(
-                &mut context,
-                target.window_handle,
-                options.debug,
-                options.occluding_window_handle,
-                options.deadline,
-                cancelled,
-            ) {
-                Ok(()) if context.ocr_text.is_empty() => {
-                    context
-                        .diagnostics
-                        .push("整窗截图成功，但 OCR 没有识别到文字。".into());
-                    CaptureStatus::Empty
-                }
-                Ok(()) => {
-                    context.source = Some(ContextSource::Ocr);
-                    CaptureStatus::Captured
-                }
-                Err(error) => {
-                    context.diagnostics.push(error);
-                    if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
-                        CaptureStatus::TimedOut
-                    } else {
-                        CaptureStatus::Failed
-                    }
-                }
-            },
         };
+        if options.method == ActiveAppContextExtractionMethod::NativeText
+            && matches!(
+                context.status,
+                CaptureStatus::Empty | CaptureStatus::TimedOut | CaptureStatus::Failed
+            )
+        {
+            let status = context.status;
+            let _ = context.use_metadata_fallback(format!(
+                "原生文本读取{status:?}，仅使用已取得的应用与窗口信息。"
+            ));
+        }
         enforce_total_budget(&mut context, options.max_chars);
         context.elapsed_ms = started.elapsed().as_millis() as u64;
         crate::development_debug_log(

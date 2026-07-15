@@ -229,6 +229,27 @@ impl CapturedActiveAppContext {
             || !self.document_text.is_empty()
             || !self.ocr_text.is_empty()
     }
+
+    /// 窗口元信息由本进程直接读取，不能让跨进程正文读取失败时一并丢失。
+    /// 这也让智能整理至少能获知用户正在使用的应用和窗口场景。
+    pub(crate) fn has_prompt_metadata(&self) -> bool {
+        !self.app_name.trim().is_empty()
+            || self
+                .window_title
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+
+    pub(crate) fn use_metadata_fallback(&mut self, reason: impl Into<String>) -> bool {
+        if matches!(self.status, CaptureStatus::Blocked | CaptureStatus::Sensitive)
+            || !self.has_prompt_metadata()
+        {
+            return false;
+        }
+        self.status = CaptureStatus::Captured;
+        self.diagnostics.push(reason.into());
+        true
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -355,6 +376,34 @@ mod tests {
             context.format_for_prompt(),
             "应用：Code\n窗口：main.rs\n选中文本：选区\n当前输入区域：输入\n光标附近内容：光标\n当前可见文字：可见\n当前文档文字：文档\n窗口可见文字：OCR"
         );
+    }
+
+    #[test]
+    fn timed_out_text_capture_can_safely_keep_window_metadata() {
+        let mut context = CapturedActiveAppContext {
+            status: CaptureStatus::TimedOut,
+            app_name: "msedge".into(),
+            window_title: Some("文档 - Microsoft Edge".into()),
+            ..Default::default()
+        };
+
+        assert!(context.use_metadata_fallback("正文读取超时，仅使用基础窗口信息。"));
+        assert_eq!(context.status, CaptureStatus::Captured);
+        assert_eq!(
+            context.format_for_prompt(),
+            "应用：msedge\n窗口：文档 - Microsoft Edge"
+        );
+    }
+
+    #[test]
+    fn sensitive_capture_never_uses_metadata_fallback() {
+        let mut context = CapturedActiveAppContext {
+            status: CaptureStatus::Sensitive,
+            app_name: "password-manager".into(),
+            ..Default::default()
+        };
+        assert!(!context.use_metadata_fallback("不应使用"));
+        assert!(context.format_for_prompt().is_empty());
     }
 
     #[test]

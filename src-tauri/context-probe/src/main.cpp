@@ -67,6 +67,7 @@ struct Request {
     uint32_t pid = 0;
     size_t maxChars = 3000;
     bool deepClipboard = true;
+    uint32_t readerBudgetMs = 650;
 };
 
 struct Result {
@@ -186,6 +187,7 @@ std::optional<Request> parseRequest(const std::string& json) {
     auto hwnd = jsonUnsigned(json, "hwnd");
     auto pid = jsonUnsigned(json, "pid");
     auto maxChars = jsonUnsigned(json, "maxChars");
+    auto readerBudgetMs = jsonUnsigned(json, "readerBudgetMs");
     if (!protocol || !requestId || !hwnd || !pid || !maxChars) return std::nullopt;
     request.protocolVersion = static_cast<uint32_t>(*protocol);
     request.requestId = *requestId;
@@ -193,6 +195,7 @@ std::optional<Request> parseRequest(const std::string& json) {
     request.pid = static_cast<uint32_t>(*pid);
     request.maxChars = std::clamp<size_t>(static_cast<size_t>(*maxChars), 1, 6000);
     request.deepClipboard = jsonBool(json, "deepClipboard", true);
+    request.readerBudgetMs = static_cast<uint32_t>(std::clamp<uint64_t>(readerBudgetMs.value_or(650), 50, 700));
     return request;
 }
 
@@ -747,6 +750,7 @@ void enforceBudget(Result& result, size_t maxChars) {
 
 Result capture(const Request& request) {
     const auto started = Clock::now();
+    const auto readerDeadline = started + std::chrono::milliseconds(request.readerBudgetMs);
     Result result;
     result.requestId = request.requestId;
     HWND target = reinterpret_cast<HWND>(request.hwnd);
@@ -776,6 +780,10 @@ Result capture(const Request& request) {
     const bool office = isOffice(process);
     auto tryReader = [&](const std::string& reader) {
         if (textSize(result) >= kMinimumUsefulChars || sensitive) return;
+        if (Clock::now() >= readerDeadline) {
+            result.diagnostics.push_back(L"原生读取预算已用尽，跳过后续读取器。 ");
+            return;
+        }
         if ((reader == "officeNative" && !office) || (reader == "win32Message" && office)) return;
         const size_t before = textSize(result);
         const auto readerStarted = Clock::now();
@@ -830,8 +838,10 @@ Result capture(const Request& request) {
             result.diagnostics.push_back(L"复用了 2 秒内的限长文档正文缓存。 ");
         }
     }
-    if (request.deepClipboard && textSize(result) < kMinimumUsefulChars) {
+    if (request.deepClipboard && textSize(result) < kMinimumUsefulChars && Clock::now() < readerDeadline) {
         readClipboardDeep(target, focused.get(), result);
+    } else if (request.deepClipboard && textSize(result) < kMinimumUsefulChars) {
+        result.diagnostics.push_back(L"原生读取预算已用尽，跳过深度剪贴板读取。 ");
     }
 
     enforceBudget(result, request.maxChars);
