@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -9,10 +9,10 @@ import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd } from "@/lib/tauri";
+import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
 import {
   MAX_SMART_TEXT_TEMPLATES,
   SMART_TEXT_PLACEHOLDER,
-  defaultSmartTextTemplates,
   useDictPrefs,
   type DeletedSmartTextTemplate,
   type SmartTextTemplate,
@@ -25,9 +25,6 @@ export function SmartTextPanel() {
   const patch = useDictPrefs((state) => state.patch);
   const templates = prefs.smartTemplates;
   const active = templates.find((template) => template.id === prefs.smartTemplateId) ?? templates[0];
-  const missingDefaultTemplates = defaultSmartTextTemplates().filter(
-    (template) => !templates.some((current) => current.id === template.id),
-  );
   const [previewInput, setPreviewInput] = useState(PREVIEW_SAMPLE);
   const [previewOutput, setPreviewOutput] = useState("");
   const [previewing, setPreviewing] = useState(false);
@@ -35,7 +32,7 @@ export function SmartTextPanel() {
   const [draftName, setDraftName] = useState(active?.name ?? "");
   const [draftPrompt, setDraftPrompt] = useState(active?.prompt ?? "");
   const [pendingDelete, setPendingDelete] = useState<SmartTextTemplate>();
-  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
   const [templateActionBusy, setTemplateActionBusy] = useState(false);
   const [templateNotice, setTemplateNotice] = useState<{ tone: "ok" | "err"; text: string }>();
   const [recentRecoveryId, setRecentRecoveryId] = useState("");
@@ -159,27 +156,6 @@ export function SmartTextPanel() {
     }
   };
 
-  const restoreDefaultTemplates = async () => {
-    if (missingDefaultTemplates.length === 0) return;
-    if (templates.length + missingDefaultTemplates.length > MAX_SMART_TEXT_TEMPLATES) {
-      setTemplateNotice({ tone: "err", text: "模板数量已接近上限，请先删除不需要的模板。" });
-      return;
-    }
-    setTemplateActionBusy(true);
-    setTemplateNotice(undefined);
-    try {
-      await patch({
-        smartTemplates: [...templates, ...missingDefaultTemplates],
-        smartTemplateId: missingDefaultTemplates[0].id,
-      });
-      setTemplateNotice({ tone: "ok", text: `已补回 ${missingDefaultTemplates.length} 个内置模板。` });
-    } catch (error) {
-      setTemplateNotice({ tone: "err", text: `恢复内置模板失败：${String(error)}` });
-    } finally {
-      setTemplateActionBusy(false);
-    }
-  };
-
   const preview = async () => {
     if (!active) return;
     setPreviewing(true);
@@ -240,11 +216,11 @@ export function SmartTextPanel() {
                 <Trash2 className="h-4 w-4" strokeWidth={1.8} aria-hidden />
               </IconButton>
               <IconButton
-                label="恢复模板"
+                label="管理模板"
                 disabled={templateActionBusy}
-                onClick={() => setRestoreOpen(true)}
+                onClick={() => setManagerOpen(true)}
               >
-                <ArchiveRestore className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                <ListChecks className="h-4 w-4" strokeWidth={1.8} aria-hidden />
               </IconButton>
             </>
           }
@@ -377,81 +353,11 @@ export function SmartTextPanel() {
         </div>
       </Modal>
 
-      <Modal
-        open={restoreOpen}
-        onClose={() => !templateActionBusy && setRestoreOpen(false)}
-        title="恢复模板"
-        className="max-w-[520px]"
-      >
-        <div className="flex flex-col gap-5 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-line)] pb-5">
-            <div className="min-w-0">
-              <h4 className="text-sm font-medium text-[var(--color-fg)]">内置模板</h4>
-              <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                {missingDefaultTemplates.length > 0
-                  ? `缺少 ${missingDefaultTemplates.length} 个内置模板，可按当前版本的默认内容补回。`
-                  : "三个内置模板均已保留。"}
-              </p>
-            </div>
-            <Button
-              size="sm"
-              title={
-                templates.length + missingDefaultTemplates.length > MAX_SMART_TEXT_TEMPLATES
-                  ? "模板数量已接近上限"
-                  : undefined
-              }
-              disabled={
-                templateActionBusy ||
-                missingDefaultTemplates.length === 0 ||
-                templates.length + missingDefaultTemplates.length > MAX_SMART_TEXT_TEMPLATES
-              }
-              onClick={() => void restoreDefaultTemplates()}
-            >
-              补回内置模板
-            </Button>
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <h4 className="text-sm font-medium text-[var(--color-fg)]">已删除模板</h4>
-              <span className="text-xs text-[var(--color-fg-faint)]">最多保留最近 50 个</span>
-            </div>
-            <div className="mt-3 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-              {prefs.smartTemplateTrash.length === 0 ? (
-                <p className="px-4 py-5 text-center text-xs text-[var(--color-fg-subtle)]">
-                  没有可恢复的已删除模板。
-                </p>
-              ) : (
-                prefs.smartTemplateTrash.map((entry) => (
-                  <div
-                    key={entry.recoveryId}
-                    className="flex items-center gap-3 border-b border-[var(--color-line)] px-3 py-2.5 last:border-b-0"
-                  >
-                    <span
-                      className="min-w-0 flex-1 truncate text-sm text-[var(--color-fg-muted)]"
-                      title={entry.template.name}
-                    >
-                      {entry.template.name}
-                    </span>
-                    <Button
-                      size="sm"
-                      title={
-                        templates.length >= MAX_SMART_TEXT_TEMPLATES
-                          ? "模板已达到数量上限"
-                          : undefined
-                      }
-                      disabled={templateActionBusy || templates.length >= MAX_SMART_TEXT_TEMPLATES}
-                      onClick={() => void restoreDeletedTemplate(entry)}
-                    >
-                      恢复
-                    </Button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      </Modal>
+      <SmartTemplateManager
+        open={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        onNotice={setTemplateNotice}
+      />
     </div>
   );
 }
