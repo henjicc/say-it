@@ -1,9 +1,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use uiautomation::core::UICacheRequest;
 use uiautomation::patterns::{UITextPattern, UIValuePattern};
-use uiautomation::types::{ControlType, Handle};
+use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement, UITreeWalker};
 use windows::core::PWSTR;
 use windows::Win32::Foundation::CloseHandle;
@@ -18,7 +19,10 @@ use super::ActiveAppContextProvider;
 
 const FIELD_CHAR_LIMIT: usize = 1_000;
 const DOCUMENT_BLOCK_LIMIT: usize = 2_000;
-const MAX_ANCESTORS: usize = 8;
+const MAX_ANCESTORS: usize = 16;
+const MAX_NEARBY_ANCESTORS: usize = 4;
+const MAX_VISIBLE_RANGES: usize = 4;
+const DEADLINE_RESERVE: Duration = Duration::from_millis(120);
 
 pub(crate) struct WindowsActiveAppContextProvider;
 
@@ -78,7 +82,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                 return context;
             }
         };
-        let root = match automation.element_from_handle(Handle::from(target.window_handle)) {
+        let cache = match create_property_cache(&automation) {
             Ok(value) => value,
             Err(error) => {
                 context.status = error_status(&error.to_string());
@@ -86,12 +90,22 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                 return context;
             }
         };
-        if root.get_process_id().ok() != Some(target.process_id) {
+        let root = match automation
+            .element_from_handle_build_cache(Handle::from(target.window_handle), &cache)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                context.status = error_status(&error.to_string());
+                context.elapsed_ms = started.elapsed().as_millis() as u64;
+                return context;
+            }
+        };
+        if cached_process_id(&root) != Some(target.process_id) {
             context.status = CaptureStatus::Failed;
             context.elapsed_ms = started.elapsed().as_millis() as u64;
             return context;
         }
-        context.window_title = root.get_name().ok().and_then(|value| {
+        context.window_title = root.get_cached_name().ok().and_then(|value| {
             let (value, truncated) = truncate_chars(&normalize_text(&value), FIELD_CHAR_LIMIT);
             context.truncated |= truncated;
             (!value.is_empty()).then_some(value)
@@ -112,31 +126,32 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             }
         };
         let focus = automation
-            .get_focused_element()
+            .get_focused_element_build_cache(&cache)
             .ok()
-            .filter(|element| element.get_process_id().ok() == Some(target.process_id));
-        let focus_is_sensitive = focus.as_ref().is_some_and(is_sensitive);
+            .filter(|element| {
+                element_matches_target(element, target.process_id, &context.process_name)
+            });
+        let focus_is_sensitive = focus.as_ref().is_some_and(is_cached_sensitive);
 
-        let mut collector = Collector::new(context, options);
-        if let Some(focus) = focus.as_ref().filter(|_| !focus_is_sensitive) {
-            collector.collect_focus(focus, &walker);
-        }
+        let focus_process_id = focus.as_ref().and_then(cached_process_id);
+        let mut collector =
+            Collector::new(context, with_deadline_reserve(options), focus_process_id);
+        let focused_document = focus
+            .as_ref()
+            .filter(|_| !focus_is_sensitive)
+            .and_then(|focus| collector.collect_focus(focus, &walker, &cache));
         if !focus_is_sensitive && !collector.is_expired() {
-            collector.collect_document(focus.as_ref(), &root, &walker);
+            if let Some(document) = focused_document.as_ref() {
+                collector.collect_document_element(document);
+            }
         }
         if !collector.is_expired() {
-            collector.collect_visible_tree(&root, &walker);
+            collector.collect_visible_tree(&root, &walker, &cache);
         }
         let mut context = collector.finish();
         enforce_total_budget(&mut context, options.max_chars);
         context.elapsed_ms = started.elapsed().as_millis() as u64;
-        context.status = if expired(options.deadline) {
-            CaptureStatus::TimedOut
-        } else if !context.has_content() {
-            CaptureStatus::Empty
-        } else {
-            CaptureStatus::Captured
-        };
+        context.status = completed_status(&context, options.deadline);
         context
     }
 }
@@ -145,10 +160,15 @@ struct Collector {
     context: CapturedActiveAppContext,
     options: CaptureOptions,
     seen: HashSet<String>,
+    allowed_process_ids: HashSet<u32>,
 }
 
 impl Collector {
-    fn new(context: CapturedActiveAppContext, options: CaptureOptions) -> Self {
+    fn new(
+        context: CapturedActiveAppContext,
+        options: CaptureOptions,
+        focus_process_id: Option<u32>,
+    ) -> Self {
         let mut seen = HashSet::new();
         for value in [
             context.app_name.as_str(),
@@ -158,10 +178,15 @@ impl Collector {
                 seen.insert(value.to_lowercase());
             }
         }
+        let mut allowed_process_ids = HashSet::from([context.process_id]);
+        if let Some(process_id) = focus_process_id {
+            allowed_process_ids.insert(process_id);
+        }
         Self {
             context,
             options,
             seen,
+            allowed_process_ids,
         }
     }
 
@@ -177,9 +202,14 @@ impl Collector {
         true
     }
 
-    fn collect_focus(&mut self, focus: &UIElement, walker: &UITreeWalker) {
-        if !self.visit() || is_sensitive(focus) {
-            return;
+    fn collect_focus(
+        &mut self,
+        focus: &UIElement,
+        walker: &UITreeWalker,
+        cache: &UICacheRequest,
+    ) -> Option<UIElement> {
+        if !self.visit() || is_cached_sensitive(focus) {
+            return None;
         }
         if let Ok(pattern) = focus.get_pattern::<UITextPattern>() {
             for range in pattern.get_selection().unwrap_or_default() {
@@ -210,7 +240,7 @@ impl Collector {
                 }
             }
         }
-        if self.context.focused_text.is_none() {
+        if self.context.focused_text.is_none() && !self.is_expired() {
             if let Ok(pattern) = focus.get_pattern::<UIValuePattern>() {
                 if let Ok(value) = pattern.get_value() {
                     let (value, truncated) =
@@ -222,49 +252,65 @@ impl Collector {
                 }
             }
         }
-        self.collect_element_metadata(focus);
+        self.collect_cached_element_metadata(focus);
 
         let mut current = focus.clone();
-        for _ in 0..MAX_ANCESTORS {
+        for depth in 0..MAX_ANCESTORS {
             if self.is_expired() {
                 break;
             }
-            let Ok(parent) = walker.get_parent(&current) else {
+            let Ok(parent) = walker.get_parent_build_cache(&current, cache) else {
                 break;
             };
-            if parent.get_process_id().ok() != Some(self.context.process_id) {
+            if !self.allows_process(&parent) {
                 break;
             }
-            if !is_sensitive(&parent) {
-                self.collect_element_metadata(&parent);
-                if let Ok(previous) = walker.get_previous_sibling(&current) {
-                    self.collect_element_metadata(&previous);
-                }
-                if let Ok(next) = walker.get_next_sibling(&current) {
-                    self.collect_element_metadata(&next);
+            let sensitive = is_cached_sensitive(&parent);
+            if parent.get_cached_control_type().ok() == Some(ControlType::Document) {
+                return (!sensitive).then_some(parent);
+            }
+            if !sensitive {
+                if depth < MAX_NEARBY_ANCESTORS {
+                    self.collect_cached_element_metadata(&parent);
+                    if !self.is_expired() {
+                        if let Ok(previous) =
+                            walker.get_previous_sibling_build_cache(&current, cache)
+                        {
+                            self.collect_cached_element_metadata(&previous);
+                        }
+                    }
+                    if !self.is_expired() {
+                        if let Ok(next) = walker.get_next_sibling_build_cache(&current, cache) {
+                            self.collect_cached_element_metadata(&next);
+                        }
+                    }
                 }
             }
             current = parent;
         }
+        None
     }
 
-    fn collect_element_metadata(&mut self, element: &UIElement) {
-        if !self.visit() || is_sensitive(element) || element.is_offscreen().unwrap_or(false) {
+    fn collect_cached_element_metadata(&mut self, element: &UIElement) {
+        if !self.visit()
+            || is_cached_sensitive(element)
+            || element.is_cached_offscreen().unwrap_or(true)
+        {
             return;
         }
-        self.push_nearby(element.get_name().ok());
+        self.push_nearby(element.get_cached_name().ok());
         if self.is_expired() {
             return;
         }
-        self.push_nearby(element.get_help_text().ok());
+        self.push_nearby(element.get_cached_help_text().ok());
         if self.is_expired() {
             return;
         }
-        self.push_nearby(element.get_item_type().ok());
+        self.push_nearby(element.get_cached_item_type().ok());
         if self.is_expired() {
             return;
         }
-        self.push_nearby(element.get_localized_control_type().ok());
+        self.push_nearby(element.get_cached_localized_control_type().ok());
     }
 
     fn push_nearby(&mut self, value: Option<String>) {
@@ -278,83 +324,32 @@ impl Collector {
         }
     }
 
-    fn collect_document(
-        &mut self,
-        focus: Option<&UIElement>,
-        root: &UIElement,
-        walker: &UITreeWalker,
-    ) {
-        let mut candidates = Vec::new();
-        if let Some(focus) = focus {
-            let mut current = focus.clone();
-            for _ in 0..MAX_ANCESTORS {
-                if self.is_expired() {
-                    break;
-                }
-                let Ok(parent) = walker.get_parent(&current) else {
-                    break;
-                };
-                if parent.get_process_id().ok() != Some(self.context.process_id) {
-                    break;
-                }
-                if parent.get_control_type().ok() == Some(ControlType::Document) {
-                    candidates.push(parent.clone());
-                    break;
-                }
-                current = parent;
-            }
+    fn collect_document_element(&mut self, candidate: &UIElement) {
+        if self.is_expired() || is_cached_sensitive(candidate) {
+            return;
         }
-        if candidates.is_empty() {
-            let mut queue = VecDeque::from([root.clone()]);
-            while let Some(element) = queue.pop_front() {
-                if !self.visit() {
-                    break;
-                }
-                let sensitive = is_sensitive(&element);
-                if !sensitive
-                    && !element.is_offscreen().unwrap_or(false)
-                    && element.get_control_type().ok() == Some(ControlType::Document)
-                {
-                    candidates.push(element.clone());
-                    break;
-                }
-                if sensitive {
-                    continue;
-                }
-                if let Ok(child) = walker.get_first_child(&element) {
-                    let mut current = child.clone();
-                    queue.push_back(child);
-                    while let Ok(next) = walker.get_next_sibling(&current) {
-                        queue.push_back(next.clone());
-                        current = next;
-                        if queue.len() + self.context.visited_nodes >= self.options.max_nodes {
-                            break;
-                        }
-                    }
-                }
-            }
+        let Ok(pattern) = candidate.get_pattern::<UITextPattern>() else {
+            return;
+        };
+        if self.is_expired() {
+            return;
         }
-        for candidate in candidates {
-            if self.is_expired() || is_sensitive(&candidate) {
-                break;
-            }
-            let Ok(pattern) = candidate.get_pattern::<UITextPattern>() else {
-                continue;
-            };
-            let ranges = pattern.get_visible_ranges().unwrap_or_default();
-            if ranges.is_empty() {
+        let ranges = pattern.get_visible_ranges().unwrap_or_default();
+        if ranges.is_empty() {
+            if !self.is_expired() {
                 if let Ok(range) = pattern.get_document_range() {
                     self.push_document_range(&range);
                 }
-            } else {
-                for range in ranges {
-                    self.push_document_range(&range);
-                    if self.is_expired() {
-                        break;
-                    }
-                }
+            }
+            return;
+        }
+        for range in ranges.into_iter().take(MAX_VISIBLE_RANGES) {
+            self.push_document_range(&range);
+            if self.is_expired() || self.has_enough_text() {
+                break;
             }
         }
+        self.context.truncated |= self.has_enough_text();
     }
 
     fn push_document_range(&mut self, range: &uiautomation::patterns::UITextRange) {
@@ -369,15 +364,28 @@ impl Collector {
         );
     }
 
-    fn collect_visible_tree(&mut self, root: &UIElement, walker: &UITreeWalker) {
+    fn collect_visible_tree(
+        &mut self,
+        root: &UIElement,
+        walker: &UITreeWalker,
+        cache: &UICacheRequest,
+    ) {
         let mut queue = VecDeque::from([root.clone()]);
+        let mut document_collected = !self.context.document_text.is_empty();
         while let Some(element) = queue.pop_front() {
-            if !self.visit() {
+            if !self.visit() || self.has_enough_text() {
                 break;
             }
-            let sensitive = is_sensitive(&element);
-            if !sensitive && !element.is_offscreen().unwrap_or(false) {
-                if let Ok(name) = element.get_name() {
+            let sensitive = is_cached_sensitive(&element);
+            let visible = !element.is_cached_offscreen().unwrap_or(true);
+            if !sensitive && visible {
+                if !document_collected
+                    && element.get_cached_control_type().ok() == Some(ControlType::Document)
+                {
+                    self.collect_document_element(&element);
+                    document_collected = !self.context.document_text.is_empty();
+                }
+                if let Ok(name) = element.get_cached_name() {
                     self.context.truncated |= push_unique(
                         &mut self.context.document_text,
                         &mut self.seen,
@@ -389,28 +397,138 @@ impl Collector {
             if sensitive {
                 continue;
             }
-            if let Ok(child) = walker.get_first_child(&element) {
-                let mut current = child.clone();
-                queue.push_back(child);
-                while let Ok(next) = walker.get_next_sibling(&current) {
-                    queue.push_back(next.clone());
-                    current = next;
-                    if queue.len() + self.context.visited_nodes >= self.options.max_nodes {
-                        break;
-                    }
-                }
-            }
+            self.enqueue_children(&element, walker, cache, &mut queue);
         }
     }
 
     fn finish(mut self) -> CapturedActiveAppContext {
-        self.context.truncated |= self.context.visited_nodes >= self.options.max_nodes;
+        self.context.truncated |= self.context.visited_nodes >= self.options.max_nodes
+            || expired(self.options.deadline)
+            || self.has_enough_text();
         self.context
+    }
+
+    fn has_enough_text(&self) -> bool {
+        let focused = self
+            .context
+            .selected_text
+            .as_deref()
+            .into_iter()
+            .chain(self.context.focused_text.as_deref())
+            .map(|value| value.chars().count())
+            .sum::<usize>();
+        let nearby = self
+            .context
+            .nearby_text
+            .iter()
+            .chain(&self.context.document_text)
+            .map(|value| value.chars().count())
+            .sum::<usize>();
+        focused + nearby >= self.options.max_chars
+    }
+
+    fn enqueue_children(
+        &self,
+        element: &UIElement,
+        walker: &UITreeWalker,
+        cache: &UICacheRequest,
+        queue: &mut VecDeque<UIElement>,
+    ) {
+        if self.is_expired() {
+            return;
+        }
+        let Ok(mut current) = walker.get_first_child_build_cache(element, cache) else {
+            return;
+        };
+        loop {
+            if self.is_expired()
+                || queue.len() + self.context.visited_nodes >= self.options.max_nodes
+            {
+                break;
+            }
+            queue.push_back(current.clone());
+            let Ok(next) = walker.get_next_sibling_build_cache(&current, cache) else {
+                break;
+            };
+            current = next;
+        }
+    }
+
+    fn allows_process(&mut self, element: &UIElement) -> bool {
+        let Some(process_id) = cached_process_id(element) else {
+            return false;
+        };
+        if self.allowed_process_ids.contains(&process_id) {
+            return true;
+        }
+        let same_executable = process_name(process_id)
+            .is_some_and(|name| same_executable_name(&name, &self.context.process_name));
+        if same_executable {
+            self.allowed_process_ids.insert(process_id);
+        }
+        same_executable
     }
 }
 
-fn is_sensitive(element: &UIElement) -> bool {
-    element.is_password().unwrap_or(true)
+fn is_cached_sensitive(element: &UIElement) -> bool {
+    element.is_cached_password().unwrap_or(true)
+}
+
+fn cached_process_id(element: &UIElement) -> Option<u32> {
+    u32::try_from(element.get_cached_process_id().ok()?).ok()
+}
+
+fn element_matches_target(
+    element: &UIElement,
+    target_process_id: u32,
+    target_process_name: &str,
+) -> bool {
+    let Some(process_id) = cached_process_id(element) else {
+        return false;
+    };
+    process_id == target_process_id
+        || process_name(process_id)
+            .is_some_and(|name| same_executable_name(&name, target_process_name))
+}
+
+fn same_executable_name(candidate: &str, target: &str) -> bool {
+    !target.is_empty() && candidate.eq_ignore_ascii_case(target)
+}
+
+fn create_property_cache(automation: &UIAutomation) -> uiautomation::Result<UICacheRequest> {
+    let cache = automation.create_cache_request()?;
+    for property in [
+        UIProperty::ProcessId,
+        UIProperty::ControlType,
+        UIProperty::LocalizedControlType,
+        UIProperty::Name,
+        UIProperty::HelpText,
+        UIProperty::IsPassword,
+        UIProperty::ItemType,
+        UIProperty::IsOffscreen,
+    ] {
+        cache.add_property(property)?;
+    }
+    cache.set_tree_scope(TreeScope::Element)?;
+    Ok(cache)
+}
+
+fn with_deadline_reserve(mut options: CaptureOptions) -> CaptureOptions {
+    options.deadline = options
+        .deadline
+        .checked_sub(DEADLINE_RESERVE)
+        .unwrap_or(options.deadline);
+    options
+}
+
+fn completed_status(context: &CapturedActiveAppContext, hard_deadline: Instant) -> CaptureStatus {
+    if context.has_content() {
+        CaptureStatus::Captured
+    } else if expired(hard_deadline) {
+        CaptureStatus::TimedOut
+    } else {
+        CaptureStatus::Empty
+    }
 }
 
 fn is_blocked(context: &CapturedActiveAppContext, blocked_apps: &[String]) -> bool {
@@ -475,5 +593,41 @@ mod tests {
         assert!(is_blocked(&context, &["secretapp.exe".into()]));
         assert!(is_blocked(&context, &["SECRETAPP".into()]));
         assert!(!is_blocked(&context, &["notepad.exe".into()]));
+    }
+
+    #[test]
+    fn deadline_reserve_leaves_time_to_return_partial_context() {
+        let hard_deadline = Instant::now() + Duration::from_millis(800);
+        let options = with_deadline_reserve(CaptureOptions {
+            deadline: hard_deadline,
+            max_nodes: 300,
+            max_chars: 3_000,
+        });
+        assert_eq!(
+            hard_deadline.duration_since(options.deadline),
+            DEADLINE_RESERVE
+        );
+    }
+
+    #[test]
+    fn useful_partial_context_is_not_discarded_at_soft_deadline() {
+        let context = CapturedActiveAppContext {
+            app_name: "Code".into(),
+            window_title: Some("windows.rs".into()),
+            truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            completed_status(&context, Instant::now() - Duration::from_millis(1)),
+            CaptureStatus::Captured
+        );
+    }
+
+    #[test]
+    fn chromium_child_processes_match_by_executable_name() {
+        assert!(same_executable_name("chrome.exe", "Chrome.exe"));
+        assert!(same_executable_name("Code.exe", "code.exe"));
+        assert!(!same_executable_name("msedge.exe", "chrome.exe"));
+        assert!(!same_executable_name("chrome.exe", ""));
     }
 }

@@ -7,8 +7,11 @@ mod unsupported;
 mod windows;
 
 use model::CAPTURE_TIMEOUT;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
+
+const MAX_CONCURRENT_CAPTURES: usize = 4;
 
 pub(crate) use debug::{request_debug_capture, reset_debug_capture, DEBUG_STATE_EVENT};
 pub(crate) use model::{
@@ -39,33 +42,38 @@ pub(crate) struct ContextCaptureHandle {
 }
 
 pub(crate) struct ContextCaptureService {
-    sender: mpsc::Sender<CaptureRequest>,
     latest: Arc<Mutex<Option<ActiveAppContextSummary>>>,
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl Default for ContextCaptureService {
     fn default() -> Self {
-        let (sender, receiver) = mpsc::channel::<CaptureRequest>();
-        std::thread::Builder::new()
-            .name("active-app-context".into())
-            .spawn(move || {
-                #[cfg(windows)]
-                let provider = windows::WindowsActiveAppContextProvider;
-                #[cfg(not(windows))]
-                let provider = unsupported::UnsupportedActiveAppContextProvider;
-
-                while let Ok(request) = receiver.recv() {
-                    let result =
-                        provider.capture(request.target, &request.blocked_apps, request.options);
-                    let _ = request.reply.send(result);
-                }
-            })
-            .expect("failed to create active app context worker");
         Self {
-            sender,
             latest: Arc::new(Mutex::new(None)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
+}
+
+struct CapturePermit {
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for CapturePermit {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_capture(in_flight: &Arc<AtomicUsize>) -> Option<CapturePermit> {
+    in_flight
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < MAX_CONCURRENT_CAPTURES).then_some(current + 1)
+        })
+        .ok()?;
+    Some(CapturePermit {
+        in_flight: Arc::clone(in_flight),
+    })
 }
 
 impl ContextCaptureService {
@@ -78,25 +86,34 @@ impl ContextCaptureService {
         let started = options.deadline - CAPTURE_TIMEOUT;
         let deadline = options.deadline;
         let (reply, receiver) = oneshot::channel();
-        if self
-            .sender
-            .send(CaptureRequest {
-                target,
-                blocked_apps,
-                options,
-                reply,
-            })
-            .is_err()
-        {
-            let (fallback_reply, fallback_receiver) = oneshot::channel();
-            let _ =
-                fallback_reply.send(CapturedActiveAppContext::with_status(CaptureStatus::Failed));
+        let Some(permit) = try_acquire_capture(&self.in_flight) else {
+            let _ = reply.send(CapturedActiveAppContext::with_status(
+                CaptureStatus::TimedOut,
+            ));
             return ContextCaptureHandle {
                 started,
                 deadline,
-                receiver: fallback_receiver,
+                receiver,
             };
-        }
+        };
+        let request = CaptureRequest {
+            target,
+            blocked_apps,
+            options,
+            reply,
+        };
+        let _ = std::thread::Builder::new()
+            .name("active-app-context".into())
+            .spawn(move || {
+                let _permit = permit;
+                #[cfg(windows)]
+                let provider = windows::WindowsActiveAppContextProvider;
+                #[cfg(not(windows))]
+                let provider = unsupported::UnsupportedActiveAppContextProvider;
+                let result =
+                    provider.capture(request.target, &request.blocked_apps, request.options);
+                let _ = request.reply.send(result);
+            });
         ContextCaptureHandle {
             started,
             deadline,
@@ -166,5 +183,16 @@ mod tests {
         assert_eq!(result.status, CaptureStatus::TimedOut);
         assert_eq!(result.elapsed_ms, CAPTURE_TIMEOUT.as_millis() as u64);
         assert!(service.latest_summary().is_none());
+    }
+
+    #[test]
+    fn capture_slots_are_bounded_and_released() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let permits = (0..MAX_CONCURRENT_CAPTURES)
+            .map(|_| try_acquire_capture(&in_flight).expect("slot should be available"))
+            .collect::<Vec<_>>();
+        assert!(try_acquire_capture(&in_flight).is_none());
+        drop(permits);
+        assert!(try_acquire_capture(&in_flight).is_some());
     }
 }
