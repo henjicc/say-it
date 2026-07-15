@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use super::model::{CapturedActiveAppContext, ABSOLUTE_MAX_CHARS};
 
 pub(crate) fn normalize_text(value: &str) -> String {
@@ -17,66 +15,23 @@ pub(crate) fn truncate_chars(value: &str, limit: usize) -> (String, bool) {
     (output, chars.next().is_some())
 }
 
-pub(crate) fn push_unique(
-    target: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-    value: &str,
-    limit: usize,
-) -> bool {
-    let normalized = normalize_text(value);
-    if normalized.is_empty() {
-        return false;
-    }
-    let (normalized, truncated) = truncate_chars(&normalized, limit);
-    let key = normalized.to_lowercase();
-    if !seen.insert(key) {
-        return truncated;
-    }
-    target.push(normalized);
-    truncated
-}
-
 pub(crate) fn enforce_total_budget(context: &mut CapturedActiveAppContext, max_chars: usize) {
-    let max_chars = max_chars.min(ABSOLUTE_MAX_CHARS);
-    let mut remaining = max_chars;
+    let mut remaining = max_chars.min(ABSOLUTE_MAX_CHARS);
+    let mut output = Vec::new();
     let mut truncated = context.truncated;
-
-    fn trim(value: &mut Option<String>, remaining: &mut usize, truncated: &mut bool) {
-        let Some(current) = value.take() else { return };
-        if *remaining == 0 {
-            *truncated = true;
-            return;
+    for value in std::mem::take(&mut context.ocr_text) {
+        if remaining == 0 {
+            truncated = true;
+            break;
         }
-        let (next, was_truncated) = truncate_chars(&current, *remaining);
-        *remaining = remaining.saturating_sub(next.chars().count());
-        *truncated |= was_truncated;
-        if !next.is_empty() {
-            *value = Some(next);
+        let (value, was_truncated) = truncate_chars(&value, remaining);
+        remaining = remaining.saturating_sub(value.chars().count());
+        truncated |= was_truncated;
+        if !value.is_empty() {
+            output.push(value);
         }
     }
-
-    fn trim_list(values: &mut Vec<String>, remaining: &mut usize, truncated: &mut bool) {
-        let mut next = Vec::new();
-        for value in std::mem::take(values) {
-            if *remaining == 0 {
-                *truncated = true;
-                break;
-            }
-            let (value, was_truncated) = truncate_chars(&value, *remaining);
-            *remaining = remaining.saturating_sub(value.chars().count());
-            *truncated |= was_truncated;
-            if !value.is_empty() {
-                next.push(value);
-            }
-        }
-        *values = next;
-    }
-
-    trim(&mut context.selected_text, &mut remaining, &mut truncated);
-    trim(&mut context.focused_text, &mut remaining, &mut truncated);
-    trim_list(&mut context.ocr_text, &mut remaining, &mut truncated);
-    trim_list(&mut context.nearby_text, &mut remaining, &mut truncated);
-    trim_list(&mut context.document_text, &mut remaining, &mut truncated);
+    context.ocr_text = output;
     context.truncated = truncated;
 }
 
@@ -85,33 +40,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_whitespace_and_deduplicates_case_insensitively() {
-        let mut values = Vec::new();
-        let mut seen = HashSet::new();
-        assert!(!push_unique(
-            &mut values,
-            &mut seen,
-            "  Hello\n world  ",
-            100
-        ));
-        assert!(!push_unique(&mut values, &mut seen, "hello world", 100));
-        assert_eq!(values, vec!["Hello world"]);
+    fn normalizes_whitespace() {
+        assert_eq!(normalize_text("  Hello\n world  "), "Hello world");
     }
 
     #[test]
-    fn budget_keeps_high_priority_fields_first() {
+    fn budget_truncates_ocr_text() {
         let mut context = CapturedActiveAppContext {
-            selected_text: Some("12345".into()),
-            focused_text: Some("67".into()),
-            ocr_text: vec!["890".into()],
-            nearby_text: vec!["abc".into()],
+            ocr_text: vec!["12345".into(), "67890".into()],
             ..Default::default()
         };
-        enforce_total_budget(&mut context, 9);
-        assert_eq!(context.selected_text.as_deref(), Some("12345"));
-        assert_eq!(context.focused_text.as_deref(), Some("67"));
-        assert_eq!(context.ocr_text, vec!["89"]);
-        assert!(context.nearby_text.is_empty());
+        enforce_total_budget(&mut context, 7);
+        assert_eq!(context.ocr_text, vec!["12345", "67"]);
         assert!(context.truncated);
     }
 }

@@ -93,7 +93,6 @@ mod tests {
             context: CapturedActiveAppContext {
                 status: CaptureStatus::Captured,
                 app_name: "Notepad".into(),
-                visited_nodes: 12,
                 ..Default::default()
             },
             formatted_context: "应用：Notepad".into(),
@@ -102,7 +101,6 @@ mod tests {
         .unwrap();
         assert_eq!(value["status"], "captured");
         assert_eq!(value["appName"], "Notepad");
-        assert_eq!(value["visitedNodes"], 12);
         assert_eq!(value["formattedContext"], "应用：Notepad");
     }
 }

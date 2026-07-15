@@ -21,13 +21,11 @@ import {
 import { useDictationStore, type ActiveAppContextStatus } from "@/store/useDictationStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
-const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n焦点附近内容：Windows UI Automation；Tauri；上下文捕获";
+const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n窗口可见文字：Tauri；OCR；上下文捕获";
 const CONTEXT_STATUS_LABELS: Record<ActiveAppContextStatus, string> = {
   captured: "已捕获",
   empty: "未获取到可用文本",
   blocked: "已按黑名单跳过",
-  sensitive: "已检测到密码输入并跳过",
-  accessDenied: "目标应用拒绝访问",
   timedOut: "捕获超时",
   unsupported: "当前系统暂不支持",
   failed: "捕获失败",
@@ -362,10 +360,10 @@ export function SmartTextPanel() {
 
       <SettingsSection title="当前软件上下文">
         <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          只有启用智能处理且当前模板包含 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 时，才会在全局快捷键触发瞬间读取当前窗口的选区、焦点信息和本机 OCR 可见文字，并将清洗后的文本随提示词发送。截图不会保存或上传，界面按钮启动不会捕获。
+          只有启用智能处理且当前模板包含 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 时，才会在全局快捷键触发瞬间截取当前激活窗口并在本机执行整窗 OCR，将清洗后的文字随提示词发送。截图不会保存或上传，界面按钮启动不会捕获。
         </p>
         <p className="max-w-[75ch] text-xs leading-relaxed text-[var(--color-warn)]">
-          已确认的密码输入框会在截图前停止捕获；若目标软件没有向 Windows 暴露密码属性，系统无法保证识别不到窗口内可见的敏感文字，请将密码管理器等应用加入黑名单。
+          整窗 OCR 会读取窗口内所有可见文字，无法自动识别密码区域；请务必将密码管理器、隐私聊天等敏感应用加入黑名单。
         </p>
         {latestContext ? (
           <div className="flex flex-col gap-2 text-sm text-[var(--color-fg-subtle)]">
