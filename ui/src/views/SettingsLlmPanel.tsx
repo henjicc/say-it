@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
@@ -119,79 +119,218 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   const isDefault = profile.effectiveCapabilities?.includes("llm") ?? false;
   const isBuiltin = profile.id === "llm-groq";
   const isCustom = profile.kind === "llm:custom";
-  const [model, setModel] = useState("");
-  const [models, setModels] = useState<LlmModelConfig[]>([]);
-  const [endpoint, setEndpoint] = useState("");
+  const [model, setModel] = useState(() => String(profile.config?.model ?? ""));
+  const [models, setModels] = useState<LlmModelConfig[]>(() => modelsFromProfile(profile));
+  const [endpoint, setEndpoint] = useState(() => String(profile.config?.endpoint ?? ""));
   const [apiKey, setApiKey] = useState("");
   const [message, setMessage] = useState("");
   const [messageError, setMessageError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [manualModalOpen, setManualModalOpen] = useState(false);
   const [manualName, setManualName] = useState("");
+  const modelRef = useRef(model);
+  const modelsRef = useRef(models);
+  const endpointRef = useRef(endpoint);
+  const endpointDirtyRef = useRef(false);
+  const apiKeyDraftRef = useRef("");
+  const endpointTimerRef = useRef<number | null>(null);
+  const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const autoRefreshStartedRef = useRef(Boolean(profile.config?.modelListAttemptedAt));
+  const modelsFetchedAtRef = useRef(profile.config?.modelsFetchedAt);
 
-  useEffect(() => {
-    setModel(String(profile.config?.model ?? ""));
-    setModels(modelsFromProfile(profile));
-    setEndpoint(String(profile.config?.endpoint ?? ""));
-    setApiKey("");
-  }, [profile.id, profile.config]);
+  useEffect(() => () => {
+    if (endpointTimerRef.current !== null) window.clearTimeout(endpointTimerRef.current);
+    apiKeyDraftRef.current = "";
+  }, []);
 
   const selectedModel = models.find((item) => item.name === model);
   const manualModels = models.filter((item) => item.source === "manual");
 
-  const updateSelectedModel = (patch: Partial<LlmModelConfig>) => {
-    setModels((current) => current.map((item) => item.name === model ? { ...item, ...patch } : item));
+  const applyProfile = (updated: ProviderProfile) => {
+    const localModels = new Map(modelsRef.current.map((item) => [item.name, item]));
+    const nextModels = modelsFromProfile(updated).map((item) => {
+      const local = localModels.get(item.name);
+      return local
+        ? {
+            ...item,
+            reasoningEffort: local.reasoningEffort,
+            temperature: local.temperature,
+            maxTokens: local.maxTokens,
+          }
+        : item;
+    });
+    const nextModel = modelRef.current || String(updated.config?.model ?? "");
+    modelsFetchedAtRef.current = updated.config?.modelsFetchedAt;
+    modelRef.current = nextModel;
+    modelsRef.current = nextModels;
+    setModel(nextModel);
+    setModels(nextModels);
   };
 
-  const persist = async (
+  useEffect(() => {
+    if (profile.config?.modelsFetchedAt === modelsFetchedAtRef.current) return;
+    applyProfile(profile);
+  }, [profile.config?.modelsFetchedAt]);
+
+  const queueConfigUpdate = (config: Record<string, unknown>): Promise<ProviderProfile> => {
+    const operation = configSaveQueueRef.current.then(() => updateConfig(profile.id, config));
+    configSaveQueueRef.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+
+  const persistModels = async (
     nextModel = model,
     nextModels = models,
   ): Promise<ProviderProfile> => {
     const validationError = validateModels(nextModels);
     if (validationError) throw new Error(validationError);
-    const config: Record<string, unknown> = {
+    return queueConfigUpdate({
       model: nextModel.trim(),
       models: nextModels,
-    };
-    if (isCustom) config.endpoint = endpoint.trim();
-    if (apiKey.trim()) config.apiKey = apiKey.trim();
-    const updated = await updateConfig(profile.id, config);
-    setApiKey("");
-    return updated;
+    });
   };
 
-  const save = async () => {
+  const maybeAutoRefresh = async (updated: ProviderProfile) => {
+    if (autoRefreshStartedRef.current || updated.config?.modelListAttemptedAt) return;
+    if (!updated.status?.hasApiKey) return;
+    if (isCustom && !/^https?:\/\//.test(endpointRef.current.trim())) return;
+
+    autoRefreshStartedRef.current = true;
+    setRefreshing(true);
     try {
-      const shouldAutoRefresh = !profile.config?.modelListAttemptedAt
-        && Boolean(apiKey.trim() || profile.status?.hasApiKey);
-      await persist();
-      if (shouldAutoRefresh) {
-        setRefreshing(true);
-        try {
-          await refreshModels(profile.id);
-          setMessage("配置已保存，并已自动获取模型列表。");
-        } catch (error) {
-          setMessage(`配置已保存，首次获取模型失败：${String(error)}`);
-          setMessageError(true);
-          return;
-        } finally {
-          setRefreshing(false);
-        }
-      } else {
-        setMessage("配置已保存。");
-      }
+      const refreshed = await refreshModels(profile.id);
+      applyProfile(refreshed);
+      setMessage("");
       setMessageError(false);
     } catch (error) {
-      setMessage(`保存失败：${String(error)}`);
+      setMessage(`首次获取模型失败：${String(error)}`);
+      setMessageError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const saveApiKeyDraft = async (draft: string) => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    const config: Record<string, unknown> = { apiKey: trimmed };
+    if (isCustom) config.endpoint = endpointRef.current.trim();
+    try {
+      const updated = await queueConfigUpdate(config);
+      if (apiKeyDraftRef.current === draft) {
+        apiKeyDraftRef.current = "";
+        setApiKey("");
+      }
+      setMessage("");
+      setMessageError(false);
+      await maybeAutoRefresh(updated);
+    } catch (error) {
+      setMessage(`API Key 自动保存失败：${String(error)}`);
       setMessageError(true);
     }
+  };
+
+  const saveEndpointDraft = async (draft: string) => {
+    try {
+      const updated = await queueConfigUpdate({ endpoint: draft.trim() });
+      if (endpointRef.current === draft) endpointDirtyRef.current = false;
+      setMessage("");
+      setMessageError(false);
+      await maybeAutoRefresh(updated);
+    } catch (error) {
+      setMessage(`接口地址自动保存失败：${String(error)}`);
+      setMessageError(true);
+    }
+  };
+
+  const handleApiKeyChange = (value: string) => {
+    apiKeyDraftRef.current = value;
+    setApiKey(value);
+  };
+
+  // 密钥在失焦时自动提交，保存后立即清除前端明文草稿，避免输入中途重置受控输入框。
+  const handleApiKeyBlur = () => {
+    const draft = apiKeyDraftRef.current;
+    if (!draft.trim()) return;
+    void saveApiKeyDraft(draft);
+  };
+
+  const handleEndpointChange = (value: string) => {
+    endpointRef.current = value;
+    endpointDirtyRef.current = true;
+    setEndpoint(value);
+    if (endpointTimerRef.current !== null) window.clearTimeout(endpointTimerRef.current);
+    endpointTimerRef.current = window.setTimeout(() => {
+      endpointTimerRef.current = null;
+      void saveEndpointDraft(value);
+    }, 500);
+  };
+
+  const changeModel = async (nextModel: string) => {
+    const previousModel = modelRef.current;
+    modelRef.current = nextModel;
+    setModel(nextModel);
+    try {
+      await persistModels(nextModel, modelsRef.current);
+      setMessage("");
+      setMessageError(false);
+    } catch (error) {
+      if (modelRef.current === nextModel) {
+        modelRef.current = previousModel;
+        setModel(previousModel);
+      }
+      setMessage(`当前模型自动保存失败：${String(error)}`);
+      setMessageError(true);
+    }
+  };
+
+  const changeReasoningEffort = async (reasoningEffort: LlmReasoningEffort) => {
+    const previousModels = modelsRef.current;
+    const nextModels = previousModels.map((item) => item.name === modelRef.current
+      ? { ...item, reasoningEffort }
+      : item);
+    modelsRef.current = nextModels;
+    setModels(nextModels);
+    try {
+      await persistModels(modelRef.current, nextModels);
+      setMessage("");
+      setMessageError(false);
+    } catch (error) {
+      if (modelsRef.current === nextModels) {
+        modelsRef.current = previousModels;
+        setModels(previousModels);
+      }
+      setMessage(`推理强度自动保存失败：${String(error)}`);
+      setMessageError(true);
+    }
+  };
+
+  const flushDrafts = async () => {
+    if (endpointTimerRef.current !== null) {
+      window.clearTimeout(endpointTimerRef.current);
+      endpointTimerRef.current = null;
+    }
+    const config: Record<string, unknown> = {};
+    const secretDraft = apiKeyDraftRef.current;
+    if (secretDraft.trim()) config.apiKey = secretDraft.trim();
+    if (isCustom && endpointDirtyRef.current) config.endpoint = endpointRef.current.trim();
+    if (Object.keys(config).length > 0) {
+      await queueConfigUpdate(config);
+      if (apiKeyDraftRef.current === secretDraft) {
+        apiKeyDraftRef.current = "";
+        setApiKey("");
+      }
+      endpointDirtyRef.current = false;
+    }
+    await configSaveQueueRef.current;
   };
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await persist();
+      await flushDrafts();
       const updated = await refreshModels(profile.id);
+      applyProfile(updated);
       const count = modelsFromProfile(updated).length;
       setMessage(`模型列表已更新，共 ${count} 个模型。`);
       setMessageError(false);
@@ -214,7 +353,9 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
       ? models
       : [...models, manualModel(name)].sort((left, right) => left.name.localeCompare(right.name));
     try {
-      await persist(name, nextModels);
+      await persistModels(name, nextModels);
+      modelRef.current = name;
+      modelsRef.current = nextModels;
       setModel(name);
       setModels(nextModels);
       setManualName("");
@@ -235,7 +376,8 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
     }
     const nextModels = models.filter((item) => item.name !== name);
     try {
-      await persist(model, nextModels);
+      await persistModels(modelRef.current, nextModels);
+      modelsRef.current = nextModels;
       setModels(nextModels);
       setMessage(`已删除手动模型“${name}”。`);
       setMessageError(false);
@@ -265,14 +407,14 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
         <Field
           label="API Key"
           controlId={`llm-api-key-${profile.id}`}
-          hint={profile.status?.hasApiKey ? "已保存；留空表示不修改" : undefined}
         >
           <SecretInput
             id={`llm-api-key-${profile.id}`}
             draftValue={apiKey}
             hasStoredValue={Boolean(profile.status?.hasApiKey)}
             placeholder={profile.status?.hasApiKey ? "输入新 Key 可覆盖" : "输入 API Key"}
-            onDraftChange={setApiKey}
+            onDraftChange={handleApiKeyChange}
+            onBlur={handleApiKeyBlur}
             revealStoredValue={() => cmd<string>(CMD.getProviderApiKey, { providerId: profile.id })}
             onRevealError={(error) => {
               setMessage(`读取 API Key 失败：${String(error)}`);
@@ -288,7 +430,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
             <Input
               value={endpoint}
               placeholder="https://example.com/v1/"
-              onChange={(event) => setEndpoint(event.target.value)}
+              onChange={(event) => handleEndpointChange(event.target.value)}
             />
           </Field>
         )}
@@ -317,24 +459,23 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
           <Field
             label="当前模型"
             controlId={`llm-model-${profile.id}`}
-            hint="智能文本处理会使用这个模型；展开后可直接输入搜索"
           >
             <Select
               id={`llm-model-${profile.id}`}
               value={model}
               searchable
               searchPlaceholder="搜索模型…"
-              onChange={(event) => setModel(event.target.value)}
+              onChange={(event) => void changeModel(event.target.value)}
             >
               {models.map((item) => <option key={item.name} value={item.name}>{modelLabel(item)}</option>)}
             </Select>
           </Field>
 
           {selectedModel && (
-            <Field label="推理强度" hint="不支持时供应商会返回错误">
+            <Field label="推理强度">
               <Select
                 value={selectedModel.reasoningEffort}
-                onChange={(event) => updateSelectedModel({ reasoningEffort: event.target.value as LlmReasoningEffort })}
+                onChange={(event) => void changeReasoningEffort(event.target.value as LlmReasoningEffort)}
               >
                 {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </Select>
@@ -371,11 +512,12 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button size="sm" variant="primary" onClick={save} disabled={refreshing}>保存</Button>
-        {!isDefault && <Button size="sm" onClick={() => void setDefault("llm", profile.id)}>设为默认</Button>}
-        {!isBuiltin && <Button size="sm" variant="danger" onClick={deleteProfile}>删除供应商</Button>}
-      </div>
+      {(!isDefault || !isBuiltin) && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {!isDefault && <Button size="sm" onClick={() => void setDefault("llm", profile.id)}>设为默认</Button>}
+          {!isBuiltin && <Button size="sm" variant="danger" onClick={deleteProfile}>删除供应商</Button>}
+        </div>
+      )}
       {message && (
         <p className={`mt-2 text-xs ${messageError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
           {message}
@@ -462,7 +604,6 @@ export function SettingsLlmPanel() {
       <Field
         label="默认模型供应商"
         controlId="default-llm-provider"
-        hint="智能文本处理会使用这里选中的供应商及其当前模型"
         actions={<Button variant="primary" onClick={() => setOpen(true)}>+ 添加</Button>}
       >
         <Select id="default-llm-provider" value={defaults.llm} onChange={(event) => void setDefault("llm", event.target.value)}>
