@@ -32,6 +32,8 @@ struct ProbeRequest {
     max_chars: usize,
     deep_clipboard: bool,
     reader_budget_ms: u32,
+    cursor_x: Option<i32>,
+    cursor_y: Option<i32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -248,6 +250,8 @@ pub(crate) fn capture(
         deep_clipboard: true,
         // 给管道回传和 Rust 的终止/重启留出余量，避免末尾的深度读取挤占整个 800ms 硬截止。
         reader_budget_ms: 650,
+        cursor_x: target.cursor_position.map(|position| position.0),
+        cursor_y: target.cursor_position.map(|position| position.1),
     };
     let client = CLIENT.get_or_init(|| Mutex::new(ProbeClient::default()));
     // 前一条跨进程请求即使卡住，也不能让新会话无限阻塞在 Mutex 上。

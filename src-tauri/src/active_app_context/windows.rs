@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::Foundation::{CloseHandle, POINT, HWND};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -13,7 +13,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    GetCursorPos, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId,
 };
 
 use super::model::{
@@ -35,9 +36,14 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     if process_id == 0 || process_id == std::process::id() {
         return None;
     }
+    let mut cursor = POINT::default();
+    let cursor_position = unsafe { GetCursorPos(&mut cursor) }
+        .is_ok()
+        .then_some((cursor.x, cursor.y));
     Some(ActivationTarget {
         window_handle: window.0 as isize,
         process_id,
+        cursor_position,
     })
 }
 
