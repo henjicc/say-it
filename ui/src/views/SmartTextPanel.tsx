@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
@@ -32,6 +32,8 @@ export function SmartTextPanel() {
   const [previewOutput, setPreviewOutput] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [message, setMessage] = useState("");
+  const [draftName, setDraftName] = useState(active?.name ?? "");
+  const [draftPrompt, setDraftPrompt] = useState(active?.prompt ?? "");
   const [pendingDelete, setPendingDelete] = useState<SmartTextTemplate>();
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [templateActionBusy, setTemplateActionBusy] = useState(false);
@@ -40,14 +42,37 @@ export function SmartTextPanel() {
   const recentDeletion = prefs.smartTemplateTrash.find(
     (entry) => entry.recoveryId === recentRecoveryId,
   );
+  const draftTemplateIdRef = useRef(active?.id ?? "");
 
-  const updateTemplate = (partial: Partial<SmartTextTemplate>) => {
-    if (!active) return;
-    void patch({
-      smartTemplates: templates.map((template) =>
-        template.id === active.id ? { ...template, ...partial } : template,
-      ),
-    });
+  useEffect(() => {
+    if (!active) {
+      draftTemplateIdRef.current = "";
+      setDraftName("");
+      setDraftPrompt("");
+      return;
+    }
+    if (draftTemplateIdRef.current === active.id) return;
+    draftTemplateIdRef.current = active.id;
+    setDraftName(active.name);
+    setDraftPrompt(active.prompt);
+  }, [active]);
+
+  const saveTemplateDraft = async (partial: Partial<Pick<SmartTextTemplate, "name" | "prompt">> = {}) => {
+    const templateId = draftTemplateIdRef.current;
+    if (!templateId) return;
+    const name = partial.name ?? draftName;
+    const prompt = partial.prompt ?? draftPrompt;
+    const currentPrefs = useDictPrefs.getState().prefs;
+    if (!currentPrefs.smartTemplates.some((template) => template.id === templateId)) return;
+    try {
+      await useDictPrefs.getState().patch({
+        smartTemplates: currentPrefs.smartTemplates.map((template) =>
+          template.id === templateId ? { ...template, name, prompt } : template,
+        ),
+      });
+    } catch (error) {
+      setTemplateNotice({ tone: "err", text: `保存模板失败：${String(error)}` });
+    }
   };
 
   const addTemplate = async () => {
@@ -160,9 +185,10 @@ export function SmartTextPanel() {
     setPreviewing(true);
     setMessage("");
     try {
+      const prompt = active.id === draftTemplateIdRef.current ? draftPrompt : active.prompt;
       const output = await cmd<string>(CMD.previewSmartText, {
         text: previewInput,
-        prompt: active.prompt,
+        prompt,
       });
       setPreviewOutput(output);
     } catch (error) {
@@ -269,7 +295,11 @@ export function SmartTextPanel() {
         {active && (
           <div className="mt-1 flex flex-col gap-4">
             <Field label="模板名称">
-              <Input value={active.name} onChange={(event) => updateTemplate({ name: event.target.value })} />
+              <Input
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                onBlur={() => void saveTemplateDraft()}
+              />
             </Field>
             <Field
               label="提示词"
@@ -277,15 +307,20 @@ export function SmartTextPanel() {
             >
               <Textarea
                 rows={7}
-                value={active.prompt}
+                value={draftPrompt}
                 spellCheck={false}
-                onChange={(event) => updateTemplate({ prompt: event.target.value })}
+                onChange={(event) => setDraftPrompt(event.target.value)}
+                onBlur={() => void saveTemplateDraft()}
               />
             </Field>
             <Button
               size="sm"
               className="self-start"
-              onClick={() => updateTemplate({ prompt: `${active.prompt}${active.prompt.endsWith("\n") ? "" : "\n"}${SMART_TEXT_PLACEHOLDER}` })}
+              onClick={() => {
+                const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${SMART_TEXT_PLACEHOLDER}`;
+                setDraftPrompt(nextPrompt);
+                void saveTemplateDraft({ prompt: nextPrompt });
+              }}
             >
               插入文本占位符
             </Button>
