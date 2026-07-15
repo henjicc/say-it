@@ -31,6 +31,7 @@ struct MNN_SharedRuntime
     MNN::ScheduleConfig schedule_config;
     int thread_count;
     int precision_mode;
+    int memory_mode;
 };
 
 struct MNN_InferenceEngine
@@ -104,8 +105,34 @@ static void init_schedule_config(MNN::ScheduleConfig &schedule, MNN::BackendConf
             backend.precision = MNN::BackendConfig::Precision_Normal;
             break;
         }
+
+        switch (config->backend_memory_mode)
+        {
+        case MNNR_BACKEND_MEMORY_HIGH:
+            backend.memory = MNN::BackendConfig::Memory_High;
+            break;
+        case MNNR_BACKEND_MEMORY_LOW:
+            backend.memory = MNN::BackendConfig::Memory_Low;
+            break;
+        default:
+            backend.memory = MNN::BackendConfig::Memory_Normal;
+            break;
+        }
     }
     schedule.backendConfig = &backend;
+}
+
+static void init_memory_mode(MNN::Interpreter *interpreter, int memory_mode)
+{
+    if (!interpreter)
+    {
+        return;
+    }
+
+    interpreter->setSessionMode(
+        memory_mode == MNNR_MEMORY_COLLECT
+            ? MNN::Interpreter::Session_Memory_Collect
+            : MNN::Interpreter::Session_Memory_Cache);
 }
 
 static bool init_engine_tensors(MNN_InferenceEngine *engine)
@@ -162,6 +189,7 @@ MNN_SharedRuntime *mnnr_create_runtime(const MNNR_Config *config)
     }
 
     runtime->precision_mode = config ? config->precision_mode : 0;
+    runtime->memory_mode = config ? config->memory_mode : MNNR_MEMORY_CACHE;
 
     runtime->schedule_config.type = (config) ? static_cast<MNNForwardType>(config->forward_type) : MNN_FORWARD_CPU;
     runtime->schedule_config.numThread = runtime->thread_count;
@@ -176,6 +204,19 @@ MNN_SharedRuntime *mnnr_create_runtime(const MNNR_Config *config)
         break;
     default:
         runtime->backend_config.precision = MNN::BackendConfig::Precision_Normal;
+        break;
+    }
+
+    switch (config ? config->backend_memory_mode : MNNR_BACKEND_MEMORY_NORMAL)
+    {
+    case MNNR_BACKEND_MEMORY_HIGH:
+        runtime->backend_config.memory = MNN::BackendConfig::Memory_High;
+        break;
+    case MNNR_BACKEND_MEMORY_LOW:
+        runtime->backend_config.memory = MNN::BackendConfig::Memory_Low;
+        break;
+    default:
+        runtime->backend_config.memory = MNN::BackendConfig::Memory_Normal;
         break;
     }
     runtime->schedule_config.backendConfig = &runtime->backend_config;
@@ -210,6 +251,8 @@ MNN_InferenceEngine *mnnr_create_engine(
         delete engine;
         return nullptr;
     }
+
+    init_memory_mode(engine->interpreter.get(), config ? config->memory_mode : MNNR_MEMORY_CACHE);
 
     // Create default session
     MNN::ScheduleConfig schedule;
@@ -255,6 +298,8 @@ MNN_InferenceEngine *mnnr_create_engine_with_runtime(
         delete engine;
         return nullptr;
     }
+
+    init_memory_mode(engine->interpreter.get(), runtime->memory_mode);
 
     // Create session using shared runtime config
     engine->default_session = engine->interpreter->createSession(runtime->schedule_config);
@@ -322,6 +367,28 @@ MNNR_ErrorCode mnnr_get_output_shape(
         dims[i] = static_cast<size_t>(engine->output_shape[i]);
     }
 
+    return MNNR_SUCCESS;
+}
+
+MNNR_ErrorCode mnnr_get_memory_usage_mb(
+    const MNN_InferenceEngine *engine,
+    float *out_mb)
+{
+    if (!engine || !out_mb)
+    {
+        return MNNR_ERROR_INVALID_PARAMETER;
+    }
+    if (!engine->interpreter || !engine->default_session)
+    {
+        return MNNR_ERROR_RUNTIME_ERROR;
+    }
+    if (!engine->interpreter->getSessionInfo(
+            engine->default_session,
+            MNN::Interpreter::MEMORY,
+            out_mb))
+    {
+        return MNNR_ERROR_UNSUPPORTED;
+    }
     return MNNR_SUCCESS;
 }
 

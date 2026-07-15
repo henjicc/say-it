@@ -34,6 +34,21 @@ extern "C"
         MNNR_DATA_FORMAT_AUTO = 2  // Auto-detect from model
     } MNNR_DataFormat;
 
+    // Static workspace policy when dynamic input shapes resize a session.
+    typedef enum
+    {
+        MNNR_MEMORY_CACHE = 0,   // Keep workspace for the next inference
+        MNNR_MEMORY_COLLECT = 1  // Reclaim stale workspace after a resize
+    } MNNR_MemoryMode;
+
+    // Backend memory preference. Lower memory may trade some throughput for RAM.
+    typedef enum
+    {
+        MNNR_BACKEND_MEMORY_NORMAL = 0,
+        MNNR_BACKEND_MEMORY_HIGH = 1,
+        MNNR_BACKEND_MEMORY_LOW = 2
+    } MNNR_BackendMemoryMode;
+
     // Configuration for inference engine
     typedef struct
     {
@@ -42,6 +57,8 @@ extern "C"
         bool use_cache;         // Whether to use cache file
         int32_t data_format;    // Input/Output data format
         int32_t forward_type;   // MNNForwardType: 0=CPU, 1=Metal, 2=CUDA, 3=OpenCL, 6=OpenGL, 7=Vulkan, 5=CoreML/NNAPI
+        int32_t memory_mode;    // MNNR_MemoryMode
+        int32_t backend_memory_mode; // MNNR_BackendMemoryMode
     } MNNR_Config;
 
     // ============== Version & Info ==============
@@ -91,6 +108,11 @@ extern "C"
         const MNN_InferenceEngine *engine,
         size_t *dims,
         size_t *out_ndims);
+
+    // Get MNN's current session workspace usage in MiB.
+    MNNR_ErrorCode mnnr_get_memory_usage_mb(
+        const MNN_InferenceEngine *engine,
+        float *out_mb);
 
     // Run single inference (thread-safe but serialized)
     // This uses the default session and is suitable for simple use cases

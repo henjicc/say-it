@@ -84,6 +84,27 @@ mod normal_impl {
         High = 2,
     }
 
+    /// Static workspace policy when a dynamic-shape session is resized.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum MemoryMode {
+        /// Keep allocated workspace for the next inference.
+        #[default]
+        Cache = 0,
+        /// Reclaim stale workspace after an input-shape resize.
+        Collect = 1,
+    }
+
+    /// Backend memory preference.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum BackendMemoryMode {
+        #[default]
+        Normal = 0,
+        High = 1,
+        Low = 2,
+    }
+
     /// Data format
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     #[repr(i32)]
@@ -145,6 +166,10 @@ mod normal_impl {
         pub data_format: DataFormat,
         /// Inference backend
         pub backend: Backend,
+        /// Workspace policy for dynamic input shapes
+        pub memory_mode: MemoryMode,
+        /// Backend memory preference
+        pub backend_memory_mode: BackendMemoryMode,
     }
 
     impl Default for InferenceConfig {
@@ -155,6 +180,8 @@ mod normal_impl {
                 use_cache: false,
                 data_format: DataFormat::NCHW,
                 backend: Backend::CPU,
+                memory_mode: MemoryMode::Cache,
+                backend_memory_mode: BackendMemoryMode::Normal,
             }
         }
     }
@@ -189,6 +216,18 @@ mod normal_impl {
             self
         }
 
+        /// Set workspace policy for dynamic input shapes.
+        pub fn with_memory_mode(mut self, memory_mode: MemoryMode) -> Self {
+            self.memory_mode = memory_mode;
+            self
+        }
+
+        /// Set backend memory preference.
+        pub fn with_backend_memory_mode(mut self, backend_memory_mode: BackendMemoryMode) -> Self {
+            self.backend_memory_mode = backend_memory_mode;
+            self
+        }
+
         fn to_ffi(&self) -> ffi::MNNR_Config {
             ffi::MNNR_Config {
                 thread_count: self.thread_count,
@@ -196,6 +235,8 @@ mod normal_impl {
                 use_cache: self.use_cache,
                 data_format: self.data_format as i32,
                 forward_type: self.backend.to_forward_type(),
+                memory_mode: self.memory_mode as i32,
+                backend_memory_mode: self.backend_memory_mode as i32,
             }
         }
     }
@@ -384,6 +425,25 @@ mod normal_impl {
         /// Get output tensor shape
         pub fn output_shape(&self) -> &[usize] {
             &self.output_shape
+        }
+
+        /// Get MNN's current workspace usage for this session in MiB.
+        pub fn memory_usage_mb(&self) -> Result<f32> {
+            let mut memory_mb = 0.0f32;
+            let error_code =
+                unsafe { ffi::mnnr_get_memory_usage_mb(self.ptr.as_ptr(), &mut memory_mb) };
+
+            match error_code {
+                ffi::MNNR_ErrorCode_MNNR_SUCCESS => Ok(memory_mb),
+                ffi::MNNR_ErrorCode_MNNR_ERROR_INVALID_PARAMETER => Err(
+                    MnnError::InvalidParameter(get_last_error_message(Some(self.ptr.as_ptr()))),
+                ),
+                ffi::MNNR_ErrorCode_MNNR_ERROR_OUT_OF_MEMORY => Err(MnnError::OutOfMemory),
+                ffi::MNNR_ErrorCode_MNNR_ERROR_UNSUPPORTED => Err(MnnError::Unsupported),
+                _ => Err(MnnError::RuntimeError(get_last_error_message(Some(
+                    self.ptr.as_ptr(),
+                )))),
+            }
         }
 
         /// Execute inference
@@ -734,6 +794,8 @@ mod normal_impl {
             let config = InferenceConfig::default();
             assert_eq!(config.thread_count, 4);
             assert_eq!(config.precision_mode, PrecisionMode::Normal);
+            assert_eq!(config.memory_mode, MemoryMode::Cache);
+            assert_eq!(config.backend_memory_mode, BackendMemoryMode::Normal);
         }
 
         #[test]
@@ -741,10 +803,14 @@ mod normal_impl {
             let config = InferenceConfig::new()
                 .with_threads(8)
                 .with_precision(PrecisionMode::High)
+                .with_memory_mode(MemoryMode::Collect)
+                .with_backend_memory_mode(BackendMemoryMode::Low)
                 .with_backend(Backend::Metal);
 
             assert_eq!(config.thread_count, 8);
             assert_eq!(config.precision_mode, PrecisionMode::High);
+            assert_eq!(config.memory_mode, MemoryMode::Collect);
+            assert_eq!(config.backend_memory_mode, BackendMemoryMode::Low);
             assert_eq!(config.backend, Backend::Metal);
         }
     }

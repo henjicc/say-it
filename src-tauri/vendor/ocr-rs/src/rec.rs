@@ -828,6 +828,11 @@ impl RecModel {
         self.engine.input_shape()
     }
 
+    /// Get the recognizer session workspace usage in MiB.
+    pub fn memory_usage_mb(&self) -> OcrResult<f32> {
+        self.engine.memory_usage_mb().map_err(Into::into)
+    }
+
     /// Get model output shape
     pub fn output_shape(&self) -> &[usize] {
         self.engine.output_shape()
