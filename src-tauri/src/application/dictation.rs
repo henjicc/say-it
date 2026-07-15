@@ -94,6 +94,7 @@ struct DictationPrefs {
     smart_processing_enabled: bool,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
+    active_app_context_blocked_apps: Vec<String>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
     dictation_silence_disconnect_ms: u64,
@@ -114,6 +115,7 @@ impl Default for DictationPrefs {
             smart_processing_enabled: false,
             smart_template_id: String::new(),
             smart_templates: vec![],
+            active_app_context_blocked_apps: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
             dictation_silence_disconnect_ms: 5_000,
@@ -142,6 +144,7 @@ struct Session {
     silence_streaming: bool,
     raw_done: Option<Arc<tokio::sync::Notify>>,
     temp_audio_path: Option<PathBuf>,
+    active_app_context: Option<crate::active_app_context::ContextCaptureHandle>,
 }
 
 impl Session {
@@ -180,6 +183,7 @@ pub(crate) struct DictationSnapshot {
     session_id: Option<String>,
     text: String,
     error: Option<String>,
+    active_app_context: Option<crate::active_app_context::ActiveAppContextSummary>,
 }
 
 pub(crate) fn initialize(app: AppHandle) {
@@ -198,15 +202,17 @@ pub(crate) fn initialize(app: AppHandle) {
 }
 
 pub(crate) fn request_toggle(app: AppHandle) {
+    let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = toggle(app.clone()).await {
+        if let Err(e) = toggle(app.clone(), activation_target).await {
             publish_state(&app, Some(e));
         }
     });
 }
 pub(crate) fn request_start(app: AppHandle) {
+    let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = start(app.clone()).await {
+        if let Err(e) = start(app.clone(), activation_target).await {
             publish_state(&app, Some(e));
         }
     });
@@ -228,11 +234,11 @@ pub(crate) fn request_cancel(app: AppHandle) {
 
 #[tauri::command]
 pub(crate) async fn dictation_toggle(app: AppHandle) -> Result<(), String> {
-    toggle(app).await
+    toggle(app, None).await
 }
 #[tauri::command]
 pub(crate) async fn dictation_start(app: AppHandle) -> Result<(), String> {
-    start(app).await
+    start(app, None).await
 }
 #[tauri::command]
 pub(crate) async fn dictation_stop(app: AppHandle) -> Result<(), String> {
@@ -287,6 +293,7 @@ fn snapshot(state: &RuntimeState) -> Result<DictationSnapshot, String> {
         session_id: s.public_id.clone(),
         text: format!("{}{}", s.committed, s.segment),
         error: None,
+        active_app_context: state.active_app_context.latest_summary(),
     })
 }
 
@@ -313,7 +320,10 @@ pub(crate) fn domain_snapshot(
     })
 }
 
-async fn toggle(app: AppHandle) -> Result<(), String> {
+async fn toggle(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+) -> Result<(), String> {
     let phase = app
         .state::<RuntimeState>()
         .dictation_runtime
@@ -322,13 +332,16 @@ async fn toggle(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "听写状态锁失败")?
         .phase;
     match phase {
-        DictationPhase::Idle | DictationPhase::Failed => start(app).await,
+        DictationPhase::Idle | DictationPhase::Failed => start(app, activation_target).await,
         DictationPhase::WaitingForVoice | DictationPhase::Recording => stop(app).await,
         _ => Ok(()),
     }
 }
 
-async fn start(app: AppHandle) -> Result<(), String> {
+async fn start(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
@@ -350,11 +363,29 @@ async fn start(app: AppHandle) -> Result<(), String> {
     let prefs: DictationPrefs =
         serde_json::from_value(prefs_value).map_err(|e| format!("听写配置无效：{e}"))?;
     validate_rules(&prefs)?;
+    validate_smart_processing(&prefs)?;
     let epoch = state
         .dictation_runtime
         .epochs
         .fetch_add(1, Ordering::AcqRel)
         + 1;
+    let active_app_context = if prefs.smart_processing_enabled {
+        prefs
+            .smart_templates
+            .iter()
+            .find(|template| template.id == prefs.smart_template_id)
+            .filter(|template| {
+                crate::application::smart_text::requires_active_app_context(&template.prompt)
+            })
+            .and_then(|_| activation_target)
+            .map(|target| {
+                state
+                    .active_app_context
+                    .begin_capture(target, prefs.active_app_context_blocked_apps.clone())
+            })
+    } else {
+        None
+    };
     let info = crate::providers::registry::model_info(&prefs.asr_model)
         .cloned()
         .or_else(|| {
@@ -415,6 +446,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
             lease: Some(lease),
             prefs: prefs.clone(),
             silence_streaming: false,
+            active_app_context,
             ..Session::default()
         };
     }
@@ -465,6 +497,7 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
             s.phase = DictationPhase::Failed;
             s.mode = None;
             s.public_id = None;
+            s.active_app_context.take();
             s.lease.take()
         });
     let _ = release_backend_mic_inner(state);
@@ -760,7 +793,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (asr, file_job, lease, temp_path) = {
+    let (asr, file_job, lease, temp_path, active_app_context) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -771,6 +804,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             s.file_job_id.take(),
             s.lease.take(),
             s.temp_audio_path.take(),
+            s.active_app_context.take(),
         );
         s.epoch = state
             .dictation_runtime
@@ -785,6 +819,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.raw_samples.clear();
         ids
     };
+    drop(active_app_context);
     let _ = pause_backend_mic_inner(&state);
     let _ = release_backend_mic_inner(&state);
     if let Some(id) = asr {
@@ -938,7 +973,7 @@ fn spawn_finalize_timeout(app: AppHandle, epoch: u64) {
 }
 
 async fn finalize(app: AppHandle, epoch: u64) {
-    let (text, prefs, method, mode, lease, asr, temp_path) = {
+    let (text, prefs, method, mode, lease, asr, temp_path, active_app_context) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
             return;
@@ -969,6 +1004,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.lease.take(),
             s.asr_session_id.take(),
             s.temp_audio_path.take(),
+            s.active_app_context.take(),
         )
     };
     publish_state(&app, None);
@@ -987,6 +1023,24 @@ async fn finalize(app: AppHandle, epoch: u64) {
             let _ = fail(app, epoch, e).await;
             return;
         }
+    };
+    let active_app_context = if let Some(handle) = active_app_context {
+        let state = app.state::<RuntimeState>();
+        let captured = state.active_app_context.resolve(handle).await;
+        let is_current = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map(|session| session.epoch == epoch)
+            .unwrap_or(false);
+        if is_current {
+            state.active_app_context.remember(&captured);
+            captured.format_for_prompt()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
     };
     let processed = if prefs.smart_processing_enabled && !local_processed.is_empty() {
         let Some(template) = prefs
@@ -1007,6 +1061,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             &state,
             &local_processed,
             &template.prompt,
+            &active_app_context,
         )
         .await
         {
@@ -1060,7 +1115,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let (lease, temp_path, asr, file_job) = {
+    let (lease, temp_path, asr, file_job, active_app_context) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1075,8 +1130,10 @@ async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
             s.temp_audio_path.take(),
             s.asr_session_id.take(),
             s.file_job_id.take(),
+            s.active_app_context.take(),
         )
     };
+    drop(active_app_context);
     if let Some(lease) = lease {
         let _ = state.audio_session.release(&lease);
     }
@@ -1158,7 +1215,7 @@ fn publish_state_with_text(
         domain: "dictation".into(),
         event_type: "stateChanged".into(),
         session_id: s.public_id.clone(),
-        payload: json!({"phase": s.phase, "recording": matches!(s.phase, DictationPhase::Recording | DictationPhase::WaitingForVoice), "text": text, "error": error}),
+        payload: json!({"phase": s.phase, "recording": matches!(s.phase, DictationPhase::Recording | DictationPhase::WaitingForVoice), "text": text, "error": error, "activeAppContext": state.active_app_context.latest_summary()}),
     };
     hotkey::set_dictation_active(!matches!(
         s.phase,
@@ -1238,7 +1295,7 @@ fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
     if template.name.trim().is_empty() {
         return Err("智能处理模板名称不能为空".to_string());
     }
-    crate::application::smart_text::render_prompt(&template.prompt, "验证文本")?;
+    crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "")?;
     Ok(())
 }
 pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), String> {

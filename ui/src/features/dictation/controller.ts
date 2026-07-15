@@ -1,5 +1,8 @@
 import { CMD, cmd } from "@/lib/tauri";
-import { useDictationStore } from "@/store/useDictationStore";
+import {
+  useDictationStore,
+  type ActiveAppContextSummary,
+} from "@/store/useDictationStore";
 import {
   startShortcutCapture,
   clearShortcut,
@@ -26,6 +29,7 @@ type RuntimePayload = {
   recording?: boolean;
   text?: string;
   error?: string | null;
+  activeAppContext?: ActiveAppContextSummary | null;
 };
 
 const labels: Record<string, string> = {
@@ -50,6 +54,7 @@ export function applyDictationRuntime(payload: RuntimePayload) {
     latestText: payload.text || useDictationStore.getState().latestText,
     statusText: error ? `语音输入出错：${error}` : labels[phase] || labels.idle,
     statusTone: error || phase === "failed" ? "err" : phase === "idle" ? "" : "ok",
+    activeAppContext: payload.activeAppContext ?? useDictationStore.getState().activeAppContext,
   });
 }
 

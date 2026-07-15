@@ -1,6 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod application;
+mod active_app_context;
 mod audio_dsp;
 mod audio_prep;
 mod commands;

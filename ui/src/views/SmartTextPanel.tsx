@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ListChecks, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -11,22 +11,37 @@ import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd } from "@/lib/tauri";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
 import {
+  ACTIVE_APP_CONTEXT_PLACEHOLDER,
   MAX_SMART_TEXT_TEMPLATES,
   SMART_TEXT_PLACEHOLDER,
   useDictPrefs,
   type DeletedSmartTextTemplate,
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
+import { useDictationStore, type ActiveAppContextStatus } from "@/store/useDictationStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
+const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n焦点附近内容：Windows UI Automation；Tauri；上下文捕获";
+const CONTEXT_STATUS_LABELS: Record<ActiveAppContextStatus, string> = {
+  captured: "已捕获",
+  empty: "未获取到可用文本",
+  blocked: "已按黑名单跳过",
+  accessDenied: "目标应用拒绝访问",
+  timedOut: "捕获超时",
+  unsupported: "当前系统暂不支持",
+  failed: "捕获失败",
+};
 
 export function SmartTextPanel() {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
+  const latestContext = useDictationStore((state) => state.activeAppContext);
   const templates = prefs.smartTemplates;
   const active = templates.find((template) => template.id === prefs.smartTemplateId) ?? templates[0];
   const [previewInput, setPreviewInput] = useState(PREVIEW_SAMPLE);
   const [previewOutput, setPreviewOutput] = useState("");
+  const [previewContext, setPreviewContext] = useState(PREVIEW_CONTEXT_SAMPLE);
+  const [blockedAppInput, setBlockedAppInput] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [message, setMessage] = useState("");
   const [draftName, setDraftName] = useState(active?.name ?? "");
@@ -40,6 +55,7 @@ export function SmartTextPanel() {
     (entry) => entry.recoveryId === recentRecoveryId,
   );
   const draftTemplateIdRef = useRef(active?.id ?? "");
+  const draftUsesActiveAppContext = draftPrompt.includes(ACTIVE_APP_CONTEXT_PLACEHOLDER);
 
   useEffect(() => {
     if (!active) {
@@ -165,12 +181,40 @@ export function SmartTextPanel() {
       const output = await cmd<string>(CMD.previewSmartText, {
         text: previewInput,
         prompt,
+        activeAppContext: prompt.includes(ACTIVE_APP_CONTEXT_PLACEHOLDER)
+          ? previewContext
+          : undefined,
       });
       setPreviewOutput(output);
     } catch (error) {
       setMessage(`试运行失败：${String(error)}`);
     } finally {
       setPreviewing(false);
+    }
+  };
+
+  const addBlockedApp = async (value = blockedAppInput) => {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || prefs.activeAppContextBlockedApps.includes(normalized)) return;
+    try {
+      await patch({
+        activeAppContextBlockedApps: [...prefs.activeAppContextBlockedApps, normalized],
+      });
+      setBlockedAppInput("");
+    } catch (error) {
+      setTemplateNotice({ tone: "err", text: `添加黑名单失败：${String(error)}` });
+    }
+  };
+
+  const removeBlockedApp = async (appName: string) => {
+    try {
+      await patch({
+        activeAppContextBlockedApps: prefs.activeAppContextBlockedApps.filter(
+          (item) => item !== appName,
+        ),
+      });
+    } catch (error) {
+      setTemplateNotice({ tone: "err", text: `移除黑名单失败：${String(error)}` });
     }
   };
 
@@ -279,7 +323,7 @@ export function SmartTextPanel() {
             </Field>
             <Field
               label="提示词"
-              hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本；启用时必须保留该占位符。</>}
+              hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选）。</>}
             >
               <Textarea
                 rows={7}
@@ -289,17 +333,84 @@ export function SmartTextPanel() {
                 onBlur={() => void saveTemplateDraft()}
               />
             </Field>
-            <Button
-              size="sm"
-              className="self-start"
-              onClick={() => {
-                const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${SMART_TEXT_PLACEHOLDER}`;
-                setDraftPrompt(nextPrompt);
-                void saveTemplateDraft({ prompt: nextPrompt });
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${SMART_TEXT_PLACEHOLDER}`;
+                  setDraftPrompt(nextPrompt);
+                  void saveTemplateDraft({ prompt: nextPrompt });
+                }}
+              >
+                插入识别文本
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${ACTIVE_APP_CONTEXT_PLACEHOLDER}`;
+                  setDraftPrompt(nextPrompt);
+                  void saveTemplateDraft({ prompt: nextPrompt });
+                }}
+              >
+                插入软件上下文
+              </Button>
+            </div>
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="当前软件上下文">
+        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+          只有启用智能处理且当前模板包含 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 时，才会在全局快捷键触发瞬间读取当前软件的可访问文本并随提示词发送。界面按钮启动不会捕获。
+        </p>
+        {latestContext ? (
+          <div className="flex flex-col gap-2 text-sm text-[var(--color-fg-subtle)]">
+            <p>
+              最近捕获：{CONTEXT_STATUS_LABELS[latestContext.status]} · {latestContext.appName || latestContext.processName || "未知应用"} · {latestContext.elapsedMs} ms
+              {latestContext.truncated ? " · 已裁剪" : ""}
+            </p>
+            {latestContext.windowTitle && <p>窗口：{latestContext.windowTitle}</p>}
+            {latestContext.preview && (
+              <Textarea rows={5} readOnly value={latestContext.preview} className="bg-[var(--color-bg)]" />
+            )}
+            {latestContext.processName && !prefs.activeAppContextBlockedApps.includes(latestContext.processName.toLowerCase()) && (
+              <Button size="sm" className="self-start" onClick={() => void addBlockedApp(latestContext.processName)}>
+                屏蔽此应用
+              </Button>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-[var(--color-fg-faint)]">尚无捕获记录。</p>
+        )}
+
+        <Field label="应用黑名单" hint="按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。">
+          <div className="flex gap-2">
+            <Input
+              value={blockedAppInput}
+              placeholder="example.exe"
+              onChange={(event) => setBlockedAppInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void addBlockedApp();
+                }
               }}
-            >
-              插入文本占位符
+            />
+            <Button disabled={!blockedAppInput.trim()} onClick={() => void addBlockedApp()}>
+              添加
             </Button>
+          </div>
+        </Field>
+        {prefs.activeAppContextBlockedApps.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {prefs.activeAppContextBlockedApps.map((appName) => (
+              <div key={appName} className="flex min-h-[var(--control-h-sm)] items-center justify-between gap-3 rounded-[var(--radius-control)] border border-[var(--color-line)] px-3 text-sm text-[var(--color-fg-subtle)]">
+                <span className="truncate">{appName}</span>
+                <IconButton label={`移除 ${appName}`} onClick={() => void removeBlockedApp(appName)}>
+                  <X className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                </IconButton>
+              </div>
+            ))}
           </div>
         )}
       </SettingsSection>
@@ -309,6 +420,11 @@ export function SmartTextPanel() {
           <Field label="试运行 · 输入">
             <Textarea rows={4} value={previewInput} onChange={(event) => setPreviewInput(event.target.value)} />
           </Field>
+          {draftUsesActiveAppContext && (
+            <Field label="模拟当前软件上下文">
+              <Textarea rows={4} value={previewContext} onChange={(event) => setPreviewContext(event.target.value)} />
+            </Field>
+          )}
           <Field label="试运行 · 输出">
             <Textarea rows={4} readOnly value={previewOutput} className="bg-[var(--color-bg)]" />
           </Field>
