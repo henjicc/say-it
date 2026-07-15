@@ -160,12 +160,14 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
   selected,
   isActive,
   busy,
+  sortingDisabled,
   onToggle,
 }: {
   template: SmartTextTemplate;
   selected: boolean;
   isActive: boolean;
   busy: boolean;
+  sortingDisabled: boolean;
   onToggle: (id: string) => void;
 }) {
   const {
@@ -178,7 +180,7 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
     isDragging,
   } = useSortable({
     id: template.id,
-    disabled: busy,
+    disabled: busy || sortingDisabled,
     transition: {
       duration: 180,
       easing: "cubic-bezier(0.22, 1, 0.36, 1)",
@@ -245,6 +247,7 @@ export function SmartTemplateManager({
   const [selectedTrashIds, setSelectedTrashIds] = useState<Set<string>>(new Set());
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>();
   const [busy, setBusy] = useState(false);
+  const [sortingSaving, setSortingSaving] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   const [activeSortId, setActiveSortId] = useState("");
   const prefersReducedMotion = usePrefersReducedMotion();
@@ -294,10 +297,10 @@ export function SmartTemplateManager({
   };
 
   const persistOrder = async (next: SmartTextTemplate[]) => {
-    if (next === orderedTemplates || busy) return;
+    if (next === orderedTemplates || busy || sortingSaving) return;
     const previous = orderedTemplates;
     setOrderedTemplates(next);
-    setBusy(true);
+    setSortingSaving(true);
     setNotice(undefined);
     try {
       await patch({ smartTemplates: next });
@@ -305,7 +308,7 @@ export function SmartTemplateManager({
       setOrderedTemplates(previous);
       report({ tone: "err", text: `调整顺序失败：${String(error)}` });
     } finally {
-      setBusy(false);
+      setSortingSaving(false);
     }
   };
 
@@ -571,6 +574,7 @@ export function SmartTemplateManager({
                       selected={selectedTemplateIds.has(template.id)}
                       isActive={template.id === prefs.smartTemplateId}
                       busy={busy}
+                      sortingDisabled={sortingSaving}
                       onToggle={toggleTemplateSelection}
                     />
                   ))}
