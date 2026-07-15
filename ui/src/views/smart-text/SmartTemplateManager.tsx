@@ -7,6 +7,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type Modifier,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -72,6 +73,13 @@ const sortableAccessibility = {
     onDragCancel: () => "已取消模板排序。",
   },
 };
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
+
+const sortableModifiers = [restrictToVerticalAxis];
 
 const SortableTemplateRow = memo(function SortableTemplateRow({
   template,
@@ -479,6 +487,7 @@ export function SmartTemplateManager({
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
+              modifiers={sortableModifiers}
               accessibility={sortableAccessibility}
               onDragEnd={finishSorting}
             >
