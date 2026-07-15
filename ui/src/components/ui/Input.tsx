@@ -1,4 +1,5 @@
-import { Children, forwardRef, isValidElement, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Children, forwardRef, isValidElement, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -33,6 +34,15 @@ interface SelectOption {
   value: string;
   label: string;
   disabled?: boolean;
+}
+
+interface SelectPopoverLayout {
+  left: number;
+  top?: number;
+  bottom?: number;
+  width: number;
+  maxHeight: number;
+  openUpward: boolean;
 }
 
 export interface SelectProps
@@ -71,12 +81,12 @@ export function Select({
   const listboxId = `${buttonId}-listbox`;
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   // 弹层挂载状态：打开时立即挂载，关闭时保留到离开动画结束再卸载
   const [rendered, setRendered] = useState(false);
-  // 打开前测一次按钮离视口上下边缘的距离：下方放不下且上方空间更大时，弹层改往上展开
-  const [openUpward, setOpenUpward] = useState(false);
+  const [popoverLayout, setPopoverLayout] = useState<SelectPopoverLayout | null>(null);
   const [query, setQuery] = useState("");
   const [internalValue, setInternalValue] = useState(defaultValue || "");
   const selectedValue = value ?? internalValue;
@@ -121,7 +131,8 @@ export function Select({
     if (!open) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
     };
 
     document.addEventListener("pointerdown", handlePointerDown);
@@ -133,19 +144,49 @@ export function Select({
       setQuery("");
       return;
     }
-    if (searchable) searchInputRef.current?.focus();
-  }, [open, searchable]);
+    if (!rendered || !searchable) return;
+    const frame = window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, rendered, searchable]);
 
-  // 弹层高度受 max-h-[19.5rem] 限制，这里用一个估算值（含搜索框）判断是否需要往上开，
-  // 不用等实际渲染出来再量，避免打开瞬间的位置跳变。
-  const openDropdown = () => {
+  const measurePopover = useCallback(() => {
     const rect = buttonRef.current?.getBoundingClientRect();
-    if (rect) {
-      const estimatedHeight = 312 + (searchable ? 54 : 0);
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      setOpenUpward(spaceBelow < estimatedHeight && spaceAbove > spaceBelow);
-    }
+    if (!rect) return;
+
+    const viewportMargin = 8;
+    const triggerGap = 6;
+    const preferredHeight = searchable ? 366 : 312;
+    const minimumUsefulHeight = searchable ? 154 : 110;
+    const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - viewportMargin - triggerGap);
+    const spaceAbove = Math.max(0, rect.top - viewportMargin - triggerGap);
+    // 下方只要还能容纳搜索框和少量结果就优先向下；确实局促时才改为向上。
+    const openUpward = spaceBelow < minimumUsefulHeight && spaceAbove > spaceBelow;
+    const availableHeight = openUpward ? spaceAbove : spaceBelow;
+    const maxHeight = Math.min(preferredHeight, availableHeight);
+
+    setPopoverLayout({
+      left: rect.left,
+      top: openUpward ? undefined : rect.bottom + triggerGap,
+      bottom: openUpward ? window.innerHeight - rect.top + triggerGap : undefined,
+      width: rect.width,
+      maxHeight,
+      openUpward,
+    });
+  }, [searchable]);
+
+  useEffect(() => {
+    if (!open) return;
+    measurePopover();
+    window.addEventListener("resize", measurePopover);
+    window.addEventListener("scroll", measurePopover, true);
+    return () => {
+      window.removeEventListener("resize", measurePopover);
+      window.removeEventListener("scroll", measurePopover, true);
+    };
+  }, [measurePopover, open]);
+
+  const openDropdown = () => {
+    measurePopover();
     setOpen(true);
   };
 
@@ -231,25 +272,38 @@ export function Select({
         <ChevronDownIcon open={open} />
       </button>
 
-      {rendered && (
+      {rendered && popoverLayout && createPortal(
         <div
+          ref={popoverRef}
           id={listboxId}
           role="listbox"
           aria-labelledby={buttonId}
           onAnimationEnd={() => {
             if (!open) setRendered(false);
           }}
-          style={{ transformOrigin: openUpward ? "bottom" : "top" }}
+          style={{
+            left: popoverLayout.left,
+            top: popoverLayout.top,
+            bottom: popoverLayout.bottom,
+            width: popoverLayout.width,
+            maxHeight: popoverLayout.maxHeight,
+            transformOrigin: popoverLayout.openUpward ? "bottom" : "top",
+          }}
           className={cn(
-            "absolute left-0 right-0 z-[var(--z-popover)] max-h-[19.5rem] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
-            openUpward ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
+            "fixed z-[var(--z-portal-popover)] flex overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+            popoverLayout.openUpward ? "flex-col-reverse" : "flex-col",
             open
               ? "animate-[dropdown-in_140ms_var(--ease-out)]"
               : "pointer-events-none animate-[dropdown-out_110ms_var(--ease-out)_forwards]",
           )}
         >
           {searchable && (
-            <div className="border-b border-[var(--color-line)] p-1.5">
+            <div className={cn(
+              "shrink-0 p-1.5",
+              popoverLayout.openUpward
+                ? "border-t border-[var(--color-line)]"
+                : "border-b border-[var(--color-line)]",
+            )}>
               <input
                 ref={searchInputRef}
                 type="text"
@@ -261,36 +315,37 @@ export function Select({
               />
             </div>
           )}
-          <div className="max-h-64 overflow-auto p-1.5">
-          {visibleOptions.length === 0 && (
-            <div className="px-3 py-2 text-sm text-[var(--color-fg-subtle)]">无匹配结果</div>
-          )}
-          {visibleOptions.map((option) => {
-            const selected = option.value === selectedOption?.value;
-            return (
-              <button
-                key={option.value}
-                id={`${listboxId}-${option.value}`}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                disabled={option.disabled}
-                onClick={() => commitValue(option.value)}
-                className={cn(
-                  "flex min-h-9 w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors",
-                  selected
-                    ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
-                    : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
-                  option.disabled && "cursor-not-allowed opacity-40",
-                )}
-              >
-                <span className="min-w-0 truncate">{option.label}</span>
-                {selected && <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />}
-              </button>
-            );
-          })}
+          <div className="min-h-0 flex-1 overflow-auto p-1.5">
+            {visibleOptions.length === 0 && (
+              <div className="px-3 py-2 text-sm text-[var(--color-fg-subtle)]">无匹配结果</div>
+            )}
+            {visibleOptions.map((option) => {
+              const selected = option.value === selectedOption?.value;
+              return (
+                <button
+                  key={option.value}
+                  id={`${listboxId}-${option.value}`}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  disabled={option.disabled}
+                  onClick={() => commitValue(option.value)}
+                  className={cn(
+                    "flex min-h-9 w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors",
+                    selected
+                      ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                      : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
+                    option.disabled && "cursor-not-allowed opacity-40",
+                  )}
+                >
+                  <span className="min-w-0 truncate">{option.label}</span>
+                  {selected && <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />}
+                </button>
+              );
+            })}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

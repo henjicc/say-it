@@ -261,7 +261,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
       subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "未配置"} · ${models.length} 个模型`}
       defaultOpen={isDefault}
     >
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3">
         <Field
           label="API Key"
           controlId={`llm-api-key-${profile.id}`}
@@ -313,65 +313,39 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
           </div>
         </div>
 
-        <Field
-          label="当前模型"
-          controlId={`llm-model-${profile.id}`}
-          hint="智能文本处理会使用这个模型；下拉列表支持搜索"
-        >
-          <Select
-            id={`llm-model-${profile.id}`}
-            value={model}
-            searchable
-            searchPlaceholder="搜索模型…"
-            onChange={(event) => setModel(event.target.value)}
+        <div className={`grid grid-cols-1 gap-3 ${selectedModel ? "sm:grid-cols-[minmax(0,2fr)_minmax(14rem,1fr)]" : ""}`}>
+          <Field
+            label="当前模型"
+            controlId={`llm-model-${profile.id}`}
+            hint="智能文本处理会使用这个模型；展开后可直接输入搜索"
           >
-            {models.map((item) => <option key={item.name} value={item.name}>{modelLabel(item)}</option>)}
-          </Select>
-        </Field>
+            <Select
+              id={`llm-model-${profile.id}`}
+              value={model}
+              searchable
+              searchPlaceholder="搜索模型…"
+              onChange={(event) => setModel(event.target.value)}
+            >
+              {models.map((item) => <option key={item.name} value={item.name}>{modelLabel(item)}</option>)}
+            </Select>
+          </Field>
 
-        {selectedModel && (
-          <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface-hover)] p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field label="推理强度" hint="不支持时供应商会返回错误">
-                <Select
-                  value={selectedModel.reasoningEffort}
-                  onChange={(event) => updateSelectedModel({ reasoningEffort: event.target.value as LlmReasoningEffort })}
-                >
-                  {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </Select>
-              </Field>
-              <Field label="温度" hint="留空使用供应商默认值">
-                <Input
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={selectedModel.temperature ?? ""}
-                  placeholder="默认"
-                  onChange={(event) => updateSelectedModel({
-                    temperature: event.target.value === "" ? null : Number(event.target.value),
-                  })}
-                />
-              </Field>
-              <Field label="最大输出 Token" hint="留空表示不限制">
-                <Input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={selectedModel.maxTokens ?? ""}
-                  placeholder="默认"
-                  onChange={(event) => updateSelectedModel({
-                    maxTokens: event.target.value === "" ? null : Number(event.target.value),
-                  })}
-                />
-              </Field>
-            </div>
-            {selectedModel.availability === "missing" && (
-              <p className="mt-3 text-xs text-[var(--color-warn)]">
-                该模型未出现在最新接口结果中，配置已保留；调用是否可用取决于供应商。
-              </p>
-            )}
-          </div>
+          {selectedModel && (
+            <Field label="推理强度" hint="不支持时供应商会返回错误">
+              <Select
+                value={selectedModel.reasoningEffort}
+                onChange={(event) => updateSelectedModel({ reasoningEffort: event.target.value as LlmReasoningEffort })}
+              >
+                {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </Select>
+            </Field>
+          )}
+        </div>
+
+        {selectedModel?.availability === "missing" && (
+          <p className="mt-3 text-xs text-[var(--color-warn)]">
+            该模型未出现在最新接口结果中，配置已保留；调用是否可用取决于供应商。
+          </p>
         )}
 
         {manualModels.length > 0 && (
