@@ -56,6 +56,16 @@ pub fn debug_log_enabled() -> bool {
     DEBUG_LOG.load(Ordering::Relaxed)
 }
 
+// 上下文和提示词可能包含用户正在编辑的内容，只允许开发构建输出到终端。
+// 发布构建完全移除实际日志输出，避免把这类数据写入用户机器日志。
+#[cfg(debug_assertions)]
+pub(crate) fn development_debug_log(component: &str, message: impl std::fmt::Display) {
+    eprintln!("[{component}][dev] {message}");
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn development_debug_log(_component: &str, _message: impl std::fmt::Display) {}
+
 #[tauri::command]
 fn set_debug_log(enabled: bool) {
     DEBUG_LOG.store(enabled, Ordering::Relaxed);

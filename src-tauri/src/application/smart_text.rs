@@ -187,6 +187,16 @@ pub(crate) async fn process_smart_text(
     let prompt = render_prompt(template, text, active_app_context)?;
     let profile = selected_profile(state)?;
     let (client, model) = client_and_model(&profile)?;
+    crate::development_debug_log(
+        "smart-text",
+        format_args!(
+            "准备调用大语言模型：供应商={}，模型={}\n--- 系统提示词开始 ---\n{}\n--- 系统提示词结束 ---\n--- 用户提示词开始 ---\n{}\n--- 用户提示词结束 ---",
+            profile.display_name,
+            model,
+            SYSTEM_PROMPT,
+            prompt,
+        ),
+    );
     let request = ChatRequest::default()
         .with_system(SYSTEM_PROMPT)
         .append_message(ChatMessage::user(prompt));
@@ -203,6 +213,13 @@ pub(crate) async fn process_smart_text(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "大语言模型没有返回文本".to_string())?;
+    crate::development_debug_log(
+        "smart-text",
+        format_args!(
+            "大语言模型返回文本：\n--- 返回开始 ---\n{}\n--- 返回结束 ---",
+            output
+        ),
+    );
     Ok(output.to_string())
 }
 

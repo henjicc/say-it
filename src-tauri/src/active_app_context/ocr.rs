@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -29,8 +30,11 @@ static MODEL_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static OCR_ENGINE: OnceLock<Result<Mutex<OcrEngine>, String>> = OnceLock::new();
 static MODEL_INIT_MS: OnceLock<u64> = OnceLock::new();
 static OCR_WORKER: OnceLock<SyncSender<OcrTask>> = OnceLock::new();
+static NEXT_OCR_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 struct OcrTask {
+    id: u64,
+    submitted_at: Instant,
     image: DynamicImage,
     reply: SyncSender<Result<OcrPipelineOutput, String>>,
 }
@@ -207,9 +211,37 @@ fn worker() -> &'static SyncSender<OcrTask> {
             .name("active-app-ocr".into())
             .spawn(move || {
                 while let Ok(task) = receiver.recv() {
+                    crate::development_debug_log(
+                        "active-app-ocr",
+                        format_args!(
+                            "任务 #{} 开始：排队 {} ms，图片 {}×{}",
+                            task.id,
+                            task.submitted_at.elapsed().as_millis(),
+                            task.image.width(),
+                            task.image.height(),
+                        ),
+                    );
                     let result =
                         catch_unwind(AssertUnwindSafe(|| run_full_window_inner(&task.image)))
                             .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
+                    match &result {
+                        Ok(output) => crate::development_debug_log(
+                            "active-app-ocr",
+                            format_args!(
+                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
+                                task.id,
+                                output.elapsed_ms,
+                                output.blocks.len(),
+                                output.text.len(),
+                                output.truncated,
+                                output.text.join("\n"),
+                            ),
+                        ),
+                        Err(error) => crate::development_debug_log(
+                            "active-app-ocr",
+                            format_args!("任务 #{} 失败：{error}", task.id),
+                        ),
+                    }
                     let _ = task.reply.send(result);
                 }
             })
@@ -223,18 +255,62 @@ pub(crate) fn run_full_window(
     timeout: Duration,
 ) -> Result<OcrPipelineOutput, String> {
     if timeout.is_zero() {
+        crate::development_debug_log("active-app-ocr", "提交前已无剩余时间，直接超时");
         return Err("OCR 任务已超时".into());
     }
     let (reply, receiver) = sync_channel(1);
-    match worker().try_send(OcrTask { image, reply }) {
+    let id = NEXT_OCR_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    let submitted_at = Instant::now();
+    crate::development_debug_log(
+        "active-app-ocr",
+        format_args!(
+            "任务 #{id} 已提交：图片 {}×{}，等待上限 {} ms",
+            image.width(),
+            image.height(),
+            timeout.as_millis(),
+        ),
+    );
+    match worker().try_send(OcrTask {
+        id,
+        submitted_at,
+        image,
+        reply,
+    }) {
         Ok(()) => {}
-        Err(TrySendError::Full(_)) => return Err("OCR 任务队列已满".into()),
-        Err(TrySendError::Disconnected(_)) => return Err("OCR 工作线程不可用".into()),
+        Err(TrySendError::Full(_)) => {
+            crate::development_debug_log(
+                "active-app-ocr",
+                format_args!("任务 #{id} 未入队：队列已满"),
+            );
+            return Err("OCR 任务队列已满".into());
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            crate::development_debug_log(
+                "active-app-ocr",
+                format_args!("任务 #{id} 未入队：工作线程不可用"),
+            );
+            return Err("OCR 工作线程不可用".into());
+        }
     }
     match receiver.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(RecvTimeoutError::Timeout) => Err("OCR 任务已超时".into()),
-        Err(RecvTimeoutError::Disconnected) => Err("OCR 工作线程不可用".into()),
+        Err(RecvTimeoutError::Timeout) => {
+            crate::development_debug_log(
+                "active-app-ocr",
+                format_args!(
+                    "任务 #{id} 调用方等待超时：已等待 {} ms；后台任务仍可能继续执行",
+                    submitted_at.elapsed().as_millis()
+                ),
+            );
+            Err("OCR 任务已超时".into())
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            crate::development_debug_log(
+                "active-app-ocr",
+                format_args!("任务 #{id} 等待时工作线程断开"),
+            );
+            Err("OCR 工作线程不可用".into())
+        }
     }
 }
 
