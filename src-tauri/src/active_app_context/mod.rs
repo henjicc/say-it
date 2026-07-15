@@ -170,18 +170,55 @@ impl ContextCaptureService {
         let remaining = deadline
             .saturating_duration_since(std::time::Instant::now())
             .min(max_wait);
+        crate::development_debug_log(
+            "active-app-context",
+            format_args!(
+                "等待上下文结果：本次最多等待 {} ms，距总截止还剩 {} ms，已运行 {} ms",
+                max_wait.as_millis(),
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis(),
+                started.elapsed().as_millis(),
+            ),
+        );
         let mut result = if remaining.is_zero() {
+            crate::development_debug_log(
+                "active-app-context",
+                "等待上下文时已到总截止；后台任务结果不会用于本次听写",
+            );
             CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
         } else {
             match tokio::time::timeout(remaining, receiver).await {
                 Ok(Ok(result)) => result,
-                Ok(Err(_)) => CapturedActiveAppContext::with_status(CaptureStatus::Failed),
-                Err(_) => CapturedActiveAppContext::with_status(CaptureStatus::TimedOut),
+                Ok(Err(_)) => {
+                    crate::development_debug_log(
+                        "active-app-context",
+                        "上下文工作线程在返回结果前断开",
+                    );
+                    CapturedActiveAppContext::with_status(CaptureStatus::Failed)
+                }
+                Err(_) => {
+                    crate::development_debug_log(
+                        "active-app-context",
+                        format_args!(
+                            "本次等待 {} ms 后仍未获得上下文；后台 OCR 可能仍在运行，本次听写将不使用它",
+                            remaining.as_millis(),
+                        ),
+                    );
+                    CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+                }
             }
         };
         if result.status == CaptureStatus::TimedOut {
             result.elapsed_ms = deadline.saturating_duration_since(started).as_millis() as u64;
         }
+        crate::development_debug_log(
+            "active-app-context",
+            format_args!(
+                "上下文解析结果：状态={:?}，返回耗时 {} ms",
+                result.status, result.elapsed_ms,
+            ),
+        );
         result
     }
 

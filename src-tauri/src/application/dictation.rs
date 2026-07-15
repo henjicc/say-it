@@ -1035,6 +1035,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
             .unwrap_or(false);
         if is_current {
             state.active_app_context.remember(&captured);
+            crate::development_debug_log(
+                "dictation",
+                format_args!(
+                    "本次听写采用的软件上下文：状态={:?}，字符数={}\n--- 上下文开始 ---\n{}\n--- 上下文结束 ---",
+                    captured.status,
+                    captured.format_for_prompt().chars().count(),
+                    captured.format_for_prompt(),
+                ),
+            );
             captured.format_for_prompt()
         } else {
             String::new()

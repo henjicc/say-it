@@ -54,9 +54,24 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             ..Default::default()
         };
 
+        crate::development_debug_log(
+            "active-app-context",
+            format_args!(
+                "开始捕获：HWND=0x{:X}，PID={}，应用={}，窗口={}",
+                target.window_handle,
+                target.process_id,
+                context.app_name,
+                context.window_title.as_deref().unwrap_or("（无标题）"),
+            ),
+        );
+
         if is_blocked(&context, blocked_apps) {
             context.status = CaptureStatus::Blocked;
             context.elapsed_ms = started.elapsed().as_millis() as u64;
+            crate::development_debug_log(
+                "active-app-context",
+                format_args!("捕获已拦截：黑名单应用 {}", context.process_name),
+            );
             return context;
         }
         if expired(options.deadline) {
@@ -90,6 +105,19 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         };
         enforce_total_budget(&mut context, options.max_chars);
         context.elapsed_ms = started.elapsed().as_millis() as u64;
+        crate::development_debug_log(
+            "active-app-context",
+            format_args!(
+                "捕获结束：状态={:?}，截图 {}×{}（{} ms），OCR {} ms，总计 {} ms\n--- 最终上下文开始 ---\n{}\n--- 最终上下文结束 ---",
+                context.status,
+                context.screenshot_width,
+                context.screenshot_height,
+                context.screenshot_elapsed_ms,
+                context.ocr_elapsed_ms,
+                context.elapsed_ms,
+                context.format_for_prompt(),
+            ),
+        );
         context
     }
 }
@@ -102,6 +130,15 @@ fn capture_and_recognize(
     deadline: Instant,
 ) -> Result<(), String> {
     let captured = screen_capture::capture_window(window_handle, occluding_window_handle)?;
+    crate::development_debug_log(
+        "active-app-context",
+        format_args!(
+            "截图完成：{}×{}，耗时 {} ms；准备提交 OCR",
+            captured.image.width(),
+            captured.image.height(),
+            captured.elapsed_ms,
+        ),
+    );
     context.screenshot_width = captured.image.width();
     context.screenshot_height = captured.image.height();
     context.screenshot_elapsed_ms = captured.elapsed_ms;
