@@ -34,6 +34,8 @@ pub const MOD_WIN: u8 = 8;
 const VK_CAPITAL: u16 = 0x14;
 const VK_NUMLOCK: u16 = 0x90;
 const VK_SCROLL: u16 = 0x91;
+const CONTEXT_DEBUG_VK: u16 = 0x77; // F8
+const CONTEXT_DEBUG_MODS: u8 = MOD_CTRL | MOD_SHIFT;
 
 // 目标键与修饰键（由设置写入，钩子回调读取）。
 static TARGET_VK: AtomicU16 = AtomicU16::new(VK_CAPITAL);
@@ -50,6 +52,8 @@ static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static SUB_TARGET_VK: AtomicU16 = AtomicU16::new(0);
 static SUB_TARGET_MODS: AtomicU8 = AtomicU8::new(0);
 static SUB_TRIGGERED: AtomicBool = AtomicBool::new(false);
+static CONTEXT_DEBUG_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CONTEXT_DEBUG_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 // 正在“设置快捷键”界面等待用户按键：此时任意锁定键（CapsLock/NumLock/ScrollLock）
 // 一律吞掉、只上报按键，不让它真的切换锁定状态——避免设置过程中意外切换大小写。
@@ -68,6 +72,7 @@ enum PressSignal {
 }
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
+static CONTEXT_DEBUG_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
@@ -121,6 +126,14 @@ pub fn init(app: AppHandle) {
     std::thread::spawn(move || {
         while let Ok(vk) = capture_rx.recv() {
             emit_capture_lock_key(vk);
+        }
+    });
+
+    let (context_debug_tx, context_debug_rx) = channel::<()>();
+    let _ = CONTEXT_DEBUG_TX.set(Mutex::new(context_debug_tx));
+    std::thread::spawn(move || {
+        while context_debug_rx.recv().is_ok() {
+            emit_context_debug_capture();
         }
     });
 
@@ -198,11 +211,24 @@ fn signal_subtitle_toggle() {
     }
 }
 
+fn signal_context_debug_capture() {
+    if let Some(lock) = CONTEXT_DEBUG_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 pub fn set_dictation_active(active: bool) {
     DICTATION_ACTIVE.store(active, Ordering::SeqCst);
     if !active {
         ESCAPE_TRIGGERED.store(false, Ordering::SeqCst);
     }
+}
+
+pub fn set_context_debug_active(active: bool) {
+    CONTEXT_DEBUG_ACTIVE.store(active, Ordering::SeqCst);
+    CONTEXT_DEBUG_TRIGGERED.store(false, Ordering::SeqCst);
 }
 
 /// 更新当前热键（仅改原子，钩子已常驻）。
@@ -337,6 +363,12 @@ fn emit_subtitle_toggle() {
     }
 }
 
+fn emit_context_debug_capture() {
+    if let Some(app) = APP.get() {
+        crate::active_app_context::request_debug_capture(app.clone());
+    }
+}
+
 fn emit_capture_lock_key(vk: u16) {
     if let Some(app) = APP.get() {
         let _ = app.emit("hotkey-capture-lock-key", json!({ "vk": vk }));
@@ -383,6 +415,18 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 return LRESULT(1);
             }
             if is_up && ESCAPE_TRIGGERED.swap(false, Ordering::SeqCst) {
+                return LRESULT(1);
+            }
+        }
+
+        if CONTEXT_DEBUG_ACTIVE.load(Ordering::SeqCst) && vk == CONTEXT_DEBUG_VK {
+            if is_down && modifiers_match(CONTEXT_DEBUG_MODS) {
+                if !CONTEXT_DEBUG_TRIGGERED.swap(true, Ordering::SeqCst) {
+                    signal_context_debug_capture();
+                }
+                return LRESULT(1);
+            }
+            if is_up && CONTEXT_DEBUG_TRIGGERED.swap(false, Ordering::SeqCst) {
                 return LRESULT(1);
             }
         }

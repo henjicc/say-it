@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the app windows",
-  "windows": ["main", "dictation-indicator"],
+  "windows": ["main", "dictation-indicator", "active-app-context-debug"],
   "permissions": [
     "core:default",
     "core:webview:default",

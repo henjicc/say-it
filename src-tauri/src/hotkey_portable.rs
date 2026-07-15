@@ -27,6 +27,10 @@ pub fn set_dictation_active(active: bool) {
     DICTATION_ACTIVE.store(active, Ordering::Relaxed);
 }
 
+pub fn set_context_debug_active(_active: bool) {
+    // 当前软件上下文调试首版仅支持 Windows。
+}
+
 pub fn set_hotkey(vk: u16, mods: u8, press_hold_mode: bool) {
     clear_hotkey();
     let Some(app) = APP.get() else { return };
