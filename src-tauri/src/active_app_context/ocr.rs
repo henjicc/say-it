@@ -20,6 +20,10 @@ use super::normalize::normalize_text;
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
 const MAX_RECOGNIZED_REGIONS: usize = 96;
+// MNN keeps the detector's largest tensor workspace while its session stays live.
+// 960 is PP-OCR's mobile/default inference ceiling and avoids a 1600px capture
+// turning into a disproportionately large permanent workspace reservation.
+const DET_MAX_SIDE_LEN: u32 = 960;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DET_MODEL: &str = "PP-OCRv6_tiny_det.mnn";
 const REC_MODEL: &str = "PP-OCRv6_tiny_rec.mnn";
@@ -106,7 +110,7 @@ fn build_engine() -> Result<EngineState, String> {
         .with_min_result_confidence(0.45)
         .with_det_options(
             DetOptions::default()
-                .with_max_side_len(1_600)
+                .with_max_side_len(DET_MAX_SIDE_LEN)
                 .with_box_threshold(0.4)
                 .with_score_threshold(0.25),
         );
@@ -537,6 +541,10 @@ mod tests {
         .expect("fixture should load");
         let engine = build_engine().expect("bundled model should initialize");
         assert_eq!(engine.engine.config().memory_mode, MemoryMode::Collect);
+        assert_eq!(
+            engine.engine.config().det_options.max_side_len,
+            DET_MAX_SIDE_LEN
+        );
         let first =
             recognize_full_window(&engine.engine, &image).expect("fixture OCR should succeed");
         let second = recognize_full_window(&engine.engine, &image)
