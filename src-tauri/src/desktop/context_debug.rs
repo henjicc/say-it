@@ -43,8 +43,25 @@ fn ensure_context_debug_window(app: &tauri::AppHandle) -> Result<tauri::WebviewW
     Ok(window)
 }
 
+#[cfg(windows)]
+fn open_active_app_context_debug_inner(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_context_debug_window(&app)?;
+    window
+        .show()
+        .map_err(|error| format!("显示上下文调试窗口失败：{error}"))?;
+    let _ = window.set_focus();
+
+    crate::active_app_context::reset_debug_capture();
+    crate::hotkey::set_context_debug_active(true);
+    let _ = window.emit(
+        crate::active_app_context::DEBUG_STATE_EVENT,
+        json!({ "state": "waiting" }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
-pub(crate) fn open_active_app_context_debug(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn open_active_app_context_debug(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = app;
@@ -52,18 +69,9 @@ pub(crate) fn open_active_app_context_debug(app: tauri::AppHandle) -> Result<(),
     }
     #[cfg(windows)]
     {
-        let window = ensure_context_debug_window(&app)?;
-        crate::active_app_context::reset_debug_capture();
-        crate::hotkey::set_context_debug_active(true);
-        let _ = window.emit(
-            crate::active_app_context::DEBUG_STATE_EVENT,
-            json!({ "state": "waiting" }),
-        );
-        window
-            .show()
-            .map_err(|error| format!("显示上下文调试窗口失败：{error}"))?;
-        let _ = window.set_focus();
-        Ok(())
+        tauri::async_runtime::spawn_blocking(move || open_active_app_context_debug_inner(app))
+            .await
+            .map_err(|error| format!("打开上下文调试窗口任务失败：{error}"))?
     }
 }
 
