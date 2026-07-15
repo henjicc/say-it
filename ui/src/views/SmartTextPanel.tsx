@@ -215,10 +215,7 @@ export function SmartTextPanel() {
               </IconButton>
               <IconButton
                 label="恢复模板"
-                disabled={
-                  templateActionBusy ||
-                  (prefs.smartTemplateTrash.length === 0 && missingDefaultTemplates.length === 0)
-                }
+                disabled={templateActionBusy}
                 onClick={() => setRestoreOpen(true)}
               >
                 <ArchiveRestore className="h-4 w-4" strokeWidth={1.8} aria-hidden />
