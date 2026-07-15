@@ -1,12 +1,16 @@
 import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   closestCenter,
+  defaultDropAnimationSideEffects,
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
+  type DropAnimation,
   type Modifier,
 } from "@dnd-kit/core";
 import {
@@ -81,6 +85,75 @@ const restrictToVerticalAxis: Modifier = ({ transform }) => ({
 
 const sortableModifiers = [restrictToVerticalAxis];
 
+const templateDropAnimation: DropAnimation = {
+  duration: 220,
+  easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+  sideEffects: defaultDropAnimationSideEffects({
+    styles: {
+      active: { opacity: "0" },
+    },
+  }),
+};
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return reduced;
+}
+
+function TemplateRowSummary({
+  template,
+  isActive,
+}: {
+  template: SmartTextTemplate;
+  isActive: boolean;
+}) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
+          {template.name || "未命名模板"}
+        </span>
+        {isActive && (
+          <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
+            当前
+          </span>
+        )}
+      </div>
+      <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
+        {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
+      </p>
+    </div>
+  );
+}
+
+function TemplateDragPreview({
+  template,
+  isActive,
+}: {
+  template: SmartTextTemplate;
+  isActive: boolean;
+}) {
+  return (
+    <div className="pointer-events-none flex min-h-[66px] w-full items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] px-3 py-2.5 shadow-[var(--shadow-popover)]">
+      <span className="h-[18px] w-[18px] shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-line-strong)] bg-[var(--color-surface)]" aria-hidden />
+      <TemplateRowSummary template={template} isActive={isActive} />
+      <span className="flex h-[var(--control-h-sm)] w-[var(--control-h-sm)] shrink-0 items-center justify-center text-[var(--color-fg-muted)]" aria-hidden>
+        <GripVertical className="h-4 w-4" strokeWidth={1.8} />
+      </span>
+    </div>
+  );
+}
+
 const SortableTemplateRow = memo(function SortableTemplateRow({
   template,
   selected,
@@ -123,7 +196,7 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
       className={cn(
         "smart-template-sortable-row relative flex min-h-[66px] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2.5 last:border-b-0",
         selected && "bg-[var(--accent-soft)]",
-        isDragging && "bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+        isDragging && "opacity-20",
       )}
     >
       <Checkbox
@@ -132,21 +205,7 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
         aria-label={`选择模板“${template.name}”`}
         onChange={() => onToggle(template.id)}
       />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
-            {template.name || "未命名模板"}
-          </span>
-          {isActive && (
-            <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
-              当前
-            </span>
-          )}
-        </div>
-        <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
-          {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
-        </p>
-      </div>
+      <TemplateRowSummary template={template} isActive={isActive} />
       <button
         ref={setActivatorNodeRef}
         type="button"
@@ -186,6 +245,8 @@ export function SmartTemplateManager({
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
+  const [activeSortId, setActiveSortId] = useState("");
+  const prefersReducedMotion = usePrefersReducedMotion();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -194,6 +255,7 @@ export function SmartTemplateManager({
     () => orderedTemplates.map((template) => template.id),
     [orderedTemplates],
   );
+  const activeSortTemplate = orderedTemplates.find((template) => template.id === activeSortId);
 
   const missingDefaultTemplates = useMemo(
     () => defaultSmartTextTemplates().filter(
@@ -222,6 +284,7 @@ export function SmartTemplateManager({
     setSelectedTrashIds(new Set());
     setConfirmAction(undefined);
     setNotice(undefined);
+    setActiveSortId("");
   }, [open]);
 
   const report = (nextNotice: Notice, share = false) => {
@@ -251,11 +314,16 @@ export function SmartTemplateManager({
 
   const finishSorting = (event: DragEndEvent) => {
     const { active: dragged, over } = event;
+    setActiveSortId("");
     if (!over || dragged.id === over.id) return;
     const sourceIndex = orderedTemplates.findIndex((template) => template.id === dragged.id);
     const targetIndex = orderedTemplates.findIndex((template) => template.id === over.id);
     if (sourceIndex < 0 || targetIndex < 0) return;
     void persistOrder(arrayMove(orderedTemplates, sourceIndex, targetIndex));
+  };
+
+  const startSorting = (event: DragStartEvent) => {
+    setActiveSortId(String(event.active.id));
   };
 
   const deleteSelectedTemplates = async () => {
@@ -489,6 +557,8 @@ export function SmartTemplateManager({
               collisionDetection={closestCenter}
               modifiers={sortableModifiers}
               accessibility={sortableAccessibility}
+              onDragStart={startSorting}
+              onDragCancel={() => setActiveSortId("")}
               onDragEnd={finishSorting}
             >
               <SortableContext items={sortableTemplateIds} strategy={verticalListSortingStrategy}>
@@ -505,6 +575,17 @@ export function SmartTemplateManager({
                   ))}
                 </div>
               </SortableContext>
+              <DragOverlay
+                adjustScale={false}
+                dropAnimation={prefersReducedMotion ? null : templateDropAnimation}
+              >
+                {activeSortTemplate ? (
+                  <TemplateDragPreview
+                    template={activeSortTemplate}
+                    isActive={activeSortTemplate.id === prefs.smartTemplateId}
+                  />
+                ) : null}
+              </DragOverlay>
             </DndContext>
             <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
               拖动每行右侧的手柄调整模板顺序。
