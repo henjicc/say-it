@@ -6,8 +6,6 @@ export type ActiveAppContextStatus =
   | "captured"
   | "empty"
   | "blocked"
-  | "sensitive"
-  | "accessDenied"
   | "timedOut"
   | "unsupported"
   | "failed";
