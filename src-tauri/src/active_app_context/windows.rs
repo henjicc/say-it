@@ -248,6 +248,7 @@ fn apply_ocr(
     context.screenshot_width = captured.image.width();
     context.screenshot_height = captured.image.height();
     context.screenshot_elapsed_ms = captured.elapsed_ms;
+    context.diagnostics.extend(captured.compatibility_notes);
     if debug {
         context.screenshot_data_url = ocr::png_data_url(&captured.image).ok();
     }
