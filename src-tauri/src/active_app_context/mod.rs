@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
+use tokio::sync::oneshot::error::TryRecvError;
 
 const MAX_CONCURRENT_CAPTURES: usize = 4;
 
@@ -165,7 +166,7 @@ impl ContextCaptureService {
         let ContextCaptureHandle {
             started,
             deadline,
-            receiver,
+            mut receiver,
         } = handle;
         let remaining = deadline
             .saturating_duration_since(std::time::Instant::now())
@@ -181,14 +182,31 @@ impl ContextCaptureService {
                 started.elapsed().as_millis(),
             ),
         );
-        let mut result = if remaining.is_zero() {
-            crate::development_debug_log(
-                "active-app-context",
-                "等待上下文时已到总截止；后台任务结果不会用于本次听写",
-            );
-            CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
-        } else {
-            match tokio::time::timeout(remaining, receiver).await {
+        // 听写可能持续超过捕获硬截止，但 OCR 已在截止前完成并写入通道。
+        // 必须先读取已就绪的结果，不能因为“现在已过截止”而错误丢弃它。
+        let mut result = match receiver.try_recv() {
+            Ok(result) => {
+                crate::development_debug_log(
+                    "active-app-context",
+                    "上下文结果已就绪，即使当前已过总截止仍会用于本次听写",
+                );
+                result
+            }
+            Err(TryRecvError::Closed) => {
+                crate::development_debug_log(
+                    "active-app-context",
+                    "上下文工作线程在返回结果前断开",
+                );
+                CapturedActiveAppContext::with_status(CaptureStatus::Failed)
+            }
+            Err(TryRecvError::Empty) if remaining.is_zero() => {
+                crate::development_debug_log(
+                    "active-app-context",
+                    "等待上下文时已到总截止且任务尚未完成；本次听写不会使用它",
+                );
+                CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
+            }
+            Err(TryRecvError::Empty) => match tokio::time::timeout(remaining, &mut receiver).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) => {
                     crate::development_debug_log(
@@ -207,7 +225,7 @@ impl ContextCaptureService {
                     );
                     CapturedActiveAppContext::with_status(CaptureStatus::TimedOut)
                 }
-            }
+            },
         };
         if result.status == CaptureStatus::TimedOut {
             result.elapsed_ms = deadline.saturating_duration_since(started).as_millis() as u64;
@@ -271,6 +289,33 @@ mod tests {
         assert_eq!(result.status, CaptureStatus::TimedOut);
         assert_eq!(result.elapsed_ms, CAPTURE_TIMEOUT.as_millis() as u64);
         assert!(service.latest_summary().is_none());
+    }
+
+    #[tokio::test]
+    async fn completed_capture_is_used_even_if_dictation_finishes_after_deadline() {
+        let service = ContextCaptureService::default();
+        let (sender, receiver) = oneshot::channel();
+        sender
+            .send(CapturedActiveAppContext {
+                status: CaptureStatus::Captured,
+                app_name: "ChatGPT".into(),
+                ocr_text: vec!["已完成的 OCR 内容".into()],
+                ..Default::default()
+            })
+            .expect("receiver should accept the completed capture");
+
+        let result = service
+            .resolve_for_dictation(ContextCaptureHandle {
+                started: std::time::Instant::now()
+                    - CAPTURE_TIMEOUT
+                    - std::time::Duration::from_millis(1),
+                deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
+                receiver,
+            })
+            .await;
+
+        assert_eq!(result.status, CaptureStatus::Captured);
+        assert_eq!(result.format_for_prompt(), "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容");
     }
 
     #[test]
