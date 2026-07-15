@@ -44,6 +44,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
         );
         return;
     };
+    let debug_window_handle = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
@@ -62,9 +63,10 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
             .into_iter()
             .filter_map(|value| value.as_str().map(str::to_owned))
             .collect();
-        let handle = state
-            .active_app_context
-            .begin_debug_capture(target, blocked_apps);
+        let handle =
+            state
+                .active_app_context
+                .begin_debug_capture(target, blocked_apps, debug_window_handle);
         let context = state.active_app_context.resolve(handle).await;
         if DEBUG_CAPTURE_EPOCH.load(Ordering::Acquire) != epoch {
             return;

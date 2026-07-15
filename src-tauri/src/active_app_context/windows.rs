@@ -69,6 +69,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             &mut context,
             target.window_handle,
             options.debug,
+            options.occluding_window_handle,
             options.deadline,
         ) {
             Ok(()) if context.ocr_text.is_empty() => {
@@ -97,9 +98,10 @@ fn capture_and_recognize(
     context: &mut CapturedActiveAppContext,
     window_handle: isize,
     debug: bool,
+    occluding_window_handle: Option<isize>,
     deadline: Instant,
 ) -> Result<(), String> {
-    let captured = screen_capture::capture_window(window_handle)?;
+    let captured = screen_capture::capture_window(window_handle, occluding_window_handle)?;
     context.screenshot_width = captured.image.width();
     context.screenshot_height = captured.image.height();
     context.screenshot_elapsed_ms = captured.elapsed_ms;
