@@ -87,25 +87,27 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
     ) -> ContextCaptureHandle {
-        self.begin_capture_inner(target, blocked_apps, false)
+        self.begin_capture_inner(target, blocked_apps, CaptureOptions::default())
     }
 
     pub(crate) fn begin_debug_capture(
         &self,
         target: ActivationTarget,
         blocked_apps: Vec<String>,
+        debug_window_handle: Option<isize>,
     ) -> ContextCaptureHandle {
-        self.begin_capture_inner(target, blocked_apps, true)
+        let mut options = CaptureOptions::default();
+        options.debug = true;
+        options.occluding_window_handle = debug_window_handle;
+        self.begin_capture_inner(target, blocked_apps, options)
     }
 
     fn begin_capture_inner(
         &self,
         target: ActivationTarget,
         blocked_apps: Vec<String>,
-        debug: bool,
+        options: CaptureOptions,
     ) -> ContextCaptureHandle {
-        let mut options = CaptureOptions::default();
-        options.debug = debug;
         let started = options.deadline - CAPTURE_TIMEOUT;
         let deadline = options.deadline;
         let (reply, receiver) = oneshot::channel();

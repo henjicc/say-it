@@ -18,6 +18,7 @@ pub(crate) struct CaptureOptions {
     pub(crate) deadline: Instant,
     pub(crate) max_chars: usize,
     pub(crate) debug: bool,
+    pub(crate) occluding_window_handle: Option<isize>,
 }
 
 impl Default for CaptureOptions {
@@ -26,6 +27,7 @@ impl Default for CaptureOptions {
             deadline: Instant::now() + CAPTURE_TIMEOUT,
             max_chars: DEFAULT_MAX_CHARS,
             debug: false,
+            occluding_window_handle: None,
         }
     }
 }

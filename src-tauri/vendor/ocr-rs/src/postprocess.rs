@@ -336,11 +336,7 @@ fn minimum_area_rect(points: &[Point<f32>]) -> Option<RotatedBox> {
 
 fn convex_hull(points: &[Point<f32>]) -> Vec<Point<f32>> {
     let mut sorted = points.to_vec();
-    sorted.sort_by(|a, b| {
-        a.x.partial_cmp(&b.x)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-    });
+    sorted.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
     sorted.dedup_by(|a, b| (a.x - b.x).abs() < f32::EPSILON && (a.y - b.y).abs() < f32::EPSILON);
 
     if sorted.len() <= 2 {
@@ -545,10 +541,7 @@ pub fn nms(boxes: &[TextBox], iou_threshold: f32) -> Vec<TextBox> {
     let mut indices: Vec<usize> = (0..boxes.len()).collect();
     indices.sort_by(|&a, &b| {
         // First sort by score descending
-        let score_cmp = boxes[b]
-            .score
-            .partial_cmp(&boxes[a].score)
-            .unwrap_or(std::cmp::Ordering::Equal);
+        let score_cmp = boxes[b].score.total_cmp(&boxes[a].score);
         if score_cmp != std::cmp::Ordering::Equal {
             return score_cmp;
         }

@@ -1,0 +1,23 @@
+# Windows 激活窗口截图无帧、黄框与 OCR 排序崩溃
+
+## 适用场景
+
+Windows 桌面应用需要在全局快捷键触发后，对当前前台且可见的窗口做一次本地 OCR。
+
+## 根因
+
+1. `windows-capture::GraphicsCaptureApiHandler::start` 会进入消息循环等待首帧。目标窗口不产生捕获帧时，调用本身没有截止时间，外层异步超时只能返回空结果，不能终止仍在等待的线程。
+2. Windows Graphics Capture 默认显示系统捕获边框。`IsBorderRequired = false` 只在受支持的系统上可用，并且需要 `graphicsCaptureWithoutBorder` 能力和用户授权；不能把它当成通用的无黄框方案。
+3. OCR 文字框排序不能在比较器中使用“坐标差小于阈值就按另一轴比较”。这种关系不具备传递性，Rust 排序检测到比较器不构成全序时会 panic，进而杀死常驻 OCR 线程。
+
+## 当前做法
+
+- 对已处于前台、用户实际可见的目标窗口，使用 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` 获取物理窗口矩形，再用 GDI `BitBlt` 从屏幕 DC 同步拷贝该矩形的真实可见像素。
+- 调试窗口置顶时，在像素拷贝前临时隐藏，并用 `DwmFlush` 等待合成器提交；拷贝结束立即以不激活方式恢复。
+- OCR 先按 `top + left` 的 `f32::total_cmp` 建立全序，再按已经确定的行分组分别做横向排序。
+- 常驻 OCR 工作线程在单个任务外层设置 `catch_unwind`，单次异常返回失败结果，不让后续任务永久失效。
+- vendored `ocr-rs` 中所有浮点排序也使用 `total_cmp`，避免 NaN 导致非全序。
+
+## 取舍
+
+屏幕 DC 截图得到的是用户当下真正看到的内容，因此不会等待目标应用配合，也不会出现系统捕获黄框。窗口被其他置顶窗口遮挡或部分移出屏幕时，截图会如实包含遮挡或屏外区域；这与“可见上下文”的产品定义一致。

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -101,7 +102,7 @@ fn recognize_full_window(image: &DynamicImage) -> Result<Vec<OcrTextBlock>, Stri
     let height = image.height().max(1) as f32;
     let guard = engine()?
         .lock()
-        .map_err(|_| "OCR 引擎锁失败".to_string())?;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let results = guard
         .recognize(image)
         .map_err(|error| format!("OCR 识别失败：{error}"))?;
@@ -124,25 +125,45 @@ fn recognize_full_window(image: &DynamicImage) -> Result<Vec<OcrTextBlock>, Stri
             .clamped();
             Some(OcrTextBlock {
                 text,
-                confidence: result.confidence,
+                confidence: if result.confidence.is_finite() {
+                    result.confidence
+                } else {
+                    0.0
+                },
                 bounds,
             })
         })
         .collect::<Vec<_>>();
-    blocks.sort_by(|a, b| {
-        if (a.bounds.top - b.bounds.top).abs() < 0.015 {
-            a.bounds.left.total_cmp(&b.bounds.left)
-        } else {
-            a.bounds
-                .top
-                .total_cmp(&b.bounds.top)
-                .then_with(|| a.bounds.left.total_cmp(&b.bounds.left))
-        }
-    });
+    sort_blocks_by_reading_order(&mut blocks);
     let mut seen = HashSet::new();
     blocks.retain(|block| seen.insert(block.text.to_lowercase()));
     blocks.truncate(MAX_BLOCKS);
     Ok(blocks)
+}
+
+fn sort_blocks_by_reading_order(blocks: &mut [OcrTextBlock]) {
+    blocks.sort_by(|a, b| {
+        a.bounds
+            .top
+            .total_cmp(&b.bounds.top)
+            .then_with(|| a.bounds.left.total_cmp(&b.bounds.left))
+    });
+
+    let mut line_start = 0;
+    while line_start < blocks.len() {
+        let line_top = blocks[line_start].bounds.top;
+        let mut line_end = line_start + 1;
+        while line_end < blocks.len() && blocks[line_end].bounds.top - line_top < 0.015 {
+            line_end += 1;
+        }
+        blocks[line_start..line_end].sort_by(|a, b| {
+            a.bounds
+                .left
+                .total_cmp(&b.bounds.left)
+                .then_with(|| a.bounds.top.total_cmp(&b.bounds.top))
+        });
+        line_start = line_end;
+    }
 }
 
 fn block_text(blocks: &[OcrTextBlock]) -> (Vec<String>, bool) {
@@ -185,7 +206,9 @@ fn worker() -> &'static SyncSender<OcrTask> {
             .name("active-app-ocr".into())
             .spawn(move || {
                 while let Ok(task) = receiver.recv() {
-                    let result = run_full_window_inner(&task.image);
+                    let result =
+                        catch_unwind(AssertUnwindSafe(|| run_full_window_inner(&task.image)))
+                            .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
                     let _ = task.reply.send(result);
                 }
             })
@@ -207,9 +230,11 @@ pub(crate) fn run_full_window(
         Err(TrySendError::Full(_)) => return Err("OCR 任务队列已满".into()),
         Err(TrySendError::Disconnected(_)) => return Err("OCR 工作线程不可用".into()),
     }
-    receiver
-        .recv_timeout(timeout)
-        .map_err(|_| "OCR 任务已超时".to_string())?
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err("OCR 任务已超时".into()),
+        Err(RecvTimeoutError::Disconnected) => Err("OCR 工作线程不可用".into()),
+    }
 }
 
 pub(crate) fn png_data_url(image: &DynamicImage) -> Result<String, String> {
@@ -229,6 +254,51 @@ pub(crate) fn png_data_url(image: &DynamicImage) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn block(left: f32, top: f32, text: &str) -> OcrTextBlock {
+        OcrTextBlock {
+            text: text.into(),
+            confidence: 1.0,
+            bounds: NormalizedRegion {
+                left,
+                top,
+                right: left + 0.01,
+                bottom: top + 0.01,
+            },
+        }
+    }
+
+    #[test]
+    fn reading_order_sort_is_total_even_for_overlapping_line_tolerances() {
+        let mut blocks = vec![
+            block(0.9, 0.0, "a"),
+            block(0.5, 0.01, "b"),
+            block(0.1, 0.02, "c"),
+            block(0.8, 0.005, "d"),
+            block(0.4, 0.015, "e"),
+            block(0.0, 0.025, "f"),
+        ];
+
+        sort_blocks_by_reading_order(&mut blocks);
+
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "d", "a", "f", "c", "e"]
+        );
+    }
+
+    #[test]
+    fn panic_boundary_returns_an_error_without_unwinding_worker_loop() {
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+            panic!("simulated OCR failure")
+        }))
+        .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
+
+        assert_eq!(result.unwrap_err(), "OCR 内部处理异常，已跳过本次识别");
+    }
 
     #[test]
     fn bundled_models_recognize_fixture_and_reuse_engine() {

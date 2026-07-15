@@ -55,9 +55,10 @@ tauri-plugin-global-shortcut = "2"
 [target.'cfg(windows)'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 ocr-rs = { version = "=2.3.2", default-features = false, features = ["mnn-static"] }
-windows-capture = "=2.0.0"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",

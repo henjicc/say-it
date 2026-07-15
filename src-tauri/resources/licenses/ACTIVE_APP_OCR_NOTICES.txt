@@ -3,13 +3,11 @@
 本功能在 Windows 上使用以下第三方组件：
 
 - ocr-rs 2.3.2，Apache License 2.0
-  https://github.com/GreatV/ocr-rs
+  https://github.com/zibo-chen/rust-paddle-ocr
 - MNN，Apache License 2.0
   https://github.com/alibaba/MNN
 - PaddleOCR / PP-OCRv6 tiny 模型，Apache License 2.0
   https://github.com/PaddlePaddle/PaddleOCR
-- windows-capture 2.0.0，MIT License
-  https://github.com/NiiightmareXD/windows-capture
 
 随包模型文件校验值（SHA-256）：
 
@@ -25,5 +23,4 @@
 - mnn-dev-windows-x86_64.zip
   A777AD47EEF1F9AA7246BF5F15B9739A3BE1733717FA64422EFBDC02F08E2D1C
 
-各组件的完整许可文本随相应源代码发行版提供；MIT 与 Apache-2.0
-许可文本也随安装资源一并分发。
+各组件的完整许可文本随相应源代码发行版提供；Apache-2.0 许可文本也随安装资源一并分发。
