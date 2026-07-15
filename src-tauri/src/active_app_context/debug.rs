@@ -62,7 +62,9 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
             .into_iter()
             .filter_map(|value| value.as_str().map(str::to_owned))
             .collect();
-        let handle = state.active_app_context.begin_capture(target, blocked_apps);
+        let handle = state
+            .active_app_context
+            .begin_debug_capture(target, blocked_apps);
         let context = state.active_app_context.resolve(handle).await;
         if DEBUG_CAPTURE_EPOCH.load(Ordering::Acquire) != epoch {
             return;

@@ -74,6 +74,7 @@ pub(crate) fn enforce_total_budget(context: &mut CapturedActiveAppContext, max_c
 
     trim(&mut context.selected_text, &mut remaining, &mut truncated);
     trim(&mut context.focused_text, &mut remaining, &mut truncated);
+    trim_list(&mut context.ocr_text, &mut remaining, &mut truncated);
     trim_list(&mut context.nearby_text, &mut remaining, &mut truncated);
     trim_list(&mut context.document_text, &mut remaining, &mut truncated);
     context.truncated = truncated;
@@ -101,13 +102,15 @@ mod tests {
     fn budget_keeps_high_priority_fields_first() {
         let mut context = CapturedActiveAppContext {
             selected_text: Some("12345".into()),
-            focused_text: Some("67890".into()),
+            focused_text: Some("67".into()),
+            ocr_text: vec!["890".into()],
             nearby_text: vec!["abc".into()],
             ..Default::default()
         };
-        enforce_total_budget(&mut context, 7);
+        enforce_total_budget(&mut context, 9);
         assert_eq!(context.selected_text.as_deref(), Some("12345"));
         assert_eq!(context.focused_text.as_deref(), Some("67"));
+        assert_eq!(context.ocr_text, vec!["89"]);
         assert!(context.nearby_text.is_empty());
         assert!(context.truncated);
     }

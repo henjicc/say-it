@@ -1026,7 +1026,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     let active_app_context = if let Some(handle) = active_app_context {
         let state = app.state::<RuntimeState>();
-        let captured = state.active_app_context.resolve(handle).await;
+        let captured = state.active_app_context.resolve_for_dictation(handle).await;
         let is_current = state
             .dictation_runtime
             .session

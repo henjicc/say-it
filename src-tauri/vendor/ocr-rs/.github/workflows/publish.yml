@@ -1,0 +1,48 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+      
+      - name: Update Cargo.toml version
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          
+          echo "Updated Cargo.toml:"
+          grep "^version = " Cargo.toml
+      
+      - name: Verify build
+        run: cargo build --release
+      
+      - name: Run tests
+        run: cargo test --release
+      
+      - name: Login to crates.io
+        run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+      
+      - name: Publish to crates.io
+        run: cargo publish --allow-dirty --no-verify

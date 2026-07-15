@@ -7,15 +7,22 @@ use uiautomation::patterns::{UITextPattern, UIValuePattern};
 use uiautomation::types::{ControlType, Handle, TreeScope, UIProperty};
 use uiautomation::{UIAutomation, UIElement, UITreeWalker};
 use windows::core::PWSTR;
-use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::{CloseHandle, HWND, RECT};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId,
+};
 
-use super::model::{ActivationTarget, CaptureOptions, CaptureStatus, CapturedActiveAppContext};
+use super::model::{
+    ActivationTarget, CaptureOptions, CaptureStatus, CapturedActiveAppContext, ContextSource,
+    NormalizedRegion,
+};
 use super::normalize::{enforce_total_budget, normalize_text, push_unique, truncate_chars};
 use super::ActiveAppContextProvider;
+use super::{ocr, screen_capture};
 
 const FIELD_CHAR_LIMIT: usize = 1_000;
 const DOCUMENT_BLOCK_LIMIT: usize = 2_000;
@@ -60,6 +67,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             app_name,
             process_name,
             process_id: target.process_id,
+            window_title: window_title(target.window_handle),
             ..Default::default()
         };
 
@@ -77,17 +85,25 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         let automation = match UIAutomation::new() {
             Ok(value) => value,
             Err(error) => {
-                context.status = error_status(&error.to_string());
-                context.elapsed_ms = started.elapsed().as_millis() as u64;
-                return context;
+                return finish_ocr_only(
+                    context,
+                    target,
+                    &options,
+                    started,
+                    error_status(&error.to_string()),
+                );
             }
         };
         let cache = match create_property_cache(&automation) {
             Ok(value) => value,
             Err(error) => {
-                context.status = error_status(&error.to_string());
-                context.elapsed_ms = started.elapsed().as_millis() as u64;
-                return context;
+                return finish_ocr_only(
+                    context,
+                    target,
+                    &options,
+                    started,
+                    error_status(&error.to_string()),
+                );
             }
         };
         let root = match automation
@@ -95,9 +111,13 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         {
             Ok(value) => value,
             Err(error) => {
-                context.status = error_status(&error.to_string());
-                context.elapsed_ms = started.elapsed().as_millis() as u64;
-                return context;
+                return finish_ocr_only(
+                    context,
+                    target,
+                    &options,
+                    started,
+                    error_status(&error.to_string()),
+                );
             }
         };
         if cached_process_id(&root) != Some(target.process_id) {
@@ -105,11 +125,14 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             context.elapsed_ms = started.elapsed().as_millis() as u64;
             return context;
         }
-        context.window_title = root.get_cached_name().ok().and_then(|value| {
+        let cached_window_title = root.get_cached_name().ok().and_then(|value| {
             let (value, truncated) = truncate_chars(&normalize_text(&value), FIELD_CHAR_LIMIT);
             context.truncated |= truncated;
             (!value.is_empty()).then_some(value)
         });
+        if cached_window_title.is_some() {
+            context.window_title = cached_window_title;
+        }
         if context.app_name.is_empty() {
             context.app_name = context
                 .window_title
@@ -120,9 +143,13 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         let walker = match automation.get_content_view_walker() {
             Ok(value) => value,
             Err(error) => {
-                context.status = error_status(&error.to_string());
-                context.elapsed_ms = started.elapsed().as_millis() as u64;
-                return context;
+                return finish_ocr_only(
+                    context,
+                    target,
+                    &options,
+                    started,
+                    error_status(&error.to_string()),
+                );
             }
         };
         let focus = automation
@@ -131,21 +158,42 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             .filter(|element| {
                 element_matches_target(element, target.process_id, &context.process_name)
             });
-        let focus_is_sensitive = focus.as_ref().is_some_and(is_cached_sensitive);
+        let focus_password_state = focus
+            .as_ref()
+            .and_then(|element| element.is_cached_password().ok());
+        if is_confirmed_sensitive(focus_password_state) {
+            context.status = CaptureStatus::Sensitive;
+            context.elapsed_ms = started.elapsed().as_millis() as u64;
+            return context;
+        }
+        let focus_region = focus
+            .as_ref()
+            .and_then(|element| normalized_focus_region(element, target.window_handle));
 
         let focus_process_id = focus.as_ref().and_then(cached_process_id);
         let mut collector =
             Collector::new(context, with_deadline_reserve(options), focus_process_id);
         let focused_document = focus
             .as_ref()
-            .filter(|_| !focus_is_sensitive)
+            .filter(|_| focus_password_state != Some(true))
             .and_then(|focus| collector.collect_focus(focus, &walker, &cache));
-        if !focus_is_sensitive && !collector.is_expired() {
+        let ocr_succeeded = if expired(options.deadline) {
+            false
+        } else {
+            apply_ocr(
+                &mut collector.context,
+                target.window_handle,
+                focus_region,
+                options.debug,
+                options.deadline,
+            )
+        };
+        if !ocr_succeeded && !collector.is_expired() {
             if let Some(document) = focused_document.as_ref() {
                 collector.collect_document_element(document);
             }
         }
-        if !collector.is_expired() {
+        if !ocr_succeeded && !collector.is_expired() {
             collector.collect_visible_tree(&root, &walker, &cache);
         }
         let mut context = collector.finish();
@@ -154,6 +202,101 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         context.status = completed_status(&context, options.deadline);
         context
     }
+}
+
+fn finish_ocr_only(
+    mut context: CapturedActiveAppContext,
+    target: ActivationTarget,
+    options: &CaptureOptions,
+    started: Instant,
+    fallback_status: CaptureStatus,
+) -> CapturedActiveAppContext {
+    let succeeded = !expired(options.deadline)
+        && apply_ocr(
+            &mut context,
+            target.window_handle,
+            None,
+            options.debug,
+            options.deadline,
+        );
+    enforce_total_budget(&mut context, options.max_chars);
+    context.elapsed_ms = started.elapsed().as_millis() as u64;
+    context.status = if succeeded {
+        CaptureStatus::Captured
+    } else if expired(options.deadline) {
+        CaptureStatus::TimedOut
+    } else {
+        fallback_status
+    };
+    context
+}
+
+fn apply_ocr(
+    context: &mut CapturedActiveAppContext,
+    window_handle: isize,
+    focus_region: Option<NormalizedRegion>,
+    debug: bool,
+    deadline: Instant,
+) -> bool {
+    let captured = match screen_capture::capture_window(window_handle) {
+        Ok(value) => value,
+        Err(error) => {
+            context.diagnostics.push(error);
+            return false;
+        }
+    };
+    context.screenshot_width = captured.image.width();
+    context.screenshot_height = captured.image.height();
+    context.screenshot_elapsed_ms = captured.elapsed_ms;
+    if debug {
+        context.screenshot_data_url = ocr::png_data_url(&captured.image).ok();
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let output = match ocr::run_pipeline(captured.image, focus_region, debug, remaining) {
+        Ok(value) => value,
+        Err(error) => {
+            context.diagnostics.push(error);
+            return false;
+        }
+    };
+    context.ocr_text = output.text;
+    context.full_window_ocr_text = output.full_window_text;
+    context.ocr_blocks = output.blocks;
+    context.ocr_capture_mode = Some(output.mode);
+    context.ocr_region = Some(output.region);
+    context.model_init_ms = output.model_init_ms;
+    context.ocr_elapsed_ms = output.elapsed_ms;
+    context.truncated |= output.truncated;
+    context.context_source = if context.selected_text.is_some()
+        || context.focused_text.is_some()
+        || !context.nearby_text.is_empty()
+    {
+        ContextSource::OcrWithUia
+    } else {
+        ContextSource::OcrOnly
+    };
+    !context.ocr_text.is_empty()
+}
+
+fn normalized_focus_region(element: &UIElement, window_handle: isize) -> Option<NormalizedRegion> {
+    let focus = element.get_cached_bounding_rectangle().ok()?;
+    let mut window = RECT::default();
+    unsafe {
+        GetWindowRect(HWND(window_handle as *mut std::ffi::c_void), &mut window).ok()?;
+    }
+    let width = (window.right - window.left) as f32;
+    let height = (window.bottom - window.top) as f32;
+    if width <= 1.0 || height <= 1.0 {
+        return None;
+    }
+    let region = NormalizedRegion {
+        left: (focus.get_left() - window.left) as f32 / width,
+        top: (focus.get_top() - window.top) as f32 / height,
+        right: (focus.get_right() - window.left) as f32 / width,
+        bottom: (focus.get_bottom() - window.top) as f32 / height,
+    }
+    .clamped();
+    region.is_valid().then_some(region)
 }
 
 struct Collector {
@@ -474,6 +617,10 @@ fn is_cached_sensitive(element: &UIElement) -> bool {
     element.is_cached_password().unwrap_or(true)
 }
 
+fn is_confirmed_sensitive(password_state: Option<bool>) -> bool {
+    password_state == Some(true)
+}
+
 fn cached_process_id(element: &UIElement) -> Option<u32> {
     u32::try_from(element.get_cached_process_id().ok()?).ok()
 }
@@ -499,6 +646,7 @@ fn create_property_cache(automation: &UIAutomation) -> uiautomation::Result<UICa
     let cache = automation.create_cache_request()?;
     for property in [
         UIProperty::ProcessId,
+        UIProperty::BoundingRectangle,
         UIProperty::ControlType,
         UIProperty::LocalizedControlType,
         UIProperty::Name,
@@ -579,6 +727,21 @@ fn process_name(process_id: u32) -> Option<String> {
         .map(str::to_string)
 }
 
+fn window_title(window_handle: isize) -> Option<String> {
+    let window = HWND(window_handle as *mut std::ffi::c_void);
+    let length = unsafe { GetWindowTextLengthW(window) };
+    if length <= 0 {
+        return None;
+    }
+    let mut buffer = vec![0u16; length as usize + 1];
+    let copied = unsafe { GetWindowTextW(window, &mut buffer) };
+    if copied <= 0 {
+        return None;
+    }
+    let title = normalize_text(&String::from_utf16_lossy(&buffer[..copied as usize]));
+    (!title.is_empty()).then_some(title)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +765,7 @@ mod tests {
             deadline: hard_deadline,
             max_nodes: 300,
             max_chars: 3_000,
+            debug: false,
         });
         assert_eq!(
             hard_deadline.duration_since(options.deadline),
@@ -629,5 +793,12 @@ mod tests {
         assert!(same_executable_name("Code.exe", "code.exe"));
         assert!(!same_executable_name("msedge.exe", "chrome.exe"));
         assert!(!same_executable_name("chrome.exe", ""));
+    }
+
+    #[test]
+    fn only_confirmed_password_focus_stops_screenshot() {
+        assert!(is_confirmed_sensitive(Some(true)));
+        assert!(!is_confirmed_sensitive(Some(false)));
+        assert!(!is_confirmed_sensitive(None));
     }
 }
