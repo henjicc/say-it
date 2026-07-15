@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -19,6 +20,7 @@ use super::normalize::normalize_text;
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
 const MAX_RECOGNIZED_REGIONS: usize = 96;
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DET_MODEL: &str = "PP-OCRv6_tiny_det.mnn";
 const REC_MODEL: &str = "PP-OCRv6_tiny_rec.mnn";
 const CHARSET: &str = "ppocr_keys_v6_tiny.txt";
@@ -35,6 +37,8 @@ static NEXT_OCR_TASK_ID: AtomicU64 = AtomicU64::new(1);
 struct OcrTask {
     id: u64,
     submitted_at: Instant,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
     image: DynamicImage,
     reply: SyncSender<Result<OcrPipelineOutput, String>>,
 }
@@ -72,6 +76,7 @@ fn verify_file(path: &Path, expected: &str) -> Result<(), String> {
 
 fn build_engine() -> Result<Mutex<OcrEngine>, String> {
     let started = Instant::now();
+    crate::development_debug_log("active-app-ocr", "PP-OCR 模型冷启动：校验并加载本地模型");
     let root = model_root();
     let det = root.join(DET_MODEL);
     let rec = root.join(REC_MODEL);
@@ -91,15 +96,33 @@ fn build_engine() -> Result<Mutex<OcrEngine>, String> {
         );
     let engine = OcrEngine::new(det, rec, charset, Some(config))
         .map_err(|error| format!("初始化 PP-OCRv6 tiny 失败：{error}"))?;
-    let _ = MODEL_INIT_MS.set(started.elapsed().as_millis() as u64);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let _ = MODEL_INIT_MS.set(elapsed_ms);
+    crate::development_debug_log(
+        "active-app-ocr",
+        format_args!("PP-OCR 模型冷启动完成：{elapsed_ms} ms；后续任务将复用内存引擎"),
+    );
     Ok(Mutex::new(engine))
 }
 
 fn engine() -> Result<&'static Mutex<OcrEngine>, String> {
+    if OCR_ENGINE.get().is_some() {
+        crate::development_debug_log("active-app-ocr", "复用已初始化的 PP-OCR 内存引擎");
+    }
     OCR_ENGINE
         .get_or_init(build_engine)
         .as_ref()
         .map_err(Clone::clone)
+}
+
+fn skip_reason(cancelled: &AtomicBool, deadline: Instant) -> Option<&'static str> {
+    if cancelled.load(Ordering::Acquire) {
+        Some("OCR 任务已取消")
+    } else if Instant::now() >= deadline {
+        Some("OCR 任务已过期")
+    } else {
+        None
+    }
 }
 
 fn recognize_full_window(image: &DynamicImage) -> Result<Vec<OcrTextBlock>, String> {
@@ -211,6 +234,14 @@ fn worker() -> &'static SyncSender<OcrTask> {
             .name("active-app-ocr".into())
             .spawn(move || {
                 while let Ok(task) = receiver.recv() {
+                    if let Some(reason) = skip_reason(task.cancelled.as_ref(), task.deadline) {
+                        crate::development_debug_log(
+                            "active-app-ocr",
+                            format_args!("任务 #{} 已跳过：{reason}", task.id),
+                        );
+                        let _ = task.reply.send(Err(reason.into()));
+                        continue;
+                    }
                     crate::development_debug_log(
                         "active-app-ocr",
                         format_args!(
@@ -252,8 +283,14 @@ fn worker() -> &'static SyncSender<OcrTask> {
 
 pub(crate) fn run_full_window(
     image: DynamicImage,
-    timeout: Duration,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<OcrPipelineOutput, String> {
+    let timeout = deadline.saturating_duration_since(Instant::now());
+    if cancelled.load(Ordering::Acquire) {
+        crate::development_debug_log("active-app-ocr", "提交前任务已取消");
+        return Err("OCR 任务已取消".into());
+    }
     if timeout.is_zero() {
         crate::development_debug_log("active-app-ocr", "提交前已无剩余时间，直接超时");
         return Err("OCR 任务已超时".into());
@@ -273,6 +310,8 @@ pub(crate) fn run_full_window(
     match worker().try_send(OcrTask {
         id,
         submitted_at,
+        deadline,
+        cancelled: Arc::clone(&cancelled),
         image,
         reply,
     }) {
@@ -292,9 +331,19 @@ pub(crate) fn run_full_window(
             return Err("OCR 工作线程不可用".into());
         }
     }
-    match receiver.recv_timeout(timeout) {
-        Ok(result) => result,
-        Err(RecvTimeoutError::Timeout) => {
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            crate::development_debug_log(
+                "active-app-ocr",
+                format_args!(
+                    "任务 #{id} 调用方已取消：已等待 {} ms；后台推理若已开始会自行收尾",
+                    submitted_at.elapsed().as_millis()
+                ),
+            );
+            return Err("OCR 任务已取消".into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             crate::development_debug_log(
                 "active-app-ocr",
                 format_args!(
@@ -302,14 +351,18 @@ pub(crate) fn run_full_window(
                     submitted_at.elapsed().as_millis()
                 ),
             );
-            Err("OCR 任务已超时".into())
+            return Err("OCR 任务已超时".into());
         }
-        Err(RecvTimeoutError::Disconnected) => {
-            crate::development_debug_log(
-                "active-app-ocr",
-                format_args!("任务 #{id} 等待时工作线程断开"),
-            );
-            Err("OCR 工作线程不可用".into())
+        match receiver.recv_timeout(remaining.min(CANCEL_POLL_INTERVAL)) {
+            Ok(result) => return result,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                crate::development_debug_log(
+                    "active-app-ocr",
+                    format_args!("任务 #{id} 等待时工作线程断开"),
+                );
+                return Err("OCR 工作线程不可用".into());
+            }
         }
     }
 }
@@ -375,6 +428,27 @@ mod tests {
         .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
 
         assert_eq!(result.unwrap_err(), "OCR 内部处理异常，已跳过本次识别");
+    }
+
+    #[test]
+    fn cancelled_or_expired_task_is_skipped_before_inference() {
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            skip_reason(
+                &cancelled,
+                Instant::now() + std::time::Duration::from_secs(1)
+            ),
+            Some("OCR 任务已取消")
+        );
+
+        let active = AtomicBool::new(false);
+        assert_eq!(
+            skip_reason(
+                &active,
+                Instant::now() - std::time::Duration::from_millis(1)
+            ),
+            Some("OCR 任务已过期")
+        );
     }
 
     #[test]
