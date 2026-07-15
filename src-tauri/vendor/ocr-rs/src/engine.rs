@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::det::{DetModel, DetOptions};
 use crate::error::{OcrError, OcrResult};
-use crate::mnn::{Backend, InferenceConfig, PrecisionMode};
+use crate::mnn::{Backend, BackendMemoryMode, InferenceConfig, MemoryMode, PrecisionMode};
 use crate::ori::{OriModel, OriOptions};
 use crate::postprocess::TextBox;
 use crate::rec::{RecModel, RecOptions, RecognitionResult};
@@ -43,6 +43,10 @@ pub struct OcrEngineConfig {
     pub thread_count: i32,
     /// Precision mode
     pub precision_mode: PrecisionMode,
+    /// Workspace policy for dynamic input shapes
+    pub memory_mode: MemoryMode,
+    /// Backend memory preference
+    pub backend_memory_mode: BackendMemoryMode,
     /// Detection options
     pub det_options: DetOptions,
     /// Recognition options
@@ -63,6 +67,8 @@ impl Default for OcrEngineConfig {
             backend: Backend::CPU,
             thread_count: 4,
             precision_mode: PrecisionMode::Normal,
+            memory_mode: MemoryMode::Cache,
+            backend_memory_mode: BackendMemoryMode::Normal,
             det_options: DetOptions::default(),
             rec_options: RecOptions::default(),
             ori_options: OriOptions::default(),
@@ -94,6 +100,18 @@ impl OcrEngineConfig {
     /// Set precision mode
     pub fn with_precision(mut self, precision: PrecisionMode) -> Self {
         self.precision_mode = precision;
+        self
+    }
+
+    /// Set workspace policy for dynamic input shapes.
+    pub fn with_memory_mode(mut self, memory_mode: MemoryMode) -> Self {
+        self.memory_mode = memory_mode;
+        self
+    }
+
+    /// Set backend memory preference.
+    pub fn with_backend_memory_mode(mut self, backend_memory_mode: BackendMemoryMode) -> Self {
+        self.backend_memory_mode = backend_memory_mode;
         self
     }
 
@@ -171,6 +189,8 @@ impl OcrEngineConfig {
             thread_count: self.thread_count,
             precision_mode: self.precision_mode,
             backend: self.backend,
+            memory_mode: self.memory_mode,
+            backend_memory_mode: self.backend_memory_mode,
             ..Default::default()
         }
     }
@@ -471,6 +491,14 @@ impl OcrEngine {
     /// Get configuration
     pub fn config(&self) -> &OcrEngineConfig {
         &self.config
+    }
+
+    /// Get detector and recognizer session workspace usage in MiB.
+    pub fn memory_usage_mb(&self) -> OcrResult<(f32, f32)> {
+        Ok((
+            self.det_model.memory_usage_mb()?,
+            self.rec_model.memory_usage_mb()?,
+        ))
     }
 
     fn correct_orientation_with_model(

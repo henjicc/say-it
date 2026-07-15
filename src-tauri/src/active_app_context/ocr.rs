@@ -11,7 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ColorType, DynamicImage, ImageEncoder};
-use ocr_rs::{DetOptions, OcrEngine, OcrEngineConfig};
+use ocr_rs::{DetOptions, MemoryMode, OcrEngine, OcrEngineConfig};
 use sha2::{Digest, Sha256};
 
 use super::model::{NormalizedRegion, OcrTextBlock};
@@ -64,6 +64,8 @@ pub(crate) struct OcrPipelineOutput {
     pub(crate) blocks: Vec<OcrTextBlock>,
     pub(crate) elapsed_ms: u64,
     pub(crate) model_init_ms: u64,
+    pub(crate) det_session_memory_mb: Option<f32>,
+    pub(crate) rec_session_memory_mb: Option<f32>,
     pub(crate) truncated: bool,
 }
 
@@ -97,6 +99,9 @@ fn build_engine() -> Result<EngineState, String> {
     verify_file(&charset, CHARSET_SHA256)?;
     let config = OcrEngineConfig::new()
         .with_threads(3)
+        // Keep the engine hot, but discard stale MNN workspace whenever a
+        // differently-sized window or text batch resizes either session.
+        .with_memory_mode(MemoryMode::Collect)
         .with_parallel(false)
         .with_min_result_confidence(0.45)
         .with_det_options(
@@ -216,6 +221,13 @@ fn block_text(blocks: &[OcrTextBlock]) -> (Vec<String>, bool) {
     (output, false)
 }
 
+fn format_session_memory(memory_mb: Option<f32>) -> String {
+    memory_mb
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "不可用".into())
+}
+
 fn run_full_window_inner(
     engine: &EngineState,
     image: &DynamicImage,
@@ -223,11 +235,18 @@ fn run_full_window_inner(
     let started = Instant::now();
     let blocks = recognize_full_window(&engine.engine, image)?;
     let (text, truncated) = block_text(&blocks);
+    let (det_session_memory_mb, rec_session_memory_mb) = engine
+        .engine
+        .memory_usage_mb()
+        .map(|(det, rec)| (Some(det), Some(rec)))
+        .unwrap_or((None, None));
     Ok(OcrPipelineOutput {
         text,
         blocks,
         elapsed_ms: started.elapsed().as_millis() as u64,
         model_init_ms: engine.init_ms,
+        det_session_memory_mb,
+        rec_session_memory_mb,
         truncated,
     })
 }
@@ -296,12 +315,14 @@ fn worker() -> &'static Sender<OcrCommand> {
                         Ok(output) => crate::development_debug_log(
                             "active-app-ocr",
                             format_args!(
-                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
+                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）；MNN 会话内存：检测 {} MiB，识别 {} MiB\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
                                 task.id,
                                 output.elapsed_ms,
                                 output.blocks.len(),
                                 output.text.len(),
                                 output.truncated,
+                                format_session_memory(output.det_session_memory_mb),
+                                format_session_memory(output.rec_session_memory_mb),
                                 output.text.join("\n"),
                             ),
                         ),
@@ -515,16 +536,23 @@ mod tests {
         )
         .expect("fixture should load");
         let engine = build_engine().expect("bundled model should initialize");
+        assert_eq!(engine.engine.config().memory_mode, MemoryMode::Collect);
         let first =
             recognize_full_window(&engine.engine, &image).expect("fixture OCR should succeed");
         let second = recognize_full_window(&engine.engine, &image)
             .expect("repeated fixture OCR should succeed");
+        let (det_memory_mb, rec_memory_mb) = engine
+            .engine
+            .memory_usage_mb()
+            .expect("MNN session memory should be available");
 
         assert!(first.iter().any(|block| {
             let text = block.text.to_lowercase();
             text.contains("ocr") || text.contains("tauri") || text.contains("测试")
         }));
         assert!(!second.is_empty());
+        assert!(det_memory_mb.is_finite() && det_memory_mb >= 0.0);
+        assert!(rec_memory_mb.is_finite() && rec_memory_mb >= 0.0);
         assert!(first.iter().all(|block| {
             block.bounds.left >= 0.0
                 && block.bounds.top >= 0.0
@@ -533,5 +561,28 @@ mod tests {
                 && block.bounds.right >= block.bounds.left
                 && block.bounds.bottom >= block.bounds.top
         }));
+    }
+
+    #[test]
+    fn collect_mode_discards_stale_detector_workspace_after_a_smaller_window() {
+        let engine = build_engine().expect("bundled model should initialize");
+        let large = DynamicImage::new_rgb8(1_600, 1_600);
+        recognize_full_window(&engine.engine, &large).expect("large window OCR should succeed");
+        let (large_det_memory_mb, _) = engine
+            .engine
+            .memory_usage_mb()
+            .expect("large detector memory should be available");
+
+        let small = DynamicImage::new_rgb8(640, 640);
+        recognize_full_window(&engine.engine, &small).expect("small window OCR should succeed");
+        let (small_det_memory_mb, _) = engine
+            .engine
+            .memory_usage_mb()
+            .expect("small detector memory should be available");
+
+        assert!(
+            small_det_memory_mb <= large_det_memory_mb + 0.1,
+            "collect mode should not retain the large detector workspace: large={large_det_memory_mb:.1} MiB, small={small_det_memory_mb:.1} MiB"
+        );
     }
 }
