@@ -1,3 +1,4 @@
+mod debug;
 mod model;
 mod normalize;
 #[cfg(not(windows))]
@@ -9,6 +10,7 @@ use model::CAPTURE_TIMEOUT;
 use std::sync::{mpsc, Arc, Mutex};
 use tokio::sync::oneshot;
 
+pub(crate) use debug::{request_debug_capture, reset_debug_capture, DEBUG_STATE_EVENT};
 pub(crate) use model::{
     ActivationTarget, ActiveAppContextSummary, CaptureOptions, CaptureStatus,
     CapturedActiveAppContext,

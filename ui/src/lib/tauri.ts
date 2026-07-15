@@ -64,6 +64,8 @@ export const CMD = {
   setIndicatorTranslation: "set_indicator_translation",
   setIndicatorLayout: "set_indicator_layout",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
+  openActiveAppContextDebug: "open_active_app_context_debug",
+  closeActiveAppContextDebug: "close_active_app_context_debug",
   getLocalFileInfo: "get_local_file_info",
   saveSubtitleSrt: "save_subtitle_srt",
   transcriptionStart: "transcription_start",
@@ -144,6 +146,8 @@ export const EVT = {
   indicatorConfig: "dictation-indicator-config",
   indicatorKeydown: "dictation-indicator-keydown",
   indicatorKeyup: "dictation-indicator-keyup",
+  contextDebugState: "active-app-context-debug-state",
+  contextDebugResult: "active-app-context-debug-result",
 } as const;
 
 export function cmd<T = unknown>(

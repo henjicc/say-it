@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 
 const dirname = fileURLToPath(new URL(".", import.meta.url));
 
-// Vite 以 ui/ 为根，同时打包主窗(index.html) 与悬浮窗(indicator.html) 两个入口。
+// Vite 以 ui/ 为根，同时打包主窗、听写指示器与上下文调试窗三个入口。
 // 输出到 ui/dist，对应 tauri.conf.json 的 frontendDist。
 export default defineConfig({
   root: "ui",
@@ -29,6 +29,7 @@ export default defineConfig({
       input: {
         main: resolve(dirname, "ui/index.html"),
         indicator: resolve(dirname, "ui/indicator.html"),
+        contextDebug: resolve(dirname, "ui/context-debug.html"),
       },
     },
   },

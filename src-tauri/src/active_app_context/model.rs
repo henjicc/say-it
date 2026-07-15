@@ -44,7 +44,8 @@ pub(crate) enum CaptureStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CapturedActiveAppContext {
     pub(crate) status: CaptureStatus,
     pub(crate) app_name: String,
