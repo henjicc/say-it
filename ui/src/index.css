@@ -272,4 +272,8 @@ input[type="radio"] {
   [class*="modal-panel-"] {
     animation-duration: 1ms !important;
   }
+
+  .smart-template-sortable-row {
+    transition-duration: 1ms !important;
+  }
 }
