@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use windows::core::PWSTR;
@@ -38,6 +40,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         target: ActivationTarget,
         blocked_apps: &[String],
         options: CaptureOptions,
+        cancelled: &Arc<AtomicBool>,
     ) -> CapturedActiveAppContext {
         let started = Instant::now();
         let process_name = process_name(target.process_id).unwrap_or_default();
@@ -65,6 +68,12 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             ),
         );
 
+        if cancelled.load(Ordering::Acquire) {
+            context.status = CaptureStatus::TimedOut;
+            context.elapsed_ms = started.elapsed().as_millis() as u64;
+            return context;
+        }
+
         if is_blocked(&context, blocked_apps) {
             context.status = CaptureStatus::Blocked;
             context.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -86,6 +95,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             options.debug,
             options.occluding_window_handle,
             options.deadline,
+            cancelled,
         ) {
             Ok(()) if context.ocr_text.is_empty() => {
                 context
@@ -96,7 +106,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             Ok(()) => CaptureStatus::Captured,
             Err(error) => {
                 context.diagnostics.push(error);
-                if expired(options.deadline) {
+                if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
                     CaptureStatus::TimedOut
                 } else {
                     CaptureStatus::Failed
@@ -128,6 +138,7 @@ fn capture_and_recognize(
     debug: bool,
     occluding_window_handle: Option<isize>,
     deadline: Instant,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let captured = screen_capture::capture_window(window_handle, occluding_window_handle)?;
     crate::development_debug_log(
@@ -144,8 +155,10 @@ fn capture_and_recognize(
     context.screenshot_elapsed_ms = captured.elapsed_ms;
     let debug_image = debug.then(|| captured.image.clone());
 
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let output_result = ocr::run_full_window(captured.image, remaining);
+    if cancelled.load(Ordering::Acquire) {
+        return Err("上下文捕获已取消".into());
+    }
+    let output_result = ocr::run_full_window(captured.image, deadline, Arc::clone(cancelled));
     if let Some(image) = debug_image {
         context.screenshot_data_url = ocr::png_data_url(&image).ok();
     }

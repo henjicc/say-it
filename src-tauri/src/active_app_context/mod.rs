@@ -12,7 +12,7 @@ mod windows;
 
 use model::{CAPTURE_TIMEOUT, DICTATION_RESOLVE_WAIT};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -31,6 +31,7 @@ pub(crate) trait ActiveAppContextProvider: Send + Sync + 'static {
         target: ActivationTarget,
         blocked_apps: &[String],
         options: CaptureOptions,
+        cancelled: &Arc<AtomicBool>,
     ) -> CapturedActiveAppContext;
 }
 
@@ -38,18 +39,26 @@ struct CaptureRequest {
     target: ActivationTarget,
     blocked_apps: Vec<String>,
     options: CaptureOptions,
+    cancelled: Arc<AtomicBool>,
     reply: oneshot::Sender<CapturedActiveAppContext>,
 }
 
 pub(crate) struct ContextCaptureHandle {
     started: std::time::Instant,
     deadline: std::time::Instant,
-    receiver: oneshot::Receiver<CapturedActiveAppContext>,
+    receiver: Option<oneshot::Receiver<CapturedActiveAppContext>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 pub(crate) struct ContextCaptureService {
     latest: Arc<Mutex<Option<ActiveAppContextSummary>>>,
     in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for ContextCaptureHandle {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 impl Default for ContextCaptureService {
@@ -112,6 +121,7 @@ impl ContextCaptureService {
         let started = options.deadline - CAPTURE_TIMEOUT;
         let deadline = options.deadline;
         let (reply, receiver) = oneshot::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
         let Some(permit) = try_acquire_capture(&self.in_flight) else {
             let _ = reply.send(CapturedActiveAppContext::with_status(
                 CaptureStatus::TimedOut,
@@ -119,31 +129,46 @@ impl ContextCaptureService {
             return ContextCaptureHandle {
                 started,
                 deadline,
-                receiver,
+                receiver: Some(receiver),
+                cancelled,
             };
         };
         let request = CaptureRequest {
             target,
             blocked_apps,
             options,
+            cancelled: Arc::clone(&cancelled),
             reply,
         };
         let _ = std::thread::Builder::new()
             .name("active-app-context".into())
             .spawn(move || {
                 let _permit = permit;
+                if request.cancelled.load(Ordering::Acquire) {
+                    crate::development_debug_log(
+                        "active-app-context",
+                        "捕获任务在启动前已取消，跳过平台读取",
+                    );
+                    return;
+                }
                 #[cfg(windows)]
                 let provider = windows::WindowsActiveAppContextProvider;
                 #[cfg(not(windows))]
                 let provider = unsupported::UnsupportedActiveAppContextProvider;
                 let result =
-                    provider.capture(request.target, &request.blocked_apps, request.options);
+                    provider.capture(
+                        request.target,
+                        &request.blocked_apps,
+                        request.options,
+                        &request.cancelled,
+                    );
                 let _ = request.reply.send(result);
             });
         ContextCaptureHandle {
             started,
             deadline,
-            receiver,
+            receiver: Some(receiver),
+            cancelled,
         }
     }
 
@@ -160,14 +185,15 @@ impl ContextCaptureService {
 
     async fn resolve_with_wait(
         &self,
-        handle: ContextCaptureHandle,
+        mut handle: ContextCaptureHandle,
         max_wait: std::time::Duration,
     ) -> CapturedActiveAppContext {
-        let ContextCaptureHandle {
-            started,
-            deadline,
-            mut receiver,
-        } = handle;
+        let started = handle.started;
+        let deadline = handle.deadline;
+        let mut receiver = handle
+            .receiver
+            .take()
+            .expect("context capture handle should be resolved only once");
         let remaining = deadline
             .saturating_duration_since(std::time::Instant::now())
             .min(max_wait);
@@ -283,7 +309,8 @@ mod tests {
                     - CAPTURE_TIMEOUT
                     - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
-                receiver,
+                receiver: Some(receiver),
+                cancelled: Arc::new(AtomicBool::new(false)),
             })
             .await;
         assert_eq!(result.status, CaptureStatus::TimedOut);
@@ -310,12 +337,29 @@ mod tests {
                     - CAPTURE_TIMEOUT
                     - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
-                receiver,
+                receiver: Some(receiver),
+                cancelled: Arc::new(AtomicBool::new(false)),
             })
             .await;
 
         assert_eq!(result.status, CaptureStatus::Captured);
         assert_eq!(result.format_for_prompt(), "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容");
+    }
+
+    #[test]
+    fn dropping_capture_handle_cancels_pending_work() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (_sender, receiver) = oneshot::channel();
+        let handle = ContextCaptureHandle {
+            started: std::time::Instant::now(),
+            deadline: std::time::Instant::now() + CAPTURE_TIMEOUT,
+            receiver: Some(receiver),
+            cancelled: Arc::clone(&cancelled),
+        };
+
+        drop(handle);
+
+        assert!(cancelled.load(Ordering::Acquire));
     }
 
     #[test]
