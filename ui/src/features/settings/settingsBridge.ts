@@ -12,10 +12,12 @@ function json(key: string): Record<string, unknown> | undefined {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
 }
 
-function apply(settings: AppSettings) {
-  hydrateDictPrefs(settings.dictationPrefs); hydrateSubtitlePrefs(settings.subtitlePrefs);
+function apply(settings: AppSettings): boolean {
+  const dictationNeedsSync = hydrateDictPrefs(settings.dictationPrefs);
+  hydrateSubtitlePrefs(settings.subtitlePrefs);
   hydrateComparePrefs(settings.comparePrefs); hydrateTheme(settings.theme);
   // 旧 Data URL 仅作迁移兼容镜像；运行时和设置页试听均由 Rust 原生播放。
+  return dictationNeedsSync;
 }
 
 export async function initializeSettings(): Promise<void> {
@@ -32,5 +34,8 @@ export async function initializeSettings(): Promise<void> {
     theme: json("sayItAccentTheme") ?? useThemeStore.getState().theme,
     customCueStart: localStorage.getItem("dictCueStartData"), customCueEnd: localStorage.getItem("dictCueEndData"),
   }});
-  apply((await cmd<AppSnapshot>(CMD.getAppSnapshot)).settings);
+  const settings = (await cmd<AppSnapshot>(CMD.getAppSnapshot)).settings;
+  if (apply(settings)) {
+    await useDictPrefs.getState().patch({});
+  }
 }
