@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import {
   closestCenter,
   defaultDropAnimationSideEffects,
@@ -575,17 +576,20 @@ export function SmartTemplateManager({
                   ))}
                 </div>
               </SortableContext>
-              <DragOverlay
-                adjustScale={false}
-                dropAnimation={prefersReducedMotion ? null : templateDropAnimation}
-              >
-                {activeSortTemplate ? (
-                  <TemplateDragPreview
-                    template={activeSortTemplate}
-                    isActive={activeSortTemplate.id === prefs.smartTemplateId}
-                  />
-                ) : null}
-              </DragOverlay>
+              {createPortal(
+                <DragOverlay
+                  adjustScale={false}
+                  dropAnimation={prefersReducedMotion ? null : templateDropAnimation}
+                >
+                  {activeSortTemplate ? (
+                    <TemplateDragPreview
+                      template={activeSortTemplate}
+                      isActive={activeSortTemplate.id === prefs.smartTemplateId}
+                    />
+                  ) : null}
+                </DragOverlay>,
+                document.body,
+              )}
             </DndContext>
             <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
               拖动每行右侧的手柄调整模板顺序。
