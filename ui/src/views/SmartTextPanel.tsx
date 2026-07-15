@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
+import { IconButton } from "@/components/ui/IconButton";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
@@ -86,8 +88,17 @@ export function SmartTextPanel() {
           controlId="smart-text-template"
           actions={
             <>
-              <Button onClick={addTemplate}>+ 新建</Button>
-              <Button variant="danger" disabled={templates.length <= 1} onClick={deleteTemplate}>删除</Button>
+              <IconButton label="新建模板" onClick={addTemplate}>
+                <Plus className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+              </IconButton>
+              <IconButton
+                label="删除当前模板"
+                variant="dangerHover"
+                disabled={templates.length <= 1}
+                onClick={deleteTemplate}
+              >
+                <Trash2 className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+              </IconButton>
             </>
           }
         >

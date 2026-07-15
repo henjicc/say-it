@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { Input, Textarea } from "@/components/ui/Input";
 import { CheckField, Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -173,21 +175,22 @@ export function LocalRulesPanel() {
                 />
                 Aa
               </label>
-              <Button
+              <IconButton
                 size="sm"
-                variant="danger"
-                className="h-7 shrink-0 px-2.5"
-                title="删除"
+                variant="dangerHover"
+                className="h-7 w-7 shrink-0"
+                label="删除查找替换规则"
                 onClick={() => deleteRule(rule.id)}
               >
-                删除
-              </Button>
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+              </IconButton>
             </div>
           ))}
         </div>
           <div>
           <Button size="sm" onClick={addFindRule}>
-            + 添加查找替换
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+            添加查找替换
           </Button>
           </div>
         </SettingsSection>
@@ -294,16 +297,16 @@ export function LocalRulesPanel() {
                         >
                           ↓
                         </Button>
-                        <Button
+                        <IconButton
                           size="sm"
-                          variant="danger"
-                          className="h-7 px-2.5"
-                          title={rule.builtin ? "内置规则不可删除（可停用）" : "删除"}
+                          variant="dangerHover"
+                          className="h-7 w-7"
+                          label={rule.builtin ? "内置规则不可删除（可停用）" : "删除正则规则"}
                           disabled={rule.builtin}
                           onClick={() => deleteRule(rule.id)}
                         >
-                          删除
-                        </Button>
+                          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                        </IconButton>
                       </div>
                     </div>
                     {rule.note && <p className="text-[11px] text-[var(--color-fg-subtle)]">{rule.note}</p>}
@@ -316,7 +319,8 @@ export function LocalRulesPanel() {
 
           <div className="flex items-center gap-2">
           <Button size="sm" onClick={addRule}>
-            + 添加正则规则
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+            添加正则规则
           </Button>
           <Button size="sm" onClick={resetLocalRules}>
             恢复内置默认

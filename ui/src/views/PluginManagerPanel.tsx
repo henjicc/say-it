@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
@@ -151,17 +152,15 @@ export function PluginManagerPanel() {
                     label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
                     onChange={(enabled) => void setEnabled(plugin, enabled)}
                   />
-                  <Button
+                  <IconButton
                     size="sm"
-                    variant="ghost"
+                    variant="dangerHover"
                     disabled={busy}
-                    aria-label={`卸载${plugin.name}`}
-                    title="卸载插件"
-                    className="w-8 border-transparent bg-transparent px-0 text-[#ff8589] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] hover:text-[#ff8589]"
+                    label={`卸载${plugin.name}`}
                     onClick={() => setPendingUninstall(plugin)}
                   >
-                    <Trash2 className="h-4 w-4" aria-hidden />
-                  </Button>
+                    <Trash2 className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                  </IconButton>
                 </div>
               </div>
             </div>
