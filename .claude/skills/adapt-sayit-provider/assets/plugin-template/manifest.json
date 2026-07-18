@@ -1,0 +1,38 @@
+{
+  "apiVersion": 3,
+  "id": "replace-provider",
+  "name": "待替换供应商",
+  "version": "0.1.0",
+  "provider": {
+    "id": "replace-provider",
+    "displayName": "待替换供应商",
+    "authKind": "api-key",
+    "capabilities": ["asr"],
+    "config": {"apiKey": ""},
+    "configFields": [
+      {"key": "apiKey", "label": "API Key", "fieldType": "password", "secret": true}
+    ],
+    "actions": []
+  },
+  "models": [
+    {
+      "id": "replace-realtime",
+      "label": "待替换实时模型",
+      "providerId": "replace-provider",
+      "category": "realtime",
+      "protocol": "plugin-realtime-v1",
+      "supportsVocabulary": false,
+      "supportsAlignmentTimestamps": false,
+      "scenes": ["dictationRealtime", "subtitles"],
+      "isDefaultRealtime": false,
+      "isDefaultFile": false
+    }
+  ],
+  "runtime": {
+    "kind": "javascript",
+    "entrypoint": "connector/index.js",
+    "hostApiVersion": 1,
+    "permissions": ["network"],
+    "network": {"allowedHosts": ["api.example.com"]}
+  }
+}
