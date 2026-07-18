@@ -5,6 +5,7 @@ import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedDictationModel,
 } from "@/features/asr/modelOptions";
+import { ocrOptionsForScene } from "@/features/asr/modelRegistry";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -31,6 +32,14 @@ export type ActiveAppContextExtractionMethod = "nativeText" | "ocr";
 export type ActiveAppContextOcrEngine = "system" | "ppocr";
 export const MAX_SMART_TEXT_TEMPLATES = 50;
 export const SMART_TEMPLATE_CATALOG_VERSION = 3;
+
+function availableOcrOptions() {
+  try {
+    return ocrOptionsForScene("activeAppContext");
+  } catch {
+    return [{ value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false }];
+  }
+}
 
 const LEGACY_DEFAULT_SMART_TEXT_TEMPLATES: SmartTextTemplate[] = [
   {
@@ -254,6 +263,8 @@ export interface DictPrefs extends DspParams {
   smartTemplateCatalogVersion: number;
   activeAppContextExtractionMethod: ActiveAppContextExtractionMethod;
   activeAppContextOcrEngine: ActiveAppContextOcrEngine;
+  activeAppContextOcrModel: string;
+  activeAppContextOcrApprovedProviders: string[];
   activeAppContextBlockedApps: string[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
   micDeviceId: string;
@@ -284,6 +295,8 @@ function defaults(): DictPrefs {
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
     activeAppContextExtractionMethod: "nativeText",
     activeAppContextOcrEngine: "system",
+    activeAppContextOcrModel: "system-ocr",
+    activeAppContextOcrApprovedProviders: [],
     activeAppContextBlockedApps: [],
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,
@@ -299,6 +312,7 @@ function defaults(): DictPrefs {
 function readStored(): DictPrefs {
   const base = defaults();
   let storedCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
+  let storedOcrModelPresent = false;
   try {
     const raw = localStorage.getItem(DICT_PREFS_KEY);
     if (raw) {
@@ -306,6 +320,7 @@ function readStored(): DictPrefs {
       storedCatalogVersion = typeof stored.smartTemplateCatalogVersion === "number"
         ? stored.smartTemplateCatalogVersion
         : 1;
+      storedOcrModelPresent = typeof stored.activeAppContextOcrModel === "string";
       Object.assign(base, stored);
     }
   } catch {
@@ -334,6 +349,22 @@ function readStored(): DictPrefs {
   base.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
   base.activeAppContextExtractionMethod = base.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
   base.activeAppContextOcrEngine = base.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
+  const ocrOptions = availableOcrOptions();
+  if (
+    !storedOcrModelPresent
+    || !ocrOptions.some((option) => option.value === base.activeAppContextOcrModel)
+  ) {
+    base.activeAppContextOcrModel = base.activeAppContextOcrEngine === "ppocr"
+      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
+      : "system-ocr";
+  }
+  base.activeAppContextOcrApprovedProviders = Array.from(new Set(
+    (Array.isArray(base.activeAppContextOcrApprovedProviders)
+      ? base.activeAppContextOcrApprovedProviders
+      : [])
+      .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+      .map((value) => value.trim()),
+  ));
   base.activeAppContextBlockedApps = normalizeBlockedApps(base.activeAppContextBlockedApps);
   if (!base.smartTemplates.some((template) => template.id === base.smartTemplateId)) {
     base.smartTemplateId = base.smartTemplates[0]?.id ?? "polish";
@@ -378,6 +409,8 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   const storedBlockedApps = value.activeAppContextBlockedApps;
   const storedContextMethod = value.activeAppContextExtractionMethod;
   const storedOcrEngine = value.activeAppContextOcrEngine;
+  const storedOcrModel = value.activeAppContextOcrModel;
+  const storedOcrApprovals = value.activeAppContextOcrApprovedProviders;
   const next = readStored();
   Object.assign(next, value);
   next.localRules = mergeLocalRules(next.localRules);
@@ -387,6 +420,22 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   next.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
   next.activeAppContextExtractionMethod = next.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
   next.activeAppContextOcrEngine = next.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
+  const ocrOptions = availableOcrOptions();
+  if (
+    typeof storedOcrModel !== "string"
+    || !ocrOptions.some((option) => option.value === next.activeAppContextOcrModel)
+  ) {
+    next.activeAppContextOcrModel = next.activeAppContextOcrEngine === "ppocr"
+      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
+      : "system-ocr";
+  }
+  next.activeAppContextOcrApprovedProviders = Array.from(new Set(
+    (Array.isArray(next.activeAppContextOcrApprovedProviders)
+      ? next.activeAppContextOcrApprovedProviders
+      : [])
+      .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
+      .map((entry) => entry.trim()),
+  ));
   next.activeAppContextBlockedApps = normalizeBlockedApps(next.activeAppContextBlockedApps);
   if (!next.smartTemplates.some((template) => template.id === next.smartTemplateId)) {
     next.smartTemplateId = next.smartTemplates[0]?.id ?? "polish";
@@ -400,6 +449,8 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     storedCatalogVersion !== next.smartTemplateCatalogVersion ||
     storedContextMethod !== next.activeAppContextExtractionMethod ||
     storedOcrEngine !== next.activeAppContextOcrEngine ||
+    storedOcrModel !== next.activeAppContextOcrModel ||
+    JSON.stringify(storedOcrApprovals ?? []) !== JSON.stringify(next.activeAppContextOcrApprovedProviders) ||
     JSON.stringify(storedBlockedApps ?? []) !== JSON.stringify(next.activeAppContextBlockedApps)
   );
 }

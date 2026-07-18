@@ -97,6 +97,8 @@ struct DictationPrefs {
     active_app_context_extraction_method:
         crate::active_app_context::ActiveAppContextExtractionMethod,
     active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind,
+    active_app_context_ocr_model: String,
+    active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -121,6 +123,8 @@ impl Default for DictationPrefs {
             active_app_context_extraction_method:
                 crate::active_app_context::ActiveAppContextExtractionMethod::NativeText,
             active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind::default(),
+            active_app_context_ocr_model: String::new(),
+            active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -385,11 +389,17 @@ async fn start(
             })
             .and_then(|_| activation_target)
             .map(|target| {
+                let ocr_provider = resolve_active_app_context_ocr_provider(
+                    &state,
+                    &prefs.active_app_context_ocr_model,
+                    prefs.active_app_context_ocr_engine,
+                    &prefs.active_app_context_ocr_approved_providers,
+                );
                 state.active_app_context.begin_capture(
                     target,
                     prefs.active_app_context_blocked_apps.clone(),
                     prefs.active_app_context_extraction_method,
-                    prefs.active_app_context_ocr_engine,
+                    ocr_provider,
                 )
             })
     } else {
@@ -1316,11 +1326,34 @@ fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
     crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "")?;
     Ok(())
 }
+fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {
+    if prefs.active_app_context_ocr_model.len() > 128 {
+        return Err("场景感知 OCR 模型 ID 过长".into());
+    }
+    if prefs.active_app_context_ocr_approved_providers.len() > 128 {
+        return Err("场景感知 OCR 隐私授权记录过多".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for provider_id in &prefs.active_app_context_ocr_approved_providers {
+        let valid = !provider_id.is_empty()
+            && provider_id.len() <= 64
+            && provider_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'-')
+            });
+        if !valid || !seen.insert(provider_id) {
+            return Err(format!("场景感知 OCR 隐私授权供应商 ID 非法或重复：{provider_id}"));
+        }
+    }
+    Ok(())
+}
 pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), String> {
     let prefs: DictationPrefs =
         serde_json::from_value(value.clone()).map_err(|e| format!("听写配置无效：{e}"))?;
     validate_rules(&prefs)?;
-    validate_smart_processing(&prefs)
+    validate_smart_processing(&prefs)?;
+    validate_ocr_preferences(&prefs)
 }
 
 pub(crate) fn active_app_context_extraction_method_from_value(
@@ -1337,6 +1370,139 @@ pub(crate) fn active_app_context_ocr_engine_from_value(
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_engine)
         .unwrap_or_default()
+}
+
+pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
+    serde_json::from_value::<DictationPrefs>(value.clone())
+        .map(|prefs| prefs.active_app_context_ocr_model)
+        .unwrap_or_default()
+}
+
+pub(crate) fn active_app_context_ocr_approved_providers_from_value(
+    value: &Value,
+) -> Vec<String> {
+    serde_json::from_value::<DictationPrefs>(value.clone())
+        .map(|prefs| prefs.active_app_context_ocr_approved_providers)
+        .unwrap_or_default()
+}
+
+pub(crate) fn resolve_active_app_context_ocr_provider(
+    state: &RuntimeState,
+    selected_model: &str,
+    legacy_engine: crate::active_app_context::OcrEngineKind,
+    approved_providers: &[String],
+) -> crate::providers::capabilities::OcrProvider {
+    use crate::providers::capabilities::OcrProvider;
+
+    let selected = selected_model.trim();
+    if selected.is_empty() {
+        return match legacy_engine {
+            crate::active_app_context::OcrEngineKind::System => OcrProvider::System,
+            crate::active_app_context::OcrEngineKind::PpOcr => {
+                let spec = state
+                    .plugin_registry
+                    .lock()
+                    .ok()
+                    .and_then(|registry| registry.local_model_for_engine("ppocr-mnn"));
+                let spec = spec.filter(|spec| {
+                    state.providers.lock().is_ok_and(|settings| {
+                        settings.profiles.iter().any(|profile| {
+                            profile.id == spec.provider_id && profile.enabled
+                        })
+                    })
+                });
+                spec.map(|spec| OcrProvider::PpOcr { spec }).unwrap_or_else(|| OcrProvider::Unavailable {
+                    selection: "ppocr".into(),
+                    reason: "旧版 PP-OCR 设置已迁移，但本地模型包尚未安装；请在插件管理安装 PP-OCRv6 Tiny 后重新选择。".into(),
+                })
+            }
+        };
+    }
+    if selected == crate::providers::SYSTEM_OCR_PROVIDER_ID || selected == "system" {
+        return OcrProvider::System;
+    }
+
+    let settings = match crate::commands::common::read_provider_settings(state) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return OcrProvider::Unavailable {
+                selection: selected.into(),
+                reason: error,
+            }
+        }
+    };
+    let registry = match state.plugin_registry.lock() {
+        Ok(registry) => registry,
+        Err(_) => {
+            return OcrProvider::Unavailable {
+                selection: selected.into(),
+                reason: "插件注册表锁失败".into(),
+            }
+        }
+    };
+    let local = registry.local_model_for_model(selected);
+    let provider_id = local
+        .as_ref()
+        .map(|spec| spec.provider_id.clone())
+        .or_else(|| registry.provider_id_for_model(selected))
+        .or_else(|| {
+            settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == selected)
+                .map(|profile| profile.id.clone())
+        });
+    let Some(provider_id) = provider_id else {
+        return OcrProvider::Unavailable {
+            selection: selected.into(),
+            reason: format!("OCR 模型 {selected} 不可用；请安装对应模型包或重新选择。"),
+        };
+    };
+    let Some(profile) = settings.profiles.iter().find(|profile| {
+        profile.id == provider_id
+            && profile.enabled
+            && profile.capabilities.iter().any(|capability| capability == "ocr")
+    }) else {
+        return OcrProvider::Unavailable {
+            selection: selected.into(),
+            reason: format!("OCR 模型 {selected} 的供应商未启用或已卸载。"),
+        };
+    };
+    if let Some(spec) = local {
+        return if spec.engine == "ppocr-mnn" {
+            OcrProvider::PpOcr { spec }
+        } else {
+            OcrProvider::Unavailable {
+                selection: selected.into(),
+                reason: format!("模型引擎 {} 不支持场景感知 OCR。", spec.engine),
+            }
+        };
+    }
+    let runtime = match registry.runtime_for_provider(&provider_id) {
+        Ok(Some(runtime)) => runtime,
+        Ok(None) => {
+            return OcrProvider::Unavailable {
+                selection: selected.into(),
+                reason: format!("OCR 供应商 {provider_id} 没有可调用的识别运行时。"),
+            }
+        }
+        Err(error) => {
+            return OcrProvider::Unavailable {
+                selection: selected.into(),
+                reason: error,
+            }
+        }
+    };
+    if !approved_providers.iter().any(|id| id == &provider_id) {
+        return OcrProvider::Unavailable {
+            selection: selected.into(),
+            reason: format!("尚未确认向第三方 OCR 供应商 {provider_id} 发送场景感知截图。"),
+        };
+    }
+    OcrProvider::Plugin {
+        spec: runtime,
+        profile: profile.clone(),
+    }
 }
 fn compile_rule(rule: &LocalRule) -> Result<fancy_regex::Regex, String> {
     let pattern = if rule.mode == "find" {
@@ -1608,5 +1774,90 @@ mod tests {
             pcm16le_to_f32(&[0, 0, 255, 127, 0, 128]),
             vec![0.0, i16::MAX as f32 / 32768.0, -1.0]
         );
+    }
+
+    #[test]
+    fn legacy_ppocr_without_model_pack_is_unavailable_but_system_ocr_remains_available() {
+        let state = RuntimeState::default();
+        assert!(matches!(
+            resolve_active_app_context_ocr_provider(
+                &state,
+                "",
+                crate::active_app_context::OcrEngineKind::PpOcr,
+                &[],
+            ),
+            crate::providers::capabilities::OcrProvider::Unavailable { .. }
+        ));
+        assert!(matches!(
+            resolve_active_app_context_ocr_provider(
+                &state,
+                crate::providers::SYSTEM_OCR_PROVIDER_ID,
+                crate::active_app_context::OcrEngineKind::PpOcr,
+                &[],
+            ),
+            crate::providers::capabilities::OcrProvider::System
+        ));
+    }
+
+    #[test]
+    fn remote_ocr_requires_provider_specific_privacy_approval() {
+        let root = std::env::temp_dir().join(format!("sayit-ocr-privacy-{}", Uuid::new_v4()));
+        let plugin = root.join("remote-ocr");
+        std::fs::create_dir_all(plugin.join("connector")).unwrap();
+        std::fs::write(
+            plugin.join("connector/index.js"),
+            b"export function recognizeImage() { return { blocks: [] }; }",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": 4,
+                "id": "remote-ocr",
+                "name": "Remote OCR",
+                "version": "1.0.0",
+                "provider": {
+                    "id": "remote-ocr",
+                    "displayName": "Remote OCR",
+                    "authKind": "none",
+                    "capabilities": ["ocr"],
+                    "config": {}
+                },
+                "models": [],
+                "runtime": {
+                    "kind": "javascript",
+                    "entrypoint": "connector/index.js",
+                    "hostApiVersion": 1
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = crate::providers::plugin::load_registry_from(&root).unwrap();
+        let mut settings = crate::providers::ProviderSettings::default();
+        registry.merge_provider_profiles(&mut settings);
+        let state = RuntimeState::default();
+        *state.plugin_registry.lock().unwrap() = registry;
+        *state.providers.lock().unwrap() = settings;
+
+        assert!(matches!(
+            resolve_active_app_context_ocr_provider(
+                &state,
+                "remote-ocr",
+                crate::active_app_context::OcrEngineKind::System,
+                &[],
+            ),
+            crate::providers::capabilities::OcrProvider::Unavailable { .. }
+        ));
+        assert!(matches!(
+            resolve_active_app_context_ocr_provider(
+                &state,
+                "remote-ocr",
+                crate::active_app_context::OcrEngineKind::System,
+                &["remote-ocr".into()],
+            ),
+            crate::providers::capabilities::OcrProvider::Plugin { .. }
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -103,12 +103,12 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
         method: ActiveAppContextExtractionMethod,
-        ocr_engine: OcrEngineKind,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
     ) -> ContextCaptureHandle {
         self.begin_capture_inner(
             target,
             blocked_apps,
-            CaptureOptions::for_method(method, ocr_engine),
+            CaptureOptions::for_method(method, ocr_provider),
         )
     }
 
@@ -118,10 +118,10 @@ impl ContextCaptureService {
         blocked_apps: Vec<String>,
         debug_window_handle: Option<isize>,
         method: ActiveAppContextExtractionMethod,
-        ocr_engine: OcrEngineKind,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
         max_capture_side_override: Option<u32>,
     ) -> ContextCaptureHandle {
-        let mut options = CaptureOptions::for_method(method, ocr_engine);
+        let mut options = CaptureOptions::for_method(method, ocr_provider);
         options.debug = true;
         options.occluding_window_handle = debug_window_handle;
         options.max_capture_side_override = max_capture_side_override;
@@ -318,13 +318,6 @@ fn metadata_fallback(
         fallback.status = CaptureStatus::TimedOut;
     }
     fallback
-}
-
-pub(crate) fn configure_ocr_model_root(path: PathBuf) {
-    #[cfg(windows)]
-    ocr::configure_model_root(path);
-    #[cfg(not(windows))]
-    let _ = path;
 }
 
 pub(crate) fn configure_native_probe_path(path: PathBuf) {

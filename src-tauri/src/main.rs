@@ -128,25 +128,6 @@ fn main() {
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
             #[cfg(windows)]
             {
-                let resolved_model_root = app
-                    .path()
-                    .resolve("resources/ocr", tauri::path::BaseDirectory::Resource)
-                    .unwrap_or_else(|_| {
-                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("resources")
-                            .join("ocr")
-                    });
-                let model_root = if resolved_model_root
-                    .join("PP-OCRv6_tiny_det.mnn")
-                    .is_file()
-                {
-                    resolved_model_root
-                } else {
-                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("resources")
-                        .join("ocr")
-                };
-                active_app_context::configure_ocr_model_root(model_root);
                 let development_probe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("binaries")
                     .join("context-probe-x86_64-pc-windows-msvc.exe");

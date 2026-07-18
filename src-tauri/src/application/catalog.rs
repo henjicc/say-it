@@ -7,7 +7,7 @@ use crate::providers::plugin::PluginRegistry;
 use crate::providers::ProviderSettingsResponse;
 use crate::state::RuntimeState;
 
-pub const CATALOG_VERSION: u32 = 2;
+pub const CATALOG_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

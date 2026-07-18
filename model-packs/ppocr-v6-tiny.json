@@ -1,0 +1,60 @@
+{
+  "manifest": {
+    "apiVersion": 4,
+    "id": "official.ppocr-v6-tiny",
+    "name": "PP-OCRv6 Tiny 本地模型",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-ppocr",
+      "displayName": "本地 PP-OCR",
+      "authKind": "none",
+      "capabilities": ["ocr"],
+      "config": {}
+    },
+    "models": [
+      {
+        "id": "local-ppocr-v6-tiny",
+        "label": "PP-OCRv6 Tiny",
+        "providerId": "local-ppocr",
+        "category": "ocr",
+        "protocol": "local-ppocr-mnn",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": false,
+        "scenes": ["activeAppContext"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      }
+    ],
+    "runtime": { "kind": "model-pack" },
+    "modelPack": {
+      "engine": "ppocr-mnn",
+      "files": [
+        {
+          "path": "PP-OCRv6_tiny_det.mnn",
+          "sha256": "7fab7b858f136bc93a760bdca66aaf25f0ff10accabb31e6ef853a897fb9cfec",
+          "sizeBytes": 901896
+        },
+        {
+          "path": "PP-OCRv6_tiny_rec.mnn",
+          "sha256": "0a43c3c979a98b905f5e84913209998f510189419b5a5d4152bbb01ce8d17a93",
+          "sizeBytes": 2251616
+        },
+        {
+          "path": "ppocr_keys_v6_tiny.txt",
+          "sha256": "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
+          "sizeBytes": 27156
+        }
+      ],
+      "params": {
+        "detModel": "PP-OCRv6_tiny_det.mnn",
+        "recModel": "PP-OCRv6_tiny_rec.mnn",
+        "charset": "ppocr_keys_v6_tiny.txt"
+      }
+    }
+  },
+  "sources": {
+    "PP-OCRv6_tiny_det.mnn": "../src-tauri/resources/ocr/PP-OCRv6_tiny_det.mnn",
+    "PP-OCRv6_tiny_rec.mnn": "../src-tauri/resources/ocr/PP-OCRv6_tiny_rec.mnn",
+    "ppocr_keys_v6_tiny.txt": "../src-tauri/resources/ocr/ppocr_keys_v6_tiny.txt"
+  }
+}

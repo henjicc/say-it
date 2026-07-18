@@ -26,7 +26,6 @@
     "publisher": "痕继痕迹",
     "externalBin": ["binaries/context-probe"],
     "resources": [
-      "resources/ocr/*",
       "resources/licenses/*"
     ]
   }

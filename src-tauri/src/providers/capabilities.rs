@@ -235,9 +235,16 @@ const PLUGIN_OCR_TIMEOUT: Duration = Duration::from_secs(60);
 pub enum OcrProvider {
     /// Windows 系统 OCR（WinRT），转发 `crate::ocr::windows`。
     System,
+    PpOcr {
+        spec: LocalModelSpec,
+    },
     Plugin {
         spec: PluginRuntimeSpec,
         profile: ProviderProfile,
+    },
+    Unavailable {
+        selection: String,
+        reason: String,
     },
 }
 #[cfg(test)]
@@ -290,6 +297,19 @@ impl OcrProvider {
                 .await?;
                 parse_plugin_ocr_blocks(&value)
             }
+            Self::PpOcr { .. } => {
+                Err("PP-OCR 由场景感知本地推理管线执行，不能走通用插件调用".into())
+            }
+            Self::Unavailable { reason, .. } => Err(reason.clone()),
+        }
+    }
+
+    pub fn description(&self) -> String {
+        match self {
+            Self::System => "Windows 系统 OCR".into(),
+            Self::PpOcr { spec } => format!("PP-OCR 模型 {}", spec.plugin_id),
+            Self::Plugin { profile, .. } => profile.display_name.clone(),
+            Self::Unavailable { selection, .. } => format!("不可用 OCR 模型 {selection}"),
         }
     }
 }

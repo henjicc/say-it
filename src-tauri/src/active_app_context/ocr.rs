@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
@@ -12,11 +12,12 @@ use base64::Engine as _;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ColorType, DynamicImage, ImageEncoder};
 use ocr_rs::{DetOptions, MemoryMode, OcrEngine, OcrEngineConfig};
-use sha2::{Digest, Sha256};
 
-use super::model::{NormalizedRegion, OcrEngineKind, OcrTextBlock};
+use super::model::{NormalizedRegion, OcrTextBlock};
 use super::normalize::normalize_text;
 use crate::ocr::windows as windows_ocr;
+use crate::providers::capabilities::OcrProvider;
+use crate::providers::plugin::{LocalModelSpec, ModelPackManifest};
 
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
@@ -26,14 +27,6 @@ const MAX_RECOGNIZED_REGIONS: usize = 96;
 // turning into a disproportionately large permanent workspace reservation.
 const DET_MAX_SIDE_LEN: u32 = 960;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const DET_MODEL: &str = "PP-OCRv6_tiny_det.mnn";
-const REC_MODEL: &str = "PP-OCRv6_tiny_rec.mnn";
-const CHARSET: &str = "ppocr_keys_v6_tiny.txt";
-const DET_SHA256: &str = "7FAB7B858F136BC93A760BDCA66AAF25F0FF10ACCABB31E6EF853A897FB9CFEC";
-const REC_SHA256: &str = "0A43C3C979A98B905F5E84913209998F510189419B5A5D4152BBB01CE8D17A93";
-const CHARSET_SHA256: &str = "C5CBE34EF40C29C4DF07ED012BF96569CB69A2D2A01A07027E9F13CB832BD9CD";
-
-static MODEL_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static OCR_WORKER: OnceLock<Sender<OcrCommand>> = OnceLock::new();
 static NEXT_OCR_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -49,16 +42,12 @@ enum OcrCommand {
 
 struct OcrTask {
     id: u64,
-    engine_kind: OcrEngineKind,
+    provider: OcrProvider,
     submitted_at: Instant,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
     image: DynamicImage,
     reply: SyncSender<Result<OcrPipelineOutput, String>>,
-}
-
-pub(crate) fn configure_model_root(path: PathBuf) {
-    let _ = MODEL_ROOT.set(path);
 }
 
 #[derive(Debug)]
@@ -70,36 +59,43 @@ pub(crate) struct OcrPipelineOutput {
     pub(crate) det_session_memory_mb: Option<f32>,
     pub(crate) rec_session_memory_mb: Option<f32>,
     pub(crate) truncated: bool,
+    pub(crate) diagnostic: Option<String>,
 }
 
-fn model_root() -> PathBuf {
-    MODEL_ROOT.get().cloned().unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("ocr")
-    })
+fn model_param_path(spec: &LocalModelSpec, key: &str) -> Result<PathBuf, String> {
+    let relative = spec
+        .params
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("PP-OCR 模型包参数缺少 {key}"))?;
+    let file = spec
+        .files
+        .iter()
+        .find(|file| file.path == relative)
+        .ok_or_else(|| format!("PP-OCR 模型包参数 {key} 指向未声明文件：{relative}"))?;
+    let path = spec.model_dir.join(crate::providers::plugin::safe_model_file_path(relative)?);
+    crate::providers::model_download::verify_model_file(&path, file)?;
+    Ok(path)
 }
 
-fn verify_file(path: &Path, expected: &str) -> Result<(), String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("读取 OCR 模型 {} 失败：{error}", path.display()))?;
-    let actual = format!("{:X}", Sha256::digest(bytes));
-    if actual != expected {
-        return Err(format!("OCR 模型校验失败：{}", path.display()));
+fn build_engine(spec: &LocalModelSpec) -> Result<EngineState, String> {
+    if spec.engine != "ppocr-mnn" {
+        return Err(format!("模型引擎 {} 不能用于 PP-OCR", spec.engine));
     }
-    Ok(())
-}
-
-fn build_engine() -> Result<EngineState, String> {
+    crate::providers::model_download::verify_pack(
+        &spec.model_dir,
+        &ModelPackManifest {
+            engine: spec.engine.clone(),
+            files: spec.files.clone(),
+            params: spec.params.clone(),
+        },
+    )
+    .map_err(|error| format!("PP-OCR 模型尚未就绪，请先在插件管理安装模型包：{error}"))?;
     let started = Instant::now();
     crate::development_debug_log("active-app-ocr", "PP-OCR 模型加载：校验并加载本地模型");
-    let root = model_root();
-    let det = root.join(DET_MODEL);
-    let rec = root.join(REC_MODEL);
-    let charset = root.join(CHARSET);
-    verify_file(&det, DET_SHA256)?;
-    verify_file(&rec, REC_SHA256)?;
-    verify_file(&charset, CHARSET_SHA256)?;
+    let det = model_param_path(spec, "detModel")?;
+    let rec = model_param_path(spec, "recModel")?;
+    let charset = model_param_path(spec, "charset")?;
     let config = OcrEngineConfig::new()
         .with_threads(3)
         // Keep the engine hot, but discard stale MNN workspace whenever a
@@ -252,6 +248,7 @@ fn pipeline_output(
         det_session_memory_mb,
         rec_session_memory_mb,
         truncated,
+        diagnostic: None,
     }
 }
 
@@ -288,6 +285,45 @@ fn run_windows_ocr_inner(image: &DynamicImage) -> Result<OcrPipelineOutput, Stri
     ))
 }
 
+fn png_bytes(image: &DynamicImage) -> Result<Vec<u8>, String> {
+    let rgba = image.to_rgba8();
+    let mut bytes = Vec::new();
+    PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, PngFilterType::Adaptive)
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            ColorType::Rgba8.into(),
+        )
+        .map_err(|error| format!("编码 OCR 截图失败：{error}"))?;
+    Ok(bytes)
+}
+
+fn run_plugin_ocr_inner(
+    provider: &OcrProvider,
+    image: &DynamicImage,
+    deadline: Instant,
+) -> Result<OcrPipelineOutput, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err("插件 OCR 已无剩余执行时间".into());
+    }
+    let bytes = png_bytes(image)?;
+    let started = Instant::now();
+    let blocks = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(remaining, provider.recognize(&bytes, "activeAppContext"))
+            .await
+            .map_err(|_| "插件 OCR 超过场景感知截止时间".to_string())?
+    })?;
+    Ok(pipeline_output(
+        finalize_blocks(blocks),
+        started.elapsed().as_millis() as u64,
+        0,
+        None,
+        None,
+    ))
+}
+
 fn worker() -> &'static Sender<OcrCommand> {
     OCR_WORKER.get_or_init(|| {
         let (sender, receiver) = channel::<OcrCommand>();
@@ -310,9 +346,9 @@ fn worker() -> &'static Sender<OcrCommand> {
                     crate::development_debug_log(
                         "active-app-ocr",
                         format_args!(
-                            "任务 #{} 开始：引擎 {:?}，排队 {} ms，图片 {}×{}",
+                            "任务 #{} 开始：模型 {}，排队 {} ms，图片 {}×{}",
                             task.id,
-                            task.engine_kind,
+                            task.provider.description(),
                             task.submitted_at.elapsed().as_millis(),
                             task.image.width(),
                             task.image.height(),
@@ -320,12 +356,35 @@ fn worker() -> &'static Sender<OcrCommand> {
                     );
                     // PP-OCR 引擎按任务构建、任务结束即随作用域释放：实测冷启动仅数毫秒，
                     // 而常驻会保留约 130 MiB 的 MNN 会话工作区，得不偿失。
-                    let result = catch_unwind(AssertUnwindSafe(|| match task.engine_kind {
-                        OcrEngineKind::PpOcr => {
-                            let engine = build_engine()?;
+                    let result = catch_unwind(AssertUnwindSafe(|| match &task.provider {
+                        OcrProvider::PpOcr { spec } => {
+                            let engine = build_engine(spec)?;
                             run_full_window_inner(&engine, &task.image)
                         }
-                        OcrEngineKind::System => run_windows_ocr_inner(&task.image),
+                        OcrProvider::System => run_windows_ocr_inner(&task.image),
+                        OcrProvider::Plugin { .. } => {
+                            match run_plugin_ocr_inner(&task.provider, &task.image, task.deadline) {
+                                Ok(output) => Ok(output),
+                                Err(error) => {
+                                    crate::development_debug_log(
+                                        "active-app-ocr",
+                                        format_args!("插件 OCR 失败，降级到系统 OCR：{error}"),
+                                    );
+                                    let mut output = run_windows_ocr_inner(&task.image).map_err(
+                                        |fallback_error| {
+                                            format!(
+                                                "插件 OCR 失败：{error}；Windows 系统 OCR 降级也失败：{fallback_error}"
+                                            )
+                                        },
+                                    )?;
+                                    output.diagnostic = Some(format!(
+                                        "插件 OCR 失败，已降级到 Windows 系统 OCR：{error}"
+                                    ));
+                                    Ok(output)
+                                }
+                            }
+                        }
+                        OcrProvider::Unavailable { reason, .. } => Err(reason.clone()),
                     }))
                     .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
                     match &result {
@@ -357,7 +416,7 @@ fn worker() -> &'static Sender<OcrCommand> {
 }
 
 pub(crate) fn run_full_window(
-    engine_kind: OcrEngineKind,
+    provider: OcrProvider,
     image: DynamicImage,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
@@ -377,7 +436,8 @@ pub(crate) fn run_full_window(
     crate::development_debug_log(
         "active-app-ocr",
         format_args!(
-            "任务 #{id} 已提交：引擎 {engine_kind:?}，图片 {}×{}，等待上限 {} ms",
+            "任务 #{id} 已提交：模型 {}，图片 {}×{}，等待上限 {} ms",
+            provider.description(),
             image.width(),
             image.height(),
             timeout.as_millis(),
@@ -386,7 +446,7 @@ pub(crate) fn run_full_window(
     if worker()
         .send(OcrCommand::Recognize(OcrTask {
             id,
-            engine_kind,
+            provider,
             submitted_at,
             deadline,
             cancelled: Arc::clone(&cancelled),
@@ -444,22 +504,56 @@ pub(crate) fn shutdown() {
 }
 
 pub(crate) fn png_data_url(image: &DynamicImage) -> Result<String, String> {
-    let rgba = image.to_rgba8();
-    let mut bytes = Vec::new();
-    PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, PngFilterType::Adaptive)
-        .write_image(
-            rgba.as_raw(),
-            rgba.width(),
-            rgba.height(),
-            ColorType::Rgba8.into(),
-        )
-        .map_err(|error| format!("生成调试截图失败：{error}"))?;
-    Ok(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+    Ok(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(png_bytes(image)?)
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bundled_model_spec() -> LocalModelSpec {
+        let file = |path: &str, sha256: &str, size_bytes: u64| {
+            crate::providers::plugin::ModelPackFileManifest {
+                path: path.into(),
+                sha256: sha256.into(),
+                size_bytes,
+                download: None,
+            }
+        };
+        LocalModelSpec {
+            plugin_id: "test.ppocr".into(),
+            provider_id: "local-ppocr".into(),
+            engine: "ppocr-mnn".into(),
+            model_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("ocr"),
+            files: vec![
+                file(
+                    "PP-OCRv6_tiny_det.mnn",
+                    "7fab7b858f136bc93a760bdca66aaf25f0ff10accabb31e6ef853a897fb9cfec",
+                    901_896,
+                ),
+                file(
+                    "PP-OCRv6_tiny_rec.mnn",
+                    "0a43c3c979a98b905f5e84913209998f510189419b5a5d4152bbb01ce8d17a93",
+                    2_251_616,
+                ),
+                file(
+                    "ppocr_keys_v6_tiny.txt",
+                    "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
+                    27_156,
+                ),
+            ],
+            params: serde_json::json!({
+                "detModel": "PP-OCRv6_tiny_det.mnn",
+                "recModel": "PP-OCRv6_tiny_rec.mnn",
+                "charset": "ppocr_keys_v6_tiny.txt"
+            }),
+        }
+    }
 
     fn block(left: f32, top: f32, text: &str) -> OcrTextBlock {
         OcrTextBlock {
@@ -528,6 +622,51 @@ mod tests {
     }
 
     #[test]
+    fn plugin_provider_runs_through_scene_capture_worker() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-context-ocr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("connector")).unwrap();
+        std::fs::write(
+            root.join("connector/index.js"),
+            concat!(
+                "export default host => ({ invoke(request) {\n",
+                "  const bytes = host.base64.decode(request.payload.imageBase64);\n",
+                "  return { blocks: [{ text: 'plugin:' + bytes.length, region: { x: 0, y: 0, width: 1, height: 1 } }] };\n",
+                "} });",
+            ),
+        )
+        .unwrap();
+        let mut profile = crate::providers::windows_ocr_profile();
+        profile.id = "test-plugin-ocr".into();
+        profile.kind = "plugin:test-plugin-ocr".into();
+        profile.display_name = "Test Plugin OCR".into();
+        let provider = OcrProvider::Plugin {
+            spec: crate::providers::plugin::PluginRuntimeSpec {
+                plugin_id: "test-plugin-ocr".into(),
+                root: root.clone(),
+                entrypoint: root.join("connector/index.js"),
+                permissions: vec![],
+                allowed_hosts: vec![],
+                browser_session: None,
+                data_dir: root.join("data"),
+                trust: "unsigned".into(),
+            },
+            profile,
+        };
+        let output = run_full_window(
+            provider,
+            DynamicImage::new_rgb8(16, 16),
+            Instant::now() + Duration::from_secs(3),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(output.blocks.len(), 1);
+        assert!(output.blocks[0].text.starts_with("plugin:"));
+        assert!(output.diagnostic.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn bundled_models_recognize_fixture_and_reuse_engine() {
         let image = image::open(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -536,7 +675,7 @@ mod tests {
                 .join("ocr-window.png"),
         )
         .expect("fixture should load");
-        let engine = build_engine().expect("bundled model should initialize");
+        let engine = build_engine(&bundled_model_spec()).expect("model pack should initialize");
         assert_eq!(engine.engine.config().memory_mode, MemoryMode::Collect);
         assert_eq!(
             engine.engine.config().det_options.max_side_len,
@@ -570,7 +709,7 @@ mod tests {
 
     #[test]
     fn collect_mode_discards_stale_detector_workspace_after_a_smaller_window() {
-        let engine = build_engine().expect("bundled model should initialize");
+        let engine = build_engine(&bundled_model_spec()).expect("model pack should initialize");
         let large = DynamicImage::new_rgb8(1_600, 1_600);
         recognize_full_window(&engine.engine, &large).expect("large window OCR should succeed");
         let (large_det_memory_mb, _) = engine
