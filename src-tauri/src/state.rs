@@ -8,6 +8,7 @@ pub(crate) struct RuntimeState {
     pub(crate) app_settings: Mutex<crate::application::settings::AppSettings>,
     pub(crate) providers: Mutex<ProviderSettings>,
     pub(crate) plugin_registry: Mutex<crate::providers::plugin::PluginRegistry>,
+    pub(crate) pending_plugin_imports: Mutex<VecDeque<String>>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,

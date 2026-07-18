@@ -37,7 +37,8 @@ use application::dictation::{
 use application::llm_models::refresh_llm_models;
 use application::plugin_management::{
     download_provider_model_pack, install_provider_plugin, list_provider_plugins,
-    reload_provider_plugins, run_provider_plugin_action, set_provider_plugin_enabled,
+    preview_provider_plugin, reload_provider_plugins, run_provider_plugin_action,
+    set_provider_plugin_enabled, take_pending_provider_plugin_imports,
     uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
@@ -111,7 +112,21 @@ fn main() {
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     let result = builder
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            match application::plugin_management::queue_provider_plugin_imports(
+                app,
+                &args,
+                std::path::Path::new(&cwd),
+            ) {
+                Ok(count) if count > 0 => {
+                    let _ = app.emit(
+                        application::plugin_management::PLUGIN_IMPORT_REQUESTED_EVENT,
+                        (),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("[plugin-import] 接收双击导入路径失败: {error}"),
+            }
             if let Err(error) = ensure_main_window(app) {
                 eprintln!("[window] 单实例唤起主窗口失败: {error}");
             }
@@ -190,6 +205,15 @@ fn main() {
             }
 
             application::plugin_management::initialize(&app.handle())?;
+            let initial_args = std::env::args().collect::<Vec<_>>();
+            let initial_cwd = std::env::current_dir().unwrap_or_default();
+            if let Err(error) = application::plugin_management::queue_provider_plugin_imports(
+                &app.handle(),
+                &initial_args,
+                &initial_cwd,
+            ) {
+                eprintln!("[plugin-import] 接收启动导入路径失败: {error}");
+            }
 
             let state = app.state::<RuntimeState>();
             if ensure_obs_overlay_settings(&state)? {
@@ -318,7 +342,9 @@ fn main() {
             get_model_catalog,
             list_provider_plugins,
             reload_provider_plugins,
+            preview_provider_plugin,
             install_provider_plugin,
+            take_pending_provider_plugin_imports,
             download_provider_model_pack,
             set_provider_plugin_enabled,
             uninstall_provider_plugin,

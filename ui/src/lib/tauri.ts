@@ -7,7 +7,9 @@ export const CMD = {
   getModelCatalog: "get_model_catalog",
   listProviderPlugins: "list_provider_plugins",
   reloadProviderPlugins: "reload_provider_plugins",
+  previewProviderPlugin: "preview_provider_plugin",
   installProviderPlugin: "install_provider_plugin",
+  takePendingProviderPluginImports: "take_pending_provider_plugin_imports",
   downloadProviderModelPack: "download_provider_model_pack",
   setProviderPluginEnabled: "set_provider_plugin_enabled",
   uninstallProviderPlugin: "uninstall_provider_plugin",
@@ -156,6 +158,8 @@ export const EVT = {
   dataRootMigration: "data-root-migration",
   modelPackProgress: "model-pack-progress",
   pluginInstallProgress: "plugin-install-progress",
+  providerPluginImportRequested: "provider-plugin-import-requested",
+  pluginRegistryChanged: "plugin-registry-changed",
 } as const;
 
 export interface DataRootStatus {

@@ -39,6 +39,20 @@ pub struct InstallResult {
     pub replaced_version: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackagePreview {
+    pub source_path: String,
+    pub package_kind: String,
+    pub name: String,
+    pub version: String,
+    pub capabilities: Vec<String>,
+    pub model_labels: Vec<String>,
+    pub trust: String,
+    pub signing_key_id: Option<String>,
+    pub archive_sha256: String,
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct TrustedKeyFile {
     #[serde(default)]
@@ -273,6 +287,7 @@ pub fn install_from_directory(
 pub fn install_from_path(
     app: &tauri::AppHandle,
     source: &Path,
+    expected_archive_sha256: Option<&str>,
     allow_unsigned: bool,
     trust_signing_key: bool,
 ) -> Result<InstallResult, String> {
@@ -293,8 +308,64 @@ pub fn install_from_path(
     }
     let plugins = plugins_dir(app)?;
     let extracted = plugins.join(format!(".archive-{}", Uuid::new_v4()));
-    let result = extract_archive(&source, &extracted, Some(app))
-        .and_then(|_| dispatch_sayit_package(&extracted, app, allow_unsigned, trust_signing_key));
+    let result = extract_archive(&source, &extracted, Some(app)).and_then(|_| {
+        if let Some(expected) = expected_archive_sha256 {
+            verify_expected_archive_hash(&source, expected)?;
+        }
+        dispatch_sayit_package(&extracted, app, allow_unsigned, trust_signing_key)
+    });
+    let _ = std::fs::remove_dir_all(&extracted);
+    result
+}
+
+fn verify_expected_archive_hash(source: &Path, expected: &str) -> Result<(), String> {
+    let actual = sha256_file(source)?;
+    if !actual.eq_ignore_ascii_case(expected.trim()) {
+        return Err("说吧包在预览后已发生变化，请重新打开并确认".into());
+    }
+    Ok(())
+}
+
+pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<PackagePreview, String> {
+    let source = source
+        .canonicalize()
+        .map_err(|error| format!("插件包不存在：{error}"))?;
+    if !source.is_file()
+        || !source
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(SAYIT_PACKAGE_EXTENSION))
+    {
+        return Err(format!("请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包"));
+    }
+    let plugins = plugins_dir(app)?;
+    let extracted = plugins.join(format!(".preview-{}", Uuid::new_v4()));
+    let archive_sha256 = sha256_file(&source)?;
+    let result = (|| {
+        extract_archive(&source, &extracted, None)?;
+        verify_expected_archive_hash(&source, &archive_sha256)?;
+        let declaration = read_package_declaration(&extracted)?;
+        let manifest = validate_plugin_dir(&extracted)?;
+        validate_declared_package_kind(&declaration, &manifest)?;
+        let trust = verify_installation(&extracted, &manifest, &load_trusted_keys(app)?)?;
+        let mut capabilities = manifest.provider.capabilities.clone();
+        capabilities.sort();
+        capabilities.dedup();
+        Ok(PackagePreview {
+            source_path: source.to_string_lossy().into_owned(),
+            package_kind: declaration.kind,
+            name: manifest.name,
+            version: manifest.version,
+            capabilities,
+            model_labels: manifest
+                .models
+                .into_iter()
+                .map(|model| model.label)
+                .collect(),
+            trust,
+            signing_key_id: manifest.signature.map(|signature| signature.key_id),
+            archive_sha256,
+        })
+    })();
     let _ = std::fs::remove_dir_all(&extracted);
     result
 }
@@ -305,6 +376,13 @@ fn dispatch_sayit_package(
     allow_unsigned: bool,
     trust_signing_key: bool,
 ) -> Result<InstallResult, String> {
+    let declaration = read_package_declaration(root)?;
+    let manifest = validate_plugin_dir(root)?;
+    validate_declared_package_kind(&declaration, &manifest)?;
+    install_from_directory(app, root, allow_unsigned, trust_signing_key)
+}
+
+fn read_package_declaration(root: &Path) -> Result<SayItPackageDeclaration, String> {
     let declaration_path = root.join(PACKAGE_DECLARATION_FILE);
     let declaration_text = std::fs::read_to_string(&declaration_path)
         .map_err(|_| format!("说吧包缺少 {PACKAGE_DECLARATION_FILE}"))?;
@@ -316,13 +394,31 @@ fn dispatch_sayit_package(
             declaration.format_version
         ));
     }
-    match declaration.kind.as_str() {
-        "provider-plugin" | "model-pack" if declaration.entry == "manifest.json" => {
-            install_from_directory(app, root, allow_unsigned, trust_signing_key)
-        }
-        "provider-plugin" | "model-pack" => Err("说吧包入口必须是 manifest.json".into()),
-        kind => Err(format!("当前版本不支持的说吧包类型：{kind}")),
+    if declaration.entry != "manifest.json" {
+        return Err("说吧包入口必须是 manifest.json".into());
     }
+    if !matches!(declaration.kind.as_str(), "provider-plugin" | "model-pack") {
+        return Err(format!("当前版本不支持的说吧包类型：{}", declaration.kind));
+    }
+    Ok(declaration)
+}
+
+fn validate_declared_package_kind(
+    declaration: &SayItPackageDeclaration,
+    manifest: &PluginManifest,
+) -> Result<(), String> {
+    let expected = if manifest.runtime.kind == "model-pack" {
+        "model-pack"
+    } else {
+        "provider-plugin"
+    };
+    if declaration.kind != expected {
+        return Err(format!(
+            "说吧包声明类型 {} 与 manifest 运行时 {} 不一致",
+            declaration.kind, manifest.runtime.kind
+        ));
+    }
+    Ok(())
 }
 
 fn extract_archive(
@@ -760,6 +856,20 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use zip::{write::SimpleFileOptions, ZipWriter};
+
+    #[test]
+    fn package_hash_binds_confirmation_to_previewed_bytes() {
+        let root = std::env::temp_dir().join(format!("sayit-package-hash-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let package = root.join("plugin.sayit");
+        std::fs::write(&package, b"previewed").unwrap();
+        let expected = sha256_file(&package).unwrap();
+        verify_expected_archive_hash(&package, &expected).unwrap();
+
+        std::fs::write(&package, b"changed").unwrap();
+        assert!(verify_expected_archive_hash(&package, &expected).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn rejects_native_executable_in_archive() {

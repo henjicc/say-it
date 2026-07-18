@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { SettingsProviderPanel } from "@/views/SettingsProviderPanel";
@@ -10,10 +9,9 @@ import { AudioView } from "@/views/AudioView";
 import { SettingsAppearancePanel } from "@/views/SettingsAppearancePanel";
 import { SettingsComparePanel } from "@/views/SettingsComparePanel";
 import { SettingsDisconnectPanel } from "@/views/SettingsDisconnectPanel";
+import { useUiStore, type SettingsTabKey } from "@/store/useUiStore";
 
-type TabKey = "provider" | "plugins" | "audio" | "disconnect" | "startup" | "mic" | "appearance" | "compare";
-
-const TABS: TabItem<TabKey>[] = [
+const TABS: TabItem<SettingsTabKey>[] = [
   { key: "provider", label: "密钥与识别" },
   { key: "plugins", label: "插件管理" },
   { key: "audio", label: "录音调整" },
@@ -25,7 +23,8 @@ const TABS: TabItem<TabKey>[] = [
 ];
 
 export function SettingsView() {
-  const [tab, setTab] = useState<TabKey>("provider");
+  const tab = useUiStore((state) => state.settingsTab);
+  const setTab = useUiStore((state) => state.setSettingsTab);
 
   return (
     <div className="flex flex-col gap-7">
@@ -34,7 +33,7 @@ export function SettingsView() {
         description="配置识别密钥、插件、录音调整、启动方式、麦克风与提示音、界面外观，并支持多模型效果对比。"
       />
 
-      <Tabs<TabKey>
+      <Tabs<SettingsTabKey>
         id="settings-tabs"
         ariaLabel="设置分类"
         tabs={TABS}
