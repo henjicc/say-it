@@ -96,6 +96,7 @@ struct DictationPrefs {
     smart_templates: Vec<SmartTemplate>,
     active_app_context_extraction_method:
         crate::active_app_context::ActiveAppContextExtractionMethod,
+    active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind,
     active_app_context_blocked_apps: Vec<String>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -119,6 +120,7 @@ impl Default for DictationPrefs {
             smart_templates: vec![],
             active_app_context_extraction_method:
                 crate::active_app_context::ActiveAppContextExtractionMethod::NativeText,
+            active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind::default(),
             active_app_context_blocked_apps: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -387,6 +389,7 @@ async fn start(
                     target,
                     prefs.active_app_context_blocked_apps.clone(),
                     prefs.active_app_context_extraction_method,
+                    prefs.active_app_context_ocr_engine,
                 )
             })
     } else {
@@ -1325,6 +1328,14 @@ pub(crate) fn active_app_context_extraction_method_from_value(
 ) -> crate::active_app_context::ActiveAppContextExtractionMethod {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_extraction_method)
+        .unwrap_or_default()
+}
+
+pub(crate) fn active_app_context_ocr_engine_from_value(
+    value: &Value,
+) -> crate::active_app_context::OcrEngineKind {
+    serde_json::from_value::<DictationPrefs>(value.clone())
+        .map(|prefs| prefs.active_app_context_ocr_engine)
         .unwrap_or_default()
 }
 fn compile_rule(rule: &LocalRule) -> Result<fancy_regex::Regex, String> {

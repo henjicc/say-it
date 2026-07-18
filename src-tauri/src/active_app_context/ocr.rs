@@ -14,8 +14,9 @@ use image::{ColorType, DynamicImage, ImageEncoder};
 use ocr_rs::{DetOptions, MemoryMode, OcrEngine, OcrEngineConfig};
 use sha2::{Digest, Sha256};
 
-use super::model::{NormalizedRegion, OcrTextBlock};
+use super::model::{NormalizedRegion, OcrEngineKind, OcrTextBlock};
 use super::normalize::normalize_text;
+use super::windows_ocr;
 
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
@@ -51,6 +52,7 @@ enum OcrCommand {
 
 struct OcrTask {
     id: u64,
+    engine_kind: OcrEngineKind,
     submitted_at: Instant,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
@@ -147,7 +149,7 @@ fn recognize_full_window(
         .recognize_limited(image, MAX_RECOGNIZED_REGIONS)
         .map_err(|error| format!("OCR 识别失败：{error}"))?;
 
-    let mut blocks = results
+    let blocks = results
         .into_iter()
         .filter_map(|result| {
             let text = normalize_text(&result.text);
@@ -173,11 +175,16 @@ fn recognize_full_window(
             })
         })
         .collect::<Vec<_>>();
+    Ok(finalize_blocks(blocks))
+}
+
+/// 排序、去重、截断——两套引擎共用的收尾步骤，保证输出契约一致。
+fn finalize_blocks(mut blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
     sort_blocks_by_reading_order(&mut blocks);
     let mut seen = HashSet::new();
     blocks.retain(|block| seen.insert(block.text.to_lowercase()));
     blocks.truncate(MAX_BLOCKS);
-    Ok(blocks)
+    blocks
 }
 
 fn sort_blocks_by_reading_order(blocks: &mut [OcrTextBlock]) {
@@ -232,27 +239,56 @@ fn format_session_memory(memory_mb: Option<f32>) -> String {
         .unwrap_or_else(|| "不可用".into())
 }
 
+fn pipeline_output(
+    blocks: Vec<OcrTextBlock>,
+    elapsed_ms: u64,
+    model_init_ms: u64,
+    det_session_memory_mb: Option<f32>,
+    rec_session_memory_mb: Option<f32>,
+) -> OcrPipelineOutput {
+    let (text, truncated) = block_text(&blocks);
+    OcrPipelineOutput {
+        text,
+        blocks,
+        elapsed_ms,
+        model_init_ms,
+        det_session_memory_mb,
+        rec_session_memory_mb,
+        truncated,
+    }
+}
+
 fn run_full_window_inner(
     engine: &EngineState,
     image: &DynamicImage,
 ) -> Result<OcrPipelineOutput, String> {
     let started = Instant::now();
     let blocks = recognize_full_window(&engine.engine, image)?;
-    let (text, truncated) = block_text(&blocks);
     let (det_session_memory_mb, rec_session_memory_mb) = engine
         .engine
         .memory_usage_mb()
         .map(|(det, rec)| (Some(det), Some(rec)))
         .unwrap_or((None, None));
-    Ok(OcrPipelineOutput {
-        text,
+    Ok(pipeline_output(
         blocks,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-        model_init_ms: engine.init_ms,
+        started.elapsed().as_millis() as u64,
+        engine.init_ms,
         det_session_memory_mb,
         rec_session_memory_mb,
-        truncated,
-    })
+    ))
+}
+
+/// 系统 OCR 没有可复用的常驻模型，每次调用直接查询系统组件，无需初始化耗时统计。
+fn run_windows_ocr_inner(image: &DynamicImage) -> Result<OcrPipelineOutput, String> {
+    let started = Instant::now();
+    let blocks = finalize_blocks(windows_ocr::recognize(image)?);
+    Ok(pipeline_output(
+        blocks,
+        started.elapsed().as_millis() as u64,
+        0,
+        None,
+        None,
+    ))
 }
 
 fn worker() -> &'static Sender<OcrCommand> {
@@ -261,12 +297,13 @@ fn worker() -> &'static Sender<OcrCommand> {
         std::thread::Builder::new()
             .name("active-app-ocr".into())
             .spawn(move || {
-                let mut engine: Option<EngineState> = None;
+                // 仅 PP-OCR 需要常驻内存引擎；系统 OCR 每次调用直接查询系统组件，不在此处缓存状态。
+                let mut ppocr_engine: Option<EngineState> = None;
                 while let Ok(command) = receiver.recv() {
                     let task = match command {
                         OcrCommand::Release => {
                             RELEASE_REQUESTED.store(false, Ordering::Release);
-                            if engine.take().is_some() {
+                            if ppocr_engine.take().is_some() {
                                 OCR_ENGINE_LOADED.store(false, Ordering::Release);
                                 crate::development_debug_log(
                                     "active-app-ocr",
@@ -277,7 +314,7 @@ fn worker() -> &'static Sender<OcrCommand> {
                         }
                         OcrCommand::Shutdown => {
                             RELEASE_REQUESTED.store(false, Ordering::Release);
-                            engine.take();
+                            ppocr_engine.take();
                             OCR_ENGINE_LOADED.store(false, Ordering::Release);
                             break;
                         }
@@ -294,32 +331,39 @@ fn worker() -> &'static Sender<OcrCommand> {
                     crate::development_debug_log(
                         "active-app-ocr",
                         format_args!(
-                            "任务 #{} 开始：排队 {} ms，图片 {}×{}",
+                            "任务 #{} 开始：引擎 {:?}，排队 {} ms，图片 {}×{}",
                             task.id,
+                            task.engine_kind,
                             task.submitted_at.elapsed().as_millis(),
                             task.image.width(),
                             task.image.height(),
                         ),
                     );
-                    if engine.is_some() {
+                    if task.engine_kind == OcrEngineKind::PpOcr && ppocr_engine.is_some() {
                         crate::development_debug_log(
                             "active-app-ocr",
                             "复用已初始化的 PP-OCR 内存引擎",
                         );
                     }
-                    let result = catch_unwind(AssertUnwindSafe(|| {
-                        if engine.is_none() {
-                            engine = Some(build_engine()?);
-                            OCR_ENGINE_LOADED.store(true, Ordering::Release);
+                    let result = catch_unwind(AssertUnwindSafe(|| match task.engine_kind {
+                        OcrEngineKind::PpOcr => {
+                            if ppocr_engine.is_none() {
+                                ppocr_engine = Some(build_engine()?);
+                                OCR_ENGINE_LOADED.store(true, Ordering::Release);
+                            }
+                            run_full_window_inner(
+                                ppocr_engine.as_ref().expect("engine initialized"),
+                                &task.image,
+                            )
                         }
-                        run_full_window_inner(engine.as_ref().expect("engine initialized"), &task.image)
+                        OcrEngineKind::System => run_windows_ocr_inner(&task.image),
                     }))
                     .unwrap_or_else(|_| Err("OCR 内部处理异常，已跳过本次识别".into()));
                     match &result {
                         Ok(output) => crate::development_debug_log(
                             "active-app-ocr",
                             format_args!(
-                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）；MNN 会话内存：检测 {} MiB，识别 {} MiB\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
+                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）；会话内存：检测 {} MiB，识别 {} MiB\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
                                 task.id,
                                 output.elapsed_ms,
                                 output.blocks.len(),
@@ -336,7 +380,8 @@ fn worker() -> &'static Sender<OcrCommand> {
                         ),
                     }
                     let _ = task.reply.send(result);
-                    if RELEASE_REQUESTED.swap(false, Ordering::AcqRel) && engine.take().is_some() {
+                    if RELEASE_REQUESTED.swap(false, Ordering::AcqRel) && ppocr_engine.take().is_some()
+                    {
                         OCR_ENGINE_LOADED.store(false, Ordering::Release);
                         crate::development_debug_log(
                             "active-app-ocr",
@@ -351,6 +396,7 @@ fn worker() -> &'static Sender<OcrCommand> {
 }
 
 pub(crate) fn run_full_window(
+    engine_kind: OcrEngineKind,
     image: DynamicImage,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
@@ -370,7 +416,7 @@ pub(crate) fn run_full_window(
     crate::development_debug_log(
         "active-app-ocr",
         format_args!(
-            "任务 #{id} 已提交：图片 {}×{}，等待上限 {} ms",
+            "任务 #{id} 已提交：引擎 {engine_kind:?}，图片 {}×{}，等待上限 {} ms",
             image.width(),
             image.height(),
             timeout.as_millis(),
@@ -379,6 +425,7 @@ pub(crate) fn run_full_window(
     if worker()
         .send(OcrCommand::Recognize(OcrTask {
             id,
+            engine_kind,
             submitted_at,
             deadline,
             cancelled: Arc::clone(&cancelled),

@@ -48,7 +48,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
-        let (blocked_apps, method) = state
+        let (blocked_apps, method, ocr_engine) = state
             .app_settings
             .lock()
             .ok()
@@ -66,7 +66,11 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                     crate::application::dictation::active_app_context_extraction_method_from_value(
                         &settings.dictation_prefs,
                     );
-                (blocked_apps, method)
+                let ocr_engine =
+                    crate::application::dictation::active_app_context_ocr_engine_from_value(
+                        &settings.dictation_prefs,
+                    );
+                (blocked_apps, method, ocr_engine)
             })
             .unwrap_or_default();
         let handle = state.active_app_context.begin_debug_capture(
@@ -74,6 +78,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
             blocked_apps,
             debug_window_handle,
             method,
+            ocr_engine,
         );
         let context = state.active_app_context.resolve(handle).await;
         if DEBUG_CAPTURE_EPOCH.load(Ordering::Acquire) != epoch {

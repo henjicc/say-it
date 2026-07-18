@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::model::{
     ActivationTarget, ActiveAppContextExtractionMethod, CaptureOptions, CaptureStatus,
-    CapturedActiveAppContext, ContextSource,
+    CapturedActiveAppContext, ContextSource, OcrEngineKind,
 };
 use super::normalize::{enforce_total_budget, normalize_text};
 use super::{native_probe, ocr, screen_capture, ActiveAppContextProvider};
@@ -148,6 +148,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                         options.occluding_window_handle,
                         options.deadline,
                         cancelled,
+                        options.ocr_engine,
                     ) {
                         Ok(()) if context.ocr_text.is_empty() => {
                             context
@@ -216,6 +217,7 @@ fn capture_and_recognize(
     occluding_window_handle: Option<isize>,
     deadline: Instant,
     cancelled: &Arc<AtomicBool>,
+    ocr_engine: OcrEngineKind,
 ) -> Result<(), String> {
     let captured = screen_capture::capture_window(window_handle, occluding_window_handle)?;
     crate::development_debug_log(
@@ -235,7 +237,8 @@ fn capture_and_recognize(
     if cancelled.load(Ordering::Acquire) {
         return Err("上下文捕获已取消".into());
     }
-    let output_result = ocr::run_full_window(captured.image, deadline, Arc::clone(cancelled));
+    let output_result =
+        ocr::run_full_window(ocr_engine, captured.image, deadline, Arc::clone(cancelled));
     if let Some(image) = debug_image {
         context.screenshot_data_url = ocr::png_data_url(&image).ok();
     }

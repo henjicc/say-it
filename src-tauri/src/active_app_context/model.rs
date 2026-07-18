@@ -38,6 +38,28 @@ impl ActiveAppContextExtractionMethod {
     }
 }
 
+/// 仅在 `ActiveAppContextExtractionMethod::Ocr` 下生效：选择具体的窗口 OCR 实现。
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum OcrEngineKind {
+    #[default]
+    System,
+    PpOcr,
+}
+
+impl<'de> Deserialize<'de> for OcrEngineKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            Some("ppocr") => Self::PpOcr,
+            _ => Self::System,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActivationTarget {
     pub(crate) window_handle: isize,
@@ -54,23 +76,31 @@ pub(crate) struct CaptureOptions {
     pub(crate) debug: bool,
     pub(crate) occluding_window_handle: Option<isize>,
     pub(crate) method: ActiveAppContextExtractionMethod,
+    pub(crate) ocr_engine: OcrEngineKind,
 }
 
 impl CaptureOptions {
-    pub(crate) fn for_method(method: ActiveAppContextExtractionMethod) -> Self {
+    pub(crate) fn for_method(
+        method: ActiveAppContextExtractionMethod,
+        ocr_engine: OcrEngineKind,
+    ) -> Self {
         Self {
             deadline: Instant::now() + method.timeout(),
             max_chars: DEFAULT_MAX_CHARS,
             debug: false,
             occluding_window_handle: None,
             method,
+            ocr_engine,
         }
     }
 }
 
 impl Default for CaptureOptions {
     fn default() -> Self {
-        Self::for_method(ActiveAppContextExtractionMethod::default())
+        Self::for_method(
+            ActiveAppContextExtractionMethod::default(),
+            OcrEngineKind::default(),
+        )
     }
 }
 
