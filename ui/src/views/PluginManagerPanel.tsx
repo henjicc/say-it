@@ -7,13 +7,12 @@ import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import {
-  installPluginPackage,
   refreshPluginConsumers,
-  requiresExplicitTrust,
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
+import { usePluginImportStore } from "@/store/usePluginImportStore";
 
 const TRUST_LABEL: Record<PluginSummary["trust"], string> = {
   trusted: "签名可信",
@@ -48,6 +47,7 @@ export function PluginManagerPanel() {
   const [message, setMessage] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
+  const enqueueImport = usePluginImportStore((state) => state.enqueue);
 
   const loadSnapshot = async () => {
     const next = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
@@ -78,6 +78,9 @@ export function PluginManagerPanel() {
     void on<{ extractedBytes: number; totalBytes: number }>(EVT.pluginInstallProgress, (event) => {
       setMessage(`正在安装：${formatBytes(event.extractedBytes)} / ${formatBytes(event.totalBytes)}`);
     }).then(keepListener);
+    void on(EVT.pluginRegistryChanged, () => {
+      void loadSnapshot().catch((error) => setMessage(`刷新插件列表失败：${String(error)}`));
+    }).then(keepListener);
     return () => {
       disposed = true;
       unlisteners.forEach((stop) => stop());
@@ -97,37 +100,13 @@ export function PluginManagerPanel() {
     }
   };
 
-  const installFromPath = async (sourcePath: string) => {
-    setMessage("");
-    try {
-      const next = await installPluginPackage(sourcePath, { allowUnsigned: false, trustSigningKey: false });
-      setSnapshot(next);
-      await loadSnapshot();
-      setMessage("插件已安装并加载。");
-    } catch (error) {
-      const reason = String(error);
-      if (!requiresExplicitTrust(error) || !window.confirm(`${reason}\n\n确认信任此来源并继续安装吗？`)) {
-        setMessage(`安装失败：${reason}`);
-        return;
-      }
-      try {
-        const next = await installPluginPackage(sourcePath, { allowUnsigned: true, trustSigningKey: true });
-        setSnapshot(next);
-        await loadSnapshot();
-        setMessage("插件已在明确授权后安装。");
-      } catch (retryError) {
-        setMessage(`安装失败：${String(retryError)}`);
-      }
-    }
-  };
-
   const install = async () => {
     const selected = await open({
       multiple: false,
       title: "选择说吧插件或模型包",
       filters: [{ name: "说吧 .sayit 包", extensions: ["sayit"] }],
     });
-    if (typeof selected === "string") await installFromPath(selected);
+    if (typeof selected === "string") enqueueImport([selected]);
   };
 
   const setEnabled = async (plugin: PluginSummary, enabled: boolean) => {

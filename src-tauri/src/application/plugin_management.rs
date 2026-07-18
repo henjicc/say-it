@@ -1,6 +1,6 @@
 use crate::persistence::save_persisted_state;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::commands::common::read_provider_settings;
 use crate::providers::browser_session_capture::{
@@ -17,6 +17,71 @@ use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const BROWSER_SYNC_TIMEOUT_MS: u64 = 3_000;
 const CAPTURE_SYNC_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const PLUGIN_IMPORT_REQUESTED_EVENT: &str = "provider-plugin-import-requested";
+
+fn sayit_paths_from_args(args: &[String], cwd: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    for argument in args {
+        let candidate = PathBuf::from(argument);
+        if !candidate
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(plugin_package::SAYIT_PACKAGE_EXTENSION))
+        {
+            continue;
+        }
+        let candidate = if candidate.is_absolute() {
+            candidate
+        } else {
+            cwd.join(candidate)
+        };
+        let Ok(candidate) = candidate.canonicalize() else {
+            continue;
+        };
+        if !candidate.is_file() {
+            continue;
+        }
+        let value = candidate.to_string_lossy().into_owned();
+        if !paths.contains(&value) {
+            paths.push(value);
+        }
+    }
+    paths
+}
+
+pub(crate) fn queue_provider_plugin_imports(
+    app: &tauri::AppHandle,
+    args: &[String],
+    cwd: &Path,
+) -> Result<usize, String> {
+    let paths = sayit_paths_from_args(args, cwd);
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let state = app.state::<RuntimeState>();
+    let mut pending = state
+        .pending_plugin_imports
+        .lock()
+        .map_err(|_| "待导入说吧包队列锁失败".to_string())?;
+    let mut added = 0;
+    for path in paths {
+        if !pending.contains(&path) {
+            pending.push_back(path);
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
+#[tauri::command]
+pub(crate) fn take_pending_provider_plugin_imports(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<Vec<String>, String> {
+    let mut pending = state
+        .pending_plugin_imports
+        .lock()
+        .map_err(|_| "待导入说吧包队列锁失败".to_string())?;
+    Ok(pending.drain(..).collect())
+}
 
 pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     let registry = load_registry(app)?;
@@ -86,6 +151,7 @@ pub(crate) fn reload_provider_plugins(
 pub(crate) async fn install_provider_plugin(
     app: tauri::AppHandle,
     source_path: String,
+    expected_archive_sha256: Option<String>,
     allow_unsigned: bool,
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
@@ -95,6 +161,7 @@ pub(crate) async fn install_provider_plugin(
         plugin_package::install_from_path(
             &install_app,
             Path::new(&source_path),
+            expected_archive_sha256.as_deref(),
             allow_unsigned,
             trust_signing_key,
         )
@@ -102,6 +169,18 @@ pub(crate) async fn install_provider_plugin(
     .await
     .map_err(|error| format!("插件安装任务失败：{error}"))??;
     reload_provider_plugins(app, state)
+}
+
+#[tauri::command]
+pub(crate) async fn preview_provider_plugin(
+    app: tauri::AppHandle,
+    source_path: String,
+) -> Result<plugin_package::PackagePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        plugin_package::preview_from_path(&app, Path::new(&source_path))
+    })
+    .await
+    .map_err(|error| format!("插件包预览任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -561,4 +640,57 @@ fn now_epoch_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sayit_args_resolve_relative_paths_and_ignore_other_inputs() {
+        let root = std::env::temp_dir().join(format!(
+            "sayit-import-args-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let package = root.join("demo.SAYIT");
+        std::fs::write(&package, b"package").unwrap();
+
+        let paths = sayit_paths_from_args(
+            &[
+                "say-it.exe".into(),
+                "demo.SAYIT".into(),
+                "missing.sayit".into(),
+                "notes.txt".into(),
+            ],
+            &root,
+        );
+
+        assert_eq!(
+            paths,
+            vec![package
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sayit_args_deduplicate_the_same_file() {
+        let root = std::env::temp_dir().join(format!(
+            "sayit-import-args-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let package = root.join("demo.sayit");
+        std::fs::write(&package, b"package").unwrap();
+
+        let value = package.to_string_lossy().into_owned();
+        let paths = sayit_paths_from_args(&[value.clone(), value], &root);
+
+        assert_eq!(paths.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

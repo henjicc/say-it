@@ -24,6 +24,14 @@
   "bundle": {
     "active": true,
     "publisher": "痕继痕迹",
+    "fileAssociations": [
+      {
+        "ext": ["sayit"],
+        "name": "说吧！扩展包",
+        "description": "说吧！供应商插件或本地模型包",
+        "mimeType": "application/x-sayit-package"
+      }
+    ],
     "externalBin": ["binaries/context-probe"],
     "resources": [
       "resources/licenses/*"

@@ -43,7 +43,7 @@ export async function refreshPluginConsumers() {
 
 export async function installPluginPackage(
   sourcePath: string,
-  options: { allowUnsigned: boolean; trustSigningKey: boolean },
+  options: { allowUnsigned: boolean; trustSigningKey: boolean; expectedArchiveSha256?: string },
 ) {
   const snapshot = await cmd<PluginSnapshot>(CMD.installProviderPlugin, {
     sourcePath,
