@@ -27,6 +27,8 @@ pub struct PluginManifest {
     pub models: Vec<ModelInfo>,
     pub runtime: PluginRuntimeManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_pack: Option<ModelPackManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_session: Option<PluginBrowserSessionManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integrity: Option<PluginIntegrityManifest>,
@@ -111,13 +113,39 @@ pub struct PluginProviderManifest {
 pub struct PluginRuntimeManifest {
     #[serde(default = "default_runtime_kind")]
     pub kind: String,
-    pub entrypoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
     #[serde(default = "default_host_api_version")]
     pub host_api_version: u32,
     #[serde(default)]
     pub permissions: Vec<String>,
     #[serde(default)]
     pub network: PluginNetworkManifest,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPackManifest {
+    pub engine: String,
+    pub files: Vec<ModelPackFileManifest>,
+    #[serde(default)]
+    pub params: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPackFileManifest {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<ModelPackDownloadManifest>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPackDownloadManifest {
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -172,6 +200,29 @@ pub struct PluginSummary {
     pub actions: Vec<String>,
     pub has_browser_session: bool,
     pub enabled: bool,
+    pub runtime_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_pack: Option<ModelPackSummary>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalModelSpec {
+    pub plugin_id: String,
+    pub provider_id: String,
+    pub engine: String,
+    pub model_dir: PathBuf,
+    pub files: Vec<ModelPackFileManifest>,
+    pub params: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPackSummary {
+    pub engine: String,
+    pub state: String,
+    pub total_bytes: u64,
+    pub ready_bytes: u64,
+    pub downloadable: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -276,7 +327,11 @@ fn load_manifest(
     let manifest: PluginManifest =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
     validate_manifest(plugin_root, &manifest)?;
-    let trust = super::plugin_package::verify_installation(plugin_root, &manifest, trusted)?;
+    let trust = if manifest.runtime.kind == "model-pack" {
+        super::plugin_package::verify_installed_model_pack(plugin_root, &manifest, trusted)?
+    } else {
+        super::plugin_package::verify_installation(plugin_root, &manifest, trusted)?
+    };
     Ok(InstalledPlugin {
         root: plugin_root.to_path_buf(),
         manifest,
@@ -347,10 +402,24 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             return Err(format!("插件操作重复：{action}"));
         }
     }
-    if manifest.runtime.kind != "javascript" {
+    if !matches!(manifest.runtime.kind.as_str(), "javascript" | "model-pack") {
         return Err(format!("不支持的插件运行时：{}", manifest.runtime.kind));
     }
-    if manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
+    if manifest.runtime.kind == "model-pack"
+        && (manifest.provider.capabilities.is_empty()
+            || manifest
+                .provider
+                .capabilities
+                .iter()
+                .any(|capability| !matches!(capability.as_str(), "asr" | "ocr")))
+    {
+        return Err("模型包能力只允许 asr 或 ocr".into());
+    }
+    let is_model_pack = manifest.runtime.kind == "model-pack";
+    if is_model_pack && manifest.api_version < 4 {
+        return Err("model-pack 运行时需要插件 API 版本 4".into());
+    }
+    if !is_model_pack && manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
         return Err(format!(
             "不支持的宿主 API 版本：{}",
             manifest.runtime.host_api_version
@@ -364,6 +433,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             return Err("localNetwork 权限需要插件 API 版本 4".into());
         }
     }
+    if is_model_pack && !manifest.runtime.permissions.is_empty() {
+        return Err("模型包不得声明任何运行时权限".into());
+    }
     if manifest
         .runtime
         .permissions
@@ -375,6 +447,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     }
     for host in &manifest.runtime.network.allowed_hosts {
         validate_allowed_host(host)?;
+    }
+    if is_model_pack && manifest.browser_session.is_some() {
+        return Err("模型包不得声明 browserSession".into());
     }
     if let Some(browser) = &manifest.browser_session {
         if !manifest
@@ -399,9 +474,7 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         }
         let mut required_cookie_names = HashSet::new();
         for name in &browser.required_cookie_names {
-            if !valid_cookie_name(name)
-                || !required_cookie_names.insert(name)
-            {
+            if !valid_cookie_name(name) || !required_cookie_names.insert(name) {
                 return Err(format!(
                     "browserSession.requiredCookieNames 包含非法或重复 Cookie 名：{name}"
                 ));
@@ -434,22 +507,37 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             }
         }
     }
-    let entrypoint = safe_entrypoint(root, &manifest.runtime.entrypoint)?;
-    if !entrypoint.is_file() {
-        return Err(format!("插件入口不存在：{}", entrypoint.display()));
-    }
-    if !matches!(
-        entrypoint.extension().and_then(|value| value.to_str()),
-        Some("js" | "mjs")
-    ) {
-        return Err("JavaScript 插件入口必须使用 .js 或 .mjs 后缀".into());
-    }
-    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
-    let canonical_entrypoint = entrypoint
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !canonical_entrypoint.starts_with(&canonical_root) {
-        return Err("插件入口不能通过符号链接跳出插件目录".into());
+    if is_model_pack {
+        if manifest.runtime.entrypoint.is_some() {
+            return Err("模型包不得声明 entrypoint".into());
+        }
+        validate_model_pack(root, manifest)?;
+    } else {
+        if manifest.model_pack.is_some() {
+            return Err("JavaScript 插件不得声明 modelPack".into());
+        }
+        let entrypoint = manifest
+            .runtime
+            .entrypoint
+            .as_deref()
+            .ok_or("JavaScript 插件必须声明 entrypoint")?;
+        let entrypoint = safe_entrypoint(root, entrypoint)?;
+        if !entrypoint.is_file() {
+            return Err(format!("插件入口不存在：{}", entrypoint.display()));
+        }
+        if !matches!(
+            entrypoint.extension().and_then(|value| value.to_str()),
+            Some("js" | "mjs")
+        ) {
+            return Err("JavaScript 插件入口必须使用 .js 或 .mjs 后缀".into());
+        }
+        let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+        let canonical_entrypoint = entrypoint
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !canonical_entrypoint.starts_with(&canonical_root) {
+            return Err("插件入口不能通过符号链接跳出插件目录".into());
+        }
     }
     // OCR 能力按供应商而非模型选择，纯 OCR 插件允许不声明模型；其余能力仍要求至少一个模型。
     let ocr_only = manifest
@@ -477,50 +565,210 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                 model.id, manifest.provider.id
             ));
         }
-        let valid_model = match model.category.as_str() {
-            "realtime" => {
-                manifest
-                    .provider
-                    .capabilities
-                    .iter()
-                    .any(|value| value == "asr")
-                    && model.protocol == "plugin-realtime-v1"
-                    && model
-                        .scenes
+        let valid_model =
+            if is_model_pack {
+                match manifest
+                    .model_pack
+                    .as_ref()
+                    .map(|pack| pack.engine.as_str())
+                {
+                    Some("sherpa-onnx-online") => {
+                        model.category == "realtime"
+                            && model.protocol == "local-sherpa-online"
+                            && model
+                                .scenes
+                                .iter()
+                                .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
+                    }
+                    Some("sherpa-onnx-offline") => {
+                        matches!(model.category.as_str(), "realtime" | "file")
+                            && model.protocol == "local-sherpa-offline"
+                            && match model.category.as_str() {
+                                "realtime" => model.scenes.iter().any(|scene| {
+                                    scene == "dictationRealtime" || scene == "subtitles"
+                                }),
+                                "file" => model.scenes.iter().any(|scene| {
+                                    scene == "dictationFile" || scene == "transcription"
+                                }),
+                                _ => false,
+                            }
+                    }
+                    Some("ppocr-mnn") => manifest
+                        .provider
+                        .capabilities
                         .iter()
-                        .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
-            }
-            "file" => {
-                manifest
-                    .provider
-                    .capabilities
-                    .iter()
-                    .any(|value| value == "asr")
-                    && model.protocol == "plugin-file-v1"
-                    && model
-                        .scenes
-                        .iter()
-                        .any(|scene| scene == "dictationFile" || scene == "transcription")
-            }
-            "translation" => {
-                manifest
-                    .provider
-                    .capabilities
-                    .iter()
-                    .any(|value| value == "translation")
-                    && model.protocol == "plugin-translation-v1"
-                    && model
-                        .scenes
-                        .iter()
-                        .any(|scene| scene == "subtitleTranslation")
-            }
-            _ => false,
-        };
+                        .any(|value| value == "ocr"),
+                    _ => false,
+                }
+            } else {
+                match model.category.as_str() {
+                    "realtime" => {
+                        manifest
+                            .provider
+                            .capabilities
+                            .iter()
+                            .any(|value| value == "asr")
+                            && model.protocol == "plugin-realtime-v1"
+                            && model
+                                .scenes
+                                .iter()
+                                .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
+                    }
+                    "file" => {
+                        manifest
+                            .provider
+                            .capabilities
+                            .iter()
+                            .any(|value| value == "asr")
+                            && model.protocol == "plugin-file-v1"
+                            && model
+                                .scenes
+                                .iter()
+                                .any(|scene| scene == "dictationFile" || scene == "transcription")
+                    }
+                    "translation" => {
+                        manifest
+                            .provider
+                            .capabilities
+                            .iter()
+                            .any(|value| value == "translation")
+                            && model.protocol == "plugin-translation-v1"
+                            && model
+                                .scenes
+                                .iter()
+                                .any(|scene| scene == "subtitleTranslation")
+                    }
+                    _ => false,
+                }
+            };
         if !valid_model {
             return Err(format!("模型 {} 的类别、协议或场景组合不受支持", model.id));
         }
     }
     Ok(())
+}
+
+fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
+    let pack = manifest
+        .model_pack
+        .as_ref()
+        .ok_or("模型包缺少 modelPack 配置")?;
+    if !matches!(
+        pack.engine.as_str(),
+        "sherpa-onnx-online" | "sherpa-onnx-offline" | "ppocr-mnn"
+    ) {
+        return Err(format!(
+            "当前版本不支持模型引擎：{}；请升级软件",
+            pack.engine
+        ));
+    }
+    if !pack.params.is_object() {
+        return Err("modelPack.params 必须是 JSON 对象".into());
+    }
+    if pack.files.is_empty() {
+        return Err("modelPack.files 不能为空".into());
+    }
+    if !manifest.provider.actions.is_empty()
+        || !manifest.provider.config_fields.is_empty()
+        || manifest
+            .provider
+            .config
+            .as_object()
+            .is_some_and(|value| !value.is_empty())
+    {
+        return Err("模型包不得声明操作或供应商配置".into());
+    }
+    let mut paths = HashSet::new();
+    for file in &pack.files {
+        let relative = safe_model_file_path(&file.path)?;
+        if !paths.insert(file.path.clone()) {
+            return Err(format!("模型文件路径重复：{}", file.path));
+        }
+        if file.size_bytes == 0 {
+            return Err(format!("模型文件大小必须大于 0：{}", file.path));
+        }
+        if file.sha256.len() != 64 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("模型文件 SHA256 非法：{}", file.path));
+        }
+        let embedded = root.join(&relative);
+        let installed = models_dir_from_plugin_root(root)
+            .join(&manifest.id)
+            .join(&relative);
+        let installed_ready = installed.is_file()
+            && super::model_download::verify_model_file(&installed, file).is_ok();
+        if !embedded.is_file() && !installed_ready && file.download.is_none() {
+            return Err(format!("模型文件既未内嵌也未提供下载地址：{}", file.path));
+        }
+        if let Some(download) = &file.download {
+            let url = url::Url::parse(&download.url)
+                .map_err(|error| format!("模型下载 URL 非法：{error}"))?;
+            if url.scheme() != "https" || url.host_str().is_none() {
+                return Err(format!("模型下载地址必须为 HTTPS：{}", file.path));
+            }
+        }
+    }
+    let required_params: &[&str] = match pack.engine.as_str() {
+        "sherpa-onnx-online" => &["encoder", "decoder", "tokens"],
+        "sherpa-onnx-offline" => &["model", "tokens", "vadModel"],
+        "ppocr-mnn" => &[],
+        _ => unreachable!(),
+    };
+    for key in required_params {
+        let path = pack
+            .params
+            .get(*key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("modelPack.params 缺少文件参数：{key}"))?;
+        if !paths.contains(path) {
+            return Err(format!("modelPack.params.{key} 指向未声明文件：{path}"));
+        }
+    }
+    fn visit(root: &Path, directory: &Path, actual: &mut HashSet<String>) -> Result<(), String> {
+        for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_symlink() {
+                return Err("模型包不能包含符号链接".into());
+            }
+            if kind.is_dir() {
+                visit(root, &entry.path(), actual)?;
+            } else if kind.is_file() {
+                let relative = entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|error| error.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !matches!(relative.as_str(), "manifest.json" | "sayit-package.json") {
+                    actual.insert(relative);
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut actual = HashSet::new();
+    visit(root, root, &mut actual)?;
+    if let Some(unexpected) = actual.difference(&paths).next() {
+        return Err(format!("模型包包含未声明的数据或代码文件：{unexpected}"));
+    }
+    Ok(())
+}
+
+pub(crate) fn safe_model_file_path(value: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(value);
+    if value.trim().is_empty()
+        || value.contains('\\')
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!("模型文件必须使用包内相对路径：{value}"));
+    }
+    Ok(relative.to_path_buf())
 }
 
 fn valid_cookie_name(name: &str) -> bool {
@@ -569,7 +817,9 @@ fn validate_captured_url_cookie(capture: &PluginCapturedUrlCookieManifest) -> Re
         || capture.url.path.contains('?')
         || capture.url.path.contains('#')
     {
-        return Err("browserSession.capturedUrlCookie.url.path 必须是不含查询参数的绝对路径".into());
+        return Err(
+            "browserSession.capturedUrlCookie.url.path 必须是不含查询参数的绝对路径".into(),
+        );
     }
     let mut query_names = HashSet::new();
     for name in &capture.url.required_query_names {
@@ -700,6 +950,19 @@ impl PluginRegistry {
                         })
                         .map(|profile| profile.enabled)
                         .unwrap_or(true),
+                    runtime_kind: plugin.manifest.runtime.kind.clone(),
+                    model_pack: plugin.manifest.model_pack.as_ref().map(|pack| {
+                        let model_dir =
+                            models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id);
+                        let status = super::model_download::inspect_pack(&model_dir, pack);
+                        ModelPackSummary {
+                            engine: pack.engine.clone(),
+                            state: status.state,
+                            total_bytes: status.total_bytes,
+                            ready_bytes: status.ready_bytes,
+                            downloadable: pack.files.iter().any(|file| file.download.is_some()),
+                        }
+                    }),
                 })
                 .collect(),
             errors: self.errors.clone(),
@@ -731,10 +994,19 @@ impl PluginRegistry {
         else {
             return Ok(None);
         };
+        if plugin.manifest.runtime.kind != "javascript" {
+            return Ok(None);
+        }
+        let entrypoint = plugin
+            .manifest
+            .runtime
+            .entrypoint
+            .as_deref()
+            .ok_or("JavaScript 插件缺少 entrypoint")?;
         Ok(Some(PluginRuntimeSpec {
             plugin_id: plugin.manifest.id.clone(),
             root: plugin.root.clone(),
-            entrypoint: safe_entrypoint(&plugin.root, &plugin.manifest.runtime.entrypoint)?,
+            entrypoint: safe_entrypoint(&plugin.root, entrypoint)?,
             permissions: plugin.manifest.runtime.permissions.clone(),
             allowed_hosts: plugin.manifest.runtime.network.allowed_hosts.clone(),
             browser_session: plugin.manifest.browser_session.clone(),
@@ -747,6 +1019,41 @@ impl PluginRegistry {
                 .join(&plugin.manifest.id),
             trust: plugin.trust.clone(),
         }))
+    }
+
+    pub fn local_model_for_model(&self, model_id: &str) -> Option<LocalModelSpec> {
+        let plugin = self.plugins.iter().find(|plugin| {
+            plugin.manifest.runtime.kind == "model-pack"
+                && plugin
+                    .manifest
+                    .models
+                    .iter()
+                    .any(|model| model.id == model_id.trim())
+        })?;
+        let pack = plugin.manifest.model_pack.as_ref()?;
+        Some(LocalModelSpec {
+            plugin_id: plugin.manifest.id.clone(),
+            provider_id: plugin.manifest.provider.id.clone(),
+            engine: pack.engine.clone(),
+            model_dir: models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id),
+            files: pack.files.clone(),
+            params: pack.params.clone(),
+        })
+    }
+
+    pub fn model_pack_for_plugin(&self, plugin_id: &str) -> Option<LocalModelSpec> {
+        let plugin = self.plugins.iter().find(|plugin| {
+            plugin.manifest.id == plugin_id && plugin.manifest.runtime.kind == "model-pack"
+        })?;
+        let pack = plugin.manifest.model_pack.as_ref()?;
+        Some(LocalModelSpec {
+            plugin_id: plugin.manifest.id.clone(),
+            provider_id: plugin.manifest.provider.id.clone(),
+            engine: pack.engine.clone(),
+            model_dir: models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id),
+            files: pack.files.clone(),
+            params: pack.params.clone(),
+        })
     }
 
     pub fn browser_for_provider(&self, provider_id: &str) -> Option<PluginBrowserSessionManifest> {
@@ -766,14 +1073,17 @@ impl PluginRegistry {
     pub fn runtime_for_provider_id_by_plugin(
         &self,
         plugin_id: &str,
-    ) -> Result<Option<(String, PluginRuntimeSpec)>, String> {
-        let Some(plugin) = self.plugins.iter().find(|plugin| plugin.manifest.id == plugin_id) else {
+    ) -> Result<Option<(String, Option<PluginRuntimeSpec>)>, String> {
+        let Some(plugin) = self
+            .plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == plugin_id)
+        else {
             return Ok(None);
         };
         let provider_id = plugin.manifest.provider.id.clone();
-        Ok(self
-            .runtime_for_provider(&provider_id)?
-            .map(|spec| (provider_id, spec)))
+        let spec = self.runtime_for_provider(&provider_id)?;
+        Ok(Some((provider_id, spec)))
     }
 
     pub fn merge_provider_profiles(&self, settings: &mut ProviderSettings) {
@@ -783,19 +1093,26 @@ impl PluginRegistry {
             .map(|plugin| (plugin.manifest.provider.id.clone(), plugin))
             .collect();
         for profile in &mut settings.profiles {
-            if profile.kind.starts_with("plugin:") && !installed.contains_key(&profile.id) {
+            if (profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
+                && !installed.contains_key(&profile.id)
+            {
                 profile.enabled = false;
             }
         }
         for (provider_id, plugin) in installed {
             let provider = &plugin.manifest.provider;
+            let profile_kind = if plugin.manifest.runtime.kind == "model-pack" {
+                format!("model-pack:{}", plugin.manifest.id)
+            } else {
+                format!("plugin:{}", plugin.manifest.id)
+            };
             match settings
                 .profiles
                 .iter_mut()
                 .find(|profile| profile.id == provider_id)
             {
                 Some(profile) => {
-                    profile.kind = format!("plugin:{}", plugin.manifest.id);
+                    profile.kind = profile_kind.clone();
                     profile.display_name = provider.display_name.clone();
                     profile.auth_kind = provider.auth_kind.clone();
                     profile.capabilities = provider.capabilities.clone();
@@ -805,7 +1122,7 @@ impl PluginRegistry {
                 }
                 None => settings.profiles.push(ProviderProfile {
                     id: provider.id.clone(),
-                    kind: format!("plugin:{}", plugin.manifest.id),
+                    kind: profile_kind,
                     display_name: provider.display_name.clone(),
                     auth_kind: provider.auth_kind.clone(),
                     capabilities: provider.capabilities.clone(),
@@ -818,6 +1135,14 @@ impl PluginRegistry {
         }
         *settings = super::normalize_settings(settings.clone());
     }
+}
+
+fn models_dir_from_plugin_root(plugin_root: &Path) -> PathBuf {
+    plugin_root
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(plugin_root)
+        .join("models")
 }
 
 #[cfg(test)]
@@ -878,7 +1203,10 @@ mod tests {
         )
         .unwrap();
         let registry = load_registry_from(&root).unwrap();
-        assert_eq!(registry.snapshot_with_provider_settings(None).plugins.len(), 1);
+        assert_eq!(
+            registry.snapshot_with_provider_settings(None).plugins.len(),
+            1
+        );
         let mut settings = ProviderSettings::default();
         registry.merge_provider_profiles(&mut settings);
         {
@@ -1025,8 +1353,8 @@ mod tests {
 
     #[test]
     fn v3_plugin_cannot_declare_local_network_permission() {
-        let root = std::env::temp_dir()
-            .join(format!("sayit-plugin-localnet-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("sayit-plugin-localnet-{}", uuid::Uuid::new_v4()));
         let connector = root.join("connector");
         std::fs::create_dir_all(&connector).unwrap();
         std::fs::write(connector.join("index.js"), b"export default () => ({})").unwrap();
@@ -1069,8 +1397,7 @@ mod tests {
 
     #[test]
     fn rejects_api_version_above_current() {
-        let root =
-            std::env::temp_dir().join(format!("sayit-plugin-v5-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("sayit-plugin-v5-{}", uuid::Uuid::new_v4()));
         write_ocr_manifest(&root, 5);
         let error = validate_plugin_dir(&root).unwrap_err();
         assert!(error.contains("不支持的插件 API 版本：5"));
@@ -1085,6 +1412,79 @@ mod tests {
         std::fs::write(root.join("manifest.json"), r#"{"apiVersion":2,"id":"legacy","name":"Legacy","version":"1","provider":{"id":"legacy","displayName":"Legacy"},"models":[],"runtime":{"kind":"process","entrypoint":"connector.exe"}}"#).unwrap();
         let error = validate_plugin_dir(&root).unwrap_err();
         assert!(error.contains("旧进程插件不兼容"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn model_pack_manifest() -> Value {
+        serde_json::json!({
+            "apiVersion": 4,
+            "id": "local-paraformer",
+            "name": "Local Paraformer",
+            "version": "1.0.0",
+            "provider": {
+                "id": "local-paraformer",
+                "displayName": "Local Paraformer",
+                "capabilities": ["asr"],
+                "config": {}
+            },
+            "models": [{
+                "id": "local-paraformer-live",
+                "label": "Local Paraformer",
+                "providerId": "local-paraformer",
+                "category": "realtime",
+                "protocol": "local-sherpa-online",
+                "supportsVocabulary": false,
+                "supportsAlignmentTimestamps": false,
+                "scenes": ["dictationRealtime", "subtitles"],
+                "isDefaultRealtime": false,
+                "isDefaultFile": false
+            }],
+            "runtime": { "kind": "model-pack" },
+            "modelPack": {
+                "engine": "sherpa-onnx-online",
+                "files": [{
+                    "path": "model.bin",
+                    "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "sizeBytes": 1
+                }],
+                "params": { "encoder": "model.bin", "decoder": "model.bin", "tokens": "model.bin" }
+            }
+        })
+    }
+
+    #[test]
+    fn v4_embedded_model_pack_is_valid_without_javascript() {
+        let root = std::env::temp_dir().join(format!("sayit-model-pack-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("model.bin"), b"x").unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&model_pack_manifest()).unwrap(),
+        )
+        .unwrap();
+        let manifest = validate_plugin_dir(&root).unwrap();
+        assert_eq!(manifest.runtime.kind, "model-pack");
+        assert!(manifest.runtime.entrypoint.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_pack_rejects_code_network_and_translation() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-model-pack-bad-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("model.bin"), b"x").unwrap();
+        let mut value = model_pack_manifest();
+        value["runtime"]["entrypoint"] = Value::String("connector/index.js".into());
+        value["runtime"]["permissions"] = serde_json::json!(["network"]);
+        value["provider"]["capabilities"] = serde_json::json!(["translation"]);
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let error = validate_plugin_dir(&root).unwrap_err();
+        assert!(error.contains("模型包能力只允许 asr 或 ocr"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

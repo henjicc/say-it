@@ -5,7 +5,7 @@ use crate::application::subtitle_document::{to_srt, SubtitleCue};
 use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::capabilities::{
-    file_recognition_for_with_plugin, FileRecognitionProvider, TranscriptionParams,
+    file_recognition_for_with_extensions, FileRecognitionProvider, TranscriptionParams,
     TranscriptionTaskStatus,
 };
 use crate::state::*;
@@ -324,11 +324,16 @@ fn resolve_file_recognition_provider(
     model: &str,
 ) -> Result<FileRecognitionProvider, String> {
     let settings = read_provider_settings(state)?;
-    let plugin_model_provider = state
-        .plugin_registry
-        .lock()
-        .map_err(|_| "插件注册表锁失败".to_string())?
-        .provider_id_for_model(model);
+    let (plugin_model_provider, local_model) = {
+        let registry = state
+            .plugin_registry
+            .lock()
+            .map_err(|_| "插件注册表锁失败".to_string())?;
+        (
+            registry.provider_id_for_model(model),
+            registry.local_model_for_model(model),
+        )
+    };
     let model_provider = crate::providers::registry::model_info(model)
         .map(|model| model.provider_id.clone())
         .or(plugin_model_provider);
@@ -340,7 +345,8 @@ fn resolve_file_recognition_provider(
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider(&provider_id)?;
-    file_recognition_for_with_plugin(profile, plugin).map_err(|error| error.to_string())
+    file_recognition_for_with_extensions(profile, plugin, local_model)
+        .map_err(|error| error.to_string())
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {

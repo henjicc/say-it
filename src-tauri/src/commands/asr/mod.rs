@@ -1,4 +1,5 @@
 mod session;
+mod local_session;
 mod plugin_session;
 
 use crate::commands::common::*;
@@ -40,6 +41,27 @@ pub(crate) async fn start_asr_stream_inner(
     let profile = find_profile(&settings, &provider_id)
         .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let local_model = model_override.as_deref().and_then(|model| {
+        state
+            .plugin_registry
+            .lock()
+            .ok()
+            .and_then(|plugins| plugins.local_model_for_model(model))
+    });
+    if let Some(local_model) = local_model {
+        let model = model_override
+            .filter(|model| !model.trim().is_empty())
+            .ok_or_else(|| "本地识别必须指定模型".to_string())?;
+        return local_session::start_local_asr_stream(
+            app,
+            state,
+            local_model,
+            model,
+            sample_rate.unwrap_or(48_000),
+            params,
+        )
+        .await;
+    }
     let plugin = state
         .plugin_registry
         .lock()

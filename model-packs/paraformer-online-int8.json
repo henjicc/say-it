@@ -1,0 +1,68 @@
+{
+  "manifest": {
+    "apiVersion": 4,
+    "id": "official.sherpa-paraformer-online",
+    "name": "Paraformer Online 中英双语 INT8",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-paraformer",
+      "displayName": "本地 Paraformer",
+      "authKind": "none",
+      "capabilities": ["asr"],
+      "config": {}
+    },
+    "models": [
+      {
+        "id": "local-paraformer-online-int8",
+        "label": "Paraformer Online 中英双语 INT8",
+        "providerId": "local-paraformer",
+        "category": "realtime",
+        "protocol": "local-sherpa-online",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": false,
+        "scenes": ["dictationRealtime", "subtitles"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      }
+    ],
+    "runtime": { "kind": "model-pack" },
+    "modelPack": {
+      "engine": "sherpa-onnx-online",
+      "files": [
+        {
+          "path": "encoder.int8.onnx",
+          "sha256": "81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a",
+          "sizeBytes": 165462184,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/encoder.int8.onnx" }
+        },
+        {
+          "path": "decoder.int8.onnx",
+          "sha256": "f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f",
+          "sizeBytes": 71664561,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/decoder.int8.onnx" }
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6",
+          "sizeBytes": 75756,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/tokens.txt" }
+        }
+      ],
+      "params": {
+        "encoder": "encoder.int8.onnx",
+        "decoder": "decoder.int8.onnx",
+        "tokens": "tokens.txt",
+        "numThreads": 2,
+        "decodingMethod": "greedy_search",
+        "rule1MinTrailingSilence": 2.4,
+        "rule2MinTrailingSilence": 1.2,
+        "rule3MinUtteranceLength": 20.0
+      }
+    }
+  },
+  "sources": {
+    "encoder.int8.onnx": "files/paraformer-online/encoder.int8.onnx",
+    "decoder.int8.onnx": "files/paraformer-online/decoder.int8.onnx",
+    "tokens.txt": "files/paraformer-online/tokens.txt"
+  }
+}

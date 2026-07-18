@@ -14,6 +14,14 @@ export interface PluginSummary {
   actions: string[];
   hasBrowserSession: boolean;
   enabled: boolean;
+  runtimeKind: "javascript" | "model-pack";
+  modelPack?: {
+    engine: string;
+    state: "pending" | "partial" | "corrupt" | "downloading" | "ready";
+    totalBytes: number;
+    readyBytes: number;
+    downloadable: boolean;
+  };
 }
 
 export interface PluginSnapshot {

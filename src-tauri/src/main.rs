@@ -36,8 +36,9 @@ use application::dictation::{
 };
 use application::llm_models::refresh_llm_models;
 use application::plugin_management::{
-    install_provider_plugin, list_provider_plugins, reload_provider_plugins, run_provider_plugin_action,
-    set_provider_plugin_enabled, uninstall_provider_plugin,
+    download_provider_model_pack, install_provider_plugin, list_provider_plugins,
+    reload_provider_plugins, run_provider_plugin_action, set_provider_plugin_enabled,
+    uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::smart_text::preview_smart_text;
@@ -337,6 +338,7 @@ fn main() {
             list_provider_plugins,
             reload_provider_plugins,
             install_provider_plugin,
+            download_provider_model_pack,
             set_provider_plugin_enabled,
             uninstall_provider_plugin,
             run_provider_plugin_action,

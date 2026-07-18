@@ -1,0 +1,83 @@
+{
+  "manifest": {
+    "apiVersion": 4,
+    "id": "official.sherpa-sensevoice-small",
+    "name": "SenseVoice Small 多语种 INT8",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-sensevoice",
+      "displayName": "本地 SenseVoice",
+      "authKind": "none",
+      "capabilities": ["asr"],
+      "config": {}
+    },
+    "models": [
+      {
+        "id": "local-sensevoice-sentence-int8",
+        "label": "SenseVoice Small 整句 INT8",
+        "providerId": "local-sensevoice",
+        "category": "realtime",
+        "protocol": "local-sherpa-offline",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": false,
+        "scenes": ["dictationRealtime", "subtitles"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      },
+      {
+        "id": "local-sensevoice-file-int8",
+        "label": "SenseVoice Small 文件识别 INT8",
+        "providerId": "local-sensevoice",
+        "category": "file",
+        "protocol": "local-sherpa-offline",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": false,
+        "scenes": ["dictationFile", "transcription"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      }
+    ],
+    "runtime": { "kind": "model-pack" },
+    "modelPack": {
+      "engine": "sherpa-onnx-offline",
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "12ca1a2ae7ecf3e0019ef2822307ee0b5cadc9196569e379b4c4026f8205276d",
+          "sizeBytes": 237115547,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/model.int8.onnx" }
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+          "sizeBytes": 315894,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/tokens.txt" }
+        },
+        {
+          "path": "silero_vad.onnx",
+          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+          "sizeBytes": 643854,
+          "download": { "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" }
+        }
+      ],
+      "params": {
+        "model": "model.int8.onnx",
+        "tokens": "tokens.txt",
+        "vadModel": "silero_vad.onnx",
+        "language": "auto",
+        "useItn": true,
+        "numThreads": 2,
+        "vadThreshold": 0.5,
+        "vadMinSilenceDuration": 0.6,
+        "vadMinSpeechDuration": 0.25,
+        "vadWindowSize": 512,
+        "vadMaxSpeechDuration": 30.0
+      }
+    }
+  },
+  "sources": {
+    "model.int8.onnx": "files/sensevoice-small/model.int8.onnx",
+    "tokens.txt": "files/sensevoice-small/tokens.txt",
+    "silero_vad.onnx": "files/sensevoice-small/silero_vad.onnx"
+  }
+}

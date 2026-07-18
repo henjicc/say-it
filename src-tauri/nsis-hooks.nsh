@@ -3,6 +3,10 @@
 ; 这里把安装目录名替换成固定英文目录 say-it，避免路径出现中文字符；
 ; 若用户手动改过安装路径，则尊重用户选择、不做替换。
 !macro NSIS_HOOK_PREINSTALL
+  Delete "$INSTDIR\onnxruntime.dll"
+  Delete "$INSTDIR\onnxruntime_providers_shared.dll"
+  Delete "$INSTDIR\sherpa-onnx-c-api.dll"
+  Delete "$INSTDIR\sherpa-onnx-cxx-api.dll"
   !if "${INSTALLMODE}" == "currentUser"
     ${If} $INSTDIR == "$LOCALAPPDATA\${PRODUCTNAME}"
     ${OrIf} $INSTDIR == "$LOCALAPPDATA\${MAINBINARYNAME}"
@@ -10,4 +14,24 @@
       SetOutPath $INSTDIR
     ${EndIf}
   !endif
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  CopyFiles /SILENT "$INSTDIR\target\release\onnxruntime.dll" "$INSTDIR\onnxruntime.dll"
+  CopyFiles /SILENT "$INSTDIR\target\release\onnxruntime_providers_shared.dll" "$INSTDIR\onnxruntime_providers_shared.dll"
+  CopyFiles /SILENT "$INSTDIR\target\release\sherpa-onnx-c-api.dll" "$INSTDIR\sherpa-onnx-c-api.dll"
+  CopyFiles /SILENT "$INSTDIR\target\release\sherpa-onnx-cxx-api.dll" "$INSTDIR\sherpa-onnx-cxx-api.dll"
+  Delete "$INSTDIR\target\release\onnxruntime.dll"
+  Delete "$INSTDIR\target\release\onnxruntime_providers_shared.dll"
+  Delete "$INSTDIR\target\release\sherpa-onnx-c-api.dll"
+  Delete "$INSTDIR\target\release\sherpa-onnx-cxx-api.dll"
+  RMDir "$INSTDIR\target\release"
+  RMDir "$INSTDIR\target"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Delete "$INSTDIR\onnxruntime.dll"
+  Delete "$INSTDIR\onnxruntime_providers_shared.dll"
+  Delete "$INSTDIR\sherpa-onnx-c-api.dll"
+  Delete "$INSTDIR\sherpa-onnx-cxx-api.dll"
 !macroend

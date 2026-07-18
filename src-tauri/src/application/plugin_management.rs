@@ -10,7 +10,7 @@ use crate::providers::find_profile;
 use crate::providers::plugin::{
     load_registry, PluginBrowserSessionManifest, PluginRegistrySnapshot, PluginRuntimeSpec,
 };
-use crate::providers::{plugin_package, plugin_runtime, plugin_secrets};
+use crate::providers::{model_download, plugin_package, plugin_runtime, plugin_secrets};
 use crate::state::RuntimeState;
 use serde_json::{json, Value};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -83,20 +83,46 @@ pub(crate) fn reload_provider_plugins(
 }
 
 #[tauri::command]
-pub(crate) fn install_provider_plugin(
+pub(crate) async fn install_provider_plugin(
     app: tauri::AppHandle,
     source_path: String,
     allow_unsigned: bool,
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
-    plugin_package::install_from_path(
-        &app,
-        Path::new(&source_path),
-        allow_unsigned,
-        trust_signing_key,
-    )?;
+    let install_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        plugin_package::install_from_path(
+            &install_app,
+            Path::new(&source_path),
+            allow_unsigned,
+            trust_signing_key,
+        )
+    })
+    .await
+    .map_err(|error| format!("插件安装任务失败：{error}"))??;
     reload_provider_plugins(app, state)
+}
+
+#[tauri::command]
+pub(crate) async fn download_provider_model_pack(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<PluginRegistrySnapshot, String> {
+    let spec = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?
+        .model_pack_for_plugin(&plugin_id)
+        .ok_or_else(|| format!("模型包 {plugin_id} 不存在"))?;
+    let pack = crate::providers::plugin::ModelPackManifest {
+        engine: spec.engine,
+        files: spec.files,
+        params: spec.params,
+    };
+    model_download::download_pack(&app, &plugin_id, &spec.model_dir, &pack).await?;
+    list_provider_plugins(state)
 }
 
 #[tauri::command]
@@ -122,7 +148,11 @@ pub(crate) fn set_provider_plugin_enabled(
         let profile = providers
             .profiles
             .iter_mut()
-            .find(|profile| profile.id == provider_id && profile.kind.starts_with("plugin:"))
+            .find(|profile| {
+                profile.id == provider_id
+                    && (profile.kind.starts_with("plugin:")
+                        || profile.kind.starts_with("model-pack:"))
+            })
             .ok_or_else(|| format!("插件 {plugin_id} 的供应商配置不存在"))?;
         profile.enabled = enabled;
         *providers = crate::providers::normalize_settings(providers.clone());
@@ -149,12 +179,14 @@ pub(crate) fn uninstall_provider_plugin(
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider_id_by_plugin(&plugin_id)?
         .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
-    plugin_secrets::clear_session(&spec)?;
-    if let Some(window) = app.get_webview_window(&login_window_label(&provider_id)) {
-        window
-            .clear_all_browsing_data()
-            .map_err(|error| format!("清除插件浏览数据失败：{error}"))?;
-        window.close().map_err(|error| error.to_string())?;
+    if let Some(spec) = spec {
+        plugin_secrets::clear_session(&spec)?;
+        if let Some(window) = app.get_webview_window(&login_window_label(&provider_id)) {
+            window
+                .clear_all_browsing_data()
+                .map_err(|error| format!("清除插件浏览数据失败：{error}"))?;
+            window.close().map_err(|error| error.to_string())?;
+        }
     }
     plugin_package::uninstall(&app, &plugin_id)?;
     {
@@ -163,7 +195,8 @@ pub(crate) fn uninstall_provider_plugin(
             .lock()
             .map_err(|_| "供应商配置锁失败".to_string())?;
         providers.profiles.retain(|profile| {
-            profile.id != provider_id || !profile.kind.starts_with("plugin:")
+            profile.id != provider_id
+                || !(profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
         });
         *providers = crate::providers::normalize_settings(providers.clone());
     }
