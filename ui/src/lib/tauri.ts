@@ -66,6 +66,7 @@ export const CMD = {
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   openActiveAppContextDebug: "open_active_app_context_debug",
   closeActiveAppContextDebug: "close_active_app_context_debug",
+  setActiveAppContextDebugOverrides: "set_active_app_context_debug_overrides",
   getLocalFileInfo: "get_local_file_info",
   saveSubtitleSrt: "save_subtitle_srt",
   transcriptionStart: "transcription_start",

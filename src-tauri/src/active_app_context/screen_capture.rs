@@ -16,12 +16,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IsIconic, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
 };
 
+use super::model::DEFAULT_MAX_CAPTURE_SIDE;
+
 pub(crate) struct CapturedWindowImage {
     pub(crate) image: DynamicImage,
     pub(crate) elapsed_ms: u64,
 }
-
-const MAX_CAPTURE_SIDE: u32 = 1_600;
 
 struct HiddenWindowGuard {
     window: HWND,
@@ -56,6 +56,7 @@ impl Drop for HiddenWindowGuard {
 pub(crate) fn capture_window(
     window_handle: isize,
     occluding_window_handle: Option<isize>,
+    max_capture_side_override: Option<u32>,
 ) -> Result<CapturedWindowImage, String> {
     let started = Instant::now();
     let window = HWND(window_handle as *mut c_void);
@@ -76,7 +77,9 @@ pub(crate) fn capture_window(
         return Err("目标窗口截图尺寸无效".into());
     }
 
-    let (capture_width, capture_height) = scaled_dimensions(width as u32, height as u32);
+    let max_capture_side = max_capture_side_override.unwrap_or(DEFAULT_MAX_CAPTURE_SIDE);
+    let (capture_width, capture_height) =
+        scaled_dimensions(width as u32, height as u32, max_capture_side);
     let mut pixels = capture_screen_rect(
         bounds,
         width,
@@ -98,12 +101,12 @@ pub(crate) fn capture_window(
     })
 }
 
-fn scaled_dimensions(width: u32, height: u32) -> (u32, u32) {
+fn scaled_dimensions(width: u32, height: u32, max_side: u32) -> (u32, u32) {
     let longest_side = width.max(height);
-    if longest_side <= MAX_CAPTURE_SIDE {
+    if longest_side <= max_side {
         return (width, height);
     }
-    let scale = MAX_CAPTURE_SIDE as f64 / longest_side as f64;
+    let scale = max_side as f64 / longest_side as f64;
     (
         (width as f64 * scale).round().max(1.0) as u32,
         (height as f64 * scale).round().max(1.0) as u32,
@@ -240,7 +243,7 @@ fn capture_screen_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::scaled_dimensions;
+    use super::{scaled_dimensions, DEFAULT_MAX_CAPTURE_SIDE as MAX_CAPTURE_SIDE};
 
     #[test]
     fn top_down_bgra_pixels_convert_to_opaque_rgba() {
@@ -254,9 +257,15 @@ mod tests {
 
     #[test]
     fn capture_dimensions_bound_large_windows_without_changing_aspect_ratio() {
-        assert_eq!(scaled_dimensions(1_280, 720), (1_280, 720));
-        assert_eq!(scaled_dimensions(1_920, 1_080), (1_600, 900));
-        assert_eq!(scaled_dimensions(3_862, 2_122), (1_600, 879));
-        assert_eq!(scaled_dimensions(2_160, 3_840), (900, 1_600));
+        assert_eq!(scaled_dimensions(1_280, 720, MAX_CAPTURE_SIDE), (1_280, 720));
+        assert_eq!(scaled_dimensions(1_920, 1_080, MAX_CAPTURE_SIDE), (1_600, 900));
+        assert_eq!(scaled_dimensions(3_862, 2_122, MAX_CAPTURE_SIDE), (1_600, 879));
+        assert_eq!(scaled_dimensions(2_160, 3_840, MAX_CAPTURE_SIDE), (900, 1_600));
+    }
+
+    #[test]
+    fn scaled_dimensions_honors_a_custom_cap() {
+        assert_eq!(scaled_dimensions(3_840, 2_160, 3_200), (3_200, 1_800));
+        assert_eq!(scaled_dimensions(1_280, 720, 3_200), (1_280, 720));
     }
 }

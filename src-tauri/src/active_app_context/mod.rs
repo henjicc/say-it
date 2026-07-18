@@ -23,7 +23,9 @@ use tokio::sync::oneshot::error::TryRecvError;
 
 const MAX_CONCURRENT_CAPTURES: usize = 4;
 
-pub(crate) use debug::{request_debug_capture, reset_debug_capture, DEBUG_STATE_EVENT};
+pub(crate) use debug::{
+    request_debug_capture, reset_debug_capture, set_debug_capture_overrides, DEBUG_STATE_EVENT,
+};
 pub(crate) use model::{
     ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, CaptureOptions,
     CaptureStatus, CapturedActiveAppContext, OcrEngineKind,
@@ -119,10 +121,12 @@ impl ContextCaptureService {
         debug_window_handle: Option<isize>,
         method: ActiveAppContextExtractionMethod,
         ocr_engine: OcrEngineKind,
+        max_capture_side_override: Option<u32>,
     ) -> ContextCaptureHandle {
         let mut options = CaptureOptions::for_method(method, ocr_engine);
         options.debug = true;
         options.occluding_window_handle = debug_window_handle;
+        options.max_capture_side_override = max_capture_side_override;
         self.begin_capture_inner(target, blocked_apps, options)
     }
 

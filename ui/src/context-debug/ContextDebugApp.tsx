@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Crosshair, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
+import { Select } from "@/components/ui/Input";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd } from "@/lib/tauri";
 import { cn } from "@/lib/cn";
+import { useDictPrefs, type ActiveAppContextOcrEngine } from "@/store/useDictPrefs";
+
+const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
 
 type CaptureStatus =
   | "captured"
@@ -41,6 +45,8 @@ interface DebugResult {
   truncated: boolean;
   formattedContext: string;
   message?: string | null;
+  ocrEngine?: "system" | "ppocr" | null;
+  maxCaptureSide?: number | null;
 }
 
 interface NormalizedRegion {
@@ -80,6 +86,10 @@ function ResultSection({ title, value }: { title: string; value?: string | null 
 export function ContextDebugApp() {
   const [result, setResult] = useState<DebugResult>();
   const [capturing, setCapturing] = useState(false);
+  const [ocrEngine, setOcrEngine] = useState<ActiveAppContextOcrEngine>(
+    () => useDictPrefs.getState().prefs.activeAppContextOcrEngine,
+  );
+  const [maxCaptureSide, setMaxCaptureSide] = useState<number>(MAX_CAPTURE_SIDE_OPTIONS[0]);
 
   useTauriEvent<{ state?: "waiting" | "capturing" }>(EVT.contextDebugState, (payload) => {
     setCapturing(payload.state === "capturing");
@@ -89,6 +99,11 @@ export function ContextDebugApp() {
     setResult(payload);
     setCapturing(false);
   });
+
+  // 调试参数只影响本窗口触发的捕获，不写入应用设置；每次变更都同步给后端，下一次捕获立即生效。
+  useEffect(() => {
+    void cmd(CMD.setActiveAppContextDebugOverrides, { ocrEngine, maxCaptureSide });
+  }, [ocrEngine, maxCaptureSide]);
 
   const close = async () => {
     await cmd(CMD.closeActiveAppContextDebug);
@@ -127,6 +142,36 @@ export function ContextDebugApp() {
           </div>
         </section>
 
+        <section className="mt-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
+          <h2 className="text-xs font-medium text-[var(--color-fg-muted)]">调试参数（仅影响本窗口触发的捕获，不写入应用设置）</h2>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1 text-xs text-[var(--color-fg-subtle)]">
+              OCR 引擎
+              <Select
+                value={ocrEngine}
+                onChange={(event) => setOcrEngine(event.target.value === "ppocr" ? "ppocr" : "system")}
+              >
+                <option value="system">系统 OCR</option>
+                <option value="ppocr">内置 PP-OCR</option>
+              </Select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-[var(--color-fg-subtle)]">
+              截图长边上限（像素）
+              <Select
+                value={String(maxCaptureSide)}
+                onChange={(event) => setMaxCaptureSide(Number(event.target.value))}
+              >
+                {MAX_CAPTURE_SIDE_OPTIONS.map((side) => (
+                  <option key={side} value={side}>{side === 1600 ? `${side}（默认）` : side}</option>
+                ))}
+              </Select>
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] leading-4 text-[var(--color-fg-faint)]">
+            仅在「提取方式」设为「窗口 OCR」时生效；调整后点击目标应用，再按快捷键重新捕获查看效果。
+          </p>
+        </section>
+
         <div className="mt-4 flex items-center justify-between gap-3">
           <p className={cn("text-sm", status?.tone ?? "text-[var(--color-fg-subtle)]")}>
             {capturing ? "正在捕获" : status?.label ?? "等待首次捕获"}
@@ -154,7 +199,8 @@ export function ContextDebugApp() {
               <div><span className="text-[var(--color-fg-faint)]">模式</span><p className="mt-1 text-[var(--color-fg)]">{result.captureMethod === "ocr" ? "窗口 OCR" : "文本提取"}</p></div>
               <div><span className="text-[var(--color-fg-faint)]">来源</span><p className="mt-1 text-[var(--color-fg)]">{result.source || "—"}</p></div>
               <div><span className="text-[var(--color-fg-faint)]">总耗时</span><p className="mt-1 text-[var(--color-fg)]">{result.elapsedMs} ms</p></div>
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">图像</span><p className="mt-1 text-[var(--color-fg)]">{result.screenshotWidth && result.screenshotHeight ? `${result.screenshotWidth} × ${result.screenshotHeight}` : "—"}</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 引擎</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrEngine === "ppocr" ? "内置 PP-OCR" : "系统 OCR"}</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">图像</span><p className="mt-1 text-[var(--color-fg)]">{result.screenshotWidth && result.screenshotHeight ? `${result.screenshotWidth} × ${result.screenshotHeight}` : "—"}{result.maxCaptureSide ? `（长边上限 ${result.maxCaptureSide}）` : ""}</p></div>}
               {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">分项耗时</span><p className="mt-1 text-[var(--color-fg)]">截图 {result.screenshotElapsedMs} ms · 模型初始化 {result.modelInitMs} ms · OCR {result.ocrElapsedMs} ms</p></div>}
               {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 文字框</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrBlocks.length} 个</p></div>}
               <div><span className="text-[var(--color-fg-faint)]">结果</span><p className="mt-1 text-[var(--color-fg)]">{result.truncated ? "已按上下文预算裁剪" : "完整"}</p></div>

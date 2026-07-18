@@ -149,6 +149,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                         options.deadline,
                         cancelled,
                         options.ocr_engine,
+                        options.max_capture_side_override,
                     ) {
                         Ok(()) if context.ocr_text.is_empty() => {
                             context
@@ -218,8 +219,13 @@ fn capture_and_recognize(
     deadline: Instant,
     cancelled: &Arc<AtomicBool>,
     ocr_engine: OcrEngineKind,
+    max_capture_side_override: Option<u32>,
 ) -> Result<(), String> {
-    let captured = screen_capture::capture_window(window_handle, occluding_window_handle)?;
+    let captured = screen_capture::capture_window(
+        window_handle,
+        occluding_window_handle,
+        max_capture_side_override,
+    )?;
     crate::development_debug_log(
         "active-app-context",
         format_args!(
