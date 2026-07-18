@@ -7,7 +7,6 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::Manager;
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -43,11 +42,7 @@ struct TrustedKeyFile {
 }
 
 pub fn load_trusted_keys(app: &tauri::AppHandle) -> Result<HashMap<String, String>, String> {
-    let path = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join(TRUST_FILE);
+    let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
     if !path.exists() {
         return Ok(HashMap::new());
     }
@@ -58,11 +53,7 @@ pub fn load_trusted_keys(app: &tauri::AppHandle) -> Result<HashMap<String, Strin
 }
 
 fn save_trusted_keys(app: &tauri::AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
-    let path = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join(TRUST_FILE);
+    let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
     let temp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(&TrustedKeyFile { keys: keys.clone() })
         .map_err(|error| error.to_string())?;
@@ -385,20 +376,14 @@ pub fn uninstall(app: &tauri::AppHandle, plugin_id: &str) -> Result<(), String> 
     }
     std::fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
 
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
+    let data_dir = crate::application::data_root::data_root(app)?
         .join("plugin-data")
         .join(plugin_id);
     if data_dir.exists() {
         std::fs::remove_dir_all(data_dir).map_err(|error| error.to_string())?;
     }
 
-    let webview_data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
+    let webview_data_dir = crate::application::data_root::data_root(app)?
         .join("plugin-webviews")
         .join(plugin_id);
     if webview_data_dir.exists() {

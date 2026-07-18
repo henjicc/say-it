@@ -33,9 +33,7 @@ fn default_subtitle_translation_model() -> String {
 }
 
 pub(crate) fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(STATE_FILE_NAME))
+    crate::application::data_root::data_file(app, STATE_FILE_NAME)
 }
 
 fn legacy_state_file_paths(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {

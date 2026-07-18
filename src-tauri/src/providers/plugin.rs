@@ -3,7 +3,6 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::Manager;
 
 use super::registry::ModelInfo;
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
@@ -194,13 +193,7 @@ fn default_host_api_version() -> u32 {
 }
 
 pub fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("plugins");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    Ok(dir)
+    crate::application::data_root::data_subdir(app, "plugins")
 }
 
 pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {

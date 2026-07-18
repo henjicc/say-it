@@ -3,7 +3,7 @@ use crate::state::RuntimeState;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
@@ -198,12 +198,8 @@ fn store_cue(app: &AppHandle, which: &str, data_url: &str) -> Result<CustomCueFi
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|e| format!("提示音 Base64 无效：{e}"))?;
-    let dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("cues");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建提示音目录失败：{e}"))?;
+    let dir = crate::application::data_root::data_subdir(app, "cues")
+        .map_err(|e| format!("创建提示音目录失败：{e}"))?;
     let relative = format!("cues/{which}.audio");
     let file = dir.join(format!("{which}.audio"));
     let tmp = dir.join(format!("{which}.audio.tmp"));
