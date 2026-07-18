@@ -22,6 +22,13 @@ const TRUST_LABEL: Record<PluginSummary["trust"], string> = {
   unsigned: "未签名",
 };
 
+const PERMISSION_LABEL: Record<string, string> = {
+  network: "网络",
+  localNetwork: "本机网络",
+  browserSession: "浏览器会话",
+  cookies: "Cookie",
+};
+
 export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
@@ -141,7 +148,7 @@ export function PluginManagerPanel() {
                     <span className="text-xs text-[var(--color-fg-subtle)]">{TRUST_LABEL[plugin.trust]}</span>
                   </div>
                   <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                    权限：{plugin.permissions.join("、") || "无"}
+                    权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、") || "无"}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">

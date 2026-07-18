@@ -362,7 +362,7 @@ impl HostState {
     }
 
     fn http_request(&self, payload: Value) -> Result<Value, String> {
-        require_permission(&self.spec, "network")?;
+        require_network_permission(&self.spec)?;
         let method = payload
             .get("method")
             .and_then(Value::as_str)
@@ -452,7 +452,7 @@ impl HostState {
     }
 
     fn websocket_open(&mut self, payload: Value) -> Result<Value, String> {
-        require_permission(&self.spec, "network")?;
+        require_network_permission(&self.spec)?;
         let url = parse_allowed_url(
             &self.spec,
             payload
@@ -896,15 +896,41 @@ fn take_input_handle(
     Ok((HashMap::from([(id, PathBuf::from(path))]), Some(descriptor)))
 }
 
+/// 回环主机按字面精确匹配，不做 DNS 解析，防止自定义域名解析到 127.0.0.1 绕过白名单；
+/// `localhost` 是系统保留名，视作唯一例外。IPv6 回环经 Url 解析后带方括号。
+const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
+
+fn plaintext_scheme(secure: &str) -> Option<&'static str> {
+    match secure {
+        "https" => Some("http"),
+        "wss" => Some("ws"),
+        _ => None,
+    }
+}
+
 fn parse_allowed_url(spec: &PluginRuntimeSpec, raw: &str, schemes: &[&str]) -> Result<Url, String> {
     let url = Url::parse(raw).map_err(|error| format!("非法网络地址：{error}"))?;
-    if !schemes.contains(&url.scheme()) {
-        return Err(format!("不允许的网络协议：{}", url.scheme()));
+    let scheme = url.scheme();
+    let is_plaintext_variant = schemes
+        .iter()
+        .any(|secure| plaintext_scheme(secure) == Some(scheme));
+    if !schemes.contains(&scheme) && !is_plaintext_variant {
+        return Err(format!("不允许的网络协议：{scheme}"));
     }
     let host = url
         .host_str()
         .ok_or("网络地址缺少主机名")?
         .to_ascii_lowercase();
+    let local_permitted = LOOPBACK_HOSTS.contains(&host.as_str())
+        && spec.permissions.iter().any(|value| value == "localNetwork");
+    if !schemes.contains(&scheme) && !local_permitted {
+        // 明文 http/ws 只对声明 localNetwork 权限的插件的回环地址放行。
+        return Err(format!("不允许的网络协议：{scheme}"));
+    }
+    if local_permitted {
+        // 本机端口由用户自己掌控，回环主机不要求出现在 allowedHosts。
+        return Ok(url);
+    }
     let allowed = spec.allowed_hosts.iter().any(|rule| {
         let rule = rule.to_ascii_lowercase();
         rule.strip_prefix("*.")
@@ -936,11 +962,17 @@ async fn wait_for_cancel(cancelled: Arc<AtomicBool>) {
     }
 }
 
-fn require_permission(spec: &PluginRuntimeSpec, permission: &str) -> Result<(), String> {
-    if spec.permissions.iter().any(|value| value == permission) {
+/// 网络类宿主 API 的准入：`network`（外部 HTTPS/WSS）或 `localNetwork`（回环明文）任一即可，
+/// 具体主机与协议限制由 `parse_allowed_url` 决定。
+fn require_network_permission(spec: &PluginRuntimeSpec) -> Result<(), String> {
+    if spec
+        .permissions
+        .iter()
+        .any(|value| value == "network" || value == "localNetwork")
+    {
         Ok(())
     } else {
-        Err(format!("插件未声明 {permission} 权限"))
+        Err("插件未声明 network 权限".into())
     }
 }
 
@@ -1152,6 +1184,36 @@ mod tests {
         assert!(parse_allowed_url(&spec, "wss://live.vendor.test/ws", &["wss"]).is_ok());
         assert!(parse_allowed_url(&spec, "https://vendor.test", &["https"]).is_err());
         assert!(parse_allowed_url(&spec, "https://evil.example.com", &["https"]).is_err());
+        // 未声明 localNetwork：回环明文协议保持拒绝。
+        assert!(parse_allowed_url(&spec, "ws://127.0.0.1:8000/ws", &["wss"]).is_err());
+        assert!(parse_allowed_url(&spec, "http://localhost:8000", &["https"]).is_err());
+    }
+
+    #[test]
+    fn local_network_permission_allows_loopback_plaintext_only() {
+        let spec = PluginRuntimeSpec {
+            plugin_id: "test".into(),
+            root: PathBuf::new(),
+            entrypoint: PathBuf::new(),
+            permissions: vec!["localNetwork".into()],
+            allowed_hosts: vec![],
+            browser_session: None,
+            data_dir: PathBuf::new(),
+            trust: "unsigned".into(),
+        };
+        // 回环地址放行明文与加密协议，且无需出现在 allowedHosts。
+        assert!(parse_allowed_url(&spec, "ws://127.0.0.1:8000/v1/ws", &["wss"]).is_ok());
+        assert!(parse_allowed_url(&spec, "http://localhost:8000/api", &["https"]).is_ok());
+        assert!(parse_allowed_url(&spec, "http://[::1]:9000", &["https"]).is_ok());
+        assert!(parse_allowed_url(&spec, "https://127.0.0.1:8443", &["https"]).is_ok());
+        // 非回环主机：明文一律拒绝，加密仍受 allowedHosts 约束。
+        assert!(parse_allowed_url(&spec, "http://192.168.1.5:8000", &["https"]).is_err());
+        assert!(parse_allowed_url(&spec, "http://0.0.0.0:8000", &["https"]).is_err());
+        assert!(parse_allowed_url(&spec, "ws://my.localhost.evil:8000", &["wss"]).is_err());
+        assert!(parse_allowed_url(&spec, "http://loopback.example.com", &["https"]).is_err());
+        assert!(parse_allowed_url(&spec, "https://api.example.com", &["https"]).is_err());
+        // 与 https/wss 无关的协议依旧拒绝。
+        assert!(parse_allowed_url(&spec, "ftp://127.0.0.1", &["https"]).is_err());
     }
 
     #[test]
