@@ -86,3 +86,25 @@ pub(crate) fn close_active_app_context_debug(app: tauri::AppHandle) -> Result<()
     }
     Ok(())
 }
+
+const DEBUG_MIN_CAPTURE_SIDE: u32 = 800;
+const DEBUG_MAX_CAPTURE_SIDE: u32 = 4_000;
+
+/// 调试窗口专用：临时覆盖下一次调试捕获使用的 OCR 引擎与截图长边上限，不写入应用设置。
+#[tauri::command]
+pub(crate) fn set_active_app_context_debug_overrides(
+    ocr_engine: Option<String>,
+    max_capture_side: Option<u32>,
+) -> Result<(), String> {
+    let ocr_engine = ocr_engine.map(|value| {
+        if value == "ppocr" {
+            crate::active_app_context::OcrEngineKind::PpOcr
+        } else {
+            crate::active_app_context::OcrEngineKind::System
+        }
+    });
+    let max_capture_side =
+        max_capture_side.map(|value| value.clamp(DEBUG_MIN_CAPTURE_SIDE, DEBUG_MAX_CAPTURE_SIDE));
+    crate::active_app_context::set_debug_capture_overrides(ocr_engine, max_capture_side);
+    Ok(())
+}

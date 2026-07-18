@@ -7,6 +7,8 @@ pub(crate) const DICTATION_RESOLVE_WAIT: Duration = Duration::from_millis(150);
 pub(crate) const DEFAULT_MAX_CHARS: usize = 3_000;
 pub(crate) const ABSOLUTE_MAX_CHARS: usize = 6_000;
 pub(crate) const SUMMARY_PREVIEW_CHARS: usize = 500;
+/// 窗口截图长边像素上限的默认值；调试窗口可临时覆盖，见 `CaptureOptions::max_capture_side_override`。
+pub(crate) const DEFAULT_MAX_CAPTURE_SIDE: u32 = 1_600;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +62,16 @@ impl<'de> Deserialize<'de> for OcrEngineKind {
     }
 }
 
+impl OcrEngineKind {
+    /// 与自定义 `Deserialize` 使用同一套小写取值，供调试面板等场景直接输出给前端。
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::PpOcr => "ppocr",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActivationTarget {
     pub(crate) window_handle: isize,
@@ -77,6 +89,8 @@ pub(crate) struct CaptureOptions {
     pub(crate) occluding_window_handle: Option<isize>,
     pub(crate) method: ActiveAppContextExtractionMethod,
     pub(crate) ocr_engine: OcrEngineKind,
+    /// 仅调试窗口会设置：覆盖截图长边像素上限（默认见 `screen_capture::MAX_CAPTURE_SIDE`）。
+    pub(crate) max_capture_side_override: Option<u32>,
 }
 
 impl CaptureOptions {
@@ -91,6 +105,7 @@ impl CaptureOptions {
             occluding_window_handle: None,
             method,
             ocr_engine,
+            max_capture_side_override: None,
         }
     }
 }

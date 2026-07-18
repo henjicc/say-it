@@ -391,6 +391,7 @@ fn main() {
             get_indicator_monitor_metrics,
             open_active_app_context_debug,
             close_active_app_context_debug,
+            set_active_app_context_debug_overrides,
             subtitle_toggle,
             subtitle_stop,
             get_subtitle_runtime,
