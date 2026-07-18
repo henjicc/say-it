@@ -11,8 +11,6 @@ mod screen_capture;
 mod unsupported;
 #[cfg(windows)]
 mod windows;
-#[cfg(windows)]
-mod windows_ocr;
 
 use model::DICTATION_RESOLVE_WAIT;
 use std::path::PathBuf;

@@ -7,7 +7,10 @@ use serde_json::Value;
 use super::registry::ModelInfo;
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
 
-pub const PLUGIN_API_VERSION: u32 = 3;
+pub const PLUGIN_API_VERSION: u32 = 4;
+/// 宿主兼容的最低插件 API 版本：v3 在线插件（asr/translation/customization）继续可用；
+/// ocr 能力、localNetwork 权限等 v4 语义仅在 apiVersion = 4 时允许声明。
+pub const PLUGIN_MIN_API_VERSION: u32 = 3;
 pub const PLUGIN_HOST_API_VERSION: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies"];
@@ -291,10 +294,10 @@ pub(crate) fn validate_plugin_dir(root: &Path) -> Result<PluginManifest, String>
 }
 
 fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
-    if manifest.api_version < PLUGIN_API_VERSION {
+    if manifest.api_version < PLUGIN_MIN_API_VERSION {
         return Err("旧进程插件不兼容，请用新版 Skill 重新生成".into());
     }
-    if manifest.api_version != PLUGIN_API_VERSION {
+    if manifest.api_version > PLUGIN_API_VERSION {
         return Err(format!("不支持的插件 API 版本：{}", manifest.api_version));
     }
     validate_id("插件", &manifest.id)?;
@@ -302,12 +305,21 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if manifest.name.trim().is_empty() || manifest.version.trim().is_empty() {
         return Err("插件名称和版本不能为空".into());
     }
-    if !manifest
-        .provider
-        .capabilities
-        .iter()
-        .any(|capability| matches!(capability.as_str(), "asr" | "translation" | "customization"))
+    if manifest.api_version < 4
+        && manifest
+            .provider
+            .capabilities
+            .iter()
+            .any(|capability| capability == "ocr")
     {
+        return Err("ocr 能力需要插件 API 版本 4".into());
+    }
+    if !manifest.provider.capabilities.iter().any(|capability| {
+        matches!(
+            capability.as_str(),
+            "asr" | "translation" | "customization" | "ocr"
+        )
+    }) {
         return Err("插件供应商未声明受支持的能力".into());
     }
     if !manifest.provider.config.is_object() {
@@ -436,7 +448,18 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if !canonical_entrypoint.starts_with(&canonical_root) {
         return Err("插件入口不能通过符号链接跳出插件目录".into());
     }
-    if manifest.models.is_empty() {
+    // OCR 能力按供应商而非模型选择，纯 OCR 插件允许不声明模型；其余能力仍要求至少一个模型。
+    let ocr_only = manifest
+        .provider
+        .capabilities
+        .iter()
+        .all(|capability| matches!(capability.as_str(), "ocr" | "customization"))
+        && manifest
+            .provider
+            .capabilities
+            .iter()
+            .any(|capability| capability == "ocr");
+    if manifest.models.is_empty() && !ocr_only {
         return Err("插件至少需要声明一个模型".into());
     }
     let mut model_ids = HashSet::new();
@@ -946,6 +969,64 @@ mod tests {
             registry.model("web-translation").unwrap().category,
             "translation"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn write_ocr_manifest(root: &Path, api_version: u32) {
+        std::fs::create_dir_all(root.join("connector")).unwrap();
+        std::fs::write(
+            root.join("connector/index.js"),
+            b"export default () => ({})",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": api_version,
+                "id": "ocr-provider",
+                "name": "OCR Provider",
+                "version": "1.0.0",
+                "provider": {
+                    "id": "ocr-provider",
+                    "displayName": "OCR Provider",
+                    "capabilities": ["ocr"],
+                    "config": {}
+                },
+                "models": [],
+                "runtime": { "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn v4_ocr_only_plugin_loads_without_models() {
+        let root = std::env::temp_dir().join(format!("sayit-plugin-ocr-{}", uuid::Uuid::new_v4()));
+        write_ocr_manifest(&root, 4);
+        let manifest = validate_plugin_dir(&root).unwrap();
+        assert_eq!(manifest.provider.capabilities, vec!["ocr"]);
+        assert!(manifest.models.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v3_plugin_cannot_declare_ocr_capability() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-plugin-ocr-v3-{}", uuid::Uuid::new_v4()));
+        write_ocr_manifest(&root, 3);
+        let error = validate_plugin_dir(&root).unwrap_err();
+        assert!(error.contains("ocr 能力需要插件 API 版本 4"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_api_version_above_current() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-plugin-v5-{}", uuid::Uuid::new_v4()));
+        write_ocr_manifest(&root, 5);
+        let error = validate_plugin_dir(&root).unwrap_err();
+        assert!(error.contains("不支持的插件 API 版本：5"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

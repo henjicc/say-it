@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use super::model::{NormalizedRegion, OcrEngineKind, OcrTextBlock};
 use super::normalize::normalize_text;
-use super::windows_ocr;
+use crate::ocr::windows as windows_ocr;
 
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;

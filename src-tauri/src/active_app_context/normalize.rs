@@ -1,13 +1,8 @@
 use super::model::{CapturedActiveAppContext, ABSOLUTE_MAX_CHARS};
 use std::collections::HashSet;
 
-pub(crate) fn normalize_text(value: &str) -> String {
-    value
-        .split_whitespace()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+// 实现上提到 `crate::ocr`（系统 OCR 引擎与本模块共用同一套空白折叠规则）。
+pub(crate) use crate::ocr::normalize_text;
 
 pub(crate) fn truncate_chars(value: &str, limit: usize) -> (String, bool) {
     let limit = limit.min(ABSOLUTE_MAX_CHARS);

@@ -145,37 +145,8 @@ pub(crate) enum ContextSource {
     Ocr,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct NormalizedRegion {
-    pub(crate) left: f32,
-    pub(crate) top: f32,
-    pub(crate) right: f32,
-    pub(crate) bottom: f32,
-}
-
-impl NormalizedRegion {
-    pub(crate) fn clamped(self) -> Self {
-        let left = self.left.clamp(0.0, 1.0);
-        let top = self.top.clamp(0.0, 1.0);
-        let right = self.right.clamp(left, 1.0);
-        let bottom = self.bottom.clamp(top, 1.0);
-        Self {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OcrTextBlock {
-    pub(crate) text: String,
-    pub(crate) confidence: f32,
-    pub(crate) bounds: NormalizedRegion,
-}
+// OCR 数据结构上提到 `crate::ocr`（providers 与本模块共用）；这里保留原路径的再导出。
+pub(crate) use crate::ocr::{NormalizedRegion, OcrTextBlock};
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]

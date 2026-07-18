@@ -17,6 +17,7 @@ mod testing;
 
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
+pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -116,6 +117,9 @@ pub struct ProviderDefaults {
     pub llm: String,
     #[serde(default)]
     pub translation: String,
+    /// OCR 能力默认供应商；空串表示未设置，normalize 后落到内置系统 OCR。旧 JSON 靠 `#[serde(default)]` 兼容。
+    #[serde(default)]
+    pub ocr: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,11 +132,12 @@ pub struct ProviderSettings {
 impl Default for ProviderSettings {
     fn default() -> Self {
         Self {
-            profiles: vec![funasr_profile(), groq_llm_profile()],
+            profiles: vec![funasr_profile(), groq_llm_profile(), windows_ocr_profile()],
             defaults: ProviderDefaults {
                 asr: FUNASR_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
                 translation: FUNASR_PROVIDER_ID.to_string(),
+                ocr: SYSTEM_OCR_PROVIDER_ID.to_string(),
             },
         }
     }
@@ -287,13 +292,28 @@ pub fn groq_llm_profile() -> ProviderProfile {
     }
 }
 
+/// 内置 Windows 系统 OCR：无配置项，识别调用见 `capabilities::OcrProvider::System`。
+pub fn windows_ocr_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: SYSTEM_OCR_PROVIDER_ID.to_string(),
+        kind: "builtin-windows-ocr".to_string(),
+        display_name: "Windows 系统 OCR".to_string(),
+        auth_kind: "none".to_string(),
+        capabilities: vec!["ocr".to_string()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
 pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a ProviderProfile> {
     settings.profiles.iter().find(|profile| profile.id == id)
 }
 
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
-    vec![funasr_profile(), groq_llm_profile()]
+    vec![funasr_profile(), groq_llm_profile(), windows_ocr_profile()]
 }
 
 pub fn llm_models_from_config(config: &Value) -> Vec<LlmModelConfig> {
@@ -386,6 +406,7 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
     settings.defaults.llm = valid_or_fallback(&settings, &settings.defaults.llm, "llm");
     settings.defaults.translation =
         valid_or_fallback(&settings, &settings.defaults.translation, "translation");
+    settings.defaults.ocr = valid_or_fallback(&settings, &settings.defaults.ocr, "ocr");
 
     settings
 }
@@ -425,6 +446,7 @@ pub fn default_provider_id(settings: &ProviderSettings, capability: &str) -> Str
         "asr" => settings.defaults.asr.clone(),
         "llm" => settings.defaults.llm.clone(),
         "translation" => settings.defaults.translation.clone(),
+        "ocr" => settings.defaults.ocr.clone(),
         _ => String::new(),
     }
 }
@@ -441,6 +463,7 @@ pub fn set_default_provider(
         "asr" => settings.defaults.asr = provider_id.to_string(),
         "llm" => settings.defaults.llm = provider_id.to_string(),
         "translation" => settings.defaults.translation = provider_id.to_string(),
+        "ocr" => settings.defaults.ocr = provider_id.to_string(),
         _ => return Err(format!("不支持的能力类型：{capability}")),
     }
     Ok(())
@@ -506,6 +529,32 @@ mod tests {
         assert_eq!(normalized.defaults.asr, "funasr");
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
+        // 旧 JSON 没有 ocr 默认值：normalize 后自动落到内置系统 OCR。
+        assert_eq!(normalized.defaults.ocr, SYSTEM_OCR_PROVIDER_ID);
+    }
+
+    #[test]
+    fn ocr_default_falls_back_to_system_ocr_and_can_be_switched() {
+        let mut settings = normalize_settings(ProviderSettings::default());
+        assert_eq!(default_provider_id(&settings, "ocr"), SYSTEM_OCR_PROVIDER_ID);
+        assert!(has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"));
+
+        settings.profiles.push(ProviderProfile {
+            id: "plugin-ocr".to_string(),
+            kind: "plugin:plugin-ocr".to_string(),
+            display_name: "插件 OCR".to_string(),
+            auth_kind: "api-key".to_string(),
+            capabilities: vec!["ocr".to_string()],
+            enabled: true,
+            config: json!({}),
+            config_fields: vec![],
+            actions: vec![],
+        });
+        set_default_provider(&mut settings, "ocr", "plugin-ocr").unwrap();
+        assert_eq!(default_provider_id(&settings, "ocr"), "plugin-ocr");
+
+        let err = set_default_provider(&mut settings, "ocr", FUNASR_PROVIDER_ID).unwrap_err();
+        assert!(err.contains("不支持"));
     }
 
     #[test]

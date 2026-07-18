@@ -12,6 +12,7 @@ mod hotkey;
 #[path = "hotkey_portable.rs"]
 mod hotkey;
 mod obs_overlay;
+mod ocr;
 mod persistence;
 mod prelude;
 mod providers;
