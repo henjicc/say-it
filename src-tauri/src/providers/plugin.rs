@@ -13,7 +13,7 @@ pub const PLUGIN_API_VERSION: u32 = 4;
 pub const PLUGIN_MIN_API_VERSION: u32 = 3;
 pub const PLUGIN_HOST_API_VERSION: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
-const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies"];
+const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies", "localNetwork"];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -359,6 +359,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     for permission in &manifest.runtime.permissions {
         if !ALLOWED_PERMISSIONS.contains(&permission.as_str()) {
             return Err(format!("未知插件权限：{permission}"));
+        }
+        if permission == "localNetwork" && manifest.api_version < 4 {
+            return Err("localNetwork 权限需要插件 API 版本 4".into());
         }
     }
     if manifest
@@ -1017,6 +1020,50 @@ mod tests {
         write_ocr_manifest(&root, 3);
         let error = validate_plugin_dir(&root).unwrap_err();
         assert!(error.contains("ocr 能力需要插件 API 版本 4"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v3_plugin_cannot_declare_local_network_permission() {
+        let root = std::env::temp_dir()
+            .join(format!("sayit-plugin-localnet-{}", uuid::Uuid::new_v4()));
+        let connector = root.join("connector");
+        std::fs::create_dir_all(&connector).unwrap();
+        std::fs::write(connector.join("index.js"), b"export default () => ({})").unwrap();
+        let manifest = |api_version: u32| {
+            serde_json::json!({
+                "apiVersion": api_version,
+                "id": "local-provider",
+                "name": "Local Provider",
+                "version": "1.0.0",
+                "provider": { "id": "local-provider", "displayName": "Local", "capabilities": ["asr"], "config": {} },
+                "models": [{
+                    "id": "local-live", "label": "Local Live", "providerId": "local-provider",
+                    "category": "realtime", "protocol": "plugin-realtime-v1",
+                    "supportsVocabulary": false, "supportsAlignmentTimestamps": false,
+                    "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
+                }],
+                "runtime": {
+                    "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1,
+                    "permissions": ["localNetwork"]
+                }
+            })
+        };
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest(3)).unwrap(),
+        )
+        .unwrap();
+        let error = validate_plugin_dir(&root).unwrap_err();
+        assert!(error.contains("localNetwork 权限需要插件 API 版本 4"));
+
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest(4)).unwrap(),
+        )
+        .unwrap();
+        let manifest = validate_plugin_dir(&root).unwrap();
+        assert_eq!(manifest.runtime.permissions, vec!["localNetwork"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
