@@ -149,13 +149,6 @@ pub(crate) fn update_app_settings(
         .lock()
         .map_err(|_| "应用配置锁失败")?
         .clone();
-    let previously_used_ppocr = domain == "dictation"
-        && crate::application::dictation::active_app_context_extraction_method_from_value(
-            &next.dictation_prefs,
-        ) == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
-        && crate::application::dictation::active_app_context_ocr_engine_from_value(
-            &next.dictation_prefs,
-        ) == crate::active_app_context::OcrEngineKind::PpOcr;
     match domain.as_str() {
         "dictation" => next.dictation_prefs = value,
         "subtitles" => next.subtitle_prefs = value,
@@ -164,16 +157,6 @@ pub(crate) fn update_app_settings(
         _ => return Err(format!("未知配置领域：{domain}")),
     }
     save_settings_then_commit(&app, &state, next.clone())?;
-    // 切走 OCR 提取方式或切走 PP-OCR 引擎时，都应释放已加载的 PP-OCR 模型内存。
-    let still_uses_ppocr = crate::application::dictation::active_app_context_extraction_method_from_value(
-        &next.dictation_prefs,
-    ) == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
-        && crate::application::dictation::active_app_context_ocr_engine_from_value(
-            &next.dictation_prefs,
-        ) == crate::active_app_context::OcrEngineKind::PpOcr;
-    if previously_used_ppocr && !still_uses_ppocr {
-        crate::active_app_context::release_ocr_engine();
-    }
     Ok(next)
 }
 

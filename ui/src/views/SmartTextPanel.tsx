@@ -367,7 +367,7 @@ export function SmartTextPanel() {
           <Field
             label="OCR 引擎"
             hint={prefs.activeAppContextOcrEngine === "ppocr"
-              ? "使用内置的 PP-OCR 模型识别，首次识别需加载模型，占用更多内存，无需系统语言包。"
+              ? "使用内置的 PP-OCR 模型识别，精度较高，无需系统语言包；模型仅在识别期间短暂占用内存。"
               : "使用 Windows 系统自带的 OCR 组件识别，速度快、不占用额外内存，但需要系统已安装对应语言的「光学字符识别」组件（可在「设置-时间和语言-语言和区域」中添加）。"}
           >
             <Select

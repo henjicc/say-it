@@ -36,8 +36,6 @@ const CHARSET_SHA256: &str = "C5CBE34EF40C29C4DF07ED012BF96569CB69A2D2A01A07027E
 static MODEL_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static OCR_WORKER: OnceLock<Sender<OcrCommand>> = OnceLock::new();
 static NEXT_OCR_TASK_ID: AtomicU64 = AtomicU64::new(1);
-static OCR_ENGINE_LOADED: AtomicBool = AtomicBool::new(false);
-static RELEASE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 struct EngineState {
     engine: OcrEngine,
@@ -46,7 +44,6 @@ struct EngineState {
 
 enum OcrCommand {
     Recognize(OcrTask),
-    Release,
     Shutdown,
 }
 
@@ -95,7 +92,7 @@ fn verify_file(path: &Path, expected: &str) -> Result<(), String> {
 
 fn build_engine() -> Result<EngineState, String> {
     let started = Instant::now();
-    crate::development_debug_log("active-app-ocr", "PP-OCR 模型冷启动：校验并加载本地模型");
+    crate::development_debug_log("active-app-ocr", "PP-OCR 模型加载：校验并加载本地模型");
     let root = model_root();
     let det = root.join(DET_MODEL);
     let rec = root.join(REC_MODEL);
@@ -121,7 +118,7 @@ fn build_engine() -> Result<EngineState, String> {
     let elapsed_ms = started.elapsed().as_millis() as u64;
     crate::development_debug_log(
         "active-app-ocr",
-        format_args!("PP-OCR 模型冷启动完成：{elapsed_ms} ms；后续任务将复用内存引擎"),
+        format_args!("PP-OCR 模型加载完成：{elapsed_ms} ms；引擎将在本次任务结束后释放"),
     );
     Ok(EngineState {
         engine,
@@ -297,27 +294,9 @@ fn worker() -> &'static Sender<OcrCommand> {
         std::thread::Builder::new()
             .name("active-app-ocr".into())
             .spawn(move || {
-                // 仅 PP-OCR 需要常驻内存引擎；系统 OCR 每次调用直接查询系统组件，不在此处缓存状态。
-                let mut ppocr_engine: Option<EngineState> = None;
                 while let Ok(command) = receiver.recv() {
                     let task = match command {
-                        OcrCommand::Release => {
-                            RELEASE_REQUESTED.store(false, Ordering::Release);
-                            if ppocr_engine.take().is_some() {
-                                OCR_ENGINE_LOADED.store(false, Ordering::Release);
-                                crate::development_debug_log(
-                                    "active-app-ocr",
-                                    "PP-OCR 模型内存已释放",
-                                );
-                            }
-                            continue;
-                        }
-                        OcrCommand::Shutdown => {
-                            RELEASE_REQUESTED.store(false, Ordering::Release);
-                            ppocr_engine.take();
-                            OCR_ENGINE_LOADED.store(false, Ordering::Release);
-                            break;
-                        }
+                        OcrCommand::Shutdown => break,
                         OcrCommand::Recognize(task) => task,
                     };
                     if let Some(reason) = skip_reason(task.cancelled.as_ref(), task.deadline) {
@@ -339,22 +318,12 @@ fn worker() -> &'static Sender<OcrCommand> {
                             task.image.height(),
                         ),
                     );
-                    if task.engine_kind == OcrEngineKind::PpOcr && ppocr_engine.is_some() {
-                        crate::development_debug_log(
-                            "active-app-ocr",
-                            "复用已初始化的 PP-OCR 内存引擎",
-                        );
-                    }
+                    // PP-OCR 引擎按任务构建、任务结束即随作用域释放：实测冷启动仅数毫秒，
+                    // 而常驻会保留约 130 MiB 的 MNN 会话工作区，得不偿失。
                     let result = catch_unwind(AssertUnwindSafe(|| match task.engine_kind {
                         OcrEngineKind::PpOcr => {
-                            if ppocr_engine.is_none() {
-                                ppocr_engine = Some(build_engine()?);
-                                OCR_ENGINE_LOADED.store(true, Ordering::Release);
-                            }
-                            run_full_window_inner(
-                                ppocr_engine.as_ref().expect("engine initialized"),
-                                &task.image,
-                            )
+                            let engine = build_engine()?;
+                            run_full_window_inner(&engine, &task.image)
                         }
                         OcrEngineKind::System => run_windows_ocr_inner(&task.image),
                     }))
@@ -363,7 +332,7 @@ fn worker() -> &'static Sender<OcrCommand> {
                         Ok(output) => crate::development_debug_log(
                             "active-app-ocr",
                             format_args!(
-                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）；会话内存：检测 {} MiB，识别 {} MiB\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
+                                "任务 #{} 完成：OCR {} ms，文字框 {} 个，输出 {} 段（截断：{}）；会话内存：检测 {} MiB，识别 {} MiB；引擎内存已随任务结束释放\n--- OCR 文字开始 ---\n{}\n--- OCR 文字结束 ---",
                                 task.id,
                                 output.elapsed_ms,
                                 output.blocks.len(),
@@ -380,14 +349,6 @@ fn worker() -> &'static Sender<OcrCommand> {
                         ),
                     }
                     let _ = task.reply.send(result);
-                    if RELEASE_REQUESTED.swap(false, Ordering::AcqRel) && ppocr_engine.take().is_some()
-                    {
-                        OCR_ENGINE_LOADED.store(false, Ordering::Release);
-                        crate::development_debug_log(
-                            "active-app-ocr",
-                            "当前任务结束后已释放 PP-OCR 模型内存",
-                        );
-                    }
                 }
             })
             .expect("failed to start active app OCR worker");
@@ -474,17 +435,6 @@ pub(crate) fn run_full_window(
             }
         }
     }
-}
-
-pub(crate) fn release_engine() {
-    RELEASE_REQUESTED.store(true, Ordering::Release);
-    if let Some(worker) = OCR_WORKER.get() {
-        let _ = worker.send(OcrCommand::Release);
-    }
-    crate::development_debug_log(
-        "active-app-ocr",
-        "已请求释放 PP-OCR 模型；若推理尚未入队或正在执行，将在本次任务结束后释放",
-    );
 }
 
 pub(crate) fn shutdown() {

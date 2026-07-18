@@ -336,11 +336,6 @@ pub(crate) fn configure_native_probe_path(path: PathBuf) {
     let _ = path;
 }
 
-pub(crate) fn release_ocr_engine() {
-    #[cfg(windows)]
-    ocr::release_engine();
-}
-
 pub(crate) fn shutdown() {
     #[cfg(windows)]
     {
