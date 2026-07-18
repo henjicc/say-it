@@ -60,17 +60,33 @@ fn run() -> Result<(), String> {
         &embedded,
         true,
     )?;
-    build_archive(
-        &descriptor,
-        descriptor_dir,
-        key_id,
-        &signing_key,
-        &manifest_only,
-        false,
-    )?;
     println!("{}", embedded.display());
-    println!("{}", manifest_only.display());
+    if supports_manifest_only(&descriptor.manifest) {
+        build_archive(
+            &descriptor,
+            descriptor_dir,
+            key_id,
+            &signing_key,
+            &manifest_only,
+            false,
+        )?;
+        println!("{}", manifest_only.display());
+    }
     Ok(())
+}
+
+fn supports_manifest_only(manifest: &Value) -> bool {
+    manifest
+        .pointer("/modelPack/files")
+        .and_then(Value::as_array)
+        .is_some_and(|files| {
+            !files.is_empty()
+                && files.iter().all(|file| {
+                    file.pointer("/download/url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|url| url.starts_with("https://"))
+                })
+        })
 }
 
 fn build_archive(

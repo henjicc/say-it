@@ -9,7 +9,7 @@
 - PaddleOCR / PP-OCRv6 tiny 模型，Apache License 2.0
   https://github.com/PaddlePaddle/PaddleOCR
 
-随包模型文件校验值（SHA-256）：
+官方 PP-OCR 模型包文件校验值（SHA-256）：
 
 - PP-OCRv6_tiny_det.mnn
   7FAB7B858F136BC93A760BDCA66AAF25F0FF10ACCABB31E6EF853A897FB9CFEC

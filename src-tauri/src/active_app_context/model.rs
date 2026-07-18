@@ -81,14 +81,14 @@ pub(crate) struct ActivationTarget {
     pub(crate) cursor_position: Option<(i32, i32)>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub(crate) struct CaptureOptions {
     pub(crate) deadline: Instant,
     pub(crate) max_chars: usize,
     pub(crate) debug: bool,
     pub(crate) occluding_window_handle: Option<isize>,
     pub(crate) method: ActiveAppContextExtractionMethod,
-    pub(crate) ocr_engine: OcrEngineKind,
+    pub(crate) ocr_provider: crate::providers::capabilities::OcrProvider,
     /// 仅调试窗口会设置：覆盖截图长边像素上限（默认见 `screen_capture::MAX_CAPTURE_SIDE`）。
     pub(crate) max_capture_side_override: Option<u32>,
 }
@@ -96,7 +96,7 @@ pub(crate) struct CaptureOptions {
 impl CaptureOptions {
     pub(crate) fn for_method(
         method: ActiveAppContextExtractionMethod,
-        ocr_engine: OcrEngineKind,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
     ) -> Self {
         Self {
             deadline: Instant::now() + method.timeout(),
@@ -104,7 +104,7 @@ impl CaptureOptions {
             debug: false,
             occluding_window_handle: None,
             method,
-            ocr_engine,
+            ocr_provider,
             max_capture_side_override: None,
         }
     }
@@ -114,7 +114,7 @@ impl Default for CaptureOptions {
     fn default() -> Self {
         Self::for_method(
             ActiveAppContextExtractionMethod::default(),
-            OcrEngineKind::default(),
+            crate::providers::capabilities::OcrProvider::System,
         )
     }
 }

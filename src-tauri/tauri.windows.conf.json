@@ -16,7 +16,6 @@
   "bundle": {
     "targets": ["nsis"],
     "resources": [
-      "resources/ocr/**/*",
       "resources/licenses/**/*",
       "target/release/onnxruntime.dll",
       "target/release/onnxruntime_providers_shared.dll",

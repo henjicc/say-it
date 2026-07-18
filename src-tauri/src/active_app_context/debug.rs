@@ -5,7 +5,7 @@ use crate::prelude::*;
 use crate::state::RuntimeState;
 use tauri::AppHandle;
 
-use super::{activation_target, CaptureStatus, CapturedActiveAppContext, OcrEngineKind};
+use super::{activation_target, CaptureStatus, CapturedActiveAppContext};
 
 pub(crate) const DEBUG_RESULT_EVENT: &str = "active-app-context-debug-result";
 pub(crate) const DEBUG_STATE_EVENT: &str = "active-app-context-debug-state";
@@ -13,31 +13,34 @@ pub(crate) const DEBUG_STATE_EVENT: &str = "active-app-context-debug-state";
 static DEBUG_CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// 调试窗口设置的临时参数覆盖，仅影响调试捕获，不写入应用设置。
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct DebugCaptureOverrides {
-    ocr_engine: Option<OcrEngineKind>,
+    ocr_model: Option<String>,
     max_capture_side: Option<u32>,
 }
 
 static DEBUG_OVERRIDES: Mutex<DebugCaptureOverrides> = Mutex::new(DebugCaptureOverrides {
-    ocr_engine: None,
+    ocr_model: None,
     max_capture_side: None,
 });
 
 pub(crate) fn set_debug_capture_overrides(
-    ocr_engine: Option<OcrEngineKind>,
+    ocr_model: Option<String>,
     max_capture_side: Option<u32>,
 ) {
     if let Ok(mut guard) = DEBUG_OVERRIDES.lock() {
         *guard = DebugCaptureOverrides {
-            ocr_engine,
+            ocr_model,
             max_capture_side,
         };
     }
 }
 
 fn debug_capture_overrides() -> DebugCaptureOverrides {
-    DEBUG_OVERRIDES.lock().map(|guard| *guard).unwrap_or_default()
+    DEBUG_OVERRIDES
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Serialize)]
@@ -47,8 +50,8 @@ struct ActiveAppContextDebugPayload {
     context: CapturedActiveAppContext,
     formatted_context: String,
     message: Option<String>,
-    /// 本次调试捕获实际使用的 OCR 引擎与截图长边上限；仅 `captureMethod` 为 `ocr` 时有意义。
-    ocr_engine: Option<&'static str>,
+    /// 本次调试捕获实际使用的 OCR 模型与截图长边上限；仅 `captureMethod` 为 `ocr` 时有意义。
+    ocr_model: Option<String>,
     max_capture_side: Option<u32>,
 }
 
@@ -72,7 +75,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                 context,
                 formatted_context: String::new(),
                 message: Some("未找到可捕获的前台窗口；请先点击其他应用，再按调试快捷键。".into()),
-                ocr_engine: None,
+                ocr_model: None,
                 max_capture_side: None,
             },
         );
@@ -82,7 +85,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
-        let (blocked_apps, method, ocr_engine) = state
+        let (blocked_apps, method, ocr_model, legacy_engine, approved_providers) = state
             .app_settings
             .lock()
             .ok()
@@ -100,21 +103,39 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                     crate::application::dictation::active_app_context_extraction_method_from_value(
                         &settings.dictation_prefs,
                     );
-                let ocr_engine =
+                let legacy_engine =
                     crate::application::dictation::active_app_context_ocr_engine_from_value(
                         &settings.dictation_prefs,
                     );
-                (blocked_apps, method, ocr_engine)
+                let ocr_model =
+                    crate::application::dictation::active_app_context_ocr_model_from_value(
+                        &settings.dictation_prefs,
+                    );
+                let approved_providers = crate::application::dictation::active_app_context_ocr_approved_providers_from_value(
+                    &settings.dictation_prefs,
+                );
+                (blocked_apps, method, ocr_model, legacy_engine, approved_providers)
             })
             .unwrap_or_default();
         let overrides = debug_capture_overrides();
-        let ocr_engine = overrides.ocr_engine.unwrap_or(ocr_engine);
+        let ocr_model = overrides.ocr_model.unwrap_or(ocr_model);
+        let displayed_model = if ocr_model.trim().is_empty() {
+            legacy_engine.as_str().to_string()
+        } else {
+            ocr_model.clone()
+        };
+        let ocr_provider = crate::application::dictation::resolve_active_app_context_ocr_provider(
+            &state,
+            &ocr_model,
+            legacy_engine,
+            &approved_providers,
+        );
         let handle = state.active_app_context.begin_debug_capture(
             target,
             blocked_apps,
             debug_window_handle,
             method,
-            ocr_engine,
+            ocr_provider,
             overrides.max_capture_side,
         );
         let context = state.active_app_context.resolve(handle).await;
@@ -130,7 +151,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                     context,
                     formatted_context,
                     message: None,
-                    ocr_engine: is_ocr.then_some(ocr_engine.as_str()),
+                    ocr_model: is_ocr.then_some(displayed_model),
                     max_capture_side: is_ocr.then_some(
                         overrides
                             .max_capture_side
@@ -156,14 +177,14 @@ mod tests {
             },
             formatted_context: "应用：Notepad".into(),
             message: None,
-            ocr_engine: Some("system"),
+            ocr_model: Some("system-ocr".into()),
             max_capture_side: Some(1_600),
         })
         .unwrap();
         assert_eq!(value["status"], "captured");
         assert_eq!(value["appName"], "Notepad");
         assert_eq!(value["formattedContext"], "应用：Notepad");
-        assert_eq!(value["ocrEngine"], "system");
+        assert_eq!(value["ocrModel"], "system-ocr");
         assert_eq!(value["maxCaptureSide"], 1_600);
     }
 }

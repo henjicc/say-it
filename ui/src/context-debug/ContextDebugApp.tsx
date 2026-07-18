@@ -4,9 +4,14 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { CMD, EVT, cmd } from "@/lib/tauri";
+import { CMD, EVT, cmd, type AppSnapshot } from "@/lib/tauri";
 import { cn } from "@/lib/cn";
-import { useDictPrefs, type ActiveAppContextOcrEngine } from "@/store/useDictPrefs";
+import {
+  loadModelCatalog,
+  ocrOptionsForScene,
+  type OcrModelOption,
+} from "@/features/asr/modelRegistry";
+import { useDictPrefs } from "@/store/useDictPrefs";
 
 const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
 
@@ -45,7 +50,7 @@ interface DebugResult {
   truncated: boolean;
   formattedContext: string;
   message?: string | null;
-  ocrEngine?: "system" | "ppocr" | null;
+  ocrModel?: string | null;
   maxCaptureSide?: number | null;
 }
 
@@ -86,10 +91,38 @@ function ResultSection({ title, value }: { title: string; value?: string | null 
 export function ContextDebugApp() {
   const [result, setResult] = useState<DebugResult>();
   const [capturing, setCapturing] = useState(false);
-  const [ocrEngine, setOcrEngine] = useState<ActiveAppContextOcrEngine>(
-    () => useDictPrefs.getState().prefs.activeAppContextOcrEngine,
+  const [ocrModel, setOcrModel] = useState(
+    () => useDictPrefs.getState().prefs.activeAppContextOcrModel,
   );
   const [maxCaptureSide, setMaxCaptureSide] = useState<number>(MAX_CAPTURE_SIDE_OPTIONS[0]);
+  const [ocrModels, setOcrModels] = useState<OcrModelOption[]>([
+    { value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false },
+  ]);
+
+  useEffect(() => {
+    void Promise.all([
+      loadModelCatalog(),
+      cmd<AppSnapshot>(CMD.getAppSnapshot),
+    ])
+      .then(([, snapshot]) => {
+        const models = ocrOptionsForScene("activeAppContext");
+        const dictation = snapshot.settings.dictationPrefs;
+        const storedModel = typeof dictation.activeAppContextOcrModel === "string"
+          ? dictation.activeAppContextOcrModel
+          : "";
+        const legacyPpOcr = dictation.activeAppContextOcrEngine === "ppocr";
+        const selected = models.some((model) => model.value === storedModel)
+          ? storedModel
+          : legacyPpOcr
+            ? models.find((model) => model.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
+            : "system-ocr";
+        setOcrModels(models);
+        setOcrModel(selected);
+      })
+      .catch(() => setOcrModels([
+        { value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false },
+      ]));
+  }, []);
 
   useTauriEvent<{ state?: "waiting" | "capturing" }>(EVT.contextDebugState, (payload) => {
     setCapturing(payload.state === "capturing");
@@ -102,8 +135,8 @@ export function ContextDebugApp() {
 
   // 调试参数只影响本窗口触发的捕获，不写入应用设置；每次变更都同步给后端，下一次捕获立即生效。
   useEffect(() => {
-    void cmd(CMD.setActiveAppContextDebugOverrides, { ocrEngine, maxCaptureSide });
-  }, [ocrEngine, maxCaptureSide]);
+    void cmd(CMD.setActiveAppContextDebugOverrides, { ocrModel, maxCaptureSide });
+  }, [ocrModel, maxCaptureSide]);
 
   const close = async () => {
     await cmd(CMD.closeActiveAppContextDebug);
@@ -133,7 +166,7 @@ export function ContextDebugApp() {
                 {capturing ? "正在读取当前窗口…" : "点击目标应用后按下快捷键"}
               </p>
               <p className="mt-1 text-xs leading-5 text-[var(--color-fg-subtle)]">
-                调试窗口会保持置顶。先在其他软件中点击目标输入区，再按快捷键捕获一次；结果仅在本机显示，不会调用模型或保存。
+                调试窗口会保持置顶。先在其他软件中点击目标输入区，再按快捷键捕获一次；结果不会保存，第三方 OCR 模型仍会按已确认的隐私授权发送截图。
               </p>
             </div>
             <kbd className="rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs text-[var(--color-accent-light)]">
@@ -146,13 +179,14 @@ export function ContextDebugApp() {
           <h2 className="text-xs font-medium text-[var(--color-fg-muted)]">调试参数（仅影响本窗口触发的捕获，不写入应用设置）</h2>
           <div className="mt-3 grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1 text-xs text-[var(--color-fg-subtle)]">
-              OCR 引擎
+              OCR 模型
               <Select
-                value={ocrEngine}
-                onChange={(event) => setOcrEngine(event.target.value === "ppocr" ? "ppocr" : "system")}
+                value={ocrModel}
+                onChange={(event) => setOcrModel(event.target.value)}
               >
-                <option value="system">系统 OCR</option>
-                <option value="ppocr">内置 PP-OCR</option>
+                {ocrModels.map((model) => (
+                  <option key={model.value} value={model.value}>{model.label}</option>
+                ))}
               </Select>
             </label>
             <label className="flex flex-col gap-1 text-xs text-[var(--color-fg-subtle)]">
@@ -199,7 +233,7 @@ export function ContextDebugApp() {
               <div><span className="text-[var(--color-fg-faint)]">模式</span><p className="mt-1 text-[var(--color-fg)]">{result.captureMethod === "ocr" ? "窗口 OCR" : "文本提取"}</p></div>
               <div><span className="text-[var(--color-fg-faint)]">来源</span><p className="mt-1 text-[var(--color-fg)]">{result.source || "—"}</p></div>
               <div><span className="text-[var(--color-fg-faint)]">总耗时</span><p className="mt-1 text-[var(--color-fg)]">{result.elapsedMs} ms</p></div>
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 引擎</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrEngine === "ppocr" ? "内置 PP-OCR" : "系统 OCR"}</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 模型</span><p className="mt-1 text-[var(--color-fg)]">{ocrModels.find((model) => model.value === result.ocrModel)?.label || result.ocrModel || "—"}</p></div>}
               {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">图像</span><p className="mt-1 text-[var(--color-fg)]">{result.screenshotWidth && result.screenshotHeight ? `${result.screenshotWidth} × ${result.screenshotHeight}` : "—"}{result.maxCaptureSide ? `（长边上限 ${result.maxCaptureSide}）` : ""}</p></div>}
               {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">分项耗时</span><p className="mt-1 text-[var(--color-fg)]">截图 {result.screenshotElapsedMs} ms · 模型初始化 {result.modelInitMs} ms · OCR {result.ocrElapsedMs} ms</p></div>}
               {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 文字框</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrBlocks.length} 个</p></div>}

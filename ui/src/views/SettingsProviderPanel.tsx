@@ -366,23 +366,10 @@ function ProviderSummaryRow({ title, subtitle }: { title: string; subtitle: stri
 
 function ProviderSectionForCapability({ capability }: { capability: ProviderSectionCapability }) {
   const providers = useProviderStore((state) => state.profiles);
-  const defaults = useProviderStore((state) => state.defaults);
-  const setDefault = useProviderStore((state) => state.setDefault);
-  const [message, setMessage] = useState("");
 
   const entries = providers.filter(
     (provider) => provider.enabled && provider.capabilities.includes(capability),
   );
-  const defaultId = defaults[capability] || "";
-
-  const changeDefault = async (providerId: string) => {
-    setMessage("");
-    try {
-      await setDefault(capability, providerId);
-    } catch (error) {
-      setMessage(`默认供应商切换失败：${String(error)}`);
-    }
-  };
 
   const renderEntry = (provider: ProviderProfile) => {
     const primary = primaryCapabilityOf(provider);
@@ -425,21 +412,7 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
       {entries.length === 0 ? (
         <p className="text-xs text-[var(--color-fg-subtle)]">暂无支持该能力的供应商，可通过「插件管理」安装。</p>
       ) : (
-        <>
-          <Field label="默认供应商" controlId={`default-${capability}-provider`}>
-            <Select
-              id={`default-${capability}-provider`}
-              value={defaultId}
-              onChange={(event) => void changeDefault(event.target.value)}
-            >
-              {entries.map((provider) => (
-                <option key={provider.id} value={provider.id}>{provider.displayName}</option>
-              ))}
-            </Select>
-          </Field>
-          {message && <p className="text-xs text-[var(--color-err)]">{message}</p>}
-          {entries.map(renderEntry)}
-        </>
+        entries.map(renderEntry)
       )}
     </SettingsSection>
   );

@@ -124,8 +124,8 @@ export function PluginManagerPanel() {
   const install = async () => {
     const selected = await open({
       multiple: false,
-      title: "选择说吧插件包",
-      filters: [{ name: "说吧插件包", extensions: ["sayit"] }],
+      title: "选择说吧插件或模型包",
+      filters: [{ name: "说吧 .sayit 包", extensions: ["sayit"] }],
     });
     if (typeof selected === "string") await installFromPath(selected);
   };
@@ -181,9 +181,9 @@ export function PluginManagerPanel() {
   return (
     <SettingsSection title="插件管理">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-        <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理识别供应商插件；登录、密钥与其他配置请在「密钥与识别」中完成。</p>
+        <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理供应商插件与本地模型包；安装并启用后，对应模型会自动出现在各场景的模型下拉框。</p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" onClick={() => void install()}>安装插件</Button>
+          <Button size="sm" variant="primary" onClick={() => void install()}>安装 .sayit 包</Button>
           <Button size="sm" onClick={() => void reload()}>重新扫描</Button>
         </div>
       </div>

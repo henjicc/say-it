@@ -597,7 +597,10 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                         .provider
                         .capabilities
                         .iter()
-                        .any(|value| value == "ocr"),
+                        .any(|value| value == "ocr")
+                        && model.category == "ocr"
+                        && model.protocol == "local-ppocr-mnn"
+                        && model.scenes.iter().any(|scene| scene == "activeAppContext"),
                     _ => false,
                 }
             } else {
@@ -637,6 +640,15 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                                 .scenes
                                 .iter()
                                 .any(|scene| scene == "subtitleTranslation")
+                    }
+                    "ocr" => {
+                        manifest
+                            .provider
+                            .capabilities
+                            .iter()
+                            .any(|value| value == "ocr")
+                            && model.protocol == "plugin-ocr-v1"
+                            && model.scenes.iter().any(|scene| scene == "activeAppContext")
                     }
                     _ => false,
                 }
@@ -710,7 +722,7 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
     let required_params: &[&str] = match pack.engine.as_str() {
         "sherpa-onnx-online" => &["encoder", "decoder", "tokens"],
         "sherpa-onnx-offline" => &["model", "tokens", "vadModel"],
-        "ppocr-mnn" => &[],
+        "ppocr-mnn" => &["detModel", "recModel", "charset"],
         _ => unreachable!(),
     };
     for key in required_params {
@@ -1044,6 +1056,26 @@ impl PluginRegistry {
     pub fn model_pack_for_plugin(&self, plugin_id: &str) -> Option<LocalModelSpec> {
         let plugin = self.plugins.iter().find(|plugin| {
             plugin.manifest.id == plugin_id && plugin.manifest.runtime.kind == "model-pack"
+        })?;
+        let pack = plugin.manifest.model_pack.as_ref()?;
+        Some(LocalModelSpec {
+            plugin_id: plugin.manifest.id.clone(),
+            provider_id: plugin.manifest.provider.id.clone(),
+            engine: pack.engine.clone(),
+            model_dir: models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id),
+            files: pack.files.clone(),
+            params: pack.params.clone(),
+        })
+    }
+
+    pub fn local_model_for_engine(&self, engine: &str) -> Option<LocalModelSpec> {
+        let plugin = self.plugins.iter().find(|plugin| {
+            plugin.manifest.runtime.kind == "model-pack"
+                && plugin
+                    .manifest
+                    .model_pack
+                    .as_ref()
+                    .is_some_and(|pack| pack.engine == engine)
         })?;
         let pack = plugin.manifest.model_pack.as_ref()?;
         Some(LocalModelSpec {
