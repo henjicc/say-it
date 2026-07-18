@@ -11,6 +11,8 @@ mod screen_capture;
 mod unsupported;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_ocr;
 
 use model::DICTATION_RESOLVE_WAIT;
 use std::path::PathBuf;
@@ -24,7 +26,7 @@ const MAX_CONCURRENT_CAPTURES: usize = 4;
 pub(crate) use debug::{request_debug_capture, reset_debug_capture, DEBUG_STATE_EVENT};
 pub(crate) use model::{
     ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, CaptureOptions,
-    CaptureStatus, CapturedActiveAppContext,
+    CaptureStatus, CapturedActiveAppContext, OcrEngineKind,
 };
 
 pub(crate) trait ActiveAppContextProvider: Send + Sync + 'static {
@@ -101,8 +103,13 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
         method: ActiveAppContextExtractionMethod,
+        ocr_engine: OcrEngineKind,
     ) -> ContextCaptureHandle {
-        self.begin_capture_inner(target, blocked_apps, CaptureOptions::for_method(method))
+        self.begin_capture_inner(
+            target,
+            blocked_apps,
+            CaptureOptions::for_method(method, ocr_engine),
+        )
     }
 
     pub(crate) fn begin_debug_capture(
@@ -111,8 +118,9 @@ impl ContextCaptureService {
         blocked_apps: Vec<String>,
         debug_window_handle: Option<isize>,
         method: ActiveAppContextExtractionMethod,
+        ocr_engine: OcrEngineKind,
     ) -> ContextCaptureHandle {
-        let mut options = CaptureOptions::for_method(method);
+        let mut options = CaptureOptions::for_method(method, ocr_engine);
         options.debug = true;
         options.occluding_window_handle = debug_window_handle;
         self.begin_capture_inner(target, blocked_apps, options)

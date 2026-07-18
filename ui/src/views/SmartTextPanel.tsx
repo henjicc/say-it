@@ -363,6 +363,23 @@ export function SmartTextPanel() {
           </Select>
         </Field>
 
+        {prefs.activeAppContextExtractionMethod === "ocr" && (
+          <Field
+            label="OCR 引擎"
+            hint={prefs.activeAppContextOcrEngine === "ppocr"
+              ? "使用内置的 PP-OCR 模型识别，首次识别需加载模型，占用更多内存，无需系统语言包。"
+              : "使用 Windows 系统自带的 OCR 组件识别，速度快、不占用额外内存，但需要系统已安装对应语言的「光学字符识别」组件（可在「设置-时间和语言-语言和区域」中添加）。"}
+          >
+            <Select
+              value={prefs.activeAppContextOcrEngine}
+              onChange={(event) => void patch({ activeAppContextOcrEngine: event.target.value === "ppocr" ? "ppocr" : "system" })}
+            >
+              <option value="system">系统 OCR（默认）</option>
+              <option value="ppocr">内置 PP-OCR</option>
+            </Select>
+          </Field>
+        )}
+
         <Field
           label="应用黑名单"
           controlId="active-app-context-blocked-app"
