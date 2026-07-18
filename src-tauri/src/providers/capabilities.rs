@@ -2,6 +2,8 @@ use super::{alibabacloud, ProviderProfile};
 pub use alibabacloud::{
     HotwordEntry, TranscriptionParams, TranscriptionResult, TranscriptionTaskStatus,
 };
+use base64::Engine;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -10,6 +12,7 @@ use std::time::Duration;
 
 use super::plugin::PluginRuntimeSpec;
 use super::plugin_runtime;
+use crate::ocr::{NormalizedRegion, OcrTextBlock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityError {
@@ -173,6 +176,137 @@ impl FileRecognitionProvider {
             Self::Plugin { .. } => Err("插件文件识别不使用宿主结果下载流程".into()),
         }
     }
+}
+
+/// 插件 OCR 识别的调用上限。图像最大 960px PNG（Base64 后远小于响应上限），
+/// 在线 OCR API 往返通常在数秒内；60 秒足够覆盖慢速网络而不至于无限等待。
+const PLUGIN_OCR_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+pub enum OcrProvider {
+    /// Windows 系统 OCR（WinRT），转发 `crate::ocr::windows`。
+    System,
+    Plugin {
+        spec: PluginRuntimeSpec,
+        profile: ProviderProfile,
+    },
+}
+#[cfg(test)]
+pub fn ocr_for(profile: &ProviderProfile) -> Result<OcrProvider, CapabilityError> {
+    ocr_for_with_plugin(profile, None)
+}
+pub fn ocr_for_with_plugin(
+    profile: &ProviderProfile,
+    plugin: Option<PluginRuntimeSpec>,
+) -> Result<OcrProvider, CapabilityError> {
+    if let Some(spec) = plugin {
+        return Ok(OcrProvider::Plugin {
+            spec,
+            profile: profile.clone(),
+        });
+    }
+    match profile.kind.as_str() {
+        "builtin-windows-ocr" => Ok(OcrProvider::System),
+        _ => Err(unsupported(profile, "ocr")),
+    }
+}
+impl OcrProvider {
+    /// 通用 OCR 接口：输入 PNG 字节与用途标识（如 "activeAppContext"），
+    /// 输出按 0~1 归一化坐标的文本块列表；排序、去重等收尾由消费方决定。
+    pub async fn recognize(
+        &self,
+        image_png: &[u8],
+        purpose: &str,
+    ) -> Result<Vec<OcrTextBlock>, String> {
+        match self {
+            Self::System => {
+                let png = image_png.to_vec();
+                tokio::task::spawn_blocking(move || system_ocr_recognize(&png))
+                    .await
+                    .map_err(|error| format!("系统 OCR 工作线程失败：{error}"))?
+            }
+            Self::Plugin { spec, profile } => {
+                let value = plugin_runtime::invoke(
+                    spec,
+                    profile,
+                    "recognizeImage",
+                    serde_json::json!({
+                        "imageBase64":
+                            base64::engine::general_purpose::STANDARD.encode(image_png),
+                        "purpose": purpose,
+                    }),
+                    PLUGIN_OCR_TIMEOUT,
+                    |_| {},
+                )
+                .await?;
+                parse_plugin_ocr_blocks(&value)
+            }
+        }
+    }
+}
+
+fn system_ocr_recognize(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
+    #[cfg(windows)]
+    {
+        let image = image::load_from_memory(png)
+            .map_err(|error| format!("解码 OCR 图像失败：{error}"))?;
+        crate::ocr::windows::recognize(&image)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = png;
+        Err("系统 OCR 仅在 Windows 上可用".into())
+    }
+}
+
+/// v4 插件 `recognizeImage` 返回约定：`{ blocks: [{ text, region: { x, y, width, height }, confidence? }] }`，
+/// 坐标为相对图像宽高的 0~1 归一化值；越界值会被收敛到合法区间。
+fn parse_plugin_ocr_blocks(value: &Value) -> Result<Vec<OcrTextBlock>, String> {
+    #[derive(Deserialize)]
+    struct PluginOcrRegion {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+    #[derive(Deserialize)]
+    struct PluginOcrBlock {
+        text: String,
+        region: PluginOcrRegion,
+        #[serde(default)]
+        confidence: Option<f32>,
+    }
+    let blocks = value
+        .get("blocks")
+        .cloned()
+        .ok_or("插件 OCR 结果缺少 blocks 数组")?;
+    let blocks: Vec<PluginOcrBlock> = serde_json::from_value(blocks).map_err(|error| {
+        format!("插件 OCR 结果格式错误（期望 blocks[].text 与 region.x/y/width/height）：{error}")
+    })?;
+    Ok(blocks
+        .into_iter()
+        .filter_map(|block| {
+            let text = crate::ocr::normalize_text(&block.text);
+            if text.is_empty() {
+                return None;
+            }
+            let bounds = NormalizedRegion {
+                left: block.region.x,
+                top: block.region.y,
+                right: block.region.x + block.region.width,
+                bottom: block.region.y + block.region.height,
+            }
+            .clamped();
+            Some(OcrTextBlock {
+                text,
+                confidence: block
+                    .confidence
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(1.0),
+                bounds,
+            })
+        })
+        .collect())
 }
 
 #[derive(Clone)]
@@ -438,5 +572,82 @@ mod tests {
         assert!(file_recognition_for(&p).is_ok());
         assert!(translation_for(&p).is_ok());
         assert!(customization_for(&p).is_ok());
+    }
+
+    #[test]
+    fn ocr_factory_supports_builtin_system_profile_only() {
+        assert!(matches!(
+            ocr_for(&super::super::windows_ocr_profile()),
+            Ok(OcrProvider::System)
+        ));
+        let error = match ocr_for(&fake()) {
+            Err(error) => error,
+            Ok(_) => panic!("expected unsupported profile to fail"),
+        };
+        assert_eq!((error.provider_id.as_str(), error.capability), ("fake", "ocr"));
+    }
+
+    #[test]
+    fn plugin_ocr_blocks_are_normalized_and_clamped() {
+        let value = json!({
+            "blocks": [
+                { "text": "  hello   world ", "region": { "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.1 } },
+                { "text": "overflow", "region": { "x": 0.9, "y": 0.9, "width": 0.5, "height": 0.5 }, "confidence": 0.75 },
+                { "text": "   ", "region": { "x": 0.0, "y": 0.0, "width": 0.1, "height": 0.1 } }
+            ]
+        });
+        let blocks = parse_plugin_ocr_blocks(&value).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "hello world");
+        assert_eq!(blocks[0].confidence, 1.0);
+        assert!((blocks[0].bounds.right - 0.4).abs() < 1e-6);
+        assert_eq!(blocks[1].confidence, 0.75);
+        assert_eq!(blocks[1].bounds.right, 1.0);
+        assert_eq!(blocks[1].bounds.bottom, 1.0);
+
+        assert!(parse_plugin_ocr_blocks(&json!({})).unwrap_err().contains("缺少 blocks"));
+        assert!(parse_plugin_ocr_blocks(&json!({ "blocks": [{ "text": "x" }] }))
+            .unwrap_err()
+            .contains("格式错误"));
+    }
+
+    #[test]
+    fn plugin_recognize_image_round_trips_payload_and_blocks() {
+        let root = std::env::temp_dir().join(format!("sayit-ocr-plugin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("connector")).unwrap();
+        std::fs::write(
+            root.join("connector/index.js"),
+            concat!(
+                "export default host => ({ invoke(request) {\n",
+                "  if (request.operation !== 'recognizeImage') throw new Error('未知操作');\n",
+                "  const { imageBase64, purpose } = request.payload;\n",
+                "  const bytes = host.base64.decode(imageBase64);\n",
+                "  return { blocks: [{ text: purpose + ':' + bytes.length, region: { x: 0.25, y: 0.5, width: 0.25, height: 0.1 } }] };\n",
+                "} });",
+            ),
+        )
+        .unwrap();
+        let spec = PluginRuntimeSpec {
+            plugin_id: "ocr-plugin".into(),
+            root: root.clone(),
+            entrypoint: root.join("connector/index.js"),
+            permissions: vec![],
+            allowed_hosts: vec![],
+            browser_session: None,
+            data_dir: root.join("data"),
+            trust: "unsigned".into(),
+        };
+        let mut profile = fake();
+        profile.capabilities = vec!["ocr".into()];
+        let provider = ocr_for_with_plugin(&profile, Some(spec)).unwrap();
+        let blocks = tauri::async_runtime::block_on(
+            provider.recognize(&[1_u8, 2, 3, 4], "activeAppContext"),
+        )
+        .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "activeAppContext:4");
+        assert!((blocks[0].bounds.left - 0.25).abs() < 1e-6);
+        assert!((blocks[0].bounds.bottom - 0.6).abs() < 1e-6);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

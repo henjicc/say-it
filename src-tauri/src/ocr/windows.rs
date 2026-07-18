@@ -6,8 +6,7 @@ use windows::Media::Ocr::OcrEngine as WindowsOcrEngine;
 use windows::Storage::Streams::DataWriter;
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
-use super::model::{NormalizedRegion, OcrTextBlock};
-use super::normalize::normalize_text;
+use super::{normalize_text, NormalizedRegion, OcrTextBlock};
 
 const NO_LANGUAGE_PACK_MESSAGE: &str = "系统未安装可用的 OCR 语言包，请前往「设置-时间和语言-语言和区域」为对应语言添加「光学字符识别」组件，或切换为内置 OCR 引擎。";
 

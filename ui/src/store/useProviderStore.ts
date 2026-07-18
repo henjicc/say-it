@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CMD, cmd } from "@/lib/tauri";
 
-export type ProviderCapability = "asr" | "llm" | "translation" | "customization";
+export type ProviderCapability = "asr" | "llm" | "translation" | "customization" | "ocr";
 
 export interface ProviderStatus {
   hasApiKey?: boolean;
@@ -28,6 +28,7 @@ export interface ProviderDefaults {
   // 预留给 LLM 后处理能力，当前未使用，空串表示未设置。
   llm: string;
   translation: string;
+  ocr: string;
 }
 
 export interface ProviderResponse {
@@ -84,6 +85,7 @@ const FALLBACK_DEFAULTS: ProviderDefaults = {
   asr: "",
   llm: "",
   translation: "",
+  ocr: "",
 };
 
 function normalize(response: ProviderResponse): Pick<ProviderState, "profiles" | "defaults"> {
