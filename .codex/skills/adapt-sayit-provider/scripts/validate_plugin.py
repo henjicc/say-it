@@ -15,7 +15,7 @@ ID = re.compile(r"^[a-z0-9.-]{1,64}$")
 ACTION_ID = re.compile(r"^[A-Za-z0-9.-]{1,64}$")
 COOKIE_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$")
 HOST = re.compile(r"^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
-PERMISSIONS = {"network", "browserSession", "cookies"}
+PERMISSIONS = {"network", "localNetwork", "browserSession", "cookies"}
 NATIVE_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".com", ".scr", ".msi", ".node", ".wasm"}
 NATIVE_MAGICS = (
     b"MZ", b"\x7fELF", b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",
@@ -116,8 +116,9 @@ def validate(root: Path) -> dict:
     if not manifest_path.is_file():
         fail("manifest.json 不存在")
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if data.get("apiVersion") != 3:
-        fail("apiVersion 必须为 3；旧进程插件不兼容")
+    api_version = data.get("apiVersion")
+    if api_version not in {3, 4}:
+        fail("apiVersion 必须为宿主支持的 3 或 4")
     provider = data.get("provider") or {}
     for label, value in (("插件", data.get("id")), ("供应商", provider.get("id"))):
         if not isinstance(value, str) or not ID.fullmatch(value):
@@ -125,7 +126,9 @@ def validate(root: Path) -> dict:
     if not str(data.get("name", "")).strip() or not str(data.get("version", "")).strip():
         fail("name 和 version 不能为空")
     capabilities = set(provider.get("capabilities", []))
-    if not capabilities & {"asr", "translation", "customization"}:
+    if api_version < 4 and "ocr" in capabilities:
+        fail("ocr 能力需要 apiVersion 4")
+    if not capabilities & {"asr", "translation", "customization", "ocr"}:
         fail("provider.capabilities 未声明受支持能力")
     if not isinstance(provider.get("config", {}), dict):
         fail("provider.config 必须是 JSON 对象")
@@ -147,6 +150,8 @@ def validate(root: Path) -> dict:
     permissions = set(runtime.get("permissions", []))
     if permissions - PERMISSIONS:
         fail(f"未知权限：{sorted(permissions - PERMISSIONS)}")
+    if api_version < 4 and "localNetwork" in permissions:
+        fail("localNetwork 权限需要 apiVersion 4")
     allowed_hosts = (runtime.get("network") or {}).get("allowedHosts", [])
     if "network" in permissions and not allowed_hosts:
         fail("声明 network 权限时 allowedHosts 不能为空")
@@ -187,8 +192,11 @@ def validate(root: Path) -> dict:
             fail(f"browserSession 必须声明操作：{sorted(required)}")
 
     models = data.get("models")
-    if not isinstance(models, list) or not models:
-        fail("至少声明一个模型")
+    if not isinstance(models, list):
+        fail("models 必须是数组")
+    ocr_only = "ocr" in capabilities and capabilities <= {"ocr", "customization"}
+    if not models and not ocr_only:
+        fail("至少声明一个模型；纯 OCR 插件可省略模型")
     seen: set[str] = set()
     for model in models:
         model_id = model.get("id")
@@ -204,6 +212,8 @@ def validate(root: Path) -> dict:
             category == "file" and "asr" in capabilities and protocol == "plugin-file-v1" and bool(scenes & {"dictationFile", "transcription"})
         ) or (
             category == "translation" and "translation" in capabilities and protocol == "plugin-translation-v1" and "subtitleTranslation" in scenes
+        ) or (
+            category == "ocr" and "ocr" in capabilities and protocol == "plugin-ocr-v1" and "activeAppContext" in scenes
         )
         if not valid:
             fail(f"模型 {model_id} 的类别、协议或场景组合不受支持")

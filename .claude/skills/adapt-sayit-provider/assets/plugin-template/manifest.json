@@ -1,5 +1,5 @@
 {
-  "apiVersion": 3,
+  "apiVersion": 4,
   "id": "replace-provider",
   "name": "待替换供应商",
   "version": "0.1.0",

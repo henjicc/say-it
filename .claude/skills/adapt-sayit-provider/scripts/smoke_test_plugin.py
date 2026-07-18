@@ -5,9 +5,11 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 from validate_plugin import validate
 
 RUNNER = r"""
@@ -46,7 +48,7 @@ def main() -> int:
     args = parser.parse_args()
     root = args.plugin_dir.resolve()
     manifest = validate(root)
-    with tempfile.TemporaryDirectory(prefix="sayit-smoke-", dir=root.parent) as temporary:
+    with tempfile.TemporaryDirectory(prefix="sayit-smoke-") as temporary:
         test_root = Path(temporary)
         shutil.copytree(root / "connector", test_root / "connector")
         (test_root / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
@@ -67,7 +69,8 @@ def main() -> int:
     methods = set(result["methods"])
     if "realtime" in categories and not {"realtimeStart", "realtimeAudio", "realtimeFinish", "realtimeStop"}.issubset(methods):
         raise SystemExit("SMOKE FAILED: 实时模型缺少 realtimeStart/realtimeAudio/realtimeFinish/realtimeStop")
-    if categories & {"file", "translation"} and "invoke" not in methods:
+    capabilities = set(manifest["provider"]["capabilities"])
+    if (categories & {"file", "translation", "ocr"} or "ocr" in capabilities) and "invoke" not in methods:
         raise SystemExit("SMOKE FAILED: 一次性模型缺少 invoke")
     print(f"SMOKE OK: {manifest['id']} ({', '.join(sorted(methods))})")
     return 0
