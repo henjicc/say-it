@@ -994,6 +994,20 @@ mod tests {
             verify_installation(&root, &manifest, &HashMap::new()).unwrap(),
             "signed-untrusted"
         );
+        let pack = manifest.model_pack.as_ref().unwrap();
+        let embedded = pack.files.iter().all(|file| root.join(&file.path).is_file());
+        if !embedded {
+            assert!(pack.files.iter().all(|file| {
+                !root.join(&file.path).exists()
+                    && file
+                        .download
+                        .as_ref()
+                        .is_some_and(|download| download.url.starts_with("https://"))
+            }));
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
         let data = std::env::temp_dir().join(format!("sayit-installed-pack-{}", Uuid::new_v4()));
         let installed = data.join("plugins").join(&manifest.id);
         let models = data.join("models").join(&manifest.id);
@@ -1005,14 +1019,14 @@ mod tests {
             installed.join("sayit-package.json"),
         )
         .unwrap();
-        for file in &manifest.model_pack.as_ref().unwrap().files {
+        for file in &pack.files {
             std::fs::copy(root.join(&file.path), models.join(&file.path)).unwrap();
         }
         assert_eq!(
             verify_installed_model_pack(&installed, &manifest, &HashMap::new()).unwrap(),
             "signed-untrusted"
         );
-        let first = &manifest.model_pack.as_ref().unwrap().files[0];
+        let first = &pack.files[0];
         std::fs::write(models.join(&first.path), b"tampered").unwrap();
         assert!(verify_installed_model_pack(&installed, &manifest, &HashMap::new()).is_err());
         std::fs::remove_dir_all(data).unwrap();

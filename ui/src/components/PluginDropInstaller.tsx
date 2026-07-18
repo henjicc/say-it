@@ -31,14 +31,22 @@ export function PluginDropInstaller() {
   };
 
   useEffect(() => {
+    let active = true;
     setPreview(undefined);
     setPreviewError("");
     setTrustReason("");
     setMessage("");
     if (!sourcePath) return;
     void cmd<PackagePreview>(CMD.previewProviderPlugin, { sourcePath })
-      .then(setPreview)
-      .catch((error) => setPreviewError(String(error)));
+      .then((value) => {
+        if (active) setPreview(value);
+      })
+      .catch((error) => {
+        if (active) setPreviewError(String(error));
+      });
+    return () => {
+      active = false;
+    };
   }, [sourcePath]);
 
   useEffect(() => {
@@ -127,60 +135,62 @@ export function PluginDropInstaller() {
           </div>
         </div>
       )}
-      <Modal
-        open={Boolean(sourcePath)}
-        onClose={close}
-        title={trustReason ? "确认信任扩展包来源" : "导入 .sayit 包"}
-        showCloseButton={false}
-        className="max-w-[460px]"
-      >
-        <div className="p-5">
-          {previewError ? (
-            <>
-              <p className="text-sm font-medium text-[var(--color-err)]">无法读取说吧包</p>
-              <p className="mt-2 break-words text-sm leading-relaxed text-[var(--color-fg-subtle)]">{previewError}</p>
-            </>
-          ) : trustReason ? (
-            <>
-              <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-                此扩展包未签名，或签名密钥尚未受信任。仅在确认来源可靠时继续；安装后它将获得清单中声明的权限。
-              </p>
-              <p className="mt-3 break-words text-xs leading-relaxed text-[var(--color-err)]">{trustReason}</p>
-            </>
-          ) : preview ? (
-            <>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-1 text-xs text-[var(--color-accent-light)]">
-                  {preview.packageKind === "model-pack" ? "本地模型包" : "在线插件"}
-                </span>
-                <p className="text-sm font-medium text-[var(--color-fg)]">{preview.name}</p>
-                <span className="text-xs text-[var(--color-fg-subtle)]">v{preview.version}</span>
-              </div>
-              <dl className="mt-4 grid grid-cols-[76px_1fr] gap-x-3 gap-y-2 text-sm">
-                <dt className="text-[var(--color-fg-subtle)]">能力</dt>
-                <dd className="text-[var(--color-fg)]">{preview.capabilities.map(capabilityLabel).join("、") || "无"}</dd>
-                <dt className="text-[var(--color-fg-subtle)]">模型</dt>
-                <dd className="text-[var(--color-fg)]">{preview.modelLabels.join("、") || "无显式模型"}</dd>
-                <dt className="text-[var(--color-fg-subtle)]">签名</dt>
-                <dd className="text-[var(--color-fg)]">{TRUST_LABEL[preview.trust]}</dd>
-              </dl>
-              <p className="mt-4 break-all text-xs text-[var(--color-fg-subtle)]">{fileName(sourcePath)}</p>
-              <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">确认后才会安装；同 ID 的已安装版本会被替换。</p>
-            </>
-          ) : (
-            <p className="text-sm text-[var(--color-fg-subtle)]">正在校验包清单、文件完整性与签名…</p>
-          )}
-          {message && <p className={message.startsWith("安装失败") ? "mt-4 text-sm text-[var(--color-err)]" : "mt-4 text-sm text-[var(--color-ok)]"}>{message}</p>}
-          <div className="mt-6 flex justify-end gap-2">
-            <Button size="sm" autoFocus onClick={close} disabled={installing}>{message && !message.startsWith("安装失败") ? "关闭" : "取消"}</Button>
-            {!previewError && preview && (!message || message.startsWith("安装失败")) && (
-              <Button size="sm" variant={trustReason ? "danger" : "primary"} disabled={installing} onClick={() => void install(Boolean(trustReason))}>
-                {installing ? "正在安装..." : trustReason ? "信任并安装" : "确认安装"}
-              </Button>
+      {sourcePath && (
+        <Modal
+          open
+          onClose={close}
+          title={trustReason ? "确认信任扩展包来源" : "导入 .sayit 包"}
+          showCloseButton={false}
+          className="max-w-[460px]"
+        >
+          <div className="p-5">
+            {previewError ? (
+              <>
+                <p className="text-sm font-medium text-[var(--color-err)]">无法读取说吧包</p>
+                <p className="mt-2 break-words text-sm leading-relaxed text-[var(--color-fg-subtle)]">{previewError}</p>
+              </>
+            ) : trustReason ? (
+              <>
+                <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+                  此扩展包未签名，或签名密钥尚未受信任。仅在确认来源可靠时继续；安装后它将获得清单中声明的权限。
+                </p>
+                <p className="mt-3 break-words text-xs leading-relaxed text-[var(--color-err)]">{trustReason}</p>
+              </>
+            ) : preview ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-1 text-xs text-[var(--color-accent-light)]">
+                    {preview.packageKind === "model-pack" ? "本地模型包" : "在线插件"}
+                  </span>
+                  <p className="text-sm font-medium text-[var(--color-fg)]">{preview.name}</p>
+                  <span className="text-xs text-[var(--color-fg-subtle)]">v{preview.version}</span>
+                </div>
+                <dl className="mt-4 grid grid-cols-[76px_1fr] gap-x-3 gap-y-2 text-sm">
+                  <dt className="text-[var(--color-fg-subtle)]">能力</dt>
+                  <dd className="text-[var(--color-fg)]">{preview.capabilities.map(capabilityLabel).join("、") || "无"}</dd>
+                  <dt className="text-[var(--color-fg-subtle)]">模型</dt>
+                  <dd className="text-[var(--color-fg)]">{preview.modelLabels.join("、") || "无显式模型"}</dd>
+                  <dt className="text-[var(--color-fg-subtle)]">签名</dt>
+                  <dd className="text-[var(--color-fg)]">{TRUST_LABEL[preview.trust]}</dd>
+                </dl>
+                <p className="mt-4 break-all text-xs text-[var(--color-fg-subtle)]">{fileName(sourcePath)}</p>
+                <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">确认后才会安装；同 ID 的已安装版本会被替换。</p>
+              </>
+            ) : (
+              <p className="text-sm text-[var(--color-fg-subtle)]">正在校验包清单、文件完整性与签名…</p>
             )}
+            {message && <p className={message.startsWith("安装失败") ? "mt-4 text-sm text-[var(--color-err)]" : "mt-4 text-sm text-[var(--color-ok)]"}>{message}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <Button size="sm" autoFocus onClick={close} disabled={installing}>{message && !message.startsWith("安装失败") ? "关闭" : "取消"}</Button>
+              {!previewError && preview && (!message || message.startsWith("安装失败")) && (
+                <Button size="sm" variant={trustReason ? "danger" : "primary"} disabled={installing} onClick={() => void install(Boolean(trustReason))}>
+                  {installing ? "正在安装..." : trustReason ? "信任并安装" : "确认安装"}
+                </Button>
+              )}
+            </div>
           </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
     </>
   );
 }

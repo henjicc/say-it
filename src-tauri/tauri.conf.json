@@ -35,6 +35,11 @@
     "externalBin": ["binaries/context-probe"],
     "resources": [
       "resources/licenses/*"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/nsis-hooks.nsh"
+      }
+    }
   }
 }
