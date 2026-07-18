@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::plugin::LocalModelSpec;
 use super::plugin::PluginRuntimeSpec;
 use super::plugin_runtime;
 use crate::ocr::{NormalizedRegion, OcrTextBlock};
@@ -57,6 +58,9 @@ pub enum FileRecognitionProvider {
         spec: PluginRuntimeSpec,
         profile: ProviderProfile,
     },
+    Local {
+        spec: LocalModelSpec,
+    },
 }
 #[cfg(test)]
 pub fn file_recognition_for(
@@ -64,10 +68,21 @@ pub fn file_recognition_for(
 ) -> Result<FileRecognitionProvider, CapabilityError> {
     file_recognition_for_with_plugin(profile, None)
 }
+#[cfg(test)]
 pub fn file_recognition_for_with_plugin(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
+    file_recognition_for_with_extensions(profile, plugin, None)
+}
+pub fn file_recognition_for_with_extensions(
+    profile: &ProviderProfile,
+    plugin: Option<PluginRuntimeSpec>,
+    local: Option<LocalModelSpec>,
+) -> Result<FileRecognitionProvider, CapabilityError> {
+    if let Some(spec) = local {
+        return Ok(FileRecognitionProvider::Local { spec });
+    }
     if let Some(spec) = plugin {
         return Ok(FileRecognitionProvider::Plugin {
             spec,
@@ -100,6 +115,7 @@ impl FileRecognitionProvider {
         match self {
             Self::AlibabaCloud { .. } => alibabacloud::uses_async_transcription_task(model),
             Self::Plugin { .. } => false,
+            Self::Local { .. } => false,
         }
     }
     pub async fn recognize_short(
@@ -126,6 +142,35 @@ impl FileRecognitionProvider {
                 serde_json::from_value(value)
                     .map_err(|error| format!("插件文件识别结果格式错误：{error}"))
             }
+            Self::Local { spec } => {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    return Err("录音识别已取消".into());
+                }
+                let spec = spec.clone();
+                let path = path.to_string();
+                let result = tauri::async_runtime::spawn_blocking(move || {
+                    let samples = crate::audio_prep::decode_to_mono_16k(&path)?;
+                    let duration_ms = (samples.len() as u64).saturating_mul(1_000) / 16_000;
+                    let text = super::local_asr::recognize_file_segments(&spec, &samples)?;
+                    serde_json::from_value(serde_json::json!({
+                        "durationMs": duration_ms,
+                        "transcripts": [{ "channelId": null, "text": text, "sentences": [] }]
+                    }))
+                    .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("本地文件识别任务失败：{error}"))??;
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    return Err("录音识别已取消".into());
+                }
+                Ok(result)
+            }
         }
     }
     pub async fn upload(&self, model: &str, path: &str) -> Result<String, String> {
@@ -134,6 +179,7 @@ impl FileRecognitionProvider {
                 alibabacloud::upload_for_model(api_key, model, path).await
             }
             Self::Plugin { .. } => Err("插件文件识别不使用宿主上传流程".into()),
+            Self::Local { .. } => Err("本地文件识别不使用上传流程".into()),
         }
     }
     pub async fn submit(
@@ -160,6 +206,7 @@ impl FileRecognitionProvider {
                 .await
             }
             Self::Plugin { .. } => Err("插件文件识别不使用宿主异步任务流程".into()),
+            Self::Local { .. } => Err("本地文件识别不使用异步任务流程".into()),
         }
     }
     pub async fn query(&self, id: &str) -> Result<TranscriptionTaskStatus, String> {
@@ -168,12 +215,14 @@ impl FileRecognitionProvider {
                 alibabacloud::query_transcription_task(api_key, id).await
             }
             Self::Plugin { .. } => Err("插件文件识别不使用宿主轮询流程".into()),
+            Self::Local { .. } => Err("本地文件识别不使用轮询流程".into()),
         }
     }
     pub async fn fetch(&self, url: &str) -> Result<TranscriptionResult, String> {
         match self {
             Self::AlibabaCloud { .. } => alibabacloud::fetch_transcription_result(url).await,
             Self::Plugin { .. } => Err("插件文件识别不使用宿主结果下载流程".into()),
+            Self::Local { .. } => Err("本地文件识别不使用结果下载流程".into()),
         }
     }
 }

@@ -1,0 +1,9 @@
+sherpa-onnx
+Copyright (c) 2022-2026 k2-fsa contributors
+Licensed under the Apache License 2.0. See Apache-2.0.txt.
+https://github.com/k2-fsa/sherpa-onnx
+
+ONNX Runtime
+Copyright (c) Microsoft Corporation
+Licensed under the MIT License. See MIT.txt.
+https://github.com/microsoft/onnxruntime

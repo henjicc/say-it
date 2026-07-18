@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Trash2 } from "lucide-react";
+import { Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
@@ -13,7 +13,7 @@ import {
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
-import { CMD, cmd } from "@/lib/tauri";
+import { CMD, EVT, cmd, on } from "@/lib/tauri";
 
 const TRUST_LABEL: Record<PluginSummary["trust"], string> = {
   trusted: "签名可信",
@@ -29,6 +29,20 @@ const PERMISSION_LABEL: Record<string, string> = {
   cookies: "Cookie",
 };
 
+const MODEL_STATE_LABEL: Record<string, string> = {
+  pending: "等待下载",
+  partial: "下载未完成",
+  corrupt: "模型校验失败",
+  downloading: "正在下载",
+  ready: "模型已就绪",
+};
+
+function formatBytes(value: number) {
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(0, value / 1024).toFixed(1)} KB`;
+}
+
 export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
@@ -42,6 +56,32 @@ export function PluginManagerPanel() {
 
   useEffect(() => {
     void loadSnapshot().catch((error) => setMessage(`读取插件失败：${String(error)}`));
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const keepListener = (stop: () => void) => {
+      if (disposed) stop();
+      else unlisteners.push(stop);
+    };
+    void on<{
+      pluginId: string;
+      packDownloadedBytes: number;
+      packTotalBytes: number;
+      state: string;
+    }>(EVT.modelPackProgress, (event) => {
+      setSnapshot((current) => current && ({
+        ...current,
+        plugins: current.plugins.map((plugin) => plugin.id === event.pluginId && plugin.modelPack
+          ? { ...plugin, modelPack: { ...plugin.modelPack, state: event.state as "downloading" | "ready", readyBytes: event.packDownloadedBytes, totalBytes: event.packTotalBytes } }
+          : plugin),
+      }));
+    }).then(keepListener);
+    void on<{ extractedBytes: number; totalBytes: number }>(EVT.pluginInstallProgress, (event) => {
+      setMessage(`正在安装：${formatBytes(event.extractedBytes)} / ${formatBytes(event.totalBytes)}`);
+    }).then(keepListener);
+    return () => {
+      disposed = true;
+      unlisteners.forEach((stop) => stop());
+    };
   }, []);
 
   const reload = async () => {
@@ -105,6 +145,22 @@ export function PluginManagerPanel() {
     }
   };
 
+  const downloadModel = async (plugin: PluginSummary) => {
+    setBusyPluginId(plugin.id);
+    setMessage("");
+    try {
+      const next = await cmd<PluginSnapshot>(CMD.downloadProviderModelPack, { pluginId: plugin.id });
+      setSnapshot(next);
+      await refreshPluginConsumers();
+      setMessage(`${plugin.name}模型已下载并校验。`);
+    } catch (error) {
+      setMessage(`模型下载失败：${String(error)}`);
+      await loadSnapshot();
+    } finally {
+      setBusyPluginId("");
+    }
+  };
+
   const uninstall = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
     setMessage("");
@@ -145,13 +201,25 @@ export function PluginManagerPanel() {
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <p className="text-sm font-medium text-[var(--color-fg)]">{plugin.name}</p>
                     <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version}</span>
+                    <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.runtimeKind === "model-pack" ? "模型包" : "连接器"}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{TRUST_LABEL[plugin.trust]}</span>
                   </div>
                   <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
                     权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、") || "无"}
                   </p>
+                  {plugin.modelPack && (
+                    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
+                      {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state} · {formatBytes(plugin.modelPack.readyBytes)} / {formatBytes(plugin.modelPack.totalBytes)}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {plugin.modelPack?.downloadable && plugin.modelPack.state !== "ready" && (
+                    <Button size="sm" disabled={busy} onClick={() => void downloadModel(plugin)}>
+                      <Download className="h-4 w-4" aria-hidden />
+                      {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}
+                    </Button>
+                  )}
                   <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
                   <Switch
                     checked={plugin.enabled}
@@ -191,7 +259,7 @@ export function PluginManagerPanel() {
       >
         <div className="p-5">
           <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            确认卸载“{pendingUninstall?.name}”吗？插件配置、登录会话、Cookie 与浏览数据都会一并删除，无法恢复。
+            确认卸载“{pendingUninstall?.name}”吗？插件配置、登录会话、Cookie、浏览数据与已下载的模型文件都会一并删除，无法恢复。
           </p>
           <div className="mt-6 flex justify-end gap-2">
             <Button size="sm" variant="dangerHover" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>

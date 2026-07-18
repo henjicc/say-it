@@ -7,6 +7,8 @@ pub mod alibabacloud;
 pub mod browser_session_capture;
 pub mod capabilities;
 pub mod connector;
+pub mod local_asr;
+pub mod model_download;
 pub mod plugin;
 pub mod plugin_package;
 pub mod plugin_runtime;
