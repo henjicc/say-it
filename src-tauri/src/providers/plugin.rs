@@ -1182,6 +1182,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adapt_skill_v4_template_matches_host_manifest_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "sayit-adapt-skill-template-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("connector")).unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            include_str!(
+                "../../../.codex/skills/adapt-sayit-provider/assets/plugin-template/manifest.json"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("connector/index.js"),
+            include_str!("../../../.codex/skills/adapt-sayit-provider/assets/plugin-template/connector/index.js"),
+        )
+        .unwrap();
+
+        let manifest = validate_plugin_dir(&root).unwrap();
+        assert_eq!(manifest.api_version, PLUGIN_API_VERSION);
+        assert_eq!(manifest.runtime.kind, "javascript");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_entrypoint_escape() {
         let root = std::env::temp_dir();
         assert!(safe_entrypoint(&root, "../bad.js").is_err());

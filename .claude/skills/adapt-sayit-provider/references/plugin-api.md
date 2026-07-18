@@ -1,4 +1,4 @@
-# 「说吧！」供应商插件 API v3
+# 「说吧！」供应商插件 API v4
 
 ## 包结构
 
@@ -25,7 +25,7 @@ provider.sayit
 
 ```json
 {
-  "apiVersion": 3,
+  "apiVersion": 4,
   "runtime": {
     "kind": "javascript",
     "entrypoint": "connector/index.js",
@@ -36,7 +36,9 @@ provider.sayit
 }
 ```
 
-权限只有 `network`、`browserSession`、`cookies`。声明 `network` 时白名单不能为空；仅允许精确主机或 `*.` 开头的子域规则，不写协议、端口和路径。
+权限只有 `network`、`localNetwork`、`browserSession`、`cookies`。声明 `network` 时白名单不能为空；仅允许精确主机或 `*.` 开头的子域规则，不写协议、端口和路径。
+
+`localNetwork` 仅用于连接本机服务：允许 `http://` / `ws://` 访问字面主机 `127.0.0.1`、`localhost`、`[::1]`，不要求写入 `allowedHosts`。它不允许局域网 IP、主机别名或公网明文地址。插件若还访问公网，必须同时声明 `network` 并列出最小公网主机白名单。v3 不允许声明 `localNetwork`。
 
 网页会话插件可在 `browserSession` 中声明 `requiredCookieNames`。它是会话完整性校验用的非敏感 Cookie 名列表；宿主在保存前必须能从 `allowedUrls` 读取所有名称，否则拒绝覆盖原有受保护会话。`allowedUrls` 要覆盖实际登录页及需要读取路径级 Cookie 的页面，例如登录页为 `/chat` 时不要只写站点根路径。
 
@@ -70,6 +72,9 @@ provider.sayit
 - `plugin-realtime-v1`：`realtime`，场景含 `dictationRealtime` 或 `subtitles`。
 - `plugin-file-v1`：`file`，场景含 `dictationFile` 或 `transcription`。
 - `plugin-translation-v1`：`translation`，场景含 `subtitleTranslation`。
+- `plugin-ocr-v1`：`ocr`，场景含 `activeAppContext`。纯 OCR 插件可不声明模型，此时宿主按供应商生成场景下拉项。
+
+API v3 兼容说明：宿主继续接受 v3 的 `asr`、`translation`、`customization` JavaScript 插件；v3 不得声明 `ocr`、`localNetwork` 或 `model-pack`。新插件默认使用 v4，不要为了兼容主动降级。
 
 ## 入口接口
 
@@ -93,7 +98,20 @@ export default function createProvider(host) {
 
 `realtimeAudio` 接收单声道 16 kHz PCM16 小端序的 `Uint8Array`。插件不得自行采集麦克风、处理系统设备或注入文本。
 
-一次性调用统一进入 `invoke({ operation, payload })`。常见操作为 `transcribeFile`、`translate`、`setHotwords`、`getHotwords`、`clearHotwords` 和 `action`。文件操作的 `payload.input` 只有 `id`、`name`、`size`；上传时把 `input.id` 交给宿主 HTTP 请求的 `inputId`，不能获得真实路径。
+一次性调用统一进入 `invoke({ operation, payload })`。常见操作为 `transcribeFile`、`translate`、`recognizeImage`、`setHotwords`、`getHotwords`、`clearHotwords` 和 `action`。文件操作的 `payload.input` 只有 `id`、`name`、`size`；上传时把 `input.id` 交给宿主 HTTP 请求的 `inputId`，不能获得真实路径。
+
+翻译操作接收宿主提供的文本、源语言、目标语言与模型等字段；不要依赖未声明字段。流式增量通过 `host.emit({ type: "delta", text })` 发出，最终返回供应商响应中归一化后的结果。
+
+OCR 操作固定为：
+
+```js
+const result = await provider.invoke({
+  operation: "recognizeImage",
+  payload: { imageBase64: "<PNG Base64>", purpose: "activeAppContext" },
+});
+```
+
+返回值固定为 `{ blocks: [{ text, region: { x, y, width, height }, confidence? }] }`。`region` 使用相对原图的 0~1 坐标；无文字时返回空 `blocks`，不得把失败伪装为空结果。图像可能包含用户正在编辑的内容，严禁写日志、存储或转发到清单未声明的主机。
 
 ## 宿主 API
 
