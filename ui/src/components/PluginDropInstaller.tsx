@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { CircleCheck, CircleX, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { firstAcceptedPath, PLUGIN_PACKAGE_DROP_ROUTE } from "@/features/fileDrop/routes";
@@ -12,6 +13,12 @@ function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
+type InstallState =
+  | { status: "idle" }
+  | { status: "installing" }
+  | { status: "success" }
+  | { status: "error"; message: string; allowUntrusted: boolean };
+
 export function PluginDropInstaller() {
   const [dragActive, setDragActive] = useState(false);
   const sourcePath = usePluginImportStore((state) => state.pendingPaths[0]);
@@ -22,8 +29,8 @@ export function PluginDropInstaller() {
   const [preview, setPreview] = useState<PackagePreview>();
   const [previewError, setPreviewError] = useState("");
   const [trustReason, setTrustReason] = useState("");
-  const [installing, setInstalling] = useState(false);
-  const [message, setMessage] = useState("");
+  const [installState, setInstallState] = useState<InstallState>({ status: "idle" });
+  const installing = installState.status === "installing";
 
   const close = () => {
     if (installing) return;
@@ -35,7 +42,7 @@ export function PluginDropInstaller() {
     setPreview(undefined);
     setPreviewError("");
     setTrustReason("");
-    setMessage("");
+    setInstallState({ status: "idle" });
     if (!sourcePath) return;
     void cmd<PackagePreview>(CMD.previewProviderPlugin, { sourcePath })
       .then((value) => {
@@ -101,29 +108,35 @@ export function PluginDropInstaller() {
 
   const install = async (allowUntrusted: boolean) => {
     if (!sourcePath) return;
-    setInstalling(true);
-    setMessage("");
+    setInstallState({ status: "installing" });
+    setTrustReason("");
     try {
       await installPluginPackage(sourcePath, {
         allowUnsigned: allowUntrusted,
         trustSigningKey: allowUntrusted,
         expectedArchiveSha256: preview?.archiveSha256,
       });
-      setMessage(preview?.packageKind === "model-pack" ? "模型包已安装并加载。" : "插件已安装并加载。");
-      setTrustReason("");
+      setInstallState({ status: "success" });
       setView("settings");
       setSettingsTab("plugins");
-      await emitEvent(EVT.pluginRegistryChanged);
+      void emitEvent(EVT.pluginRegistryChanged).catch((error) => {
+        console.error("刷新插件目录失败", error);
+      });
     } catch (error) {
       if (!allowUntrusted && requiresExplicitTrust(error)) {
+        setInstallState({ status: "idle" });
         setTrustReason(String(error));
       } else {
-        setMessage(`安装失败：${String(error)}`);
+        setInstallState({ status: "error", message: String(error), allowUntrusted });
       }
-    } finally {
-      setInstalling(false);
     }
   };
+
+  const packageName = preview?.name || "所选插件";
+  const installLabel = preview?.packageKind === "model-pack" ? "安装模型包" : "安装插件";
+  const successDescription = preview?.packageKind === "model-pack"
+    ? `${packageName} 已安装。关闭后可在插件管理中查看模型状态并启用。`
+    : `${packageName} 已安装并加载。关闭后可在插件管理中配置或启用。`;
 
   return (
     <>
@@ -131,7 +144,7 @@ export function PluginDropInstaller() {
         <div className="pointer-events-none fixed inset-0 z-[calc(var(--z-modal)-1)] grid place-items-center bg-[var(--accent-soft)] p-8">
           <div className="rounded-[var(--radius-xl)] border border-dashed border-[var(--color-accent)] bg-[var(--color-overlay)] px-7 py-5 text-center shadow-[var(--shadow-popover)]">
             <p className="text-base font-medium text-[var(--color-fg)]">松开以安装说吧插件</p>
-            <p className="mt-1 text-sm text-[var(--color-fg-subtle)]">支持 .sayit 插件包</p>
+            <p className="mt-1 text-sm text-[var(--color-fg-subtle)]">支持 .sayit 插件包和模型包</p>
           </div>
         </div>
       )}
@@ -139,23 +152,68 @@ export function PluginDropInstaller() {
         <Modal
           open
           onClose={close}
-          title={trustReason ? "确认信任扩展包来源" : "导入 .sayit 包"}
+          title={trustReason ? "确认插件来源" : "安装插件"}
           showCloseButton={false}
           className="max-w-[460px]"
         >
           <div className="p-5">
-            {previewError ? (
-              <>
-                <p className="text-sm font-medium text-[var(--color-err)]">无法读取说吧包</p>
-                <p className="mt-2 break-words text-sm leading-relaxed text-[var(--color-fg-subtle)]">{previewError}</p>
-              </>
-            ) : trustReason ? (
-              <>
-                <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-                  此扩展包未签名，或签名密钥尚未受信任。仅在确认来源可靠时继续；安装后它将获得清单中声明的权限。
+            {installState.status === "success" ? (
+              <div role="status" aria-live="polite" className="flex items-start gap-3">
+                <CircleCheck className="mt-0.5 h-8 w-8 flex-none text-[var(--color-ok)]" aria-hidden />
+                <div className="min-w-0">
+                  <h4 className="text-base font-semibold text-[var(--color-fg)]">安装完成</h4>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">{successDescription}</p>
+                </div>
+              </div>
+            ) : installState.status === "error" ? (
+              <div role="alert">
+                <div className="flex items-start gap-3">
+                  <CircleX className="mt-0.5 h-8 w-8 flex-none text-[var(--color-err)]" aria-hidden />
+                  <div className="min-w-0">
+                    <h4 className="text-base font-semibold text-[var(--color-fg)]">安装失败</h4>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--color-fg-muted)]">请检查错误信息后重新安装。</p>
+                  </div>
+                </div>
+                <p className="mt-4 max-h-32 overflow-y-auto break-words rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--color-err)_12%,transparent)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-err)]">
+                  {installState.message}
                 </p>
-                <p className="mt-3 break-words text-xs leading-relaxed text-[var(--color-err)]">{trustReason}</p>
-              </>
+              </div>
+            ) : installing ? (
+              <div role="status" aria-live="polite" className="flex items-start gap-3">
+                <LoaderCircle className="mt-0.5 h-7 w-7 flex-none animate-spin text-[var(--color-accent-light)]" aria-hidden />
+                <div className="min-w-0">
+                  <h4 className="text-sm font-semibold text-[var(--color-fg)]">正在安装</h4>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">正在校验并安装 {packageName}，请不要关闭窗口。</p>
+                </div>
+              </div>
+            ) : previewError ? (
+              <div role="alert">
+                <div className="flex items-start gap-3">
+                  <CircleX className="mt-0.5 h-8 w-8 flex-none text-[var(--color-err)]" aria-hidden />
+                  <div className="min-w-0">
+                    <h4 className="text-base font-semibold text-[var(--color-fg)]">无法安装插件</h4>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--color-fg-muted)]">文件未通过校验，请确认这是有效的 .sayit 文件。</p>
+                  </div>
+                </div>
+                <p className="mt-4 max-h-32 overflow-y-auto break-words rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--color-err)_12%,transparent)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-err)]">
+                  {previewError}
+                </p>
+              </div>
+            ) : trustReason ? (
+              <div role="alert">
+                <div className="flex items-start gap-3">
+                  <TriangleAlert className="mt-0.5 h-7 w-7 flex-none text-[var(--color-warn)]" aria-hidden />
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-semibold text-[var(--color-fg)]">发布者尚未受信任</h4>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--color-fg-muted)]">
+                      仅在确认插件来源可靠时继续。安装后，插件将获得清单中声明的权限。
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-4 break-words rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--color-warn)_10%,transparent)] px-3 py-2.5 text-xs leading-relaxed text-[var(--color-warn)]">
+                  {trustReason}
+                </p>
+              </div>
             ) : preview ? (
               <>
                 <div className="flex flex-wrap items-center gap-2">
@@ -174,18 +232,38 @@ export function PluginDropInstaller() {
                   <dd className="text-[var(--color-fg)]">{TRUST_LABEL[preview.trust]}</dd>
                 </dl>
                 <p className="mt-4 break-all text-xs text-[var(--color-fg-subtle)]">{fileName(sourcePath)}</p>
-                <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">确认后才会安装；同 ID 的已安装版本会被替换。</p>
+                <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">安装后，同 ID 的现有版本将被替换。</p>
               </>
             ) : (
-              <p className="text-sm text-[var(--color-fg-subtle)]">正在校验包清单、文件完整性与签名…</p>
+              <div role="status" aria-live="polite" className="flex items-center gap-3 py-1">
+                <LoaderCircle className="h-5 w-5 animate-spin text-[var(--color-accent-light)]" aria-hidden />
+                <p className="text-sm text-[var(--color-fg-muted)]">正在校验插件清单、文件完整性与签名…</p>
+              </div>
             )}
-            {message && <p className={message.startsWith("安装失败") ? "mt-4 text-sm text-[var(--color-err)]" : "mt-4 text-sm text-[var(--color-ok)]"}>{message}</p>}
             <div className="mt-6 flex justify-end gap-2">
-              <Button size="sm" autoFocus onClick={close} disabled={installing}>{message && !message.startsWith("安装失败") ? "关闭" : "取消"}</Button>
-              {!previewError && preview && (!message || message.startsWith("安装失败")) && (
-                <Button size="sm" variant={trustReason ? "danger" : "primary"} disabled={installing} onClick={() => void install(Boolean(trustReason))}>
-                  {installing ? "正在安装..." : trustReason ? "信任并安装" : "确认安装"}
+              {installState.status === "success" ? (
+                <Button size="sm" variant="primary" autoFocus onClick={close}>完成</Button>
+              ) : installState.status === "error" ? (
+                <>
+                  <Button size="sm" onClick={close}>关闭</Button>
+                  <Button size="sm" variant="primary" autoFocus onClick={() => void install(installState.allowUntrusted)}>重新安装</Button>
+                </>
+              ) : previewError ? (
+                <Button size="sm" autoFocus onClick={close}>关闭</Button>
+              ) : installing ? (
+                <Button size="sm" variant="primary" disabled>
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  正在安装
                 </Button>
+              ) : (
+                <>
+                  <Button size="sm" autoFocus onClick={close}>取消</Button>
+                  {preview && (
+                    <Button size="sm" variant={trustReason ? "danger" : "primary"} onClick={() => void install(Boolean(trustReason))}>
+                      {trustReason ? "信任并安装" : installLabel}
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>
