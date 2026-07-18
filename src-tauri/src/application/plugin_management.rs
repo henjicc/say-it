@@ -470,10 +470,7 @@ fn ensure_login_window(
         return Ok(window);
     }
     let url = url::Url::parse(&browser.login_url).map_err(|error| error.to_string())?;
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
+    let data_dir = crate::application::data_root::data_root(app)?
         .join("plugin-webviews")
         .join(plugin_id);
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
@@ -502,10 +499,7 @@ fn reset_login_webview_profile(
         window.close().map_err(|error| error.to_string())?;
     }
 
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
+    let data_dir = crate::application::data_root::data_root(app)?
         .join("plugin-webviews")
         .join(plugin_id);
     if data_dir.exists() {

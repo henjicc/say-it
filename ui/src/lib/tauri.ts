@@ -76,6 +76,9 @@ export const CMD = {
   openExternalLink: "open_external_link",
   getStartupSettings: "get_startup_settings",
   setStartupSettings: "set_startup_settings",
+  getDataRootStatus: "get_data_root_status",
+  migrateDataRoot: "migrate_data_root",
+  restartApp: "restart_app",
   setDebugLog: "set_debug_log",
   setHotkeyCapturing: "set_hotkey_capturing",
   debugModelCallState: "debug_model_call_state",
@@ -149,7 +152,25 @@ export const EVT = {
   indicatorKeyup: "dictation-indicator-keyup",
   contextDebugState: "active-app-context-debug-state",
   contextDebugResult: "active-app-context-debug-result",
+  dataRootMigration: "data-root-migration",
 } as const;
+
+export interface DataRootStatus {
+  activeRoot: string;
+  configuredRoot: string;
+  defaultRoot: string;
+  isCustom: boolean;
+  restartRequired: boolean;
+}
+
+export interface DataRootMigrationEvent {
+  phase: "copying" | "done" | "failed";
+  copiedBytes: number;
+  totalBytes: number;
+  copiedFiles: number;
+  totalFiles: number;
+  message?: string | null;
+}
 
 export function cmd<T = unknown>(
   command: string,

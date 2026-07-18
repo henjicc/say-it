@@ -28,6 +28,7 @@ use application::audio_lab::{
 use application::catalog::get_model_catalog;
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
+use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
 use application::dictation::{
     dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime,
     preview_dictation_cue,
@@ -122,6 +123,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
+            application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
             #[cfg(windows)]
             {
                 let resolved_model_root = app
@@ -338,6 +340,9 @@ fn main() {
             uninstall_provider_plugin,
             run_provider_plugin_action,
             import_legacy_settings,
+            get_data_root_status,
+            migrate_data_root,
+            restart_app,
             update_app_settings,
             update_custom_cue,
             get_session_status,
