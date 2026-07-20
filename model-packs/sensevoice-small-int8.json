@@ -32,7 +32,7 @@
         "category": "file",
         "protocol": "local-sherpa-offline",
         "supportsVocabulary": false,
-        "supportsAlignmentTimestamps": false,
+        "supportsAlignmentTimestamps": true,
         "emitsPartialResults": false,
         "scenes": ["dictationFile", "transcription"],
         "isDefaultRealtime": false,
