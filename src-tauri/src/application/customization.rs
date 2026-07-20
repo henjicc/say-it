@@ -5,8 +5,8 @@
 //! 上下文（`supportsContext`）。因此这里只维护一份全局数据，由本模块按模型能力
 //! 分别渲染，供应商层不再各存一份热词。
 //!
-//! 上下文模板里的 `{{hotwords}}` 会被替换成热词文本；模板留空时退化为纯热词列表，
-//! 保证「只填热词」的用户在只支持上下文的模型上仍然有效。
+//! 上下文完全由模板决定：模板留空就不下发上下文，需要带上热词时由用户在模板里显式
+//! 插入 `{{hotwords}}` 变量。热词不会被隐式塞进上下文。
 
 use crate::providers::capabilities::HotwordEntry;
 use crate::providers::RequestCustomization;
@@ -54,14 +54,14 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// 上下文完全由模板决定：模板留空就不下发上下文，模板里没有 `{{hotwords}}` 就不带热词。
+/// 热词要不要出现在上下文里是用户的显式选择，不做隐式合并。
 pub(crate) fn render_context(prefs: &CustomizationPrefs) -> String {
-    let hotwords_text = hotwords_as_text(&prefs.hotwords);
     let template = prefs.context_template.trim();
-    let rendered = if template.is_empty() {
-        hotwords_text
-    } else {
-        template.replace(HOTWORDS_PLACEHOLDER, &hotwords_text)
-    };
+    if template.is_empty() {
+        return String::new();
+    }
+    let rendered = template.replace(HOTWORDS_PLACEHOLDER, &hotwords_as_text(&prefs.hotwords));
     truncate_chars(rendered.trim(), MAX_CONTEXT_CHARS)
 }
 
@@ -93,10 +93,8 @@ pub(crate) fn validate_customization_settings_value(value: &Value) -> Result<(),
     if prefs.hotwords.len() > MAX_HOTWORDS {
         return Err(format!("热词数量不能超过 {MAX_HOTWORDS} 条"));
     }
+    // 允许空热词：界面上「添加热词」先插入一条待填写的空行，落库后由 normalize 剔除。
     for item in &prefs.hotwords {
-        if item.text.trim().is_empty() {
-            return Err("热词内容不能为空".into());
-        }
         if item.text.chars().count() > MAX_HOTWORD_CHARS {
             return Err(format!("单条热词不能超过 {MAX_HOTWORD_CHARS} 个字符"));
         }
@@ -230,12 +228,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_template_falls_back_to_plain_hotword_list() {
-        let prefs = CustomizationPrefs {
-            hotwords: vec![entry("说吧", 4), entry("Fun-ASR", 3)],
-            context_template: String::new(),
-        };
-        assert_eq!(render_context(&prefs), "说吧 Fun-ASR");
+    fn hotwords_only_reach_context_through_the_placeholder() {
+        let hotwords = vec![entry("说吧", 4), entry("Fun-ASR", 3)];
+        // 模板留空：不下发上下文。
+        assert_eq!(
+            render_context(&CustomizationPrefs {
+                hotwords: hotwords.clone(),
+                context_template: String::new(),
+            }),
+            ""
+        );
+        // 模板不含变量：只用模板文本，不隐式塞入热词。
+        assert_eq!(
+            render_context(&CustomizationPrefs {
+                hotwords,
+                context_template: "一场技术分享".into(),
+            }),
+            "一场技术分享"
+        );
     }
 
     #[test]
