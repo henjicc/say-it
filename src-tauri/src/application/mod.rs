@@ -3,6 +3,7 @@ pub(crate) mod audio_lab;
 pub(crate) mod catalog;
 pub(crate) mod compare;
 pub(crate) mod contract;
+pub(crate) mod customization;
 pub(crate) mod data_root;
 pub(crate) mod dictation;
 pub(crate) mod events;

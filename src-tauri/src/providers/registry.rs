@@ -25,6 +25,15 @@ pub struct ModelInfo {
     pub category: String,
     pub protocol: String,
     pub supports_vocabulary: bool,
+    /// 是否支持「上下文增强」：识别请求可以携带一段自然语言/词表文本，模型据此修正专有名词。
+    ///
+    /// 与 `supports_vocabulary` 相互独立：前者是带权重的词表接口，后者是纯文本上下文接口，
+    /// 同一个模型可以两者都支持、都不支持或只支持其一。宿主按声明分别下发全局热词与全局上下文。
+    ///
+    /// 必须 `skip_serializing_if`，理由同 `emits_partial_results`：签名载荷由本结构体重新
+    /// 序列化得到，缺省时若序列化成 `null` 会让既有插件签名集体失效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_context: Option<bool>,
     pub supports_alignment_timestamps: bool,
     /// 识别过程中是否输出可变的中间结果（"边说边出字"）。
     ///
@@ -96,6 +105,14 @@ pub fn supports_vocabulary(model: &str) -> bool {
         let normalized = model.trim();
         normalized.starts_with("fun-asr") || normalized.starts_with("paraformer")
     }
+}
+
+/// 判断模型是否支持上下文增强。未声明按不支持处理：上下文只在明确声明的模型上生效，
+/// 避免向不认识该字段的模型塞入无效内容。
+pub fn supports_context(model: &str) -> bool {
+    model_info(model)
+        .and_then(|info| info.supports_context)
+        .unwrap_or(false)
 }
 
 /// 判断模型是否支持对齐时间戳（文稿对齐场景需要）。
@@ -229,6 +246,16 @@ mod tests {
         assert!(supports_vocabulary("paraformer-unknown"));
         // 表外模型：其他不支持
         assert!(!supports_vocabulary("unknown-model"));
+    }
+
+    #[test]
+    fn test_supports_context() {
+        // 表内声明支持上下文增强的模型
+        assert!(supports_context("fun-asr-flash-2026-06-15"));
+        // 表内未声明的模型按不支持处理
+        assert!(!supports_context("fun-asr-realtime"));
+        // 表外模型不做前缀兜底，一律不支持
+        assert!(!supports_context("fun-asr-unknown"));
     }
 
     #[test]

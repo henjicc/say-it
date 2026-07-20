@@ -18,7 +18,7 @@ pub const VOCABULARY_TARGETS: &[(&str, &str)] = &[
 ];
 
 /// 单条热词（文本 + 权重），用于创建/更新热词列表。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HotwordEntry {
     pub text: String,

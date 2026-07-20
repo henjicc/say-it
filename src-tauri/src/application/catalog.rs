@@ -7,7 +7,7 @@ use crate::providers::plugin::PluginRegistry;
 use crate::providers::ProviderSettingsResponse;
 use crate::state::RuntimeState;
 
-pub const CATALOG_VERSION: u32 = 3;
+pub const CATALOG_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +19,8 @@ pub struct ModelCatalogItem {
     pub protocol: String,
     pub scenes: Vec<String>,
     pub supports_vocabulary: bool,
+    /// 已按「未声明即不支持」解析，前端直接消费。
+    pub supports_context: bool,
     pub supports_alignment_timestamps: bool,
     /// 已按 `category` 兜底解析，前端直接消费，不再感知"未声明"状态。
     pub emits_partial_results: bool,
@@ -61,6 +63,7 @@ pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegist
                 protocol: model.protocol.clone(),
                 scenes: model.scenes.clone(),
                 supports_vocabulary: model.supports_vocabulary,
+                supports_context: model.supports_context.unwrap_or(false),
                 supports_alignment_timestamps: model.supports_alignment_timestamps,
                 emits_partial_results: model.emits_partial_results(),
                 is_default_realtime: model.is_default_realtime,

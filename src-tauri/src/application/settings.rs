@@ -20,6 +20,9 @@ pub(crate) struct AppSettings {
     pub(crate) subtitle_prefs: Value,
     #[serde(default = "empty_object")]
     pub(crate) compare_prefs: Value,
+    /// 全局热词与上下文，见 `application::customization`。
+    #[serde(default = "empty_object")]
+    pub(crate) customization_prefs: Value,
     #[serde(default = "default_theme")]
     pub(crate) theme: Value,
     #[serde(default)]
@@ -53,6 +56,7 @@ impl Default for AppSettings {
             dictation_prefs: empty_object(),
             subtitle_prefs: empty_object(),
             compare_prefs: empty_object(),
+            customization_prefs: empty_object(),
             theme: default_theme(),
             custom_cue_start: None,
             custom_cue_end: None,
@@ -144,6 +148,9 @@ pub(crate) fn update_app_settings(
     if domain == "dictation" {
         crate::application::dictation::validate_dictation_settings_value(&value)?;
     }
+    if domain == "customization" {
+        crate::application::customization::validate_customization_settings_value(&value)?;
+    }
     let mut next = state
         .app_settings
         .lock()
@@ -153,6 +160,7 @@ pub(crate) fn update_app_settings(
         "dictation" => next.dictation_prefs = value,
         "subtitles" => next.subtitle_prefs = value,
         "comparison" => next.compare_prefs = value,
+        "customization" => next.customization_prefs = value,
         "theme" => next.theme = value,
         _ => return Err(format!("未知配置领域：{domain}")),
     }

@@ -54,6 +54,7 @@
     "category": "file",
     "protocol": "file-sync-funasr-flash",
     "supportsVocabulary": false,
+    "supportsContext": true,
     "supportsAlignmentTimestamps": true,
     "scenes": ["dictationFile", "transcription"],
     "isDefaultRealtime": false,
