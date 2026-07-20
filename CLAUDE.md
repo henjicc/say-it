@@ -137,6 +137,7 @@
 ## 项目专属信息
 
 - 项目目标：桌面端语音/听写应用「说吧！」，包含主窗口与悬浮指示窗口。
+- 项目内 `测试/` 是插件测试目录，插件开发与测试产物均在此目录进行。
 - 技术栈与运行环境：Tauri 2 + Rust 2021 后端，React 19 + TypeScript + Vite 6 + Tailwind CSS 4 前端，Windows 为主要打包目标（NSIS）。
 - 包管理器：npm，锁文件为 `package-lock.json`。
 - 安装命令：`npm install`。
@@ -145,8 +146,13 @@
 - 测试命令：当前未配置自动化测试脚本。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
-- UI 设计系统：视觉走「深蓝黑桌面风格」，令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
+- UI 设计系统：视觉走「深蓝黑桌面风格」，产品与视觉原则见根目录 `PRODUCT.md`、`DESIGN.md`；令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
+- UI 分区与卡片边界：设置页和 Tab 页面优先使用 `SettingsSection/FormGrid/Field` 形成扁平分区，禁止用一张外层卡片包住整个页面或整个 Tab，也禁止无意义的卡片嵌套；卡片仅用于独立实体、折叠内容、预览或边界明确的列表。
+- UI 控件尺寸与对齐：标准 Button/Input/Select 必须消费统一的 44px `--control-h` 或 34px `--control-h-sm`；同排字段操作使用 `Field.actions`，hint 独占下一行。禁止在页面通过 `items-end`、子选择器或额外 `h-*` 修补标准控件对齐；高密列表确需更小尺寸时必须显式限定在列表内部。
+- 持久化密钥：已保存的 API Key、密码等敏感字段必须复用 `SecretInput`；掩码只能是展示状态，不得进入 input value、`onChange`、保存请求、日志或领域快照。目录快照只投影是否已配置，明文仅能在用户点击显隐操作后按需读取，并在失焦、保存、切换实体或卸载时清理。
+- UI 无障碍基线：新组件与页面以 WCAG AA 为默认门槛，必须支持键盘操作、可见焦点、明确标签与状态语义、足够文字对比度，并尊重 `prefers-reduced-motion`。
 - 不可违反的架构边界：业务与平台能力优先放在 `src-tauri/src` 的明确模块中；React 组件避免直接承载复杂业务流程；UI 改造不得破坏现有 store、`features` controller、Tauri invoke/event 和桌面交互；多入口页面需同时考虑 `ui/index.html` 主窗口和 `ui/indicator.html` 悬浮窗。
+- 最终运行时边界：持久化、听写、字幕/翻译/OBS、转写、模型对比和音频调校均以 Rust `application/` 为唯一权威；前端只能调用领域命令并投影快照/`domain-event`，不得恢复 raw PCM、ASR 流、供应商专属命令或前端会话状态机。0.3.x 的 `localStorage` 仅保留双写回退镜像，不能作为读取权威或新增持久化入口。
 - 自动生成文件及其生成命令：`ui/dist/` 由 `npm run ui:build` 生成；`src-tauri/target/` 由 Cargo/Tauri 生成；`src-tauri/gen/schemas/` 为 Tauri 生成 schema，通常不要手工改。
 - 必需环境变量或平台限制：开发端口固定为 `5155` 且 `strictPort: true`；Tauri 配置的 `devUrl` 依赖该端口。
 - 已知陷阱和非显而易见行为：`vite.config.ts` 以 `ui/` 为 root，并配置 `main` 与 `indicator` 两个打包入口；`tauri.conf.json` 中主窗口初始 `visible: false`、`decorations: false`，窗口显示逻辑在后端控制；`ui/dist/`、`src-tauri/target/` 不应手工维护；主题为运行时切换——`App.tsx` 根据 `useThemeStore` 在 `<html>` 上写 `data-ui-tone` 并覆写 `--color-*` 令牌，`index.css` 靠 `[data-ui-tone="light"]` 选择器补齐亮色，暗色为主要方向、亮色仅保证可用不破版。
@@ -155,3 +161,4 @@
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
 - `.sayit` 同时承载 API v3/v4 JavaScript 供应商插件与 v4 无代码模型包；在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
+- sherpa-onnx VAD（`sherpa-onnx-offline` 引擎）必须按 `vadWindowSize` 小块喂入，且不得在语音未确认时 `reset()`；细节见 `docs/experience/sherpa-onnx-VAD喂入块过大与误reset导致无识别结果.md`。
