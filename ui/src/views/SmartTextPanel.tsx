@@ -266,7 +266,7 @@ export function SmartTextPanel() {
         />}
       >
         <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          识别结束后先执行本地处理，再把文本交给默认大语言模型，最终注入模型返回的内容。
+          识别结束后先把文本交给默认大语言模型，再对模型返回的内容执行本地处理，最终注入处理结果。
         </p>
       </SettingsSection>
 

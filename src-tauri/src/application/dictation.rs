@@ -1031,18 +1031,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
     }
-    let local_processed = match apply_rules(&text, &prefs) {
-        Ok(v) => v,
-        Err(e) => {
-            let state = app.state::<RuntimeState>();
-            if let Some(lease) = &lease {
-                let _ = state.audio_session.release(lease);
-            }
-            remove_temp(temp_path.clone());
-            let _ = fail(app, epoch, e).await;
-            return;
-        }
-    };
     let active_app_context = if let Some(handle) = active_app_context {
         let state = app.state::<RuntimeState>();
         let captured = state.active_app_context.resolve_for_dictation(handle).await;
@@ -1070,7 +1058,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         String::new()
     };
-    let processed = if prefs.smart_processing_enabled && !local_processed.is_empty() {
+    // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
+    // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
+    let smart_processed = if prefs.smart_processing_enabled && !text.is_empty() {
         let Some(template) = prefs
             .smart_templates
             .iter()
@@ -1087,7 +1077,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         let state = app.state::<RuntimeState>();
         match crate::application::smart_text::process_smart_text(
             &state,
-            &local_processed,
+            &text,
             &template.prompt,
             &active_app_context,
         )
@@ -1104,7 +1094,19 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
     } else {
-        local_processed
+        text
+    };
+    let processed = match apply_rules(&smart_processed, &prefs) {
+        Ok(v) => v,
+        Err(e) => {
+            let state = app.state::<RuntimeState>();
+            if let Some(lease) = &lease {
+                let _ = state.audio_session.release(lease);
+            }
+            remove_temp(temp_path.clone());
+            let _ = fail(app, epoch, e).await;
+            return;
+        }
     };
     let result = if processed.is_empty() {
         Ok(())
