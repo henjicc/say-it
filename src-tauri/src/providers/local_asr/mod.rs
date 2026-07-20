@@ -18,6 +18,14 @@ pub struct LocalAsrOutput {
     pub finals: Vec<String>,
 }
 
+/// 一个 VAD 句段的识别结果与它在整段音频里的位置。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalSegment {
+    pub text: String,
+    pub begin_ms: u64,
+    pub end_ms: u64,
+}
+
 pub struct OnlineSession {
     recognizer: OnlineRecognizer,
     stream: sherpa_onnx::OnlineStream,
@@ -139,6 +147,11 @@ pub struct OfflineVadSession {
     vad: VoiceActivityDetector,
     /// 每次喂给 VAD 的样本数，等于 Silero 的窗口大小。
     window_size: usize,
+    /// 本轮 VAD（上次 reset 之后）已喂入的样本数。
+    fed_samples: u64,
+    /// 之前各轮 VAD 累计的样本数。`SpeechSegment::start` 只在本轮内计数，
+    /// reset 会清零，因此句段的绝对位置必须由这里补齐。
+    base_samples: u64,
 }
 
 impl OfflineVadSession {
@@ -163,39 +176,51 @@ impl OfflineVadSession {
             engine,
             vad,
             window_size: window_size as usize,
+            fed_samples: 0,
+            base_samples: 0,
         })
     }
 
     /// 调用方可以传入任意长度的音频；这里负责切成 VAD 能正确处理的窗口。
-    pub fn accept(&mut self, samples: &[f32]) -> Result<Vec<String>, String> {
+    pub fn accept(&mut self, samples: &[f32]) -> Result<Vec<LocalSegment>, String> {
         // 必须按窗口大小小块喂入：单次传入过长音频会让 sherpa VAD 在语音确认前
         // 裁掉缓冲里的开头。实测 5.6s 音频，≤0.3s 的块识别完整，0.5s 的块丢失开头
         // 数字，整段一次性传入只剩一个语气词。
         let mut results = Vec::new();
         for window in samples.chunks(self.window_size) {
             self.vad.accept_waveform(window);
+            self.fed_samples += window.len() as u64;
             results.extend(self.drain()?);
         }
         Ok(results)
     }
 
-    pub fn finish(mut self) -> Result<Vec<String>, String> {
+    pub fn finish(mut self) -> Result<Vec<LocalSegment>, String> {
         self.flush_and_reset()
     }
 
-    pub fn flush_and_reset(&mut self) -> Result<Vec<String>, String> {
+    pub fn flush_and_reset(&mut self) -> Result<Vec<LocalSegment>, String> {
         self.vad.flush();
         let results = self.drain()?;
         self.vad.reset();
+        // reset 之后 SpeechSegment::start 重新从 0 计数，把本轮长度并入基准偏移。
+        self.base_samples += self.fed_samples;
+        self.fed_samples = 0;
         Ok(results)
     }
 
-    fn drain(&mut self) -> Result<Vec<String>, String> {
+    fn drain(&mut self) -> Result<Vec<LocalSegment>, String> {
         let mut results = Vec::new();
         while let Some(segment) = self.vad.front() {
             let text = self.engine.recognize(segment.samples())?;
             if !text.is_empty() {
-                results.push(text);
+                let start = self.base_samples + segment.start().max(0) as u64;
+                let end = start + segment.n().max(0) as u64;
+                results.push(LocalSegment {
+                    text,
+                    begin_ms: samples_to_ms(start),
+                    end_ms: samples_to_ms(end),
+                });
             }
             drop(segment);
             self.vad.pop();
@@ -208,7 +233,10 @@ impl OfflineVadSession {
     }
 }
 
-pub fn recognize_file_segments(spec: &LocalModelSpec, samples: &[f32]) -> Result<String, String> {
+pub fn recognize_file_segments(
+    spec: &LocalModelSpec,
+    samples: &[f32],
+) -> Result<Vec<LocalSegment>, String> {
     let mut session = OfflineVadSession::create(spec)?;
     let mut results = Vec::new();
     for (index, chunk) in samples.chunks(SAMPLE_RATE as usize * 10).enumerate() {
@@ -220,7 +248,11 @@ pub fn recognize_file_segments(spec: &LocalModelSpec, samples: &[f32]) -> Result
         }
     }
     results.extend(session.finish()?);
-    Ok(results.join("\n"))
+    Ok(results)
+}
+
+fn samples_to_ms(samples: u64) -> u64 {
+    samples.saturating_mul(1_000) / SAMPLE_RATE as u64
 }
 
 fn ensure_ready(spec: &LocalModelSpec) -> Result<(), String> {
@@ -407,7 +439,8 @@ mod tests {
             !direct.trim().is_empty(),
             "SenseVoice 直接整句识别应输出文本"
         );
-        let segmented = recognize_file_segments(&spec, wave.samples()).unwrap();
+        let segments = recognize_file_segments(&spec, wave.samples()).unwrap();
+        let segmented = joined(&segments);
         assert!(
             !segmented.trim().is_empty(),
             "SenseVoice VAD 分段识别应输出文本"
@@ -419,6 +452,8 @@ mod tests {
             segmented.trim().chars().count() * 2 >= expected_len,
             "VAD 分段结果明显短于整句识别，疑似丢弃语音：分段={segmented:?} 整句={direct:?}"
         );
+        let wave_ms = samples_to_ms(wave.samples().len() as u64);
+        assert_timeline(&segments, wave_ms);
 
         // 实时听写按小块喂入，是 VAD 状态最容易被破坏的路径（drain 里误加 reset 会
         // 让这里一个句段都切不出来），必须与文件模式分开回归。
@@ -428,7 +463,7 @@ mod tests {
             realtime.extend(session.accept(chunk).unwrap());
         }
         realtime.extend(session.finish().unwrap());
-        let realtime = realtime.join("\n");
+        let realtime = joined(&realtime);
         assert!(
             !realtime.trim().is_empty(),
             "SenseVoice 实时小块喂入应输出文本（VAD 未切出任何句段）"
@@ -445,11 +480,49 @@ mod tests {
             long_audio.extend_from_slice(wave.samples());
         }
         long_audio.truncate(ten_minutes);
-        let long_text = recognize_file_segments(&spec, &long_audio).unwrap();
+        let long_segments = recognize_file_segments(&spec, &long_audio).unwrap();
         assert!(
-            !long_text.trim().is_empty(),
+            !joined(&long_segments).trim().is_empty(),
             "SenseVoice 十分钟音频分段识别应输出文本"
         );
+        // 十分钟音频会多次触发 flush_and_reset，reset 后 SpeechSegment::start 重新从 0
+        // 计数。若基准偏移没补齐，这里的时间轴会突然回退或整体压缩到前一分钟内。
+        assert_timeline(&long_segments, samples_to_ms(long_audio.len() as u64));
+        let last_begin = long_segments.last().unwrap().begin_ms;
+        assert!(
+            last_begin > 9 * 60 * 1_000,
+            "十分钟音频的末句起点应接近尾部，实际 {last_begin}ms —— 疑似 reset 后基准偏移丢失"
+        );
         println!("SenseVoice PoC: {segmented}");
+        println!("SenseVoice 首句时间轴: {:?}", segments.first());
+    }
+
+    fn joined(segments: &[LocalSegment]) -> String {
+        segments
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 句段时间轴必须单调、不重叠，且落在音频时长内。
+    fn assert_timeline(segments: &[LocalSegment], total_ms: u64) {
+        assert!(!segments.is_empty(), "应至少切出一个句段");
+        let mut previous_end = 0;
+        for segment in segments {
+            assert!(
+                segment.begin_ms < segment.end_ms,
+                "句段起止时间非法：{segment:?}"
+            );
+            assert!(
+                segment.begin_ms >= previous_end,
+                "句段时间轴回退或重叠：{segment:?} 上一句结束于 {previous_end}ms"
+            );
+            assert!(
+                segment.end_ms <= total_ms + 1_000,
+                "句段超出音频时长 {total_ms}ms：{segment:?}"
+            );
+            previous_end = segment.end_ms;
+        }
     }
 }

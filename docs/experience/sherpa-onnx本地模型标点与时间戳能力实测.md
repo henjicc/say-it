@@ -53,15 +53,23 @@ sherpa-onnx 的官方做法是外挂独立标点模型（ct-transformer），`sh
 
 SenseVoice 的时间戳数量与 token 数一一对应，可用。
 
-### 但宿主目前把它丢掉了
+### 宿主一度把它丢掉了（已修复）
 
-- `LocalAsrOutput` 只有 `partial: Option<String>` 与 `finals: Vec<String>`，没有时间字段。
-- 本地文件识别固定返回 `"sentences": []`（`providers/capabilities.rs`）。
+早期实现里 `LocalAsrOutput` 只有文本字段，本地文件识别固定返回 `"sentences": []`，
+两个本地模型因此都只能声明 `supportsAlignmentTimestamps: false`。
 
-所以两个本地模型的 `supportsAlignmentTimestamps` 都声明 `false`——这对"宿主实际能提供什么"
-是诚实的，对"模型能做什么"是低估的。**要让 SenseVoice 支持文稿对齐/字幕转写，需要先把
-VAD 分段边界或 token 时间戳透传进 `sentences`，再翻转该字段**，两者必须同步改，只改声明会
-让功能拿到空时间轴而失败。
+现在 `recognize_file_segments` 返回 `LocalSegment { text, begin_ms, end_ms }`，时间轴取自
+**VAD 句段边界**（而非 token 时间戳）——句级边界正是字幕和文稿对齐需要的粒度，且 online
+引擎没有 token 时间戳，用句段边界可以让两种引擎走同一条路。SenseVoice 文件模型据此声明
+`supportsAlignmentTimestamps: true`。
+
+实现要点：`SpeechSegment::start` 只在**本轮 VAD 内**计数，`recognize_file_segments` 每分钟
+会 `flush_and_reset` 一次，reset 后该计数归零。因此 `OfflineVadSession` 必须自己累计
+`base_samples` 补齐绝对位置，否则长音频的时间轴会周期性回退或整体压缩到第一分钟内。
+回归用例对十分钟音频断言"末句起点必须超过 9 分钟"，专门盯这个偏移。
+
+> 注意：`supportsAlignmentTimestamps` 写在模型包清单里且已签名，**改描述文件后必须重新
+> 构建并安装模型包**才会生效；`emitsPartialResults` 则有宿主按协议兜底，无需重装。
 
 ## 复现方式
 

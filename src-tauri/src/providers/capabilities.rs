@@ -154,10 +154,26 @@ impl FileRecognitionProvider {
                 let result = tauri::async_runtime::spawn_blocking(move || {
                     let samples = crate::audio_prep::decode_to_mono_16k(&path)?;
                     let duration_ms = (samples.len() as u64).saturating_mul(1_000) / 16_000;
-                    let text = super::local_asr::recognize_file_segments(&spec, &samples)?;
+                    let segments = super::local_asr::recognize_file_segments(&spec, &samples)?;
+                    // VAD 句段边界即字幕时间轴，逐句透传，文稿对齐与字幕转写才能用上本地模型。
+                    let text = segments
+                        .iter()
+                        .map(|item| item.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let sentences = segments
+                        .iter()
+                        .map(|item| {
+                            serde_json::json!({
+                                "beginTime": item.begin_ms,
+                                "endTime": item.end_ms,
+                                "text": item.text,
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     serde_json::from_value(serde_json::json!({
                         "durationMs": duration_ms,
-                        "transcripts": [{ "channelId": null, "text": text, "sentences": [] }]
+                        "transcripts": [{ "channelId": null, "text": text, "sentences": sentences }]
                     }))
                     .map_err(|error| error.to_string())
                 })

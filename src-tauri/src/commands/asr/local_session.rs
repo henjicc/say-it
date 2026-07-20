@@ -89,9 +89,9 @@ fn run_local_session(
                 let result = match &mut session {
                     Session::Online(session) => Ok(session.accept(&samples)),
                     Session::Offline(session) => {
-                        session.accept(&samples).map(|finals| LocalAsrOutput {
+                        session.accept(&samples).map(|segments| LocalAsrOutput {
                             partial: None,
-                            finals,
+                            finals: segments.into_iter().map(|item| item.text).collect(),
                         })
                     }
                 };
@@ -111,9 +111,9 @@ fn run_local_session(
             Some(AsrStreamInput::Finish) => {
                 let result = match session {
                     Session::Online(session) => Ok(session.finish()),
-                    Session::Offline(session) => session.finish().map(|finals| LocalAsrOutput {
+                    Session::Offline(session) => session.finish().map(|segments| LocalAsrOutput {
                         partial: None,
-                        finals,
+                        finals: segments.into_iter().map(|item| item.text).collect(),
                     }),
                 };
                 match result {
