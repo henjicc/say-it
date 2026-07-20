@@ -137,18 +137,21 @@ impl OfflineEngine {
 pub struct OfflineVadSession {
     engine: OfflineEngine,
     vad: VoiceActivityDetector,
+    /// 每次喂给 VAD 的样本数，等于 Silero 的窗口大小。
+    window_size: usize,
 }
 
 impl OfflineVadSession {
     pub fn create(spec: &LocalModelSpec) -> Result<Self, String> {
         let engine = OfflineEngine::create(spec)?;
+        let window_size = int_param(&spec.params, "vadWindowSize", 512).max(1);
         let mut config = VadModelConfig::default();
         config.silero_vad = SileroVadModelConfig {
             model: Some(param_path(spec, "vadModel")?),
             threshold: float_param(&spec.params, "vadThreshold", 0.5),
             min_silence_duration: float_param(&spec.params, "vadMinSilenceDuration", 0.6),
             min_speech_duration: float_param(&spec.params, "vadMinSpeechDuration", 0.25),
-            window_size: int_param(&spec.params, "vadWindowSize", 512),
+            window_size,
             max_speech_duration: float_param(&spec.params, "vadMaxSpeechDuration", 30.0),
         };
         config.sample_rate = SAMPLE_RATE;
@@ -156,12 +159,24 @@ impl OfflineVadSession {
         config.provider = Some("cpu".into());
         let vad = VoiceActivityDetector::create(&config, 120.0)
             .ok_or("创建 Silero VAD 失败；请检查 vadModel 参数")?;
-        Ok(Self { engine, vad })
+        Ok(Self {
+            engine,
+            vad,
+            window_size: window_size as usize,
+        })
     }
 
+    /// 调用方可以传入任意长度的音频；这里负责切成 VAD 能正确处理的窗口。
     pub fn accept(&mut self, samples: &[f32]) -> Result<Vec<String>, String> {
-        self.vad.accept_waveform(samples);
-        self.drain()
+        // 必须按窗口大小小块喂入：单次传入过长音频会让 sherpa VAD 在语音确认前
+        // 裁掉缓冲里的开头。实测 5.6s 音频，≤0.3s 的块识别完整，0.5s 的块丢失开头
+        // 数字，整段一次性传入只剩一个语气词。
+        let mut results = Vec::new();
+        for window in samples.chunks(self.window_size) {
+            self.vad.accept_waveform(window);
+            results.extend(self.drain()?);
+        }
+        Ok(results)
     }
 
     pub fn finish(mut self) -> Result<Vec<String>, String> {
@@ -185,9 +200,10 @@ impl OfflineVadSession {
             drop(segment);
             self.vad.pop();
         }
-        if self.vad.is_empty() && !self.vad.detected() {
-            self.vad.reset();
-        }
+        // 这里不能 reset：Silero VAD 依赖跨窗口的循环状态累积语音概率，语音刚起始
+        // 时 detected() 仍为 false，此刻 reset 会清空模型状态与尚未成段的缓冲，使
+        // detected() 永远无法置位、reset 每块反复触发，VAD 再也切不出任何句段。
+        // 缓冲增长由 recognize_file_segments 的周期性 flush_and_reset 收口。
         Ok(results)
     }
 }
@@ -396,6 +412,32 @@ mod tests {
             !segmented.trim().is_empty(),
             "SenseVoice VAD 分段识别应输出文本"
         );
+        // 只断言"非空"会放过退化结果：历史上 VAD 丢掉开头、只切出一个语气词也算
+        // 通过，因此要求分段结果与整句识别的长度相当。
+        let expected_len = direct.trim().chars().count();
+        assert!(
+            segmented.trim().chars().count() * 2 >= expected_len,
+            "VAD 分段结果明显短于整句识别，疑似丢弃语音：分段={segmented:?} 整句={direct:?}"
+        );
+
+        // 实时听写按小块喂入，是 VAD 状态最容易被破坏的路径（drain 里误加 reset 会
+        // 让这里一个句段都切不出来），必须与文件模式分开回归。
+        let mut session = OfflineVadSession::create(&spec).unwrap();
+        let mut realtime = Vec::new();
+        for chunk in wave.samples().chunks(1_600) {
+            realtime.extend(session.accept(chunk).unwrap());
+        }
+        realtime.extend(session.finish().unwrap());
+        let realtime = realtime.join("\n");
+        assert!(
+            !realtime.trim().is_empty(),
+            "SenseVoice 实时小块喂入应输出文本（VAD 未切出任何句段）"
+        );
+        assert!(
+            realtime.trim().chars().count() * 2 >= expected_len,
+            "实时小块识别结果明显偏短：实时={realtime:?} 整句={direct:?}"
+        );
+
         let ten_minutes = SAMPLE_RATE as usize * 10 * 60;
         let repeats = ten_minutes.div_ceil(wave.samples().len());
         let mut long_audio = Vec::with_capacity(ten_minutes);
