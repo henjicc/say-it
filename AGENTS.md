@@ -137,7 +137,12 @@
 ## 项目专属信息
 
 - 项目目标：桌面端语音/听写应用「说吧！」，包含主窗口与悬浮指示窗口。
-- 项目内 `测试/` 是插件测试目录，插件开发与测试产物均在此目录进行。
+- 插件与模型包的开发产物一律放在**仓库外**的同级目录，不进 git，也不再堆在 `测试/`：
+  - `../sayit-plugin-work/<插件 ID>/`：插件源码工作区（`source/` `build/` `dist/`），`.sayit` 成品在 `dist/`。
+  - `../sayit-release-packs/`：待发布的模型包与插件 `.sayit`，作为 GitHub Release 资产上传。
+  - `../sayit-release-keys/`：发布者私钥，绝不入库；技能的 `sign_plugin.py` 要求私钥位于 `--work-root` 内，跨目录签名时把 work-root 指到共同父目录。
+  - 模型权重按 `model-packs/*.json` 的 `sources` 落在 `model-packs/files/`（已 gitignore），缺失时构建器会按 `download.url` 自动补下载。
+- 项目内 `测试/` 只保留安装与回归测试用的临时产物。
 - 技术栈与运行环境：Tauri 2 + Rust 2021 后端，React 19 + TypeScript + Vite 6 + Tailwind CSS 4 前端，Windows 为主要打包目标（NSIS）。
 - 包管理器：npm，锁文件为 `package-lock.json`。
 - 安装命令：`npm install`。
