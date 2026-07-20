@@ -46,6 +46,7 @@ export function PluginManagerPanel() {
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
+  const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
 
@@ -88,7 +89,11 @@ export function PluginManagerPanel() {
   }, []);
 
   const reload = async () => {
-    setMessage("");
+    // 重新扫描会对已安装文件逐个复核 SHA256，模型包动辄数百 MB，耗时以秒计。
+    // 没有进行中状态时界面完全无反馈，用户会以为软件卡死。
+    if (scanning) return;
+    setScanning(true);
+    setMessage("正在扫描插件目录并校验文件完整性…");
     try {
       const next = await cmd<PluginSnapshot>(CMD.reloadProviderPlugins);
       setSnapshot(next);
@@ -97,6 +102,8 @@ export function PluginManagerPanel() {
       setMessage("插件目录已重新扫描。");
     } catch (error) {
       setMessage(`重新扫描失败：${String(error)}`);
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -162,8 +169,10 @@ export function PluginManagerPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
         <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理供应商插件与本地模型包；安装并启用后，对应模型会自动出现在各场景的模型下拉框。</p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" onClick={() => void install()}>安装 .sayit 包</Button>
-          <Button size="sm" onClick={() => void reload()}>重新扫描</Button>
+          <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
+          <Button size="sm" disabled={scanning} onClick={() => void reload()}>
+            {scanning ? "扫描中…" : "重新扫描"}
+          </Button>
         </div>
       </div>
 
