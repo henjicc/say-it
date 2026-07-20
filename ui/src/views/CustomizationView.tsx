@@ -25,10 +25,12 @@ const TABS: TabItem<CustomizationTabKey>[] = [
   { key: "context", label: "上下文" },
 ];
 
-const WEIGHTS = Array.from(
-  { length: MAX_HOTWORD_WEIGHT - MIN_HOTWORD_WEIGHT + 1 },
-  (_, index) => MIN_HOTWORD_WEIGHT + index,
-);
+/** 权重收敛到 1-5 的整数：输入框允许中途出现空值或超界，落库前统一收敛。 */
+function clampWeight(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_HOTWORD_WEIGHT;
+  return Math.min(MAX_HOTWORD_WEIGHT, Math.max(MIN_HOTWORD_WEIGHT, parsed));
+}
 
 /** 支持热词同步的供应商，判定与设置页一致。 */
 function supportsHotwordSync(profile: ProviderProfile): boolean {
@@ -93,7 +95,7 @@ function HotwordsTab() {
           热词用于提升人名、产品名、专业术语的识别准确率。权重越高，模型越倾向于把相近发音识别成该词；
           不支持权重的供应商会忽略这一列。热词同时可以通过 <code>{HOTWORDS_PLACEHOLDER}</code> 引用到上下文里。
         </p>
-        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+        <div className="max-w-[75ch] overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {prefs.hotwords.length === 0 && (
             <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
           )}
@@ -110,18 +112,20 @@ function HotwordsTab() {
                 onChange={(event) => updateHotword(index, { text: event.target.value })}
                 className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
               />
-              <Select
-                value={String(hotword.weight)}
-                aria-label={`第 ${index + 1} 个热词的权重`}
-                onChange={(event) => updateHotword(index, { weight: Number(event.target.value) })}
-                className="min-h-0 h-8 w-24 shrink-0 px-2.5 py-1 text-xs"
-              >
-                {WEIGHTS.map((weight) => (
-                  <option key={weight} value={String(weight)}>
-                    权重 {weight}
-                  </option>
-                ))}
-              </Select>
+              <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
+                权重
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={MIN_HOTWORD_WEIGHT}
+                  max={MAX_HOTWORD_WEIGHT}
+                  step={1}
+                  value={String(hotword.weight)}
+                  aria-label={`第 ${index + 1} 个热词的权重`}
+                  onChange={(event) => updateHotword(index, { weight: clampWeight(event.target.value) })}
+                  className="min-h-0 h-8 w-14 px-2 py-1 text-center text-xs"
+                />
+              </label>
               <IconButton
                 size="sm"
                 variant="dangerHover"
@@ -171,11 +175,11 @@ function HotwordsTab() {
               </Button>
             </div>
             <Field
+              className="max-w-[75ch]"
               label="从供应商获取热词"
               hint="用云端已有的词表覆盖上面的热词列表，上下文模板不受影响。"
               actions={
                 <Button
-                  size="sm"
                   disabled={busy || !pullProviderId}
                   onClick={() => void run("获取热词", () => pullFromProvider(pullProviderId))}
                 >
@@ -240,11 +244,6 @@ function ContextTab() {
         <Field
           label="模板"
           hint="上下文按词表匹配生效，需要包含音频里会出现的原词；只写语义描述不会起作用。"
-          actions={
-            <Button size="sm" onClick={insertHotwordsVariable}>
-              插入 {HOTWORDS_PLACEHOLDER}
-            </Button>
-          }
         >
           <Textarea
             rows={8}
@@ -254,6 +253,11 @@ function ContextTab() {
             onChange={(event) => void patch({ contextTemplate: event.target.value })}
           />
         </Field>
+        <div>
+          <Button size="sm" onClick={insertHotwordsVariable}>
+            插入 {HOTWORDS_PLACEHOLDER}
+          </Button>
+        </div>
       </SettingsSection>
 
       <SettingsSection title="实际下发内容">
