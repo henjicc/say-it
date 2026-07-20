@@ -20,6 +20,8 @@ pub struct ModelCatalogItem {
     pub scenes: Vec<String>,
     pub supports_vocabulary: bool,
     pub supports_alignment_timestamps: bool,
+    /// 已按 `category` 兜底解析，前端直接消费，不再感知"未声明"状态。
+    pub emits_partial_results: bool,
     pub is_default_realtime: bool,
     pub is_default_file: bool,
     pub is_qwen_realtime: bool,
@@ -60,6 +62,7 @@ pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegist
                 scenes: model.scenes.clone(),
                 supports_vocabulary: model.supports_vocabulary,
                 supports_alignment_timestamps: model.supports_alignment_timestamps,
+                emits_partial_results: model.emits_partial_results(),
                 is_default_realtime: model.is_default_realtime,
                 is_default_file: model.is_default_file,
                 is_qwen_realtime: matches!(
@@ -113,6 +116,51 @@ mod tests {
             .iter()
             .any(|m| m.id == catalog.default_file_model && m.is_default_file));
         assert!(catalog.models.iter().all(|m| !m.scenes.is_empty()));
+    }
+
+    #[test]
+    fn emits_partial_results_falls_back_to_category() {
+        // 内置模型都没有显式声明，必须按 category 推导出与改动前一致的行为，
+        // 否则旧插件清单升级后下拉标注会集体错位。
+        let catalog = build_catalog(
+            provider_settings_response(normalize_settings(ProviderSettings::default())),
+            &PluginRegistry::default(),
+        );
+        for model in &catalog.models {
+            assert_eq!(
+                model.emits_partial_results,
+                model.category == "realtime",
+                "模型 {} 的中间结果推导与 category 不一致",
+                model.id
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_emits_partial_results_overrides_category() {
+        // VAD 分段整句模型：category 是 realtime，但必须能声明自己没有中间结果。
+        let model: registry::ModelInfo = serde_json::from_value(serde_json::json!({
+            "id": "x", "label": "X", "providerId": "p", "category": "realtime",
+            "protocol": "local-sherpa-offline", "supportsVocabulary": false,
+            "supportsAlignmentTimestamps": false, "emitsPartialResults": false,
+            "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
+        }))
+        .unwrap();
+        assert!(!model.emits_partial_results());
+    }
+
+    #[test]
+    fn offline_engine_has_no_partials_even_without_declaration() {
+        // 字段上线前打包安装的模型包清单里没有 emitsPartialResults，此时不能退回
+        // category 推导，否则整句模型会被当成真流式，下拉里看不出区别。
+        let model: registry::ModelInfo = serde_json::from_value(serde_json::json!({
+            "id": "local-sensevoice-sentence-int8", "label": "SenseVoice", "providerId": "p",
+            "category": "realtime", "protocol": "local-sherpa-offline",
+            "supportsVocabulary": false, "supportsAlignmentTimestamps": false,
+            "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
+        }))
+        .unwrap();
+        assert!(!model.emits_partial_results());
     }
 
     #[test]

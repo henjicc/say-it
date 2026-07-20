@@ -4,6 +4,7 @@ import {
   DEFAULT_FILE_ASR_MODEL,
   supportsAlignmentTimestamps,
 } from "@/features/asr/modelOptions";
+import { timestampCapableLabels } from "@/features/asr/modelRegistry";
 import {
   buildCues,
   cuesFromOptimizedSegments,
@@ -336,10 +337,14 @@ export async function startAlignment() {
   }
 
   if (!supportsAlignmentTimestamps(store.params.model)) {
+    // 可用模型从目录派生：插件与模型包会增删带时间戳的模型，写死供应商名会误导用户。
+    const candidates = timestampCapableLabels("transcription");
     store.setRuntime({
       alignStage: "error",
       alignStatusText: "当前模型不适合文稿对齐。",
-      alignErrorMessage: "文稿对齐需要带时间戳的识别结果，请切换到 Fun-ASR、Fun-ASR-Flash 或 Qwen3-ASR-Flash-Filetrans。",
+      alignErrorMessage: candidates.length
+        ? `文稿对齐需要带时间戳的识别结果，请切换到 ${candidates.join("、")}。`
+        : "文稿对齐需要带时间戳的识别结果，当前没有已启用的支持模型，请先在设置中启用对应供应商。",
     });
     return;
   }

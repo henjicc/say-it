@@ -20,6 +20,7 @@
         "protocol": "local-sherpa-offline",
         "supportsVocabulary": false,
         "supportsAlignmentTimestamps": false,
+        "emitsPartialResults": false,
         "scenes": ["dictationRealtime", "subtitles"],
         "isDefaultRealtime": false,
         "isDefaultFile": false
@@ -32,6 +33,7 @@
         "protocol": "local-sherpa-offline",
         "supportsVocabulary": false,
         "supportsAlignmentTimestamps": false,
+        "emitsPartialResults": false,
         "scenes": ["dictationFile", "transcription"],
         "isDefaultRealtime": false,
         "isDefaultFile": false
