@@ -1,6 +1,6 @@
 import { Children, forwardRef, isValidElement, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const fieldBase =
@@ -19,6 +19,76 @@ export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTML
   ),
 );
 Input.displayName = "Input";
+
+/**
+ * 数值输入框：隐藏浏览器原生 spinner，改用与设计令牌一致的自绘步进按钮。
+ * 步进按钮不进入 Tab 序列——键盘用户直接用输入框自带的上下方向键即可。
+ */
+export function NumberInput({
+  value,
+  min,
+  max,
+  step = 1,
+  onValueChange,
+  className,
+  inputClassName,
+  disabled,
+  ...props
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "size"> & {
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onValueChange: (value: number) => void;
+  inputClassName?: string;
+}) {
+  const commit = (next: number) => onValueChange(Math.min(max, Math.max(min, next)));
+  return (
+    <div className={cn("relative", className)}>
+      <input
+        {...props}
+        type="number"
+        inputMode="numeric"
+        value={String(value)}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onChange={(event) => {
+          const parsed = Number.parseInt(event.target.value, 10);
+          if (Number.isFinite(parsed)) commit(parsed);
+        }}
+        className={cn(
+          fieldBase,
+          "pr-7 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+          inputClassName,
+        )}
+      />
+      <span className="pointer-events-none absolute inset-y-0 right-0 flex w-6 flex-col justify-center gap-px py-1">
+        {[
+          { label: "增加", delta: step, icon: <ChevronUp className="h-3 w-3" strokeWidth={2} aria-hidden /> },
+          { label: "减少", delta: -step, icon: <ChevronDown className="h-3 w-3" strokeWidth={2} aria-hidden /> },
+        ].map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            tabIndex={-1}
+            aria-hidden
+            disabled={disabled}
+            onClick={() => commit(value + item.delta)}
+            className={cn(
+              "pointer-events-auto flex flex-1 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-fg-faint)]",
+              "transition-colors duration-[var(--dur-fast)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
+              "disabled:pointer-events-none disabled:opacity-40",
+            )}
+          >
+            {item.icon}
+          </button>
+        ))}
+      </span>
+    </div>
+  );
+}
 
 export const Textarea = forwardRef<
   HTMLTextAreaElement,
