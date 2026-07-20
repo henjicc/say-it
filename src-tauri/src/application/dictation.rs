@@ -1325,7 +1325,7 @@ fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
     if template.name.trim().is_empty() {
         return Err("智能处理模板名称不能为空".to_string());
     }
-    crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "", "")?;
+    crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "", "", "")?;
     Ok(())
 }
 fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {

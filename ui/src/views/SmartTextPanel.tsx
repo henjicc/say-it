@@ -15,7 +15,10 @@ import {
   type OcrModelOption,
 } from "@/features/asr/modelRegistry";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
-import { GLOBAL_CONTEXT_PLACEHOLDER } from "@/store/useCustomizationStore";
+import {
+  GLOBAL_CONTEXT_PLACEHOLDER,
+  HOTWORDS_PLACEHOLDER,
+} from "@/store/useCustomizationStore";
 import {
   ACTIVE_APP_CONTEXT_PLACEHOLDER,
   MAX_SMART_TEXT_TEMPLATES,
@@ -361,7 +364,7 @@ export function SmartTextPanel() {
             </Field>
             <Field
               label="提示词"
-              hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选）。</>}
+              hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
             >
               <Textarea
                 rows={7}
@@ -401,6 +404,16 @@ export function SmartTextPanel() {
                 }}
               >
                 插入全局上下文
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${HOTWORDS_PLACEHOLDER}`;
+                  setDraftPrompt(nextPrompt);
+                  void saveTemplateDraft({ prompt: nextPrompt });
+                }}
+              >
+                插入全局热词
               </Button>
             </div>
           </div>

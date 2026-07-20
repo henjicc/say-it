@@ -38,7 +38,7 @@ pub(crate) struct CustomizationPrefs {
 
 /// 热词在上下文里的呈现形式：空格分隔的纯词列表。
 /// 阿里云文档说明上下文按词表匹配生效，`text` 必须包含音频里的原词，不带权重。
-fn hotwords_as_text(hotwords: &[HotwordEntry]) -> String {
+pub(crate) fn hotwords_as_text(hotwords: &[HotwordEntry]) -> String {
     hotwords
         .iter()
         .map(|item| item.text.trim())
