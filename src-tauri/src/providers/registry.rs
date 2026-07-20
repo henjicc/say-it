@@ -31,7 +31,10 @@ pub struct ModelInfo {
     /// `category` 只区分"实时会话"与"文件批处理"，装不下 VAD 分段的整句模型：这类模型
     /// 走实时会话，但说完一句才整句出字，没有中间态。省略时按 `category` 推导，保证既有
     /// 内置模型与旧插件清单行为不变。
-    #[serde(default)]
+    /// 必须 `skip_serializing_if`：签名载荷是对本结构体**重新序列化**得到的
+    /// （见 `plugin_package::signing_payload`），若缺省时序列化成 `null`，所有在本字段
+    /// 之前签名的插件载荷都会改变，签名集体验证失败。新增可选字段一律照此处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emits_partial_results: Option<bool>,
     pub scenes: Vec<String>,
     pub is_default_realtime: bool,
