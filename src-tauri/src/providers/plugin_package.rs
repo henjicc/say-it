@@ -956,10 +956,12 @@ mod tests {
         let manifest: PluginManifest = serde_json::from_value(signed_before.clone()).unwrap();
         let reserialized = serde_json::to_value(&manifest).unwrap();
         let model = &reserialized["models"][0];
-        assert!(
-            model.get("emitsPartialResults").is_none(),
-            "缺省的可选字段不得出现在重新序列化结果里，否则旧签名全部失效：{model}"
-        );
+        for field in ["emitsPartialResults", "supportsContext"] {
+            assert!(
+                model.get(field).is_none(),
+                "缺省的可选字段 {field} 不得出现在重新序列化结果里，否则旧签名全部失效：{model}"
+            );
+        }
     }
 
 

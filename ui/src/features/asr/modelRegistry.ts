@@ -3,7 +3,7 @@ import { CMD, cmd } from "@/lib/tauri";
 
 export interface ModelInfo {
   id: string; label: string; providerId: string; category: string; protocol: string;
-  supportsVocabulary: boolean; supportsAlignmentTimestamps: boolean;
+  supportsVocabulary: boolean; supportsContext: boolean; supportsAlignmentTimestamps: boolean;
   emitsPartialResults: boolean; scenes: string[];
   isDefaultRealtime: boolean; isDefaultFile: boolean; isQwenRealtime: boolean;
   isQwenFile: boolean; isQwenShortAudioFile: boolean; isFunasrFlashFile: boolean;
