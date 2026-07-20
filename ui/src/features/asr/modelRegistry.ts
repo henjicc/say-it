@@ -3,7 +3,8 @@ import { CMD, cmd } from "@/lib/tauri";
 
 export interface ModelInfo {
   id: string; label: string; providerId: string; category: string; protocol: string;
-  supportsVocabulary: boolean; supportsAlignmentTimestamps: boolean; scenes: string[];
+  supportsVocabulary: boolean; supportsAlignmentTimestamps: boolean;
+  emitsPartialResults: boolean; scenes: string[];
   isDefaultRealtime: boolean; isDefaultFile: boolean; isQwenRealtime: boolean;
   isQwenFile: boolean; isQwenShortAudioFile: boolean; isFunasrFlashFile: boolean;
 }
@@ -54,10 +55,25 @@ export function currentCatalog(): ModelCatalogResponse {
   return catalog;
 }
 export function modelInfo(id: string) { return catalog?.models.find((item) => item.id === id.trim()); }
+/**
+ * 出字方式标注。语音输入下拉把实时与非实时模型混在一起，实时字幕下拉里也可能混入
+ * 无中间结果的整句模型，用户必须能在选之前就看出差别：
+ *
+ * - 真流式（边说边出字）：不加后缀
+ * - 整句模型：走实时会话，但说完一句才整句出字，没有中间态
+ * - 非实时：停止后才开始识别
+ */
+function outputModeSuffix(item: ModelInfo, scene: string): string {
+  if (scene === "dictationFile" && item.category === "file") return "（非实时）";
+  if ((scene === "dictationRealtime" || scene === "subtitles") && !item.emitsPartialResults) {
+    return "（整句）";
+  }
+  return "";
+}
 export function optionsForScene(scene: string): AsrModelOption[] {
   return currentCatalog().models.filter((item) => item.scenes.includes(scene)).map((item) => ({
     value: item.id,
-    label: scene === "dictationFile" && item.category === "file" ? `${item.label}（非实时）` : item.label,
+    label: `${item.label}${outputModeSuffix(item, scene)}`,
   }));
 }
 export function ocrOptionsForScene(scene: string): OcrModelOption[] {
@@ -89,6 +105,12 @@ export function ocrOptionsForScene(scene: string): OcrModelOption[] {
   return [...implicit, ...explicit];
 }
 export const supportsAlignmentTimestamps = (id: string) => modelInfo(id)?.supportsAlignmentTimestamps ?? false;
+/** 场景内可用于文稿对齐的模型名，供提示文案直接列举，避免硬编码供应商名。 */
+export function timestampCapableLabels(scene: string): string[] {
+  return currentCatalog()
+    .models.filter((item) => item.scenes.includes(scene) && item.supportsAlignmentTimestamps)
+    .map((item) => item.label);
+}
 export const isQwenRealtimeModel = (id: string) => modelInfo(id)?.isQwenRealtime ?? false;
 export const isQwenFileModel = (id: string) => modelInfo(id)?.isQwenFile ?? false;
 export const isQwenShortAudioFileModel = (id: string) => modelInfo(id)?.isQwenShortAudioFile ?? false;

@@ -20,6 +20,7 @@
         "protocol": "local-sherpa-online",
         "supportsVocabulary": false,
         "supportsAlignmentTimestamps": false,
+        "emitsPartialResults": true,
         "scenes": ["dictationRealtime", "subtitles"],
         "isDefaultRealtime": false,
         "isDefaultFile": false

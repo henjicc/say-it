@@ -26,9 +26,34 @@ pub struct ModelInfo {
     pub protocol: String,
     pub supports_vocabulary: bool,
     pub supports_alignment_timestamps: bool,
+    /// 识别过程中是否输出可变的中间结果（"边说边出字"）。
+    ///
+    /// `category` 只区分"实时会话"与"文件批处理"，装不下 VAD 分段的整句模型：这类模型
+    /// 走实时会话，但说完一句才整句出字，没有中间态。省略时按 `category` 推导，保证既有
+    /// 内置模型与旧插件清单行为不变。
+    #[serde(default)]
+    pub emits_partial_results: Option<bool>,
     pub scenes: Vec<String>,
     pub is_default_realtime: bool,
     pub is_default_file: bool,
+}
+
+impl ModelInfo {
+    /// 未显式声明时的推导顺序：宿主自有引擎按实现判定，其余按 `category` 兜底。
+    ///
+    /// `local-sherpa-offline` 由宿主自己驱动，走 VAD 分段整句识别，实现上不存在中间结果
+    /// （见 `commands/asr/local_session.rs` 的 Offline 分支）。这是宿主的事实而非插件的
+    /// 声明，因此优先于 `category`——否则字段上线前已安装的模型包必须重新打包安装才能
+    /// 拿到正确标注。
+    pub fn emits_partial_results(&self) -> bool {
+        if let Some(explicit) = self.emits_partial_results {
+            return explicit;
+        }
+        if self.protocol == "local-sherpa-offline" {
+            return false;
+        }
+        self.category == "realtime"
+    }
 }
 
 pub fn models() -> &'static [ModelInfo] {
