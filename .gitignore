@@ -12,3 +12,5 @@ docs/others
 model-packs/files/
 # 发布者私钥不得入库
 *.pem
+__pycache__/
+*.pyc
