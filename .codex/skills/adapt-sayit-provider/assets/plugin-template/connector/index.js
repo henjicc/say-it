@@ -9,6 +9,9 @@ export default function createProvider(host) {
     },
 
     realtimeStart(request) {
+      // 模型声明 supportsVocabulary 时 request.hotwords 为 [{ text, weight }]（weight 为 1-5），
+      // 声明 supportsContext 时 request.context 为一段文本；字段为空则不会出现。
+      // 供应商不支持权重就只取 text，权重区间不同则在这里换算，不要原样透传。
       // 按供应商协议构造 WSS 地址和鉴权信息；不要在日志中输出凭据。
       connectionId = host.websocket.open({
         url: `wss://api.example.com/realtime?model=${encodeURIComponent(request.model)}`,
