@@ -104,9 +104,34 @@ provider.sayit
   没有把它透传进 `sentences`，仍然写 `false`——写 `true` 会让功能拿到空时间轴而失败。
 - 文件识别结果的 `sentences` 为空数组时，必须写 `false`。
 
-### `supportsVocabulary`：是否支持热词/自定义词表
+### `supportsVocabulary` 与 `supportsContext`：热词与上下文
 
-只有连接器真的把宿主传入的词表送给供应商并生效时才写 `true`。
+宿主只维护**一份全局热词与上下文**（用户在「热词上下文」页面配置），按模型声明分别下发：
+
+| 字段 | 含义 | 下发内容 |
+| --- | --- | --- |
+| `supportsVocabulary` | 供应商接受带权重的词表 | `hotwords: [{ text, weight }]` |
+| `supportsContext` | 供应商接受一段上下文文本，靠其中出现的原词纠正专有名词 | `context: "..."`（已渲染并截断到 400 字符） |
+
+两者相互独立：可以都声明、都不声明，或只声明其一；都声明时两个字段一起下发。
+`supportsContext` 是可选字段，**省略等于 `false`**，宿主不会向未声明的模型下发上下文。
+只有连接器真的把对应内容送给供应商并生效时才写 `true`——写错就是静默失效，宿主无法探测。
+
+**权重的适配责任在连接器**：宿主的权重固定为 1–5 的整数。若供应商不支持权重，直接忽略
+`weight` 只取 `text`；若供应商的权重区间不同（如 0–1 的浮点或 1–10 的整数），在连接器里
+线性换算，不要把 1–5 原样透传。若供应商只接受纯词列表，用分隔符拼接 `text` 即可。
+
+热词与上下文在下面这些调用里出现（**字段为空时不会出现**，据此可以区分"用户没配"和"模型不支持"）：
+
+```js
+// 实时：模型声明的能力决定收到哪些字段
+realtimeStart({ providerId, model, sampleRate, config, hotwords, context })
+// 文件：同上
+invoke({ operation: "transcribeFile", payload: { filePath, params, hotwords, context } })
+```
+
+`setHotwords` / `getHotwords` / `clearHotwords` 是另一回事：它们用于**需要预先在云端建词表**的
+供应商，由用户在「热词上下文 → 供应商同步」里触发。随请求下发的模型不需要实现这三个操作。
 
 ### 声明前先实测
 
@@ -138,6 +163,8 @@ export default function createProvider(host) {
 `realtimeAudio` 接收单声道 16 kHz PCM16 小端序的 `Uint8Array`。插件不得自行采集麦克风、处理系统设备或注入文本。
 
 一次性调用统一进入 `invoke({ operation, payload })`。常见操作为 `transcribeFile`、`translate`、`recognizeImage`、`setHotwords`、`getHotwords`、`clearHotwords` 和 `action`。文件操作的 `payload.input` 只有 `id`、`name`、`size`；上传时把 `input.id` 交给宿主 HTTP 请求的 `inputId`，不能获得真实路径。
+
+`transcribeFile` 的 `payload` 与 `realtimeStart` 的请求还可能带 `hotwords` 与 `context`，规则见上文的模型能力字段。
 
 翻译操作接收宿主提供的文本、源语言、目标语言与模型等字段；不要依赖未声明字段。流式增量通过 `host.emit({ type: "delta", text })` 发出，最终返回供应商响应中归一化后的结果。
 

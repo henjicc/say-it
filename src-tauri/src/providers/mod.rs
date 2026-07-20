@@ -287,7 +287,6 @@ pub fn funasr_profile() -> ProviderProfile {
         config: json!({
             "apiKey": "",
             "vocabularyIds": {},
-            "hotwords": [],
             "languageHints": [],
             "semanticPunctuationEnabled": false,
             "maxSentenceSilence": 1300,
