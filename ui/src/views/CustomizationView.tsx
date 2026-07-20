@@ -87,7 +87,7 @@ function HotwordsTab() {
           热词用于提升人名、产品名、专业术语的识别准确率。权重越高，模型越倾向于把相近发音识别成该词；
           不支持权重的供应商会忽略这一列。修改会自动保存，并在停顿后自动同步到需要云端词表的供应商。
         </p>
-        <div className="max-w-[75ch] overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {prefs.hotwords.length === 0 ? (
             <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
           ) : (
@@ -151,7 +151,6 @@ function HotwordsTab() {
           <p className="text-xs text-[var(--color-fg-faint)]">当前没有已启用且支持热词的供应商。</p>
         ) : (
           <Field
-            className="max-w-[75ch]"
             label="云端词表"
             hint="获取会用云端已有的词表覆盖上面的热词列表，上下文模板不受影响。"
             actions={
