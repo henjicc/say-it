@@ -10,6 +10,9 @@ docs/others
 # 模型包构建源：权重文件按 model-packs/*.json 的 sources 映射放在这里，
 # 体积数百 MB，只在本地构建时存在，不得入库。
 model-packs/files/
+# 本地工作区：插件源码工作区、待发布 .sayit、发布者私钥。
+# 只在本机存在，含密钥与大体积产物，整体不得入库。
+工作区/
 # 发布者私钥不得入库
 *.pem
 __pycache__/
