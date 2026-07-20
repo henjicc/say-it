@@ -74,6 +74,45 @@ provider.sayit
 - `plugin-translation-v1`：`translation`，场景含 `subtitleTranslation`。
 - `plugin-ocr-v1`：`ocr`，场景含 `activeAppContext`。纯 OCR 插件可不声明模型，此时宿主按供应商生成场景下拉项。
 
+## 模型能力字段（必须逐项如实声明）
+
+这些字段直接决定用户在下拉里看到什么、以及哪些功能对该模型开放。宿主无法探测真实行为，
+声明错了就是错的，**不要照抄模板默认值**。
+
+### `category` + `emitsPartialResults`：出字方式
+
+两者共同决定下拉标注，用户靠它判断"要不要等"：
+
+| 实际行为 | `category` | `emitsPartialResults` | 下拉显示 |
+| --- | --- | --- | --- |
+| 边说边出字，中间结果可变 | `realtime` | `true` | 不加后缀 |
+| 走实时会话，但说完一句才整句出字，无中间态 | `realtime` | `false` | `（整句）` |
+| 停止后才开始识别 | `file` | `false` | `（非实时）` |
+
+`category` 只区分"实时会话"与"文件批处理"，**装不下第二种**。只要模型不产出可变的中间
+结果，就必须显式写 `"emitsPartialResults": false`，否则会被当成真流式，用户以为卡住了。
+
+省略该字段时宿主按 `category` 兜底（`realtime` → `true`），仅为兼容旧清单，新模型一律显式声明。
+
+### `supportsAlignmentTimestamps`：是否返回时间戳
+
+指识别结果能否带**逐句或逐词的时间信息**。它 gate 了录音识别里的**文稿对齐**功能，
+声明 `false` 的模型会被挡在功能外并提示用户换模型。
+
+- 只有结果里真的带可用时间戳才写 `true`。
+- 判断依据是**宿主最终能拿到什么**，不是模型理论上支持什么。若模型能返回时间戳但连接器
+  没有把它透传进 `sentences`，仍然写 `false`——写 `true` 会让功能拿到空时间轴而失败。
+- 文件识别结果的 `sentences` 为空数组时，必须写 `false`。
+
+### `supportsVocabulary`：是否支持热词/自定义词表
+
+只有连接器真的把宿主传入的词表送给供应商并生效时才写 `true`。
+
+### 声明前先实测
+
+新接入的模型必须跑一遍真实音频，并据实回填上述字段；同时留意结果**是否带标点**——
+不带标点的模型在长听写和字幕场景体验差异很大，应在 `label` 或插件说明里提示用户。
+
 API v3 兼容说明：宿主继续接受 v3 的 `asr`、`translation`、`customization` JavaScript 插件；v3 不得声明 `ocr`、`localNetwork` 或 `model-pack`。新插件默认使用 v4，不要为了兼容主动降级。
 
 ## 入口接口
