@@ -7,3 +7,8 @@ npm-debug.log*
 .env
 docs/others
 测试/
+# 模型包构建源：权重文件按 model-packs/*.json 的 sources 映射放在这里，
+# 体积数百 MB，只在本地构建时存在，不得入库。
+model-packs/files/
+# 发布者私钥不得入库
+*.pem
