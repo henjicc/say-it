@@ -64,7 +64,18 @@ jobs:
             throw "Release notes for version $version were not found in CHANGELOG.md."
           }
 
-          $match.Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
+          # 模型包体积数百 MB 且几乎不随应用版本变化，只在独立的 models-* Release 发布一次。
+          # 这里把固定下载链接追加到每个版本的说明里，用户在同一个页面既能拿到安装包附件，
+          # 也能拿到模型下载，无需重复上传。模型更新时只改 model-packs/RELEASE_NOTES.md。
+          $modelNotesPath = Join-Path $PWD "model-packs/RELEASE_NOTES.md"
+
+          if (-not (Test-Path -LiteralPath $modelNotesPath)) {
+            throw "model-packs/RELEASE_NOTES.md not found."
+          }
+
+          $modelNotes = Get-Content -LiteralPath $modelNotesPath -Raw -Encoding utf8
+          $notes = $match.Value.Trim() + "`n`n---`n`n" + $modelNotes.Trim()
+          $notes | Set-Content -LiteralPath $notesPath -Encoding utf8
 
           gh release view "${{ github.ref_name }}" *> $null
           if ($LASTEXITCODE -eq 0) {
