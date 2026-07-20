@@ -9,6 +9,7 @@
 //! 保证「只填热词」的用户在只支持上下文的模型上仍然有效。
 
 use crate::providers::capabilities::HotwordEntry;
+use crate::providers::RequestCustomization;
 use crate::state::RuntimeState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +20,6 @@ pub(crate) const HOTWORDS_PLACEHOLDER: &str = "{{hotwords}}";
 /// 单条热词的权重取值范围，与阿里云百炼一致；不支持权重的供应商忽略该字段。
 const MIN_WEIGHT: i32 = 1;
 const MAX_WEIGHT: i32 = 5;
-pub(crate) const DEFAULT_WEIGHT: i32 = 4;
 
 const MAX_HOTWORDS: usize = 500;
 const MAX_HOTWORD_CHARS: usize = 64;
@@ -34,20 +34,6 @@ pub(crate) const MAX_CONTEXT_CHARS: usize = 400;
 pub(crate) struct CustomizationPrefs {
     pub(crate) hotwords: Vec<HotwordEntry>,
     pub(crate) context_template: String,
-}
-
-/// 一次识别请求实际要用的定制数据：热词按供应商能力直接下发，
-/// 上下文是模板渲染并截断后的最终文本。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ResolvedCustomization {
-    pub(crate) hotwords: Vec<HotwordEntry>,
-    pub(crate) context: String,
-}
-
-impl ResolvedCustomization {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.hotwords.is_empty() && self.context.is_empty()
-    }
 }
 
 /// 热词在上下文里的呈现形式：空格分隔的纯词列表。
@@ -137,37 +123,90 @@ pub(crate) fn prefs(state: &RuntimeState) -> CustomizationPrefs {
         .unwrap_or_default()
 }
 
-pub(crate) fn resolve(state: &RuntimeState) -> ResolvedCustomization {
+/// 模型声明的定制能力。内置模型查注册表，插件与模型包查插件注册表，
+/// 两处都查不到时按「都不支持」处理，避免向不认识这些字段的模型塞内容。
+fn capabilities_of(state: &RuntimeState, model: &str) -> (bool, bool) {
+    if let Some(info) = crate::providers::registry::model_info(model) {
+        return (
+            info.supports_vocabulary,
+            info.supports_context.unwrap_or(false),
+        );
+    }
+    if let Ok(registry) = state.plugin_registry.lock() {
+        if let Some(info) = registry.model(model) {
+            return (
+                info.supports_vocabulary,
+                info.supports_context.unwrap_or(false),
+            );
+        }
+    }
+    (false, false)
+}
+
+/// 按模型声明裁剪全局配置：支持热词的模型才拿到 `hotwords`，
+/// 支持上下文的模型才拿到渲染后的 `context`。两者互不影响，可同时下发。
+pub(crate) fn resolve_for_model(state: &RuntimeState, model: &str) -> RequestCustomization {
+    let (supports_vocabulary, supports_context) = capabilities_of(state, model);
+    if !supports_vocabulary && !supports_context {
+        return RequestCustomization::default();
+    }
     let prefs = prefs(state);
-    ResolvedCustomization {
-        context: render_context(&prefs),
-        hotwords: prefs.hotwords,
+    RequestCustomization {
+        context: if supports_context {
+            render_context(&prefs)
+        } else {
+            String::new()
+        },
+        hotwords: if supports_vocabulary {
+            prefs.hotwords
+        } else {
+            vec![]
+        },
     }
 }
 
-/// 0.4.x 之前热词按供应商存在 `profile.config.hotwords`。首次加载时把各供应商的
-/// 热词合并进全局配置，避免用户升级后热词凭空消失；`vocabularyIds` 是厂商侧词表 ID，
-/// 仍旧留在供应商配置里。
+/// 写入全局热词与上下文并落盘。走 `update_app_settings` 以复用同一条校验与持久化路径。
+pub(crate) fn store(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, RuntimeState>,
+    prefs: &CustomizationPrefs,
+) -> Result<CustomizationPrefs, String> {
+    let normalized = normalize(prefs);
+    let value = serde_json::to_value(&normalized).map_err(|error| error.to_string())?;
+    crate::application::settings::update_app_settings(
+        app.clone(),
+        state.clone(),
+        "customization".into(),
+        value,
+    )?;
+    Ok(normalized)
+}
+
+/// 0.4.x 之前热词按供应商存在 `profile.config.hotwords`。加载时把这份数据搬进全局配置：
+/// 全局还是空的就合并写入，避免用户升级后热词凭空消失；无论是否写入都从供应商配置里
+/// 移除该键，防止留下两份互相矛盾的热词。`vocabularyIds` 是厂商侧词表 ID，仍留在供应商配置。
 pub(crate) fn migrate_legacy_provider_hotwords(
     settings: &mut crate::application::settings::AppSettings,
-    providers: &crate::providers::ProviderSettings,
+    providers: &mut crate::providers::ProviderSettings,
 ) {
+    let mut merged: Vec<HotwordEntry> = Vec::new();
+    for profile in &mut providers.profiles {
+        let Some(config) = profile.config.as_object_mut() else {
+            continue;
+        };
+        let Some(value) = config.remove("hotwords") else {
+            continue;
+        };
+        if let Ok(items) = serde_json::from_value::<Vec<HotwordEntry>>(value) {
+            merged.extend(items);
+        }
+    }
+    if merged.is_empty() {
+        return;
+    }
     let existing: CustomizationPrefs =
         serde_json::from_value(settings.customization_prefs.clone()).unwrap_or_default();
     if !existing.hotwords.is_empty() || !existing.context_template.trim().is_empty() {
-        return;
-    }
-    let mut merged: Vec<HotwordEntry> = Vec::new();
-    for profile in &providers.profiles {
-        let Some(value) = profile.config.get("hotwords") else {
-            continue;
-        };
-        let Ok(items) = serde_json::from_value::<Vec<HotwordEntry>>(value.clone()) else {
-            continue;
-        };
-        merged.extend(items);
-    }
-    if merged.is_empty() {
         return;
     }
     let normalized = normalize(&CustomizationPrefs {
@@ -246,14 +285,18 @@ mod tests {
             serde_json::json!([{"text": "说吧", "weight": 3}, {"text": "说吧", "weight": 5}]);
         providers.profiles = vec![profile];
 
-        migrate_legacy_provider_hotwords(&mut settings, &providers);
+        migrate_legacy_provider_hotwords(&mut settings, &mut providers);
         let migrated: CustomizationPrefs =
             serde_json::from_value(settings.customization_prefs.clone()).unwrap();
         assert_eq!(migrated.hotwords, vec![entry("说吧", 3)]);
+        // 搬走后供应商配置里不得再留一份热词。
+        assert!(providers.profiles[0].config.get("hotwords").is_none());
 
         // 二次迁移不得覆盖用户后来的编辑结果。
         settings.customization_prefs = serde_json::json!({"hotwords": [], "contextTemplate": "自定义"});
-        migrate_legacy_provider_hotwords(&mut settings, &providers);
+        providers.profiles[0].config["hotwords"] = serde_json::json!([{"text": "残留", "weight": 3}]);
+        migrate_legacy_provider_hotwords(&mut settings, &mut providers);
         assert_eq!(settings.customization_prefs["contextTemplate"], "自定义");
+        assert!(providers.profiles[0].config.get("hotwords").is_none());
     }
 }

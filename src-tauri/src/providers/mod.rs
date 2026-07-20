@@ -17,6 +17,30 @@ pub mod registry;
 #[cfg(test)]
 mod testing;
 
+/// 一次识别请求携带的定制数据。内容由应用层的全局热词与上下文渲染得到
+/// （见 `application::customization`），供应商层只负责按模型声明的能力下发：
+/// `supportsVocabulary` 的模型收到 `hotwords`，`supportsContext` 的模型收到 `context`。
+#[derive(Clone, Debug, Default)]
+pub struct RequestCustomization {
+    pub hotwords: Vec<alibabacloud::HotwordEntry>,
+    pub context: String,
+}
+
+impl RequestCustomization {
+    /// 把定制数据写进插件调用载荷。空字段不写：插件只在宿主真的有内容下发时才看到
+    /// `hotwords` / `context`，可以据此区分"用户没配"和"模型不支持"。
+    pub fn write_into(&self, payload: &mut serde_json::Map<String, Value>) {
+        if !self.hotwords.is_empty() {
+            if let Ok(value) = serde_json::to_value(&self.hotwords) {
+                payload.insert("hotwords".into(), value);
+            }
+        }
+        if !self.context.trim().is_empty() {
+            payload.insert("context".into(), json!(self.context));
+        }
+    }
+}
+
 pub const FUNASR_PROVIDER_ID: &str = "funasr";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";

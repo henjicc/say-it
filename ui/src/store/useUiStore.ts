@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "subtitles" | "transcription" | "settings";
+export type ViewKey = "dictation" | "subtitles" | "transcription" | "customization" | "settings";
+export type CustomizationTabKey = "hotwords" | "context";
 export type SettingsTabKey = "provider" | "plugins" | "audio" | "disconnect" | "startup" | "mic" | "appearance" | "compare";
 
 export interface SessionStatus {
@@ -14,6 +15,8 @@ interface UiState {
   setView: (view: ViewKey) => void;
   settingsTab: SettingsTabKey;
   setSettingsTab: (tab: SettingsTabKey) => void;
+  customizationTab: CustomizationTabKey;
+  setCustomizationTab: (tab: CustomizationTabKey) => void;
   aboutOpen: boolean;
   openAbout: () => void;
   closeAbout: () => void;
@@ -26,6 +29,8 @@ export const useUiStore = create<UiState>((set) => ({
   setView: (view) => set({ view }),
   settingsTab: "provider",
   setSettingsTab: (settingsTab) => set({ settingsTab }),
+  customizationTab: "hotwords",
+  setCustomizationTab: (customizationTab) => set({ customizationTab }),
   aboutOpen: false,
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),

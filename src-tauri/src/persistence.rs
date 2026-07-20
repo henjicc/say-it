@@ -154,7 +154,7 @@ pub(crate) fn load_persisted_state(
     data.providers = normalize_settings(data.providers);
     crate::application::customization::migrate_legacy_provider_hotwords(
         &mut data.app_settings,
-        &data.providers,
+        &mut data.providers,
     );
     Ok(Some(data))
 }

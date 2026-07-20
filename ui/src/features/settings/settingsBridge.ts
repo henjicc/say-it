@@ -2,6 +2,7 @@ import { CMD, cmd, type AppSettings, type AppSnapshot } from "@/lib/tauri";
 import { hydrateDictPrefs, useDictPrefs } from "@/store/useDictPrefs";
 import { hydrateSubtitlePrefs, useSubtitleStore } from "@/store/useSubtitleStore";
 import { hydrateComparePrefs, useCompareStore } from "@/store/useCompareStore";
+import { hydrateCustomizationPrefs } from "@/store/useCustomizationStore";
 import { hydrateTheme, useThemeStore } from "@/store/useThemeStore";
 import { loadModelCatalog } from "@/features/asr/modelRegistry";
 import { hydrateModelOptions, DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
@@ -16,6 +17,7 @@ function apply(settings: AppSettings): boolean {
   const dictationNeedsSync = hydrateDictPrefs(settings.dictationPrefs);
   hydrateSubtitlePrefs(settings.subtitlePrefs);
   hydrateComparePrefs(settings.comparePrefs); hydrateTheme(settings.theme);
+  hydrateCustomizationPrefs(settings.customizationPrefs);
   // 旧 Data URL 仅作迁移兼容镜像；运行时和设置页试听均由 Rust 原生播放。
   return dictationNeedsSync;
 }

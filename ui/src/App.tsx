@@ -11,6 +11,7 @@ import { initializeSettings } from "@/features/settings/settingsBridge";
 import { DictationView } from "@/views/DictationView";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { TranscriptionView } from "@/views/TranscriptionView";
+import { CustomizationView } from "@/views/CustomizationView";
 import { SettingsView } from "@/views/SettingsView";
 import { AboutDialog } from "@/views/AboutView";
 import { PluginDropInstaller } from "@/components/PluginDropInstaller";
@@ -19,6 +20,7 @@ const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
   subtitles: <RealtimeSubtitlesPanel />,
   transcription: <TranscriptionView />,
+  customization: <CustomizationView />,
   settings: <SettingsView />,
 };
 

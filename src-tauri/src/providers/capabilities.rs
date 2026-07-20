@@ -1,4 +1,4 @@
-use super::{alibabacloud, ProviderProfile};
+use super::{alibabacloud, ProviderProfile, RequestCustomization};
 pub use alibabacloud::{
     HotwordEntry, TranscriptionParams, TranscriptionResult, TranscriptionTaskStatus,
 };
@@ -52,11 +52,12 @@ pub enum FileRecognitionProvider {
     AlibabaCloud {
         api_key: String,
         vocabulary_ids: HashMap<String, String>,
-        hotwords: Vec<HotwordEntry>,
+        customization: RequestCustomization,
     },
     Plugin {
         spec: PluginRuntimeSpec,
         profile: ProviderProfile,
+        customization: RequestCustomization,
     },
     Local {
         spec: LocalModelSpec,
@@ -73,12 +74,13 @@ pub fn file_recognition_for_with_plugin(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
-    file_recognition_for_with_extensions(profile, plugin, None)
+    file_recognition_for_with_extensions(profile, plugin, None, RequestCustomization::default())
 }
 pub fn file_recognition_for_with_extensions(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
     local: Option<LocalModelSpec>,
+    customization: RequestCustomization,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
     if let Some(spec) = local {
         return Ok(FileRecognitionProvider::Local { spec });
@@ -87,6 +89,7 @@ pub fn file_recognition_for_with_extensions(
         return Ok(FileRecognitionProvider::Plugin {
             spec,
             profile: profile.clone(),
+            customization,
         });
     }
     match profile.kind.as_str() {
@@ -101,15 +104,12 @@ pub fn file_recognition_for_with_extensions(
                 .get("vocabularyIds")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
-            hotwords: profile
-                .config
-                .get("hotwords")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
+            customization,
         }),
         _ => Err(unsupported(profile, "fileRecognition")),
     }
 }
+
 impl FileRecognitionProvider {
     pub fn uses_async_task(&self, model: &str) -> bool {
         match self {
@@ -126,14 +126,27 @@ impl FileRecognitionProvider {
     ) -> Result<TranscriptionResult, String> {
         match self {
             Self::AlibabaCloud {
-                api_key, hotwords, ..
-            } => alibabacloud::recognize_short_audio(api_key, path, params, hotwords).await,
-            Self::Plugin { spec, profile } => {
+                api_key,
+                customization,
+                ..
+            } => alibabacloud::recognize_short_audio(api_key, path, params, customization).await,
+            Self::Plugin {
+                spec,
+                profile,
+                customization,
+            } => {
+                let mut payload = serde_json::Map::new();
+                payload.insert("filePath".into(), serde_json::json!(path));
+                payload.insert(
+                    "params".into(),
+                    serde_json::to_value(params).map_err(|error| error.to_string())?,
+                );
+                customization.write_into(&mut payload);
                 let value = plugin_runtime::invoke_cancellable(
                     spec,
                     profile,
                     "transcribeFile",
-                    serde_json::json!({ "filePath": path, "params": params }),
+                    Value::Object(payload),
                     Duration::from_secs(30 * 60),
                     cancel,
                     |_| {},
