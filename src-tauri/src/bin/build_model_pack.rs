@@ -46,6 +46,7 @@ fn run() -> Result<(), String> {
     let descriptor_dir = descriptor_path.parent().ok_or("描述文件路径无效")?;
     validate_manifest_shape(&descriptor.manifest)?;
     validate_source_map(&descriptor)?;
+    ensure_sources_present(&descriptor, descriptor_dir)?;
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
 
     let id = text_field(&descriptor.manifest, "id")?;
@@ -168,6 +169,93 @@ fn validate_manifest_shape(manifest: &Value) -> Result<(), String> {
     text_field(manifest, "id")?;
     text_field(manifest, "version")?;
     Ok(())
+}
+
+/// 权重文件体积数百 MB，不入库；本地缺失时按描述文件声明的地址补下载。
+///
+/// 下载后不做校验，交给 `validate_source` 统一按清单 SHA256 复核——下载损坏与
+/// 源文件被篡改是同一类问题，只留一处判定。
+fn ensure_sources_present(descriptor: &BuildDescriptor, descriptor_dir: &Path) -> Result<(), String> {
+    let files = descriptor
+        .manifest
+        .pointer("/modelPack/files")
+        .and_then(Value::as_array)
+        .ok_or("modelPack.files 必须是数组")?;
+    let mut missing = Vec::new();
+    for file in files {
+        let path = file
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("modelPack.files.path 不能为空")?;
+        let relative = descriptor
+            .sources
+            .get(path)
+            .ok_or_else(|| format!("内嵌包缺少模型源文件映射：{path}"))?;
+        let source = descriptor_dir.join(relative);
+        if source.is_file() {
+            continue;
+        }
+        let url = file
+            .pointer("/download/url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "模型源文件不存在且描述文件未声明下载地址：{path}\n  期望路径：{}",
+                    source.display()
+                )
+            })?;
+        missing.push((path.to_string(), source, url.to_string()));
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|error| format!("创建下载运行时失败：{error}"))?;
+    for (path, source, url) in missing {
+        println!("源文件缺失，开始下载 {path}");
+        println!("  <- {url}");
+        runtime.block_on(download_to(&url, &source))?;
+        println!("  -> {}", source.display());
+    }
+    Ok(())
+}
+
+async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("下载请求失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载失败，HTTP {}：{url}", response.status()));
+    }
+    let total = response.content_length().unwrap_or(0);
+    // 先写 .part，成功后再改名，避免中断留下看起来完整的半截文件。
+    let temporary = destination.with_extension("part");
+    let mut file = std::fs::File::create(&temporary).map_err(|error| error.to_string())?;
+    let mut response = response;
+    let mut written = 0u64;
+    let mut next_report = 0u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("下载中断：{error}"))?
+    {
+        file.write_all(&chunk).map_err(|error| error.to_string())?;
+        written += chunk.len() as u64;
+        if written >= next_report {
+            match total {
+                0 => println!("     {} MB", written / 1_048_576),
+                total => println!("     {}% ({} / {} MB)", written * 100 / total, written / 1_048_576, total / 1_048_576),
+            }
+            next_report = written + 32 * 1_048_576;
+        }
+    }
+    drop(file);
+    std::fs::rename(&temporary, destination).map_err(|error| error.to_string())
 }
 
 fn validate_source_map(descriptor: &BuildDescriptor) -> Result<(), String> {
