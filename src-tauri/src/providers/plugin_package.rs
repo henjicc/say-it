@@ -936,6 +936,34 @@ mod tests {
     }
 
     #[test]
+    fn signing_payload_ignores_absent_optional_model_fields() {
+        // 签名载荷是对 PluginManifest 重新序列化得到的，因此模型上任何"缺省即不写"的
+        // 可选字段都必须 skip_serializing_if。曾经 emitsPartialResults 缺省时被序列化成
+        // null，导致此前签名的插件与模型包全部验签失败（用户端表现为"插件签名验证失败"）。
+        let signed_before: serde_json::Value = serde_json::json!({
+            "apiVersion": 4,
+            "id": "test", "name": "Test", "version": "1.0.0",
+            "provider": {"id":"test","displayName":"Test","config":{}},
+            "models": [{
+                "id":"m","label":"M","providerId":"test","category":"realtime",
+                "protocol":"plugin-realtime-v1","supportsVocabulary":false,
+                "supportsAlignmentTimestamps":false,
+                "scenes":["dictationRealtime"],
+                "isDefaultRealtime":false,"isDefaultFile":false
+            }],
+            "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1}
+        });
+        let manifest: PluginManifest = serde_json::from_value(signed_before.clone()).unwrap();
+        let reserialized = serde_json::to_value(&manifest).unwrap();
+        let model = &reserialized["models"][0];
+        assert!(
+            model.get("emitsPartialResults").is_none(),
+            "缺省的可选字段不得出现在重新序列化结果里，否则旧签名全部失效：{model}"
+        );
+    }
+
+
+    #[test]
     fn signed_package_detects_tampering_and_trusts_pinned_key() {
         let root = std::env::temp_dir().join(format!("sayit-signed-plugin-{}", Uuid::new_v4()));
         std::fs::create_dir_all(root.join("connector")).unwrap();
