@@ -6,7 +6,7 @@ use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
 use crate::providers::plugin::PluginRuntimeSpec;
 use crate::providers::plugin_runtime::JsProviderRuntime;
-use crate::providers::ProviderProfile;
+use crate::providers::{ProviderProfile, RequestCustomization};
 use crate::state::*;
 
 const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
@@ -28,6 +28,7 @@ pub(super) async fn start_plugin_asr_stream(
         &plugin,
     )
     .await?;
+    let customization = crate::application::customization::resolve_for_model(state, &model);
     let session_id = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
     state
@@ -48,6 +49,7 @@ pub(super) async fn start_plugin_asr_stream(
             model,
             plugin,
             profile,
+            customization,
         );
     });
 
@@ -64,6 +66,7 @@ fn run_plugin_session(
     model: String,
     plugin: PluginRuntimeSpec,
     profile: ProviderProfile,
+    customization: RequestCustomization,
 ) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let runtime = match JsProviderRuntime::create(
@@ -80,14 +83,15 @@ fn run_plugin_session(
             return;
         }
     };
+    let mut start_payload = serde_json::Map::new();
+    start_payload.insert("providerId".into(), json!(profile.id));
+    start_payload.insert("model".into(), json!(model));
+    start_payload.insert("sampleRate".into(), json!(OUTPUT_RATE));
+    start_payload.insert("config".into(), profile.config.clone());
+    customization.write_into(&mut start_payload);
     if let Err(error) = runtime.call(
         "realtimeStart",
-        &json!({
-            "providerId": profile.id,
-            "model": model,
-            "sampleRate": OUTPUT_RATE,
-            "config": profile.config,
-        }),
+        &Value::Object(start_payload),
         Duration::from_secs(30),
     ) {
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));

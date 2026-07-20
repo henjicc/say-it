@@ -69,12 +69,6 @@ interface ProviderState {
   }) => Promise<ProviderProfile>;
   refreshLlmModels: (providerId: string) => Promise<ProviderProfile>;
   removeLlmProvider: (providerId: string) => Promise<void>;
-  saveFunasrHotwords: (hotwords: { text: string; weight: number }[]) => Promise<void>;
-  syncFunasrHotwords: () => Promise<void>;
-  clearFunasrHotwords: () => Promise<void>;
-  saveHotwords: (providerId: string, hotwords: { text: string; weight: number }[]) => Promise<void>;
-  syncHotwords: (providerId: string) => Promise<void>;
-  clearHotwords: (providerId: string) => Promise<void>;
   setOverride: (capability: ProviderCapability, providerId: string) => void;
   effective: (capability: ProviderCapability) => string;
   optionsFor: (capability: ProviderCapability) => ProviderProfile[];
@@ -157,36 +151,6 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   removeLlmProvider: async (providerId) => {
     const response = await cmd<ProviderResponse>(CMD.removeLlmProvider, { providerId });
     set({ ...normalize(response), statusText: "大语言模型已删除。", statusTone: "ok" });
-  },
-
-  saveFunasrHotwords: async (hotwords) => {
-    const response = await cmd<ProviderResponse>(CMD.providerSaveHotwords, { providerId: "funasr", hotwords });
-    set({ ...normalize(response), statusText: "热词已保存到阿里云百炼。", statusTone: "ok" });
-  },
-
-  syncFunasrHotwords: async () => {
-    const response = await cmd<ProviderResponse>(CMD.providerSyncHotwords, { providerId: "funasr" });
-    set({ ...normalize(response), statusText: "热词已从阿里云百炼同步。", statusTone: "ok" });
-  },
-
-  clearFunasrHotwords: async () => {
-    const response = await cmd<ProviderResponse>(CMD.providerClearHotwords, { providerId: "funasr" });
-    set({ ...normalize(response), statusText: "热词已清除。", statusTone: "ok" });
-  },
-
-  saveHotwords: async (providerId, hotwords) => {
-    const response = await cmd<ProviderResponse>(CMD.providerSaveHotwords, { providerId, hotwords });
-    set({ ...normalize(response), statusText: "热词已保存。", statusTone: "ok" });
-  },
-
-  syncHotwords: async (providerId) => {
-    const response = await cmd<ProviderResponse>(CMD.providerSyncHotwords, { providerId });
-    set({ ...normalize(response), statusText: "热词已同步。", statusTone: "ok" });
-  },
-
-  clearHotwords: async (providerId) => {
-    const response = await cmd<ProviderResponse>(CMD.providerClearHotwords, { providerId });
-    set({ ...normalize(response), statusText: "热词已清除。", statusTone: "ok" });
   },
 
   setOverride: (capability, providerId) => {

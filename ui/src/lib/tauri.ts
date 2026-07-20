@@ -53,9 +53,9 @@ export const CMD = {
   refreshLlmModels: "refresh_llm_models",
   removeLlmProvider: "remove_llm_provider",
   previewSmartText: "preview_smart_text",
-  providerSaveHotwords: "provider_save_hotwords",
-  providerSyncHotwords: "provider_sync_hotwords",
-  providerClearHotwords: "provider_clear_hotwords",
+  customizationSyncProviders: "customization_sync_providers",
+  customizationPullFromProvider: "customization_pull_from_provider",
+  customizationClearProviders: "customization_clear_providers",
   getBackendMicLevel: "get_backend_mic_level",
   startBackendMic: "start_backend_mic",
   releaseBackendMic: "release_backend_mic",
@@ -124,6 +124,7 @@ export interface AppSettings {
   dictationPrefs: Record<string, unknown>;
   subtitlePrefs: Record<string, unknown>;
   comparePrefs: Record<string, unknown>;
+  customizationPrefs: Record<string, unknown>;
   theme: Record<string, unknown>;
   customCueStart?: { relativePath: string; mimeType: string };
   customCueEnd?: { relativePath: string; mimeType: string };

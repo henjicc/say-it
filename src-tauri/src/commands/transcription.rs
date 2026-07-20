@@ -345,8 +345,13 @@ fn resolve_file_recognition_provider(
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider(&provider_id)?;
-    file_recognition_for_with_extensions(profile, plugin, local_model)
-        .map_err(|error| error.to_string())
+    file_recognition_for_with_extensions(
+        profile,
+        plugin,
+        local_model,
+        crate::application::customization::resolve_for_model(state, model),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {

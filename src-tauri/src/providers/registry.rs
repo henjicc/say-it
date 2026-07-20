@@ -109,6 +109,9 @@ pub fn supports_vocabulary(model: &str) -> bool {
 
 /// 判断模型是否支持上下文增强。未声明按不支持处理：上下文只在明确声明的模型上生效，
 /// 避免向不认识该字段的模型塞入无效内容。
+/// 运行路径按 `ModelInfo` 直接取值（还要兼顾插件注册表，见 `application::customization`），
+/// 这里保留同名查询以保持注册表 API 完整并被单测锁定。
+#[allow(dead_code)]
 pub fn supports_context(model: &str) -> bool {
     model_info(model)
         .and_then(|info| info.supports_context)

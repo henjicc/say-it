@@ -12,7 +12,6 @@ import {
   type ProviderCapability,
   type ProviderProfile,
 } from "@/store/useProviderStore";
-import { FunAsrHotwordsPanel } from "@/views/FunAsrHotwordsPanel";
 
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
@@ -129,11 +128,6 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
             </Button>
           ))}
         </div>
-        {(provider.capabilities.includes("customization") || provider.actions?.includes("manageHotwords")) && (
-          <Collapse title="热词" className={NESTED_COLLAPSE_CLASS}>
-            <FunAsrHotwordsPanel providerId={provider.id} />
-          </Collapse>
-        )}
         {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       </div>
     </Collapse>
@@ -269,17 +263,6 @@ function FunAsrProviderConfig({ provider }: { provider: ProviderProfile }) {
       </p>
 
       <div className="mt-4 flex flex-col gap-3">
-        {provider.actions?.includes("manageHotwords") && (
-          <Collapse
-            title="热词"
-            className={NESTED_COLLAPSE_CLASS}
-            headerClassName={NESTED_HEADER_CLASS}
-            bodyClassName={NESTED_BODY_CLASS}
-          >
-            <FunAsrHotwordsPanel />
-          </Collapse>
-        )}
-
         <Collapse
           title="高级参数"
           className={NESTED_COLLAPSE_CLASS}

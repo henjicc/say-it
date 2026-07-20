@@ -7,7 +7,7 @@ mod types;
 
 use serde_json::json;
 
-use super::customization::HotwordEntry;
+use crate::providers::RequestCustomization;
 
 pub use async_oss::{fetch_transcription_result, query_transcription_task, submit_transcription_task};
 pub use types::{TranscriptionParams, TranscriptionResult, TranscriptionTaskStatus};
@@ -28,7 +28,7 @@ pub async fn recognize_short_audio(
     api_key: &str,
     file_path: &str,
     params: &TranscriptionParams,
-    hotwords: &[HotwordEntry],
+    customization: &RequestCustomization,
 ) -> Result<TranscriptionResult, String> {
     if api_key.trim().is_empty() {
         return Err("请先保存阿里云百炼 API Key".to_string());
@@ -44,20 +44,17 @@ pub async fn recognize_short_audio(
         TranscriptionModelFamily::FunAsrFlash => {
             let data_uri = media_encode::build_opus_data_uri(file_path)?;
             let mut messages = Vec::new();
-            // fun-asr-flash 不支持 vocabulary_id，改用文档里的“上下文增强”：把热词词表拼成一条
-            // input_text 消息放在音频消息之前，模型据此提升这些词的识别概率。
-            if !hotwords.is_empty() {
-                let vocabulary_text = hotwords
-                    .iter()
-                    .map(|item| item.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
+            // fun-asr-flash 不支持 vocabulary_id，改用文档里的“上下文增强”：把全局上下文
+            // （模板未填时即为热词列表本身）拼成一条 input_text 消息放在音频消息之前。
+            // 是否支持上下文由应用层按模型声明裁剪，这里只负责下发拿到的内容。
+            let context = customization.context.trim();
+            if !context.is_empty() {
                 messages.push(json!({
                     "role": "user",
                     "content": [
                         {
                             "type": "input_text",
-                            "text": vocabulary_text,
+                            "text": context,
                         }
                     ]
                 }));
