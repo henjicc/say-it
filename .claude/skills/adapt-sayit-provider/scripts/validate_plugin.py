@@ -205,7 +205,22 @@ def validate(root: Path) -> dict:
         seen.add(model_id)
         if model.get("providerId") != provider.get("id"):
             fail(f"模型 {model_id} 的 providerId 不匹配")
+        if not isinstance(model.get("label"), str) or not model["label"].strip():
+            fail(f"模型 {model_id} 缺少 label")
+        # 宿主对这些字段没有默认值，缺失或类型错误会让插件装上后加载失败，
+        # 必须在打包阶段就拦下来。
+        for field in ("supportsVocabulary", "supportsAlignmentTimestamps",
+                      "isDefaultRealtime", "isDefaultFile"):
+            if not isinstance(model.get(field), bool):
+                fail(f"模型 {model_id} 的 {field} 必须是布尔值")
         category, protocol, scenes = model.get("category"), model.get("protocol"), set(model.get("scenes", []))
+        partial = model.get("emitsPartialResults")
+        if partial is not None and not isinstance(partial, bool):
+            fail(f"模型 {model_id} 的 emitsPartialResults 必须是布尔值")
+        # 实时模型有真流式与"整句"两种出字方式，宿主无法探测，只能靠声明区分：
+        # 漏声明会被当成真流式，用户看不到「（整句）」标注，以为界面卡住。
+        if category == "realtime" and partial is None:
+            fail(f"模型 {model_id} 是实时模型，必须显式声明 emitsPartialResults")
         valid = (
             category == "realtime" and "asr" in capabilities and protocol == "plugin-realtime-v1" and bool(scenes & {"dictationRealtime", "subtitles"})
         ) or (

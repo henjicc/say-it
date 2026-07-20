@@ -19,7 +19,7 @@ description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！
 
 1. 将本 Skill 目录记为 `SKILL_DIR`，运行：`python "$SKILL_DIR/scripts/init_plugin_workspace.py" "$WORK_ROOT/sayit-plugin-work/<插件 ID>" --template "$SKILL_DIR/assets/plugin-template" --work-root "$WORK_ROOT"`。
 2. 完整阅读 [插件接口规范](references/plugin-api.md)。涉及网页登录、Cookie、网页逆向或非官方接口时，再完整阅读 [特权与逆向供应商](references/privileged-providers.md)。
-3. 仅在 `source/` 内修改 `manifest.json` 与 `connector/`。按实际能力调研并确认鉴权、请求/响应、音频或图像格式、临时/最终结果、收尾、取消、超时和会话续期。若网页登录会话还依赖短时签名 URL，必须在 `browserSession.capturedUrlCookie` 声明 Cookie、有效期和 URL 规则；不得要求或实现按插件 ID 的宿主侧特判。
+3. 仅在 `source/` 内修改 `manifest.json` 与 `connector/`。按实际能力调研并确认鉴权、请求/响应、音频或图像格式、临时/最终结果、收尾、取消、超时和会话续期。实测供应商是否返回中间结果、时间戳与标点，据此回填模型能力字段，不要沿用模板默认值。若网页登录会话还依赖短时签名 URL，必须在 `browserSession.capturedUrlCookie` 声明 Cookie、有效期和 URL 规则；不得要求或实现按插件 ID 的宿主侧特判。
 4. 插件默认导出 `createProvider(host)`；只使用规范中的 `host`，不要引用 Node、DOM、文件系统、环境变量、进程、Shell、Tauri IPC 或原生模块。
 5. 运行 `python "$SKILL_DIR/scripts/smoke_test_plugin.py" "$PLUGIN_ROOT/source"`，再用模拟响应覆盖已声明方法的解析、错误、取消与断连。
 6. 生成纯源码包目录：`python "$SKILL_DIR/scripts/package_plugin.py" "$PLUGIN_ROOT/source" "$PLUGIN_ROOT/build/<插件 ID>-<版本>" --work-root "$WORK_ROOT"`。
@@ -32,6 +32,7 @@ description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！
 
 - 新插件默认使用 API v4；运行时固定为 `javascript`，宿主 API 固定为 v1。只有维护既有插件且未使用 `ocr`、`localNetwork` 时才保留 v3。
 - 模型协议只能使用 `plugin-realtime-v1`、`plugin-file-v1`、`plugin-translation-v1`、`plugin-ocr-v1`，并与能力、类别和场景严格匹配。
+- 模型能力字段必须按实测如实声明，宿主无法探测真实行为，照抄模板默认值就是错的：实时模型必须显式写 `emitsPartialResults`（真流式 `true`，说完一句才整句出字的写 `false`，否则用户看不到「（整句）」标注、以为界面卡住）；`supportsAlignmentTimestamps` 按宿主最终能否拿到时间戳判断，连接器没把时间戳透传进 `sentences` 就必须写 `false`。判定表见 [插件接口规范](references/plugin-api.md) 的「模型能力字段」。
 - 音频由宿主完成 DSP 和 PCM16 转换，以 `Uint8Array` 传给 `realtimeAudio`。
 - 文件识别只能使用宿主给出的不透明输入句柄；不得接收或猜测本地路径。
 - OCR 统一通过 `invoke({ operation: "recognizeImage", payload })`；输入是 PNG Base64 与用途，输出必须是带 0~1 归一化区域的文本块。
