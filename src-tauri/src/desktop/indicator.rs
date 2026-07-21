@@ -118,11 +118,13 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
     Ok(())
 }
 
-/// 切换指示器内容。state: "recording" | "processing" | "hidden"。
+/// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
 pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
-    hotkey::set_dictation_active(state == "recording" || state == "processing");
+    hotkey::set_dictation_active(
+        state == "recording" || state == "processing" || state == "smartProcessing",
+    );
     if state == "hidden" {
         if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
             let _ = window.emit("dictation-indicator-state", json!({ "state": state }));

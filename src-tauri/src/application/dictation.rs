@@ -1159,6 +1159,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
         )
     };
     publish_state(&app, None);
+    if effective.smart_processing_enabled {
+        let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+    }
     if let Some(id) = asr {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
