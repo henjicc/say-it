@@ -80,9 +80,11 @@ export function AppProfilesPanel() {
     [next[index], next[target]] = [next[target], next[index]];
     patch({ appProfiles: next });
   };
-  const deleteProfile = (id: string) => {
-    patch({ appProfiles: profiles.filter((p) => p.id !== id) });
-    if (editingId === id) setEditingId(null);
+  const deleteProfile = (profile: AppProfile) => {
+    const label = profile.name.trim() || profile.matchers[0] || "未命名规则";
+    if (!window.confirm(`确定删除软件规则“${label}”吗？`)) return;
+    patch({ appProfiles: profiles.filter((p) => p.id !== profile.id) });
+    if (editingId === profile.id) setEditingId(null);
   };
   const addProfile = () => {
     if (profiles.length >= MAX_APP_PROFILES) return;
@@ -119,7 +121,7 @@ export function AppProfilesPanel() {
   return (
     <div className="flex flex-col gap-8">
       <SettingsSection
-        title="按软件配置规则"
+        title="软件规则"
         right={
           <Switch
             checked={prefs.appProfilesEnabled}
@@ -200,7 +202,7 @@ export function AppProfilesPanel() {
                     variant="dangerHover"
                     className="h-7 w-7 shrink-0"
                     label="删除软件规则"
-                    onClick={() => deleteProfile(profile.id)}
+                    onClick={() => deleteProfile(profile)}
                   >
                     <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                   </IconButton>

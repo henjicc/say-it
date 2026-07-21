@@ -28,7 +28,7 @@ const TABS: TabItem<TabKey>[] = [
   { key: "basic", label: "通用设置" },
   { key: "local", label: "本地处理" },
   { key: "smart", label: "智能处理" },
-  { key: "apps", label: "按软件配置" },
+  { key: "apps", label: "软件规则" },
   { key: "debug", label: "调试" },
 ];
 
