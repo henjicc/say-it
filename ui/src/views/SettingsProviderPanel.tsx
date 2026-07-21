@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Collapse } from "@/components/ui/Collapse";
 import { Button } from "@/components/ui/Button";
 import { Field, CheckField } from "@/components/ui/Field";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
@@ -230,7 +230,6 @@ function FunAsrProviderConfig({ provider }: { provider: ProviderProfile }) {
     <Collapse
       title={provider.displayName}
       subtitle={hasApiKey ? "已配置" : "未配置"}
-      defaultOpen
     >
       <p className="text-xs text-[var(--color-fg-subtle)]">
         <button
@@ -354,6 +353,8 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     (provider) => provider.enabled && provider.capabilities.includes(capability),
   );
 
+  // 无配置项的供应商（系统内置 OCR、无配置字段的插件、本地模型包）不占据分区位置；
+  // 多能力供应商仍在非主分区保留一行指引，避免用户以为该能力没有供应商。
   const renderEntry = (provider: ProviderProfile) => {
     const primary = primaryCapabilityOf(provider);
     if (primary !== capability) {
@@ -368,34 +369,24 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     if (provider.kind === "alibabacloud-funasr") {
       return <FunAsrProviderConfig key={provider.id} provider={provider} />;
     }
-    if (provider.kind.startsWith("plugin:")) {
-      if (!hasPluginConfiguration(provider)) {
-        return (
-          <ProviderSummaryRow
-            key={provider.id}
-            title={provider.displayName}
-            subtitle="无需配置"
-          />
-        );
-      }
+    if (provider.kind.startsWith("plugin:") && hasPluginConfiguration(provider)) {
       return <PluginProviderConfig key={provider.id} provider={provider} />;
     }
-    // 内置或模型包供应商没有在线凭据配置项。
-    return (
-      <ProviderSummaryRow
-        key={provider.id}
-        title={provider.displayName}
-        subtitle={provider.kind.startsWith("builtin-") ? "系统内置，无需配置" : "无需配置"}
-      />
-    );
+    return null;
   };
+
+  const rendered = entries.map(renderEntry).filter((entry) => entry !== null);
 
   return (
     <SettingsSection title={SECTION_TITLES[capability]}>
-      {entries.length === 0 ? (
-        <p className="text-xs text-[var(--color-fg-subtle)]">暂无支持该能力的供应商，可通过「插件管理」安装。</p>
+      {rendered.length > 0 ? (
+        rendered
       ) : (
-        entries.map(renderEntry)
+        <p className="text-xs text-[var(--color-fg-subtle)]">
+          {entries.length === 0
+            ? "暂无支持该能力的供应商，可通过「插件管理」安装。"
+            : "当前已启用的供应商均无需配置。"}
+        </p>
       )}
     </SettingsSection>
   );
