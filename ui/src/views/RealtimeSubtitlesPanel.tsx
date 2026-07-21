@@ -64,8 +64,7 @@ export function RealtimeSubtitlesPanel() {
                 patch({ obsOutputEnabled: event.target.value === "obs" });
                 void applyObsOutputRouting();
               }}
-              // 与右侧两个 h-10 按钮等高对齐；Select 默认高度是表单控件的 --control-h。
-              className="w-36 [&>button]:min-h-0 [&>button]:h-10 [&>button]:py-0"
+              className="w-36"
               title="选择字幕输出位置。输出到 OBS 时需要先在“OBS 接入”里连接并安装字幕源；OBS 未就绪会自动回落到桌面悬浮窗。"
             >
               <option value="desktop">输出到桌面</option>
