@@ -401,7 +401,6 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
     <Collapse
       title={profile.displayName}
       subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "未配置"} · ${models.length} 个模型`}
-      defaultOpen={isDefault}
     >
       <div className="grid grid-cols-1 gap-3">
         <Field

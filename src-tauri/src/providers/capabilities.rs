@@ -276,25 +276,6 @@ pub enum OcrProvider {
         reason: String,
     },
 }
-#[cfg(test)]
-pub fn ocr_for(profile: &ProviderProfile) -> Result<OcrProvider, CapabilityError> {
-    ocr_for_with_plugin(profile, None)
-}
-pub fn ocr_for_with_plugin(
-    profile: &ProviderProfile,
-    plugin: Option<PluginRuntimeSpec>,
-) -> Result<OcrProvider, CapabilityError> {
-    if let Some(spec) = plugin {
-        return Ok(OcrProvider::Plugin {
-            spec,
-            profile: profile.clone(),
-        });
-    }
-    match profile.kind.as_str() {
-        "builtin-windows-ocr" => Ok(OcrProvider::System),
-        _ => Err(unsupported(profile, "ocr")),
-    }
-}
 impl OcrProvider {
     /// 通用 OCR 接口：输入 PNG 字节与用途标识（如 "activeAppContext"），
     /// 输出按 0~1 归一化坐标的文本块列表；排序、去重等收尾由消费方决定。
@@ -673,19 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn ocr_factory_supports_builtin_system_profile_only() {
-        assert!(matches!(
-            ocr_for(&super::super::windows_ocr_profile()),
-            Ok(OcrProvider::System)
-        ));
-        let error = match ocr_for(&fake()) {
-            Err(error) => error,
-            Ok(_) => panic!("expected unsupported profile to fail"),
-        };
-        assert_eq!((error.provider_id.as_str(), error.capability), ("fake", "ocr"));
-    }
-
-    #[test]
     fn plugin_ocr_blocks_are_normalized_and_clamped() {
         let value = json!({
             "blocks": [
@@ -737,7 +705,7 @@ mod tests {
         };
         let mut profile = fake();
         profile.capabilities = vec!["ocr".into()];
-        let provider = ocr_for_with_plugin(&profile, Some(spec)).unwrap();
+        let provider = OcrProvider::Plugin { spec, profile };
         let blocks = tauri::async_runtime::block_on(
             provider.recognize(&[1_u8, 2, 3, 4], "activeAppContext"),
         )
