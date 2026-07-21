@@ -42,6 +42,26 @@ const ACTIONS_CLASS = "flex shrink-0 items-stretch gap-2 [&>*]:h-[var(--control-
 注释写「与右侧两个 h-10 按钮等高对齐」。但那两个 Button 是默认 `md` = 44px，Select 原生也是 44px，
 本来就是齐的；这个 hack 把 Select 压到 40px，**是它自己制造了错位**。已删除。
 
+## 全仓同类排查（同一根因的其它形态）
+
+修完上面那处后按「页面自造尺寸、绕开令牌与组件」全仓扫了一遍，又找到四类，已一并修掉：
+
+| 形态 | 症状 | 处理 |
+|---|---|---|
+| 密集输入框 | `min-h-0 h-8 px-2.5 py-1 text-xs` 在 2 个文件里复制 7 次，外加 1 处 `h-9`；`px-2` / `px-2.5` / 有无 `font-mono` 已开始漂移 | `Input` / `NumberInput` 增加 `size="sm"`（走 `--control-h-sm`），调用方只写 `size="sm"` |
+| 输入框内嵌图标按钮 | 5 份手写实现（SecretInput、ObsOverlayPanel ×2、DictationShortcutsPanel、SubtitleGeneralPanel），高度 h-7/h-8、圆角 sm/md、hover 底色、disabled 透明度 35/40 各不相同 | 抽 `components/ui/InputAffixButton`，5 处全部替换；输入框右内边距统一 `pr-11` |
+| 颜色色板 | 「外观」`h-10 w-10` 与「字幕样式」`h-11 w-12` 两套，边框、背景、内边距都不同，且都没有可见焦点 | 抽 `components/ui/ColorInput`，尺寸走 `--control-h`，补 focus ring |
+| 冗余高度补丁 | `min-h-[var(--control-h)]` 加在本就是该高度的 Button 上；分段控件用 `h-9` | 删除冗余；`h-9` 改为 `--control-h-sm` |
+
+排查用的四条 grep（改完应全部为空）：
+
+```
+grep -rn "\[&>" views/ components/ --include=*.tsx | grep -v components/ui/   # 页面里的子选择器
+grep -rn "items-end" views/ components/ --include=*.tsx                      # 用对齐兜尺寸问题
+grep -rn "min-h-0 h-" views/ components/ --include=*.tsx | grep -v components/ui/
+grep -rn 'className="[^"]*\bh-\(8\|9\|10\|11\|12\)\b' views/ --include=*.tsx # 图标除外
+```
+
 ## 触发条件与正确做法
 
 - 往 `Field.actions` 里放按钮时，**不要传 `size="sm"`**；组件现在会兜底，但代码应表达真实意图。
