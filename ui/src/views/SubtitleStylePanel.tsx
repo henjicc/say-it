@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
+import { ColorInput } from "@/components/ui/ColorInput";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { SettingsSection } from "@/components/ui/SettingsSection";
@@ -62,13 +63,7 @@ function ColorField({
   return (
     <Field label={label}>
       <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-11 w-12 flex-none cursor-pointer rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-1"
-          aria-label={label}
-        />
+        <ColorInput value={value} onChange={onChange} label={label} />
         <Input value={value} onChange={(event) => onChange(event.target.value)} />
       </div>
     </Field>

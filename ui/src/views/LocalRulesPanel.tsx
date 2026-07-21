@@ -154,7 +154,7 @@ export function LocalRulesPanel() {
                 placeholder="查找，例如 Cloud Code"
                 spellCheck={false}
                 onChange={(e) => updateRule(rule.id, { find: e.target.value })}
-                className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
+                size="sm" className="flex-1"
               />
               <span className="shrink-0 text-[var(--color-fg-faint)]">→</span>
               <Input
@@ -162,7 +162,7 @@ export function LocalRulesPanel() {
                 placeholder="替换为，留空 = 删除"
                 spellCheck={false}
                 onChange={(e) => updateRule(rule.id, { replacement: e.target.value })}
-                className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
+                size="sm" className="flex-1"
               />
               <label
                 title="忽略大小写"
@@ -244,7 +244,7 @@ export function LocalRulesPanel() {
                       value={rule.name}
                       placeholder="规则名称"
                       onChange={(e) => updateRule(rule.id, { name: e.target.value })}
-                      className="min-h-0 h-8 px-2.5 py-1 text-xs"
+                      size="sm"
                     />
                     <div className="flex items-center gap-2">
                       <Input
@@ -252,10 +252,8 @@ export function LocalRulesPanel() {
                         placeholder="正则表达式，例如 (?:嗯|呃)+"
                         spellCheck={false}
                         onChange={(e) => updateRule(rule.id, { pattern: e.target.value })}
-                        className={cn(
-                          "min-h-0 h-8 flex-1 px-2.5 py-1 font-mono text-xs",
-                          err && "border-[var(--color-err)]",
-                        )}
+                        size="sm"
+                        className={cn("flex-1 font-mono", err && "border-[var(--color-err)]")}
                       />
                       <span className="shrink-0 text-xs text-[var(--color-fg-faint)]">替换为</span>
                       <Input
@@ -263,7 +261,7 @@ export function LocalRulesPanel() {
                         placeholder="留空 = 删除"
                         spellCheck={false}
                         onChange={(e) => updateRule(rule.id, { replacement: e.target.value })}
-                        className="min-h-0 h-8 flex-1 px-2.5 py-1 font-mono text-xs"
+                        size="sm" className="flex-1 font-mono"
                       />
                     </div>
                     {err && <p className="text-[11px] text-[var(--color-err)]">正则错误：{err}</p>}

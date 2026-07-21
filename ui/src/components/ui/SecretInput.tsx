@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, LoaderCircle } from "lucide-react";
 import { Input } from "./Input";
 import { cn } from "@/lib/cn";
+import { InputAffixButton } from "./InputAffixButton";
 
 const STORED_SECRET_MASK = "•".repeat(32);
 
 export interface SecretInputProps
-  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "defaultValue" | "onChange"> {
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "defaultValue" | "onChange" | "size"> {
   draftValue: string;
   hasStoredValue: boolean;
   onDraftChange: (value: string) => void;
@@ -108,15 +109,12 @@ export function SecretInput({
           className,
         )}
       />
-      <button
-        type="button"
-        aria-label={visible ? "隐藏密钥" : "显示密钥"}
-        title={visible ? "隐藏密钥" : "显示密钥"}
-        aria-pressed={visible}
-        onMouseDown={(event) => event.preventDefault()}
+      <InputAffixButton
+        label={visible ? "隐藏密钥" : "显示密钥"}
+        pressed={visible}
+        keepFocus
         onClick={() => void toggleVisibility()}
         disabled={disabled || loading || !canToggle}
-        className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
       >
         {loading ? (
           <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
@@ -125,7 +123,7 @@ export function SecretInput({
         ) : (
           <Eye className="h-4 w-4" aria-hidden />
         )}
-      </button>
+      </InputAffixButton>
     </div>
   );
 }

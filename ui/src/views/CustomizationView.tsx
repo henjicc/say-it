@@ -103,7 +103,7 @@ function HotwordsTab() {
                     spellCheck={false}
                     aria-label={`第 ${index + 1} 个热词`}
                     onChange={(event) => updateHotword(index, { text: event.target.value })}
-                    className="min-h-0 h-8 flex-1 px-2.5 py-1 text-xs"
+                    size="sm" className="flex-1"
                   />
                   <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
                     权重
@@ -114,7 +114,7 @@ function HotwordsTab() {
                       aria-label={`第 ${index + 1} 个热词的权重`}
                       onValueChange={(weight) => updateHotword(index, { weight })}
                       className="w-16"
-                      inputClassName="min-h-0 h-8 px-2 py-1 text-xs"
+                      size="sm"
                     />
                   </label>
                   <IconButton

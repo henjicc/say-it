@@ -11,6 +11,7 @@ import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { useAudioDevices } from "@/features/audio/devices";
 import { startShortcutCapture, clearShortcut, setInjectMethod, setPressHoldMode } from "@/features/dictation/controller";
+import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
 const DEFAULT_INPUT_VALUE = "";
 export function DictationShortcutsPanel() {
@@ -63,18 +64,13 @@ export function DictationShortcutsPanel() {
                   placeholder="未设置"
                   className={cn(
                     capturing && "border-[var(--accent-ring)]",
-                    !capturing && shortcutLabel && "pr-9",
+                    !capturing && shortcutLabel && "pr-11",
                   )}
                 />
                 {!capturing && shortcutLabel && (
-                  <button
-                    type="button"
-                    aria-label="清除快捷键"
-                    onClick={clearShortcut}
-                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
-                  >
+                  <InputAffixButton label="清除快捷键" onClick={clearShortcut}>
                     <ClearIcon />
-                  </button>
+                  </InputAffixButton>
                 )}
               </div>
               <Button className="shrink-0 self-stretch" onClick={startShortcutCapture}>

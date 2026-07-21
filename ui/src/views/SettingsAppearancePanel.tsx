@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { ColorInput } from "@/components/ui/ColorInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
 import { useThemeStore } from "@/store/useThemeStore";
@@ -30,13 +31,7 @@ function AccentColorField({
 
   return (
     <div className="grid grid-cols-[2.75rem_1fr] gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
-      <input
-        type="color"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        aria-label="强调色"
-        className="h-10 w-10 cursor-pointer rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-transparent p-0.5 [accent-color:var(--color-accent)]"
-      />
+      <ColorInput value={value} onChange={onChange} label="强调色" />
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -52,7 +47,8 @@ function AccentColorField({
           onKeyDown={(event) => {
             if (event.key === "Enter") commit();
           }}
-          className={cn("mt-2 min-h-0 h-9 font-mono", invalid && "border-[var(--color-err)]")}
+          size="sm"
+          className={cn("mt-2 font-mono", invalid && "border-[var(--color-err)]")}
           spellCheck={false}
         />
         {invalid && <p className="mt-1 text-xs text-[var(--color-err)]">请输入 3 或 6 位 Hex 颜色。</p>}
@@ -85,7 +81,7 @@ export function SettingsAppearancePanel() {
                     type="button"
                     onClick={() => patch({ tone: option.value as "dark" | "light" })}
                     className={cn(
-                      "h-9 rounded-[var(--radius-md)] text-sm transition-colors duration-[var(--dur-fast)]",
+                      "h-[var(--control-h-sm)] rounded-[var(--radius-md)] text-sm transition-colors duration-[var(--dur-fast)]",
                       active
                         ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
                         : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",

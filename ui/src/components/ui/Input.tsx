@@ -4,18 +4,30 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const fieldBase =
-  "w-full h-[var(--control-h)] rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-sm text-[var(--color-fg)] " +
+  "w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg)] " +
   "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
   "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
 
-const textareaBase =
-  "w-full min-h-[var(--control-h)] rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-sm text-[var(--color-fg)] " +
-  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
-  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
+/**
+ * 输入框尺寸。sm 供高密列表使用——必须走这里，不要在页面里用 `h-8`/`h-9` 之类自造高度：
+ * 那样既绕开令牌，也会在几个列表之间慢慢漂移出好几种"差不多"的尺寸。
+ */
+export type ControlSize = "sm" | "md";
 
-export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
-  ({ className, ...props }, ref) => (
-    <input ref={ref} className={cn(fieldBase, className)} {...props} />
+const fieldSizes: Record<ControlSize, string> = {
+  sm: "h-[var(--control-h-sm)] px-2.5 py-1 text-xs",
+  md: "h-[var(--control-h)] px-4 py-2.5 text-sm",
+};
+
+const textareaBase = cn(fieldBase, "min-h-[var(--control-h)] px-4 py-2.5 text-sm");
+
+export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "size"> {
+  size?: ControlSize;
+}
+
+export const Input = forwardRef<HTMLInputElement, InputProps>(
+  ({ className, size = "md", ...props }, ref) => (
+    <input ref={ref} className={cn(fieldBase, fieldSizes[size], className)} {...props} />
   ),
 );
 Input.displayName = "Input";
@@ -32,6 +44,7 @@ export function NumberInput({
   onValueChange,
   className,
   inputClassName,
+  size = "md",
   disabled,
   ...props
 }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type" | "size"> & {
@@ -41,6 +54,7 @@ export function NumberInput({
   step?: number;
   onValueChange: (value: number) => void;
   inputClassName?: string;
+  size?: ControlSize;
 }) {
   const commit = (next: number) => onValueChange(Math.min(max, Math.max(min, next)));
   return (
@@ -60,6 +74,7 @@ export function NumberInput({
         }}
         className={cn(
           fieldBase,
+          fieldSizes[size],
           "pr-7 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
           inputClassName,
         )}

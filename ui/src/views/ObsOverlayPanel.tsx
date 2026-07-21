@@ -8,6 +8,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
+import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
 interface ObsOverlayStatus {
   ready: boolean;
@@ -207,17 +208,10 @@ export function ObsOverlayPanel() {
         <FormGrid columns={1}>
           <Field layout="row" label="字幕源 URL">
             <div className="relative">
-              <Input className="pr-12" readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
-              <button
-                type="button"
-                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={copyUrl}
-                disabled={!overlay.url}
-                aria-label="复制字幕源 URL"
-                title="复制字幕源 URL"
-              >
+              <Input className="pr-11" readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
+              <InputAffixButton label="复制字幕源 URL" onClick={copyUrl} disabled={!overlay.url}>
                 <Copy className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-              </button>
+              </InputAffixButton>
             </div>
           </Field>
         </FormGrid>
@@ -255,16 +249,15 @@ export function ObsOverlayPanel() {
                 className="pr-11"
                 disabled={busy}
               />
-              <button
-                type="button"
-                aria-label={passwordVisible ? "隐藏密码" : "显示密码"}
-                title={passwordVisible ? "隐藏密码" : "显示密码"}
+              <InputAffixButton
+                label={passwordVisible ? "隐藏密码" : "显示密码"}
+                pressed={passwordVisible}
+                keepFocus
                 onClick={togglePasswordVisibility}
                 disabled={busy || (!hasSavedPassword && !passwordDirty)}
-                className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-subtle)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-not-allowed disabled:opacity-35"
               >
                 {passwordVisible ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
-              </button>
+              </InputAffixButton>
             </div>
           </Field>
           <Field layout="row" label="安装场景">
