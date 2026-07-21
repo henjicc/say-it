@@ -21,6 +21,7 @@ const DOMAIN_EVENT: &str = "domain-event";
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 const MAX_SMART_TEMPLATES: usize = 50;
 const MAX_APP_PROFILES: usize = 100;
+const MAX_SMART_PROCESSING_MIN_CHARS: u32 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +80,7 @@ struct SmartTemplate {
     prompt: String,
 }
 
-/// 按软件覆盖后处理配置。三个字段都是三态：`None` 表示继承全局，
+/// 按软件覆盖后处理配置。覆盖字段使用 `None` 表示继承全局，
 /// 只有显式配置过的项才覆盖，否则新建一条规则会把没配的项静默关掉。
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -91,6 +92,8 @@ struct AppProfile {
     enabled: bool,
     local_rules_enabled: Option<bool>,
     smart_processing_enabled: Option<bool>,
+    /// `None` 跟随全局，`0` 每次听写，正数表示达到该字符数才处理。
+    smart_processing_min_chars: Option<u32>,
     smart_template_id: Option<String>,
 }
 
@@ -103,6 +106,7 @@ impl Default for AppProfile {
             enabled: true,
             local_rules_enabled: None,
             smart_processing_enabled: None,
+            smart_processing_min_chars: None,
             smart_template_id: None,
         }
     }
@@ -124,6 +128,8 @@ impl AppProfile {
 struct EffectivePostProcessing {
     local_rules_enabled: bool,
     smart_processing_enabled: bool,
+    /// `0` 表示每次听写，正数表示达到该字符数才处理。
+    smart_processing_min_chars: u32,
     smart_template_id: String,
     /// 命中的规则名，仅用于调试日志。
     matched_profile: Option<String>,
@@ -143,6 +149,7 @@ struct DictationPrefs {
     local_rules_enabled: bool,
     local_rules: Vec<LocalRule>,
     smart_processing_enabled: bool,
+    smart_processing_min_chars: u32,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
     active_app_context_extraction_method:
@@ -171,6 +178,8 @@ impl Default for DictationPrefs {
             local_rules_enabled: false,
             local_rules: vec![],
             smart_processing_enabled: false,
+            // 旧版本没有长度门槛，反序列化缺失字段时必须保持原有“每次听写”语义。
+            smart_processing_min_chars: 0,
             smart_template_id: String::new(),
             smart_templates: vec![],
             active_app_context_extraction_method:
@@ -200,6 +209,7 @@ impl DictationPrefs {
         let global = EffectivePostProcessing {
             local_rules_enabled: self.local_rules_enabled,
             smart_processing_enabled: self.smart_processing_enabled,
+            smart_processing_min_chars: self.smart_processing_min_chars,
             smart_template_id: self.smart_template_id.clone(),
             matched_profile: None,
         };
@@ -225,6 +235,9 @@ impl DictationPrefs {
                 .local_rules_enabled
                 .unwrap_or(global.local_rules_enabled),
             smart_processing_enabled,
+            smart_processing_min_chars: profile
+                .smart_processing_min_chars
+                .unwrap_or(global.smart_processing_min_chars),
             // 模板只在智能处理开启时有意义；规则没指定模板就沿用全局选择。
             smart_template_id: profile
                 .smart_template_id
@@ -234,6 +247,18 @@ impl DictationPrefs {
             matched_profile: Some(profile.name.clone()),
         }
     }
+}
+
+fn smart_text_char_count(text: &str) -> usize {
+    text.trim().chars().count()
+}
+
+fn should_run_smart_processing(effective: &EffectivePostProcessing, text: &str) -> bool {
+    let char_count = smart_text_char_count(text);
+    effective.smart_processing_enabled
+        && char_count > 0
+        && (effective.smart_processing_min_chars == 0
+            || char_count >= effective.smart_processing_min_chars as usize)
 }
 
 #[derive(Default)]
@@ -497,12 +522,13 @@ async fn start(
         crate::development_debug_log(
             "dictation",
             format_args!(
-                "前台软件={}（{}），命中规则={}，本地处理={}，智能处理={}，模板={}",
+                "前台软件={}（{}），命中规则={}，本地处理={}，智能处理={}，最少字符数={}，模板={}",
                 identity.app_name,
                 identity.process_name,
                 effective.matched_profile.as_deref().unwrap_or("全局配置"),
                 effective.local_rules_enabled,
                 effective.smart_processing_enabled,
+                effective.smart_processing_min_chars,
                 effective.smart_template_id,
             ),
         );
@@ -1159,14 +1185,27 @@ async fn finalize(app: AppHandle, epoch: u64) {
         )
     };
     publish_state(&app, None);
-    if effective.smart_processing_enabled {
+    let should_process_smart_text = should_run_smart_processing(&effective, &text);
+    if should_process_smart_text {
         let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
     }
     if let Some(id) = asr {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
     }
-    let active_app_context = if let Some(handle) = active_app_context {
+    let active_app_context = if !should_process_smart_text {
+        if effective.smart_processing_enabled && !text.is_empty() {
+            crate::development_debug_log(
+                "dictation",
+                format_args!(
+                    "智能处理已跳过：识别文本字符数={}，最少字符数={}",
+                    smart_text_char_count(&text),
+                    effective.smart_processing_min_chars,
+                ),
+            );
+        }
+        String::new()
+    } else if let Some(handle) = active_app_context {
         let state = app.state::<RuntimeState>();
         let captured = state.active_app_context.resolve_for_dictation(handle).await;
         let is_current = state
@@ -1195,7 +1234,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
     // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
-    let smart_processed = if effective.smart_processing_enabled && !text.is_empty() {
+    let smart_processed = if should_process_smart_text {
         let Some(template) = prefs
             .smart_templates
             .iter()
@@ -1483,6 +1522,26 @@ fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
     }
     if prefs.app_profiles.len() > MAX_APP_PROFILES {
         return Err(format!("软件规则不能超过 {MAX_APP_PROFILES} 条"));
+    }
+    if prefs.smart_processing_min_chars > MAX_SMART_PROCESSING_MIN_CHARS {
+        return Err(format!(
+            "智能处理最少字符数不能超过 {MAX_SMART_PROCESSING_MIN_CHARS}"
+        ));
+    }
+    for profile in &prefs.app_profiles {
+        if profile
+            .smart_processing_min_chars
+            .is_some_and(|value| value > MAX_SMART_PROCESSING_MIN_CHARS)
+        {
+            let name = if profile.name.trim().is_empty() {
+                "软件规则"
+            } else {
+                profile.name.trim()
+            };
+            return Err(format!(
+                "软件规则「{name}」的智能处理最少字符数不能超过 {MAX_SMART_PROCESSING_MIN_CHARS}"
+            ));
+        }
     }
     if prefs.smart_processing_enabled {
         prefs
@@ -1931,6 +1990,7 @@ mod tests {
         DictationPrefs {
             local_rules_enabled: true,
             smart_processing_enabled: false,
+            smart_processing_min_chars: 120,
             smart_template_id: "global".into(),
             app_profiles_enabled: true,
             app_profiles: profiles,
@@ -1965,8 +2025,46 @@ mod tests {
         let effective = prefs.resolve_post_processing(Some(&identity("Code.exe")));
         assert!(effective.local_rules_enabled);
         assert!(effective.smart_processing_enabled);
+        assert_eq!(effective.smart_processing_min_chars, 120);
         assert_eq!(effective.smart_template_id, "coding");
         assert_eq!(effective.matched_profile.as_deref(), Some("编程"));
+    }
+
+    #[test]
+    fn profile_can_override_smart_processing_min_chars() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            matchers: vec!["code.exe".into()],
+            smart_processing_enabled: Some(true),
+            smart_processing_min_chars: Some(0),
+            ..Default::default()
+        }]);
+        let effective = prefs.resolve_post_processing(Some(&identity("code.exe")));
+        assert_eq!(effective.smart_processing_min_chars, 0);
+        assert!(should_run_smart_processing(&effective, "短句"));
+    }
+
+    #[test]
+    fn smart_processing_min_chars_uses_unicode_character_boundary() {
+        let effective = EffectivePostProcessing {
+            local_rules_enabled: false,
+            smart_processing_enabled: true,
+            smart_processing_min_chars: 4,
+            smart_template_id: String::new(),
+            matched_profile: None,
+        };
+        assert!(!should_run_smart_processing(&effective, " 你好世 "));
+        assert!(should_run_smart_processing(&effective, " 你好世界 "));
+    }
+
+    #[test]
+    fn smart_processing_min_chars_is_validated_for_profiles() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            name: "编程".into(),
+            smart_processing_min_chars: Some(MAX_SMART_PROCESSING_MIN_CHARS + 1),
+            ..Default::default()
+        }]);
+        let error = validate_smart_processing(&prefs).unwrap_err();
+        assert!(error.contains("编程"));
     }
 
     #[test]

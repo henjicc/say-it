@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
-import { Input, Select } from "@/components/ui/Input";
+import { Input, NumberInput, Select } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -11,7 +11,9 @@ import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
 import {
+  DEFAULT_SMART_PROCESSING_MIN_CHARS,
   MAX_APP_PROFILES,
+  MAX_SMART_PROCESSING_MIN_CHARS,
   useDictPrefs,
   type AppProfile,
   type RunningApp,
@@ -32,6 +34,12 @@ function parseOverride(value: string): boolean | null {
   return value === "inherit" ? null : value === "on";
 }
 
+type SmartTriggerMode = "inherit" | "always" | "minimum";
+
+function smartTriggerMode(value: number | null): SmartTriggerMode {
+  return value === null ? "inherit" : value === 0 ? "always" : "minimum";
+}
+
 function newProfile(): AppProfile {
   return {
     id: crypto.randomUUID(),
@@ -40,6 +48,7 @@ function newProfile(): AppProfile {
     enabled: true,
     localRulesEnabled: null,
     smartProcessingEnabled: null,
+    smartProcessingMinChars: null,
     smartTemplateId: null,
   };
 }
@@ -107,6 +116,7 @@ export function AppProfilesPanel() {
 
   const summarize = (profile: AppProfile) => {
     const smart = profile.smartProcessingEnabled ?? prefs.smartProcessingEnabled;
+    const smartMinChars = profile.smartProcessingMinChars ?? prefs.smartProcessingMinChars;
     const templateName = profile.smartTemplateId
       ? prefs.smartTemplates.find((t) => t.id === profile.smartTemplateId)?.name
       : null;
@@ -114,7 +124,10 @@ export function AppProfilesPanel() {
       `本地处理${profile.localRulesEnabled === null ? "跟随全局" : profile.localRulesEnabled ? "开启" : "关闭"}`,
       `智能处理${profile.smartProcessingEnabled === null ? "跟随全局" : profile.smartProcessingEnabled ? "开启" : "关闭"}`,
     ];
-    if (smart) parts.push(`模板：${templateName ?? "跟随全局"}`);
+    if (smart) {
+      parts.push(smartMinChars === 0 ? "每次处理" : `达到 ${smartMinChars} 字符时处理`);
+      parts.push(`模板：${templateName ?? "跟随全局"}`);
+    }
     return parts.join(" · ");
   };
 
@@ -152,6 +165,7 @@ export function AppProfilesPanel() {
             const open = editingId === profile.id;
             const matcher = profile.matchers[0] ?? "";
             const smartActive = profile.smartProcessingEnabled ?? prefs.smartProcessingEnabled;
+            const triggerMode = smartTriggerMode(profile.smartProcessingMinChars);
             return (
               <div key={profile.id} className="border-b border-[var(--color-line)] last:border-b-0">
                 <div className="flex items-center gap-2.5 px-3 py-2">
@@ -295,6 +309,55 @@ export function AppProfilesPanel() {
                           ))}
                         </Select>
                       </Field>
+
+                      <Field
+                        label="处理时机"
+                        hint={smartActive ? undefined : "智能处理未生效时该条件不会被使用。"}
+                      >
+                        <Select
+                          disabled={!smartActive}
+                          value={triggerMode}
+                          onChange={(e) => {
+                            const mode = e.target.value as SmartTriggerMode;
+                            updateProfile(profile.id, {
+                              smartProcessingMinChars:
+                                mode === "inherit"
+                                  ? null
+                                  : mode === "always"
+                                    ? 0
+                                    : profile.smartProcessingMinChars
+                                      || prefs.smartProcessingMinChars
+                                      || DEFAULT_SMART_PROCESSING_MIN_CHARS,
+                            });
+                          }}
+                        >
+                          <option value="inherit">
+                            跟随全局（{prefs.smartProcessingMinChars === 0
+                              ? "每次听写"
+                              : `达到 ${prefs.smartProcessingMinChars} 字符`}）
+                          </option>
+                          <option value="always">每次听写</option>
+                          <option value="minimum">达到指定长度</option>
+                        </Select>
+                      </Field>
+
+                      {triggerMode === "minimum" && (
+                        <Field
+                          label="最少文本长度"
+                          hint={`达到 ${profile.smartProcessingMinChars} 个字符时触发。`}
+                        >
+                          <NumberInput
+                            min={1}
+                            max={MAX_SMART_PROCESSING_MIN_CHARS}
+                            step={10}
+                            disabled={!smartActive}
+                            value={profile.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS}
+                            onValueChange={(value) =>
+                              updateProfile(profile.id, { smartProcessingMinChars: value })
+                            }
+                          />
+                        </Field>
+                      )}
 
                       <Field
                         label="智能处理模板"
