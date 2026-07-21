@@ -3,23 +3,31 @@ import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/cn";
 
-const fieldBase =
-  "w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg)] " +
-  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
-  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
-
 /**
  * 输入框尺寸。sm 供高密列表使用——必须走这里，不要在页面里用 `h-8`/`h-9` 之类自造高度：
  * 那样既绕开令牌，也会在几个列表之间慢慢漂移出好几种"差不多"的尺寸。
  */
 export type ControlSize = "sm" | "md";
 
-const fieldSizes: Record<ControlSize, string> = {
+/** auto 仅供 textarea：高度随内容增长，只保底不封顶。 */
+type FieldSize = ControlSize | "auto";
+
+// 只有 fieldClass 能碰这两个常量。高度和内边距都在 fieldSizes 里，
+// 谁要是拿得到不带尺寸的 base，就能拼出一个没有高度的控件——
+// 这种错误不报错、不失败，只有截图能发现，所以干脆不给这个入口。
+const fieldBase =
+  "w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg)] " +
+  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
+  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
+
+const fieldSizes: Record<FieldSize, string> = {
   sm: "h-[var(--control-h-sm)] px-2.5 py-1 text-xs",
   md: "h-[var(--control-h)] px-4 py-2.5 text-sm",
+  auto: "min-h-[var(--control-h)] px-4 py-2.5 text-sm",
 };
 
-const textareaBase = cn(fieldBase, "min-h-[var(--control-h)] px-4 py-2.5 text-sm");
+/** 表单控件基础类名。尺寸是必填的，没有"不带尺寸"的用法。 */
+const fieldClass = (size: FieldSize) => cn(fieldBase, fieldSizes[size]);
 
 export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "size"> {
   size?: ControlSize;
@@ -27,7 +35,7 @@ export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElem
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
   ({ className, size = "md", ...props }, ref) => (
-    <input ref={ref} className={cn(fieldBase, fieldSizes[size], className)} {...props} />
+    <input ref={ref} className={cn(fieldClass(size), className)} {...props} />
   ),
 );
 Input.displayName = "Input";
@@ -73,8 +81,7 @@ export function NumberInput({
           if (Number.isFinite(parsed)) commit(parsed);
         }}
         className={cn(
-          fieldBase,
-          fieldSizes[size],
+          fieldClass(size),
           "pr-7 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
           inputClassName,
         )}
@@ -109,7 +116,7 @@ export const Textarea = forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>
 >(({ className, ...props }, ref) => (
-  <textarea ref={ref} className={cn(textareaBase, "resize-y leading-relaxed", className)} {...props} />
+  <textarea ref={ref} className={cn(fieldClass("auto"), "resize-y leading-relaxed", className)} {...props} />
 ));
 Textarea.displayName = "Textarea";
 
@@ -142,6 +149,7 @@ export interface SelectProps
   /** 打开时在选项上方显示搜索框，按 label/value 过滤，选项较多时（如字体、设备列表）适用。 */
   searchable?: boolean;
   searchPlaceholder?: string;
+  size?: ControlSize;
 }
 
 function ChevronDownIcon({ open }: { open: boolean }) {
@@ -159,6 +167,7 @@ export function Select({
   id,
   searchable,
   searchPlaceholder = "搜索…",
+  size = "md",
   ...props
 }: SelectProps) {
   const generatedId = useId();
@@ -337,7 +346,7 @@ export function Select({
         id={buttonId}
         type="button"
         className={cn(
-          fieldBase,
+          fieldClass(size),
           "flex items-center justify-between gap-3 pr-3 text-left",
           "hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-hover)]",
           open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
