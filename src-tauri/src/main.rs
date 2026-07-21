@@ -32,7 +32,7 @@ use application::contract::get_app_snapshot;
 use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
 use application::dictation::{
     dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime,
-    preview_dictation_cue,
+    list_running_apps, preview_dictation_cue,
 };
 use application::llm_models::refresh_llm_models;
 use application::plugin_management::{
@@ -377,6 +377,7 @@ fn main() {
             open_external_link,
             get_dictation_settings,
             get_dictation_runtime,
+            list_running_apps,
             audio_lab_start,
             audio_lab_stop,
             audio_lab_reprocess,

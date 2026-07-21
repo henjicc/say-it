@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, POINT, HWND};
+use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -13,12 +13,13 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
 };
 
 use super::model::{
-    ActivationTarget, ActiveAppContextExtractionMethod, CaptureOptions, CaptureStatus,
+    ActivationTarget, ActiveAppContextExtractionMethod, AppIdentity, CaptureOptions, CaptureStatus,
     CapturedActiveAppContext, ContextSource,
 };
 use super::normalize::{enforce_total_budget, normalize_text};
@@ -325,6 +326,117 @@ fn process_name(process_id: u32) -> Option<String> {
         .file_name()
         .and_then(|value| value.to_str())
         .map(str::to_string)
+}
+
+/// UWP / 打包应用的顶层窗口由 `ApplicationFrameHost.exe` 托管，直接取 PID 会让所有
+/// UWP 应用都显示成同一个进程名，规则互相串。真实进程挂在 `CoreWindow` 子窗口上。
+const UWP_FRAME_HOST: &str = "applicationframehost.exe";
+const UWP_CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
+
+fn class_name(window: HWND) -> String {
+    let mut buffer = [0u16; 256];
+    let copied = unsafe { GetClassNameW(window, &mut buffer) };
+    if copied <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..copied as usize])
+}
+
+unsafe extern "system" fn collect_core_window(window: HWND, lparam: LPARAM) -> BOOL {
+    let found = &mut *(lparam.0 as *mut Option<u32>);
+    if class_name(window) != UWP_CORE_WINDOW_CLASS {
+        return BOOL(1);
+    }
+    let mut process_id = 0u32;
+    GetWindowThreadProcessId(window, Some(&mut process_id));
+    if process_id != 0 {
+        *found = Some(process_id);
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+
+/// 若窗口是 UWP 框架宿主，返回承载真实应用的子窗口 PID；否则返回原 PID。
+fn resolve_real_process(window: HWND, process_id: u32) -> u32 {
+    let host = process_name(process_id).unwrap_or_default().to_lowercase();
+    if host != UWP_FRAME_HOST {
+        return process_id;
+    }
+    let mut found: Option<u32> = None;
+    let _ = unsafe {
+        EnumChildWindows(
+            window,
+            Some(collect_core_window),
+            LPARAM(&mut found as *mut Option<u32> as isize),
+        )
+    };
+    // 子窗口自身可能仍属于宿主进程，那种情况下没有更好的答案，保持原 PID。
+    found.filter(|pid| *pid != process_id).unwrap_or(process_id)
+}
+
+fn identity_for(window: HWND, process_id: u32) -> AppIdentity {
+    let process_name = process_name(process_id).unwrap_or_default();
+    let app_name = Path::new(&process_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&process_name)
+        .to_string();
+    AppIdentity {
+        process_name,
+        app_name,
+        window_title: window_title(window.0 as isize),
+    }
+}
+
+pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
+    let window = HWND(target.window_handle as *mut std::ffi::c_void);
+    let process_id = resolve_real_process(window, target.process_id);
+    let identity = identity_for(window, process_id);
+    (!identity.process_name.is_empty()).then_some(identity)
+}
+
+unsafe extern "system" fn collect_running_app(window: HWND, lparam: LPARAM) -> BOOL {
+    let apps = &mut *(lparam.0 as *mut Vec<AppIdentity>);
+    // 只要用户能看见、能切换过去的窗口：可见、非工具窗口、非属主窗口的附属窗口、有标题。
+    if !IsWindowVisible(window).as_bool() {
+        return BOOL(1);
+    }
+    let ex_style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+    if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+        return BOOL(1);
+    }
+    if GetWindow(window, GW_OWNER).map(|owner| !owner.0.is_null()).unwrap_or(false) {
+        return BOOL(1);
+    }
+    if window_title(window.0 as isize).is_none() {
+        return BOOL(1);
+    }
+    let mut process_id = 0u32;
+    GetWindowThreadProcessId(window, Some(&mut process_id));
+    if process_id == 0 || process_id == std::process::id() {
+        return BOOL(1);
+    }
+    let identity = identity_for(window, resolve_real_process(window, process_id));
+    if !identity.process_name.is_empty() {
+        apps.push(identity);
+    }
+    BOOL(1)
+}
+
+/// 枚举当前可切换的顶层窗口，供「按软件配置规则」的下拉框选择。
+/// 同一个进程可能开多个窗口，这里按进程名去重，保留第一个窗口标题作为辨识线索。
+pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
+    let mut apps: Vec<AppIdentity> = Vec::new();
+    let _ = unsafe {
+        EnumWindows(
+            Some(collect_running_app),
+            LPARAM(&mut apps as *mut Vec<AppIdentity> as isize),
+        )
+    };
+    let mut seen = std::collections::HashSet::new();
+    apps.retain(|app| seen.insert(app.process_name.to_lowercase()));
+    apps.sort_by(|a, b| a.app_name.to_lowercase().cmp(&b.app_name.to_lowercase()));
+    apps
 }
 
 fn window_title(window_handle: isize) -> Option<String> {

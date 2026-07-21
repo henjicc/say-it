@@ -20,6 +20,7 @@ use tauri::AppHandle;
 const DOMAIN_EVENT: &str = "domain-event";
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 const MAX_SMART_TEMPLATES: usize = 50;
+const MAX_APP_PROFILES: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +78,56 @@ struct SmartTemplate {
     name: String,
     prompt: String,
 }
+
+/// 按软件覆盖后处理配置。三个字段都是三态：`None` 表示继承全局，
+/// 只有显式配置过的项才覆盖，否则新建一条规则会把没配的项静默关掉。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AppProfile {
+    id: String,
+    name: String,
+    /// 匹配的进程名，如 `Code.exe`；大小写不敏感，语义与上下文黑名单一致。
+    matchers: Vec<String>,
+    enabled: bool,
+    local_rules_enabled: Option<bool>,
+    smart_processing_enabled: Option<bool>,
+    smart_template_id: Option<String>,
+}
+
+impl Default for AppProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            matchers: vec![],
+            enabled: true,
+            local_rules_enabled: None,
+            smart_processing_enabled: None,
+            smart_template_id: None,
+        }
+    }
+}
+
+impl AppProfile {
+    fn matches(&self, identity: &crate::active_app_context::AppIdentity) -> bool {
+        let process_name = identity.process_name.to_lowercase();
+        let app_name = identity.app_name.to_lowercase();
+        self.matchers.iter().any(|matcher| {
+            let matcher = matcher.trim().to_lowercase();
+            !matcher.is_empty() && (matcher == process_name || matcher == app_name)
+        })
+    }
+}
+
+/// 应用规则解析后实际生效的后处理配置。
+#[derive(Clone, Debug)]
+struct EffectivePostProcessing {
+    local_rules_enabled: bool,
+    smart_processing_enabled: bool,
+    smart_template_id: String,
+    /// 命中的规则名，仅用于调试日志。
+    matched_profile: Option<String>,
+}
 fn default_flags() -> String {
     "g".into()
 }
@@ -100,6 +151,8 @@ struct DictationPrefs {
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
+    app_profiles_enabled: bool,
+    app_profiles: Vec<AppProfile>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
     dictation_silence_disconnect_ms: u64,
@@ -126,11 +179,59 @@ impl Default for DictationPrefs {
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
+            app_profiles_enabled: false,
+            app_profiles: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
             dictation_silence_disconnect_ms: 5_000,
             dictation_silence_threshold: 0.0001,
             dsp: DspParams::default(),
+        }
+    }
+}
+
+impl DictationPrefs {
+    /// 解析当前前台软件生效的后处理配置。未启用应用规则、平台不支持、或没有命中
+    /// 规则时，返回全局配置——所有失败路径都回落到「和现在一样」。
+    fn resolve_post_processing(
+        &self,
+        identity: Option<&crate::active_app_context::AppIdentity>,
+    ) -> EffectivePostProcessing {
+        let global = EffectivePostProcessing {
+            local_rules_enabled: self.local_rules_enabled,
+            smart_processing_enabled: self.smart_processing_enabled,
+            smart_template_id: self.smart_template_id.clone(),
+            matched_profile: None,
+        };
+        if !self.app_profiles_enabled {
+            return global;
+        }
+        let Some(identity) = identity else {
+            return global;
+        };
+        // 顺序即优先级：取第一条命中的启用规则。
+        let Some(profile) = self
+            .app_profiles
+            .iter()
+            .find(|profile| profile.enabled && profile.matches(identity))
+        else {
+            return global;
+        };
+        let smart_processing_enabled = profile
+            .smart_processing_enabled
+            .unwrap_or(global.smart_processing_enabled);
+        EffectivePostProcessing {
+            local_rules_enabled: profile
+                .local_rules_enabled
+                .unwrap_or(global.local_rules_enabled),
+            smart_processing_enabled,
+            // 模板只在智能处理开启时有意义；规则没指定模板就沿用全局选择。
+            smart_template_id: profile
+                .smart_template_id
+                .clone()
+                .filter(|id| !id.is_empty())
+                .unwrap_or(global.smart_template_id),
+            matched_profile: Some(profile.name.clone()),
         }
     }
 }
@@ -150,6 +251,8 @@ struct Session {
     injected_epoch: Option<u64>,
     lease: Option<AudioLease>,
     prefs: DictationPrefs,
+    /// 本次听写按前台软件解析出的后处理配置；`None` 表示尚未开始，回落全局。
+    effective: Option<EffectivePostProcessing>,
     last_voice_at: Option<Instant>,
     silence_streaming: bool,
     raw_done: Option<Arc<tokio::sync::Notify>>,
@@ -258,6 +361,13 @@ pub(crate) async fn dictation_stop(app: AppHandle) -> Result<(), String> {
 pub(crate) async fn dictation_cancel(app: AppHandle) -> Result<(), String> {
     cancel(app).await
 }
+/// 当前可切换的软件列表，供「按软件配置规则」选择目标。仅读取窗口元信息，
+/// 不读取窗口内容，与上下文黑名单无关。
+#[tauri::command]
+pub(crate) fn list_running_apps() -> Vec<crate::active_app_context::AppIdentity> {
+    crate::active_app_context::list_running_apps()
+}
+
 #[tauri::command]
 pub(crate) fn get_dictation_runtime(
     state: tauri::State<'_, RuntimeState>,
@@ -379,11 +489,29 @@ async fn start(
         .epochs
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    let active_app_context = if prefs.smart_processing_enabled {
+    // 先解析前台软件并定下生效配置，再决定是否捕获上下文正文：应用规则可能把智能
+    // 处理切到含 {{active_app_context}} 的模板，顺序反了就拿不到上下文。
+    let app_identity = activation_target.and_then(crate::active_app_context::app_identity);
+    let effective = prefs.resolve_post_processing(app_identity.as_ref());
+    if let Some(identity) = &app_identity {
+        crate::development_debug_log(
+            "dictation",
+            format_args!(
+                "前台软件={}（{}），命中规则={}，本地处理={}，智能处理={}，模板={}",
+                identity.app_name,
+                identity.process_name,
+                effective.matched_profile.as_deref().unwrap_or("全局配置"),
+                effective.local_rules_enabled,
+                effective.smart_processing_enabled,
+                effective.smart_template_id,
+            ),
+        );
+    }
+    let active_app_context = if effective.smart_processing_enabled {
         prefs
             .smart_templates
             .iter()
-            .find(|template| template.id == prefs.smart_template_id)
+            .find(|template| template.id == effective.smart_template_id)
             .filter(|template| {
                 crate::application::smart_text::requires_active_app_context(&template.prompt)
             })
@@ -464,6 +592,7 @@ async fn start(
             sample_rate: mic.sample_rate,
             lease: Some(lease),
             prefs: prefs.clone(),
+            effective: Some(effective),
             silence_streaming: false,
             active_app_context,
             ..Session::default()
@@ -992,7 +1121,7 @@ fn spawn_finalize_timeout(app: AppHandle, epoch: u64) {
 }
 
 async fn finalize(app: AppHandle, epoch: u64) {
-    let (text, prefs, method, mode, lease, asr, temp_path, active_app_context) = {
+    let (text, prefs, effective, method, mode, lease, asr, temp_path, active_app_context) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
             return;
@@ -1018,6 +1147,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
         (
             format!("{}{}", s.committed, s.segment).trim().to_string(),
             s.prefs.clone(),
+            s.effective
+                .clone()
+                .unwrap_or_else(|| s.prefs.resolve_post_processing(None)),
             method,
             s.mode,
             s.lease.take(),
@@ -1060,11 +1192,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
     // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
-    let smart_processed = if prefs.smart_processing_enabled && !text.is_empty() {
+    let smart_processed = if effective.smart_processing_enabled && !text.is_empty() {
         let Some(template) = prefs
             .smart_templates
             .iter()
-            .find(|template| template.id == prefs.smart_template_id)
+            .find(|template| template.id == effective.smart_template_id)
         else {
             let state = app.state::<RuntimeState>();
             if let Some(lease) = &lease {
@@ -1096,7 +1228,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         text
     };
-    let processed = match apply_rules(&smart_processed, &prefs) {
+    let processed = match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
         Ok(v) => v,
         Err(e) => {
             let state = app.state::<RuntimeState>();
@@ -1301,8 +1433,26 @@ fn summarize_peaks(samples: &[f32], n: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 应用规则里显式开启该项的启用规则；用于判断某项配置是否需要校验。
+fn profiles_enabling(
+    prefs: &DictationPrefs,
+    pick: impl Fn(&AppProfile) -> Option<bool>,
+) -> impl Iterator<Item = &AppProfile> {
+    let enabled = prefs.app_profiles_enabled;
+    prefs
+        .app_profiles
+        .iter()
+        .filter(move |profile| enabled && profile.enabled)
+        .filter(move |profile| pick(profile) == Some(true))
+}
+
 fn validate_rules(prefs: &DictationPrefs) -> Result<(), String> {
-    if !prefs.local_rules_enabled {
+    // 全局关闭但某条应用规则开启时，正则同样会被执行，必须一并校验。
+    let needed = prefs.local_rules_enabled
+        || profiles_enabling(prefs, |profile| profile.local_rules_enabled)
+            .next()
+            .is_some();
+    if !needed {
         return Ok(());
     }
     for rule in prefs.local_rules.iter().filter(|r| r.enabled) {
@@ -1310,22 +1460,51 @@ fn validate_rules(prefs: &DictationPrefs) -> Result<(), String> {
     }
     Ok(())
 }
-fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
-    if prefs.smart_templates.len() > MAX_SMART_TEMPLATES {
-        return Err(format!("智能处理模板不能超过 {MAX_SMART_TEMPLATES} 个"));
-    }
-    if !prefs.smart_processing_enabled {
-        return Ok(());
-    }
+
+fn validate_template(prefs: &DictationPrefs, template_id: &str, scope: &str) -> Result<(), String> {
     let template = prefs
         .smart_templates
         .iter()
-        .find(|template| template.id == prefs.smart_template_id)
-        .ok_or_else(|| "请选择有效的智能处理模板".to_string())?;
+        .find(|template| template.id == template_id)
+        .ok_or_else(|| format!("{scope}引用的智能处理模板不存在"))?;
     if template.name.trim().is_empty() {
         return Err("智能处理模板名称不能为空".to_string());
     }
     crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "", "", "")?;
+    Ok(())
+}
+
+fn validate_smart_processing(prefs: &DictationPrefs) -> Result<(), String> {
+    if prefs.smart_templates.len() > MAX_SMART_TEMPLATES {
+        return Err(format!("智能处理模板不能超过 {MAX_SMART_TEMPLATES} 个"));
+    }
+    if prefs.app_profiles.len() > MAX_APP_PROFILES {
+        return Err(format!("软件规则不能超过 {MAX_APP_PROFILES} 条"));
+    }
+    if prefs.smart_processing_enabled {
+        prefs
+            .smart_templates
+            .iter()
+            .find(|template| template.id == prefs.smart_template_id)
+            .ok_or_else(|| "请选择有效的智能处理模板".to_string())?;
+        validate_template(prefs, &prefs.smart_template_id, "全局配置")?;
+    }
+    // 规则引用的模板在保存时就要校验，否则要等到听写完成才失败。
+    for profile in profiles_enabling(prefs, |profile| profile.smart_processing_enabled) {
+        let Some(template_id) = profile
+            .smart_template_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let name = if profile.name.trim().is_empty() {
+            "软件规则"
+        } else {
+            profile.name.trim()
+        };
+        validate_template(prefs, template_id, &format!("软件规则「{name}」"))?;
+    }
     Ok(())
 }
 fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {
@@ -1546,8 +1725,8 @@ fn regex_escape_find(input: &str) -> String {
         if last { "\\b" } else { "" }
     )
 }
-fn apply_rules(text: &str, prefs: &DictationPrefs) -> Result<String, String> {
-    if !prefs.local_rules_enabled {
+fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<String, String> {
+    if !enabled {
         return Ok(text.into());
     }
     let mut out = text.to_string();
@@ -1735,8 +1914,141 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(apply_rules("中AA", &p).unwrap(), "中A");
+        assert_eq!(apply_rules("中AA", &p, true).unwrap(), "中A");
     }
+    fn identity(process_name: &str) -> crate::active_app_context::AppIdentity {
+        crate::active_app_context::AppIdentity {
+            process_name: process_name.into(),
+            app_name: process_name.trim_end_matches(".exe").into(),
+            window_title: None,
+        }
+    }
+
+    fn prefs_with_profiles(profiles: Vec<AppProfile>) -> DictationPrefs {
+        DictationPrefs {
+            local_rules_enabled: true,
+            smart_processing_enabled: false,
+            smart_template_id: "global".into(),
+            app_profiles_enabled: true,
+            app_profiles: profiles,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unmatched_app_falls_back_to_global_post_processing() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            matchers: vec!["Code.exe".into()],
+            smart_processing_enabled: Some(true),
+            ..Default::default()
+        }]);
+        let effective = prefs.resolve_post_processing(Some(&identity("notepad.exe")));
+        assert!(effective.local_rules_enabled);
+        assert!(!effective.smart_processing_enabled);
+        assert_eq!(effective.smart_template_id, "global");
+        assert!(effective.matched_profile.is_none());
+    }
+
+    #[test]
+    fn profile_overrides_only_the_fields_it_sets() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            name: "编程".into(),
+            matchers: vec!["code.exe".into()],
+            smart_processing_enabled: Some(true),
+            smart_template_id: Some("coding".into()),
+            ..Default::default()
+        }]);
+        // 大小写不敏感，且未设置的本地处理仍继承全局的 true。
+        let effective = prefs.resolve_post_processing(Some(&identity("Code.exe")));
+        assert!(effective.local_rules_enabled);
+        assert!(effective.smart_processing_enabled);
+        assert_eq!(effective.smart_template_id, "coding");
+        assert_eq!(effective.matched_profile.as_deref(), Some("编程"));
+    }
+
+    #[test]
+    fn first_enabled_matching_profile_wins() {
+        let prefs = prefs_with_profiles(vec![
+            AppProfile {
+                name: "停用的".into(),
+                matchers: vec!["code.exe".into()],
+                enabled: false,
+                local_rules_enabled: Some(false),
+                ..Default::default()
+            },
+            AppProfile {
+                name: "第一条".into(),
+                matchers: vec!["code.exe".into()],
+                smart_template_id: Some("first".into()),
+                ..Default::default()
+            },
+            AppProfile {
+                name: "第二条".into(),
+                matchers: vec!["code.exe".into()],
+                smart_template_id: Some("second".into()),
+                ..Default::default()
+            },
+        ]);
+        let effective = prefs.resolve_post_processing(Some(&identity("code.exe")));
+        assert_eq!(effective.matched_profile.as_deref(), Some("第一条"));
+        assert_eq!(effective.smart_template_id, "first");
+    }
+
+    #[test]
+    fn profiles_are_ignored_when_disabled_or_identity_is_unknown() {
+        let mut prefs = prefs_with_profiles(vec![AppProfile {
+            matchers: vec!["code.exe".into()],
+            local_rules_enabled: Some(false),
+            ..Default::default()
+        }]);
+        // 平台拿不到前台软件时回落全局。
+        assert!(prefs.resolve_post_processing(None).local_rules_enabled);
+        prefs.app_profiles_enabled = false;
+        assert!(
+            prefs
+                .resolve_post_processing(Some(&identity("code.exe")))
+                .local_rules_enabled
+        );
+    }
+
+    #[test]
+    fn profile_referenced_template_must_exist() {
+        let mut prefs = prefs_with_profiles(vec![AppProfile {
+            name: "编程".into(),
+            matchers: vec!["code.exe".into()],
+            smart_processing_enabled: Some(true),
+            smart_template_id: Some("missing".into()),
+            ..Default::default()
+        }]);
+        prefs.smart_templates = vec![SmartTemplate {
+            id: "global".into(),
+            name: "全局".into(),
+            prompt: format!("处理：{}", crate::application::smart_text::TEXT_PLACEHOLDER),
+        }];
+        let error = validate_smart_processing(&prefs).unwrap_err();
+        assert!(error.contains("编程"), "错误信息应指出是哪条规则：{error}");
+    }
+
+    #[test]
+    fn local_rules_are_validated_when_only_a_profile_enables_them() {
+        let mut prefs = prefs_with_profiles(vec![AppProfile {
+            matchers: vec!["code.exe".into()],
+            local_rules_enabled: Some(true),
+            ..Default::default()
+        }]);
+        prefs.local_rules_enabled = false;
+        prefs.local_rules = vec![LocalRule {
+            id: "bad".into(),
+            enabled: true,
+            mode: String::new(),
+            find: String::new(),
+            pattern: "([".into(),
+            flags: "g".into(),
+            replacement: String::new(),
+        }];
+        assert!(validate_rules(&prefs).is_err());
+    }
+
     #[test]
     fn stale_epoch_does_not_match() {
         let mut s = Session::default();

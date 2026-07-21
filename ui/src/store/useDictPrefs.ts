@@ -30,6 +30,30 @@ export interface DeletedSmartTextTemplate {
   deletedAt: number;
 }
 
+/** 当前可切换的软件，由后端枚举顶层窗口得到。 */
+export interface RunningApp {
+  processName: string;
+  appName: string;
+  windowTitle: string | null;
+}
+
+/**
+ * 按软件覆盖后处理配置。三个覆盖项都是三态：`null` 表示继承全局配置，
+ * 只有显式设过的项才覆盖——否则新建一条规则会把没配的项静默关掉。
+ */
+export interface AppProfile {
+  id: string;
+  name: string;
+  /** 匹配的进程名，如 `Code.exe`；大小写不敏感。 */
+  matchers: string[];
+  enabled: boolean;
+  localRulesEnabled: boolean | null;
+  smartProcessingEnabled: boolean | null;
+  smartTemplateId: string | null;
+}
+
+export const MAX_APP_PROFILES = 100;
+
 export const SMART_TEXT_PLACEHOLDER = "{{text}}";
 export const ACTIVE_APP_CONTEXT_PLACEHOLDER = "{{active_app_context}}";
 export type ActiveAppContextExtractionMethod = "nativeText" | "ocr";
@@ -287,6 +311,53 @@ function normalizeBlockedApps(stored: unknown): string[] {
   )].slice(0, 100);
 }
 
+/** 三态覆盖项：只有真正的布尔值才算显式覆盖，其余一律回落继承。 */
+function normalizeOverride(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeAppProfiles(stored: unknown): AppProfile[] {
+  if (!Array.isArray(stored)) return [];
+  return stored
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+    .map((entry) => ({
+      id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+      name: typeof entry.name === "string" ? entry.name : "",
+      matchers: Array.isArray(entry.matchers)
+        ? [...new Set(
+            entry.matchers
+              .filter((value): value is string => typeof value === "string")
+              .map((value) => value.trim())
+              .filter(Boolean),
+          )]
+        : [],
+      enabled: entry.enabled !== false,
+      localRulesEnabled: normalizeOverride(entry.localRulesEnabled),
+      smartProcessingEnabled: normalizeOverride(entry.smartProcessingEnabled),
+      smartTemplateId:
+        typeof entry.smartTemplateId === "string" && entry.smartTemplateId
+          ? entry.smartTemplateId
+          : null,
+    }))
+    .slice(0, MAX_APP_PROFILES);
+}
+
+/**
+ * 模板被删除后，引用它的软件规则会指向不存在的 ID，后端保存校验会直接报错。
+ * 这里把失效引用降级为"继承全局模板"，让删除模板不至于卡住整个配置的保存。
+ */
+function pruneProfileTemplates(
+  profiles: AppProfile[],
+  templates: SmartTextTemplate[],
+): AppProfile[] {
+  const known = new Set(templates.map((template) => template.id));
+  return profiles.map((profile) =>
+    profile.smartTemplateId && !known.has(profile.smartTemplateId)
+      ? { ...profile, smartTemplateId: null }
+      : profile,
+  );
+}
+
 function normalizeSmartTemplateTrash(stored: unknown): DeletedSmartTextTemplate[] {
   if (!Array.isArray(stored)) return [];
   return stored
@@ -323,6 +394,10 @@ export interface DictPrefs extends DspParams {
   activeAppContextOcrModel: string;
   activeAppContextOcrApprovedProviders: string[];
   activeAppContextBlockedApps: string[];
+  /** 按软件覆盖后处理配置；关闭时所有听写一律走全局配置。 */
+  appProfilesEnabled: boolean;
+  /** 顺序即优先级，取第一条命中的启用规则。 */
+  appProfiles: AppProfile[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
   micDeviceId: string;
   dictationSilenceDisconnectEnabled: boolean;
@@ -355,6 +430,8 @@ function defaults(): DictPrefs {
     activeAppContextOcrModel: "system-ocr",
     activeAppContextOcrApprovedProviders: [],
     activeAppContextBlockedApps: [],
+    appProfilesEnabled: false,
+    appProfiles: [],
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,
     dictationSilenceDisconnectMs: 5000,
@@ -423,6 +500,10 @@ function readStored(): DictPrefs {
       .map((value) => value.trim()),
   ));
   base.activeAppContextBlockedApps = normalizeBlockedApps(base.activeAppContextBlockedApps);
+  base.appProfiles = pruneProfileTemplates(
+    normalizeAppProfiles(base.appProfiles),
+    base.smartTemplates,
+  );
   if (!base.smartTemplates.some((template) => template.id === base.smartTemplateId)) {
     base.smartTemplateId = base.smartTemplates[0]?.id ?? "polish";
   }
@@ -448,6 +529,11 @@ export const useDictPrefs = create<DictPrefsState>((set, get) => ({
   prefs: readStored(),
   patch: async (partial) => {
     const next = { ...get().prefs, ...partial };
+    // 删除模板会让引用它的软件规则变成孤儿，后端保存校验会直接拒绝整份配置。
+    // 在唯一的写入口把失效引用降级为"跟随全局"，删模板才不会卡住所有设置的保存。
+    if (partial.smartTemplates) {
+      next.appProfiles = pruneProfileTemplates(next.appProfiles, next.smartTemplates);
+    }
     await cmd(CMD.updateAppSettings, { domain: "dictation", value: next });
     persist(next); set({ prefs: next });
     if ("debugLog" in partial) cmdSilent(CMD.setDebugLog, { enabled: !!next.debugLog });
@@ -494,6 +580,10 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
       .map((entry) => entry.trim()),
   ));
   next.activeAppContextBlockedApps = normalizeBlockedApps(next.activeAppContextBlockedApps);
+  next.appProfiles = pruneProfileTemplates(
+    normalizeAppProfiles(next.appProfiles),
+    next.smartTemplates,
+  );
   if (!next.smartTemplates.some((template) => template.id === next.smartTemplateId)) {
     next.smartTemplateId = next.smartTemplates[0]?.id ?? "polish";
   }

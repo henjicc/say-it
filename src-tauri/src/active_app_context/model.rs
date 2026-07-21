@@ -72,6 +72,18 @@ impl OcrEngineKind {
     }
 }
 
+/// 前台软件的轻量标识。只读取本进程可直接取得的窗口元信息，不涉及正文提取、
+/// UIA 或 OCR，因此可以在每次听写启动时无条件调用。
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppIdentity {
+    /// 可执行文件名，如 `Code.exe`。应用规则以它为匹配键。
+    pub(crate) process_name: String,
+    /// 去掉扩展名的显示名，如 `Code`。
+    pub(crate) app_name: String,
+    pub(crate) window_title: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ActivationTarget {
     pub(crate) window_handle: isize,
