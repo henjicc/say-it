@@ -5,7 +5,7 @@ import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { playCueKind } from "@/lib/cues";
 
-type Phase = "hidden" | "recording" | "processing" | "subtitle";
+type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle";
 type IndicatorMode = "dictation" | "subtitle";
 
 interface SubtitleConfig {
@@ -35,6 +35,7 @@ interface SubtitleConfig {
 const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   recording: "正在聆听…",
   processing: "识别中…",
+  smartProcessing: "智能处理中…",
   subtitle: "实时字幕",
 };
 
@@ -264,11 +265,13 @@ export function IndicatorApp() {
   }, []);
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
+  const pillVisualPhase = pillPhase === "smartProcessing" ? "processing" : pillPhase;
   const visible = phase !== "hidden";
   const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
   const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
-  const showProcessingPanel = mode === "dictation" && phase === "processing" && !original.hasText;
+  const showProcessingPanel =
+    mode === "dictation" && (phase === "processing" || phase === "smartProcessing") && !original.hasText;
   const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
   const showTranslationRow =
     mode === "subtitle" && subtitleConfig.translationEnabled && subtitleConfig.translationLayout === "bilingual";
@@ -382,7 +385,7 @@ export function IndicatorApp() {
         </div>
       )}
       {pillPhase !== "subtitle" && (
-        <div className={`pill ${pillPhase}`} id="pill">
+        <div className={`pill ${pillVisualPhase}`} id="pill">
           <span className="dot" />
           <span className="label" id="label">
             {LABELS[pillPhase]}
