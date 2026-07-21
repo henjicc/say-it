@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { IconButton } from "@/components/ui/IconButton";
-import { Input, Select, Textarea } from "@/components/ui/Input";
+import { Input, NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
@@ -21,6 +21,8 @@ import {
 } from "@/store/useCustomizationStore";
 import {
   ACTIVE_APP_CONTEXT_PLACEHOLDER,
+  DEFAULT_SMART_PROCESSING_MIN_CHARS,
+  MAX_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_TEXT_TEMPLATES,
   SMART_TEXT_PLACEHOLDER,
   useDictPrefs,
@@ -272,6 +274,35 @@ export function SmartTextPanel() {
         <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
           识别结束后先把文本交给默认大语言模型，再对模型返回的内容执行本地处理，最终注入处理结果。
         </p>
+        <FormGrid>
+          <Field label="处理时机">
+            <Select
+              value={prefs.smartProcessingMinChars === 0 ? "always" : "minimum"}
+              onChange={(event) => void patch({
+                smartProcessingMinChars: event.target.value === "always"
+                  ? 0
+                  : prefs.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS,
+              })}
+            >
+              <option value="always">每次听写</option>
+              <option value="minimum">达到指定长度</option>
+            </Select>
+          </Field>
+          {prefs.smartProcessingMinChars > 0 && (
+            <Field
+              label="最少文本长度"
+              hint={`少于 ${prefs.smartProcessingMinChars} 个字符时跳过智能处理，仍会执行本地处理。`}
+            >
+              <NumberInput
+                min={1}
+                max={MAX_SMART_PROCESSING_MIN_CHARS}
+                step={10}
+                value={prefs.smartProcessingMinChars}
+                onValueChange={(value) => void patch({ smartProcessingMinChars: value })}
+              />
+            </Field>
+          )}
+        </FormGrid>
       </SettingsSection>
 
       <SettingsSection title="处理模板">

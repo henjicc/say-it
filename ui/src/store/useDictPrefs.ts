@@ -38,7 +38,7 @@ export interface RunningApp {
 }
 
 /**
- * 按软件覆盖后处理配置。三个覆盖项都是三态：`null` 表示继承全局配置，
+ * 按软件覆盖后处理配置。覆盖项使用 `null` 表示继承全局配置，
  * 只有显式设过的项才覆盖——否则新建一条规则会把没配的项静默关掉。
  */
 export interface AppProfile {
@@ -49,10 +49,14 @@ export interface AppProfile {
   enabled: boolean;
   localRulesEnabled: boolean | null;
   smartProcessingEnabled: boolean | null;
+  /** `null` 跟随全局，`0` 每次听写，正数表示达到该字符数才处理。 */
+  smartProcessingMinChars: number | null;
   smartTemplateId: string | null;
 }
 
 export const MAX_APP_PROFILES = 100;
+export const DEFAULT_SMART_PROCESSING_MIN_CHARS = 140;
+export const MAX_SMART_PROCESSING_MIN_CHARS = 10_000;
 
 export const SMART_TEXT_PLACEHOLDER = "{{text}}";
 export const ACTIVE_APP_CONTEXT_PLACEHOLDER = "{{active_app_context}}";
@@ -316,6 +320,14 @@ function normalizeOverride(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function normalizeSmartProcessingMinChars(value: unknown, fallback: number | null): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(
+    MAX_SMART_PROCESSING_MIN_CHARS,
+    Math.max(0, Math.round(value)),
+  );
+}
+
 function normalizeAppProfiles(stored: unknown): AppProfile[] {
   if (!Array.isArray(stored)) return [];
   return stored
@@ -334,6 +346,10 @@ function normalizeAppProfiles(stored: unknown): AppProfile[] {
       enabled: entry.enabled !== false,
       localRulesEnabled: normalizeOverride(entry.localRulesEnabled),
       smartProcessingEnabled: normalizeOverride(entry.smartProcessingEnabled),
+      smartProcessingMinChars: normalizeSmartProcessingMinChars(
+        entry.smartProcessingMinChars,
+        null,
+      ),
       smartTemplateId:
         typeof entry.smartTemplateId === "string" && entry.smartTemplateId
           ? entry.smartTemplateId
@@ -385,6 +401,8 @@ export interface DictPrefs extends DspParams {
   localRulesEnabled: boolean;
   localRules: LocalRule[];
   smartProcessingEnabled: boolean;
+  /** `0` 表示每次听写，正数表示识别文本达到该字符数才执行智能处理。 */
+  smartProcessingMinChars: number;
   smartTemplateId: string;
   smartTemplates: SmartTextTemplate[];
   smartTemplateTrash: DeletedSmartTextTemplate[];
@@ -421,6 +439,7 @@ function defaults(): DictPrefs {
     localRulesEnabled: false,
     localRules: defaultLocalRules(),
     smartProcessingEnabled: false,
+    smartProcessingMinChars: DEFAULT_SMART_PROCESSING_MIN_CHARS,
     smartTemplateId: "polish",
     smartTemplates: defaultSmartTextTemplates(),
     smartTemplateTrash: [],
@@ -447,10 +466,17 @@ function readStored(): DictPrefs {
   const base = defaults();
   let storedCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
   let storedOcrModelPresent = false;
+  let storedPrefsPresent = false;
+  let storedSmartProcessingMinCharsPresent = false;
   try {
     const raw = localStorage.getItem(DICT_PREFS_KEY);
     if (raw) {
       const stored = JSON.parse(raw) as Partial<DictPrefs>;
+      storedPrefsPresent = true;
+      storedSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
+        stored,
+        "smartProcessingMinChars",
+      );
       storedCatalogVersion = typeof stored.smartTemplateCatalogVersion === "number"
         ? stored.smartTemplateCatalogVersion
         : 1;
@@ -471,6 +497,13 @@ function readStored(): DictPrefs {
   if (typeof legacy.silenceThreshold === "number") {
     base.dictationSilenceThreshold = legacy.silenceThreshold;
   }
+  // 已有配置在这个字段出现前等价于“每次听写”；只有全新配置才采用 140 字符默认值。
+  base.smartProcessingMinChars = storedPrefsPresent && !storedSmartProcessingMinCharsPresent
+    ? 0
+    : normalizeSmartProcessingMinChars(
+        base.smartProcessingMinChars,
+        DEFAULT_SMART_PROCESSING_MIN_CHARS,
+      ) ?? DEFAULT_SMART_PROCESSING_MIN_CHARS;
   base.dictationSilenceThreshold = Math.min(0.1, Math.max(0.0001, Number(base.dictationSilenceThreshold) || 0.0001));
   base.subtitleSilenceThreshold = Math.min(0.1, Math.max(0.0001, Number(base.subtitleSilenceThreshold) || 0.0001));
   if (!isSupportedDictationModel(base.asrModel)) {
@@ -554,8 +587,17 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   const storedOcrEngine = value.activeAppContextOcrEngine;
   const storedOcrModel = value.activeAppContextOcrModel;
   const storedOcrApprovals = value.activeAppContextOcrApprovedProviders;
+  const storedSmartProcessingMinChars = value.smartProcessingMinChars;
+  const storedSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
+    value,
+    "smartProcessingMinChars",
+  );
   const next = readStored();
   Object.assign(next, value);
+  // 后端权威配置缺少该字段说明它来自旧版本，必须保留“每次听写”的原有语义。
+  next.smartProcessingMinChars = storedSmartProcessingMinCharsPresent
+    ? normalizeSmartProcessingMinChars(storedSmartProcessingMinChars, 0) ?? 0
+    : 0;
   next.localRules = mergeLocalRules(next.localRules);
   next.smartTemplates = mergeSmartTextTemplates(next.smartTemplates);
   next.smartTemplates = migrateSmartTemplateCatalog(next.smartTemplates, storedCatalogVersion);
@@ -594,6 +636,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     JSON.stringify(storedTrash) !== JSON.stringify(next.smartTemplateTrash) ||
     storedTemplateId !== next.smartTemplateId ||
     storedCatalogVersion !== next.smartTemplateCatalogVersion ||
+    storedSmartProcessingMinChars !== next.smartProcessingMinChars ||
     storedContextMethod !== next.activeAppContextExtractionMethod ||
     storedOcrEngine !== next.activeAppContextOcrEngine ||
     storedOcrModel !== next.activeAppContextOcrModel ||
