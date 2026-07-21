@@ -43,14 +43,8 @@ function CueField({
       label={label}
       actions={
         <>
-          <Button size="sm" onClick={onPreview}>
-            试听
-          </Button>
-          {value === "custom" && (
-            <Button size="sm" onClick={onPickFile}>
-              更换
-            </Button>
-          )}
+          <Button onClick={onPreview}>试听</Button>
+          {value === "custom" && <Button onClick={onPickFile}>更换</Button>}
         </>
       }
     >
