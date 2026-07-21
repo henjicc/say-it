@@ -20,6 +20,51 @@ const CUE_OPTIONS: { value: CueKind; label: string }[] = [
   { value: "custom", label: "自定义文件…" },
 ];
 
+/**
+ * 提示音字段：音色下拉 + 试听。
+ * 选中「自定义文件…」后额外给出「更换」——原生 select 重选同一项不触发 onChange，
+ * 没有这个入口就无法替换已选文件。
+ */
+function CueField({
+  label,
+  value,
+  onSelect,
+  onPickFile,
+  onPreview,
+}: {
+  label: string;
+  value: CueKind;
+  onSelect: (value: CueKind) => void;
+  onPickFile: () => void;
+  onPreview: () => void;
+}) {
+  return (
+    <Field
+      label={label}
+      actions={
+        <>
+          <Button size="sm" onClick={onPreview}>
+            试听
+          </Button>
+          {value === "custom" && (
+            <Button size="sm" onClick={onPickFile}>
+              更换
+            </Button>
+          )}
+        </>
+      }
+    >
+      <Select value={value} onChange={(e) => onSelect(e.target.value as CueKind)}>
+        {CUE_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
 export function SettingsMicCuePanel() {
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
@@ -78,7 +123,7 @@ export function SettingsMicCuePanel() {
               ))}
             </Select>
           </Field>
-          <Field label="麦克风保活（秒，0=用完即关）">
+          <Field label="麦克风保活" hint="单位为秒；0 表示用完即关。">
             <Input
               type="number"
               min={0}
@@ -107,44 +152,22 @@ export function SettingsMicCuePanel() {
         </div>
 
         <FormGrid>
-          <Field label="开始提示音">
-            <Select value={prefs.cueStart} onChange={(e) => onCueSelect("start", e.target.value as CueKind)}>
-              {CUE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="结束提示音">
-            <Select value={prefs.cueEnd} onChange={(e) => onCueSelect("end", e.target.value as CueKind)}>
-              {CUE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <CueField
+            label="开始提示音"
+            value={prefs.cueStart}
+            onSelect={(v) => onCueSelect("start", v)}
+            onPickFile={() => pickCueFile("start")}
+            onPreview={() => playCue("start")}
+          />
+          <CueField
+            label="结束提示音"
+            value={prefs.cueEnd}
+            onSelect={(v) => onCueSelect("end", v)}
+            onPickFile={() => pickCueFile("end")}
+            onPreview={() => playCue("end")}
+          />
         </FormGrid>
-
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => pickCueFile("start")}>
-            选择开始音文件
-          </Button>
-          <Button size="sm" onClick={() => pickCueFile("end")}>
-            选择结束音文件
-          </Button>
-          <Button size="sm" onClick={() => playCue("start")}>
-            试听开始音
-          </Button>
-          <Button size="sm" onClick={() => playCue("end")}>
-            试听结束音
-          </Button>
-        </div>
         <input ref={fileRef} type="file" accept="audio/*" className="hidden" onChange={onCueFile} />
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          增益 / 降噪参数请在「设置 → 录音调整」中调试，调好后会自动应用到语音输入。
-        </p>
       </SettingsSection>
     </div>
   );

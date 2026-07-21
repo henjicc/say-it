@@ -26,7 +26,6 @@ interface AudioState {
   recording: boolean;
   recInfo: string;
   recTone: Tone;
-  level: number;
   canPlay: boolean;
   meters: Meters;
   labStatus: string;
@@ -37,7 +36,6 @@ export const useAudioStore = create<AudioState>(() => ({
   recording: false,
   recInfo: "",
   recTone: "",
-  level: 0,
   canPlay: false,
   meters: { ...emptyMeters },
   labStatus: "参数改动实时生效并自动保存到速记。",

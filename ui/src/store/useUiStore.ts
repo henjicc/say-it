@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export type ViewKey = "dictation" | "subtitles" | "transcription" | "customization" | "settings";
 export type CustomizationTabKey = "hotwords" | "context";
-export type SettingsTabKey = "provider" | "plugins" | "audio" | "disconnect" | "startup" | "mic" | "appearance" | "compare";
+export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "compare" | "advanced";
 
 export interface SessionStatus {
   default_asr_provider?: string;
@@ -27,7 +27,7 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   view: "dictation",
   setView: (view) => set({ view }),
-  settingsTab: "provider",
+  settingsTab: "model",
   setSettingsTab: (settingsTab) => set({ settingsTab }),
   customizationTab: "hotwords",
   setCustomizationTab: (customizationTab) => set({ customizationTab }),
