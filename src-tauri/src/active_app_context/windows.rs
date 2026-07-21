@@ -13,7 +13,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
+    EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
     IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
 };
@@ -55,18 +55,18 @@ pub(crate) fn baseline_context(
     blocked_apps: &[String],
     method: ActiveAppContextExtractionMethod,
 ) -> CapturedActiveAppContext {
-    let process_name = process_name(target.process_id).unwrap_or_default();
-    let app_name = Path::new(&process_name)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(&process_name)
-        .to_string();
+    let window = HWND(target.window_handle as *mut std::ffi::c_void);
+    // 与软件规则走同一套 UWP 解析，否则黑名单和提示词里的应用名会是框架宿主，
+    // 和规则匹配到的真实应用对不上。关联不到时继续用宿主信息保底——上下文捕获
+    // 有窗口元信息就有价值，不像规则匹配那样必须拿到确切的应用。
+    let process_id = resolve_real_process(window, target.process_id).unwrap_or(target.process_id);
+    let identity = identity_for(process_id, window_title(target.window_handle));
     let mut context = CapturedActiveAppContext {
         capture_method: method,
-        app_name,
-        process_name,
-        process_id: target.process_id,
-        window_title: window_title(target.window_handle),
+        app_name: identity.app_name,
+        process_name: identity.process_name,
+        process_id,
+        window_title: identity.window_title,
         ..Default::default()
     };
     if is_blocked(&context, blocked_apps) {
@@ -330,7 +330,9 @@ fn process_name(process_id: u32) -> Option<String> {
 
 /// UWP / 打包应用的顶层窗口由 `ApplicationFrameHost.exe` 托管，直接取 PID 会让所有
 /// UWP 应用都显示成同一个进程名，规则互相串。真实进程挂在 `CoreWindow` 子窗口上。
-const UWP_FRAME_HOST: &str = "applicationframehost.exe";
+/// 按窗口类名识别宿主，而不是先取进程名再比对——类名是窗口自己的属性，读它不需要
+/// 打开进程句柄，枚举几十个窗口时差别很明显。
+const UWP_FRAME_WINDOW_CLASS: &str = "ApplicationFrameWindow";
 const UWP_CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
 
 fn class_name(window: HWND) -> String {
@@ -342,39 +344,63 @@ fn class_name(window: HWND) -> String {
     String::from_utf16_lossy(&buffer[..copied as usize])
 }
 
-unsafe extern "system" fn collect_core_window(window: HWND, lparam: LPARAM) -> BOOL {
-    let found = &mut *(lparam.0 as *mut Option<u32>);
+struct CoreWindowLookup {
+    title: String,
+    host_process_id: u32,
+    process_id: Option<u32>,
+}
+
+unsafe extern "system" fn match_core_window(window: HWND, lparam: LPARAM) -> BOOL {
+    let lookup = &mut *(lparam.0 as *mut CoreWindowLookup);
     if class_name(window) != UWP_CORE_WINDOW_CLASS {
+        return BOOL(1);
+    }
+    if window_title(window.0 as isize).as_deref() != Some(lookup.title.as_str()) {
         return BOOL(1);
     }
     let mut process_id = 0u32;
     GetWindowThreadProcessId(window, Some(&mut process_id));
-    if process_id != 0 {
-        *found = Some(process_id);
+    if process_id != 0 && process_id != lookup.host_process_id {
+        lookup.process_id = Some(process_id);
         return BOOL(0);
     }
     BOOL(1)
 }
 
-/// 若窗口是 UWP 框架宿主，返回承载真实应用的子窗口 PID；否则返回原 PID。
-fn resolve_real_process(window: HWND, process_id: u32) -> u32 {
-    let host = process_name(process_id).unwrap_or_default().to_lowercase();
-    if host != UWP_FRAME_HOST {
-        return process_id;
-    }
-    let mut found: Option<u32> = None;
+/// 找出框架窗口承载的真实应用进程。
+///
+/// 常见的两种做法在 Win10 19045 上实测都不成立：`EnumChildWindows` 找不到
+/// `CoreWindow`（框架窗口的子树全部属于宿主进程），`GetPropW` 取
+/// `ApplicationViewCoreWindow` 返回空。`CoreWindow` 实际是独立的顶层窗口，
+/// 与框架窗口只有标题一致这一条可用线索，只能按标题关联。
+fn resolve_uwp_process(window: HWND, host_process_id: u32) -> Option<u32> {
+    let mut lookup = CoreWindowLookup {
+        title: window_title(window.0 as isize)?,
+        host_process_id,
+        process_id: None,
+    };
     let _ = unsafe {
-        EnumChildWindows(
-            window,
-            Some(collect_core_window),
-            LPARAM(&mut found as *mut Option<u32> as isize),
+        EnumWindows(
+            Some(match_core_window),
+            LPARAM(&mut lookup as *mut CoreWindowLookup as isize),
         )
     };
-    // 子窗口自身可能仍属于宿主进程，那种情况下没有更好的答案，保持原 PID。
-    found.filter(|pid| *pid != process_id).unwrap_or(process_id)
+    lookup.process_id
 }
 
-fn identity_for(window: HWND, process_id: u32) -> AppIdentity {
+/// 窗口对应的真实进程。非 UWP 窗口原样返回，不做任何跨进程调用。
+/// 框架窗口关联不到真实应用时返回 `None`——那样的条目只会显示成
+/// `ApplicationFrameHost`，既认不出是哪个应用，配了规则也无法命中。
+fn resolve_real_process(window: HWND, process_id: u32) -> Option<u32> {
+    if class_name(window) != UWP_FRAME_WINDOW_CLASS {
+        return Some(process_id);
+    }
+    resolve_uwp_process(window, process_id)
+}
+
+/// 组装标识。`window_title` 由调用方传入：枚举路径上标题已经作为过滤条件读过一次，
+/// 这里复用，不再重复调用。
+fn identity_for(process_id: u32, window_title: Option<String>) -> AppIdentity {
     let process_name = process_name(process_id).unwrap_or_default();
     let app_name = Path::new(&process_name)
         .file_stem()
@@ -384,20 +410,26 @@ fn identity_for(window: HWND, process_id: u32) -> AppIdentity {
     AppIdentity {
         process_name,
         app_name,
-        window_title: window_title(window.0 as isize),
+        window_title,
     }
 }
 
 pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
     let window = HWND(target.window_handle as *mut std::ffi::c_void);
-    let process_id = resolve_real_process(window, target.process_id);
-    let identity = identity_for(window, process_id);
+    let process_id = resolve_real_process(window, target.process_id)?;
+    let identity = identity_for(process_id, window_title(target.window_handle));
     (!identity.process_name.is_empty()).then_some(identity)
 }
 
+struct RunningAppScan {
+    apps: Vec<AppIdentity>,
+    seen_processes: std::collections::HashSet<u32>,
+}
+
 unsafe extern "system" fn collect_running_app(window: HWND, lparam: LPARAM) -> BOOL {
-    let apps = &mut *(lparam.0 as *mut Vec<AppIdentity>);
-    // 只要用户能看见、能切换过去的窗口：可见、非工具窗口、非属主窗口的附属窗口、有标题。
+    let scan = &mut *(lparam.0 as *mut RunningAppScan);
+    // 过滤条件按代价从低到高排列，尽量在打开进程句柄之前就淘汰掉窗口。
+    // 只保留用户能看见、能切换过去的：可见、非工具窗口、非附属窗口、有标题。
     if !IsWindowVisible(window).as_bool() {
         return BOOL(1);
     }
@@ -405,34 +437,53 @@ unsafe extern "system" fn collect_running_app(window: HWND, lparam: LPARAM) -> B
     if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
         return BOOL(1);
     }
-    if GetWindow(window, GW_OWNER).map(|owner| !owner.0.is_null()).unwrap_or(false) {
+    if GetWindow(window, GW_OWNER)
+        .map(|owner| !owner.0.is_null())
+        .unwrap_or(false)
+    {
         return BOOL(1);
     }
-    if window_title(window.0 as isize).is_none() {
+    let Some(title) = window_title(window.0 as isize) else {
         return BOOL(1);
-    }
+    };
     let mut process_id = 0u32;
     GetWindowThreadProcessId(window, Some(&mut process_id));
     if process_id == 0 || process_id == std::process::id() {
         return BOOL(1);
     }
-    let identity = identity_for(window, resolve_real_process(window, process_id));
+    // UWP 解析必须排在按 PID 去重之前，否则多个 UWP 应用会因为共用宿主 PID 被
+    // 折叠成一个。关联不到真实应用的框架窗口直接丢弃：它承载的应用会以自己的
+    // CoreWindow 顶层窗口另行出现在枚举里，留着只会多一条认不出的重复条目。
+    let Some(process_id) = resolve_real_process(window, process_id) else {
+        return BOOL(1);
+    };
+    // 同一进程常开多个窗口（浏览器、资源管理器），只处理第一个就够，
+    // 后面的窗口直接跳过——这是省下重复 OpenProcess 的主要来源。
+    if !scan.seen_processes.insert(process_id) {
+        return BOOL(1);
+    }
+    let identity = identity_for(process_id, Some(title));
     if !identity.process_name.is_empty() {
-        apps.push(identity);
+        scan.apps.push(identity);
     }
     BOOL(1)
 }
 
-/// 枚举当前可切换的顶层窗口，供「按软件配置规则」的下拉框选择。
-/// 同一个进程可能开多个窗口，这里按进程名去重，保留第一个窗口标题作为辨识线索。
+/// 枚举当前可切换的顶层窗口，供软件规则的下拉框选择。
+/// 同一个进程可能开多个窗口，按进程去重，保留第一个窗口标题作为辨识线索。
 pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
-    let mut apps: Vec<AppIdentity> = Vec::new();
+    let mut scan = RunningAppScan {
+        apps: Vec::new(),
+        seen_processes: std::collections::HashSet::new(),
+    };
     let _ = unsafe {
         EnumWindows(
             Some(collect_running_app),
-            LPARAM(&mut apps as *mut Vec<AppIdentity> as isize),
+            LPARAM(&mut scan as *mut RunningAppScan as isize),
         )
     };
+    let mut apps = scan.apps;
+    // 同名不同 PID 的多实例（多开的同一软件）对规则来说是同一个软件，再去重一次。
     let mut seen = std::collections::HashSet::new();
     apps.retain(|app| seen.insert(app.process_name.to_lowercase()));
     apps.sort_by(|a, b| a.app_name.to_lowercase().cmp(&b.app_name.to_lowercase()));
@@ -470,3 +521,5 @@ mod tests {
         assert!(!is_blocked(&context, &["notepad.exe".into()]));
     }
 }
+
+
