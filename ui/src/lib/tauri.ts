@@ -67,6 +67,7 @@ export const CMD = {
   setIndicatorTranslation: "set_indicator_translation",
   setIndicatorLayout: "set_indicator_layout",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
+  listRunningApps: "list_running_apps",
   openActiveAppContextDebug: "open_active_app_context_debug",
   closeActiveAppContextDebug: "close_active_app_context_debug",
   setActiveAppContextDebugOverrides: "set_active_app_context_debug_overrides",

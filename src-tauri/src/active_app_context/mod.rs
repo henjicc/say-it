@@ -25,8 +25,8 @@ pub(crate) use debug::{
     request_debug_capture, reset_debug_capture, set_debug_capture_overrides, DEBUG_STATE_EVENT,
 };
 pub(crate) use model::{
-    ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, CaptureOptions,
-    CaptureStatus, CapturedActiveAppContext, OcrEngineKind,
+    ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, AppIdentity,
+    CaptureOptions, CaptureStatus, CapturedActiveAppContext, OcrEngineKind,
 };
 
 pub(crate) trait ActiveAppContextProvider: Send + Sync + 'static {
@@ -343,6 +343,30 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     #[cfg(not(windows))]
     {
         unsupported::activation_target()
+    }
+}
+
+/// 听写启动时解析前台软件标识。同步、无跨进程调用，可在每次启动时无条件调用。
+pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
+    #[cfg(windows)]
+    {
+        windows::app_identity(target)
+    }
+    #[cfg(not(windows))]
+    {
+        unsupported::app_identity(target)
+    }
+}
+
+/// 当前可切换的顶层窗口列表，供应用规则的软件下拉框使用。
+pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
+    #[cfg(windows)]
+    {
+        windows::list_running_apps()
+    }
+    #[cfg(not(windows))]
+    {
+        unsupported::list_running_apps()
     }
 }
 

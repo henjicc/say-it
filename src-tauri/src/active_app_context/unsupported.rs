@@ -1,5 +1,5 @@
 use super::{
-    ActivationTarget, ActiveAppContextProvider, CaptureOptions, CaptureStatus,
+    ActivationTarget, ActiveAppContextProvider, AppIdentity, CaptureOptions, CaptureStatus,
     CapturedActiveAppContext,
 };
 
@@ -23,4 +23,12 @@ impl ActiveAppContextProvider for UnsupportedActiveAppContextProvider {
 
 pub(crate) fn activation_target() -> Option<ActivationTarget> {
     None
+}
+
+pub(crate) fn app_identity(_target: ActivationTarget) -> Option<AppIdentity> {
+    None
+}
+
+pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
+    Vec::new()
 }
