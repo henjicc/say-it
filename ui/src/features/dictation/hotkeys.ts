@@ -22,10 +22,13 @@ export type ShortcutProcessingMode =
   | "smartOnly"
   | "smartAndLocal";
 
+export type ShortcutTriggerMode = "toggle" | "pressHold";
+
 export interface DictationShortcutProfile extends ShortcutCombo {
   id: string;
   name: string;
   enabled: boolean;
+  triggerMode: ShortcutTriggerMode;
   processingMode: ShortcutProcessingMode;
   smartTemplateId: string | null;
   smartProcessingMinChars: number | null;
@@ -319,6 +322,7 @@ function normalizeProfile(value: Partial<DictationShortcutProfile>): DictationSh
     id: value.id,
     name: typeof value.name === "string" ? value.name : "",
     enabled: value.enabled === true,
+    triggerMode: value.triggerMode === "pressHold" ? "pressHold" : "toggle",
     keyCode: typeof value.keyCode === "string" ? value.keyCode : "",
     ctrl: value.ctrl === true,
     shift: value.shift === true,

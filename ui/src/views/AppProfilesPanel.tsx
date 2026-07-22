@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -58,27 +58,48 @@ export function AppProfilesPanel() {
   const profiles = prefs.appProfiles;
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const pendingRuleWrites = useRef<Promise<void>>(Promise.resolve());
+
+  const trackRuleWrite = (task: Promise<void>) => {
+    pendingRuleWrites.current = Promise.all([
+      pendingRuleWrites.current,
+      task.catch(() => {}),
+    ]).then(() => undefined);
+    return task;
+  };
+
+  useEffect(() => () => {
+    void pendingRuleWrites.current.then(async () => {
+      const latest = useDictPrefs.getState().prefs.appProfiles;
+      const next = latest.filter((profile) => profile.name.trim() || profile.matchers.length > 0);
+      if (next.length !== latest.length) {
+        await useDictPrefs.getState().patch({ appProfiles: next });
+      }
+    }).catch(() => {});
+  }, []);
 
   const updateProfile = (id: string, partial: Partial<AppProfile>) => {
-    return patch({ appProfiles: profiles.map((p) => (p.id === id ? { ...p, ...partial } : p)) });
+    return trackRuleWrite(
+      patch({ appProfiles: profiles.map((p) => (p.id === id ? { ...p, ...partial } : p)) }),
+    );
   };
   const moveProfile = (index: number, dir: -1 | 1) => {
     const target = index + dir;
     if (target < 0 || target >= profiles.length) return;
     const next = profiles.slice();
     [next[index], next[target]] = [next[target], next[index]];
-    patch({ appProfiles: next });
+    void trackRuleWrite(patch({ appProfiles: next }));
   };
   const deleteProfile = (profile: AppProfile) => {
     const label = profile.name.trim() || profile.matchers[0] || "未命名规则";
     if (!window.confirm(`确定删除软件规则“${label}”吗？`)) return;
-    patch({ appProfiles: profiles.filter((p) => p.id !== profile.id) });
+    void trackRuleWrite(patch({ appProfiles: profiles.filter((p) => p.id !== profile.id) }));
     if (editingId === profile.id) setEditingId(null);
   };
   const addProfile = () => {
     if (profiles.length >= MAX_APP_PROFILES) return;
     const profile = newProfile();
-    patch({ appProfiles: [...profiles, profile] });
+    void trackRuleWrite(patch({ appProfiles: [...profiles, profile] }));
     setEditingId(profile.id);
   };
 

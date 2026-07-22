@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -15,6 +15,7 @@ import {
   updateShortcutProfiles,
   type DictationShortcutProfile,
   type ShortcutProcessingMode,
+  type ShortcutTriggerMode,
 } from "@/features/dictation/hotkeys";
 import { cn } from "@/lib/cn";
 import {
@@ -34,6 +35,11 @@ const PROCESSING_MODES: Array<{ value: ShortcutProcessingMode; label: string }> 
   { value: "smartAndLocal", label: "智能处理后再本地处理" },
 ];
 
+const SHORTCUT_TRIGGER_MODES: Array<{ value: ShortcutTriggerMode; label: string }> = [
+  { value: "toggle", label: "单击切换" },
+  { value: "pressHold", label: "长按说话" },
+];
+
 function triggerMode(value: number | null): SmartTriggerMode {
   return value === null ? "inherit" : value === 0 ? "always" : "minimum";
 }
@@ -43,6 +49,7 @@ function createProfile(index: number): DictationShortcutProfile {
     id: crypto.randomUUID(),
     name: `快捷键方案 ${index}`,
     enabled: false,
+    triggerMode: "toggle",
     keyCode: "",
     ctrl: false,
     shift: false,
@@ -59,27 +66,44 @@ function processingSummary(profile: DictationShortcutProfile): string {
   return PROCESSING_MODES.find((mode) => mode.value === profile.processingMode)?.label ?? "跟随场景";
 }
 
+function shortcutTriggerLabel(mode: ShortcutTriggerMode): string {
+  return SHORTCUT_TRIGGER_MODES.find((item) => item.value === mode)?.label ?? "单击切换";
+}
+
 export function ShortcutProfilesPanel() {
   const prefs = useDictPrefs((state) => state.prefs);
   const mainShortcut = useDictationStore((state) => state.shortcut);
+  const mainPressHoldMode = useDictationStore((state) => state.pressHoldMode);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
+  const untouchedDraftIds = useRef(new Set<string>());
+
+  useEffect(() => () => {
+    const draftIds = new Set(untouchedDraftIds.current);
+    if (draftIds.size === 0) return;
+    const latest = useDictationStore.getState().shortcutProfiles;
+    const next = latest.filter((profile) => !draftIds.has(profile.id));
+    if (next.length !== latest.length) void updateShortcutProfiles(next).catch(() => {});
+  }, []);
 
   const save = (next: DictationShortcutProfile[]) => {
     void updateShortcutProfiles(next).catch(() => {});
   };
   const update = (id: string, partial: Partial<DictationShortcutProfile>) => {
+    untouchedDraftIds.current.delete(id);
     save(profiles.map((profile) => (profile.id === id ? { ...profile, ...partial } : profile)));
   };
   const remove = (profile: DictationShortcutProfile) => {
     if (!window.confirm(`确定删除快捷键方案“${profile.name}”吗？`)) return;
+    untouchedDraftIds.current.delete(profile.id);
     save(profiles.filter((item) => item.id !== profile.id));
     if (editingId === profile.id) setEditingId(null);
   };
   const add = () => {
     if (profiles.length >= MAX_DICTATION_SHORTCUT_PROFILES) return;
     const profile = createProfile(profiles.length + 1);
+    untouchedDraftIds.current.add(profile.id);
     save([...profiles, profile]);
     setEditingId(profile.id);
   };
@@ -87,11 +111,19 @@ export function ShortcutProfilesPanel() {
   const conflictMessage = (profile: DictationShortcutProfile): string => {
     if (!profile.keyCode) return "尚未设置快捷键，录入后会自动启用。";
     const signature = shortcutSignature(profile);
-    if (mainShortcut.keyCode && shortcutSignature(mainShortcut) === signature) return "与主快捷键冲突";
+    const mainTriggerMode: ShortcutTriggerMode = mainPressHoldMode ? "pressHold" : "toggle";
+    if (
+      mainShortcut.keyCode
+      && shortcutSignature(mainShortcut) === signature
+      && profile.triggerMode === mainTriggerMode
+    ) return `与主快捷键的${shortcutTriggerLabel(mainTriggerMode)}冲突`;
     const duplicate = profiles.find(
-      (candidate) => candidate.id !== profile.id && candidate.keyCode && shortcutSignature(candidate) === signature,
+      (candidate) => candidate.id !== profile.id
+        && candidate.keyCode
+        && candidate.triggerMode === profile.triggerMode
+        && shortcutSignature(candidate) === signature,
     );
-    return duplicate ? `与“${duplicate.name}”冲突` : "";
+    return duplicate ? `与“${duplicate.name}”的${shortcutTriggerLabel(profile.triggerMode)}冲突` : "";
   };
 
   return (
@@ -99,7 +131,7 @@ export function ShortcutProfilesPanel() {
       <SettingsSection title="快捷键方案">
         <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
           为临时意图设置专用快捷键。听写开始时会冻结对应方案；录音过程中修改设置或按下其他听写快捷键，
-          都不会切换当前文本的处理方式。
+          都不会切换当前文本的处理方式。同一按键可分别设置一条单击和一条长按方案，相同触发方式则会提示冲突。
         </p>
       </SettingsSection>
 
@@ -136,7 +168,7 @@ export function ShortcutProfilesPanel() {
                     {conflict && <span className="text-[11px] text-[var(--color-warn)]">{conflict}</span>}
                   </span>
                   <span className="block truncate text-[11px] text-[var(--color-fg-faint)]">
-                    {shortcutLabel(profile) || "未设置"} · {processingSummary(profile)}
+                    {shortcutLabel(profile) || "未设置"} · {shortcutTriggerLabel(profile.triggerMode)} · {processingSummary(profile)}
                   </span>
                 </button>
                 <IconButton
@@ -193,6 +225,18 @@ export function ShortcutProfilesPanel() {
                           enabled: false,
                         })}
                       />
+                    </Field>
+                    <Field label="触发方式">
+                      <Select
+                        value={profile.triggerMode}
+                        onChange={(event) => update(profile.id, {
+                          triggerMode: event.target.value as ShortcutTriggerMode,
+                        })}
+                      >
+                        {SHORTCUT_TRIGGER_MODES.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </Select>
                     </Field>
                     <Field label="处理方式">
                       <Select

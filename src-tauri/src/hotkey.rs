@@ -44,16 +44,18 @@ pub struct HotkeyBinding {
     pub vk: u16,
     pub mods: u8,
     pub profile_id: Option<String>,
+    pub press_hold_mode: bool,
 }
 
-// 固定容量原子槽位由设置写入、低级钩子读取。槽位 0 是主快捷键，其余是快捷键方案。
+// 固定容量原子槽位由设置写入、低级钩子读取；主快捷键为空时，首槽可直接存放方案快捷键。
 static TARGET_VKS: [AtomicU16; MAX_DICTATION_BINDINGS] =
     [const { AtomicU16::new(0) }; MAX_DICTATION_BINDINGS];
 static TARGET_MODS: [AtomicU8; MAX_DICTATION_BINDINGS] =
     [const { AtomicU8::new(0) }; MAX_DICTATION_BINDINGS];
 static TRIGGERED: [AtomicBool; MAX_DICTATION_BINDINGS] =
     [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
-static PRESS_HOLD_MODE: AtomicBool = AtomicBool::new(false);
+static BINDING_PRESS_HOLD: [AtomicBool; MAX_DICTATION_BINDINGS] =
+    [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
 static PRESS_HOLD_STARTED: [AtomicBool; MAX_DICTATION_BINDINGS] =
     [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
 static PRESS_HOLD_START_MS: AtomicU32 = AtomicU32::new(260);
@@ -272,7 +274,7 @@ pub fn set_context_debug_active(active: bool) {
 }
 
 /// 原子替换全部听写快捷键。低级钩子只读固定槽位，不获取任何锁。
-pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<(), String> {
+pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
     if bindings.len() > MAX_DICTATION_BINDINGS {
         return Err(format!("听写快捷键不能超过 {MAX_DICTATION_BINDINGS} 个"));
     }
@@ -282,6 +284,7 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<
     for slot in 0..MAX_DICTATION_BINDINGS {
         TARGET_VKS[slot].store(0, Ordering::SeqCst);
         TARGET_MODS[slot].store(0, Ordering::SeqCst);
+        BINDING_PRESS_HOLD[slot].store(false, Ordering::SeqCst);
         TRIGGERED[slot].store(false, Ordering::SeqCst);
         PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
         PRESS_HOLD_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
@@ -292,11 +295,11 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<
             .map(|binding| binding.profile_id.clone())
             .collect();
     }
-    PRESS_HOLD_MODE.store(press_hold_mode, Ordering::SeqCst);
     for (slot, binding) in bindings.iter().enumerate() {
         TARGET_MODS[slot].store(binding.mods, Ordering::SeqCst);
+        BINDING_PRESS_HOLD[slot].store(binding.press_hold_mode, Ordering::SeqCst);
         TARGET_VKS[slot].store(binding.vk, Ordering::SeqCst);
-        if is_lock_key(binding.vk) && !press_hold_mode {
+        if is_lock_key(binding.vk) && !binding.press_hold_mode {
             force_lock_off(binding.vk);
         }
     }
@@ -503,51 +506,106 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         }
 
         let generation = HOTKEY_GENERATION.load(Ordering::SeqCst);
-        let press_hold_mode = PRESS_HOLD_MODE.load(Ordering::SeqCst);
         let mut matched_lock_key = false;
+        let mut matching_toggle = None;
+        let mut matching_press_hold = None;
         for slot in 0..MAX_DICTATION_BINDINGS {
             let target = TARGET_VKS[slot].load(Ordering::SeqCst);
             if target == 0 || target != vk {
                 continue;
             }
-            let lock = is_lock_key(target);
-            matched_lock_key |= lock;
-            let signal = HotkeySignal {
-                slot: slot as u8,
-                generation,
-            };
+            matched_lock_key |= is_lock_key(target);
             if is_down && modifiers_match(TARGET_MODS[slot].load(Ordering::SeqCst)) {
+                if BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst) {
+                    matching_press_hold = Some(slot);
+                } else {
+                    matching_toggle = Some(slot);
+                }
+            }
+        }
+
+        if is_down {
+            if let Some(slot) = matching_press_hold {
+                if let Some(toggle_slot) = matching_toggle {
+                    // 同一组合的短按与长按共存时，短按延迟到释放再触发。
+                    TRIGGERED[toggle_slot].store(true, Ordering::SeqCst);
+                }
                 if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
-                    if press_hold_mode {
-                        PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
-                        let sequence = PRESS_HOLD_SEQUENCE[slot]
-                            .fetch_add(1, Ordering::SeqCst)
-                            .wrapping_add(1);
-                        let immediate = DICTATION_ACTIVE.load(Ordering::SeqCst);
-                        if immediate {
-                            PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
-                        }
-                        let delay_ms = if immediate {
-                            0
-                        } else {
-                            PRESS_HOLD_START_MS.load(Ordering::SeqCst)
-                        };
-                        crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
-                        signal_press_start(signal, sequence, delay_ms, immediate);
-                    } else {
-                        crate::dlog!("[hotkey] 触发 toggle (slot={slot}, vk={vk:#04x})");
-                        signal_toggle(signal);
+                    PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
+                    let sequence = PRESS_HOLD_SEQUENCE[slot]
+                        .fetch_add(1, Ordering::SeqCst)
+                        .wrapping_add(1);
+                    let immediate = DICTATION_ACTIVE.load(Ordering::SeqCst);
+                    if immediate {
+                        PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
                     }
+                    let delay_ms = if immediate {
+                        0
+                    } else {
+                        PRESS_HOLD_START_MS.load(Ordering::SeqCst)
+                    };
+                    crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
+                    signal_press_start(
+                        HotkeySignal {
+                            slot: slot as u8,
+                            generation,
+                        },
+                        sequence,
+                        delay_ms,
+                        immediate,
+                    );
                 }
-            } else if is_up {
-                let was_triggered = TRIGGERED[slot].swap(false, Ordering::SeqCst);
+            } else if let Some(slot) = matching_toggle {
+                if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
+                    crate::dlog!("[hotkey] 触发 toggle (slot={slot}, vk={vk:#04x})");
+                    signal_toggle(HotkeySignal {
+                        slot: slot as u8,
+                        generation,
+                    });
+                }
+            }
+        } else if is_up {
+            let mut handled_toggle_slots = [false; MAX_DICTATION_BINDINGS];
+            for slot in 0..MAX_DICTATION_BINDINGS {
+                if TARGET_VKS[slot].load(Ordering::SeqCst) != vk
+                    || !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
+                    || !TRIGGERED[slot].swap(false, Ordering::SeqCst)
+                {
+                    continue;
+                }
+                let mods = TARGET_MODS[slot].load(Ordering::SeqCst);
+                let paired_toggle = (0..MAX_DICTATION_BINDINGS).find(|candidate| {
+                    TARGET_VKS[*candidate].load(Ordering::SeqCst) == vk
+                        && TARGET_MODS[*candidate].load(Ordering::SeqCst) == mods
+                        && !BINDING_PRESS_HOLD[*candidate].load(Ordering::SeqCst)
+                        && TRIGGERED[*candidate].swap(false, Ordering::SeqCst)
+                });
+                if let Some(toggle_slot) = paired_toggle {
+                    handled_toggle_slots[toggle_slot] = true;
+                }
                 let press_hold_started = PRESS_HOLD_STARTED[slot].swap(false, Ordering::SeqCst);
-                if was_triggered && press_hold_mode {
+                if press_hold_started {
                     crate::dlog!("[hotkey] 触发长按结束 (slot={slot}, vk={vk:#04x})");
-                    signal_press_end(signal);
-                }
-                if lock && press_hold_mode && was_triggered && !press_hold_started {
+                    signal_press_end(HotkeySignal {
+                        slot: slot as u8,
+                        generation,
+                    });
+                } else if let Some(toggle_slot) = paired_toggle {
+                    crate::dlog!("[hotkey] 触发配对短按 (slot={toggle_slot}, vk={vk:#04x})");
+                    signal_toggle(HotkeySignal {
+                        slot: toggle_slot as u8,
+                        generation,
+                    });
+                } else if is_lock_key(vk) {
                     unsafe { tap_key(vk) };
+                }
+            }
+            for slot in 0..MAX_DICTATION_BINDINGS {
+                if TARGET_VKS[slot].load(Ordering::SeqCst) == vk
+                    && !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
+                    && !handled_toggle_slots[slot]
+                {
+                    TRIGGERED[slot].store(false, Ordering::SeqCst);
                 }
             }
         }
@@ -647,28 +705,29 @@ mod tests {
     #[test]
     fn multiple_bindings_replace_slots_and_advance_generation() {
         let before = HOTKEY_GENERATION.load(Ordering::SeqCst);
-        set_hotkeys(
-            &[
-                HotkeyBinding {
-                    vk: 0x78,
-                    mods: MOD_CTRL,
-                    profile_id: None,
-                },
-                HotkeyBinding {
-                    vk: 0x79,
-                    mods: MOD_SHIFT,
-                    profile_id: Some("smart".into()),
-                },
-            ],
-            false,
-        )
+        set_hotkeys(&[
+            HotkeyBinding {
+                vk: 0x78,
+                mods: MOD_CTRL,
+                profile_id: None,
+                press_hold_mode: false,
+            },
+            HotkeyBinding {
+                vk: 0x79,
+                mods: MOD_SHIFT,
+                profile_id: Some("smart".into()),
+                press_hold_mode: true,
+            },
+        ])
         .unwrap();
         assert_eq!(TARGET_VKS[0].load(Ordering::SeqCst), 0x78);
         assert_eq!(TARGET_VKS[1].load(Ordering::SeqCst), 0x79);
         assert_eq!(TARGET_MODS[1].load(Ordering::SeqCst), MOD_SHIFT);
+        assert!(!BINDING_PRESS_HOLD[0].load(Ordering::SeqCst));
+        assert!(BINDING_PRESS_HOLD[1].load(Ordering::SeqCst));
         assert_ne!(HOTKEY_GENERATION.load(Ordering::SeqCst), before);
 
-        set_hotkeys(&[], false).unwrap();
+        set_hotkeys(&[]).unwrap();
         assert_eq!(TARGET_VKS[0].load(Ordering::SeqCst), 0);
         assert_eq!(TARGET_VKS[1].load(Ordering::SeqCst), 0);
     }
@@ -680,8 +739,9 @@ mod tests {
                 vk: 0x70 + index as u16,
                 mods: 0,
                 profile_id: None,
+                press_hold_mode: false,
             })
             .collect::<Vec<_>>();
-        assert!(set_hotkeys(&bindings, false).is_err());
+        assert!(set_hotkeys(&bindings).is_err());
     }
 }

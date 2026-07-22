@@ -306,6 +306,7 @@ mod tests {
                 alt: false,
                 meta: false,
                 processing_mode: crate::state::ShortcutProcessingMode::FollowScene,
+                trigger_mode: crate::state::ShortcutTriggerMode::Toggle,
                 smart_template_id: Some("deleted".into()),
                 smart_processing_min_chars: None,
                 inject_method: None,
