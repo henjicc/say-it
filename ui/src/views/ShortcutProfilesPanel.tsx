@@ -11,7 +11,6 @@ import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import {
   MAX_DICTATION_SHORTCUT_PROFILES,
   shortcutLabel,
-  shortcutSignature,
   updateShortcutProfiles,
   type DictationShortcutProfile,
   type ShortcutProcessingMode,
@@ -73,8 +72,6 @@ function shortcutTriggerLabel(mode: ShortcutTriggerMode): string {
 
 export function ShortcutProfilesPanel() {
   const prefs = useDictPrefs((state) => state.prefs);
-  const mainShortcut = useDictationStore((state) => state.shortcut);
-  const mainPressHoldMode = useDictationStore((state) => state.pressHoldMode);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
   const focusedProfileId = useUiStore((state) => state.focusedShortcutProfileId);
   const consumeFocusedProfile = useUiStore((state) => state.consumeFocusedShortcutProfile);
@@ -128,24 +125,6 @@ export function ShortcutProfilesPanel() {
     setEditingId(profile.id);
   };
 
-  const conflictMessage = (profile: DictationShortcutProfile): string => {
-    if (!profile.keyCode) return "尚未设置快捷键，录入后会自动启用。";
-    const signature = shortcutSignature(profile);
-    const mainTriggerMode: ShortcutTriggerMode = mainPressHoldMode ? "pressHold" : "toggle";
-    if (
-      mainShortcut.keyCode
-      && shortcutSignature(mainShortcut) === signature
-      && profile.triggerMode === mainTriggerMode
-    ) return `与主快捷键的${shortcutTriggerLabel(mainTriggerMode)}冲突`;
-    const duplicate = profiles.find(
-      (candidate) => candidate.id !== profile.id
-        && candidate.keyCode
-        && candidate.triggerMode === profile.triggerMode
-        && shortcutSignature(candidate) === signature,
-    );
-    return duplicate ? `与“${duplicate.name}”的${shortcutTriggerLabel(profile.triggerMode)}冲突` : "";
-  };
-
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection title="快捷键方案">
@@ -163,7 +142,6 @@ export function ShortcutProfilesPanel() {
         )}
         {profiles.map((profile) => {
           const open = editingId === profile.id;
-          const conflict = conflictMessage(profile);
           const smartRelevant = profile.processingMode === "followScene"
             || profile.processingMode === "smartOnly"
             || profile.processingMode === "smartAndLocal";
@@ -177,7 +155,7 @@ export function ShortcutProfilesPanel() {
               <div className="flex items-center gap-2.5 px-3 py-2.5">
                 <Checkbox
                   checked={profile.enabled}
-                  disabled={!profile.keyCode || Boolean(conflict)}
+                  disabled={!profile.keyCode}
                   onChange={(event) => update(profile.id, { enabled: event.target.checked })}
                   title={profile.enabled ? "已启用" : "已停用"}
                 />
@@ -189,7 +167,6 @@ export function ShortcutProfilesPanel() {
                 >
                   <span className="flex items-center gap-2 text-sm text-[var(--color-fg)]">
                     <span className="truncate">{profile.name}</span>
-                    {conflict && <span className="text-[11px] text-[var(--color-warn)]">{conflict}</span>}
                   </span>
                   <span className="block truncate text-[11px] text-[var(--color-fg-faint)]">
                     {shortcutLabel(profile) || "未设置"} · {shortcutTriggerLabel(profile.triggerMode)} · {processingSummary(profile)}
@@ -236,7 +213,10 @@ export function ShortcutProfilesPanel() {
                         }}
                       />
                     </Field>
-                    <Field label="快捷键" hint={conflict || undefined}>
+                    <Field
+                      label="快捷键"
+                      hint={!profile.keyCode ? "尚未设置快捷键，录入后会自动启用。" : undefined}
+                    >
                       <ShortcutRecorder
                         value={profile}
                         onChange={(shortcut) => update(profile.id, { ...shortcut, enabled: true })}
