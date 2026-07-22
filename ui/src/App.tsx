@@ -15,6 +15,7 @@ import { CustomizationView } from "@/views/CustomizationView";
 import { SettingsView } from "@/views/SettingsView";
 import { AboutDialog } from "@/views/AboutView";
 import { PluginDropInstaller } from "@/components/PluginDropInstaller";
+import { ShortcutConflictDialog } from "@/features/hotkeys/ShortcutConflictDialog";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationView />,
@@ -88,6 +89,7 @@ export default function App() {
         </main>
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
         <PluginDropInstaller />
+        <ShortcutConflictDialog />
       </div>
       </>}
     </div>

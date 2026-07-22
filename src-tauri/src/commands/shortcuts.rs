@@ -2,6 +2,8 @@ use crate::persistence::save_persisted_state;
 use crate::prelude::*;
 use crate::state::*;
 
+const SHORTCUT_CONFLICT_PREFIX: &str = "快捷键冲突：";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum ShortcutTarget {
@@ -359,7 +361,7 @@ pub(crate) fn validate_shortcut_settings(
         validate_reserved_shortcut(vk, dictation_mods(dictation), "主快捷键")?;
         shortcuts.insert(
             (vk, dictation_mods(dictation), dictation.press_hold_mode),
-            "主快捷键".to_string(),
+            "语音输入 · 主快捷键".to_string(),
         );
     }
 
@@ -403,12 +405,14 @@ pub(crate) fn validate_shortcut_settings(
             .ok_or_else(|| format!("快捷键方案「{}」使用了不支持的按键", profile.name))?;
         let mods = profile.mods();
         validate_reserved_shortcut(vk, mods, &format!("快捷键方案「{}」", profile.name))?;
-        if let Some(existing) =
-            shortcuts.insert((vk, mods, profile.press_hold_mode()), profile.name.clone())
-        {
+        if let Some(existing) = shortcuts.insert(
+            (vk, mods, profile.press_hold_mode()),
+            format!("语音输入 · {}", profile.name),
+        ) {
             return Err(format!(
-                "快捷键方案「{}」与{existing}使用了相同快捷键和触发方式",
-                profile.name
+                "{SHORTCUT_CONFLICT_PREFIX}快捷键方案「{}」与“{existing}”使用了相同快捷键和触发方式「{}」，不能重复设置。",
+                profile.name,
+                shortcut_trigger_label(profile.press_hold_mode()),
             ));
         }
     }
@@ -418,13 +422,26 @@ pub(crate) fn validate_shortcut_settings(
             .ok_or_else(|| "实时字幕使用了不支持的快捷键".to_string())?;
         let subtitle_mods = subtitle_shortcut_mods(subtitle);
         validate_reserved_shortcut(subtitle_vk, subtitle_mods, "实时字幕")?;
-        if let Some(owner) = shortcuts.iter().find_map(|(&(vk, mods, _), owner)| {
-            (vk == subtitle_vk && mods == subtitle_mods).then_some(owner)
-        }) {
-            return Err(format!("实时字幕与{owner}使用了相同快捷键"));
+        if let Some((owner, press_hold)) = shortcuts.iter().find_map(
+            |(&(vk, mods, press_hold), owner)| {
+                (vk == subtitle_vk && mods == subtitle_mods).then_some((owner, press_hold))
+            },
+        ) {
+            return Err(format!(
+                "{SHORTCUT_CONFLICT_PREFIX}实时字幕与“{owner}（{}）”使用了相同快捷键。实时字幕占用整个物理快捷键，不能与语音输入快捷键共存。",
+                shortcut_trigger_label(press_hold),
+            ));
         }
     }
     Ok(())
+}
+
+fn shortcut_trigger_label(press_hold: bool) -> &'static str {
+    if press_hold {
+        "长按说话"
+    } else {
+        "单击切换"
+    }
 }
 
 fn validate_reserved_shortcut(vk: u16, mods: u8, owner: &str) -> Result<(), String> {
@@ -586,8 +603,30 @@ mod tests {
                 ctrl: true,
                 ..Default::default()
             };
-            assert!(validate_shortcut_settings(&dictation, &subtitle, &state).is_err());
+            let error = validate_shortcut_settings(&dictation, &subtitle, &state).unwrap_err();
+            assert!(error.starts_with(SHORTCUT_CONFLICT_PREFIX));
+            assert!(error.contains(shortcut_trigger_label(mode == ShortcutTriggerMode::PressHold)));
         }
+    }
+
+    #[test]
+    fn duplicate_dictation_binding_names_owner_and_trigger_mode() {
+        let state = RuntimeState::default();
+        let dictation = DictationSettings {
+            key_code: "F9".into(),
+            ctrl: true,
+            shortcut_profiles: vec![profile("智能方案", "F9", ShortcutTriggerMode::Toggle)],
+            ..Default::default()
+        };
+        let error = validate_shortcut_settings(
+            &dictation,
+            &SubtitleShortcutSettings::default(),
+            &state,
+        )
+        .unwrap_err();
+        assert!(error.starts_with(SHORTCUT_CONFLICT_PREFIX));
+        assert!(error.contains("语音输入 · 主快捷键"));
+        assert!(error.contains("单击切换"));
     }
 
     #[test]

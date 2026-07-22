@@ -13,6 +13,7 @@ import {
   updateShortcutBinding,
   type ShortcutBindingItem,
 } from "@/features/hotkeys/catalog";
+import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 import { useUiStore } from "@/store/useUiStore";
 
 const TRIGGER_OPTIONS: Array<{ value: ShortcutTriggerMode; label: string }> = [
@@ -66,6 +67,7 @@ export function SettingsKeyBindingsPanel() {
     try {
       setItems(await operation());
     } catch (error) {
+      reportShortcutConflict(error);
       setErrors((current) => ({ ...current, [key]: String(error) }));
       await refresh().catch(() => {});
     } finally {

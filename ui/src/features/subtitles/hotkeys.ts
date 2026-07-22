@@ -1,5 +1,6 @@
 import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
+import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 
 type Tone = "" | "ok" | "err";
 
@@ -109,6 +110,7 @@ async function completeSubtitleCapture(
   } catch (error) {
     ({ subKeyCode, subCtrl, subShift, subAlt, subMeta } = prev);
     updateSubtitleShortcutDisplay();
+    reportShortcutConflict(error);
     hooks.setStatus(`设置失败：${String(error)}`, "err");
   }
 }
