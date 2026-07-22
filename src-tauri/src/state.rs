@@ -108,7 +108,55 @@ pub(crate) fn default_inject_method() -> String {
     "paste".to_string()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) const MAX_DICTATION_SHORTCUT_PROFILES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ShortcutProcessingMode {
+    #[default]
+    FollowScene,
+    Raw,
+    LocalOnly,
+    SmartOnly,
+    SmartAndLocal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DictationShortcutProfile {
+    #[serde(default)]
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) key_code: String,
+    #[serde(default)]
+    pub(crate) ctrl: bool,
+    #[serde(default)]
+    pub(crate) shift: bool,
+    #[serde(default)]
+    pub(crate) alt: bool,
+    #[serde(default)]
+    pub(crate) meta: bool,
+    #[serde(default)]
+    pub(crate) processing_mode: ShortcutProcessingMode,
+    #[serde(default)]
+    pub(crate) smart_template_id: Option<String>,
+    #[serde(default)]
+    pub(crate) smart_processing_min_chars: Option<u32>,
+    #[serde(default)]
+    pub(crate) inject_method: Option<String>,
+}
+
+impl DictationShortcutProfile {
+    pub(crate) fn mods(&self) -> u8 {
+        hotkey_mods(self.ctrl, self.shift, self.alt, self.meta)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DictationSettings {
     #[serde(default = "default_key_code")]
     pub(crate) key_code: String,
@@ -124,6 +172,8 @@ pub(crate) struct DictationSettings {
     pub(crate) inject_method: String,
     #[serde(default)]
     pub(crate) press_hold_mode: bool,
+    #[serde(default)]
+    pub(crate) shortcut_profiles: Vec<DictationShortcutProfile>,
 }
 
 impl Default for DictationSettings {
@@ -136,22 +186,27 @@ impl Default for DictationSettings {
             meta: cfg!(target_os = "macos"),
             inject_method: default_inject_method(),
             press_hold_mode: false,
+            shortcut_profiles: Vec::new(),
         }
     }
 }
 
 pub(crate) fn dictation_mods(settings: &DictationSettings) -> u8 {
+    hotkey_mods(settings.ctrl, settings.shift, settings.alt, settings.meta)
+}
+
+fn hotkey_mods(ctrl: bool, shift: bool, alt: bool, meta: bool) -> u8 {
     let mut mods = 0u8;
-    if settings.ctrl {
+    if ctrl {
         mods |= hotkey::MOD_CTRL;
     }
-    if settings.shift {
+    if shift {
         mods |= hotkey::MOD_SHIFT;
     }
-    if settings.alt {
+    if alt {
         mods |= hotkey::MOD_ALT;
     }
-    if settings.meta {
+    if meta {
         mods |= hotkey::MOD_WIN;
     }
     mods
@@ -159,14 +214,67 @@ pub(crate) fn dictation_mods(settings: &DictationSettings) -> u8 {
 
 /// 应用语音输入热键；key_code 为空表示未设置，直接清除即可。
 pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(), String> {
-    if settings.key_code.trim().is_empty() {
-        hotkey::clear_hotkey();
-        return Ok(());
+    let mut bindings = Vec::with_capacity(1 + settings.shortcut_profiles.len());
+    if !settings.key_code.trim().is_empty() {
+        let vk = hotkey::code_to_vk(&settings.key_code)
+            .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
+        bindings.push(hotkey::HotkeyBinding {
+            vk,
+            mods: dictation_mods(settings),
+            profile_id: None,
+        });
     }
-    let vk = hotkey::code_to_vk(&settings.key_code)
-        .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
-    hotkey::set_hotkey(vk, dictation_mods(settings), settings.press_hold_mode);
-    Ok(())
+    for profile in settings
+        .shortcut_profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+    {
+        let vk = hotkey::code_to_vk(&profile.key_code)
+            .ok_or_else(|| format!("快捷键方案「{}」使用了不支持的按键", profile.name))?;
+        bindings.push(hotkey::HotkeyBinding {
+            vk,
+            mods: profile.mods(),
+            profile_id: Some(profile.id.clone()),
+        });
+    }
+    hotkey::set_hotkeys(&bindings, settings.press_hold_mode)
+}
+
+#[cfg(test)]
+mod dictation_settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_dictation_settings_migrate_to_no_shortcut_profiles() {
+        let settings: DictationSettings = serde_json::from_value(json!({
+            "key_code": "CapsLock",
+            "inject_method": "paste"
+        }))
+        .unwrap();
+        assert_eq!(settings.key_code, "CapsLock");
+        assert!(settings.shortcut_profiles.is_empty());
+    }
+
+    #[test]
+    fn shortcut_profile_uses_camel_case_nested_contract() {
+        let settings: DictationSettings = serde_json::from_value(json!({
+            "shortcut_profiles": [{
+                "id": "smart",
+                "name": "智能",
+                "enabled": true,
+                "keyCode": "F9",
+                "processingMode": "smartOnly",
+                "smartProcessingMinChars": 0,
+                "injectMethod": "type"
+            }]
+        }))
+        .unwrap();
+        let profile = &settings.shortcut_profiles[0];
+        assert_eq!(profile.processing_mode, ShortcutProcessingMode::SmartOnly);
+        assert_eq!(profile.smart_processing_min_chars, Some(0));
+        assert_eq!(profile.inject_method.as_deref(), Some("type"));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

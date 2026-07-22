@@ -102,7 +102,7 @@ export function AppProfilesPanel() {
   return (
     <div className="flex flex-col gap-8">
       <SettingsSection
-        title="软件规则"
+        title="按软件规则"
         right={
           <Switch
             checked={prefs.appProfilesEnabled}

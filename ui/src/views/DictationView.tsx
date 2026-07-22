@@ -8,7 +8,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { LocalRulesPanel } from "@/views/LocalRulesPanel";
 import { SmartTextPanel } from "@/views/SmartTextPanel";
-import { AppProfilesPanel } from "@/views/AppProfilesPanel";
+import { SceneRulesPanel } from "@/views/SceneRulesPanel";
 import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
 import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
@@ -28,7 +28,7 @@ const TABS: TabItem<TabKey>[] = [
   { key: "basic", label: "通用设置" },
   { key: "local", label: "本地处理" },
   { key: "smart", label: "智能处理" },
-  { key: "apps", label: "软件规则" },
+  { key: "apps", label: "场景规则" },
   ...(import.meta.env.DEV ? [{ key: "debug" as const, label: "调试" }] : []),
 ];
 
@@ -76,7 +76,7 @@ export function DictationView() {
         {tab === "basic" && <DictationShortcutsPanel />}
         {tab === "local" && <LocalRulesPanel />}
         {tab === "smart" && <SmartTextPanel />}
-        {tab === "apps" && <AppProfilesPanel />}
+        {tab === "apps" && <SceneRulesPanel />}
         {tab === "debug" && (
           <div className="flex flex-col gap-7">
             <SettingsSection title="当前软件上下文调试">

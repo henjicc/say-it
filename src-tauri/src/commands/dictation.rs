@@ -1,5 +1,5 @@
-use crate::prelude::*;
 use crate::persistence::save_persisted_state;
+use crate::prelude::*;
 use crate::state::*;
 
 #[tauri::command]
@@ -16,41 +16,166 @@ pub(crate) fn get_dictation_settings(
 #[tauri::command]
 pub(crate) fn set_dictation_settings(
     app: tauri::AppHandle,
-    settings: DictationSettings,
+    mut settings: DictationSettings,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<(), String> {
+    settings.inject_method = normalize_inject_method(Some(&settings.inject_method))
+        .unwrap_or_else(|| "paste".to_string());
+    for profile in &mut settings.shortcut_profiles {
+        profile.id = profile.id.trim().to_string();
+        profile.name = profile.name.trim().to_string();
+        profile.key_code = profile.key_code.trim().to_string();
+        profile.smart_template_id = profile
+            .smart_template_id
+            .take()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        profile.inject_method = normalize_inject_method(profile.inject_method.as_deref());
+    }
+
+    validate_dictation_settings(&settings, &state)?;
+    let previous = state
+        .dictation
+        .lock()
+        .map_err(|_| "Dictation lock failed".to_string())?
+        .clone();
+    // 先尝试应用完整的新集合，确认平台可以注册，再替换内存和持久化状态。
+    apply_dictation_hotkey(&settings)?;
+    if let Err(error) = state
+        .dictation
+        .lock()
+        .map(|mut guard| *guard = settings)
+        .map_err(|_| "Dictation lock failed".to_string())
     {
-        let subtitle = state
-            .subtitle_shortcut
-            .lock()
-            .map_err(|_| "Subtitle shortcut lock failed".to_string())?;
-        if !subtitle.key_code.trim().is_empty()
-            && subtitle.key_code == settings.key_code
-            && subtitle_shortcut_mods(&subtitle) == dictation_mods(&settings)
+        let _ = apply_dictation_hotkey(&previous);
+        return Err(error);
+    }
+    if let Err(error) = save_persisted_state(&app, &state) {
+        if let Ok(mut guard) = state.dictation.lock() {
+            *guard = previous.clone();
+        }
+        let restore = apply_dictation_hotkey(&previous);
+        return match restore {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!("{error}；恢复原快捷键失败：{restore_error}")),
+        };
+    }
+    Ok(())
+}
+
+fn normalize_inject_method(value: Option<&str>) -> Option<String> {
+    match value {
+        Some("paste") => Some("paste".to_string()),
+        Some("type") => Some("type".to_string()),
+        _ => None,
+    }
+}
+
+fn validate_dictation_settings(
+    settings: &DictationSettings,
+    state: &RuntimeState,
+) -> Result<(), String> {
+    if settings.shortcut_profiles.len() > MAX_DICTATION_SHORTCUT_PROFILES {
+        return Err(format!(
+            "快捷键方案不能超过 {MAX_DICTATION_SHORTCUT_PROFILES} 条"
+        ));
+    }
+    let subtitle = state
+        .subtitle_shortcut
+        .lock()
+        .map_err(|_| "Subtitle shortcut lock failed".to_string())?
+        .clone();
+    let known_templates = state
+        .app_settings
+        .lock()
+        .map_err(|_| "应用配置锁失败".to_string())?
+        .dictation_prefs
+        .get("smartTemplates")
+        .and_then(serde_json::Value::as_array)
+        .map(|templates| {
+            templates
+                .iter()
+                .filter_map(|template| template.get("id").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut ids = std::collections::HashSet::new();
+    let mut shortcuts = std::collections::HashMap::<(u16, u8), String>::new();
+    if !settings.key_code.trim().is_empty() {
+        let vk = hotkey::code_to_vk(&settings.key_code)
+            .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
+        validate_reserved_shortcut(vk, dictation_mods(settings), "主快捷键")?;
+        shortcuts.insert((vk, dictation_mods(settings)), "主快捷键".to_string());
+    }
+
+    for profile in &settings.shortcut_profiles {
+        if profile.id.is_empty() || !ids.insert(profile.id.clone()) {
+            return Err("快捷键方案 ID 不能为空且不能重复".to_string());
+        }
+        if profile.name.is_empty() {
+            return Err("快捷键方案名称不能为空".to_string());
+        }
+        if profile.name.chars().count() > 80 {
+            return Err(format!(
+                "快捷键方案「{}」名称不能超过 80 个字符",
+                profile.name
+            ));
+        }
+        if profile
+            .smart_processing_min_chars
+            .is_some_and(|value| value > 10_000)
         {
-            return Err("该快捷键已被实时字幕占用".to_string());
+            return Err(format!(
+                "快捷键方案「{}」的智能处理最少字符数不能超过 10000",
+                profile.name
+            ));
+        }
+        if let Some(template_id) = &profile.smart_template_id {
+            if !known_templates.contains(template_id) {
+                return Err(format!(
+                    "快捷键方案「{}」引用的智能模板不存在",
+                    profile.name
+                ));
+            }
+        }
+        if profile.key_code.is_empty() {
+            if profile.enabled {
+                return Err(format!("快捷键方案「{}」尚未设置快捷键", profile.name));
+            }
+            continue;
+        }
+        let vk = hotkey::code_to_vk(&profile.key_code)
+            .ok_or_else(|| format!("快捷键方案「{}」使用了不支持的按键", profile.name))?;
+        let mods = profile.mods();
+        validate_reserved_shortcut(vk, mods, &format!("快捷键方案「{}」", profile.name))?;
+        if let Some(existing) = shortcuts.insert((vk, mods), profile.name.clone()) {
+            return Err(format!(
+                "快捷键方案「{}」与{existing}使用了相同快捷键",
+                profile.name
+            ));
         }
     }
-    // 先尝试应用到钩子，确认键码受支持，再写入并持久化。
-    apply_dictation_hotkey(&settings)?;
-    {
-        let mut guard = state
-            .dictation
-            .lock()
-            .map_err(|_| "Dictation lock failed".to_string())?;
-        guard.key_code = settings.key_code;
-        guard.ctrl = settings.ctrl;
-        guard.shift = settings.shift;
-        guard.alt = settings.alt;
-        guard.meta = settings.meta;
-        guard.inject_method = if settings.inject_method == "type" {
-            "type".to_string()
-        } else {
-            "paste".to_string()
-        };
-        guard.press_hold_mode = settings.press_hold_mode;
+
+    if !subtitle.key_code.trim().is_empty() {
+        let subtitle_vk = hotkey::code_to_vk(&subtitle.key_code)
+            .ok_or_else(|| "实时字幕使用了不支持的快捷键".to_string())?;
+        let subtitle_signature = (subtitle_vk, subtitle_shortcut_mods(&subtitle));
+        if let Some(owner) = shortcuts.get(&subtitle_signature) {
+            return Err(format!("{owner}的快捷键已被实时字幕占用"));
+        }
     }
-    save_persisted_state(&app, &state)?;
+    Ok(())
+}
+
+fn validate_reserved_shortcut(vk: u16, mods: u8, owner: &str) -> Result<(), String> {
+    // Ctrl+Shift+F8 由当前软件上下文调试窗口占用。
+    if vk == 0x77 && mods == (hotkey::MOD_CTRL | hotkey::MOD_SHIFT) {
+        return Err(format!(
+            "{owner}不能使用当前软件上下文调试快捷键 Ctrl+Shift+F8"
+        ));
+    }
     Ok(())
 }
 
@@ -168,4 +293,82 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
         Err(e) => dlog!("[inject] 注入失败: {e}"),
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(id: &str, name: &str, key_code: &str) -> DictationShortcutProfile {
+        DictationShortcutProfile {
+            id: id.into(),
+            name: name.into(),
+            enabled: true,
+            key_code: key_code.into(),
+            ctrl: true,
+            shift: false,
+            alt: false,
+            meta: false,
+            processing_mode: ShortcutProcessingMode::FollowScene,
+            smart_template_id: None,
+            smart_processing_min_chars: None,
+            inject_method: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_dictation_shortcuts_are_rejected() {
+        let state = RuntimeState::default();
+        let settings = DictationSettings {
+            key_code: "F9".into(),
+            ctrl: true,
+            shortcut_profiles: vec![profile("one", "方案一", "F9")],
+            ..Default::default()
+        };
+        let error = validate_dictation_settings(&settings, &state).unwrap_err();
+        assert!(error.contains("相同快捷键"));
+    }
+
+    #[test]
+    fn enabled_profile_requires_a_key_but_disabled_draft_does_not() {
+        let state = RuntimeState::default();
+        let mut draft = profile("draft", "草稿", "");
+        draft.enabled = false;
+        let settings = DictationSettings {
+            shortcut_profiles: vec![draft.clone()],
+            ..Default::default()
+        };
+        assert!(validate_dictation_settings(&settings, &state).is_ok());
+
+        draft.enabled = true;
+        let settings = DictationSettings {
+            shortcut_profiles: vec![draft],
+            ..Default::default()
+        };
+        assert!(validate_dictation_settings(&settings, &state)
+            .unwrap_err()
+            .contains("尚未设置快捷键"));
+    }
+
+    #[test]
+    fn shortcut_profile_limits_and_ids_are_validated() {
+        let state = RuntimeState::default();
+        let mut settings = DictationSettings {
+            shortcut_profiles: (0..=MAX_DICTATION_SHORTCUT_PROFILES)
+                .map(|index| profile(&format!("id-{index}"), &format!("方案{index}"), "F9"))
+                .collect(),
+            ..Default::default()
+        };
+        assert!(validate_dictation_settings(&settings, &state)
+            .unwrap_err()
+            .contains("不能超过"));
+
+        settings.shortcut_profiles = vec![
+            profile("same", "方案一", "F9"),
+            profile("same", "方案二", "F10"),
+        ];
+        assert!(validate_dictation_settings(&settings, &state)
+            .unwrap_err()
+            .contains("ID"));
+    }
 }

@@ -4,22 +4,20 @@ import {
   type ActiveAppContextSummary,
 } from "@/store/useDictationStore";
 import {
-  startShortcutCapture,
-  clearShortcut,
   isCapturing,
   setInjectMethod,
   setPressHoldMode,
+  setMainShortcut,
   loadDictationSettings,
   handleCaptureLockKey,
   configureHotkeys,
 } from "./hotkeys";
 
 export {
-  startShortcutCapture,
-  clearShortcut,
   isCapturing,
   setInjectMethod,
   setPressHoldMode,
+  setMainShortcut,
   loadDictationSettings,
   handleCaptureLockKey,
 } from "./hotkeys";

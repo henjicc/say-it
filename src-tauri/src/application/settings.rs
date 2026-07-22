@@ -164,8 +164,53 @@ pub(crate) fn update_app_settings(
         "theme" => next.theme = value,
         _ => return Err(format!("未知配置领域：{domain}")),
     }
-    save_settings_then_commit(&app, &state, next.clone())?;
+    // 模板目录和快捷键方案分属两份持久化设置。后端在同一保存路径清理孤立引用，
+    // 即使调用方不是当前前端，也不会留下启动后才报错的快捷键方案。
+    let previous_dictation = if domain == "dictation" {
+        let mut dictation = state
+            .dictation
+            .lock()
+            .map_err(|_| "Dictation lock failed".to_string())?;
+        let previous = dictation.clone();
+        prune_shortcut_template_references(&mut dictation, &next.dictation_prefs);
+        (previous != *dictation).then_some(previous)
+    } else {
+        None
+    };
+    if let Err(error) = save_settings_then_commit(&app, &state, next.clone()) {
+        if let Some(previous) = previous_dictation {
+            if let Ok(mut dictation) = state.dictation.lock() {
+                *dictation = previous;
+            }
+        }
+        return Err(error);
+    }
     Ok(next)
+}
+
+fn prune_shortcut_template_references(
+    dictation: &mut crate::state::DictationSettings,
+    prefs: &Value,
+) {
+    let valid_templates = prefs
+        .get("smartTemplates")
+        .and_then(Value::as_array)
+        .map(|templates| {
+            templates
+                .iter()
+                .filter_map(|template| template.get("id").and_then(Value::as_str))
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    for profile in &mut dictation.shortcut_profiles {
+        if profile
+            .smart_template_id
+            .as_deref()
+            .is_some_and(|id| !valid_templates.contains(id))
+        {
+            profile.smart_template_id = None;
+        }
+    }
 }
 
 #[tauri::command]
@@ -245,5 +290,30 @@ mod tests {
     #[test]
     fn rejects_non_object_domain() {
         assert!(valid_object(&serde_json::json!([])).is_err());
+    }
+    #[test]
+    fn deleting_a_template_downgrades_shortcut_override_to_inherit() {
+        let mut dictation = crate::state::DictationSettings::default();
+        dictation
+            .shortcut_profiles
+            .push(crate::state::DictationShortcutProfile {
+                id: "shortcut".into(),
+                name: "方案".into(),
+                enabled: false,
+                key_code: String::new(),
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+                processing_mode: crate::state::ShortcutProcessingMode::FollowScene,
+                smart_template_id: Some("deleted".into()),
+                smart_processing_min_chars: None,
+                inject_method: None,
+            });
+        prune_shortcut_template_references(
+            &mut dictation,
+            &serde_json::json!({"smartTemplates":[{"id":"remaining"}]}),
+        );
+        assert!(dictation.shortcut_profiles[0].smart_template_id.is_none());
     }
 }

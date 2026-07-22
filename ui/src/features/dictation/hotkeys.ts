@@ -7,26 +7,61 @@ interface HotkeyHooks {
   setStatus: (text: string, tone?: Tone) => void;
 }
 
-let hooks: HotkeyHooks = {
-  setStatus: () => {},
-};
+export interface ShortcutCombo {
+  keyCode: string;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+}
 
-// ---- 快捷键 ----
-let dictKeyCode = "CapsLock";
-let dictCtrl = false;
-let dictShift = false;
-let dictAlt = false;
-let dictMeta = false;
+export type ShortcutProcessingMode =
+  | "followScene"
+  | "raw"
+  | "localOnly"
+  | "smartOnly"
+  | "smartAndLocal";
+
+export interface DictationShortcutProfile extends ShortcutCombo {
+  id: string;
+  name: string;
+  enabled: boolean;
+  processingMode: ShortcutProcessingMode;
+  smartTemplateId: string | null;
+  smartProcessingMinChars: number | null;
+  injectMethod: "paste" | "type" | null;
+}
+
+export const MAX_DICTATION_SHORTCUT_PROFILES = 8;
+
+let hooks: HotkeyHooks = { setStatus: () => {} };
+let mainShortcut: ShortcutCombo = {
+  keyCode: "CapsLock",
+  ctrl: false,
+  shift: false,
+  alt: false,
+  meta: false,
+};
 let dictInjectMethod: "paste" | "type" = "paste";
 let dictPressHoldMode = false;
-let dictCapturing = false;
+let dictShortcutProfiles: DictationShortcutProfile[] = [];
+let settingsMutationRevision = 0;
 const metaKeyLabel = navigator.userAgent.includes("Macintosh") ? "⌘" : "Win";
+
+interface DictationSettingsSnapshot {
+  mainShortcut: ShortcutCombo;
+  injectMethod: "paste" | "type";
+  pressHoldMode: boolean;
+  shortcutProfiles: DictationShortcutProfile[];
+}
+
+let persistedSettings: DictationSettingsSnapshot | null = null;
+let settingsSaveQueue: Promise<void> = Promise.resolve();
 
 export function configureHotkeys(next: HotkeyHooks) {
   hooks = next;
 }
 
-// ---- 快捷键显示 ----
 const KEY_DISPLAY_NAMES: Record<string, string> = {
   CapsLock: "Caps Lock",
   Space: "Space",
@@ -49,69 +84,126 @@ function prettyKeyName(code: string): string {
   if (KEY_DISPLAY_NAMES[code]) return KEY_DISPLAY_NAMES[code];
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Digit")) return code.slice(5);
-  if (/^F\d{1,2}$/.test(code)) return code;
   return code;
 }
 
-export function comboLabel(): string {
+export function shortcutLabel(shortcut: ShortcutCombo): string {
+  if (!shortcut.keyCode) return "";
   const parts: string[] = [];
-  if (dictCtrl) parts.push("Ctrl");
-  if (dictAlt) parts.push("Alt");
-  if (dictShift) parts.push("Shift");
-  if (dictMeta) parts.push(metaKeyLabel);
-  parts.push(prettyKeyName(dictKeyCode));
+  if (shortcut.ctrl) parts.push("Ctrl");
+  if (shortcut.alt) parts.push("Alt");
+  if (shortcut.shift) parts.push("Shift");
+  if (shortcut.meta) parts.push(metaKeyLabel);
+  parts.push(prettyKeyName(shortcut.keyCode));
   return parts.join(" + ");
 }
 
-function updateShortcutDisplay() {
-  useDictationStore.setState({ shortcutLabel: dictKeyCode ? comboLabel() : "" });
+export function shortcutSignature(shortcut: ShortcutCombo): string {
+  return [
+    shortcut.ctrl ? "1" : "0",
+    shortcut.shift ? "1" : "0",
+    shortcut.alt ? "1" : "0",
+    shortcut.meta ? "1" : "0",
+    shortcut.keyCode,
+  ].join(":");
 }
 
-async function saveDictationSettings() {
+export function comboLabel(): string {
+  return shortcutLabel(mainShortcut);
+}
+
+function publishSettingsState() {
+  useDictationStore.setState({
+    shortcutLabel: comboLabel(),
+    shortcut: { ...mainShortcut },
+    shortcutProfiles: dictShortcutProfiles.map((profile) => ({ ...profile })),
+    injectMethod: dictInjectMethod,
+    pressHoldMode: dictPressHoldMode,
+  });
+}
+
+function settingsSnapshot(): DictationSettingsSnapshot {
+  return {
+    mainShortcut: { ...mainShortcut },
+    injectMethod: dictInjectMethod,
+    pressHoldMode: dictPressHoldMode,
+    shortcutProfiles: dictShortcutProfiles.map((profile) => ({ ...profile })),
+  };
+}
+
+function applySettingsSnapshot(snapshot: DictationSettingsSnapshot) {
+  mainShortcut = { ...snapshot.mainShortcut };
+  dictInjectMethod = snapshot.injectMethod;
+  dictPressHoldMode = snapshot.pressHoldMode;
+  dictShortcutProfiles = snapshot.shortcutProfiles.map((profile) => ({ ...profile }));
+  publishSettingsState();
+}
+
+async function sendDictationSettings(snapshot: DictationSettingsSnapshot) {
   await cmd(CMD.setDictationSettings, {
     settings: {
-      key_code: dictKeyCode,
-      ctrl: dictCtrl,
-      shift: dictShift,
-      alt: dictAlt,
-      meta: dictMeta,
-      inject_method: dictInjectMethod,
-      press_hold_mode: dictPressHoldMode,
+      key_code: snapshot.mainShortcut.keyCode,
+      ctrl: snapshot.mainShortcut.ctrl,
+      shift: snapshot.mainShortcut.shift,
+      alt: snapshot.mainShortcut.alt,
+      meta: snapshot.mainShortcut.meta,
+      inject_method: snapshot.injectMethod,
+      press_hold_mode: snapshot.pressHoldMode,
+      shortcut_profiles: snapshot.shortcutProfiles,
     },
   });
 }
 
-// ---- 快捷键捕获 ----
-// 捕获期间通知 Rust 侧：任意锁定键（CapsLock/NumLock/ScrollLock）一律吞掉、只上报，
-// 不会真的切换大小写等状态——否则拿 CapsLock 绑快捷键时，按下的瞬间会先切换一次
-// 大小写，绑定后该键又被永久吞掉，导致没法再用它把状态切回去。
-function stopShortcutCapture() {
-  dictCapturing = false;
-  useDictationStore.setState({ capturing: false });
-  window.removeEventListener("keydown", onCaptureKeydown, true);
-  cmdSilent(CMD.setHotkeyCapturing, { active: false });
+async function persistCurrentSettings() {
+  const snapshot = settingsSnapshot();
+  const revision = ++settingsMutationRevision;
+  const pending = settingsSaveQueue.then(() => sendDictationSettings(snapshot));
+  settingsSaveQueue = pending.catch(() => {});
+  try {
+    await pending;
+    persistedSettings = snapshot;
+  } catch (error) {
+    if (revision === settingsMutationRevision && persistedSettings) {
+      applySettingsSnapshot(persistedSettings);
+    }
+    throw error;
+  }
 }
 
-async function completeCapture(
-  code: string,
-  mods: { ctrl: boolean; shift: boolean; alt: boolean; meta: boolean },
-) {
-  const prev = { dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta };
-  dictKeyCode = code;
-  dictCtrl = mods.ctrl;
-  dictShift = mods.shift;
-  dictAlt = mods.alt;
-  dictMeta = mods.meta;
-  stopShortcutCapture();
-  updateShortcutDisplay();
-  try {
-    await saveDictationSettings();
-    hooks.setStatus(`快捷键已设为：${comboLabel()}（在任意软件中按下即可）`, "ok");
-  } catch (error) {
-    ({ dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta } = prev);
-    updateShortcutDisplay();
-    hooks.setStatus(`设置失败：${String(error)}`, "err");
-  }
+interface ActiveCapture {
+  complete: (shortcut: ShortcutCombo) => void | Promise<void>;
+  cancel: () => void;
+}
+
+let activeCapture: ActiveCapture | null = null;
+
+function teardownCapture(notifyCancel: boolean) {
+  const capture = activeCapture;
+  activeCapture = null;
+  window.removeEventListener("keydown", onCaptureKeydown, true);
+  cmdSilent(CMD.setHotkeyCapturing, { active: false });
+  if (notifyCancel) capture?.cancel();
+}
+
+export function beginShortcutCapture(
+  complete: (shortcut: ShortcutCombo) => void | Promise<void>,
+  cancel: () => void,
+): () => void {
+  teardownCapture(true);
+  const capture = { complete, cancel };
+  activeCapture = capture;
+  window.addEventListener("keydown", onCaptureKeydown, true);
+  cmdSilent(CMD.setHotkeyCapturing, { active: true });
+  return () => {
+    if (activeCapture === capture) teardownCapture(true);
+  };
+}
+
+async function finishCapture(shortcut: ShortcutCombo) {
+  const capture = activeCapture;
+  if (!capture) return;
+  teardownCapture(false);
+  await capture.complete(shortcut);
 }
 
 async function onCaptureKeydown(event: KeyboardEvent) {
@@ -121,16 +213,13 @@ async function onCaptureKeydown(event: KeyboardEvent) {
     ["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"].includes(
       event.code,
     )
-  ) {
-    return;
-  }
+  ) return;
   if (event.code === "Escape") {
-    stopShortcutCapture();
-    hooks.setStatus("已取消设置快捷键。");
+    teardownCapture(true);
     return;
   }
-
-  await completeCapture(event.code, {
+  await finishCapture({
+    keyCode: event.code,
     ctrl: event.ctrlKey,
     shift: event.shiftKey,
     alt: event.altKey,
@@ -138,8 +227,6 @@ async function onCaptureKeydown(event: KeyboardEvent) {
   });
 }
 
-// 锁定键被 Rust 侧吞掉后不会产生 DOM keydown 事件，只能靠这个上报的虚拟键码识别；
-// 这几个键的绑定几乎总是单独使用，因此不追加修饰键状态。
 const LOCK_KEY_VK_TO_CODE: Record<number, string> = {
   0x14: "CapsLock",
   0x90: "NumLock",
@@ -147,44 +234,25 @@ const LOCK_KEY_VK_TO_CODE: Record<number, string> = {
 };
 
 export function handleCaptureLockKey(vk: number) {
-  if (!dictCapturing) return;
   const code = LOCK_KEY_VK_TO_CODE[vk];
-  if (!code) return;
-  completeCapture(code, { ctrl: false, shift: false, alt: false, meta: false });
+  if (!code || !activeCapture) return;
+  void finishCapture({ keyCode: code, ctrl: false, shift: false, alt: false, meta: false });
 }
 
-export function startShortcutCapture() {
-  if (dictCapturing) {
-    stopShortcutCapture();
-    hooks.setStatus("已取消设置快捷键。");
-    return;
-  }
-  dictCapturing = true;
-  useDictationStore.setState({ capturing: true });
-  window.addEventListener("keydown", onCaptureKeydown, true);
-  cmdSilent(CMD.setHotkeyCapturing, { active: true });
-}
-
-export async function clearShortcut() {
-  const prev = { dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta };
-  dictKeyCode = "";
-  dictCtrl = false;
-  dictShift = false;
-  dictAlt = false;
-  dictMeta = false;
-  updateShortcutDisplay();
+export async function setMainShortcut(shortcut: ShortcutCombo) {
+  mainShortcut = { ...shortcut };
+  publishSettingsState();
   try {
-    await saveDictationSettings();
-    hooks.setStatus("已清除语音输入快捷键，语音输入将无法通过全局快捷键触发。");
+    await persistCurrentSettings();
+    hooks.setStatus(`主快捷键已设为：${comboLabel()}`, "ok");
   } catch (error) {
-    ({ dictKeyCode, dictCtrl, dictShift, dictAlt, dictMeta } = prev);
-    updateShortcutDisplay();
-    hooks.setStatus(`清除失败：${String(error)}`, "err");
+    hooks.setStatus(`设置失败：${String(error)}`, "err");
+    throw error;
   }
 }
 
 export function isCapturing() {
-  return dictCapturing;
+  return activeCapture !== null;
 }
 
 export function getInjectMethod() {
@@ -192,10 +260,10 @@ export function getInjectMethod() {
 }
 
 export async function setInjectMethod(method: "paste" | "type") {
-  dictInjectMethod = method || "paste";
-  useDictationStore.setState({ injectMethod: dictInjectMethod });
+  dictInjectMethod = method === "type" ? "type" : "paste";
+  publishSettingsState();
   try {
-    await saveDictationSettings();
+    await persistCurrentSettings();
     hooks.setStatus(
       `注入方式已切换为：${dictInjectMethod === "type" ? "模拟逐字输入" : "剪贴板粘贴"}`,
       "ok",
@@ -206,17 +274,64 @@ export async function setInjectMethod(method: "paste" | "type") {
 }
 
 export async function setPressHoldMode(enabled: boolean) {
-  const prev = dictPressHoldMode;
   dictPressHoldMode = enabled;
-  useDictationStore.setState({ pressHoldMode: dictPressHoldMode });
+  publishSettingsState();
   try {
-    await saveDictationSettings();
+    await persistCurrentSettings();
     hooks.setStatus(enabled ? "已启用长按输入：按住快捷键开始，松开结束。" : "已切换为按一次开始、再按一次结束。", "ok");
   } catch (error) {
-    dictPressHoldMode = prev;
-    useDictationStore.setState({ pressHoldMode: dictPressHoldMode });
     hooks.setStatus(`保存失败：${String(error)}`, "err");
   }
+}
+
+export async function updateShortcutProfiles(next: DictationShortcutProfile[]) {
+  dictShortcutProfiles = next.map((profile) => ({ ...profile }));
+  publishSettingsState();
+  try {
+    await persistCurrentSettings();
+    hooks.setStatus("快捷键方案已保存。", "ok");
+  } catch (error) {
+    hooks.setStatus(`快捷键方案保存失败：${String(error)}`, "err");
+    throw error;
+  }
+}
+
+export async function pruneShortcutProfileTemplates(validTemplateIds: Iterable<string>) {
+  const valid = new Set(validTemplateIds);
+  const next = dictShortcutProfiles.map((profile) =>
+    profile.smartTemplateId && !valid.has(profile.smartTemplateId)
+      ? { ...profile, smartTemplateId: null }
+      : profile,
+  );
+  if (next.some((profile, index) => profile !== dictShortcutProfiles[index])) {
+    await updateShortcutProfiles(next);
+  }
+}
+
+function normalizeProfile(value: Partial<DictationShortcutProfile>): DictationShortcutProfile | null {
+  if (typeof value.id !== "string") return null;
+  const mode = value.processingMode;
+  const processingMode: ShortcutProcessingMode =
+    mode === "raw" || mode === "localOnly" || mode === "smartOnly" || mode === "smartAndLocal"
+      ? mode
+      : "followScene";
+  return {
+    id: value.id,
+    name: typeof value.name === "string" ? value.name : "",
+    enabled: value.enabled === true,
+    keyCode: typeof value.keyCode === "string" ? value.keyCode : "",
+    ctrl: value.ctrl === true,
+    shift: value.shift === true,
+    alt: value.alt === true,
+    meta: value.meta === true,
+    processingMode,
+    smartTemplateId: typeof value.smartTemplateId === "string" && value.smartTemplateId ? value.smartTemplateId : null,
+    smartProcessingMinChars:
+      typeof value.smartProcessingMinChars === "number" && value.smartProcessingMinChars >= 0
+        ? Math.min(10_000, Math.round(value.smartProcessingMinChars))
+        : null,
+    injectMethod: value.injectMethod === "paste" || value.injectMethod === "type" ? value.injectMethod : null,
+  };
 }
 
 export async function loadDictationSettings() {
@@ -229,17 +344,24 @@ export async function loadDictationSettings() {
       meta?: boolean;
       inject_method?: "paste" | "type";
       press_hold_mode?: boolean;
+      shortcut_profiles?: Partial<DictationShortcutProfile>[];
     }>(CMD.getDictationSettings);
-    dictKeyCode = d.key_code ?? "";
-    dictCtrl = !!d.ctrl;
-    dictShift = !!d.shift;
-    dictAlt = !!d.alt;
-    dictMeta = !!d.meta;
-    dictInjectMethod = d.inject_method || "paste";
-    dictPressHoldMode = !!d.press_hold_mode;
-    useDictationStore.setState({ injectMethod: dictInjectMethod, pressHoldMode: dictPressHoldMode });
-    updateShortcutDisplay();
-    hooks.setStatus(dictKeyCode ? `速记就绪，快捷键：${comboLabel()}` : "速记就绪，当前未设置全局快捷键。");
+    mainShortcut = {
+      keyCode: d.key_code ?? "",
+      ctrl: d.ctrl === true,
+      shift: d.shift === true,
+      alt: d.alt === true,
+      meta: d.meta === true,
+    };
+    dictInjectMethod = d.inject_method === "type" ? "type" : "paste";
+    dictPressHoldMode = d.press_hold_mode === true;
+    dictShortcutProfiles = (d.shortcut_profiles ?? [])
+      .map(normalizeProfile)
+      .filter((profile): profile is DictationShortcutProfile => profile !== null)
+      .slice(0, MAX_DICTATION_SHORTCUT_PROFILES);
+    persistedSettings = settingsSnapshot();
+    publishSettingsState();
+    hooks.setStatus(mainShortcut.keyCode ? `速记就绪，主快捷键：${comboLabel()}` : "速记就绪，当前未设置主快捷键。");
   } catch (error) {
     hooks.setStatus(`读取速记设置失败：${String(error)}`, "err");
   }
