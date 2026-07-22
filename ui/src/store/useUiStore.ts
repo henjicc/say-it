@@ -5,6 +5,7 @@ export type CustomizationTabKey = "hotwords" | "context";
 export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "keys" | "compare" | "advanced";
 export type DictationTabKey = "basic" | "local" | "smart" | "apps" | "debug";
 export type SceneRulesTabKey = "apps" | "shortcuts";
+export type SmartTextTabKey = "template" | "context" | "preview";
 export type SubtitleTabKey = "general" | "style" | "translation" | "obs";
 
 export interface SessionStatus {
@@ -22,6 +23,8 @@ interface UiState {
   setDictationTab: (tab: DictationTabKey) => void;
   sceneRulesTab: SceneRulesTabKey;
   setSceneRulesTab: (tab: SceneRulesTabKey) => void;
+  smartTextTab: SmartTextTabKey;
+  setSmartTextTab: (tab: SmartTextTabKey) => void;
   subtitleTab: SubtitleTabKey;
   setSubtitleTab: (tab: SubtitleTabKey) => void;
   focusedShortcutProfileId: string | null;
@@ -46,6 +49,8 @@ export const useUiStore = create<UiState>((set) => ({
   setDictationTab: (dictationTab) => set({ dictationTab }),
   sceneRulesTab: "apps",
   setSceneRulesTab: (sceneRulesTab) => set({ sceneRulesTab }),
+  smartTextTab: "template",
+  setSmartTextTab: (smartTextTab) => set({ smartTextTab }),
   subtitleTab: "general",
   setSubtitleTab: (subtitleTab) => set({ subtitleTab }),
   focusedShortcutProfileId: null,

@@ -16,6 +16,8 @@ export function SceneRulesPanel() {
       <Tabs<SceneRulesTabKey>
         id="scene-rule-tabs"
         ariaLabel="场景规则类型"
+        variant="subpage"
+        className="-mt-4"
         tabs={TABS}
         active={tab}
         onChange={setTab}
