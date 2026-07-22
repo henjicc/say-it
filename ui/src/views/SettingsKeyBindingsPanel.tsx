@@ -67,8 +67,9 @@ export function SettingsKeyBindingsPanel() {
     try {
       setItems(await operation());
     } catch (error) {
-      reportShortcutConflict(error);
-      setErrors((current) => ({ ...current, [key]: String(error) }));
+      if (!reportShortcutConflict(error)) {
+        setErrors((current) => ({ ...current, [key]: String(error) }));
+      }
       await refresh().catch(() => {});
     } finally {
       setBusyKey(null);

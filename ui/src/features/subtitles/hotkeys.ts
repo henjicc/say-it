@@ -110,8 +110,7 @@ async function completeSubtitleCapture(
   } catch (error) {
     ({ subKeyCode, subCtrl, subShift, subAlt, subMeta } = prev);
     updateSubtitleShortcutDisplay();
-    reportShortcutConflict(error);
-    hooks.setStatus(`设置失败：${String(error)}`, "err");
+    if (!reportShortcutConflict(error)) hooks.setStatus(`设置失败：${String(error)}`, "err");
   }
 }
 
