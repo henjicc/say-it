@@ -33,34 +33,7 @@ pub(crate) fn set_dictation_settings(
         profile.inject_method = normalize_inject_method(profile.inject_method.as_deref());
     }
 
-    validate_dictation_settings(&settings, &state)?;
-    let previous = state
-        .dictation
-        .lock()
-        .map_err(|_| "Dictation lock failed".to_string())?
-        .clone();
-    // 先尝试应用完整的新集合，确认平台可以注册，再替换内存和持久化状态。
-    apply_dictation_hotkey(&settings)?;
-    if let Err(error) = state
-        .dictation
-        .lock()
-        .map(|mut guard| *guard = settings)
-        .map_err(|_| "Dictation lock failed".to_string())
-    {
-        let _ = apply_dictation_hotkey(&previous);
-        return Err(error);
-    }
-    if let Err(error) = save_persisted_state(&app, &state) {
-        if let Ok(mut guard) = state.dictation.lock() {
-            *guard = previous.clone();
-        }
-        let restore = apply_dictation_hotkey(&previous);
-        return match restore {
-            Ok(()) => Err(error),
-            Err(restore_error) => Err(format!("{error}；恢复原快捷键失败：{restore_error}")),
-        };
-    }
-    Ok(())
+    crate::commands::shortcuts::replace_dictation_settings(&app, &state, settings)
 }
 
 fn normalize_inject_method(value: Option<&str>) -> Option<String> {
@@ -71,119 +44,17 @@ fn normalize_inject_method(value: Option<&str>) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 fn validate_dictation_settings(
     settings: &DictationSettings,
     state: &RuntimeState,
 ) -> Result<(), String> {
-    if settings.shortcut_profiles.len() > MAX_DICTATION_SHORTCUT_PROFILES {
-        return Err(format!(
-            "快捷键方案不能超过 {MAX_DICTATION_SHORTCUT_PROFILES} 条"
-        ));
-    }
     let subtitle = state
         .subtitle_shortcut
         .lock()
         .map_err(|_| "Subtitle shortcut lock failed".to_string())?
         .clone();
-    let known_templates = state
-        .app_settings
-        .lock()
-        .map_err(|_| "应用配置锁失败".to_string())?
-        .dictation_prefs
-        .get("smartTemplates")
-        .and_then(serde_json::Value::as_array)
-        .map(|templates| {
-            templates
-                .iter()
-                .filter_map(|template| template.get("id").and_then(serde_json::Value::as_str))
-                .map(str::to_string)
-                .collect::<std::collections::HashSet<_>>()
-        })
-        .unwrap_or_default();
-
-    let mut ids = std::collections::HashSet::new();
-    let mut shortcuts = std::collections::HashMap::<(u16, u8, bool), String>::new();
-    if !settings.key_code.trim().is_empty() {
-        let vk = hotkey::code_to_vk(&settings.key_code)
-            .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
-        validate_reserved_shortcut(vk, dictation_mods(settings), "主快捷键")?;
-        shortcuts.insert(
-            (vk, dictation_mods(settings), settings.press_hold_mode),
-            "主快捷键".to_string(),
-        );
-    }
-
-    for profile in &settings.shortcut_profiles {
-        if profile.id.is_empty() || !ids.insert(profile.id.clone()) {
-            return Err("快捷键方案 ID 不能为空且不能重复".to_string());
-        }
-        if profile.name.is_empty() {
-            return Err("快捷键方案名称不能为空".to_string());
-        }
-        if profile.name.chars().count() > 80 {
-            return Err(format!(
-                "快捷键方案「{}」名称不能超过 80 个字符",
-                profile.name
-            ));
-        }
-        if profile
-            .smart_processing_min_chars
-            .is_some_and(|value| value > 10_000)
-        {
-            return Err(format!(
-                "快捷键方案「{}」的智能处理最少字符数不能超过 10000",
-                profile.name
-            ));
-        }
-        if let Some(template_id) = &profile.smart_template_id {
-            if !known_templates.contains(template_id) {
-                return Err(format!(
-                    "快捷键方案「{}」引用的智能模板不存在",
-                    profile.name
-                ));
-            }
-        }
-        if profile.key_code.is_empty() {
-            if profile.enabled {
-                return Err(format!("快捷键方案「{}」尚未设置快捷键", profile.name));
-            }
-            continue;
-        }
-        let vk = hotkey::code_to_vk(&profile.key_code)
-            .ok_or_else(|| format!("快捷键方案「{}」使用了不支持的按键", profile.name))?;
-        let mods = profile.mods();
-        validate_reserved_shortcut(vk, mods, &format!("快捷键方案「{}」", profile.name))?;
-        if let Some(existing) =
-            shortcuts.insert((vk, mods, profile.press_hold_mode()), profile.name.clone())
-        {
-            return Err(format!(
-                "快捷键方案「{}」与{existing}使用了相同快捷键和触发方式",
-                profile.name,
-            ));
-        }
-    }
-
-    if !subtitle.key_code.trim().is_empty() {
-        let subtitle_vk = hotkey::code_to_vk(&subtitle.key_code)
-            .ok_or_else(|| "实时字幕使用了不支持的快捷键".to_string())?;
-        let subtitle_mods = subtitle_shortcut_mods(&subtitle);
-        if let Some(owner) = shortcuts.iter().find_map(|(&(vk, mods, _), owner)| {
-            (vk == subtitle_vk && mods == subtitle_mods).then_some(owner)
-        }) {
-            return Err(format!("{owner}的快捷键已被实时字幕占用"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_reserved_shortcut(vk: u16, mods: u8, owner: &str) -> Result<(), String> {
-    // Ctrl+Shift+F8 由当前软件上下文调试窗口占用。
-    if vk == 0x77 && mods == (hotkey::MOD_CTRL | hotkey::MOD_SHIFT) {
-        return Err(format!(
-            "{owner}不能使用当前软件上下文调试快捷键 Ctrl+Shift+F8"
-        ));
-    }
-    Ok(())
+    crate::commands::shortcuts::validate_shortcut_settings(settings, &subtitle, state)
 }
 
 /// 读取启动设置：`autostart` 查询系统注册表实际状态，`silent_start` 取本地持久化值。

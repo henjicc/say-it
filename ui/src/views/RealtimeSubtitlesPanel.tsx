@@ -16,10 +16,9 @@ import { SubtitleGeneralPanel } from "@/views/SubtitleGeneralPanel";
 import { SubtitleStylePanel } from "@/views/SubtitleStylePanel";
 import { SubtitleTranslationPanel } from "@/views/SubtitleTranslationPanel";
 import { ObsOverlayPanel } from "@/views/ObsOverlayPanel";
+import { useUiStore, type SubtitleTabKey } from "@/store/useUiStore";
 
-type TabKey = "general" | "style" | "translation" | "obs";
-
-const TABS: TabItem<TabKey>[] = [
+const TABS: TabItem<SubtitleTabKey>[] = [
   { key: "general", label: "通用设置" },
   { key: "style", label: "字幕样式" },
   { key: "translation", label: "字幕翻译" },
@@ -27,7 +26,8 @@ const TABS: TabItem<TabKey>[] = [
 ];
 
 export function RealtimeSubtitlesPanel() {
-  const [tab, setTab] = useState<TabKey>("general");
+  const tab = useUiStore((state) => state.subtitleTab);
+  const setTab = useUiStore((state) => state.setSubtitleTab);
   const [previewOpen, setPreviewOpen] = useState(false);
   const running = useSubtitleStore((s) => s.running);
   const prefs = useSubtitleStore((s) => s.prefs);
@@ -89,7 +89,7 @@ export function RealtimeSubtitlesPanel() {
         }
       />
 
-      <Tabs<TabKey> tabs={TABS} active={tab} onChange={setTab} />
+      <Tabs<SubtitleTabKey> tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "general" && <SubtitleGeneralPanel />}
       {tab === "style" && <SubtitleStylePanel />}

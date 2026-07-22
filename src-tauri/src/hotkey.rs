@@ -311,13 +311,14 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
 }
 
 /// 设置实时字幕专用热键（与语音输入完全独立）。
-pub fn set_subtitle_hotkey(vk: u16, mods: u8) {
+pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
     SUB_TARGET_VK.store(vk, Ordering::SeqCst);
     SUB_TARGET_MODS.store(mods, Ordering::SeqCst);
     SUB_TRIGGERED.store(false, Ordering::SeqCst);
     if is_lock_key(vk) {
         force_lock_off(vk);
     }
+    Ok(())
 }
 
 /// 清除实时字幕热键（恢复未设置状态）。

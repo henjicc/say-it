@@ -15,6 +15,7 @@ import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { toggleDictation, clearDictLog } from "@/features/dictation/controller";
 import { CMD, cmd } from "@/lib/tauri";
+import { useUiStore, type DictationTabKey } from "@/store/useUiStore";
 
 const toneClass: Record<string, string> = {
   "": "text-[var(--color-fg-muted)]",
@@ -22,9 +23,7 @@ const toneClass: Record<string, string> = {
   err: "text-[var(--color-err)]",
 };
 
-type TabKey = "basic" | "local" | "smart" | "apps" | "debug";
-
-const TABS: TabItem<TabKey>[] = [
+const TABS: TabItem<DictationTabKey>[] = [
   { key: "basic", label: "通用设置" },
   { key: "local", label: "本地处理" },
   { key: "smart", label: "智能处理" },
@@ -33,7 +32,8 @@ const TABS: TabItem<TabKey>[] = [
 ];
 
 export function DictationView() {
-  const [tab, setTab] = useState<TabKey>("basic");
+  const tab = useUiStore((state) => state.dictationTab);
+  const setTab = useUiStore((state) => state.setDictationTab);
   const { statusText, statusTone, latestText, log, recording } = useDictationStore();
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
@@ -60,7 +60,7 @@ export function DictationView() {
         description="按快捷键说话，再次按下停止并注入到当前光标位置。"
       />
 
-      <Tabs<TabKey>
+      <Tabs<DictationTabKey>
         id="dictation-tabs"
         ariaLabel="语音输入设置"
         tabs={TABS}

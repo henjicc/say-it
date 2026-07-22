@@ -5,6 +5,7 @@ pub(crate) mod dictation;
 pub(crate) mod customization;
 pub(crate) mod obs;
 pub(crate) mod session;
+pub(crate) mod shortcuts;
 pub(crate) mod subtitles;
 pub(crate) mod transcription;
 
@@ -13,5 +14,6 @@ pub(crate) use dictation::*;
 pub(crate) use customization::*;
 pub(crate) use obs::*;
 pub(crate) use session::*;
+pub(crate) use shortcuts::*;
 pub(crate) use subtitles::*;
 pub(crate) use transcription::*;

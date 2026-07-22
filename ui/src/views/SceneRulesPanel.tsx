@@ -1,20 +1,19 @@
-import { useState } from "react";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { AppProfilesPanel } from "@/views/AppProfilesPanel";
 import { ShortcutProfilesPanel } from "@/views/ShortcutProfilesPanel";
+import { useUiStore, type SceneRulesTabKey } from "@/store/useUiStore";
 
-type SceneRuleTab = "apps" | "shortcuts";
-
-const TABS: TabItem<SceneRuleTab>[] = [
+const TABS: TabItem<SceneRulesTabKey>[] = [
   { key: "apps", label: "按软件" },
   { key: "shortcuts", label: "按快捷键" },
 ];
 
 export function SceneRulesPanel() {
-  const [tab, setTab] = useState<SceneRuleTab>("apps");
+  const tab = useUiStore((state) => state.sceneRulesTab);
+  const setTab = useUiStore((state) => state.setSceneRulesTab);
   return (
     <div className="flex flex-col gap-6">
-      <Tabs<SceneRuleTab>
+      <Tabs<SceneRulesTabKey>
         id="scene-rule-tabs"
         ariaLabel="场景规则类型"
         tabs={TABS}

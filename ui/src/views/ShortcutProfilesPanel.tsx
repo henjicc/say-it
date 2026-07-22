@@ -24,6 +24,7 @@ import {
   useDictPrefs,
 } from "@/store/useDictPrefs";
 import { useDictationStore } from "@/store/useDictationStore";
+import { useUiStore } from "@/store/useUiStore";
 
 type SmartTriggerMode = "inherit" | "always" | "minimum";
 
@@ -75,9 +76,28 @@ export function ShortcutProfilesPanel() {
   const mainShortcut = useDictationStore((state) => state.shortcut);
   const mainPressHoldMode = useDictationStore((state) => state.pressHoldMode);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
+  const focusedProfileId = useUiStore((state) => state.focusedShortcutProfileId);
+  const consumeFocusedProfile = useUiStore((state) => state.consumeFocusedShortcutProfile);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
   const untouchedDraftIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!focusedProfileId) return undefined;
+    if (!profiles.some((profile) => profile.id === focusedProfileId)) {
+      consumeFocusedProfile();
+      return undefined;
+    }
+    setEditingId(focusedProfileId);
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`shortcut-profile-${focusedProfileId}`)?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "center",
+      });
+      consumeFocusedProfile();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeFocusedProfile, focusedProfileId, profiles]);
 
   useEffect(() => () => {
     const draftIds = new Set(untouchedDraftIds.current);
@@ -149,7 +169,11 @@ export function ShortcutProfilesPanel() {
             || profile.processingMode === "smartAndLocal";
           const mode = triggerMode(profile.smartProcessingMinChars);
           return (
-            <div key={profile.id} className="border-b border-[var(--color-line)] last:border-b-0">
+            <div
+              key={profile.id}
+              id={`shortcut-profile-${profile.id}`}
+              className="border-b border-[var(--color-line)] last:border-b-0"
+            >
               <div className="flex items-center gap-2.5 px-3 py-2.5">
                 <Checkbox
                   checked={profile.enabled}

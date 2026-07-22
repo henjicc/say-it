@@ -210,26 +210,45 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
     }
 }
 
-pub fn set_subtitle_hotkey(vk: u16, mods: u8) {
-    clear_subtitle_hotkey();
-    let Some(app) = APP.get() else { return };
-    let Some(shortcut) = shortcut_string(vk, mods) else {
-        return;
-    };
-    let registered = app
-        .global_shortcut()
-        .on_shortcut(shortcut.clone(), |app, _, event| {
+fn register_subtitle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
+    app.global_shortcut()
+        .on_shortcut(shortcut.to_string(), |app, _, event| {
             if event.state == ShortcutState::Pressed {
                 crate::application::subtitles::request_toggle(app.clone());
             }
-        });
-    if let Err(error) = registered {
-        crate::dlog!("[hotkey] 注册跨平台字幕快捷键失败：{error}");
-        return;
+        })
+        .map_err(|error| format!("注册跨平台字幕快捷键失败：{error}"))
+}
+
+pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
+    let app = APP
+        .get()
+        .ok_or_else(|| "全局快捷键尚未初始化".to_string())?;
+    let shortcut =
+        shortcut_string(vk, mods).ok_or_else(|| "当前平台不支持这个字幕快捷键".to_string())?;
+    let storage = SUBTITLE_SHORTCUT
+        .get()
+        .ok_or_else(|| "字幕快捷键状态尚未初始化".to_string())?;
+    let mut current = storage
+        .lock()
+        .map_err(|_| "字幕快捷键状态锁失败".to_string())?;
+    let previous = current.take();
+    if let Some(old) = &previous {
+        let _ = app.global_shortcut().unregister(old.clone());
     }
-    if let Some(lock) = SUBTITLE_SHORTCUT.get() {
-        *lock.lock().expect("subtitle shortcut lock") = Some(shortcut);
+    if let Err(error) = register_subtitle_shortcut(app, &shortcut) {
+        if let Some(old) = previous {
+            match register_subtitle_shortcut(app, &old) {
+                Ok(()) => *current = Some(old),
+                Err(restore_error) => {
+                    return Err(format!("{error}；恢复原字幕快捷键失败：{restore_error}"));
+                }
+            }
+        }
+        return Err(error);
     }
+    *current = Some(shortcut);
+    Ok(())
 }
 
 pub fn clear_subtitle_hotkey() {

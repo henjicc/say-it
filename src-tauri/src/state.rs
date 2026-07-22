@@ -13,6 +13,7 @@ pub(crate) struct RuntimeState {
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
+    pub(crate) shortcut_config_operation: Mutex<()>,
     pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
@@ -351,8 +352,7 @@ pub(crate) fn apply_subtitle_hotkey(settings: &SubtitleShortcutSettings) -> Resu
     }
     let vk = hotkey::code_to_vk(&settings.key_code)
         .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
-    hotkey::set_subtitle_hotkey(vk, subtitle_shortcut_mods(settings));
-    Ok(())
+    hotkey::set_subtitle_hotkey(vk, subtitle_shortcut_mods(settings))
 }
 
 pub(crate) const AUTOSTART_ARG: &str = "--autostarted";
