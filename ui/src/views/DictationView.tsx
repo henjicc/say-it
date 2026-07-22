@@ -72,6 +72,7 @@ export function DictationView() {
         id={`dictation-tabs-${tab}-panel`}
         role="tabpanel"
         aria-labelledby={`dictation-tabs-${tab}-tab`}
+        className={cn(tab === "smart" && "-mt-4")}
       >
         {tab === "basic" && <DictationShortcutsPanel />}
         {tab === "local" && <LocalRulesPanel />}

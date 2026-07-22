@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
   closestCenter,
@@ -26,12 +26,14 @@ import {
   Archive,
   ArchiveRestore,
   GripVertical,
+  Pencil,
   RotateCcw,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { IconButton } from "@/components/ui/IconButton";
+import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
@@ -44,7 +46,7 @@ import {
 } from "@/store/useDictPrefs";
 
 type ManagerTab = "templates" | "trash";
-type ConfirmAction = "delete-templates" | "purge-trash";
+type ConfirmAction = "delete-template" | "delete-templates" | "purge-trash";
 type Notice = { tone: "ok" | "err"; text: string };
 
 const deletedAtFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -114,25 +116,81 @@ function usePrefersReducedMotion(): boolean {
 function TemplateRowSummary({
   template,
   isActive,
+  onStartRename,
+  rename,
 }: {
   template: SmartTextTemplate;
   isActive: boolean;
+  onStartRename?: () => void;
+  rename?: {
+    value: string;
+    busy: boolean;
+    onChange: (value: string) => void;
+    onCommit: () => void;
+    onCancel: () => void;
+  };
 }) {
+  const cancelingRename = useRef(false);
+
+  useEffect(() => {
+    if (rename) cancelingRename.current = false;
+  }, [rename]);
+
   return (
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm font-medium text-[var(--color-fg)]" title={template.name}>
-          {template.name || "未命名模板"}
-        </span>
+        {rename ? (
+          <Input
+            autoFocus
+            size="sm"
+            maxLength={80}
+            value={rename.value}
+            disabled={rename.busy}
+            aria-label={`重命名模板“${template.name}”`}
+            className="min-w-0 flex-1"
+            onChange={(event) => rename.onChange(event.target.value)}
+            onBlur={() => {
+              if (cancelingRename.current) {
+                cancelingRename.current = false;
+                return;
+              }
+              rename.onCommit();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelingRename.current = true;
+                rename.onCancel();
+              }
+            }}
+          />
+        ) : (
+          <span
+            className={cn(
+              "truncate text-sm font-medium text-[var(--color-fg)]",
+              onStartRename && "cursor-text",
+            )}
+            title={template.name}
+            onDoubleClick={onStartRename}
+          >
+            {template.name || "未命名模板"}
+          </span>
+        )}
         {isActive && (
           <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
             当前
           </span>
         )}
       </div>
-      <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
-        {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
-      </p>
+      {!rename && (
+        <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
+          {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
+        </p>
+      )}
     </div>
   );
 }
@@ -162,6 +220,14 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
   busy,
   sortingDisabled,
   onToggle,
+  renaming,
+  renameDraft,
+  canDelete,
+  onRenameDraftChange,
+  onStartRename,
+  onCommitRename,
+  onCancelRename,
+  onRequestDelete,
 }: {
   template: SmartTextTemplate;
   selected: boolean;
@@ -169,6 +235,14 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
   busy: boolean;
   sortingDisabled: boolean;
   onToggle: (id: string) => void;
+  renaming: boolean;
+  renameDraft: string;
+  canDelete: boolean;
+  onRenameDraftChange: (value: string) => void;
+  onStartRename: (template: SmartTextTemplate) => void;
+  onCommitRename: () => void;
+  onCancelRename: () => void;
+  onRequestDelete: (template: SmartTextTemplate) => void;
 }) {
   const {
     attributes,
@@ -208,11 +282,40 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
         aria-label={`选择模板“${template.name}”`}
         onChange={() => onToggle(template.id)}
       />
-      <TemplateRowSummary template={template} isActive={isActive} />
+      <TemplateRowSummary
+        template={template}
+        isActive={isActive}
+        onStartRename={() => onStartRename(template)}
+        rename={renaming ? {
+          value: renameDraft,
+          busy,
+          onChange: onRenameDraftChange,
+          onCommit: onCommitRename,
+          onCancel: onCancelRename,
+        } : undefined}
+      />
+      <IconButton
+        size="sm"
+        label={`重命名“${template.name}”`}
+        disabled={busy || sortingDisabled}
+        onClick={() => onStartRename(template)}
+      >
+        <Pencil className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+      </IconButton>
+      <IconButton
+        size="sm"
+        variant="dangerHover"
+        label={`删除“${template.name}”`}
+        title={canDelete ? undefined : "至少需要保留一个模板"}
+        disabled={busy || sortingDisabled || !canDelete}
+        onClick={() => onRequestDelete(template)}
+      >
+        <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+      </IconButton>
       <button
         ref={setActivatorNodeRef}
         type="button"
-        disabled={busy}
+        disabled={busy || sortingDisabled}
         {...attributes}
         {...listeners}
         aria-label={`拖动“${template.name}”调整顺序`}
@@ -250,6 +353,10 @@ export function SmartTemplateManager({
   const [sortingSaving, setSortingSaving] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   const [activeSortId, setActiveSortId] = useState("");
+  const [renamingTemplateId, setRenamingTemplateId] = useState("");
+  const [renameDraft, setRenameDraft] = useState("");
+  const [pendingDeleteTemplateId, setPendingDeleteTemplateId] = useState("");
+  const renameSavingRef = useRef(false);
   const prefersReducedMotion = usePrefersReducedMotion();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -260,6 +367,7 @@ export function SmartTemplateManager({
     [orderedTemplates],
   );
   const activeSortTemplate = orderedTemplates.find((template) => template.id === activeSortId);
+  const pendingDeleteTemplate = templates.find((template) => template.id === pendingDeleteTemplateId);
 
   const missingDefaultTemplates = useMemo(
     () => defaultSmartTextTemplates().filter(
@@ -289,6 +397,9 @@ export function SmartTemplateManager({
     setConfirmAction(undefined);
     setNotice(undefined);
     setActiveSortId("");
+    setRenamingTemplateId("");
+    setRenameDraft("");
+    setPendingDeleteTemplateId("");
   }, [open]);
 
   const report = (nextNotice: Notice, share = false) => {
@@ -316,6 +427,69 @@ export function SmartTemplateManager({
     setSelectedTemplateIds((current) => selectionAfterToggle(current, id));
   }, []);
 
+  const startRenaming = (template: SmartTextTemplate) => {
+    if (busy || sortingSaving) return;
+    setConfirmAction(undefined);
+    setPendingDeleteTemplateId("");
+    setRenamingTemplateId(template.id);
+    setRenameDraft(template.name);
+  };
+
+  const cancelRenaming = () => {
+    setRenamingTemplateId("");
+    setRenameDraft("");
+  };
+
+  const commitRename = async () => {
+    const templateId = renamingTemplateId;
+    if (!templateId || renameSavingRef.current) return;
+    const nextName = renameDraft.trim();
+    if (!nextName) {
+      report({ tone: "err", text: "模板名称不能为空。" });
+      return;
+    }
+    const currentPrefs = useDictPrefs.getState().prefs;
+    const currentTemplate = currentPrefs.smartTemplates.find((template) => template.id === templateId);
+    if (!currentTemplate) {
+      cancelRenaming();
+      return;
+    }
+    if (nextName === currentTemplate.name) {
+      cancelRenaming();
+      return;
+    }
+
+    renameSavingRef.current = true;
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      await patch({
+        smartTemplates: currentPrefs.smartTemplates.map((template) =>
+          template.id === templateId ? { ...template, name: nextName } : template,
+        ),
+      });
+      cancelRenaming();
+      report({ tone: "ok", text: `已重命名为“${nextName}”。` });
+    } catch (error) {
+      report({ tone: "err", text: `重命名失败：${String(error)}` });
+    } finally {
+      renameSavingRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const requestDeleteTemplate = (template: SmartTextTemplate) => {
+    if (busy || sortingSaving) return;
+    if (templates.length <= 1) {
+      report({ tone: "err", text: "至少需要保留一个模板。" });
+      return;
+    }
+    cancelRenaming();
+    setPendingDeleteTemplateId(template.id);
+    setConfirmAction("delete-template");
+    setNotice(undefined);
+  };
+
   const finishSorting = (event: DragEndEvent) => {
     const { active: dragged, over } = event;
     setActiveSortId("");
@@ -330,11 +504,11 @@ export function SmartTemplateManager({
     setActiveSortId(String(event.active.id));
   };
 
-  const deleteSelectedTemplates = async () => {
+  const deleteTemplates = async (templateIds: Set<string>, successText: string) => {
     const currentPrefs = useDictPrefs.getState().prefs;
-    const selected = currentPrefs.smartTemplates.filter((template) => selectedTemplateIds.has(template.id));
+    const selected = currentPrefs.smartTemplates.filter((template) => templateIds.has(template.id));
     if (selected.length === 0) return;
-    const remaining = currentPrefs.smartTemplates.filter((template) => !selectedTemplateIds.has(template.id));
+    const remaining = currentPrefs.smartTemplates.filter((template) => !templateIds.has(template.id));
     if (remaining.length === 0) {
       report({ tone: "err", text: "至少需要保留一个模板，请取消选择一个模板后再删除。" });
       setConfirmAction(undefined);
@@ -346,7 +520,7 @@ export function SmartTemplateManager({
       template: { ...template },
       deletedAt: Date.now(),
     }));
-    const activeRemoved = selectedTemplateIds.has(currentPrefs.smartTemplateId);
+    const activeRemoved = templateIds.has(currentPrefs.smartTemplateId);
     const activeIndex = currentPrefs.smartTemplates.findIndex(
       (template) => template.id === currentPrefs.smartTemplateId,
     );
@@ -365,14 +539,32 @@ export function SmartTemplateManager({
           MAX_SMART_TEXT_TEMPLATES,
         ),
       });
-      setSelectedTemplateIds(new Set());
+      setSelectedTemplateIds((current) => new Set(
+        [...current].filter((id) => !templateIds.has(id)),
+      ));
       setConfirmAction(undefined);
-      report({ tone: "ok", text: `已将 ${selected.length} 个模板移入回收站。` }, true);
+      setPendingDeleteTemplateId("");
+      if (templateIds.has(renamingTemplateId)) cancelRenaming();
+      report({ tone: "ok", text: successText }, true);
     } catch (error) {
-      report({ tone: "err", text: `批量删除失败：${String(error)}` });
+      report({ tone: "err", text: `删除模板失败：${String(error)}` });
     } finally {
       setBusy(false);
     }
+  };
+
+  const deleteSelectedTemplates = () => deleteTemplates(
+    selectedTemplateIds,
+    `已将 ${selectedTemplateIds.size} 个模板移入回收站。`,
+  );
+
+  const deletePendingTemplate = () => {
+    const template = templates.find((item) => item.id === pendingDeleteTemplateId);
+    if (!template) return Promise.resolve();
+    return deleteTemplates(
+      new Set([template.id]),
+      `已将“${template.name}”移入回收站。`,
+    );
   };
 
   const restoreEntries = async (recoveryIds: Set<string>) => {
@@ -484,6 +676,8 @@ export function SmartTemplateManager({
               setTab(nextTab);
               setConfirmAction(undefined);
               setNotice(undefined);
+              cancelRenaming();
+              setPendingDeleteTemplateId("");
             }}
           />
           <span className="text-xs text-[var(--color-fg-faint)]">
@@ -542,6 +736,29 @@ export function SmartTemplateManager({
               </Button>
             </div>
 
+            {confirmAction === "delete-template" && pendingDeleteTemplate && (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-rec)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-rec)_10%,transparent)] px-3 py-2.5">
+                <p className="text-xs text-[var(--color-fg-muted)]">
+                  将把“{pendingDeleteTemplate.name}”移入回收站，之后仍可恢复。
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirmAction(undefined);
+                      setPendingDeleteTemplateId("");
+                    }}
+                  >
+                    取消
+                  </Button>
+                  <Button size="sm" variant="danger" disabled={busy} onClick={() => void deletePendingTemplate()}>
+                    {busy ? "正在删除..." : "删除模板"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {confirmAction === "delete-templates" && (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-rec)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-rec)_10%,transparent)] px-3 py-2.5">
                 <p className="text-xs text-[var(--color-fg-muted)]">
@@ -574,8 +791,16 @@ export function SmartTemplateManager({
                       selected={selectedTemplateIds.has(template.id)}
                       isActive={template.id === prefs.smartTemplateId}
                       busy={busy}
-                      sortingDisabled={sortingSaving}
+                      sortingDisabled={sortingSaving || Boolean(renamingTemplateId)}
                       onToggle={toggleTemplateSelection}
+                      renaming={renamingTemplateId === template.id}
+                      renameDraft={renameDraft}
+                      canDelete={templates.length > 1}
+                      onRenameDraftChange={setRenameDraft}
+                      onStartRename={startRenaming}
+                      onCommitRename={() => void commitRename()}
+                      onCancelRename={cancelRenaming}
+                      onRequestDelete={requestDeleteTemplate}
                     />
                   ))}
                 </div>
@@ -596,7 +821,7 @@ export function SmartTemplateManager({
               )}
             </DndContext>
             <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
-              拖动每行右侧的手柄调整模板顺序。
+              双击模板名称可直接重命名；拖动每行右侧的手柄调整模板顺序。
             </p>
           </div>
         ) : (

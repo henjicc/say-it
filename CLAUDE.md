@@ -153,6 +153,7 @@
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
 - UI 设计系统：视觉走「深蓝黑桌面风格」，产品与视觉原则见根目录 `PRODUCT.md`、`DESIGN.md`；令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
+- Tab 层级约定：侧栏入口不是 Tab；页面级 Tab 用于页面内主要任务分类，子页面 Tab 仅用于 2～4 个长期稳定、可独立完成且不需要并行对照的任务分类，最多允许一层，禁止第三层页面导航；长流程、单一开关/少量字段或需要同时查看的内容不拆子 Tab；纯文本/字幕编辑、现有模板/回收站等只使用内容区内的局部视图切换。`ui/src/components/ui/Tabs.tsx` 支持 `page`、`subpage`、`view` 变体，默认 `page` 以兼容现有调用，未经确认不得把其他现有页面切换到新变体。当前实现：`SceneRulesPanel` 使用“按软件/按快捷键”子 Tab；`SmartTextPanel` 使用“处理模板/当前软件上下文/试运行”子 Tab；本地处理不拆分。
 - UI 分区与卡片边界：设置页和 Tab 页面优先使用 `SettingsSection/FormGrid/Field` 形成扁平分区，禁止用一张外层卡片包住整个页面或整个 Tab，也禁止无意义的卡片嵌套；卡片仅用于独立实体、折叠内容、预览或边界明确的列表。
 - UI 控件尺寸与对齐：标准 Button/Input/Select 必须消费统一的 44px `--control-h` 或 34px `--control-h-sm`；同排字段操作使用 `Field.actions`，hint 独占下一行。禁止在页面通过 `items-end`、子选择器或额外 `h-*` 修补标准控件对齐；高密列表确需更小尺寸时必须显式限定在列表内部。
 - 持久化密钥：已保存的 API Key、密码等敏感字段必须复用 `SecretInput`；掩码只能是展示状态，不得进入 input value、`onChange`、保存请求、日志或领域快照。目录快照只投影是否已配置，明文仅能在用户点击显隐操作后按需读取，并在失焦、保存、切换实体或卸载时清理。

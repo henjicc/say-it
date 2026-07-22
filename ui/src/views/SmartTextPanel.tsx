@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { IconButton } from "@/components/ui/IconButton";
-import { Input, NumberInput, Select, Textarea } from "@/components/ui/Input";
+import { NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
+import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   ocrOptionsForScene,
@@ -30,9 +31,16 @@ import {
   type DeletedSmartTextTemplate,
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
+import { useUiStore, type SmartTextTabKey } from "@/store/useUiStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
 const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n窗口可见文字：Tauri；OCR；上下文捕获";
+const TABS: TabItem<SmartTextTabKey>[] = [
+  { key: "template", label: "处理模板" },
+  { key: "context", label: "当前软件上下文" },
+  { key: "preview", label: "试运行" },
+];
+
 export function SmartTextPanel() {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
@@ -44,7 +52,7 @@ export function SmartTextPanel() {
   const [previewing, setPreviewing] = useState(false);
   const [message, setMessage] = useState("");
   const [ocrMessage, setOcrMessage] = useState("");
-  const [draftName, setDraftName] = useState(active?.name ?? "");
+  const [contextMessage, setContextMessage] = useState("");
   const [draftPrompt, setDraftPrompt] = useState(active?.prompt ?? "");
   const [pendingDelete, setPendingDelete] = useState<SmartTextTemplate>();
   const [pendingOcrModel, setPendingOcrModel] = useState<OcrModelOption>();
@@ -52,6 +60,8 @@ export function SmartTextPanel() {
   const [templateActionBusy, setTemplateActionBusy] = useState(false);
   const [templateNotice, setTemplateNotice] = useState<{ tone: "ok" | "err"; text: string }>();
   const [recentRecoveryId, setRecentRecoveryId] = useState("");
+  const tab = useUiStore((state) => state.smartTextTab);
+  const setTab = useUiStore((state) => state.setSmartTextTab);
   const recentDeletion = prefs.smartTemplateTrash.find(
     (entry) => entry.recoveryId === recentRecoveryId,
   );
@@ -103,27 +113,24 @@ export function SmartTextPanel() {
   useEffect(() => {
     if (!active) {
       draftTemplateIdRef.current = "";
-      setDraftName("");
       setDraftPrompt("");
       return;
     }
     if (draftTemplateIdRef.current === active.id) return;
     draftTemplateIdRef.current = active.id;
-    setDraftName(active.name);
     setDraftPrompt(active.prompt);
   }, [active]);
 
-  const saveTemplateDraft = async (partial: Partial<Pick<SmartTextTemplate, "name" | "prompt">> = {}) => {
+  const saveTemplateDraft = async (partial: Partial<Pick<SmartTextTemplate, "prompt">> = {}) => {
     const templateId = draftTemplateIdRef.current;
     if (!templateId) return;
-    const name = partial.name ?? draftName;
     const prompt = partial.prompt ?? draftPrompt;
     const currentPrefs = useDictPrefs.getState().prefs;
     if (!currentPrefs.smartTemplates.some((template) => template.id === templateId)) return;
     try {
       await useDictPrefs.getState().patch({
         smartTemplates: currentPrefs.smartTemplates.map((template) =>
-          template.id === templateId ? { ...template, name, prompt } : template,
+          template.id === templateId ? { ...template, prompt } : template,
         ),
       });
     } catch (error) {
@@ -253,6 +260,7 @@ export function SmartTextPanel() {
   };
 
   const removeBlockedApp = async (appName: string) => {
+    setContextMessage("");
     try {
       await patch({
         activeAppContextBlockedApps: prefs.activeAppContextBlockedApps.filter(
@@ -260,14 +268,29 @@ export function SmartTextPanel() {
         ),
       });
     } catch (error) {
-      setTemplateNotice({ tone: "err", text: `移除黑名单失败：${String(error)}` });
+      setContextMessage(`移除黑名单失败：${String(error)}`);
     }
   };
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
+      <Tabs<SmartTextTabKey>
+        id="smart-text-tabs"
+        ariaLabel="智能处理工作区"
+        variant="subpage"
+        tabs={TABS}
+        active={tab}
+        onChange={setTab}
+      />
+
+      <div
+        id={`smart-text-tabs-${tab}-panel`}
+        role="tabpanel"
+        aria-labelledby={`smart-text-tabs-${tab}-tab`}
+      >
+      {tab === "template" && (
       <SettingsSection
-        title="智能处理"
+        title="处理模板"
         right={<Switch
           checked={prefs.smartProcessingEnabled}
           onChange={(value) => void patch({ smartProcessingEnabled: value })}
@@ -306,9 +329,6 @@ export function SmartTextPanel() {
             </Field>
           )}
         </FormGrid>
-      </SettingsSection>
-
-      <SettingsSection title="处理模板">
         <Field
           label="当前模板"
           controlId="smart-text-template"
@@ -389,13 +409,6 @@ export function SmartTextPanel() {
 
         {active && (
           <div className="mt-1 flex flex-col gap-4">
-            <Field label="模板名称">
-              <Input
-                value={draftName}
-                onChange={(event) => setDraftName(event.target.value)}
-                onBlur={() => void saveTemplateDraft()}
-              />
-            </Field>
             <Field
               label="提示词"
               hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
@@ -453,7 +466,9 @@ export function SmartTextPanel() {
           </div>
         )}
       </SettingsSection>
+      )}
 
+      {tab === "context" && (
       <SettingsSection title="当前软件上下文">
         <Field
           label="提取方式"
@@ -545,8 +560,11 @@ export function SmartTextPanel() {
             ))}
           </div>
         )}
+        {contextMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{contextMessage}</p>}
       </SettingsSection>
+      )}
 
+      {tab === "preview" && (
       <SettingsSection title="试运行">
         <FormGrid className="gap-y-3">
           <Field label="试运行 · 输入">
@@ -568,6 +586,8 @@ export function SmartTextPanel() {
           {message && <p className="text-xs text-[var(--color-err)]">{message}</p>}
         </div>
       </SettingsSection>
+      )}
+      </div>
 
       <Modal
         open={Boolean(pendingDelete)}
