@@ -1,5 +1,6 @@
 import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useDictationStore } from "@/store/useDictationStore";
+import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 
 type Tone = "" | "ok" | "err";
 
@@ -249,6 +250,7 @@ export async function setMainShortcut(shortcut: ShortcutCombo) {
     await persistCurrentSettings();
     hooks.setStatus(`主快捷键已设为：${comboLabel()}`, "ok");
   } catch (error) {
+    reportShortcutConflict(error);
     hooks.setStatus(`设置失败：${String(error)}`, "err");
     throw error;
   }
@@ -283,6 +285,7 @@ export async function setPressHoldMode(enabled: boolean) {
     await persistCurrentSettings();
     hooks.setStatus(enabled ? "已启用长按输入：按住快捷键开始，松开结束。" : "已切换为按一次开始、再按一次结束。", "ok");
   } catch (error) {
+    reportShortcutConflict(error);
     hooks.setStatus(`保存失败：${String(error)}`, "err");
   }
 }
@@ -294,6 +297,7 @@ export async function updateShortcutProfiles(next: DictationShortcutProfile[]) {
     await persistCurrentSettings();
     hooks.setStatus("快捷键方案已保存。", "ok");
   } catch (error) {
+    reportShortcutConflict(error);
     hooks.setStatus(`快捷键方案保存失败：${String(error)}`, "err");
     throw error;
   }
