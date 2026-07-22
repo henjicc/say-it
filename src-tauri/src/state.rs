@@ -121,6 +121,14 @@ pub(crate) enum ShortcutProcessingMode {
     SmartAndLocal,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ShortcutTriggerMode {
+    #[default]
+    Toggle,
+    PressHold,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DictationShortcutProfile {
@@ -143,6 +151,8 @@ pub(crate) struct DictationShortcutProfile {
     #[serde(default)]
     pub(crate) processing_mode: ShortcutProcessingMode,
     #[serde(default)]
+    pub(crate) trigger_mode: ShortcutTriggerMode,
+    #[serde(default)]
     pub(crate) smart_template_id: Option<String>,
     #[serde(default)]
     pub(crate) smart_processing_min_chars: Option<u32>,
@@ -153,6 +163,10 @@ pub(crate) struct DictationShortcutProfile {
 impl DictationShortcutProfile {
     pub(crate) fn mods(&self) -> u8 {
         hotkey_mods(self.ctrl, self.shift, self.alt, self.meta)
+    }
+
+    pub(crate) fn press_hold_mode(&self) -> bool {
+        self.trigger_mode == ShortcutTriggerMode::PressHold
     }
 }
 
@@ -222,6 +236,7 @@ pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(),
             vk,
             mods: dictation_mods(settings),
             profile_id: None,
+            press_hold_mode: settings.press_hold_mode,
         });
     }
     for profile in settings
@@ -235,9 +250,10 @@ pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(),
             vk,
             mods: profile.mods(),
             profile_id: Some(profile.id.clone()),
+            press_hold_mode: profile.press_hold_mode(),
         });
     }
-    hotkey::set_hotkeys(&bindings, settings.press_hold_mode)
+    hotkey::set_hotkeys(&bindings)
 }
 
 #[cfg(test)]
@@ -265,6 +281,7 @@ mod dictation_settings_tests {
                 "enabled": true,
                 "keyCode": "F9",
                 "processingMode": "smartOnly",
+                "triggerMode": "pressHold",
                 "smartProcessingMinChars": 0,
                 "injectMethod": "type"
             }]
@@ -272,8 +289,26 @@ mod dictation_settings_tests {
         .unwrap();
         let profile = &settings.shortcut_profiles[0];
         assert_eq!(profile.processing_mode, ShortcutProcessingMode::SmartOnly);
+        assert_eq!(profile.trigger_mode, ShortcutTriggerMode::PressHold);
         assert_eq!(profile.smart_processing_min_chars, Some(0));
         assert_eq!(profile.inject_method.as_deref(), Some("type"));
+    }
+
+    #[test]
+    fn legacy_shortcut_profile_defaults_to_toggle_trigger() {
+        let settings: DictationSettings = serde_json::from_value(json!({
+            "shortcut_profiles": [{
+                "id": "legacy",
+                "name": "旧方案",
+                "enabled": false,
+                "keyCode": "F10"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            settings.shortcut_profiles[0].trigger_mode,
+            ShortcutTriggerMode::Toggle
+        );
     }
 }
 

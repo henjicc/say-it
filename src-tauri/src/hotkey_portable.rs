@@ -1,8 +1,9 @@
 //! macOS 等非 Windows 平台使用 Tauri 全局快捷键。
 //! CapsLock 吞键需要 CGEventTap 与辅助功能权限，当前仍不支持绑定 CapsLock。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -17,13 +18,26 @@ pub struct HotkeyBinding {
     pub vk: u16,
     pub mods: u8,
     pub profile_id: Option<String>,
+    pub press_hold_mode: bool,
 }
 
 #[derive(Clone, Default)]
 struct RegisteredSet {
     bindings: Vec<HotkeyBinding>,
     shortcuts: Vec<String>,
-    press_hold_mode: bool,
+}
+
+#[derive(Default)]
+struct PortablePressState {
+    pressed: AtomicBool,
+    started: AtomicBool,
+    sequence: AtomicU32,
+}
+
+struct PortableBindingGroup {
+    shortcut: String,
+    toggle_profile_id: Option<Option<String>>,
+    press_hold_profile_id: Option<Option<String>>,
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
@@ -45,36 +59,101 @@ pub fn set_context_debug_active(_active: bool) {
     // 当前软件上下文调试仅支持 Windows。
 }
 
-fn register_bindings(
-    app: &AppHandle,
-    bindings: &[HotkeyBinding],
-    press_hold_mode: bool,
-) -> Result<Vec<String>, String> {
-    let mut shortcuts = Vec::with_capacity(bindings.len());
+fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<String>, String> {
+    let mut groups = Vec::<PortableBindingGroup>::new();
     for binding in bindings {
         let shortcut = shortcut_string(binding.vk, binding.mods)
             .ok_or_else(|| "当前平台不支持这个快捷键".to_string())?;
-        let profile_id = binding.profile_id.clone();
+        let group = if let Some(group) = groups.iter_mut().find(|group| group.shortcut == shortcut)
+        {
+            group
+        } else {
+            groups.push(PortableBindingGroup {
+                shortcut: shortcut.clone(),
+                toggle_profile_id: None,
+                press_hold_profile_id: None,
+            });
+            groups.last_mut().expect("portable shortcut group")
+        };
+        let target = if binding.press_hold_mode {
+            &mut group.press_hold_profile_id
+        } else {
+            &mut group.toggle_profile_id
+        };
+        if target.is_some() {
+            return Err(format!("快捷键 {shortcut} 的相同触发方式重复"));
+        }
+        *target = Some(binding.profile_id.clone());
+    }
+
+    let mut shortcuts = Vec::with_capacity(groups.len());
+    for group in groups {
+        let shortcut = group.shortcut;
+        let toggle_profile_id = group.toggle_profile_id;
+        let press_hold_profile_id = group.press_hold_profile_id;
+        let press_state = Arc::new(PortablePressState::default());
         if let Err(error) =
             app.global_shortcut()
-                .on_shortcut(shortcut.clone(), move |app, _, event| {
-                    match (press_hold_mode, event.state) {
-                        (true, ShortcutState::Pressed) => {
+                .on_shortcut(shortcut.clone(), move |app, _, event| match event.state {
+                    ShortcutState::Pressed => {
+                        if press_hold_profile_id.is_none() {
+                            if let Some(profile_id) = toggle_profile_id.clone() {
+                                crate::application::dictation::request_toggle_with_profile(
+                                    app.clone(),
+                                    profile_id,
+                                );
+                            }
+                            return;
+                        }
+                        if press_state.pressed.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        press_state.started.store(false, Ordering::SeqCst);
+                        let sequence = press_state
+                            .sequence
+                            .fetch_add(1, Ordering::SeqCst)
+                            .wrapping_add(1);
+                        let profile_id = press_hold_profile_id
+                            .clone()
+                            .expect("press-hold profile exists");
+                        if DICTATION_ACTIVE.load(Ordering::SeqCst) {
+                            press_state.started.store(true, Ordering::SeqCst);
                             crate::application::dictation::request_start_with_profile(
                                 app.clone(),
-                                profile_id.clone(),
-                            )
+                                profile_id,
+                            );
+                            return;
                         }
-                        (true, ShortcutState::Released) => {
-                            crate::application::dictation::request_stop(app.clone())
+                        let delayed_app = app.clone();
+                        let delayed_state = press_state.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(260));
+                            if delayed_state.pressed.load(Ordering::SeqCst)
+                                && delayed_state.sequence.load(Ordering::SeqCst) == sequence
+                            {
+                                delayed_state.started.store(true, Ordering::SeqCst);
+                                crate::application::dictation::request_start_with_profile(
+                                    delayed_app,
+                                    profile_id,
+                                );
+                            }
+                        });
+                    }
+                    ShortcutState::Released => {
+                        if press_hold_profile_id.is_none()
+                            || !press_state.pressed.swap(false, Ordering::SeqCst)
+                        {
+                            return;
                         }
-                        (false, ShortcutState::Pressed) => {
+                        press_state.sequence.fetch_add(1, Ordering::SeqCst);
+                        if press_state.started.swap(false, Ordering::SeqCst) {
+                            crate::application::dictation::request_stop(app.clone());
+                        } else if let Some(profile_id) = toggle_profile_id.clone() {
                             crate::application::dictation::request_toggle_with_profile(
                                 app.clone(),
-                                profile_id.clone(),
-                            )
+                                profile_id,
+                            );
                         }
-                        (false, ShortcutState::Released) => {}
                     }
                 })
         {
@@ -93,7 +172,7 @@ fn unregister_shortcuts(app: &AppHandle, shortcuts: &[String]) {
 }
 
 /// 事务式替换全部听写快捷键；新集合注册失败时恢复旧集合。
-pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<(), String> {
+pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
     let app = APP
         .get()
         .ok_or_else(|| "全局快捷键尚未初始化".to_string())?;
@@ -105,17 +184,16 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<
         .map_err(|_| "全局快捷键状态锁失败".to_string())?;
     let previous = current.clone();
     unregister_shortcuts(app, &previous.shortcuts);
-    match register_bindings(app, bindings, press_hold_mode) {
+    match register_bindings(app, bindings) {
         Ok(shortcuts) => {
             *current = RegisteredSet {
                 bindings: bindings.to_vec(),
                 shortcuts,
-                press_hold_mode,
             };
             Ok(())
         }
         Err(error) => {
-            match register_bindings(app, &previous.bindings, previous.press_hold_mode) {
+            match register_bindings(app, &previous.bindings) {
                 Ok(shortcuts) => {
                     *current = RegisteredSet {
                         shortcuts,

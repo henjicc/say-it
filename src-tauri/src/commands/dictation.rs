@@ -102,12 +102,15 @@ fn validate_dictation_settings(
         .unwrap_or_default();
 
     let mut ids = std::collections::HashSet::new();
-    let mut shortcuts = std::collections::HashMap::<(u16, u8), String>::new();
+    let mut shortcuts = std::collections::HashMap::<(u16, u8, bool), String>::new();
     if !settings.key_code.trim().is_empty() {
         let vk = hotkey::code_to_vk(&settings.key_code)
             .ok_or_else(|| format!("不支持的按键：{}", settings.key_code))?;
         validate_reserved_shortcut(vk, dictation_mods(settings), "主快捷键")?;
-        shortcuts.insert((vk, dictation_mods(settings)), "主快捷键".to_string());
+        shortcuts.insert(
+            (vk, dictation_mods(settings), settings.press_hold_mode),
+            "主快捷键".to_string(),
+        );
     }
 
     for profile in &settings.shortcut_profiles {
@@ -150,10 +153,12 @@ fn validate_dictation_settings(
             .ok_or_else(|| format!("快捷键方案「{}」使用了不支持的按键", profile.name))?;
         let mods = profile.mods();
         validate_reserved_shortcut(vk, mods, &format!("快捷键方案「{}」", profile.name))?;
-        if let Some(existing) = shortcuts.insert((vk, mods), profile.name.clone()) {
+        if let Some(existing) =
+            shortcuts.insert((vk, mods, profile.press_hold_mode()), profile.name.clone())
+        {
             return Err(format!(
-                "快捷键方案「{}」与{existing}使用了相同快捷键",
-                profile.name
+                "快捷键方案「{}」与{existing}使用了相同快捷键和触发方式",
+                profile.name,
             ));
         }
     }
@@ -161,8 +166,10 @@ fn validate_dictation_settings(
     if !subtitle.key_code.trim().is_empty() {
         let subtitle_vk = hotkey::code_to_vk(&subtitle.key_code)
             .ok_or_else(|| "实时字幕使用了不支持的快捷键".to_string())?;
-        let subtitle_signature = (subtitle_vk, subtitle_shortcut_mods(&subtitle));
-        if let Some(owner) = shortcuts.get(&subtitle_signature) {
+        let subtitle_mods = subtitle_shortcut_mods(&subtitle);
+        if let Some(owner) = shortcuts.iter().find_map(|(&(vk, mods, _), owner)| {
+            (vk == subtitle_vk && mods == subtitle_mods).then_some(owner)
+        }) {
             return Err(format!("{owner}的快捷键已被实时字幕占用"));
         }
     }
@@ -310,6 +317,7 @@ mod tests {
             alt: false,
             meta: false,
             processing_mode: ShortcutProcessingMode::FollowScene,
+            trigger_mode: ShortcutTriggerMode::Toggle,
             smart_template_id: None,
             smart_processing_min_chars: None,
             inject_method: None,
@@ -327,6 +335,38 @@ mod tests {
         };
         let error = validate_dictation_settings(&settings, &state).unwrap_err();
         assert!(error.contains("相同快捷键"));
+    }
+
+    #[test]
+    fn same_shortcut_with_different_trigger_modes_is_allowed() {
+        let state = RuntimeState::default();
+        let mut hold = profile("hold", "长按方案", "F9");
+        hold.trigger_mode = ShortcutTriggerMode::PressHold;
+        let settings = DictationSettings {
+            key_code: "F9".into(),
+            ctrl: true,
+            press_hold_mode: false,
+            shortcut_profiles: vec![hold],
+            ..Default::default()
+        };
+        assert!(validate_dictation_settings(&settings, &state).is_ok());
+    }
+
+    #[test]
+    fn same_profile_shortcut_and_trigger_mode_is_rejected() {
+        let state = RuntimeState::default();
+        let mut first = profile("one", "长按一", "F9");
+        first.trigger_mode = ShortcutTriggerMode::PressHold;
+        let mut second = profile("two", "长按二", "F9");
+        second.trigger_mode = ShortcutTriggerMode::PressHold;
+        let settings = DictationSettings {
+            key_code: String::new(),
+            shortcut_profiles: vec![first, second],
+            ..Default::default()
+        };
+        assert!(validate_dictation_settings(&settings, &state)
+            .unwrap_err()
+            .contains("相同快捷键和触发方式"));
     }
 
     #[test]

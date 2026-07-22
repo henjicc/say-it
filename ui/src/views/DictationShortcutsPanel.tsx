@@ -59,7 +59,7 @@ export function DictationShortcutsPanel() {
               onClear={() => setMainShortcut({ keyCode: "", ctrl: false, shift: false, alt: false, meta: false })}
             />
           </Field>
-          <Field label="触发方式">
+          <Field label="主快捷键触发方式">
             <Select
               value={pressHoldMode ? "press-hold" : "toggle"}
               onChange={(e) => setPressHoldMode(e.target.value === "press-hold")}

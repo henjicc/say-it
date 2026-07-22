@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ListChecks, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -532,8 +532,14 @@ export function SmartTextPanel() {
             {prefs.activeAppContextBlockedApps.map((appName) => (
               <div key={appName} className="flex min-h-[var(--control-h-sm)] items-center justify-between gap-3 rounded-[var(--radius-control)] border border-[var(--color-line)] px-3 text-sm text-[var(--color-fg-subtle)]">
                 <span className="truncate">{appName}</span>
-                <IconButton label={`移除 ${appName}`} onClick={() => void removeBlockedApp(appName)}>
-                  <X className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                <IconButton
+                  size="sm"
+                  variant="dangerHover"
+                  className="h-7 w-7 shrink-0"
+                  label={`移除 ${appName}`}
+                  onClick={() => void removeBlockedApp(appName)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                 </IconButton>
               </div>
             ))}

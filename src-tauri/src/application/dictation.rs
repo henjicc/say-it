@@ -2366,6 +2366,7 @@ mod tests {
             alt: false,
             meta: false,
             processing_mode: mode,
+            trigger_mode: crate::state::ShortcutTriggerMode::Toggle,
             smart_template_id: None,
             smart_processing_min_chars: None,
             inject_method: None,
