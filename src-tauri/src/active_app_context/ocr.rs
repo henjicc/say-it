@@ -285,6 +285,17 @@ fn run_windows_ocr_inner(image: &DynamicImage) -> Result<OcrPipelineOutput, Stri
     ))
 }
 
+fn run_windows_fallback_if_active(
+    image: &DynamicImage,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<OcrPipelineOutput, String> {
+    if let Some(reason) = skip_reason(cancelled, deadline) {
+        return Err(reason.into());
+    }
+    run_windows_ocr_inner(image)
+}
+
 fn png_bytes(image: &DynamicImage) -> Result<Vec<u8>, String> {
     let rgba = image.to_rgba8();
     let mut bytes = Vec::new();
@@ -303,12 +314,17 @@ fn run_plugin_ocr_inner(
     provider: &OcrProvider,
     image: &DynamicImage,
     deadline: Instant,
+    cancelled: &AtomicBool,
 ) -> Result<OcrPipelineOutput, String> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err("插件 OCR 已无剩余执行时间".into());
+    if let Some(reason) = skip_reason(cancelled, deadline) {
+        return Err(reason.into());
     }
     let bytes = png_bytes(image)?;
+    // 编码大图也可能消耗可观时间；远程请求前必须按绝对截止重新计算预算。
+    if let Some(reason) = skip_reason(cancelled, deadline) {
+        return Err(reason.into());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
     let started = Instant::now();
     let blocks = tauri::async_runtime::block_on(async {
         tokio::time::timeout(remaining, provider.recognize(&bytes, "activeAppContext"))
@@ -359,24 +375,42 @@ fn worker() -> &'static Sender<OcrCommand> {
                     let result = catch_unwind(AssertUnwindSafe(|| match &task.provider {
                         OcrProvider::PpOcr { spec } => {
                             let engine = build_engine(spec)?;
-                            run_full_window_inner(&engine, &task.image)
+                            if let Some(reason) =
+                                skip_reason(task.cancelled.as_ref(), task.deadline)
+                            {
+                                Err(reason.into())
+                            } else {
+                                run_full_window_inner(&engine, &task.image)
+                            }
                         }
-                        OcrProvider::System => run_windows_ocr_inner(&task.image),
+                        OcrProvider::System => run_windows_fallback_if_active(
+                            &task.image,
+                            task.cancelled.as_ref(),
+                            task.deadline,
+                        ),
                         OcrProvider::Plugin { .. } => {
-                            match run_plugin_ocr_inner(&task.provider, &task.image, task.deadline) {
+                            match run_plugin_ocr_inner(
+                                &task.provider,
+                                &task.image,
+                                task.deadline,
+                                task.cancelled.as_ref(),
+                            ) {
                                 Ok(output) => Ok(output),
                                 Err(error) => {
                                     crate::development_debug_log(
                                         "active-app-ocr",
                                         format_args!("插件 OCR 失败，降级到系统 OCR：{error}"),
                                     );
-                                    let mut output = run_windows_ocr_inner(&task.image).map_err(
-                                        |fallback_error| {
+                                    let mut output = run_windows_fallback_if_active(
+                                        &task.image,
+                                        task.cancelled.as_ref(),
+                                        task.deadline,
+                                    )
+                                    .map_err(|fallback_error| {
                                             format!(
                                                 "插件 OCR 失败：{error}；Windows 系统 OCR 降级也失败：{fallback_error}"
                                             )
-                                        },
-                                    )?;
+                                        })?;
                                     output.diagnostic = Some(format!(
                                         "插件 OCR 失败，已降级到 Windows 系统 OCR：{error}"
                                     ));
@@ -484,7 +518,12 @@ pub(crate) fn run_full_window(
             return Err("OCR 任务已超时".into());
         }
         match receiver.recv_timeout(remaining.min(CANCEL_POLL_INTERVAL)) {
-            Ok(result) => return result,
+            Ok(result) => {
+                if let Some(reason) = skip_reason(cancelled.as_ref(), deadline) {
+                    return Err(reason.into());
+                }
+                return result;
+            }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
                 crate::development_debug_log(
@@ -618,6 +657,26 @@ mod tests {
                 Instant::now() - std::time::Duration::from_millis(1)
             ),
             Some("OCR 任务已过期")
+        );
+
+        let image = DynamicImage::new_rgba8(1, 1);
+        assert_eq!(
+            run_windows_fallback_if_active(
+                &image,
+                &cancelled,
+                Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .unwrap_err(),
+            "OCR 任务已取消"
+        );
+        assert_eq!(
+            run_windows_fallback_if_active(
+                &image,
+                &active,
+                Instant::now() - std::time::Duration::from_millis(1),
+            )
+            .unwrap_err(),
+            "OCR 任务已过期"
         );
     }
 

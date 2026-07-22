@@ -56,12 +56,64 @@ pub(crate) struct ContextCaptureHandle {
     fallback: CapturedActiveAppContext,
 }
 
+#[derive(Clone)]
+pub(crate) struct ContextCaptureCancellation {
+    capture_cancelled: Arc<AtomicBool>,
+    session_cancelled: Arc<AtomicBool>,
+}
+
+impl ContextCaptureCancellation {
+    pub(crate) fn cancel(&self) {
+        self.session_cancelled.store(true, Ordering::Release);
+        self.capture_cancelled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.session_cancelled.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) enum DictationContextCaptureHandle {
+    Eager(ContextCaptureHandle),
+    #[cfg(windows)]
+    DeferredOcr(DeferredOcrCaptureHandle),
+}
+
+impl DictationContextCaptureHandle {
+    pub(crate) fn cancellation(&self) -> ContextCaptureCancellation {
+        let cancelled = match self {
+            Self::Eager(handle) => Arc::clone(&handle.cancelled),
+            #[cfg(windows)]
+            Self::DeferredOcr(handle) => Arc::clone(&handle.cancelled),
+        };
+        ContextCaptureCancellation {
+            capture_cancelled: cancelled,
+            session_cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct DeferredOcrCaptureHandle {
+    deadline: std::time::Instant,
+    receiver: Option<oneshot::Receiver<windows::PreparedOcrCapture>>,
+    cancelled: Arc<AtomicBool>,
+    fallback: CapturedActiveAppContext,
+}
+
 pub(crate) struct ContextCaptureService {
     latest: Arc<Mutex<Option<ActiveAppContextSummary>>>,
     in_flight: Arc<AtomicUsize>,
 }
 
 impl Drop for ContextCaptureHandle {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DeferredOcrCaptureHandle {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
     }
@@ -98,6 +150,32 @@ fn try_acquire_capture(in_flight: &Arc<AtomicUsize>) -> Option<CapturePermit> {
 }
 
 impl ContextCaptureService {
+    pub(crate) fn begin_dictation_capture(
+        &self,
+        target: ActivationTarget,
+        blocked_apps: Vec<String>,
+        method: ActiveAppContextExtractionMethod,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
+        defer_ocr: bool,
+    ) -> DictationContextCaptureHandle {
+        #[cfg(windows)]
+        if defer_ocr && method == ActiveAppContextExtractionMethod::Ocr {
+            return DictationContextCaptureHandle::DeferredOcr(self.begin_deferred_ocr_capture(
+                target,
+                blocked_apps,
+                ocr_provider,
+            ));
+        }
+        #[cfg(not(windows))]
+        let _ = defer_ocr;
+        DictationContextCaptureHandle::Eager(self.begin_capture(
+            target,
+            blocked_apps,
+            method,
+            ocr_provider,
+        ))
+    }
+
     pub(crate) fn begin_capture(
         &self,
         target: ActivationTarget,
@@ -110,6 +188,58 @@ impl ContextCaptureService {
             blocked_apps,
             CaptureOptions::for_method(method, ocr_provider),
         )
+    }
+
+    #[cfg(windows)]
+    fn begin_deferred_ocr_capture(
+        &self,
+        target: ActivationTarget,
+        blocked_apps: Vec<String>,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
+    ) -> DeferredOcrCaptureHandle {
+        let options =
+            CaptureOptions::for_method(ActiveAppContextExtractionMethod::Ocr, ocr_provider);
+        let deadline = options.deadline;
+        let fallback = windows::baseline_context(target, &blocked_apps, options.method);
+        let (reply, receiver) = oneshot::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let Some(permit) = try_acquire_capture(&self.in_flight) else {
+            let mut completed = fallback.clone();
+            if completed.status != CaptureStatus::Blocked {
+                completed.status = CaptureStatus::Failed;
+                completed
+                    .diagnostics
+                    .push("上下文任务繁忙，未执行密码检查与截图。".into());
+            }
+            let _ = reply.send(windows::PreparedOcrCapture::without_image(
+                completed,
+                options.ocr_provider,
+                options.max_chars,
+            ));
+            return DeferredOcrCaptureHandle {
+                deadline,
+                receiver: Some(receiver),
+                cancelled,
+                fallback,
+            };
+        };
+        let thread_cancelled = Arc::clone(&cancelled);
+        let _ = std::thread::Builder::new()
+            .name("active-app-context-prepare".into())
+            .spawn(move || {
+                let prepared =
+                    windows::prepare_ocr_capture(target, &blocked_apps, options, &thread_cancelled);
+                // 接收方一拿到截图就可能立即申请 OCR 配额；先释放准备阶段配额，
+                // 避免并发上限已满时被自己的截图任务挡住。
+                drop(permit);
+                let _ = reply.send(prepared);
+            });
+        DeferredOcrCaptureHandle {
+            deadline,
+            receiver: Some(receiver),
+            cancelled,
+            fallback,
+        }
     }
 
     pub(crate) fn begin_debug_capture(
@@ -169,7 +299,6 @@ impl ContextCaptureService {
         let _ = std::thread::Builder::new()
             .name("active-app-context".into())
             .spawn(move || {
-                let _permit = permit;
                 if request.cancelled.load(Ordering::Acquire) {
                     crate::development_debug_log(
                         "active-app-context",
@@ -187,6 +316,7 @@ impl ContextCaptureService {
                     request.options,
                     &request.cancelled,
                 );
+                drop(permit);
                 let _ = request.reply.send(result);
             });
         ContextCaptureHandle {
@@ -208,6 +338,105 @@ impl ContextCaptureService {
         handle: ContextCaptureHandle,
     ) -> CapturedActiveAppContext {
         self.resolve_with_wait(handle, DICTATION_RESOLVE_WAIT).await
+    }
+
+    pub(crate) async fn resolve_dictation_capture(
+        &self,
+        handle: DictationContextCaptureHandle,
+    ) -> CapturedActiveAppContext {
+        match handle {
+            DictationContextCaptureHandle::Eager(handle) => {
+                self.resolve_for_dictation(handle).await
+            }
+            #[cfg(windows)]
+            DictationContextCaptureHandle::DeferredOcr(handle) => {
+                self.resolve_deferred_ocr_for_dictation(handle).await
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    async fn resolve_deferred_ocr_for_dictation(
+        &self,
+        mut handle: DeferredOcrCaptureHandle,
+    ) -> CapturedActiveAppContext {
+        let mut preparation_receiver = handle
+            .receiver
+            .take()
+            .expect("deferred OCR preparation should be resolved only once");
+        // 先取已经完成的开始阶段截图。听写本身可能超过准备截止时间，不能因此
+        // 丢弃早已准备好的截图；只有尚未完成的准备任务才受旧截止时间约束。
+        let preparation_remaining = handle
+            .deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(DICTATION_RESOLVE_WAIT);
+        let prepared = match preparation_receiver.try_recv() {
+            Ok(prepared) => Some(prepared),
+            Err(TryRecvError::Closed) => None,
+            Err(TryRecvError::Empty) if preparation_remaining.is_zero() => None,
+            Err(TryRecvError::Empty) => {
+                match tokio::time::timeout(preparation_remaining, &mut preparation_receiver).await {
+                    Ok(Ok(prepared)) => Some(prepared),
+                    Ok(Err(_)) | Err(_) => None,
+                }
+            }
+        };
+        let Some(prepared) = prepared else {
+            return unverified_preparation_failure(
+                handle.fallback.clone(),
+                "OCR 截图准备未及时完成，未使用未经密码检查的窗口信息。",
+            );
+        };
+        if !prepared.has_image() {
+            return prepared.into_context();
+        }
+
+        let Some(permit) = try_acquire_capture(&self.in_flight) else {
+            return metadata_fallback(
+                prepared.into_context(),
+                "OCR 任务繁忙，仅使用基础窗口信息。",
+            );
+        };
+        // OCR 的总截止从真正提交识别时重新计时，不能复用听写开始时的截图截止。
+        let started = std::time::Instant::now();
+        let deadline = started + ActiveAppContextExtractionMethod::Ocr.timeout();
+        let fallback = prepared.context_for_fallback();
+        let (reply, mut receiver) = oneshot::channel();
+        let cancelled = Arc::clone(&handle.cancelled);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let _ = std::thread::Builder::new()
+            .name("active-app-context-ocr".into())
+            .spawn(move || {
+                let result = windows::recognize_prepared_ocr(prepared, deadline, &worker_cancelled);
+                drop(permit);
+                let _ = reply.send(result);
+            });
+
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let mut result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Closed) => metadata_fallback(
+                fallback,
+                "OCR 工作线程在返回结果前断开，仅使用基础窗口信息。",
+            ),
+            Err(TryRecvError::Empty) if remaining.is_zero() => {
+                metadata_fallback(fallback, "OCR 已到截止，仅使用基础窗口信息。")
+            }
+            Err(TryRecvError::Empty) => {
+                match tokio::time::timeout(remaining, &mut receiver).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => metadata_fallback(
+                        fallback,
+                        "OCR 工作线程在返回结果前断开，仅使用基础窗口信息。",
+                    ),
+                    Err(_) => metadata_fallback(fallback, "OCR 等待超时，仅使用基础窗口信息。"),
+                }
+            }
+        };
+        if result.status == CaptureStatus::TimedOut {
+            result.elapsed_ms = deadline.saturating_duration_since(started).as_millis() as u64;
+        }
+        result
     }
 
     async fn resolve_with_wait(
@@ -316,6 +545,18 @@ fn metadata_fallback(
     }
     if !fallback.use_metadata_fallback(reason) {
         fallback.status = CaptureStatus::TimedOut;
+    }
+    fallback
+}
+
+#[cfg(windows)]
+fn unverified_preparation_failure(
+    mut fallback: CapturedActiveAppContext,
+    reason: impl Into<String>,
+) -> CapturedActiveAppContext {
+    if fallback.status != CaptureStatus::Blocked {
+        fallback.status = CaptureStatus::TimedOut;
+        fallback.diagnostics.push(reason.into());
     }
     fallback
 }
@@ -466,6 +707,71 @@ mod tests {
         drop(handle);
 
         assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn dictation_cancellation_survives_after_the_capture_handle_is_moved() {
+        let capture_cancelled = Arc::new(AtomicBool::new(false));
+        let (_sender, receiver) = oneshot::channel();
+        let handle = DictationContextCaptureHandle::Eager(ContextCaptureHandle {
+            started: std::time::Instant::now(),
+            deadline: std::time::Instant::now()
+                + ActiveAppContextExtractionMethod::NativeText.timeout(),
+            receiver: Some(receiver),
+            cancelled: Arc::clone(&capture_cancelled),
+            fallback: CapturedActiveAppContext::default(),
+        });
+        let cancellation = handle.cancellation();
+
+        cancellation.cancel();
+
+        assert!(cancellation.is_cancelled());
+        assert!(capture_cancelled.load(Ordering::Acquire));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unfinished_password_check_never_promotes_window_metadata() {
+        let result = unverified_preparation_failure(
+            CapturedActiveAppContext {
+                app_name: "password-manager".into(),
+                window_title: Some("secret".into()),
+                ..Default::default()
+            },
+            "未完成密码检查",
+        );
+
+        assert_eq!(result.status, CaptureStatus::TimedOut);
+        assert!(result.format_for_prompt().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn completed_preparation_survives_its_start_deadline() {
+        let service = ContextCaptureService::default();
+        let (sender, receiver) = oneshot::channel();
+        assert!(sender
+            .send(windows::PreparedOcrCapture::without_image(
+                CapturedActiveAppContext {
+                    status: CaptureStatus::Sensitive,
+                    capture_method: ActiveAppContextExtractionMethod::Ocr,
+                    ..Default::default()
+                },
+                crate::providers::capabilities::OcrProvider::System,
+                model::DEFAULT_MAX_CHARS,
+            ))
+            .is_ok());
+
+        let result = service
+            .resolve_deferred_ocr_for_dictation(DeferredOcrCaptureHandle {
+                deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
+                receiver: Some(receiver),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                fallback: CapturedActiveAppContext::default(),
+            })
+            .await;
+
+        assert_eq!(result.status, CaptureStatus::Sensitive);
     }
 
     #[test]

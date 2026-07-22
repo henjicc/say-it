@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use image::DynamicImage;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT};
 use windows::Win32::System::Com::{
@@ -26,6 +27,40 @@ use super::normalize::{enforce_total_budget, normalize_text};
 use super::{native_probe, ocr, screen_capture, ActiveAppContextProvider};
 
 pub(crate) struct WindowsActiveAppContextProvider;
+
+pub(crate) struct PreparedOcrCapture {
+    context: CapturedActiveAppContext,
+    image: Option<DynamicImage>,
+    ocr_provider: crate::providers::capabilities::OcrProvider,
+    max_chars: usize,
+}
+
+impl PreparedOcrCapture {
+    pub(crate) fn without_image(
+        context: CapturedActiveAppContext,
+        ocr_provider: crate::providers::capabilities::OcrProvider,
+        max_chars: usize,
+    ) -> Self {
+        Self {
+            context,
+            image: None,
+            ocr_provider,
+            max_chars,
+        }
+    }
+
+    pub(crate) fn has_image(&self) -> bool {
+        self.image.is_some()
+    }
+
+    pub(crate) fn context_for_fallback(&self) -> CapturedActiveAppContext {
+        self.context.clone()
+    }
+
+    pub(crate) fn into_context(self) -> CapturedActiveAppContext {
+        self.context
+    }
+}
 
 pub(crate) fn activation_target() -> Option<ActivationTarget> {
     let window = unsafe { GetForegroundWindow() };
@@ -210,6 +245,159 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
         );
         context
     }
+}
+
+/// 听写开始阶段只做隐私检查与屏幕拷贝。返回后线程即可退出，截图留在会话句柄中；
+/// 此函数绝不加载本地 OCR 模型，也不调用远程 OCR 供应商。
+pub(crate) fn prepare_ocr_capture(
+    target: ActivationTarget,
+    blocked_apps: &[String],
+    options: CaptureOptions,
+    cancelled: &Arc<AtomicBool>,
+) -> PreparedOcrCapture {
+    let started = Instant::now();
+    let mut context = baseline_context(target, blocked_apps, ActiveAppContextExtractionMethod::Ocr);
+    let mut image = None;
+
+    if cancelled.load(Ordering::Acquire) {
+        context.status = CaptureStatus::TimedOut;
+    } else if context.status == CaptureStatus::Blocked {
+        crate::development_debug_log(
+            "active-app-context",
+            format_args!("OCR 截图准备已拦截：黑名单应用 {}", context.process_name),
+        );
+    } else if expired(options.deadline) {
+        context.status = CaptureStatus::TimedOut;
+    } else {
+        match focused_target_is_password(target) {
+            Ok(true) => {
+                context
+                    .diagnostics
+                    .push("焦点位于受保护输入控件，已停止上下文读取。".into());
+                context.status = CaptureStatus::Sensitive;
+            }
+            Ok(false) => match screen_capture::capture_window(
+                target.window_handle,
+                options.occluding_window_handle,
+                options.max_capture_side_override,
+            ) {
+                Ok(captured) => {
+                    context.screenshot_width = captured.image.width();
+                    context.screenshot_height = captured.image.height();
+                    context.screenshot_elapsed_ms = captured.elapsed_ms;
+                    if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                        context.status = CaptureStatus::TimedOut;
+                    } else {
+                        context.status = CaptureStatus::Empty;
+                        image = Some(captured.image);
+                    }
+                }
+                Err(error) => {
+                    context.diagnostics.push(error);
+                    context.status =
+                        if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                            CaptureStatus::TimedOut
+                        } else {
+                            CaptureStatus::Failed
+                        };
+                }
+            },
+            Err(error) => {
+                context.diagnostics.push(error);
+                context.status = if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                    CaptureStatus::TimedOut
+                } else {
+                    CaptureStatus::Failed
+                };
+            }
+        }
+    }
+    context.elapsed_ms = started.elapsed().as_millis() as u64;
+    crate::development_debug_log(
+        "active-app-context",
+        format_args!(
+            "OCR 开始阶段准备结束：状态={:?}，截图 {}×{}（{} ms），未提交识别",
+            context.status,
+            context.screenshot_width,
+            context.screenshot_height,
+            context.screenshot_elapsed_ms,
+        ),
+    );
+    PreparedOcrCapture {
+        context,
+        image,
+        ocr_provider: options.ocr_provider,
+        max_chars: options.max_chars,
+    }
+}
+
+pub(crate) fn recognize_prepared_ocr(
+    mut prepared: PreparedOcrCapture,
+    deadline: Instant,
+    cancelled: &Arc<AtomicBool>,
+) -> CapturedActiveAppContext {
+    let started = Instant::now();
+    let Some(image) = prepared.image.take() else {
+        return prepared.context;
+    };
+    if cancelled.load(Ordering::Acquire) || expired(deadline) {
+        prepared.context.status = CaptureStatus::TimedOut;
+        prepared
+            .context
+            .diagnostics
+            .push("OCR 提交前已取消或到达截止时间。".into());
+        return prepared.context;
+    }
+
+    let output = ocr::run_full_window(
+        prepared.ocr_provider,
+        image,
+        deadline,
+        Arc::clone(cancelled),
+    );
+    prepared.context.status = match output {
+        Ok(output) => {
+            if let Some(diagnostic) = output.diagnostic {
+                prepared.context.diagnostics.push(diagnostic);
+            }
+            prepared.context.ocr_text = output.text;
+            prepared.context.ocr_blocks = output.blocks;
+            prepared.context.model_init_ms = output.model_init_ms;
+            prepared.context.ocr_elapsed_ms = output.elapsed_ms;
+            prepared.context.truncated |= output.truncated;
+            if prepared.context.ocr_text.is_empty() {
+                prepared
+                    .context
+                    .diagnostics
+                    .push("整窗截图成功，但 OCR 没有识别到文字。".into());
+                CaptureStatus::Empty
+            } else {
+                prepared.context.source = Some(ContextSource::Ocr);
+                CaptureStatus::Captured
+            }
+        }
+        Err(error) => {
+            prepared.context.diagnostics.push(error);
+            if cancelled.load(Ordering::Acquire) || expired(deadline) {
+                CaptureStatus::TimedOut
+            } else {
+                CaptureStatus::Failed
+            }
+        }
+    };
+    enforce_total_budget(&mut prepared.context, prepared.max_chars);
+    prepared.context.elapsed_ms = prepared
+        .context
+        .elapsed_ms
+        .saturating_add(started.elapsed().as_millis() as u64);
+    crate::development_debug_log(
+        "active-app-context",
+        format_args!(
+            "延迟 OCR 结束：状态={:?}，OCR {} ms，总工作耗时 {} ms",
+            prepared.context.status, prepared.context.ocr_elapsed_ms, prepared.context.elapsed_ms,
+        ),
+    );
+    prepared.context
 }
 
 fn capture_and_recognize(
@@ -520,6 +708,28 @@ mod tests {
         assert!(is_blocked(&context, &["SECRETAPP".into()]));
         assert!(!is_blocked(&context, &["notepad.exe".into()]));
     }
+
+    #[test]
+    fn prepared_sensitive_result_never_enters_ocr() {
+        let prepared = PreparedOcrCapture::without_image(
+            CapturedActiveAppContext {
+                status: CaptureStatus::Sensitive,
+                app_name: "password-manager".into(),
+                ..Default::default()
+            },
+            crate::providers::capabilities::OcrProvider::System,
+            3_000,
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let result = recognize_prepared_ocr(
+            prepared,
+            Instant::now() + ActiveAppContextExtractionMethod::Ocr.timeout(),
+            &cancelled,
+        );
+
+        assert_eq!(result.status, CaptureStatus::Sensitive);
+        assert!(result.ocr_text.is_empty());
+        assert!(result.format_for_prompt().is_empty());
+    }
 }
-
-

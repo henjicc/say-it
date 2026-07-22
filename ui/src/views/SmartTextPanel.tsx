@@ -14,6 +14,7 @@ import {
   useModelCatalogRevision,
   type OcrModelOption,
 } from "@/features/asr/modelRegistry";
+import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
 import {
   GLOBAL_CONTEXT_PLACEHOLDER,
@@ -40,7 +41,6 @@ export function SmartTextPanel() {
   const [previewInput, setPreviewInput] = useState(PREVIEW_SAMPLE);
   const [previewOutput, setPreviewOutput] = useState("");
   const [previewContext, setPreviewContext] = useState(PREVIEW_CONTEXT_SAMPLE);
-  const [blockedAppInput, setBlockedAppInput] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [message, setMessage] = useState("");
   const [ocrMessage, setOcrMessage] = useState("");
@@ -236,17 +236,20 @@ export function SmartTextPanel() {
     }
   };
 
-  const addBlockedApp = async (value = blockedAppInput) => {
+  const addBlockedApp = async (value: string) => {
     const normalized = value.trim().toLowerCase();
-    if (!normalized || prefs.activeAppContextBlockedApps.includes(normalized)) return;
-    try {
-      await patch({
-        activeAppContextBlockedApps: [...prefs.activeAppContextBlockedApps, normalized],
-      });
-      setBlockedAppInput("");
-    } catch (error) {
-      setTemplateNotice({ tone: "err", text: `添加黑名单失败：${String(error)}` });
+    if (
+      !normalized
+      || prefs.activeAppContextBlockedApps.some(
+        (item) => item.toLowerCase() === normalized,
+      )
+    ) return;
+    if (prefs.activeAppContextBlockedApps.length >= 100) {
+      throw new Error("应用黑名单最多支持 100 个软件。");
     }
+    await patch({
+      activeAppContextBlockedApps: [...prefs.activeAppContextBlockedApps, normalized],
+    });
   };
 
   const removeBlockedApp = async (appName: string) => {
@@ -492,38 +495,38 @@ export function SmartTextPanel() {
                 ))}
               </Select>
             </Field>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-4">
+                <label
+                  htmlFor="active-app-context-ocr-follow-smart-min-chars"
+                  className="text-xs font-medium text-[var(--color-fg-muted)]"
+                >
+                  OCR 跟随处理时机
+                </label>
+                <Switch
+                  id="active-app-context-ocr-follow-smart-min-chars"
+                  label="OCR 跟随处理时机"
+                  checked={prefs.activeAppContextOcrFollowSmartProcessingMinChars}
+                  onChange={(value) => void patch({
+                    activeAppContextOcrFollowSmartProcessingMinChars: value,
+                  })}
+                />
+              </div>
+              <p className="text-xs text-[var(--color-fg-subtle)]">
+                复用命中软件规则后生效的智能处理最少文本长度；最少长度为 0 时每次听写都会执行 OCR。
+              </p>
+            </div>
             {ocrMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{ocrMessage}</p>}
           </>
         )}
 
-        <Field
+        <RunningAppPicker
+          value=""
           label="应用黑名单"
-          controlId="active-app-context-blocked-app"
           hint="按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"
-          actions={(
-            <Button
-              variant="primary"
-              className="whitespace-nowrap"
-              disabled={!blockedAppInput.trim()}
-              onClick={() => void addBlockedApp()}
-            >
-              添加
-            </Button>
-          )}
-        >
-          <Input
-            id="active-app-context-blocked-app"
-            value={blockedAppInput}
-            placeholder="example.exe"
-            onChange={(event) => setBlockedAppInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void addBlockedApp();
-              }
-            }}
-          />
-        </Field>
+          placeholder="选择要加入黑名单的软件"
+          onSelect={(selection) => addBlockedApp(selection.processName)}
+        />
         {prefs.activeAppContextBlockedApps.length > 0 && (
           <div className="flex flex-col gap-2">
             {prefs.activeAppContextBlockedApps.map((appName) => (
