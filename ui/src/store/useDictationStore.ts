@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { DictationShortcutProfile, ShortcutCombo } from "@/features/dictation/hotkeys";
 
 type Tone = "" | "ok" | "err";
 
@@ -29,8 +30,9 @@ interface DictationState {
   latestText: string;
   log: string;
   recording: boolean;
-  capturing: boolean;
   shortcutLabel: string;
+  shortcut: ShortcutCombo;
+  shortcutProfiles: DictationShortcutProfile[];
   injectMethod: "paste" | "type";
   pressHoldMode: boolean;
   activeAppContext?: ActiveAppContextSummary;
@@ -42,8 +44,9 @@ export const useDictationStore = create<DictationState>(() => ({
   latestText: "",
   log: "",
   recording: false,
-  capturing: false,
   shortcutLabel: "",
+  shortcut: { keyCode: "", ctrl: false, shift: false, alt: false, meta: false },
+  shortcutProfiles: [],
   injectMethod: "paste",
   pressHoldMode: false,
   activeAppContext: undefined,

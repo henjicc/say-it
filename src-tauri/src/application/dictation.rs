@@ -12,7 +12,9 @@ use crate::desktop::{
 };
 use crate::prelude::*;
 use crate::providers::alibabacloud::TranscriptionParams;
-use crate::state::{AsrStreamInput, RuntimeState};
+use crate::state::{
+    AsrStreamInput, DictationShortcutProfile, RuntimeState, ShortcutProcessingMode,
+};
 use fancy_regex::{Captures, RegexBuilder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::AppHandle;
@@ -133,6 +135,8 @@ struct EffectivePostProcessing {
     smart_template_id: String,
     /// 命中的规则名，仅用于调试日志。
     matched_profile: Option<String>,
+    /// 启动本次听写的快捷键方案名，仅用于调试日志。
+    matched_shortcut_profile: Option<String>,
 }
 fn default_flags() -> String {
     "g".into()
@@ -220,6 +224,7 @@ impl DictationPrefs {
             smart_processing_min_chars: self.smart_processing_min_chars,
             smart_template_id: self.smart_template_id.clone(),
             matched_profile: None,
+            matched_shortcut_profile: None,
         };
         if !self.app_profiles_enabled {
             return global;
@@ -253,7 +258,45 @@ impl DictationPrefs {
                 .filter(|id| !id.is_empty())
                 .unwrap_or(global.smart_template_id),
             matched_profile: Some(profile.name.clone()),
+            matched_shortcut_profile: None,
         }
+    }
+}
+
+impl EffectivePostProcessing {
+    fn apply_shortcut_profile(mut self, profile: Option<&DictationShortcutProfile>) -> Self {
+        let Some(profile) = profile else { return self };
+        match profile.processing_mode {
+            ShortcutProcessingMode::FollowScene => {}
+            ShortcutProcessingMode::Raw => {
+                self.local_rules_enabled = false;
+                self.smart_processing_enabled = false;
+            }
+            ShortcutProcessingMode::LocalOnly => {
+                self.local_rules_enabled = true;
+                self.smart_processing_enabled = false;
+            }
+            ShortcutProcessingMode::SmartOnly => {
+                self.local_rules_enabled = false;
+                self.smart_processing_enabled = true;
+            }
+            ShortcutProcessingMode::SmartAndLocal => {
+                self.local_rules_enabled = true;
+                self.smart_processing_enabled = true;
+            }
+        }
+        if let Some(min_chars) = profile.smart_processing_min_chars {
+            self.smart_processing_min_chars = min_chars;
+        }
+        if let Some(template_id) = profile
+            .smart_template_id
+            .as_ref()
+            .filter(|template_id| !template_id.trim().is_empty())
+        {
+            self.smart_template_id = template_id.clone();
+        }
+        self.matched_shortcut_profile = Some(profile.name.clone());
+        self
     }
 }
 
@@ -273,10 +316,22 @@ fn should_defer_active_app_context_ocr(
     prefs: &DictationPrefs,
     effective: &EffectivePostProcessing,
 ) -> bool {
-    prefs.active_app_context_ocr_follow_smart_processing_min_chars
+    effective.smart_processing_enabled
+        && prefs.active_app_context_ocr_follow_smart_processing_min_chars
         && prefs.active_app_context_extraction_method
             == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
         && effective.smart_processing_min_chars > 0
+}
+
+fn resolve_inject_method(
+    global_method: &str,
+    profile: Option<&DictationShortcutProfile>,
+) -> String {
+    profile
+        .and_then(|profile| profile.inject_method.as_deref())
+        .filter(|method| *method == "paste" || *method == "type")
+        .unwrap_or(global_method)
+        .to_string()
 }
 
 #[derive(Default)]
@@ -296,6 +351,8 @@ struct Session {
     prefs: DictationPrefs,
     /// 本次听写按前台软件解析出的后处理配置；`None` 表示尚未开始，回落全局。
     effective: Option<EffectivePostProcessing>,
+    /// 启动时冻结的注入方式，避免录音过程中修改设置影响当前会话。
+    inject_method: String,
     last_voice_at: Option<Instant>,
     silence_streaming: bool,
     raw_done: Option<Arc<tokio::sync::Notify>>,
@@ -359,18 +416,19 @@ pub(crate) fn initialize(app: AppHandle) {
     });
 }
 
-pub(crate) fn request_toggle(app: AppHandle) {
+pub(crate) fn request_toggle_with_profile(app: AppHandle, profile_id: Option<String>) {
     let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = toggle(app.clone(), activation_target).await {
+        if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
             publish_state(&app, Some(e));
         }
     });
 }
-pub(crate) fn request_start(app: AppHandle) {
+pub(crate) fn request_start_with_profile(app: AppHandle, profile_id: Option<String>) {
     let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = start(app.clone(), activation_target).await {
+        // 长按开始也走 toggle：若另一条快捷键已启动听写，本次按下只负责停止当前会话。
+        if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
             publish_state(&app, Some(e));
         }
     });
@@ -408,11 +466,11 @@ pub(crate) fn request_cancel(app: AppHandle) {
 
 #[tauri::command]
 pub(crate) async fn dictation_toggle(app: AppHandle) -> Result<(), String> {
-    toggle(app, None).await
+    toggle(app, None, None).await
 }
 #[tauri::command]
 pub(crate) async fn dictation_start(app: AppHandle) -> Result<(), String> {
-    start(app, None).await
+    start(app, None, None).await
 }
 #[tauri::command]
 pub(crate) async fn dictation_stop(app: AppHandle) -> Result<(), String> {
@@ -504,6 +562,7 @@ pub(crate) fn domain_snapshot(
 async fn toggle(
     app: AppHandle,
     activation_target: Option<crate::active_app_context::ActivationTarget>,
+    shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
     let phase = app
         .state::<RuntimeState>()
@@ -513,7 +572,9 @@ async fn toggle(
         .map_err(|_| "听写状态锁失败")?
         .phase;
     match phase {
-        DictationPhase::Idle | DictationPhase::Failed => start(app, activation_target).await,
+        DictationPhase::Idle | DictationPhase::Failed => {
+            start(app, activation_target, shortcut_profile_id).await
+        }
         DictationPhase::WaitingForVoice | DictationPhase::Recording => stop(app).await,
         _ => Ok(()),
     }
@@ -522,6 +583,7 @@ async fn toggle(
 async fn start(
     app: AppHandle,
     activation_target: Option<crate::active_app_context::ActivationTarget>,
+    shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -545,6 +607,25 @@ async fn start(
         serde_json::from_value(prefs_value).map_err(|e| format!("听写配置无效：{e}"))?;
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
+    let dictation_settings = state
+        .dictation
+        .lock()
+        .map_err(|_| "听写快捷键配置锁失败")?
+        .clone();
+    let shortcut_profile = if let Some(profile_id) = shortcut_profile_id.as_deref() {
+        let profile = dictation_settings
+            .shortcut_profiles
+            .iter()
+            .find(|profile| profile.enabled && profile.id == profile_id);
+        if profile.is_none() {
+            dlog!("[dictation] 忽略已失效的快捷键方案信号：{profile_id}");
+            return Ok(());
+        }
+        profile
+    } else {
+        None
+    };
+    let inject_method = resolve_inject_method(&dictation_settings.inject_method, shortcut_profile);
     let epoch = state
         .dictation_runtime
         .epochs
@@ -553,19 +634,27 @@ async fn start(
     // 先解析前台软件并定下生效配置，再决定是否捕获上下文正文：应用规则可能把智能
     // 处理切到含 {{active_app_context}} 的模板，顺序反了就拿不到上下文。
     let app_identity = activation_target.and_then(crate::active_app_context::app_identity);
-    let effective = prefs.resolve_post_processing(app_identity.as_ref());
+    let effective = prefs
+        .resolve_post_processing(app_identity.as_ref())
+        .apply_shortcut_profile(shortcut_profile);
+    validate_effective_post_processing(&prefs, &effective)?;
     if let Some(identity) = &app_identity {
         crate::development_debug_log(
             "dictation",
             format_args!(
-                "前台软件={}（{}），命中规则={}，本地处理={}，智能处理={}，最少字符数={}，模板={}",
+                "前台软件={}（{}），命中软件规则={}，快捷键方案={}，本地处理={}，智能处理={}，最少字符数={}，模板={}，注入方式={}",
                 identity.app_name,
                 identity.process_name,
                 effective.matched_profile.as_deref().unwrap_or("全局配置"),
+                effective
+                    .matched_shortcut_profile
+                    .as_deref()
+                    .unwrap_or("主快捷键/手动启动"),
                 effective.local_rules_enabled,
                 effective.smart_processing_enabled,
                 effective.smart_processing_min_chars,
                 effective.smart_template_id,
+                inject_method,
             ),
         );
     }
@@ -660,6 +749,7 @@ async fn start(
             lease: Some(lease),
             prefs: prefs.clone(),
             effective: Some(effective),
+            inject_method,
             silence_streaming: false,
             active_app_context,
             active_app_context_cancellation,
@@ -695,7 +785,12 @@ async fn start(
         Some(36.0),
     );
     let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
-    play_cue_async(app.clone(), "start", &prefs, CuePlaybackTarget::IndicatorWindow);
+    play_cue_async(
+        app.clone(),
+        "start",
+        &prefs,
+        CuePlaybackTarget::IndicatorWindow,
+    );
     publish_state(&app, None);
     Ok(())
 }
@@ -785,8 +880,8 @@ fn spawn_raw_consumer(
                         need_close = true;
                     }
                 }
-                let waveform_config = should_show_waveform(s.mode)
-                    .then(|| (s.prefs.dsp.clone(), s.sample_rate));
+                let waveform_config =
+                    should_show_waveform(s.mode).then(|| (s.prefs.dsp.clone(), s.sample_rate));
                 (need_open, need_close, waveform_config)
             };
             if let Some((params, sample_rate)) = waveform_config {
@@ -1254,12 +1349,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
             return;
         }
         s.phase = DictationPhase::Injecting;
-        let method = state
-            .dictation
-            .lock()
-            .ok()
-            .map(|v| v.inject_method.clone())
-            .unwrap_or_else(|| "paste".into());
+        let method = if s.inject_method == "type" {
+            "type".to_string()
+        } else {
+            "paste".to_string()
+        };
         (
             format!("{}{}", s.committed, s.segment).trim().to_string(),
             s.prefs.clone(),
@@ -1455,7 +1549,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
-    play_cue_async(app.clone(), "end", &prefs, CuePlaybackTarget::IndicatorWindow);
+    play_cue_async(
+        app.clone(),
+        "end",
+        &prefs,
+        CuePlaybackTarget::IndicatorWindow,
+    );
     publish_state_with_text(
         &app,
         None,
@@ -1658,6 +1757,21 @@ fn validate_rules(prefs: &DictationPrefs) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_effective_post_processing(
+    prefs: &DictationPrefs,
+    effective: &EffectivePostProcessing,
+) -> Result<(), String> {
+    if effective.local_rules_enabled {
+        for rule in prefs.local_rules.iter().filter(|rule| rule.enabled) {
+            compile_rule(rule)?;
+        }
+    }
+    if effective.smart_processing_enabled {
+        validate_template(prefs, &effective.smart_template_id, "本次快捷键场景")?;
+    }
+    Ok(())
+}
+
 fn validate_template(prefs: &DictationPrefs, template_id: &str, scope: &str) -> Result<(), String> {
     let template = prefs
         .smart_templates
@@ -1736,12 +1850,12 @@ fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {
         let valid = !provider_id.is_empty()
             && provider_id.len() <= 64
             && provider_id.bytes().all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'.' | b'-')
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
             });
         if !valid || !seen.insert(provider_id) {
-            return Err(format!("场景感知 OCR 隐私授权供应商 ID 非法或重复：{provider_id}"));
+            return Err(format!(
+                "场景感知 OCR 隐私授权供应商 ID 非法或重复：{provider_id}"
+            ));
         }
     }
     Ok(())
@@ -1776,9 +1890,7 @@ pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn active_app_context_ocr_approved_providers_from_value(
-    value: &Value,
-) -> Vec<String> {
+pub(crate) fn active_app_context_ocr_approved_providers_from_value(value: &Value) -> Vec<String> {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_approved_providers)
         .unwrap_or_default()
@@ -1804,9 +1916,10 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
                     .and_then(|registry| registry.local_model_for_engine("ppocr-mnn"));
                 let spec = spec.filter(|spec| {
                     state.providers.lock().is_ok_and(|settings| {
-                        settings.profiles.iter().any(|profile| {
-                            profile.id == spec.provider_id && profile.enabled
-                        })
+                        settings
+                            .profiles
+                            .iter()
+                            .any(|profile| profile.id == spec.provider_id && profile.enabled)
                     })
                 });
                 spec.map(|spec| OcrProvider::PpOcr { spec }).unwrap_or_else(|| OcrProvider::Unavailable {
@@ -1859,7 +1972,10 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
     let Some(profile) = settings.profiles.iter().find(|profile| {
         profile.id == provider_id
             && profile.enabled
-            && profile.capabilities.iter().any(|capability| capability == "ocr")
+            && profile
+                .capabilities
+                .iter()
+                .any(|capability| capability == "ocr")
     }) else {
         return OcrProvider::Unavailable {
             selection: selected.into(),
@@ -2123,6 +2239,7 @@ mod tests {
             smart_processing_min_chars: 20,
             smart_template_id: String::new(),
             matched_profile: None,
+            matched_shortcut_profile: None,
         };
         let mut prefs = DictationPrefs {
             active_app_context_extraction_method:
@@ -2238,6 +2355,148 @@ mod tests {
         assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
     }
 
+    fn shortcut_profile(mode: ShortcutProcessingMode) -> DictationShortcutProfile {
+        DictationShortcutProfile {
+            id: "shortcut".into(),
+            name: "临时方案".into(),
+            enabled: true,
+            key_code: "F9".into(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            processing_mode: mode,
+            smart_template_id: None,
+            smart_processing_min_chars: None,
+            inject_method: None,
+        }
+    }
+
+    #[test]
+    fn shortcut_processing_modes_override_the_resolved_app_scene() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            name: "编程".into(),
+            matchers: vec!["code.exe".into()],
+            local_rules_enabled: Some(false),
+            smart_processing_enabled: Some(true),
+            ..Default::default()
+        }]);
+        let base = prefs.resolve_post_processing(Some(&identity("code.exe")));
+        assert!(!base.local_rules_enabled && base.smart_processing_enabled);
+
+        let cases = [
+            (ShortcutProcessingMode::FollowScene, false, true),
+            (ShortcutProcessingMode::Raw, false, false),
+            (ShortcutProcessingMode::LocalOnly, true, false),
+            (ShortcutProcessingMode::SmartOnly, false, true),
+            (ShortcutProcessingMode::SmartAndLocal, true, true),
+        ];
+        for (mode, local, smart) in cases {
+            let profile = shortcut_profile(mode);
+            let effective = base.clone().apply_shortcut_profile(Some(&profile));
+            assert_eq!(effective.local_rules_enabled, local, "mode={mode:?}");
+            assert_eq!(effective.smart_processing_enabled, smart, "mode={mode:?}");
+            assert_eq!(effective.matched_profile.as_deref(), Some("编程"));
+            assert_eq!(
+                effective.matched_shortcut_profile.as_deref(),
+                Some("临时方案")
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_advanced_fields_have_highest_precedence() {
+        let prefs = prefs_with_profiles(vec![AppProfile {
+            name: "编程".into(),
+            matchers: vec!["code.exe".into()],
+            smart_processing_enabled: Some(true),
+            smart_processing_min_chars: Some(80),
+            smart_template_id: Some("app".into()),
+            ..Default::default()
+        }]);
+        let mut profile = shortcut_profile(ShortcutProcessingMode::FollowScene);
+        profile.smart_processing_min_chars = Some(0);
+        profile.smart_template_id = Some("shortcut-template".into());
+        let effective = prefs
+            .resolve_post_processing(Some(&identity("code.exe")))
+            .apply_shortcut_profile(Some(&profile));
+        assert_eq!(effective.smart_processing_min_chars, 0);
+        assert_eq!(effective.smart_template_id, "shortcut-template");
+        assert!(should_run_smart_processing(&effective, "短句"));
+    }
+
+    #[test]
+    fn shortcut_injection_method_overrides_global_and_can_be_frozen_in_session() {
+        let mut profile = shortcut_profile(ShortcutProcessingMode::Raw);
+        assert_eq!(resolve_inject_method("paste", Some(&profile)), "paste");
+        profile.inject_method = Some("type".into());
+        let frozen = resolve_inject_method("paste", Some(&profile));
+        assert_eq!(frozen, "type");
+        let session = Session {
+            inject_method: frozen,
+            ..Default::default()
+        };
+        assert_eq!(session.inject_method, "type");
+    }
+
+    #[test]
+    fn raw_and_local_shortcuts_never_defer_or_submit_ocr() {
+        let prefs = DictationPrefs {
+            active_app_context_extraction_method:
+                crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
+            active_app_context_ocr_follow_smart_processing_min_chars: true,
+            smart_processing_enabled: true,
+            smart_processing_min_chars: 100,
+            ..Default::default()
+        };
+        for mode in [
+            ShortcutProcessingMode::Raw,
+            ShortcutProcessingMode::LocalOnly,
+        ] {
+            let profile = shortcut_profile(mode);
+            let effective = prefs
+                .resolve_post_processing(None)
+                .apply_shortcut_profile(Some(&profile));
+            assert!(!effective.smart_processing_enabled);
+            assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+        }
+    }
+
+    #[test]
+    fn shortcut_enabled_processing_is_validated_even_when_global_switches_are_off() {
+        let mut prefs = DictationPrefs {
+            local_rules_enabled: false,
+            smart_processing_enabled: false,
+            smart_template_id: "valid".into(),
+            smart_templates: vec![SmartTemplate {
+                id: "valid".into(),
+                name: "有效模板".into(),
+                prompt: format!("处理：{}", crate::application::smart_text::TEXT_PLACEHOLDER),
+            }],
+            local_rules: vec![LocalRule {
+                id: "bad".into(),
+                enabled: true,
+                mode: String::new(),
+                find: String::new(),
+                pattern: "([".into(),
+                flags: "g".into(),
+                replacement: String::new(),
+            }],
+            ..Default::default()
+        };
+        assert!(validate_rules(&prefs).is_ok());
+        let local = prefs
+            .resolve_post_processing(None)
+            .apply_shortcut_profile(Some(&shortcut_profile(ShortcutProcessingMode::LocalOnly)));
+        assert!(validate_effective_post_processing(&prefs, &local).is_err());
+
+        prefs.local_rules.clear();
+        let smart = prefs
+            .resolve_post_processing(None)
+            .apply_shortcut_profile(Some(&shortcut_profile(ShortcutProcessingMode::SmartOnly)));
+        assert!(validate_effective_post_processing(&prefs, &smart).is_ok());
+    }
+
     #[test]
     fn smart_processing_min_chars_uses_unicode_character_boundary() {
         let effective = EffectivePostProcessing {
@@ -2246,6 +2505,7 @@ mod tests {
             smart_processing_min_chars: 4,
             smart_template_id: String::new(),
             matched_profile: None,
+            matched_shortcut_profile: None,
         };
         assert!(!should_run_smart_processing(&effective, " 你好世 "));
         assert!(should_run_smart_processing(&effective, " 你好世界 "));

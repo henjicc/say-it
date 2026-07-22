@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use serde_json::json;
@@ -18,7 +18,8 @@ use tauri::{AppHandle, Emitter};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
+    VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HC_ACTION,
@@ -36,16 +37,29 @@ const VK_NUMLOCK: u16 = 0x90;
 const VK_SCROLL: u16 = 0x91;
 const CONTEXT_DEBUG_VK: u16 = 0x77; // F8
 const CONTEXT_DEBUG_MODS: u8 = MOD_CTRL | MOD_SHIFT;
+const MAX_DICTATION_BINDINGS: usize = 1 + crate::state::MAX_DICTATION_SHORTCUT_PROFILES;
 
-// 目标键与修饰键（由设置写入，钩子回调读取）。
-static TARGET_VK: AtomicU16 = AtomicU16::new(VK_CAPITAL);
-static TARGET_MODS: AtomicU8 = AtomicU8::new(0);
-// 目标键当前是否处于“已触发未释放”，用于长按去重和成对吞掉 keyup。
-static TRIGGERED: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Debug)]
+pub struct HotkeyBinding {
+    pub vk: u16,
+    pub mods: u8,
+    pub profile_id: Option<String>,
+}
+
+// 固定容量原子槽位由设置写入、低级钩子读取。槽位 0 是主快捷键，其余是快捷键方案。
+static TARGET_VKS: [AtomicU16; MAX_DICTATION_BINDINGS] =
+    [const { AtomicU16::new(0) }; MAX_DICTATION_BINDINGS];
+static TARGET_MODS: [AtomicU8; MAX_DICTATION_BINDINGS] =
+    [const { AtomicU8::new(0) }; MAX_DICTATION_BINDINGS];
+static TRIGGERED: [AtomicBool; MAX_DICTATION_BINDINGS] =
+    [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
 static PRESS_HOLD_MODE: AtomicBool = AtomicBool::new(false);
-static PRESS_HOLD_STARTED: AtomicBool = AtomicBool::new(false);
+static PRESS_HOLD_STARTED: [AtomicBool; MAX_DICTATION_BINDINGS] =
+    [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
 static PRESS_HOLD_START_MS: AtomicU32 = AtomicU32::new(260);
-static PRESS_HOLD_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+static PRESS_HOLD_SEQUENCE: [AtomicU32; MAX_DICTATION_BINDINGS] =
+    [const { AtomicU32::new(0) }; MAX_DICTATION_BINDINGS];
+static HOTKEY_GENERATION: AtomicU32 = AtomicU32::new(0);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 // 实时字幕专用的第二路目标键，与语音输入完全独立。0 表示未设置。
@@ -62,14 +76,29 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 // 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
 // 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
-static TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static TOGGLE_TX: OnceLock<Mutex<Sender<HotkeySignal>>> = OnceLock::new();
 static PRESS_TX: OnceLock<Mutex<Sender<PressSignal>>> = OnceLock::new();
 static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 
 enum PressSignal {
-    Start { sequence: u32, delay_ms: u32 },
-    End,
+    Start {
+        hotkey: HotkeySignal,
+        sequence: u32,
+        delay_ms: u32,
+        immediate: bool,
+    },
+    End {
+        hotkey: HotkeySignal,
+    },
 }
+
+#[derive(Clone, Copy)]
+struct HotkeySignal {
+    slot: u8,
+    generation: u32,
+}
+
+static BINDING_PROFILE_IDS: OnceLock<RwLock<Vec<Option<String>>>> = OnceLock::new();
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static CONTEXT_DEBUG_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
@@ -81,16 +110,17 @@ const VK_ESCAPE: u16 = 0x1B;
 /// 保存 AppHandle 并安装一次键盘钩子（带消息循环的专用线程）。
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
+    let _ = BINDING_PROFILE_IDS.set(RwLock::new(Vec::new()));
     if HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
         return;
     }
 
     // 发送线程：把钩子信号转成前端事件。
-    let (tx, rx) = channel::<()>();
+    let (tx, rx) = channel::<HotkeySignal>();
     let _ = TOGGLE_TX.set(Mutex::new(tx));
     std::thread::spawn(move || {
-        while rx.recv().is_ok() {
-            emit_toggle();
+        while let Ok(signal) = rx.recv() {
+            emit_toggle(signal);
         }
     });
 
@@ -99,8 +129,13 @@ pub fn init(app: AppHandle) {
     std::thread::spawn(move || {
         while let Ok(signal) = press_rx.recv() {
             match signal {
-                PressSignal::Start { sequence, delay_ms } => emit_press_start(sequence, delay_ms),
-                PressSignal::End => emit_press_end(),
+                PressSignal::Start {
+                    hotkey,
+                    sequence,
+                    delay_ms,
+                    immediate,
+                } => emit_press_start(hotkey, sequence, delay_ms, immediate),
+                PressSignal::End { hotkey } => emit_press_end(hotkey),
             }
         }
     });
@@ -171,26 +206,31 @@ pub fn init(app: AppHandle) {
 }
 
 /// 钩子回调里调用：发一个非阻塞信号给发送线程。
-fn signal_toggle() {
+fn signal_toggle(signal: HotkeySignal) {
     if let Some(lock) = TOGGLE_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(());
+            let _ = tx.send(signal);
         }
     }
 }
 
-fn signal_press_start(sequence: u32, delay_ms: u32) {
+fn signal_press_start(hotkey: HotkeySignal, sequence: u32, delay_ms: u32, immediate: bool) {
     if let Some(lock) = PRESS_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(PressSignal::Start { sequence, delay_ms });
+            let _ = tx.send(PressSignal::Start {
+                hotkey,
+                sequence,
+                delay_ms,
+                immediate,
+            });
         }
     }
 }
 
-fn signal_press_end() {
+fn signal_press_end(hotkey: HotkeySignal) {
     if let Some(lock) = PRESS_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(PressSignal::End);
+            let _ = tx.send(PressSignal::End { hotkey });
         }
     }
 }
@@ -231,26 +271,40 @@ pub fn set_context_debug_active(active: bool) {
     CONTEXT_DEBUG_TRIGGERED.store(false, Ordering::SeqCst);
 }
 
-/// 更新当前热键（仅改原子，钩子已常驻）。
-pub fn set_hotkey(vk: u16, mods: u8, press_hold_mode: bool) {
-    TARGET_VK.store(vk, Ordering::SeqCst);
-    TARGET_MODS.store(mods, Ordering::SeqCst);
-    PRESS_HOLD_MODE.store(press_hold_mode, Ordering::SeqCst);
-    PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
-    TRIGGERED.store(false, Ordering::SeqCst);
-    // 普通模式下锁定键会被无条件吞掉，因此先关闭锁定状态，避免卡在开启。
-    if is_lock_key(vk) && !press_hold_mode {
-        force_lock_off(vk);
+/// 原子替换全部听写快捷键。低级钩子只读固定槽位，不获取任何锁。
+pub fn set_hotkeys(bindings: &[HotkeyBinding], press_hold_mode: bool) -> Result<(), String> {
+    if bindings.len() > MAX_DICTATION_BINDINGS {
+        return Err(format!("听写快捷键不能超过 {MAX_DICTATION_BINDINGS} 个"));
     }
-}
-
-/// 清除语音输入热键（恢复未设置状态，语音输入将无法通过全局快捷键触发）。
-pub fn clear_hotkey() {
-    TARGET_VK.store(0, Ordering::SeqCst);
-    TARGET_MODS.store(0, Ordering::SeqCst);
-    PRESS_HOLD_MODE.store(false, Ordering::SeqCst);
-    PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
-    TRIGGERED.store(false, Ordering::SeqCst);
+    let generation = HOTKEY_GENERATION
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1);
+    for slot in 0..MAX_DICTATION_BINDINGS {
+        TARGET_VKS[slot].store(0, Ordering::SeqCst);
+        TARGET_MODS[slot].store(0, Ordering::SeqCst);
+        TRIGGERED[slot].store(false, Ordering::SeqCst);
+        PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
+        PRESS_HOLD_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
+    }
+    if let Some(ids) = BINDING_PROFILE_IDS.get() {
+        *ids.write().map_err(|_| "快捷键方案锁失败".to_string())? = bindings
+            .iter()
+            .map(|binding| binding.profile_id.clone())
+            .collect();
+    }
+    PRESS_HOLD_MODE.store(press_hold_mode, Ordering::SeqCst);
+    for (slot, binding) in bindings.iter().enumerate() {
+        TARGET_MODS[slot].store(binding.mods, Ordering::SeqCst);
+        TARGET_VKS[slot].store(binding.vk, Ordering::SeqCst);
+        if is_lock_key(binding.vk) && !press_hold_mode {
+            force_lock_off(binding.vk);
+        }
+    }
+    crate::dlog!(
+        "[hotkey] 已应用 {} 个听写快捷键，generation={generation}",
+        bindings.len()
+    );
+    Ok(())
 }
 
 /// 设置实时字幕专用热键（与语音输入完全独立）。
@@ -326,27 +380,44 @@ fn modifiers_match(mods: u8) -> bool {
         && ((mods & MOD_WIN != 0) == win)
 }
 
-fn emit_toggle() {
-    if let Some(app) = APP.get() {
-        crate::application::dictation::request_toggle(app.clone());
+fn profile_for_signal(signal: HotkeySignal) -> Option<Option<String>> {
+    if HOTKEY_GENERATION.load(Ordering::SeqCst) != signal.generation {
+        return None;
+    }
+    BINDING_PROFILE_IDS
+        .get()?
+        .read()
+        .ok()?
+        .get(signal.slot as usize)
+        .cloned()
+}
+
+fn emit_toggle(signal: HotkeySignal) {
+    if let (Some(app), Some(profile_id)) = (APP.get(), profile_for_signal(signal)) {
+        crate::application::dictation::request_toggle_with_profile(app.clone(), profile_id);
     }
 }
 
-fn emit_press_start(sequence: u32, delay_ms: u32) {
+fn emit_press_start(signal: HotkeySignal, sequence: u32, delay_ms: u32, immediate: bool) {
     std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
-    if !TRIGGERED.load(Ordering::SeqCst)
-        || PRESS_HOLD_SEQUENCE.load(Ordering::SeqCst) != sequence
+    let slot = signal.slot as usize;
+    if slot >= MAX_DICTATION_BINDINGS
+        || HOTKEY_GENERATION.load(Ordering::SeqCst) != signal.generation
+        || (!immediate
+            && (!TRIGGERED[slot].load(Ordering::SeqCst)
+                || PRESS_HOLD_SEQUENCE[slot].load(Ordering::SeqCst) != sequence))
     {
         return;
     }
-    PRESS_HOLD_STARTED.store(true, Ordering::SeqCst);
-    if let Some(app) = APP.get() {
-        crate::application::dictation::request_start(app.clone());
+    PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
+    if let (Some(app), Some(profile_id)) = (APP.get(), profile_for_signal(signal)) {
+        crate::application::dictation::request_start_with_profile(app.clone(), profile_id);
     }
 }
 
-fn emit_press_end() {
-    if let Some(app) = APP.get() {
+fn emit_press_end(signal: HotkeySignal) {
+    if HOTKEY_GENERATION.load(Ordering::SeqCst) == signal.generation {
+        let Some(app) = APP.get() else { return };
         crate::application::dictation::request_stop(app.clone());
     }
 }
@@ -431,47 +502,58 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             }
         }
 
-        let target = TARGET_VK.load(Ordering::SeqCst);
-        let mods = TARGET_MODS.load(Ordering::SeqCst);
-
-        if target != 0 && vk == target {
+        let generation = HOTKEY_GENERATION.load(Ordering::SeqCst);
+        let press_hold_mode = PRESS_HOLD_MODE.load(Ordering::SeqCst);
+        let mut matched_lock_key = false;
+        for slot in 0..MAX_DICTATION_BINDINGS {
+            let target = TARGET_VKS[slot].load(Ordering::SeqCst);
+            if target == 0 || target != vk {
+                continue;
+            }
             let lock = is_lock_key(target);
-            let press_hold_mode = PRESS_HOLD_MODE.load(Ordering::SeqCst);
-            if is_down {
-                if modifiers_match(mods) {
-                    // 长按只在第一次按下触发一次。
-                    if !TRIGGERED.swap(true, Ordering::SeqCst) {
-                        if press_hold_mode {
-                            PRESS_HOLD_STARTED.store(false, Ordering::SeqCst);
-                            let sequence = PRESS_HOLD_SEQUENCE.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                            let delay_ms = PRESS_HOLD_START_MS.load(Ordering::SeqCst);
-                            crate::dlog!("[hotkey] 触发长按开始候选 (vk={vk:#04x})");
-                            signal_press_start(sequence, delay_ms);
-                        } else {
-                            crate::dlog!("[hotkey] 触发 toggle (vk={vk:#04x})");
-                            signal_toggle();
+            matched_lock_key |= lock;
+            let signal = HotkeySignal {
+                slot: slot as u8,
+                generation,
+            };
+            if is_down && modifiers_match(TARGET_MODS[slot].load(Ordering::SeqCst)) {
+                if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
+                    if press_hold_mode {
+                        PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
+                        let sequence = PRESS_HOLD_SEQUENCE[slot]
+                            .fetch_add(1, Ordering::SeqCst)
+                            .wrapping_add(1);
+                        let immediate = DICTATION_ACTIVE.load(Ordering::SeqCst);
+                        if immediate {
+                            PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
                         }
+                        let delay_ms = if immediate {
+                            0
+                        } else {
+                            PRESS_HOLD_START_MS.load(Ordering::SeqCst)
+                        };
+                        crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
+                        signal_press_start(signal, sequence, delay_ms, immediate);
+                    } else {
+                        crate::dlog!("[hotkey] 触发 toggle (slot={slot}, vk={vk:#04x})");
+                        signal_toggle(signal);
                     }
-                }
-                if lock {
-                    // 普通模式吞掉锁定键；长按模式先吞掉，若短按释放再模拟一次系统点击。
-                    return LRESULT(1);
                 }
             } else if is_up {
-                let was_triggered = TRIGGERED.swap(false, Ordering::SeqCst);
-                let press_hold_started = PRESS_HOLD_STARTED.swap(false, Ordering::SeqCst);
+                let was_triggered = TRIGGERED[slot].swap(false, Ordering::SeqCst);
+                let press_hold_started = PRESS_HOLD_STARTED[slot].swap(false, Ordering::SeqCst);
                 if was_triggered && press_hold_mode {
-                    crate::dlog!("[hotkey] 触发长按结束 (vk={vk:#04x})");
-                    signal_press_end();
+                    crate::dlog!("[hotkey] 触发长按结束 (slot={slot}, vk={vk:#04x})");
+                    signal_press_end(signal);
                 }
-                if lock {
-                    if press_hold_mode && was_triggered && !press_hold_started {
-                        unsafe { tap_key(vk) };
-                    }
-                    // 成对吞掉 keyup，避免下游收到孤立的 keyup。
-                    return LRESULT(1);
+                if lock && press_hold_mode && was_triggered && !press_hold_started {
+                    unsafe { tap_key(vk) };
                 }
             }
+        }
+        if matched_lock_key {
+            // 普通模式吞掉锁定键；长按模式短按释放时已模拟一次系统点击。
+            return LRESULT(1);
         }
 
         let sub_target = SUB_TARGET_VK.load(Ordering::SeqCst);
@@ -556,4 +638,50 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
         _ => return None,
     };
     Some(vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiple_bindings_replace_slots_and_advance_generation() {
+        let before = HOTKEY_GENERATION.load(Ordering::SeqCst);
+        set_hotkeys(
+            &[
+                HotkeyBinding {
+                    vk: 0x78,
+                    mods: MOD_CTRL,
+                    profile_id: None,
+                },
+                HotkeyBinding {
+                    vk: 0x79,
+                    mods: MOD_SHIFT,
+                    profile_id: Some("smart".into()),
+                },
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(TARGET_VKS[0].load(Ordering::SeqCst), 0x78);
+        assert_eq!(TARGET_VKS[1].load(Ordering::SeqCst), 0x79);
+        assert_eq!(TARGET_MODS[1].load(Ordering::SeqCst), MOD_SHIFT);
+        assert_ne!(HOTKEY_GENERATION.load(Ordering::SeqCst), before);
+
+        set_hotkeys(&[], false).unwrap();
+        assert_eq!(TARGET_VKS[0].load(Ordering::SeqCst), 0);
+        assert_eq!(TARGET_VKS[1].load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn binding_count_is_bounded_for_hook_safety() {
+        let bindings = (0..=MAX_DICTATION_BINDINGS)
+            .map(|index| HotkeyBinding {
+                vk: 0x70 + index as u16,
+                mods: 0,
+                profile_id: None,
+            })
+            .collect::<Vec<_>>();
+        assert!(set_hotkeys(&bindings, false).is_err());
+    }
 }

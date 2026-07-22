@@ -1,22 +1,19 @@
 import { Field } from "@/components/ui/Field";
-import { Input, Select } from "@/components/ui/Input";
-import { ClearIcon } from "@/components/ui/icons";
-import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Input";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { cn } from "@/lib/cn";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { useAudioDevices } from "@/features/audio/devices";
-import { startShortcutCapture, clearShortcut, setInjectMethod, setPressHoldMode } from "@/features/dictation/controller";
-import { InputAffixButton } from "@/components/ui/InputAffixButton";
+import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
+import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 
 const DEFAULT_INPUT_VALUE = "";
 export function DictationShortcutsPanel() {
   useModelCatalogRevision();
-  const { capturing, shortcutLabel, injectMethod, pressHoldMode } = useDictationStore();
+  const { shortcut, injectMethod, pressHoldMode } = useDictationStore();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
   const patchDictPrefs = useDictPrefs((s) => s.patch);
@@ -55,28 +52,12 @@ export function DictationShortcutsPanel() {
 
       <SettingsSection title="输入行为">
         <FormGrid>
-          <Field label="全局快捷键">
-            <div className="flex items-stretch gap-2">
-              <div className="relative min-w-0 flex-1">
-                <Input
-                  readOnly
-                  value={capturing ? "请按下按键…" : shortcutLabel}
-                  placeholder="未设置"
-                  className={cn(
-                    capturing && "border-[var(--accent-ring)]",
-                    !capturing && shortcutLabel && "pr-11",
-                  )}
-                />
-                {!capturing && shortcutLabel && (
-                  <InputAffixButton label="清除快捷键" onClick={clearShortcut}>
-                    <ClearIcon />
-                  </InputAffixButton>
-                )}
-              </div>
-              <Button className="shrink-0 self-stretch" onClick={startShortcutCapture}>
-                {capturing ? "取消" : "修改"}
-              </Button>
-            </div>
+          <Field label="主快捷键">
+            <ShortcutRecorder
+              value={shortcut}
+              onChange={setMainShortcut}
+              onClear={() => setMainShortcut({ keyCode: "", ctrl: false, shift: false, alt: false, meta: false })}
+            />
           </Field>
           <Field label="触发方式">
             <Select
@@ -98,9 +79,9 @@ export function DictationShortcutsPanel() {
           </Field>
         </FormGrid>
         <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          「单击切换」为按一次开始、再按一次结束；「长按说话」为按住开始、松手结束，Caps Lock
-          短按仍保留系统大小写切换。过程中按 Esc 可取消。点击「修改」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
-          清除后无法用全局快捷键触发，仍可在"语音输入"页手动点击开始/停止触发。
+          主快捷键跟随当前软件的场景规则。「单击切换」为按一次开始、再按一次结束；「长按说话」为按住开始、松手结束，Caps Lock
+          短按仍保留系统大小写切换。过程中按 Esc 可取消。点击「录入」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
+          清除后仍可使用快捷键方案，或在“语音输入”页手动开始。
         </p>
       </SettingsSection>
     </div>

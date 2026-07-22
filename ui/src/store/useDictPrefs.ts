@@ -579,6 +579,8 @@ export const useDictPrefs = create<DictPrefsState>((set, get) => ({
     // 在唯一的写入口把失效引用降级为"跟随全局"，删模板才不会卡住所有设置的保存。
     if (partial.smartTemplates) {
       next.appProfiles = pruneProfileTemplates(next.appProfiles, next.smartTemplates);
+      const { pruneShortcutProfileTemplates } = await import("@/features/dictation/hotkeys");
+      await pruneShortcutProfileTemplates(next.smartTemplates.map((template) => template.id));
     }
     await cmd(CMD.updateAppSettings, { domain: "dictation", value: next });
     persist(next); set({ prefs: next });
