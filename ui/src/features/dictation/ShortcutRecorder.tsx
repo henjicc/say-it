@@ -15,9 +15,10 @@ interface ShortcutRecorderProps {
   onChange: (shortcut: ShortcutCombo) => void | Promise<void>;
   onClear?: () => void | Promise<void>;
   disabled?: boolean;
+  ariaLabel?: string;
 }
 
-export function ShortcutRecorder({ value, onChange, onClear, disabled }: ShortcutRecorderProps) {
+export function ShortcutRecorder({ value, onChange, onClear, disabled, ariaLabel = "快捷键" }: ShortcutRecorderProps) {
   const [capturing, setCapturing] = useState(false);
   const cancelRef = useRef<(() => void) | null>(null);
 
@@ -49,6 +50,7 @@ export function ShortcutRecorder({ value, onChange, onClear, disabled }: Shortcu
         <Input
           readOnly
           disabled={disabled}
+          aria-label={ariaLabel}
           value={capturing ? "请按下按键…" : label}
           placeholder="未设置"
           className={cn(capturing && "border-[var(--accent-ring)]", !capturing && label && onClear && "pr-11")}
@@ -59,7 +61,12 @@ export function ShortcutRecorder({ value, onChange, onClear, disabled }: Shortcu
           </InputAffixButton>
         )}
       </div>
-      <Button disabled={disabled} className="shrink-0 self-stretch" onClick={toggleCapture}>
+      <Button
+        disabled={disabled}
+        className="shrink-0 self-stretch"
+        aria-label={capturing ? `取消录入${ariaLabel}` : `录入${ariaLabel}`}
+        onClick={toggleCapture}
+      >
         {capturing ? "取消" : "录入"}
       </Button>
     </div>

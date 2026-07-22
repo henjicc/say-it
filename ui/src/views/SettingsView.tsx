@@ -8,6 +8,7 @@ import { SettingsMicCuePanel } from "@/views/SettingsMicCuePanel";
 import { SettingsAppearancePanel } from "@/views/SettingsAppearancePanel";
 import { SettingsComparePanel } from "@/views/SettingsComparePanel";
 import { SettingsAdvancedPanel } from "@/views/SettingsAdvancedPanel";
+import { SettingsKeyBindingsPanel } from "@/views/SettingsKeyBindingsPanel";
 import { useUiStore, type SettingsTabKey } from "@/store/useUiStore";
 
 const TABS: TabItem<SettingsTabKey>[] = [
@@ -15,6 +16,7 @@ const TABS: TabItem<SettingsTabKey>[] = [
   { key: "plugins", label: "插件" },
   { key: "audio", label: "音频" },
   { key: "general", label: "通用" },
+  { key: "keys", label: "按键" },
   { key: "compare", label: "对比" },
   { key: "advanced", label: "高级" },
 ];
@@ -27,7 +29,7 @@ export function SettingsView() {
     <div className="flex flex-col gap-7">
       <PageHeader
         title="设置"
-        description="配置识别模型与密钥、插件、麦克风与提示音、启动与外观，并支持多模型效果对比与音频链路调校。"
+        description="配置识别模型与密钥、插件、麦克风、启动与外观，并集中管理按键、模型对比和音频链路。"
       />
 
       <Tabs<SettingsTabKey>
@@ -57,6 +59,7 @@ export function SettingsView() {
             <SettingsAppearancePanel />
           </div>
         )}
+        {tab === "keys" && <SettingsKeyBindingsPanel />}
         {tab === "compare" && <SettingsComparePanel />}
         {tab === "advanced" && <SettingsAdvancedPanel />}
       </div>
