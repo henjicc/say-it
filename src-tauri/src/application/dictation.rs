@@ -157,6 +157,9 @@ struct DictationPrefs {
     active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind,
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
+    /// 新建配置默认开启；旧配置缺失字段时必须保持原先的 eager OCR 行为。
+    #[serde(default = "legacy_ocr_follow_smart_processing_min_chars")]
+    active_app_context_ocr_follow_smart_processing_min_chars: bool,
     active_app_context_blocked_apps: Vec<String>,
     app_profiles_enabled: bool,
     app_profiles: Vec<AppProfile>,
@@ -187,6 +190,7 @@ impl Default for DictationPrefs {
             active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind::default(),
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
+            active_app_context_ocr_follow_smart_processing_min_chars: true,
             active_app_context_blocked_apps: vec![],
             app_profiles_enabled: false,
             app_profiles: vec![],
@@ -197,6 +201,10 @@ impl Default for DictationPrefs {
             dsp: DspParams::default(),
         }
     }
+}
+
+fn legacy_ocr_follow_smart_processing_min_chars() -> bool {
+    false
 }
 
 impl DictationPrefs {
@@ -261,6 +269,16 @@ fn should_run_smart_processing(effective: &EffectivePostProcessing, text: &str) 
             || char_count >= effective.smart_processing_min_chars as usize)
 }
 
+fn should_defer_active_app_context_ocr(
+    prefs: &DictationPrefs,
+    effective: &EffectivePostProcessing,
+) -> bool {
+    prefs.active_app_context_ocr_follow_smart_processing_min_chars
+        && prefs.active_app_context_extraction_method
+            == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
+        && effective.smart_processing_min_chars > 0
+}
+
 #[derive(Default)]
 struct Session {
     epoch: u64,
@@ -282,7 +300,9 @@ struct Session {
     silence_streaming: bool,
     raw_done: Option<Arc<tokio::sync::Notify>>,
     temp_audio_path: Option<PathBuf>,
-    active_app_context: Option<crate::active_app_context::ContextCaptureHandle>,
+    active_app_context: Option<crate::active_app_context::DictationContextCaptureHandle>,
+    /// finalize 会把捕获句柄移出会话；保留独立令牌，让取消/会话替换仍能中断 OCR。
+    active_app_context_cancellation: Option<crate::active_app_context::ContextCaptureCancellation>,
 }
 
 impl Session {
@@ -358,7 +378,23 @@ pub(crate) fn request_start(app: AppHandle) {
 pub(crate) fn request_stop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = stop(app.clone()).await {
-            publish_state(&app, Some(e));
+            // fail 已在 operation 锁内发布 Failed；此处只补充 stop 提前失败的错误。
+            // 若新会话已经开始，不得把旧 stop 的错误附到新会话快照。
+            let should_publish = app
+                .state::<RuntimeState>()
+                .dictation_runtime
+                .session
+                .lock()
+                .map(|session| {
+                    matches!(
+                        session.phase,
+                        DictationPhase::Finishing | DictationPhase::ProcessingFile
+                    )
+                })
+                .unwrap_or(true);
+            if should_publish {
+                publish_state(&app, Some(e));
+            }
         }
     });
 }
@@ -533,6 +569,7 @@ async fn start(
             ),
         );
     }
+    let defer_active_app_context_ocr = should_defer_active_app_context_ocr(&prefs, &effective);
     let active_app_context = if effective.smart_processing_enabled {
         prefs
             .smart_templates
@@ -549,16 +586,20 @@ async fn start(
                     prefs.active_app_context_ocr_engine,
                     &prefs.active_app_context_ocr_approved_providers,
                 );
-                state.active_app_context.begin_capture(
+                state.active_app_context.begin_dictation_capture(
                     target,
                     prefs.active_app_context_blocked_apps.clone(),
                     prefs.active_app_context_extraction_method,
                     ocr_provider,
+                    defer_active_app_context_ocr,
                 )
             })
     } else {
         None
     };
+    let active_app_context_cancellation = active_app_context
+        .as_ref()
+        .map(crate::active_app_context::DictationContextCaptureHandle::cancellation);
     let info = crate::providers::registry::model_info(&prefs.asr_model)
         .cloned()
         .or_else(|| {
@@ -621,6 +662,7 @@ async fn start(
             effective: Some(effective),
             silence_streaming: false,
             active_app_context,
+            active_app_context_cancellation,
             ..Session::default()
         };
     }
@@ -671,6 +713,9 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
             s.phase = DictationPhase::Failed;
             s.mode = None;
             s.public_id = None;
+            if let Some(cancellation) = s.active_app_context_cancellation.take() {
+                cancellation.cancel();
+            }
             s.active_app_context.take();
             s.lease.take()
         });
@@ -887,14 +932,19 @@ async fn stop(app: AppHandle) -> Result<(), String> {
                 asr_stream_finish_inner(&id, &state)
                     .map(|_| spawn_finalize_timeout(app.clone(), epoch))
             } else {
+                // finalize 会短暂获取同一把 operation 锁来原子提交 UI 终态；
+                // 没有 ASR 会话时这里是同步调用，必须先释放 stop 持有的锁。
+                drop(_guard);
                 finalize(app.clone(), epoch).await;
-                Ok(())
+                return Ok(());
             }
         }
         Some(DictationMode::File) => start_file_job(app.clone(), epoch, raw, rate, prefs).await,
         None => Ok(()),
     };
     if let Err(error) = result {
+        // fail 也会获取 operation 锁来保护终态 UI；先结束 stop 的临界区。
+        drop(_guard);
         return fail(app, epoch, error).await;
     }
     Ok(())
@@ -967,7 +1017,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (asr, file_job, lease, temp_path, active_app_context) = {
+    let (asr, file_job, lease, temp_path, active_app_context, active_app_context_cancellation) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -979,6 +1029,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             s.lease.take(),
             s.temp_audio_path.take(),
             s.active_app_context.take(),
+            s.active_app_context_cancellation.take(),
         );
         s.epoch = state
             .dictation_runtime
@@ -993,6 +1044,9 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.raw_samples.clear();
         ids
     };
+    if let Some(cancellation) = active_app_context_cancellation {
+        cancellation.cancel();
+    }
     drop(active_app_context);
     let _ = pause_backend_mic_inner(&state);
     let _ = release_backend_mic_inner(&state);
@@ -1146,8 +1200,44 @@ fn spawn_finalize_timeout(app: AppHandle, epoch: u64) {
     });
 }
 
+fn finalize_session_is_current(
+    state: &RuntimeState,
+    epoch: u64,
+    cancellation: Option<&crate::active_app_context::ContextCaptureCancellation>,
+) -> bool {
+    !cancellation.is_some_and(|cancellation| cancellation.is_cancelled())
+        && state
+            .dictation_runtime
+            .session
+            .lock()
+            .map(|session| session.epoch == epoch && session.phase == DictationPhase::Injecting)
+            .unwrap_or(false)
+}
+
+fn cleanup_stale_finalize(
+    state: &RuntimeState,
+    lease: Option<AudioLease>,
+    temp_path: Option<PathBuf>,
+) {
+    if let Some(lease) = lease {
+        let _ = state.audio_session.release(&lease);
+    }
+    remove_temp(temp_path);
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
-    let (text, prefs, effective, method, mode, lease, asr, temp_path, active_app_context) = {
+    let (
+        text,
+        prefs,
+        effective,
+        method,
+        mode,
+        lease,
+        asr,
+        temp_path,
+        active_app_context,
+        active_app_context_cancellation,
+    ) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
             return;
@@ -1182,18 +1272,30 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.asr_session_id.take(),
             s.temp_audio_path.take(),
             s.active_app_context.take(),
+            s.active_app_context_cancellation.clone(),
         )
     };
-    publish_state(&app, None);
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
-    if should_process_smart_text {
-        let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
-    }
     if let Some(id) = asr {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
     }
+    let state = app.state::<RuntimeState>();
+    {
+        let operation = state.dictation_runtime.operation.clone();
+        let _guard = operation.lock().await;
+        if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        }
+        publish_state(&app, None);
+        if should_process_smart_text {
+            let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+        }
+    }
     let active_app_context = if !should_process_smart_text {
+        // 延迟截图不会自行进入 OCR；尽早释放句柄与截图，短文本不占用后续资源。
+        drop(active_app_context);
         if effective.smart_processing_enabled && !text.is_empty() {
             crate::development_debug_log(
                 "dictation",
@@ -1206,15 +1308,20 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         String::new()
     } else if let Some(handle) = active_app_context {
-        let state = app.state::<RuntimeState>();
-        let captured = state.active_app_context.resolve_for_dictation(handle).await;
-        let is_current = state
-            .dictation_runtime
-            .session
-            .lock()
-            .map(|session| session.epoch == epoch)
-            .unwrap_or(false);
-        if is_current {
+        let captured = state
+            .active_app_context
+            .resolve_dictation_capture(handle)
+            .await;
+        let current_session = state.dictation_runtime.session.lock().ok();
+        if current_session.as_deref().is_some_and(|session| {
+            session.epoch == epoch
+                && session.phase == DictationPhase::Injecting
+                && !active_app_context_cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| cancellation.is_cancelled())
+        }) {
+            // 保持会话锁直到 summary 写入完成，避免取消或新会话插在
+            // current 检查与 remember 之间，让旧会话覆盖最近上下文。
             state.active_app_context.remember(&captured);
             crate::development_debug_log(
                 "dictation",
@@ -1232,6 +1339,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         String::new()
     };
+    // 延迟 OCR 最长会等待新的 5 秒截止。等待期间若用户取消或开始了新会话，
+    // 旧会话不得继续调用智能处理，更不能注入文本。
+    if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+        cleanup_stale_finalize(&state, lease, temp_path);
+        return;
+    }
     // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
     // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
     let smart_processed = if should_process_smart_text {
@@ -1248,15 +1361,22 @@ async fn finalize(app: AppHandle, epoch: u64) {
             let _ = fail(app, epoch, "当前智能处理模板不存在".to_string()).await;
             return;
         };
-        let state = app.state::<RuntimeState>();
-        match crate::application::smart_text::process_smart_text(
+        if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        }
+        let smart_result = crate::application::smart_text::process_smart_text(
             &state,
             &text,
             &template.prompt,
             &active_app_context,
         )
-        .await
-        {
+        .await;
+        if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        }
+        match smart_result {
             Ok(value) => value,
             Err(error) => {
                 if let Some(lease) = &lease {
@@ -1282,29 +1402,56 @@ async fn finalize(app: AppHandle, epoch: u64) {
             return;
         }
     };
+    if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+        cleanup_stale_finalize(&state, lease, temp_path);
+        return;
+    }
+    // 与 start/cancel 串行化“最后一次 current 检查 + 注入 + 会话提交 + UI 终态”。
+    // cancel 若先取得锁，本次不会注入；注入若已开始，则 cancel 会在其完成后收尾。
+    let operation = state.dictation_runtime.operation.clone();
+    let _guard = operation.lock().await;
+    if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
+        cleanup_stale_finalize(&state, lease, temp_path);
+        return;
+    }
     let result = if processed.is_empty() {
         Ok(())
     } else {
         inject_text_inner(processed.clone(), Some(method)).await
     };
-    let state = app.state::<RuntimeState>();
     if let Some(lease) = lease {
         let _ = state.audio_session.release(&lease);
     }
     remove_temp(temp_path);
     if let Err(e) = result {
+        // fail 负责在同一把 operation 锁下提交失败终态，避免与 start/cancel 交错。
+        drop(_guard);
         let _ = fail(app, epoch, e).await;
         return;
     }
-    if let Ok(mut s) = state.dictation_runtime.session.lock() {
-        if s.epoch == epoch {
+    let committed = if let Ok(mut s) = state.dictation_runtime.session.lock() {
+        if s.epoch == epoch
+            && s.phase == DictationPhase::Injecting
+            && !active_app_context_cancellation
+                .as_ref()
+                .is_some_and(|cancellation| cancellation.is_cancelled())
+        {
             s.phase = DictationPhase::Idle;
             s.mode = None;
             s.public_id = None;
             s.file_job_id = None;
             s.committed.clear();
             s.segment.clear();
+            s.active_app_context_cancellation = None;
+            true
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    if !committed {
+        return;
     }
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
@@ -1319,13 +1466,17 @@ async fn finalize(app: AppHandle, epoch: u64) {
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let (lease, temp_path, asr, file_job, active_app_context) = {
+    let operation = state.dictation_runtime.operation.clone();
+    let _guard = operation.lock().await;
+    let (lease, temp_path, asr, file_job, active_app_context, active_app_context_cancellation) = {
         let mut s = state
             .dictation_runtime
             .session
             .lock()
             .map_err(|_| "听写状态锁失败")?;
-        if s.epoch != epoch {
+        // 迟到的错误不得把已经正常结束的同 epoch 会话重新标成失败，
+        // 也无需重复提交已经失败会话的 UI 与资源清理。
+        if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
         s.phase = DictationPhase::Failed;
@@ -1335,8 +1486,12 @@ async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
             s.asr_session_id.take(),
             s.file_job_id.take(),
             s.active_app_context.take(),
+            s.active_app_context_cancellation.take(),
         )
     };
+    if let Some(cancellation) = active_app_context_cancellation {
+        cancellation.cancel();
+    }
     drop(active_app_context);
     if let Some(lease) = lease {
         let _ = state.audio_session.release(&lease);
@@ -1952,6 +2107,43 @@ fn play_cue_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocr_follow_min_chars_is_enabled_for_new_defaults_but_not_legacy_json() {
+        assert!(DictationPrefs::default().active_app_context_ocr_follow_smart_processing_min_chars);
+        let legacy: DictationPrefs = serde_json::from_value(json!({})).unwrap();
+        assert!(!legacy.active_app_context_ocr_follow_smart_processing_min_chars);
+    }
+
+    #[test]
+    fn ocr_is_deferred_only_for_an_enabled_positive_minimum() {
+        let effective = EffectivePostProcessing {
+            local_rules_enabled: false,
+            smart_processing_enabled: true,
+            smart_processing_min_chars: 20,
+            smart_template_id: String::new(),
+            matched_profile: None,
+        };
+        let mut prefs = DictationPrefs {
+            active_app_context_extraction_method:
+                crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
+            active_app_context_ocr_follow_smart_processing_min_chars: true,
+            ..Default::default()
+        };
+        assert!(should_defer_active_app_context_ocr(&prefs, &effective));
+
+        let mut immediate = effective.clone();
+        immediate.smart_processing_min_chars = 0;
+        assert!(!should_defer_active_app_context_ocr(&prefs, &immediate));
+        prefs.active_app_context_extraction_method =
+            crate::active_app_context::ActiveAppContextExtractionMethod::NativeText;
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+        prefs.active_app_context_extraction_method =
+            crate::active_app_context::ActiveAppContextExtractionMethod::Ocr;
+        prefs.active_app_context_ocr_follow_smart_processing_min_chars = false;
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+    }
+
     #[test]
     fn epoch_and_single_injection_are_explicit() {
         let runtime = DictationRuntime::default();
@@ -2032,15 +2224,18 @@ mod tests {
 
     #[test]
     fn profile_can_override_smart_processing_min_chars() {
-        let prefs = prefs_with_profiles(vec![AppProfile {
+        let mut prefs = prefs_with_profiles(vec![AppProfile {
             matchers: vec!["code.exe".into()],
             smart_processing_enabled: Some(true),
             smart_processing_min_chars: Some(0),
             ..Default::default()
         }]);
+        prefs.active_app_context_extraction_method =
+            crate::active_app_context::ActiveAppContextExtractionMethod::Ocr;
         let effective = prefs.resolve_post_processing(Some(&identity("code.exe")));
         assert_eq!(effective.smart_processing_min_chars, 0);
         assert!(should_run_smart_processing(&effective, "短句"));
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
     }
 
     #[test]

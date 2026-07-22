@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select } from "@/components/ui/Input";
@@ -8,15 +8,14 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
+import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { cn } from "@/lib/cn";
-import { CMD, cmd } from "@/lib/tauri";
 import {
   DEFAULT_SMART_PROCESSING_MIN_CHARS,
   MAX_APP_PROFILES,
   MAX_SMART_PROCESSING_MIN_CHARS,
   useDictPrefs,
   type AppProfile,
-  type RunningApp,
 } from "@/store/useDictPrefs";
 
 /** 三态覆盖项在下拉框里的取值；`inherit` 落库为 null。 */
@@ -59,28 +58,9 @@ export function AppProfilesPanel() {
   const profiles = prefs.appProfiles;
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [runningApps, setRunningApps] = useState<RunningApp[]>([]);
-  const [loadingApps, setLoadingApps] = useState(false);
-  const [appsError, setAppsError] = useState("");
-
-  const loadRunningApps = useCallback(async () => {
-    setLoadingApps(true);
-    setAppsError("");
-    try {
-      setRunningApps(await cmd<RunningApp[]>(CMD.listRunningApps));
-    } catch (error) {
-      setAppsError(`读取软件列表失败：${String(error)}`);
-    } finally {
-      setLoadingApps(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadRunningApps();
-  }, [loadRunningApps]);
 
   const updateProfile = (id: string, partial: Partial<AppProfile>) => {
-    patch({ appProfiles: profiles.map((p) => (p.id === id ? { ...p, ...partial } : p)) });
+    return patch({ appProfiles: profiles.map((p) => (p.id === id ? { ...p, ...partial } : p)) });
   };
   const moveProfile = (index: number, dir: -1 | 1) => {
     const target = index + dir;
@@ -100,18 +80,6 @@ export function AppProfilesPanel() {
     const profile = newProfile();
     patch({ appProfiles: [...profiles, profile] });
     setEditingId(profile.id);
-  };
-
-  /** 选中的进程名可能不在当前运行列表里（软件没开），补一条选项以免回显丢失。 */
-  const appOptions = (selected: string) => {
-    const options = runningApps.map((app) => ({
-      value: app.processName,
-      label: app.windowTitle ? `${app.appName} — ${app.windowTitle}` : app.appName,
-    }));
-    if (selected && !options.some((option) => option.value === selected)) {
-      options.unshift({ value: selected, label: `${selected}（未运行）` });
-    }
-    return options;
   };
 
   const summarize = (profile: AppProfile) => {
@@ -225,47 +193,19 @@ export function AppProfilesPanel() {
                 {open && (
                   <div className="border-t border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-4">
                     <FormGrid>
-                      <Field
+                      <RunningAppPicker
+                        value={matcher}
                         label="软件"
                         hint="按进程名匹配，大小写不敏感。列表只显示当前打开的软件。"
-                        actions={
-                          <IconButton
-                            label="刷新软件列表"
-                            disabled={loadingApps}
-                            onClick={() => void loadRunningApps()}
-                          >
-                            <RefreshCw
-                              className={cn("h-4 w-4", loadingApps && "animate-spin")}
-                              strokeWidth={1.8}
-                              aria-hidden
-                            />
-                          </IconButton>
+                        onClear={() => updateProfile(profile.id, { matchers: [] })}
+                        onSelect={(selection) =>
+                          updateProfile(profile.id, {
+                            matchers: [selection.processName],
+                            // 名称留空时跟随所选软件，用户手动改过就不再覆盖。
+                            name: profile.name.trim() === "" ? selection.appName : profile.name,
+                          })
                         }
-                      >
-                        <Select
-                          searchable
-                          searchPlaceholder="搜索软件…"
-                          value={matcher}
-                          onChange={(e) =>
-                            updateProfile(profile.id, {
-                              matchers: e.target.value ? [e.target.value] : [],
-                              // 名称留空时跟随所选软件，用户手动改过就不再覆盖。
-                              name:
-                                profile.name.trim() === ""
-                                  ? runningApps.find((app) => app.processName === e.target.value)
-                                      ?.appName ?? profile.name
-                                  : profile.name,
-                            })
-                          }
-                        >
-                          <option value="">请选择软件</option>
-                          {appOptions(matcher).map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
+                      />
 
                       <Field label="规则名称" hint="仅用于在列表里辨认，可留空。">
                         <Input
@@ -387,12 +327,6 @@ export function AppProfilesPanel() {
             );
           })}
         </div>
-
-        {appsError && (
-          <p role="status" className="text-xs text-[var(--color-err)]">
-            {appsError}
-          </p>
-        )}
 
         <div>
           <Button size="sm" disabled={profiles.length >= MAX_APP_PROFILES} onClick={addProfile}>
