@@ -126,16 +126,24 @@ bool sayit_macos_place_indicator_window(
         NSWindow *window = (__bridge NSWindow *)nsWindow;
         NSScreen *screen = SayItIndicatorScreen(window);
         if (screen == nil) return;
+        NSRect frame = screen.frame;
         NSRect visible = screen.visibleFrame;
-        CGFloat x = NSMidX(visible) - width / 2.0;
+        CGFloat x;
         CGFloat y;
         if (anchor == 0) {
+            x = NSMidX(visible) - width / 2.0;
             y = NSMaxY(visible) - height - offsetY;
         } else if (anchor == 1) {
+            x = NSMidX(visible) - width / 2.0;
             // 正 offset 与其他平台保持一致：视觉上向屏幕下方移动。
             y = NSMidY(visible) - height / 2.0 - offsetY;
         } else {
-            y = NSMinY(visible) + offsetY;
+            // 底部 Dock 会抬高 visibleFrame 的下边缘，按该边缘自动适配 Dock 大小。
+            // Dock 在左/右侧时，下边缘没有被占用，因此水平居中和底部锚点都按完整屏幕计算。
+            BOOL hasBottomInset = NSMinY(visible) > NSMinY(frame) + 0.5;
+            CGFloat bottomEdge = hasBottomInset ? NSMinY(visible) : NSMinY(frame);
+            x = NSMidX(frame) - width / 2.0;
+            y = bottomEdge + offsetY;
         }
         [window setFrame:NSMakeRect(x, y, width, height) display:NO];
         success = true;
