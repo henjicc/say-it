@@ -111,7 +111,7 @@ fn main() {
     #[cfg(not(windows))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
-    let result = builder
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             match application::plugin_management::queue_provider_plugin_imports(
                 app,
@@ -433,7 +433,29 @@ fn main() {
             install_obs_overlay,
             uninstall_obs_overlay
         ])
-        .run(tauri::generate_context!());
-    active_app_context::shutdown();
-    result.expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    #[cfg(target_os = "macos")]
+    {
+        let exit_code = app.run_return(|app, event| {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if !has_visible_windows {
+                    if let Err(error) = ensure_main_window(app) {
+                        eprintln!("[window] Dock 重开主窗口失败: {error}");
+                    }
+                }
+            }
+        });
+        active_app_context::shutdown();
+        std::process::exit(exit_code);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.run(|_, _| {});
+        active_app_context::shutdown();
+    }
 }

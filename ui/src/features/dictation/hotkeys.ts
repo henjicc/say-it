@@ -1,6 +1,7 @@
 import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useDictationStore } from "@/store/useDictationStore";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
+import { shortcutModifierLabels } from "@/lib/platform";
 
 type Tone = "" | "ok" | "err";
 
@@ -50,7 +51,6 @@ let dictInjectMethod: "paste" | "type" = "paste";
 let dictPressHoldMode = false;
 let dictShortcutProfiles: DictationShortcutProfile[] = [];
 let settingsMutationRevision = 0;
-const metaKeyLabel = navigator.userAgent.includes("Macintosh") ? "⌘" : "Win";
 
 interface DictationSettingsSnapshot {
   mainShortcut: ShortcutCombo;
@@ -94,10 +94,10 @@ function prettyKeyName(code: string): string {
 export function shortcutLabel(shortcut: ShortcutCombo): string {
   if (!shortcut.keyCode) return "";
   const parts: string[] = [];
-  if (shortcut.ctrl) parts.push("Ctrl");
-  if (shortcut.alt) parts.push("Alt");
-  if (shortcut.shift) parts.push("Shift");
-  if (shortcut.meta) parts.push(metaKeyLabel);
+  if (shortcut.ctrl) parts.push(shortcutModifierLabels.ctrl);
+  if (shortcut.alt) parts.push(shortcutModifierLabels.alt);
+  if (shortcut.shift) parts.push(shortcutModifierLabels.shift);
+  if (shortcut.meta) parts.push(shortcutModifierLabels.meta);
   parts.push(prettyKeyName(shortcut.keyCode));
   return parts.join(" + ");
 }

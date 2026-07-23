@@ -15,6 +15,7 @@
   },
   "bundle": {
     "targets": ["nsis"],
+    "externalBin": ["binaries/context-probe"],
     "resources": [
       "resources/licenses/**/*",
       "target/release/onnxruntime.dll",

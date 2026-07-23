@@ -94,7 +94,7 @@ fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<
         let press_state = Arc::new(PortablePressState::default());
         if let Err(error) =
             app.global_shortcut()
-                .on_shortcut(shortcut.clone(), move |app, _, event| match event.state {
+                .on_shortcut(shortcut.as_str(), move |app, _, event| match event.state {
                     ShortcutState::Pressed => {
                         if press_hold_profile_id.is_none() {
                             if let Some(profile_id) = toggle_profile_id.clone() {
@@ -167,7 +167,7 @@ fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<
 
 fn unregister_shortcuts(app: &AppHandle, shortcuts: &[String]) {
     for shortcut in shortcuts {
-        let _ = app.global_shortcut().unregister(shortcut.clone());
+        let _ = app.global_shortcut().unregister(shortcut.as_str());
     }
 }
 
@@ -212,7 +212,7 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
 
 fn register_subtitle_shortcut(app: &AppHandle, shortcut: &str) -> Result<(), String> {
     app.global_shortcut()
-        .on_shortcut(shortcut.to_string(), |app, _, event| {
+        .on_shortcut(shortcut, |app, _, event| {
             if event.state == ShortcutState::Pressed {
                 crate::application::subtitles::request_toggle(app.clone());
             }
@@ -234,7 +234,7 @@ pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
         .map_err(|_| "字幕快捷键状态锁失败".to_string())?;
     let previous = current.take();
     if let Some(old) = &previous {
-        let _ = app.global_shortcut().unregister(old.clone());
+        let _ = app.global_shortcut().unregister(old.as_str());
     }
     if let Err(error) = register_subtitle_shortcut(app, &shortcut) {
         if let Some(old) = previous {
@@ -265,6 +265,30 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
         "Enter" => Some(0x0d),
         "Tab" => Some(0x09),
         "Escape" => Some(0x1b),
+        "Backspace" => Some(0x08),
+        "Backquote" => Some(0xc0),
+        "Backslash" => Some(0xdc),
+        "Minus" => Some(0xbd),
+        "Equal" => Some(0xbb),
+        "BracketLeft" => Some(0xdb),
+        "BracketRight" => Some(0xdd),
+        "Semicolon" => Some(0xba),
+        "Quote" => Some(0xde),
+        "Comma" => Some(0xbc),
+        "Period" => Some(0xbe),
+        "Slash" => Some(0xbf),
+        "ArrowLeft" => Some(0x25),
+        "ArrowUp" => Some(0x26),
+        "ArrowRight" => Some(0x27),
+        "ArrowDown" => Some(0x28),
+        "Insert" => Some(0x2d),
+        "Delete" => Some(0x2e),
+        "Home" => Some(0x24),
+        "End" => Some(0x23),
+        "PageUp" => Some(0x21),
+        "PageDown" => Some(0x22),
+        "Pause" => Some(0x13),
+        "PrintScreen" => Some(0x2c),
         value if value.len() == 4 && value.starts_with("Key") => {
             value.as_bytes().get(3).copied().map(u16::from)
         }
@@ -299,6 +323,30 @@ fn shortcut_string(vk: u16, mods: u8) -> Option<String> {
         0x0d => "Enter".to_string(),
         0x09 => "Tab".to_string(),
         0x1b => "Escape".to_string(),
+        0x08 => "Backspace".to_string(),
+        0xc0 => "Backquote".to_string(),
+        0xdc => "Backslash".to_string(),
+        0xbd => "Minus".to_string(),
+        0xbb => "Equal".to_string(),
+        0xdb => "BracketLeft".to_string(),
+        0xdd => "BracketRight".to_string(),
+        0xba => "Semicolon".to_string(),
+        0xde => "Quote".to_string(),
+        0xbc => "Comma".to_string(),
+        0xbe => "Period".to_string(),
+        0xbf => "Slash".to_string(),
+        0x25 => "ArrowLeft".to_string(),
+        0x26 => "ArrowUp".to_string(),
+        0x27 => "ArrowRight".to_string(),
+        0x28 => "ArrowDown".to_string(),
+        0x2d => "Insert".to_string(),
+        0x2e => "Delete".to_string(),
+        0x24 => "Home".to_string(),
+        0x23 => "End".to_string(),
+        0x21 => "PageUp".to_string(),
+        0x22 => "PageDown".to_string(),
+        0x13 => "Pause".to_string(),
+        0x2c => "PrintScreen".to_string(),
         0x41..=0x5a => char::from_u32(u32::from(vk))?.to_string(),
         0x30..=0x39 => char::from_u32(u32::from(vk))?.to_string(),
         0x70..=0x83 => format!("F{}", vk - 0x70 + 1),
@@ -312,6 +360,39 @@ fn unregister(slot: Option<&Mutex<Option<String>>>) {
     let Some(app) = APP.get() else { return };
     let Some(slot) = slot else { return };
     if let Some(shortcut) = slot.lock().expect("shortcut lock").take() {
-        let _ = app.global_shortcut().unregister(shortcut);
+        let _ = app.global_shortcut().unregister(shortcut.as_str());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_key_codes_convert_to_portable_accelerators() {
+        for (code, expected) in [
+            ("KeyA", "A"),
+            ("Digit7", "7"),
+            ("Backquote", "Backquote"),
+            ("ArrowLeft", "ArrowLeft"),
+            ("PageDown", "PageDown"),
+            ("F20", "F20"),
+        ] {
+            let vk = code_to_vk(code).expect("supported browser key code");
+            assert_eq!(shortcut_string(vk, 0).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn macos_default_shortcut_uses_command_shift_space() {
+        assert_eq!(
+            shortcut_string(0x20, MOD_WIN | MOD_SHIFT).as_deref(),
+            Some("Shift+CommandOrControl+Space")
+        );
+    }
+
+    #[test]
+    fn caps_lock_remains_unsupported_without_an_event_tap() {
+        assert_eq!(code_to_vk("CapsLock"), None);
     }
 }

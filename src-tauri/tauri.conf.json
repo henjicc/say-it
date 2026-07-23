@@ -32,7 +32,6 @@
         "mimeType": "application/x-sayit-package"
       }
     ],
-    "externalBin": ["binaries/context-probe"],
     "resources": [
       "resources/licenses/*"
     ],
