@@ -19,7 +19,9 @@ pub(crate) use crate::providers::alibabacloud::HotwordEntry;
 pub(crate) use crate::providers::connector::{AsrEvent, RealtimeAsrConnector};
 pub(crate) use base64::{engine::general_purpose::STANDARD, Engine as _};
 pub(crate) use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-pub(crate) use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
+#[cfg(not(target_os = "macos"))]
+pub(crate) use enigo::{Direction, Key};
+pub(crate) use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
 pub(crate) use futures_util::{SinkExt, StreamExt};
 pub(crate) use serde::{Deserialize, Serialize};
 pub(crate) use serde_json::{json, Value};
