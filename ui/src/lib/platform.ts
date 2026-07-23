@@ -2,6 +2,7 @@ const userAgent = navigator.userAgent;
 
 export const isMacOS = userAgent.includes("Macintosh");
 export const isWindows = userAgent.includes("Windows");
+export const systemOcrLabel = isMacOS ? "macOS 系统 OCR" : "Windows 系统 OCR";
 
 export const shortcutModifierLabels = isMacOS
   ? { ctrl: "⌃", alt: "⌥", shift: "⇧", meta: "⌘" }

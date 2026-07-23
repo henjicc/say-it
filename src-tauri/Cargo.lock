@@ -5776,6 +5776,7 @@ dependencies = [
  "arboard",
  "axum",
  "base64 0.22.1",
+ "cc",
  "cpal",
  "ebur128",
  "ed25519-dalek",

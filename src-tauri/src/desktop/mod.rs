@@ -2,7 +2,10 @@ pub(crate) mod audio_devices;
 pub(crate) mod backend_mic;
 #[cfg(windows)]
 pub(crate) mod backend_system_audio;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "backend_system_audio_macos.rs"]
+pub(crate) mod backend_system_audio;
+#[cfg(not(any(windows, target_os = "macos")))]
 #[path = "backend_system_audio_unsupported.rs"]
 pub(crate) mod backend_system_audio;
 pub(crate) mod context_debug;

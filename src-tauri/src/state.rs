@@ -98,11 +98,7 @@ pub(crate) struct MainWindowPlacement {
 }
 
 pub(crate) fn default_key_code() -> String {
-    if cfg!(target_os = "macos") {
-        "Space".to_string()
-    } else {
-        "CapsLock".to_string()
-    }
+    "CapsLock".to_string()
 }
 
 pub(crate) fn default_inject_method() -> String {
@@ -196,9 +192,9 @@ impl Default for DictationSettings {
         Self {
             key_code: default_key_code(),
             ctrl: false,
-            shift: cfg!(target_os = "macos"),
+            shift: false,
             alt: false,
-            meta: cfg!(target_os = "macos"),
+            meta: false,
             inject_method: default_inject_method(),
             press_hold_mode: false,
             shortcut_profiles: Vec::new(),
@@ -261,6 +257,13 @@ pub(crate) fn apply_dictation_hotkey(settings: &DictationSettings) -> Result<(),
 mod dictation_settings_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn default_dictation_shortcut_is_caps_lock_without_modifiers() {
+        let settings = DictationSettings::default();
+        assert_eq!(settings.key_code, "CapsLock");
+        assert!(!settings.ctrl && !settings.shift && !settings.alt && !settings.meta);
+    }
 
     #[test]
     fn legacy_dictation_settings_migrate_to_no_shortcut_profiles() {

@@ -1,4 +1,6 @@
 mod debug;
+#[cfg(target_os = "macos")]
+mod macos;
 mod model;
 #[cfg(windows)]
 mod native_probe;
@@ -7,7 +9,7 @@ mod normalize;
 mod ocr;
 #[cfg(windows)]
 mod screen_capture;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod unsupported;
 #[cfg(windows)]
 mod windows;
@@ -269,7 +271,9 @@ impl ContextCaptureService {
         let deadline = options.deadline;
         #[cfg(windows)]
         let fallback = windows::baseline_context(target, &blocked_apps, options.method);
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let fallback = macos::baseline_context(target, &blocked_apps, options.method);
+        #[cfg(not(any(windows, target_os = "macos")))]
         let fallback = CapturedActiveAppContext {
             capture_method: options.method,
             process_id: target.process_id,
@@ -308,7 +312,9 @@ impl ContextCaptureService {
                 }
                 #[cfg(windows)]
                 let provider = windows::WindowsActiveAppContextProvider;
-                #[cfg(not(windows))]
+                #[cfg(target_os = "macos")]
+                let provider = macos::MacActiveAppContextProvider;
+                #[cfg(not(any(windows, target_os = "macos")))]
                 let provider = unsupported::UnsupportedActiveAppContextProvider;
                 let result = provider.capture(
                     request.target,
@@ -581,7 +587,11 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     {
         windows::activation_target()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::activation_target()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         unsupported::activation_target()
     }
@@ -593,7 +603,11 @@ pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
     {
         windows::app_identity(target)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::app_identity(target)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         unsupported::app_identity(target)
     }
@@ -605,7 +619,11 @@ pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
     {
         windows::list_running_apps()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::list_running_apps()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         unsupported::list_running_apps()
     }

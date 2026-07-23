@@ -10,12 +10,21 @@ pub(crate) const SUMMARY_PREVIEW_CHARS: usize = 500;
 /// 窗口截图长边像素上限的默认值；调试窗口可临时覆盖，见 `CaptureOptions::max_capture_side_override`。
 pub(crate) const DEFAULT_MAX_CAPTURE_SIDE: u32 = 1_600;
 
-#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ActiveAppContextExtractionMethod {
-    #[default]
     NativeText,
     Ocr,
+}
+
+impl Default for ActiveAppContextExtractionMethod {
+    fn default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Ocr
+        } else {
+            Self::NativeText
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for ActiveAppContextExtractionMethod {
@@ -322,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_method_defaults_to_native_text() {
+    fn missing_method_defaults_to_platform_method() {
         #[derive(Deserialize)]
         #[serde(default)]
         struct Wrapper {
@@ -336,7 +345,14 @@ mod tests {
             }
         }
         let value: Wrapper = serde_json::from_str("{}").unwrap();
-        assert_eq!(value.method, ActiveAppContextExtractionMethod::NativeText);
+        assert_eq!(
+            value.method,
+            if cfg!(target_os = "macos") {
+                ActiveAppContextExtractionMethod::Ocr
+            } else {
+                ActiveAppContextExtractionMethod::NativeText
+            }
+        );
     }
 
     #[test]

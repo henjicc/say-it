@@ -262,7 +262,7 @@ const PLUGIN_OCR_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub enum OcrProvider {
-    /// Windows 系统 OCR（WinRT），转发 `crate::ocr::windows`。
+    /// 平台系统 OCR：Windows 使用 WinRT，macOS 使用 Vision。
     System,
     PpOcr {
         spec: LocalModelSpec,
@@ -316,7 +316,7 @@ impl OcrProvider {
 
     pub fn description(&self) -> String {
         match self {
-            Self::System => "Windows 系统 OCR".into(),
+            Self::System => super::system_ocr_display_name().into(),
             Self::PpOcr { spec } => format!("PP-OCR 模型 {}", spec.plugin_id),
             Self::Plugin { profile, .. } => profile.display_name.clone(),
             Self::Unavailable { selection, .. } => format!("不可用 OCR 模型 {selection}"),
@@ -331,10 +331,14 @@ fn system_ocr_recognize(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
             .map_err(|error| format!("解码 OCR 图像失败：{error}"))?;
         crate::ocr::windows::recognize(&image)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::ocr::macos::recognize_png(png)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = png;
-        Err("系统 OCR 仅在 Windows 上可用".into())
+        Err("当前平台没有可用的系统 OCR".into())
     }
 }
 

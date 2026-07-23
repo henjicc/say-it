@@ -6,6 +6,7 @@ import {
   isSupportedDictationModel,
 } from "@/features/asr/modelOptions";
 import { ocrOptionsForScene } from "@/features/asr/modelRegistry";
+import { isMacOS, systemOcrLabel } from "@/lib/platform";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -69,8 +70,13 @@ function availableOcrOptions() {
   try {
     return ocrOptionsForScene("activeAppContext");
   } catch {
-    return [{ value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false }];
+    return [{ value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false }];
   }
+}
+
+function normalizeExtractionMethod(value: unknown): ActiveAppContextExtractionMethod {
+  if (isMacOS) return "ocr";
+  return value === "ocr" ? "ocr" : "nativeText";
 }
 
 const LEGACY_DEFAULT_SMART_TEXT_TEMPLATES: SmartTextTemplate[] = [
@@ -446,7 +452,7 @@ function defaults(): DictPrefs {
     smartTemplates: defaultSmartTextTemplates(),
     smartTemplateTrash: [],
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
-    activeAppContextExtractionMethod: "nativeText",
+    activeAppContextExtractionMethod: normalizeExtractionMethod(undefined),
     activeAppContextOcrEngine: "system",
     activeAppContextOcrModel: "system-ocr",
     activeAppContextOcrApprovedProviders: [],
@@ -522,7 +528,7 @@ function readStored(): DictPrefs {
   base.smartTemplates = migrateSmartTemplateCatalog(base.smartTemplates, storedCatalogVersion);
   base.smartTemplateTrash = normalizeSmartTemplateTrash(base.smartTemplateTrash);
   base.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
-  base.activeAppContextExtractionMethod = base.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
+  base.activeAppContextExtractionMethod = normalizeExtractionMethod(base.activeAppContextExtractionMethod);
   base.activeAppContextOcrEngine = base.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
   const ocrOptions = availableOcrOptions();
   if (
@@ -625,7 +631,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   next.smartTemplates = migrateSmartTemplateCatalog(next.smartTemplates, storedCatalogVersion);
   next.smartTemplateTrash = normalizeSmartTemplateTrash(next.smartTemplateTrash);
   next.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
-  next.activeAppContextExtractionMethod = next.activeAppContextExtractionMethod === "ocr" ? "ocr" : "nativeText";
+  next.activeAppContextExtractionMethod = normalizeExtractionMethod(next.activeAppContextExtractionMethod);
   next.activeAppContextOcrEngine = next.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
   const ocrOptions = availableOcrOptions();
   if (

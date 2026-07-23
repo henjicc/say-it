@@ -1,6 +1,33 @@
 fn main() {
+    build_macos_native_bridge();
     copy_sherpa_runtime_for_cargo_tests();
     tauri_build::build()
+}
+
+fn build_macos_native_bridge() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+        return;
+    }
+    cc::Build::new()
+        .file("macos/SayItMacBridge.m")
+        .flag("-fobjc-arc")
+        .flag("-fblocks")
+        .warnings(true)
+        .compile("sayit_macos_bridge");
+    for framework in [
+        "AppKit",
+        "ApplicationServices",
+        "AVFoundation",
+        "CoreAudio",
+        "CoreGraphics",
+        "CoreMedia",
+        "Foundation",
+        "ScreenCaptureKit",
+        "Vision",
+    ] {
+        println!("cargo:rustc-link-lib=framework={framework}");
+    }
+    println!("cargo:rerun-if-changed=macos/SayItMacBridge.m");
 }
 
 fn copy_sherpa_runtime_for_cargo_tests() {

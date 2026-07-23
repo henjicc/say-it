@@ -6,6 +6,9 @@ const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("缺少 Tauri 子命令");
 
 const env = { ...process.env };
+if (process.platform === "darwin" && !env.MACOSX_DEPLOYMENT_TARGET) {
+  env.MACOSX_DEPLOYMENT_TARGET = "11.0";
+}
 if (process.platform === "darwin" && !env.OPUS_LIB_DIR && !env.LIBOPUS_LIB_DIR) {
   const opusLibraries = [
     "/opt/homebrew/lib/libopus.a",

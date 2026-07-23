@@ -316,11 +316,22 @@ fn should_defer_active_app_context_ocr(
     prefs: &DictationPrefs,
     effective: &EffectivePostProcessing,
 ) -> bool {
-    effective.smart_processing_enabled
+    cfg!(windows)
+        && effective.smart_processing_enabled
         && prefs.active_app_context_ocr_follow_smart_processing_min_chars
-        && prefs.active_app_context_extraction_method
+        && platform_context_method(prefs.active_app_context_extraction_method)
             == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
         && effective.smart_processing_min_chars > 0
+}
+
+fn platform_context_method(
+    method: crate::active_app_context::ActiveAppContextExtractionMethod,
+) -> crate::active_app_context::ActiveAppContextExtractionMethod {
+    if cfg!(target_os = "macos") {
+        crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
+    } else {
+        method
+    }
 }
 
 fn resolve_inject_method(
@@ -678,7 +689,7 @@ async fn start(
                 state.active_app_context.begin_dictation_capture(
                     target,
                     prefs.active_app_context_blocked_apps.clone(),
-                    prefs.active_app_context_extraction_method,
+                    platform_context_method(prefs.active_app_context_extraction_method),
                     ocr_provider,
                     defer_active_app_context_ocr,
                 )
@@ -1872,7 +1883,7 @@ pub(crate) fn active_app_context_extraction_method_from_value(
     value: &Value,
 ) -> crate::active_app_context::ActiveAppContextExtractionMethod {
     serde_json::from_value::<DictationPrefs>(value.clone())
-        .map(|prefs| prefs.active_app_context_extraction_method)
+        .map(|prefs| platform_context_method(prefs.active_app_context_extraction_method))
         .unwrap_or_default()
 }
 
@@ -2247,7 +2258,10 @@ mod tests {
             active_app_context_ocr_follow_smart_processing_min_chars: true,
             ..Default::default()
         };
-        assert!(should_defer_active_app_context_ocr(&prefs, &effective));
+        assert_eq!(
+            should_defer_active_app_context_ocr(&prefs, &effective),
+            cfg!(windows)
+        );
 
         let mut immediate = effective.clone();
         immediate.smart_processing_min_chars = 0;
