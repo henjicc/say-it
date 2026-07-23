@@ -31,6 +31,12 @@ extern "system" {
 const DICTATION_INDICATOR_LABEL: &str = "dictation-indicator";
 const DEFAULT_INDICATOR_WIDTH: f64 = 460.0;
 const DEFAULT_INDICATOR_HEIGHT: f64 = 188.0;
+// macOS 听写内容距窗口底边还有 24px 透明内边距；-12px 让可见内容最终
+// 保持在 Dock 或屏幕底边上方约 12px，而不是重复叠加两份间距。
+#[cfg(target_os = "macos")]
+pub(crate) const DICTATION_INDICATOR_OFFSET_Y: f64 = -12.0;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const DICTATION_INDICATOR_OFFSET_Y: f64 = 36.0;
 
 fn fallback_indicator_position(
     monitor_x: i32,
@@ -122,7 +128,13 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     // 点击穿透：空闲时整块透明、不拦截鼠标。
     let _ = window.set_ignore_cursor_events(true);
 
-    place_indicator_window(&window, DEFAULT_INDICATOR_WIDTH, DEFAULT_INDICATOR_HEIGHT, "bottom", 36.0);
+    place_indicator_window(
+        &window,
+        DEFAULT_INDICATOR_WIDTH,
+        DEFAULT_INDICATOR_HEIGHT,
+        "bottom",
+        DICTATION_INDICATOR_OFFSET_Y,
+    );
     Ok(window)
 }
 

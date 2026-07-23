@@ -3,7 +3,7 @@
 ## 平台能力边界
 
 - macOS 透明 WebView 窗口需要 Tauri 的 `app.macOSPrivateApi`；仅给窗口 CSS 设置 `background: transparent` 不足以清除 WKWebView/NSWindow 的白色底层。该能力会影响 Mac App Store 审核，当前项目使用 GitHub Release 分发时可接受，但若未来上架商店必须重新评估。
-- 悬浮窗不能按完整显示器高度推算底边。macOS 应使用 `NSScreen.visibleFrame`，它会按当前 Dock、菜单栏与刘海安全区域动态排除不可用空间；不要缓存结果，Dock 尺寸、位置和自动隐藏设置都可能变化。
+- 悬浮窗不能按完整显示器高度推算底边。macOS 应同时读取 `NSScreen.frame` 与 `visibleFrame` 且不要缓存：底部 Dock 会抬高 `visibleFrame.minY`，底部锚点应据此动态避让；Dock 位于左/右侧时则按完整 `frame` 的水平中心和底边定位，避免无关的横向偏移。听写窗口本身还有 24px 透明底部内边距，设置视觉间距时要从窗口偏移中扣除，不能在 Dock 安全区之外再次叠加一整份桌面边距。
 - Caps Lock 不能交给 Tauri 全局快捷键注册。要避免切换大小写状态，必须使用可丢弃事件的 Quartz `CGEventTap`，并请求“辅助功能”权限；设置页录制 Caps Lock 时也要由同一事件过滤器吞键并向前端上报。
 - `kCGSessionEventTap` 收到 Caps Lock 时系统锁定状态已经改变，单纯从回调返回 `NULL` 只能阻止后续投递，不能恢复大小写状态或键盘灯。监听启动时应记录 `IOHIDGetModifierLockState`，每次触发后用 `IOHIDSetModifierLockState` 写回；初始化时同时探测写权限，不能在无法恢复状态时假装快捷键注册成功。
 - macOS 上不能在 Tokio/阻塞工作线程里用 `enigo::Key::Unicode` 发送粘贴快捷键。enigo 会通过 Text Services Manager 查询当前键盘布局，而该 API 强制要求主队列，违规调用会触发 `dispatch_assert_queue` 并以 `SIGTRAP` 直接终止进程。听写完成后的 Command+V 应使用不查询输入法布局的 CoreGraphics 物理键事件，或显式调度到主线程；不能依赖 Rust 错误处理捕获这种系统级断言。

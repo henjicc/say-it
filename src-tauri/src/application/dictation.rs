@@ -798,7 +798,7 @@ async fn start(
         Some(460.0),
         Some(188.0),
         Some("bottom".into()),
-        Some(36.0),
+        Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
     );
     let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
     play_cue_async(
