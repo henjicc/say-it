@@ -152,6 +152,9 @@ pub(crate) fn load_persisted_state(
         }
     };
     data.providers = normalize_settings(data.providers);
+    crate::application::dictation::repair_empty_asr_model(
+        &mut data.app_settings.dictation_prefs,
+    );
     crate::application::customization::migrate_legacy_provider_hotwords(
         &mut data.app_settings,
         &mut data.providers,

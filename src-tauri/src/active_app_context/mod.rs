@@ -1,3 +1,4 @@
+#[cfg(windows)]
 mod debug;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -15,6 +16,7 @@ mod unsupported;
 mod windows;
 
 use model::DICTATION_RESOLVE_WAIT;
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +25,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 
 const MAX_CONCURRENT_CAPTURES: usize = 4;
 
+#[cfg(windows)]
 pub(crate) use debug::{
     request_debug_capture, reset_debug_capture, set_debug_capture_overrides, DEBUG_STATE_EVENT,
 };
@@ -244,6 +247,7 @@ impl ContextCaptureService {
         }
     }
 
+    #[cfg(windows)]
     pub(crate) fn begin_debug_capture(
         &self,
         target: ActivationTarget,
@@ -334,6 +338,7 @@ impl ContextCaptureService {
         }
     }
 
+    #[cfg(any(windows, test))]
     pub(crate) async fn resolve(&self, handle: ContextCaptureHandle) -> CapturedActiveAppContext {
         let max_wait = handle.deadline.saturating_duration_since(handle.started);
         self.resolve_with_wait(handle, max_wait).await
@@ -567,11 +572,9 @@ fn unverified_preparation_failure(
     fallback
 }
 
+#[cfg(windows)]
 pub(crate) fn configure_native_probe_path(path: PathBuf) {
-    #[cfg(windows)]
     native_probe::configure_path(path);
-    #[cfg(not(windows))]
-    let _ = path;
 }
 
 pub(crate) fn shutdown() {
@@ -580,6 +583,16 @@ pub(crate) fn shutdown() {
         native_probe::shutdown();
         ocr::shutdown();
     }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn reset_debug_capture() {}
+
+#[cfg(not(windows))]
+pub(crate) fn set_debug_capture_overrides(
+    _ocr_model: Option<String>,
+    _max_capture_side: Option<u32>,
+) {
 }
 
 pub(crate) fn activation_target() -> Option<ActivationTarget> {

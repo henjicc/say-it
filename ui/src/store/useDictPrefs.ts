@@ -597,6 +597,7 @@ export const useDictPrefs = create<DictPrefsState>((set, get) => ({
 }));
 
 export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
+  const storedAsrModel = value.asrModel;
   const storedTemplates = value.smartTemplates;
   const storedTrash = value.smartTemplateTrash;
   const storedTemplateId = value.smartTemplateId;
@@ -622,6 +623,9 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   );
   const next = readStored();
   Object.assign(next, value);
+  if (!isSupportedDictationModel(next.asrModel)) {
+    next.asrModel = DEFAULT_REALTIME_ASR_MODEL;
+  }
   // 后端权威配置缺少该字段说明它来自旧版本，必须保留“每次听写”的原有语义。
   next.smartProcessingMinChars = storedSmartProcessingMinCharsPresent
     ? normalizeSmartProcessingMinChars(storedSmartProcessingMinChars, 0) ?? 0
@@ -664,6 +668,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   persist(next);
   useDictPrefs.setState({ prefs: next });
   return (
+    storedAsrModel !== next.asrModel ||
     JSON.stringify(storedTemplates) !== JSON.stringify(next.smartTemplates) ||
     JSON.stringify(storedTrash) !== JSON.stringify(next.smartTemplateTrash) ||
     storedTemplateId !== next.smartTemplateId ||

@@ -73,6 +73,7 @@ impl<'de> Deserialize<'de> for OcrEngineKind {
 
 impl OcrEngineKind {
     /// 与自定义 `Deserialize` 使用同一套小写取值，供调试面板等场景直接输出给前端。
+    #[cfg(windows)]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
@@ -99,6 +100,7 @@ pub(crate) struct ActivationTarget {
     pub(crate) process_id: u32,
     /// 全局快捷键触发时鼠标仍通常停在刚点击的输入区。该坐标仅在本次捕获中用于
     /// 定点定位辅助功能元素，不会持久化或发送到模型。
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) cursor_position: Option<(i32, i32)>,
 }
 
@@ -107,6 +109,7 @@ pub(crate) struct CaptureOptions {
     pub(crate) deadline: Instant,
     pub(crate) max_chars: usize,
     pub(crate) debug: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) occluding_window_handle: Option<isize>,
     pub(crate) method: ActiveAppContextExtractionMethod,
     pub(crate) ocr_provider: crate::providers::capabilities::OcrProvider,
@@ -155,6 +158,7 @@ pub(crate) enum CaptureStatus {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ContextSource {
     Ia2Text,
@@ -167,7 +171,9 @@ pub(crate) enum ContextSource {
 }
 
 // OCR 数据结构上提到 `crate::ocr`（providers 与本模块共用）；这里保留原路径的再导出。
-pub(crate) use crate::ocr::{NormalizedRegion, OcrTextBlock};
+#[cfg(any(windows, test))]
+pub(crate) use crate::ocr::NormalizedRegion;
+pub(crate) use crate::ocr::OcrTextBlock;
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +204,7 @@ pub(crate) struct CapturedActiveAppContext {
 }
 
 impl CapturedActiveAppContext {
+    #[cfg(windows)]
     pub(crate) fn with_status(status: CaptureStatus) -> Self {
         Self {
             status,
@@ -253,6 +260,7 @@ impl CapturedActiveAppContext {
         lines.join("\n")
     }
 
+    #[cfg(windows)]
     pub(crate) fn has_text_content(&self) -> bool {
         self.selected_text
             .as_deref()
