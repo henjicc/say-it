@@ -39,6 +39,7 @@ struct NativeOcrBlock {
 }
 
 pub(crate) type CapsLockCallback = unsafe extern "C" fn(*mut c_void, u64) -> bool;
+pub(crate) type EscapeCallback = unsafe extern "C" fn(*mut c_void, bool) -> bool;
 pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, usize);
 
 unsafe extern "C" {
@@ -63,12 +64,15 @@ unsafe extern "C" {
         length: usize,
         error: *mut *mut c_char,
     ) -> *mut c_char;
-    fn sayit_macos_caps_lock_start(
-        callback: CapsLockCallback,
+    fn sayit_macos_keyboard_tap_start(
+        caps_lock_callback: CapsLockCallback,
+        escape_callback: EscapeCallback,
         context: *mut c_void,
+        monitor_caps_lock: bool,
+        monitor_escape: bool,
         error: *mut *mut c_char,
     ) -> *mut c_void;
-    fn sayit_macos_caps_lock_stop(handle: *mut c_void);
+    fn sayit_macos_keyboard_tap_stop(handle: *mut c_void);
     fn sayit_macos_system_audio_start(
         callback: AudioCallback,
         context: *mut c_void,
@@ -197,19 +201,35 @@ pub(crate) fn vision_ocr(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
         .collect())
 }
 
-pub(crate) fn start_caps_lock_tap(callback: CapsLockCallback) -> Result<usize, String> {
+pub(crate) fn start_keyboard_tap(
+    caps_lock_callback: CapsLockCallback,
+    escape_callback: EscapeCallback,
+    monitor_caps_lock: bool,
+    monitor_escape: bool,
+) -> Result<usize, String> {
     let mut error = ptr::null_mut();
-    let handle = unsafe { sayit_macos_caps_lock_start(callback, ptr::null_mut(), &mut error) };
+    let handle = unsafe {
+        sayit_macos_keyboard_tap_start(
+            caps_lock_callback,
+            escape_callback,
+            ptr::null_mut(),
+            monitor_caps_lock,
+            monitor_escape,
+            &mut error,
+        )
+    };
     if handle.is_null() {
-        Err(unsafe { take_string(error).unwrap_or_else(|| "启动 Caps Lock 监听失败".into()) })
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "启动 macOS 键盘监听失败".into())
+        })
     } else {
         Ok(handle as usize)
     }
 }
 
-pub(crate) fn stop_caps_lock_tap(handle: usize) {
+pub(crate) fn stop_keyboard_tap(handle: usize) {
     if handle != 0 {
-        unsafe { sayit_macos_caps_lock_stop(handle as *mut c_void) };
+        unsafe { sayit_macos_keyboard_tap_stop(handle as *mut c_void) };
     }
 }
 

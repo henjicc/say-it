@@ -467,7 +467,6 @@ pub(crate) fn request_stop(app: AppHandle) {
         }
     });
 }
-#[cfg(windows)]
 pub(crate) fn request_cancel(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = cancel(app.clone()).await {
