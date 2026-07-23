@@ -140,29 +140,17 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
         // 给系统一点时间让剪贴板生效。
         std::thread::sleep(Duration::from_millis(60));
 
-        let mut enigo =
-            Enigo::new(&EnigoSettings::default()).map_err(|e| format!("初始化输入失败: {e}"))?;
-        let paste_modifier = if cfg!(target_os = "macos") {
-            Key::Meta
-        } else {
-            Key::Control
-        };
-        enigo
-            .key(paste_modifier, Direction::Press)
-            .map_err(|e| format!("模拟粘贴失败: {e}"))?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| format!("模拟粘贴失败: {e}"))?;
-        enigo
-            .key(paste_modifier, Direction::Release)
-            .map_err(|e| format!("模拟粘贴失败: {e}"))?;
+        let paste_result = send_paste_shortcut();
 
-        // 等目标窗口完成粘贴后再还原剪贴板，避免把内容清掉。
-        std::thread::sleep(Duration::from_millis(180));
+        // 等目标窗口完成粘贴后再还原剪贴板，避免把内容清掉。发送失败时也要
+        // 立即还原，不能把识别结果意外留在用户剪贴板里。
+        if paste_result.is_ok() {
+            std::thread::sleep(Duration::from_millis(180));
+        }
         if let Some(prev) = previous {
             let _ = clipboard.set_text(prev);
         }
-        Ok(())
+        paste_result
     })
     .await
     .map_err(|e| format!("注入任务失败: {e}"))?;
@@ -171,6 +159,30 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
         Err(e) => dlog!("[inject] 注入失败: {e}"),
     }
     result
+}
+
+#[cfg(target_os = "macos")]
+fn send_paste_shortcut() -> Result<(), String> {
+    // enigo 会为 Key::Unicode('v') 查询当前输入法布局，而 macOS 的 TSM API
+    // 强制要求主队列调用；听写注入运行在阻塞工作线程，因此改用不依赖布局查询的
+    // CoreGraphics 原生键盘事件。
+    crate::macos_native::send_paste_shortcut()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_paste_shortcut() -> Result<(), String> {
+    let mut enigo =
+        Enigo::new(&EnigoSettings::default()).map_err(|e| format!("初始化输入失败: {e}"))?;
+    enigo
+        .key(Key::Control, Direction::Press)
+        .map_err(|e| format!("模拟粘贴失败: {e}"))?;
+    enigo
+        .key(Key::Unicode('v'), Direction::Click)
+        .map_err(|e| format!("模拟粘贴失败: {e}"))?;
+    enigo
+        .key(Key::Control, Direction::Release)
+        .map_err(|e| format!("模拟粘贴失败: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]

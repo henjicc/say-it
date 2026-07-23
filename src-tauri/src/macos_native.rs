@@ -89,6 +89,7 @@ unsafe extern "C" {
         height: *mut f64,
         error: *mut *mut c_char,
     ) -> bool;
+    fn sayit_macos_send_paste_shortcut(error: *mut *mut c_char) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -282,6 +283,17 @@ pub(crate) fn indicator_visible_screen_size(
     } else {
         Err(unsafe {
             take_string(error).unwrap_or_else(|| "读取 macOS 可用屏幕区域失败".into())
+        })
+    }
+}
+
+pub(crate) fn send_paste_shortcut() -> Result<(), String> {
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_send_paste_shortcut(&mut error) } {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "发送 macOS 粘贴快捷键失败".into())
         })
     }
 }
