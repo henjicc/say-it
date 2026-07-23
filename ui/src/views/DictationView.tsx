@@ -11,6 +11,7 @@ import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { SceneRulesPanel } from "@/views/SceneRulesPanel";
 import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
 import { cn } from "@/lib/cn";
+import { contextDebugShortcutHint, contextDebugShortcutLabel } from "@/lib/platform";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { toggleDictation, clearDictLog } from "@/features/dictation/controller";
@@ -82,7 +83,7 @@ export function DictationView() {
           <div className="flex flex-col gap-7">
             <SettingsSection title="当前软件上下文调试">
               <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-                打开置顶调试窗口后，点击任意其他软件，再按 <kbd className="font-mono text-[var(--color-accent-light)]">Ctrl + Shift + F8</kbd>，即可查看当前提取方式获得的原始内容和最终提示词上下文。调试过程不录音、不调用模型，也不保存捕获内容。
+                打开置顶调试窗口后，点击任意其他软件，再按 <kbd className="font-mono text-[var(--color-accent-light)]">{contextDebugShortcutLabel}</kbd>{contextDebugShortcutHint}，即可查看当前提取方式获得的原始内容和最终提示词上下文。调试过程不录音、不调用语音识别或智能处理模型，也不保存捕获内容。
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <Button variant="primary" disabled={contextDebugOpening} onClick={() => void openContextDebug()}>

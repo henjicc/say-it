@@ -1,4 +1,4 @@
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod debug;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -25,7 +25,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 
 const MAX_CONCURRENT_CAPTURES: usize = 4;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) use debug::{
     request_debug_capture, reset_debug_capture, set_debug_capture_overrides, DEBUG_STATE_EVENT,
 };
@@ -247,7 +247,7 @@ impl ContextCaptureService {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn begin_debug_capture(
         &self,
         target: ActivationTarget,
@@ -338,7 +338,7 @@ impl ContextCaptureService {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "macos", test))]
     pub(crate) async fn resolve(&self, handle: ContextCaptureHandle) -> CapturedActiveAppContext {
         let max_wait = handle.deadline.saturating_duration_since(handle.started);
         self.resolve_with_wait(handle, max_wait).await
@@ -585,10 +585,10 @@ pub(crate) fn shutdown() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn reset_debug_capture() {}
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn set_debug_capture_overrides(
     _ocr_model: Option<String>,
     _max_capture_side: Option<u32>,

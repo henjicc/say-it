@@ -73,7 +73,7 @@ impl<'de> Deserialize<'de> for OcrEngineKind {
 
 impl OcrEngineKind {
     /// 与自定义 `Deserialize` 使用同一套小写取值，供调试面板等场景直接输出给前端。
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::System => "system",
@@ -204,7 +204,7 @@ pub(crate) struct CapturedActiveAppContext {
 }
 
 impl CapturedActiveAppContext {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn with_status(status: CaptureStatus) -> Self {
         Self {
             status,

@@ -14,6 +14,8 @@ pub const MOD_CTRL: u8 = 1;
 pub const MOD_SHIFT: u8 = 2;
 pub const MOD_ALT: u8 = 4;
 pub const MOD_WIN: u8 = 8;
+#[cfg(target_os = "macos")]
+const CONTEXT_DEBUG_SHORTCUT: &str = "Control+Shift+F8";
 
 #[derive(Clone, Debug)]
 pub struct HotkeyBinding {
@@ -62,6 +64,8 @@ static DICTATION_SHORTCUTS: OnceLock<Mutex<RegisteredSet>> = OnceLock::new();
 static SUBTITLE_SHORTCUT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
+static CONTEXT_DEBUG_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
 static CAPS_LOCK_BINDING: OnceLock<Mutex<Option<CapsLockBinding>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static KEYBOARD_TAP: OnceLock<Mutex<Option<KeyboardTapHandle>>> = OnceLock::new();
@@ -105,8 +109,53 @@ pub fn set_dictation_active(active: bool) {
     }
 }
 
-pub fn set_context_debug_active(_active: bool) {
-    // 当前软件上下文调试仅支持 Windows。
+pub fn set_context_debug_active(active: bool) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = active;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_context_debug_active(active)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_context_debug_active(active: bool) -> Result<(), String> {
+    let app = APP
+        .get()
+        .ok_or_else(|| "全局快捷键尚未初始化".to_string())?;
+    let previous = CONTEXT_DEBUG_ACTIVE.swap(active, Ordering::SeqCst);
+    if previous == active {
+        return Ok(());
+    }
+    if active {
+        if let Err(error) = app.global_shortcut().on_shortcut(
+            CONTEXT_DEBUG_SHORTCUT,
+            |app, _, event| {
+                if event.state == ShortcutState::Pressed
+                    && CONTEXT_DEBUG_ACTIVE.load(Ordering::SeqCst)
+                {
+                    crate::active_app_context::request_debug_capture(app.clone());
+                }
+            },
+        ) {
+            CONTEXT_DEBUG_ACTIVE.store(false, Ordering::SeqCst);
+            return Err(format!(
+                "注册上下文调试快捷键 Ctrl+Shift+F8 失败：{error}"
+            ));
+        }
+    } else {
+        if let Err(error) = app
+            .global_shortcut()
+            .unregister(CONTEXT_DEBUG_SHORTCUT)
+        {
+            CONTEXT_DEBUG_ACTIVE.store(true, Ordering::SeqCst);
+            return Err(format!("注销上下文调试快捷键失败：{error}"));
+        }
+    }
+    Ok(())
 }
 
 fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<String>, String> {

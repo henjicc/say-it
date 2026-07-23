@@ -11,7 +11,11 @@ import {
   ocrOptionsForScene,
   type OcrModelOption,
 } from "@/features/asr/modelRegistry";
-import { systemOcrLabel } from "@/lib/platform";
+import {
+  contextDebugShortcutHint,
+  contextDebugShortcutLabel,
+  systemOcrLabel,
+} from "@/lib/platform";
 import { useDictPrefs } from "@/store/useDictPrefs";
 
 const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
@@ -171,7 +175,7 @@ export function ContextDebugApp() {
               </p>
             </div>
             <kbd className="rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs text-[var(--color-accent-light)]">
-              Ctrl + Shift + F8
+              {contextDebugShortcutLabel} {contextDebugShortcutHint}
             </kbd>
           </div>
         </section>

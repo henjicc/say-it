@@ -1899,7 +1899,7 @@ pub(crate) fn repair_empty_asr_model(value: &mut Value) -> bool {
     true
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_extraction_method_from_value(
     value: &Value,
 ) -> crate::active_app_context::ActiveAppContextExtractionMethod {
@@ -1908,7 +1908,7 @@ pub(crate) fn active_app_context_extraction_method_from_value(
         .unwrap_or_default()
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_ocr_engine_from_value(
     value: &Value,
 ) -> crate::active_app_context::OcrEngineKind {
@@ -1917,14 +1917,14 @@ pub(crate) fn active_app_context_ocr_engine_from_value(
         .unwrap_or_default()
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_model)
         .unwrap_or_default()
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_ocr_approved_providers_from_value(value: &Value) -> Vec<String> {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_approved_providers)

@@ -62,7 +62,7 @@ pub(crate) fn reset_debug_capture() {
 pub(crate) fn request_debug_capture(app: AppHandle) {
     let epoch = DEBUG_CAPTURE_EPOCH.fetch_add(1, Ordering::AcqRel) + 1;
     let Some(window) = app.get_webview_window(crate::desktop::CONTEXT_DEBUG_WINDOW_LABEL) else {
-        crate::hotkey::set_context_debug_active(false);
+        let _ = crate::hotkey::set_context_debug_active(false);
         return;
     };
     let _ = window.emit(DEBUG_STATE_EVENT, json!({ "state": "capturing" }));

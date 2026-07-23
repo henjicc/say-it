@@ -1,12 +1,12 @@
 use crate::prelude::*;
 
 pub(crate) const CONTEXT_DEBUG_WINDOW_LABEL: &str = "active-app-context-debug";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const DEBUG_WINDOW_WIDTH: f64 = 720.0;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const DEBUG_WINDOW_HEIGHT: f64 = 700.0;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn place_window(window: &tauri::WebviewWindow) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
@@ -21,7 +21,7 @@ fn place_window(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::PhysicalPosition::new(x.max(position.x), y));
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn ensure_context_debug_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(CONTEXT_DEBUG_WINDOW_LABEL) {
         return Ok(window);
@@ -47,16 +47,22 @@ fn ensure_context_debug_window(app: &tauri::AppHandle) -> Result<tauri::WebviewW
     Ok(window)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn open_active_app_context_debug_inner(app: tauri::AppHandle) -> Result<(), String> {
     let window = ensure_context_debug_window(&app)?;
+    crate::active_app_context::reset_debug_capture();
+    if let Err(error) = crate::hotkey::set_context_debug_active(true) {
+        let _ = window.close();
+        return Err(error);
+    }
     window
         .show()
-        .map_err(|error| format!("显示上下文调试窗口失败：{error}"))?;
+        .map_err(|error| {
+            let _ = crate::hotkey::set_context_debug_active(false);
+            format!("显示上下文调试窗口失败：{error}")
+        })?;
     let _ = window.set_focus();
 
-    crate::active_app_context::reset_debug_capture();
-    crate::hotkey::set_context_debug_active(true);
     let _ = window.emit(
         crate::active_app_context::DEBUG_STATE_EVENT,
         json!({ "state": "waiting" }),
@@ -66,10 +72,10 @@ fn open_active_app_context_debug_inner(app: tauri::AppHandle) -> Result<(), Stri
 
 #[tauri::command]
 pub(crate) async fn open_active_app_context_debug(app: tauri::AppHandle) -> Result<(), String> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
-        return Err("当前软件上下文调试首版仅支持 Windows".into());
+        return Err("当前系统暂不支持当前软件上下文调试".into());
     }
     #[cfg(windows)]
     {
@@ -77,18 +83,25 @@ pub(crate) async fn open_active_app_context_debug(app: tauri::AppHandle) -> Resu
             .await
             .map_err(|error| format!("打开上下文调试窗口任务失败：{error}"))?
     }
+    #[cfg(target_os = "macos")]
+    {
+        open_active_app_context_debug_inner(app)
+    }
 }
 
 #[tauri::command]
 pub(crate) fn close_active_app_context_debug(app: tauri::AppHandle) -> Result<(), String> {
-    crate::hotkey::set_context_debug_active(false);
+    let hotkey_result = crate::hotkey::set_context_debug_active(false);
     crate::active_app_context::reset_debug_capture();
-    if let Some(window) = app.get_webview_window(CONTEXT_DEBUG_WINDOW_LABEL) {
+    let close_result = if let Some(window) = app.get_webview_window(CONTEXT_DEBUG_WINDOW_LABEL) {
         window
             .close()
-            .map_err(|error| format!("关闭上下文调试窗口失败：{error}"))?;
-    }
-    Ok(())
+            .map_err(|error| format!("关闭上下文调试窗口失败：{error}"))
+    } else {
+        Ok(())
+    };
+    hotkey_result?;
+    close_result
 }
 
 const DEBUG_MIN_CAPTURE_SIDE: u32 = 800;
