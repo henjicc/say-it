@@ -268,9 +268,10 @@ pub fn set_dictation_active(active: bool) {
     }
 }
 
-pub fn set_context_debug_active(active: bool) {
+pub fn set_context_debug_active(active: bool) -> Result<(), String> {
     CONTEXT_DEBUG_ACTIVE.store(active, Ordering::SeqCst);
     CONTEXT_DEBUG_TRIGGERED.store(false, Ordering::SeqCst);
+    Ok(())
 }
 
 /// 原子替换全部听写快捷键。低级钩子只读固定槽位，不获取任何锁。

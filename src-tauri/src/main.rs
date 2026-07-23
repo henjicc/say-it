@@ -333,7 +333,7 @@ fn main() {
                 }
             } else if window.label() == CONTEXT_DEBUG_WINDOW_LABEL {
                 if matches!(event, WindowEvent::CloseRequested { .. }) {
-                    hotkey::set_context_debug_active(false);
+                    let _ = hotkey::set_context_debug_active(false);
                     active_app_context::reset_debug_capture();
                 }
             }
