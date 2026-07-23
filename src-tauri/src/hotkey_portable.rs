@@ -1,5 +1,5 @@
-//! macOS 等非 Windows 平台使用 Tauri 全局快捷键；macOS 的 Caps Lock 由
-//! Quartz 事件过滤器单独处理，以便触发听写时吞掉锁定状态切换。
+//! macOS 等非 Windows 平台使用 Tauri 全局快捷键；macOS 的 Caps Lock 与
+//! 听写期间的 Esc 由 Quartz 事件过滤器处理，以便吞掉系统按键并触发领域操作。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -49,6 +49,14 @@ struct CapsLockBinding {
     profile_id: Option<String>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct KeyboardTapHandle {
+    native: usize,
+    monitor_caps_lock: bool,
+    monitor_escape: bool,
+}
+
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static DICTATION_SHORTCUTS: OnceLock<Mutex<RegisteredSet>> = OnceLock::new();
 static SUBTITLE_SHORTCUT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -56,9 +64,11 @@ static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static CAPS_LOCK_BINDING: OnceLock<Mutex<Option<CapsLockBinding>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
-static CAPS_LOCK_TAP: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+static KEYBOARD_TAP: OnceLock<Mutex<Option<KeyboardTapHandle>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
@@ -67,12 +77,32 @@ pub fn init(app: AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let _ = CAPS_LOCK_BINDING.set(Mutex::new(None));
-        let _ = CAPS_LOCK_TAP.set(Mutex::new(None));
+        let _ = KEYBOARD_TAP.set(Mutex::new(None));
     }
 }
 
 pub fn set_dictation_active(active: bool) {
-    DICTATION_ACTIVE.store(active, Ordering::Relaxed);
+    DICTATION_ACTIVE.store(active, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
+        if !active {
+            ESCAPE_TRIGGERED.store(false, Ordering::SeqCst);
+        }
+        if let Err(error) = refresh_keyboard_tap() {
+            crate::dlog!("[hotkey] 更新 macOS Esc 监听失败: {error}");
+            if active {
+                if let Some(app) = APP.get() {
+                    let _ = app.emit(
+                        "dictation-shortcut-error",
+                        serde_json::json!({
+                            "message": format!("监听 Esc 取消失败：{error}"),
+                            "key_code": "Escape"
+                        }),
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn set_context_debug_active(_active: bool) {
@@ -302,7 +332,7 @@ pub fn set_capturing(active: bool) {
     #[cfg(target_os = "macos")]
     {
         CAPTURING.store(active, Ordering::SeqCst);
-        let _ = refresh_caps_lock_tap();
+        let _ = refresh_keyboard_tap();
     }
     #[cfg(not(target_os = "macos"))]
     let _ = active;
@@ -363,7 +393,7 @@ fn configure_caps_lock(binding: Option<CapsLockBinding>) -> Result<(), String> {
     *storage
         .lock()
         .map_err(|_| "Caps Lock 快捷键状态锁失败".to_string())? = binding;
-    if let Err(error) = refresh_caps_lock_tap() {
+    if let Err(error) = refresh_keyboard_tap() {
         if let Ok(mut current) = storage.lock() {
             *current = None;
         }
@@ -373,26 +403,53 @@ fn configure_caps_lock(binding: Option<CapsLockBinding>) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn refresh_caps_lock_tap() -> Result<(), String> {
-    let needed = CAPTURING.load(Ordering::SeqCst)
-        || CAPS_LOCK_BINDING
-            .get()
-            .and_then(|binding| binding.lock().ok())
-            .is_some_and(|binding| binding.is_some());
-    let storage = CAPS_LOCK_TAP
+fn keyboard_tap_requirements(
+    capturing: bool,
+    has_caps_lock_binding: bool,
+    dictation_active: bool,
+) -> (bool, bool) {
+    (capturing || has_caps_lock_binding, dictation_active)
+}
+
+#[cfg(target_os = "macos")]
+fn refresh_keyboard_tap() -> Result<(), String> {
+    let has_caps_lock_binding = CAPS_LOCK_BINDING
         .get()
-        .ok_or_else(|| "Caps Lock 事件过滤器尚未初始化".to_string())?;
-    let mut handle = storage
+        .and_then(|binding| binding.lock().ok())
+        .is_some_and(|binding| binding.is_some());
+    let (monitor_caps_lock, monitor_escape) = keyboard_tap_requirements(
+        CAPTURING.load(Ordering::SeqCst),
+        has_caps_lock_binding,
+        DICTATION_ACTIVE.load(Ordering::SeqCst),
+    );
+    let storage = KEYBOARD_TAP
+        .get()
+        .ok_or_else(|| "macOS 键盘事件过滤器尚未初始化".to_string())?;
+    let mut current = storage
         .lock()
-        .map_err(|_| "Caps Lock 事件过滤器状态锁失败".to_string())?;
-    if needed && handle.is_none() {
-        *handle = Some(crate::macos_native::start_caps_lock_tap(
+        .map_err(|_| "macOS 键盘事件过滤器状态锁失败".to_string())?;
+    let desired = (monitor_caps_lock, monitor_escape);
+    if current
+        .as_ref()
+        .is_some_and(|handle| (handle.monitor_caps_lock, handle.monitor_escape) == desired)
+    {
+        return Ok(());
+    }
+    if let Some(handle) = current.take() {
+        crate::macos_native::stop_keyboard_tap(handle.native);
+    }
+    if monitor_caps_lock || monitor_escape {
+        let native = crate::macos_native::start_keyboard_tap(
             handle_caps_lock_event,
-        )?);
-    } else if !needed {
-        if let Some(current) = handle.take() {
-            crate::macos_native::stop_caps_lock_tap(current);
-        }
+            handle_escape_event,
+            monitor_caps_lock,
+            monitor_escape,
+        )?;
+        *current = Some(KeyboardTapHandle {
+            native,
+            monitor_caps_lock,
+            monitor_escape,
+        });
     }
     Ok(())
 }
@@ -418,6 +475,24 @@ unsafe extern "C" fn handle_caps_lock_event(_context: *mut std::ffi::c_void, fla
         }
     }
     true
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn handle_escape_event(_context: *mut std::ffi::c_void, pressed: bool) -> bool {
+    if pressed {
+        if !DICTATION_ACTIVE.load(Ordering::SeqCst) {
+            return false;
+        }
+        if !ESCAPE_TRIGGERED.swap(true, Ordering::SeqCst) {
+            crate::dlog!("[hotkey] 触发 macOS 听写取消");
+            if let Some(app) = APP.get() {
+                crate::application::dictation::request_cancel(app.clone());
+            }
+        }
+        true
+    } else {
+        ESCAPE_TRIGGERED.swap(false, Ordering::SeqCst)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -530,5 +605,17 @@ mod tests {
     fn caps_lock_uses_native_event_tap_key_code() {
         assert_eq!(code_to_vk("CapsLock"), Some(0x14));
         assert_eq!(macos_modifiers((1 << 17) | (1 << 20)), MOD_SHIFT | MOD_WIN);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keyboard_tap_only_monitors_escape_while_dictation_is_active() {
+        assert_eq!(
+            keyboard_tap_requirements(false, false, false),
+            (false, false)
+        );
+        assert_eq!(keyboard_tap_requirements(false, true, false), (true, false));
+        assert_eq!(keyboard_tap_requirements(false, false, true), (false, true));
+        assert_eq!(keyboard_tap_requirements(true, false, true), (true, true));
     }
 }

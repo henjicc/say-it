@@ -11,6 +11,7 @@
 #import <dlfcn.h>
 
 typedef bool (*SayItCapsLockCallback)(void *context, uint64_t flags);
+typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
 
 typedef struct {
@@ -446,26 +447,35 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
     }
 }
 
-@interface SayItCapsTap : NSObject
-@property(nonatomic) SayItCapsLockCallback callback;
+@interface SayItKeyboardTap : NSObject
+@property(nonatomic) SayItCapsLockCallback capsLockCallback;
+@property(nonatomic) SayItEscapeCallback escapeCallback;
 @property(nonatomic) void *context;
 @property(nonatomic) CFMachPortRef tap;
 @property(nonatomic) CFRunLoopRef runLoop;
 @property(nonatomic) dispatch_semaphore_t ready;
 @property(nonatomic, copy) NSString *startupError;
+@property(nonatomic) bool monitorCapsLock;
+@property(nonatomic) bool monitorEscape;
 @property(nonatomic) io_connect_t hidConnection;
 @property(nonatomic) bool preservedCapsLockState;
 @property(nonatomic) CFAbsoluteTime lastCapsLockEventAt;
 @end
 
-static CGEventRef SayItCapsEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
+static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
     (void)proxy;
-    SayItCapsTap *owner = (__bridge SayItCapsTap *)context;
+    SayItKeyboardTap *owner = (__bridge SayItKeyboardTap *)context;
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
         if (owner.tap != NULL) CGEventTapEnable(owner.tap, true);
         return event;
     }
-    if (type != kCGEventFlagsChanged || CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) != 57) return event;
+    int64_t keyCode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    if (owner.monitorEscape && keyCode == 53 && (type == kCGEventKeyDown || type == kCGEventKeyUp)) {
+        bool swallow = owner.escapeCallback != NULL
+            && owner.escapeCallback(owner.context, type == kCGEventKeyDown);
+        return swallow ? NULL : event;
+    }
+    if (!owner.monitorCapsLock || type != kCGEventFlagsChanged || keyCode != 57) return event;
     // Session 级事件过滤器收到 Caps Lock 时，系统锁定状态已经发生变化；仅返回 NULL
     // 只能阻止事件继续投递，不能把大小写和键盘灯恢复。这里显式写回绑定前的状态。
     if (owner.hidConnection != IO_OBJECT_NULL) {
@@ -475,26 +485,31 @@ static CGEventRef SayItCapsEventCallback(CGEventTapProxy proxy, CGEventType type
     bool duplicated = owner.lastCapsLockEventAt > 0 && now - owner.lastCapsLockEventAt < 0.12;
     owner.lastCapsLockEventAt = now;
     bool swallow = true;
-    if (!duplicated && owner.callback != NULL) {
-        swallow = owner.callback(owner.context, (uint64_t)CGEventGetFlags(event));
+    if (!duplicated && owner.capsLockCallback != NULL) {
+        swallow = owner.capsLockCallback(owner.context, (uint64_t)CGEventGetFlags(event));
     }
     return swallow ? NULL : event;
 }
 
-@implementation SayItCapsTap
+@implementation SayItKeyboardTap
 - (void)startOnThread {
     @autoreleasepool {
-        CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged);
+        CGEventMask mask = 0;
+        if (self.monitorCapsLock) mask |= CGEventMaskBit(kCGEventFlagsChanged);
+        if (self.monitorEscape) {
+            mask |= CGEventMaskBit(kCGEventKeyDown);
+            mask |= CGEventMaskBit(kCGEventKeyUp);
+        }
         self.tap = CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
             kCGEventTapOptionDefault,
             mask,
-            SayItCapsEventCallback,
+            SayItKeyboardEventCallback,
             (__bridge void *)self
         );
         if (self.tap == NULL) {
-            self.startupError = @"无法创建 Caps Lock 事件过滤器，请在系统设置中授予辅助功能权限";
+            self.startupError = @"无法创建 macOS 键盘事件过滤器，请在系统设置中授予辅助功能权限";
             dispatch_semaphore_signal(self.ready);
             return;
         }
@@ -559,28 +574,45 @@ static bool SayItOpenHIDSystem(io_connect_t *connection, bool *capsLockState, NS
     return true;
 }
 
-void *sayit_macos_caps_lock_start(SayItCapsLockCallback callback, void *context, char **error) {
+void *sayit_macos_keyboard_tap_start(
+    SayItCapsLockCallback capsLockCallback,
+    SayItEscapeCallback escapeCallback,
+    void *context,
+    bool monitorCapsLock,
+    bool monitorEscape,
+    char **error
+) {
+    if (!monitorCapsLock && !monitorEscape) {
+        SayItSetError(error, @"macOS 键盘监听没有指定目标按键");
+        return NULL;
+    }
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
     if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options)) {
-        SayItSetError(error, @"使用 Caps Lock 快捷键需要辅助功能权限；授权后请重启说吧！");
+        SayItSetError(error, @"监听 Caps Lock 或 Esc 需要辅助功能权限；授权后请重启说吧！");
         return NULL;
     }
-    SayItCapsTap *owner = [[SayItCapsTap alloc] init];
-    owner.callback = callback;
+    SayItKeyboardTap *owner = [[SayItKeyboardTap alloc] init];
+    owner.capsLockCallback = capsLockCallback;
+    owner.escapeCallback = escapeCallback;
     owner.context = context;
+    owner.monitorCapsLock = monitorCapsLock;
+    owner.monitorEscape = monitorEscape;
     owner.ready = dispatch_semaphore_create(0);
-    NSString *hidError = nil;
-    io_connect_t hidConnection = IO_OBJECT_NULL;
-    bool preservedCapsLockState = false;
-    if (!SayItOpenHIDSystem(&hidConnection, &preservedCapsLockState, &hidError)) {
-        SayItSetError(error, hidError);
-        return NULL;
+    owner.hidConnection = IO_OBJECT_NULL;
+    if (monitorCapsLock) {
+        NSString *hidError = nil;
+        io_connect_t hidConnection = IO_OBJECT_NULL;
+        bool preservedCapsLockState = false;
+        if (!SayItOpenHIDSystem(&hidConnection, &preservedCapsLockState, &hidError)) {
+            SayItSetError(error, hidError);
+            return NULL;
+        }
+        owner.hidConnection = hidConnection;
+        owner.preservedCapsLockState = preservedCapsLockState;
     }
-    owner.hidConnection = hidConnection;
-    owner.preservedCapsLockState = preservedCapsLockState;
     [NSThread detachNewThreadSelector:@selector(startOnThread) toTarget:owner withObject:nil];
     if (dispatch_semaphore_wait(owner.ready, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
-        SayItSetError(error, @"启动 Caps Lock 事件过滤器超时");
+        SayItSetError(error, @"启动 macOS 键盘事件过滤器超时");
         return NULL;
     }
     if (owner.startupError != nil) {
@@ -590,9 +622,9 @@ void *sayit_macos_caps_lock_start(SayItCapsLockCallback callback, void *context,
     return (void *)CFBridgingRetain(owner);
 }
 
-void sayit_macos_caps_lock_stop(void *handle) {
+void sayit_macos_keyboard_tap_stop(void *handle) {
     if (handle == NULL) return;
-    SayItCapsTap *owner = CFBridgingRelease(handle);
+    SayItKeyboardTap *owner = CFBridgingRelease(handle);
     [owner stop];
 }
 
