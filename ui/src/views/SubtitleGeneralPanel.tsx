@@ -11,11 +11,12 @@ import { useSubtitleStore, buildSubtitleSource, parseSubtitleSource, type Subtit
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { isMacOS } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
 const shortcutActionButtonClassName = "shrink-0 self-stretch";
-const systemAudioSupported = !navigator.userAgent.includes("Macintosh");
+const systemAudioSupported = !isMacOS;
 
 export function SubtitleGeneralPanel() {
   useModelCatalogRevision();

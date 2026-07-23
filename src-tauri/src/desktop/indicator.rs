@@ -60,7 +60,7 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     if let Some(win) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         return Ok(win);
     }
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         DICTATION_INDICATOR_LABEL,
         WebviewUrl::App("indicator.html".into()),
@@ -73,11 +73,13 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     .skip_taskbar(true)
     .focused(false)
     .visible(false)
-    .shadow(false)
-    // macOS 保持公开 API 可支持的不透明窗口，避免启用 macOSPrivateApi。
-    .transparent(!cfg!(target_os = "macos"))
-    .build()
-    .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
+    .shadow(false);
+    // macOS 不调用私有透明窗口 API，保持默认不透明；其他平台继续使用透明悬浮窗。
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+    let window = builder
+        .build()
+        .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
 
     // 点击穿透：空闲时整块透明、不拦截鼠标。
     let _ = window.set_ignore_cursor_events(true);
@@ -196,4 +198,3 @@ pub(crate) fn set_indicator_layout(
     place_indicator_window(&window, width, height, &anchor, offset_y);
     Ok(())
 }
-

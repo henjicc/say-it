@@ -1,6 +1,7 @@
 import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
+import { shortcutModifierLabels } from "@/lib/platform";
 
 type Tone = "" | "ok" | "err";
 
@@ -21,7 +22,6 @@ let subShift = false;
 let subAlt = false;
 let subMeta = false;
 let subCapturing = false;
-const metaKeyLabel = navigator.userAgent.includes("Macintosh") ? "⌘" : "Win";
 
 export function configureSubtitleHotkeys(next: SubtitleHotkeyHooks) {
   hooks = next;
@@ -57,10 +57,10 @@ function prettyKeyName(code: string): string {
 export function subtitleComboLabel(): string {
   if (!subKeyCode) return "";
   const parts: string[] = [];
-  if (subCtrl) parts.push("Ctrl");
-  if (subAlt) parts.push("Alt");
-  if (subShift) parts.push("Shift");
-  if (subMeta) parts.push(metaKeyLabel);
+  if (subCtrl) parts.push(shortcutModifierLabels.ctrl);
+  if (subAlt) parts.push(shortcutModifierLabels.alt);
+  if (subShift) parts.push(shortcutModifierLabels.shift);
+  if (subMeta) parts.push(shortcutModifierLabels.meta);
   parts.push(prettyKeyName(subKeyCode));
   return parts.join(" + ");
 }

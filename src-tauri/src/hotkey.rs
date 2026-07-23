@@ -669,6 +669,7 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
         "Space" => 0x20,
         "Enter" => 0x0D,
         "Tab" => 0x09,
+        "Backspace" => 0x08,
         "Backquote" => 0xC0,
         "Backslash" => 0xDC,
         "Minus" => 0xBD,

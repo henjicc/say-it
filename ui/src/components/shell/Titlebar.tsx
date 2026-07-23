@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { isMacOS } from "@/lib/platform";
 
 const appWindow = getCurrentWindow();
-const isMacOS = navigator.userAgent.includes("Macintosh");
 
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);

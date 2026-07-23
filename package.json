@@ -10,8 +10,8 @@
     "ui:preview": "vite preview",
     "context-probe:build": "node scripts/build-context-probe.mjs",
     "context-probe:test": "ctest --test-dir src-tauri/target/context-probe-build -C Release --output-on-failure",
-    "tauri:dev": "npm run context-probe:build && tauri dev",
-    "tauri:build": "npm run context-probe:build && tauri build",
+    "tauri:dev": "npm run context-probe:build && node scripts/run-tauri.mjs dev",
+    "tauri:build": "npm run context-probe:build && node scripts/run-tauri.mjs build",
     "tauri": "tauri"
   },
   "devDependencies": {

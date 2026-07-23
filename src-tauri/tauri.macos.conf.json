@@ -22,7 +22,11 @@
     "icon": ["icons/icon.icns"],
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "frameworks": [
+        "target/release/libsherpa-onnx-c-api.dylib",
+        "target/release/libonnxruntime.1.27.0.dylib"
+      ]
     }
   }
 }

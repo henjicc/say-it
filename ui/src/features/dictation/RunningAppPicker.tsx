@@ -6,10 +6,11 @@ import { Field } from "@/components/ui/Field";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import { isWindows } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 import type { RunningApp } from "@/store/useDictPrefs";
 
-const supportsExecutableBrowse = navigator.userAgent.includes("Windows");
+const supportsExecutableBrowse = isWindows;
 
 function processKey(processName: string) {
   return processName.trim().toLowerCase();

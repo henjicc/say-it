@@ -81,7 +81,10 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
         );
         return;
     };
+    #[cfg(windows)]
     let debug_window_handle = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
+    #[cfg(not(windows))]
+    let debug_window_handle = None;
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
