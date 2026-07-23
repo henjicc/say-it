@@ -11,6 +11,7 @@ import {
   ocrOptionsForScene,
   type OcrModelOption,
 } from "@/features/asr/modelRegistry";
+import { systemOcrLabel } from "@/lib/platform";
 import { useDictPrefs } from "@/store/useDictPrefs";
 
 const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
@@ -96,7 +97,7 @@ export function ContextDebugApp() {
   );
   const [maxCaptureSide, setMaxCaptureSide] = useState<number>(MAX_CAPTURE_SIDE_OPTIONS[0]);
   const [ocrModels, setOcrModels] = useState<OcrModelOption[]>([
-    { value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false },
+    { value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false },
   ]);
 
   useEffect(() => {
@@ -120,7 +121,7 @@ export function ContextDebugApp() {
         setOcrModel(selected);
       })
       .catch(() => setOcrModels([
-        { value: "system-ocr", label: "Windows 系统 OCR", providerId: "system-ocr", remote: false },
+        { value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false },
       ]));
   }, []);
 

@@ -158,7 +158,7 @@ pub struct ProviderSettings {
 impl Default for ProviderSettings {
     fn default() -> Self {
         Self {
-            profiles: vec![funasr_profile(), groq_llm_profile(), windows_ocr_profile()],
+            profiles: vec![funasr_profile(), groq_llm_profile(), system_ocr_profile()],
             defaults: ProviderDefaults {
                 asr: FUNASR_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
@@ -317,12 +317,28 @@ pub fn groq_llm_profile() -> ProviderProfile {
     }
 }
 
-/// 内置 Windows 系统 OCR：无配置项，识别调用见 `capabilities::OcrProvider::System`。
-pub fn windows_ocr_profile() -> ProviderProfile {
+pub fn system_ocr_display_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS 系统 OCR"
+    } else {
+        "Windows 系统 OCR"
+    }
+}
+
+fn system_ocr_kind() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "builtin-macos-vision-ocr"
+    } else {
+        "builtin-windows-ocr"
+    }
+}
+
+/// 内置系统 OCR：Windows 使用 WinRT，macOS 使用 Vision，无用户配置项。
+pub fn system_ocr_profile() -> ProviderProfile {
     ProviderProfile {
         id: SYSTEM_OCR_PROVIDER_ID.to_string(),
-        kind: "builtin-windows-ocr".to_string(),
-        display_name: "Windows 系统 OCR".to_string(),
+        kind: system_ocr_kind().to_string(),
+        display_name: system_ocr_display_name().to_string(),
         auth_kind: "none".to_string(),
         capabilities: vec!["ocr".to_string()],
         enabled: true,
@@ -338,7 +354,7 @@ pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a 
 
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
-    vec![funasr_profile(), groq_llm_profile(), windows_ocr_profile()]
+    vec![funasr_profile(), groq_llm_profile(), system_ocr_profile()]
 }
 
 pub fn llm_models_from_config(config: &Value) -> Vec<LlmModelConfig> {
@@ -537,6 +553,18 @@ mod tests {
         ],
         "defaults": {"asr": "funasr"}
     }"#;
+
+    #[test]
+    fn system_ocr_profile_matches_current_platform() {
+        let profile = system_ocr_profile();
+        if cfg!(target_os = "macos") {
+            assert_eq!(profile.display_name, "macOS 系统 OCR");
+            assert_eq!(profile.kind, "builtin-macos-vision-ocr");
+        } else {
+            assert_eq!(profile.display_name, "Windows 系统 OCR");
+            assert_eq!(profile.kind, "builtin-windows-ocr");
+        }
+    }
 
     #[test]
     fn legacy_json_without_llm_field_preserves_key_hotwords_and_defaults() {

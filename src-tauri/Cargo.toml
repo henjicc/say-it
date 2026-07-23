@@ -22,6 +22,9 @@ required-features = ["model-pack-builder"]
 tauri-build = { version = "2.0.1", features = [] }
 sherpa-onnx-sys = { version = "1.13.4", default-features = false, features = ["shared"] }
 
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1"
+
 [patch.crates-io]
 ocr-rs = { path = "vendor/ocr-rs" }
 

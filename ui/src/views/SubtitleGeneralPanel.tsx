@@ -11,12 +11,13 @@ import { useSubtitleStore, buildSubtitleSource, parseSubtitleSource, type Subtit
 import { useAudioDevices } from "@/features/audio/devices";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
-import { isMacOS } from "@/lib/platform";
+import { isMacOS, isWindows } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
 const shortcutActionButtonClassName = "shrink-0 self-stretch";
-const systemAudioSupported = !isMacOS;
+const systemAudioSupported = isWindows || isMacOS;
+const systemAudioSupportsDeviceSelection = isWindows;
 
 export function SubtitleGeneralPanel() {
   useModelCatalogRevision();
@@ -91,7 +92,9 @@ export function SubtitleGeneralPanel() {
             >
               <option value={buildSubtitleSource("mic")}>麦克风（默认）</option>
               <option value={buildSubtitleSource("system")} disabled={!systemAudioSupported}>
-                {systemAudioSupported ? "系统音频（默认）" : "系统音频（macOS 暂不支持）"}
+                {systemAudioSupported
+                  ? isMacOS ? "系统音频（macOS 13+，需录制权限）" : "系统音频（默认）"
+                  : "系统音频（当前平台暂不支持）"}
               </option>
               {inputs.length > 0 && (
                 <option value="__group_inputs" disabled>
@@ -103,12 +106,12 @@ export function SubtitleGeneralPanel() {
                   {device.name}
                 </option>
               ))}
-              {systemAudioSupported && outputs.length > 0 && (
+              {systemAudioSupportsDeviceSelection && outputs.length > 0 && (
                 <option value="__group_outputs" disabled>
                   — 输出设备 —
                 </option>
               )}
-              {systemAudioSupported && outputs.map((device) => (
+              {systemAudioSupportsDeviceSelection && outputs.map((device) => (
                 <option key={`out:${device.name}`} value={buildSubtitleSource("system", device.name)}>
                   {device.name}
                 </option>

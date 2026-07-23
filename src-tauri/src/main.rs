@@ -11,6 +11,8 @@ mod hotkey;
 #[cfg(not(windows))]
 #[path = "hotkey_portable.rs"]
 mod hotkey;
+#[cfg(target_os = "macos")]
+mod macos_native;
 mod obs_overlay;
 mod ocr;
 mod persistence;

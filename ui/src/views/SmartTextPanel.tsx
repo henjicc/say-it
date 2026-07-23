@@ -10,6 +10,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { CMD, cmd } from "@/lib/tauri";
+import { isMacOS, systemOcrLabel } from "@/lib/platform";
 import {
   ocrOptionsForScene,
   useModelCatalogRevision,
@@ -473,15 +474,17 @@ export function SmartTextPanel() {
         <Field
           label="提取方式"
           hint={prefs.activeAppContextExtractionMethod === "ocr"
-            ? "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
+            ? isMacOS
+              ? "使用 macOS Vision 识别当前窗口内的可见文字，需要辅助功能与屏幕录制权限。"
+              : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
             : "通过应用文本接口读取相关内容，不加载 OCR 模型，内存占用更低。"}
         >
           <Select
             value={prefs.activeAppContextExtractionMethod}
             onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
           >
-            <option value="nativeText">文本提取（低内存）</option>
-            <option value="ocr">窗口 OCR（高覆盖率）</option>
+            {!isMacOS && <option value="nativeText">文本提取（低内存）</option>}
+            <option value="ocr">{isMacOS ? "窗口 OCR（macOS Vision）" : "窗口 OCR（高覆盖率）"}</option>
           </Select>
         </Field>
 
@@ -493,7 +496,7 @@ export function SmartTextPanel() {
                 ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
                 : selectedOcrModel?.value === "local-ppocr-v6-tiny"
                   ? "使用已安装的 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
-                  : "使用 Windows 系统 OCR，不会向第三方发送截图。"}
+                  : `使用${systemOcrLabel}，不会向第三方发送截图。`}
             >
               <Select
                 value={prefs.activeAppContextOcrModel}
@@ -510,7 +513,7 @@ export function SmartTextPanel() {
                 ))}
               </Select>
             </Field>
-            <div className="flex flex-col gap-1.5">
+            {!isMacOS && <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-4">
                 <label
                   htmlFor="active-app-context-ocr-follow-smart-min-chars"
@@ -530,7 +533,7 @@ export function SmartTextPanel() {
               <p className="text-xs text-[var(--color-fg-subtle)]">
                 复用命中软件规则后生效的智能处理最少文本长度；最少长度为 0 时每次听写都会执行 OCR。
               </p>
-            </div>
+            </div>}
             {ocrMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{ocrMessage}</p>}
           </>
         )}

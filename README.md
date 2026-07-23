@@ -78,7 +78,7 @@
 ### 安装说明
 
 - **Windows**：下载 `.exe` 安装包并运行，按向导完成安装。
-- **macOS**：当前为预览支持，可从源码运行或构建；首次文本注入时需按系统提示授予辅助功能权限。系统音频采集与当前软件上下文暂不可用。
+- **macOS**：当前为预览支持，可从源码运行或构建；Caps Lock 快捷键和文本注入需要“辅助功能”权限，窗口 OCR 与系统音频需要“屏幕与系统音频录制”权限。系统音频采集要求 macOS 13 及以上。
 - **Linux**：暂未支持，详见[路线图](#-路线图)。
 
 > Windows 启动时遇到 WebView 相关错误，可尝试安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
