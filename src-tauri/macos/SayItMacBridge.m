@@ -48,6 +48,83 @@ void sayit_macos_free_bytes(uint8_t *value) {
     free(value);
 }
 
+static void SayItRunOnMainThread(dispatch_block_t block) {
+    if (NSThread.isMainThread) {
+        block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), block);
+    }
+}
+
+static NSScreen *SayItIndicatorScreen(NSWindow *window) {
+    // mainScreen 对应当前拥有键盘焦点窗口所在屏幕；全局快捷键触发时就是用户正在听写的应用。
+    // 回退到悬浮窗当前屏幕，最后才使用主显示器。
+    return NSScreen.mainScreen ?: window.screen ?: NSScreen.screens.firstObject;
+}
+
+bool sayit_macos_place_indicator_window(
+    void *nsWindow,
+    double width,
+    double height,
+    int32_t anchor,
+    double offsetY,
+    char **error
+) {
+    if (nsWindow == NULL || width <= 0 || height <= 0) {
+        SayItSetError(error, @"macOS 悬浮窗口定位参数无效");
+        return false;
+    }
+    __block bool success = false;
+    SayItRunOnMainThread(^{
+        NSWindow *window = (__bridge NSWindow *)nsWindow;
+        NSScreen *screen = SayItIndicatorScreen(window);
+        if (screen == nil) return;
+        NSRect visible = screen.visibleFrame;
+        CGFloat x = NSMidX(visible) - width / 2.0;
+        CGFloat y;
+        if (anchor == 0) {
+            y = NSMaxY(visible) - height - offsetY;
+        } else if (anchor == 1) {
+            // 正 offset 与其他平台保持一致：视觉上向屏幕下方移动。
+            y = NSMidY(visible) - height / 2.0 - offsetY;
+        } else {
+            y = NSMinY(visible) + offsetY;
+        }
+        [window setFrame:NSMakeRect(x, y, width, height) display:NO];
+        success = true;
+    });
+    if (!success) SayItSetError(error, @"macOS 没有可用的显示器");
+    return success;
+}
+
+bool sayit_macos_indicator_visible_screen_size(
+    void *nsWindow,
+    double *width,
+    double *height,
+    char **error
+) {
+    if (nsWindow == NULL || width == NULL || height == NULL) {
+        SayItSetError(error, @"macOS 可用屏幕区域参数无效");
+        return false;
+    }
+    __block bool success = false;
+    __block NSSize size = NSZeroSize;
+    SayItRunOnMainThread(^{
+        NSWindow *window = (__bridge NSWindow *)nsWindow;
+        NSScreen *screen = SayItIndicatorScreen(window);
+        if (screen == nil) return;
+        size = screen.visibleFrame.size;
+        success = true;
+    });
+    if (!success) {
+        SayItSetError(error, @"macOS 没有可用的显示器");
+        return false;
+    }
+    *width = size.width;
+    *height = size.height;
+    return true;
+}
+
 static NSDictionary *SayItWindowInfoForApplication(NSRunningApplication *application, CGWindowID targetWindowId) {
     if (application == nil || application.processIdentifier <= 0) return nil;
     CFArrayRef rawWindows = CGWindowListCopyWindowInfo(

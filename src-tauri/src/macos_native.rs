@@ -75,6 +75,20 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_void;
     fn sayit_macos_system_audio_stop(handle: *mut c_void);
+    fn sayit_macos_place_indicator_window(
+        ns_window: *mut c_void,
+        width: f64,
+        height: f64,
+        anchor: i32,
+        offset_y: f64,
+        error: *mut *mut c_char,
+    ) -> bool;
+    fn sayit_macos_indicator_visible_screen_size(
+        ns_window: *mut c_void,
+        width: *mut f64,
+        height: *mut f64,
+        error: *mut *mut c_char,
+    ) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -214,5 +228,60 @@ pub(crate) unsafe fn start_system_audio(
 pub(crate) fn stop_system_audio(handle: usize) {
     if handle != 0 {
         unsafe { sayit_macos_system_audio_stop(handle as *mut c_void) };
+    }
+}
+
+pub(crate) fn place_indicator_window(
+    ns_window: *mut c_void,
+    width: f64,
+    height: f64,
+    anchor: &str,
+    offset_y: f64,
+) -> Result<(), String> {
+    let anchor = match anchor {
+        "top" => 0,
+        "center" => 1,
+        _ => 2,
+    };
+    let mut error = ptr::null_mut();
+    let success = unsafe {
+        sayit_macos_place_indicator_window(
+            ns_window,
+            width,
+            height,
+            anchor,
+            offset_y,
+            &mut error,
+        )
+    };
+    if success {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "定位 macOS 悬浮窗口失败".into())
+        })
+    }
+}
+
+pub(crate) fn indicator_visible_screen_size(
+    ns_window: *mut c_void,
+) -> Result<(f64, f64), String> {
+    let mut width = 0.0;
+    let mut height = 0.0;
+    let mut error = ptr::null_mut();
+    let success = unsafe {
+        sayit_macos_indicator_visible_screen_size(
+            ns_window,
+            &mut width,
+            &mut height,
+            &mut error,
+        )
+    };
+    if success && width > 0.0 && height > 0.0 {
+        Ok((width, height))
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "读取 macOS 可用屏幕区域失败".into())
+        })
     }
 }

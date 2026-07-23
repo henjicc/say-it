@@ -2,6 +2,8 @@
 
 ## 平台能力边界
 
+- macOS 透明 WebView 窗口需要 Tauri 的 `app.macOSPrivateApi`；仅给窗口 CSS 设置 `background: transparent` 不足以清除 WKWebView/NSWindow 的白色底层。该能力会影响 Mac App Store 审核，当前项目使用 GitHub Release 分发时可接受，但若未来上架商店必须重新评估。
+- 悬浮窗不能按完整显示器高度推算底边。macOS 应使用 `NSScreen.visibleFrame`，它会按当前 Dock、菜单栏与刘海安全区域动态排除不可用空间；不要缓存结果，Dock 尺寸、位置和自动隐藏设置都可能变化。
 - Caps Lock 不能交给 Tauri 全局快捷键注册。要避免切换大小写状态，必须使用可丢弃事件的 Quartz `CGEventTap`，并请求“辅助功能”权限；设置页录制 Caps Lock 时也要由同一事件过滤器吞键并向前端上报。
 - `kCGSessionEventTap` 收到 Caps Lock 时系统锁定状态已经改变，单纯从回调返回 `NULL` 只能阻止后续投递，不能恢复大小写状态或键盘灯。监听启动时应记录 `IOHIDGetModifierLockState`，每次触发后用 `IOHIDSetModifierLockState` 写回；初始化时同时探测写权限，不能在无法恢复状态时假装快捷键注册成功。
 - ScreenCaptureKit 的系统音频输出、`capturesAudio`、采样率和声道配置从 macOS 13 起可用。应用仍可保持 macOS 11 的整体最低版本，但系统音频入口必须明确标注 13+，运行时也必须用可用性检查返回可操作错误。

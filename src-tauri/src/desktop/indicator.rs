@@ -32,6 +32,25 @@ const DICTATION_INDICATOR_LABEL: &str = "dictation-indicator";
 const DEFAULT_INDICATOR_WIDTH: f64 = 460.0;
 const DEFAULT_INDICATOR_HEIGHT: f64 = 188.0;
 
+fn fallback_indicator_position(
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_width: i32,
+    monitor_height: i32,
+    window_width: i32,
+    window_height: i32,
+    anchor: &str,
+    margin: i32,
+) -> (i32, i32) {
+    let x = monitor_x + (monitor_width - window_width) / 2;
+    let y = match anchor {
+        "top" => monitor_y + margin,
+        "center" => monitor_y + (monitor_height - window_height) / 2 + margin,
+        _ => monitor_y + monitor_height - window_height - margin,
+    };
+    (x, y)
+}
+
 fn place_indicator_window(
     window: &tauri::WebviewWindow,
     width: f64,
@@ -40,19 +59,40 @@ fn place_indicator_window(
     offset_y: f64,
 ) {
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
+
+    #[cfg(target_os = "macos")]
+    if let Ok(ns_window) = window.ns_window() {
+        if crate::macos_native::place_indicator_window(
+            ns_window,
+            width,
+            height,
+            anchor,
+            offset_y,
+        )
+        .is_ok()
+        {
+            return;
+        }
+    }
+
     if let Ok(Some(monitor)) = window.current_monitor() {
         let size = monitor.size();
+        let position = monitor.position();
         let scale = window.scale_factor().unwrap_or(1.0);
         let win_w = (width * scale) as i32;
         let win_h = (height * scale) as i32;
-        let x = (size.width as i32 - win_w) / 2;
         let margin = (offset_y * scale) as i32;
-        let y = match anchor {
-            "top" => margin,
-            "center" => ((size.height as i32 - win_h) / 2) + margin,
-            _ => size.height as i32 - win_h - margin,
-        };
-        let _ = window.set_position(tauri::PhysicalPosition::new(x.max(0), y.max(0)));
+        let (x, y) = fallback_indicator_position(
+            position.x,
+            position.y,
+            size.width as i32,
+            size.height as i32,
+            win_w,
+            win_h,
+            anchor,
+            margin,
+        );
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
 }
 
@@ -73,10 +113,8 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     .skip_taskbar(true)
     .focused(false)
     .visible(false)
-    .shadow(false);
-    // macOS 不调用私有透明窗口 API，保持默认不透明；其他平台继续使用透明悬浮窗。
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.transparent(true);
+    .shadow(false)
+    .transparent(true);
     let window = builder
         .build()
         .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
@@ -170,6 +208,12 @@ pub(crate) fn set_indicator_translation(app: tauri::AppHandle, text: String) -> 
 #[tauri::command]
 pub(crate) fn get_indicator_monitor_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let window = ensure_indicator_window(&app)?;
+    #[cfg(target_os = "macos")]
+    if let Ok(ns_window) = window.ns_window() {
+        if let Ok((width, height)) = crate::macos_native::indicator_visible_screen_size(ns_window) {
+            return Ok(json!({ "width": width, "height": height }));
+        }
+    }
     let scale = window.scale_factor().unwrap_or(1.0);
     if let Ok(Some(monitor)) = window.current_monitor() {
         let size = monitor.size();
@@ -197,4 +241,29 @@ pub(crate) fn set_indicator_layout(
     let offset_y = offset_y.unwrap_or(36.0).clamp(-240.0, 240.0);
     place_indicator_window(&window, width, height, &anchor, offset_y);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fallback_indicator_position;
+
+    #[test]
+    fn fallback_position_preserves_negative_secondary_monitor_origin() {
+        assert_eq!(
+            fallback_indicator_position(-1_920, 0, 1_920, 1_080, 460, 188, "bottom", 36),
+            (-1_190, 856)
+        );
+    }
+
+    #[test]
+    fn fallback_position_applies_anchor_margin_in_monitor_coordinates() {
+        assert_eq!(
+            fallback_indicator_position(200, -900, 1_600, 900, 400, 180, "top", 24),
+            (800, -876)
+        );
+        assert_eq!(
+            fallback_indicator_position(200, -900, 1_600, 900, 400, 180, "center", 24),
+            (800, -516)
+        );
+    }
 }
