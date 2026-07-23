@@ -11,12 +11,14 @@ import {
   notifyModelCatalogUpdated,
   type AsrModelOption,
 } from "./modelRegistry";
+import builtinModels from "~shared/asr-models.json";
 
 export type { AsrModelOption };
 
-// 启动桥在渲染业务页面前从后端填充；数组保持同一引用，避免消费方缓存失效。
-export let DEFAULT_REALTIME_ASR_MODEL = "";
-export let DEFAULT_FILE_ASR_MODEL = "";
+// Store 模块会早于异步启动桥求值，因此默认值必须同步来自共享注册表，不能先用空串占位。
+// 启动桥随后仍会用后端目录（含插件模型）刷新这些值和选项。
+export let DEFAULT_REALTIME_ASR_MODEL = builtinModels.find((model) => model.isDefaultRealtime)?.id ?? "";
+export let DEFAULT_FILE_ASR_MODEL = builtinModels.find((model) => model.isDefaultFile)?.id ?? "";
 
 // 模型下拉选项从注册表派生
 export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = [];

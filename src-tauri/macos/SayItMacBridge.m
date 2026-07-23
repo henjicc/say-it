@@ -2,6 +2,10 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreMedia/CoreMedia.h>
+#import <IOKit/IOKitLib.h>
+#import <IOKit/hidsystem/IOHIDLib.h>
+#import <IOKit/hidsystem/IOHIDParameter.h>
+#import <IOKit/hidsystem/IOHIDShared.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <Vision/Vision.h>
 #import <dlfcn.h>
@@ -317,6 +321,9 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
 @property(nonatomic) CFRunLoopRef runLoop;
 @property(nonatomic) dispatch_semaphore_t ready;
 @property(nonatomic, copy) NSString *startupError;
+@property(nonatomic) io_connect_t hidConnection;
+@property(nonatomic) bool preservedCapsLockState;
+@property(nonatomic) CFAbsoluteTime lastCapsLockEventAt;
 @end
 
 static CGEventRef SayItCapsEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
@@ -327,7 +334,18 @@ static CGEventRef SayItCapsEventCallback(CGEventTapProxy proxy, CGEventType type
         return event;
     }
     if (type != kCGEventFlagsChanged || CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) != 57) return event;
-    bool swallow = owner.callback != NULL && owner.callback(owner.context, (uint64_t)CGEventGetFlags(event));
+    // Session 级事件过滤器收到 Caps Lock 时，系统锁定状态已经发生变化；仅返回 NULL
+    // 只能阻止事件继续投递，不能把大小写和键盘灯恢复。这里显式写回绑定前的状态。
+    if (owner.hidConnection != IO_OBJECT_NULL) {
+        IOHIDSetModifierLockState(owner.hidConnection, kIOHIDCapsLockState, owner.preservedCapsLockState);
+    }
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    bool duplicated = owner.lastCapsLockEventAt > 0 && now - owner.lastCapsLockEventAt < 0.12;
+    owner.lastCapsLockEventAt = now;
+    bool swallow = true;
+    if (!duplicated && owner.callback != NULL) {
+        swallow = owner.callback(owner.context, (uint64_t)CGEventGetFlags(event));
+    }
     return swallow ? NULL : event;
 }
 
@@ -368,8 +386,46 @@ static CGEventRef SayItCapsEventCallback(CGEventTapProxy proxy, CGEventType type
 - (void)dealloc {
     if (_tap != NULL) CFRelease(_tap);
     if (_runLoop != NULL) CFRelease(_runLoop);
+    if (_hidConnection != IO_OBJECT_NULL) IOServiceClose(_hidConnection);
 }
 @end
+
+static bool SayItOpenHIDSystem(io_connect_t *connection, bool *capsLockState, NSString **message) {
+    // IOKit 明确约定 NULL 表示默认 main port；这样可同时支持 macOS 11，
+    // 避免引用仅在 macOS 12 引入的同义常量 kIOMainPortDefault。
+    io_service_t service = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching(kIOHIDSystemClass));
+    if (service == IO_OBJECT_NULL) {
+        *message = @"无法连接 macOS 键盘状态服务";
+        return false;
+    }
+    kern_return_t opened = IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, connection);
+    IOObjectRelease(service);
+    if (opened != KERN_SUCCESS) {
+        *message = @"无法打开 macOS 键盘状态服务";
+        return false;
+    }
+    bool current = false;
+    kern_return_t read = IOHIDGetModifierLockState(*connection, kIOHIDCapsLockState, &current);
+    if (read != KERN_SUCCESS) {
+        IOServiceClose(*connection);
+        *connection = IO_OBJECT_NULL;
+        *message = @"无法读取 macOS 大写锁定状态";
+        return false;
+    }
+    kern_return_t writable = IOHIDSetModifierLockState(
+        *connection,
+        kIOHIDCapsLockState,
+        current
+    );
+    if (writable != KERN_SUCCESS) {
+        IOServiceClose(*connection);
+        *connection = IO_OBJECT_NULL;
+        *message = @"无法控制 macOS 大写锁定状态";
+        return false;
+    }
+    *capsLockState = current;
+    return true;
+}
 
 void *sayit_macos_caps_lock_start(SayItCapsLockCallback callback, void *context, char **error) {
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
@@ -381,6 +437,15 @@ void *sayit_macos_caps_lock_start(SayItCapsLockCallback callback, void *context,
     owner.callback = callback;
     owner.context = context;
     owner.ready = dispatch_semaphore_create(0);
+    NSString *hidError = nil;
+    io_connect_t hidConnection = IO_OBJECT_NULL;
+    bool preservedCapsLockState = false;
+    if (!SayItOpenHIDSystem(&hidConnection, &preservedCapsLockState, &hidError)) {
+        SayItSetError(error, hidError);
+        return NULL;
+    }
+    owner.hidConnection = hidConnection;
+    owner.preservedCapsLockState = preservedCapsLockState;
     [NSThread detachNewThreadSelector:@selector(startOnThread) toTarget:owner withObject:nil];
     if (dispatch_semaphore_wait(owner.ready, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
         SayItSetError(error, @"启动 Caps Lock 事件过滤器超时");

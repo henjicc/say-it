@@ -1,5 +1,6 @@
 /// 注册表字体值名形如 "Microsoft YaHei & Microsoft YaHei UI (TrueType)"，
 /// 需要去掉尾部的格式标注、按 "&" 拆开同一条目里捆绑的多个字重/字体族名。
+#[cfg(windows)]
 fn parse_font_family_names(value_name: &str) -> Vec<String> {
     let without_suffix = value_name
         .rsplit_once(" (")

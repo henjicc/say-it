@@ -467,6 +467,7 @@ pub(crate) fn request_stop(app: AppHandle) {
         }
     });
 }
+#[cfg(windows)]
 pub(crate) fn request_cancel(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = cancel(app.clone()).await {
@@ -614,8 +615,12 @@ async fn start(
         .map_err(|_| "应用配置锁失败")?
         .dictation_prefs
         .clone();
-    let prefs: DictationPrefs =
+    let mut prefs: DictationPrefs =
         serde_json::from_value(prefs_value).map_err(|e| format!("听写配置无效：{e}"))?;
+    if prefs.asr_model.trim().is_empty() {
+        prefs.asr_model = crate::providers::registry::default_realtime_model().into();
+        dlog!("[dictation] 检测到空的听写模型配置，已回退到默认实时模型");
+    }
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
     let dictation_settings = state
@@ -1874,11 +1879,28 @@ fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {
 pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), String> {
     let prefs: DictationPrefs =
         serde_json::from_value(value.clone()).map_err(|e| format!("听写配置无效：{e}"))?;
+    if prefs.asr_model.trim().is_empty() {
+        return Err("听写模型不能为空".into());
+    }
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
     validate_ocr_preferences(&prefs)
 }
 
+/// 修复已经落盘的空模型值。只处理显式存在的字段，不能把旧版空对象变成“已配置”，
+/// 否则会阻断前端 localStorage 的一次性迁移。
+pub(crate) fn repair_empty_asr_model(value: &mut Value) -> bool {
+    let Some(model) = value.get_mut("asrModel") else {
+        return false;
+    };
+    if model.as_str().is_some_and(|value| !value.trim().is_empty()) {
+        return false;
+    }
+    *model = Value::String(crate::providers::registry::default_realtime_model().into());
+    true
+}
+
+#[cfg(windows)]
 pub(crate) fn active_app_context_extraction_method_from_value(
     value: &Value,
 ) -> crate::active_app_context::ActiveAppContextExtractionMethod {
@@ -1887,6 +1909,7 @@ pub(crate) fn active_app_context_extraction_method_from_value(
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
 pub(crate) fn active_app_context_ocr_engine_from_value(
     value: &Value,
 ) -> crate::active_app_context::OcrEngineKind {
@@ -1895,12 +1918,14 @@ pub(crate) fn active_app_context_ocr_engine_from_value(
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
 pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_model)
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
 pub(crate) fn active_app_context_ocr_approved_providers_from_value(value: &Value) -> Vec<String> {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_approved_providers)
@@ -2240,6 +2265,20 @@ mod tests {
         assert!(DictationPrefs::default().active_app_context_ocr_follow_smart_processing_min_chars);
         let legacy: DictationPrefs = serde_json::from_value(json!({})).unwrap();
         assert!(!legacy.active_app_context_ocr_follow_smart_processing_min_chars);
+    }
+
+    #[test]
+    fn explicit_empty_asr_model_is_repaired_without_changing_legacy_empty_object() {
+        let mut broken = json!({ "asrModel": "  " });
+        assert!(repair_empty_asr_model(&mut broken));
+        assert_eq!(
+            broken["asrModel"],
+            crate::providers::registry::default_realtime_model()
+        );
+
+        let mut legacy = json!({});
+        assert!(!repair_empty_asr_model(&mut legacy));
+        assert_eq!(legacy, json!({}));
     }
 
     #[test]

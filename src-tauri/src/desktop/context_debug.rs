@@ -1,9 +1,12 @@
 use crate::prelude::*;
 
 pub(crate) const CONTEXT_DEBUG_WINDOW_LABEL: &str = "active-app-context-debug";
+#[cfg(windows)]
 const DEBUG_WINDOW_WIDTH: f64 = 720.0;
+#[cfg(windows)]
 const DEBUG_WINDOW_HEIGHT: f64 = 700.0;
 
+#[cfg(windows)]
 fn place_window(window: &tauri::WebviewWindow) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
@@ -18,6 +21,7 @@ fn place_window(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::PhysicalPosition::new(x.max(position.x), y));
 }
 
+#[cfg(windows)]
 fn ensure_context_debug_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(CONTEXT_DEBUG_WINDOW_LABEL) {
         return Ok(window);
