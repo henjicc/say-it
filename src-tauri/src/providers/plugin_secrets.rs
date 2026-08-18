@@ -224,10 +224,11 @@ fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(any(windows, target_os = "macos"))]
     fn test_spec() -> PluginRuntimeSpec {
         let nonce = next_storage_key();
         PluginRuntimeSpec {
@@ -270,6 +271,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "会向当前用户的 macOS 钥匙串写入并清理临时测试凭据"
+    )]
     fn long_session_round_trips_through_system_credentials() {
         let spec = test_spec();
         let session = serde_json::json!({
@@ -288,6 +294,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
         use windows::core::w;
         use windows::Win32::Foundation::{LocalFree, HLOCAL};
@@ -317,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn legacy_dpapi_data_can_be_migrated() {
         let plain = br#"{"cookie":"secret"}"#;
         assert_eq!(unprotect(&protect(plain).unwrap()).unwrap(), plain);
