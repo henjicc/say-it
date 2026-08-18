@@ -319,8 +319,53 @@ fn start_recording(
             }
         }
         let _ = drain_tx.send(());
+        let capture_error = app
+            .state::<RuntimeState>()
+            .backend_mic
+            .lock()
+            .ok()
+            .and_then(|mut capture| capture.last_error.take());
+        if let Some(error) = capture_error {
+            fail_recording_capture(&app, epoch, error);
+        }
     });
     Ok(())
+}
+
+fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
+    let state = app.state::<RuntimeState>();
+    let (sessions, lease) = {
+        let Ok(mut compare) = state.compare_runtime.inner.lock() else {
+            return;
+        };
+        if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch
+            || compare.phase != "recording"
+        {
+            return;
+        }
+        compare.phase = "idle".into();
+        compare.error = error.clone();
+        compare.recording_drain = None;
+        compare.playback_progress = None;
+        for cell in &mut compare.cells {
+            if !matches!(cell.status.as_str(), "done" | "error") {
+                cell.status = "error".into();
+                cell.error_message = error.clone();
+            }
+        }
+        (
+            std::mem::take(&mut compare.sessions),
+            compare.lease.take(),
+        )
+    };
+    let _ = release_backend_mic_inner(&state);
+    for (session_id, _) in sessions {
+        let _ = stop_asr_stream_inner(&session_id, &state);
+    }
+    if let Some(lease) = lease {
+        let _ = state.audio_session.release(&lease);
+    }
+    publish(app);
 }
 
 #[tauri::command]

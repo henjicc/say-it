@@ -2,10 +2,11 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::Manager;
+use serde_json::json;
+use tauri::{Emitter, Manager};
 
 use crate::audio_dsp::{process_offline, DspParams};
-use crate::application::contract::{DomainRunState, DomainSnapshot};
+use crate::application::contract::{next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot};
 
 const WAVE_POINTS: usize = 860;
 
@@ -21,6 +22,7 @@ struct AudioLabState {
     raw: Vec<f32>,
     processed: Vec<f32>,
     stats: Option<AudioLabStats>,
+    error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -42,6 +44,7 @@ pub(crate) struct AudioLabSnapshot {
     pub(crate) raw_waveform: Vec<[f32; 2]>,
     pub(crate) processed_waveform: Vec<[f32; 2]>,
     pub(crate) stats: Option<AudioLabStats>,
+    pub(crate) error: Option<String>,
 }
 
 impl AudioLabRuntime {
@@ -53,6 +56,17 @@ impl AudioLabRuntime {
     }
     pub(crate) fn append(&self, samples: &[f32]) {
         if let Ok(mut state) = self.state.lock() { if state.recording { state.raw.extend_from_slice(samples); } }
+    }
+    fn abort(&self) {
+        if let Ok(mut state) = self.state.lock() { *state = AudioLabState::default(); }
+    }
+    fn fail(&self, error: String) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.recording {
+                state.recording = false;
+                state.error = Some(error);
+            }
+        }
     }
     pub(crate) fn stop(&self) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
@@ -73,7 +87,7 @@ impl AudioLabRuntime {
         Ok(snapshot(&state))
     }
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
-        match self.state.lock() { Ok(state) => DomainSnapshot { state: if state.recording { DomainRunState::Running } else { DomainRunState::Idle }, session_id: None }, Err(_) => DomainSnapshot { state: DomainRunState::Failed, session_id: None } }
+        match self.state.lock() { Ok(state) => DomainSnapshot { state: if state.error.is_some() { DomainRunState::Failed } else if state.recording { DomainRunState::Running } else { DomainRunState::Idle }, session_id: None }, Err(_) => DomainSnapshot { state: DomainRunState::Failed, session_id: None } }
     }
     pub(crate) fn write_wav(&self, processed: bool) -> Result<String, String> {
         let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
@@ -95,16 +109,55 @@ impl AudioLabRuntime {
 #[tauri::command]
 pub(crate) fn audio_lab_start(app: tauri::AppHandle, state: tauri::State<'_, crate::state::RuntimeState>, device_name: Option<String>) -> Result<AudioLabSnapshot, String> {
     let lease = state.audio_session.acquire(crate::application::audio_session::AudioOwner::AudioLab)?;
-    *state.audio_lab_lease.lock().map_err(|_| "音频会话锁失败")? = Some(lease);
-    let started = crate::desktop::backend_mic::start_backend_mic_inner(device_name, &state)?;
-    state.audio_lab_runtime.begin(started.sample_rate)?;
-    let (_, mut receiver) = crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state)?;
+    match state.audio_lab_lease.lock() {
+        Ok(mut current) => *current = Some(lease),
+        Err(_) => {
+            let _ = state.audio_session.release(&lease);
+            return Err("音频会话锁失败".into());
+        }
+    }
+    let started = match crate::desktop::backend_mic::start_backend_mic_inner(device_name, &state) {
+        Ok(started) => started,
+        Err(error) => {
+            cleanup_start_failure(&state);
+            return Err(error);
+        }
+    };
+    if let Err(error) = state.audio_lab_runtime.begin(started.sample_rate) {
+        cleanup_start_failure(&state);
+        return Err(error);
+    }
+    let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state) {
+        Ok(attached) => attached,
+        Err(error) => {
+            cleanup_start_failure(&state);
+            return Err(error);
+        }
+    };
     tauri::async_runtime::spawn(async move {
         while let Some(crate::state::AsrStreamInput::RawF32(samples)) = receiver.recv().await {
             if let Some(runtime) = app.try_state::<crate::state::RuntimeState>() { runtime.audio_lab_runtime.append(&samples); }
         }
+        let Some(state) = app.try_state::<crate::state::RuntimeState>() else { return; };
+        let capture_error = state.backend_mic.lock().ok().and_then(|mut capture| capture.last_error.take());
+        if let Some(error) = capture_error {
+            state.audio_lab_runtime.fail(error);
+            let _ = crate::desktop::backend_mic::release_backend_mic_inner(&state);
+            if let Ok(mut current) = state.audio_lab_lease.lock() {
+                if let Some(lease) = current.take() { let _ = state.audio_session.release(&lease); }
+            }
+            publish(&app);
+        }
     });
     state.audio_lab_runtime.snapshot()
+}
+
+fn cleanup_start_failure(state: &crate::state::RuntimeState) {
+    state.audio_lab_runtime.abort();
+    let _ = crate::desktop::backend_mic::release_backend_mic_inner(state);
+    if let Ok(mut current) = state.audio_lab_lease.lock() {
+        if let Some(lease) = current.take() { let _ = state.audio_session.release(&lease); }
+    }
 }
 
 #[tauri::command]
@@ -126,7 +179,13 @@ pub(crate) fn get_audio_lab_runtime(state: tauri::State<'_, crate::state::Runtim
 pub(crate) fn audio_lab_audio_path(state: tauri::State<'_, crate::state::RuntimeState>, processed: bool) -> Result<String, String> { state.audio_lab_runtime.write_wav(processed) }
 
 fn snapshot(state: &AudioLabState) -> AudioLabSnapshot {
-    AudioLabSnapshot { recording: state.recording, sample_rate: state.sample_rate, duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64, raw_waveform: summarize(&state.raw), processed_waveform: summarize(&state.processed), stats: state.stats.clone() }
+    AudioLabSnapshot { recording: state.recording, sample_rate: state.sample_rate, duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64, raw_waveform: summarize(&state.raw), processed_waveform: summarize(&state.processed), stats: state.stats.clone(), error: state.error.clone() }
+}
+fn publish(app: &tauri::AppHandle) {
+    let state = app.state::<crate::state::RuntimeState>();
+    let revision = next_revision(&state.snapshot_revision);
+    let payload = state.audio_lab_runtime.snapshot().ok().and_then(|snapshot| serde_json::to_value(snapshot).ok()).unwrap_or_else(|| json!({}));
+    let _ = app.emit("domain-event", DomainEventEnvelope { revision, domain: "audioLab".into(), event_type: "stateChanged".into(), session_id: None, payload });
 }
 fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
     if samples.is_empty() { return Vec::new(); }
@@ -134,4 +193,26 @@ fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
     (0..width).map(|index| { let start = index * samples.len() / width; let end = ((index + 1) * samples.len() / width).max(start + 1); samples[start..end].iter().fold([1.0_f32, -1.0_f32], |[min, max], sample| [min.min(*sample), max.max(*sample)]) }).collect()
 }
 
-#[cfg(test)] mod tests { use super::*; #[test] fn waveform_is_bounded() { assert_eq!(summarize(&vec![0.0; 1000]).len(), WAVE_POINTS); } }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waveform_is_bounded() {
+        assert_eq!(summarize(&vec![0.0; 1000]).len(), WAVE_POINTS);
+    }
+
+    #[test]
+    fn capture_failure_stops_recording_and_preserves_the_error() {
+        let runtime = AudioLabRuntime::default();
+        runtime.begin(48_000).unwrap();
+        runtime.append(&[0.1, -0.1]);
+
+        runtime.fail("输入设备已断开".into());
+
+        let snapshot = runtime.snapshot().unwrap();
+        assert!(!snapshot.recording);
+        assert_eq!(snapshot.error.as_deref(), Some("输入设备已断开"));
+        assert_eq!(runtime.domain_snapshot().state, DomainRunState::Failed);
+    }
+}

@@ -113,14 +113,35 @@ pub(crate) fn interleaved_to_mono_f32_from_u16(input: &[u16], channels: usize) -
         .collect()
 }
 
+fn report_backend_mic_capture_error(
+    worker: &std::sync::mpsc::Sender<BackendMicCommand>,
+    capture_failed: &std::sync::atomic::AtomicBool,
+    message: String,
+) {
+    if !capture_failed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        let _ = worker.send(BackendMicCommand::CaptureError { message });
+    }
+}
+
 pub(crate) fn build_backend_mic_stream(
     mic: Arc<Mutex<BackendMicState>>,
+    worker: std::sync::mpsc::Sender<BackendMicCommand>,
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
 ) -> Result<cpal::Stream, String> {
     let stream_config: cpal::StreamConfig = config.clone().into();
     let channels = stream_config.channels.max(1) as usize;
-    let err_fn = |err| dlog!("[backend-mic] 输入流错误: {err}");
+    let capture_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let error_callback = || {
+        let worker = worker.clone();
+        let capture_failed = capture_failed.clone();
+        move |error: cpal::StreamError| {
+            let message = format!("麦克风输入流意外停止：{error}");
+            dlog!("[backend-mic] {message}");
+            report_backend_mic_capture_error(&worker, &capture_failed, message);
+        }
+    };
 
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
@@ -132,7 +153,7 @@ pub(crate) fn build_backend_mic_stream(
                         interleaved_to_mono_f32_from_f32(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建麦克风输入流失败: {e}")),
@@ -145,7 +166,7 @@ pub(crate) fn build_backend_mic_stream(
                         interleaved_to_mono_f32_from_i16(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建麦克风输入流失败: {e}")),
@@ -158,7 +179,7 @@ pub(crate) fn build_backend_mic_stream(
                         interleaved_to_mono_f32_from_u16(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建麦克风输入流失败: {e}")),
@@ -281,29 +302,59 @@ pub(crate) fn start_backend_mic_inner(
     let sample_rate = config.sample_rate().0;
     let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
+    let worker_for_stream = worker_tx.clone();
+    let (startup_tx, startup_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let mic = state.backend_mic.clone();
+    {
+        let mut guard = mic
+            .lock()
+            .map_err(|_| "Backend mic lock failed".to_string())?;
+        guard.worker = Some(worker_tx.clone());
+        guard.sample_rate = sample_rate;
+        guard.channels = channels;
+        guard.session_id = None;
+        guard.tx = None;
+        guard.raw_txs.clear();
+        guard.pending.clear();
+        guard.buffer.clear();
+        guard.chunk_count = 0;
+        guard.last_rms = 0.0;
+        guard.last_error = None;
+        guard.current_device = resolved_device_name.clone();
+    }
     std::thread::spawn(move || {
-        let stream = match build_backend_mic_stream(mic.clone(), &device, &config) {
+        let stream = match build_backend_mic_stream(
+            mic.clone(),
+            worker_for_stream,
+            &device,
+            &config,
+        ) {
             Ok(stream) => stream,
             Err(err) => {
                 dlog!("[backend-mic] {err}");
                 if let Ok(mut guard) = mic.lock() {
+                    guard.last_error = Some(err.clone());
                     guard.worker = None;
                     guard.sample_rate = 0;
                     guard.channels = 0;
                 }
+                let _ = startup_tx.send(Err(err));
                 return;
             }
         };
         if let Err(err) = stream.play() {
-            dlog!("[backend-mic] 启动麦克风输入流失败: {err}");
+            let message = format!("启动麦克风输入流失败: {err}");
+            dlog!("[backend-mic] {message}");
             if let Ok(mut guard) = mic.lock() {
+                guard.last_error = Some(message.clone());
                 guard.worker = None;
                 guard.sample_rate = 0;
                 guard.channels = 0;
             }
+            let _ = startup_tx.send(Err(message));
             return;
         }
+        let _ = startup_tx.send(Ok(()));
         dlog!(
             "[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}"
         );
@@ -389,21 +440,33 @@ pub(crate) fn start_backend_mic_inner(
         }
     });
 
-    let mut guard = state
-        .backend_mic
-        .lock()
-        .map_err(|_| "Backend mic lock failed".to_string())?;
-    guard.worker = Some(worker_tx);
-    guard.sample_rate = sample_rate;
-    guard.channels = channels;
-    guard.session_id = None;
-    guard.tx = None;
-    guard.raw_txs.clear();
-    guard.pending.clear();
-    guard.buffer.clear();
-    guard.chunk_count = 0;
-    guard.last_rms = 0.0;
-    guard.current_device = resolved_device_name.clone();
+    match startup_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => {
+            let guard = state
+                .backend_mic
+                .lock()
+                .map_err(|_| "Backend mic lock failed".to_string())?;
+            if guard.worker.is_none() {
+                return Err(guard
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "麦克风输入流已意外停止".into()));
+            }
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            let _ = worker_tx.send(BackendMicCommand::Stop { reply: None });
+            let error = "启动麦克风输入流超时".to_string();
+            if let Ok(mut guard) = state.backend_mic.lock() {
+                guard.worker = None;
+                guard.sample_rate = 0;
+                guard.channels = 0;
+                guard.current_device = None;
+                guard.last_error = Some(error.clone());
+            }
+            return Err(error);
+        }
+    }
     dlog!("[backend-mic] 已启动后端麦克风 sample_rate={sample_rate} channels={channels} device={resolved_device_name:?}");
     Ok(BackendMicStartResponse {
         sample_rate,
@@ -553,6 +616,7 @@ pub(crate) fn release_backend_mic_inner(state: &RuntimeState) -> Result<(), Stri
     guard.chunk_count = 0;
     guard.current_device = None;
     guard.last_rms = 0.0;
+    guard.last_error = None;
     dlog!("[backend-mic] 已释放后端麦克风");
     Ok(())
 }
@@ -603,5 +667,20 @@ mod tests {
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn capture_error_is_forwarded_only_once() {
+        let (worker, receiver) = std::sync::mpsc::channel();
+        let capture_failed = std::sync::atomic::AtomicBool::new(false);
+
+        report_backend_mic_capture_error(&worker, &capture_failed, "设备已断开".into());
+        report_backend_mic_capture_error(&worker, &capture_failed, "重复错误".into());
+
+        match receiver.recv().unwrap() {
+            BackendMicCommand::CaptureError { message } => assert_eq!(message, "设备已断开"),
+            _ => panic!("expected capture error"),
+        }
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     }
 }
