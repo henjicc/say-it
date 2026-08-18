@@ -21,11 +21,11 @@
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.icns"],
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "15.5",
       "infoPlist": "Info.plist",
       "frameworks": [
         "target/release/libsherpa-onnx-c-api.dylib",
-        "target/release/libonnxruntime.1.27.0.dylib"
+        "target/release/libonnxruntime.dylib"
       ]
     }
   }
