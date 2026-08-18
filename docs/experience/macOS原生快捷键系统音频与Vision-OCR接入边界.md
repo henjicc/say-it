@@ -31,6 +31,7 @@
 - 应用规则从本地选择 `.app` 时不能直接拿包目录名作为进程匹配键；`.app` 名与 `CFBundleExecutable` 经常不同。应由原生层通过 `NSBundle.executableURL` 解析实际进程名，同时读取 `CFBundleDisplayName`/`CFBundleName` 作为显示名。
 - macOS 字幕字体列表不能沿用 Windows 注册表实现；应在主线程通过 `NSFontManager.availableFontFamilies` 读取。自定义数据目录迁移的剩余空间检查也不能静默跳过，应读取卷的 `NSURLVolumeAvailableCapacityForImportantUsageKey`，失败时再降级到普通可用容量键。
 - 新安装的 macOS 字幕默认字体应使用系统自带的 `PingFang SC`，不能继续写入 Windows 的 `Microsoft YaHei`；字体下拉在加载系统列表后仍要保留当前已保存但本机缺失的字体项，避免设置值存在而控件显示为空。
+- macOS 普通应用在销毁所有窗口后仍会保留 Dock 图标。“静默启动后只驻留托盘/状态栏”不能只复用 Windows 的隐藏窗口逻辑：应在确认由开机自启且启用静默启动时，于事件循环启动前隐藏 Dock；用户从状态栏、文件关联或单实例入口打开主窗口时再恢复 Dock 身份。系统自启状态读取失败也必须向界面返回错误，不能静默当作“未开启”。
 
 ## 构建与验证
 
