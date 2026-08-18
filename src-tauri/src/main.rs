@@ -58,8 +58,61 @@ use state::*;
 
 static DEBUG_LOG: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+const MACOS_AUTOSTART_LABEL: &str = "com.henjicc.sayit.autostart";
+
 fn should_start_hidden(launched_via_autostart: bool, silent_start: bool) -> bool {
     launched_via_autostart && silent_start
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_app_executable(path: &std::path::Path) -> bool {
+    path.parent().is_some_and(|directory| {
+        directory.file_name().is_some_and(|name| name == "MacOS")
+            && directory.parent().is_some_and(|contents| {
+                contents.file_name().is_some_and(|name| name == "Contents")
+                    && contents
+                        .parent()
+                        .is_some_and(|bundle| bundle.extension().is_some_and(|ext| ext == "app"))
+            })
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_macos_autostart(app: &tauri::AppHandle) -> Result<(), String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("定位 macOS 应用程序失败：{error}"))?;
+    // 开发态二进制不能把已安装应用的自启项迁移到 target/debug/say-it。
+    if !is_macos_app_executable(&executable) {
+        return Ok(());
+    }
+    let legacy_label = app.package_info().name.as_str();
+    if legacy_label == MACOS_AUTOSTART_LABEL {
+        return Ok(());
+    }
+    let launch_agents = app
+        .path()
+        .home_dir()
+        .map_err(|error| format!("定位 macOS 用户目录失败：{error}"))?
+        .join("Library")
+        .join("LaunchAgents");
+    let legacy_file = launch_agents.join(format!("{legacy_label}.plist"));
+    if !legacy_file.exists() {
+        return Ok(());
+    }
+
+    let current_file = launch_agents.join(format!("{MACOS_AUTOSTART_LABEL}.plist"));
+    if !current_file.exists() {
+        app.autolaunch()
+            .enable()
+            .map_err(|error| format!("迁移 macOS 开机自启项失败：{error}"))?;
+    }
+    fs::remove_file(&legacy_file).map_err(|error| {
+        format!(
+            "清理旧版 macOS 开机自启项 {} 失败：{error}",
+            legacy_file.display()
+        )
+    })
 }
 
 pub fn debug_log_enabled() -> bool {
@@ -116,6 +169,11 @@ fn main() {
     let builder = tauri::Builder::default();
     #[cfg(not(windows))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    let autostart = tauri_plugin_autostart::Builder::new().args([AUTOSTART_ARG]);
+    // LaunchAgent 的 Label 和 plist 文件名应使用稳定、唯一的反向域名标识，不能跟随
+    // 本地化 productName（当前为“说吧！”）变化。
+    #[cfg(target_os = "macos")]
+    let autostart = autostart.app_name(MACOS_AUTOSTART_LABEL);
 
     let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -137,16 +195,16 @@ fn main() {
                 eprintln!("[window] 单实例唤起主窗口失败: {error}");
             }
         }))
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .args([AUTOSTART_ARG])
-                .build(),
-        )
+        .plugin(autostart.build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            #[cfg(target_os = "macos")]
+            if let Err(error) = migrate_legacy_macos_autostart(&app.handle()) {
+                eprintln!("[autostart] {error}");
+            }
             #[cfg(windows)]
             {
                 let development_probe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -495,11 +553,25 @@ fn main() {
 mod tests {
     use super::should_start_hidden;
 
+    #[cfg(target_os = "macos")]
+    use super::is_macos_app_executable;
+
     #[test]
     fn silent_start_only_hides_an_autostart_launch() {
         assert!(should_start_hidden(true, true));
         assert!(!should_start_hidden(true, false));
         assert!(!should_start_hidden(false, true));
         assert!(!should_start_hidden(false, false));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn autostart_migration_only_touches_packaged_apps() {
+        assert!(is_macos_app_executable(std::path::Path::new(
+            "/Applications/说吧！.app/Contents/MacOS/say-it"
+        )));
+        assert!(!is_macos_app_executable(std::path::Path::new(
+            "/workspace/src-tauri/target/debug/say-it"
+        )));
     }
 }
