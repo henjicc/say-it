@@ -17,6 +17,7 @@ fn build_macos_native_bridge() {
     for framework in [
         "AppKit",
         "ApplicationServices",
+        "AudioToolbox",
         "AVFoundation",
         "CoreAudio",
         "CoreGraphics",

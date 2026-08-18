@@ -1,13 +1,18 @@
 use crate::desktop::backend_mic::{flush_backend_mic_buffer, push_backend_mic_samples};
 use crate::prelude::*;
 use crate::state::*;
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void, CStr};
 
 const SYSTEM_AUDIO_SAMPLE_RATE: u32 = 16_000;
 
 struct MacSystemAudioCapture {
     handle: usize,
-    context: *mut Arc<Mutex<BackendMicState>>,
+    context: *mut MacSystemAudioContext,
+}
+
+struct MacSystemAudioContext {
+    state: Arc<Mutex<BackendMicState>>,
+    worker: std::sync::mpsc::Sender<BackendMicCommand>,
 }
 
 unsafe impl Send for MacSystemAudioCapture {}
@@ -25,17 +30,40 @@ unsafe extern "C" fn receive_system_audio(context: *mut c_void, samples: *const 
     if context.is_null() || samples.is_null() || count == 0 {
         return;
     }
-    let state = &*(context as *const Arc<Mutex<BackendMicState>>);
+    let state = &(*(context as *const MacSystemAudioContext)).state;
     let samples = std::slice::from_raw_parts(samples, count).to_vec();
     push_backend_mic_samples(state, samples);
 }
 
+unsafe extern "C" fn receive_system_audio_error(
+    context: *mut c_void,
+    message: *const c_char,
+) {
+    if context.is_null() {
+        return;
+    }
+    let context = &*(context as *const MacSystemAudioContext);
+    let message = if message.is_null() {
+        "macOS 系统音频采集意外停止".to_string()
+    } else {
+        CStr::from_ptr(message).to_string_lossy().into_owned()
+    };
+    let _ = context.worker.send(BackendMicCommand::CaptureError {
+        message: format!("macOS 系统音频采集已停止：{message}"),
+    });
+}
+
 fn start_native_capture(
     state: Arc<Mutex<BackendMicState>>,
+    worker: std::sync::mpsc::Sender<BackendMicCommand>,
 ) -> Result<MacSystemAudioCapture, String> {
-    let context = Box::into_raw(Box::new(state));
+    let context = Box::into_raw(Box::new(MacSystemAudioContext { state, worker }));
     let handle = match unsafe {
-        crate::macos_native::start_system_audio(receive_system_audio, context.cast())
+        crate::macos_native::start_system_audio(
+            receive_system_audio,
+            receive_system_audio_error,
+            context.cast(),
+        )
     } {
         Ok(handle) => handle,
         Err(error) => {
@@ -86,8 +114,11 @@ pub(crate) fn start_backend_system_audio_inner(
         let _ = receiver.recv_timeout(Duration::from_secs(5));
     }
 
-    let capture = start_native_capture(Arc::clone(&state.backend_system_audio))?;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
+    let capture = start_native_capture(
+        Arc::clone(&state.backend_system_audio),
+        worker_tx.clone(),
+    )?;
     {
         let mut guard = state
             .backend_system_audio
@@ -103,6 +134,7 @@ pub(crate) fn start_backend_system_audio_inner(
         guard.buffer.clear();
         guard.chunk_count = 0;
         guard.last_rms = 0.0;
+        guard.last_error = None;
         guard.current_device = None;
     }
 
@@ -160,6 +192,12 @@ pub(crate) fn start_backend_system_audio_inner(
                             Ok(flushed)
                         })();
                         let _ = reply.send(result);
+                    }
+                    BackendMicCommand::CaptureError { message } => {
+                        if let Ok(mut guard) = system_audio.lock() {
+                            guard.last_error = Some(message);
+                        }
+                        break;
                     }
                     BackendMicCommand::Stop { reply } => {
                         stop_reply = reply;
@@ -305,6 +343,7 @@ pub(crate) fn release_backend_system_audio_inner(state: &RuntimeState) -> Result
     guard.chunk_count = 0;
     guard.current_device = None;
     guard.last_rms = 0.0;
+    guard.last_error = None;
     Ok(())
 }
 
@@ -329,4 +368,30 @@ fn system_audio_worker(
         .worker
         .clone()
         .ok_or_else(|| "系统音频采集未启动".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn native_stop_error_is_forwarded_to_worker() {
+        let (worker, receiver) = std::sync::mpsc::channel();
+        let context = Box::into_raw(Box::new(MacSystemAudioContext {
+            state: Arc::new(Mutex::new(BackendMicState::default())),
+            worker,
+        }));
+        let message = CString::new("显示器已断开").unwrap();
+
+        unsafe { receive_system_audio_error(context.cast(), message.as_ptr()) };
+
+        match receiver.recv().unwrap() {
+            BackendMicCommand::CaptureError { message } => {
+                assert_eq!(message, "macOS 系统音频采集已停止：显示器已断开");
+            }
+            _ => panic!("expected capture error"),
+        }
+        unsafe { drop(Box::from_raw(context)) };
+    }
 }

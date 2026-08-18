@@ -29,6 +29,19 @@ const OPUS_MAX_FRAMES_PER_PACKET: usize = 5_760;
 /// 解码任意音视频文件的首个可解码音轨，下混为单声道并重采样到 16kHz。
 /// 返回 [-1, 1] 范围的 f32 PCM。
 pub fn decode_to_mono_16k(file_path: &str) -> Result<Vec<f32>, String> {
+    match decode_with_symphonia(file_path) {
+        Ok(samples) => Ok(samples),
+        #[cfg(target_os = "macos")]
+        Err(primary_error) => crate::macos_native::decode_audio_file(Path::new(file_path))
+            .map_err(|native_error| {
+                format!("{primary_error}；macOS 原生音频解码也失败：{native_error}")
+            }),
+        #[cfg(not(target_os = "macos"))]
+        Err(error) => Err(error),
+    }
+}
+
+fn decode_with_symphonia(file_path: &str) -> Result<Vec<f32>, String> {
     let file =
         File::open(file_path).map_err(|e| format!("打开待识别音频文件失败：{file_path}（{e}）"))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -335,6 +348,33 @@ mod tests {
         let parsed = opus_header(Some(&mp4)).unwrap();
         assert_eq!(parsed.pre_skip, 312);
         assert_eq!(parsed.output_gain, -256);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn decode_uses_macos_fallback_for_alac() {
+        let root = std::env::temp_dir().join(format!("say-it-alac-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wav = root.join("source.wav");
+        let alac = root.join("source.m4a");
+        write_test_stereo_wav(&wav, 1.0, 44_100);
+        let output = std::process::Command::new("/usr/bin/afconvert")
+            .args(["-f", "m4af", "-d", "alac"])
+            .arg(&wav)
+            .arg(&alac)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "afconvert failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let samples = decode_to_mono_16k(alac.to_str().unwrap()).unwrap();
+        assert!((samples.len() as i64 - 16_000).abs() < 1_600);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.01));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn encode_test_ogg_opus(samples: &[i16]) -> Vec<u8> {

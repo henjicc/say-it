@@ -9,13 +9,16 @@ import { FormGrid } from "@/components/ui/FormGrid";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { CMD, cmd } from "@/lib/tauri";
+import { defaultSubtitleFontFamily, isMacOS } from "@/lib/platform";
 import {
   useSubtitleStore,
   type SubtitleAnchor,
   type SubtitleAnimationEasing,
 } from "@/store/useSubtitleStore";
 
-const FALLBACK_FONTS = ["Microsoft YaHei", "SimHei", "KaiTi", "Segoe UI"];
+const FALLBACK_FONTS = isMacOS
+  ? [defaultSubtitleFontFamily, "Hiragino Sans GB", "Heiti SC"]
+  : [defaultSubtitleFontFamily, "SimHei", "KaiTi", "Segoe UI"];
 
 let cachedSystemFonts: string[] | null = null;
 
@@ -73,6 +76,9 @@ function ColorField({
 export function SubtitleStylePanel() {
   const { prefs, patch } = useSubtitleStore();
   const systemFonts = useSystemFonts();
+  const fontOptions = systemFonts.includes(prefs.fontFamily)
+    ? systemFonts
+    : [prefs.fontFamily, ...systemFonts];
   const outputToObs = prefs.obsOutputEnabled;
   const [obsPositionNoticeOpen, setObsPositionNoticeOpen] = useState(false);
   const obsPositionHint = "当前输出到 OBS，请在 OBS 画布中调整字幕的位置。";
@@ -97,7 +103,7 @@ export function SubtitleStylePanel() {
               value={prefs.fontFamily}
               onChange={(event) => patch({ fontFamily: event.target.value })}
             >
-              {systemFonts.map((font) => (
+              {fontOptions.map((font) => (
                 <option key={font} value={font}>
                   {font}
                 </option>

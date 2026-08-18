@@ -5,6 +5,7 @@ import {
   isSupportedRealtimeModel,
 } from "@/features/asr/modelOptions";
 import { TRANSLATION_MODEL_NONE, normalizeTranslationModel } from "@/features/translation/models";
+import { defaultSubtitleFontFamily } from "@/lib/platform";
 import {
   DEFAULT_TRANSLATION_SOURCE_LANG,
   DEFAULT_TRANSLATION_TARGET_LANG,
@@ -106,7 +107,7 @@ const defaults = (): SubtitlePrefs => ({
   source: DEFAULT_SUBTITLE_SOURCE,
   asrModel: DEFAULT_REALTIME_ASR_MODEL,
   mode: "replace",
-  fontFamily: "Microsoft YaHei",
+  fontFamily: defaultSubtitleFontFamily,
   fontSizePercent: 2.6,
   lineCount: 1,
   widthPercent: 46,

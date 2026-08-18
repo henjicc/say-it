@@ -48,6 +48,8 @@ pub(crate) struct BackendMicState {
     pub(crate) buffer: Vec<f32>,
     pub(crate) chunk_count: u64,
     pub(crate) last_rms: f32,
+    /// 采集流意外终止时保留原始错误，供上层在原始音频通道关闭后展示。
+    pub(crate) last_error: Option<String>,
     /// 当前 worker 实际打开的设备名；`None` 表示用的是系统默认设备。
     pub(crate) current_device: Option<String>,
 }
@@ -64,6 +66,9 @@ pub(crate) enum BackendMicCommand {
     },
     Pause {
         reply: std::sync::mpsc::Sender<Result<usize, String>>,
+    },
+    CaptureError {
+        message: String,
     },
     /// `reply` 在设备真正释放、guard 状态清理完成后才会收到信号，
     /// 用于切换设备时确保旧 worker 完全退出后再起新的，避免状态被旧线程的收尾逻辑覆盖。

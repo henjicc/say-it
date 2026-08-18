@@ -12,6 +12,7 @@
 - macOS 粘贴注入不能只用 `get_text()` 备份剪贴板：图片、文件和富文本会被永久覆盖。应在主线程按 `NSPasteboardItem` 的全部类型和原始数据建立快照，完成 Command+V 后再恢复；恢复前必须核对 `changeCount`，若用户或其他应用已复制新内容则放弃恢复，不能用旧快照覆盖新剪贴板。
 - ScreenCaptureKit 的系统音频输出、`capturesAudio`、采样率和声道配置从 macOS 13 起可用，运行时仍应使用可用性检查返回可操作错误。当前 sherpa-onnx 1.13.5 所带 ONNX Runtime 的 `LC_BUILD_VERSION minos` 为 15.5，应用的最低系统版本必须与最严格的内嵌动态库一致；不能只检查主程序的 minos 后继续宣称支持 macOS 11。
 - ScreenCaptureKit 的采样回调持有 Rust context 裸指针，停止采集时不能先释放指针再等待异步回调自然消失。应先在 `sampleHandlerQueue` 上同步设置回调与 context 为空，以串行队列屏障等待正在执行的回调结束，再调用 `stopCapture`；这样即使停止超时，后续样本也不会访问已经释放的 Rust 状态。
+- ScreenCaptureKit 运行中可能因显示器断开、权限变化或系统服务异常调用 `SCStreamDelegate.stream(_:didStopWithError:)`。错误回调应转发到与采样相同的串行队列，再通知 Rust worker 关闭所有音频发送端并保留原始错误；实时字幕的原始音频通道若在会话仍活动时关闭，必须进入失败清理并把错误投影到界面，不能继续停留在“运行中”却只输出静音。
 - macOS 系统 OCR 使用 Vision `VNRecognizeTextRequest`。Vision 的文本框以左下角为原点，进入公共 `OcrTextBlock` 前必须转换为左上角原点并收敛到 0～1。
 - macOS 的低内存文本提取可通过 Accessibility API 读取焦点控件的 `AXSelectedText`、`AXValue` 和 `AXSelectedTextRange`。跨进程 AX 调用必须设置短消息超时，密码控件要在读取正文前按 `AXSecureTextField` 保守拦截；拿不到正文时只允许回退到应用名与窗口标题，不能改用剪贴板或静默截图。
 - PP-OCR 不能只接在 Windows 场景感知管线中；模型校验、MNN 引擎创建和结果归一化应放到跨平台 OCR 模块，macOS 的通用 OCR 供应商入口才能真正调用本地模型。`ocr-rs` 在 macOS 使用不启用 `mnn-static` 的预编译 universal MNN，下载归档必须固定 SHA-256，避免构建期供应链内容漂移。
@@ -28,6 +29,7 @@
 - macOS 从 Finder 双击关联文件不会可靠地把文件路径放进 `argv`；Tauri 会通过 `RunEvent::Opened { urls }` 交付 Apple 文件打开事件。`.sayit` 导入必须同时处理该事件、启动参数和单实例回调，并统一进入同一待安装队列。
 - 应用规则从本地选择 `.app` 时不能直接拿包目录名作为进程匹配键；`.app` 名与 `CFBundleExecutable` 经常不同。应由原生层通过 `NSBundle.executableURL` 解析实际进程名，同时读取 `CFBundleDisplayName`/`CFBundleName` 作为显示名。
 - macOS 字幕字体列表不能沿用 Windows 注册表实现；应在主线程通过 `NSFontManager.availableFontFamilies` 读取。自定义数据目录迁移的剩余空间检查也不能静默跳过，应读取卷的 `NSURLVolumeAvailableCapacityForImportantUsageKey`，失败时再降级到普通可用容量键。
+- 新安装的 macOS 字幕默认字体应使用系统自带的 `PingFang SC`，不能继续写入 Windows 的 `Microsoft YaHei`；字体下拉在加载系统列表后仍要保留当前已保存但本机缺失的字体项，避免设置值存在而控件显示为空。
 
 ## 构建与验证
 

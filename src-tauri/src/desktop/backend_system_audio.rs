@@ -225,6 +225,12 @@ pub(crate) fn start_backend_system_audio_inner(
                     })();
                     let _ = reply.send(result);
                 }
+                BackendMicCommand::CaptureError { message } => {
+                    if let Ok(mut guard) = system_audio.lock() {
+                        guard.last_error = Some(message);
+                    }
+                    break;
+                }
                 BackendMicCommand::Stop { reply } => {
                     stop_reply = reply;
                     break;

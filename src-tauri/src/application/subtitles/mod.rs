@@ -84,7 +84,7 @@ impl Default for SubtitlePrefs {
             source: "mic:default".into(),
             asr_model: crate::providers::registry::default_realtime_model().into(),
             mode: "replace".into(),
-            font_family: "Microsoft YaHei".into(),
+            font_family: default_subtitle_font_family(),
             font_size_percent: 2.6,
             line_count: 1,
             width_percent: 46.0,
@@ -107,6 +107,14 @@ impl Default for SubtitlePrefs {
             translation_order: "translationFirst".into(),
             obs_output_enabled: false,
         }
+    }
+}
+
+fn default_subtitle_font_family() -> String {
+    if cfg!(target_os = "macos") {
+        "PingFang SC".into()
+    } else {
+        "Microsoft YaHei".into()
     }
 }
 
@@ -524,7 +532,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
             return Err(error);
         }
     };
-    spawn_raw_consumer(app.clone(), epoch, raw_rx);
+    spawn_raw_consumer(app.clone(), epoch, source, raw_rx);
     let should_open = !state
         .subtitle_runtime
         .session
@@ -635,6 +643,7 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
+    source: SourceKind,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -690,6 +699,34 @@ fn spawn_raw_consumer(
                     }
                 }
             }
+        }
+
+        let state = app.state::<RuntimeState>();
+        let capture_error = match source {
+            SourceKind::Mic => &state.backend_mic,
+            SourceKind::System => &state.backend_system_audio,
+        }
+        .lock()
+        .ok()
+        .and_then(|mut capture| capture.last_error.take());
+        let still_active = state
+            .subtitle_runtime
+            .session
+            .lock()
+            .map(|session| {
+                session.epoch == epoch
+                    && !matches!(
+                        session.phase,
+                        SubtitlePhase::Idle | SubtitlePhase::Stopping | SubtitlePhase::Failed
+                    )
+            })
+            .unwrap_or(false);
+        if still_active {
+            fail_and_cleanup(
+                app,
+                capture_error.unwrap_or_else(|| "音频采集已意外停止".into()),
+            )
+            .await;
         }
     });
 }
@@ -1381,6 +1418,18 @@ fn overlay_style(prefs: &SubtitlePrefs) -> ObsOverlayStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_font_matches_the_current_desktop_platform() {
+        assert_eq!(
+            SubtitlePrefs::default().font_family,
+            if cfg!(target_os = "macos") {
+                "PingFang SC"
+            } else {
+                "Microsoft YaHei"
+            }
+        );
+    }
 
     #[test]
     fn replacement_continues_within_gap_and_resets_after_gap() {
