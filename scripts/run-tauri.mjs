@@ -9,6 +9,13 @@ const env = { ...process.env };
 if (process.platform === "darwin" && !env.MACOSX_DEPLOYMENT_TARGET) {
   env.MACOSX_DEPLOYMENT_TARGET = "11.0";
 }
+if (
+  process.platform === "darwin" &&
+  command === "build" &&
+  !env.APPLE_SIGNING_IDENTITY
+) {
+  env.APPLE_SIGNING_IDENTITY = "-";
+}
 if (process.platform === "darwin" && !env.OPUS_LIB_DIR && !env.LIBOPUS_LIB_DIR) {
   const opusLibraries = [
     "/opt/homebrew/lib/libopus.a",
