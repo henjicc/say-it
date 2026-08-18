@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use connector::RealtimeAsrConnector;
 
 pub mod alibabacloud;
+pub mod apple_speech;
 pub mod browser_session_capture;
 pub mod capabilities;
 pub mod connector;
@@ -158,7 +159,7 @@ pub struct ProviderSettings {
 impl Default for ProviderSettings {
     fn default() -> Self {
         Self {
-            profiles: vec![funasr_profile(), groq_llm_profile(), system_ocr_profile()],
+            profiles: builtin_profiles(),
             defaults: ProviderDefaults {
                 asr: FUNASR_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
@@ -348,13 +349,32 @@ pub fn system_ocr_profile() -> ProviderProfile {
     }
 }
 
+pub fn apple_speech_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: apple_speech::PROVIDER_ID.to_string(),
+        kind: apple_speech::PROVIDER_KIND.to_string(),
+        display_name: "Apple SpeechTranscriber".to_string(),
+        auth_kind: "none".to_string(),
+        capabilities: vec!["asr".to_string()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec!["prepareAppleSpeech".to_string()],
+    }
+}
+
 pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a ProviderProfile> {
     settings.profiles.iter().find(|profile| profile.id == id)
 }
 
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
-    vec![funasr_profile(), groq_llm_profile(), system_ocr_profile()]
+    vec![
+        funasr_profile(),
+        groq_llm_profile(),
+        system_ocr_profile(),
+        apple_speech_profile(),
+    ]
 }
 
 pub fn llm_models_from_config(config: &Value) -> Vec<LlmModelConfig> {

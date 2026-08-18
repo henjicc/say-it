@@ -201,8 +201,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 验证现有 9 个模型都在表内
-        assert_eq!(REGISTRY.len(), 9, "当前应有 9 个模型");
+        // 9 个云端模型，加上 macOS 26 的 Apple 本地实时模型。
+        assert_eq!(REGISTRY.len(), 10, "当前应有 10 个模型");
     }
 
     #[test]

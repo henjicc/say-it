@@ -2,8 +2,8 @@ use serde::Serialize;
 use std::collections::HashSet;
 
 use crate::commands::common::{provider_settings_response, read_provider_settings};
-use crate::providers::registry::{self, FileTranscriptionRoute};
 use crate::providers::plugin::PluginRegistry;
+use crate::providers::registry::{self, FileTranscriptionRoute};
 use crate::providers::ProviderSettingsResponse;
 use crate::state::RuntimeState;
 
@@ -42,7 +42,10 @@ pub struct ModelCatalog {
     pub providers: ProviderSettingsResponse,
 }
 
-pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegistry) -> ModelCatalog {
+pub fn build_catalog(
+    providers: ProviderSettingsResponse,
+    plugins: &PluginRegistry,
+) -> ModelCatalog {
     let enabled_provider_ids = providers
         .profiles
         .iter()
@@ -53,6 +56,10 @@ pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegist
         .iter()
         .chain(plugins.models())
         .filter(|model| enabled_provider_ids.contains(model.provider_id.as_str()))
+        .filter(|model| {
+            model.protocol != crate::providers::apple_speech::PROTOCOL
+                || crate::providers::apple_speech::runtime_available()
+        })
         .map(|model| {
             let route = registry::file_transcription_route(&model.id);
             ModelCatalogItem {
@@ -91,7 +98,10 @@ pub fn build_catalog(providers: ProviderSettingsResponse, plugins: &PluginRegist
 pub(crate) fn get_model_catalog(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<ModelCatalog, String> {
-    let plugins = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
+    let plugins = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败")?;
     Ok(build_catalog(
         provider_settings_response(read_provider_settings(&state)?),
         &plugins,
@@ -109,7 +119,12 @@ mod tests {
             provider_settings_response(normalize_settings(ProviderSettings::default())),
             &PluginRegistry::default(),
         );
-        assert_eq!(catalog.models.len(), 9);
+        let expected = if crate::providers::apple_speech::runtime_available() {
+            10
+        } else {
+            9
+        };
+        assert_eq!(catalog.models.len(), expected);
         assert!(catalog
             .models
             .iter()

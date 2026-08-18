@@ -52,6 +52,7 @@ export const CMD = {
   listProviders: "list_providers",
   setDefaultProvider: "set_default_provider",
   updateProviderConfig: "update_provider_config",
+  prepareAppleSpeechModel: "prepare_apple_speech_model",
   getProviderApiKey: "get_provider_api_key",
   addLlmProvider: "add_llm_provider",
   refreshLlmModels: "refresh_llm_models",

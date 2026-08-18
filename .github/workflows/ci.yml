@@ -13,6 +13,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.os == 'macOS'
+        with:
+          xcode-version: latest-stable
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -25,6 +29,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install opus
       - run: npm ci
+      - name: Build macOS 26 SpeechAnalyzer helper
+        if: runner.os == 'macOS'
+        run: node scripts/build-macos-speech.mjs --require-sdk-26
       - run: npm run typecheck
       - run: npm run test:ui
       - run: npm run ui:build

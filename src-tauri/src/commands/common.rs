@@ -53,13 +53,25 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
     let profiles = settings
         .profiles
         .iter()
+        .filter(|profile| {
+            profile.kind != crate::providers::apple_speech::PROVIDER_KIND
+                || crate::providers::apple_speech::runtime_available()
+        })
         .map(|profile| {
             let fields = config_fields_for(profile);
             let has_key = fields.iter().filter(|field| field.secret).any(|field| {
                 profile.config.get(&field.key).is_some_and(|value| {
-                    value.as_str().map(|value| !value.trim().is_empty()).unwrap_or(true)
+                    value
+                        .as_str()
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(true)
                 })
             });
+            let configured = if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
+                crate::providers::apple_speech::status().installed
+            } else {
+                has_key
+            };
             ProviderListItem {
                 id: profile.id.clone(),
                 kind: profile.kind.clone(),
@@ -68,14 +80,17 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
                 capabilities: profile.capabilities.clone(),
                 enabled: profile.enabled,
                 is_default_asr: profile.id == settings.defaults.asr,
-                effective_capabilities: profile.capabilities.iter().filter(|capability| {
-                    default_provider_id(&settings, capability) == profile.id
-                }).cloned().collect(),
+                effective_capabilities: profile
+                    .capabilities
+                    .iter()
+                    .filter(|capability| default_provider_id(&settings, capability) == profile.id)
+                    .cloned()
+                    .collect(),
                 config_fields: fields,
                 actions: actions_for(profile),
                 status: Some(ProviderStatus {
                     has_api_key: Some(has_key),
-                    configured: Some(has_key),
+                    configured: Some(configured),
                 }),
                 config: sanitized_config(profile),
             }
