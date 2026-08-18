@@ -5774,6 +5774,7 @@ name = "say-it"
 version = "0.4.0"
 dependencies = [
  "arboard",
+ "audiopus",
  "axum",
  "base64 0.22.1",
  "cc",
@@ -5791,6 +5792,7 @@ dependencies = [
  "nnnoiseless",
  "obws",
  "ocr-rs",
+ "ogg",
  "ogg-opus",
  "once_cell",
  "rand 0.9.2",
