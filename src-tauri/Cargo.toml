@@ -91,6 +91,10 @@ windows = { version = "0.58", features = [
 ] }
 winreg = "0.52"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+ocr-rs = { version = "=2.3.2", default-features = false }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

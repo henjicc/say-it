@@ -307,8 +307,12 @@ impl OcrProvider {
                 .await?;
                 parse_plugin_ocr_blocks(&value)
             }
-            Self::PpOcr { .. } => {
-                Err("PP-OCR 由场景感知本地推理管线执行，不能走通用插件调用".into())
+            Self::PpOcr { spec } => {
+                let png = image_png.to_vec();
+                let spec = spec.clone();
+                tokio::task::spawn_blocking(move || crate::ocr::ppocr::recognize_png(&spec, &png))
+                    .await
+                    .map_err(|error| format!("PP-OCR 工作线程失败：{error}"))?
             }
             Self::Unavailable { reason, .. } => Err(reason.clone()),
         }

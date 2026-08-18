@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, RecvTimeoutError, Sender, SyncSender};
@@ -11,29 +12,19 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{ColorType, DynamicImage, ImageEncoder};
-use ocr_rs::{DetOptions, MemoryMode, OcrEngine, OcrEngineConfig};
 
-use super::model::{NormalizedRegion, OcrTextBlock};
-use super::normalize::normalize_text;
+#[cfg(test)]
+use super::model::NormalizedRegion;
+use super::model::OcrTextBlock;
+use crate::ocr::ppocr::{build_engine, recognize_full_window, EngineState};
 use crate::ocr::windows as windows_ocr;
 use crate::providers::capabilities::OcrProvider;
-use crate::providers::plugin::{LocalModelSpec, ModelPackManifest};
 
 const OCR_TEXT_LIMIT: usize = 2_000;
 const MAX_BLOCKS: usize = 120;
-const MAX_RECOGNIZED_REGIONS: usize = 96;
-// MNN keeps the detector's largest tensor workspace while its session stays live.
-// 960 is PP-OCR's mobile/default inference ceiling and avoids a 1600px capture
-// turning into a disproportionately large permanent workspace reservation.
-const DET_MAX_SIDE_LEN: u32 = 960;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static OCR_WORKER: OnceLock<Sender<OcrCommand>> = OnceLock::new();
 static NEXT_OCR_TASK_ID: AtomicU64 = AtomicU64::new(1);
-
-struct EngineState {
-    engine: OcrEngine,
-    init_ms: u64,
-}
 
 enum OcrCommand {
     Recognize(OcrTask),
@@ -62,66 +53,6 @@ pub(crate) struct OcrPipelineOutput {
     pub(crate) diagnostic: Option<String>,
 }
 
-fn model_param_path(spec: &LocalModelSpec, key: &str) -> Result<PathBuf, String> {
-    let relative = spec
-        .params
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("PP-OCR 模型包参数缺少 {key}"))?;
-    let file = spec
-        .files
-        .iter()
-        .find(|file| file.path == relative)
-        .ok_or_else(|| format!("PP-OCR 模型包参数 {key} 指向未声明文件：{relative}"))?;
-    let path = spec.model_dir.join(crate::providers::plugin::safe_model_file_path(relative)?);
-    crate::providers::model_download::verify_model_file(&path, file)?;
-    Ok(path)
-}
-
-fn build_engine(spec: &LocalModelSpec) -> Result<EngineState, String> {
-    if spec.engine != "ppocr-mnn" {
-        return Err(format!("模型引擎 {} 不能用于 PP-OCR", spec.engine));
-    }
-    crate::providers::model_download::verify_pack(
-        &spec.model_dir,
-        &ModelPackManifest {
-            engine: spec.engine.clone(),
-            files: spec.files.clone(),
-            params: spec.params.clone(),
-        },
-    )
-    .map_err(|error| format!("PP-OCR 模型尚未就绪，请先在插件管理安装模型包：{error}"))?;
-    let started = Instant::now();
-    crate::development_debug_log("active-app-ocr", "PP-OCR 模型加载：校验并加载本地模型");
-    let det = model_param_path(spec, "detModel")?;
-    let rec = model_param_path(spec, "recModel")?;
-    let charset = model_param_path(spec, "charset")?;
-    let config = OcrEngineConfig::new()
-        .with_threads(3)
-        // Keep the engine hot, but discard stale MNN workspace whenever a
-        // differently-sized window or text batch resizes either session.
-        .with_memory_mode(MemoryMode::Collect)
-        .with_parallel(false)
-        .with_min_result_confidence(0.45)
-        .with_det_options(
-            DetOptions::default()
-                .with_max_side_len(DET_MAX_SIDE_LEN)
-                .with_box_threshold(0.4)
-                .with_score_threshold(0.25),
-        );
-    let engine = OcrEngine::new(det, rec, charset, Some(config))
-        .map_err(|error| format!("初始化 PP-OCRv6 tiny 失败：{error}"))?;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    crate::development_debug_log(
-        "active-app-ocr",
-        format_args!("PP-OCR 模型加载完成：{elapsed_ms} ms；引擎将在本次任务结束后释放"),
-    );
-    Ok(EngineState {
-        engine,
-        init_ms: elapsed_ms,
-    })
-}
-
 fn skip_reason(cancelled: &AtomicBool, deadline: Instant) -> Option<&'static str> {
     if cancelled.load(Ordering::Acquire) {
         Some("OCR 任务已取消")
@@ -130,45 +61,6 @@ fn skip_reason(cancelled: &AtomicBool, deadline: Instant) -> Option<&'static str
     } else {
         None
     }
-}
-
-fn recognize_full_window(
-    engine: &OcrEngine,
-    image: &DynamicImage,
-) -> Result<Vec<OcrTextBlock>, String> {
-    let width = image.width().max(1) as f32;
-    let height = image.height().max(1) as f32;
-    let results = engine
-        .recognize_limited(image, MAX_RECOGNIZED_REGIONS)
-        .map_err(|error| format!("OCR 识别失败：{error}"))?;
-
-    let blocks = results
-        .into_iter()
-        .filter_map(|result| {
-            let text = normalize_text(&result.text);
-            if text.is_empty() {
-                return None;
-            }
-            let rect = result.bbox.rect;
-            let bounds = NormalizedRegion {
-                left: rect.left().max(0) as f32 / width,
-                top: rect.top().max(0) as f32 / height,
-                right: (rect.left().max(0) as f32 + rect.width() as f32) / width,
-                bottom: (rect.top().max(0) as f32 + rect.height() as f32) / height,
-            }
-            .clamped();
-            Some(OcrTextBlock {
-                text,
-                confidence: if result.confidence.is_finite() {
-                    result.confidence
-                } else {
-                    0.0
-                },
-                bounds,
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(finalize_blocks(blocks))
 }
 
 /// 排序、去重、截断——两套引擎共用的收尾步骤，保证输出契约一致。
@@ -257,7 +149,7 @@ fn run_full_window_inner(
     image: &DynamicImage,
 ) -> Result<OcrPipelineOutput, String> {
     let started = Instant::now();
-    let blocks = recognize_full_window(&engine.engine, image)?;
+    let blocks = finalize_blocks(recognize_full_window(&engine.engine, image)?);
     let (det_session_memory_mb, rec_session_memory_mb) = engine
         .engine
         .memory_usage_mb()
@@ -552,46 +444,10 @@ pub(crate) fn png_data_url(image: &DynamicImage) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ocr_rs::MemoryMode;
 
-    fn bundled_model_spec() -> LocalModelSpec {
-        let file = |path: &str, sha256: &str, size_bytes: u64| {
-            crate::providers::plugin::ModelPackFileManifest {
-                path: path.into(),
-                sha256: sha256.into(),
-                size_bytes,
-                download: None,
-            }
-        };
-        LocalModelSpec {
-            plugin_id: "test.ppocr".into(),
-            provider_id: "local-ppocr".into(),
-            engine: "ppocr-mnn".into(),
-            model_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("resources")
-                .join("ocr"),
-            files: vec![
-                file(
-                    "PP-OCRv6_tiny_det.mnn",
-                    "7fab7b858f136bc93a760bdca66aaf25f0ff10accabb31e6ef853a897fb9cfec",
-                    901_896,
-                ),
-                file(
-                    "PP-OCRv6_tiny_rec.mnn",
-                    "0a43c3c979a98b905f5e84913209998f510189419b5a5d4152bbb01ce8d17a93",
-                    2_251_616,
-                ),
-                file(
-                    "ppocr_keys_v6_tiny.txt",
-                    "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
-                    27_156,
-                ),
-            ],
-            params: serde_json::json!({
-                "detModel": "PP-OCRv6_tiny_det.mnn",
-                "recModel": "PP-OCRv6_tiny_rec.mnn",
-                "charset": "ppocr_keys_v6_tiny.txt"
-            }),
-        }
+    fn bundled_model_spec() -> crate::providers::plugin::LocalModelSpec {
+        crate::ocr::ppocr::bundled_test_model_spec()
     }
 
     fn block(left: f32, top: f32, text: &str) -> OcrTextBlock {
@@ -738,7 +594,7 @@ mod tests {
         assert_eq!(engine.engine.config().memory_mode, MemoryMode::Collect);
         assert_eq!(
             engine.engine.config().det_options.max_side_len,
-            DET_MAX_SIDE_LEN
+            crate::ocr::ppocr::DET_MAX_SIDE_LEN
         );
         let first =
             recognize_full_window(&engine.engine, &image).expect("fixture OCR should succeed");
