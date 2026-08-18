@@ -13,6 +13,7 @@
 typedef bool (*SayItCapsLockCallback)(void *context, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
+typedef void (*SayItAudioErrorCallback)(void *context, const char *message);
 
 typedef struct {
     uint8_t *data;
@@ -49,6 +50,87 @@ void sayit_macos_free_string(char *value) {
 
 void sayit_macos_free_bytes(uint8_t *value) {
     free(value);
+}
+
+bool sayit_macos_decode_audio_file(const char *path, float **samples, size_t *count, char **error) {
+    if (samples == NULL || count == NULL) {
+        SayItSetError(error, @"macOS 音频解码输出参数无效");
+        return false;
+    }
+    *samples = NULL;
+    *count = 0;
+    if (path == NULL) {
+        SayItSetError(error, @"待解码音频路径无效");
+        return false;
+    }
+
+    @autoreleasepool {
+        NSString *filePath = [[NSString alloc] initWithUTF8String:path];
+        if (filePath == nil) {
+            SayItSetError(error, @"待解码音频路径不是有效的 UTF-8");
+            return false;
+        }
+        ExtAudioFileRef audioFile = NULL;
+        OSStatus status = ExtAudioFileOpenURL((__bridge CFURLRef)[NSURL fileURLWithPath:filePath], &audioFile);
+        if (status != noErr || audioFile == NULL) {
+            SayItSetError(error, [NSString stringWithFormat:@"打开 macOS 原生音频失败（OSStatus %d）", (int)status]);
+            return false;
+        }
+
+        AudioStreamBasicDescription clientFormat = {0};
+        clientFormat.mSampleRate = 16000.0;
+        clientFormat.mFormatID = kAudioFormatLinearPCM;
+        clientFormat.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
+        clientFormat.mBytesPerPacket = sizeof(float);
+        clientFormat.mFramesPerPacket = 1;
+        clientFormat.mBytesPerFrame = sizeof(float);
+        clientFormat.mChannelsPerFrame = 1;
+        clientFormat.mBitsPerChannel = 8 * sizeof(float);
+        status = ExtAudioFileSetProperty(
+            audioFile,
+            kExtAudioFileProperty_ClientDataFormat,
+            sizeof(clientFormat),
+            &clientFormat
+        );
+        if (status != noErr) {
+            ExtAudioFileDispose(audioFile);
+            SayItSetError(error, [NSString stringWithFormat:@"配置 macOS 音频转换失败（OSStatus %d）", (int)status]);
+            return false;
+        }
+
+        NSMutableData *decoded = [NSMutableData data];
+        float chunk[4096];
+        while (true) {
+            UInt32 frames = 4096;
+            AudioBufferList buffers = {0};
+            buffers.mNumberBuffers = 1;
+            buffers.mBuffers[0].mNumberChannels = 1;
+            buffers.mBuffers[0].mDataByteSize = sizeof(chunk);
+            buffers.mBuffers[0].mData = chunk;
+            status = ExtAudioFileRead(audioFile, &frames, &buffers);
+            if (status != noErr) break;
+            if (frames == 0) break;
+            [decoded appendBytes:chunk length:(NSUInteger)frames * sizeof(float)];
+        }
+        ExtAudioFileDispose(audioFile);
+        if (status != noErr) {
+            SayItSetError(error, [NSString stringWithFormat:@"macOS 原生音频解码失败（OSStatus %d）", (int)status]);
+            return false;
+        }
+        if (decoded.length == 0) {
+            SayItSetError(error, @"macOS 原生音频解码没有输出音频数据");
+            return false;
+        }
+        float *output = malloc(decoded.length);
+        if (output == NULL) {
+            SayItSetError(error, @"macOS 原生音频解码内存不足");
+            return false;
+        }
+        memcpy(output, decoded.bytes, decoded.length);
+        *samples = output;
+        *count = decoded.length / sizeof(float);
+        return true;
+    }
 }
 
 static NSArray<NSDictionary<NSPasteboardType, NSData *> *> *SayItSnapshotPasteboard(NSPasteboard *pasteboard) {
@@ -1052,12 +1134,23 @@ void sayit_macos_keyboard_tap_stop(void *handle) {
 API_AVAILABLE(macos(13.0))
 @interface SayItSystemAudioCapture : NSObject <SCStreamOutput, SCStreamDelegate>
 @property(nonatomic) SayItAudioCallback callback;
+@property(nonatomic) SayItAudioErrorCallback errorCallback;
 @property(nonatomic) void *context;
 @property(nonatomic, strong) SCStream *stream;
 @property(nonatomic) dispatch_queue_t sampleQueue;
 @end
 
 @implementation SayItSystemAudioCapture
+- (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
+    (void)stream;
+    NSString *message = error.localizedDescription ?: @"未知 ScreenCaptureKit 错误";
+    dispatch_async(self.sampleQueue, ^{
+        if (self.errorCallback != NULL) {
+            self.errorCallback(self.context, message.UTF8String);
+        }
+    });
+}
+
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
     (void)stream;
     if (type != SCStreamOutputTypeAudio || !CMSampleBufferIsValid(sampleBuffer) || self.callback == NULL) return;
@@ -1126,7 +1219,7 @@ API_AVAILABLE(macos(13.0))
 }
 @end
 
-void *sayit_macos_system_audio_start(SayItAudioCallback callback, void *context, char **error) {
+void *sayit_macos_system_audio_start(SayItAudioCallback callback, SayItAudioErrorCallback errorCallback, void *context, char **error) {
     if (@available(macOS 13.0, *)) {
         if (!SayItScreenCaptureAccess(true)) {
             SayItSetError(error, @"系统音频采集需要屏幕录制权限，请在系统设置 → 隐私与安全性 → 屏幕录制中允许当前运行的说吧！进程；授权后请完全退出并重新启动应用");
@@ -1166,6 +1259,7 @@ void *sayit_macos_system_audio_start(SayItAudioCallback callback, void *context,
 
         SayItSystemAudioCapture *capture = [[SayItSystemAudioCapture alloc] init];
         capture.callback = callback;
+        capture.errorCallback = errorCallback;
         capture.context = context;
         capture.sampleQueue = dispatch_queue_create("com.henji.sayit.system-audio", DISPATCH_QUEUE_SERIAL);
         capture.stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:capture];
@@ -1203,6 +1297,7 @@ void sayit_macos_system_audio_stop(void *handle) {
         if (capture.sampleQueue != nil) {
             dispatch_sync(capture.sampleQueue, ^{
                 capture.callback = NULL;
+                capture.errorCallback = NULL;
                 capture.context = NULL;
             });
         }

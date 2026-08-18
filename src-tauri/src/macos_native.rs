@@ -68,10 +68,17 @@ struct NativeOcrBlock {
 pub(crate) type CapsLockCallback = unsafe extern "C" fn(*mut c_void, u64) -> bool;
 pub(crate) type EscapeCallback = unsafe extern "C" fn(*mut c_void, bool) -> bool;
 pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, usize);
+pub(crate) type AudioErrorCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
 
 unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);
     fn sayit_macos_free_bytes(value: *mut u8);
+    fn sayit_macos_decode_audio_file(
+        path: *const c_char,
+        samples: *mut *mut f32,
+        count: *mut usize,
+        error: *mut *mut c_char,
+    ) -> bool;
     fn sayit_macos_context_ocr_permissions(request: bool) -> u32;
     fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
@@ -119,6 +126,7 @@ unsafe extern "C" {
     fn sayit_macos_keyboard_tap_stop(handle: *mut c_void);
     fn sayit_macos_system_audio_start(
         callback: AudioCallback,
+        error_callback: AudioErrorCallback,
         context: *mut c_void,
         error: *mut *mut c_char,
     ) -> *mut c_void;
@@ -290,6 +298,31 @@ pub(crate) fn volume_available_capacity(path: &Path) -> Result<u64, String> {
     }
 }
 
+pub(crate) fn decode_audio_file(path: &Path) -> Result<Vec<f32>, String> {
+    let path = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "macOS 音频文件路径包含空字符".to_string())?;
+    let mut samples = ptr::null_mut();
+    let mut count = 0_usize;
+    let mut error = ptr::null_mut();
+    let success = unsafe {
+        sayit_macos_decode_audio_file(path.as_ptr(), &mut samples, &mut count, &mut error)
+    };
+    if !success || samples.is_null() || count == 0 {
+        if !samples.is_null() {
+            unsafe { sayit_macos_free_bytes(samples.cast()) };
+        }
+        return Err(unsafe {
+            take_string(error).unwrap_or_else(|| "macOS 原生音频解码失败".into())
+        });
+    }
+    let output = unsafe { std::slice::from_raw_parts(samples, count).to_vec() };
+    unsafe { sayit_macos_free_bytes(samples.cast()) };
+    if !error.is_null() {
+        let _ = unsafe { take_string(error) };
+    }
+    Ok(output)
+}
+
 pub(crate) fn capture_window(window_id: u32, max_side: u32) -> Result<MacWindowCapture, String> {
     let mut output = NativeByteBuffer {
         data: ptr::null_mut(),
@@ -376,10 +409,11 @@ pub(crate) fn stop_keyboard_tap(handle: usize) {
 
 pub(crate) unsafe fn start_system_audio(
     callback: AudioCallback,
+    error_callback: AudioErrorCallback,
     context: *mut c_void,
 ) -> Result<usize, String> {
     let mut error = ptr::null_mut();
-    let handle = sayit_macos_system_audio_start(callback, context, &mut error);
+    let handle = sayit_macos_system_audio_start(callback, error_callback, context, &mut error);
     if handle.is_null() {
         Err(take_string(error).unwrap_or_else(|| "启动 macOS 系统音频采集失败".into()))
     } else {
