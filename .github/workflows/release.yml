@@ -137,9 +137,11 @@ jobs:
           test "$(lipo -archs "$binary")" = "$EXPECTED_ARCH"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           otool -L "$binary" | grep -q '@rpath/libsherpa-onnx-c-api.dylib'
-          otool -L "$binary" | grep -q '@rpath/libonnxruntime.1.27.0.dylib'
+          otool -L "$binary" | grep -q '@rpath/libonnxruntime.dylib'
           test -f "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
-          test -f "$app_path/Contents/Frameworks/libonnxruntime.1.27.0.dylib"
+          test -f "$app_path/Contents/Frameworks/libonnxruntime.dylib"
+          test "$(plutil -extract LSMinimumSystemVersion raw -o - "$app_path/Contents/Info.plist")" = "15.5"
+          node scripts/validate-macos-bundle.mjs "$app_path"
           plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract NSScreenCaptureUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract CFBundleDocumentTypes json -o - "$app_path/Contents/Info.plist" | grep -q 'sayit'

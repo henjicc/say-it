@@ -93,7 +93,7 @@ export function SubtitleGeneralPanel() {
               <option value={buildSubtitleSource("mic")}>麦克风（默认）</option>
               <option value={buildSubtitleSource("system")} disabled={!systemAudioSupported}>
                 {systemAudioSupported
-                  ? isMacOS ? "系统音频（macOS 13+，需录制权限）" : "系统音频（默认）"
+                  ? isMacOS ? "系统音频（需录制权限）" : "系统音频（默认）"
                   : "系统音频（当前平台暂不支持）"}
               </option>
               {inputs.length > 0 && (

@@ -8,7 +8,7 @@
 - `kCGSessionEventTap` 收到 Caps Lock 时系统锁定状态已经改变，单纯从回调返回 `NULL` 只能阻止后续投递，不能恢复大小写状态或键盘灯。监听启动时应记录 `IOHIDGetModifierLockState`，每次触发后用 `IOHIDSetModifierLockState` 写回；初始化时同时探测写权限，不能在无法恢复状态时假装快捷键注册成功。
 - 听写时焦点位于其他应用，WebView 的键盘事件和普通窗口快捷键都收不到 Esc。macOS 必须在听写活动期间把 `kCGEventKeyDown`/`kCGEventKeyUp` 加入 Quartz 事件过滤器，按物理键码 53 触发领域取消并吞掉按下与释放事件；空闲后立即撤销 Esc 监听，避免常驻事件过滤器观察无关键盘输入。取消入口本身不能再限制为 Windows 编译。
 - macOS 上不能在 Tokio/阻塞工作线程里用 `enigo::Key::Unicode` 发送粘贴快捷键。enigo 会通过 Text Services Manager 查询当前键盘布局，而该 API 强制要求主队列，违规调用会触发 `dispatch_assert_queue` 并以 `SIGTRAP` 直接终止进程。听写完成后的 Command+V 应使用不查询输入法布局的 CoreGraphics 物理键事件，或显式调度到主线程；不能依赖 Rust 错误处理捕获这种系统级断言。
-- ScreenCaptureKit 的系统音频输出、`capturesAudio`、采样率和声道配置从 macOS 13 起可用。应用仍可保持 macOS 11 的整体最低版本，但系统音频入口必须明确标注 13+，运行时也必须用可用性检查返回可操作错误。
+- ScreenCaptureKit 的系统音频输出、`capturesAudio`、采样率和声道配置从 macOS 13 起可用，运行时仍应使用可用性检查返回可操作错误。当前 sherpa-onnx 1.13.5 所带 ONNX Runtime 的 `LC_BUILD_VERSION minos` 为 15.5，应用的最低系统版本必须与最严格的内嵌动态库一致；不能只检查主程序的 minos 后继续宣称支持 macOS 11。
 - macOS 系统 OCR 使用 Vision `VNRecognizeTextRequest`。Vision 的文本框以左下角为原点，进入公共 `OcrTextBlock` 前必须转换为左上角原点并收敛到 0～1。
 - macOS 的低内存文本提取可通过 Accessibility API 读取焦点控件的 `AXSelectedText`、`AXValue` 和 `AXSelectedTextRange`。跨进程 AX 调用必须设置短消息超时，密码控件要在读取正文前按 `AXSecureTextField` 保守拦截；拿不到正文时只允许回退到应用名与窗口标题，不能改用剪贴板或静默截图。
 - PP-OCR 不能只接在 Windows 场景感知管线中；模型校验、MNN 引擎创建和结果归一化应放到跨平台 OCR 模块，macOS 的通用 OCR 供应商入口才能真正调用本地模型。`ocr-rs` 在 macOS 使用不启用 `mnn-static` 的预编译 universal MNN，下载归档必须固定 SHA-256，避免构建期供应链内容漂移。
@@ -28,8 +28,8 @@
 
 ## 构建与验证
 
-- 原生 Objective-C 桥接由 `build.rs` 编译，Tauri 构建脚本需设置 `MACOSX_DEPLOYMENT_TARGET=11.0`，否则命令行工具可能把二进制最低版本提升到当前 SDK 版本。
-- 构建后用 `otool -l` 检查 `LC_BUILD_VERSION minos`，并用 `plutil` 确认权限说明实际进入 `.app/Contents/Info.plist`。
+- 原生 Objective-C 桥接由 `build.rs` 编译，Tauri 构建脚本需显式设置与应用声明一致的 `MACOSX_DEPLOYMENT_TARGET`，否则命令行工具可能把二进制最低版本提升到当前 SDK 版本。
+- 构建后要用 `otool -l` 检查主程序及 `Contents/Frameworks` 内每个 Mach-O 的 `LC_BUILD_VERSION minos`，取其中最大值与 `LSMinimumSystemVersion` 对齐；仅检查主程序会漏掉应用启动时由 dyld 强制加载的本地模型运行库。还需用 `plutil` 确认权限说明实际进入 `.app/Contents/Info.plist`。
 - 自动化测试只能覆盖桥接编译、Vision 图片输入和领域状态机；Caps Lock 吞键、权限弹窗、真实系统音频与目标窗口 OCR 必须由用户实际操作验证。
 - 本地 PP-OCR 应使用随包测试图和真实模型做一次推理测试，不能只以 Rust 编译或模型文件存在作为可用证据。
 - 前端模型目录是异步加载的，但 Zustand Store 会在模块导入时同步初始化。默认模型不能先以空串占位，否则全新数据目录会把空 `asrModel` 导入后端，快捷键虽已触发却会在悬浮窗创建前报“听写模型未登记”。同步初值应直接来自共享模型注册表，后端加载和听写启动仍需修复历史空值。

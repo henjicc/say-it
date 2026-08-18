@@ -78,7 +78,7 @@
 ### 安装说明
 
 - **Windows**：下载 `.exe` 安装包并运行，按向导完成安装。
-- **macOS**：当前为预览支持，可从源码运行或构建；Caps Lock 快捷键和文本注入需要“辅助功能”权限，窗口 OCR 与系统音频需要“屏幕与系统音频录制”权限。系统音频采集要求 macOS 13 及以上。
+- **macOS**：当前为预览支持，可从源码运行或构建；Caps Lock 快捷键和文本注入需要“辅助功能”权限，窗口 OCR 与系统音频需要“屏幕与系统音频录制”权限。当前本地 ASR 运行库要求 macOS 15.5 及以上。
 - **Linux**：暂未支持，详见[路线图](#-路线图)。
 
 > Windows 启动时遇到 WebView 相关错误，可尝试安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
@@ -169,7 +169,7 @@
 
 | 项目 | 最低要求 | 推荐配置 |
 |---|---|---|
-| 操作系统 | Windows 10 21H2 及以上 / macOS 11 及以上 | Windows 11 / 较新的 macOS |
+| 操作系统 | Windows 10 21H2 及以上 / macOS 15.5 及以上 | Windows 11 / 较新的 macOS |
 | 内存 | 4 GB | 8 GB 及以上 |
 | 存储空间 | 200 MB | 500 MB |
 | 其他 | 麦克风设备、网络连接（用于调用语音识别服务） | 独立降噪麦克风 |
