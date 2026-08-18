@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Lock, LockOpen, RotateCw, X } from "lucide-react";
-import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
+import { AlertTriangle, Lock, LockOpen, RotateCw, X } from "lucide-react";
+import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { playCueKind } from "@/lib/cues";
 import { subtitleFontStack } from "@/lib/platform";
 
-type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle";
+type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle" | "error";
 type IndicatorMode = "dictation" | "subtitle";
 
 interface SubtitleConfig {
@@ -38,6 +38,7 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   processing: "识别中…",
   smartProcessing: "智能处理中…",
   subtitle: "实时字幕",
+  error: "处理失败",
 };
 
 const MAX_RENDER_CHARS = 20000;
@@ -188,6 +189,8 @@ export function IndicatorApp() {
   const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig>({});
   const [subtitleLocked, setSubtitleLocked] = useState(false);
   const [waveform, setWaveform] = useState({ active: false, level: 0, peaks: [] as number[] });
+  const [errorState, setErrorState] = useState({ message: "", canUseRawText: false });
+  const [errorActionBusy, setErrorActionBusy] = useState(false);
 
   const isReplaceMode = mode === "subtitle" && subtitleConfig.displayMode === "replace";
   // 双语模式下译文与原文共用同一套"滚动累积/单句替换"规则，行为保持一致。
@@ -201,7 +204,17 @@ export function IndicatorApp() {
       original.resetText();
       translation.resetText();
       setWaveform({ active: false, level: 0, peaks: [] });
+      setErrorState({ message: "", canUseRawText: false });
+      setErrorActionBusy(false);
     }
+  });
+
+  useTauriEvent<{ message?: string; canUseRawText?: boolean }>(EVT.indicatorError, (payload) => {
+    setErrorState({
+      message: payload.message || "",
+      canUseRawText: !!payload.canUseRawText,
+    });
+    setErrorActionBusy(false);
   });
 
   useTauriEvent<{ which?: "start" | "end"; kind?: string }>(EVT.indicatorPlayCue, (payload) => {
@@ -324,6 +337,20 @@ export function IndicatorApp() {
     void cmdSilent(CMD.subtitleStop);
   };
 
+  const handleErrorAction = async (useRawText: boolean) => {
+    if (errorActionBusy) return;
+    setErrorActionBusy(true);
+    try {
+      await cmd(useRawText ? CMD.dictationUseRawText : CMD.dictationCancel);
+    } catch (error) {
+      setErrorState((current) => ({
+        ...current,
+        message: `操作失败：${String(error)}`,
+      }));
+      setErrorActionBusy(false);
+    }
+  };
+
   return (
     <div
       id="wrap"
@@ -360,6 +387,33 @@ export function IndicatorApp() {
         </div>
       </div>
       {!translationFirst && translationBlock}
+      {mode === "dictation" && phase === "error" && (
+        <div id="error-panel" role="alert" aria-live="assertive">
+          <div className="error-summary">
+            <AlertTriangle aria-hidden="true" />
+            <span>{errorState.message || "处理过程中发生未知错误"}</span>
+          </div>
+          <div className="error-actions">
+            {errorState.canUseRawText && (
+              <button
+                type="button"
+                className="primary"
+                disabled={errorActionBusy}
+                onClick={() => void handleErrorAction(true)}
+              >
+                输入未处理原文
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={errorActionBusy}
+              onClick={() => void handleErrorAction(false)}
+            >
+              {errorState.canUseRawText ? "取消" : "关闭"}
+            </button>
+          </div>
+        </div>
+      )}
       {(showWaveform || showProcessingPanel) && (
         <div
           id="signal-panel"

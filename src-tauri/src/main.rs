@@ -33,8 +33,8 @@ use application::compare::{compare_cancel, compare_start, compare_stop, get_comp
 use application::contract::get_app_snapshot;
 use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
 use application::dictation::{
-    dictation_cancel, dictation_start, dictation_stop, dictation_toggle, get_dictation_runtime,
-    list_running_apps, preview_dictation_cue,
+    dictation_cancel, dictation_start, dictation_stop, dictation_toggle, dictation_use_raw_text,
+    get_dictation_runtime, list_running_apps, preview_dictation_cue,
 };
 use application::llm_models::refresh_llm_models;
 use application::plugin_management::{
@@ -465,6 +465,7 @@ fn main() {
             dictation_start,
             dictation_stop,
             dictation_cancel,
+            dictation_use_raw_text,
             preview_dictation_cue,
             set_dictation_settings,
             get_shortcut_bindings,

@@ -610,6 +610,24 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     }
 }
 
+/// 恢复听写启动时的目标窗口。仅用于用户在悬浮窗确认失败降级后，避免原文被
+/// 注入到刚刚点击的悬浮 WebView 中。
+pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::activate_target(target)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::activate_target(target)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = target;
+        Err("当前平台不支持恢复原输入窗口".into())
+    }
+}
+
 /// 听写启动时解析前台软件标识。同步、无跨进程调用，可在每次启动时无条件调用。
 pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
     #[cfg(windows)]

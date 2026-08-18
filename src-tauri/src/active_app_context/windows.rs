@@ -16,7 +16,7 @@ use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
     GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
+    IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
 };
 
 use super::model::{
@@ -81,6 +81,15 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
         process_id,
         cursor_position,
     })
+}
+
+pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
+    let window = HWND(target.window_handle as *mut std::ffi::c_void);
+    if unsafe { SetForegroundWindow(window) }.as_bool() {
+        Ok(())
+    } else {
+        Err("无法重新激活听写开始时的目标窗口".into())
+    }
 }
 
 /// 只读取本进程可直接取得的窗口元信息。它必须在探针或 UIA 发生跨进程调用前完成，

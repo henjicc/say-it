@@ -6,6 +6,7 @@
 - 悬浮窗不能按完整显示器高度推算底边。macOS 应同时读取 `NSScreen.frame` 与 `visibleFrame` 且不要缓存：底部 Dock 会抬高 `visibleFrame.minY`，底部锚点应据此动态避让；Dock 位于左/右侧时则按完整 `frame` 的水平中心和底边定位，避免无关的横向偏移。听写窗口本身还有 24px 透明底部内边距，设置视觉间距时要从窗口偏移中扣除，不能在 Dock 安全区之外再次叠加一整份桌面边距。
 - Caps Lock 不能交给 Tauri 全局快捷键注册。要避免切换大小写状态，必须使用可丢弃事件的 Quartz `CGEventTap`，并请求“辅助功能”权限；设置页录制 Caps Lock 时也要由同一事件过滤器吞键并向前端上报。
 - `kCGSessionEventTap` 收到 Caps Lock 时系统锁定状态已经改变，单纯从回调返回 `NULL` 只能阻止后续投递，不能恢复大小写状态或键盘灯。监听启动时应记录 `IOHIDGetModifierLockState`，每次触发后用 `IOHIDSetModifierLockState` 写回；初始化时同时探测写权限，不能在无法恢复状态时假装快捷键注册成功。
+- macOS 会故意延迟 Caps Lock 的普通 `flagsChanged` 事件以防误触，因此只靠 `CGEventTap` 会让“单击切换”表现得像必须长按。快捷键触发应使用 `IOHIDManager` 的原始 Caps Lock 按下值（需要“输入监控”权限），`CGEventTap` 只负责吞掉随后可能出现的系统锁定事件并恢复原锁定状态；原始 HID 与 Quartz 回调不得同时触发听写，否则长按会切换两次。
 - 听写时焦点位于其他应用，WebView 的键盘事件和普通窗口快捷键都收不到 Esc。macOS 必须在听写活动期间把 `kCGEventKeyDown`/`kCGEventKeyUp` 加入 Quartz 事件过滤器，按物理键码 53 触发领域取消并吞掉按下与释放事件；空闲后立即撤销 Esc 监听，避免常驻事件过滤器观察无关键盘输入。取消入口本身不能再限制为 Windows 编译。
 - macOS 上不能在 Tokio/阻塞工作线程里用 `enigo::Key::Unicode` 发送粘贴快捷键。enigo 会通过 Text Services Manager 查询当前键盘布局，而该 API 强制要求主队列，违规调用会触发 `dispatch_assert_queue` 并以 `SIGTRAP` 直接终止进程。听写完成后的 Command+V 应使用不查询输入法布局的 CoreGraphics 物理键事件，或显式调度到主线程；不能依赖 Rust 错误处理捕获这种系统级断言。
 - “逐字输入”同样不能继续走 enigo 的 macOS Unicode 路径。应使用 `CGEventKeyboardSetUnicodeString` 直接发送 UTF-16，并按组合字符边界分批，避免拆开代理对、emoji 或带组合符号的文字；事件必须清空修饰键标志，防止用户仍按着 Command/Option 时改变注入语义。

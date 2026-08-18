@@ -88,6 +88,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> bool;
     fn sayit_macos_frontmost_window_json(error: *mut *mut c_char) -> *mut c_char;
+    fn sayit_macos_activate_application(process_id: u32, error: *mut *mut c_char) -> bool;
     fn sayit_macos_window_json(
         window_id: u32,
         process_id: u32,
@@ -174,6 +175,17 @@ pub(crate) fn frontmost_window() -> Result<MacWindowInfo, String> {
     let value = unsafe { sayit_macos_frontmost_window_json(&mut error) };
     let json = unsafe { native_result(value, error)? };
     serde_json::from_str(&json).map_err(|error| format!("解析 macOS 前台窗口失败：{error}"))
+}
+
+pub(crate) fn activate_application(process_id: u32) -> Result<(), String> {
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_activate_application(process_id, &mut error) } {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "无法重新激活听写开始时的应用".into())
+        })
+    }
 }
 
 pub(crate) fn running_apps() -> Result<Vec<MacWindowInfo>, String> {

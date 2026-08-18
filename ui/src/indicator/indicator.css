@@ -76,6 +76,11 @@ body,
   box-shadow: 0 0 0 5px rgba(37, 195, 111, 0.14);
 }
 
+.error .dot {
+  background: #ff6b6b;
+  box-shadow: 0 0 0 5px rgba(255, 80, 80, 0.14);
+}
+
 .subtitle-controls {
   position: absolute;
   top: 5px;
@@ -207,6 +212,82 @@ body,
     inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   overflow: hidden;
+}
+
+#error-panel {
+  width: 396px;
+  min-height: 76px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(34, 13, 18, 0.97);
+  color: #ffe9ec;
+  border: 1px solid rgba(255, 105, 120, 0.34);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+  font: 12px/1.4 var(--font-sans);
+}
+
+.error-summary {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.error-summary svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  color: #ff8794;
+}
+
+.error-summary span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.error-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.error-actions button {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8f9fc;
+  font: 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.error-actions button.primary {
+  border-color: rgba(111, 165, 255, 0.48);
+  background: #397ddd;
+}
+
+.error-actions button:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.error-actions button:focus-visible {
+  outline: 2px solid #a9caff;
+  outline-offset: 2px;
+}
+
+.error-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .wave-bars {
