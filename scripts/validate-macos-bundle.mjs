@@ -78,15 +78,65 @@ function minimumVersions(binary) {
   return versions;
 }
 
+function architectures(binary) {
+  const values = command("/usr/bin/lipo", ["-archs", binary]).split(/\s+/).filter(Boolean);
+  if (values.length === 0) {
+    throw new Error(`Mach-O 缺少可识别的处理器架构：${binary}`);
+  }
+  return values;
+}
+
+function dynamicDependencies(binary) {
+  return command("/usr/bin/otool", ["-L", binary])
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/, 1)[0])
+    .filter(Boolean);
+}
+
+function validateDependency(appPath, executablePath, binary, dependency) {
+  let bundledPath = null;
+  if (dependency.startsWith("@rpath/")) {
+    bundledPath = resolve(appPath, "Contents/Frameworks", dependency.slice("@rpath/".length));
+  } else if (dependency.startsWith("@loader_path/")) {
+    bundledPath = resolve(binary, "..", dependency.slice("@loader_path/".length));
+  } else if (dependency.startsWith("@executable_path/")) {
+    bundledPath = resolve(executablePath, "..", dependency.slice("@executable_path/".length));
+  } else if (
+    dependency.startsWith("/") &&
+    !dependency.startsWith("/System/Library/") &&
+    !dependency.startsWith("/usr/lib/")
+  ) {
+    throw new Error(`Mach-O 依赖了应用包外的绝对路径：${binary} -> ${dependency}`);
+  }
+
+  if (bundledPath && !existsSync(bundledPath)) {
+    throw new Error(`Mach-O 依赖未随应用打包：${binary} -> ${dependency}`);
+  }
+}
+
 function validateApp(appPath) {
+  const infoPlist = resolve(appPath, "Contents/Info.plist");
   const declaredMinimum = command("/usr/bin/plutil", [
     "-extract",
     "LSMinimumSystemVersion",
     "raw",
     "-o",
     "-",
-    resolve(appPath, "Contents/Info.plist"),
+    infoPlist,
   ]);
+  const executableName = command("/usr/bin/plutil", [
+    "-extract",
+    "CFBundleExecutable",
+    "raw",
+    "-o",
+    "-",
+    infoPlist,
+  ]);
+  const executablePath = resolve(appPath, "Contents/MacOS", executableName);
+  if (!existsSync(executablePath)) {
+    throw new Error(`macOS 应用包缺少主程序：${executablePath}`);
+  }
   const binaries = filesUnder(resolve(appPath, "Contents")).filter((path) =>
     command("/usr/bin/file", ["--brief", path]).includes("Mach-O"),
   );
@@ -94,7 +144,26 @@ function validateApp(appPath) {
     throw new Error(`macOS 应用包内没有 Mach-O：${appPath}`);
   }
 
+  const mainArchitectures = architectures(executablePath);
+  const expectedArchitecture = process.env.EXPECTED_ARCH?.trim();
+  if (
+    expectedArchitecture &&
+    (mainArchitectures.length !== 1 || mainArchitectures[0] !== expectedArchitecture)
+  ) {
+    throw new Error(
+      `主程序架构应为 ${expectedArchitecture}，实际为 ${mainArchitectures.join(" ")}：${executablePath}`,
+    );
+  }
+
   for (const binary of binaries) {
+    const binaryArchitectures = architectures(binary);
+    for (const architecture of mainArchitectures) {
+      if (!binaryArchitectures.includes(architecture)) {
+        throw new Error(
+          `Mach-O 缺少主程序所需架构 ${architecture}：${binary}（实际 ${binaryArchitectures.join(" ")}）`,
+        );
+      }
+    }
     for (const minimum of minimumVersions(binary)) {
       if (compareVersions(minimum, declaredMinimum) > 0) {
         throw new Error(
@@ -102,9 +171,14 @@ function validateApp(appPath) {
         );
       }
     }
+    for (const dependency of dynamicDependencies(binary)) {
+      validateDependency(appPath, executablePath, binary, dependency);
+    }
   }
 
-  console.log(`macOS 最低版本校验通过：声明 ${declaredMinimum}，检查 ${binaries.length} 个 Mach-O。`);
+  console.log(
+    `macOS 应用包校验通过：声明最低版本 ${declaredMinimum}，主程序架构 ${mainArchitectures.join(" ")}，检查 ${binaries.length} 个 Mach-O。`,
+  );
 }
 
 if (requestedPath.endsWith(".dmg")) {
