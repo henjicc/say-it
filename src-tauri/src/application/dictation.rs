@@ -912,6 +912,33 @@ fn spawn_raw_consumer(
             }
         }
         done.notify_one();
+
+        let state = app.state::<RuntimeState>();
+        let capture_error = state
+            .backend_mic
+            .lock()
+            .ok()
+            .and_then(|mut capture| capture.last_error.take());
+        let still_recording = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map(|session| {
+                session.epoch == epoch
+                    && matches!(
+                        session.phase,
+                        DictationPhase::Recording | DictationPhase::WaitingForVoice
+                    )
+            })
+            .unwrap_or(false);
+        if still_recording {
+            let _ = fail(
+                app,
+                epoch,
+                capture_error.unwrap_or_else(|| "麦克风采集已意外停止".into()),
+            )
+            .await;
+        }
     });
 }
 

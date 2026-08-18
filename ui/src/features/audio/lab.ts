@@ -4,7 +4,7 @@ import { CMD, cmd } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useAudioStore, emptyMeters } from "@/store/useAudioStore";
 
-type Snapshot = { recording: boolean; rawWaveform: [number, number][]; processedWaveform: [number, number][]; stats?: { inLufs: number; outLufs: number; inPeakDb: number; outPeakDb: number; clippedSamples: number } };
+type Snapshot = { recording: boolean; rawWaveform: [number, number][]; processedWaveform: [number, number][]; stats?: { inLufs: number; outLufs: number; inPeakDb: number; outPeakDb: number; clippedSamples: number }; error?: string | null };
 let rawCanvas: HTMLCanvasElement | null = null;
 let processedCanvas: HTMLCanvasElement | null = null;
 let last: Snapshot | null = null;
@@ -21,6 +21,8 @@ function apply(snapshot: Snapshot) {
   const stats = snapshot.stats; useAudioStore.setState({ recording: snapshot.recording, canPlay: !snapshot.recording && snapshot.rawWaveform.length > 0, meters: stats ? { olufs: `${stats.inLufs.toFixed(1)} LUFS`, orms: "-", opeak: stats.inPeakDb.toFixed(1), plufs: `${stats.outLufs.toFixed(1)} LUFS`, prms: "-", ppeak: stats.outPeakDb.toFixed(1), clip: String(stats.clippedSamples) } : { ...emptyMeters } });
 }
 export function setCanvases(raw: HTMLCanvasElement | null, processed: HTMLCanvasElement | null) { rawCanvas = raw; processedCanvas = processed; if (last) apply(last); }
+export function applyAudioLabRuntime(snapshot: Snapshot) { apply(snapshot); if (snapshot.error) useAudioStore.setState({ recInfo: `录音失败：${snapshot.error}`, recTone: "err", recording: false }); }
+export async function loadAudioLabRuntime() { applyAudioLabRuntime(await cmd<Snapshot>(CMD.getAudioLabRuntime)); }
 export async function toggleRecord() { try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } }
 export async function reprocess() { const snapshot = await cmd<Snapshot>(CMD.audioLabReprocess, { params: useDictPrefs.getState().dspParams() }); apply(snapshot); }
 export function paramChanged() { if (timer) clearTimeout(timer); timer = setTimeout(() => { void reprocess().catch((error) => useAudioStore.setState({ recInfo: `处理失败：${error}`, recTone: "err" })); }, 120); }
