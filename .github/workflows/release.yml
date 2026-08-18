@@ -6,9 +6,7 @@ on:
       - 'v*.*.*'
 
 jobs:
-  publish-tauri:
-    permissions:
-      contents: write
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,69 +24,187 @@ jobs:
       - name: install frontend dependencies
         run: npm install
 
-      - name: build tauri app
+      - name: build Windows installer
         run: npm run tauri:build
 
-      - name: publish github release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: normalize Windows asset name
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $bundleDir = Join-Path $PWD "src-tauri/target/release/bundle/nsis"
           $installers = @(Get-ChildItem -LiteralPath $bundleDir -Filter "*.exe")
-
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer in $bundleDir, found $($installers.Count)."
           }
+          Rename-Item -LiteralPath $installers[0].FullName -NewName "SayIt_${version}_x64-setup.exe"
 
-          $installerName = "SayIt_${version}_x64-setup.exe"
-          $installerPath = Join-Path $bundleDir $installerName
-          Rename-Item -LiteralPath $installers[0].FullName -NewName $installerName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sayit-windows-x64
+          path: src-tauri/target/release/bundle/nsis/SayIt_*_x64-setup.exe
+          if-no-files-found: error
 
-          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
-          $changelogPath = Join-Path $PWD "CHANGELOG.md"
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            asset_arch: arm64
+            expected_arch: arm64
+          - runner: macos-15-intel
+            asset_arch: x64
+            expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      SAYIT_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      SAYIT_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      SAYIT_KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      SAYIT_APPLE_ID: ${{ secrets.APPLE_ID }}
+      SAYIT_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      SAYIT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
 
-          if (-not (Test-Path -LiteralPath $changelogPath)) {
-            throw "CHANGELOG.md not found."
-          }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
 
-          $changelog = Get-Content -LiteralPath $changelogPath -Raw -Encoding utf8
-          $escapedVersion = [regex]::Escape($version)
-          $pattern = "(?ms)^## \[$escapedVersion\].*?(?=^## \[|\z)"
-          $match = [regex]::Match($changelog, $pattern)
+      - uses: dtolnay/rust-toolchain@stable
 
-          if (-not $match.Success) {
-            throw "Release notes for version $version were not found in CHANGELOG.md."
-          }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: ${{ matrix.expected_arch }}
 
-          # 模型包体积数百 MB 且几乎不随应用版本变化，只在独立的 models-* Release 发布一次。
-          # 这里把固定下载链接追加到每个版本的说明里，用户在同一个页面既能拿到安装包附件，
-          # 也能拿到模型下载，无需重复上传。模型更新时只改 model-packs/RELEASE_NOTES.md。
-          $modelNotesPath = Join-Path $PWD "model-packs/RELEASE_NOTES.md"
+      - name: validate Apple signing secrets
+        run: |
+          values=(
+            "$SAYIT_APPLE_CERTIFICATE"
+            "$SAYIT_APPLE_CERTIFICATE_PASSWORD"
+            "$SAYIT_KEYCHAIN_PASSWORD"
+            "$SAYIT_APPLE_ID"
+            "$SAYIT_APPLE_PASSWORD"
+            "$SAYIT_APPLE_TEAM_ID"
+          )
+          present=0
+          for value in "${values[@]}"; do
+            if [[ -n "$value" ]]; then present=$((present + 1)); fi
+          done
+          if [[ "$present" -ne 0 && "$present" -ne "${#values[@]}" ]]; then
+            echo "Apple 签名与公证 secrets 必须全部配置，或全部留空以生成 ad-hoc 签名包。" >&2
+            exit 1
+          fi
 
-          if (-not (Test-Path -LiteralPath $modelNotesPath)) {
-            throw "model-packs/RELEASE_NOTES.md not found."
-          }
+      - name: import Apple Developer certificate
+        if: env.SAYIT_APPLE_CERTIFICATE != ''
+        run: |
+          certificate="$RUNNER_TEMP/sayit-certificate.p12"
+          keychain="$RUNNER_TEMP/sayit-build.keychain-db"
+          printf '%s' "$SAYIT_APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$SAYIT_KEYCHAIN_PASSWORD" "$keychain"
+          security default-keychain -s "$keychain"
+          security unlock-keychain -p "$SAYIT_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -t 3600 -u "$keychain"
+          security import "$certificate" -k "$keychain" -P "$SAYIT_APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$SAYIT_KEYCHAIN_PASSWORD" "$keychain"
+          signing_identity="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          test -n "$signing_identity"
+          {
+            echo "APPLE_SIGNING_IDENTITY=$signing_identity"
+            echo "APPLE_ID=$SAYIT_APPLE_ID"
+            echo "APPLE_PASSWORD=$SAYIT_APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$SAYIT_APPLE_TEAM_ID"
+          } >> "$GITHUB_ENV"
 
-          $modelNotes = Get-Content -LiteralPath $modelNotesPath -Raw -Encoding utf8
-          $notes = $match.Value.Trim() + "`n`n---`n`n" + $modelNotes.Trim()
-          $notes | Set-Content -LiteralPath $notesPath -Encoding utf8
+      - name: install native and frontend dependencies
+        run: |
+          brew install opus
+          npm install
 
-          gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
+      - name: build macOS disk image
+        run: npm run tauri:build -- --bundles app dmg
+
+      - name: validate macOS bundle
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          binary="$app_path/Contents/MacOS/SayIt"
+          test "$(lipo -archs "$binary")" = "$EXPECTED_ARCH"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          otool -L "$binary" | grep -q '@rpath/libsherpa-onnx-c-api.dylib'
+          otool -L "$binary" | grep -q '@rpath/libonnxruntime.1.27.0.dylib'
+          test -f "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
+          test -f "$app_path/Contents/Frameworks/libonnxruntime.1.27.0.dylib"
+          plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+          plutil -extract NSScreenCaptureUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+          plutil -extract CFBundleDocumentTypes json -o - "$app_path/Contents/Info.plist" | grep -q 'sayit'
+
+      - name: normalize macOS asset name
+        env:
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          bundle_dir="src-tauri/target/release/bundle/dmg"
+          shopt -s nullglob
+          images=("$bundle_dir"/*.dmg)
+          test "${#images[@]}" -eq 1
+          mv "${images[0]}" "$bundle_dir/SayIt_${version}_${ASSET_ARCH}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sayit-macos-${{ matrix.asset_arch }}
+          path: src-tauri/target/release/bundle/dmg/SayIt_*_${{ matrix.asset_arch }}.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [build-windows, build-macos]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sayit-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: prepare release notes
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const version = require('./package.json').version;
+          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const match = changelog.match(new RegExp(`^## \\[${escaped}\\].*?(?=^## \\[|$)`, 'ms'));
+          if (!match) throw new Error(`Release notes for version ${version} were not found in CHANGELOG.md.`);
+          const modelNotes = fs.readFileSync('model-packs/RELEASE_NOTES.md', 'utf8').trim();
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/release-notes.md', `${match[0].trim()}\n\n---\n\n${modelNotes}\n`);
+          NODE
+
+      - name: publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          assets=(release-assets/*)
+          test "${#assets[@]}" -eq 3
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
             gh release delete "${{ github.ref_name }}" --yes
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to delete existing release ${{ github.ref_name }}."
-            }
-          }
-
-          gh release create "${{ github.ref_name }}" $installerPath `
-            --title "说吧！ v$version" `
-            --notes-file $notesPath `
+          fi
+          version="$(node -p "require('./package.json').version")"
+          gh release create "${{ github.ref_name }}" "${assets[@]}" \
+            --title "说吧！ v$version" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --latest
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create release ${{ github.ref_name }}."
-          }
