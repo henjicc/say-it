@@ -40,7 +40,7 @@ private enum SpeechHelperError: LocalizedError {
     case unsupportedLocale(String)
     case invalidAudioFormat
     case invalidSampleRate
-    case modelNotInstalled(String)
+    case systemAssetsUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -52,8 +52,8 @@ private enum SpeechHelperError: LocalizedError {
             return "无法创建 Apple 本地语音识别音频格式"
         case .invalidSampleRate:
             return "输入采样率无效"
-        case .modelNotInstalled(let locale):
-            return "Apple 本地语音模型 \(locale) 尚未安装，请先在设置中下载"
+        case .systemAssetsUnavailable(let locale):
+            return "Apple 系统语音资源 \(locale) 尚未就绪"
         }
     }
 }
@@ -68,7 +68,7 @@ private func prepare(localeIdentifier: String) async -> Int32 {
             await emitter.send(OutputEvent(
                 kind: "preparing",
                 locale: locale.identifier(.bcp47),
-                message: "正在下载并安装 Apple 本地语音模型"
+                message: "正在由 macOS 准备本地语音识别资源"
             ))
             try await request.downloadAndInstall()
         }
@@ -158,7 +158,7 @@ private func transcribe(localeIdentifier: String, sampleRate: Double) async -> I
         let locale = try await resolvedLocale(localeIdentifier)
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
         if !(await isInstalled(locale)) {
-            throw SpeechHelperError.modelNotInstalled(locale.identifier(.bcp47))
+            throw SpeechHelperError.systemAssetsUnavailable(locale.identifier(.bcp47))
         }
 
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(

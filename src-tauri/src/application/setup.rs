@@ -121,7 +121,7 @@ fn provider_check(state: &RuntimeState) -> SetupCheckResult {
                 .fold((0usize, 0usize), |(ready, incomplete), profile| {
                     if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
                         let status = crate::providers::apple_speech::status();
-                        return if status.available && status.installed {
+                        return if status.available {
                             (ready + 1, incomplete)
                         } else {
                             (ready, incomplete + 1)
@@ -166,25 +166,6 @@ fn provider_check(state: &RuntimeState) -> SetupCheckResult {
             Some("model"),
         )
     }
-}
-
-#[tauri::command]
-pub(crate) async fn prepare_apple_speech_model() -> Result<serde_json::Value, String> {
-    let status = crate::providers::apple_speech::prepare().await?;
-    Ok(serde_json::json!({
-        "status": "ready",
-        "message": format!(
-            "Apple 本地语音模型{}已安装",
-            if status.locale.is_empty() {
-                String::new()
-            } else {
-                format!("（{}）", status.locale)
-            }
-        ),
-        "locale": status.locale,
-        "installed": status.installed,
-        "onDevice": true
-    }))
 }
 
 fn shortcut_check(state: &RuntimeState) -> SetupCheckResult {

@@ -68,7 +68,7 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
                 })
             });
             let configured = if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
-                crate::providers::apple_speech::status().installed
+                crate::providers::apple_speech::status().available
             } else {
                 has_key
             };

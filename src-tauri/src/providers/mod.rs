@@ -359,7 +359,7 @@ pub fn apple_speech_profile() -> ProviderProfile {
         enabled: true,
         config: json!({}),
         config_fields: vec![],
-        actions: vec!["prepareAppleSpeech".to_string()],
+        actions: vec![],
     }
 }
 
@@ -584,6 +584,14 @@ mod tests {
             assert_eq!(profile.display_name, "Windows 系统 OCR");
             assert_eq!(profile.kind, "builtin-windows-ocr");
         }
+    }
+
+    #[test]
+    fn apple_speech_uses_system_managed_assets_without_manual_configuration() {
+        let profile = apple_speech_profile();
+        assert_eq!(profile.auth_kind, "none");
+        assert!(profile.config_fields.is_empty());
+        assert!(profile.actions.is_empty());
     }
 
     #[test]
