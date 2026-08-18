@@ -120,6 +120,10 @@ pub(crate) fn register_initial_main_window(app: &tauri::AppHandle, should_open: 
 
 /// 托盘、单实例和其他显式打开路径共用的幂等入口。
 pub(crate) fn ensure_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.set_dock_visibility(true) {
+        dlog!("[window] 恢复 macOS Dock 图标失败: {error}");
+    }
     let existing = app.get_webview_window(MAIN_WINDOW_LABEL);
     let action = {
         let state = app.state::<RuntimeState>();

@@ -103,13 +103,16 @@ fn validate_dictation_settings(
     crate::commands::shortcuts::validate_shortcut_settings(settings, &subtitle, state)
 }
 
-/// 读取启动设置：`autostart` 查询系统注册表实际状态，`silent_start` 取本地持久化值。
+/// 读取启动设置：`autostart` 查询当前平台的系统自启状态，`silent_start` 取本地持久化值。
 #[tauri::command]
 pub(crate) fn get_startup_settings(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<StartupStatus, String> {
-    let autostart = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|error| format!("读取开机自启状态失败：{error}"))?;
     let silent_start = state
         .startup
         .lock()
@@ -121,7 +124,7 @@ pub(crate) fn get_startup_settings(
     })
 }
 
-/// 写入启动设置：开关开机自启（写系统注册表），并持久化静默启动偏好。
+/// 写入启动设置：通过当前平台的系统自启机制切换状态，并持久化静默启动偏好。
 #[tauri::command]
 pub(crate) fn set_startup_settings(
     app: tauri::AppHandle,
@@ -130,7 +133,9 @@ pub(crate) fn set_startup_settings(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<StartupStatus, String> {
     let manager = app.autolaunch();
-    let currently = manager.is_enabled().unwrap_or(false);
+    let currently = manager
+        .is_enabled()
+        .map_err(|error| format!("读取开机自启状态失败：{error}"))?;
     if autostart && !currently {
         manager
             .enable()
@@ -148,7 +153,9 @@ pub(crate) fn set_startup_settings(
         guard.silent_start = silent_start;
     }
     save_persisted_state(&app, &state)?;
-    let autostart = manager.is_enabled().unwrap_or(autostart);
+    let autostart = manager
+        .is_enabled()
+        .map_err(|error| format!("确认开机自启状态失败：{error}"))?;
     Ok(StartupStatus {
         autostart,
         silent_start,
