@@ -115,42 +115,74 @@ fn atomic_write_with_backup(file: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = file.with_extension("json.tmp");
     let backup = file.with_extension("json.bak");
     {
-        let mut output = fs::File::create(&tmp).map_err(|e| format!("创建配置临时文件失败：{e}"))?;
+        let mut output =
+            fs::File::create(&tmp).map_err(|e| format!("创建配置临时文件失败：{e}"))?;
         use std::io::Write;
-        output.write_all(bytes).map_err(|e| format!("写入配置临时文件失败：{e}"))?;
-        output.sync_all().map_err(|e| format!("刷新配置临时文件失败：{e}"))?;
+        output
+            .write_all(bytes)
+            .map_err(|e| format!("写入配置临时文件失败：{e}"))?;
+        output
+            .sync_all()
+            .map_err(|e| format!("刷新配置临时文件失败：{e}"))?;
     }
-    if file.exists() { fs::copy(file, &backup).map_err(|e| format!("备份原配置失败：{e}"))?; fs::remove_file(file).map_err(|e| format!("替换配置前移除旧文件失败：{e}"))?; }
+    if file.exists() {
+        fs::copy(file, &backup).map_err(|e| format!("备份原配置失败：{e}"))?;
+        // Unix（包括 macOS）的 rename 可原子替换同目录目标。先删除旧文件会制造一个
+        // 掉电窗口，使主配置暂时不存在；Windows 则仍需先移除目标文件。
+        #[cfg(windows)]
+        fs::remove_file(file).map_err(|e| format!("替换配置前移除旧文件失败：{e}"))?;
+    }
     if let Err(error) = fs::rename(&tmp, file) {
-        if backup.exists() { let _ = fs::copy(&backup, file); }
+        if !file.exists() && backup.exists() {
+            let _ = fs::copy(&backup, file);
+        }
+        let _ = fs::remove_file(&tmp);
         return Err(format!("提交配置文件失败，已尝试恢复备份：{error}"));
     }
     Ok(())
+}
+
+fn persisted_state_files_exist(file: &Path) -> bool {
+    file.exists() || file.with_extension("json.bak").exists()
+}
+
+fn load_persisted_data_from_path(file: &Path) -> Result<PersistedData, String> {
+    let backup = file.with_extension("json.bak");
+    if !file.exists() {
+        let text = fs::read_to_string(&backup)
+            .map_err(|error| format!("主配置不存在且读取备份失败：{error}"))?;
+        return serde_json::from_str(&text)
+            .map_err(|error| format!("主配置不存在且备份损坏：{error}"));
+    }
+
+    let text = fs::read_to_string(file).map_err(|error| format!("读取配置文件失败：{error}"))?;
+    match serde_json::from_str::<PersistedData>(&text) {
+        Ok(data) => Ok(data),
+        Err(primary) => {
+            let backup_text = fs::read_to_string(&backup)
+                .map_err(|_| format!("配置文件损坏且备份不可用：{primary}"))?;
+            serde_json::from_str(&backup_text).map_err(|backup_error| {
+                format!("配置文件及备份均损坏：主文件 {primary}；备份 {backup_error}")
+            })
+        }
+    }
 }
 
 pub(crate) fn load_persisted_state(
     app: &tauri::AppHandle,
 ) -> Result<Option<PersistedData>, String> {
     let file = state_file_path(app)?;
-    let source = if file.exists() {
+    let source = if persisted_state_files_exist(&file) {
         Some(file)
     } else {
         legacy_state_file_paths(app)?
             .into_iter()
-            .find(|legacy| legacy.exists())
+            .find(|legacy| persisted_state_files_exist(legacy))
     };
     let Some(source) = source else {
         return Ok(None);
     };
-    let text = fs::read_to_string(&source).map_err(|e| e.to_string())?;
-    let mut data = match serde_json::from_str::<PersistedData>(&text) {
-        Ok(data) => data,
-        Err(primary) => {
-            let backup = source.with_extension("json.bak");
-            let backup_text = fs::read_to_string(&backup).map_err(|_| format!("配置文件损坏且备份不可用：{primary}"))?;
-            serde_json::from_str(&backup_text).map_err(|backup_error| format!("配置文件及备份均损坏：主文件 {primary}；备份 {backup_error}"))?
-        }
-    };
+    let mut data = load_persisted_data_from_path(&source)?;
     data.providers = normalize_settings(data.providers);
     crate::application::dictation::repair_empty_asr_model(
         &mut data.app_settings.dictation_prefs,
@@ -180,6 +212,24 @@ mod tests {
         let file = dir.join("state.json");
         atomic_write_with_backup(&file, b"one").unwrap(); atomic_write_with_backup(&file, b"two").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "two"); assert_eq!(fs::read_to_string(file.with_extension("json.bak")).unwrap(), "one");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_primary_state_recovers_from_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "say-it-persistence-recovery-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("state.json");
+        fs::write(file.with_extension("json.bak"), b"{}").unwrap();
+
+        assert!(persisted_state_files_exist(&file));
+        let data = load_persisted_data_from_path(&file).unwrap();
+        assert_eq!(data.schema_version, 1);
+
         fs::remove_dir_all(dir).unwrap();
     }
 }
