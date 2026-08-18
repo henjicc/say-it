@@ -75,8 +75,8 @@ function availableOcrOptions() {
 }
 
 function normalizeExtractionMethod(value: unknown): ActiveAppContextExtractionMethod {
-  if (isMacOS) return "ocr";
-  return value === "ocr" ? "ocr" : "nativeText";
+  if (value === "ocr" || value === "nativeText") return value;
+  return isMacOS ? "ocr" : "nativeText";
 }
 
 const LEGACY_DEFAULT_SMART_TEXT_TEMPLATES: SmartTextTemplate[] = [

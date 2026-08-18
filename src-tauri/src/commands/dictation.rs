@@ -44,6 +44,52 @@ fn normalize_inject_method(value: Option<&str>) -> Option<String> {
     }
 }
 
+#[tauri::command]
+pub(crate) fn resolve_application_identity(
+    path: String,
+) -> Result<crate::active_app_context::AppIdentity, String> {
+    let path = std::path::PathBuf::from(path);
+    #[cfg(windows)]
+    {
+        if !path.is_file()
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            return Err("请选择有效的 EXE 格式 Windows 应用程序".into());
+        }
+        let process_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "无法读取 Windows 应用程序文件名".to_string())?
+            .to_string();
+        let app_name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&process_name)
+            .to_string();
+        Ok(crate::active_app_context::AppIdentity {
+            process_name,
+            app_name,
+            window_title: None,
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let identity = crate::macos_native::application_bundle(&path)?;
+        Ok(crate::active_app_context::AppIdentity {
+            process_name: identity.process_name,
+            app_name: identity.app_name,
+            window_title: None,
+        })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = path;
+        Err("当前平台不支持从本地选择应用程序".into())
+    }
+}
+
 #[cfg(test)]
 fn validate_dictation_settings(
     settings: &DictationSettings,

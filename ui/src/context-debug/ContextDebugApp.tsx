@@ -32,7 +32,7 @@ type CaptureStatus =
 interface DebugResult {
   status: CaptureStatus;
   captureMethod: "nativeText" | "ocr";
-  source?: "ia2Text" | "uiaTextPattern" | "win32Message" | "officeNative" | "msaa" | "clipboardDeep" | "ocr" | null;
+  source?: "accessibility" | "ia2Text" | "uiaTextPattern" | "win32Message" | "officeNative" | "msaa" | "clipboardDeep" | "ocr" | null;
   appName: string;
   processName: string;
   processId: number;

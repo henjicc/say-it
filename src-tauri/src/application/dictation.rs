@@ -327,11 +327,7 @@ fn should_defer_active_app_context_ocr(
 fn platform_context_method(
     method: crate::active_app_context::ActiveAppContextExtractionMethod,
 ) -> crate::active_app_context::ActiveAppContextExtractionMethod {
-    if cfg!(target_os = "macos") {
-        crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
-    } else {
-        method
-    }
+    method
 }
 
 fn resolve_inject_method(
@@ -2311,6 +2307,14 @@ mod tests {
             crate::active_app_context::ActiveAppContextExtractionMethod::Ocr;
         prefs.active_app_context_ocr_follow_smart_processing_min_chars = false;
         assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+    }
+
+    #[test]
+    fn platform_context_method_keeps_the_selected_strategy() {
+        use crate::active_app_context::ActiveAppContextExtractionMethod::{NativeText, Ocr};
+
+        assert_eq!(platform_context_method(NativeText), NativeText);
+        assert_eq!(platform_context_method(Ocr), Ocr);
     }
 
     #[test]

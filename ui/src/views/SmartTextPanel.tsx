@@ -477,13 +477,15 @@ export function SmartTextPanel() {
             ? isMacOS
               ? "使用 macOS Vision 识别当前窗口内的可见文字，需要辅助功能与屏幕录制权限。"
               : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
-            : "通过应用文本接口读取相关内容，不加载 OCR 模型，内存占用更低。"}
+            : isMacOS
+              ? "通过 macOS 辅助功能接口读取焦点控件的选区和文本，不需要屏幕录制权限。"
+              : "通过应用文本接口读取相关内容，不加载 OCR 模型，内存占用更低。"}
         >
           <Select
             value={prefs.activeAppContextExtractionMethod}
             onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
           >
-            {!isMacOS && <option value="nativeText">文本提取（低内存）</option>}
+            <option value="nativeText">文本提取（低内存）</option>
             <option value="ocr">{isMacOS ? "窗口 OCR（macOS Vision）" : "窗口 OCR（高覆盖率）"}</option>
           </Select>
         </Field>
