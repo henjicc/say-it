@@ -1,4 +1,6 @@
 mod session;
+#[cfg(target_os = "macos")]
+mod apple_session;
 mod local_session;
 mod plugin_session;
 
@@ -41,6 +43,22 @@ pub(crate) async fn start_asr_stream_inner(
     let profile = find_profile(&settings, &provider_id)
         .cloned()
         .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
+        let model = model_override
+            .filter(|model| !model.trim().is_empty())
+            .ok_or_else(|| "Apple 本地语音识别必须指定模型".to_string())?;
+        #[cfg(target_os = "macos")]
+        return apple_session::start_apple_speech_stream(
+            app,
+            state,
+            model,
+            sample_rate.unwrap_or(48_000),
+            params,
+        )
+        .await;
+        #[cfg(not(target_os = "macos"))]
+        return Err("Apple SpeechTranscriber 仅支持 macOS 26 或更高版本".into());
+    }
     let local_model = model_override.as_deref().and_then(|model| {
         state
             .plugin_registry

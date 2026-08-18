@@ -1,5 +1,18 @@
 [
   {
+    "id": "apple-speech-transcriber-live",
+    "label": "Apple 本地语音识别（系统语言）",
+    "providerId": "apple-speech",
+    "category": "realtime",
+    "protocol": "builtin-macos-speech-analyzer",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "emitsPartialResults": true,
+    "scenes": ["dictationRealtime", "subtitles"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
     "id": "fun-asr-realtime-2026-02-28",
     "label": "Fun-ASR-Realtime 最新版",
     "providerId": "funasr",

@@ -19,6 +19,7 @@
   },
   "bundle": {
     "targets": ["app", "dmg"],
+    "externalBin": ["binaries/sayit-apple-speech"],
     "icon": ["icons/icon.icns"],
     "macOS": {
       "minimumSystemVersion": "15.5",

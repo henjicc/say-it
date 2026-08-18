@@ -3,6 +3,7 @@ ui/dist/
 src-tauri/target/
 src-tauri/bundle-assets/
 src-tauri/binaries/*.exe
+src-tauri/binaries/sayit-apple-speech-*
 npm-debug.log*
 .env
 docs/others

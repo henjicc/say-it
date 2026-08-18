@@ -67,6 +67,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -123,6 +127,9 @@ jobs:
           brew install opus
           npm install
 
+      - name: validate macOS 26 SpeechAnalyzer toolchain
+        run: node scripts/build-macos-speech.mjs --require-sdk-26
+
       - name: build macOS disk image
         run: npm run tauri:build -- --bundles app dmg
 
@@ -140,6 +147,7 @@ jobs:
           otool -L "$binary" | grep -q '@rpath/libonnxruntime.dylib'
           test -f "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
           test -f "$app_path/Contents/Frameworks/libonnxruntime.dylib"
+          test -x "$app_path/Contents/MacOS/sayit-apple-speech"
           test "$(plutil -extract LSMinimumSystemVersion raw -o - "$app_path/Contents/Info.plist")" = "15.5"
           node scripts/validate-macos-bundle.mjs "$app_path"
           plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null

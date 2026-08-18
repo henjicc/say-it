@@ -56,8 +56,8 @@ use application::plugin_management::{
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::setup::{
-    complete_onboarding, get_setup_status, request_setup_permissions, run_injection_setup_check,
-    run_setup_check,
+    complete_onboarding, get_setup_status, prepare_apple_speech_model, request_setup_permissions,
+    run_injection_setup_check, run_setup_check,
 };
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
@@ -462,6 +462,7 @@ fn main() {
             list_providers,
             set_default_provider,
             update_provider_config,
+            prepare_apple_speech_model,
             get_provider_api_key,
             add_llm_provider,
             refresh_llm_models,

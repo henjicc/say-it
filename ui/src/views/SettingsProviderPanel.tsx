@@ -12,6 +12,8 @@ import {
   type ProviderCapability,
   type ProviderProfile,
 } from "@/store/useProviderStore";
+import { hydrateModelOptions } from "@/features/asr/modelOptions";
+import { loadModelCatalog } from "@/features/asr/modelRegistry";
 
 const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
 const NESTED_HEADER_CLASS = "px-3 py-2.5";
@@ -22,6 +24,7 @@ const PLUGIN_ACTION_LABELS: Record<string, string> = {
   syncSession: "获取并保护登录会话",
   clearSession: "清除登录会话",
   diagnose: "运行诊断",
+  prepareAppleSpeech: "下载本地语音模型",
 };
 
 type ProviderSectionCapability = Extract<ProviderCapability, "asr" | "ocr" | "translation">;
@@ -39,6 +42,9 @@ function primaryCapabilityOf(provider: ProviderProfile): ProviderSectionCapabili
 }
 
 function providerConfigurationStatus(provider: ProviderProfile) {
+  if (provider.kind === "builtin-macos-speech-analyzer") {
+    return provider.status?.configured ? "本地模型已安装" : "需要下载本地模型";
+  }
   if (provider.authKind === "none") return "无需配置";
   return provider.status?.configured || provider.status?.hasApiKey ? "已配置" : "未配置";
 }
@@ -81,11 +87,17 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
       !window.confirm(`插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`)
     ) return;
     try {
-      const result = await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, {
-        providerId: provider.id,
-        action,
-      });
+      const result = action === "prepareAppleSpeech"
+        ? await cmd<Record<string, unknown>>(CMD.prepareAppleSpeechModel)
+        : await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, {
+            providerId: provider.id,
+            action,
+          });
       await loadProviders();
+      if (action === "prepareAppleSpeech") {
+        await loadModelCatalog();
+        hydrateModelOptions();
+      }
       setMessage(String(result.message || result.status || "操作完成。"));
     } catch (error) {
       setMessage(`操作失败：${String(error)}`);
@@ -369,7 +381,7 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     if (provider.kind === "alibabacloud-funasr") {
       return <FunAsrProviderConfig key={provider.id} provider={provider} />;
     }
-    if (provider.kind.startsWith("plugin:") && hasPluginConfiguration(provider)) {
+    if (hasPluginConfiguration(provider)) {
       return <PluginProviderConfig key={provider.id} provider={provider} />;
     }
     return null;
