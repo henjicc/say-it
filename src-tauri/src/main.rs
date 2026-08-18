@@ -379,6 +379,7 @@ fn main() {
             open_external_link,
             get_dictation_settings,
             get_dictation_runtime,
+            resolve_application_identity,
             list_running_apps,
             audio_lab_start,
             audio_lab_stop,

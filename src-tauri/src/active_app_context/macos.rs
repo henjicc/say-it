@@ -95,14 +95,7 @@ impl ActiveAppContextProvider for MacActiveAppContextProvider {
 
         context.status = match options.method {
             ActiveAppContextExtractionMethod::NativeText => {
-                context
-                    .diagnostics
-                    .push("macOS 当前软件上下文请使用“窗口 OCR”；原生文本提取尚未接入。".into());
-                if context.use_metadata_fallback("仅使用已取得的应用与窗口信息。") {
-                    CaptureStatus::Captured
-                } else {
-                    CaptureStatus::Unsupported
-                }
+                capture_accessibility_text(&mut context, target, &options)
             }
             ActiveAppContextExtractionMethod::Ocr => {
                 capture_ocr(&mut context, target, &options, cancelled)
@@ -111,6 +104,51 @@ impl ActiveAppContextProvider for MacActiveAppContextProvider {
         enforce_total_budget(&mut context, options.max_chars);
         context.elapsed_ms = started.elapsed().as_millis() as u64;
         context
+    }
+}
+
+fn capture_accessibility_text(
+    context: &mut CapturedActiveAppContext,
+    target: ActivationTarget,
+    options: &CaptureOptions,
+) -> CaptureStatus {
+    if let Err(error) = crate::macos_native::prepare_accessibility_permission(false) {
+        context.diagnostics.push(error);
+        return CaptureStatus::Failed;
+    }
+    match crate::macos_native::accessibility_context(target.process_id, options.max_chars) {
+        Ok(value) => {
+            if value.secure {
+                context
+                    .diagnostics
+                    .push("焦点位于受保护输入控件，已停止上下文读取。".into());
+                return CaptureStatus::Sensitive;
+            }
+            context.selected_text = value.selected_text;
+            context.focused_text = value.focused_text;
+            context.caret_context = value.caret_context;
+            if context.selected_text.is_some()
+                || context.focused_text.is_some()
+                || context.caret_context.is_some()
+            {
+                context.source = Some(ContextSource::Accessibility);
+                CaptureStatus::Captured
+            } else if context.use_metadata_fallback(
+                "当前焦点控件没有暴露可读文本，仅使用应用与窗口信息。",
+            ) {
+                CaptureStatus::Captured
+            } else {
+                CaptureStatus::Empty
+            }
+        }
+        Err(error) => {
+            context.diagnostics.push(error);
+            if context.use_metadata_fallback("辅助功能文本读取失败，仅使用应用与窗口信息。") {
+                CaptureStatus::Captured
+            } else {
+                CaptureStatus::Failed
+            }
+        }
     }
 }
 

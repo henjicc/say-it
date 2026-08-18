@@ -1,28 +1,18 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { basename } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { Field } from "@/components/ui/Field";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
-import { isWindows } from "@/lib/platform";
+import { isMacOS, isWindows } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 import type { RunningApp } from "@/store/useDictPrefs";
 
-const supportsExecutableBrowse = isWindows;
+const supportsApplicationBrowse = isWindows || isMacOS;
 
 function processKey(processName: string) {
   return processName.trim().toLowerCase();
-}
-
-function isExeFileName(fileName: string) {
-  return (
-    fileName.length > 4
-    && fileName !== "."
-    && fileName !== ".."
-    && /\.[eE][xX][eE]$/.test(fileName)
-  );
 }
 
 function errorDetail(error: unknown) {
@@ -112,7 +102,7 @@ export function RunningAppPicker({
     }
   };
 
-  const browseExecutable = async () => {
+  const browseApplication = async () => {
     if (pickingRef.current) return;
     pickingRef.current = true;
     setPicking(true);
@@ -121,18 +111,15 @@ export function RunningAppPicker({
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "Windows 应用程序", extensions: ["exe"] }],
+        filters: isMacOS
+          ? [{ name: "macOS 应用程序", extensions: ["app"] }]
+          : [{ name: "Windows 应用程序", extensions: ["exe"] }],
       });
       if (typeof selected !== "string") return;
-
-      const processName = await basename(selected);
-      if (!isExeFileName(processName)) {
-        setMessage("请选择 EXE 格式的 Windows 应用程序。");
-        return;
-      }
+      const identity = await cmd<RunningApp>(CMD.resolveApplicationIdentity, { path: selected });
       await commitSelection({
-        processName,
-        appName: processName.slice(0, -4),
+        processName: identity.processName,
+        appName: identity.appName,
         windowTitle: null,
         source: "file",
       });
@@ -152,11 +139,11 @@ export function RunningAppPicker({
         hint={hint}
         actions={(
           <>
-            {supportsExecutableBrowse && (
+            {supportsApplicationBrowse && (
               <IconButton
-                label="从本地选择 EXE"
+                label={isMacOS ? "从本地选择 macOS 应用" : "从本地选择 EXE"}
                 disabled={disabled || picking}
-                onClick={() => void browseExecutable()}
+                onClick={() => void browseApplication()}
               >
                 <FolderOpen className="h-4 w-4" strokeWidth={1.8} aria-hidden />
               </IconButton>

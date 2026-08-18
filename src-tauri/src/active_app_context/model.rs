@@ -152,7 +152,7 @@ pub(crate) enum CaptureStatus {
     Blocked,
     Sensitive,
     TimedOut,
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     Unsupported,
     Failed,
 }
@@ -161,6 +161,7 @@ pub(crate) enum CaptureStatus {
 #[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ContextSource {
+    Accessibility,
     Ia2Text,
     UiaTextPattern,
     Win32Message,

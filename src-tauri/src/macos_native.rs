@@ -15,10 +15,30 @@ pub(crate) struct MacWindowInfo {
     pub(crate) window_title: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MacApplicationIdentity {
+    pub(crate) process_name: String,
+    pub(crate) app_name: String,
+}
+
 pub(crate) struct MacWindowCapture {
     pub(crate) png: Vec<u8>,
     pub(crate) width: u32,
     pub(crate) height: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MacAccessibilityContext {
+    #[serde(default)]
+    pub(crate) secure: bool,
+    #[serde(default)]
+    pub(crate) selected_text: Option<String>,
+    #[serde(default)]
+    pub(crate) focused_text: Option<String>,
+    #[serde(default)]
+    pub(crate) caret_context: Option<String>,
 }
 
 #[repr(C)]
@@ -53,6 +73,7 @@ unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);
     fn sayit_macos_free_bytes(value: *mut u8);
     fn sayit_macos_context_ocr_permissions(request: bool) -> u32;
+    fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_volume_available_capacity(
         path: *const c_char,
@@ -66,7 +87,16 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn sayit_macos_running_apps_json(error: *mut *mut c_char) -> *mut c_char;
+    fn sayit_macos_application_bundle_json(
+        path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     fn sayit_macos_focused_input_security(process_id: u32, error: *mut *mut c_char) -> i32;
+    fn sayit_macos_accessibility_context_json(
+        process_id: u32,
+        max_chars: u32,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     fn sayit_macos_capture_window_png(
         window_id: u32,
         max_side: u32,
@@ -151,6 +181,15 @@ pub(crate) fn window_info(window_id: u32, process_id: u32) -> Result<MacWindowIn
     serde_json::from_str(&json).map_err(|error| format!("解析 macOS 窗口信息失败：{error}"))
 }
 
+pub(crate) fn application_bundle(path: &Path) -> Result<MacApplicationIdentity, String> {
+    let path = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "macOS 应用路径包含空字符".to_string())?;
+    let mut error = ptr::null_mut();
+    let value = unsafe { sayit_macos_application_bundle_json(path.as_ptr(), &mut error) };
+    let json = unsafe { native_result(value, error)? };
+    serde_json::from_str(&json).map_err(|error| format!("解析 macOS 应用信息失败：{error}"))
+}
+
 pub(crate) fn focused_input_is_secure(process_id: u32) -> Result<bool, String> {
     let mut error = ptr::null_mut();
     let result = unsafe { sayit_macos_focused_input_security(process_id, &mut error) };
@@ -161,6 +200,26 @@ pub(crate) fn focused_input_is_secure(process_id: u32) -> Result<bool, String> {
             take_string(error).unwrap_or_else(|| "无法确认当前输入区域安全性".into())
         }),
     }
+}
+
+pub(crate) fn accessibility_context(
+    process_id: u32,
+    max_chars: usize,
+) -> Result<MacAccessibilityContext, String> {
+    let mut error = ptr::null_mut();
+    let value = unsafe {
+        sayit_macos_accessibility_context_json(
+            process_id,
+            max_chars.min(u32::MAX as usize) as u32,
+            &mut error,
+        )
+    };
+    let json = unsafe { native_result(value, error)? };
+    parse_accessibility_context(&json)
+}
+
+fn parse_accessibility_context(json: &str) -> Result<MacAccessibilityContext, String> {
+    serde_json::from_str(json).map_err(|error| format!("解析 macOS 辅助功能文本失败：{error}"))
 }
 
 pub(crate) fn context_ocr_permissions(request: bool) -> MacContextOcrPermissions {
@@ -194,6 +253,14 @@ pub(crate) fn prepare_context_ocr_permissions(request: bool) -> Result<(), Strin
         missing.join("、"),
         action
     ))
+}
+
+pub(crate) fn prepare_accessibility_permission(request: bool) -> Result<(), String> {
+    if unsafe { sayit_macos_accessibility_permission(request) } {
+        Ok(())
+    } else {
+        Err("macOS 文本提取需要辅助功能权限；请在系统设置 → 隐私与安全性 → 辅助功能中允许当前运行的说吧！进程，授权后完全退出并重新启动应用。".into())
+    }
 }
 
 pub(crate) fn system_font_families() -> Result<Vec<String>, String> {
@@ -388,5 +455,33 @@ pub(crate) fn send_paste_shortcut() -> Result<(), String> {
         Err(unsafe {
             take_string(error).unwrap_or_else(|| "发送 macOS 粘贴快捷键失败".into())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessibility_context_accepts_partial_native_payload() {
+        let context = parse_accessibility_context(
+            r#"{"selectedText":"选区","caretContext":"光标附近"}"#,
+        )
+        .unwrap();
+        assert_eq!(context.selected_text.as_deref(), Some("选区"));
+        assert!(!context.secure);
+        assert_eq!(context.focused_text, None);
+        assert_eq!(context.caret_context.as_deref(), Some("光标附近"));
+
+        let secure = parse_accessibility_context(r#"{"secure":true}"#).unwrap();
+        assert!(secure.secure);
+        assert_eq!(secure.selected_text, None);
+    }
+
+    #[test]
+    fn application_bundle_resolves_system_application_identity() {
+        let identity = application_bundle(Path::new("/System/Applications/TextEdit.app")).unwrap();
+        assert!(!identity.process_name.trim().is_empty());
+        assert!(!identity.app_name.trim().is_empty());
     }
 }

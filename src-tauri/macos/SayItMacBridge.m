@@ -147,6 +147,10 @@ uint32_t sayit_macos_context_ocr_permissions(bool request) {
     return SayItContextOcrPermissionBits(request);
 }
 
+bool sayit_macos_accessibility_permission(bool request) {
+    return SayItAccessibilityAccess(request);
+}
+
 char *sayit_macos_system_fonts_json(char **error) {
     __block NSArray<NSString *> *families = nil;
     SayItRunOnMainThread(^{
@@ -349,12 +353,43 @@ char *sayit_macos_running_apps_json(char **error) {
     }
 }
 
+char *sayit_macos_application_bundle_json(const char *path, char **error) {
+    @autoreleasepool {
+        if (path == NULL) {
+            SayItSetError(error, @"macOS 应用路径无效");
+            return NULL;
+        }
+        NSString *bundlePath = [[NSFileManager defaultManager]
+            stringWithFileSystemRepresentation:path
+            length:strlen(path)];
+        NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
+        NSURL *executableURL = bundle.executableURL;
+        if (bundle == nil || executableURL == nil) {
+            SayItSetError(error, @"请选择有效的 macOS .app 应用包");
+            return NULL;
+        }
+        NSString *processName = executableURL.lastPathComponent;
+        NSString *appName = [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"]
+            ?: [bundle objectForInfoDictionaryKey:@"CFBundleName"]
+            ?: bundlePath.lastPathComponent.stringByDeletingPathExtension;
+        if (processName.length == 0 || appName.length == 0) {
+            SayItSetError(error, @"macOS 应用包缺少可执行文件或显示名称");
+            return NULL;
+        }
+        return SayItCopyJSON(@{
+            @"processName": processName,
+            @"appName": appName,
+        }, error);
+    }
+}
+
 int32_t sayit_macos_focused_input_security(uint32_t processId, char **error) {
     if (!AXIsProcessTrusted()) {
         SayItSetError(error, @"检查密码输入区域需要辅助功能权限");
         return -1;
     }
     AXUIElementRef application = AXUIElementCreateApplication((pid_t)processId);
+    AXUIElementSetMessagingTimeout(application, 0.5f);
     CFTypeRef focused = NULL;
     AXError focusedError = AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute, &focused);
     CFRelease(application);
@@ -374,6 +409,123 @@ int32_t sayit_macos_focused_input_security(uint32_t processId, char **error) {
         && CFEqual(role, kAXSecureTextFieldSubrole);
     CFRelease(role);
     return secure ? 1 : 0;
+}
+
+static NSString *SayItAXStringAttribute(AXUIElementRef element, CFStringRef attribute) {
+    CFTypeRef value = NULL;
+    AXError result = AXUIElementCopyAttributeValue(element, attribute, &value);
+    if (result != kAXErrorSuccess || value == NULL) return nil;
+    NSString *text = nil;
+    if (CFGetTypeID(value) == CFStringGetTypeID()) {
+        text = [(__bridge NSString *)value copy];
+    } else if (CFGetTypeID(value) == CFAttributedStringGetTypeID()) {
+        CFStringRef string = CFAttributedStringGetString((CFAttributedStringRef)value);
+        if (string != NULL) text = [(__bridge NSString *)string copy];
+    }
+    CFRelease(value);
+    return text;
+}
+
+static NSString *SayItTruncateAccessibilityText(NSString *text, NSUInteger maxLength) {
+    if (text.length <= maxLength) return text;
+    NSRange range = [text rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, maxLength)];
+    return [text substringWithRange:range];
+}
+
+static char *SayItAccessibilityContextJSON(
+    uint32_t processId,
+    uint32_t maxChars,
+    char **error
+) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"读取当前软件文本需要辅助功能权限");
+        return NULL;
+    }
+    if (processId == 0) {
+        SayItSetError(error, @"当前软件进程无效");
+        return NULL;
+    }
+
+    AXUIElementRef application = AXUIElementCreateApplication((pid_t)processId);
+    AXUIElementSetMessagingTimeout(application, 0.2f);
+    CFTypeRef focusedValue = NULL;
+    AXError focusedError = AXUIElementCopyAttributeValue(
+        application,
+        kAXFocusedUIElementAttribute,
+        &focusedValue
+    );
+    CFRelease(application);
+    if (focusedError != kAXErrorSuccess || focusedValue == NULL) {
+        SayItSetError(error, @"当前软件没有可读取的焦点文本区域");
+        return NULL;
+    }
+
+    AXUIElementRef focused = (AXUIElementRef)focusedValue;
+    AXUIElementSetMessagingTimeout(focused, 0.15f);
+    CFTypeRef subrole = NULL;
+    AXError subroleError = AXUIElementCopyAttributeValue(focused, kAXSubroleAttribute, &subrole);
+    bool secure = subroleError == kAXErrorSuccess
+        && subrole != NULL
+        && CFGetTypeID(subrole) == CFStringGetTypeID()
+        && CFEqual(subrole, kAXSecureTextFieldSubrole);
+    if (subrole != NULL) CFRelease(subrole);
+    if (secure) {
+        CFRelease(focusedValue);
+        return SayItCopyJSON(@{ @"secure": @YES }, error);
+    }
+
+    NSUInteger limit = MAX((NSUInteger)1, MIN((NSUInteger)maxChars, (NSUInteger)6000));
+    NSString *selectedText = SayItAXStringAttribute(focused, kAXSelectedTextAttribute);
+    NSString *focusedText = SayItAXStringAttribute(focused, kAXValueAttribute);
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    if (selectedText.length > 0) {
+        result[@"selectedText"] = SayItTruncateAccessibilityText(selectedText, limit);
+    }
+    if (focusedText.length > 0) {
+        result[@"focusedText"] = SayItTruncateAccessibilityText(focusedText, limit);
+
+        CFTypeRef rangeValue = NULL;
+        AXError rangeError = AXUIElementCopyAttributeValue(
+            focused,
+            kAXSelectedTextRangeAttribute,
+            &rangeValue
+        );
+        if (rangeError == kAXErrorSuccess
+            && rangeValue != NULL
+            && CFGetTypeID(rangeValue) == AXValueGetTypeID()
+            && AXValueGetType((AXValueRef)rangeValue) == kAXValueCFRangeType) {
+            CFRange selectedRange = CFRangeMake(0, 0);
+            if (AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &selectedRange)
+                && selectedRange.location >= 0
+                && selectedRange.length >= 0) {
+                NSUInteger location = MIN((NSUInteger)selectedRange.location, focusedText.length);
+                NSUInteger availableLength = focusedText.length - location;
+                NSUInteger selectionLength = MIN((NSUInteger)selectedRange.length, availableLength);
+                NSUInteger selectionEnd = location + selectionLength;
+                NSUInteger contextStart = location > 256 ? location - 256 : 0;
+                NSUInteger contextEnd = MIN(focusedText.length, selectionEnd + 256);
+                NSRange contextRange = NSMakeRange(contextStart, contextEnd - contextStart);
+                contextRange = [focusedText rangeOfComposedCharacterSequencesForRange:contextRange];
+                NSString *caretContext = [focusedText substringWithRange:contextRange];
+                if (caretContext.length > 0) {
+                    result[@"caretContext"] = SayItTruncateAccessibilityText(caretContext, limit);
+                }
+            }
+        }
+        if (rangeValue != NULL) CFRelease(rangeValue);
+    }
+    CFRelease(focusedValue);
+    return SayItCopyJSON(result, error);
+}
+
+char *sayit_macos_accessibility_context_json(
+    uint32_t processId,
+    uint32_t maxChars,
+    char **error
+) {
+    @autoreleasepool {
+        return SayItAccessibilityContextJSON(processId, maxChars, error);
+    }
 }
 
 static CGImageRef SayItCaptureWindowImage(CGWindowID windowId, uint32_t maxSide, NSString **message) {
