@@ -4,7 +4,7 @@ import { Lock, LockOpen, RotateCw, X } from "lucide-react";
 import { CMD, EVT, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { playCueKind } from "@/lib/cues";
-import { defaultSubtitleFontFamily } from "@/lib/platform";
+import { subtitleFontStack } from "@/lib/platform";
 
 type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle";
 type IndicatorMode = "dictation" | "subtitle";
@@ -287,7 +287,7 @@ export function IndicatorApp() {
           "--subtitle-text": subtitleConfig.textColor || "#fff",
           "--subtitle-bg": subtitleConfig.backgroundColor || "rgba(5, 7, 10, 0.72)",
           "--subtitle-radius": `${subtitleConfig.rounded ?? 18}px`,
-          "--subtitle-font": subtitleConfig.fontFamily || defaultSubtitleFontFamily,
+          "--subtitle-font": subtitleFontStack(subtitleConfig.fontFamily),
           "--subtitle-motion-duration": `${subtitleConfig.motionDurationMs ?? 120}ms`,
           "--subtitle-motion-easing": subtitleConfig.motionEasing || "ease-out",
           "--subtitle-fade-duration": `${subtitleConfig.fadeDurationMs ?? 180}ms`,
