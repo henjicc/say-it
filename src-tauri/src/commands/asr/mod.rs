@@ -57,7 +57,7 @@ pub(crate) async fn start_asr_stream_inner(
         )
         .await;
         #[cfg(not(target_os = "macos"))]
-        return Err("Apple SpeechTranscriber 仅支持 macOS 26 或更高版本".into());
+        return Err("Apple 系统本地识别仅支持 macOS".into());
     }
     let local_model = model_override.as_deref().and_then(|model| {
         state

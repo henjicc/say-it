@@ -1,10 +1,10 @@
 [
   {
     "id": "apple-speech-transcriber-live",
-    "label": "Apple 本地语音识别（系统语言）",
+    "label": "Apple 系统本地识别（系统语言）",
     "providerId": "apple-speech",
     "category": "realtime",
-    "protocol": "builtin-macos-speech-analyzer",
+    "protocol": "builtin-macos-speech",
     "supportsVocabulary": false,
     "supportsAlignmentTimestamps": false,
     "emitsPartialResults": true,

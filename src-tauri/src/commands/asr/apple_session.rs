@@ -20,6 +20,8 @@ struct HelperEvent {
     message: String,
     #[serde(default)]
     locale: String,
+    #[serde(default)]
+    backend: String,
 }
 
 pub(super) async fn start_apple_speech_stream(
@@ -32,7 +34,14 @@ pub(super) async fn start_apple_speech_stream(
     let mut capability = crate::providers::apple_speech::status();
     if !capability.available {
         return Err(if capability.message.trim().is_empty() {
-            "Apple 本地语音识别需要 macOS 26、受支持的设备和语言".into()
+            "当前设备或系统语言不支持 Apple 纯本地语音识别".into()
+        } else {
+            capability.message
+        });
+    }
+    if matches!(capability.authorization.as_str(), "denied" | "restricted") {
+        return Err(if capability.message.trim().is_empty() {
+            "请在 macOS“系统设置 → 隐私与安全性 → 语音识别”中允许“说吧！”".into()
         } else {
             capability.message
         });
@@ -89,7 +98,7 @@ async fn run_apple_session(
                 &app,
                 &session_id,
                 "error",
-                json!({ "message": format!("启动 Apple SpeechTranscriber 失败：{error}") }),
+                json!({ "message": format!("启动 Apple 系统本地识别失败：{error}") }),
             );
             cleanup_stream(&streams, &session_id);
             return;
@@ -101,7 +110,7 @@ async fn run_apple_session(
             &app,
             &session_id,
             "error",
-            json!({ "message": "Apple SpeechTranscriber 标准输出不可用" }),
+            json!({ "message": "Apple 系统本地识别标准输出不可用" }),
         );
         cleanup_stream(&streams, &session_id);
         return;
@@ -125,7 +134,7 @@ async fn run_apple_session(
                             &app,
                             &session_id,
                             "error",
-                            json!({ "message": format!("发送音频到 Apple SpeechTranscriber 失败：{error}") }),
+                            json!({ "message": format!("发送音频到 Apple 系统本地识别失败：{error}") }),
                         );
                         terminal_event = true;
                         break;
@@ -152,9 +161,10 @@ async fn run_apple_session(
                                 &session_id,
                                 "opened",
                                 json!({
-                                    "message": "Apple SpeechAnalyzer opened",
+                                    "message": "Apple system speech opened",
                                     "model": model,
                                     "locale": event.locale,
+                                    "backend": event.backend,
                                     "onDevice": true
                                 }),
                             );
@@ -200,7 +210,7 @@ async fn run_apple_session(
                         &app,
                         &session_id,
                         "error",
-                        json!({ "message": format!("读取 Apple SpeechTranscriber 结果失败：{error}") }),
+                        json!({ "message": format!("读取 Apple 系统本地识别结果失败：{error}") }),
                     );
                     break;
                 }
@@ -218,9 +228,9 @@ async fn run_apple_session(
         let message = if !detail.trim().is_empty() {
             detail.trim().to_string()
         } else if !opened {
-            "Apple SpeechTranscriber 未能启动".to_string()
+            "Apple 系统本地识别未能启动".to_string()
         } else {
-            format!("Apple SpeechTranscriber 意外结束（{exit_status:?}）")
+            format!("Apple 系统本地识别意外结束（{exit_status:?}）")
         };
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": message }));
     }
@@ -229,7 +239,7 @@ async fn run_apple_session(
         &app,
         &session_id,
         "ended",
-        json!({ "message": "Apple SpeechAnalyzer ended" }),
+        json!({ "message": "Apple system speech ended" }),
     );
 }
 
@@ -245,15 +255,18 @@ fn parse_helper_event(line: &str) -> Result<HelperEvent, String> {
         message: String,
         #[serde(default)]
         locale: String,
+        #[serde(default)]
+        backend: String,
     }
     let event: WireEvent = serde_json::from_str(line)
-        .map_err(|error| format!("解析 Apple SpeechTranscriber 事件失败：{error}"))?;
+        .map_err(|error| format!("解析 Apple 系统本地识别事件失败：{error}"))?;
     Ok(HelperEvent {
         kind: event.kind,
         text: event.text,
         final_result: event.final_result,
         message: event.message,
         locale: event.locale,
+        backend: event.backend,
     })
 }
 
@@ -284,8 +297,12 @@ mod tests {
         assert!(!partial.final_result);
 
         let final_result =
-            parse_helper_event(r#"{"kind":"result","text":"你好。","final":true}"#).unwrap();
+            parse_helper_event(
+                r#"{"kind":"result","text":"你好。","final":true,"backend":"SFSpeechRecognizer"}"#,
+            )
+            .unwrap();
         assert!(final_result.final_result);
+        assert_eq!(final_result.backend, "SFSpeechRecognizer");
     }
 
     #[test]

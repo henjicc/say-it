@@ -1,11 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-static RUNTIME_AVAILABLE: once_cell::sync::Lazy<bool> =
-    once_cell::sync::Lazy::new(|| status().available);
-
 pub const PROVIDER_ID: &str = "apple-speech";
-pub const PROVIDER_KIND: &str = "builtin-macos-speech-analyzer";
-pub const PROTOCOL: &str = "builtin-macos-speech-analyzer";
+pub const PROVIDER_KIND: &str = "builtin-macos-speech";
+pub const PROTOCOL: &str = "builtin-macos-speech";
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +15,8 @@ pub struct AppleSpeechStatus {
     pub locale: String,
     #[serde(default)]
     pub backend: String,
+    #[serde(default)]
+    pub authorization: String,
     #[serde(default)]
     pub message: String,
 }
@@ -46,7 +45,7 @@ fn parse_last_status(stdout: &[u8]) -> Result<AppleSpeechStatus, String> {
     text.lines()
         .rev()
         .find_map(|line| serde_json::from_str::<AppleSpeechStatus>(line).ok())
-        .ok_or_else(|| "Apple SpeechTranscriber 助手没有返回有效状态".to_string())
+        .ok_or_else(|| "Apple 系统语音识别助手没有返回有效状态".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -54,7 +53,7 @@ pub fn status() -> AppleSpeechStatus {
     let helper = helper_path();
     if !helper.is_file() {
         return AppleSpeechStatus {
-            message: "缺少 Apple SpeechTranscriber 原生助手，请重新安装应用".into(),
+            message: "缺少 Apple 系统语音识别原生助手，请重新安装应用".into(),
             ..Default::default()
         };
     }
@@ -69,7 +68,7 @@ pub fn status() -> AppleSpeechStatus {
             })
         }
         Err(error) => AppleSpeechStatus {
-            message: format!("启动 Apple SpeechTranscriber 原生助手失败：{error}"),
+            message: format!("启动 Apple 系统语音识别原生助手失败：{error}"),
             ..Default::default()
         },
     }
@@ -78,13 +77,13 @@ pub fn status() -> AppleSpeechStatus {
 #[cfg(not(target_os = "macos"))]
 pub fn status() -> AppleSpeechStatus {
     AppleSpeechStatus {
-        message: "Apple SpeechTranscriber 仅支持 macOS 26 或更高版本".into(),
+        message: "Apple 系统本地识别仅支持 macOS".into(),
         ..Default::default()
     }
 }
 
 pub fn runtime_available() -> bool {
-    *RUNTIME_AVAILABLE
+    status().available
 }
 
 #[cfg(target_os = "macos")]
@@ -112,7 +111,7 @@ pub async fn prepare() -> Result<AppleSpeechStatus, String> {
 
 #[cfg(not(target_os = "macos"))]
 pub async fn prepare() -> Result<AppleSpeechStatus, String> {
-    Err("Apple SpeechTranscriber 仅支持 macOS 26 或更高版本".into())
+    Err("Apple 系统本地识别仅支持 macOS".into())
 }
 
 #[cfg(target_os = "macos")]
@@ -129,11 +128,14 @@ mod tests {
     #[test]
     fn status_payload_defaults_optional_fields() {
         let status: AppleSpeechStatus =
-            serde_json::from_str(r#"{"available":true,"installed":false,"locale":"zh-CN"}"#)
-                .unwrap();
+            serde_json::from_str(
+                r#"{"available":true,"installed":true,"locale":"zh-CN","backend":"SFSpeechRecognizer","authorization":"notDetermined"}"#,
+            )
+            .unwrap();
         assert!(status.available);
-        assert!(!status.installed);
+        assert!(status.installed);
         assert_eq!(status.locale, "zh-CN");
-        assert!(status.backend.is_empty());
+        assert_eq!(status.backend, "SFSpeechRecognizer");
+        assert_eq!(status.authorization, "notDetermined");
     }
 }

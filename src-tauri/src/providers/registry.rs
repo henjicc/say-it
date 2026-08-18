@@ -200,8 +200,23 @@ mod tests {
     }
 
     #[test]
+    fn apple_system_model_keeps_one_stable_entry() {
+        let model = model_info("apple-speech-transcriber-live").unwrap();
+        assert_eq!(model.label, "Apple 系统本地识别（系统语言）");
+        assert_eq!(model.protocol, "builtin-macos-speech");
+        assert_eq!(
+            model
+                .scenes
+                .iter()
+                .filter(|scene| matches!(scene.as_str(), "dictationRealtime" | "subtitles"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn test_model_count() {
-        // 9 个云端模型，加上 macOS 26 的 Apple 本地实时模型。
+        // 9 个云端模型，加上 macOS 上按能力选择新旧引擎的 Apple 本地实时模型。
         assert_eq!(REGISTRY.len(), 10, "当前应有 10 个模型");
     }
 

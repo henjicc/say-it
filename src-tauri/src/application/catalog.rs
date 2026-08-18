@@ -7,7 +7,7 @@ use crate::providers::registry::{self, FileTranscriptionRoute};
 use crate::providers::ProviderSettingsResponse;
 use crate::state::RuntimeState;
 
-pub const CATALOG_VERSION: u32 = 4;
+pub const CATALOG_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

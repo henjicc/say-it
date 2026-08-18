@@ -353,7 +353,7 @@ pub fn apple_speech_profile() -> ProviderProfile {
     ProviderProfile {
         id: apple_speech::PROVIDER_ID.to_string(),
         kind: apple_speech::PROVIDER_KIND.to_string(),
-        display_name: "Apple SpeechTranscriber".to_string(),
+        display_name: "Apple 系统本地识别".to_string(),
         auth_kind: "none".to_string(),
         capabilities: vec!["asr".to_string()],
         enabled: true,
@@ -589,6 +589,8 @@ mod tests {
     #[test]
     fn apple_speech_uses_system_managed_assets_without_manual_configuration() {
         let profile = apple_speech_profile();
+        assert_eq!(profile.kind, "builtin-macos-speech");
+        assert_eq!(profile.display_name, "Apple 系统本地识别");
         assert_eq!(profile.auth_kind, "none");
         assert!(profile.config_fields.is_empty());
         assert!(profile.actions.is_empty());
