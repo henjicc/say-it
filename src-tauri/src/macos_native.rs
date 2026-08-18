@@ -138,6 +138,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
+    fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -459,6 +460,18 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     }
 }
 
+pub(crate) fn type_text(text: &str) -> Result<(), String> {
+    let text = CString::new(text).map_err(|_| "待输入文本包含空字符".to_string())?;
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_type_text(text.as_ptr(), &mut error) } {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "执行 macOS 逐字输入失败".into())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +497,11 @@ mod tests {
         let identity = application_bundle(Path::new("/System/Applications/TextEdit.app")).unwrap();
         assert!(!identity.process_name.trim().is_empty());
         assert!(!identity.app_name.trim().is_empty());
+    }
+
+    #[test]
+    fn text_injection_rejects_embedded_null_before_native_call() {
+        assert_eq!(type_text("前\0后").unwrap_err(), "待输入文本包含空字符");
+        assert_eq!(paste_text("前\0后").unwrap_err(), "待粘贴文本包含空字符");
     }
 }

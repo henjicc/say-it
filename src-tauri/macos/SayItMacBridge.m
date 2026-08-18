@@ -192,6 +192,81 @@ bool sayit_macos_paste_text(const char *text, char **error) {
     return true;
 }
 
+static bool SayItPostUnicodeChunk(CGEventSourceRef source, NSString *value, NSRange range) {
+    UniChar *characters = malloc(range.length * sizeof(UniChar));
+    if (characters == NULL) return false;
+    [value getCharacters:characters range:range];
+
+    CGEventRef keyDown = CGEventCreateKeyboardEvent(source, 0, true);
+    CGEventRef keyUp = CGEventCreateKeyboardEvent(source, 0, false);
+    if (keyDown == NULL || keyUp == NULL) {
+        if (keyDown != NULL) CFRelease(keyDown);
+        if (keyUp != NULL) CFRelease(keyUp);
+        free(characters);
+        return false;
+    }
+    CGEventSetFlags(keyDown, 0);
+    CGEventSetFlags(keyUp, 0);
+    CGEventKeyboardSetUnicodeString(keyDown, range.length, characters);
+    CGEventPost(kCGHIDEventTap, keyDown);
+    CGEventPost(kCGHIDEventTap, keyUp);
+    CFRelease(keyDown);
+    CFRelease(keyUp);
+    free(characters);
+    return true;
+}
+
+bool sayit_macos_type_text(const char *text, char **error) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"逐字输入需要辅助功能权限");
+        return false;
+    }
+    if (text == NULL) {
+        SayItSetError(error, @"待输入文本无效");
+        return false;
+    }
+    NSString *value = [[NSString alloc] initWithUTF8String:text];
+    if (value == nil) {
+        SayItSetError(error, @"待输入文本不是有效的 UTF-8");
+        return false;
+    }
+    if (value.length == 0) return true;
+
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    if (source == NULL) {
+        SayItSetError(error, @"无法创建 macOS 文字输入事件源");
+        return false;
+    }
+
+    // Quartz 使用 UTF-16；按组合字符边界分批，既避免拆开 emoji/代理对，也避免部分
+    // 应用丢弃单个事件里过长的 Unicode 文本。
+    const NSUInteger maxChunkLength = 32;
+    NSUInteger cursor = 0;
+    NSRange chunk = NSMakeRange(0, 0);
+    bool success = true;
+    while (cursor < value.length) {
+        NSRange character = [value rangeOfComposedCharacterSequenceAtIndex:cursor];
+        if (chunk.length > 0 && NSMaxRange(character) - chunk.location > maxChunkLength) {
+            if (!SayItPostUnicodeChunk(source, value, chunk)) {
+                success = false;
+                break;
+            }
+            chunk = NSMakeRange(character.location, 0);
+        }
+        if (chunk.length == 0) chunk.location = character.location;
+        chunk.length = NSMaxRange(character) - chunk.location;
+        cursor = NSMaxRange(character);
+    }
+    if (success && chunk.length > 0) success = SayItPostUnicodeChunk(source, value, chunk);
+    CFRelease(source);
+
+    if (!success) {
+        SayItSetError(error, @"创建 macOS Unicode 输入事件失败");
+        return false;
+    }
+    return true;
+}
+
 static void SayItRunOnMainThread(dispatch_block_t block) {
     if (NSThread.isMainThread) {
         block();

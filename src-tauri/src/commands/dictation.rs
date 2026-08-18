@@ -168,12 +168,19 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
     dlog!("[inject] 开始注入：方式={method}，{char_count} 字");
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         if method == "type" {
-            let mut enigo = Enigo::new(&EnigoSettings::default())
-                .map_err(|e| format!("初始化输入失败: {e}"))?;
-            enigo
-                .text(&text)
-                .map_err(|e| format!("模拟输入失败: {e}"))?;
-            return Ok(());
+            #[cfg(target_os = "macos")]
+            {
+                return crate::macos_native::type_text(&text);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let mut enigo = Enigo::new(&EnigoSettings::default())
+                    .map_err(|e| format!("初始化输入失败: {e}"))?;
+                enigo
+                    .text(&text)
+                    .map_err(|e| format!("模拟输入失败: {e}"))?;
+                return Ok(());
+            }
         }
 
         #[cfg(target_os = "macos")]
