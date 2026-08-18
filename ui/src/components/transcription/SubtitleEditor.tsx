@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Combine, Plus, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { isMacOS, shortcutModifierLabels } from "@/lib/platform";
 import {
   formatClock,
   parseClock,
@@ -704,11 +705,11 @@ export function SubtitleEditor({
         </Button>
         <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
           时间轴 {formatZoom(timelineZoom)}
-          <span className="text-[var(--color-fg-subtle)]">Ctrl+滚轮</span>
+          <span className="text-[var(--color-fg-subtle)]">{shortcutModifierLabels.ctrl}+滚轮</span>
         </span>
         <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
           波形 {formatZoom(waveformZoom)}
-          <span className="text-[var(--color-fg-subtle)]">Alt+滚轮</span>
+          <span className="text-[var(--color-fg-subtle)]">{shortcutModifierLabels.alt}+滚轮</span>
         </span>
         <span
           className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1"
@@ -735,7 +736,7 @@ export function SubtitleEditor({
           中键拖动时间轴
         </span>
         <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
-          Ctrl+Z 撤销 / Ctrl+Y 重做
+          {isMacOS ? "⌘Z 撤销 / ⌘⇧Z 重做" : "Ctrl+Z 撤销 / Ctrl+Y 重做"}
         </span>
         <span className="font-mono text-xs tabular-nums text-[var(--color-fg-subtle)]">
           {formatClock(currentMs)} / {formatClock(totalMs)}

@@ -120,6 +120,10 @@ fn capture_ocr(
     options: &CaptureOptions,
     cancelled: &Arc<AtomicBool>,
 ) -> CaptureStatus {
+    if let Err(error) = crate::macos_native::prepare_context_ocr_permissions(false) {
+        context.diagnostics.push(error);
+        return CaptureStatus::Failed;
+    }
     match crate::macos_native::focused_input_is_secure(target.process_id) {
         Ok(true) => {
             context

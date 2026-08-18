@@ -49,6 +49,9 @@ fn ensure_context_debug_window(app: &tauri::AppHandle) -> Result<tauri::WebviewW
 
 #[cfg(any(windows, target_os = "macos"))]
 fn open_active_app_context_debug_inner(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    crate::macos_native::prepare_context_ocr_permissions(true)?;
+
     let window = ensure_context_debug_window(&app)?;
     crate::active_app_context::reset_debug_capture();
     if let Err(error) = crate::hotkey::set_context_debug_active(true) {

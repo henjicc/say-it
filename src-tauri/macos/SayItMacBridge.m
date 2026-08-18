@@ -104,6 +104,100 @@ static void SayItRunOnMainThread(dispatch_block_t block) {
     }
 }
 
+enum {
+    SayItContextOcrAccessibilityPermission = 1u << 0,
+    SayItContextOcrScreenCapturePermission = 1u << 1,
+};
+
+static bool SayItAccessibilityAccess(bool request) {
+    __block bool trusted = false;
+    SayItRunOnMainThread(^{
+        trusted = AXIsProcessTrusted();
+        if (request && !trusted) {
+            NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+            (void)AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+            // 申请函数只负责触发系统设置提示；必须再次检查，不能把“已提示”当成“已授权”。
+            trusted = AXIsProcessTrusted();
+        }
+    });
+    return trusted;
+}
+
+static bool SayItScreenCaptureAccess(bool request) {
+    __block bool granted = false;
+    SayItRunOnMainThread(^{
+        granted = CGPreflightScreenCaptureAccess();
+        if (request && !granted) {
+            (void)CGRequestScreenCaptureAccess();
+            // 用户可能需要在系统设置中手动确认，申请返回后仍要重新预检。
+            granted = CGPreflightScreenCaptureAccess();
+        }
+    });
+    return granted;
+}
+
+static uint32_t SayItContextOcrPermissionBits(bool request) {
+    uint32_t bits = 0;
+    if (SayItAccessibilityAccess(request)) bits |= SayItContextOcrAccessibilityPermission;
+    if (SayItScreenCaptureAccess(request)) bits |= SayItContextOcrScreenCapturePermission;
+    return bits;
+}
+
+uint32_t sayit_macos_context_ocr_permissions(bool request) {
+    return SayItContextOcrPermissionBits(request);
+}
+
+char *sayit_macos_system_fonts_json(char **error) {
+    __block NSArray<NSString *> *families = nil;
+    SayItRunOnMainThread(^{
+        families = [NSFontManager.sharedFontManager.availableFontFamilies
+            sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    });
+    if (families == nil) {
+        SayItSetError(error, @"macOS 没有返回可用字体列表");
+        return NULL;
+    }
+    return SayItCopyJSON(families, error);
+}
+
+bool sayit_macos_volume_available_capacity(
+    const char *path,
+    uint64_t *capacity,
+    char **error
+) {
+    if (path == NULL || capacity == NULL) {
+        SayItSetError(error, @"macOS 磁盘容量查询参数无效");
+        return false;
+    }
+    NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path isDirectory:YES relativeToURL:nil];
+    if (url == nil) {
+        SayItSetError(error, @"无法解析 macOS 数据目录路径");
+        return false;
+    }
+
+    NSError *capacityError = nil;
+    NSNumber *available = nil;
+    if (![url getResourceValue:&available
+                        forKey:NSURLVolumeAvailableCapacityForImportantUsageKey
+                         error:&capacityError] || available == nil) {
+        capacityError = nil;
+        if (![url getResourceValue:&available
+                            forKey:NSURLVolumeAvailableCapacityKey
+                             error:&capacityError] || available == nil) {
+            SayItSetError(error, [NSString stringWithFormat:@"读取 macOS 磁盘剩余空间失败：%@",
+                capacityError.localizedDescription ?: @"未知错误"]);
+            return false;
+        }
+    }
+    long long value = available.longLongValue;
+    if (value < 0) {
+        SayItSetError(error, @"macOS 返回了无效的磁盘剩余空间");
+        return false;
+    }
+    *capacity = (uint64_t)value;
+    return true;
+}
+
 static NSScreen *SayItIndicatorScreen(NSWindow *window) {
     // mainScreen 对应当前拥有键盘焦点窗口所在屏幕；全局快捷键触发时就是用户正在听写的应用。
     // 回退到悬浮窗当前屏幕，最后才使用主显示器。
@@ -354,6 +448,10 @@ static CGImageRef SayItCaptureWindowImage(CGWindowID windowId, uint32_t maxSide,
 bool sayit_macos_capture_window_png(uint32_t windowId, uint32_t maxSide, SayItByteBuffer *output, char **error) {
     if (output == NULL || windowId == 0) {
         SayItSetError(error, @"窗口截图参数无效");
+        return false;
+    }
+    if (!SayItScreenCaptureAccess(false)) {
+        SayItSetError(error, @"窗口 OCR 需要屏幕录制权限，请在系统设置 → 隐私与安全性 → 屏幕录制中允许当前运行的说吧！进程；授权后请完全退出并重新启动应用");
         return false;
     }
     @autoreleasepool {
@@ -707,6 +805,10 @@ API_AVAILABLE(macos(13.0))
 
 void *sayit_macos_system_audio_start(SayItAudioCallback callback, void *context, char **error) {
     if (@available(macOS 13.0, *)) {
+        if (!SayItScreenCaptureAccess(true)) {
+            SayItSetError(error, @"系统音频采集需要屏幕录制权限，请在系统设置 → 隐私与安全性 → 屏幕录制中允许当前运行的说吧！进程；授权后请完全退出并重新启动应用");
+            return NULL;
+        }
         __block SCShareableContent *content = nil;
         __block NSError *contentError = nil;
         dispatch_semaphore_t contentReady = dispatch_semaphore_create(0);

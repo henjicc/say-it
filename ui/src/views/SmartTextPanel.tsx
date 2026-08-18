@@ -541,7 +541,9 @@ export function SmartTextPanel() {
         <RunningAppPicker
           value=""
           label="应用黑名单"
-          hint="按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"
+          hint={isMacOS
+            ? "按 macOS 应用进程名匹配；可从运行中的软件选择。黑名单应用不会读取或发送上下文。"
+            : "按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"}
           placeholder="选择要加入黑名单的软件"
           onSelect={(selection) => addBlockedApp(selection.processName)}
         />

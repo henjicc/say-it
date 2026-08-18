@@ -361,7 +361,18 @@ fn free_space_bytes(path: &Path) -> Option<u64> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn free_space_bytes(path: &Path) -> Option<u64> {
+    match crate::macos_native::volume_available_capacity(path) {
+        Ok(capacity) => Some(capacity),
+        Err(error) => {
+            eprintln!("[data-root] {error}");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn free_space_bytes(_path: &Path) -> Option<u64> {
     None
 }

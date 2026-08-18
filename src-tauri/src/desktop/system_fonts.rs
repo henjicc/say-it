@@ -41,7 +41,13 @@ pub(crate) fn list_system_fonts() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub(crate) fn list_system_fonts() -> Result<Vec<String>, String> {
+    crate::macos_native::system_font_families()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 #[tauri::command]
 pub(crate) fn list_system_fonts() -> Result<Vec<String>, String> {
     Ok(Vec::new())

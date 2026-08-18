@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void, CStr, CString};
+use std::path::Path;
 use std::ptr;
 
 use crate::ocr::{NormalizedRegion, OcrTextBlock};
@@ -28,6 +29,12 @@ struct NativeByteBuffer {
     height: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MacContextOcrPermissions {
+    pub(crate) accessibility: bool,
+    pub(crate) screen_recording: bool,
+}
+
 #[derive(Deserialize)]
 struct NativeOcrBlock {
     text: String,
@@ -45,6 +52,13 @@ pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, us
 unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);
     fn sayit_macos_free_bytes(value: *mut u8);
+    fn sayit_macos_context_ocr_permissions(request: bool) -> u32;
+    fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
+    fn sayit_macos_volume_available_capacity(
+        path: *const c_char,
+        capacity: *mut u64,
+        error: *mut *mut c_char,
+    ) -> bool;
     fn sayit_macos_frontmost_window_json(error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_window_json(
         window_id: u32,
@@ -146,6 +160,65 @@ pub(crate) fn focused_input_is_secure(process_id: u32) -> Result<bool, String> {
         _ => Err(unsafe {
             take_string(error).unwrap_or_else(|| "无法确认当前输入区域安全性".into())
         }),
+    }
+}
+
+pub(crate) fn context_ocr_permissions(request: bool) -> MacContextOcrPermissions {
+    let bits = unsafe { sayit_macos_context_ocr_permissions(request) };
+    MacContextOcrPermissions {
+        accessibility: bits & (1 << 0) != 0,
+        screen_recording: bits & (1 << 1) != 0,
+    }
+}
+
+pub(crate) fn prepare_context_ocr_permissions(request: bool) -> Result<(), String> {
+    let permissions = context_ocr_permissions(request);
+    if permissions.accessibility && permissions.screen_recording {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    if !permissions.accessibility {
+        missing.push("辅助功能");
+    }
+    if !permissions.screen_recording {
+        missing.push("屏幕录制");
+    }
+    let action = if request {
+        "系统已尝试打开授权入口；请在系统设置 → 隐私与安全性中允许当前运行的说吧！进程"
+    } else {
+        "请在系统设置 → 隐私与安全性中允许当前运行的说吧！进程"
+    };
+    Err(format!(
+        "macOS 窗口 OCR 需要{}权限。{}；授权后请完全退出并重新启动应用。开发态通常显示为 say-it 或终端启动的开发进程。",
+        missing.join("、"),
+        action
+    ))
+}
+
+pub(crate) fn system_font_families() -> Result<Vec<String>, String> {
+    let mut error = ptr::null_mut();
+    let value = unsafe { sayit_macos_system_fonts_json(&mut error) };
+    let json = unsafe { native_result(value, error)? };
+    let mut families: Vec<String> = serde_json::from_str(&json)
+        .map_err(|error| format!("解析 macOS 系统字体列表失败：{error}"))?;
+    families.retain(|family| !family.trim().is_empty());
+    families.sort_by_key(|family| family.to_lowercase());
+    families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    Ok(families)
+}
+
+pub(crate) fn volume_available_capacity(path: &Path) -> Result<u64, String> {
+    let path = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| "macOS 数据目录路径包含空字符".to_string())?;
+    let mut capacity = 0;
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_volume_available_capacity(path.as_ptr(), &mut capacity, &mut error) } {
+        Ok(capacity)
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "读取 macOS 磁盘剩余空间失败".into())
+        })
     }
 }
 

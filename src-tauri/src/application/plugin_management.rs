@@ -72,6 +72,19 @@ pub(crate) fn queue_provider_plugin_imports(
     Ok(added)
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn queue_provider_plugin_opened_urls(
+    app: &tauri::AppHandle,
+    urls: &[url::Url],
+) -> Result<usize, String> {
+    let paths = urls
+        .iter()
+        .filter_map(|url| url.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    queue_provider_plugin_imports(app, &paths, Path::new("/"))
+}
+
 #[tauri::command]
 pub(crate) fn take_pending_provider_plugin_imports(
     state: tauri::State<'_, RuntimeState>,
@@ -692,5 +705,37 @@ mod tests {
 
         assert_eq!(paths.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn opened_file_urls_keep_only_existing_sayit_packages() {
+        let root = std::env::temp_dir().join(format!("sayit-opened-urls-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let package = root.join("模型 包.sayit");
+        std::fs::write(&package, b"test").unwrap();
+        let other = root.join("说明.txt");
+        std::fs::write(&other, b"test").unwrap();
+
+        let urls = [
+            url::Url::from_file_path(&package).unwrap(),
+            url::Url::from_file_path(&other).unwrap(),
+        ];
+        let paths = urls
+            .iter()
+            .filter_map(|url| url.to_file_path().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let resolved = sayit_paths_from_args(&paths, Path::new("/"));
+
+        assert_eq!(
+            resolved,
+            vec![package
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
