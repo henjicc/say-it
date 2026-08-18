@@ -31,7 +31,7 @@ const sdkVersion = sdkResult.stdout.trim();
 const sdkMajor = Number.parseInt(sdkVersion.split(".")[0] || "0", 10);
 const requireSdk26 = process.argv.includes("--require-sdk-26") || process.env.SAYIT_REQUIRE_MACOS26_SDK === "1";
 if (requireSdk26 && sdkMajor < 26) {
-  throw new Error(`Apple 本地语音识别发布构建需要 macOS 26 SDK，当前为 ${sdkVersion}`);
+  throw new Error(`Apple 本地语音识别发布构建需要 macOS 26 SDK 以包含新引擎，当前为 ${sdkVersion}`);
 }
 
 mkdirSync(dirname(output), { recursive: true });
@@ -51,4 +51,4 @@ args.push(source, "-o", output);
 const result = spawnSync("xcrun", args, { stdio: "inherit" });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
-console.log(`apple-speech: built ${output} with macOS SDK ${sdkVersion}${sdkMajor < 26 ? " (unavailable stub)" : ""}.`);
+console.log(`apple-speech: built ${output} with macOS SDK ${sdkVersion}${sdkMajor < 26 ? " (legacy backend only)" : ""}.`);

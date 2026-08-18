@@ -4,6 +4,8 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>说吧！需要使用麦克风进行语音输入、听写和实时字幕。</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>说吧！需要使用 macOS 语音识别能力进行纯本地实时听写，音频不会发送到网络。</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>说吧！需要捕获系统音频和当前窗口画面，用于实时字幕与本机 OCR 场景感知。</string>
 </dict>

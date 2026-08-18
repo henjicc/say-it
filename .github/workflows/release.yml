@@ -127,7 +127,7 @@ jobs:
           brew install opus
           npm install
 
-      - name: validate macOS 26 SpeechAnalyzer toolchain
+      - name: validate Apple system speech toolchain
         run: node scripts/build-macos-speech.mjs --require-sdk-26
 
       - name: build macOS disk image
@@ -151,6 +151,7 @@ jobs:
           test "$(plutil -extract LSMinimumSystemVersion raw -o - "$app_path/Contents/Info.plist")" = "15.5"
           node scripts/validate-macos-bundle.mjs "$app_path"
           plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+          plutil -extract NSSpeechRecognitionUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract NSScreenCaptureUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract CFBundleDocumentTypes json -o - "$app_path/Contents/Info.plist" | grep -q 'sayit'
 

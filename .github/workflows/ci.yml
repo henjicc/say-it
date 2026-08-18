@@ -29,7 +29,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install opus
       - run: npm ci
-      - name: Build macOS 26 SpeechAnalyzer helper
+      - name: Build Apple system speech helper
         if: runner.os == 'macOS'
         run: node scripts/build-macos-speech.mjs --require-sdk-26
       - run: npm run typecheck
