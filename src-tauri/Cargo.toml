@@ -56,6 +56,7 @@ cpal = "0.15"
 nnnoiseless = "0.5"
 ebur128 = "0.1"
 symphonia = { version = "0.6.0", features = ["mp3", "aac", "isomp4", "ogg"] }
+audiopus = "0.2.0"
 ogg-opus = "0.1.2"
 mp3lame-encoder = "0.2.4"
 once_cell = "1.20"
@@ -99,3 +100,6 @@ ocr-rs = { version = "=2.3.2", default-features = false }
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 model-pack-builder = []
+
+[dev-dependencies]
+ogg = "0.8.0"
