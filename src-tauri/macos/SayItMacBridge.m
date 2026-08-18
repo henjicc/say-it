@@ -30,6 +30,8 @@ static void SayItSetError(char **error, NSString *message) {
     if (error != NULL) *error = SayItCopyString(message ?: @"未知 macOS 原生错误");
 }
 
+static void SayItRunOnMainThread(dispatch_block_t block);
+
 static char *SayItCopyJSON(id value, char **error) {
     NSError *jsonError = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:&jsonError];
@@ -49,9 +51,79 @@ void sayit_macos_free_bytes(uint8_t *value) {
     free(value);
 }
 
-bool sayit_macos_send_paste_shortcut(char **error) {
+static NSArray<NSDictionary<NSPasteboardType, NSData *> *> *SayItSnapshotPasteboard(NSPasteboard *pasteboard) {
+    NSMutableArray<NSDictionary<NSPasteboardType, NSData *> *> *snapshot = [NSMutableArray array];
+    for (NSPasteboardItem *item in pasteboard.pasteboardItems ?: @[]) {
+        NSMutableDictionary<NSPasteboardType, NSData *> *types = [NSMutableDictionary dictionary];
+        for (NSPasteboardType type in item.types) {
+            NSData *data = [item dataForType:type];
+            if (data != nil) types[type] = [data copy];
+        }
+        if (types.count > 0) [snapshot addObject:types];
+    }
+    return snapshot;
+}
+
+static bool SayItRestorePasteboard(
+    NSPasteboard *pasteboard,
+    NSArray<NSDictionary<NSPasteboardType, NSData *> *> *snapshot
+) {
+    NSMutableArray<NSPasteboardItem *> *items = [NSMutableArray arrayWithCapacity:snapshot.count];
+    for (NSDictionary<NSPasteboardType, NSData *> *types in snapshot) {
+        NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+        for (NSPasteboardType type in types) {
+            if (![item setData:types[type] forType:type]) return false;
+        }
+        [items addObject:item];
+    }
+    [pasteboard clearContents];
+    return items.count == 0 || [pasteboard writeObjects:items];
+}
+
+bool sayit_macos_paste_text(const char *text, char **error) {
     if (!AXIsProcessTrusted()) {
         SayItSetError(error, @"模拟粘贴需要辅助功能权限");
+        return false;
+    }
+    if (text == NULL) {
+        SayItSetError(error, @"待粘贴文本无效");
+        return false;
+    }
+
+    NSString *value = [[NSString alloc] initWithUTF8String:text];
+    if (value == nil) {
+        SayItSetError(error, @"待粘贴文本不是有效的 UTF-8");
+        return false;
+    }
+
+    __block NSPasteboard *pasteboard = nil;
+    __block NSArray<NSDictionary<NSPasteboardType, NSData *> *> *snapshot = nil;
+    __block NSInteger injectedChangeCount = 0;
+    __block bool clipboardReady = false;
+    __block bool clipboardChangedDuringSnapshot = false;
+    SayItRunOnMainThread(^{
+        pasteboard = NSPasteboard.generalPasteboard;
+        NSInteger sourceChangeCount = pasteboard.changeCount;
+        snapshot = SayItSnapshotPasteboard(pasteboard);
+        if (pasteboard.changeCount != sourceChangeCount) {
+            clipboardChangedDuringSnapshot = true;
+            return;
+        }
+        [pasteboard clearContents];
+        clipboardReady = [pasteboard setString:value forType:NSPasteboardTypeString];
+        injectedChangeCount = pasteboard.changeCount;
+    });
+    if (clipboardChangedDuringSnapshot) {
+        SayItSetError(error, @"剪贴板在准备粘贴时已被更新，请重试");
+        return false;
+    }
+    if (!clipboardReady) {
+        SayItRunOnMainThread(^{
+            if (pasteboard.changeCount == injectedChangeCount) {
+                SayItRestorePasteboard(pasteboard, snapshot);
+            }
+        });
+        SayItSetError(error, @"写入 macOS 剪贴板失败");
         return false;
     }
 
@@ -61,6 +133,11 @@ bool sayit_macos_send_paste_shortcut(char **error) {
     const CGKeyCode vKeyCode = 0x09;
     CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
     if (source == NULL) {
+        SayItRunOnMainThread(^{
+            if (pasteboard.changeCount == injectedChangeCount) {
+                SayItRestorePasteboard(pasteboard, snapshot);
+            }
+        });
         SayItSetError(error, @"无法创建 macOS 键盘事件源");
         return false;
     }
@@ -75,6 +152,11 @@ bool sayit_macos_send_paste_shortcut(char **error) {
         if (vUp != NULL) CFRelease(vUp);
         if (commandUp != NULL) CFRelease(commandUp);
         CFRelease(source);
+        SayItRunOnMainThread(^{
+            if (pasteboard.changeCount == injectedChangeCount) {
+                SayItRestorePasteboard(pasteboard, snapshot);
+            }
+        });
         SayItSetError(error, @"无法创建 macOS 粘贴键盘事件");
         return false;
     }
@@ -93,6 +175,20 @@ bool sayit_macos_send_paste_shortcut(char **error) {
     CFRelease(vUp);
     CFRelease(commandUp);
     CFRelease(source);
+
+    // 等目标应用读取完剪贴板再恢复。若期间用户或其他应用主动修改了剪贴板，
+    // changeCount 会变化，此时不能用旧快照覆盖对方的新内容。
+    [NSThread sleepForTimeInterval:0.18];
+    __block bool restored = true;
+    SayItRunOnMainThread(^{
+        if (pasteboard.changeCount == injectedChangeCount) {
+            restored = SayItRestorePasteboard(pasteboard, snapshot);
+        }
+    });
+    if (!restored) {
+        SayItSetError(error, @"恢复 macOS 剪贴板失败");
+        return false;
+    }
     return true;
 }
 

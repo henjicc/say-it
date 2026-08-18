@@ -137,7 +137,7 @@ unsafe extern "C" {
         height: *mut f64,
         error: *mut *mut c_char,
     ) -> bool;
-    fn sayit_macos_send_paste_shortcut(error: *mut *mut c_char) -> bool;
+    fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -447,13 +447,14 @@ pub(crate) fn indicator_visible_screen_size(
     }
 }
 
-pub(crate) fn send_paste_shortcut() -> Result<(), String> {
+pub(crate) fn paste_text(text: &str) -> Result<(), String> {
+    let text = CString::new(text).map_err(|_| "待粘贴文本包含空字符".to_string())?;
     let mut error = ptr::null_mut();
-    if unsafe { sayit_macos_send_paste_shortcut(&mut error) } {
+    if unsafe { sayit_macos_paste_text(text.as_ptr(), &mut error) } {
         Ok(())
     } else {
         Err(unsafe {
-            take_string(error).unwrap_or_else(|| "发送 macOS 粘贴快捷键失败".into())
+            take_string(error).unwrap_or_else(|| "执行 macOS 粘贴失败".into())
         })
     }
 }
