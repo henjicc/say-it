@@ -99,6 +99,26 @@ export const CMD = {
   connectObs: "connect_obs",
   installObsOverlay: "install_obs_overlay",
   uninstallObsOverlay: "uninstall_obs_overlay",
+  queryHistory: "query_history",
+  updateHistoryText: "update_history_text",
+  retryHistoryInjection: "retry_history_injection",
+  deleteHistoryEntry: "delete_history_entry",
+  clearHistory: "clear_history",
+  openHistoryWindow: "open_history_window",
+  getSetupStatus: "get_setup_status",
+  runSetupCheck: "run_setup_check",
+  requestSetupPermissions: "request_setup_permissions",
+  runInjectionSetupCheck: "run_injection_setup_check",
+  completeOnboarding: "complete_onboarding",
+  captureCurrentSelection: "capture_current_selection",
+  assistantStart: "assistant_start",
+  assistantStop: "assistant_stop",
+  assistantCancel: "assistant_cancel",
+  getAssistantAnswer: "get_assistant_answer",
+  insertAssistantAnswer: "insert_assistant_answer",
+  regenerateAssistantAnswer: "regenerate_assistant_answer",
+  closeAssistantAnswer: "close_assistant_answer",
+  getPerformanceMetrics: "get_performance_metrics",
 } as const;
 
 export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";
@@ -131,6 +151,10 @@ export interface AppSettings {
   subtitlePrefs: Record<string, unknown>;
   comparePrefs: Record<string, unknown>;
   customizationPrefs: Record<string, unknown>;
+  assistantPrefs: Record<string, unknown>;
+  historyPrefs: Record<string, unknown>;
+  onboardingVersion: number;
+  setupResults: Record<string, unknown>;
   theme: Record<string, unknown>;
   customCueStart?: { relativePath: string; mimeType: string };
   customCueEnd?: { relativePath: string; mimeType: string };
@@ -168,7 +192,46 @@ export const EVT = {
   pluginInstallProgress: "plugin-install-progress",
   providerPluginImportRequested: "provider-plugin-import-requested",
   pluginRegistryChanged: "plugin-registry-changed",
+  historyChanged: "history-changed",
+  openHistory: "open-history",
 } as const;
+
+export interface HistoryEntry {
+  id: string;
+  createdAt: number;
+  taskKind: "dictation" | "translateSpeech" | "editSelection" | "ask";
+  sourceText: string;
+  outputText: string;
+  instruction: string;
+  appName: string;
+  processName: string;
+  providerId: string;
+  modelId: string;
+  status: "succeeded" | "failed" | "cancelled";
+  error?: string | null;
+  durationMs: number;
+}
+
+export interface HistoryPage {
+  items: HistoryEntry[];
+  total: number;
+  recoveryNotice?: string | null;
+}
+
+export interface SetupCheckResult {
+  id: "microphone" | "permissions" | "provider" | "shortcut" | "injection";
+  status: "ready" | "warning" | "blocked";
+  title: string;
+  message: string;
+  action?: string | null;
+}
+
+export interface SetupStatus {
+  onboardingVersion: number;
+  requiredVersion: number;
+  complete: boolean;
+  checks: SetupCheckResult[];
+}
 
 export interface DataRootStatus {
   activeRoot: string;

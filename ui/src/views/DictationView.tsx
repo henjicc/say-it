@@ -10,6 +10,7 @@ import { LocalRulesPanel } from "@/views/LocalRulesPanel";
 import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { SceneRulesPanel } from "@/views/SceneRulesPanel";
 import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
+import { VoiceAssistantPanel } from "@/views/VoiceAssistantPanel";
 import { cn } from "@/lib/cn";
 import { contextDebugShortcutHint, contextDebugShortcutLabel } from "@/lib/platform";
 import { useDictationStore } from "@/store/useDictationStore";
@@ -26,6 +27,7 @@ const toneClass: Record<string, string> = {
 
 const TABS: TabItem<DictationTabKey>[] = [
   { key: "basic", label: "通用设置" },
+  { key: "assistant", label: "语音助手" },
   { key: "local", label: "本地处理" },
   { key: "smart", label: "智能处理" },
   { key: "apps", label: "场景规则" },
@@ -76,6 +78,7 @@ export function DictationView() {
         className={cn(tab === "smart" && "-mt-4")}
       >
         {tab === "basic" && <DictationShortcutsPanel />}
+        {tab === "assistant" && <VoiceAssistantPanel />}
         {tab === "local" && <LocalRulesPanel />}
         {tab === "smart" && <SmartTextPanel />}
         {tab === "apps" && <SceneRulesPanel />}

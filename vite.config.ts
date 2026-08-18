@@ -30,6 +30,7 @@ export default defineConfig({
         main: resolve(dirname, "ui/index.html"),
         indicator: resolve(dirname, "ui/indicator.html"),
         contextDebug: resolve(dirname, "ui/context-debug.html"),
+        assistant: resolve(dirname, "ui/assistant.html"),
       },
     },
   },

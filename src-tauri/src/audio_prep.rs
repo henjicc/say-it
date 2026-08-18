@@ -353,6 +353,14 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn decode_uses_macos_fallback_for_alac() {
+        let formats = std::process::Command::new("/usr/bin/afconvert")
+            .arg("-hf")
+            .output()
+            .expect("query afconvert formats");
+        if !String::from_utf8_lossy(&formats.stdout).contains("'alac'") {
+            eprintln!("skip ALAC fallback test: this macOS afconvert cannot encode ALAC fixtures");
+            return;
+        }
         let root = std::env::temp_dir().join(format!("say-it-alac-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let wav = root.join("source.wav");

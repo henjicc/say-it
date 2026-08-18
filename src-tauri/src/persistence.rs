@@ -18,6 +18,8 @@ pub(crate) struct PersistedData {
     pub(crate) dictation: DictationSettings,
     #[serde(default)]
     pub(crate) subtitle_shortcut: SubtitleShortcutSettings,
+    #[serde(default)]
+    pub(crate) assistant_shortcuts: crate::application::assistant::AssistantShortcutSettings,
     #[serde(default = "default_subtitle_translation_model")]
     pub(crate) subtitle_translation_model: String,
     #[serde(default)]
@@ -26,7 +28,9 @@ pub(crate) struct PersistedData {
     pub(crate) obs_overlay: ObsOverlaySettings,
 }
 
-fn default_schema_version() -> u32 { 1 }
+fn default_schema_version() -> u32 {
+    1
+}
 
 fn default_subtitle_translation_model() -> String {
     "none".to_string()
@@ -74,6 +78,11 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .lock()
         .map_err(|_| "Subtitle shortcut lock failed".to_string())?
         .clone();
+    let assistant_shortcuts = state
+        .assistant_shortcuts
+        .lock()
+        .map_err(|_| "语音助手快捷键配置锁失败".to_string())?
+        .clone();
     let subtitle_translation_model = state
         .subtitle_translation_model
         .lock()
@@ -93,11 +102,16 @@ pub(crate) fn save_persisted_state_with_app_settings(
         schema_version: default_schema_version(),
         app_settings: match app_settings_override {
             Some(settings) => settings.clone(),
-            None => state.app_settings.lock().map_err(|_| "App settings lock failed".to_string())?.clone(),
+            None => state
+                .app_settings
+                .lock()
+                .map_err(|_| "App settings lock failed".to_string())?
+                .clone(),
         },
         providers: normalize_settings(providers),
         dictation,
         subtitle_shortcut,
+        assistant_shortcuts,
         subtitle_translation_model: if subtitle_translation_model.trim().is_empty() {
             default_subtitle_translation_model()
         } else {
@@ -184,9 +198,7 @@ pub(crate) fn load_persisted_state(
     };
     let mut data = load_persisted_data_from_path(&source)?;
     data.providers = normalize_settings(data.providers);
-    crate::application::dictation::repair_empty_asr_model(
-        &mut data.app_settings.dictation_prefs,
-    );
+    crate::application::dictation::repair_empty_asr_model(&mut data.app_settings.dictation_prefs);
     crate::application::customization::migrate_legacy_provider_hotwords(
         &mut data.app_settings,
         &mut data.providers,
@@ -208,10 +220,16 @@ mod tests {
     #[test]
     fn atomic_write_keeps_previous_backup() {
         let dir = std::env::temp_dir().join(format!("say-it-persistence-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir); fs::create_dir_all(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
         let file = dir.join("state.json");
-        atomic_write_with_backup(&file, b"one").unwrap(); atomic_write_with_backup(&file, b"two").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "two"); assert_eq!(fs::read_to_string(file.with_extension("json.bak")).unwrap(), "one");
+        atomic_write_with_backup(&file, b"one").unwrap();
+        atomic_write_with_backup(&file, b"two").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "two");
+        assert_eq!(
+            fs::read_to_string(file.with_extension("json.bak")).unwrap(),
+            "one"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

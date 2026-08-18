@@ -14,9 +14,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
+    EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    SetForegroundWindow, GWL_EXSTYLE, GW_OWNER, WS_EX_TOOLWINDOW,
 };
 
 use super::model::{
@@ -164,10 +164,11 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             ActiveAppContextExtractionMethod::NativeText => match native_probe::capture(
                     target,
                     &mut context,
-                    options.deadline,
-                    options.max_chars,
-                    cancelled,
-                ) {
+                options.deadline,
+                options.max_chars,
+                cancelled,
+                options.selection_only,
+            ) {
                 Ok(status) => status,
                 Err(error) => {
                     context.diagnostics.push(error);
@@ -178,11 +179,10 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                     }
                 }
             },
-            ActiveAppContextExtractionMethod::Ocr => {
-                match focused_target_is_password(target) {
-                    Ok(true) => {
-                        context
-                            .diagnostics
+            ActiveAppContextExtractionMethod::Ocr => match focused_target_is_password(target) {
+                Ok(true) => {
+                    context
+                        .diagnostics
                             .push("焦点位于受保护输入控件，已停止上下文读取。".into());
                         CaptureStatus::Sensitive
                     }
@@ -220,11 +220,10 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                         if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
                             CaptureStatus::TimedOut
                         } else {
-                            CaptureStatus::Failed
-                        }
+                        CaptureStatus::Failed
                     }
                 }
-            }
+            },
         };
         if options.method == ActiveAppContextExtractionMethod::NativeText
             && matches!(
@@ -441,8 +440,12 @@ fn capture_and_recognize(
     if cancelled.load(Ordering::Acquire) {
         return Err("上下文捕获已取消".into());
     }
-    let output_result =
-        ocr::run_full_window(ocr_provider, captured.image, deadline, Arc::clone(cancelled));
+    let output_result = ocr::run_full_window(
+        ocr_provider,
+        captured.image,
+        deadline,
+        Arc::clone(cancelled),
+    );
     if let Some(image) = debug_image {
         context.screenshot_data_url = ocr::png_data_url(&image).ok();
     }
@@ -471,7 +474,7 @@ fn expired(deadline: Instant) -> bool {
     Instant::now() >= deadline
 }
 
-fn focused_target_is_password(target: ActivationTarget) -> Result<bool, String> {
+pub(super) fn focused_target_is_password(target: ActivationTarget) -> Result<bool, String> {
     unsafe {
         let initialized_here = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         let result = (|| {

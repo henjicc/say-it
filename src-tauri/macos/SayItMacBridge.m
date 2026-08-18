@@ -407,6 +407,93 @@ bool sayit_macos_accessibility_permission(bool request) {
     return SayItAccessibilityAccess(request);
 }
 
+char *sayit_macos_copy_selection_text(uint32_t processId, char **error) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"复制当前选区需要辅助功能权限");
+        return NULL;
+    }
+    NSRunningApplication *frontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+    if (processId == 0 || frontmost.processIdentifier != (pid_t)processId) {
+        SayItSetError(error, @"当前前台应用与选区来源不一致");
+        return NULL;
+    }
+
+    __block NSPasteboard *pasteboard = nil;
+    __block NSArray<NSDictionary<NSPasteboardType, NSData *> *> *snapshot = nil;
+    __block NSInteger temporaryChangeCount = 0;
+    SayItRunOnMainThread(^{
+        pasteboard = NSPasteboard.generalPasteboard;
+        NSInteger sourceChangeCount = pasteboard.changeCount;
+        snapshot = SayItSnapshotPasteboard(pasteboard);
+        if (pasteboard.changeCount == sourceChangeCount) {
+            [pasteboard clearContents];
+            temporaryChangeCount = pasteboard.changeCount;
+        }
+    });
+    if (pasteboard == nil || snapshot == nil || temporaryChangeCount == 0) {
+        SayItSetError(error, @"备份 macOS 剪贴板失败");
+        return NULL;
+    }
+
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    const CGKeyCode commandKeyCode = 0x37;
+    const CGKeyCode cKeyCode = 0x08;
+    CGEventRef commandDown = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, commandKeyCode, true);
+    CGEventRef cDown = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, cKeyCode, true);
+    CGEventRef cUp = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, cKeyCode, false);
+    CGEventRef commandUp = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, commandKeyCode, false);
+    if (source == NULL || commandDown == NULL || cDown == NULL || cUp == NULL || commandUp == NULL) {
+        if (commandDown != NULL) CFRelease(commandDown);
+        if (cDown != NULL) CFRelease(cDown);
+        if (cUp != NULL) CFRelease(cUp);
+        if (commandUp != NULL) CFRelease(commandUp);
+        if (source != NULL) CFRelease(source);
+        SayItRunOnMainThread(^{
+            if (pasteboard.changeCount == temporaryChangeCount) SayItRestorePasteboard(pasteboard, snapshot);
+        });
+        SayItSetError(error, @"无法创建 macOS 复制选区事件");
+        return NULL;
+    }
+    CGEventSetFlags(commandDown, kCGEventFlagMaskCommand);
+    CGEventSetFlags(cDown, kCGEventFlagMaskCommand);
+    CGEventSetFlags(cUp, kCGEventFlagMaskCommand);
+    CGEventPost(kCGHIDEventTap, commandDown);
+    CGEventPost(kCGHIDEventTap, cDown);
+    CGEventPost(kCGHIDEventTap, cUp);
+    CGEventPost(kCGHIDEventTap, commandUp);
+    CFRelease(commandDown);
+    CFRelease(cDown);
+    CFRelease(cUp);
+    CFRelease(commandUp);
+    CFRelease(source);
+
+    [NSThread sleepForTimeInterval:0.12];
+    __block NSString *selected = nil;
+    __block NSInteger copiedChangeCount = 0;
+    __block bool restored = true;
+    SayItRunOnMainThread(^{
+        copiedChangeCount = pasteboard.changeCount;
+        if (copiedChangeCount > temporaryChangeCount) {
+            selected = [pasteboard stringForType:NSPasteboardTypeString];
+        }
+    });
+    [NSThread sleepForTimeInterval:0.04];
+    SayItRunOnMainThread(^{
+        if (pasteboard.changeCount == copiedChangeCount) {
+            restored = SayItRestorePasteboard(pasteboard, snapshot);
+        }
+    });
+    if (!restored) {
+        SayItSetError(error, @"恢复 macOS 剪贴板失败");
+        return NULL;
+    }
+    if (selected.length == 0) {
+        SayItSetError(error, @"当前应用没有可复制的文本选区");
+        return NULL;
+    }
+    return SayItCopyString(selected);
+}
+
 char *sayit_macos_system_fonts_json(char **error) {
     __block NSArray<NSString *> *families = nil;
     SayItRunOnMainThread(^{
@@ -698,6 +785,56 @@ static NSString *SayItAXStringAttribute(AXUIElementRef element, CFStringRef attr
     return text;
 }
 
+static NSString *SayItAXSelectedTextInTree(
+    AXUIElementRef element,
+    NSUInteger depth,
+    NSUInteger *remaining
+) {
+    if (element == NULL || remaining == NULL || *remaining == 0) return nil;
+    *remaining -= 1;
+    NSString *selected = SayItAXStringAttribute(element, kAXSelectedTextAttribute);
+    if (selected.length > 0 || depth == 0) return selected;
+
+    CFTypeRef childrenValue = NULL;
+    AXError childrenError = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &childrenValue);
+    if (childrenError != kAXErrorSuccess || childrenValue == NULL || CFGetTypeID(childrenValue) != CFArrayGetTypeID()) {
+        if (childrenValue != NULL) CFRelease(childrenValue);
+        return nil;
+    }
+    CFArrayRef children = (CFArrayRef)childrenValue;
+    for (CFIndex index = 0; index < CFArrayGetCount(children) && *remaining > 0; index += 1) {
+        CFTypeRef child = CFArrayGetValueAtIndex(children, index);
+        if (child == NULL || CFGetTypeID(child) != AXUIElementGetTypeID()) continue;
+        AXUIElementSetMessagingTimeout((AXUIElementRef)child, 0.08f);
+        selected = SayItAXSelectedTextInTree((AXUIElementRef)child, depth - 1, remaining);
+        if (selected.length > 0) break;
+    }
+    CFRelease(childrenValue);
+    return selected;
+}
+
+static NSString *SayItAXSelectedTextWithAncestors(AXUIElementRef element) {
+    AXUIElementRef current = (AXUIElementRef)CFRetain(element);
+    NSString *selected = nil;
+    for (NSUInteger depth = 0; current != NULL && depth < 10; depth += 1) {
+        NSUInteger remaining = 96;
+        selected = SayItAXSelectedTextInTree(current, 3, &remaining);
+        if (selected.length > 0) break;
+        CFTypeRef parentValue = NULL;
+        AXError parentError = AXUIElementCopyAttributeValue(current, kAXParentAttribute, &parentValue);
+        CFRelease(current);
+        current = NULL;
+        if (parentError != kAXErrorSuccess || parentValue == NULL || CFGetTypeID(parentValue) != AXUIElementGetTypeID()) {
+            if (parentValue != NULL) CFRelease(parentValue);
+            break;
+        }
+        current = (AXUIElementRef)parentValue;
+        AXUIElementSetMessagingTimeout(current, 0.15f);
+    }
+    if (current != NULL) CFRelease(current);
+    return selected;
+}
+
 static NSString *SayItTruncateAccessibilityText(NSString *text, NSUInteger maxLength) {
     if (text.length <= maxLength) return text;
     NSRange range = [text rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, maxLength)];
@@ -747,7 +884,9 @@ static char *SayItAccessibilityContextJSON(
     }
 
     NSUInteger limit = MAX((NSUInteger)1, MIN((NSUInteger)maxChars, (NSUInteger)6000));
-    NSString *selectedText = SayItAXStringAttribute(focused, kAXSelectedTextAttribute);
+    // Chromium、表格和跨子节点选区经常只在祖先元素暴露 AXSelectedText。
+    // 最多向上检查 10 层，与 selection-hook 的被动读取策略保持一致。
+    NSString *selectedText = SayItAXSelectedTextWithAncestors(focused);
     NSString *focusedText = SayItAXStringAttribute(focused, kAXValueAttribute);
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     if (selectedText.length > 0) {

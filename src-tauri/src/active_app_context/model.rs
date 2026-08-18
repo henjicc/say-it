@@ -113,6 +113,7 @@ pub(crate) struct CaptureOptions {
     pub(crate) occluding_window_handle: Option<isize>,
     pub(crate) method: ActiveAppContextExtractionMethod,
     pub(crate) ocr_provider: crate::providers::capabilities::OcrProvider,
+    pub(crate) selection_only: bool,
     /// 仅调试窗口会设置：覆盖截图长边像素上限（默认见 `screen_capture::MAX_CAPTURE_SIDE`）。
     pub(crate) max_capture_side_override: Option<u32>,
 }
@@ -129,6 +130,7 @@ impl CaptureOptions {
             occluding_window_handle: None,
             method,
             ocr_provider,
+            selection_only: false,
             max_capture_side_override: None,
         }
     }
@@ -290,8 +292,10 @@ impl CapturedActiveAppContext {
     }
 
     pub(crate) fn use_metadata_fallback(&mut self, reason: impl Into<String>) -> bool {
-        if matches!(self.status, CaptureStatus::Blocked | CaptureStatus::Sensitive)
-            || !self.has_prompt_metadata()
+        if matches!(
+            self.status,
+            CaptureStatus::Blocked | CaptureStatus::Sensitive
+        ) || !self.has_prompt_metadata()
         {
             return false;
         }

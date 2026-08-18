@@ -394,6 +394,7 @@ export function IndicatorApp() {
             <span>{errorState.message || "处理过程中发生未知错误"}</span>
           </div>
           <div className="error-actions">
+            <button type="button" disabled={errorActionBusy} onClick={() => void cmd(CMD.openHistoryWindow)}>打开历史</button>
             {errorState.canUseRawText && (
               <button
                 type="button"

@@ -21,8 +21,18 @@ const MIGRATABLE_FILES: &[&str] = &[
     "say-it-state.json",
     "say-it-state.json.bak",
     "trusted-plugin-keys.json",
+    "history.sqlite3",
+    "history.sqlite3-shm",
+    "history.sqlite3-wal",
+    "history-recovery.json",
 ];
-const MIGRATABLE_DIRS: &[&str] = &["plugins", "plugin-data", "plugin-webviews", "cues", "models"];
+const MIGRATABLE_DIRS: &[&str] = &[
+    "plugins",
+    "plugin-data",
+    "plugin-webviews",
+    "cues",
+    "models",
+];
 
 pub(crate) const MIGRATION_EVENT: &str = "data-root-migration";
 
@@ -64,7 +74,10 @@ fn resolve_root_from(default_root: &Path) -> PathBuf {
             if root.is_absolute() && root.is_dir() {
                 root
             } else {
-                eprintln!("[data-root] 指针指向的目录无效，回退默认目录：{}", root.display());
+                eprintln!(
+                    "[data-root] 指针指向的目录无效，回退默认目录：{}",
+                    root.display()
+                );
                 default_root.to_path_buf()
             }
         }
@@ -100,7 +113,8 @@ pub(crate) fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
 /// 数据根目录下的子目录（自动创建）。
 pub(crate) fn data_subdir(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = data_root(app)?.join(name);
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建数据子目录 {name} 失败：{error}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("创建数据子目录 {name} 失败：{error}"))?;
     Ok(dir)
 }
 
@@ -140,7 +154,10 @@ pub(crate) fn restart_app(app: AppHandle) {
 }
 
 #[tauri::command]
-pub(crate) async fn migrate_data_root(app: AppHandle, target: String) -> Result<DataRootStatus, String> {
+pub(crate) async fn migrate_data_root(
+    app: AppHandle,
+    target: String,
+) -> Result<DataRootStatus, String> {
     if MIGRATING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -156,9 +173,10 @@ pub(crate) async fn migrate_data_root(app: AppHandle, target: String) -> Result<
     let _guard = Guard;
 
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || migrate_blocking(&worker_app, &target))
-        .await
-        .map_err(|error| format!("迁移任务执行失败：{error}"))?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || migrate_blocking(&worker_app, &target))
+            .await
+            .map_err(|error| format!("迁移任务执行失败：{error}"))?;
     match &result {
         Ok(_) => emit_progress(&app, "done", 0, 0, 0, 0, None),
         Err(message) => emit_progress(&app, "failed", 0, 0, 0, 0, Some(message)),
@@ -202,8 +220,8 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     let current = data_root(app)?;
 
     std::fs::create_dir_all(&target).map_err(|error| format!("创建目标目录失败：{error}"))?;
-    let canonical_target = std::fs::canonicalize(&target)
-        .map_err(|error| format!("解析目标目录失败：{error}"))?;
+    let canonical_target =
+        std::fs::canonicalize(&target).map_err(|error| format!("解析目标目录失败：{error}"))?;
     let canonical_current = std::fs::canonicalize(&current)
         .map_err(|error| format!("解析当前数据目录失败：{error}"))?;
     let canonical_default = std::fs::canonicalize(&default).unwrap_or_else(|_| default.clone());
@@ -220,6 +238,7 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
 
     let plan = collect_migration_plan(&current)?;
     ensure_free_space(&target, plan.total_bytes)?;
+    crate::application::history::pause_for_data_root_migration(app)?;
 
     let app_for_progress = app.clone();
     let mut last_emit = Instant::now();
@@ -242,14 +261,21 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
 
     if let Err(error) = copy_and_verify(&current, &target, &plan, &mut progress) {
         cleanup_partial_target(&target);
+        crate::application::history::resume_after_failed_data_root_migration();
         return Err(error);
     }
 
     // 复制与校验都成功后才切换指针；指针始终写在默认目录。
     if target_is_default {
-        remove_pointer(&default)?;
+        if let Err(error) = remove_pointer(&default) {
+            crate::application::history::resume_after_failed_data_root_migration();
+            return Err(error);
+        }
     } else {
-        write_pointer(&default, &target)?;
+        if let Err(error) = write_pointer(&default, &target) {
+            crate::application::history::resume_after_failed_data_root_migration();
+            return Err(error);
+        }
     }
 
     // 旧数据删除失败不回滚迁移（指针已切换），仅提示手动清理。
@@ -293,7 +319,8 @@ fn collect_files_recursive(
     files: &mut Vec<PathBuf>,
     total_bytes: &mut u64,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|error| format!("读取目录 {} 失败：{error}", dir.display()))?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("读取目录 {} 失败：{error}", dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("遍历目录 {} 失败：{error}", dir.display()))?;
         let path = entry.path();
@@ -329,7 +356,8 @@ fn validate_target_contents(target: &Path, target_is_default: bool) -> Result<()
         }
         return Ok(());
     }
-    let mut entries = std::fs::read_dir(target).map_err(|error| format!("读取目标目录失败：{error}"))?;
+    let mut entries =
+        std::fs::read_dir(target).map_err(|error| format!("读取目标目录失败：{error}"))?;
     if entries.next().is_some() {
         return Err("目标目录必须为空目录".into());
     }
@@ -447,7 +475,8 @@ fn cleanup_partial_target(target: &Path) {
 }
 
 fn write_pointer(default_root: &Path, target: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(default_root).map_err(|error| format!("创建默认数据目录失败：{error}"))?;
+    std::fs::create_dir_all(default_root)
+        .map_err(|error| format!("创建默认数据目录失败：{error}"))?;
     let pointer = default_root.join(POINTER_FILE);
     let temp = pointer.with_extension(format!("json.tmp-{}", std::process::id()));
     let bytes = serde_json::to_vec_pretty(&PointerFile {
@@ -531,7 +560,10 @@ mod tests {
         let gone = default.join("gone-away");
         std::fs::write(
             default.join(POINTER_FILE),
-            serde_json::to_vec(&PointerFile { root: gone.display().to_string() }).unwrap(),
+            serde_json::to_vec(&PointerFile {
+                root: gone.display().to_string(),
+            })
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(resolve_root_from(&default), default);
@@ -544,7 +576,10 @@ mod tests {
         let custom = temp_dir("valid-custom");
         std::fs::write(
             default.join(POINTER_FILE),
-            serde_json::to_vec(&PointerFile { root: custom.display().to_string() }).unwrap(),
+            serde_json::to_vec(&PointerFile {
+                root: custom.display().to_string(),
+            })
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(resolve_root_from(&default), custom);

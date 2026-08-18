@@ -362,6 +362,10 @@ struct Session {
     inject_method: String,
     /// 听写启动时的目标窗口。悬浮窗恢复操作会先重新激活它，再注入未处理原文。
     activation_target: Option<crate::active_app_context::ActivationTarget>,
+    app_identity: Option<crate::active_app_context::AppIdentity>,
+    started_at: Option<Instant>,
+    assistant_request: Option<crate::application::assistant::AssistantRequest>,
+    history_allowed: bool,
     error: Option<String>,
     pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
@@ -483,6 +487,15 @@ pub(crate) fn request_cancel(app: AppHandle) {
             publish_state(&app, Some(e));
         }
     });
+}
+
+pub(crate) fn is_active(app: &AppHandle) -> bool {
+    app.state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|session| !matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed))
+        .unwrap_or(false)
 }
 
 fn present_request_error(app: &AppHandle, error: String) {
@@ -661,8 +674,27 @@ async fn start(
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
-    let activation_target =
-        activation_target.or_else(crate::active_app_context::activation_target);
+    start_internal(app, activation_target, shortcut_profile_id, None).await
+}
+
+pub(crate) async fn start_assistant(
+    app: AppHandle,
+    request: crate::application::assistant::AssistantRequest,
+) -> Result<(), String> {
+    start_internal(app, request.target, None, Some(request)).await
+}
+
+async fn start_internal(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    shortcut_profile_id: Option<String>,
+    assistant_request: Option<crate::application::assistant::AssistantRequest>,
+) -> Result<(), String> {
+    let start_requested_at = Instant::now();
+    let activation_target = activation_target.or_else(crate::active_app_context::activation_target);
+    let history_allowed = activation_target
+        .and_then(|target| crate::active_app_context::target_is_sensitive(target).ok())
+        .is_some_and(|sensitive| !sensitive);
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
@@ -833,6 +865,10 @@ async fn start(
             effective: Some(effective),
             inject_method,
             activation_target,
+            app_identity,
+            started_at: Some(Instant::now()),
+            assistant_request,
+            history_allowed,
             silence_streaming: false,
             active_app_context,
             active_app_context_cancellation,
@@ -868,6 +904,10 @@ async fn start(
         Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
     );
     let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
+    crate::application::performance::record(
+        "dictation.request_to_recording",
+        start_requested_at.elapsed().as_millis() as u64,
+    );
     play_cue_async(
         app.clone(),
         "start",
@@ -981,12 +1021,8 @@ fn spawn_raw_consumer(
             }
             if need_open {
                 if let Err(error) = open_asr(app.clone(), epoch).await {
-                    let _ = fail(
-                        app.clone(),
-                        epoch,
-                        format!("连接实时语音识别失败：{error}"),
-                    )
-                    .await;
+                    let _ =
+                        fail(app.clone(), epoch, format!("连接实时语音识别失败：{error}")).await;
                     break;
                 }
             }
@@ -1434,6 +1470,35 @@ fn cleanup_stale_finalize(
     remove_temp(temp_path);
 }
 
+fn history_provider_id(state: &RuntimeState, model: &str) -> String {
+    crate::providers::registry::model_info(model)
+        .map(|info| info.provider_id.clone())
+        .or_else(|| {
+            state
+                .plugin_registry
+                .lock()
+                .ok()
+                .and_then(|plugins| plugins.provider_id_for_model(model))
+        })
+        .unwrap_or_default()
+}
+
+async fn prepare_target_for_injection(
+    target: crate::active_app_context::ActivationTarget,
+) -> Result<(), String> {
+    crate::active_app_context::activate_target(target)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let current = crate::active_app_context::activation_target()
+        .ok_or_else(|| "重新激活后无法确认原目标窗口".to_string())?;
+    if !crate::active_app_context::same_activation_target(current, target) {
+        return Err("原目标窗口已变化，结果已保留但未注入".into());
+    }
+    if crate::active_app_context::target_is_sensitive(current)? {
+        return Err("当前焦点是安全输入框，结果已保留但未注入".into());
+    }
+    Ok(())
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let (
         text,
@@ -1446,6 +1511,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
         temp_path,
         active_app_context,
         active_app_context_cancellation,
+        activation_target,
+        app_identity,
+        started_at,
+        assistant_request,
+        history_allowed,
     ) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -1481,6 +1551,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.temp_audio_path.take(),
             s.active_app_context.take(),
             s.active_app_context_cancellation.clone(),
+            s.activation_target,
+            s.app_identity.clone(),
+            s.started_at,
+            s.assistant_request.clone(),
+            s.history_allowed,
         )
     };
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
@@ -1501,7 +1576,10 @@ async fn finalize(app: AppHandle, epoch: u64) {
             let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
         }
     }
-    let active_app_context = if !should_process_smart_text {
+    let active_app_context = if assistant_request.is_some() {
+        drop(active_app_context);
+        String::new()
+    } else if !should_process_smart_text {
         // 延迟截图不会自行进入 OCR；尽早释放句柄与截图，短文本不占用后续资源。
         drop(active_app_context);
         if effective.smart_processing_enabled && !text.is_empty() {
@@ -1556,7 +1634,60 @@ async fn finalize(app: AppHandle, epoch: u64) {
     // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
     // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
     let raw_text = text.clone();
-    let smart_processed = if should_process_smart_text {
+    let assistant_processed = if let Some(request) = assistant_request.as_ref() {
+        match crate::application::assistant::process(&app, &state, request, &text).await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                if let Some(lease) = &lease {
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let identity = request.identity.clone().unwrap_or_default();
+                if history_allowed {
+                    let _ = crate::application::history::record(
+                        &app,
+                        crate::application::history::NewHistoryEntry {
+                            task_kind: request.action.task_kind().into(),
+                            source_text: request
+                                .selection
+                                .as_ref()
+                                .map(|value| value.text.clone())
+                                .unwrap_or_else(|| raw_text.clone()),
+                            output_text: String::new(),
+                            instruction: if request.action
+                                == crate::application::assistant::AssistantAction::TranslateSpeech
+                            {
+                                String::new()
+                            } else {
+                                raw_text.clone()
+                            },
+                            app_name: identity.app_name,
+                            process_name: identity.process_name,
+                            provider_id: history_provider_id(&state, &prefs.asr_model),
+                            model_id: prefs.asr_model.clone(),
+                            status: "failed".into(),
+                            error: Some(error.clone()),
+                            duration_ms: request.started_at.elapsed().as_millis() as u64,
+                        },
+                    );
+                }
+                crate::application::assistant::publish_answer(
+                    &app,
+                    request,
+                    String::new(),
+                    Some(error.clone()),
+                    false,
+                );
+                let _ = fail(app, epoch, error).await;
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let smart_processed = if let Some(result) = &assistant_processed {
+        result.output.clone()
+    } else if should_process_smart_text {
         let Some(template) = prefs
             .smart_templates
             .iter()
@@ -1599,37 +1730,29 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
-                let _ = fail_with_raw_fallback(
-                    app,
-                    epoch,
-                    error,
-                    raw_text.clone(),
-                    method.clone(),
-                )
-                .await;
+                let _ = fail_with_raw_fallback(app, epoch, error, raw_text.clone(), method.clone())
+                    .await;
                 return;
             }
         }
     } else {
         text
     };
-    let processed = match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
-        Ok(v) => v,
-        Err(e) => {
-            let state = app.state::<RuntimeState>();
+    let processed = if assistant_processed.is_some() {
+        smart_processed
+    } else {
+        match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
+            Ok(v) => v,
+            Err(e) => {
+                let state = app.state::<RuntimeState>();
             if let Some(lease) = &lease {
-                let _ = state.audio_session.release(lease);
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let _ =
+                    fail_with_raw_fallback(app, epoch, e, raw_text.clone(), method.clone()).await;
+                return;
             }
-            remove_temp(temp_path.clone());
-            let _ = fail_with_raw_fallback(
-                app,
-                epoch,
-                e,
-                raw_text.clone(),
-                method.clone(),
-            )
-            .await;
-            return;
         }
     };
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
@@ -1646,17 +1769,78 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     let result = if processed.is_empty() {
         Ok(())
+    } else if let (Some(request), Some(assistant)) =
+        (assistant_request.as_ref(), assistant_processed.as_ref())
+    {
+        if assistant.show_answer {
+            crate::application::assistant::publish_answer(
+                &app,
+                request,
+                processed.clone(),
+                None,
+                true,
+            );
+        }
+        if assistant.should_inject {
+            if let Some(target) = request.target {
+                match prepare_target_for_injection(target).await {
+                    Ok(()) => inject_text_inner(processed.clone(), Some(method.clone())).await,
+                    Err(error) => Err(error),
+                }
+            } else {
+                Err("语音助手的原目标窗口已丢失".into())
+            }
+        } else {
+            Ok(())
+        }
     } else {
-        inject_text_inner(processed.clone(), Some(method)).await
+        match activation_target {
+            Some(target) => match prepare_target_for_injection(target).await {
+                Ok(()) => inject_text_inner(processed.clone(), Some(method.clone())).await,
+                Err(error) => Err(error),
+            },
+            None => Err("听写开始时的目标窗口已丢失".into()),
+        }
     };
     if let Some(lease) = lease {
         let _ = state.audio_session.release(&lease);
     }
     remove_temp(temp_path);
     if let Err(e) = result {
+        if let Some(request) = assistant_request.as_ref() {
+            crate::application::assistant::publish_answer(
+                &app,
+                request,
+                processed.clone(),
+                Some(e.clone()),
+                true,
+            );
+            let identity = request.identity.clone().unwrap_or_default();
+            if history_allowed {
+                let _ = crate::application::history::record(
+                    &app,
+                    crate::application::history::NewHistoryEntry {
+                        task_kind: request.action.task_kind().into(),
+                        source_text: raw_text.clone(),
+                        output_text: processed.clone(),
+                        instruction: raw_text.clone(),
+                        app_name: identity.app_name,
+                        process_name: identity.process_name,
+                        provider_id: history_provider_id(&state, &prefs.asr_model),
+                        model_id: prefs.asr_model.clone(),
+                        status: "failed".into(),
+                        error: Some(e.clone()),
+                        duration_ms: request.started_at.elapsed().as_millis() as u64,
+                    },
+                );
+            }
+            drop(_guard);
+            let _ = fail(app, epoch, e).await;
+            return;
+        }
         // fail 负责在同一把 operation 锁下提交失败终态，避免与 start/cancel 交错。
         drop(_guard);
-        let _ = fail(app, epoch, e).await;
+        let _ = fail_with_raw_fallback(app, epoch, e, processed.clone(), method).await;
         return;
     }
     let committed = if let Ok(mut s) = state.dictation_runtime.session.lock() {
@@ -1676,6 +1860,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.activation_target = None;
             s.error = None;
             s.pending_fallback = None;
+            s.assistant_request = None;
             true
         } else {
             false
@@ -1685,6 +1870,53 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     if !committed {
         return;
+    }
+    let identity = assistant_request
+        .as_ref()
+        .and_then(|request| request.identity.clone())
+        .or(app_identity)
+        .unwrap_or_default();
+    let task_kind = assistant_request
+        .as_ref()
+        .map(|request| request.action.task_kind())
+        .unwrap_or("dictation");
+    let history_source = assistant_request
+        .as_ref()
+        .and_then(|request| {
+            request
+                .selection
+                .as_ref()
+                .map(|selection| selection.text.clone())
+        })
+        .unwrap_or_else(|| raw_text.clone());
+    let instruction = assistant_request
+        .as_ref()
+        .filter(|request| {
+            request.action != crate::application::assistant::AssistantAction::TranslateSpeech
+        })
+        .map(|_| raw_text.clone())
+        .unwrap_or_default();
+    if history_allowed {
+        let _ = crate::application::history::record(
+            &app,
+            crate::application::history::NewHistoryEntry {
+                task_kind: task_kind.into(),
+                source_text: history_source,
+                output_text: processed.clone(),
+                instruction,
+                app_name: identity.app_name,
+                process_name: identity.process_name,
+                provider_id: history_provider_id(&state, &prefs.asr_model),
+                model_id: prefs.asr_model.clone(),
+                status: "succeeded".into(),
+                error: None,
+                duration_ms: assistant_request
+                    .as_ref()
+                    .map(|request| request.started_at.elapsed().as_millis() as u64)
+                    .or_else(|| started_at.map(|value| value.elapsed().as_millis() as u64))
+                    .unwrap_or(0),
+            },
+        );
     }
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
@@ -1819,7 +2051,15 @@ async fn fail_internal(
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (lease, temp_path, asr, file_job, active_app_context, active_app_context_cancellation) = {
+    let (
+        lease,
+        temp_path,
+        asr,
+        file_job,
+        active_app_context,
+        active_app_context_cancellation,
+        history,
+    ) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1830,6 +2070,30 @@ async fn fail_internal(
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
+        let history = s
+            .history_allowed
+            .then(|| {
+                pending_fallback.as_ref().map(|pending| {
+                    let identity = s.app_identity.clone().unwrap_or_default();
+                    crate::application::history::NewHistoryEntry {
+                        task_kind: "dictation".into(),
+                        source_text: pending.text.clone(),
+                        output_text: pending.text.clone(),
+                        instruction: String::new(),
+                        app_name: identity.app_name,
+                        process_name: identity.process_name,
+                        provider_id: history_provider_id(&state, &s.prefs.asr_model),
+                        model_id: s.prefs.asr_model.clone(),
+                        status: "failed".into(),
+                        error: Some(error.clone()),
+                        duration_ms: s
+                            .started_at
+                            .map(|value| value.elapsed().as_millis() as u64)
+                            .unwrap_or(0),
+                    }
+                })
+            })
+            .flatten();
         s.mark_failed(error.clone(), pending_fallback);
         (
             s.lease.take(),
@@ -1838,6 +2102,7 @@ async fn fail_internal(
             s.file_job_id.take(),
             s.active_app_context.take(),
             s.active_app_context_cancellation.take(),
+            history,
         )
     };
     if let Some(cancellation) = active_app_context_cancellation {
@@ -1855,6 +2120,9 @@ async fn fail_internal(
         let _ = transcription_cancel_inner(&app, &state, &id);
     }
     let _ = release_backend_mic_inner(&state);
+    if let Some(entry) = history {
+        let _ = crate::application::history::record(&app, entry);
+    }
     hotkey::set_dictation_active(false);
     let can_use_raw_text = state
         .dictation_runtime
@@ -1862,11 +2130,7 @@ async fn fail_internal(
         .lock()
         .map(|session| session.pending_fallback.is_some())
         .unwrap_or(false);
-    let _ = crate::desktop::show_dictation_indicator_error(
-        &app,
-        error.clone(),
-        can_use_raw_text,
-    );
+    let _ = crate::desktop::show_dictation_indicator_error(&app, error.clone(), can_use_raw_text);
     publish_state(&app, Some(error.clone()));
     Err(error)
 }

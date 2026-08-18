@@ -166,6 +166,7 @@ pub(crate) fn set_startup_settings(
 /// - paste：备份剪贴板 → 写入文本 → 模拟平台粘贴键 → 还原剪贴板（更适合长中文）。
 /// - type：逐字 Unicode 模拟输入。
 pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> Result<(), String> {
+    let started = std::time::Instant::now();
     let text = text.trim_end_matches(['\r', '\n']).to_string();
     if text.is_empty() {
         return Ok(());
@@ -197,7 +198,12 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
             return crate::macos_native::paste_text(&text);
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            return crate::windows_native::paste_text(&text);
+        }
+
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             // paste 模式
             let mut clipboard =
@@ -228,6 +234,7 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
         Ok(()) => dlog!("[inject] 注入完成"),
         Err(e) => dlog!("[inject] 注入失败: {e}"),
     }
+    crate::application::performance::record("text.injection", started.elapsed().as_millis() as u64);
     result
 }
 

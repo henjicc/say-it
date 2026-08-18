@@ -6,7 +6,8 @@ import type { ShortcutCombo, ShortcutTriggerMode } from "@/features/dictation/ho
 export type ShortcutTarget =
   | { kind: "dictationMain" }
   | { kind: "dictationProfile"; profileId: string }
-  | { kind: "subtitles" };
+  | { kind: "subtitles" }
+  | { kind: "assistant"; action: "translateSpeech" | "editSelection" | "ask" };
 
 export interface ShortcutBindingItem extends ShortcutCombo {
   target: ShortcutTarget;
@@ -20,7 +21,7 @@ export interface ShortcutBindingItem extends ShortcutCombo {
 export function shortcutTargetKey(target: ShortcutTarget): string {
   return target.kind === "dictationProfile"
     ? `${target.kind}:${target.profileId}`
-    : target.kind;
+    : target.kind === "assistant" ? `${target.kind}:${target.action}` : target.kind;
 }
 
 export async function loadShortcutBindings(): Promise<ShortcutBindingItem[]> {
@@ -56,7 +57,7 @@ export async function clearShortcutBinding(item: ShortcutBindingItem): Promise<S
 async function syncShortcutDomain(target: ShortcutTarget) {
   if (target.kind === "subtitles") {
     await loadSubtitleShortcut();
-  } else {
+  } else if (target.kind !== "assistant") {
     await loadDictationSettings();
   }
 }

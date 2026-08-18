@@ -68,6 +68,7 @@ struct Request {
     uint32_t pid = 0;
     size_t maxChars = 3000;
     bool deepClipboard = true;
+    bool selectionOnly = false;
     uint32_t readerBudgetMs = 650;
     bool hasCursor = false;
     POINT cursor{};
@@ -215,6 +216,7 @@ std::optional<Request> parseRequest(const std::string& json) {
     request.pid = static_cast<uint32_t>(*pid);
     request.maxChars = std::clamp<size_t>(static_cast<size_t>(*maxChars), 1, 6000);
     request.deepClipboard = jsonBool(json, "deepClipboard", true);
+    request.selectionOnly = jsonBool(json, "selectionOnly", false);
     request.readerBudgetMs = static_cast<uint32_t>(std::clamp<uint64_t>(readerBudgetMs.value_or(650), 50, 700));
     if (cursorX && cursorY
         && *cursorX >= std::numeric_limits<LONG>::min() && *cursorX <= std::numeric_limits<LONG>::max()
@@ -804,6 +806,42 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
     return true;
 }
 
+bool readClipboardSelection(HWND target, Result& result) {
+    if (GetForegroundWindow() != target) return false;
+    ComPtr<IDataObject> backup;
+    OleGetClipboard(backup.put());
+    const DWORD before = GetClipboardSequenceNumber();
+    sendChord('C');
+    std::wstring text;
+    DWORD copiedSequence = before;
+    for (int attempt = 0; attempt < 25; ++attempt) {
+        if (GetForegroundWindow() != target) break;
+        if (GetClipboardSequenceNumber() != before) {
+            copiedSequence = GetClipboardSequenceNumber();
+            text = clipboardUnicodeText();
+            if (!text.empty()) break;
+        }
+        Sleep(10);
+    }
+    if (GetForegroundWindow() != target) text.clear();
+    if (GetClipboardSequenceNumber() == copiedSequence) {
+        if (backup) {
+            OleSetClipboard(backup.get());
+            OleFlushClipboard();
+        } else if (OpenClipboard(nullptr)) {
+            EmptyClipboard();
+            CloseClipboard();
+        }
+    } else {
+        text.clear();
+        result.diagnostics.push_back(L"选区复制期间检测到其他剪贴板修改，未覆盖新内容。 ");
+    }
+    if (text.empty()) return false;
+    result.selectedText = text;
+    result.source = "clipboardSelection";
+    return true;
+}
+
 bool isBrowserOrElectron(const std::wstring& process) {
     static const std::vector<std::wstring> names = {
         L"chrome.exe", L"msedge.exe", L"firefox.exe", L"code.exe", L"cursor.exe",
@@ -870,6 +908,32 @@ Result capture(const Request& request) {
     const bool browser = isBrowserOrElectron(process);
     const bool office = isOffice(process);
     bool sensitive = false;
+
+    if (request.selectionOnly) {
+        ComPtr<IUIAutomationElement> focused = focusedElement(target, actualPid, process);
+        if (focused && elementIsPassword(focused.get())) {
+            result.status = "sensitive";
+            result.diagnostics.push_back(L"焦点位于密码控件，已停止选区读取。 ");
+            return result;
+        }
+        if (focused) readUiaWithAncestors(focused.get(), result, request.maxChars);
+        if (result.selectedText.empty() && focused) readIa2(focused.get(), result, request.maxChars);
+        if (result.selectedText.empty()) readWin32(target, result, request.maxChars, sensitive);
+        if (result.selectedText.empty()) readMsaa(target, result);
+        result.focusedText.clear();
+        result.caretContext.clear();
+        result.visibleText.clear();
+        result.documentText.clear();
+        if (sensitive) {
+            result.status = "sensitive";
+            return result;
+        }
+        if (result.selectedText.empty() && request.deepClipboard) readClipboardSelection(target, result);
+        enforceBudget(result, request.maxChars);
+        result.status = result.selectedText.empty() ? "empty" : "captured";
+        result.elapsedMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count());
+        return result;
+    }
 
     // 全局 GetFocusedElement 在 Chromium/Electron 中偶尔会被其多进程辅助功能桥拖慢。
     // 快捷键刚触发时鼠标通常仍位于用户点击的编辑区，先用定点 MSAA/IA2 读取，可绕开全局焦点查询。
@@ -1050,9 +1114,9 @@ bool selfTestRequested() {
 
 int runSelfTests() {
     const auto request = parseRequest(
-        R"({"protocolVersion":1,"requestId":42,"hwnd":123,"pid":456,"maxChars":3000,"deepClipboard":true,"cursorX":-320,"cursorY":480})");
+        R"({"protocolVersion":1,"requestId":42,"hwnd":123,"pid":456,"maxChars":3000,"deepClipboard":true,"selectionOnly":true,"cursorX":-320,"cursorY":480})");
     if (!request || request->requestId != 42 || request->hwnd != 123 || request->pid != 456
-        || request->maxChars != 3000 || !request->deepClipboard || !request->hasCursor
+        || request->maxChars != 3000 || !request->deepClipboard || !request->selectionOnly || !request->hasCursor
         || request->cursor.x != -320 || request->cursor.y != 480) return 10;
     if (parseRequest(R"({"protocolVersion":1})")) return 11;
 

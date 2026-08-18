@@ -4,7 +4,6 @@ use crate::application::contract::{
 };
 use crate::application::events::BackendEvent;
 use crate::commands::asr::{start_asr_stream_inner, stop_asr_stream_inner};
-use crate::commands::common::{read_provider_settings, resolve_provider_id};
 use crate::commands::obs::{sync_obs_overlay_layout, ObsOverlayLayoutRequest};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner,
@@ -16,7 +15,6 @@ use crate::obs_overlay::{
     overlay_status, publish_overlay_snapshot, ObsOverlaySnapshot, ObsOverlayStyle,
 };
 use crate::prelude::*;
-use crate::providers::capabilities::translation_for_with_plugin;
 use crate::state::{AsrStreamInput, RuntimeState};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -920,22 +918,7 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
             .lock()
             .map_err(|_| "字幕状态锁失败")?;
         let model = session.prefs.translation_model.clone();
-        let plugin_provider = state
-            .plugin_registry
-            .lock()
-            .map_err(|_| "插件注册表锁失败")?
-            .provider_id_for_model(&model);
-        let provider_id = resolve_provider_id(&state, "translation", plugin_provider)?;
-        let settings = read_provider_settings(&state)?;
-        let profile = find_profile(&settings, &provider_id)
-            .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
-        let plugin = state
-            .plugin_registry
-            .lock()
-            .map_err(|_| "插件注册表锁失败")?
-            .runtime_for_provider(&provider_id)?;
-        let provider =
-            translation_for_with_plugin(profile, plugin).map_err(|error| error.to_string())?;
+        let provider = crate::application::translation::resolve_provider(&state, &model)?;
         Ok((
             model,
             session.prefs.translation_source_lang.clone(),
