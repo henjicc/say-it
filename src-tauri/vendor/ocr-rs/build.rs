@@ -9,6 +9,8 @@ const MNN_PREBUILT_VERSION: &str = "dev";
 const MNN_PREBUILT_REPO: &str = "zibo-chen/MNN-Prebuilds";
 const WINDOWS_X64_ARCHIVE_SHA256: &str =
     "A777AD47EEF1F9AA7246BF5F15B9739A3BE1733717FA64422EFBDC02F08E2D1C";
+const MACOS_UNIVERSAL_ARCHIVE_SHA256: &str =
+    "61E0F340B062CAE44D0995610C90AD46B9609839F02854B61F4164EA91698BBD";
 
 /// MNN linking mode
 enum MnnLinkMode {
@@ -282,13 +284,26 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
     // but never create it from build.rs: cargo publish verification forbids
     // modifying the package source directory.
     if local_extract_dir.join("lib").exists() && local_extract_dir.join("include").exists() {
-        println!(
-            "cargo:warning=Using cached prebuilt MNN from: {}",
-            local_extract_dir.display()
-        );
-        // Ensure dynamic libs are removed even from cached extractions
-        remove_dynamic_libs(&local_extract_dir);
-        return local_extract_dir;
+        let local_archive = local_cache_dir.join(format!("{}.tar.gz", asset_name));
+        let cache_is_verified = if os == "macos" && asset_name == "mnn-dev-macos-universal" {
+            if local_archive.is_file() {
+                verify_pinned_archive(&local_archive, os, asset_name);
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        if cache_is_verified {
+            println!(
+                "cargo:warning=Using cached prebuilt MNN from: {}",
+                local_extract_dir.display()
+            );
+            // Ensure dynamic libs are removed even from cached extractions
+            remove_dynamic_libs(&local_extract_dir);
+            return local_extract_dir;
+        }
     }
 
     let cache_dir =
@@ -296,12 +311,25 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
     let extract_dir = cache_dir.join(asset_name);
 
     if extract_dir.join("lib").exists() && extract_dir.join("include").exists() {
-        println!(
-            "cargo:warning=Using OUT_DIR prebuilt MNN from: {}",
-            extract_dir.display()
-        );
-        remove_dynamic_libs(&extract_dir);
-        return extract_dir;
+        let archive_path = cache_dir.join(format!("{}.tar.gz", asset_name));
+        let cache_is_verified = if os == "macos" && asset_name == "mnn-dev-macos-universal" {
+            if archive_path.is_file() {
+                verify_pinned_archive(&archive_path, os, asset_name);
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        if cache_is_verified {
+            println!(
+                "cargo:warning=Using OUT_DIR prebuilt MNN from: {}",
+                extract_dir.display()
+            );
+            remove_dynamic_libs(&extract_dir);
+            return extract_dir;
+        }
     }
 
     fs::create_dir_all(&cache_dir).expect("Failed to create prebuilt cache directory");
@@ -351,9 +379,7 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
             download_file(&url, &archive_path);
         }
     }
-    if os == "windows" && asset_name == "mnn-dev-windows-x86_64" {
-        verify_archive(&archive_path, WINDOWS_X64_ARCHIVE_SHA256);
-    }
+    verify_pinned_archive(&archive_path, os, asset_name);
 
     // Extract
     println!(
@@ -397,6 +423,16 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
     remove_dynamic_libs(&extract_dir);
 
     extract_dir
+}
+
+fn verify_pinned_archive(path: &Path, os: &str, asset_name: &str) {
+    match (os, asset_name) {
+        ("windows", "mnn-dev-windows-x86_64") => verify_archive(path, WINDOWS_X64_ARCHIVE_SHA256),
+        ("macos", "mnn-dev-macos-universal") => {
+            verify_archive(path, MACOS_UNIVERSAL_ARCHIVE_SHA256)
+        }
+        _ => {}
+    }
 }
 
 fn verify_archive(path: &Path, expected: &str) {

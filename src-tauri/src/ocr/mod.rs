@@ -8,6 +8,8 @@ use serde::Serialize;
 
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) mod ppocr;
 #[cfg(windows)]
 pub(crate) mod windows;
 
