@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Combine, Plus, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
-import { isMacOS, shortcutModifierLabels } from "@/lib/platform";
+import { isMacOS, isWindows, shortcutModifierLabels } from "@/lib/platform";
 import {
   formatClock,
   parseClock,
@@ -504,6 +504,7 @@ export function SubtitleEditor({
    * 默认滚动判定，表现为 Alt+滚轮缩放一次之后，页面/列表滚轮整体失灵，要点一下别处才恢复。
    * 阻止 Alt 键 keydown 的默认动作即可避免触发该系统行为，不影响 wheel 事件里正常读取 altKey。 */
   useEffect(() => {
+    if (!isWindows) return;
     const onAltKeydown = (event: KeyboardEvent) => {
       if (event.key === "Alt") event.preventDefault();
     };
