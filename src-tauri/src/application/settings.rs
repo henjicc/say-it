@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +23,14 @@ pub(crate) struct AppSettings {
     /// 全局热词与上下文，见 `application::customization`。
     #[serde(default = "empty_object")]
     pub(crate) customization_prefs: Value,
+    #[serde(default = "default_assistant_prefs")]
+    pub(crate) assistant_prefs: Value,
+    #[serde(default = "default_history_prefs")]
+    pub(crate) history_prefs: Value,
+    #[serde(default)]
+    pub(crate) onboarding_version: u32,
+    #[serde(default = "empty_object")]
+    pub(crate) setup_results: Value,
     #[serde(default = "default_theme")]
     pub(crate) theme: Value,
     #[serde(default)]
@@ -47,6 +55,12 @@ fn empty_object() -> Value {
 fn default_theme() -> Value {
     serde_json::json!({"tone":"dark","accent":"#5199FF"})
 }
+fn default_assistant_prefs() -> Value {
+    serde_json::json!({"translationModel":"none","sourceLanguage":"auto","targetLanguage":"zh"})
+}
+fn default_history_prefs() -> Value {
+    serde_json::json!({"enabled":true,"retentionDays":30,"excludedApps":[]})
+}
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -57,6 +71,10 @@ impl Default for AppSettings {
             subtitle_prefs: empty_object(),
             compare_prefs: empty_object(),
             customization_prefs: empty_object(),
+            assistant_prefs: default_assistant_prefs(),
+            history_prefs: default_history_prefs(),
+            onboarding_version: 0,
+            setup_results: empty_object(),
             theme: default_theme(),
             custom_cue_start: None,
             custom_cue_end: None,
@@ -151,6 +169,21 @@ pub(crate) fn update_app_settings(
     if domain == "customization" {
         crate::application::customization::validate_customization_settings_value(&value)?;
     }
+    if domain == "history" {
+        let days = value
+            .get("retentionDays")
+            .and_then(Value::as_u64)
+            .unwrap_or(30);
+        if !(1..=3650).contains(&days) {
+            return Err("历史保留天数必须在 1～3650 之间".into());
+        }
+        if value
+            .get("excludedApps")
+            .is_some_and(|apps| !apps.is_array())
+        {
+            return Err("历史排除应用必须是数组".into());
+        }
+    }
     let mut next = state
         .app_settings
         .lock()
@@ -161,6 +194,8 @@ pub(crate) fn update_app_settings(
         "subtitles" => next.subtitle_prefs = value,
         "comparison" => next.compare_prefs = value,
         "customization" => next.customization_prefs = value,
+        "assistant" => next.assistant_prefs = value,
+        "history" => next.history_prefs = value,
         "theme" => next.theme = value,
         _ => return Err(format!("未知配置领域：{domain}")),
     }
@@ -184,6 +219,14 @@ pub(crate) fn update_app_settings(
             }
         }
         return Err(error);
+    }
+    if domain == "history" {
+        let days = next
+            .history_prefs
+            .get("retentionDays")
+            .and_then(Value::as_u64)
+            .unwrap_or(30) as u32;
+        crate::application::history::cleanup_expired(&app, days)?;
     }
     Ok(next)
 }
@@ -284,8 +327,11 @@ mod tests {
     #[test]
     fn old_json_gets_safe_defaults() {
         let v: AppSettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(v.schema_version, 1);
+        assert_eq!(v.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(v.dictation_prefs.is_object());
+        assert_eq!(v.history_prefs["retentionDays"], 30);
+        assert_eq!(v.assistant_prefs["translationModel"], "none");
+        assert!(v.setup_results.is_object());
     }
     #[test]
     fn rejects_non_object_domain() {

@@ -13,6 +13,9 @@ pub(crate) enum ShortcutTarget {
         profile_id: String,
     },
     Subtitles,
+    Assistant {
+        action: crate::application::assistant::AssistantAction,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -60,7 +63,14 @@ pub(crate) fn get_shortcut_bindings(
         .lock()
         .map_err(|_| "Subtitle shortcut lock failed".to_string())?
         .clone();
-    Ok(collect_shortcut_bindings(&dictation, &subtitle))
+    let assistant = state
+        .assistant_shortcuts
+        .lock()
+        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .clone();
+    Ok(collect_all_shortcut_bindings(
+        &dictation, &subtitle, &assistant,
+    ))
 }
 
 #[tauri::command]
@@ -70,6 +80,17 @@ pub(crate) fn update_shortcut_binding(
     binding: ShortcutBindingInput,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<Vec<ShortcutBindingItem>, String> {
+    if let ShortcutTarget::Assistant { action } = target {
+        return transact_assistant_shortcuts(&app, &state, move |settings| {
+            let shortcut = settings.get_mut(action);
+            shortcut.key_code = binding.key_code.trim().to_string();
+            shortcut.ctrl = binding.ctrl;
+            shortcut.shift = binding.shift;
+            shortcut.alt = binding.alt;
+            shortcut.meta = binding.meta;
+            Ok(())
+        });
+    }
     transact_shortcut_settings(&app, &state, move |dictation, subtitle| {
         apply_binding_update(dictation, subtitle, &target, binding)
     })
@@ -81,6 +102,12 @@ pub(crate) fn clear_shortcut_binding(
     target: ShortcutTarget,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<Vec<ShortcutBindingItem>, String> {
+    if let ShortcutTarget::Assistant { action } = target {
+        return transact_assistant_shortcuts(&app, &state, move |settings| {
+            *settings.get_mut(action) = crate::application::assistant::AssistantShortcut::default();
+            Ok(())
+        });
+    }
     transact_shortcut_settings(&app, &state, move |dictation, subtitle| {
         clear_binding(dictation, subtitle, &target)
     })
@@ -136,6 +163,12 @@ where
     let mut next_subtitle = previous_subtitle.clone();
     mutate(&mut next_dictation, &mut next_subtitle)?;
     validate_shortcut_settings(&next_dictation, &next_subtitle, state)?;
+    let assistant = state
+        .assistant_shortcuts
+        .lock()
+        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .clone();
+    validate_assistant_shortcuts(&next_dictation, &next_subtitle, &assistant)?;
 
     if let Err(error) = apply_dictation_hotkey(&next_dictation) {
         return Err(error);
@@ -178,7 +211,11 @@ where
         return Err(with_restore_failures(error, failures));
     }
 
-    Ok(collect_shortcut_bindings(&next_dictation, &next_subtitle))
+    Ok(collect_all_shortcut_bindings(
+        &next_dictation,
+        &next_subtitle,
+        &assistant,
+    ))
 }
 
 fn restore_after_registration_failure(
@@ -270,6 +307,7 @@ fn apply_binding_update(
             subtitle.alt = binding.alt;
             subtitle.meta = binding.meta;
         }
+        ShortcutTarget::Assistant { .. } => return Err("语音助手快捷键应由专用事务更新".into()),
     }
     Ok(())
 }
@@ -309,6 +347,7 @@ fn clear_binding(
             &mut subtitle.alt,
             &mut subtitle.meta,
         ),
+        ShortcutTarget::Assistant { .. } => return Err("语音助手快捷键应由专用事务清除".into()),
     }
     Ok(())
 }
@@ -422,11 +461,13 @@ pub(crate) fn validate_shortcut_settings(
             .ok_or_else(|| "实时字幕使用了不支持的快捷键".to_string())?;
         let subtitle_mods = subtitle_shortcut_mods(subtitle);
         validate_reserved_shortcut(subtitle_vk, subtitle_mods, "实时字幕")?;
-        if let Some((owner, press_hold)) = shortcuts.iter().find_map(
-            |(&(vk, mods, press_hold), owner)| {
-                (vk == subtitle_vk && mods == subtitle_mods).then_some((owner, press_hold))
-            },
-        ) {
+        if let Some((owner, press_hold)) =
+            shortcuts
+                .iter()
+                .find_map(|(&(vk, mods, press_hold), owner)| {
+                    (vk == subtitle_vk && mods == subtitle_mods).then_some((owner, press_hold))
+                })
+        {
             return Err(format!(
                 "{SHORTCUT_CONFLICT_PREFIX}实时字幕与“{owner}（{}）”使用了相同快捷键。实时字幕占用整个物理快捷键，不能与语音输入快捷键共存。",
                 shortcut_trigger_label(press_hold),
@@ -514,6 +555,171 @@ fn collect_shortcut_bindings(
         });
     }
     items
+}
+
+fn collect_all_shortcut_bindings(
+    dictation: &DictationSettings,
+    subtitle: &SubtitleShortcutSettings,
+    assistant: &crate::application::assistant::AssistantShortcutSettings,
+) -> Vec<ShortcutBindingItem> {
+    let mut items = collect_shortcut_bindings(dictation, subtitle);
+    for (action, name, label) in [
+        (
+            crate::application::assistant::AssistantAction::TranslateSpeech,
+            "语音助手 · 语音翻译",
+            "说话并翻译到目标语言",
+        ),
+        (
+            crate::application::assistant::AssistantAction::EditSelection,
+            "语音助手 · 选区编辑",
+            "按语音指令修改选中文本",
+        ),
+        (
+            crate::application::assistant::AssistantAction::Ask,
+            "语音助手 · 语音问答",
+            "携带选区进行语音提问",
+        ),
+    ] {
+        let shortcut = assistant.get(action);
+        items.push(ShortcutBindingItem {
+            target: ShortcutTarget::Assistant { action },
+            name: name.into(),
+            action_label: label.into(),
+            enabled: !shortcut.key_code.trim().is_empty(),
+            key_code: shortcut.key_code.clone(),
+            ctrl: shortcut.ctrl,
+            shift: shortcut.shift,
+            alt: shortcut.alt,
+            meta: shortcut.meta,
+            trigger_mode: ShortcutTriggerMode::Toggle,
+            trigger_mode_editable: false,
+        });
+    }
+    items
+}
+
+fn assistant_mods(shortcut: &crate::application::assistant::AssistantShortcut) -> u8 {
+    let mut mods = 0;
+    if shortcut.ctrl {
+        mods |= hotkey::MOD_CTRL;
+    }
+    if shortcut.shift {
+        mods |= hotkey::MOD_SHIFT;
+    }
+    if shortcut.alt {
+        mods |= hotkey::MOD_ALT;
+    }
+    if shortcut.meta {
+        mods |= hotkey::MOD_WIN;
+    }
+    mods
+}
+
+fn validate_assistant_shortcuts(
+    dictation: &DictationSettings,
+    subtitle: &SubtitleShortcutSettings,
+    assistant: &crate::application::assistant::AssistantShortcutSettings,
+) -> Result<(), String> {
+    let mut used = std::collections::HashMap::<(u16, u8), String>::new();
+    if !dictation.key_code.trim().is_empty() {
+        if let Some(vk) = hotkey::code_to_vk(&dictation.key_code) {
+            used.insert(
+                (vk, dictation_mods(dictation)),
+                "语音输入 · 主快捷键".into(),
+            );
+        }
+    }
+    for profile in dictation
+        .shortcut_profiles
+        .iter()
+        .filter(|profile| profile.enabled && !profile.key_code.trim().is_empty())
+    {
+        if let Some(vk) = hotkey::code_to_vk(&profile.key_code) {
+            used.insert((vk, profile.mods()), format!("语音输入 · {}", profile.name));
+        }
+    }
+    if !subtitle.key_code.trim().is_empty() {
+        if let Some(vk) = hotkey::code_to_vk(&subtitle.key_code) {
+            used.insert((vk, subtitle_shortcut_mods(subtitle)), "实时字幕".into());
+        }
+    }
+    for (action, label) in [
+        (
+            crate::application::assistant::AssistantAction::TranslateSpeech,
+            "语音助手 · 语音翻译",
+        ),
+        (
+            crate::application::assistant::AssistantAction::EditSelection,
+            "语音助手 · 选区编辑",
+        ),
+        (
+            crate::application::assistant::AssistantAction::Ask,
+            "语音助手 · 语音问答",
+        ),
+    ] {
+        let shortcut = assistant.get(action);
+        if shortcut.key_code.trim().is_empty() {
+            continue;
+        }
+        let vk = hotkey::code_to_vk(&shortcut.key_code)
+            .ok_or_else(|| format!("{label}使用了不支持的按键"))?;
+        validate_reserved_shortcut(vk, assistant_mods(shortcut), label)?;
+        if let Some(owner) = used.insert((vk, assistant_mods(shortcut)), label.into()) {
+            return Err(format!(
+                "{SHORTCUT_CONFLICT_PREFIX}{label}与“{owner}”使用了相同快捷键。"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn transact_assistant_shortcuts<F>(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, RuntimeState>,
+    mutate: F,
+) -> Result<Vec<ShortcutBindingItem>, String>
+where
+    F: FnOnce(&mut crate::application::assistant::AssistantShortcutSettings) -> Result<(), String>,
+{
+    let _operation = state
+        .shortcut_config_operation
+        .lock()
+        .map_err(|_| "快捷键配置操作锁失败")?;
+    let dictation = state
+        .dictation
+        .lock()
+        .map_err(|_| "Dictation lock failed")?
+        .clone();
+    let subtitle = state
+        .subtitle_shortcut
+        .lock()
+        .map_err(|_| "Subtitle shortcut lock failed")?
+        .clone();
+    let previous = state
+        .assistant_shortcuts
+        .lock()
+        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .clone();
+    let mut next = previous.clone();
+    mutate(&mut next)?;
+    validate_assistant_shortcuts(&dictation, &subtitle, &next)?;
+    if let Err(error) = crate::application::assistant::set_shortcuts(app, &next) {
+        let _ = crate::application::assistant::set_shortcuts(app, &previous);
+        return Err(error);
+    }
+    *state
+        .assistant_shortcuts
+        .lock()
+        .map_err(|_| "语音助手快捷键配置锁失败")? = next.clone();
+    if let Err(error) = save_persisted_state(app, state) {
+        *state
+            .assistant_shortcuts
+            .lock()
+            .map_err(|_| "语音助手快捷键配置锁失败")? = previous.clone();
+        let _ = crate::application::assistant::set_shortcuts(app, &previous);
+        return Err(error);
+    }
+    Ok(collect_all_shortcut_bindings(&dictation, &subtitle, &next))
 }
 
 fn processing_mode_label(mode: ShortcutProcessingMode) -> &'static str {
@@ -605,7 +811,9 @@ mod tests {
             };
             let error = validate_shortcut_settings(&dictation, &subtitle, &state).unwrap_err();
             assert!(error.starts_with(SHORTCUT_CONFLICT_PREFIX));
-            assert!(error.contains(shortcut_trigger_label(mode == ShortcutTriggerMode::PressHold)));
+            assert!(error.contains(shortcut_trigger_label(
+                mode == ShortcutTriggerMode::PressHold
+            )));
         }
     }
 
@@ -618,12 +826,9 @@ mod tests {
             shortcut_profiles: vec![profile("智能方案", "F9", ShortcutTriggerMode::Toggle)],
             ..Default::default()
         };
-        let error = validate_shortcut_settings(
-            &dictation,
-            &SubtitleShortcutSettings::default(),
-            &state,
-        )
-        .unwrap_err();
+        let error =
+            validate_shortcut_settings(&dictation, &SubtitleShortcutSettings::default(), &state)
+                .unwrap_err();
         assert!(error.starts_with(SHORTCUT_CONFLICT_PREFIX));
         assert!(error.contains("语音输入 · 主快捷键"));
         assert!(error.contains("单击切换"));
@@ -747,5 +952,40 @@ mod tests {
         )
         .unwrap_err()
         .contains("上下文调试"));
+    }
+
+    #[test]
+    fn assistant_shortcuts_conflict_with_existing_and_each_other() {
+        let dictation = DictationSettings {
+            key_code: "F9".into(),
+            ctrl: true,
+            ..Default::default()
+        };
+        let mut assistant = crate::application::assistant::AssistantShortcutSettings::default();
+        assistant.translate_speech = crate::application::assistant::AssistantShortcut {
+            key_code: "F9".into(),
+            ctrl: true,
+            ..Default::default()
+        };
+        assert!(validate_assistant_shortcuts(
+            &dictation,
+            &SubtitleShortcutSettings::default(),
+            &assistant,
+        )
+        .unwrap_err()
+        .contains("主快捷键"));
+
+        assistant.translate_speech.key_code = "F10".into();
+        assistant.ask = assistant.translate_speech.clone();
+        assert!(validate_assistant_shortcuts(
+            &DictationSettings {
+                key_code: String::new(),
+                ..Default::default()
+            },
+            &SubtitleShortcutSettings::default(),
+            &assistant,
+        )
+        .unwrap_err()
+        .contains("语音问答"));
     }
 }

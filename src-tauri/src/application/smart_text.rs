@@ -150,6 +150,11 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
     ))
 }
 
+pub(crate) fn validate_available(state: &RuntimeState) -> Result<(), String> {
+    let profile = selected_profile(state)?;
+    client_and_model(&profile).map(|_| ())
+}
+
 fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
@@ -225,13 +230,19 @@ pub(crate) async fn process_smart_text(
     let prefs = crate::application::customization::prefs(state);
     let global_context = crate::application::customization::render_context(&prefs);
     let hotwords = crate::application::customization::hotwords_as_text(&prefs.hotwords);
-    let prompt = render_prompt(
+    let mut prompt = render_prompt(
         template,
         text,
         active_app_context,
         &global_context,
         &hotwords,
     )?;
+    let corrections =
+        crate::application::history::relevant_corrections(state, text, active_app_context);
+    if !corrections.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&corrections);
+    }
     let profile = selected_profile(state)?;
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(

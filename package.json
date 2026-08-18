@@ -8,6 +8,10 @@
     "ui:dev": "vite",
     "ui:build": "vite build",
     "ui:preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:ui": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "check": "npm run typecheck && npm run test:ui && npm run ui:build && npm run test:rust",
     "context-probe:build": "node scripts/build-context-probe.mjs",
     "context-probe:test": "ctest --test-dir src-tauri/target/context-probe-build -C Release --output-on-failure",
     "tauri:dev": "npm run context-probe:build && node scripts/run-tauri.mjs dev",
@@ -17,12 +21,16 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.8.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

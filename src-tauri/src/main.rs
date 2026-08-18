@@ -1,7 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
-mod application;
 mod active_app_context;
+mod application;
 mod audio_dsp;
 mod audio_prep;
 mod commands;
@@ -20,10 +20,17 @@ mod prelude;
 mod providers;
 mod state;
 mod text_align;
+#[cfg(windows)]
+mod windows_native;
 
 use prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use application::assistant::{
+    assistant_cancel, assistant_start, assistant_stop, capture_current_selection,
+    close_assistant_answer, get_assistant_answer, insert_assistant_answer,
+    regenerate_assistant_answer,
+};
 use application::audio_lab::{
     audio_lab_audio_path, audio_lab_reprocess, audio_lab_start, audio_lab_stop,
     get_audio_lab_runtime,
@@ -36,14 +43,22 @@ use application::dictation::{
     dictation_cancel, dictation_start, dictation_stop, dictation_toggle, dictation_use_raw_text,
     get_dictation_runtime, list_running_apps, preview_dictation_cue,
 };
+use application::history::{
+    clear_history, delete_history_entry, open_history_window, query_history,
+    retry_history_injection, update_history_text,
+};
 use application::llm_models::refresh_llm_models;
+use application::performance::get_performance_metrics;
 use application::plugin_management::{
     download_provider_model_pack, install_provider_plugin, list_provider_plugins,
     preview_provider_plugin, reload_provider_plugins, run_provider_plugin_action,
-    set_provider_plugin_enabled, take_pending_provider_plugin_imports,
-    uninstall_provider_plugin,
+    set_provider_plugin_enabled, take_pending_provider_plugin_imports, uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
+use application::setup::{
+    complete_onboarding, get_setup_status, request_setup_permissions, run_injection_setup_check,
+    run_setup_check,
+};
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
     apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle,
@@ -80,8 +95,8 @@ fn is_macos_app_executable(path: &std::path::Path) -> bool {
 
 #[cfg(target_os = "macos")]
 fn migrate_legacy_macos_autostart(app: &tauri::AppHandle) -> Result<(), String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("定位 macOS 应用程序失败：{error}"))?;
+    let executable =
+        std::env::current_exe().map_err(|error| format!("定位 macOS 应用程序失败：{error}"))?;
     // 开发态二进制不能把已安装应用的自启项迁移到 target/debug/say-it。
     if !is_macos_app_executable(&executable) {
         return Ok(());
@@ -247,6 +262,12 @@ fn main() {
                     *subtitle_shortcut = persisted.subtitle_shortcut;
                 }
                 {
+                    let mut assistant_shortcuts = state.assistant_shortcuts.lock().map_err(|_| {
+                        std::io::Error::other("assistant shortcut lock failed while loading persisted data")
+                    })?;
+                    *assistant_shortcuts = persisted.assistant_shortcuts;
+                }
+                {
                     let mut translation_model = state.subtitle_translation_model.lock().map_err(|_| {
                         std::io::Error::other("subtitle translation model lock failed while loading persisted data")
                     })?;
@@ -268,6 +289,7 @@ fn main() {
                 }
             }
 
+            application::history::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::plugin_management::initialize(&app.handle())?;
             let initial_args = std::env::args().collect::<Vec<_>>();
             let initial_cwd = std::env::current_dir().unwrap_or_default();
@@ -318,6 +340,15 @@ fn main() {
                     "subtitle-shortcut-error",
                     json!({ "message": err, "key_code": subtitle_shortcut_settings.key_code }),
                 );
+            }
+
+            let assistant_shortcuts = state
+                .assistant_shortcuts
+                .lock()
+                .map_err(|_| std::io::Error::other("assistant shortcut lock failed while registering"))?
+                .clone();
+            if let Err(error) = application::assistant::set_shortcuts(&app.handle(), &assistant_shortcuts) {
+                eprintln!("[assistant-shortcut] {error}");
             }
 
             let _ = ensure_indicator_window(&app.handle());
@@ -505,7 +536,27 @@ fn main() {
             get_obs_password,
             connect_obs,
             install_obs_overlay,
-            uninstall_obs_overlay
+            uninstall_obs_overlay,
+            query_history,
+            update_history_text,
+            retry_history_injection,
+            delete_history_entry,
+            clear_history,
+            open_history_window,
+            get_setup_status,
+            run_setup_check,
+            request_setup_permissions,
+            run_injection_setup_check,
+            complete_onboarding,
+            capture_current_selection,
+            assistant_start,
+            assistant_stop,
+            assistant_cancel,
+            get_assistant_answer,
+            insert_assistant_answer,
+            regenerate_assistant_answer,
+            close_assistant_answer,
+            get_performance_metrics
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

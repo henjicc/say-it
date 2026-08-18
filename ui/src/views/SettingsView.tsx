@@ -9,6 +9,8 @@ import { SettingsAppearancePanel } from "@/views/SettingsAppearancePanel";
 import { SettingsComparePanel } from "@/views/SettingsComparePanel";
 import { SettingsAdvancedPanel } from "@/views/SettingsAdvancedPanel";
 import { SettingsKeyBindingsPanel } from "@/views/SettingsKeyBindingsPanel";
+import { SettingsHistoryPanel } from "@/views/SettingsHistoryPanel";
+import { SettingsSetupPanel } from "@/views/SettingsSetupPanel";
 import { useUiStore, type SettingsTabKey } from "@/store/useUiStore";
 
 const TABS: TabItem<SettingsTabKey>[] = [
@@ -56,7 +58,9 @@ export function SettingsView() {
         {tab === "general" && (
           <div className="flex flex-col gap-7">
             <SettingsStartupPanel />
+            <SettingsSetupPanel />
             <SettingsAppearancePanel />
+            <SettingsHistoryPanel />
           </div>
         )}
         {tab === "keys" && <SettingsKeyBindingsPanel />}

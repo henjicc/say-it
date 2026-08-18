@@ -1,9 +1,9 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "subtitles" | "transcription" | "customization" | "settings";
+export type ViewKey = "dictation" | "subtitles" | "transcription" | "customization" | "history" | "settings";
 export type CustomizationTabKey = "hotwords" | "context";
 export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "keys" | "compare" | "advanced";
-export type DictationTabKey = "basic" | "local" | "smart" | "apps" | "debug";
+export type DictationTabKey = "basic" | "assistant" | "local" | "smart" | "apps" | "debug";
 export type SceneRulesTabKey = "apps" | "shortcuts";
 export type SmartTextTabKey = "template" | "context" | "preview";
 export type SubtitleTabKey = "general" | "style" | "translation" | "obs";

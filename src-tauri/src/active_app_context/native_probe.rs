@@ -31,6 +31,7 @@ struct ProbeRequest {
     pid: u32,
     max_chars: usize,
     deep_clipboard: bool,
+    selection_only: bool,
     reader_budget_ms: u32,
     cursor_x: Option<i32>,
     cursor_y: Option<i32>,
@@ -226,6 +227,7 @@ fn source(value: &str) -> Option<ContextSource> {
         "officeNative" => Some(ContextSource::OfficeNative),
         "msaa" => Some(ContextSource::Msaa),
         "clipboardDeep" => Some(ContextSource::ClipboardDeep),
+        "clipboardSelection" => Some(ContextSource::ClipboardDeep),
         _ => None,
     }
 }
@@ -236,6 +238,7 @@ pub(crate) fn capture(
     deadline: Instant,
     max_chars: usize,
     cancelled: &Arc<AtomicBool>,
+    selection_only: bool,
 ) -> Result<CaptureStatus, String> {
     if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Ok(CaptureStatus::TimedOut);
@@ -248,6 +251,7 @@ pub(crate) fn capture(
         pid: target.process_id,
         max_chars,
         deep_clipboard: true,
+        selection_only,
         // 给管道回传和 Rust 的终止/重启留出余量，避免末尾的深度读取挤占整个 800ms 硬截止。
         reader_budget_ms: 650,
         cursor_x: target.cursor_position.map(|position| position.0),

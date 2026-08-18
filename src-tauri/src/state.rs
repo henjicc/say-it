@@ -13,6 +13,7 @@ pub(crate) struct RuntimeState {
     pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
+    pub(crate) assistant_shortcuts: Mutex<crate::application::assistant::AssistantShortcutSettings>,
     pub(crate) shortcut_config_operation: Mutex<()>,
     pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
@@ -26,6 +27,8 @@ pub(crate) struct RuntimeState {
     pub(crate) transcription_runtime: crate::application::transcription::TranscriptionRuntime,
     pub(crate) compare_runtime: crate::application::compare::CompareRuntime,
     pub(crate) audio_lab_runtime: crate::application::audio_lab::AudioLabRuntime,
+    pub(crate) assistant_runtime: crate::application::assistant::AssistantRuntime,
+    pub(crate) correction_samples: Mutex<Vec<crate::application::history::CorrectionSample>>,
     pub(crate) audio_lab_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) main_window_lifecycle:
         Mutex<crate::application::window_lifecycle::MainWindowLifecycle>,

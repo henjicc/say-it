@@ -195,6 +195,15 @@ impl ContextCaptureService {
         )
     }
 
+    pub(crate) fn begin_selection_capture(&self, target: ActivationTarget) -> ContextCaptureHandle {
+        let mut options = CaptureOptions::for_method(
+            ActiveAppContextExtractionMethod::NativeText,
+            crate::providers::capabilities::OcrProvider::System,
+        );
+        options.selection_only = true;
+        self.begin_capture_inner(target, Vec::new(), options)
+    }
+
     #[cfg(windows)]
     fn begin_deferred_ocr_capture(
         &self,
@@ -491,7 +500,10 @@ impl ContextCaptureService {
                     "active-app-context",
                     "上下文工作线程在返回结果前断开",
                 );
-                metadata_fallback(fallback, "上下文工作线程在返回结果前断开，仅使用基础窗口信息。")
+                metadata_fallback(
+                    fallback,
+                    "上下文工作线程在返回结果前断开，仅使用基础窗口信息。",
+                )
             }
             Err(TryRecvError::Empty) if remaining.is_zero() => {
                 crate::development_debug_log(
@@ -508,7 +520,10 @@ impl ContextCaptureService {
                             "active-app-context",
                             "上下文工作线程在返回结果前断开",
                         );
-                            metadata_fallback(fallback, "上下文工作线程在返回结果前断开，仅使用基础窗口信息。")
+                        metadata_fallback(
+                            fallback,
+                            "上下文工作线程在返回结果前断开，仅使用基础窗口信息。",
+                        )
                     }
                     Err(_) => {
                         crate::development_debug_log(
@@ -610,6 +625,10 @@ pub(crate) fn activation_target() -> Option<ActivationTarget> {
     }
 }
 
+pub(crate) fn same_activation_target(left: ActivationTarget, right: ActivationTarget) -> bool {
+    left.process_id == right.process_id && left.window_handle == right.window_handle
+}
+
 /// 恢复听写启动时的目标窗口。仅用于用户在悬浮窗确认失败降级后，避免原文被
 /// 注入到刚刚点击的悬浮 WebView 中。
 pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
@@ -625,6 +644,22 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     {
         let _ = target;
         Err("当前平台不支持恢复原输入窗口".into())
+    }
+}
+
+pub(crate) fn target_is_sensitive(target: ActivationTarget) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        return windows::focused_target_is_password(target);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos_native::focused_input_is_secure(target.process_id);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = target;
+        Ok(false)
     }
 }
 
@@ -663,6 +698,23 @@ pub(crate) fn list_running_apps() -> Vec<AppIdentity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_target_requires_the_same_process_and_window() {
+        let target = ActivationTarget {
+            window_handle: 12,
+            process_id: 34,
+            cursor_position: None,
+        };
+        assert!(same_activation_target(target, target));
+        assert!(!same_activation_target(
+            target,
+            ActivationTarget {
+                window_handle: 13,
+                ..target
+            }
+        ));
+    }
 
     #[tokio::test]
     async fn expired_capture_returns_timeout_without_updating_latest_summary() {

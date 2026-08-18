@@ -64,6 +64,7 @@ fancy-regex = "0.14"
 genai = "0.7.0-beta.13"
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 rquickjs = { version = "0.12.1", features = ["futures", "loader", "macro"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 hmac = "0.12"
 rand = "0.9"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native"] }
@@ -79,6 +80,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_System_Pipes",
     "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_DataExchange",
     "Win32_System_WinRT",
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",

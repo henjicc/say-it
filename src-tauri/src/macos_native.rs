@@ -100,6 +100,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn sayit_macos_focused_input_security(process_id: u32, error: *mut *mut c_char) -> i32;
+    fn sayit_macos_copy_selection_text(process_id: u32, error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_accessibility_context_json(
         process_id: u32,
         max_chars: u32,
@@ -221,6 +222,12 @@ pub(crate) fn focused_input_is_secure(process_id: u32) -> Result<bool, String> {
             take_string(error).unwrap_or_else(|| "无法确认当前输入区域安全性".into())
         }),
     }
+}
+
+pub(crate) fn copy_selection_text(process_id: u32) -> Result<String, String> {
+    let mut error = std::ptr::null_mut();
+    let value = unsafe { sayit_macos_copy_selection_text(process_id, &mut error) };
+    unsafe { native_result(value, error) }
 }
 
 pub(crate) fn accessibility_context(
@@ -453,14 +460,7 @@ pub(crate) fn place_indicator_window(
     };
     let mut error = ptr::null_mut();
     let success = unsafe {
-        sayit_macos_place_indicator_window(
-            ns_window,
-            width,
-            height,
-            anchor,
-            offset_y,
-            &mut error,
-        )
+        sayit_macos_place_indicator_window(ns_window, width, height, anchor, offset_y, &mut error)
     };
     if success {
         Ok(())
@@ -471,19 +471,12 @@ pub(crate) fn place_indicator_window(
     }
 }
 
-pub(crate) fn indicator_visible_screen_size(
-    ns_window: *mut c_void,
-) -> Result<(f64, f64), String> {
+pub(crate) fn indicator_visible_screen_size(ns_window: *mut c_void) -> Result<(f64, f64), String> {
     let mut width = 0.0;
     let mut height = 0.0;
     let mut error = ptr::null_mut();
     let success = unsafe {
-        sayit_macos_indicator_visible_screen_size(
-            ns_window,
-            &mut width,
-            &mut height,
-            &mut error,
-        )
+        sayit_macos_indicator_visible_screen_size(ns_window, &mut width, &mut height, &mut error)
     };
     if success && width > 0.0 && height > 0.0 {
         Ok((width, height))
@@ -500,9 +493,7 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     if unsafe { sayit_macos_paste_text(text.as_ptr(), &mut error) } {
         Ok(())
     } else {
-        Err(unsafe {
-            take_string(error).unwrap_or_else(|| "执行 macOS 粘贴失败".into())
-        })
+        Err(unsafe { take_string(error).unwrap_or_else(|| "执行 macOS 粘贴失败".into()) })
     }
 }
 
@@ -524,10 +515,9 @@ mod tests {
 
     #[test]
     fn accessibility_context_accepts_partial_native_payload() {
-        let context = parse_accessibility_context(
-            r#"{"selectedText":"选区","caretContext":"光标附近"}"#,
-        )
-        .unwrap();
+        let context =
+            parse_accessibility_context(r#"{"selectedText":"选区","caretContext":"光标附近"}"#)
+                .unwrap();
         assert_eq!(context.selected_text.as_deref(), Some("选区"));
         assert!(!context.secure);
         assert_eq!(context.focused_text, None);
