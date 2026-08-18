@@ -3,6 +3,9 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreMedia/CoreMedia.h>
 #import <IOKit/IOKitLib.h>
+#import <IOKit/hid/IOHIDKeys.h>
+#import <IOKit/hid/IOHIDManager.h>
+#import <IOKit/hid/IOHIDUsageTables.h>
 #import <IOKit/hidsystem/IOHIDLib.h>
 #import <IOKit/hidsystem/IOHIDParameter.h>
 #import <IOKit/hidsystem/IOHIDShared.h>
@@ -581,6 +584,22 @@ char *sayit_macos_frontmost_window_json(char **error) {
     }
 }
 
+bool sayit_macos_activate_application(uint32_t processId, char **error) {
+    @autoreleasepool {
+        NSRunningApplication *application =
+            [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)processId];
+        if (application == nil || application.terminated) {
+            SayItSetError(error, @"听写开始时的目标应用已经退出");
+            return false;
+        }
+        if (![application activateWithOptions:0]) {
+            SayItSetError(error, @"无法重新激活听写开始时的目标应用");
+            return false;
+        }
+        return true;
+    }
+}
+
 char *sayit_macos_window_json(uint32_t windowId, uint32_t processId, char **error) {
     @autoreleasepool {
         NSRunningApplication *application = [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)processId];
@@ -961,9 +980,35 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
 @property(nonatomic) bool monitorCapsLock;
 @property(nonatomic) bool monitorEscape;
 @property(nonatomic) io_connect_t hidConnection;
+@property(nonatomic) IOHIDManagerRef hidManager;
 @property(nonatomic) bool preservedCapsLockState;
 @property(nonatomic) CFAbsoluteTime lastCapsLockEventAt;
+@property(nonatomic) bool rawCapsLockPressed;
+@property(nonatomic) bool rawCapsLockActive;
 @end
+
+static void SayItHIDInputValueCallback(
+    void *context,
+    IOReturn result,
+    void *sender,
+    IOHIDValueRef value
+) {
+    (void)sender;
+    if (result != kIOReturnSuccess || value == NULL || context == NULL) return;
+    SayItKeyboardTap *owner = (__bridge SayItKeyboardTap *)context;
+    IOHIDElementRef element = IOHIDValueGetElement(value);
+    if (element == NULL
+        || IOHIDElementGetUsagePage(element) != kHIDPage_KeyboardOrKeypad
+        || IOHIDElementGetUsage(element) != kHIDUsage_KeyboardCapsLock) {
+        return;
+    }
+    bool pressed = IOHIDValueGetIntegerValue(value) != 0;
+    if (pressed && !owner.rawCapsLockPressed && owner.capsLockCallback != NULL) {
+        CGEventFlags flags = CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
+        owner.capsLockCallback(owner.context, (uint64_t)flags);
+    }
+    owner.rawCapsLockPressed = pressed;
+}
 
 static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
     (void)proxy;
@@ -988,7 +1033,7 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
     bool duplicated = owner.lastCapsLockEventAt > 0 && now - owner.lastCapsLockEventAt < 0.12;
     owner.lastCapsLockEventAt = now;
     bool swallow = true;
-    if (!duplicated && owner.capsLockCallback != NULL) {
+    if (!owner.rawCapsLockActive && !duplicated && owner.capsLockCallback != NULL) {
         swallow = owner.capsLockCallback(owner.context, (uint64_t)CGEventGetFlags(event));
     }
     return swallow ? NULL : event;
@@ -997,6 +1042,48 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
 @implementation SayItKeyboardTap
 - (void)startOnThread {
     @autoreleasepool {
+        if (self.monitorCapsLock) {
+            IOHIDAccessType access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+            if (access != kIOHIDAccessTypeGranted
+                && !IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)) {
+                self.startupError = @"快速响应 Caps Lock 需要“输入监控”权限；请在系统设置 → 隐私与安全性 → 输入监控中授权，随后重启说吧！";
+                dispatch_semaphore_signal(self.ready);
+                return;
+            }
+            self.hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+            if (self.hidManager == NULL) {
+                self.startupError = @"无法创建 macOS 原始键盘监听器";
+                dispatch_semaphore_signal(self.ready);
+                return;
+            }
+            NSDictionary *deviceMatching = @{
+                @kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop),
+                @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Keyboard),
+            };
+            NSDictionary *valueMatching = @{
+                @kIOHIDElementUsagePageKey: @(kHIDPage_KeyboardOrKeypad),
+                @kIOHIDElementUsageKey: @(kHIDUsage_KeyboardCapsLock),
+            };
+            IOHIDManagerSetDeviceMatching(self.hidManager, (__bridge CFDictionaryRef)deviceMatching);
+            IOHIDManagerSetInputValueMatching(self.hidManager, (__bridge CFDictionaryRef)valueMatching);
+            IOHIDManagerRegisterInputValueCallback(
+                self.hidManager,
+                SayItHIDInputValueCallback,
+                (__bridge void *)self
+            );
+            IOHIDManagerScheduleWithRunLoop(
+                self.hidManager,
+                CFRunLoopGetCurrent(),
+                kCFRunLoopCommonModes
+            );
+            IOReturn opened = IOHIDManagerOpen(self.hidManager, kIOHIDOptionsTypeNone);
+            if (opened != kIOReturnSuccess) {
+                self.startupError = @"无法打开 macOS 原始键盘监听器，请确认已授予输入监控权限";
+                dispatch_semaphore_signal(self.ready);
+                return;
+            }
+            self.rawCapsLockActive = true;
+        }
         CGEventMask mask = 0;
         if (self.monitorCapsLock) mask |= CGEventMaskBit(kCGEventFlagsChanged);
         if (self.monitorEscape) {
@@ -1031,11 +1118,20 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
         CGEventTapEnable(self.tap, false);
         CFMachPortInvalidate(self.tap);
     }
+    if (self.hidManager != NULL) {
+        IOHIDManagerUnscheduleFromRunLoop(
+            self.hidManager,
+            self.runLoop ?: CFRunLoopGetCurrent(),
+            kCFRunLoopCommonModes
+        );
+        IOHIDManagerClose(self.hidManager, kIOHIDOptionsTypeNone);
+    }
     if (self.runLoop != NULL) CFRunLoopStop(self.runLoop);
 }
 - (void)dealloc {
     if (_tap != NULL) CFRelease(_tap);
     if (_runLoop != NULL) CFRelease(_runLoop);
+    if (_hidManager != NULL) CFRelease(_hidManager);
     if (_hidConnection != IO_OBJECT_NULL) IOServiceClose(_hidConnection);
 }
 @end

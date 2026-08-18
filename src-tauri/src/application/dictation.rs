@@ -360,6 +360,10 @@ struct Session {
     effective: Option<EffectivePostProcessing>,
     /// 启动时冻结的注入方式，避免录音过程中修改设置影响当前会话。
     inject_method: String,
+    /// 听写启动时的目标窗口。悬浮窗恢复操作会先重新激活它，再注入未处理原文。
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    error: Option<String>,
+    pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
     silence_streaming: bool,
     raw_done: Option<Arc<tokio::sync::Notify>>,
@@ -367,6 +371,13 @@ struct Session {
     active_app_context: Option<crate::active_app_context::DictationContextCaptureHandle>,
     /// finalize 会把捕获句柄移出会话；保留独立令牌，让取消/会话替换仍能中断 OCR。
     active_app_context_cancellation: Option<crate::active_app_context::ContextCaptureCancellation>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingFallback {
+    text: String,
+    method: String,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
 }
 
 impl Session {
@@ -380,6 +391,25 @@ impl Session {
         }
         self.injected_epoch = Some(epoch);
         true
+    }
+
+    fn mark_failed(&mut self, error: String, pending_fallback: Option<PendingFallback>) {
+        self.phase = DictationPhase::Failed;
+        self.error = Some(error);
+        self.pending_fallback = pending_fallback;
+    }
+
+    fn begin_pending_fallback(&mut self) -> Result<PendingFallback, String> {
+        if self.phase != DictationPhase::Failed {
+            return Err("当前没有可恢复的失败听写".into());
+        }
+        let pending = self
+            .pending_fallback
+            .clone()
+            .ok_or_else(|| "本次失败没有可输入的未处理原文".to_string())?;
+        self.phase = DictationPhase::Injecting;
+        self.error = None;
+        Ok(pending)
     }
 }
 
@@ -427,7 +457,7 @@ pub(crate) fn request_toggle_with_profile(app: AppHandle, profile_id: Option<Str
     let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
-            publish_state(&app, Some(e));
+            present_runtime_error(&app, e).await;
         }
     });
 }
@@ -436,30 +466,14 @@ pub(crate) fn request_start_with_profile(app: AppHandle, profile_id: Option<Stri
     tauri::async_runtime::spawn(async move {
         // 长按开始也走 toggle：若另一条快捷键已启动听写，本次按下只负责停止当前会话。
         if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
-            publish_state(&app, Some(e));
+            present_runtime_error(&app, e).await;
         }
     });
 }
 pub(crate) fn request_stop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(e) = stop(app.clone()).await {
-            // fail 已在 operation 锁内发布 Failed；此处只补充 stop 提前失败的错误。
-            // 若新会话已经开始，不得把旧 stop 的错误附到新会话快照。
-            let should_publish = app
-                .state::<RuntimeState>()
-                .dictation_runtime
-                .session
-                .lock()
-                .map(|session| {
-                    matches!(
-                        session.phase,
-                        DictationPhase::Finishing | DictationPhase::ProcessingFile
-                    )
-                })
-                .unwrap_or(true);
-            if should_publish {
-                publish_state(&app, Some(e));
-            }
+            present_runtime_error(&app, e).await;
         }
     });
 }
@@ -471,21 +485,76 @@ pub(crate) fn request_cancel(app: AppHandle) {
     });
 }
 
+fn present_request_error(app: &AppHandle, error: String) {
+    let can_present = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|mut session| {
+            if !matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed) {
+                return false;
+            }
+            session.mark_failed(error.clone(), None);
+            true
+        })
+        .unwrap_or(false);
+    publish_state(app, Some(error.clone()));
+    if can_present {
+        let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
+    }
+}
+
+async fn present_runtime_error(app: &AppHandle, error: String) {
+    let active_epoch = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .ok()
+        .and_then(|session| {
+            (!matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed))
+                .then_some(session.epoch)
+        });
+    if let Some(epoch) = active_epoch {
+        let _ = fail(app.clone(), epoch, error).await;
+    } else {
+        present_request_error(app, error);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn dictation_toggle(app: AppHandle) -> Result<(), String> {
-    toggle(app, None, None).await
+    let result = toggle(app.clone(), None, None).await;
+    if let Err(error) = &result {
+        present_runtime_error(&app, error.clone()).await;
+    }
+    result
 }
 #[tauri::command]
 pub(crate) async fn dictation_start(app: AppHandle) -> Result<(), String> {
-    start(app, None, None).await
+    let result = start(app.clone(), None, None).await;
+    if let Err(error) = &result {
+        present_runtime_error(&app, error.clone()).await;
+    }
+    result
 }
 #[tauri::command]
 pub(crate) async fn dictation_stop(app: AppHandle) -> Result<(), String> {
-    stop(app).await
+    let result = stop(app.clone()).await;
+    if let Err(error) = &result {
+        present_runtime_error(&app, error.clone()).await;
+    }
+    result
 }
 #[tauri::command]
 pub(crate) async fn dictation_cancel(app: AppHandle) -> Result<(), String> {
     cancel(app).await
+}
+
+#[tauri::command]
+pub(crate) async fn dictation_use_raw_text(app: AppHandle) -> Result<(), String> {
+    use_pending_fallback(app).await
 }
 /// 当前可切换的软件列表，供「按软件配置规则」选择目标。仅读取窗口元信息，
 /// 不读取窗口内容，与上下文黑名单无关。
@@ -538,7 +607,7 @@ fn snapshot(state: &RuntimeState) -> Result<DictationSnapshot, String> {
         phase: s.phase,
         session_id: s.public_id.clone(),
         text: format!("{}{}", s.committed, s.segment),
-        error: None,
+        error: s.error.clone(),
         active_app_context: state.active_app_context.latest_summary(),
     })
 }
@@ -592,6 +661,8 @@ async fn start(
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
+    let activation_target =
+        activation_target.or_else(crate::active_app_context::activation_target);
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
@@ -761,6 +832,7 @@ async fn start(
             prefs: prefs.clone(),
             effective: Some(effective),
             inject_method,
+            activation_target,
             silence_streaming: false,
             active_app_context,
             active_app_context_cancellation,
@@ -908,7 +980,15 @@ fn spawn_raw_consumer(
                 disconnect_silent_asr(app.clone(), epoch);
             }
             if need_open {
-                let _ = open_asr(app.clone(), epoch).await;
+                if let Err(error) = open_asr(app.clone(), epoch).await {
+                    let _ = fail(
+                        app.clone(),
+                        epoch,
+                        format!("连接实时语音识别失败：{error}"),
+                    )
+                    .await;
+                    break;
+                }
             }
         }
         done.notify_one();
@@ -1175,6 +1255,9 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.committed.clear();
         s.segment.clear();
         s.raw_samples.clear();
+        s.error = None;
+        s.pending_fallback = None;
+        s.activation_target = None;
         ids
     };
     if let Some(cancellation) = active_app_context_cancellation {
@@ -1240,25 +1323,18 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
             "ended" | "closed" if s.phase == DictationPhase::Finishing => {
                 finalize_epoch = Some(s.epoch)
             }
-            "error" if s.phase == DictationPhase::Finishing => finalize_epoch = Some(s.epoch),
             "ended" | "closed" => {
                 s.asr_session_id = None;
-                if s.prefs.dictation_silence_disconnect_enabled {
-                    s.phase = DictationPhase::WaitingForVoice;
-                    s.silence_streaming = false;
-                } else {
-                    failure = Some((s.epoch, "ASR 连接意外中断".to_string()));
-                }
+                failure = Some((s.epoch, "实时语音识别连接意外中断".to_string()));
             }
             "error" => {
-                let message = payload.to_string();
-                if s.prefs.dictation_silence_disconnect_enabled {
-                    s.asr_session_id = None;
-                    s.phase = DictationPhase::WaitingForVoice;
-                    s.silence_streaming = false;
-                } else {
-                    failure = Some((s.epoch, message));
-                }
+                let message = payload
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| payload.to_string());
+                s.asr_session_id = None;
+                failure = Some((s.epoch, format!("实时语音识别失败：{message}")));
             }
             _ => {}
         }
@@ -1479,6 +1555,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
     // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
+    let raw_text = text.clone();
     let smart_processed = if should_process_smart_text {
         let Some(template) = prefs
             .smart_templates
@@ -1490,7 +1567,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 let _ = state.audio_session.release(lease);
             }
             remove_temp(temp_path.clone());
-            let _ = fail(app, epoch, "当前智能处理模板不存在".to_string()).await;
+            let _ = fail_with_raw_fallback(
+                app,
+                epoch,
+                "当前智能处理模板不存在".to_string(),
+                raw_text.clone(),
+                method.clone(),
+            )
+            .await;
             return;
         };
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
@@ -1515,7 +1599,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
-                let _ = fail(app, epoch, error).await;
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    error,
+                    raw_text.clone(),
+                    method.clone(),
+                )
+                .await;
                 return;
             }
         }
@@ -1530,7 +1621,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 let _ = state.audio_session.release(lease);
             }
             remove_temp(temp_path.clone());
-            let _ = fail(app, epoch, e).await;
+            let _ = fail_with_raw_fallback(
+                app,
+                epoch,
+                e,
+                raw_text.clone(),
+                method.clone(),
+            )
+            .await;
             return;
         }
     };
@@ -1575,6 +1673,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.committed.clear();
             s.segment.clear();
             s.active_app_context_cancellation = None;
+            s.activation_target = None;
+            s.error = None;
+            s.pending_fallback = None;
             true
         } else {
             false
@@ -1601,7 +1702,120 @@ async fn finalize(app: AppHandle, epoch: u64) {
     );
 }
 
+async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<RuntimeState>();
+    let operation = state.dictation_runtime.operation.clone();
+    let _guard = operation.lock().await;
+    let (epoch, pending, prefs, mode) = {
+        let mut session = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map_err(|_| "听写状态锁失败")?;
+        let pending = session.begin_pending_fallback()?;
+        (session.epoch, pending, session.prefs.clone(), session.mode)
+    };
+    publish_state(&app, None);
+    let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+
+    let result = async {
+        let target = pending
+            .activation_target
+            .ok_or_else(|| "无法定位听写开始时的目标窗口，请重新聚焦输入框后再听写".to_string())?;
+        crate::active_app_context::activate_target(target)?;
+        sleep(Duration::from_millis(120)).await;
+        inject_text_inner(pending.text.clone(), Some(pending.method.clone())).await
+    }
+    .await;
+
+    if let Err(error) = result {
+        if let Ok(mut session) = state.dictation_runtime.session.lock() {
+            if session.epoch == epoch && session.phase == DictationPhase::Injecting {
+                session.phase = DictationPhase::Failed;
+                session.error = Some(error.clone());
+            }
+        }
+        let _ = crate::desktop::show_dictation_indicator_error(&app, error.clone(), true);
+        publish_state(&app, Some(error.clone()));
+        return Err(error);
+    }
+
+    let committed = state
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|mut session| {
+            if session.epoch != epoch || session.phase != DictationPhase::Injecting {
+                return false;
+            }
+            session.phase = DictationPhase::Idle;
+            session.mode = None;
+            session.public_id = None;
+            session.file_job_id = None;
+            session.committed.clear();
+            session.segment.clear();
+            session.activation_target = None;
+            session.error = None;
+            session.pending_fallback = None;
+            true
+        })
+        .unwrap_or(false);
+    if !committed {
+        return Ok(());
+    }
+    play_cue_async(
+        app.clone(),
+        "end",
+        &prefs,
+        CuePlaybackTarget::IndicatorWindow,
+    );
+    publish_state_with_text(
+        &app,
+        None,
+        pending.text,
+        should_show_final_text_in_indicator(mode),
+    );
+    Ok(())
+}
+
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
+    fail_internal(app, epoch, error, None).await
+}
+
+async fn fail_with_raw_fallback(
+    app: AppHandle,
+    epoch: u64,
+    error: String,
+    text: String,
+    method: String,
+) -> Result<(), String> {
+    let activation_target = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .ok()
+        .and_then(|session| (session.epoch == epoch).then_some(session.activation_target))
+        .flatten();
+    fail_internal(
+        app,
+        epoch,
+        error,
+        Some(PendingFallback {
+            text,
+            method,
+            activation_target,
+        }),
+    )
+    .await
+}
+
+async fn fail_internal(
+    app: AppHandle,
+    epoch: u64,
+    error: String,
+    pending_fallback: Option<PendingFallback>,
+) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
@@ -1616,7 +1830,7 @@ async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
-        s.phase = DictationPhase::Failed;
+        s.mark_failed(error.clone(), pending_fallback);
         (
             s.lease.take(),
             s.temp_audio_path.take(),
@@ -1642,7 +1856,17 @@ async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
     }
     let _ = release_backend_mic_inner(&state);
     hotkey::set_dictation_active(false);
-    let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+    let can_use_raw_text = state
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|session| session.pending_fallback.is_some())
+        .unwrap_or(false);
+    let _ = crate::desktop::show_dictation_indicator_error(
+        &app,
+        error.clone(),
+        can_use_raw_text,
+    );
     publish_state(&app, Some(error.clone()));
     Err(error)
 }
@@ -1681,7 +1905,7 @@ fn schedule_release(app: AppHandle, epoch: u64, generation: u64, delay: u64) {
 }
 
 fn publish_state(app: &AppHandle, error: Option<String>) {
-    let (text, show_in_indicator) = app
+    let (text, show_in_indicator, error) = app
         .state::<RuntimeState>()
         .dictation_runtime
         .session
@@ -1690,6 +1914,7 @@ fn publish_state(app: &AppHandle, error: Option<String>) {
             (
                 format!("{}{}", s.committed, s.segment),
                 should_show_final_text_in_indicator(s.mode),
+                error.or_else(|| s.error.clone()),
             )
         })
         .unwrap_or_default();
@@ -2353,6 +2578,37 @@ mod tests {
         assert!(s.claim_injection(1));
         assert!(!s.claim_injection(1));
     }
+
+    #[test]
+    fn failed_session_can_begin_raw_fallback_once() {
+        let mut session = Session::default();
+        session.mark_failed(
+            "智能处理失败".into(),
+            Some(PendingFallback {
+                text: "未处理原文".into(),
+                method: "paste".into(),
+                activation_target: None,
+            }),
+        );
+
+        let pending = session.begin_pending_fallback().unwrap();
+        assert_eq!(pending.text, "未处理原文");
+        assert_eq!(pending.method, "paste");
+        assert_eq!(session.phase, DictationPhase::Injecting);
+        assert!(session.error.is_none());
+        assert!(session.begin_pending_fallback().is_err());
+    }
+
+    #[test]
+    fn failed_session_without_raw_text_cannot_begin_fallback() {
+        let mut session = Session::default();
+        session.mark_failed("实时识别连接失败".into(), None);
+
+        assert!(session.begin_pending_fallback().is_err());
+        assert_eq!(session.phase, DictationPhase::Failed);
+        assert_eq!(session.error.as_deref(), Some("实时识别连接失败"));
+    }
+
     #[test]
     fn rules_support_backrefs_and_lookaround() {
         let p = DictationPrefs {

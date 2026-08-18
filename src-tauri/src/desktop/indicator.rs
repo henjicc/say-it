@@ -164,13 +164,17 @@ pub(crate) fn raise_indicator_window(window: &tauri::WebviewWindow) {
 pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), String> {
     let window = ensure_indicator_window(app)?;
     let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
+    let _ = window.emit(
+        "dictation-indicator-error",
+        json!({ "message": "", "canUseRawText": false }),
+    );
     let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
     let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
     let _ = window.emit("dictation-indicator-waveform", json!({ "active": false, "level": 0, "peaks": [] }));
     Ok(())
 }
 
-/// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "hidden"。
+/// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "subtitle" | "error" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
 pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
@@ -188,9 +192,42 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
         return Ok(());
     }
     let window = ensure_indicator_window(&app)?;
-    let _ = window.set_ignore_cursor_events(state != "subtitle");
+    let _ = window.set_ignore_cursor_events(state != "subtitle" && state != "error");
     raise_indicator_window(&window);
     let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
+    Ok(())
+}
+
+/// 在听写悬浮窗中展示可操作错误。`can_use_raw_text` 仅用于智能处理失败：
+/// 待恢复的原文仍由 Rust 会话持有，WebView 只发送恢复命令。
+pub(crate) fn show_dictation_indicator_error(
+    app: &tauri::AppHandle,
+    message: String,
+    can_use_raw_text: bool,
+) -> Result<(), String> {
+    let window = ensure_indicator_window(app)?;
+    place_indicator_window(
+        &window,
+        DEFAULT_INDICATOR_WIDTH,
+        DEFAULT_INDICATOR_HEIGHT,
+        "bottom",
+        DICTATION_INDICATOR_OFFSET_Y,
+    );
+    let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
+    let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
+    let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
+    let _ = window.emit(
+        "dictation-indicator-waveform",
+        json!({ "active": false, "level": 0, "peaks": [] }),
+    );
+    let _ = window.set_ignore_cursor_events(false);
+    raise_indicator_window(&window);
+    let _ = window.emit(
+        "dictation-indicator-error",
+        json!({ "message": message, "canUseRawText": can_use_raw_text }),
+    );
+    let _ = window.emit("dictation-indicator-state", json!({ "state": "error" }));
+    hotkey::set_dictation_active(false);
     Ok(())
 }
 
