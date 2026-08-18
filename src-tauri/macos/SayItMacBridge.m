@@ -1198,6 +1198,14 @@ void sayit_macos_system_audio_stop(void *handle) {
     if (handle == NULL) return;
     if (@available(macOS 13.0, *)) {
         SayItSystemAudioCapture *capture = CFBridgingRelease(handle);
+        // Rust 会在本函数返回后释放 callback context。先在串行采样队列上做屏障并
+        // 断开回调，保证已经入队或正在执行的回调全部结束，后续样本也不会再访问该指针。
+        if (capture.sampleQueue != nil) {
+            dispatch_sync(capture.sampleQueue, ^{
+                capture.callback = NULL;
+                capture.context = NULL;
+            });
+        }
         dispatch_semaphore_t stopped = dispatch_semaphore_create(0);
         [capture.stream stopCaptureWithCompletionHandler:^(NSError *error) {
             (void)error;
