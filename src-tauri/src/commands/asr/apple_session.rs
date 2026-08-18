@@ -29,7 +29,7 @@ pub(super) async fn start_apple_speech_stream(
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
-    let capability = crate::providers::apple_speech::status();
+    let mut capability = crate::providers::apple_speech::status();
     if !capability.available {
         return Err(if capability.message.trim().is_empty() {
             "Apple 本地语音识别需要 macOS 26、受支持的设备和语言".into()
@@ -38,14 +38,12 @@ pub(super) async fn start_apple_speech_stream(
         });
     }
     if !capability.installed {
-        return Err(format!(
-            "Apple 本地语音模型{}尚未安装，请先在“设置 → 密钥与识别”中下载",
-            if capability.locale.is_empty() {
-                String::new()
-            } else {
-                format!("（{}）", capability.locale)
-            }
-        ));
+        capability = crate::providers::apple_speech::prepare()
+            .await
+            .map_err(|error| format!("macOS 自动准备本地语音识别资源失败：{error}"))?;
+    }
+    if !capability.available || !capability.installed {
+        return Err("macOS 未能准备当前系统语言的本地语音识别资源".into());
     }
 
     let session_id = Uuid::new_v4().to_string();

@@ -93,7 +93,7 @@ pub async fn prepare() -> Result<AppleSpeechStatus, String> {
         .args(["--prepare", "--locale", ""])
         .output()
         .await
-        .map_err(|error| format!("启动 Apple SpeechTranscriber 模型安装失败：{error}"))?;
+        .map_err(|error| format!("启动 macOS 语音资源准备失败：{error}"))?;
     let status = parse_last_status(&output.stdout)?;
     if output.status.success() && status.available && status.installed {
         Ok(status)
@@ -104,7 +104,7 @@ pub async fn prepare() -> Result<AppleSpeechStatus, String> {
         } else if !stderr.trim().is_empty() {
             stderr.trim().to_string()
         } else {
-            "Apple 本地语音模型安装失败".to_string()
+            "macOS 本地语音识别资源准备失败".to_string()
         };
         Err(message)
     }
