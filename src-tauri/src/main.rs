@@ -439,18 +439,34 @@ fn main() {
         .expect("error while building tauri application");
     #[cfg(target_os = "macos")]
     {
-        let exit_code = app.run_return(|app, event| {
-            if let tauri::RunEvent::Reopen {
+        let exit_code = app.run_return(|app, event| match event {
+            tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..
-            } = event
-            {
-                if !has_visible_windows {
-                    if let Err(error) = ensure_main_window(app) {
-                        eprintln!("[window] Dock 重开主窗口失败: {error}");
+            } if !has_visible_windows => {
+                if let Err(error) = ensure_main_window(app) {
+                    eprintln!("[window] Dock 重开主窗口失败: {error}");
+                }
+            }
+            tauri::RunEvent::Opened { urls } => {
+                match application::plugin_management::queue_provider_plugin_opened_urls(app, &urls)
+                {
+                    Ok(count) if count > 0 => {
+                        if let Err(error) = ensure_main_window(app) {
+                            eprintln!("[window] 打开扩展包时唤起主窗口失败: {error}");
+                        }
+                        let _ = app.emit(
+                            application::plugin_management::PLUGIN_IMPORT_REQUESTED_EVENT,
+                            (),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("[plugin-import] 接收 macOS 文件打开事件失败: {error}")
                     }
                 }
             }
+            _ => {}
         });
         active_app_context::shutdown();
         std::process::exit(exit_code);
