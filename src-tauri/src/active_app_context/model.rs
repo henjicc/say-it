@@ -173,6 +173,15 @@ pub(crate) enum ContextSource {
     Ocr,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContextBounds {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
 // OCR 数据结构上提到 `crate::ocr`（providers 与本模块共用）；这里保留原路径的再导出。
 #[cfg(any(windows, test))]
 pub(crate) use crate::ocr::NormalizedRegion;
@@ -189,6 +198,8 @@ pub(crate) struct CapturedActiveAppContext {
     pub(crate) process_id: u32,
     pub(crate) window_title: Option<String>,
     pub(crate) selected_text: Option<String>,
+    pub(crate) selection_bounds: Option<ContextBounds>,
+    pub(crate) selection_editable: Option<bool>,
     pub(crate) focused_text: Option<String>,
     pub(crate) caret_context: Option<String>,
     pub(crate) visible_text: Vec<String>,

@@ -12,6 +12,7 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <Vision/Vision.h>
 #import <dlfcn.h>
+#import <math.h>
 
 typedef bool (*SayItCapsLockCallback)(void *context, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
@@ -161,7 +162,9 @@ static bool SayItRestorePasteboard(
         }
         [items addObject:item];
     }
-    [pasteboard clearContents];
+    // selection-hook uses the host-only preparation path so restoring temporary
+    // clipboard contents does not trigger Universal Clipboard / Handoff syncing.
+    [pasteboard prepareForNewContentsWithOptions:NSPasteboardContentsCurrentHostOnly];
     return items.count == 0 || [pasteboard writeObjects:items];
 }
 
@@ -471,6 +474,7 @@ char *sayit_macos_copy_selection_text(uint32_t processId, char **error) {
     __block NSString *selected = nil;
     __block NSInteger copiedChangeCount = 0;
     __block bool restored = true;
+    __block bool clipboardWasChangedByUser = false;
     SayItRunOnMainThread(^{
         copiedChangeCount = pasteboard.changeCount;
         if (copiedChangeCount > temporaryChangeCount) {
@@ -481,10 +485,21 @@ char *sayit_macos_copy_selection_text(uint32_t processId, char **error) {
     SayItRunOnMainThread(^{
         if (pasteboard.changeCount == copiedChangeCount) {
             restored = SayItRestorePasteboard(pasteboard, snapshot);
+        } else {
+            clipboardWasChangedByUser = true;
         }
     });
+    NSRunningApplication *currentFrontmost = NSWorkspace.sharedWorkspace.frontmostApplication;
+    if (clipboardWasChangedByUser) {
+        SayItSetError(error, @"复制选区期间剪贴板被用户修改，已保留用户的新内容并放弃本次结果");
+        return NULL;
+    }
     if (!restored) {
         SayItSetError(error, @"恢复 macOS 剪贴板失败");
+        return NULL;
+    }
+    if (currentFrontmost.processIdentifier != (pid_t)processId) {
+        SayItSetError(error, @"复制选区期间前台应用已变化，已放弃本次结果");
         return NULL;
     }
     if (selected.length == 0) {
@@ -785,15 +800,144 @@ static NSString *SayItAXStringAttribute(AXUIElementRef element, CFStringRef attr
     return text;
 }
 
+// selection-hook 会在 AXSelectedText 不可用时用 AXValue + AXSelectedTextRange
+// 还原选区。部分原生控件、WebKit 控件只实现后一组属性，因此这里保留同样的回退。
+static NSString *SayItAXSelectedTextFromElement(AXUIElementRef element) {
+    CFTypeRef selectedValue = NULL;
+    AXError selectedError = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, &selectedValue);
+    if (selectedError == kAXErrorSuccess && selectedValue != NULL) {
+        NSString *selected = nil;
+        if (CFGetTypeID(selectedValue) == CFStringGetTypeID()) {
+            selected = [(__bridge NSString *)selectedValue copy];
+        } else if (CFGetTypeID(selectedValue) == CFAttributedStringGetTypeID()) {
+            CFStringRef string = CFAttributedStringGetString((CFAttributedStringRef)selectedValue);
+            if (string != NULL) selected = [(__bridge NSString *)string copy];
+        } else if (CFGetTypeID(selectedValue) == CFNumberGetTypeID()) {
+            selected = [(__bridge NSNumber *)selectedValue stringValue];
+        }
+        CFRelease(selectedValue);
+        if (selected.length > 0) return selected;
+    } else if (selectedValue != NULL) {
+        CFRelease(selectedValue);
+    }
+
+    NSString *value = SayItAXStringAttribute(element, kAXValueAttribute);
+    if (value.length == 0) return nil;
+    CFTypeRef rangeValue = NULL;
+    AXError rangeError = AXUIElementCopyAttributeValue(
+        element,
+        kAXSelectedTextRangeAttribute,
+        &rangeValue
+    );
+    if (rangeError != kAXErrorSuccess
+        || rangeValue == NULL
+        || CFGetTypeID(rangeValue) != AXValueGetTypeID()
+        || AXValueGetType((AXValueRef)rangeValue) != kAXValueCFRangeType) {
+        if (rangeValue != NULL) CFRelease(rangeValue);
+        return nil;
+    }
+    CFRange range = CFRangeMake(0, 0);
+    bool valid = AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &range)
+        && range.location >= 0
+        && range.length > 0
+        && (NSUInteger)range.location < value.length;
+    CFRelease(rangeValue);
+    if (!valid) return nil;
+    NSUInteger location = (NSUInteger)range.location;
+    NSUInteger length = MIN((NSUInteger)range.length, value.length - location);
+    return length > 0 ? [value substringWithRange:NSMakeRange(location, length)] : nil;
+}
+
+static NSDictionary<NSString *, NSNumber *> *SayItAXSelectionBounds(AXUIElementRef element) {
+    CFTypeRef rangeValue = NULL;
+    AXError rangeError = AXUIElementCopyAttributeValue(
+        element,
+        kAXSelectedTextRangeAttribute,
+        &rangeValue
+    );
+    if (rangeError != kAXErrorSuccess
+        || rangeValue == NULL
+        || CFGetTypeID(rangeValue) != AXValueGetTypeID()
+        || AXValueGetType((AXValueRef)rangeValue) != kAXValueCFRangeType) {
+        if (rangeValue != NULL) CFRelease(rangeValue);
+        return nil;
+    }
+    CFRange range = CFRangeMake(0, 0);
+    if (!AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &range) || range.length <= 0) {
+        CFRelease(rangeValue);
+        return nil;
+    }
+    CFTypeRef boundsValue = NULL;
+    AXError boundsError = AXUIElementCopyParameterizedAttributeValue(
+        element,
+        kAXBoundsForRangeParameterizedAttribute,
+        rangeValue,
+        &boundsValue
+    );
+    CFRelease(rangeValue);
+    if (boundsError != kAXErrorSuccess
+        || boundsValue == NULL
+        || CFGetTypeID(boundsValue) != AXValueGetTypeID()
+        || AXValueGetType((AXValueRef)boundsValue) != kAXValueCGRectType) {
+        if (boundsValue != NULL) CFRelease(boundsValue);
+        return nil;
+    }
+    CGRect bounds = CGRectZero;
+    bool valid = AXValueGetValue((AXValueRef)boundsValue, kAXValueCGRectType, &bounds)
+        && isfinite(bounds.origin.x)
+        && isfinite(bounds.origin.y)
+        && isfinite(bounds.size.width)
+        && isfinite(bounds.size.height)
+        && bounds.size.width > 0
+        && bounds.size.height > 0;
+    CFRelease(boundsValue);
+    if (!valid) return nil;
+    return @{
+        @"x": @(bounds.origin.x),
+        @"y": @(bounds.origin.y),
+        @"width": @(bounds.size.width),
+        @"height": @(bounds.size.height),
+    };
+}
+
+static NSNumber *SayItAXSelectionEditable(AXUIElementRef element) {
+    CFTypeRef enabledValue = NULL;
+    AXError enabledError = AXUIElementCopyAttributeValue(element, kAXEnabledAttribute, &enabledValue);
+    if (enabledError == kAXErrorSuccess
+        && enabledValue != NULL
+        && CFGetTypeID(enabledValue) == CFBooleanGetTypeID()
+        && !CFBooleanGetValue((CFBooleanRef)enabledValue)) {
+        CFRelease(enabledValue);
+        return @NO;
+    }
+    if (enabledValue != NULL) CFRelease(enabledValue);
+    Boolean valueSettable = false;
+    Boolean selectionSettable = false;
+    AXError valueError = AXUIElementIsAttributeSettable(element, kAXValueAttribute, &valueSettable);
+    AXError selectionError = AXUIElementIsAttributeSettable(
+        element,
+        kAXSelectedTextAttribute,
+        &selectionSettable
+    );
+    if ((valueError == kAXErrorSuccess && valueSettable)
+        || (selectionError == kAXErrorSuccess && selectionSettable)) return @YES;
+    return nil;
+}
+
 static NSString *SayItAXSelectedTextInTree(
     AXUIElementRef element,
     NSUInteger depth,
-    NSUInteger *remaining
+    NSUInteger *remaining,
+    AXUIElementRef *matchedElement
 ) {
     if (element == NULL || remaining == NULL || *remaining == 0) return nil;
     *remaining -= 1;
-    NSString *selected = SayItAXStringAttribute(element, kAXSelectedTextAttribute);
-    if (selected.length > 0 || depth == 0) return selected;
+    NSString *selected = SayItAXSelectedTextFromElement(element);
+    if (selected.length > 0) {
+        if (matchedElement != NULL) *matchedElement = (AXUIElementRef)CFRetain(element);
+        return selected;
+    }
+    if (depth == 0) return nil;
 
     CFTypeRef childrenValue = NULL;
     AXError childrenError = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &childrenValue);
@@ -806,19 +950,27 @@ static NSString *SayItAXSelectedTextInTree(
         CFTypeRef child = CFArrayGetValueAtIndex(children, index);
         if (child == NULL || CFGetTypeID(child) != AXUIElementGetTypeID()) continue;
         AXUIElementSetMessagingTimeout((AXUIElementRef)child, 0.08f);
-        selected = SayItAXSelectedTextInTree((AXUIElementRef)child, depth - 1, remaining);
+        selected = SayItAXSelectedTextInTree(
+            (AXUIElementRef)child,
+            depth - 1,
+            remaining,
+            matchedElement
+        );
         if (selected.length > 0) break;
     }
     CFRelease(childrenValue);
     return selected;
 }
 
-static NSString *SayItAXSelectedTextWithAncestors(AXUIElementRef element) {
+static NSString *SayItAXSelectedTextWithAncestors(
+    AXUIElementRef element,
+    AXUIElementRef *matchedElement
+) {
     AXUIElementRef current = (AXUIElementRef)CFRetain(element);
     NSString *selected = nil;
     for (NSUInteger depth = 0; current != NULL && depth < 10; depth += 1) {
         NSUInteger remaining = 96;
-        selected = SayItAXSelectedTextInTree(current, 3, &remaining);
+        selected = SayItAXSelectedTextInTree(current, 3, &remaining, matchedElement);
         if (selected.length > 0) break;
         CFTypeRef parentValue = NULL;
         AXError parentError = AXUIElementCopyAttributeValue(current, kAXParentAttribute, &parentValue);
@@ -863,9 +1015,20 @@ static char *SayItAccessibilityContextJSON(
         kAXFocusedUIElementAttribute,
         &focusedValue
     );
-    CFRelease(application);
     if (focusedError != kAXErrorSuccess || focusedValue == NULL) {
-        SayItSetError(error, @"当前软件没有可读取的焦点文本区域");
+        if (focusedValue != NULL) {
+            CFRelease(focusedValue);
+            focusedValue = NULL;
+        }
+        focusedError = AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute,
+            &focusedValue
+        );
+    }
+    if (focusedError != kAXErrorSuccess || focusedValue == NULL) {
+        CFRelease(application);
+        SayItSetError(error, @"当前软件没有可读取的焦点文本区域或窗口");
         return NULL;
     }
 
@@ -879,6 +1042,7 @@ static char *SayItAccessibilityContextJSON(
         && CFEqual(subrole, kAXSecureTextFieldSubrole);
     if (subrole != NULL) CFRelease(subrole);
     if (secure) {
+        CFRelease(application);
         CFRelease(focusedValue);
         return SayItCopyJSON(@{ @"secure": @YES }, error);
     }
@@ -886,11 +1050,23 @@ static char *SayItAccessibilityContextJSON(
     NSUInteger limit = MAX((NSUInteger)1, MIN((NSUInteger)maxChars, (NSUInteger)6000));
     // Chromium、表格和跨子节点选区经常只在祖先元素暴露 AXSelectedText。
     // 最多向上检查 10 层，与 selection-hook 的被动读取策略保持一致。
-    NSString *selectedText = SayItAXSelectedTextWithAncestors(focused);
+    AXUIElementRef selectedElement = NULL;
+    NSString *selectedText = SayItAXSelectedTextWithAncestors(focused, &selectedElement);
+    if (selectedText.length == 0) {
+        // Chromium/Electron may not publish its accessibility tree until these
+        // application attributes are enabled. selection-hook uses the same pair.
+        AXUIElementSetAttributeValue(application, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
+        AXUIElementSetAttributeValue(application, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
+        selectedText = SayItAXSelectedTextWithAncestors(focused, &selectedElement);
+    }
     NSString *focusedText = SayItAXStringAttribute(focused, kAXValueAttribute);
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     if (selectedText.length > 0) {
         result[@"selectedText"] = SayItTruncateAccessibilityText(selectedText, limit);
+        NSDictionary *bounds = SayItAXSelectionBounds(selectedElement ?: focused);
+        if (bounds != nil) result[@"selectionBounds"] = bounds;
+        NSNumber *editable = SayItAXSelectionEditable(selectedElement ?: focused);
+        if (editable != nil) result[@"selectionEditable"] = editable;
     }
     if (focusedText.length > 0) {
         result[@"focusedText"] = SayItTruncateAccessibilityText(focusedText, limit);
@@ -925,6 +1101,8 @@ static char *SayItAccessibilityContextJSON(
         }
         if (rangeValue != NULL) CFRelease(rangeValue);
     }
+    if (selectedElement != NULL) CFRelease(selectedElement);
+    CFRelease(application);
     CFRelease(focusedValue);
     return SayItCopyJSON(result, error);
 }

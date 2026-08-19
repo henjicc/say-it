@@ -23,7 +23,7 @@ use super::model::{
     ActivationTarget, ActiveAppContextExtractionMethod, AppIdentity, CaptureOptions, CaptureStatus,
     CapturedActiveAppContext, ContextSource,
 };
-use super::normalize::{enforce_total_budget, normalize_text};
+use super::normalize::{enforce_selection_budget, enforce_total_budget, normalize_text};
 use super::{native_probe, ocr, screen_capture, ActiveAppContextProvider};
 
 pub(crate) struct WindowsActiveAppContextProvider;
@@ -236,7 +236,11 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                 "原生文本读取{status:?}，仅使用已取得的应用与窗口信息。"
             ));
         }
-        enforce_total_budget(&mut context, options.max_chars);
+        if options.selection_only {
+            enforce_selection_budget(&mut context, options.max_chars);
+        } else {
+            enforce_total_budget(&mut context, options.max_chars);
+        }
         context.elapsed_ms = started.elapsed().as_millis() as u64;
         crate::development_debug_log(
             "active-app-context",

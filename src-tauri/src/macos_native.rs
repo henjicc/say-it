@@ -30,11 +30,24 @@ pub(crate) struct MacWindowCapture {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MacAccessibilityBounds {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MacAccessibilityContext {
     #[serde(default)]
     pub(crate) secure: bool,
     #[serde(default)]
     pub(crate) selected_text: Option<String>,
+    #[serde(default)]
+    pub(crate) selection_bounds: Option<MacAccessibilityBounds>,
+    #[serde(default)]
+    pub(crate) selection_editable: Option<bool>,
     #[serde(default)]
     pub(crate) focused_text: Option<String>,
     #[serde(default)]
@@ -515,13 +528,16 @@ mod tests {
 
     #[test]
     fn accessibility_context_accepts_partial_native_payload() {
-        let context =
-            parse_accessibility_context(r#"{"selectedText":"选区","caretContext":"光标附近"}"#)
-                .unwrap();
+        let context = parse_accessibility_context(
+            r#"{"selectedText":"选区","caretContext":"光标附近","selectionBounds":{"x":12.5,"y":20,"width":80,"height":24},"selectionEditable":true}"#,
+        )
+        .unwrap();
         assert_eq!(context.selected_text.as_deref(), Some("选区"));
         assert!(!context.secure);
         assert_eq!(context.focused_text, None);
         assert_eq!(context.caret_context.as_deref(), Some("光标附近"));
+        assert_eq!(context.selection_editable, Some(true));
+        assert_eq!(context.selection_bounds.as_ref().map(|value| value.x), Some(12.5));
 
         let secure = parse_accessibility_context(r#"{"secure":true}"#).unwrap();
         assert!(secure.secure);

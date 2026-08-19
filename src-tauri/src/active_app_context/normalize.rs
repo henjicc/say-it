@@ -102,6 +102,27 @@ pub(crate) fn enforce_total_budget(context: &mut CapturedActiveAppContext, max_c
     context.truncated = truncated;
 }
 
+/// 选区是待编辑的原文，不能像提示词上下文一样折叠换行和空格。
+pub(crate) fn enforce_selection_budget(
+    context: &mut CapturedActiveAppContext,
+    max_chars: usize,
+) {
+    context.focused_text = None;
+    context.caret_context = None;
+    context.visible_text.clear();
+    context.document_text.clear();
+    context.ocr_text.clear();
+    let Some(selected) = context.selected_text.take() else {
+        return;
+    };
+    if selected.trim().is_empty() {
+        return;
+    }
+    let (selected, truncated) = truncate_chars(&selected, max_chars);
+    context.truncated |= truncated;
+    context.selected_text = Some(selected);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +161,17 @@ mod tests {
         assert_eq!(context.selected_text.as_deref(), Some("Same"));
         assert!(context.focused_text.is_none());
         assert_eq!(context.document_text, vec!["Different"]);
+    }
+
+    #[test]
+    fn selection_budget_preserves_formatting() {
+        let mut context = CapturedActiveAppContext {
+            selected_text: Some("  第一行\n  第二行  ".into()),
+            focused_text: Some("无关上下文".into()),
+            ..Default::default()
+        };
+        enforce_selection_budget(&mut context, 100);
+        assert_eq!(context.selected_text.as_deref(), Some("  第一行\n  第二行  "));
+        assert!(context.focused_text.is_none());
     }
 }

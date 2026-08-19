@@ -7,7 +7,7 @@ use super::model::{
     ActivationTarget, ActiveAppContextExtractionMethod, AppIdentity, CaptureOptions, CaptureStatus,
     CapturedActiveAppContext, ContextSource, OcrTextBlock, DEFAULT_MAX_CAPTURE_SIDE,
 };
-use super::normalize::enforce_total_budget;
+use super::normalize::{enforce_selection_budget, enforce_total_budget};
 use super::ActiveAppContextProvider;
 use crate::providers::capabilities::OcrProvider;
 
@@ -105,7 +105,11 @@ impl ActiveAppContextProvider for MacActiveAppContextProvider {
                 capture_ocr(&mut context, target, &options, cancelled)
             }
         };
-        enforce_total_budget(&mut context, options.max_chars);
+        if options.selection_only {
+            enforce_selection_budget(&mut context, options.max_chars);
+        } else {
+            enforce_total_budget(&mut context, options.max_chars);
+        }
         context.elapsed_ms = started.elapsed().as_millis() as u64;
         context
     }
@@ -129,6 +133,13 @@ fn capture_accessibility_text(
                 return CaptureStatus::Sensitive;
             }
             context.selected_text = value.selected_text;
+            context.selection_bounds = value.selection_bounds.map(|bounds| super::ContextBounds {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+            });
+            context.selection_editable = value.selection_editable;
             context.focused_text = value.focused_text;
             context.caret_context = value.caret_context;
             if context.selected_text.is_some()
