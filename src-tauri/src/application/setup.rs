@@ -1,7 +1,8 @@
 use crate::persistence::save_persisted_state_with_app_settings;
 use crate::state::RuntimeState;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use std::sync::atomic::Ordering;
+use tauri::{AppHandle, Manager, State};
 
 pub(crate) const ONBOARDING_VERSION: u32 = 1;
 
@@ -195,12 +196,85 @@ fn shortcut_check(state: &RuntimeState) -> SetupCheckResult {
 }
 
 fn collect(state: &RuntimeState) -> Vec<SetupCheckResult> {
-    vec![
-        microphone_check(),
-        permission_check(),
-        provider_check(state),
-        shortcut_check(state),
-    ]
+    let mut checks = vec![microphone_check()];
+    // Windows 基础听写没有需要用户处理的授权步骤，不在首次引导里展示一条
+    // “已通过”的技术性权限检查。macOS 和尚未正式支持的平台仍保留检查。
+    #[cfg(not(windows))]
+    checks.push(permission_check());
+    checks.push(provider_check(state));
+    checks.push(shortcut_check(state));
+    checks
+}
+
+fn pcm16_rms(bytes: &[u8]) -> f32 {
+    if bytes.len() < 2 {
+        return 0.0;
+    }
+    let (sum, count) = bytes
+        .chunks_exact(2)
+        .fold((0.0f32, 0usize), |(sum, count), pair| {
+            let value = i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0;
+            (sum + value * value, count + 1)
+        });
+    (sum / count as f32).sqrt()
+}
+
+#[tauri::command]
+pub(crate) fn start_setup_mic_meter(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<(), String> {
+    let sample_rate = state
+        .backend_mic
+        .lock()
+        .map_err(|_| "麦克风状态锁失败")?
+        .sample_rate;
+    if sample_rate == 0 {
+        return Err("麦克风尚未启动".to_string());
+    }
+    let params = serde_json::from_value::<crate::audio_dsp::DspParams>(
+        state
+            .app_settings
+            .lock()
+            .map_err(|_| "应用配置锁失败")?
+            .dictation_prefs
+            .clone(),
+    )
+    .map_err(|error| format!("音频处理配置无效：{error}"))?;
+    let (_, mut receiver) = crate::desktop::attach_backend_mic_raw_inner(&state)?;
+    let epoch = state.setup_mic_meter_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+    state.setup_mic_level_bits.store(0, Ordering::Release);
+
+    tauri::async_runtime::spawn(async move {
+        let mut dsp = crate::audio_dsp::StreamDsp::new(params, sample_rate);
+        while let Some(input) = receiver.recv().await {
+            let crate::state::AsrStreamInput::RawF32(samples) = input else {
+                continue;
+            };
+            let state = app.state::<RuntimeState>();
+            if state.setup_mic_meter_epoch.load(Ordering::Acquire) != epoch {
+                break;
+            }
+            let processed = dsp.process(&samples);
+            if !processed.is_empty() {
+                state
+                    .setup_mic_level_bits
+                    .store(pcm16_rms(&processed).to_bits(), Ordering::Release);
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_setup_mic_level(state: State<'_, RuntimeState>) -> f32 {
+    f32::from_bits(state.setup_mic_level_bits.load(Ordering::Acquire))
+}
+
+#[tauri::command]
+pub(crate) fn stop_setup_mic_meter(state: State<'_, RuntimeState>) {
+    state.setup_mic_meter_epoch.fetch_add(1, Ordering::AcqRel);
+    state.setup_mic_level_bits.store(0, Ordering::Release);
 }
 
 fn persist_result(
@@ -322,4 +396,17 @@ pub(crate) fn complete_onboarding(
     save_persisted_state_with_app_settings(&app, &state, Some(&next))?;
     *state.app_settings.lock().map_err(|_| "应用配置锁失败")? = next;
     get_setup_status(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processed_pcm_level_uses_normalized_samples() {
+        let samples = [0i16, 16_384, -16_384];
+        let bytes: Vec<u8> = samples.into_iter().flat_map(i16::to_le_bytes).collect();
+        let expected = (0.5f32 / 3.0).sqrt();
+        assert!((pcm16_rms(&bytes) - expected).abs() < 0.0001);
+    }
 }
