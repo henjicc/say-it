@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,6 +24,19 @@ if (!existsSync(requestedPath)) {
 
 function command(commandPath, args) {
   return execFileSync(commandPath, args, { encoding: "utf8" }).trim();
+}
+
+function codeSigningIdentifier(binary) {
+  const result = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", binary], {
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const identifier = output.match(/^Identifier=(.+)$/m)?.[1]?.trim();
+  if (result.status !== 0 || !identifier) {
+    throw new Error(`无法读取代码签名标识：${binary}\n${output.trim()}`);
+  }
+  return identifier;
 }
 
 function filesUnder(path) {
@@ -136,6 +149,30 @@ function validateApp(appPath) {
   const executablePath = resolve(appPath, "Contents/MacOS", executableName);
   if (!existsSync(executablePath)) {
     throw new Error(`macOS 应用包缺少主程序：${executablePath}`);
+  }
+  const appleSpeechHelper = resolve(appPath, "Contents/MacOS/sayit-apple-speech");
+  if (!existsSync(appleSpeechHelper)) {
+    throw new Error(`macOS 应用包缺少 Apple 语音识别助手：${appleSpeechHelper}`);
+  }
+  let speechCheck;
+  try {
+    const speechCheckLine = command(appleSpeechHelper, ["--self-check"])
+      .split("\n")
+      .filter(Boolean)
+      .at(-1);
+    speechCheck = JSON.parse(speechCheckLine || "{}");
+  } catch (error) {
+    throw new Error(`Apple 语音识别助手自检失败：${error.message}`);
+  }
+  if (
+    speechCheck.identityValid !== true ||
+    speechCheck.bundleIdentifier !== "com.henjicc.sayit" ||
+    speechCheck.usageDescriptionPresent !== true
+  ) {
+    throw new Error(`Apple 语音识别助手缺少稳定的权限身份：${JSON.stringify(speechCheck)}`);
+  }
+  if (codeSigningIdentifier(appleSpeechHelper) !== "com.henjicc.sayit") {
+    throw new Error("Apple 语音识别助手代码签名没有复用主应用身份");
   }
   const binaries = filesUnder(resolve(appPath, "Contents")).filter((path) =>
     command("/usr/bin/file", ["--brief", path]).includes("Mach-O"),

@@ -15,7 +15,7 @@
     "context-probe:build": "node scripts/build-context-probe.mjs",
     "context-probe:test": "ctest --test-dir src-tauri/target/context-probe-build -C Release --output-on-failure",
     "macos-speech:build": "node scripts/build-macos-speech.mjs",
-    "tauri:dev": "npm run context-probe:build && npm run macos-speech:build && node scripts/run-tauri.mjs dev",
+    "tauri:dev": "npm run context-probe:build && node scripts/build-macos-speech.mjs --development && node scripts/run-tauri.mjs dev",
     "tauri:build": "npm run context-probe:build && npm run macos-speech:build && node scripts/run-tauri.mjs build",
     "tauri": "tauri"
   },

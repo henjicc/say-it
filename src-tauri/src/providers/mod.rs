@@ -449,6 +449,8 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
                 existing.display_name = builtin.display_name;
                 existing.auth_kind = builtin.auth_kind;
                 existing.capabilities = builtin.capabilities;
+                existing.config_fields = builtin.config_fields;
+                existing.actions = builtin.actions;
                 // enabled 现状仍强制为 true：UI 尚无停用开关，先维持现状。
                 existing.enabled = true;
             }
@@ -679,6 +681,21 @@ mod tests {
         let normalized = normalize_settings(settings);
         assert!(find_profile(&normalized, "future-llm").is_some());
         assert!(find_profile(&normalized, FUNASR_PROVIDER_ID).is_some());
+    }
+
+    #[test]
+    fn normalize_settings_removes_stale_builtin_actions() {
+        let mut settings = ProviderSettings::default();
+        let profile = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == apple_speech::PROVIDER_ID)
+            .unwrap();
+        profile.actions = vec!["prepareAppleSpeech".to_string()];
+
+        let normalized = normalize_settings(settings);
+        let profile = find_profile(&normalized, apple_speech::PROVIDER_ID).unwrap();
+        assert!(profile.actions.is_empty());
     }
 
     #[test]
