@@ -17,7 +17,8 @@ vi.mock("@/lib/tauri", () => ({
 
 describe("AssistantAnswerApp", () => {
   it("shows the safe answer actions and selection context", async () => {
-    render(<AssistantAnswerApp />);
+    const { container } = render(<AssistantAnswerApp />);
+    expect(container.firstElementChild).toHaveClass("assistant-answer-window");
     expect(await screen.findByText("回答正文")).toBeInTheDocument();
     expect(screen.getByText("选区")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /重新生成/ })).toBeInTheDocument();
