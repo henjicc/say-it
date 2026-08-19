@@ -1113,7 +1113,9 @@ fn disconnect_silent_asr(app: AppHandle, epoch: u64) {
         .ok()
         .and_then(|mut s| {
             if s.epoch == epoch {
-                s.segment.clear();
+                // 断开时供应商未必会先发 final。Apple 本地识别尤其可能只有
+                // partial；先保存用户已经看到的最后快照，再关闭旧流。
+                commit_current_segment(&mut s);
                 s.asr_session_id.take()
             } else {
                 None
@@ -1350,8 +1352,7 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
                     s.segment = text.into();
                     if payload.get("final").and_then(Value::as_bool) == Some(true) {
-                        let segment = std::mem::take(&mut s.segment);
-                        s.committed.push_str(&segment);
+                        commit_current_segment(&mut s);
                     }
                 }
             }
@@ -1389,6 +1390,13 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
     );
     if let Some(epoch) = finalize_epoch {
         finalize(app, epoch).await;
+    }
+}
+
+fn commit_current_segment(session: &mut Session) {
+    if !session.segment.is_empty() {
+        session.committed.push_str(&session.segment);
+        session.segment.clear();
     }
 }
 
@@ -3215,6 +3223,22 @@ mod tests {
         s.epoch = 2;
         assert!(!s.is_current(1));
     }
+
+    #[test]
+    fn disconnect_commits_the_last_partial_segment() {
+        let mut session = Session {
+            committed: "第一段".into(),
+            segment: "第二段尚未收到 final".into(),
+            ..Default::default()
+        };
+        commit_current_segment(&mut session);
+        assert_eq!(session.committed, "第一段第二段尚未收到 final");
+        assert!(session.segment.is_empty());
+
+        commit_current_segment(&mut session);
+        assert_eq!(session.committed, "第一段第二段尚未收到 final");
+    }
+
     #[test]
     fn waveform_is_reserved_for_file_dictation() {
         assert!(should_show_waveform(Some(DictationMode::File)));
