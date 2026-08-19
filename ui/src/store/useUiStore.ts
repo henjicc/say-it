@@ -1,9 +1,10 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "subtitles" | "transcription" | "customization" | "history" | "settings";
+export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "customization" | "history" | "settings";
 export type CustomizationTabKey = "hotwords" | "context";
 export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "keys" | "compare" | "advanced";
-export type DictationTabKey = "basic" | "assistant" | "local" | "smart" | "apps" | "debug";
+export type DictationTabKey = "basic" | "local" | "smart" | "apps" | "debug";
+export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
 export type SceneRulesTabKey = "apps" | "shortcuts";
 export type SmartTextTabKey = "template" | "context" | "preview";
 export type SubtitleTabKey = "general" | "style" | "translation" | "obs";
@@ -30,6 +31,9 @@ interface UiState {
   focusedShortcutProfileId: string | null;
   consumeFocusedShortcutProfile: () => void;
   openDictationShortcutSettings: (profileId?: string) => void;
+  focusedAssistantAction: AssistantActionKey | null;
+  consumeFocusedAssistantAction: () => void;
+  openAssistantSettings: (action?: AssistantActionKey) => void;
   openSubtitleShortcutSettings: () => void;
   customizationTab: CustomizationTabKey;
   setCustomizationTab: (tab: CustomizationTabKey) => void;
@@ -67,6 +71,13 @@ export const useUiStore = create<UiState>((set) => ({
       dictationTab: "basic",
       focusedShortcutProfileId: null,
     }),
+  focusedAssistantAction: null,
+  consumeFocusedAssistantAction: () => set({ focusedAssistantAction: null }),
+  openAssistantSettings: (action) => set({
+    view: "assistant",
+    focusedAssistantAction: action ?? null,
+    focusedShortcutProfileId: null,
+  }),
   openSubtitleShortcutSettings: () => set({
     view: "subtitles",
     subtitleTab: "general",

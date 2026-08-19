@@ -1,5 +1,5 @@
 import type { ViewKey } from "@/store/useUiStore";
-import { BookMarked, Captions, ClosedCaption, History, Info, Mic, Settings } from "lucide-react";
+import { BookMarked, Captions, ClosedCaption, History, Info, Mic, Settings, Sparkles } from "lucide-react";
 
 export interface NavItem {
   view: ViewKey;
@@ -21,6 +21,11 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
     view: "dictation",
     label: "语音输入",
     icon: <Mic {...iconProps} />,
+  },
+  {
+    view: "assistant",
+    label: "语音助手",
+    icon: <Sparkles {...iconProps} />,
   },
   {
     view: "subtitles",

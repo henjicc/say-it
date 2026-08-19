@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +56,8 @@ fn default_theme() -> Value {
     serde_json::json!({"tone":"dark","accent":"#5199FF"})
 }
 fn default_assistant_prefs() -> Value {
-    serde_json::json!({"translationModel":"none","sourceLanguage":"auto","targetLanguage":"zh"})
+    serde_json::to_value(crate::application::assistant::AssistantPreferences::default())
+        .expect("default assistant preferences must serialize")
 }
 fn default_history_prefs() -> Value {
     serde_json::json!({"enabled":true,"retentionDays":30,"excludedApps":[]})
@@ -150,6 +151,7 @@ pub(crate) fn import_legacy_settings(
             current.custom_cue_end = Some(store_cue(&app, "end", &data)?);
         }
     }
+    current.schema_version = SETTINGS_SCHEMA_VERSION;
     current.legacy_imported = true;
     save_settings_then_commit(&app, &state, current.clone())?;
     Ok(current)
@@ -168,6 +170,9 @@ pub(crate) fn update_app_settings(
     }
     if domain == "customization" {
         crate::application::customization::validate_customization_settings_value(&value)?;
+    }
+    if domain == "assistant" {
+        crate::application::assistant::validate_preferences_value(&value)?;
     }
     if domain == "history" {
         let days = value
@@ -189,6 +194,7 @@ pub(crate) fn update_app_settings(
         .lock()
         .map_err(|_| "应用配置锁失败")?
         .clone();
+    next.schema_version = SETTINGS_SCHEMA_VERSION;
     match domain.as_str() {
         "dictation" => next.dictation_prefs = value,
         "subtitles" => next.subtitle_prefs = value,
@@ -331,6 +337,8 @@ mod tests {
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
         assert_eq!(v.assistant_prefs["translationModel"], "none");
+        assert_eq!(v.assistant_prefs["llmProviderId"], "default");
+        assert_eq!(v.assistant_prefs["answerStyle"], "balanced");
         assert!(v.setup_results.is_object());
     }
     #[test]

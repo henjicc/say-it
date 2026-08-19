@@ -4,7 +4,7 @@ use crate::providers::{
 };
 use crate::state::RuntimeState;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ReasoningEffort};
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use tauri::State;
@@ -85,17 +85,33 @@ pub(crate) fn render_prompt(
     ))
 }
 
-fn selected_profile(state: &RuntimeState) -> Result<ProviderProfile, String> {
+fn selected_profile(
+    state: &RuntimeState,
+    requested_provider_id: Option<&str>,
+    requested_model: Option<&str>,
+) -> Result<ProviderProfile, String> {
     let settings = state
         .providers
         .lock()
         .map_err(|_| "大语言模型配置锁失败".to_string())?;
     let settings = normalize_settings(settings.clone());
-    let provider_id = default_provider_id(&settings, "llm");
-    find_profile(&settings, &provider_id)
+    let requested_provider_id = requested_provider_id.unwrap_or_default().trim();
+    let provider_id = if requested_provider_id.is_empty() || requested_provider_id == "default" {
+        default_provider_id(&settings, "llm")
+    } else {
+        requested_provider_id.to_string()
+    };
+    let mut profile = find_profile(&settings, &provider_id)
         .filter(|profile| profile.enabled && profile.kind.starts_with("llm:"))
         .cloned()
-        .ok_or_else(|| "请先在“设置 → 密钥与识别”中配置默认大语言模型".to_string())
+        .ok_or_else(|| "请先在“设置 → 模型”中配置可用的大语言模型".to_string())?;
+    if let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        profile.config["model"] = serde_json::Value::String(model.to_string());
+    }
+    Ok(profile)
 }
 
 fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), String> {
@@ -150,8 +166,12 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
     ))
 }
 
-pub(crate) fn validate_available(state: &RuntimeState) -> Result<(), String> {
-    let profile = selected_profile(state)?;
+pub(crate) fn validate_available_for(
+    state: &RuntimeState,
+    provider_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let profile = selected_profile(state, provider_id, model)?;
     client_and_model(&profile).map(|_| ())
 }
 
@@ -218,6 +238,17 @@ fn request_timeout(profile: &ProviderProfile) -> Duration {
     }
 }
 
+fn structured_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> ChatOptions {
+    options = options.with_response_format(ChatResponseFormat::JsonMode);
+    let model_name = profile_value(profile, "model").to_ascii_lowercase();
+    if profile.kind == "llm:groq" && model_name.contains("qwen3") {
+        // Groq 的 Qwen 3 默认把推理内容放进正文，既会破坏 JSON，又显著增加延迟。
+        // reasoning_effort="none" 对应 genai 的 Zero，只针对官方明确支持该值的 Qwen 3。
+        options = options.with_reasoning_effort(ReasoningEffort::Zero);
+    }
+    options
+}
+
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
     text: &str,
@@ -243,22 +274,46 @@ pub(crate) async fn process_smart_text(
         prompt.push_str("\n\n");
         prompt.push_str(&corrections);
     }
-    let profile = selected_profile(state)?;
+    process_prompt(
+        state,
+        SYSTEM_PROMPT,
+        &prompt,
+        None,
+        None,
+        "smart-text",
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn process_prompt(
+    state: &RuntimeState,
+    system_prompt: &str,
+    user_prompt: &str,
+    provider_id: Option<&str>,
+    model_override: Option<&str>,
+    log_scope: &str,
+    structured_json: bool,
+) -> Result<String, String> {
+    let profile = selected_profile(state, provider_id, model_override)?;
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
-        "smart-text",
+        log_scope,
         format_args!(
             "准备调用大语言模型：供应商={}，模型={}\n--- 系统提示词开始 ---\n{}\n--- 系统提示词结束 ---\n--- 用户提示词开始 ---\n{}\n--- 用户提示词结束 ---",
             profile.display_name,
             model,
-            SYSTEM_PROMPT,
-            prompt,
+            system_prompt,
+            user_prompt,
         ),
     );
     let request = ChatRequest::default()
-        .with_system(SYSTEM_PROMPT)
-        .append_message(ChatMessage::user(prompt));
-    let options = chat_options(&profile)?;
+        .with_system(system_prompt)
+        .append_message(ChatMessage::user(user_prompt));
+    let mut options = chat_options(&profile)?;
+    if structured_json {
+        options = structured_output_options(&profile, options);
+    }
     let request_timeout = request_timeout(&profile);
     let response = timeout(
         request_timeout,
@@ -273,7 +328,7 @@ pub(crate) async fn process_smart_text(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "大语言模型没有返回文本".to_string())?;
     crate::development_debug_log(
-        "smart-text",
+        log_scope,
         format_args!(
             "大语言模型返回文本：\n--- 返回开始 ---\n{}\n--- 返回结束 ---",
             output
@@ -529,5 +584,31 @@ mod tests {
             request_timeout(&llm_profile("llm:groq", "auto")),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn assistant_json_mode_disables_groq_qwen3_reasoning() {
+        let mut profile = llm_profile("llm:groq", "auto");
+        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
+        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
+        let options = structured_output_options(&profile, chat_options(&profile).unwrap());
+        assert!(matches!(
+            options.response_format,
+            Some(ChatResponseFormat::JsonMode)
+        ));
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(ReasoningEffort::Zero)
+        ));
+    }
+
+    #[test]
+    fn assistant_json_mode_does_not_override_other_models_reasoning() {
+        let profile = llm_profile("llm:groq", "high");
+        let options = structured_output_options(&profile, chat_options(&profile).unwrap());
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(ReasoningEffort::High)
+        ));
     }
 }

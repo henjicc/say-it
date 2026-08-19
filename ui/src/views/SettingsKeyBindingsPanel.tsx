@@ -27,6 +27,7 @@ export function SettingsKeyBindingsPanel() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const openDictation = useUiStore((state) => state.openDictationShortcutSettings);
+  const openAssistant = useUiStore((state) => state.openAssistantSettings);
   const openSubtitles = useUiStore((state) => state.openSubtitleShortcutSettings);
 
   const refresh = async () => {
@@ -52,7 +53,8 @@ export function SettingsKeyBindingsPanel() {
   }, []);
 
   const groups = useMemo(() => ({
-    dictation: items.filter((item) => item.target.kind !== "subtitles"),
+    dictation: items.filter((item) => item.target.kind === "dictationMain" || item.target.kind === "dictationProfile"),
+    assistant: items.filter((item) => item.target.kind === "assistant"),
     subtitles: items.filter((item) => item.target.kind === "subtitles"),
   }), [items]);
   const mutating = busyKey !== null;
@@ -90,6 +92,8 @@ export function SettingsKeyBindingsPanel() {
   const goToSource = (item: ShortcutBindingItem) => {
     if (item.target.kind === "subtitles") {
       openSubtitles();
+    } else if (item.target.kind === "assistant") {
+      openAssistant(item.target.action);
     } else {
       openDictation(item.target.kind === "dictationProfile" ? item.target.profileId : undefined);
     }
@@ -208,6 +212,7 @@ export function SettingsKeyBindingsPanel() {
         </p>
       </SettingsSection>
       {renderGroup("语音输入", groups.dictation)}
+      {renderGroup("语音助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}
     </div>
   );
