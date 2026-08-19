@@ -158,7 +158,7 @@ private struct LegacyTranscriptAccumulator {
     ) -> String {
         let next = snapshot.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty else { return text }
-        let timelineRolled = rangeStart.flatMap { previous in
+        let timelineAdvanced = rangeStart.flatMap { previous in
             nextRangeStart.map { $0 > previous + 0.75 }
         } ?? false
         // 部分系统版本在滚动后会把 segment 时间重新从零计算；文本突然缩短是
@@ -168,8 +168,14 @@ private struct LegacyTranscriptAccumulator {
         let severeShrink = current.count >= 24
             && next.count * 3 < current.count
             && sharedPrefixCount < sameWindowPrefix
-        if !current.isEmpty && (timelineRolled || severeShrink) {
-            committed = concatenateTranscript(committed, current)
+        let substantialSharedPrefix = next.count * 3 >= current.count * 2
+            && sharedPrefixCount >= min(6, max(2, min(current.count, next.count) / 5))
+        if !current.isEmpty && (severeShrink || (timelineAdvanced && !substantialSharedPrefix)) {
+            // 滚动窗口通常会保留上一窗口的尾部。只提交已经从窗口中滑出的前缀，
+            // 否则把旧快照整体提交后再拼新快照，会在最终输入时产生重复段落。
+            let overlap = suffixPrefixOverlap(current, next, limit: 512)
+            let committedPrefix = String(current.dropLast(overlap))
+            committed = concatenateTranscript(committed, committedPrefix)
         }
         current = next
         rangeStart = nextRangeStart
@@ -179,6 +185,19 @@ private struct LegacyTranscriptAccumulator {
     var text: String {
         concatenateTranscript(committed, current)
     }
+}
+
+private func suffixPrefixOverlap(_ left: String, _ right: String, limit: Int) -> Int {
+    let leftCharacters = Array(left.suffix(limit))
+    let rightCharacters = Array(right.prefix(limit))
+    let maximum = min(leftCharacters.count, rightCharacters.count)
+    guard maximum > 0 else { return 0 }
+    for count in stride(from: maximum, through: 1, by: -1) {
+        if leftCharacters.suffix(count).elementsEqual(rightCharacters.prefix(count)) {
+            return count
+        }
+    }
+    return 0
 }
 
 /// SpeechAnalyzer 返回的是按音频范围排列的 phrase，而不是整段听写快照。
@@ -223,6 +242,14 @@ private func accumulatorCheck() async -> Int32 {
     _ = legacy.update(snapshot: "第一段修正文本", rangeStart: 0)
     let legacyResult = legacy.update(snapshot: "第二段", rangeStart: 61)
 
+    var overlappingLegacy = LegacyTranscriptAccumulator()
+    _ = overlappingLegacy.update(snapshot: "第一段内容，接着说第二段内容", rangeStart: 0)
+    let overlappingLegacyResult = overlappingLegacy.update(snapshot: "第二段内容，然后是第三段", rangeStart: 61)
+
+    var revisedLegacy = LegacyTranscriptAccumulator()
+    _ = revisedLegacy.update(snapshot: "今天我们测试一段较长的识别内容", rangeStart: 0)
+    let revisedLegacyResult = revisedLegacy.update(snapshot: "今天我们来测试一段较长的识别内容", rangeStart: 1)
+
     var progressive = ProgressiveTranscriptAccumulator()
     _ = progressive.update(text: "第一段临时", isFinal: false)
     _ = progressive.update(text: "第一段", isFinal: true)
@@ -230,12 +257,14 @@ private func accumulatorCheck() async -> Int32 {
     let progressiveResult = progressive.update(text: "第二段", isFinal: true)
 
     let success = legacyResult == "第一段修正文本第二段"
+        && overlappingLegacyResult == "第一段内容，接着说第二段内容，然后是第三段"
+        && revisedLegacyResult == "今天我们来测试一段较长的识别内容"
         && progressiveResult == "第一段第二段"
     let emitter = JsonEmitter()
     await emitter.send(OutputEvent(
         kind: "accumulatorCheck",
         available: success,
-        message: success ? nil : "Apple 转写累加器自检失败"
+        message: success ? nil : "Apple 转写累加器自检失败：legacy=\(legacyResult)，overlap=\(overlappingLegacyResult)，revision=\(revisedLegacyResult)，progressive=\(progressiveResult)"
     ))
     return success ? 0 : 70
 }
@@ -455,11 +484,11 @@ private func transcribeLegacy(
                 eventBuilder.finish()
             }
         }
-        let resultTask = Task { () -> String? in
+        let resultTask = Task { () -> (text: String, error: String?) in
             var accumulator = LegacyTranscriptAccumulator()
             for await event in events {
                 switch event {
-                case .result(let text, let isFinal, let rangeStart):
+                case .result(let text, _, let rangeStart):
                     let snapshot = accumulator.update(
                         snapshot: text,
                         rangeStart: rangeStart
@@ -467,13 +496,15 @@ private func transcribeLegacy(
                     await emitter.send(OutputEvent(
                         kind: "result",
                         text: snapshot,
-                        isFinal: isFinal
+                        // SFSpeechRecognizer 的 final 只结束原生识别任务。对通用
+                        // 听写状态机始终发送会话快照，并在任务结束后只提交一次 final。
+                        isFinal: false
                     ))
                 case .failure(let message):
-                    return message
+                    return (accumulator.text, message)
                 }
             }
-            return nil
+            return (accumulator.text, nil)
         }
 
         await emitter.send(OutputEvent(
@@ -503,7 +534,8 @@ private func transcribeLegacy(
             eventBuilder.yield(.failure("Apple 本地语音识别结束等待超时"))
             eventBuilder.finish()
         }
-        if let resultError = await resultTask.value {
+        let result = await resultTask.value
+        if let resultError = result.error {
             timeoutTask.cancel()
             recognitionTask.cancel()
             throw NSError(
@@ -513,6 +545,13 @@ private func transcribeLegacy(
             )
         }
         timeoutTask.cancel()
+        if !result.text.isEmpty {
+            await emitter.send(OutputEvent(
+                kind: "result",
+                text: result.text,
+                isFinal: true
+            ))
+        }
         await emitter.send(OutputEvent(kind: "finish"))
         return 0
     } catch {

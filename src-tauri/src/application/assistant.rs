@@ -1,6 +1,8 @@
 use crate::active_app_context::{ActivationTarget, AppIdentity, CaptureStatus};
 use crate::state::RuntimeState;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -24,6 +26,8 @@ pub(crate) struct AssistantShortcut {
     pub(crate) alt: bool,
     #[serde(default)]
     pub(crate) meta: bool,
+    #[serde(default)]
+    pub(crate) trigger_mode: crate::state::ShortcutTriggerMode,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -99,21 +103,56 @@ pub(crate) fn set_shortcuts(
     for shortcut in registered.drain(..) {
         let _ = app.global_shortcut().unregister(shortcut.as_str());
     }
+    #[cfg(target_os = "macos")]
+    crate::hotkey::set_assistant_fn_binding(None)?;
     let mut next: Vec<String> = Vec::new();
+    #[cfg(target_os = "macos")]
+    let mut fn_binding = None;
     for action in [
         AssistantAction::TranslateSpeech,
         AssistantAction::EditSelection,
         AssistantAction::Ask,
     ] {
+        if settings.get(action).key_code.trim() == "Fn" {
+            #[cfg(target_os = "macos")]
+            {
+                if fn_binding.is_some() {
+                    return Err("智能助手 Fn 快捷键重复".into());
+                }
+                fn_binding = Some((action, settings.get(action).trigger_mode));
+                continue;
+            }
+            #[cfg(not(target_os = "macos"))]
+            return Err(
+                "Fn 单键快捷键仅受 macOS 支持；Windows 键盘通常不会把 Fn 作为独立按键交给应用"
+                    .into(),
+            );
+        }
         let Some(shortcut) = accelerator(settings.get(action))? else {
             continue;
         };
         let callback_action = action;
+        let trigger_mode = settings.get(action).trigger_mode;
+        let pressed = Arc::new(AtomicBool::new(false));
         if let Err(error) =
             app.global_shortcut()
-                .on_shortcut(shortcut.as_str(), move |app, _, event| {
-                    if event.state == ShortcutState::Pressed {
-                        request_shortcut(app.clone(), callback_action);
+                .on_shortcut(shortcut.as_str(), move |app, _, event| match event.state {
+                    ShortcutState::Pressed => {
+                        if pressed.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        // 必须在全局快捷键回调内同步冻结前台窗口。回调返回后 macOS
+                        // 可能把本应用短暂视为活跃进程，异步任务再查询就会丢失原选区。
+                        let target = crate::active_app_context::activation_target();
+                        request_shortcut(app.clone(), callback_action, target);
+                    }
+                    ShortcutState::Released => {
+                        if !pressed.swap(false, Ordering::SeqCst)
+                            || trigger_mode != crate::state::ShortcutTriggerMode::PressHold
+                        {
+                            return;
+                        }
+                        request_shortcut_release(app.clone());
                     }
                 })
         {
@@ -124,16 +163,38 @@ pub(crate) fn set_shortcuts(
         }
         next.push(shortcut);
     }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = crate::hotkey::set_assistant_fn_binding(fn_binding) {
+        for value in &next {
+            let _ = app.global_shortcut().unregister(value.as_str());
+        }
+        return Err(error);
+    }
     *registered = next;
     Ok(())
 }
 
-fn request_shortcut(app: AppHandle, action: AssistantAction) {
+#[cfg(target_os = "macos")]
+pub(crate) fn handle_native_fn_shortcut(
+    app: AppHandle,
+    action: AssistantAction,
+    trigger_mode: crate::state::ShortcutTriggerMode,
+    pressed: bool,
+) {
+    if pressed {
+        let target = crate::active_app_context::activation_target();
+        request_shortcut(app, action, target);
+    } else if trigger_mode == crate::state::ShortcutTriggerMode::PressHold {
+        request_shortcut_release(app);
+    }
+}
+
+fn request_shortcut(app: AppHandle, action: AssistantAction, target: Option<ActivationTarget>) {
     tauri::async_runtime::spawn(async move {
         let result = if crate::application::dictation::is_active(&app) {
             crate::application::dictation::dictation_stop(app.clone()).await
         } else {
-            assistant_start(app.clone(), action).await
+            assistant_start_for_target(app.clone(), action, target).await
         };
         if let Err(error) = result {
             publish_answer(
@@ -149,6 +210,14 @@ fn request_shortcut(app: AppHandle, action: AssistantAction) {
                 Some(error),
                 false,
             );
+        }
+    });
+}
+
+fn request_shortcut_release(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if crate::application::dictation::is_active(&app) {
+            let _ = assistant_stop(app).await;
         }
     });
 }
@@ -634,11 +703,28 @@ pub(crate) struct ProcessedAssistant {
 pub(crate) async fn capture_selection_internal(
     app: &AppHandle,
 ) -> Result<(SelectionSnapshot, ActivationTarget), String> {
+    capture_selection_for_target(app, None).await
+}
+
+async fn capture_selection_for_target(
+    app: &AppHandle,
+    target: Option<ActivationTarget>,
+) -> Result<(SelectionSnapshot, ActivationTarget), String> {
     let started = Instant::now();
-    let target = crate::active_app_context::activation_target()
+    let target_was_frozen = target.is_some();
+    let target = target
+        .or_else(crate::active_app_context::activation_target)
         .ok_or_else(|| "无法定位当前前台窗口".to_string())?;
     if target.process_id == std::process::id() {
         return Err("请先选中其他应用中的文本，再按智能助手快捷键".into());
+    }
+    if target_was_frozen
+        && crate::active_app_context::activation_target().is_none_or(|current| {
+            !crate::active_app_context::same_activation_target(current, target)
+        })
+    {
+        crate::active_app_context::activate_target(target)?;
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     }
     let state = app.state::<RuntimeState>();
     let handle = state.active_app_context.begin_selection_capture(target);
@@ -665,8 +751,7 @@ pub(crate) async fn capture_selection_internal(
     #[cfg(target_os = "macos")]
     if text.is_empty() && !secure {
         if let Ok(value) = crate::macos_native::copy_selection_text(target.process_id) {
-            let (value, was_truncated) =
-                crate::active_app_context::truncate_selection_text(&value);
+            let (value, was_truncated) = crate::active_app_context::truncate_selection_text(&value);
             truncated |= was_truncated;
             text = if value.trim().is_empty() {
                 String::new()
@@ -705,6 +790,15 @@ pub(crate) async fn capture_current_selection(app: AppHandle) -> Result<Selectio
 
 #[tauri::command]
 pub(crate) async fn assistant_start(app: AppHandle, action: AssistantAction) -> Result<(), String> {
+    let target = crate::active_app_context::activation_target();
+    assistant_start_for_target(app, action, target).await
+}
+
+async fn assistant_start_for_target(
+    app: AppHandle,
+    action: AssistantAction,
+    initial_target: Option<ActivationTarget>,
+) -> Result<(), String> {
     {
         let state = app.state::<RuntimeState>();
         let prefs = preferences_from_value(
@@ -744,12 +838,11 @@ pub(crate) async fn assistant_start(app: AppHandle, action: AssistantAction) -> 
     }
     let (selection, target) = match action {
         AssistantAction::TranslateSpeech => {
-            let target = crate::active_app_context::activation_target()
-                .ok_or_else(|| "无法定位当前输入窗口".to_string())?;
+            let target = initial_target.ok_or_else(|| "无法定位当前输入窗口".to_string())?;
             (None, Some(target))
         }
         AssistantAction::EditSelection | AssistantAction::Ask => {
-            match capture_selection_internal(&app).await {
+            match capture_selection_for_target(&app, initial_target).await {
                 Ok((snapshot, _))
                     if action == AssistantAction::EditSelection && snapshot.text.is_empty() =>
                 {
@@ -762,7 +855,7 @@ pub(crate) async fn assistant_start(app: AppHandle, action: AssistantAction) -> 
                 }
                 Ok((snapshot, target)) => (Some(snapshot), Some(target)),
                 Err(error) if action == AssistantAction::Ask => {
-                    let target = crate::active_app_context::activation_target();
+                    let target = initial_target;
                     if target.is_none() {
                         return Err(error);
                     }
@@ -1159,7 +1252,11 @@ pub(crate) fn publish_answer(
                 .and_then(|selection| selection.bounds.as_ref()),
         );
         let _ = window.show();
-        let _ = window.set_focus();
+        // 启动阶段的“未读取到选区”等错误只提示，不把焦点从用户正在操作的
+        // 应用抢回来说吧；已有可恢复结果时仍聚焦回答窗，方便复制或重试。
+        if answer.error.is_none() || can_insert {
+            let _ = window.set_focus();
+        }
         let _ = window.emit(ANSWER_EVENT, answer);
     }
 }
@@ -1298,6 +1395,19 @@ pub(crate) fn close_assistant_answer(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_assistant_shortcut_defaults_to_toggle_trigger() {
+        let shortcut: AssistantShortcut = serde_json::from_value(serde_json::json!({
+            "keyCode": "F10",
+            "ctrl": true
+        }))
+        .unwrap();
+        assert_eq!(
+            shortcut.trigger_mode,
+            crate::state::ShortcutTriggerMode::Toggle
+        );
+    }
 
     #[test]
     fn legacy_preferences_receive_new_safe_defaults() {

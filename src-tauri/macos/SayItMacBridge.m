@@ -15,6 +15,7 @@
 #import <math.h>
 
 typedef bool (*SayItCapsLockCallback)(void *context, uint64_t flags);
+typedef bool (*SayItFnKeyCallback)(void *context, bool pressed, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
 typedef void (*SayItAudioErrorCallback)(void *context, const char *message);
@@ -1288,6 +1289,7 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
 
 @interface SayItKeyboardTap : NSObject
 @property(nonatomic) SayItCapsLockCallback capsLockCallback;
+@property(nonatomic) SayItFnKeyCallback fnKeyCallback;
 @property(nonatomic) SayItEscapeCallback escapeCallback;
 @property(nonatomic) void *context;
 @property(nonatomic) CFMachPortRef tap;
@@ -1295,6 +1297,7 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
 @property(nonatomic) dispatch_semaphore_t ready;
 @property(nonatomic, copy) NSString *startupError;
 @property(nonatomic) bool monitorCapsLock;
+@property(nonatomic) bool monitorFnKey;
 @property(nonatomic) bool monitorEscape;
 @property(nonatomic) io_connect_t hidConnection;
 @property(nonatomic) IOHIDManagerRef hidManager;
@@ -1302,6 +1305,7 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
 @property(nonatomic) CFAbsoluteTime lastCapsLockEventAt;
 @property(nonatomic) bool rawCapsLockPressed;
 @property(nonatomic) bool rawCapsLockActive;
+@property(nonatomic) bool fnKeyPressed;
 @end
 
 static void SayItHIDInputValueCallback(
@@ -1335,6 +1339,15 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
         return event;
     }
     int64_t keyCode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    if (owner.monitorFnKey && type == kCGEventFlagsChanged && keyCode == 63) {
+        CGEventFlags flags = CGEventGetFlags(event);
+        bool pressed = (flags & kCGEventFlagMaskSecondaryFn) != 0;
+        if (pressed == owner.fnKeyPressed) return NULL;
+        owner.fnKeyPressed = pressed;
+        bool swallow = owner.fnKeyCallback != NULL
+            && owner.fnKeyCallback(owner.context, pressed, (uint64_t)flags);
+        return swallow ? NULL : event;
+    }
     if (owner.monitorEscape && keyCode == 53 && (type == kCGEventKeyDown || type == kCGEventKeyUp)) {
         bool swallow = owner.escapeCallback != NULL
             && owner.escapeCallback(owner.context, type == kCGEventKeyDown);
@@ -1402,7 +1415,7 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
             self.rawCapsLockActive = true;
         }
         CGEventMask mask = 0;
-        if (self.monitorCapsLock) mask |= CGEventMaskBit(kCGEventFlagsChanged);
+        if (self.monitorCapsLock || self.monitorFnKey) mask |= CGEventMaskBit(kCGEventFlagsChanged);
         if (self.monitorEscape) {
             mask |= CGEventMaskBit(kCGEventKeyDown);
             mask |= CGEventMaskBit(kCGEventKeyUp);
@@ -1492,26 +1505,30 @@ static bool SayItOpenHIDSystem(io_connect_t *connection, bool *capsLockState, NS
 
 void *sayit_macos_keyboard_tap_start(
     SayItCapsLockCallback capsLockCallback,
+    SayItFnKeyCallback fnKeyCallback,
     SayItEscapeCallback escapeCallback,
     void *context,
     bool monitorCapsLock,
+    bool monitorFnKey,
     bool monitorEscape,
     char **error
 ) {
-    if (!monitorCapsLock && !monitorEscape) {
+    if (!monitorCapsLock && !monitorFnKey && !monitorEscape) {
         SayItSetError(error, @"macOS 键盘监听没有指定目标按键");
         return NULL;
     }
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
     if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options)) {
-        SayItSetError(error, @"监听 Caps Lock 或 Esc 需要辅助功能权限；授权后请重启说吧！");
+        SayItSetError(error, @"监听 Caps Lock、Fn 或 Esc 需要辅助功能权限；授权后请重启说吧！");
         return NULL;
     }
     SayItKeyboardTap *owner = [[SayItKeyboardTap alloc] init];
     owner.capsLockCallback = capsLockCallback;
+    owner.fnKeyCallback = fnKeyCallback;
     owner.escapeCallback = escapeCallback;
     owner.context = context;
     owner.monitorCapsLock = monitorCapsLock;
+    owner.monitorFnKey = monitorFnKey;
     owner.monitorEscape = monitorEscape;
     owner.ready = dispatch_semaphore_create(0);
     owner.hidConnection = IO_OBJECT_NULL;

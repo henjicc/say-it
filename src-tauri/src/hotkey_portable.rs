@@ -15,6 +15,8 @@ pub const MOD_SHIFT: u8 = 2;
 pub const MOD_ALT: u8 = 4;
 pub const MOD_WIN: u8 = 8;
 #[cfg(target_os = "macos")]
+pub const VK_FN: u16 = 0x100;
+#[cfg(target_os = "macos")]
 const CONTEXT_DEBUG_SHORTCUT: &str = "Control+Shift+F8";
 
 #[derive(Clone, Debug)]
@@ -52,10 +54,26 @@ struct CapsLockBinding {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct FnDictationBinding {
+    mods: u8,
+    profile_id: Option<String>,
+    press_hold_mode: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct FnAssistantBinding {
+    action: crate::application::assistant::AssistantAction,
+    trigger_mode: crate::state::ShortcutTriggerMode,
+}
+
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct KeyboardTapHandle {
     native: usize,
     monitor_caps_lock: bool,
+    monitor_fn_key: bool,
     monitor_escape: bool,
 }
 
@@ -67,6 +85,10 @@ static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONTEXT_DEBUG_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static CAPS_LOCK_BINDING: OnceLock<Mutex<Option<CapsLockBinding>>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static FN_DICTATION_BINDING: OnceLock<Mutex<Option<FnDictationBinding>>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static FN_ASSISTANT_BINDING: OnceLock<Mutex<Option<FnAssistantBinding>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
 static KEYBOARD_TAP: OnceLock<Mutex<Option<KeyboardTapHandle>>> = OnceLock::new();
 #[cfg(target_os = "macos")]
@@ -81,6 +103,8 @@ pub fn init(app: AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let _ = CAPS_LOCK_BINDING.set(Mutex::new(None));
+        let _ = FN_DICTATION_BINDING.set(Mutex::new(None));
+        let _ = FN_ASSISTANT_BINDING.set(Mutex::new(None));
         let _ = KEYBOARD_TAP.set(Mutex::new(None));
     }
 }
@@ -131,26 +155,21 @@ fn set_macos_context_debug_active(active: bool) -> Result<(), String> {
         return Ok(());
     }
     if active {
-        if let Err(error) = app.global_shortcut().on_shortcut(
-            CONTEXT_DEBUG_SHORTCUT,
-            |app, _, event| {
-                if event.state == ShortcutState::Pressed
-                    && CONTEXT_DEBUG_ACTIVE.load(Ordering::SeqCst)
-                {
-                    crate::active_app_context::request_debug_capture(app.clone());
-                }
-            },
-        ) {
+        if let Err(error) =
+            app.global_shortcut()
+                .on_shortcut(CONTEXT_DEBUG_SHORTCUT, |app, _, event| {
+                    if event.state == ShortcutState::Pressed
+                        && CONTEXT_DEBUG_ACTIVE.load(Ordering::SeqCst)
+                    {
+                        crate::active_app_context::request_debug_capture(app.clone());
+                    }
+                })
+        {
             CONTEXT_DEBUG_ACTIVE.store(false, Ordering::SeqCst);
-            return Err(format!(
-                "注册上下文调试快捷键 Ctrl+Shift+F8 失败：{error}"
-            ));
+            return Err(format!("注册上下文调试快捷键 Ctrl+Shift+F8 失败：{error}"));
         }
     } else {
-        if let Err(error) = app
-            .global_shortcut()
-            .unregister(CONTEXT_DEBUG_SHORTCUT)
-        {
+        if let Err(error) = app.global_shortcut().unregister(CONTEXT_DEBUG_SHORTCUT) {
             CONTEXT_DEBUG_ACTIVE.store(true, Ordering::SeqCst);
             return Err(format!("注销上下文调试快捷键失败：{error}"));
         }
@@ -162,6 +181,8 @@ fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<
     let mut groups = Vec::<PortableBindingGroup>::new();
     #[cfg(target_os = "macos")]
     let mut caps_lock_binding = None;
+    #[cfg(target_os = "macos")]
+    let mut fn_binding = None;
     for binding in bindings {
         #[cfg(target_os = "macos")]
         if binding.vk == 0x14 {
@@ -174,6 +195,18 @@ fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<
             caps_lock_binding = Some(CapsLockBinding {
                 mods: binding.mods,
                 profile_id: binding.profile_id.clone(),
+            });
+            continue;
+        }
+        #[cfg(target_os = "macos")]
+        if binding.vk == VK_FN {
+            if fn_binding.is_some() {
+                return Err("Fn 快捷键重复".into());
+            }
+            fn_binding = Some(FnDictationBinding {
+                mods: binding.mods,
+                profile_id: binding.profile_id.clone(),
+                press_hold_mode: binding.press_hold_mode,
             });
             continue;
         }
@@ -282,6 +315,12 @@ fn register_bindings(app: &AppHandle, bindings: &[HotkeyBinding]) -> Result<Vec<
         unregister_shortcuts(app, &shortcuts);
         return Err(error);
     }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = configure_fn_dictation(fn_binding) {
+        let _ = configure_caps_lock(None);
+        unregister_shortcuts(app, &shortcuts);
+        return Err(error);
+    }
     Ok(shortcuts)
 }
 
@@ -306,6 +345,8 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
     unregister_shortcuts(app, &previous.shortcuts);
     #[cfg(target_os = "macos")]
     configure_caps_lock(None)?;
+    #[cfg(target_os = "macos")]
+    configure_fn_dictation(None)?;
     match register_bindings(app, bindings) {
         Ok(shortcuts) => {
             *current = RegisteredSet {
@@ -391,6 +432,8 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
     match code.trim() {
         #[cfg(target_os = "macos")]
         "CapsLock" => Some(0x14),
+        #[cfg(target_os = "macos")]
+        "Fn" => Some(VK_FN),
         "Space" => Some(0x20),
         "Enter" => Some(0x0d),
         "Tab" => Some(0x09),
@@ -452,12 +495,63 @@ fn configure_caps_lock(binding: Option<CapsLockBinding>) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn configure_fn_dictation(binding: Option<FnDictationBinding>) -> Result<(), String> {
+    let storage = FN_DICTATION_BINDING
+        .get()
+        .ok_or_else(|| "Fn 快捷键状态尚未初始化".to_string())?;
+    *storage
+        .lock()
+        .map_err(|_| "Fn 快捷键状态锁失败".to_string())? = binding;
+    if let Err(error) = refresh_keyboard_tap() {
+        if let Ok(mut current) = storage.lock() {
+            *current = None;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn set_assistant_fn_binding(
+    binding: Option<(
+        crate::application::assistant::AssistantAction,
+        crate::state::ShortcutTriggerMode,
+    )>,
+) -> Result<(), String> {
+    let storage = FN_ASSISTANT_BINDING
+        .get()
+        .ok_or_else(|| "智能助手 Fn 快捷键状态尚未初始化".to_string())?;
+    let previous = *storage
+        .lock()
+        .map_err(|_| "智能助手 Fn 快捷键状态锁失败".to_string())?;
+    *storage
+        .lock()
+        .map_err(|_| "智能助手 Fn 快捷键状态锁失败".to_string())? =
+        binding.map(|(action, trigger_mode)| FnAssistantBinding {
+            action,
+            trigger_mode,
+        });
+    if let Err(error) = refresh_keyboard_tap() {
+        if let Ok(mut current) = storage.lock() {
+            *current = previous;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn keyboard_tap_requirements(
     capturing: bool,
     has_caps_lock_binding: bool,
+    has_fn_binding: bool,
     dictation_active: bool,
-) -> (bool, bool) {
-    (capturing || has_caps_lock_binding, dictation_active)
+) -> (bool, bool, bool) {
+    (
+        capturing || has_caps_lock_binding,
+        capturing || has_fn_binding,
+        dictation_active,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -466,9 +560,18 @@ fn refresh_keyboard_tap() -> Result<(), String> {
         .get()
         .and_then(|binding| binding.lock().ok())
         .is_some_and(|binding| binding.is_some());
-    let (monitor_caps_lock, monitor_escape) = keyboard_tap_requirements(
+    let has_fn_binding = FN_DICTATION_BINDING
+        .get()
+        .and_then(|binding| binding.lock().ok())
+        .is_some_and(|binding| binding.is_some())
+        || FN_ASSISTANT_BINDING
+            .get()
+            .and_then(|binding| binding.lock().ok())
+            .is_some_and(|binding| binding.is_some());
+    let (monitor_caps_lock, monitor_fn_key, monitor_escape) = keyboard_tap_requirements(
         CAPTURING.load(Ordering::SeqCst),
         has_caps_lock_binding,
+        has_fn_binding,
         DICTATION_ACTIVE.load(Ordering::SeqCst),
     );
     let storage = KEYBOARD_TAP
@@ -477,30 +580,97 @@ fn refresh_keyboard_tap() -> Result<(), String> {
     let mut current = storage
         .lock()
         .map_err(|_| "macOS 键盘事件过滤器状态锁失败".to_string())?;
-    let desired = (monitor_caps_lock, monitor_escape);
-    if current
-        .as_ref()
-        .is_some_and(|handle| (handle.monitor_caps_lock, handle.monitor_escape) == desired)
-    {
+    let desired = (monitor_caps_lock, monitor_fn_key, monitor_escape);
+    if current.as_ref().is_some_and(|handle| {
+        (
+            handle.monitor_caps_lock,
+            handle.monitor_fn_key,
+            handle.monitor_escape,
+        ) == desired
+    }) {
         return Ok(());
     }
     if let Some(handle) = current.take() {
         crate::macos_native::stop_keyboard_tap(handle.native);
     }
-    if monitor_caps_lock || monitor_escape {
+    if monitor_caps_lock || monitor_fn_key || monitor_escape {
         let native = crate::macos_native::start_keyboard_tap(
             handle_caps_lock_event,
+            handle_fn_key_event,
             handle_escape_event,
             monitor_caps_lock,
+            monitor_fn_key,
             monitor_escape,
         )?;
         *current = Some(KeyboardTapHandle {
             native,
             monitor_caps_lock,
+            monitor_fn_key,
             monitor_escape,
         });
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn handle_fn_key_event(
+    _context: *mut std::ffi::c_void,
+    pressed: bool,
+    flags: u64,
+) -> bool {
+    if CAPTURING.load(Ordering::SeqCst) {
+        if pressed {
+            if let Some(app) = APP.get() {
+                let _ = app.emit(
+                    "hotkey-capture-lock-key",
+                    serde_json::json!({ "vk": VK_FN }),
+                );
+            }
+        }
+        return true;
+    }
+    if let Some(binding) = FN_DICTATION_BINDING
+        .get()
+        .and_then(|binding| binding.lock().ok())
+        .and_then(|binding| binding.clone())
+    {
+        if macos_modifiers(flags) != binding.mods {
+            return true;
+        }
+        if let Some(app) = APP.get() {
+            if binding.press_hold_mode {
+                if pressed {
+                    crate::application::dictation::request_start_with_profile(
+                        app.clone(),
+                        binding.profile_id,
+                    );
+                } else {
+                    crate::application::dictation::request_stop(app.clone());
+                }
+            } else if pressed {
+                crate::application::dictation::request_toggle_with_profile(
+                    app.clone(),
+                    binding.profile_id,
+                );
+            }
+        }
+        return true;
+    }
+    if let Some(binding) = FN_ASSISTANT_BINDING
+        .get()
+        .and_then(|binding| binding.lock().ok())
+        .and_then(|binding| *binding)
+    {
+        if let Some(app) = APP.get() {
+            crate::application::assistant::handle_native_fn_shortcut(
+                app.clone(),
+                binding.action,
+                binding.trigger_mode,
+                pressed,
+            );
+        }
+    }
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -653,6 +823,7 @@ mod tests {
     #[test]
     fn caps_lock_uses_native_event_tap_key_code() {
         assert_eq!(code_to_vk("CapsLock"), Some(0x14));
+        assert_eq!(code_to_vk("Fn"), Some(VK_FN));
         assert_eq!(macos_modifiers((1 << 17) | (1 << 20)), MOD_SHIFT | MOD_WIN);
     }
 
@@ -660,11 +831,24 @@ mod tests {
     #[test]
     fn keyboard_tap_only_monitors_escape_while_dictation_is_active() {
         assert_eq!(
-            keyboard_tap_requirements(false, false, false),
-            (false, false)
+            keyboard_tap_requirements(false, false, false, false),
+            (false, false, false)
         );
-        assert_eq!(keyboard_tap_requirements(false, true, false), (true, false));
-        assert_eq!(keyboard_tap_requirements(false, false, true), (false, true));
-        assert_eq!(keyboard_tap_requirements(true, false, true), (true, true));
+        assert_eq!(
+            keyboard_tap_requirements(false, true, false, false),
+            (true, false, false)
+        );
+        assert_eq!(
+            keyboard_tap_requirements(false, false, true, false),
+            (false, true, false)
+        );
+        assert_eq!(
+            keyboard_tap_requirements(false, false, false, true),
+            (false, false, true)
+        );
+        assert_eq!(
+            keyboard_tap_requirements(true, false, false, true),
+            (true, true, true)
+        );
     }
 }
