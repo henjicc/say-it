@@ -99,11 +99,16 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         .lock()
         .map_err(|_| "startup settings lock failed")?;
     let revision = state.snapshot_revision.load(Ordering::Acquire);
-    let settings = state
+    let mut settings = state
         .app_settings
         .lock()
         .map_err(|_| "app settings lock failed")?
         .clone();
+    if let Ok(normalized) =
+        crate::application::assistant::normalized_preferences_value(&settings.assistant_prefs)
+    {
+        settings.assistant_prefs = normalized;
+    }
 
     Ok(AppSnapshot {
         revision,

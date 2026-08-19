@@ -10,6 +10,7 @@ vi.mock("@/lib/tauri", () => ({
     getAppSnapshot: "get_app_snapshot",
     updateAppSettings: "update_app_settings",
     previewAssistant: "preview_assistant",
+    getDefaultAssistantPreferences: "get_default_assistant_preferences",
   },
   cmd: (...args: unknown[]) => cmd(...args),
 }));
@@ -42,6 +43,24 @@ describe("VoiceAssistantView", () => {
         };
       }
       if (name === "preview_assistant") return "您好：\n请查收新版方案。";
+      if (name === "get_default_assistant_preferences") {
+        return {
+          templateCatalogVersion: 2,
+          translationEngine: "llm",
+          translationModel: "none",
+          sourceLanguage: "auto",
+          targetLanguage: "zh",
+          translateSpeech: { llmProviderId: "default", llmModel: "", activeTemplateId: "translate-accurate", templates: [], templateTrash: [] },
+          editSelection: {
+            llmProviderId: "default",
+            llmModel: "",
+            activeTemplateId: "edit-smart",
+            templates: [{ id: "edit-smart", name: "智能执行", prompt: "后端提供的新版内置提示词" }],
+            templateTrash: [],
+          },
+          ask: { llmProviderId: "default", llmModel: "", activeTemplateId: "ask-direct", templates: [], templateTrash: [] },
+        };
+      }
       return undefined;
     });
     useUiStore.setState({ focusedAssistantAction: null, view: "assistant", assistantTab: "editSelection" });
@@ -66,6 +85,22 @@ describe("VoiceAssistantView", () => {
         spokenText: "改成一封简洁、专业的邮件",
       })));
     expect(await screen.findByText(/试运行完成/)).toBeInTheDocument();
+  });
+
+  it("restores built-in templates from the Rust catalog", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<VoiceAssistantView />);
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_default_assistant_preferences"));
+    expect(cmd).toHaveBeenCalledWith("update_app_settings", expect.objectContaining({
+      domain: "assistant",
+      value: expect.objectContaining({
+        editSelection: expect.objectContaining({
+          templates: expect.arrayContaining([expect.objectContaining({ prompt: "后端提供的新版内置提示词" })]),
+        }),
+      }),
+    }));
   });
 
   it("keeps the shortcut deep link on the exact assistant action", () => {
