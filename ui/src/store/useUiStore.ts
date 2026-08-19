@@ -1,10 +1,11 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "customization" | "history" | "settings";
+export type ViewKey = "home" | "dictation" | "assistant" | "subtitles" | "transcription" | "customization" | "history" | "settings";
 export type CustomizationTabKey = "hotwords" | "context";
 export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "keys" | "compare" | "advanced";
-export type DictationTabKey = "basic" | "local" | "smart" | "apps" | "debug";
+export type DictationTabKey = "basic" | "local" | "apps" | "debug";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
+export type AssistantTabKey = "smart" | AssistantActionKey;
 export type SceneRulesTabKey = "apps" | "shortcuts";
 export type SmartTextTabKey = "template" | "context" | "preview";
 export type SubtitleTabKey = "general" | "style" | "translation" | "obs";
@@ -32,6 +33,8 @@ interface UiState {
   consumeFocusedShortcutProfile: () => void;
   openDictationShortcutSettings: (profileId?: string) => void;
   focusedAssistantAction: AssistantActionKey | null;
+  assistantTab: AssistantTabKey;
+  setAssistantTab: (tab: AssistantTabKey) => void;
   consumeFocusedAssistantAction: () => void;
   openAssistantSettings: (action?: AssistantActionKey) => void;
   openSubtitleShortcutSettings: () => void;
@@ -45,7 +48,7 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  view: "dictation",
+  view: "home",
   setView: (view) => set({ view }),
   settingsTab: "model",
   setSettingsTab: (settingsTab) => set({ settingsTab }),
@@ -72,9 +75,12 @@ export const useUiStore = create<UiState>((set) => ({
       focusedShortcutProfileId: null,
     }),
   focusedAssistantAction: null,
+  assistantTab: "smart",
+  setAssistantTab: (assistantTab) => set({ assistantTab }),
   consumeFocusedAssistantAction: () => set({ focusedAssistantAction: null }),
   openAssistantSettings: (action) => set({
     view: "assistant",
+    assistantTab: action ?? "smart",
     focusedAssistantAction: action ?? null,
     focusedShortcutProfileId: null,
   }),

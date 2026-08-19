@@ -19,6 +19,8 @@ vi.mock("@/features/asr/modelRegistry", () => ({
   optionsForScene: () => [],
 }));
 
+vi.mock("@/views/SmartTextPanel", () => ({ SmartTextPanel: () => <div>智能优化设置</div> }));
+
 describe("VoiceAssistantView", () => {
   afterEach(cleanup);
   beforeEach(() => {
@@ -42,14 +44,14 @@ describe("VoiceAssistantView", () => {
       if (name === "preview_assistant") return "您好：\n请查收新版方案。";
       return undefined;
     });
-    useUiStore.setState({ focusedAssistantAction: null, view: "assistant" });
+    useUiStore.setState({ focusedAssistantAction: null, view: "assistant", assistantTab: "editSelection" });
   });
 
   it("shows all assistant settings instead of redirecting to dictation basics", async () => {
     render(<VoiceAssistantView />);
-    expect(screen.getByRole("heading", { name: "语音助手", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "智能助手", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选区编辑" })).toBeInTheDocument();
-    expect(screen.getByText("长期偏好")).toBeInTheDocument();
+    expect(screen.getByText("任务提示词")).toBeInTheDocument();
     expect(screen.getByText("试运行")).toBeInTheDocument();
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
   });
@@ -69,6 +71,7 @@ describe("VoiceAssistantView", () => {
   it("keeps the shortcut deep link on the exact assistant action", () => {
     useUiStore.getState().openAssistantSettings("ask");
     expect(useUiStore.getState().view).toBe("assistant");
+    expect(useUiStore.getState().assistantTab).toBe("ask");
     expect(useUiStore.getState().focusedAssistantAction).toBe("ask");
   });
 });

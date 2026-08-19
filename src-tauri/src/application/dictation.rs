@@ -153,6 +153,8 @@ struct DictationPrefs {
     local_rules_enabled: bool,
     local_rules: Vec<LocalRule>,
     smart_processing_enabled: bool,
+    smart_llm_provider_id: String,
+    smart_llm_model: String,
     smart_processing_min_chars: u32,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
@@ -185,6 +187,8 @@ impl Default for DictationPrefs {
             local_rules_enabled: false,
             local_rules: vec![],
             smart_processing_enabled: false,
+            smart_llm_provider_id: "default".into(),
+            smart_llm_model: String::new(),
             // 旧版本没有长度门槛，反序列化缺失字段时必须保持原有“每次听写”语义。
             smart_processing_min_chars: 0,
             smart_template_id: String::new(),
@@ -1522,6 +1526,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         activation_target,
         app_identity,
         started_at,
+        recorded_duration_ms,
         assistant_request,
         history_allowed,
     ) = {
@@ -1562,6 +1567,13 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.activation_target,
             s.app_identity.clone(),
             s.started_at,
+            if s.sample_rate > 0 && !s.raw_samples.is_empty() {
+                (s.raw_samples.len() as u64).saturating_mul(1000) / s.sample_rate as u64
+            } else {
+                s.started_at
+                    .map(|value| value.elapsed().as_millis() as u64)
+                    .unwrap_or(0)
+            },
             s.assistant_request.clone(),
             s.history_allowed,
         )
@@ -1725,6 +1737,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
             &text,
             &template.prompt,
             &active_app_context,
+            &prefs.smart_llm_provider_id,
+            &prefs.smart_llm_model,
         )
         .await;
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
@@ -1753,7 +1767,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             Ok(v) => v,
             Err(e) => {
                 let state = app.state::<RuntimeState>();
-            if let Some(lease) = &lease {
+                if let Some(lease) = &lease {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
@@ -1796,7 +1810,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     Err(error) => Err(error),
                 }
             } else {
-                Err("语音助手的原目标窗口已丢失".into())
+                Err("智能助手的原目标窗口已丢失".into())
             }
         } else {
             Ok(())
@@ -1926,6 +1940,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             },
         );
     }
+    let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
     let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
     play_cue_async(

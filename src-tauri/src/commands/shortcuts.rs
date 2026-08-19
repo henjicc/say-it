@@ -66,7 +66,7 @@ pub(crate) fn get_shortcut_bindings(
     let assistant = state
         .assistant_shortcuts
         .lock()
-        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .map_err(|_| "智能助手快捷键配置锁失败")?
         .clone();
     Ok(collect_all_shortcut_bindings(
         &dictation, &subtitle, &assistant,
@@ -166,7 +166,7 @@ where
     let assistant = state
         .assistant_shortcuts
         .lock()
-        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .map_err(|_| "智能助手快捷键配置锁失败")?
         .clone();
     validate_assistant_shortcuts(&next_dictation, &next_subtitle, &assistant)?;
 
@@ -307,7 +307,7 @@ fn apply_binding_update(
             subtitle.alt = binding.alt;
             subtitle.meta = binding.meta;
         }
-        ShortcutTarget::Assistant { .. } => return Err("语音助手快捷键应由专用事务更新".into()),
+        ShortcutTarget::Assistant { .. } => return Err("智能助手快捷键应由专用事务更新".into()),
     }
     Ok(())
 }
@@ -347,7 +347,7 @@ fn clear_binding(
             &mut subtitle.alt,
             &mut subtitle.meta,
         ),
-        ShortcutTarget::Assistant { .. } => return Err("语音助手快捷键应由专用事务清除".into()),
+        ShortcutTarget::Assistant { .. } => return Err("智能助手快捷键应由专用事务清除".into()),
     }
     Ok(())
 }
@@ -566,17 +566,17 @@ fn collect_all_shortcut_bindings(
     for (action, name, label) in [
         (
             crate::application::assistant::AssistantAction::TranslateSpeech,
-            "语音助手 · 语音翻译",
+            "智能助手 · 语音翻译",
             "说话并翻译到目标语言",
         ),
         (
             crate::application::assistant::AssistantAction::EditSelection,
-            "语音助手 · 选区编辑",
+            "智能助手 · 选区编辑",
             "按语音指令修改选中文本",
         ),
         (
             crate::application::assistant::AssistantAction::Ask,
-            "语音助手 · 语音问答",
+            "智能助手 · 语音问答",
             "携带选区进行语音提问",
         ),
     ] {
@@ -646,15 +646,15 @@ fn validate_assistant_shortcuts(
     for (action, label) in [
         (
             crate::application::assistant::AssistantAction::TranslateSpeech,
-            "语音助手 · 语音翻译",
+            "智能助手 · 语音翻译",
         ),
         (
             crate::application::assistant::AssistantAction::EditSelection,
-            "语音助手 · 选区编辑",
+            "智能助手 · 选区编辑",
         ),
         (
             crate::application::assistant::AssistantAction::Ask,
-            "语音助手 · 语音问答",
+            "智能助手 · 语音问答",
         ),
     ] {
         let shortcut = assistant.get(action);
@@ -698,7 +698,7 @@ where
     let previous = state
         .assistant_shortcuts
         .lock()
-        .map_err(|_| "语音助手快捷键配置锁失败")?
+        .map_err(|_| "智能助手快捷键配置锁失败")?
         .clone();
     let mut next = previous.clone();
     mutate(&mut next)?;
@@ -710,12 +710,12 @@ where
     *state
         .assistant_shortcuts
         .lock()
-        .map_err(|_| "语音助手快捷键配置锁失败")? = next.clone();
+        .map_err(|_| "智能助手快捷键配置锁失败")? = next.clone();
     if let Err(error) = save_persisted_state(app, state) {
         *state
             .assistant_shortcuts
             .lock()
-            .map_err(|_| "语音助手快捷键配置锁失败")? = previous.clone();
+            .map_err(|_| "智能助手快捷键配置锁失败")? = previous.clone();
         let _ = crate::application::assistant::set_shortcuts(app, &previous);
         return Err(error);
     }

@@ -254,6 +254,8 @@ pub(crate) async fn process_smart_text(
     text: &str,
     template: &str,
     active_app_context: &str,
+    provider_id: &str,
+    model_override: &str,
 ) -> Result<String, String> {
     if text.trim().is_empty() {
         return Ok(String::new());
@@ -278,8 +280,8 @@ pub(crate) async fn process_smart_text(
         state,
         SYSTEM_PROMPT,
         &prompt,
-        None,
-        None,
+        Some(provider_id),
+        Some(model_override),
         "smart-text",
         false,
     )
@@ -342,6 +344,8 @@ pub(crate) async fn preview_smart_text(
     text: String,
     prompt: String,
     active_app_context: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
     state: State<'_, RuntimeState>,
 ) -> Result<String, String> {
     process_smart_text(
@@ -349,6 +353,8 @@ pub(crate) async fn preview_smart_text(
         &text,
         &prompt,
         active_app_context.as_deref().unwrap_or_default(),
+        provider_id.as_deref().unwrap_or("default"),
+        model.as_deref().unwrap_or_default(),
     )
     .await
 }

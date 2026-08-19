@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use application::assistant::{
     assistant_cancel, assistant_start, assistant_stop, capture_current_selection,
-    close_assistant_answer, get_assistant_answer, insert_assistant_answer,
-    preview_assistant, regenerate_assistant_answer,
+    close_assistant_answer, get_assistant_answer, insert_assistant_answer, preview_assistant,
+    regenerate_assistant_answer,
 };
 use application::audio_lab::{
     audio_lab_audio_path, audio_lab_reprocess, audio_lab_start, audio_lab_stop,
@@ -44,8 +44,8 @@ use application::dictation::{
     get_dictation_runtime, list_running_apps, preview_dictation_cue,
 };
 use application::history::{
-    clear_history, delete_history_entry, open_history_window, query_history,
-    retry_history_injection, update_history_text,
+    clear_history, clear_usage_summary, delete_history_entry, get_usage_summary,
+    open_history_window, query_history, retry_history_injection, update_history_text,
 };
 use application::llm_models::refresh_llm_models;
 use application::performance::get_performance_metrics;
@@ -542,6 +542,8 @@ fn main() {
             retry_history_injection,
             delete_history_entry,
             clear_history,
+            get_usage_summary,
+            clear_usage_summary,
             open_history_window,
             get_setup_status,
             run_setup_check,

@@ -212,7 +212,7 @@ export function SettingsKeyBindingsPanel() {
         </p>
       </SettingsSection>
       {renderGroup("语音输入", groups.dictation)}
-      {renderGroup("语音助手", groups.assistant)}
+      {renderGroup("智能助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}
     </div>
   );

@@ -500,6 +500,8 @@ export interface DictPrefs extends DspParams {
   localRulesEnabled: boolean;
   localRules: LocalRule[];
   smartProcessingEnabled: boolean;
+  smartLlmProviderId: string;
+  smartLlmModel: string;
   /** `0` 表示每次听写，正数表示识别文本达到该字符数才执行智能处理。 */
   smartProcessingMinChars: number;
   smartTemplateId: string;
@@ -540,6 +542,8 @@ function defaults(): DictPrefs {
     localRulesEnabled: false,
     localRules: defaultLocalRules(),
     smartProcessingEnabled: false,
+    smartLlmProviderId: "default",
+    smartLlmModel: "",
     smartProcessingMinChars: DEFAULT_SMART_PROCESSING_MIN_CHARS,
     smartTemplateId: DEFAULT_SMART_TEMPLATE_ID,
     smartTemplates: defaultSmartTextTemplates(),

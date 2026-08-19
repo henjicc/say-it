@@ -33,6 +33,7 @@ import {
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
 import { useUiStore, type SmartTextTabKey } from "@/store/useUiStore";
+import { useProviderStore } from "@/store/useProviderStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
 const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n窗口可见文字：Tauri；OCR；上下文捕获";
@@ -63,6 +64,19 @@ export function SmartTextPanel() {
   const [recentRecoveryId, setRecentRecoveryId] = useState("");
   const tab = useUiStore((state) => state.smartTextTab);
   const setTab = useUiStore((state) => state.setSmartTextTab);
+  const llmProfiles = useProviderStore((state) => state.profiles).filter(
+    (profile) => profile.enabled && profile.kind.startsWith("llm:"),
+  );
+  const llmDefaults = useProviderStore((state) => state.defaults);
+  const llmOptions = llmProfiles.flatMap((profile) => {
+    const models = Array.isArray(profile.config?.models)
+      ? profile.config.models.flatMap((item) => item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string" ? [String((item as { name: string }).name)] : [])
+      : [];
+    const current = typeof profile.config?.model === "string" ? profile.config.model : "";
+    if (current && !models.includes(current)) models.unshift(current);
+    return models.map((model) => ({ value: JSON.stringify([profile.id, model]), label: `${profile.displayName} · ${model}` }));
+  });
+  const selectedLlm = prefs.smartLlmProviderId === "default" ? "default" : JSON.stringify([prefs.smartLlmProviderId, prefs.smartLlmModel]);
   const recentDeletion = prefs.smartTemplateTrash.find(
     (entry) => entry.recoveryId === recentRecoveryId,
   );
@@ -232,6 +246,8 @@ export function SmartTextPanel() {
       const output = await cmd<string>(CMD.previewSmartText, {
         text: previewInput,
         prompt,
+        providerId: prefs.smartLlmProviderId,
+        model: prefs.smartLlmModel,
         activeAppContext: prompt.includes(ACTIVE_APP_CONTEXT_PLACEHOLDER)
           ? previewContext
           : undefined,
@@ -302,6 +318,21 @@ export function SmartTextPanel() {
           识别结束后先把文本交给默认大语言模型，再对模型返回的内容执行本地处理，最终注入处理结果。
         </p>
         <FormGrid>
+          <Field label="智能模型" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
+            <Select value={selectedLlm} onChange={(event) => {
+              if (event.target.value === "default") {
+                void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
+                return;
+              }
+              try {
+                const [providerId, model] = JSON.parse(event.target.value) as [string, string];
+                void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
+              } catch { /* 选项值由页面生成 */ }
+            }}>
+              <option value="default">跟随全局默认智能模型</option>
+              {llmOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </Select>
+          </Field>
           <Field label="处理时机">
             <Select
               value={prefs.smartProcessingMinChars === 0 ? "always" : "minimum"}

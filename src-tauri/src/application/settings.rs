@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -171,9 +171,11 @@ pub(crate) fn update_app_settings(
     if domain == "customization" {
         crate::application::customization::validate_customization_settings_value(&value)?;
     }
-    if domain == "assistant" {
-        crate::application::assistant::validate_preferences_value(&value)?;
-    }
+    let value = if domain == "assistant" {
+        crate::application::assistant::normalized_preferences_value(&value)?
+    } else {
+        value
+    };
     if domain == "history" {
         let days = value
             .get("retentionDays")
@@ -337,8 +339,12 @@ mod tests {
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
         assert_eq!(v.assistant_prefs["translationModel"], "none");
-        assert_eq!(v.assistant_prefs["llmProviderId"], "default");
-        assert_eq!(v.assistant_prefs["answerStyle"], "balanced");
+        assert_eq!(v.assistant_prefs["translationEngine"], "llm");
+        assert_eq!(
+            v.assistant_prefs["editSelection"]["llmProviderId"],
+            "default"
+        );
+        assert_eq!(v.assistant_prefs["ask"]["activeTemplateId"], "ask-direct");
         assert!(v.setup_results.is_object());
     }
     #[test]

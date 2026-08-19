@@ -94,7 +94,7 @@ export function HistoryView() {
 
   return (
     <div className="flex flex-col gap-7">
-      <PageHeader title="历史" description="默认保留最近 30 天的本地听写与语音助手结果，不保存音频。" />
+      <PageHeader title="历史" description="默认保留最近 30 天的本地听写与智能助手结果，不保存音频。" />
       {page.recoveryNotice && (
         <p role="alert" className="rounded-[var(--radius-lg)] border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-4 py-3 text-sm text-[var(--color-fg)]">
           {page.recoveryNotice}
