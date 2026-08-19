@@ -9,6 +9,7 @@ import { accentDark, accentLight, useThemeStore } from "@/store/useThemeStore";
 import { initializeSettings } from "@/features/settings/settingsBridge";
 
 import { DictationView } from "@/views/DictationView";
+import { HomeView } from "@/views/HomeView";
 import { VoiceAssistantView } from "@/views/VoiceAssistantPanel";
 import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
 import { TranscriptionView } from "@/views/TranscriptionView";
@@ -22,6 +23,7 @@ import { OnboardingWizard } from "@/components/OnboardingWizard";
 import type { SetupStatus } from "@/lib/tauri";
 
 const VIEWS: Record<ViewKey, React.ReactNode> = {
+  home: <HomeView />,
   dictation: <DictationView />,
   assistant: <VoiceAssistantView />,
   subtitles: <RealtimeSubtitlesPanel />,

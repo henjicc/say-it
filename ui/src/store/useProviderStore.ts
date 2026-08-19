@@ -25,7 +25,7 @@ export interface ProviderProfile {
 
 export interface ProviderDefaults {
   asr: string;
-  // 智能处理与语音助手默认使用的 LLM 供应商，空串表示未设置。
+  // 智能优化与智能助手默认使用的 LLM 供应商，空串表示未设置。
   llm: string;
   translation: string;
   ocr: string;

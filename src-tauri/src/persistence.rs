@@ -81,7 +81,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
     let assistant_shortcuts = state
         .assistant_shortcuts
         .lock()
-        .map_err(|_| "语音助手快捷键配置锁失败".to_string())?
+        .map_err(|_| "智能助手快捷键配置锁失败".to_string())?
         .clone();
     let subtitle_translation_model = state
         .subtitle_translation_model

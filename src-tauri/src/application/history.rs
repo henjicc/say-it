@@ -79,6 +79,15 @@ pub(crate) struct CorrectionSample {
     pub(crate) app_name: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageSummary {
+    pub(crate) successful_actions: u64,
+    pub(crate) output_chars: u64,
+    pub(crate) spoken_duration_ms: u64,
+    pub(crate) estimated_time_saved_ms: u64,
+}
+
 fn default_page_size() -> u32 {
     30
 }
@@ -128,10 +137,77 @@ fn open_path(path: &Path) -> Result<Connection, String> {
                app_name TEXT NOT NULL DEFAULT '',
                created_at INTEGER NOT NULL,
                FOREIGN KEY(entry_id) REFERENCES history_entries(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS usage_totals (
+               id INTEGER PRIMARY KEY CHECK (id = 1),
+               successful_actions INTEGER NOT NULL DEFAULT 0,
+               output_chars INTEGER NOT NULL DEFAULT 0,
+               spoken_duration_ms INTEGER NOT NULL DEFAULT 0,
+               estimated_time_saved_ms INTEGER NOT NULL DEFAULT 0
              );",
         )
         .map_err(|error| format!("初始化历史数据库失败：{error}"))?;
     Ok(connection)
+}
+
+fn output_metrics(text: &str, spoken_duration_ms: u64) -> (u64, u64) {
+    let output_chars = text.chars().filter(|value| !value.is_whitespace()).count() as u64;
+    let cjk = text
+        .chars()
+        .filter(|value| matches!(*value as u32, 0x3400..=0x9fff | 0xf900..=0xfaff))
+        .count() as u64;
+    let latin_words = text
+        .split_whitespace()
+        .filter(|word| word.chars().any(|value| value.is_ascii_alphabetic()))
+        .count() as u64;
+    let typing_ms = cjk.saturating_mul(60_000) / 40 + latin_words.saturating_mul(60_000) / 40;
+    (output_chars, typing_ms.saturating_sub(spoken_duration_ms))
+}
+
+pub(crate) fn record_usage(
+    app: &AppHandle,
+    output: &str,
+    spoken_duration_ms: u64,
+) -> Result<(), String> {
+    if output.trim().is_empty() {
+        return Ok(());
+    }
+    let (output_chars, saved_ms) = output_metrics(output, spoken_duration_ms);
+    open(app)?.execute(
+        "INSERT INTO usage_totals (id, successful_actions, output_chars, spoken_duration_ms, estimated_time_saved_ms)
+         VALUES (1, 1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+           successful_actions = successful_actions + 1,
+           output_chars = output_chars + excluded.output_chars,
+           spoken_duration_ms = spoken_duration_ms + excluded.spoken_duration_ms,
+           estimated_time_saved_ms = estimated_time_saved_ms + excluded.estimated_time_saved_ms",
+        params![output_chars as i64, spoken_duration_ms as i64, saved_ms as i64],
+    ).map_err(|error| format!("更新本地使用统计失败：{error}"))?;
+    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"usageUpdated"}));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_usage_summary(app: AppHandle) -> Result<UsageSummary, String> {
+    open(&app)?.query_row(
+        "SELECT successful_actions, output_chars, spoken_duration_ms, estimated_time_saved_ms FROM usage_totals WHERE id = 1",
+        [],
+        |row| Ok(UsageSummary {
+            successful_actions: row.get::<_, i64>(0)?.max(0) as u64,
+            output_chars: row.get::<_, i64>(1)?.max(0) as u64,
+            spoken_duration_ms: row.get::<_, i64>(2)?.max(0) as u64,
+            estimated_time_saved_ms: row.get::<_, i64>(3)?.max(0) as u64,
+        }),
+    ).optional().map(|value| value.unwrap_or_default()).map_err(|error| format!("读取本地使用统计失败：{error}"))
+}
+
+#[tauri::command]
+pub(crate) fn clear_usage_summary(app: AppHandle) -> Result<(), String> {
+    open(&app)?
+        .execute("DELETE FROM usage_totals WHERE id = 1", [])
+        .map_err(|error| format!("清空本地使用统计失败：{error}"))?;
+    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"usageCleared"}));
+    Ok(())
 }
 
 fn open(app: &AppHandle) -> Result<Connection, String> {
@@ -286,7 +362,8 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始历史写入事务失败：{error}"))?;
-    transaction.execute(
+    transaction
+        .execute(
             "INSERT INTO history_entries
              (id, created_at, task_kind, source_text, output_text, instruction, app_name,
               process_name, provider_id, model_id, status, error, duration_ms)
@@ -615,6 +692,15 @@ pub(crate) fn resume_after_failed_data_root_migration() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn usage_metrics_ignore_whitespace_and_never_report_negative_savings() {
+        let (chars, saved) = output_metrics("你好  world", 1_000);
+        assert_eq!(chars, 7);
+        assert!(saved > 0);
+        let (_, saved) = output_metrics("短", 120_000);
+        assert_eq!(saved, 0);
+    }
+
     fn entry(output: &str) -> NewHistoryEntry {
         NewHistoryEntry {
             task_kind: "dictation".into(),
@@ -660,7 +746,9 @@ mod tests {
         let error = open_path(&path).unwrap_err();
         let connection = recover_corrupt_path(&path, &notice, &error).unwrap();
         connection
-            .query_row("SELECT COUNT(*) FROM history_entries", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM history_entries", [], |row| {
+                row.get::<_, i64>(0)
+            })
             .unwrap();
         drop(connection);
         assert!(notice.exists());

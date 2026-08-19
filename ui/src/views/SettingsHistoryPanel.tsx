@@ -56,6 +56,16 @@ export function SettingsHistoryPanel() {
     }
   }
 
+  async function clearUsage() {
+    if (!window.confirm("确定清空本地累计使用统计吗？历史记录不会受到影响。")) return;
+    try {
+      await cmd(CMD.clearUsageSummary);
+      setMessage("本地累计使用统计已清空");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
   return (
     <SettingsSection title="本地历史">
       <p className="text-xs text-[var(--color-fg-subtle)]">历史只保存在当前数据目录，不保存音频；安全输入框永不记录。</p>
@@ -74,6 +84,9 @@ export function SettingsHistoryPanel() {
         </Field>
         <Field label="清理数据" hint="立即删除全部历史及其纠错样本，此操作不可撤销。">
           <Button variant="dangerHover" onClick={() => void clear()}>清空全部历史</Button>
+        </Field>
+        <Field label="使用统计" hint="统计只包含成功次数、字数和时长等聚合数字；清空历史不会影响它。">
+          <Button variant="dangerHover" onClick={() => void clearUsage()}>清空使用统计</Button>
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}

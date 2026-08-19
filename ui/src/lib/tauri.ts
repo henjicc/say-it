@@ -120,6 +120,8 @@ export const CMD = {
   regenerateAssistantAnswer: "regenerate_assistant_answer",
   closeAssistantAnswer: "close_assistant_answer",
   getPerformanceMetrics: "get_performance_metrics",
+  getUsageSummary: "get_usage_summary",
+  clearUsageSummary: "clear_usage_summary",
 } as const;
 
 export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";
@@ -232,6 +234,13 @@ export interface SetupStatus {
   requiredVersion: number;
   complete: boolean;
   checks: SetupCheckResult[];
+}
+
+export interface UsageSummary {
+  successfulActions: number;
+  outputChars: number;
+  spokenDurationMs: number;
+  estimatedTimeSavedMs: number;
 }
 
 export interface DataRootStatus {
