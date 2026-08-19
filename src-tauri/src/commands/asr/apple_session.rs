@@ -1,9 +1,15 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines,
+};
+use tokio::net::UnixListener;
+use tokio::process::{Child, ChildStderr};
 
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
@@ -22,6 +28,18 @@ struct HelperEvent {
     locale: String,
     #[serde(default)]
     backend: String,
+    #[serde(default)]
+    process_id: i32,
+}
+
+type DynReader = Box<dyn AsyncRead + Unpin + Send>;
+type DynWriter = Box<dyn AsyncWrite + Unpin + Send>;
+
+struct SessionTransport {
+    writer: Option<DynWriter>,
+    lines: Lines<BufReader<DynReader>>,
+    child: Option<Child>,
+    stderr: Option<ChildStderr>,
 }
 
 pub(super) async fn start_apple_speech_stream(
@@ -31,7 +49,14 @@ pub(super) async fn start_apple_speech_stream(
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
-    let mut capability = crate::providers::apple_speech::status();
+    let mut capability = crate::providers::apple_speech::refresh_status();
+    if !capability.identity_valid {
+        return Err(if capability.message.trim().is_empty() {
+            "Apple 语音识别助手缺少 macOS 权限身份，请重新构建开发版或重新安装应用".into()
+        } else {
+            capability.message
+        });
+    }
     if !capability.available {
         return Err(if capability.message.trim().is_empty() {
             "当前设备或系统语言不支持 Apple 纯本地语音识别".into()
@@ -84,42 +109,24 @@ async fn run_apple_session(
     mut dsp: StreamDsp,
     model: String,
 ) {
-    let mut command = crate::providers::apple_speech::command(OUTPUT_RATE);
-    let mut child = match command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(child) => child,
+    let transport = match open_transport(OUTPUT_RATE).await {
+        Ok(transport) => transport,
         Err(error) => {
-            emit_asr_stream_event(
-                &app,
-                &session_id,
-                "error",
-                json!({ "message": format!("启动 Apple 系统本地识别失败：{error}") }),
-            );
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
             return;
         }
     };
-    let mut stdin = child.stdin.take();
-    let Some(stdout) = child.stdout.take() else {
-        emit_asr_stream_event(
-            &app,
-            &session_id,
-            "error",
-            json!({ "message": "Apple 系统本地识别标准输出不可用" }),
-        );
-        cleanup_stream(&streams, &session_id);
-        return;
-    };
-    let mut lines = BufReader::new(stdout).lines();
-    let mut stderr = child.stderr.take();
+    let SessionTransport {
+        mut writer,
+        mut lines,
+        mut child,
+        mut stderr,
+    } = transport;
     let mut opened = false;
     let mut terminal_event = false;
     let mut stopped = false;
+    let mut helper_pid = 0;
 
     loop {
         tokio::select! {
@@ -128,8 +135,8 @@ async fn run_apple_session(
                     let pcm = dsp.process(&samples);
                     if pcm.is_empty() { continue; }
                     let bytes = pcm16_as_f32_bytes(&pcm);
-                    let Some(writer) = stdin.as_mut() else { continue; };
-                    if let Err(error) = writer.write_all(&bytes).await {
+                    let Some(channel) = writer.as_mut() else { continue; };
+                    if let Err(error) = channel.write_all(&bytes).await {
                         emit_asr_stream_event(
                             &app,
                             &session_id,
@@ -141,19 +148,25 @@ async fn run_apple_session(
                     }
                 }
                 Some(AsrStreamInput::Finish) => {
-                    if let Some(mut writer) = stdin.take() {
-                        let _ = writer.shutdown().await;
+                    if let Some(mut channel) = writer.take() {
+                        let _ = channel.shutdown().await;
                     }
                 }
                 Some(AsrStreamInput::Stop) | None => {
                     stopped = true;
-                    let _ = child.kill().await;
+                    writer.take();
+                    if let Some(process) = child.as_mut() {
+                        let _ = process.kill().await;
+                    } else if helper_pid > 0 {
+                        terminate_process(helper_pid);
+                    }
                     break;
                 }
             },
             line = lines.next_line() => match line {
                 Ok(Some(line)) => match parse_helper_event(&line) {
                     Ok(event) => match event.kind.as_str() {
+                        "connected" => helper_pid = event.process_id,
                         "opened" => {
                             opened = true;
                             emit_asr_stream_event(
@@ -218,8 +231,12 @@ async fn run_apple_session(
         }
     }
 
-    stdin.take();
-    let exit_status = child.wait().await.ok();
+    writer.take();
+    let exit_status = if let Some(process) = child.as_mut() {
+        process.wait().await.ok()
+    } else {
+        None
+    };
     if !stopped && !terminal_event {
         let mut detail = String::new();
         if let Some(mut stderr) = stderr.take() {
@@ -228,7 +245,12 @@ async fn run_apple_session(
         let message = if !detail.trim().is_empty() {
             detail.trim().to_string()
         } else if !opened {
-            "Apple 系统本地识别未能启动".to_string()
+            match exit_status.as_ref() {
+                Some(status) if !status.success() => format!(
+                    "Apple 系统本地识别助手被 macOS 异常终止（{status}）。请重新构建开发版或重新安装应用；若问题仍在，请检查“隐私与安全性 → 语音识别”权限"
+                ),
+                _ => "Apple 系统本地识别未能启动或开发通信已断开".to_string(),
+            }
         } else {
             format!("Apple 系统本地识别意外结束（{exit_status:?}）")
         };
@@ -241,6 +263,70 @@ async fn run_apple_session(
         "ended",
         json!({ "message": "Apple system speech ended" }),
     );
+}
+
+async fn open_transport(sample_rate: u32) -> Result<SessionTransport, String> {
+    if crate::providers::apple_speech::uses_development_bundle() {
+        return open_development_transport(sample_rate).await;
+    }
+    let mut command = crate::providers::apple_speech::command(sample_rate);
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("启动 Apple 系统本地识别失败：{error}"))?;
+    let writer = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Apple 系统本地识别标准输入不可用".to_string())?;
+    let reader = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Apple 系统本地识别标准输出不可用".to_string())?;
+    let stderr = child.stderr.take();
+    Ok(SessionTransport {
+        writer: Some(Box::new(writer)),
+        lines: BufReader::new(Box::new(reader) as DynReader).lines(),
+        child: Some(child),
+        stderr,
+    })
+}
+
+async fn open_development_transport(sample_rate: u32) -> Result<SessionTransport, String> {
+    let socket_path = PathBuf::from(format!("/tmp/sayit-asr-{}.sock", Uuid::new_v4().simple()));
+    let listener = UnixListener::bind(&socket_path)
+        .map_err(|error| format!("创建 Apple 开发语音通道失败：{error}"))?;
+    let bundle = crate::providers::apple_speech::development_bundle_path();
+    let output = tokio::process::Command::new("/usr/bin/open")
+        .args(["-n", "-g"])
+        .arg(&bundle)
+        .args(["--args", "--socket"])
+        .arg(&socket_path)
+        .args(["--sample-rate", &sample_rate.to_string()])
+        .output()
+        .await
+        .map_err(|error| format!("启动 Apple 开发语音助手失败：{error}"))?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&socket_path);
+        return Err(format!(
+            "启动 Apple 开发语音助手失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let accepted = tokio::time::timeout(Duration::from_secs(15), listener.accept()).await;
+    let _ = std::fs::remove_file(&socket_path);
+    let (stream, _) = accepted
+        .map_err(|_| "等待 Apple 开发语音助手连接超时".to_string())?
+        .map_err(|error| format!("Apple 开发语音助手连接失败：{error}"))?;
+    let (reader, writer) = stream.into_split();
+    Ok(SessionTransport {
+        writer: Some(Box::new(writer)),
+        lines: BufReader::new(Box::new(reader) as DynReader).lines(),
+        child: None,
+        stderr: None,
+    })
 }
 
 fn parse_helper_event(line: &str) -> Result<HelperEvent, String> {
@@ -257,6 +343,8 @@ fn parse_helper_event(line: &str) -> Result<HelperEvent, String> {
         locale: String,
         #[serde(default)]
         backend: String,
+        #[serde(default, rename = "processId")]
+        process_id: i32,
     }
     let event: WireEvent = serde_json::from_str(line)
         .map_err(|error| format!("解析 Apple 系统本地识别事件失败：{error}"))?;
@@ -267,7 +355,20 @@ fn parse_helper_event(line: &str) -> Result<HelperEvent, String> {
         message: event.message,
         locale: event.locale,
         backend: event.backend,
+        process_id: event.process_id,
     })
+}
+
+fn terminate_process(process_id: i32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SIGTERM: i32 = 15;
+    if process_id > 0 {
+        unsafe {
+            let _ = kill(process_id, SIGTERM);
+        }
+    }
 }
 
 fn pcm16_as_f32_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -296,13 +397,15 @@ mod tests {
         assert_eq!(partial.text, "你好");
         assert!(!partial.final_result);
 
-        let final_result =
-            parse_helper_event(
-                r#"{"kind":"result","text":"你好。","final":true,"backend":"SFSpeechRecognizer"}"#,
-            )
-            .unwrap();
+        let final_result = parse_helper_event(
+            r#"{"kind":"result","text":"你好。","final":true,"backend":"SFSpeechRecognizer"}"#,
+        )
+        .unwrap();
         assert!(final_result.final_result);
         assert_eq!(final_result.backend, "SFSpeechRecognizer");
+
+        let connected = parse_helper_event(r#"{"kind":"connected","processId":1234}"#).unwrap();
+        assert_eq!(connected.process_id, 1234);
     }
 
     #[test]

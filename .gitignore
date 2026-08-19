@@ -4,6 +4,8 @@ src-tauri/target/
 src-tauri/bundle-assets/
 src-tauri/binaries/*.exe
 src-tauri/binaries/sayit-apple-speech-*
+src-tauri/binaries/SayItAppleSpeech.app/
+src-tauri/binaries/apple-speech-build.json
 npm-debug.log*
 .env
 docs/others

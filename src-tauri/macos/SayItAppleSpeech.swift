@@ -1,8 +1,14 @@
 import AVFoundation
+import Darwin
 import Foundation
 import Speech
 
 private let modelIdentifier = "apple-speech-transcriber-live"
+#if SAYIT_DEVELOPMENT_BUNDLE
+private let expectedBundleIdentifier = "com.henjicc.sayit.dev.apple-speech"
+#else
+private let expectedBundleIdentifier = "com.henjicc.sayit"
+#endif
 
 private struct OutputEvent: Encodable, Sendable {
     let kind: String
@@ -16,21 +22,33 @@ private struct OutputEvent: Encodable, Sendable {
     var text: String?
     var isFinal: Bool?
     var onDevice: Bool?
+    var identityValid: Bool?
+    var bundleIdentifier: String?
+    var usageDescriptionPresent: Bool?
+    var processId: Int32?
 
     enum CodingKeys: String, CodingKey {
         case kind, available, installed, locale, backend, authorization, message, model, text, onDevice
+        case identityValid, bundleIdentifier, usageDescriptionPresent
+        case processId
         case isFinal = "final"
     }
 }
 
 private actor JsonEmitter {
+    private let output: FileHandle
+
+    init(output: FileHandle = .standardOutput) {
+        self.output = output
+    }
+
     func send(_ event: OutputEvent) {
         guard let data = try? JSONEncoder().encode(event),
               var line = String(data: data, encoding: .utf8) else {
             return
         }
         line.append("\n")
-        FileHandle.standardOutput.write(Data(line.utf8))
+        output.write(Data(line.utf8))
     }
 }
 
@@ -42,6 +60,7 @@ private enum SpeechHelperError: LocalizedError {
     case systemAssetsUnavailable(String)
     case authorizationDenied
     case authorizationRestricted
+    case invalidBundleMetadata
 
     var errorDescription: String? {
         switch self {
@@ -59,8 +78,65 @@ private enum SpeechHelperError: LocalizedError {
             return "语音识别权限已被拒绝，请在系统设置的“隐私与安全性”中允许“说吧！”使用语音识别"
         case .authorizationRestricted:
             return "当前系统限制了语音识别权限"
+        case .invalidBundleMetadata:
+            return "Apple 语音识别助手缺少 macOS 权限身份，请重新构建开发版或重新安装应用"
         }
     }
+}
+
+private struct BundleMetadata {
+    let identifier: String
+    let usageDescriptionPresent: Bool
+
+    var isValid: Bool {
+        identifier == expectedBundleIdentifier && usageDescriptionPresent
+    }
+}
+
+private func bundleMetadata() -> BundleMetadata {
+    let identifier = Bundle.main.bundleIdentifier ?? ""
+    let usageDescription = Bundle.main.object(
+        forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription"
+    ) as? String
+    return BundleMetadata(
+        identifier: identifier,
+        usageDescriptionPresent: !(usageDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    )
+}
+
+private func withBundleMetadata(_ event: OutputEvent) -> OutputEvent {
+    let metadata = bundleMetadata()
+    var enriched = event
+    enriched.identityValid = metadata.isValid
+    enriched.bundleIdentifier = metadata.identifier
+    enriched.usageDescriptionPresent = metadata.usageDescriptionPresent
+    return enriched
+}
+
+private func selfCheck() async -> Int32 {
+    let metadata = bundleMetadata()
+    let emitter = JsonEmitter()
+    await emitter.send(OutputEvent(
+        kind: "selfCheck",
+        message: metadata.isValid ? nil : SpeechHelperError.invalidBundleMetadata.localizedDescription,
+        identityValid: metadata.isValid,
+        bundleIdentifier: metadata.identifier,
+        usageDescriptionPresent: metadata.usageDescriptionPresent
+    ))
+    return metadata.isValid ? 0 : 78
+}
+
+private func emitInvalidIdentity() async -> Int32 {
+    let metadata = bundleMetadata()
+    let emitter = JsonEmitter()
+    await emitter.send(OutputEvent(
+        kind: "error",
+        message: SpeechHelperError.invalidBundleMetadata.localizedDescription,
+        identityValid: false,
+        bundleIdentifier: metadata.identifier,
+        usageDescriptionPresent: metadata.usageDescriptionPresent
+    ))
+    return 78
 }
 
 private enum LegacyRecognitionEvent: Sendable {
@@ -93,16 +169,55 @@ private func legacyRecognizer(localeIdentifier: String) -> SFSpeechRecognizer? {
 
 private func legacyStatus(localeIdentifier: String) -> OutputEvent {
     let authorization = SFSpeechRecognizer.authorizationStatus()
-    guard let recognizer = legacyRecognizer(localeIdentifier: localeIdentifier),
-          recognizer.supportsOnDeviceRecognition else {
-        return OutputEvent(
+    let locale = requestedLocale(localeIdentifier)
+    if authorization == .notDetermined {
+        // 在真正开始听写前不能创建 recognizer 或查询设备资源；部分 macOS 版本会把
+        // 这种“未授权预检”直接记成 denied，导致用户永远看不到系统授权弹窗。
+        return withBundleMetadata(OutputEvent(
+            kind: "status",
+            available: true,
+            installed: true,
+            locale: locale.identifier(.bcp47),
+            backend: "SFSpeechRecognizer",
+            authorization: authorizationName(authorization),
+            onDevice: true
+        ))
+    }
+    if authorization == .denied || authorization == .restricted {
+        return withBundleMetadata(OutputEvent(
+            kind: "status",
+            available: false,
+            installed: false,
+            locale: locale.identifier(.bcp47),
+            backend: "SFSpeechRecognizer",
+            authorization: authorizationName(authorization),
+            message: authorization == .denied
+                ? SpeechHelperError.authorizationDenied.localizedDescription
+                : SpeechHelperError.authorizationRestricted.localizedDescription,
+            onDevice: true
+        ))
+    }
+    guard let recognizer = legacyRecognizer(localeIdentifier: localeIdentifier) else {
+        return withBundleMetadata(OutputEvent(
             kind: "status",
             available: false,
             installed: false,
             authorization: authorizationName(authorization),
             message: SpeechHelperError.unavailable.localizedDescription,
             onDevice: true
-        )
+        ))
+    }
+    guard recognizer.supportsOnDeviceRecognition else {
+        return withBundleMetadata(OutputEvent(
+            kind: "status",
+            available: false,
+            installed: false,
+            locale: recognizer.locale.identifier(.bcp47),
+            backend: "SFSpeechRecognizer",
+            authorization: authorizationName(authorization),
+            message: SpeechHelperError.unavailable.localizedDescription,
+            onDevice: true
+        ))
     }
     let message: String?
     switch authorization {
@@ -113,7 +228,7 @@ private func legacyStatus(localeIdentifier: String) -> OutputEvent {
     default:
         message = recognizer.isAvailable ? nil : "Apple 系统语音识别服务当前不可用"
     }
-    return OutputEvent(
+    return withBundleMetadata(OutputEvent(
         kind: "status",
         available: recognizer.isAvailable,
         installed: true,
@@ -122,7 +237,7 @@ private func legacyStatus(localeIdentifier: String) -> OutputEvent {
         authorization: authorizationName(authorization),
         message: message,
         onDevice: true
-    )
+    ))
 }
 
 private func requestLegacyAuthorization() async throws {
@@ -144,6 +259,43 @@ private func requestLegacyAuthorization() async throws {
     }
 }
 
+private func authorize() async -> Int32 {
+    let emitter = JsonEmitter()
+#if SAYIT_HAS_SPEECH_ANALYZER
+    if #available(macOS 26.0, *) {
+        await emitter.send(withBundleMetadata(OutputEvent(
+            kind: "status",
+            available: true,
+            installed: true,
+            backend: "SpeechAnalyzer",
+            authorization: "notRequired",
+            onDevice: true
+        )))
+        return 0
+    }
+#endif
+    do {
+        try await requestLegacyAuthorization()
+        await emitter.send(withBundleMetadata(OutputEvent(
+            kind: "status",
+            available: true,
+            installed: true,
+            backend: "SFSpeechRecognizer",
+            authorization: "authorized",
+            onDevice: true
+        )))
+        return 0
+    } catch {
+        await emitter.send(withBundleMetadata(OutputEvent(
+            kind: "error",
+            authorization: authorizationName(SFSpeechRecognizer.authorizationStatus()),
+            message: error.localizedDescription,
+            onDevice: true
+        )))
+        return 1
+    }
+}
+
 private func makeBuffer(data: Data, format: AVAudioFormat) throws -> AVAudioPCMBuffer {
     let frameCount = data.count / MemoryLayout<Float>.size
     guard frameCount > 0,
@@ -160,8 +312,13 @@ private func makeBuffer(data: Data, format: AVAudioFormat) throws -> AVAudioPCMB
     return buffer
 }
 
-private func transcribeLegacy(localeIdentifier: String, sampleRate: Double) async -> Int32 {
-    let emitter = JsonEmitter()
+private func transcribeLegacy(
+    localeIdentifier: String,
+    sampleRate: Double,
+    input: FileHandle,
+    output: FileHandle
+) async -> Int32 {
+    let emitter = JsonEmitter(output: output)
     do {
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw SpeechHelperError.invalidSampleRate
@@ -227,7 +384,7 @@ private func transcribeLegacy(localeIdentifier: String, sampleRate: Double) asyn
 
         var pending = Data()
         while true {
-            let chunk = FileHandle.standardInput.readData(ofLength: 32 * 1024)
+            let chunk = input.readData(ofLength: 32 * 1024)
             if chunk.isEmpty { break }
             pending.append(chunk)
             let usableCount = pending.count - pending.count % MemoryLayout<Float>.size
@@ -287,7 +444,7 @@ private func analyzerIsInstalled(_ locale: Locale) async -> Bool {
 private func analyzerStatus(localeIdentifier: String) async -> OutputEvent {
     do {
         let locale = try await resolvedAnalyzerLocale(localeIdentifier)
-        return OutputEvent(
+        return withBundleMetadata(OutputEvent(
             kind: "status",
             available: true,
             installed: await analyzerIsInstalled(locale),
@@ -295,16 +452,16 @@ private func analyzerStatus(localeIdentifier: String) async -> OutputEvent {
             backend: "SpeechAnalyzer",
             authorization: "notRequired",
             onDevice: true
-        )
+        ))
     } catch {
-        return OutputEvent(
+        return withBundleMetadata(OutputEvent(
             kind: "status",
             available: false,
             installed: false,
             authorization: "notRequired",
             message: error.localizedDescription,
             onDevice: true
-        )
+        ))
     }
 }
 
@@ -333,16 +490,22 @@ private func prepareAnalyzer(localeIdentifier: String) async -> Int32 {
 }
 
 @available(macOS 26.0, *)
-private func transcribeAnalyzer(localeIdentifier: String, sampleRate: Double) async -> Int32 {
-    let emitter = JsonEmitter()
+private func transcribeAnalyzer(
+    localeIdentifier: String,
+    sampleRate: Double,
+    input: FileHandle,
+    output: FileHandle
+) async -> Int32 {
+    let emitter = JsonEmitter(output: output)
     do {
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw SpeechHelperError.invalidSampleRate
         }
         let locale = try await resolvedAnalyzerLocale(localeIdentifier)
         let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
-        if !(await analyzerIsInstalled(locale)) {
-            throw SpeechHelperError.systemAssetsUnavailable(locale.identifier(.bcp47))
+        if !(await analyzerIsInstalled(locale)),
+           let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try await request.downloadAndInstall()
         }
 
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
@@ -391,7 +554,7 @@ private func transcribeAnalyzer(localeIdentifier: String, sampleRate: Double) as
 
         var pending = Data()
         while true {
-            let chunk = FileHandle.standardInput.readData(ofLength: 32 * 1024)
+            let chunk = input.readData(ofLength: 32 * 1024)
             if chunk.isEmpty { break }
             pending.append(chunk)
             let usableCount = pending.count - pending.count % MemoryLayout<Float>.size
@@ -460,22 +623,109 @@ private func prepare(localeIdentifier: String) async -> Int32 {
     return status.available == true ? 0 : 2
 }
 
-private func transcribe(localeIdentifier: String, sampleRate: Double) async -> Int32 {
+private func transcribe(
+    localeIdentifier: String,
+    sampleRate: Double,
+    input: FileHandle,
+    output: FileHandle
+) async -> Int32 {
 #if SAYIT_HAS_SPEECH_ANALYZER
     if #available(macOS 26.0, *) {
         let status = await analyzerStatus(localeIdentifier: localeIdentifier)
         if status.available == true {
-            return await transcribeAnalyzer(localeIdentifier: localeIdentifier, sampleRate: sampleRate)
+            return await transcribeAnalyzer(
+                localeIdentifier: localeIdentifier,
+                sampleRate: sampleRate,
+                input: input,
+                output: output
+            )
         }
     }
 #endif
-    return await transcribeLegacy(localeIdentifier: localeIdentifier, sampleRate: sampleRate)
+    return await transcribeLegacy(
+        localeIdentifier: localeIdentifier,
+        sampleRate: sampleRate,
+        input: input,
+        output: output
+    )
+}
+
+private func connectUnixSocket(path: String) throws -> FileHandle {
+    let pathBytes = Array(path.utf8)
+    var address = sockaddr_un()
+    let capacity = MemoryLayout.size(ofValue: address.sun_path)
+    guard !pathBytes.isEmpty, pathBytes.count + 1 <= capacity else {
+        throw NSError(
+            domain: "com.henjicc.sayit.apple-speech",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "开发语音通道路径无效"]
+        )
+    }
+    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSLocalizedDescriptionKey: "创建开发语音通道失败"]
+        )
+    }
+    address.sun_family = sa_family_t(AF_UNIX)
+    let addressLength = MemoryLayout<sa_family_t>.size + pathBytes.count + 1
+    address.sun_len = UInt8(addressLength)
+    withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+        buffer.initializeMemory(as: UInt8.self, repeating: 0)
+        buffer.copyBytes(from: pathBytes)
+    }
+    let connected = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(descriptor, $0, socklen_t(addressLength))
+        }
+    }
+    guard connected == 0 else {
+        let code = errno
+        Darwin.close(descriptor)
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "连接开发语音通道失败"]
+        )
+    }
+    return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
 }
 
 @main
 private struct SayItAppleSpeechHelper {
     static func main() async {
         let arguments = CommandLine.arguments
+        if arguments.contains("--self-check") {
+            Foundation.exit(await selfCheck())
+        }
+        guard bundleMetadata().isValid else {
+            Foundation.exit(await emitInvalidIdentity())
+        }
+        if arguments.contains("--transport-check") {
+            do {
+                guard let socketPath = value(after: "--socket", in: arguments) else {
+                    throw NSError(
+                        domain: "com.henjicc.sayit.apple-speech",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "缺少开发语音通道"]
+                    )
+                }
+                let channel = try connectUnixSocket(path: socketPath)
+                let emitter = JsonEmitter(output: channel)
+                await emitter.send(OutputEvent(kind: "opened", backend: "TransportCheck"))
+                await emitter.send(OutputEvent(kind: "finish"))
+                Foundation.exit(0)
+            } catch {
+                let emitter = JsonEmitter()
+                await emitter.send(OutputEvent(kind: "error", message: error.localizedDescription))
+                Foundation.exit(1)
+            }
+        }
+        if arguments.contains("--authorize") {
+            Foundation.exit(await authorize())
+        }
         let locale = value(after: "--locale", in: arguments) ?? ""
         if arguments.contains("--probe") {
             Foundation.exit(await probe(localeIdentifier: locale))
@@ -484,7 +734,29 @@ private struct SayItAppleSpeechHelper {
             Foundation.exit(await prepare(localeIdentifier: locale))
         }
         let sampleRate = Double(value(after: "--sample-rate", in: arguments) ?? "") ?? 0
-        Foundation.exit(await transcribe(localeIdentifier: locale, sampleRate: sampleRate))
+        do {
+            let socketPath = value(after: "--socket", in: arguments)
+            let channel = try socketPath.map(connectUnixSocket(path:))
+            let input = channel ?? .standardInput
+            let output = channel ?? .standardOutput
+            if channel != nil {
+                let emitter = JsonEmitter(output: output)
+                await emitter.send(OutputEvent(
+                    kind: "connected",
+                    processId: ProcessInfo.processInfo.processIdentifier
+                ))
+            }
+            Foundation.exit(await transcribe(
+                localeIdentifier: locale,
+                sampleRate: sampleRate,
+                input: input,
+                output: output
+            ))
+        } catch {
+            let emitter = JsonEmitter()
+            await emitter.send(OutputEvent(kind: "error", message: error.localizedDescription))
+            Foundation.exit(1)
+        }
     }
 
     private static func value(after key: String, in arguments: [String]) -> String? {
