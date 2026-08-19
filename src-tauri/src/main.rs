@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use application::assistant::{
     assistant_cancel, assistant_start, assistant_stop, capture_current_selection,
     close_assistant_answer, get_assistant_answer, insert_assistant_answer,
-    regenerate_assistant_answer,
+    preview_assistant, regenerate_assistant_answer,
 };
 use application::audio_lab::{
     audio_lab_audio_path, audio_lab_reprocess, audio_lab_start, audio_lab_stop,
@@ -552,6 +552,7 @@ fn main() {
             assistant_start,
             assistant_stop,
             assistant_cancel,
+            preview_assistant,
             get_assistant_answer,
             insert_assistant_answer,
             regenerate_assistant_answer,

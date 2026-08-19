@@ -28,7 +28,7 @@ pub(crate) fn resolve_provider(
     model: &str,
 ) -> Result<TranslationProvider, String> {
     if model.trim().is_empty() || model == "none" {
-        return Err("请先在“语音输入 → 语音助手”中选择翻译模型".into());
+        return Err("请先在“语音助手”中选择翻译模型".into());
     }
     let plugin_provider = state
         .plugin_registry
