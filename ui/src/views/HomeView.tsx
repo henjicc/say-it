@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleAlert, Clock3, Languages, Mic, Sparkles, TextCursorInput, WandSparkles } from "lucide-react";
+import { CheckCircle2, ChevronRight, CircleAlert, Clock3, Languages, Mic, Sparkles, TextCursorInput, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Input";
@@ -91,13 +91,6 @@ export function HomeView() {
   const blocked = setup?.checks.filter((item) => item.status !== "ready") ?? [];
 
   return <div className="flex flex-col gap-8">
-    <section className="relative overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-line)] bg-[linear-gradient(135deg,var(--accent-soft),var(--color-surface)_55%,transparent)] px-7 py-8">
-      <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[var(--accent-soft-strong)] blur-3xl" />
-      <p className="text-xs font-medium tracking-[0.2em] text-[var(--color-accent-light)]">说吧！</p>
-      <h1 className="mt-3 text-3xl font-semibold tracking-tight text-[var(--color-fg)]">开口输入，也能编辑、翻译和问答</h1>
-      <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--color-fg-subtle)]">常用能力集中在这里。录入快捷键、选择模型后，就可以在任意应用中直接使用。</p>
-    </section>
-
     <SettingsSection title="快捷操作">
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
         {visibleShortcuts.map((item) => {
@@ -110,20 +103,19 @@ export function HomeView() {
       </div>
     </SettingsSection>
 
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
-      <SettingsSection title="快速模型">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="主语音识别模型"><Select value={asrModel} onChange={(event) => void patchDict({ asrModel: event.target.value })}>{DICTATION_ASR_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
-          <Field label="全局默认智能模型" hint="智能优化和智能助手默认跟随此设置。"><Select value={selectedSmartModel} onChange={(event) => void changeSmartModel(event.target.value)}><option value="">尚未配置</option>{smartModelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
-        </div>
-      </SettingsSection>
-      <SettingsSection title="环境状态">
-        <button type="button" onClick={openStatus} className="flex min-h-[var(--control-h)] w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]">
-          {setup && blocked.length === 0 ? <CheckCircle2 className="h-5 w-5 text-[var(--color-ok)]" /> : <CircleAlert className="h-5 w-5 text-[var(--color-warn)]" />}
-          <div><p className="text-sm font-medium text-[var(--color-fg)]">{!setup ? "正在检查环境…" : blocked.length === 0 ? "所有关键能力均可用" : `${blocked.length} 项需要处理`}</p><p className="text-xs text-[var(--color-fg-subtle)]">点击查看麦克风、权限、模型和注入检查</p></div>
-        </button>
-      </SettingsSection>
-    </div>
+    <SettingsSection title="快速设置">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <Field label="主语音识别模型"><Select value={asrModel} onChange={(event) => void patchDict({ asrModel: event.target.value })}>{DICTATION_ASR_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
+        <Field label="全局默认智能模型"><Select value={selectedSmartModel} onChange={(event) => void changeSmartModel(event.target.value)}><option value="">尚未配置</option>{smartModelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
+        <Field label="环境状态" controlId="home-environment-status" className="md:col-span-2 xl:col-span-1">
+          <button id="home-environment-status" type="button" onClick={openStatus} className="flex h-[var(--control-h)] w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 text-left transition-colors hover:border-[var(--color-line-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]">
+            {setup && blocked.length === 0 ? <CheckCircle2 className="h-4.5 w-4.5 shrink-0 text-[var(--color-ok)]" /> : <CircleAlert className="h-4.5 w-4.5 shrink-0 text-[var(--color-warn)]" />}
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-fg)]">{!setup ? "正在检查环境…" : blocked.length === 0 ? "所有关键能力均可用" : `${blocked.length} 项需要处理`}</span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
+          </button>
+        </Field>
+      </div>
+    </SettingsSection>
 
     <SettingsSection title="本地累计使用">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
