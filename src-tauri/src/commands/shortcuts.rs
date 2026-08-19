@@ -88,6 +88,7 @@ pub(crate) fn update_shortcut_binding(
             shortcut.shift = binding.shift;
             shortcut.alt = binding.alt;
             shortcut.meta = binding.meta;
+            shortcut.trigger_mode = binding.trigger_mode;
             Ok(())
         });
     }
@@ -591,8 +592,8 @@ fn collect_all_shortcut_bindings(
             shift: shortcut.shift,
             alt: shortcut.alt,
             meta: shortcut.meta,
-            trigger_mode: ShortcutTriggerMode::Toggle,
-            trigger_mode_editable: false,
+            trigger_mode: shortcut.trigger_mode,
+            trigger_mode_editable: true,
         });
     }
     items
@@ -987,5 +988,34 @@ mod tests {
         )
         .unwrap_err()
         .contains("语音问答"));
+    }
+
+    #[test]
+    fn assistant_catalog_exposes_persisted_trigger_mode() {
+        let mut assistant = crate::application::assistant::AssistantShortcutSettings::default();
+        assistant.edit_selection = crate::application::assistant::AssistantShortcut {
+            key_code: "F10".into(),
+            trigger_mode: ShortcutTriggerMode::PressHold,
+            ..Default::default()
+        };
+        let items = collect_all_shortcut_bindings(
+            &DictationSettings {
+                key_code: String::new(),
+                ..Default::default()
+            },
+            &SubtitleShortcutSettings::default(),
+            &assistant,
+        );
+        let item = items
+            .iter()
+            .find(|item| {
+                item.target
+                    == (ShortcutTarget::Assistant {
+                        action: crate::application::assistant::AssistantAction::EditSelection,
+                    })
+            })
+            .expect("assistant shortcut");
+        assert_eq!(item.trigger_mode, ShortcutTriggerMode::PressHold);
+        assert!(item.trigger_mode_editable);
     }
 }

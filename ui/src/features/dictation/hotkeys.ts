@@ -67,6 +67,7 @@ export function configureHotkeys(next: HotkeyHooks) {
 }
 
 const KEY_DISPLAY_NAMES: Record<string, string> = {
+  Fn: "Fn",
   CapsLock: "Caps Lock",
   Space: "Space",
   Enter: "Enter",
@@ -235,6 +236,7 @@ const LOCK_KEY_VK_TO_CODE: Record<number, string> = {
   0x14: "CapsLock",
   0x90: "NumLock",
   0x91: "ScrollLock",
+  0x100: "Fn",
 };
 
 export function handleCaptureLockKey(vk: number) {

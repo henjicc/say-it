@@ -79,6 +79,7 @@ struct NativeOcrBlock {
 }
 
 pub(crate) type CapsLockCallback = unsafe extern "C" fn(*mut c_void, u64) -> bool;
+pub(crate) type FnKeyCallback = unsafe extern "C" fn(*mut c_void, bool, u64) -> bool;
 pub(crate) type EscapeCallback = unsafe extern "C" fn(*mut c_void, bool) -> bool;
 pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, usize);
 pub(crate) type AudioErrorCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
@@ -132,9 +133,11 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn sayit_macos_keyboard_tap_start(
         caps_lock_callback: CapsLockCallback,
+        fn_key_callback: FnKeyCallback,
         escape_callback: EscapeCallback,
         context: *mut c_void,
         monitor_caps_lock: bool,
+        monitor_fn_key: bool,
         monitor_escape: bool,
         error: *mut *mut c_char,
     ) -> *mut c_void;
@@ -409,17 +412,21 @@ pub(crate) fn vision_ocr(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
 
 pub(crate) fn start_keyboard_tap(
     caps_lock_callback: CapsLockCallback,
+    fn_key_callback: FnKeyCallback,
     escape_callback: EscapeCallback,
     monitor_caps_lock: bool,
+    monitor_fn_key: bool,
     monitor_escape: bool,
 ) -> Result<usize, String> {
     let mut error = ptr::null_mut();
     let handle = unsafe {
         sayit_macos_keyboard_tap_start(
             caps_lock_callback,
+            fn_key_callback,
             escape_callback,
             ptr::null_mut(),
             monitor_caps_lock,
+            monitor_fn_key,
             monitor_escape,
             &mut error,
         )
@@ -537,7 +544,10 @@ mod tests {
         assert_eq!(context.focused_text, None);
         assert_eq!(context.caret_context.as_deref(), Some("光标附近"));
         assert_eq!(context.selection_editable, Some(true));
-        assert_eq!(context.selection_bounds.as_ref().map(|value| value.x), Some(12.5));
+        assert_eq!(
+            context.selection_bounds.as_ref().map(|value| value.x),
+            Some(12.5)
+        );
 
         let secure = parse_accessibility_context(r#"{"secure":true}"#).unwrap();
         assert!(secure.secure);

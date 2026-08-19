@@ -43,6 +43,7 @@ describe("HomeView", () => {
     expect(screen.getByText("环境状态")).toBeInTheDocument();
     expect(screen.queryByText("智能优化和智能助手默认跟随此设置。")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "环境状态" })).toBeInTheDocument();
+    expect(await screen.findByRole("combobox", { name: "语音输入触发方式" })).toHaveTextContent("单击切换");
     expect(screen.getByText(/正在检查环境…|所有关键能力均可用/)).toBeInTheDocument();
   });
 });

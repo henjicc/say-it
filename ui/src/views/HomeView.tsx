@@ -8,6 +8,7 @@ import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { loadShortcutBindings, shortcutTargetKey, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 import { CMD, EVT, cmd, on, type SetupStatus, type UsageSummary } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -77,6 +78,12 @@ export function HomeView() {
     catch (error) { if (!reportShortcutConflict(error)) setMessage(String(error)); setShortcuts(ensureMainShortcut(await loadShortcutBindings().catch(() => shortcuts))); }
     finally { setBusy(""); }
   };
+  const changeTrigger = async (item: ShortcutBindingItem, triggerMode: ShortcutTriggerMode) => {
+    const key = shortcutTargetKey(item.target); setBusy(key); setMessage("");
+    try { setShortcuts(ensureMainShortcut(await updateShortcutBinding(item, item, triggerMode))); }
+    catch (error) { if (!reportShortcutConflict(error)) setMessage(String(error)); setShortcuts(ensureMainShortcut(await loadShortcutBindings().catch(() => shortcuts))); }
+    finally { setBusy(""); }
+  };
   const openStatus = () => { setSettingsTab("general"); setView("settings"); };
   const changeSmartModel = async (value: string) => {
     if (!value) return;
@@ -95,9 +102,12 @@ export function HomeView() {
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
         {visibleShortcuts.map((item) => {
           const key = itemKey(item) as keyof typeof actionMeta; const meta = actionMeta[key]; const Icon = meta.icon;
-          return <div key={shortcutTargetKey(item.target)} className="grid items-center gap-4 border-b border-[var(--color-line)] px-4 py-3 last:border-0 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.72fr)]">
+          return <div key={shortcutTargetKey(item.target)} className="grid items-center gap-4 border-b border-[var(--color-line)] px-4 py-3 last:border-0 md:grid-cols-[minmax(0,1fr)_minmax(380px,0.9fr)]">
             <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] bg-[var(--accent-soft)] text-[var(--color-accent-light)]"><Icon className="h-4.5 w-4.5" /></span><div><p className="text-sm font-medium text-[var(--color-fg)]">{meta.title}</p><p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">{meta.description}</p></div></div>
-            <ShortcutRecorder value={item} disabled={Boolean(busy)} ariaLabel={`${meta.title}快捷键`} onChange={(next) => void changeShortcut(item, next)} />
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px]">
+              <ShortcutRecorder value={item} disabled={Boolean(busy)} ariaLabel={`${meta.title}快捷键`} onChange={(next) => void changeShortcut(item, next)} />
+              {item.triggerModeEditable ? <Select value={item.triggerMode} disabled={Boolean(busy)} aria-label={`${meta.title}触发方式`} onChange={(event) => void changeTrigger(item, event.target.value as ShortcutTriggerMode)}><option value="toggle">单击切换</option><option value="pressHold">按住说话</option></Select> : null}
+            </div>
           </div>;
         })}
       </div>
