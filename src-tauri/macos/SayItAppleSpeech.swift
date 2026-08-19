@@ -140,8 +140,104 @@ private func emitInvalidIdentity() async -> Int32 {
 }
 
 private enum LegacyRecognitionEvent: Sendable {
-    case result(String, Bool)
+    case result(String, Bool, TimeInterval?)
     case failure(String)
+}
+
+/// Apple 的旧识别器在长会话中会悄悄滚动内部识别窗口：新的 partial 只包含
+/// 后半段，但不会先为旧窗口发送 final。这里把每个窗口的最后快照保留下来，
+/// 对外仍维持“本次会话完整快照”的协议。
+private struct LegacyTranscriptAccumulator {
+    private(set) var committed = ""
+    private(set) var current = ""
+    private var rangeStart: TimeInterval?
+
+    mutating func update(
+        snapshot: String,
+        rangeStart nextRangeStart: TimeInterval?
+    ) -> String {
+        let next = snapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !next.isEmpty else { return text }
+        let timelineRolled = rangeStart.flatMap { previous in
+            nextRangeStart.map { $0 > previous + 0.75 }
+        } ?? false
+        // 部分系统版本在滚动后会把 segment 时间重新从零计算；文本突然缩短是
+        // 这一路径的兜底信号。小幅回改仍只替换 current，不会被错误提交。
+        let sharedPrefixCount = zip(current, next).prefix { $0 == $1 }.count
+        let sameWindowPrefix = min(8, max(1, next.count / 2))
+        let severeShrink = current.count >= 24
+            && next.count * 3 < current.count
+            && sharedPrefixCount < sameWindowPrefix
+        if !current.isEmpty && (timelineRolled || severeShrink) {
+            committed = concatenateTranscript(committed, current)
+        }
+        current = next
+        rangeStart = nextRangeStart
+        return text
+    }
+
+    var text: String {
+        concatenateTranscript(committed, current)
+    }
+}
+
+/// SpeechAnalyzer 返回的是按音频范围排列的 phrase，而不是整段听写快照。
+/// final phrase 依次追加，volatile phrase 只替换当前尾部。
+private struct ProgressiveTranscriptAccumulator {
+    private(set) var finalized = ""
+    private(set) var volatile = ""
+
+    mutating func update(text: String, isFinal: Bool) -> String {
+        if isFinal {
+            // Apple 的范围结果自带边界空白和标点，必须像官方示例一样原样拼接。
+            finalized += text
+            volatile = ""
+        } else {
+            volatile = text
+        }
+        return self.text
+    }
+
+    var text: String {
+        finalized + volatile
+    }
+}
+
+private func concatenateTranscript(_ left: String, _ right: String) -> String {
+    guard !left.isEmpty else { return right }
+    guard !right.isEmpty else { return left }
+    guard let last = left.unicodeScalars.last,
+          let first = right.unicodeScalars.first else {
+        return left + right
+    }
+    let needsSpace = last.isASCII
+        && first.isASCII
+        && CharacterSet.alphanumerics.contains(last)
+        && CharacterSet.alphanumerics.contains(first)
+    return left + (needsSpace ? " " : "") + right
+}
+
+private func accumulatorCheck() async -> Int32 {
+    var legacy = LegacyTranscriptAccumulator()
+    _ = legacy.update(snapshot: "第一段临时文本", rangeStart: 0)
+    _ = legacy.update(snapshot: "第一段修正文本", rangeStart: 0)
+    let legacyResult = legacy.update(snapshot: "第二段", rangeStart: 61)
+
+    var progressive = ProgressiveTranscriptAccumulator()
+    _ = progressive.update(text: "第一段临时", isFinal: false)
+    _ = progressive.update(text: "第一段", isFinal: true)
+    _ = progressive.update(text: "第二", isFinal: false)
+    let progressiveResult = progressive.update(text: "第二段", isFinal: true)
+
+    let success = legacyResult == "第一段修正文本第二段"
+        && progressiveResult == "第一段第二段"
+    let emitter = JsonEmitter()
+    await emitter.send(OutputEvent(
+        kind: "accumulatorCheck",
+        available: success,
+        message: success ? nil : "Apple 转写累加器自检失败"
+    ))
+    return success ? 0 : 70
 }
 
 private func authorizationName(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
@@ -347,7 +443,9 @@ private func transcribeLegacy(
             if let result {
                 let text = result.bestTranscription.formattedString
                 if !text.isEmpty {
-                    eventBuilder.yield(.result(text, result.isFinal))
+                    let segments = result.bestTranscription.segments
+                    let rangeStart = segments.first?.timestamp
+                    eventBuilder.yield(.result(text, result.isFinal, rangeStart))
                 }
             }
             if let error {
@@ -358,12 +456,17 @@ private func transcribeLegacy(
             }
         }
         let resultTask = Task { () -> String? in
+            var accumulator = LegacyTranscriptAccumulator()
             for await event in events {
                 switch event {
-                case .result(let text, let isFinal):
+                case .result(let text, let isFinal, let rangeStart):
+                    let snapshot = accumulator.update(
+                        snapshot: text,
+                        rangeStart: rangeStart
+                    )
                     await emitter.send(OutputEvent(
                         kind: "result",
-                        text: text,
+                        text: snapshot,
                         isFinal: isFinal
                     ))
                 case .failure(let message):
@@ -524,21 +627,25 @@ private func transcribeAnalyzer(
         let converter = AnalyzerInputConverter(analyzerFormat: analyzerFormat)
         let (inputSequence, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
-        let resultTask = Task { () -> String? in
+        let resultTask = Task { () -> (text: String, error: String?) in
+            var accumulator = ProgressiveTranscriptAccumulator()
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
-                    if !text.isEmpty {
+                    let snapshot = accumulator.update(text: text, isFinal: result.isFinal)
+                    if !snapshot.isEmpty {
                         await emitter.send(OutputEvent(
                             kind: "result",
-                            text: text,
-                            isFinal: result.isFinal
+                            text: snapshot,
+                            // Result.isFinal 只表示当前音频范围已稳定，不代表整个
+                            // 听写会话结束；会话 final 在 analyzer 完成后统一发送。
+                            isFinal: false
                         ))
                     }
                 }
-                return nil
+                return (accumulator.text, nil)
             } catch {
-                return error.localizedDescription
+                return (accumulator.text, error.localizedDescription)
             }
         }
         async let lastSampleTime = analyzer.analyzeSequence(inputSequence)
@@ -576,12 +683,20 @@ private func transcribeAnalyzer(
         } else {
             await analyzer.cancelAndFinishNow()
         }
-        if let resultError = await resultTask.value {
+        let result = await resultTask.value
+        if let resultError = result.error {
             throw NSError(
                 domain: "com.henjicc.sayit.apple-speech",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: resultError]
             )
+        }
+        if !result.text.isEmpty {
+            await emitter.send(OutputEvent(
+                kind: "result",
+                text: result.text,
+                isFinal: true
+            ))
         }
         await emitter.send(OutputEvent(kind: "finish"))
         return 0
@@ -702,6 +817,9 @@ private struct SayItAppleSpeechHelper {
         }
         guard bundleMetadata().isValid else {
             Foundation.exit(await emitInvalidIdentity())
+        }
+        if arguments.contains("--accumulator-check") {
+            Foundation.exit(await accumulatorCheck())
         }
         if arguments.contains("--transport-check") {
             do {

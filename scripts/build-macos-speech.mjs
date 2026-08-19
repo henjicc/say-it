@@ -159,6 +159,13 @@ if (
 ) {
   throw new Error(`Apple 语音助手缺少稳定的权限身份：${check.message || checkLine || "未知错误"}`);
 }
+const accumulatorCheckResult = spawnSync(output, ["--accumulator-check"], { encoding: "utf8" });
+if (accumulatorCheckResult.error) throw accumulatorCheckResult.error;
+const accumulatorCheckLine = accumulatorCheckResult.stdout.trim().split("\n").findLast(Boolean);
+const accumulatorCheck = JSON.parse(accumulatorCheckLine || "{}");
+if (accumulatorCheckResult.status !== 0 || accumulatorCheck.available !== true) {
+  throw new Error(`Apple 转写累加器自检失败：${accumulatorCheck.message || accumulatorCheckLine || "未知错误"}`);
+}
 const developmentCheckResult = spawnSync(developmentExecutable, ["--self-check"], { encoding: "utf8" });
 if (developmentCheckResult.error) throw developmentCheckResult.error;
 const developmentCheckLine = developmentCheckResult.stdout.trim().split("\n").findLast(Boolean);
