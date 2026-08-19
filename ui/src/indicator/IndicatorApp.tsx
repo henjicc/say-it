@@ -34,9 +34,9 @@ interface SubtitleConfig {
 }
 
 const LABELS: Record<Exclude<Phase, "hidden">, string> = {
-  recording: "正在聆听…",
+  recording: "聆听中…",
   processing: "识别中…",
-  smartProcessing: "智能处理中…",
+  smartProcessing: "处理中…",
   subtitle: "实时字幕",
   error: "处理失败",
 };
