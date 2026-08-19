@@ -1592,7 +1592,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
             return;
         }
         publish_state(&app, None);
-        if should_process_smart_text {
+        // ASR 已经结束；无论是普通听写的智能优化，还是智能助手任务，
+        // 后续都统一投影为“处理中”，避免模型调用期间仍误显示“识别中”。
+        if assistant_request.is_some() || should_process_smart_text {
             let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
         }
     }
