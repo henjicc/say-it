@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cwctype>
 #include <limits>
@@ -84,6 +85,14 @@ struct Result {
     std::vector<std::wstring> visibleText;
     std::vector<std::wstring> documentText;
     std::vector<std::wstring> diagnostics;
+    double selectionX = 0;
+    double selectionY = 0;
+    double selectionWidth = 0;
+    double selectionHeight = 0;
+    bool hasSelectionBounds = false;
+    bool selectionEditable = true;
+    bool hasSelectionEditable = false;
+    bool nonTextSelection = false;
     uint64_t elapsedMs = 0;
     bool truncated = false;
 };
@@ -250,6 +259,18 @@ std::string serializeResult(const Result& result) {
     appendJsonArray(json, result.documentText);
     json << ",\"diagnostics\":";
     appendJsonArray(json, result.diagnostics);
+    json << ",\"selectionBounds\":";
+    if (result.hasSelectionBounds) {
+        json << "{\"x\":" << result.selectionX
+             << ",\"y\":" << result.selectionY
+             << ",\"width\":" << result.selectionWidth
+             << ",\"height\":" << result.selectionHeight << '}';
+    } else {
+        json << "null";
+    }
+    json << ",\"selectionEditable\":";
+    if (result.hasSelectionEditable) json << (result.selectionEditable ? "true" : "false");
+    else json << "null";
     json << ",\"elapsedMs\":" << result.elapsedMs
          << ",\"truncated\":" << (result.truncated ? "true" : "false") << '}';
     return json.str();
@@ -326,6 +347,123 @@ std::wstring rangeText(IUIAutomationTextRange* range, int limit) {
     return trim(value);
 }
 
+std::wstring selectedRangeText(IUIAutomationTextRange* range, int limit) {
+    if (!range) return {};
+    BSTR text = nullptr;
+    if (FAILED(range->GetText(limit, &text)) || !text) return {};
+    std::wstring value(text, SysStringLen(text));
+    SysFreeString(text);
+    value.erase(std::remove(value.begin(), value.end(), static_cast<wchar_t>(0xfffc)), value.end());
+    return trim(value).empty() ? std::wstring{} : value;
+}
+
+// Ported from selection-hook's UIA range-coordinate strategy. Keep the union of
+// all valid line rectangles so multi-line selections also have a stable fingerprint.
+bool readSelectionBounds(IUIAutomationTextRange* range, Result& result) {
+    if (!range) return false;
+    SAFEARRAY* rectangles = nullptr;
+    if (FAILED(range->GetBoundingRectangles(&rectangles)) || !rectangles) return false;
+    double* values = nullptr;
+    if (FAILED(SafeArrayAccessData(rectangles, reinterpret_cast<void**>(&values))) || !values) {
+        SafeArrayDestroy(rectangles);
+        return false;
+    }
+    LONG lower = 0;
+    LONG upper = -1;
+    SafeArrayGetLBound(rectangles, 1, &lower);
+    SafeArrayGetUBound(rectangles, 1, &upper);
+    const LONG valueCount = upper >= lower ? upper - lower + 1 : 0;
+    bool found = false;
+    double left = 0, top = 0, right = 0, bottom = 0;
+    for (LONG offset = 0; offset + 3 < valueCount; offset += 4) {
+        const double x = values[offset];
+        const double y = values[offset + 1];
+        const double width = values[offset + 2];
+        const double height = values[offset + 3];
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height)
+            || width <= 0 || height <= 0 || height >= 300) continue;
+        if (!found) {
+            left = x;
+            top = y;
+            right = x + width;
+            bottom = y + height;
+            found = true;
+        } else {
+            left = std::min(left, x);
+            top = std::min(top, y);
+            right = std::max(right, x + width);
+            bottom = std::max(bottom, y + height);
+        }
+    }
+    SafeArrayUnaccessData(rectangles);
+    SafeArrayDestroy(rectangles);
+    if (!found) return false;
+    result.selectionX = left;
+    result.selectionY = top;
+    result.selectionWidth = right - left;
+    result.selectionHeight = bottom - top;
+    result.hasSelectionBounds = true;
+    return true;
+}
+
+void readSelectionEditable(IUIAutomationElement* element, Result& result) {
+    if (!element) return;
+    BOOL enabled = TRUE;
+    if (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && enabled == FALSE) {
+        result.selectionEditable = false;
+        result.hasSelectionEditable = true;
+        return;
+    }
+    ComPtr<IUIAutomationValuePattern> valuePattern;
+    if (SUCCEEDED(element->GetCurrentPatternAs(
+            UIA_ValuePatternId,
+            __uuidof(IUIAutomationValuePattern),
+            reinterpret_cast<void**>(valuePattern.put()))) && valuePattern) {
+        BOOL readOnly = FALSE;
+        if (SUCCEEDED(valuePattern->get_CurrentIsReadOnly(&readOnly))) {
+            result.selectionEditable = readOnly == FALSE;
+            result.hasSelectionEditable = true;
+        }
+    }
+}
+
+bool readSelectionRanges(
+    IUIAutomationElement* element,
+    Result& result,
+    size_t maxChars
+) {
+    if (!element) return false;
+    ComPtr<IUIAutomationTextPattern> pattern;
+    if (FAILED(element->GetCurrentPatternAs(
+            UIA_TextPatternId,
+            __uuidof(IUIAutomationTextPattern),
+            reinterpret_cast<void**>(pattern.put()))) || !pattern) return false;
+    ComPtr<IUIAutomationTextRangeArray> selections;
+    if (FAILED(pattern->GetSelection(selections.put())) || !selections) return false;
+    int count = 0;
+    if (FAILED(selections->get_Length(&count)) || count <= 0) return false;
+    for (int index = 0; index < count; ++index) {
+        ComPtr<IUIAutomationTextRange> range;
+        if (FAILED(selections->GetElement(index, range.put())) || !range) continue;
+        const size_t probeLimit = std::min<size_t>(
+            maxChars + 1,
+            static_cast<size_t>(std::numeric_limits<int>::max())
+        );
+        std::wstring selected = selectedRangeText(range.get(), static_cast<int>(probeLimit));
+        if (selected.empty()) continue;
+        if (selected.size() > maxChars) {
+            selected.resize(maxChars);
+            result.truncated = true;
+        }
+        result.selectedText = std::move(selected);
+        readSelectionBounds(range.get(), result);
+        readSelectionEditable(element, result);
+        result.source = "uiaTextPattern";
+        return true;
+    }
+    return false;
+}
+
 bool elementIsPassword(IUIAutomationElement* element) {
     if (!element) return false;
     BOOL value = FALSE;
@@ -355,8 +493,15 @@ bool readIa2Accessible(IAccessible* accessible, Result& result, size_t maxChars,
         long start = 0, end = 0;
         if (SUCCEEDED(text->get_selection(0, &start, &end)) && end > start) {
             BSTR selected = nullptr;
-            if (SUCCEEDED(text->get_text(start, end, &selected)) && selected) {
-                result.selectedText = trim(std::wstring(selected, SysStringLen(selected)));
+            const long selectedEnd = std::min<long>(end, start + static_cast<long>(maxChars) + 1);
+            if (SUCCEEDED(text->get_text(start, selectedEnd, &selected)) && selected) {
+                result.selectedText.assign(selected, SysStringLen(selected));
+                result.selectedText.erase(
+                    std::remove(result.selectedText.begin(), result.selectedText.end(), static_cast<wchar_t>(0xfffc)),
+                    result.selectedText.end()
+                );
+                if (trim(result.selectedText).empty()) result.selectedText.clear();
+                result.truncated |= selectedEnd < end;
                 SysFreeString(selected);
             }
         }
@@ -408,17 +553,7 @@ bool readTextPattern(IUIAutomationElement* element, Result& result, size_t maxCh
         return false;
     }
 
-    ComPtr<IUIAutomationTextRangeArray> selections;
-    if (SUCCEEDED(pattern->GetSelection(selections.put())) && selections) {
-        int count = 0;
-        if (SUCCEEDED(selections->get_Length(&count)) && count > 0) {
-            ComPtr<IUIAutomationTextRange> range;
-            if (SUCCEEDED(selections->GetElement(0, range.put()))) {
-                std::wstring selected = rangeText(range.get(), static_cast<int>(maxChars));
-                if (!selected.empty()) result.selectedText = std::move(selected);
-            }
-        }
-    }
+    readSelectionRanges(element, result, maxChars);
 
     ComPtr<IUIAutomationTextPattern2> pattern2;
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPattern2Id, __uuidof(IUIAutomationTextPattern2), reinterpret_cast<void**>(pattern2.put()))) && pattern2) {
@@ -531,6 +666,81 @@ bool accessibleIsPassword(IAccessible* accessible) {
     return protectedField;
 }
 
+enum class AccessibleSelectionResult {
+    Unavailable,
+    Text,
+    NonText,
+};
+
+AccessibleSelectionResult classifyAccessibleSelection(IAccessible* accessible, const VARIANT& child) {
+    if (!accessible) return AccessibleSelectionResult::Unavailable;
+    VARIANT role;
+    VariantInit(&role);
+    const HRESULT hr = accessible->get_accRole(child, &role);
+    AccessibleSelectionResult result = AccessibleSelectionResult::Unavailable;
+    if (SUCCEEDED(hr) && role.vt == VT_I4) {
+        if (role.lVal != ROLE_SYSTEM_TEXT
+            && role.lVal >= ROLE_SYSTEM_TITLEBAR
+            && role.lVal <= ROLE_SYSTEM_OUTLINEBUTTON) {
+            result = AccessibleSelectionResult::NonText;
+        }
+    }
+    VariantClear(&role);
+    return result;
+}
+
+// selection-hook distinguishes an object selection from an unavailable text
+// selection. That distinction matters: sending Ctrl+C for a selected image or
+// tree item can trigger an unrelated application action.
+AccessibleSelectionResult readMsaaSelectionAccessible(IAccessible* accessible, Result& result) {
+    if (!accessible) return AccessibleSelectionResult::Unavailable;
+    VARIANT selected;
+    VariantInit(&selected);
+    AccessibleSelectionResult outcome = AccessibleSelectionResult::Unavailable;
+    if (SUCCEEDED(accessible->get_accSelection(&selected))) {
+        if (selected.vt == VT_BSTR && selected.bstrVal) {
+            result.selectedText.assign(selected.bstrVal, SysStringLen(selected.bstrVal));
+            result.selectedText.erase(
+                std::remove(result.selectedText.begin(), result.selectedText.end(), static_cast<wchar_t>(0xfffc)),
+                result.selectedText.end()
+            );
+            if (trim(result.selectedText).empty()) result.selectedText.clear();
+            if (!result.selectedText.empty()) {
+                result.source = "msaa";
+                outcome = AccessibleSelectionResult::Text;
+            }
+        } else if (selected.vt == VT_UNKNOWN || (selected.vt & VT_ARRAY) != 0) {
+            outcome = AccessibleSelectionResult::NonText;
+        } else if (selected.vt == VT_I4) {
+            outcome = classifyAccessibleSelection(accessible, selected);
+        } else if (selected.vt == VT_DISPATCH && selected.pdispVal) {
+            ComPtr<IAccessible> selectedAccessible;
+            if (SUCCEEDED(selected.pdispVal->QueryInterface(IID_PPV_ARGS(selectedAccessible.put())))
+                && selectedAccessible) {
+                VARIANT self;
+                VariantInit(&self);
+                self.vt = VT_I4;
+                self.lVal = CHILDID_SELF;
+                outcome = classifyAccessibleSelection(selectedAccessible.get(), self);
+            }
+        }
+    }
+    VariantClear(&selected);
+    return outcome;
+}
+
+AccessibleSelectionResult readMsaaSelection(HWND target, Result& result) {
+    ComPtr<IAccessible> root;
+    if (FAILED(AccessibleObjectFromWindow(
+            target,
+            static_cast<DWORD>(OBJID_CLIENT),
+            IID_IAccessible,
+            reinterpret_cast<void**>(root.put()))) || !root) {
+        return AccessibleSelectionResult::Unavailable;
+    }
+    return readMsaaSelectionAccessible(root.get(), result);
+}
+
 bool readUiaWithAncestors(IUIAutomationElement* focused, Result& result, size_t maxChars) {
     if (!focused || !gAutomation) return false;
     if (readTextPattern(focused, result, maxChars, true) && textSize(result) >= kMinimumUsefulChars) return true;
@@ -548,6 +758,26 @@ bool readUiaWithAncestors(IUIAutomationElement* focused, Result& result, size_t 
         if (textSize(result) >= kMinimumUsefulChars) break;
     }
     return textSize(result) > 0;
+}
+
+bool readUiaSelectionWithAncestors(IUIAutomationElement* focused, Result& result, size_t maxChars) {
+    if (!focused || !gAutomation) return false;
+    if (readSelectionRanges(focused, result, maxChars)) return true;
+
+    ComPtr<IUIAutomationTreeWalker> walker;
+    if (FAILED(gAutomation->get_ControlViewWalker(walker.put())) || !walker) return false;
+    focused->AddRef();
+    ComPtr<IUIAutomationElement> current(focused);
+    for (int depth = 0; depth < kMaxAncestorDepth; ++depth) {
+        ComPtr<IUIAutomationElement> parent;
+        if (FAILED(walker->GetParentElement(current.get(), parent.put())) || !parent) break;
+        current = std::move(parent);
+        if (elementIsPassword(current.get())) break;
+        // Ancestors only use GetSelection. Reading their document range can mistake
+        // an entire Chromium document for the user's selection.
+        if (readSelectionRanges(current.get(), result, maxChars)) return true;
+    }
+    return false;
 }
 
 HWND focusedWindowForThread(HWND target) {
@@ -573,16 +803,31 @@ bool readWin32(HWND target, Result& result, size_t maxChars, bool& sensitive) {
 
     DWORD_PTR textLength = 0;
     if (!SendMessageTimeoutW(focus, WM_GETTEXTLENGTH, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 80, &textLength)) return false;
-    const size_t length = std::min<size_t>(static_cast<size_t>(textLength), maxChars);
+    DWORD start = 0, end = 0;
+    SendMessageTimeoutW(focus, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end), SMTO_ABORTIFHUNG | SMTO_BLOCK, 80, nullptr);
+    // A selection may begin far beyond the general context limit. Read far enough
+    // to include it (with a hard cap) instead of silently losing valid selections.
+    constexpr size_t kMaxWin32ReadChars = 1024 * 1024;
+    const size_t desired = end > start
+        ? std::max(maxChars, std::min<size_t>(static_cast<size_t>(end), kMaxWin32ReadChars))
+        : maxChars;
+    const size_t length = std::min<size_t>(static_cast<size_t>(textLength), desired);
     std::wstring text(length + 1, L'\0');
     DWORD_PTR copied = 0;
     if (!SendMessageTimeoutW(focus, WM_GETTEXT, static_cast<WPARAM>(text.size()), reinterpret_cast<LPARAM>(text.data()), SMTO_ABORTIFHUNG | SMTO_BLOCK, 80, &copied)) return false;
     text.resize(std::min<size_t>(static_cast<size_t>(copied), length));
     result.focusedText = trim(text);
-    DWORD start = 0, end = 0;
-    SendMessageTimeoutW(focus, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end), SMTO_ABORTIFHUNG | SMTO_BLOCK, 80, nullptr);
     if (end > start && start < text.size()) {
-        result.selectedText = trim(text.substr(start, std::min<size_t>(end - start, text.size() - start)));
+        const size_t selectionLength = std::min<size_t>(
+            std::min<size_t>(end - start, maxChars),
+            text.size() - start
+        );
+        result.selectedText = text.substr(start, selectionLength);
+        if (trim(result.selectedText).empty()) result.selectedText.clear();
+        result.truncated |= static_cast<size_t>(end - start) > selectionLength;
+        result.selectionEditable = IsWindowEnabled(focus)
+            && (GetWindowLongPtrW(focus, GWL_STYLE) & ES_READONLY) == 0;
+        result.hasSelectionEditable = true;
     }
     if (!result.focusedText.empty() || !result.selectedText.empty()) result.source = "win32Message";
     return textSize(result) > 0;
@@ -708,7 +953,7 @@ void sendChord(WORD key) {
     sendKey(VK_CONTROL, false);
 }
 
-std::wstring clipboardUnicodeText() {
+std::wstring clipboardUnicodeText(bool preserveFormatting = false) {
     std::wstring output;
     if (!OpenClipboard(nullptr)) return output;
     HANDLE data = GetClipboardData(CF_UNICODETEXT);
@@ -720,7 +965,46 @@ std::wstring clipboardUnicodeText() {
         }
     }
     CloseClipboard();
-    return trim(output);
+    if (!preserveFormatting) return trim(output);
+    return trim(output).empty() ? std::wstring{} : output;
+}
+
+bool clipboardEmpty(bool& empty) {
+    if (!OpenClipboard(nullptr)) return false;
+    SetLastError(ERROR_SUCCESS);
+    const UINT firstFormat = EnumClipboardFormats(0);
+    const DWORD error = GetLastError();
+    CloseClipboard();
+    if (firstFormat == 0 && error != ERROR_SUCCESS) return false;
+    empty = firstFormat == 0;
+    return true;
+}
+
+bool waitForClipboardSelection(
+    HWND target,
+    DWORD& sequence,
+    std::wstring& text,
+    int maxAttempts
+) {
+    bool changed = false;
+    int stableAttempts = 0;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (GetForegroundWindow() != target) return false;
+        const DWORD current = GetClipboardSequenceNumber();
+        if (current != sequence) {
+            sequence = current;
+            changed = true;
+            stableAttempts = 0;
+            text = clipboardUnicodeText(true);
+        } else if (changed) {
+            ++stableAttempts;
+            // Some applications publish plain text and rich formats in multiple
+            // stages. Wait for 30 ms of stability before accepting the value.
+            if (!text.empty() && stableAttempts >= 3) return true;
+        }
+        Sleep(10);
+    }
+    return changed && !text.empty();
 }
 
 bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& result) {
@@ -744,8 +1028,20 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
         }
     }
 
+    bool clipboardWasEmpty = false;
+    if (!clipboardEmpty(clipboardWasEmpty)) {
+        result.diagnostics.push_back(L"无法检查剪贴板状态，已跳过深度读取。 ");
+        return false;
+    }
+    // Materialize delayed-rendered formats before replacing the clipboard. This
+    // makes the IDataObject backup reliable even if the previous owner exits.
+    OleFlushClipboard();
     ComPtr<IDataObject> backup;
-    OleGetClipboard(backup.put());
+    const HRESULT backupResult = OleGetClipboard(backup.put());
+    if (FAILED(backupResult) && !clipboardWasEmpty) {
+        result.diagnostics.push_back(L"无法完整备份剪贴板，已跳过深度读取。 ");
+        return false;
+    }
     const DWORD before = GetClipboardSequenceNumber();
     sendChord('A');
     Sleep(15);
@@ -771,9 +1067,11 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
     const bool clipboardUnchangedSinceCopy = GetClipboardSequenceNumber() == copiedSequence;
     if (clipboardUnchangedSinceCopy) {
         if (backup) {
-            OleSetClipboard(backup.get());
-            OleFlushClipboard();
-        } else if (OpenClipboard(nullptr)) {
+            if (FAILED(OleSetClipboard(backup.get())) || FAILED(OleFlushClipboard())) {
+                text.clear();
+                result.diagnostics.push_back(L"恢复剪贴板失败，已放弃深度读取结果。 ");
+            }
+        } else if (clipboardWasEmpty && OpenClipboard(nullptr)) {
             EmptyClipboard();
             CloseClipboard();
         }
@@ -808,27 +1106,38 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
 
 bool readClipboardSelection(HWND target, Result& result) {
     if (GetForegroundWindow() != target) return false;
+    bool clipboardWasEmpty = false;
+    if (!clipboardEmpty(clipboardWasEmpty)) {
+        result.diagnostics.push_back(L"无法检查剪贴板状态，已停止选区复制回退。 ");
+        return false;
+    }
+    OleFlushClipboard();
     ComPtr<IDataObject> backup;
-    OleGetClipboard(backup.put());
+    const HRESULT backupResult = OleGetClipboard(backup.put());
+    if (FAILED(backupResult) && !clipboardWasEmpty) {
+        result.diagnostics.push_back(L"无法完整备份剪贴板，已停止选区复制回退。 ");
+        return false;
+    }
     const DWORD before = GetClipboardSequenceNumber();
-    sendChord('C');
     std::wstring text;
     DWORD copiedSequence = before;
-    for (int attempt = 0; attempt < 25; ++attempt) {
-        if (GetForegroundWindow() != target) break;
-        if (GetClipboardSequenceNumber() != before) {
-            copiedSequence = GetClipboardSequenceNumber();
-            text = clipboardUnicodeText();
-            if (!text.empty()) break;
-        }
-        Sleep(10);
+    // selection-hook prefers Ctrl+Insert because it conflicts with fewer
+    // application commands, then falls back to the more widely supported Ctrl+C.
+    sendChord(VK_INSERT);
+    bool copied = waitForClipboardSelection(target, copiedSequence, text, 12);
+    if (!copied && GetForegroundWindow() == target) {
+        text.clear();
+        sendChord('C');
+        copied = waitForClipboardSelection(target, copiedSequence, text, 25);
     }
-    if (GetForegroundWindow() != target) text.clear();
+    if (!copied || GetForegroundWindow() != target) text.clear();
     if (GetClipboardSequenceNumber() == copiedSequence) {
         if (backup) {
-            OleSetClipboard(backup.get());
-            OleFlushClipboard();
-        } else if (OpenClipboard(nullptr)) {
+            if (FAILED(OleSetClipboard(backup.get())) || FAILED(OleFlushClipboard())) {
+                text.clear();
+                result.diagnostics.push_back(L"恢复剪贴板失败，已放弃选区结果。 ");
+            }
+        } else if (clipboardWasEmpty && OpenClipboard(nullptr)) {
             EmptyClipboard();
             CloseClipboard();
         }
@@ -910,16 +1219,46 @@ Result capture(const Request& request) {
     bool sensitive = false;
 
     if (request.selectionOnly) {
+        if (GetForegroundWindow() != target) {
+            result.status = "failed";
+            result.diagnostics.push_back(L"选区读取开始前目标窗口已失去焦点。 ");
+            return result;
+        }
         ComPtr<IUIAutomationElement> focused = focusedElement(target, actualPid, process);
         if (focused && elementIsPassword(focused.get())) {
             result.status = "sensitive";
             result.diagnostics.push_back(L"焦点位于密码控件，已停止选区读取。 ");
             return result;
         }
-        if (focused) readUiaWithAncestors(focused.get(), result, request.maxChars);
+        if (focused) readUiaSelectionWithAncestors(focused.get(), result, request.maxChars);
         if (result.selectedText.empty() && focused) readIa2(focused.get(), result, request.maxChars);
-        if (result.selectedText.empty()) readWin32(target, result, request.maxChars, sensitive);
-        if (result.selectedText.empty()) readMsaa(target, result);
+        if (result.selectedText.empty()
+            && request.hasCursor
+            && pointBelongsToTarget(target, request.cursor)) {
+            ComPtr<IUIAutomationElement> pointed = elementAtPoint(request.cursor, actualPid, process);
+            if (pointed && elementIsPassword(pointed.get())) {
+                result.status = "sensitive";
+                result.diagnostics.push_back(L"鼠标所在 UIA 控件为受保护输入框，已停止选区读取。 ");
+                return result;
+            }
+            if (pointed) readUiaSelectionWithAncestors(pointed.get(), result, request.maxChars);
+            if (result.selectedText.empty()) {
+                ComPtr<IAccessible> accessible = accessibleAtPoint(request.cursor);
+                if (accessible && accessibleIsPassword(accessible.get())) {
+                    result.status = "sensitive";
+                    result.diagnostics.push_back(L"鼠标所在控件为受保护输入框，已停止选区读取。 ");
+                    return result;
+                }
+                if (accessible) readIa2Accessible(accessible.get(), result, request.maxChars, &request.cursor);
+            }
+        }
+        if (result.selectedText.empty()) {
+            const AccessibleSelectionResult msaa = readMsaaSelection(target, result);
+            result.nonTextSelection = msaa == AccessibleSelectionResult::NonText;
+        }
+        if (result.selectedText.empty() && !result.nonTextSelection) {
+            readWin32(target, result, request.maxChars, sensitive);
+        }
         result.focusedText.clear();
         result.caretContext.clear();
         result.visibleText.clear();
@@ -928,8 +1267,20 @@ Result capture(const Request& request) {
             result.status = "sensitive";
             return result;
         }
-        if (result.selectedText.empty() && request.deepClipboard) readClipboardSelection(target, result);
-        enforceBudget(result, request.maxChars);
+        if (result.nonTextSelection) {
+            result.diagnostics.push_back(L"检测到非文本对象选区，已跳过模拟复制。 ");
+        } else if (result.selectedText.empty() && request.deepClipboard) {
+            readClipboardSelection(target, result);
+        }
+        if (result.selectedText.size() > request.maxChars) {
+            size_t limit = request.maxChars;
+            if (limit > 0) {
+                const wchar_t last = result.selectedText[limit - 1];
+                if (last >= 0xD800 && last <= 0xDBFF) --limit;
+            }
+            result.selectedText.resize(limit);
+            result.truncated = true;
+        }
         result.status = result.selectedText.empty() ? "empty" : "captured";
         result.elapsedMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count());
         return result;
@@ -1130,9 +1481,18 @@ int runSelfTests() {
         || !budget.documentText.empty()) return 12;
 
     budget.status = "captured";
+    budget.hasSelectionBounds = true;
+    budget.selectionX = -120.5;
+    budget.selectionY = 48;
+    budget.selectionWidth = 200;
+    budget.selectionHeight = 32;
+    budget.hasSelectionEditable = true;
+    budget.selectionEditable = false;
     const std::string response = serializeResult(budget);
     if (response.find("\"requestId\":42") == std::string::npos
-        || response.find("\"status\":\"captured\"") == std::string::npos) return 13;
+        || response.find("\"status\":\"captured\"") == std::string::npos
+        || response.find("\"selectionBounds\":{\"x\":-120.5") == std::string::npos
+        || response.find("\"selectionEditable\":false") == std::string::npos) return 13;
     return 0;
 }
 

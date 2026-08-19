@@ -589,6 +589,7 @@ pub(crate) struct SelectionSnapshot {
     pub(crate) method: String,
     pub(crate) bounds: Option<SelectionBounds>,
     pub(crate) elapsed_ms: u64,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -642,16 +643,21 @@ pub(crate) async fn capture_selection_internal(
     let state = app.state::<RuntimeState>();
     let handle = state.active_app_context.begin_selection_capture(target);
     let captured = state.active_app_context.resolve_for_dictation(handle).await;
+    let current_target = crate::active_app_context::activation_target()
+        .ok_or_else(|| "选区读取完成前目标窗口已丢失".to_string())?;
+    if !crate::active_app_context::same_activation_target(current_target, target) {
+        return Err("选区读取期间目标窗口已变化，请重新选择文本后再试".into());
+    }
     crate::application::performance::record(
         "selection.capture",
         started.elapsed().as_millis() as u64,
     );
     let secure = captured.status == CaptureStatus::Sensitive;
-    let mut text = captured
-        .selected_text
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let mut truncated = captured.truncated;
+    let mut text = captured.selected_text.unwrap_or_default();
+    if text.trim().is_empty() {
+        text.clear();
+    }
     let mut method = captured
         .source
         .map(|source| format!("{source:?}"))
@@ -659,7 +665,14 @@ pub(crate) async fn capture_selection_internal(
     #[cfg(target_os = "macos")]
     if text.is_empty() && !secure {
         if let Ok(value) = crate::macos_native::copy_selection_text(target.process_id) {
-            text = value.trim().to_string();
+            let (value, was_truncated) =
+                crate::active_app_context::truncate_selection_text(&value);
+            truncated |= was_truncated;
+            text = if value.trim().is_empty() {
+                String::new()
+            } else {
+                value
+            };
             method = "clipboardSelection".into();
         }
     }
@@ -669,11 +682,17 @@ pub(crate) async fn capture_selection_internal(
             app_name: captured.app_name,
             process_name: captured.process_name,
             process_id: target.process_id,
-            editable: !secure,
+            editable: captured.selection_editable.unwrap_or(!secure),
             secure,
             method,
-            bounds: None,
+            bounds: captured.selection_bounds.map(|bounds| SelectionBounds {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+            }),
             elapsed_ms: started.elapsed().as_millis() as u64,
+            truncated,
         },
         target,
     ))
@@ -735,6 +754,11 @@ pub(crate) async fn assistant_start(app: AppHandle, action: AssistantAction) -> 
                     if action == AssistantAction::EditSelection && snapshot.text.is_empty() =>
                 {
                     return Err("请先选中需要修改的文本".into())
+                }
+                Ok((snapshot, _))
+                    if action == AssistantAction::EditSelection && snapshot.truncated =>
+                {
+                    return Err("选中文本过长，为避免只处理部分内容，已停止选区编辑".into())
                 }
                 Ok((snapshot, target)) => (Some(snapshot), Some(target)),
                 Err(error) if action == AssistantAction::Ask => {
@@ -1071,8 +1095,28 @@ async fn verify_selection(app: &AppHandle, request: &AssistantRequest) -> Result
     Ok(
         crate::active_app_context::same_activation_target(current_target, target)
             && current.text == expected.text
+            && selection_bounds_match(current.bounds.as_ref(), expected.bounds.as_ref())
+            && current.editable
             && !current.secure,
     )
+}
+
+fn selection_bounds_match(
+    current: Option<&SelectionBounds>,
+    expected: Option<&SelectionBounds>,
+) -> bool {
+    match (current, expected) {
+        (Some(current), Some(expected)) => {
+            const TOLERANCE: f64 = 3.0;
+            (current.x - expected.x).abs() <= TOLERANCE
+                && (current.y - expected.y).abs() <= TOLERANCE
+                && (current.width - expected.width).abs() <= TOLERANCE
+                && (current.height - expected.height).abs() <= TOLERANCE
+        }
+        // 部分应用只在第一次读取时提供边界；文本与目标窗口仍是必要校验，
+        // 不能因为可选坐标偶发缺失而让所有选区编辑失效。
+        _ => true,
+    }
 }
 
 pub(crate) fn publish_answer(
@@ -1368,5 +1412,30 @@ mod tests {
         let ask = assistant_system_prompt(AssistantAction::Ask, ASK_DIRECT);
         assert!(ask.contains("没有选区时正常回答一般问题"));
         assert!(ask.contains("只能返回一个合法 JSON 对象"));
+    }
+
+    #[test]
+    fn selection_bounds_fingerprint_allows_small_accessibility_jitter() {
+        let expected = SelectionBounds {
+            x: 100.0,
+            y: 200.0,
+            width: 300.0,
+            height: 40.0,
+        };
+        let close = SelectionBounds {
+            x: 102.0,
+            y: 198.0,
+            width: 301.0,
+            height: 42.0,
+        };
+        let moved = SelectionBounds {
+            x: 160.0,
+            y: 200.0,
+            width: 300.0,
+            height: 40.0,
+        };
+        assert!(selection_bounds_match(Some(&close), Some(&expected)));
+        assert!(!selection_bounds_match(Some(&moved), Some(&expected)));
+        assert!(selection_bounds_match(None, Some(&expected)));
     }
 }

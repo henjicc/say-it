@@ -31,8 +31,12 @@ pub(crate) use debug::{
 };
 pub(crate) use model::{
     ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, AppIdentity,
-    CaptureOptions, CaptureStatus, CapturedActiveAppContext, OcrEngineKind,
+    CaptureOptions, CaptureStatus, CapturedActiveAppContext, ContextBounds, OcrEngineKind,
 };
+
+pub(crate) fn truncate_selection_text(value: &str) -> (String, bool) {
+    normalize::truncate_chars(value, model::DEFAULT_MAX_CHARS)
+}
 
 pub(crate) trait ActiveAppContextProvider: Send + Sync + 'static {
     fn capture(

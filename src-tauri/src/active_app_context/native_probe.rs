@@ -50,6 +50,8 @@ struct ProbeResponse {
     visible_text: Vec<String>,
     document_text: Vec<String>,
     diagnostics: Vec<String>,
+    selection_bounds: Option<super::model::ContextBounds>,
+    selection_editable: Option<bool>,
     elapsed_ms: u64,
     truncated: bool,
 }
@@ -282,6 +284,8 @@ pub(crate) fn capture(
     }
     context.source = source(&response.source);
     context.selected_text = (!response.selected_text.is_empty()).then_some(response.selected_text);
+    context.selection_bounds = response.selection_bounds;
+    context.selection_editable = response.selection_editable;
     context.focused_text = (!response.focused_text.is_empty()).then_some(response.focused_text);
     context.caret_context = (!response.caret_context.is_empty()).then_some(response.caret_context);
     context.visible_text = response.visible_text;
@@ -321,5 +325,15 @@ mod tests {
     #[test]
     fn response_rejects_oversized_frames() {
         assert!(MAX_RESPONSE_BYTES < usize::MAX);
+    }
+
+    #[test]
+    fn response_decodes_selection_metadata() {
+        let response: ProbeResponse = serde_json::from_str(
+            r#"{"protocolVersion":1,"requestId":7,"status":"captured","selectedText":"hello","selectionBounds":{"x":-120.5,"y":48,"width":200,"height":32},"selectionEditable":false}"#,
+        )
+        .unwrap();
+        assert_eq!(response.selection_editable, Some(false));
+        assert_eq!(response.selection_bounds.as_ref().map(|value| value.x), Some(-120.5));
     }
 }
