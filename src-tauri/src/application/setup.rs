@@ -1,8 +1,7 @@
 use crate::persistence::save_persisted_state_with_app_settings;
 use crate::state::RuntimeState;
 use serde::Serialize;
-use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 pub(crate) const ONBOARDING_VERSION: u32 = 1;
 
@@ -66,15 +65,14 @@ fn permission_check() -> SetupCheckResult {
     {
         let permissions = crate::macos_native::context_ocr_permissions(false);
         let ready = permissions.accessibility;
-        let message = match (permissions.accessibility, permissions.screen_recording) {
-            (true, true) => "辅助功能与屏幕录制权限均已授予".to_string(),
-            (true, false) => "辅助功能可用；启用窗口 OCR 时还需要屏幕录制权限".to_string(),
-            (false, _) => "需要在系统设置中授予辅助功能权限".to_string(),
+        let message = match permissions.accessibility {
+            true => "文字输入权限已授予".to_string(),
+            false => "需要辅助功能权限，才能把识别文字输入其他软件".to_string(),
         };
         return check(
             "permissions",
             if ready { "ready" } else { "blocked" },
-            "系统权限",
+            "文字输入权限",
             message,
             (!ready).then_some("permissions"),
         );
@@ -206,77 +204,6 @@ fn collect(state: &RuntimeState) -> Vec<SetupCheckResult> {
     checks
 }
 
-fn pcm16_rms(bytes: &[u8]) -> f32 {
-    if bytes.len() < 2 {
-        return 0.0;
-    }
-    let (sum, count) = bytes
-        .chunks_exact(2)
-        .fold((0.0f32, 0usize), |(sum, count), pair| {
-            let value = i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0;
-            (sum + value * value, count + 1)
-        });
-    (sum / count as f32).sqrt()
-}
-
-#[tauri::command]
-pub(crate) fn start_setup_mic_meter(
-    app: AppHandle,
-    state: State<'_, RuntimeState>,
-) -> Result<(), String> {
-    let sample_rate = state
-        .backend_mic
-        .lock()
-        .map_err(|_| "麦克风状态锁失败")?
-        .sample_rate;
-    if sample_rate == 0 {
-        return Err("麦克风尚未启动".to_string());
-    }
-    let params = serde_json::from_value::<crate::audio_dsp::DspParams>(
-        state
-            .app_settings
-            .lock()
-            .map_err(|_| "应用配置锁失败")?
-            .dictation_prefs
-            .clone(),
-    )
-    .map_err(|error| format!("音频处理配置无效：{error}"))?;
-    let (_, mut receiver) = crate::desktop::attach_backend_mic_raw_inner(&state)?;
-    let epoch = state.setup_mic_meter_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-    state.setup_mic_level_bits.store(0, Ordering::Release);
-
-    tauri::async_runtime::spawn(async move {
-        let mut dsp = crate::audio_dsp::StreamDsp::new(params, sample_rate);
-        while let Some(input) = receiver.recv().await {
-            let crate::state::AsrStreamInput::RawF32(samples) = input else {
-                continue;
-            };
-            let state = app.state::<RuntimeState>();
-            if state.setup_mic_meter_epoch.load(Ordering::Acquire) != epoch {
-                break;
-            }
-            let processed = dsp.process(&samples);
-            if !processed.is_empty() {
-                state
-                    .setup_mic_level_bits
-                    .store(pcm16_rms(&processed).to_bits(), Ordering::Release);
-            }
-        }
-    });
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn get_setup_mic_level(state: State<'_, RuntimeState>) -> f32 {
-    f32::from_bits(state.setup_mic_level_bits.load(Ordering::Acquire))
-}
-
-#[tauri::command]
-pub(crate) fn stop_setup_mic_meter(state: State<'_, RuntimeState>) {
-    state.setup_mic_meter_epoch.fetch_add(1, Ordering::AcqRel);
-    state.setup_mic_level_bits.store(0, Ordering::Release);
-}
-
 fn persist_result(
     app: &AppHandle,
     state: &State<'_, RuntimeState>,
@@ -351,29 +278,6 @@ pub(crate) fn request_setup_permissions(
 }
 
 #[tauri::command]
-pub(crate) async fn run_injection_setup_check(
-    app: AppHandle,
-    state: State<'_, RuntimeState>,
-    text: String,
-) -> Result<SetupCheckResult, String> {
-    let marker = if text.trim().is_empty() {
-        "说吧！注入测试".to_string()
-    } else {
-        text
-    };
-    crate::commands::dictation::inject_text_inner(marker, Some("paste".into())).await?;
-    let result = check(
-        "injection",
-        "ready",
-        "文本注入",
-        "测试文本已发送到当前输入框",
-        None,
-    );
-    persist_result(&app, &state, &result)?;
-    Ok(result)
-}
-
-#[tauri::command]
 pub(crate) fn complete_onboarding(
     app: AppHandle,
     state: State<'_, RuntimeState>,
@@ -396,17 +300,4 @@ pub(crate) fn complete_onboarding(
     save_persisted_state_with_app_settings(&app, &state, Some(&next))?;
     *state.app_settings.lock().map_err(|_| "应用配置锁失败")? = next;
     get_setup_status(state)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn processed_pcm_level_uses_normalized_samples() {
-        let samples = [0i16, 16_384, -16_384];
-        let bytes: Vec<u8> = samples.into_iter().flat_map(i16::to_le_bytes).collect();
-        let expected = (0.5f32 / 3.0).sqrt();
-        assert!((pcm16_rms(&bytes) - expected).abs() < 0.0001);
-    }
 }
