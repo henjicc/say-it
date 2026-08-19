@@ -25,6 +25,7 @@ export interface AssistantFeaturePreferences {
   templateTrash: DeletedAssistantPromptTemplate[];
 }
 export interface AssistantPrefs {
+  templateCatalogVersion: number;
   translationEngine: "llm" | "dedicated";
   translationModel: string;
   sourceLanguage: string;
@@ -59,6 +60,7 @@ function defaultFeature(action: AssistantActionKey): AssistantFeaturePreferences
 }
 
 const DEFAULT_PREFS: AssistantPrefs = {
+  templateCatalogVersion: 2,
   translationEngine: "llm", translationModel: "none", sourceLanguage: "auto", targetLanguage: "zh",
   translateSpeech: defaultFeature("translateSpeech"), editSelection: defaultFeature("editSelection"), ask: defaultFeature("ask"),
 };
@@ -98,6 +100,7 @@ export function normalizeAssistantPrefs(value: Record<string, unknown>): Assista
     if (value.answerStyle === "detailed") ask.templates[0].prompt += "\n默认提供较详细的分析。";
   }
   return {
+    templateCatalogVersion: typeof value.templateCatalogVersion === "number" ? value.templateCatalogVersion : 2,
     translationEngine: value.translationEngine === "dedicated" || (!value.translationEngine && typeof value.translationModel === "string" && value.translationModel !== "none") ? "dedicated" : "llm",
     translationModel: typeof value.translationModel === "string" ? value.translationModel : "none",
     sourceLanguage: typeof value.sourceLanguage === "string" ? value.sourceLanguage : "auto",
@@ -176,10 +179,14 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
     const deleted = { recoveryId: crypto.randomUUID(), template: active, deletedAt: Date.now() };
     void updateFeature({ ...feature, activeTemplateId: templates[0].id, templates, templateTrash: [deleted, ...feature.templateTrash].slice(0, 20) });
   };
-  const resetTemplate = () => {
-    const original = builtIns[action].find((item) => item.id === active?.id);
-    if (!original || !window.confirm(`恢复“${active.name}”的内置内容吗？`)) return;
-    void updateFeature({ ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...original } : item) });
+  const resetTemplate = async () => {
+    if (!active || !window.confirm(`恢复“${active.name}”的内置内容吗？`)) return;
+    try {
+      const factory = await cmd<AssistantPrefs>(CMD.getDefaultAssistantPreferences);
+      const original = factory[action].templates.find((item) => item.id === active.id);
+      if (!original) return setMessage("当前模板不是内置模板，无法恢复默认内容");
+      await updateFeature({ ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...original } : item) });
+    } catch (error) { setMessage(`恢复默认模板失败：${String(error)}`); }
   };
   const restore = (entry: DeletedAssistantPromptTemplate) => {
     if (feature.templates.length >= 20) return;
@@ -210,7 +217,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
       </FormGrid>
     </SettingsSection>
 
-    <SettingsSection title="任务模板" right={<div className="flex gap-2"><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={resetTemplate}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></div>}>
+    <SettingsSection title="任务模板" right={<div className="flex gap-2"><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></div>}>
       {action === "translateSpeech" && prefs.translationEngine === "dedicated" && <p className="text-xs text-[var(--color-fg-subtle)]">专用翻译模型不使用任务模板；切回大语言模型后当前模板会继续生效。</p>}
       <FormGrid>
         <Field label="当前模板"><Select value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>

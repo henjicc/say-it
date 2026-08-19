@@ -115,6 +115,7 @@ export const CMD = {
   assistantStop: "assistant_stop",
   assistantCancel: "assistant_cancel",
   previewAssistant: "preview_assistant",
+  getDefaultAssistantPreferences: "get_default_assistant_preferences",
   getAssistantAnswer: "get_assistant_answer",
   insertAssistantAnswer: "insert_assistant_answer",
   regenerateAssistantAnswer: "regenerate_assistant_answer",
