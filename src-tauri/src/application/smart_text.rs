@@ -238,15 +238,49 @@ fn request_timeout(profile: &ProviderProfile) -> Duration {
     }
 }
 
-fn structured_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> ChatOptions {
-    options = options.with_response_format(ChatResponseFormat::JsonMode);
+fn final_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> ChatOptions {
     let model_name = profile_value(profile, "model").to_ascii_lowercase();
-    if profile.kind == "llm:groq" && model_name.contains("qwen3") {
-        // Groq 的 Qwen 3 默认把推理内容放进正文，既会破坏 JSON，又显著增加延迟。
+    if profile.kind == "llm:groq"
+        && model_name.contains("qwen3")
+        && options.reasoning_effort.is_none()
+    {
+        // Groq 的 Qwen 3 默认把推理内容放进正文。智能优化与智能助手都只消费最终
+        // 输出，用户未显式选择推理强度时直接关闭，避免延迟和 <think> 泄漏。
         // reasoning_effort="none" 对应 genai 的 Zero，只针对官方明确支持该值的 Qwen 3。
         options = options.with_reasoning_effort(ReasoningEffort::Zero);
     }
     options
+}
+
+fn structured_output_options(profile: &ProviderProfile, options: ChatOptions) -> ChatOptions {
+    final_output_options(profile, options).with_response_format(ChatResponseFormat::JsonMode)
+}
+
+/// 部分 OpenAI 兼容接口会把模型推理过程塞进 message.content。提示词无法可靠阻止
+/// 这种供应商行为，因此在领域边界只接收标签后的最终正文；只有未闭合思考标签时，
+/// 说明本次生成在得到答案前已被截断，必须失败并让听写链路保留可恢复原文。
+fn final_text_from_output(output: &str) -> Result<String, String> {
+    let mut remaining = output.trim();
+    let mut final_text = String::new();
+
+    while let Some(start) = remaining.find("<think>") {
+        final_text.push_str(&remaining[..start]);
+        let reasoning = &remaining[start + "<think>".len()..];
+        let Some(end) = reasoning.find("</think>") else {
+            return Err(
+                "大语言模型只返回了未完成的思考过程，请关闭该模型的推理或提高最大输出 Token"
+                    .to_string(),
+            );
+        };
+        remaining = &reasoning[end + "</think>".len()..];
+    }
+    final_text.push_str(remaining);
+
+    let final_text = final_text.trim();
+    if final_text.is_empty() || final_text.contains("</think>") {
+        return Err("大语言模型没有返回可用的最终文本".to_string());
+    }
+    Ok(final_text.to_string())
 }
 
 pub(crate) async fn process_smart_text(
@@ -312,10 +346,11 @@ pub(crate) async fn process_prompt(
     let request = ChatRequest::default()
         .with_system(system_prompt)
         .append_message(ChatMessage::user(user_prompt));
-    let mut options = chat_options(&profile)?;
-    if structured_json {
-        options = structured_output_options(&profile, options);
-    }
+    let options = if structured_json {
+        structured_output_options(&profile, chat_options(&profile)?)
+    } else {
+        final_output_options(&profile, chat_options(&profile)?)
+    };
     let request_timeout = request_timeout(&profile);
     let response = timeout(
         request_timeout,
@@ -336,7 +371,7 @@ pub(crate) async fn process_prompt(
             output
         ),
     );
-    Ok(output.to_string())
+    final_text_from_output(output)
 }
 
 #[tauri::command]
@@ -616,5 +651,53 @@ mod tests {
             options.reasoning_effort,
             Some(ReasoningEffort::High)
         ));
+    }
+
+    #[test]
+    fn smart_text_disables_default_groq_qwen3_reasoning() {
+        let mut profile = llm_profile("llm:groq", "auto");
+        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
+        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
+
+        let options = final_output_options(&profile, chat_options(&profile).unwrap());
+
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(ReasoningEffort::Zero)
+        ));
+    }
+
+    #[test]
+    fn smart_text_preserves_explicit_groq_qwen3_reasoning() {
+        let mut profile = llm_profile("llm:groq", "high");
+        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
+        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
+
+        let options = final_output_options(&profile, chat_options(&profile).unwrap());
+
+        assert!(matches!(
+            options.reasoning_effort,
+            Some(ReasoningEffort::High)
+        ));
+    }
+
+    #[test]
+    fn final_text_removes_completed_thinking_block() {
+        assert_eq!(
+            final_text_from_output("<think>内部推理</think>\n整理后的正文").unwrap(),
+            "整理后的正文"
+        );
+    }
+
+    #[test]
+    fn final_text_rejects_unfinished_thinking_block() {
+        let error = final_text_from_output("<think>还在推理，没有最终正文").unwrap_err();
+        assert!(error.contains("未完成的思考过程"));
+    }
+
+    #[test]
+    fn final_text_rejects_thinking_without_final_answer() {
+        let error = final_text_from_output("<think>内部推理</think>").unwrap_err();
+        assert!(error.contains("没有返回可用的最终文本"));
     }
 }

@@ -2,13 +2,14 @@
 
 ## 触发条件
 
-通过 Groq 调用支持推理的 Qwen 3 系列模型，并要求正文返回 JSON。即使提示词明确要求“只返回 JSON”，模型在默认推理模式下仍可能把 `<think>...</think>` 放进 `message.content`，导致解析失败、输出很长且延迟增加。
+通过 Groq 调用支持推理的 Qwen 3 系列模型，并要求正文返回最终文本或 JSON。即使提示词明确要求“只返回结果”，模型在默认推理模式下仍可能把 `<think>...</think>` 放进 `message.content`，导致智能优化直接注入思考过程，或让结构化解析失败；输出也会变长并增加延迟。若生成在 `</think>` 前达到 Token 上限，响应里甚至完全没有最终正文。
 
 ## 正确做法
 
 - 对需要机器解析的助手请求启用 OpenAI 兼容协议的 JSON Object Mode（`response_format.type = json_object`）。
-- 仅对 Groq 明确支持非思考模式的 Qwen 3 系列发送 `reasoning_effort = none`；在 `genai` 中对应 `ReasoningEffort::Zero`。
+- 智能优化和智能助手都只消费最终输出。用户没有显式指定推理强度时，仅对 Groq 明确支持非思考模式的 Qwen 3 系列发送 `reasoning_effort = none`；在 `genai` 中对应 `ReasoningEffort::Zero`。
 - 不要把这一参数无条件发送给其他推理模型。例如 Groq 的 GPT-OSS 使用 `low`、`medium`、`high`，不支持 `none`。
+- Rust 在统一模型边界剥离完整的 `<think>...</think>` 块，并校验最终正文非空。遇到未闭合标签必须判为失败，让听写领域保留原文供用户恢复，禁止把半截思考过程注入目标软件。
 - Rust 仍需校验 JSON、意图枚举和非空正文，不能把供应商的结构化输出保证当作领域校验的替代品。
 - 解析器可以兼容代码围栏或 JSON 前后的少量文字，但这只能用于失败恢复，不能代替请求端的 JSON 模式。
 
