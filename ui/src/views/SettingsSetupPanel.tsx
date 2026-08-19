@@ -3,9 +3,9 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 
 export function SettingsSetupPanel() {
   return (
-    <SettingsSection title="环境体检">
-      <p className="text-xs text-[var(--color-fg-subtle)]">重新检查麦克风、系统权限、识别模型、快捷键和文本注入。</p>
-      <Button onClick={() => window.dispatchEvent(new Event("sayit-open-setup"))}>运行首次使用体检</Button>
+    <SettingsSection title="使用引导">
+      <p className="text-xs text-[var(--color-fg-subtle)]">重新确认识别方式、处理后麦克风音量、系统权限、快捷键和文字输入。</p>
+      <Button onClick={() => window.dispatchEvent(new Event("sayit-open-setup"))}>重新运行使用引导</Button>
     </SettingsSection>
   );
 }

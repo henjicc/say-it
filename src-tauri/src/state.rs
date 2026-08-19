@@ -1,6 +1,6 @@
 use crate::obs_overlay::{ObsOverlayRuntime, ObsOverlaySettings};
 use crate::prelude::*;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 #[derive(Default)]
 pub(crate) struct RuntimeState {
@@ -18,6 +18,10 @@ pub(crate) struct RuntimeState {
     pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
+    /// 首次使用引导里的处理后麦克风电平。f32 以位模式存入，避免音频任务为一个
+    /// 标量频繁争用互斥锁；epoch 用于让已退出引导的旧任务自行停止。
+    pub(crate) setup_mic_level_bits: AtomicU32,
+    pub(crate) setup_mic_meter_epoch: AtomicU64,
     pub(crate) backend_events: crate::application::events::BackendEventHub,
     pub(crate) audio_session: crate::application::audio_session::AudioSessionCoordinator,
     pub(crate) legacy_audio_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
