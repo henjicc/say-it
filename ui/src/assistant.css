@@ -1,0 +1,21 @@
+html,
+body,
+#assistant-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.assistant-answer-window {
+  width: calc(100% - 12px);
+  height: calc(100% - 12px);
+  margin: 6px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-overlay);
+  box-shadow: var(--shadow-popover);
+  /* 未装饰透明窗口不会替我们裁切 WebView，内容层必须负责圆角裁切。 */
+  overflow: hidden;
+}

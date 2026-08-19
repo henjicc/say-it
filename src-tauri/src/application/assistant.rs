@@ -1310,6 +1310,8 @@ fn ensure_answer_window(app: &AppHandle) -> Result<(), String> {
     .min_inner_size(420.0, 280.0)
     .decorations(false)
     .always_on_top(true)
+    .shadow(false)
+    .transparent(true)
     .visible(false)
     .build()
     .map_err(|error| format!("创建智能助手回答窗失败：{error}"))?;
