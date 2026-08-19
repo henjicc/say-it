@@ -2,3 +2,6 @@
 export const DICT_INDICATOR_WINDOW_MAX = 6000;
 export const DICT_INDICATOR_WINDOW_KEEP = 4500;
 export const DICT_INDICATOR_INTERVAL_MS = 140;
+
+export const OFFLINE_MODEL_RELEASE_URL =
+  "https://github.com/henjicc/say-it/releases/tag/models-v1";

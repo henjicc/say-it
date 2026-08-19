@@ -56,8 +56,7 @@ use application::plugin_management::{
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::setup::{
-    complete_onboarding, get_setup_mic_level, get_setup_status, request_setup_permissions,
-    run_injection_setup_check, run_setup_check, start_setup_mic_meter, stop_setup_mic_meter,
+    complete_onboarding, get_setup_status, request_setup_permissions, run_setup_check,
 };
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
@@ -548,10 +547,6 @@ fn main() {
             get_setup_status,
             run_setup_check,
             request_setup_permissions,
-            run_injection_setup_check,
-            start_setup_mic_meter,
-            get_setup_mic_level,
-            stop_setup_mic_meter,
             complete_onboarding,
             capture_current_selection,
             assistant_start,

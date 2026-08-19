@@ -108,10 +108,6 @@ export const CMD = {
   getSetupStatus: "get_setup_status",
   runSetupCheck: "run_setup_check",
   requestSetupPermissions: "request_setup_permissions",
-  runInjectionSetupCheck: "run_injection_setup_check",
-  startSetupMicMeter: "start_setup_mic_meter",
-  getSetupMicLevel: "get_setup_mic_level",
-  stopSetupMicMeter: "stop_setup_mic_meter",
   completeOnboarding: "complete_onboarding",
   captureCurrentSelection: "capture_current_selection",
   assistantStart: "assistant_start",
@@ -226,7 +222,7 @@ export interface HistoryPage {
 }
 
 export interface SetupCheckResult {
-  id: "microphone" | "permissions" | "provider" | "shortcut" | "injection";
+  id: "microphone" | "permissions" | "provider" | "shortcut";
   status: "ready" | "warning" | "blocked";
   title: string;
   message: string;
