@@ -157,9 +157,13 @@ body,
 
 .assistant-voice-wave span {
   width: 2px;
+  height: 22px;
   flex: none;
+  transform: scaleY(0.09);
+  transform-origin: center;
   border-radius: 999px;
   background: var(--color-accent-light);
+  will-change: transform;
 }
 
 .assistant-markdown > :first-child {

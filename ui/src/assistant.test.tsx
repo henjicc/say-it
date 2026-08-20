@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CMD, cmd } from "@/lib/tauri";
-import { AssistantAnswerApp } from "./assistant";
+import { AssistantAnswerApp, buildVoiceWaveTargets, VOICE_WAVE_BAR_COUNT } from "./assistant";
 
 vi.mock("@/lib/tauri", () => ({
   CMD: {
@@ -55,5 +55,14 @@ describe("AssistantAnswerApp", () => {
     const send = await screen.findByRole("button", { name: "结束语音并发送" });
     fireEvent.click(send);
     await waitFor(() => expect(cmd).toHaveBeenCalledWith(CMD.stopAssistantFollowUpVoice));
+  });
+
+  it("builds a fixed symmetric waveform without saturating every bar", () => {
+    const targets = buildVoiceWaveTargets({ level: 1, peaks: [1, 1, 1, 1, 1, 1] });
+    expect(targets).toHaveLength(VOICE_WAVE_BAR_COUNT);
+    expect(Math.max(...targets)).toBeLessThan(0.85);
+    for (let index = 0; index < targets.length; index += 1) {
+      expect(targets[index]).toBeCloseTo(targets[targets.length - 1 - index], 6);
+    }
   });
 });
