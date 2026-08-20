@@ -1,6 +1,7 @@
 use crate::active_app_context::{ActivationTarget, AppIdentity, CaptureStatus};
 use crate::state::RuntimeState;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -8,9 +9,18 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tokio_util::sync::CancellationToken;
 
 pub(crate) const ANSWER_WINDOW_LABEL: &str = "assistant-answer";
 pub(crate) const ANSWER_EVENT: &str = "assistant-answer-changed";
+pub(crate) const ANSWER_VOICE_EVENT: &str = "assistant-answer-voice-input";
+pub(crate) const ANSWER_WAVEFORM_EVENT: &str = "assistant-answer-waveform";
+const MAX_CONVERSATION_TURNS: usize = 10;
+const ANSWER_CONTENT_WIDTH: f64 = 560.0;
+const ANSWER_CONTENT_HEIGHT: f64 = 420.0;
+const ANSWER_SHADOW_GUTTER: f64 = 40.0;
+const ANSWER_WINDOW_WIDTH: f64 = ANSWER_CONTENT_WIDTH + ANSWER_SHADOW_GUTTER * 2.0;
+const ANSWER_WINDOW_HEIGHT: f64 = ANSWER_CONTENT_HEIGHT + ANSWER_SHADOW_GUTTER * 2.0;
 static REGISTERED_SHORTCUTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -205,6 +215,7 @@ fn request_shortcut(app: AppHandle, action: AssistantAction, target: Option<Acti
                     target: None,
                     identity: None,
                     started_at: Instant::now(),
+                    follow_up: false,
                 },
                 String::new(),
                 Some(error),
@@ -668,6 +679,8 @@ pub(crate) struct AssistantRequest {
     pub(crate) target: Option<ActivationTarget>,
     pub(crate) identity: Option<AppIdentity>,
     pub(crate) started_at: Instant,
+    /// 来自回答窗内的语音追问，复用听写 ASR 链路但不展示全局指示窗。
+    pub(crate) follow_up: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -680,6 +693,7 @@ pub(crate) struct AssistantAnswer {
     pub(crate) error: Option<String>,
     pub(crate) can_insert: bool,
     pub(crate) streaming: bool,
+    pub(crate) pinned: bool,
 }
 
 #[derive(Default)]
@@ -687,12 +701,103 @@ pub(crate) struct AssistantRuntime {
     answer: Mutex<AssistantAnswer>,
     answer_target: Mutex<Option<ActivationTarget>>,
     regeneration: Mutex<Option<RegenerationContext>>,
+    conversation: Mutex<Option<AssistantConversation>>,
+    generation: Mutex<Option<CancellationToken>>,
+    pinned: AtomicBool,
 }
 
 #[derive(Clone, Debug)]
 struct RegenerationContext {
     request: AssistantRequest,
     spoken_text: String,
+    prior_turns: Vec<crate::application::smart_text::PromptConversationTurn>,
+}
+
+#[derive(Clone, Debug)]
+struct AssistantConversation {
+    request: AssistantRequest,
+    turns: VecDeque<crate::application::smart_text::PromptConversationTurn>,
+}
+
+impl AssistantRuntime {
+    fn begin_generation(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        if let Ok(mut current) = self.generation.lock() {
+            if let Some(previous) = current.replace(token.clone()) {
+                previous.cancel();
+            }
+        }
+        token
+    }
+
+    fn cancel_generation(&self) {
+        if let Ok(mut current) = self.generation.lock() {
+            if let Some(token) = current.take() {
+                token.cancel();
+            }
+        }
+    }
+}
+
+fn conversation_turns(
+    state: &RuntimeState,
+    request: &AssistantRequest,
+) -> Vec<crate::application::smart_text::PromptConversationTurn> {
+    if !request.follow_up {
+        return Vec::new();
+    }
+    state
+        .assistant_runtime
+        .conversation
+        .lock()
+        .ok()
+        .and_then(|conversation| conversation.as_ref().map(|value| value.turns.clone()))
+        .map(Vec::from)
+        .unwrap_or_default()
+}
+
+fn remember_conversation_turn(
+    state: &RuntimeState,
+    request: &AssistantRequest,
+    spoken_text: &str,
+    user_payload: String,
+    assistant_text: String,
+    prior_turns: Vec<crate::application::smart_text::PromptConversationTurn>,
+) {
+    let mut turns = VecDeque::from(prior_turns.clone());
+    push_conversation_turn(
+        &mut turns,
+        crate::application::smart_text::PromptConversationTurn {
+            user: user_payload,
+            assistant: assistant_text,
+        },
+    );
+
+    let mut base_request = request.clone();
+    base_request.follow_up = false;
+    if let Ok(mut conversation) = state.assistant_runtime.conversation.lock() {
+        *conversation = Some(AssistantConversation {
+            request: base_request,
+            turns,
+        });
+    }
+    if let Ok(mut regeneration) = state.assistant_runtime.regeneration.lock() {
+        *regeneration = Some(RegenerationContext {
+            request: request.clone(),
+            spoken_text: spoken_text.to_string(),
+            prior_turns,
+        });
+    }
+}
+
+fn push_conversation_turn(
+    turns: &mut VecDeque<crate::application::smart_text::PromptConversationTurn>,
+    turn: crate::application::smart_text::PromptConversationTurn,
+) {
+    turns.push_back(turn);
+    while turns.len() > MAX_CONVERSATION_TURNS {
+        turns.pop_front();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -877,6 +982,7 @@ async fn assistant_start_for_target(
             target,
             identity,
             started_at: Instant::now(),
+            follow_up: false,
         },
     )
     .await
@@ -898,11 +1004,8 @@ pub(crate) async fn process(
     request: &AssistantRequest,
     spoken_text: &str,
 ) -> Result<ProcessedAssistant, String> {
-    if let Ok(mut current) = state.assistant_runtime.regeneration.lock() {
-        *current = Some(RegenerationContext {
-            request: request.clone(),
-            spoken_text: spoken_text.to_string(),
-        });
+    if request.follow_up {
+        publish_follow_up_voice_input(app, false, spoken_text);
     }
     let prefs = preferences_from_value(
         &state
@@ -911,6 +1014,15 @@ pub(crate) async fn process(
             .map_err(|_| "应用配置锁失败")?
             .assistant_prefs,
     )?;
+    if request.action != AssistantAction::Ask {
+        if let Ok(mut current) = state.assistant_runtime.regeneration.lock() {
+            *current = Some(RegenerationContext {
+                request: request.clone(),
+                spoken_text: spoken_text.to_string(),
+                prior_turns: Vec::new(),
+            });
+        }
+    }
     match request.action {
         AssistantAction::TranslateSpeech => {
             let output = if prefs.translation_engine == "dedicated" {
@@ -973,7 +1085,9 @@ pub(crate) async fn process(
                 .as_ref()
                 .map(|selection| selection.app_name.as_str())
                 .unwrap_or("");
-            let (output, reasoning) = process_ask_action(
+            let prior_turns = conversation_turns(state, request);
+            let cancellation = state.assistant_runtime.begin_generation();
+            let (output, reasoning, user_payload) = process_ask_action(
                 app,
                 state,
                 context,
@@ -981,8 +1095,21 @@ pub(crate) async fn process(
                 app_name,
                 &prefs,
                 request,
+                &prior_turns,
+                cancellation.clone(),
             )
             .await?;
+            if cancellation.is_cancelled() {
+                return Err("大语言模型请求已取消".into());
+            }
+            remember_conversation_turn(
+                state,
+                request,
+                spoken_text,
+                user_payload,
+                output.clone(),
+                prior_turns,
+            );
             Ok(ProcessedAssistant {
                 output,
                 reasoning,
@@ -1179,7 +1306,9 @@ async fn process_ask_action(
     app_name: &str,
     prefs: &AssistantPreferences,
     request: &AssistantRequest,
-) -> Result<(String, String), String> {
+    history: &[crate::application::smart_text::PromptConversationTurn],
+    cancellation: CancellationToken,
+) -> Result<(String, String, String), String> {
     if spoken_text.trim().is_empty() {
         return Err("没有识别到语音指令".into());
     }
@@ -1196,24 +1325,161 @@ async fn process_ask_action(
         "targetLanguage": prefs.target_language,
         "confirmedCorrections": corrections,
     });
+    let user_payload = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
     let (raw, reasoning) = crate::application::smart_text::process_prompt_stream(
         state,
         &assistant_system_prompt(AssistantAction::Ask, &selected_template.prompt),
-        &serde_json::to_string(&payload).map_err(|error| error.to_string())?,
+        &user_payload,
         Some(&feature.llm_provider_id),
         Some(&feature.llm_model),
         "assistant",
         "high",
         true,
+        history,
+        cancellation.clone(),
         |partial, reasoning| {
-            if partial.trim().is_empty() && reasoning.trim().is_empty() {
+            if cancellation.is_cancelled()
+                || (partial.trim().is_empty() && reasoning.trim().is_empty())
+            {
                 return;
             }
             publish_answer_progress(app, request, partial.to_string(), reasoning.to_string());
         },
     )
     .await?;
-    Ok((parse_assistant_answer_output(&raw)?, reasoning))
+    Ok((
+        parse_assistant_answer_output(&raw)?,
+        reasoning,
+        user_payload,
+    ))
+}
+
+fn current_conversation(state: &RuntimeState) -> Result<AssistantConversation, String> {
+    state
+        .assistant_runtime
+        .conversation
+        .lock()
+        .map_err(|_| "问答上下文状态锁失败")?
+        .clone()
+        .ok_or_else(|| "当前回答没有可追问的上下文".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn continue_assistant_answer(
+    app: AppHandle,
+    prompt: String,
+) -> Result<(), String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("请先输入要追问的内容".into());
+    }
+    if prompt.chars().count() > 8_000 {
+        return Err("单次追问不能超过 8000 个字符".into());
+    }
+    let state = app.state::<RuntimeState>();
+    let conversation = current_conversation(&state)?;
+    let prior_turns = Vec::from(conversation.turns);
+    let mut request = conversation.request;
+    request.follow_up = true;
+    request.started_at = Instant::now();
+    let selected_text = request
+        .selection
+        .as_ref()
+        .map(|selection| selection.text.clone())
+        .unwrap_or_default();
+    let app_name = request
+        .selection
+        .as_ref()
+        .map(|selection| selection.app_name.clone())
+        .unwrap_or_default();
+    let prefs = preferences_from_value(
+        &state
+            .app_settings
+            .lock()
+            .map_err(|_| "应用配置锁失败")?
+            .assistant_prefs,
+    )?;
+    let cancellation = state.assistant_runtime.begin_generation();
+    publish_answer_progress(&app, &request, String::new(), String::new());
+    let result = process_ask_action(
+        &app,
+        &state,
+        &selected_text,
+        prompt,
+        &app_name,
+        &prefs,
+        &request,
+        &prior_turns,
+        cancellation.clone(),
+    )
+    .await;
+    match result {
+        Ok((output, reasoning, user_payload)) if !cancellation.is_cancelled() => {
+            remember_conversation_turn(
+                &state,
+                &request,
+                prompt,
+                user_payload,
+                output.clone(),
+                prior_turns,
+            );
+            publish_answer_with_reasoning(&app, &request, output, reasoning, None, true);
+            Ok(())
+        }
+        Ok(_) => Err("大语言模型请求已取消".into()),
+        Err(error) if cancellation.is_cancelled() => Err(error),
+        Err(error) => {
+            publish_answer(&app, &request, String::new(), Some(error.clone()), false);
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn start_assistant_follow_up_voice(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<RuntimeState>();
+    if state
+        .assistant_runtime
+        .answer
+        .lock()
+        .map_err(|_| "回答状态锁失败")?
+        .streaming
+    {
+        return Err("请等当前回答完成后再开始语音追问".into());
+    }
+    let conversation = current_conversation(&state)?;
+    let mut request = conversation.request;
+    request.follow_up = true;
+    request.started_at = Instant::now();
+    drop(state);
+    crate::application::dictation::start_assistant(app.clone(), request).await?;
+    publish_follow_up_voice_input(&app, true, "");
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn stop_assistant_follow_up_voice(app: AppHandle) -> Result<(), String> {
+    crate::application::dictation::stop_assistant_follow_up(app.clone()).await?;
+    publish_follow_up_voice_input(&app, false, "");
+    Ok(())
+}
+
+pub(crate) fn publish_follow_up_voice_input(app: &AppHandle, active: bool, text: &str) {
+    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        let _ = window.emit(
+            ANSWER_VOICE_EVENT,
+            serde_json::json!({"active": active, "text": text}),
+        );
+    }
+}
+
+pub(crate) fn publish_follow_up_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
+    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        let _ = window.emit(
+            ANSWER_WAVEFORM_EVENT,
+            serde_json::json!({"active": true, "level": level, "peaks": peaks}),
+        );
+    }
 }
 
 #[tauri::command]
@@ -1327,6 +1593,11 @@ fn publish_answer_details(
     can_insert: bool,
     streaming: bool,
 ) {
+    let pinned = app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .pinned
+        .load(Ordering::Acquire);
     let answer = AssistantAnswer {
         action: Some(request.action),
         text: output,
@@ -1339,6 +1610,7 @@ fn publish_answer_details(
         error,
         can_insert,
         streaming,
+        pinned,
     };
     if let Ok(mut current) = app.state::<RuntimeState>().assistant_runtime.answer.lock() {
         *current = answer.clone();
@@ -1353,6 +1625,8 @@ fn publish_answer_details(
     }
     let _ = ensure_answer_window(app);
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        let should_focus =
+            !window.is_visible().unwrap_or(false) && (answer.error.is_none() || can_insert);
         position_answer_window(
             app,
             &window,
@@ -1362,9 +1636,9 @@ fn publish_answer_details(
                 .and_then(|selection| selection.bounds.as_ref()),
         );
         let _ = window.show();
-        // 启动阶段的“未读取到选区”等错误只提示，不把焦点从用户正在操作的
-        // 应用抢回来说吧；已有可恢复结果时仍聚焦回答窗，方便复制或重试。
-        if !streaming && (answer.error.is_none() || can_insert) {
+        // 正常回答从出现起就取得焦点，后续的失焦事件才能可靠触发关闭与取消；
+        // 启动阶段的“未读取到选区”等错误仍只提示，不抢占用户当前应用。
+        if should_focus {
             let _ = window.set_focus();
         }
         let _ = window.emit(ANSWER_EVENT, answer);
@@ -1391,8 +1665,8 @@ fn position_answer_window(
     let top = f64::from(area.y);
     let right = left + f64::from(size.width);
     let bottom = top + f64::from(size.height);
-    let width = 560.0;
-    let height = 420.0;
+    let width = ANSWER_WINDOW_WIDTH;
+    let height = ANSWER_WINDOW_HEIGHT;
     let x = (anchor_x + 16.0).min(right - width - 12.0).max(left + 12.0);
     let preferred_y = anchor_y + 16.0;
     let y = if preferred_y + height <= bottom - 12.0 {
@@ -1410,21 +1684,44 @@ fn ensure_answer_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window(ANSWER_WINDOW_LABEL).is_some() {
         return Ok(());
     }
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         ANSWER_WINDOW_LABEL,
         WebviewUrl::App("assistant.html".into()),
     )
     .title("说吧！智能助手")
-    .inner_size(560.0, 420.0)
-    .min_inner_size(420.0, 280.0)
+    .inner_size(ANSWER_WINDOW_WIDTH, ANSWER_WINDOW_HEIGHT)
+    .min_inner_size(
+        420.0 + ANSWER_SHADOW_GUTTER * 2.0,
+        280.0 + ANSWER_SHADOW_GUTTER * 2.0,
+    )
     .decorations(false)
-    .always_on_top(true)
+    .always_on_top(false)
     .shadow(false)
     .transparent(true)
     .visible(false)
     .build()
     .map_err(|error| format!("创建智能助手回答窗失败：{error}"))?;
+    let app_handle = app.clone();
+    window.on_window_event(move |event| {
+        if !matches!(event, tauri::WindowEvent::Focused(false))
+            || app_handle
+                .state::<RuntimeState>()
+                .assistant_runtime
+                .pinned
+                .load(Ordering::Acquire)
+            || !app_handle
+                .get_webview_window(ANSWER_WINDOW_LABEL)
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let app = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = close_assistant_answer_inner(app).await;
+        });
+    });
     Ok(())
 }
 
@@ -1438,6 +1735,36 @@ pub(crate) fn get_assistant_answer(
         .lock()
         .map(|answer| answer.clone())
         .map_err(|_| "回答状态锁失败".into())
+}
+
+#[tauri::command]
+pub(crate) fn set_assistant_answer_pinned(
+    app: AppHandle,
+    pinned: bool,
+) -> Result<AssistantAnswer, String> {
+    let state = app.state::<RuntimeState>();
+    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        window
+            .set_always_on_top(pinned)
+            .map_err(|error| format!("设置回答窗置顶状态失败：{error}"))?;
+    }
+    state
+        .assistant_runtime
+        .pinned
+        .store(pinned, Ordering::Release);
+    let answer = {
+        let mut answer = state
+            .assistant_runtime
+            .answer
+            .lock()
+            .map_err(|_| "回答状态锁失败")?;
+        answer.pinned = pinned;
+        answer.clone()
+    };
+    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        let _ = window.emit(ANSWER_EVENT, answer.clone());
+    }
+    Ok(answer)
 }
 
 #[tauri::command]
@@ -1478,6 +1805,74 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
         .clone()
         .ok_or_else(|| "当前回答没有可重新生成的上下文".to_string())?;
     let state = app.state::<RuntimeState>();
+    if context.request.action == AssistantAction::Ask {
+        let selected_text = context
+            .request
+            .selection
+            .as_ref()
+            .map(|selection| selection.text.clone())
+            .unwrap_or_default();
+        let app_name = context
+            .request
+            .selection
+            .as_ref()
+            .map(|selection| selection.app_name.clone())
+            .unwrap_or_default();
+        let prefs = preferences_from_value(
+            &state
+                .app_settings
+                .lock()
+                .map_err(|_| "应用配置锁失败")?
+                .assistant_prefs,
+        )?;
+        let cancellation = state.assistant_runtime.begin_generation();
+        publish_answer_progress(&app, &context.request, String::new(), String::new());
+        let result = process_ask_action(
+            &app,
+            &state,
+            &selected_text,
+            &context.spoken_text,
+            &app_name,
+            &prefs,
+            &context.request,
+            &context.prior_turns,
+            cancellation.clone(),
+        )
+        .await;
+        return match result {
+            Ok((output, reasoning, user_payload)) if !cancellation.is_cancelled() => {
+                remember_conversation_turn(
+                    &state,
+                    &context.request,
+                    &context.spoken_text,
+                    user_payload,
+                    output.clone(),
+                    context.prior_turns,
+                );
+                publish_answer_with_reasoning(
+                    &app,
+                    &context.request,
+                    output,
+                    reasoning,
+                    None,
+                    true,
+                );
+                Ok(())
+            }
+            Ok(_) => Err("大语言模型请求已取消".into()),
+            Err(error) if cancellation.is_cancelled() => Err(error),
+            Err(error) => {
+                publish_answer(
+                    &app,
+                    &context.request,
+                    String::new(),
+                    Some(error.clone()),
+                    false,
+                );
+                Err(error)
+            }
+        };
+    }
     match process(&app, &state, &context.request, &context.spoken_text).await {
         Ok(processed) => {
             publish_answer_with_reasoning(
@@ -1503,17 +1898,61 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
     }
 }
 
-#[tauri::command]
-pub(crate) fn close_assistant_answer(app: AppHandle) -> Result<(), String> {
+async fn close_assistant_answer_inner(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<RuntimeState>();
+    state.assistant_runtime.cancel_generation();
+    state
+        .assistant_runtime
+        .pinned
+        .store(false, Ordering::Release);
+    if let Ok(mut conversation) = state.assistant_runtime.conversation.lock() {
+        *conversation = None;
+    }
+    if let Ok(mut regeneration) = state.assistant_runtime.regeneration.lock() {
+        *regeneration = None;
+    }
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+        let _ = window.set_always_on_top(false);
         window.hide().map_err(|error| error.to_string())?;
     }
+    publish_follow_up_voice_input(&app, false, "");
+    crate::application::dictation::cancel_assistant_if_active(app).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn close_assistant_answer(app: AppHandle) -> Result<(), String> {
+    close_assistant_answer_inner(app).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_keeps_only_the_latest_ten_turns() {
+        let mut turns = VecDeque::new();
+        for index in 0..12 {
+            push_conversation_turn(
+                &mut turns,
+                crate::application::smart_text::PromptConversationTurn {
+                    user: format!("user-{index}"),
+                    assistant: format!("assistant-{index}"),
+                },
+            );
+        }
+        assert_eq!(turns.len(), MAX_CONVERSATION_TURNS);
+        assert_eq!(turns.front().map(|turn| turn.user.as_str()), Some("user-2"));
+        assert_eq!(turns.back().map(|turn| turn.user.as_str()), Some("user-11"));
+    }
+
+    #[test]
+    fn closing_runtime_cancels_the_active_generation() {
+        let runtime = AssistantRuntime::default();
+        let cancellation = runtime.begin_generation();
+        runtime.cancel_generation();
+        assert!(cancellation.is_cancelled());
+    }
 
     #[test]
     fn legacy_assistant_shortcut_defaults_to_toggle_trigger() {

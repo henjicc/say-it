@@ -688,6 +688,38 @@ pub(crate) async fn start_assistant(
     start_internal(app, request.target, None, Some(request)).await
 }
 
+pub(crate) async fn stop_assistant_follow_up(app: AppHandle) -> Result<(), String> {
+    let is_follow_up = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?
+        .assistant_request
+        .as_ref()
+        .is_some_and(|request| request.follow_up);
+    if !is_follow_up {
+        return Err("当前没有正在识别的语音追问".into());
+    }
+    stop(app).await
+}
+
+pub(crate) async fn cancel_assistant_if_active(app: AppHandle) -> Result<(), String> {
+    let active = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?
+        .assistant_request
+        .is_some();
+    if active {
+        cancel(app).await
+    } else {
+        Ok(())
+    }
+}
+
 async fn start_internal(
     app: AppHandle,
     activation_target: Option<crate::active_app_context::ActivationTarget>,
@@ -695,6 +727,9 @@ async fn start_internal(
     assistant_request: Option<crate::application::assistant::AssistantRequest>,
 ) -> Result<(), String> {
     let start_requested_at = Instant::now();
+    let inline_follow_up = assistant_request
+        .as_ref()
+        .is_some_and(|request| request.follow_up);
     let activation_target = activation_target.or_else(crate::active_app_context::activation_target);
     let history_allowed = activation_target
         .and_then(|target| crate::active_app_context::target_is_sensitive(target).ok())
@@ -709,6 +744,9 @@ async fn start_internal(
         .map_err(|_| "听写状态锁失败")?
         .phase;
     if !matches!(phase, DictationPhase::Idle | DictationPhase::Failed) {
+        if inline_follow_up {
+            return Err("当前有其他语音识别任务正在进行".into());
+        }
         return Ok(());
     }
     let prefs_value = state
@@ -900,14 +938,16 @@ async fn start_internal(
         }
     }
     let _ = prepare_dictation_indicator(&app);
-    let _ = crate::desktop::set_indicator_layout(
-        app.clone(),
-        Some(460.0),
-        Some(188.0),
-        Some("bottom".into()),
-        Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
-    );
-    let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
+    if !inline_follow_up {
+        let _ = crate::desktop::set_indicator_layout(
+            app.clone(),
+            Some(460.0),
+            Some(188.0),
+            Some("bottom".into()),
+            Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
+        );
+        let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
+    }
     crate::application::performance::record(
         "dictation.request_to_recording",
         start_requested_at.elapsed().as_millis() as u64,
@@ -1007,17 +1047,27 @@ fn spawn_raw_consumer(
                         need_close = true;
                     }
                 }
-                let waveform_config =
-                    should_show_waveform(s.mode).then(|| (s.prefs.dsp.clone(), s.sample_rate));
+                let assistant_follow_up = s
+                    .assistant_request
+                    .as_ref()
+                    .is_some_and(|request| request.follow_up);
+                let waveform_config = should_show_waveform(s.mode, assistant_follow_up)
+                    .then(|| (s.prefs.dsp.clone(), s.sample_rate, assistant_follow_up));
                 (need_open, need_close, waveform_config)
             };
-            if let Some((params, sample_rate)) = waveform_config {
+            if let Some((params, sample_rate, assistant_follow_up)) = waveform_config {
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
                 let processed = pcm16le_to_f32(&dsp.process(&samples));
                 if !processed.is_empty() {
                     let level = rms(&processed);
                     let peaks = summarize_peaks(&processed, 6);
-                    emit_waveform(&app, level, peaks);
+                    if assistant_follow_up {
+                        crate::application::assistant::publish_follow_up_waveform(
+                            &app, level, peaks,
+                        );
+                    } else {
+                        emit_waveform(&app, level, peaks);
+                    }
                 }
             }
             if need_close {
@@ -1135,7 +1185,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (epoch, mode, session_id, rate, prefs, raw_done, audio_generation) = {
+    let (epoch, mode, session_id, rate, prefs, raw_done, audio_generation, inline_follow_up) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1160,6 +1210,9 @@ async fn stop(app: AppHandle) -> Result<(), String> {
             s.prefs.clone(),
             s.raw_done.clone(),
             s.lease.as_ref().map(|v| v.generation).unwrap_or(0),
+            s.assistant_request
+                .as_ref()
+                .is_some_and(|request| request.follow_up),
         )
     };
     pause_backend_mic_inner(&state)?;
@@ -1180,7 +1233,9 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         schedule_release(app.clone(), epoch, audio_generation, prefs.keep_alive_ms);
     }
     publish_state(&app, None);
-    let _ = crate::desktop::set_indicator_state(app.clone(), "processing".into());
+    if !inline_follow_up {
+        let _ = crate::desktop::set_indicator_state(app.clone(), "processing".into());
+    }
     let result = match mode {
         Some(DictationMode::Realtime) => {
             if let Some(id) = session_id {
@@ -1300,6 +1355,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.error = None;
         s.pending_fallback = None;
         s.activation_target = None;
+        s.assistant_request = None;
         ids
     };
     if let Some(cancellation) = active_app_context_cancellation {
@@ -1392,6 +1448,30 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
             None
         },
     );
+    let follow_up_voice = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .ok()
+        .and_then(|session| {
+            session
+                .assistant_request
+                .as_ref()
+                .filter(|request| request.follow_up)
+                .map(|_| {
+                    (
+                        matches!(
+                            session.phase,
+                            DictationPhase::Recording | DictationPhase::WaitingForVoice
+                        ),
+                        format!("{}{}", session.committed, session.segment),
+                    )
+                })
+        });
+    if let Some((active, text)) = follow_up_voice {
+        crate::application::assistant::publish_follow_up_voice_input(&app, active, &text);
+    }
     if let Some(epoch) = finalize_epoch {
         finalize(app, epoch).await;
     }
@@ -1594,7 +1674,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
         publish_state(&app, None);
         // ASR 已经结束；无论是普通听写的智能优化，还是智能助手任务，
         // 后续都统一投影为“处理中”，避免模型调用期间仍误显示“识别中”。
-        if assistant_request.is_some() || should_process_smart_text {
+        if (assistant_request.is_some() || should_process_smart_text)
+            && !assistant_request
+                .as_ref()
+                .is_some_and(|request| request.follow_up)
+        {
             let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
         }
     }
@@ -1660,6 +1744,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
         match crate::application::assistant::process(&app, &state, request, &text).await {
             Ok(value) => Some(value),
             Err(error) => {
+                if !finalize_session_is_current(
+                    &state,
+                    epoch,
+                    active_app_context_cancellation.as_ref(),
+                ) {
+                    cleanup_stale_finalize(&state, lease, temp_path);
+                    return;
+                }
                 if let Some(lease) = &lease {
                     let _ = state.audio_session.release(lease);
                 }
@@ -1956,7 +2048,10 @@ async fn finalize(app: AppHandle, epoch: u64) {
         &app,
         None,
         processed,
-        should_show_final_text_in_indicator(mode),
+        should_show_final_text_in_indicator(mode)
+            && !assistant_request
+                .as_ref()
+                .is_some_and(|request| request.follow_up),
     );
 }
 
@@ -2247,8 +2342,8 @@ fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
     }
 }
 
-fn should_show_waveform(mode: Option<DictationMode>) -> bool {
-    mode == Some(DictationMode::File)
+fn should_show_waveform(mode: Option<DictationMode>, assistant_follow_up: bool) -> bool {
+    assistant_follow_up || mode == Some(DictationMode::File)
 }
 
 fn should_show_final_text_in_indicator(mode: Option<DictationMode>) -> bool {
@@ -3258,10 +3353,11 @@ mod tests {
     }
 
     #[test]
-    fn waveform_is_reserved_for_file_dictation() {
-        assert!(should_show_waveform(Some(DictationMode::File)));
-        assert!(!should_show_waveform(Some(DictationMode::Realtime)));
-        assert!(!should_show_waveform(None));
+    fn waveform_is_shown_for_file_dictation_and_inline_voice_follow_up() {
+        assert!(should_show_waveform(Some(DictationMode::File), false));
+        assert!(should_show_waveform(Some(DictationMode::Realtime), true));
+        assert!(!should_show_waveform(Some(DictationMode::Realtime), false));
+        assert!(!should_show_waveform(None, false));
     }
     #[test]
     fn file_dictation_never_projects_final_text_to_indicator() {
