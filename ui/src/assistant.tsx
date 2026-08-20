@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Copy, CornerDownLeft, Mic, Pin, RefreshCw, SendHorizontal, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -30,6 +30,32 @@ interface VoiceWaveform {
   peaks: number[];
 }
 
+export const VOICE_WAVE_BAR_COUNT = 28;
+const VOICE_WAVE_MAX_AMPLITUDE = 0.82;
+const VOICE_WAVE_MIN_SCALE = 0.09;
+
+function normalizeVoiceAmplitude(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const db = 20 * Math.log10(Math.max(value, 0.00001));
+  if (db <= -48) return 0;
+  const normalized = Math.min(1, (db + 48) / 40);
+  return Math.min(VOICE_WAVE_MAX_AMPLITUDE, Math.pow(normalized, 1.65) * VOICE_WAVE_MAX_AMPLITUDE);
+}
+
+export function buildVoiceWaveTargets(frame: Pick<VoiceWaveform, "level" | "peaks">) {
+  const level = normalizeVoiceAmplitude(frame.level);
+  const source = frame.peaks.length > 0 ? frame.peaks : [frame.level];
+  return Array.from({ length: VOICE_WAVE_BAR_COUNT }, (_, index) => {
+    // 固定柱位并左右镜像：每一帧只改变原地高度，不累积历史，也不会产生横向滚动感。
+    const distance = Math.abs(index - (VOICE_WAVE_BAR_COUNT - 1) / 2)
+      / ((VOICE_WAVE_BAR_COUNT - 1) / 2);
+    const sourceIndex = Math.round(distance * (source.length - 1));
+    const local = normalizeVoiceAmplitude(source[sourceIndex] ?? frame.level);
+    const envelope = 1 - distance * 0.38;
+    return Math.min(VOICE_WAVE_MAX_AMPLITUDE, (level * 0.68 + local * 0.32) * envelope);
+  });
+}
+
 const EMPTY_ANSWER: Answer = {
   text: "",
   reasoning: "",
@@ -45,13 +71,43 @@ function SafeMarkdown({ text }: { text: string }) {
   </div>;
 }
 
-function VoiceWave({ values }: { values: number[] }) {
-  const samples = values.length > 0 ? values : Array.from({ length: 30 }, () => 0.025);
+function VoiceWave({ frame }: { frame: VoiceWaveform }) {
+  const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const targetsRef = useRef<number[]>(Array(VOICE_WAVE_BAR_COUNT).fill(0));
+
+  useEffect(() => {
+    targetsRef.current = buildVoiceWaveTargets(frame);
+  }, [frame]);
+
+  useEffect(() => {
+    const current = Array(VOICE_WAVE_BAR_COUNT).fill(0) as number[];
+    let animationFrame = 0;
+    let previousTime = performance.now();
+    const animate = (time: number) => {
+      const elapsed = Math.min(50, Math.max(1, time - previousTime));
+      previousTime = time;
+      for (let index = 0; index < VOICE_WAVE_BAR_COUNT; index += 1) {
+        const target = targetsRef.current[index] ?? 0;
+        const timeConstant = target > current[index] ? 58 : 135;
+        const blend = 1 - Math.exp(-elapsed / timeConstant);
+        current[index] += (target - current[index]) * blend;
+        const scale = VOICE_WAVE_MIN_SCALE + current[index] * (1 - VOICE_WAVE_MIN_SCALE);
+        const bar = barsRef.current[index];
+        if (bar && Math.abs(Number(bar.dataset.scale || 0) - scale) > 0.002) {
+          bar.dataset.scale = String(scale);
+          bar.style.transform = `scaleY(${scale})`;
+        }
+      }
+      animationFrame = requestAnimationFrame(animate);
+    };
+    animationFrame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrame);
+  }, []);
+
   return <div className="assistant-voice-wave" role="img" aria-label="正在接收语音">
-    {samples.map((value, index) => <span
-      // 波形是短生命周期的实时采样序列，序号就是稳定位置。
+    {Array.from({ length: VOICE_WAVE_BAR_COUNT }, (_, index) => <span
       key={index}
-      style={{ height: `${Math.max(2, Math.min(22, value * 54))}px` }}
+      ref={(node) => { barsRef.current[index] = node; }}
     />)}
   </div>;
 }
@@ -62,7 +118,7 @@ export function AssistantAnswerApp() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
-  const [waveform, setWaveform] = useState<number[]>([]);
+  const [waveform, setWaveform] = useState<VoiceWaveform>({ active: false, level: 0, peaks: [] });
 
   useEffect(() => {
     let disposed = false;
@@ -79,12 +135,12 @@ export function AssistantAnswerApp() {
         if (value.text) setDraft(value.text);
       } else {
         setDraft("");
-        setWaveform([]);
+        setWaveform({ active: false, level: 0, peaks: [] });
       }
     });
     void register<VoiceWaveform>("assistant-answer-waveform", (value) => {
       if (!value.active) return;
-      setWaveform((current) => [...current, ...value.peaks].slice(-36));
+      setWaveform(value);
     });
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") void cmd(CMD.closeAssistantAnswer);
@@ -127,7 +183,7 @@ export function AssistantAnswerApp() {
     if (voiceActive || answer.streaming || busy) return;
     setMessage("");
     setDraft("");
-    setWaveform([]);
+    setWaveform({ active: true, level: 0, peaks: [] });
     try {
       await cmd(CMD.startAssistantFollowUpVoice);
       setVoiceActive(true);
@@ -141,7 +197,7 @@ export function AssistantAnswerApp() {
     setMessage("");
     if (voiceActive) {
       setVoiceActive(false);
-      setWaveform([]);
+      setWaveform({ active: false, level: 0, peaks: [] });
       try {
         await cmd(CMD.stopAssistantFollowUpVoice);
       } catch (error) {
@@ -216,7 +272,7 @@ export function AssistantAnswerApp() {
         </button>
         <div className="assistant-composer-input">
           {voiceActive
-            ? <VoiceWave values={waveform} />
+            ? <VoiceWave frame={waveform} />
             : <textarea
               value={draft}
               rows={1}

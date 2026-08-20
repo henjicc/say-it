@@ -1060,12 +1060,15 @@ fn spawn_raw_consumer(
                 let processed = pcm16le_to_f32(&dsp.process(&samples));
                 if !processed.is_empty() {
                     let level = rms(&processed);
-                    let peaks = summarize_peaks(&processed, 6);
                     if assistant_follow_up {
+                        // 追问窗展示的是实时响度而非瞬时峰值。分段 RMS 不会被单个
+                        // 尖峰直接顶满，视觉上更接近用户实际说话强弱。
+                        let peaks = summarize_rms(&processed, 6);
                         crate::application::assistant::publish_follow_up_waveform(
                             &app, level, peaks,
                         );
                     } else {
+                        let peaks = summarize_peaks(&processed, 6);
                         emit_waveform(&app, level, peaks);
                     }
                 }
@@ -2377,6 +2380,17 @@ fn summarize_peaks(samples: &[f32], n: usize) -> Vec<f32> {
         .collect()
 }
 
+fn summarize_rms(samples: &[f32], n: usize) -> Vec<f32> {
+    let size = (samples.len() / n.max(1)).max(1);
+    (0..n)
+        .map(|i| {
+            rms(samples
+                .get(i * size..((i + 1) * size).min(samples.len()))
+                .unwrap_or(&[]))
+        })
+        .collect()
+}
+
 /// 应用规则里显式开启该项的启用规则；用于判断某项配置是否需要校验。
 fn profiles_enabling(
     prefs: &DictationPrefs,
@@ -3359,6 +3373,17 @@ mod tests {
         assert!(!should_show_waveform(Some(DictationMode::Realtime), false));
         assert!(!should_show_waveform(None, false));
     }
+
+    #[test]
+    fn waveform_rms_summary_does_not_treat_one_spike_as_full_volume() {
+        let mut samples = vec![0.0; 64];
+        samples[0] = 1.0;
+        let rms_levels = summarize_rms(&samples, 1);
+        let peaks = summarize_peaks(&samples, 1);
+        assert_eq!(peaks, vec![1.0]);
+        assert!(rms_levels[0] < 0.2);
+    }
+
     #[test]
     fn file_dictation_never_projects_final_text_to_indicator() {
         assert!(!should_show_final_text_in_indicator(Some(
