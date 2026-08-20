@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
 import { Field } from "@/components/ui/Field";
@@ -18,19 +18,19 @@ import {
 } from "@/store/useProviderStore";
 
 const PRESETS = [
-  { adapter: "groq", name: "Groq", model: "openai/gpt-oss-20b" },
-  { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini" },
-  { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5" },
-  { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash" },
-  { adapter: "volcengine", name: "火山方舟 Doubao", model: "doubao-seed-evolving" },
-  { adapter: "kimi", name: "Kimi", model: "kimi-k3" },
-  { adapter: "bigmodel", name: "智谱 GLM", model: "glm-5.3" },
-  { adapter: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" },
-  { adapter: "mimo", name: "小米 MiMo", model: "mimo-v2.5" },
-  { adapter: "bailian", name: "阿里云百炼 Qwen", model: "qwen3.8-max" },
-  { adapter: "minimax", name: "MiniMax", model: "MiniMax-M3" },
-  { adapter: "open_router", name: "OpenRouter", model: "google/gemini-2.0-flash-001" },
-  { adapter: "custom", name: "自定义 OpenAI 兼容接口", model: "" },
+  { adapter: "groq", name: "Groq", model: "openai/gpt-oss-20b", apiKeyUrl: "https://console.groq.com/keys" },
+  { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini", apiKeyUrl: "https://platform.openai.com/api-keys" },
+  { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5", apiKeyUrl: "https://platform.claude.com/settings/keys" },
+  { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash", apiKeyUrl: "https://aistudio.google.com/app/apikey" },
+  { adapter: "volcengine", name: "火山方舟 Doubao", model: "doubao-seed-evolving", apiKeyUrl: "https://console.volcengine.com/ark/apiKey" },
+  { adapter: "kimi", name: "Kimi", model: "kimi-k3", apiKeyUrl: "https://platform.kimi.com/console/api-keys" },
+  { adapter: "bigmodel", name: "智谱 GLM", model: "glm-5.3", apiKeyUrl: "https://open.bigmodel.cn/usercenter/apikeys" },
+  { adapter: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash", apiKeyUrl: "https://platform.deepseek.com/api_keys" },
+  { adapter: "mimo", name: "小米 MiMo", model: "mimo-v2.5", apiKeyUrl: "https://platform.xiaomimimo.com/" },
+  { adapter: "bailian", name: "阿里云百炼 Qwen", model: "qwen3.8-max", apiKeyUrl: "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key" },
+  { adapter: "minimax", name: "MiniMax", model: "MiniMax-M3", apiKeyUrl: "https://platform.minimaxi.com/console/access?tab=api-keys" },
+  { adapter: "open_router", name: "OpenRouter", model: "google/gemini-2.0-flash-001", apiKeyUrl: "https://openrouter.ai/settings/keys" },
+  { adapter: "custom", name: "自定义 OpenAI 兼容接口", model: "", apiKeyUrl: null },
 ] as const;
 
 const REASONING_OPTIONS: { value: LlmReasoningEffort; label: string }[] = [
@@ -559,8 +559,6 @@ export function SettingsLlmPanel() {
   const refreshModels = useProviderStore((state) => state.refreshLlmModels);
   const [open, setOpen] = useState(false);
   const [adapter, setAdapter] = useState("groq");
-  const [displayName, setDisplayName] = useState("Groq");
-  const [model, setModel] = useState("openai/gpt-oss-20b");
   const [apiKey, setApiKey] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [message, setMessage] = useState("");
@@ -568,25 +566,41 @@ export function SettingsLlmPanel() {
   const [panelMessageError, setPanelMessageError] = useState(false);
   const [adding, setAdding] = useState(false);
 
+  const closeAddModal = () => {
+    setOpen(false);
+    setApiKey("");
+    setEndpoint("");
+    setMessage("");
+  };
+
   const selectPreset = (nextAdapter: string) => {
     const preset = PRESETS.find((item) => item.adapter === nextAdapter) ?? PRESETS[0];
     setAdapter(preset.adapter);
-    setDisplayName(preset.name);
-    setModel(preset.model);
     setEndpoint("");
+    setApiKey("");
+    setMessage("");
   };
 
   const submit = async () => {
+    const trimmedApiKey = apiKey.trim();
+    if (!trimmedApiKey) {
+      setMessage("请先填写 API Key");
+      return;
+    }
+    const preset = PRESETS.find((item) => item.adapter === adapter) ?? PRESETS[0];
     setAdding(true);
     try {
-      const profile = await add({ adapter, displayName, model, apiKey, endpoint });
-      setOpen(false);
-      setMessage("");
+      const profile = await add({
+        adapter,
+        displayName: preset.name,
+        model: preset.model,
+        apiKey: trimmedApiKey,
+        endpoint,
+      });
+      closeAddModal();
       setPanelMessage("大语言模型供应商已添加。");
       setPanelMessageError(false);
-      const shouldAutoRefresh = Boolean(apiKey.trim())
-        && (adapter !== "custom" || /^https?:\/\//.test(endpoint.trim()));
-      setApiKey("");
+      const shouldAutoRefresh = adapter !== "custom" || /^https?:\/\//.test(endpoint.trim());
       if (shouldAutoRefresh) {
         try {
           const updated = await refreshModels(profile.id);
@@ -603,6 +617,25 @@ export function SettingsLlmPanel() {
       setAdding(false);
     }
   };
+
+  const selectedPreset = PRESETS.find((item) => item.adapter === adapter) ?? PRESETS[0];
+  const customEndpointValid = adapter !== "custom" || /^https?:\/\//.test(endpoint.trim());
+  const canSubmit = Boolean(apiKey.trim()) && customEndpointValid;
+  const apiKeyHint = selectedPreset.apiKeyUrl ? (
+    <a
+      href={selectedPreset.apiKeyUrl}
+      className="inline-flex items-center gap-1 text-[var(--color-accent-light)] underline underline-offset-2 hover:text-[var(--color-accent)]"
+      onClick={(event) => {
+        event.preventDefault();
+        void cmd(CMD.openExternalLink, { url: selectedPreset.apiKeyUrl }).catch((error) => {
+          setMessage(`打开 API Key 管理页失败：${String(error)}`);
+        });
+      }}
+    >
+      前往 {selectedPreset.name} API Key 管理页
+      <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+    </a>
+  ) : undefined;
 
   return (
     <SettingsSection title="大语言模型">
@@ -626,31 +659,41 @@ export function SettingsLlmPanel() {
         {profiles.map((profile) => <LlmProfileEditor key={profile.id} profile={profile} />)}
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="添加大语言模型" className="max-w-xl">
+      <Modal
+        open={open}
+        onClose={closeAddModal}
+        title="添加大语言模型"
+        ariaLabel="添加大语言模型"
+        className="max-w-xl"
+      >
         <div className="flex flex-col gap-4 p-5">
           <Field label="快速选择">
             <Select value={adapter} onChange={(event) => selectPreset(event.target.value)}>
               {PRESETS.map((preset) => <option key={preset.adapter} value={preset.adapter}>{preset.name}</option>)}
             </Select>
           </Field>
-          <Field label="显示名称">
-            <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-          </Field>
-          <Field label="初始模型" hint="可留空，首次获取模型列表后会自动选择一个模型">
-            <Input value={model} placeholder="可选的模型名称" onChange={(event) => setModel(event.target.value)} />
-          </Field>
           {adapter === "custom" && (
             <Field label="接口地址" hint="OpenAI 兼容接口的基础地址">
               <Input value={endpoint} placeholder="https://example.com/v1/" onChange={(event) => setEndpoint(event.target.value)} />
             </Field>
           )}
-          <Field label="API Key" hint="填写后会在添加完成时自动获取一次模型列表，也可以稍后配置">
-            <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          <Field label="API Key（必填）" controlId="new-llm-api-key" hint={apiKeyHint}>
+            <SecretInput
+              id="new-llm-api-key"
+              required
+              autoComplete="new-password"
+              draftValue={apiKey}
+              hasStoredValue={false}
+              onDraftChange={(value) => {
+                setApiKey(value);
+                if (value.trim()) setMessage("");
+              }}
+            />
           </Field>
           {message && <p className="text-xs text-[var(--color-err)]">{message}</p>}
           <div className="flex justify-end gap-2">
-            <Button onClick={() => setOpen(false)} disabled={adding}>取消</Button>
-            <Button variant="primary" onClick={submit} disabled={adding}>{adding ? "正在添加" : "添加"}</Button>
+            <Button onClick={closeAddModal} disabled={adding}>取消</Button>
+            <Button variant="primary" onClick={submit} disabled={adding || !canSubmit}>{adding ? "正在添加" : "添加"}</Button>
           </div>
         </div>
       </Modal>
