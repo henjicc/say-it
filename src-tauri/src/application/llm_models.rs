@@ -1,7 +1,8 @@
 use crate::commands::common::provider_settings_response;
 use crate::persistence::save_persisted_state;
 use crate::providers::{
-    llm_models_from_config, normalize_llm_endpoint, normalize_settings, set_llm_models,
+    llm_models_from_config, llm_responses_endpoint, llm_uses_responses, normalize_llm_endpoint,
+    normalize_settings, set_llm_models,
     LlmModelAvailability, LlmModelConfig, LlmModelSource, ProviderProfile,
     ProviderSettingsResponse,
 };
@@ -40,7 +41,11 @@ fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
         Some("openai") => Ok(AdapterKind::OpenAI),
         Some("anthropic") => Ok(AdapterKind::Anthropic),
         Some("gemini") => Ok(AdapterKind::Gemini),
-        Some("deepseek") => Ok(AdapterKind::DeepSeek),
+        Some("deepseek" | "volcengine" | "bailian") => Ok(AdapterKind::OpenAIResp),
+        Some("kimi") => Ok(AdapterKind::Kimi),
+        Some("bigmodel") => Ok(AdapterKind::BigModel),
+        Some("mimo") => Ok(AdapterKind::Mimo),
+        Some("minimax") => Ok(AdapterKind::MiniMax),
         Some("open_router") => Ok(AdapterKind::OpenRouter),
         Some("custom") => Ok(AdapterKind::OpenAI),
         Some(other) => Err(format!("不支持的大语言模型适配器：{other}")),
@@ -54,13 +59,33 @@ fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> 
         return Err(format!("请先为 {} 设置 API Key", profile.display_name));
     }
     let auth = AuthData::from_single(api_key.to_string());
-    if profile.kind == "llm:custom" {
-        let endpoint = profile_value(profile, "endpoint");
+    let adapter = profile
+        .kind
+        .strip_prefix("llm:")
+        .ok_or_else(|| "供应商不是大语言模型配置".to_string())?;
+    if profile.kind == "llm:custom" || llm_uses_responses(adapter) {
+        let endpoint = if profile.kind == "llm:custom" {
+            profile_value(profile, "endpoint").to_string()
+        } else {
+            profile_value(profile, "endpoint")
+                .to_string()
+                .trim()
+                .to_string()
+        };
+        let endpoint = if endpoint.is_empty() {
+            llm_responses_endpoint(adapter).unwrap_or("").to_string()
+        } else {
+            endpoint
+        };
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err("自定义大语言模型的接口地址无效".to_string());
+            return Err(if profile.kind == "llm:custom" {
+                "自定义大语言模型的接口地址无效".to_string()
+            } else {
+                format!("{} 的 Responses API 接口地址无效", profile.display_name)
+            });
         }
         return Ok(ProviderConfig::from((
-            Endpoint::from_owned(normalize_llm_endpoint(endpoint)),
+            Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
             auth,
         )));
     }
@@ -243,6 +268,19 @@ mod tests {
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
             Some("https://example.com/v1/")
+        );
+    }
+
+    #[test]
+    fn deepseek_uses_responses_adapter_and_v1_endpoint() {
+        let mut profile = custom_profile("secret", "");
+        profile.kind = "llm:deepseek".into();
+        profile.display_name = "DeepSeek".into();
+        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAIResp);
+        let config = provider_config(&profile).unwrap();
+        assert_eq!(
+            config.endpoint.as_ref().map(Endpoint::base_url),
+            Some("https://api.deepseek.com/v1/")
         );
     }
 

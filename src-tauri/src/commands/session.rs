@@ -4,7 +4,19 @@ use crate::prelude::*;
 use crate::state::*;
 
 const LLM_ADAPTERS: &[&str] = &[
-    "groq", "openai", "anthropic", "gemini", "deepseek", "open_router", "custom",
+    "groq",
+    "openai",
+    "anthropic",
+    "gemini",
+    "volcengine",
+    "kimi",
+    "bigmodel",
+    "deepseek",
+    "mimo",
+    "bailian",
+    "minimax",
+    "open_router",
+    "custom",
 ];
 
 #[derive(Deserialize)]

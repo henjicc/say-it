@@ -1,12 +1,16 @@
 use crate::providers::{
-    default_provider_id, find_profile, llm_models_from_config, normalize_llm_endpoint,
-    normalize_settings, ProviderProfile,
+    default_provider_id, find_profile, llm_models_from_config, llm_responses_endpoint,
+    llm_uses_responses, normalize_llm_endpoint, normalize_settings, ProviderProfile,
 };
 use crate::state::RuntimeState;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ReasoningEffort};
+use genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, ReasoningEffort,
+    Tool,
+};
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
+use futures_util::StreamExt;
 use tauri::State;
 use tokio::time::{timeout, Duration};
 
@@ -128,6 +132,35 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         return Err(format!("请先为 {} 设置 API Key", profile.display_name));
     }
 
+    if adapter != "custom" && llm_uses_responses(adapter) {
+        let endpoint = profile_value(profile, "endpoint");
+        let endpoint = if endpoint.is_empty() {
+            llm_responses_endpoint(adapter)
+                .ok_or_else(|| format!("供应商 {} 未配置 Responses API 地址", profile.display_name))?
+                .to_string()
+        } else {
+            endpoint.to_string()
+        };
+        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+            return Err(format!("{} 的 Responses API 接口地址无效", profile.display_name));
+        }
+        let target_resolver = ServiceTargetResolver::from_resolver_fn(
+            move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
+                Ok(ServiceTarget {
+                    endpoint: Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
+                    auth: AuthData::from_single(api_key.clone()),
+                    model: ModelIden::new(AdapterKind::OpenAIResp, target.model.model_name),
+                })
+            },
+        );
+        return Ok((
+            Client::builder()
+                .with_service_target_resolver(target_resolver)
+                .build(),
+            format!("openai_resp::{model}"),
+        ));
+    }
+
     if adapter == "custom" {
         let endpoint = profile_value(profile, "endpoint").to_string();
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
@@ -175,7 +208,22 @@ pub(crate) fn validate_available_for(
     client_and_model(&profile).map(|_| ())
 }
 
+#[cfg(test)]
 fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
+    chat_options_for(profile, None)
+}
+
+fn supports_explicit_reasoning_zero(profile: &ProviderProfile) -> bool {
+    !matches!(
+        profile.kind.strip_prefix("llm:"),
+        Some("kimi" | "bigmodel")
+    )
+}
+
+fn chat_options_for(
+    profile: &ProviderProfile,
+    default_reasoning: Option<&str>,
+) -> Result<ChatOptions, String> {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
         .into_iter()
@@ -195,7 +243,20 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
         options = options.with_max_tokens(max_tokens);
     }
     let is_deepseek = profile.kind == "llm:deepseek";
-    let reasoning = match model.reasoning_effort.as_str() {
+    let configured_reasoning = match model.reasoning_effort.as_str() {
+        "auto" | "" => default_reasoning.unwrap_or("auto"),
+        value => value,
+    };
+    // 指南中的 Kimi K3 与 GLM-5.3 没有关闭思考的协议值；对这两类模型不能伪造
+    // `reasoning_effort=zero`，否则会被接口拒绝，只能保留供应商默认行为。
+    let configured_reasoning = if configured_reasoning == "zero"
+        && !supports_explicit_reasoning_zero(profile)
+    {
+        "auto"
+    } else {
+        configured_reasoning
+    };
+    let reasoning = match configured_reasoning {
         "auto" | "" => None,
         // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
         // reasoning_effort="none"，但 DeepSeek V4 关闭思考必须使用 thinking.type=disabled。
@@ -222,7 +283,12 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     Ok(options)
 }
 
+#[cfg(test)]
 fn request_timeout(profile: &ProviderProfile) -> Duration {
+    request_timeout_for(profile, None)
+}
+
+fn request_timeout_for(profile: &ProviderProfile, default_reasoning: Option<&str>) -> Duration {
     if profile.kind != "llm:deepseek" {
         return DEFAULT_REQUEST_TIMEOUT;
     }
@@ -230,7 +296,11 @@ fn request_timeout(profile: &ProviderProfile) -> Duration {
     let thinking_disabled = llm_models_from_config(&profile.config)
         .iter()
         .find(|model| model.name == model_name)
-        .is_some_and(|model| model.reasoning_effort == "zero");
+        .is_some_and(|model| {
+            model.reasoning_effort == "zero"
+                || (matches!(model.reasoning_effort.as_str(), "auto" | "")
+                    && default_reasoning == Some("zero"))
+        });
     if thinking_disabled {
         DEFAULT_REQUEST_TIMEOUT
     } else {
@@ -283,6 +353,13 @@ fn final_text_from_output(output: &str) -> Result<String, String> {
     Ok(final_text.to_string())
 }
 
+fn supports_web_search(profile: &ProviderProfile) -> bool {
+    profile
+        .kind
+        .strip_prefix("llm:")
+        .is_some_and(|adapter| matches!(adapter, "volcengine" | "deepseek" | "bailian"))
+}
+
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
     text: &str,
@@ -331,6 +408,31 @@ pub(crate) async fn process_prompt(
     log_scope: &str,
     structured_json: bool,
 ) -> Result<String, String> {
+    process_prompt_with_options(
+        state,
+        system_prompt,
+        user_prompt,
+        provider_id,
+        model_override,
+        log_scope,
+        structured_json,
+        "zero",
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn process_prompt_with_options(
+    state: &RuntimeState,
+    system_prompt: &str,
+    user_prompt: &str,
+    provider_id: Option<&str>,
+    model_override: Option<&str>,
+    log_scope: &str,
+    structured_json: bool,
+    default_reasoning: &str,
+    enable_web_search: bool,
+) -> Result<String, String> {
     let profile = selected_profile(state, provider_id, model_override)?;
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
@@ -343,15 +445,21 @@ pub(crate) async fn process_prompt(
             user_prompt,
         ),
     );
-    let request = ChatRequest::default()
+    let mut request = ChatRequest::default()
         .with_system(system_prompt)
         .append_message(ChatMessage::user(user_prompt));
+    if enable_web_search && supports_web_search(&profile) {
+        request = request.with_tools([Tool::new_web_search()]);
+    }
     let options = if structured_json {
-        structured_output_options(&profile, chat_options(&profile)?)
+        structured_output_options(
+            &profile,
+            chat_options_for(&profile, Some(default_reasoning))?,
+        )
     } else {
-        final_output_options(&profile, chat_options(&profile)?)
+        final_output_options(&profile, chat_options_for(&profile, Some(default_reasoning))?)
     };
-    let request_timeout = request_timeout(&profile);
+    let request_timeout = request_timeout_for(&profile, Some(default_reasoning));
     let response = timeout(
         request_timeout,
         client.exec_chat(&model, request, Some(&options)),
@@ -372,6 +480,94 @@ pub(crate) async fn process_prompt(
         ),
     );
     final_text_from_output(output)
+}
+
+/// 智能问答专用流式调用。结构化 JSON 只适合机器解析，问答则直接以 Markdown 正文
+/// 输出，思考与正文分别通过增量回调投影到回答窗，翻译/编辑/听写链路仍走上面的整包请求。
+pub(crate) async fn process_prompt_stream<F>(
+    state: &RuntimeState,
+    system_prompt: &str,
+    user_prompt: &str,
+    provider_id: Option<&str>,
+    model_override: Option<&str>,
+    log_scope: &str,
+    default_reasoning: &str,
+    enable_web_search: bool,
+    mut on_update: F,
+) -> Result<(String, String), String>
+where
+    F: FnMut(&str, &str),
+{
+    let profile = selected_profile(state, provider_id, model_override)?;
+    let (client, model) = client_and_model(&profile)?;
+    crate::development_debug_log(
+        log_scope,
+        format_args!(
+            "准备流式调用大语言模型：供应商={}，模型={}，联网搜索={}",
+            profile.display_name,
+            model,
+            enable_web_search && supports_web_search(&profile),
+        ),
+    );
+    let mut request = ChatRequest::default()
+        .with_system(system_prompt)
+        .append_message(ChatMessage::user(user_prompt));
+    if enable_web_search && supports_web_search(&profile) {
+        request = request.with_tools([Tool::new_web_search()]);
+    }
+    let options = final_output_options(
+        &profile,
+        chat_options_for(&profile, Some(default_reasoning))?
+            .with_capture_content(true)
+            .with_capture_reasoning_content(true)
+            .with_normalize_reasoning_content(true),
+    );
+    let request_timeout = request_timeout_for(&profile, Some(default_reasoning));
+    let mut stream = timeout(
+        request_timeout,
+        client.exec_chat_stream(&model, request, Some(&options)),
+    )
+    .await
+    .map_err(|_| format!("大语言模型处理超时（{} 秒）", request_timeout.as_secs()))?
+    .map_err(|error| format!("大语言模型调用失败：{error}"))?
+    .stream;
+
+    let consume = async {
+        let mut output = String::new();
+        let mut reasoning = String::new();
+        while let Some(event) = stream.next().await {
+            let event = event.map_err(|error| format!("大语言模型流式输出失败：{error}"))?;
+            match event {
+                ChatStreamEvent::Chunk(chunk) => output.push_str(&chunk.content),
+                ChatStreamEvent::ReasoningChunk(chunk) => reasoning.push_str(&chunk.content),
+                ChatStreamEvent::End(end) => {
+                    if output.is_empty() {
+                        if let Some(captured) = end.captured_first_text() {
+                            output.push_str(captured);
+                        }
+                    }
+                    if reasoning.is_empty() {
+                        if let Some(captured) = end.captured_reasoning_content.as_deref() {
+                            reasoning.push_str(captured);
+                        }
+                    }
+                }
+                ChatStreamEvent::Start
+                | ChatStreamEvent::ThoughtSignatureChunk(_)
+                | ChatStreamEvent::ToolCallChunk(_) => {}
+            }
+            on_update(&output, &reasoning);
+        }
+        Ok::<(String, String), String>((output, reasoning))
+    };
+    let (output, reasoning) = timeout(request_timeout, consume)
+        .await
+        .map_err(|_| format!("大语言模型流式处理超时（{} 秒）", request_timeout.as_secs()))??;
+    let output = final_text_from_output(&output)?;
+    if output.is_empty() {
+        return Err("大语言模型没有返回可用的最终文本".to_string());
+    }
+    Ok((output, reasoning.trim().to_string()))
 }
 
 #[tauri::command]
@@ -536,6 +732,33 @@ mod tests {
             options.reasoning_effort,
             Some(ReasoningEffort::High)
         ));
+    }
+
+    #[test]
+    fn scenario_defaults_turn_thinking_off_or_on_without_overriding_explicit_choice() {
+        let profile = llm_profile("llm:deepseek", "auto");
+        let disabled = chat_options_for(&profile, Some("zero")).unwrap();
+        assert!(disabled.reasoning_effort.is_none());
+        assert_eq!(disabled.extra_body, Some(serde_json::json!({
+            "thinking": { "type": "disabled" }
+        })));
+
+        let enabled = chat_options_for(&profile, Some("high")).unwrap();
+        assert!(matches!(
+            enabled.reasoning_effort,
+            Some(ReasoningEffort::High)
+        ));
+        assert_eq!(enabled.extra_body, Some(serde_json::json!({
+            "thinking": { "type": "enabled" }
+        })));
+    }
+
+    #[test]
+    fn web_search_is_limited_to_responses_adapters_with_documented_support() {
+        assert!(supports_web_search(&llm_profile("llm:deepseek", "auto")));
+        assert!(supports_web_search(&llm_profile("llm:bailian", "auto")));
+        assert!(!supports_web_search(&llm_profile("llm:kimi", "auto")));
+        assert!(!supports_web_search(&llm_profile("llm:custom", "auto")));
     }
 
     #[test]

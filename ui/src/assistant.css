@@ -19,3 +19,106 @@ body,
   /* 未装饰透明窗口不会替我们裁切 WebView，内容层必须负责圆角裁切。 */
   overflow: hidden;
 }
+
+.assistant-markdown > :first-child {
+  margin-top: 0;
+}
+
+.assistant-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3 {
+  margin: 1rem 0 0.5rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.assistant-markdown h1 { font-size: 1.15rem; }
+.assistant-markdown h2 { font-size: 1.05rem; }
+.assistant-markdown h3 { font-size: 0.98rem; }
+.assistant-markdown p,
+.assistant-markdown ul,
+.assistant-markdown ol,
+.assistant-markdown blockquote,
+.assistant-markdown pre,
+.assistant-markdown table {
+  margin: 0.65rem 0;
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-left: 1.35rem;
+}
+
+.assistant-markdown ul { list-style: disc; }
+.assistant-markdown ol { list-style: decimal; }
+.assistant-markdown li + li { margin-top: 0.25rem; }
+.assistant-markdown blockquote {
+  border-left: 2px solid var(--color-accent);
+  padding-left: 0.75rem;
+  color: var(--color-fg-muted);
+}
+.assistant-markdown a {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.assistant-markdown code {
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 0.12rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+.assistant-markdown pre {
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  padding: 0.75rem;
+}
+.assistant-markdown pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+.assistant-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.assistant-markdown th,
+.assistant-markdown td {
+  border: 1px solid var(--color-line);
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.assistant-markdown th {
+  background: var(--color-surface);
+  font-weight: 600;
+}
+
+.assistant-reasoning {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+  color: var(--color-fg-muted);
+  font-size: 0.8rem;
+}
+
+.assistant-reasoning summary {
+  cursor: pointer;
+  padding: 0.55rem 0.75rem;
+  color: var(--color-fg-subtle);
+  user-select: none;
+}
+
+.assistant-reasoning > div {
+  border-top: 1px solid var(--color-line);
+  padding: 0.65rem 0.75rem;
+}
