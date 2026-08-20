@@ -153,8 +153,12 @@ pub(crate) fn add_llm_provider(
     }
     let display_name = request.display_name.trim();
     let model = request.model.trim();
+    let api_key = request.api_key.trim();
     if display_name.is_empty() {
         return Err("供应商名称不能为空".to_string());
+    }
+    if api_key.is_empty() {
+        return Err("API Key 不能为空".to_string());
     }
     let endpoint = request.endpoint.trim();
     if adapter == "custom"
@@ -183,7 +187,7 @@ pub(crate) fn add_llm_provider(
             capabilities: vec!["llm".to_string()],
             enabled: true,
             config: json!({
-                "apiKey": request.api_key.trim(),
+                "apiKey": api_key,
                 "model": model,
                 "endpoint": endpoint,
                 "models": models,

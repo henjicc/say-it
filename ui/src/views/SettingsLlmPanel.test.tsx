@@ -1,0 +1,65 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SettingsLlmPanel } from "./SettingsLlmPanel";
+
+const invoke = vi.fn();
+const addLlmProvider = vi.fn();
+const refreshLlmModels = vi.fn();
+const setDefault = vi.fn();
+
+vi.mock("@/lib/tauri", () => ({
+  CMD: { openExternalLink: "open_external_link" },
+  cmd: (...args: unknown[]) => invoke(...args),
+}));
+
+vi.mock("@/store/useProviderStore", () => ({
+  useProviderStore: (selector: (state: unknown) => unknown) => selector({
+    profiles: [],
+    defaults: { llm: "" },
+    addLlmProvider,
+    refreshLlmModels,
+    setDefault,
+  }),
+}));
+
+describe("SettingsLlmPanel", () => {
+  beforeEach(() => {
+    invoke.mockReset().mockResolvedValue(undefined);
+    addLlmProvider.mockReset().mockResolvedValue({ id: "llm-new" });
+    refreshLlmModels.mockReset().mockResolvedValue({ config: { models: [] } });
+    setDefault.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("keeps preset details hidden and requires an API key before adding", async () => {
+    render(<SettingsLlmPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "+ 添加" }));
+
+    const dialog = screen.getByRole("dialog", { name: "添加大语言模型" });
+    expect(within(dialog).queryByText("显示名称")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("初始模型")).not.toBeInTheDocument();
+
+    const addButton = within(dialog).getByRole("button", { name: "添加" });
+    expect(addButton).toBeDisabled();
+
+    const keyLink = within(dialog).getByRole("link", { name: /前往 Groq API Key 管理页/ });
+    expect(keyLink).toHaveAttribute("href", "https://console.groq.com/keys");
+    fireEvent.click(keyLink);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_external_link", {
+      url: "https://console.groq.com/keys",
+    }));
+
+    fireEvent.change(within(dialog).getByLabelText("API Key（必填）"), {
+      target: { value: "gsk-test" },
+    });
+    expect(addButton).toBeEnabled();
+    fireEvent.click(addButton);
+
+    await waitFor(() => expect(addLlmProvider).toHaveBeenCalledWith({
+      adapter: "groq",
+      displayName: "Groq",
+      model: "openai/gpt-oss-20b",
+      apiKey: "gsk-test",
+      endpoint: "",
+    }));
+  });
+});
