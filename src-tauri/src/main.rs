@@ -28,8 +28,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use application::assistant::{
     assistant_cancel, assistant_start, assistant_stop, capture_current_selection,
-    close_assistant_answer, get_assistant_answer, get_default_assistant_preferences,
-    insert_assistant_answer, preview_assistant, regenerate_assistant_answer,
+    close_assistant_answer, continue_assistant_answer, get_assistant_answer,
+    get_default_assistant_preferences, insert_assistant_answer, preview_assistant,
+    regenerate_assistant_answer, set_assistant_answer_pinned,
+    start_assistant_follow_up_voice, stop_assistant_follow_up_voice,
 };
 use application::audio_lab::{
     audio_lab_audio_path, audio_lab_reprocess, audio_lab_start, audio_lab_stop,
@@ -557,6 +559,10 @@ fn main() {
             get_assistant_answer,
             insert_assistant_answer,
             regenerate_assistant_answer,
+            continue_assistant_answer,
+            start_assistant_follow_up_voice,
+            stop_assistant_follow_up_voice,
+            set_assistant_answer_pinned,
             close_assistant_answer,
             get_performance_metrics
         ])
