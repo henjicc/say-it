@@ -427,6 +427,21 @@ pub fn normalize_llm_endpoint(endpoint: &str) -> String {
     }
 }
 
+/// 需要走 OpenAI Responses API、但不能复用 genai 默认端点的供应商。
+/// 端点只作为协议路由默认值；用户在自定义配置中填写的 endpoint 仍优先。
+pub fn llm_responses_endpoint(adapter: &str) -> Option<&'static str> {
+    match adapter {
+        "volcengine" => Some("https://ark.cn-beijing.volces.com/api/v3/"),
+        "deepseek" => Some("https://api.deepseek.com/v1/"),
+        "bailian" => Some("https://dashscope.aliyuncs.com/compatible-mode/v1/"),
+        _ => None,
+    }
+}
+
+pub fn llm_uses_responses(adapter: &str) -> bool {
+    llm_responses_endpoint(adapter).is_some()
+}
+
 fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     if !profile.kind.starts_with("llm:") {
         return;

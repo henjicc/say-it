@@ -22,7 +22,13 @@ const PRESETS = [
   { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini" },
   { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5" },
   { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash" },
+  { adapter: "volcengine", name: "火山方舟 Doubao", model: "doubao-seed-evolving" },
+  { adapter: "kimi", name: "Kimi", model: "kimi-k3" },
+  { adapter: "bigmodel", name: "智谱 GLM", model: "glm-5.3" },
   { adapter: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" },
+  { adapter: "mimo", name: "小米 MiMo", model: "mimo-v2.5" },
+  { adapter: "bailian", name: "阿里云百炼 Qwen", model: "qwen3.8-max" },
+  { adapter: "minimax", name: "MiniMax", model: "MiniMax-M3" },
   { adapter: "open_router", name: "OpenRouter", model: "google/gemini-2.0-flash-001" },
   { adapter: "custom", name: "自定义 OpenAI 兼容接口", model: "" },
 ] as const;

@@ -1797,10 +1797,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
         (assistant_request.as_ref(), assistant_processed.as_ref())
     {
         if assistant.show_answer {
-            crate::application::assistant::publish_answer(
+            crate::application::assistant::publish_answer_with_reasoning(
                 &app,
                 request,
                 processed.clone(),
+                assistant.reasoning.clone(),
                 None,
                 true,
             );
