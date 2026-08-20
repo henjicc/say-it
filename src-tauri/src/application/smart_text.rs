@@ -310,14 +310,32 @@ fn request_timeout_for(profile: &ProviderProfile, default_reasoning: Option<&str
 
 fn final_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> ChatOptions {
     let model_name = profile_value(profile, "model").to_ascii_lowercase();
-    if profile.kind == "llm:groq"
-        && model_name.contains("qwen3")
-        && options.reasoning_effort.is_none()
-    {
-        // Groq 的 Qwen 3 默认把推理内容放进正文。智能优化与智能助手都只消费最终
-        // 输出，用户未显式选择推理强度时直接关闭，避免延迟和 <think> 泄漏。
-        // reasoning_effort="none" 对应 genai 的 Zero，只针对官方明确支持该值的 Qwen 3。
-        options = options.with_reasoning_effort(ReasoningEffort::Zero);
+    if profile.kind == "llm:groq" && model_name.contains("qwen3") {
+        // Groq Qwen 3 的推理开关只接受 none/default，不接受通用的
+        // low/medium/high。保留上层的开关语义，但在供应商边界压缩为它的二值协议。
+        let reasoning_enabled = options
+            .reasoning_effort
+            .as_ref()
+            .is_some_and(|effort| !matches!(effort, ReasoningEffort::Zero));
+        options.reasoning_effort = None;
+
+        let mut extra_body = options
+            .extra_body
+            .take()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !extra_body.is_object() {
+            extra_body = serde_json::json!({});
+        }
+        extra_body["reasoning_effort"] = serde_json::json!(if reasoning_enabled {
+            "default"
+        } else {
+            "none"
+        });
+        if reasoning_enabled {
+            // parsed 会把思考过程放在 delta.reasoning，便于问答流式界面与正文分开展示。
+            extra_body["reasoning_format"] = serde_json::json!("parsed");
+        }
+        options = options.with_extra_body(extra_body);
     }
     options
 }
@@ -860,10 +878,11 @@ mod tests {
             options.response_format,
             Some(ChatResponseFormat::JsonMode)
         ));
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::Zero)
-        ));
+        assert!(options.reasoning_effort.is_none());
+        assert_eq!(
+            options.extra_body,
+            Some(serde_json::json!({"reasoning_effort": "none"}))
+        );
     }
 
     #[test]
@@ -884,24 +903,32 @@ mod tests {
 
         let options = final_output_options(&profile, chat_options(&profile).unwrap());
 
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::Zero)
-        ));
+        assert!(options.reasoning_effort.is_none());
+        assert_eq!(
+            options.extra_body,
+            Some(serde_json::json!({"reasoning_effort": "none"}))
+        );
     }
 
     #[test]
-    fn smart_text_preserves_explicit_groq_qwen3_reasoning() {
-        let mut profile = llm_profile("llm:groq", "high");
+    fn smart_text_maps_enabled_groq_qwen3_reasoning_to_default() {
+        let mut profile = llm_profile("llm:groq", "auto");
         profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
         profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
 
-        let options = final_output_options(&profile, chat_options(&profile).unwrap());
+        let options = final_output_options(
+            &profile,
+            chat_options_for(&profile, Some("high")).unwrap(),
+        );
 
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::High)
-        ));
+        assert!(options.reasoning_effort.is_none());
+        assert_eq!(
+            options.extra_body,
+            Some(serde_json::json!({
+                "reasoning_effort": "default",
+                "reasoning_format": "parsed"
+            }))
+        );
     }
 
     #[test]
