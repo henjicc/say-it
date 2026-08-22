@@ -106,3 +106,9 @@ model-pack-builder = []
 
 [dev-dependencies]
 ogg = "0.8.0"
+
+# 保留开发态栈回溯所需的调试信息，同时避免 macOS 默认的 unpacked
+# 模式为每个编译单元长期累积大量独立对象文件。
+[profile.dev]
+debug = 1
+split-debuginfo = "packed"
