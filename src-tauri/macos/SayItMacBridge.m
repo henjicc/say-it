@@ -1703,9 +1703,17 @@ static CGEventRef SayItMouseMonitorEventCallback(
     }
     if (owner.callback == NULL) return event;
     CGPoint point = CGEventGetLocation(event);
-    bool buttonDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)
-        || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonRight)
-        || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonCenter);
+    bool leftDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft);
+    bool rightDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonRight);
+    bool otherDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonCenter);
+    // CGEventSourceButtonState 在 mouseUp 回调内可能仍是上一拍的状态，以当前事件沿为准修正。
+    if (type == kCGEventLeftMouseDown) leftDown = true;
+    if (type == kCGEventLeftMouseUp) leftDown = false;
+    if (type == kCGEventRightMouseDown) rightDown = true;
+    if (type == kCGEventRightMouseUp) rightDown = false;
+    if (type == kCGEventOtherMouseDown) otherDown = true;
+    if (type == kCGEventOtherMouseUp) otherDown = false;
+    bool buttonDown = leftDown || rightDown || otherDown;
     owner.callback(
         owner.context,
         point.x,

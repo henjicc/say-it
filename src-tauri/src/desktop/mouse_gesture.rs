@@ -211,6 +211,12 @@ impl RapidClickRecognizer {
             return None;
         }
 
+        // macOS 的全局事件回调在 leftMouseUp 到达时，系统按钮状态仍可能短暂报告为按下。
+        // 释放沿必须优先处理，否则整组连击永远无法形成一次完整点击。
+        if sample.left_released {
+            return self.finish_click(sample, required_clicks);
+        }
+
         if sample.button_down {
             if let Some(press) = self.press {
                 let distance = ((sample.x - press.x).powi(2) + (sample.y - press.y).powi(2)).sqrt();
@@ -224,9 +230,10 @@ impl RapidClickRecognizer {
             return None;
         }
 
-        if !sample.left_released {
-            return None;
-        }
+        None
+    }
+
+    fn finish_click(&mut self, sample: PointerSample, required_clicks: u8) -> Option<(i32, i32)> {
         let Some(press) = self.press.take() else {
             self.clicks.clear();
             return None;
@@ -925,5 +932,44 @@ mod tests {
             None,
         );
         assert!(recognizer.clicks.is_empty());
+    }
+
+    #[test]
+    fn macos_release_edge_counts_even_if_combined_button_state_is_still_down() {
+        let start = Instant::now();
+        let mut recognizer = RapidClickRecognizer::default();
+        for index in 0..3 {
+            let at = start + Duration::from_millis(index * 160);
+            assert_eq!(
+                recognizer.push(
+                    PointerSample {
+                        x: 50.0,
+                        y: 50.0,
+                        at,
+                        button_down: true,
+                        left_pressed: true,
+                        left_released: false,
+                    },
+                    3,
+                ),
+                None,
+            );
+            let result = recognizer.push(
+                PointerSample {
+                    x: 50.0,
+                    y: 50.0,
+                    at: at + Duration::from_millis(45),
+                    button_down: true,
+                    left_pressed: false,
+                    left_released: true,
+                },
+                3,
+            );
+            if index < 2 {
+                assert_eq!(result, None);
+            } else {
+                assert_eq!(result, Some((50, 50)));
+            }
+        }
     }
 }
