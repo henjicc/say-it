@@ -34,7 +34,8 @@ typedef void (*SayItMouseMonitorCallback)(
     double y,
     bool buttonDown,
     bool leftPressed,
-    bool leftReleased
+    bool leftReleased,
+    uint8_t clickCount
 );
 
 typedef struct {
@@ -1714,13 +1715,16 @@ static CGEventRef SayItMouseMonitorEventCallback(
     if (type == kCGEventOtherMouseDown) otherDown = true;
     if (type == kCGEventOtherMouseUp) otherDown = false;
     bool buttonDown = leftDown || rightDown || otherDown;
+    int64_t rawClickCount = CGEventGetIntegerValueField(event, kCGMouseEventClickState);
+    uint8_t clickCount = (uint8_t)MAX(0, MIN(rawClickCount, UINT8_MAX));
     owner.callback(
         owner.context,
         point.x,
         point.y,
         buttonDown,
         type == kCGEventLeftMouseDown,
-        type == kCGEventLeftMouseUp
+        type == kCGEventLeftMouseUp,
+        clickCount
     );
     return event;
 }
