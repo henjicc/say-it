@@ -35,8 +35,34 @@ pub(crate) struct RuntimeState {
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
     pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
+    pub(crate) floating_orb: Mutex<FloatingOrbSettings>,
+    pub(crate) floating_orb_runtime: FloatingOrbRuntime,
     pub(crate) obs_overlay_settings: Mutex<ObsOverlaySettings>,
     pub(crate) obs_overlay_runtime: ObsOverlayRuntime,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FloatingOrbPosition {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FloatingOrbSettings {
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) position: Option<FloatingOrbPosition>,
+}
+
+#[derive(Default)]
+pub(crate) struct FloatingOrbRuntime {
+    pub(crate) transient_position: std::sync::atomic::AtomicBool,
+    pub(crate) reduced_motion: std::sync::atomic::AtomicBool,
+    pub(crate) placement_generation: AtomicU64,
+    pub(crate) transition_generation: AtomicU64,
 }
 
 #[derive(Default)]

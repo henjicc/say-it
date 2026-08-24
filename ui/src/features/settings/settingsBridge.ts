@@ -8,6 +8,7 @@ import { loadModelCatalog } from "@/features/asr/modelRegistry";
 import { hydrateModelOptions, DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
+import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 
 function json(key: string): Record<string, unknown> | undefined {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
@@ -36,8 +37,9 @@ export async function initializeSettings(): Promise<void> {
     theme: json("sayItAccentTheme") ?? useThemeStore.getState().theme,
     customCueStart: localStorage.getItem("dictCueStartData"), customCueEnd: localStorage.getItem("dictCueEndData"),
   }});
-  const settings = (await cmd<AppSnapshot>(CMD.getAppSnapshot)).settings;
-  if (apply(settings)) {
+  const snapshot = await cmd<AppSnapshot>(CMD.getAppSnapshot);
+  useFloatingOrbStore.getState().hydrate(snapshot.floatingOrb);
+  if (apply(snapshot.settings)) {
     await useDictPrefs.getState().patch({});
   }
 }

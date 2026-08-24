@@ -30,6 +30,13 @@ pub(crate) struct AudioSessionCoordinator {
 }
 
 impl AudioSessionCoordinator {
+    pub(crate) fn is_busy(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|state| state.owner.is_some())
+            .unwrap_or(true)
+    }
+
     pub(crate) fn acquire(&self, owner: AudioOwner) -> Result<AudioLease, String> {
         let mut state = self.inner.lock().map_err(|_| "音频会话锁失败")?;
         if let Some(current) = state.owner {
@@ -99,5 +106,15 @@ mod tests {
         let second = c.acquire(AudioOwner::Legacy).unwrap();
         assert!(!c.can_release_device(first.generation));
         c.release(&second).unwrap();
+    }
+
+    #[test]
+    fn reports_busy_without_mutating_the_active_lease() {
+        let coordinator = AudioSessionCoordinator::default();
+        assert!(!coordinator.is_busy());
+        let lease = coordinator.acquire(AudioOwner::Subtitles).unwrap();
+        assert!(coordinator.is_busy());
+        coordinator.release(&lease).unwrap();
+        assert!(!coordinator.is_busy());
     }
 }

@@ -4,7 +4,10 @@ use crate::application::events::BackendEvent;
 use crate::commands::asr::{
     asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
 };
-use crate::commands::dictation::inject_text_inner;
+use crate::commands::dictation::{
+    inject_text_inner, inject_text_with_policy, write_clipboard_text_inner,
+    ClipboardDisposition,
+};
 use crate::commands::transcription::{transcription_cancel_inner, transcription_start_inner};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner, pause_backend_mic_inner,
@@ -47,6 +50,41 @@ impl Default for DictationPhase {
 enum DictationMode {
     Realtime,
     File,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DictationTrigger {
+    #[default]
+    Standard,
+    FloatingOrb { target_confirmed: bool },
+}
+
+impl DictationTrigger {
+    fn is_floating_orb(self) -> bool {
+        matches!(self, Self::FloatingOrb { .. })
+    }
+
+    fn target_confirmed(self) -> bool {
+        matches!(self, Self::FloatingOrb { target_confirmed: true })
+    }
+}
+
+fn select_activation_target(
+    trigger: DictationTrigger,
+    supplied: Option<crate::active_app_context::ActivationTarget>,
+    current: Option<crate::active_app_context::ActivationTarget>,
+) -> Option<crate::active_app_context::ActivationTarget> {
+    if trigger.is_floating_orb() {
+        supplied
+    } else {
+        supplied.or(current)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FloatingFallbackKind {
+    Processing,
+    Delivery,
 }
 
 #[derive(Clone, Copy)]
@@ -364,6 +402,7 @@ struct Session {
     effective: Option<EffectivePostProcessing>,
     /// 启动时冻结的注入方式，避免录音过程中修改设置影响当前会话。
     inject_method: String,
+    trigger: DictationTrigger,
     /// 听写启动时的目标窗口。悬浮窗恢复操作会先重新激活它，再注入未处理原文。
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     app_identity: Option<crate::active_app_context::AppIdentity>,
@@ -499,6 +538,18 @@ pub(crate) fn is_active(app: &AppHandle) -> bool {
         .session
         .lock()
         .map(|session| !matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed))
+        .unwrap_or(false)
+}
+
+pub(crate) fn is_floating_orb_active(app: &AppHandle) -> bool {
+    app.state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|session| {
+            session.trigger.is_floating_orb()
+                && !matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed)
+        })
         .unwrap_or(false)
 }
 
@@ -678,14 +729,58 @@ async fn start(
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
-    start_internal(app, activation_target, shortcut_profile_id, None).await
+    start_internal(
+        app,
+        activation_target,
+        shortcut_profile_id,
+        None,
+        DictationTrigger::Standard,
+    )
+    .await
 }
 
 pub(crate) async fn start_assistant(
     app: AppHandle,
     request: crate::application::assistant::AssistantRequest,
 ) -> Result<(), String> {
-    start_internal(app, request.target, None, Some(request)).await
+    start_internal(
+        app,
+        request.target,
+        None,
+        Some(request),
+        DictationTrigger::Standard,
+    )
+    .await
+}
+
+pub(crate) async fn start_from_floating_orb(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    target_confirmed: bool,
+) -> Result<(), String> {
+    start_internal(
+        app,
+        activation_target,
+        None,
+        None,
+        DictationTrigger::FloatingOrb { target_confirmed },
+    )
+    .await
+}
+
+pub(crate) async fn stop_from_floating_orb(app: AppHandle) -> Result<(), String> {
+    let floating = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?
+        .trigger
+        .is_floating_orb();
+    if !floating {
+        return Err("当前听写不是由悬浮球启动".into());
+    }
+    stop(app).await
 }
 
 pub(crate) async fn stop_assistant_follow_up(app: AppHandle) -> Result<(), String> {
@@ -725,12 +820,16 @@ async fn start_internal(
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
     assistant_request: Option<crate::application::assistant::AssistantRequest>,
+    trigger: DictationTrigger,
 ) -> Result<(), String> {
     let start_requested_at = Instant::now();
     let inline_follow_up = assistant_request
         .as_ref()
         .is_some_and(|request| request.follow_up);
-    let activation_target = activation_target.or_else(crate::active_app_context::activation_target);
+    let current_target = (!trigger.is_floating_orb())
+        .then(crate::active_app_context::activation_target)
+        .flatten();
+    let activation_target = select_activation_target(trigger, activation_target, current_target);
     let history_allowed = activation_target
         .and_then(|target| crate::active_app_context::target_is_sensitive(target).ok())
         .is_some_and(|sensitive| !sensitive);
@@ -906,6 +1005,7 @@ async fn start_internal(
             prefs: prefs.clone(),
             effective: Some(effective),
             inject_method,
+            trigger,
             activation_target,
             app_identity,
             started_at: Some(Instant::now()),
@@ -937,8 +1037,10 @@ async fn start_internal(
             return Err(error);
         }
     }
-    let _ = prepare_dictation_indicator(&app);
-    if !inline_follow_up {
+    if !trigger.is_floating_orb() {
+        let _ = prepare_dictation_indicator(&app);
+    }
+    if !inline_follow_up && !trigger.is_floating_orb() {
         let _ = crate::desktop::set_indicator_layout(
             app.clone(),
             Some(460.0),
@@ -952,12 +1054,16 @@ async fn start_internal(
         "dictation.request_to_recording",
         start_requested_at.elapsed().as_millis() as u64,
     );
-    play_cue_async(
-        app.clone(),
-        "start",
-        &prefs,
-        CuePlaybackTarget::IndicatorWindow,
-    );
+    if trigger.is_floating_orb() {
+        play_floating_orb_cue(&app, "start", &prefs);
+    } else {
+        play_cue_async(
+            app.clone(),
+            "start",
+            &prefs,
+            CuePlaybackTarget::IndicatorWindow,
+        );
+    }
     publish_state(&app, None);
     Ok(())
 }
@@ -1188,7 +1294,17 @@ async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (epoch, mode, session_id, rate, prefs, raw_done, audio_generation, inline_follow_up) = {
+    let (
+        epoch,
+        mode,
+        session_id,
+        rate,
+        prefs,
+        raw_done,
+        audio_generation,
+        inline_follow_up,
+        trigger,
+    ) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1216,6 +1332,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
             s.assistant_request
                 .as_ref()
                 .is_some_and(|request| request.follow_up),
+            s.trigger,
         )
     };
     pause_backend_mic_inner(&state)?;
@@ -1236,7 +1353,9 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         schedule_release(app.clone(), epoch, audio_generation, prefs.keep_alive_ms);
     }
     publish_state(&app, None);
-    if !inline_follow_up {
+    if trigger.is_floating_orb() {
+        crate::desktop::set_floating_orb_phase(&app, "processing", "识别中…");
+    } else if !inline_follow_up {
         let _ = crate::desktop::set_indicator_state(app.clone(), "processing".into());
     }
     let result = match mode {
@@ -1330,7 +1449,15 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (asr, file_job, lease, temp_path, active_app_context, active_app_context_cancellation) = {
+    let (
+        asr,
+        file_job,
+        lease,
+        temp_path,
+        active_app_context,
+        active_app_context_cancellation,
+        trigger,
+    ) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1343,6 +1470,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             s.temp_audio_path.take(),
             s.active_app_context.take(),
             s.active_app_context_cancellation.take(),
+            s.trigger,
         );
         s.epoch = state
             .dictation_runtime
@@ -1359,6 +1487,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.pending_fallback = None;
         s.activation_target = None;
         s.assistant_request = None;
+        s.trigger = DictationTrigger::Standard;
         ids
     };
     if let Some(cancellation) = active_app_context_cancellation {
@@ -1378,7 +1507,16 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     }
     remove_temp(temp_path);
     hotkey::set_dictation_active(false);
-    let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+    if trigger.is_floating_orb() {
+        crate::desktop::complete_floating_orb(
+            app.clone(),
+            "error",
+            "已取消".to_string(),
+            1000,
+        );
+    } else {
+        let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+    }
     publish_state(&app, None);
     Ok(())
 }
@@ -1612,6 +1750,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         recorded_duration_ms,
         assistant_request,
         history_allowed,
+        trigger,
     ) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -1659,6 +1798,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             },
             s.assistant_request.clone(),
             s.history_allowed,
+            s.trigger,
         )
     };
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
@@ -1682,7 +1822,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 .as_ref()
                 .is_some_and(|request| request.follow_up)
         {
-            let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+            if trigger.is_floating_orb() {
+                crate::desktop::set_floating_orb_phase(&app, "smartProcessing", "处理中…");
+            } else {
+                let _ =
+                    crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+            }
         }
     }
     let active_app_context = if assistant_request.is_some() {
@@ -1821,6 +1966,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 "当前智能处理模板不存在".to_string(),
                 raw_text.clone(),
                 method.clone(),
+                FloatingFallbackKind::Processing,
             )
             .await;
             return;
@@ -1849,8 +1995,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
-                let _ = fail_with_raw_fallback(app, epoch, error, raw_text.clone(), method.clone())
-                    .await;
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    error,
+                    raw_text.clone(),
+                    method.clone(),
+                    FloatingFallbackKind::Processing,
+                )
+                .await;
                 return;
             }
         }
@@ -1868,8 +2021,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
-                let _ =
-                    fail_with_raw_fallback(app, epoch, e, raw_text.clone(), method.clone()).await;
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    e,
+                    raw_text.clone(),
+                    method.clone(),
+                    FloatingFallbackKind::Processing,
+                )
+                .await;
                 return;
             }
         }
@@ -1888,6 +2048,27 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     let result = if processed.is_empty() {
         Ok(())
+    } else if trigger.is_floating_orb() {
+        match write_clipboard_text_inner(processed.clone()).await {
+            Err(error) => Err(error),
+            Ok(()) if !trigger.target_confirmed() => {
+                Err("未能确认底层目标窗口，结果已复制到剪贴板".into())
+            }
+            Ok(()) => match activation_target {
+                Some(target) => match prepare_target_for_injection(target).await {
+                    Ok(()) => {
+                        inject_text_with_policy(
+                            processed.clone(),
+                            Some(method.clone()),
+                            ClipboardDisposition::KeepResult,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                },
+                None => Err("听写开始时的目标窗口已丢失，结果已复制到剪贴板".into()),
+            },
+        }
     } else if let (Some(request), Some(assistant)) =
         (assistant_request.as_ref(), assistant_processed.as_ref())
     {
@@ -1960,7 +2141,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         // fail 负责在同一把 operation 锁下提交失败终态，避免与 start/cancel 交错。
         drop(_guard);
-        let _ = fail_with_raw_fallback(app, epoch, e, processed.clone(), method).await;
+        let _ = fail_with_raw_fallback(
+            app,
+            epoch,
+            e,
+            processed.clone(),
+            method,
+            FloatingFallbackKind::Delivery,
+        )
+        .await;
         return;
     }
     let committed = if let Ok(mut s) = state.dictation_runtime.session.lock() {
@@ -1978,6 +2167,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.segment.clear();
             s.active_app_context_cancellation = None;
             s.activation_target = None;
+            s.trigger = DictationTrigger::Standard;
             s.error = None;
             s.pending_fallback = None;
             s.assistant_request = None;
@@ -2040,18 +2230,34 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
-    let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
-    play_cue_async(
-        app.clone(),
-        "end",
-        &prefs,
-        CuePlaybackTarget::IndicatorWindow,
-    );
+    if trigger.is_floating_orb() {
+        play_floating_orb_cue(&app, "end", &prefs);
+        let (message, delay) = if processed.is_empty() {
+            ("未识别到内容", 2000)
+        } else {
+            ("已完成并复制", 1200)
+        };
+        crate::desktop::complete_floating_orb(
+            app.clone(),
+            "success",
+            message.to_string(),
+            delay,
+        );
+    } else {
+        let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+        play_cue_async(
+            app.clone(),
+            "end",
+            &prefs,
+            CuePlaybackTarget::IndicatorWindow,
+        );
+    }
     publish_state_with_text(
         &app,
         None,
         processed,
-        should_show_final_text_in_indicator(mode)
+        !trigger.is_floating_orb()
+            && should_show_final_text_in_indicator(mode)
             && !assistant_request
                 .as_ref()
                 .is_some_and(|request| request.follow_up),
@@ -2135,7 +2341,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
 }
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
-    fail_internal(app, epoch, error, None).await
+    fail_internal(app, epoch, error, None, None).await
 }
 
 async fn fail_with_raw_fallback(
@@ -2144,15 +2350,43 @@ async fn fail_with_raw_fallback(
     error: String,
     text: String,
     method: String,
+    floating_kind: FloatingFallbackKind,
 ) -> Result<(), String> {
-    let activation_target = app
+    let (activation_target, floating) = app
         .state::<RuntimeState>()
         .dictation_runtime
         .session
         .lock()
         .ok()
-        .and_then(|session| (session.epoch == epoch).then_some(session.activation_target))
-        .flatten();
+        .and_then(|session| {
+            (session.epoch == epoch)
+                .then_some((session.activation_target, session.trigger.is_floating_orb()))
+        })
+        .unwrap_or((None, false));
+    let floating_feedback = if floating {
+        if text.is_empty() {
+            Some(("error", "未识别到内容".to_string(), 2000))
+        } else {
+            match write_clipboard_text_inner(text.clone()).await {
+                Ok(()) => Some((
+                    "fallback",
+                    match floating_kind {
+                        FloatingFallbackKind::Processing => "处理失败，原文已复制",
+                        FloatingFallbackKind::Delivery => "已复制，请手动粘贴",
+                    }
+                    .to_string(),
+                    3000,
+                )),
+                Err(_) => Some((
+                    "error",
+                    "复制失败，请在历史记录中查看".to_string(),
+                    3000,
+                )),
+            }
+        }
+    } else {
+        None
+    };
     fail_internal(
         app,
         epoch,
@@ -2162,6 +2396,7 @@ async fn fail_with_raw_fallback(
             method,
             activation_target,
         }),
+        floating_feedback,
     )
     .await
 }
@@ -2171,6 +2406,7 @@ async fn fail_internal(
     epoch: u64,
     error: String,
     pending_fallback: Option<PendingFallback>,
+    floating_feedback: Option<(&'static str, String, u64)>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -2183,6 +2419,7 @@ async fn fail_internal(
         active_app_context,
         active_app_context_cancellation,
         history,
+        floating,
     ) = {
         let mut s = state
             .dictation_runtime
@@ -2218,7 +2455,15 @@ async fn fail_internal(
                 })
             })
             .flatten();
-        s.mark_failed(error.clone(), pending_fallback);
+        let floating = s.trigger.is_floating_orb();
+        s.mark_failed(
+            error.clone(),
+            if floating {
+                None
+            } else {
+                pending_fallback
+            },
+        );
         (
             s.lease.take(),
             s.temp_audio_path.take(),
@@ -2227,6 +2472,7 @@ async fn fail_internal(
             s.active_app_context.take(),
             s.active_app_context_cancellation.take(),
             history,
+            floating,
         )
     };
     if let Some(cancellation) = active_app_context_cancellation {
@@ -2248,13 +2494,20 @@ async fn fail_internal(
         let _ = crate::application::history::record(&app, entry);
     }
     hotkey::set_dictation_active(false);
-    let can_use_raw_text = state
-        .dictation_runtime
-        .session
-        .lock()
-        .map(|session| session.pending_fallback.is_some())
-        .unwrap_or(false);
-    let _ = crate::desktop::show_dictation_indicator_error(&app, error.clone(), can_use_raw_text);
+    if floating {
+        let (phase, message, delay) = floating_feedback
+            .unwrap_or(("error", error.clone(), 3000));
+        crate::desktop::complete_floating_orb(app.clone(), phase, message, delay);
+    } else {
+        let can_use_raw_text = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map(|session| session.pending_fallback.is_some())
+            .unwrap_or(false);
+        let _ =
+            crate::desktop::show_dictation_indicator_error(&app, error.clone(), can_use_raw_text);
+    }
     publish_state(&app, Some(error.clone()));
     Err(error)
 }
@@ -2301,7 +2554,7 @@ fn publish_state(app: &AppHandle, error: Option<String>) {
         .map(|s| {
             (
                 format!("{}{}", s.committed, s.segment),
-                should_show_final_text_in_indicator(s.mode),
+                !s.trigger.is_floating_orb() && should_show_final_text_in_indicator(s.mode),
                 error.or_else(|| s.error.clone()),
             )
         })
@@ -2902,9 +3155,49 @@ fn play_cue_async(
     });
 }
 
+fn play_floating_orb_cue(app: &AppHandle, which: &'static str, prefs: &DictationPrefs) {
+    if !prefs.cue_enabled {
+        return;
+    }
+    let kind = if which == "start" {
+        prefs.cue_start.as_str()
+    } else {
+        prefs.cue_end.as_str()
+    };
+    if kind != "none" {
+        crate::desktop::emit_floating_orb_cue(app, which, kind);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn activation_target(process_id: u32) -> crate::active_app_context::ActivationTarget {
+        crate::active_app_context::ActivationTarget {
+            window_handle: process_id as isize,
+            process_id,
+            cursor_position: None,
+        }
+    }
+
+    #[test]
+    fn floating_orb_never_falls_back_to_an_unrelated_current_target() {
+        let current = activation_target(7);
+        assert!(select_activation_target(
+            DictationTrigger::FloatingOrb {
+                target_confirmed: false,
+            },
+            None,
+            Some(current),
+        )
+        .is_none());
+        assert_eq!(
+            select_activation_target(DictationTrigger::Standard, None, Some(current))
+                .map(|target| target.process_id),
+            Some(7)
+        );
+    }
 
     #[test]
     fn ocr_follow_min_chars_is_enabled_for_new_defaults_but_not_legacy_json() {
