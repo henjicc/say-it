@@ -75,7 +75,7 @@ export const CMD = {
   getFloatingOrbSettings: "get_floating_orb_settings",
   showFloatingOrbMenu: "show_floating_orb_menu",
   hideFloatingOrbMenu: "hide_floating_orb_menu",
-  setFloatingOrbMenuExpanded: "set_floating_orb_menu_expanded",
+  floatingOrbOpenMainWindow: "floating_orb_open_main_window",
   setFloatingOrbAppearance: "set_floating_orb_appearance",
   floatingOrbStartDragging: "floating_orb_start_dragging",
   floatingOrbActivate: "floating_orb_activate",

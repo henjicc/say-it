@@ -26,6 +26,10 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     crate::macos_native::activate_application(target.process_id)
 }
 
+pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
+    crate::macos_native::focused_input_is_editable(target.process_id)
+}
+
 pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {
     let info =
         crate::macos_native::window_info(target.window_handle as u32, target.process_id).ok()?;

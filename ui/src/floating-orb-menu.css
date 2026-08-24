@@ -19,6 +19,11 @@ body,
   -webkit-user-select: none;
 }
 
+#floating-orb-menu-root {
+  box-sizing: border-box;
+  padding: 1px;
+}
+
 button,
 input {
   font: inherit;
@@ -30,21 +35,20 @@ input {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 14px;
   border: 1px solid var(--color-line-strong);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--color-bg) 94%, var(--color-fg) 6%);
+  background: var(--color-overlay);
 }
 
 .orb-menu-panel.glass {
-  border-color: color-mix(in srgb, var(--color-fg) var(--glass-border, 8%), transparent);
+  border-color: color-mix(in srgb, var(--color-fg) var(--glass-border, 8%), var(--color-line-strong));
   background: color-mix(in srgb, var(--color-bg) var(--glass-tint, 10%), transparent);
 }
 
 .orb-menu-header,
-.orb-menu-field > span,
-.orb-menu-toggle-row {
+.orb-menu-field > span {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -52,7 +56,19 @@ input {
 
 .orb-menu-header {
   min-height: 22px;
+  flex: none;
   font-size: 14px;
+}
+
+.orb-menu-content {
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 2px 3px 3px 1px;
+  scrollbar-gutter: stable;
 }
 
 .orb-menu-close {
@@ -74,10 +90,7 @@ input {
 }
 
 .orb-menu-close:focus-visible,
-.orb-menu-disable:focus-visible,
-.orb-menu-disclosure:focus-visible,
-.orb-menu-switch input:focus-visible + span,
-.orb-menu-field input:focus-visible {
+.orb-menu-action:focus-visible {
   outline: 2px solid var(--color-accent-light);
   outline-offset: 2px;
 }
@@ -94,173 +107,70 @@ input {
   font-variant-numeric: tabular-nums;
 }
 
-.orb-menu-field input[type="range"] {
-  width: 100%;
-  height: 4px;
-  margin: 4px 0;
-  appearance: none;
-  border-radius: 999px;
-  background: var(--color-line-strong);
-  cursor: pointer;
-}
-
-.orb-menu-field input[type="range"]::-webkit-slider-thumb {
-  width: 16px;
-  height: 16px;
-  appearance: none;
-  border: 2px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-fg));
-  border-radius: 50%;
-  background: var(--color-accent);
-}
-
-.orb-menu-glass-tuning {
-  display: grid;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--color-line);
-}
-
-.orb-menu-disclosure {
-  min-height: 34px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
-  background: var(--color-surface);
-  color: var(--color-fg-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.orb-menu-disclosure:hover:not(:disabled) {
-  border-color: var(--color-line-strong);
-  background: var(--color-surface-hover);
-  color: var(--color-fg);
-}
-
-.orb-menu-disclosure:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.orb-menu-disclosure svg {
-  width: 15px;
-  height: 15px;
-  transition: transform 140ms ease-out;
-}
-
-.orb-menu-disclosure svg.expanded {
-  transform: rotate(180deg);
-}
-
-.orb-menu-glass-hint {
-  margin: 0;
-  color: var(--color-fg-subtle);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.orb-menu-toggle-row {
-  gap: 12px;
-}
-
-.orb-menu-toggle-row > span {
-  display: grid;
-  gap: 2px;
-}
-
-.orb-menu-toggle-row strong {
-  color: var(--color-fg-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.orb-menu-toggle-row small {
-  color: var(--color-fg-subtle);
-  font-size: 10px;
-}
-
-.orb-menu-switch {
-  position: relative;
-  display: block;
-  width: 36px;
-  height: 20px;
-  flex: none;
-}
-
-.orb-menu-switch input {
-  position: absolute;
-  opacity: 0;
-}
-
-.orb-menu-switch > span:not(.orb-menu-sr-only) {
-  position: absolute;
-  inset: 0;
-  border: 1px solid var(--color-line-strong);
-  border-radius: 999px;
-  background: var(--color-surface-strong);
-  cursor: pointer;
-}
-
-.orb-menu-switch > span:not(.orb-menu-sr-only)::after {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--color-fg) 86%, transparent);
-  content: "";
-  transition: transform 140ms ease-out;
-}
-
-.orb-menu-switch input:checked + span {
-  border-color: var(--color-accent);
-  background: var(--color-accent-dark);
-}
-
-.orb-menu-switch input:checked + span::after {
-  transform: translateX(16px);
-}
-
 .orb-menu-error {
-  margin: -5px 0 0;
-  color: #ff8b8b;
+  margin: 0;
+  color: var(--color-err);
   font-size: 10px;
   line-height: 1.3;
 }
 
-.orb-menu-disable {
-  min-height: 28px;
-  margin-top: auto;
-  border: 1px solid rgba(255, 107, 107, 0.26);
-  border-radius: 8px;
-  background: rgba(255, 107, 107, 0.08);
-  color: #ff8b8b;
-  font-size: 11px;
+.orb-menu-actions {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-line);
+}
+
+.orb-menu-action {
+  min-height: 44px;
+  padding: 7px 9px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-fg-muted);
+  text-align: left;
   cursor: pointer;
 }
 
-.orb-menu-disable:hover {
-  border-color: rgba(255, 107, 107, 0.46);
-  background: rgba(255, 107, 107, 0.12);
+.orb-menu-action:hover {
+  border-color: var(--color-line);
+  background: var(--color-surface-hover);
+  color: var(--color-fg);
 }
 
-.orb-menu-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+.orb-menu-action > svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: var(--color-accent-light);
+  stroke-width: 1.8;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .orb-menu-switch > span:not(.orb-menu-sr-only)::after,
-  .orb-menu-disclosure svg {
-    transition: none;
-  }
+[data-ui-tone="light"] .orb-menu-action > svg {
+  color: var(--color-accent-dark);
+}
+
+.orb-menu-action > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.orb-menu-action strong {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.orb-menu-action small {
+  color: var(--color-fg-subtle);
+  font-size: 9px;
+}
+
+.orb-menu-action.danger > svg,
+.orb-menu-action.danger strong {
+  color: var(--color-err);
 }

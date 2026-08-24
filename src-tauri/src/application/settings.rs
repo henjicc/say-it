@@ -53,7 +53,12 @@ fn empty_object() -> Value {
     serde_json::json!({})
 }
 fn default_theme() -> Value {
-    serde_json::json!({"tone":"dark","accent":"#5199FF"})
+    serde_json::json!({
+        "tone":"dark",
+        "accent":"#5199FF",
+        "backgroundMode":"followAccent",
+        "background":"#0A0E16"
+    })
 }
 fn default_assistant_prefs() -> Value {
     serde_json::to_value(crate::application::assistant::AssistantPreferences::default())
@@ -342,6 +347,8 @@ mod tests {
         assert_eq!(v.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
+        assert_eq!(v.theme["backgroundMode"], "followAccent");
+        assert_eq!(v.theme["background"], "#0A0E16");
         assert_eq!(v.assistant_prefs["translationModel"], "none");
         assert_eq!(v.assistant_prefs["translationEngine"], "llm");
         assert_eq!(

@@ -535,7 +535,7 @@ fn main() {
             get_floating_orb_settings,
             show_floating_orb_menu,
             hide_floating_orb_menu,
-            set_floating_orb_menu_expanded,
+            floating_orb_open_main_window,
             set_floating_orb_appearance,
             floating_orb_start_dragging,
             floating_orb_activate,

@@ -4,6 +4,8 @@ import { CMD, EVT, cmd, emitEvent } from "@/lib/tauri";
 export interface AccentTheme {
   tone: "dark" | "light";
   accent: string;
+  backgroundMode: "followAccent" | "custom";
+  background: string;
 }
 
 interface ThemeState {
@@ -17,6 +19,8 @@ const THEME_KEY = "sayItAccentTheme";
 export const defaultAccentTheme: AccentTheme = {
   tone: "dark",
   accent: "#5199FF",
+  backgroundMode: "followAccent",
+  background: "#0A0E16",
 };
 
 function normalizeHex(value: string, fallback: string) {
@@ -38,6 +42,8 @@ function normalizeTheme(theme: Partial<AccentTheme>): AccentTheme {
   return {
     tone: theme.tone === "light" ? "light" : "dark",
     accent: normalizeHex(theme.accent || "", defaultAccentTheme.accent),
+    backgroundMode: theme.backgroundMode === "custom" ? "custom" : "followAccent",
+    background: normalizeHex(theme.background || "", defaultAccentTheme.background),
   };
 }
 
@@ -124,19 +130,26 @@ export function accentDark(hex: string) {
   return mix(hex, "#000000", 0.32);
 }
 
+export function themeBackground(themeValue: Partial<AccentTheme>) {
+  const theme = normalizeTheme(themeValue);
+  if (theme.backgroundMode === "custom") return theme.background;
+  return mix(theme.accent, theme.tone === "light" ? "#F4F7FB" : "#070A10", 0.96);
+}
+
 export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = document) {
   const theme = normalizeTheme(themeValue);
+  const background = themeBackground(theme);
   const root = target.documentElement;
   root.dataset.uiTone = theme.tone;
   root.style.setProperty("--color-accent", theme.accent);
   root.style.setProperty("--color-accent-light", accentLight(theme.accent));
   root.style.setProperty("--color-accent-dark", accentDark(theme.accent));
-  root.style.setProperty("--color-accent-contrast", "#FFFFFF");
+  root.style.setProperty("--color-accent-contrast", accentContrast(theme.accent));
   const light = theme.tone === "light";
-  root.style.setProperty("--color-bg", light ? "#F4F7FB" : "#0A0E16");
-  root.style.setProperty("--color-bg-sidebar", light ? "#EAF0F8" : "#080B12");
-  root.style.setProperty("--color-bg-titlebar", light ? "#EAF0F8" : "#080B12");
-  root.style.setProperty("--color-overlay", light ? "#FFFFFF" : "#12161F");
+  root.style.setProperty("--color-bg", background);
+  root.style.setProperty("--color-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));
+  root.style.setProperty("--color-bg-titlebar", mix(background, "#000000", light ? 0.04 : 0.18));
+  root.style.setProperty("--color-overlay", mix(background, "#FFFFFF", light ? 0.88 : 0.06));
   root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
   root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
   root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");

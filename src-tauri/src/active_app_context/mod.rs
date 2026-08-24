@@ -651,6 +651,22 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     }
 }
 
+pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        return windows::focused_target_is_editable(target);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::focused_target_is_editable(target);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = target;
+        Ok(false)
+    }
+}
+
 pub(crate) fn target_is_sensitive(target: ActivationTarget) -> Result<bool, String> {
     #[cfg(windows)]
     {

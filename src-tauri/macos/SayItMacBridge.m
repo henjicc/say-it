@@ -979,6 +979,33 @@ static NSNumber *SayItAXSelectionEditable(AXUIElementRef element) {
     return nil;
 }
 
+int32_t sayit_macos_focused_input_editable(uint32_t processId, char **error) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"检查焦点输入区域需要辅助功能权限");
+        return -1;
+    }
+    AXUIElementRef application = AXUIElementCreateApplication((pid_t)processId);
+    AXUIElementSetMessagingTimeout(application, 0.15f);
+    CFTypeRef focusedValue = NULL;
+    AXError focusedError = AXUIElementCopyAttributeValue(
+        application,
+        kAXFocusedUIElementAttribute,
+        &focusedValue
+    );
+    CFRelease(application);
+    if (focusedError != kAXErrorSuccess || focusedValue == NULL) {
+        if (focusedValue != NULL) CFRelease(focusedValue);
+        SayItSetError(error, @"无法读取当前焦点控件");
+        return -1;
+    }
+    AXUIElementRef focused = (AXUIElementRef)focusedValue;
+    AXUIElementSetMessagingTimeout(focused, 0.15f);
+    NSNumber *editable = SayItAXSelectionEditable(focused);
+    CFRelease(focusedValue);
+    if (editable == nil) return 0;
+    return editable.boolValue ? 1 : 0;
+}
+
 static NSString *SayItAXSelectedTextInTree(
     AXUIElementRef element,
     NSUInteger depth,
