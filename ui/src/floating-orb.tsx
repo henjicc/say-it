@@ -157,16 +157,20 @@ function FloatingOrbApp() {
             />
           ))}
         </span>
-      ) : loading || phase === "busy" ? (
-        <LoaderCircle className="orb-state-icon orb-spinner" aria-hidden />
-      ) : phase === "success" ? (
-        <Check className="orb-state-icon" aria-hidden />
-      ) : phase === "fallback" ? (
-        <Clipboard className="orb-state-icon" aria-hidden />
-      ) : phase === "error" ? (
-        <AlertTriangle className="orb-state-icon" aria-hidden />
       ) : (
-        <Mic className="orb-state-icon" aria-hidden />
+        <span className="orb-icon-shell" aria-hidden>
+          {loading || phase === "busy" ? (
+            <LoaderCircle key={phase} className="orb-state-icon orb-spinner" />
+          ) : phase === "success" ? (
+            <Check className="orb-state-icon" />
+          ) : phase === "fallback" ? (
+            <Clipboard className="orb-state-icon" />
+          ) : phase === "error" ? (
+            <AlertTriangle className="orb-state-icon" />
+          ) : (
+            <Mic className="orb-state-icon" />
+          )}
+        </span>
       )}
       <span className="orb-sr-only" aria-live="polite">{label}</span>
     </button>
