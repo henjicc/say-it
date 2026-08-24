@@ -898,7 +898,7 @@ export function SubtitleEditor({
                     "flex h-7 min-w-7 items-center justify-center rounded-[var(--radius-sm)] px-1 font-mono text-xs tabular-nums",
                     "transition-colors duration-[var(--dur-fast)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                     isHighlighted
-                      ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                      ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                       : "text-[var(--color-fg-faint)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >

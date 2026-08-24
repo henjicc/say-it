@@ -122,6 +122,45 @@ function mix(hex: string, target: string, amount: number) {
   });
 }
 
+function relativeLuminance(hex: string) {
+  const { r, g, b } = hexToRgb(hex);
+  const [lr, lg, lb] = [r, g, b].map((value) => {
+    const channel = value / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+export function contrastRatio(first: string, second: string) {
+  const lighter = Math.max(relativeLuminance(first), relativeLuminance(second));
+  const darker = Math.min(relativeLuminance(first), relativeLuminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function ensureTextContrast(background: string, foreground: "#000000" | "#FFFFFF") {
+  if (contrastRatio(background, foreground) >= 4.5) return background;
+  const target = foreground === "#FFFFFF" ? "#000000" : "#FFFFFF";
+  let low = 0;
+  let high = 1;
+  for (let index = 0; index < 18; index += 1) {
+    const amount = (low + high) / 2;
+    if (contrastRatio(mix(background, target, amount), foreground) >= 4.5) high = amount;
+    else low = amount;
+  }
+  return mix(background, target, high);
+}
+
+export function accentControlColors(accent: string) {
+  // 文本型主按钮遵循桌面应用的视觉语义：中深色、饱和色优先白字，只有真正的
+  // 浅色强调色才使用黑字。若原色达不到 AA，对填充色做最小幅度明暗修正。
+  const foreground = (relativeLuminance(accent) >= 0.48 ? "#000000" : "#FFFFFF") as
+    "#000000" | "#FFFFFF";
+  const background = ensureTextContrast(accent, foreground);
+  const hover = ensureTextContrast(mix(background, "#FFFFFF", 0.06), foreground);
+  const active = ensureTextContrast(mix(background, "#000000", 0.1), foreground);
+  return { background, foreground, hover, active };
+}
+
 export function accentLight(hex: string) {
   return mix(hex, "#FFFFFF", 0.34);
 }
@@ -147,6 +186,11 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   root.style.setProperty("--color-accent-contrast", accentContrast(theme.accent));
   root.style.setProperty("--color-accent-light-contrast", accentContrast(accentLight(theme.accent)));
   root.style.setProperty("--color-accent-dark-contrast", accentContrast(accentDark(theme.accent)));
+  const control = accentControlColors(theme.accent);
+  root.style.setProperty("--color-accent-control", control.background);
+  root.style.setProperty("--color-accent-control-hover", control.hover);
+  root.style.setProperty("--color-accent-control-active", control.active);
+  root.style.setProperty("--color-accent-control-contrast", control.foreground);
   const light = theme.tone === "light";
   root.style.setProperty("--theme-bg", background);
   root.style.setProperty("--theme-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));

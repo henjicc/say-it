@@ -97,7 +97,7 @@ export function SettingsAppearancePanel() {
                     className={cn(
                       "h-[var(--control-h-sm)] rounded-[var(--radius-md)] text-sm transition-colors duration-[var(--dur-fast)]",
                       active
-                        ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
+                        ? "bg-[var(--color-accent-control)] font-medium text-[var(--color-accent-control-contrast)]"
                         : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                     )}
                   >
@@ -132,7 +132,7 @@ export function SettingsAppearancePanel() {
                     className={cn(
                       "h-[var(--control-h-sm)] rounded-[var(--radius-md)] text-sm transition-colors duration-[var(--dur-fast)]",
                       active
-                        ? "bg-[var(--color-accent)] font-medium text-[var(--color-accent-contrast)]"
+                        ? "bg-[var(--color-accent-control)] font-medium text-[var(--color-accent-control-contrast)]"
                         : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                     )}
                   >

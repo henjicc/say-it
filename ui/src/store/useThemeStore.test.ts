@@ -13,9 +13,11 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import {
+  accentControlColors,
   accentContrast,
   applySystemGlassToDocument,
   applyThemeToDocument,
+  contrastRatio,
   defaultAccentTheme,
   useThemeStore,
 } from "./useThemeStore";
@@ -52,6 +54,7 @@ describe("theme store", () => {
     expect(document.documentElement.dataset.uiTone).toBe("light");
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#E36B2C");
     expect(document.documentElement.style.getPropertyValue("--color-accent-contrast")).toBe("#000000");
+    expect(document.documentElement.style.getPropertyValue("--color-accent-control-contrast")).toBe("#FFFFFF");
     expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F4F4F7");
     expect(document.documentElement.style.getPropertyValue("--system-glass-color")).toBe("#F8F7F8");
   });
@@ -72,8 +75,18 @@ describe("theme store", () => {
     expect(document.documentElement.style.getPropertyValue("--system-glass-tint")).toBe("40%");
   });
 
-  it("chooses readable black or white text from the actual accent luminance", () => {
+  it("keeps raw-color contrast available for non-control projections", () => {
     expect(accentContrast("#F4D35E")).toBe("#000000");
     expect(accentContrast("#17324D")).toBe("#FFFFFF");
+  });
+
+  it("uses white text for medium blue controls and minimally darkens the fill to AA", () => {
+    const blue = accentControlColors("#5199FF");
+    expect(blue.foreground).toBe("#FFFFFF");
+    expect(contrastRatio(blue.background, blue.foreground)).toBeGreaterThanOrEqual(4.5);
+
+    const yellow = accentControlColors("#F4D35E");
+    expect(yellow.foreground).toBe("#000000");
+    expect(contrastRatio(yellow.background, yellow.foreground)).toBeGreaterThanOrEqual(4.5);
   });
 });

@@ -31,7 +31,7 @@ const VARIANT_STYLES: Record<TabsVariant, {
   page: {
     list: "inline-flex h-[var(--control-h)] w-fit items-center gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-1",
     button: "h-[var(--control-h-sm)] rounded-[var(--radius-md)] px-4 text-sm",
-    active: "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]",
+    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
     inactive: "text-[var(--color-fg-subtle)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg-muted)]",
   },
   subpage: {
