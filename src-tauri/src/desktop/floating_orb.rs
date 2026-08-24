@@ -1472,15 +1472,16 @@ pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), Strin
     crate::application::dictation::stop_from_floating_orb(app).await
 }
 
-async fn send_return_key() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn send_return_key(target: crate::active_app_context::ActivationTarget) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
         {
-            crate::macos_native::press_return()
+            crate::macos_native::press_return(target.process_id)
         }
         #[cfg(not(target_os = "macos"))]
         {
             use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+            let _ = target;
             let mut enigo = Enigo::new(&Settings::default())
                 .map_err(|error| format!("初始化键盘模拟失败：{error}"))?;
             enigo
@@ -1490,6 +1491,20 @@ async fn send_return_key() -> Result<(), String> {
     })
     .await
     .map_err(|error| format!("模拟回车任务失败：{error}"))?
+}
+
+fn validate_submit_enter_target(
+    expected: crate::active_app_context::ActivationTarget,
+    current: crate::active_app_context::ActivationTarget,
+    sensitive: bool,
+) -> Result<(), String> {
+    if !crate::active_app_context::same_activation_target(current, expected) {
+        return Err("当前输入目标已变化".into());
+    }
+    if sensitive {
+        return Err("安全输入框不发送回车".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1509,19 +1524,16 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
         let _ = window.set_ignore_cursor_events(true);
     }
     emit_state(&app, "submitting", Some("正在发送回车…"));
+    // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
+    sleep(Duration::from_millis(40)).await;
     let result = async {
         let current = crate::active_app_context::activation_target()
             .ok_or_else(|| "当前输入目标已变化".to_string())?;
-        if !crate::active_app_context::same_activation_target(current, action.target) {
-            return Err("当前输入目标已变化".into());
-        }
-        if !crate::active_app_context::focused_target_is_editable(current)? {
-            return Err("当前焦点已不在可编辑输入框".into());
-        }
-        if crate::active_app_context::target_is_sensitive(current)? {
-            return Err("安全输入框不发送回车".into());
-        }
-        send_return_key().await
+        // 文本刚刚已成功注入；这里不再依赖可编辑性探针。浏览器 contenteditable
+        // 等控件会对辅助功能/UIA 报告不可编辑，继续检查会误拦截本可送达的回车。
+        let sensitive = crate::active_app_context::target_is_sensitive(current)?;
+        validate_submit_enter_target(action.target, current, sensitive)?;
+        send_return_key(current).await
     }
     .await;
     match result {
@@ -1530,6 +1542,7 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
             Ok(())
         }
         Err(error) => {
+            eprintln!("[floating-orb] 快捷回车未发送: {error}");
             complete_floating_orb(app, "error", "未发送回车".into(), 1500);
             Err(error)
         }
@@ -1721,5 +1734,25 @@ mod tests {
             now,
             now + Duration::from_millis(1)
         ));
+    }
+
+    #[test]
+    fn submit_enter_reuses_a_matching_non_sensitive_target() {
+        let target = crate::active_app_context::ActivationTarget {
+            window_handle: 42,
+            process_id: 7,
+            cursor_position: None,
+        };
+        assert!(validate_submit_enter_target(target, target, false).is_ok());
+        assert!(validate_submit_enter_target(target, target, true).is_err());
+        assert!(validate_submit_enter_target(
+            target,
+            crate::active_app_context::ActivationTarget {
+                window_handle: 99,
+                ..target
+            },
+            false,
+        )
+        .is_err());
     }
 }

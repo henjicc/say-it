@@ -229,9 +229,13 @@ bool sayit_macos_paste_current_clipboard(char **error) {
     return SayItPostPasteShortcut(error);
 }
 
-bool sayit_macos_press_return(char **error) {
+bool sayit_macos_press_return(uint32_t processId, char **error) {
     if (!AXIsProcessTrusted()) {
         SayItSetError(error, @"模拟回车需要辅助功能权限");
+        return false;
+    }
+    if (processId == 0) {
+        SayItSetError(error, @"模拟回车的目标应用无效");
         return false;
     }
     const CGKeyCode returnKeyCode = 0x24;
@@ -245,8 +249,10 @@ bool sayit_macos_press_return(char **error) {
         SayItSetError(error, @"无法创建 macOS 回车键事件");
         return false;
     }
-    CGEventPost(kCGHIDEventTap, keyDown);
-    CGEventPost(kCGHIDEventTap, keyUp);
+    // 点击非激活悬浮球时目标应用仍持有键盘焦点；定向投递可以避免事件被
+    // WebView 的鼠标处理阶段或其他前台状态变化截获。
+    CGEventPostToPid((pid_t)processId, keyDown);
+    CGEventPostToPid((pid_t)processId, keyUp);
     CFRelease(keyDown);
     CFRelease(keyUp);
     CFRelease(source);
