@@ -79,6 +79,12 @@ button {
   cursor: default;
 }
 
+.floating-orb.positioning,
+.floating-orb.positioning:disabled {
+  opacity: 0;
+  transition: none;
+}
+
 .floating-orb.recording {
   border-color: var(--accent-ring);
   cursor: pointer;

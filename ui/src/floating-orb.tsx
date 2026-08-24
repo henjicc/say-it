@@ -146,7 +146,11 @@ function FloatingOrbApp() {
     { length: WAVE_BAR_COUNT },
     (_, index) => waveform.peaks[index] ?? waveform.level,
   );
-  const loading = phase === "moving" || phase === "processing" || phase === "smartProcessing" || phase === "submitting";
+  const loading = phase === "moving"
+    || phase === "positioning"
+    || phase === "processing"
+    || phase === "smartProcessing"
+    || phase === "submitting";
   const interactive = phase === "idle" || phase === "armed" || phase === "recording" || (phase === "success" && canSubmit);
   const title = phase === "idle"
     ? transient ? label : "点击开始语音输入，拖动调整位置"

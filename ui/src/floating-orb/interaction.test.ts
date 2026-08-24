@@ -17,6 +17,7 @@ describe("floating orb interaction", () => {
     expect(floatingOrbLabel("recording", "聆听中…")).toBe("聆听中…");
     expect(floatingOrbLabel("fallback", "")).toBe("已复制，请手动粘贴");
     expect(floatingOrbLabel("armed", "")).toBe("点击开始语音输入");
+    expect(floatingOrbLabel("positioning", "")).toBe("正在定位…");
     expect(floatingOrbLabel("submitted", "")).toBe("已发送回车");
     expect(floatingOrbLabel("cancelled", "")).toBe("已取消");
   });
