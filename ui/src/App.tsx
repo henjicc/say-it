@@ -5,7 +5,8 @@ import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
-import { applyThemeToDocument, useThemeStore } from "@/store/useThemeStore";
+import { applySystemGlassToDocument, applyThemeToDocument, useThemeStore } from "@/store/useThemeStore";
+import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { initializeSettings } from "@/features/settings/settingsBridge";
 
 import { DictationView } from "@/views/DictationView";
@@ -40,6 +41,7 @@ export default function App() {
   const setSession = useUiStore((s) => s.setSession);
   const setView = useUiStore((s) => s.setView);
   const theme = useThemeStore((s) => s.theme);
+  const systemGlass = useFloatingOrbStore((s) => s.settings);
   const [settingsReady, setSettingsReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
 
@@ -61,6 +63,10 @@ export default function App() {
   useEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
+
+  useEffect(() => {
+    applySystemGlassToDocument(systemGlass);
+  }, [systemGlass.glassEnabled, systemGlass.glassTint]);
 
   useEffect(() => {
     cmd<SessionStatus>(CMD.getSessionStatus)

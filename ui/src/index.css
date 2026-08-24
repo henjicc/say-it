@@ -62,6 +62,24 @@
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
 :root {
+  --theme-bg: #0a0e16;
+  --theme-bg-sidebar: #080b12;
+  --theme-bg-titlebar: #080b12;
+  --theme-overlay: #12161f;
+  --theme-surface: rgba(255, 255, 255, 0.035);
+  --theme-surface-hover: rgba(255, 255, 255, 0.06);
+  --theme-surface-strong: rgba(255, 255, 255, 0.08);
+  --system-glass-color: #1c3456;
+  --system-glass-tint: 8%;
+
+  --color-bg: var(--theme-bg);
+  --color-bg-sidebar: var(--theme-bg-sidebar);
+  --color-bg-titlebar: var(--theme-bg-titlebar);
+  --color-overlay: var(--theme-overlay);
+  --color-surface: var(--theme-surface);
+  --color-surface-hover: var(--theme-surface-hover);
+  --color-surface-strong: var(--theme-surface-strong);
+
   --titlebar-h: 36px;
   --sidebar-w: 232px;
   --control-h: 44px;
@@ -79,6 +97,18 @@
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
   --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+/* 系统材质开启时，所有界面入口共享同一套透明背景令牌。原生窗口负责模糊桌面，
+ * WebView 只叠加跟随强调色的轻底色，避免把系统材质重新盖成实色。 */
+[data-system-glass="true"] {
+  --color-bg: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
+  --color-bg-sidebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
+  --color-bg-titlebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
+  --color-overlay: color-mix(in srgb, var(--theme-overlay) 58%, transparent);
+  --color-surface: color-mix(in srgb, var(--theme-overlay) 24%, transparent);
+  --color-surface-hover: color-mix(in srgb, var(--theme-overlay) 34%, transparent);
+  --color-surface-strong: color-mix(in srgb, var(--theme-overlay) 42%, transparent);
 }
 
 /* ============ 全局基样式 ============ */
@@ -102,6 +132,16 @@ body {
   font-size: 14px;
   line-height: 1.5;
   overflow: hidden;
+}
+
+[data-system-glass="true"] body {
+  background: transparent;
+}
+
+[data-system-glass="true"] [role="listbox"],
+[data-system-glass="true"] [role="dialog"] {
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
 }
 
 /* Tauri 拖拽区域 */
@@ -211,10 +251,6 @@ input[type="radio"] {
   accent-color: var(--color-accent);
 }
 
-[data-ui-tone="light"] body {
-  background: var(--color-bg);
-}
-
 [data-ui-tone="light"] .text-white {
   color: var(--color-fg) !important;
 }
@@ -244,14 +280,14 @@ input[type="radio"] {
   color: var(--color-fg) !important;
 }
 
-[data-ui-tone="light"] button.text-\[var\(--color-accent-contrast\)\] {
-  color: #ffffff !important;
-}
-
 [data-ui-tone="light"] .about-dialog {
   border-color: rgba(17, 24, 39, 0.08);
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+}
+
+[data-system-glass="true"][data-ui-tone="light"] .about-dialog {
+  background: var(--color-overlay);
 }
 
 /* 下拉弹层进入/离开动画（自 transform-origin: top 展开） */

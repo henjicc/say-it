@@ -29,7 +29,7 @@ describe("floating orb interaction", () => {
       opacity: 70,
       glassEnabled: true,
       glassMaterial: "sidebar",
-      glassTint: 0,
+      glassTint: 8,
       glassBorder: 0,
     });
     expect(normalizeFloatingOrbAppearance({

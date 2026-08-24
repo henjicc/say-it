@@ -55,13 +55,13 @@ button {
 
 .floating-orb.glass {
   border-color: color-mix(in srgb, var(--color-fg) var(--orb-glass-border, 8%), transparent);
-  background: color-mix(in srgb, var(--color-bg) var(--orb-glass-tint, 10%), transparent);
+  background: color-mix(in srgb, var(--system-glass-color) var(--orb-glass-tint, 10%), transparent);
 }
 
 .floating-orb.glass:hover,
 .floating-orb.glass.recording:hover {
   border-color: var(--accent-ring);
-  background: color-mix(in srgb, var(--color-bg) var(--orb-glass-tint, 10%), transparent);
+  background: color-mix(in srgb, var(--system-glass-color) var(--orb-glass-tint, 10%), transparent);
 }
 
 .floating-orb:hover .orb-icon-shell,

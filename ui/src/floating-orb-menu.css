@@ -44,7 +44,7 @@ input {
 
 .orb-menu-panel.glass {
   border-color: color-mix(in srgb, var(--color-fg) var(--glass-border, 8%), var(--color-line-strong));
-  background: color-mix(in srgb, var(--color-bg) var(--glass-tint, 10%), transparent);
+  background: color-mix(in srgb, var(--system-glass-color) var(--glass-tint, 10%), transparent);
 }
 
 .orb-menu-header,

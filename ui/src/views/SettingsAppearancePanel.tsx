@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import { ColorInput } from "@/components/ui/ColorInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Slider } from "@/components/ui/Slider";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
-import type { FloatingOrbSettings } from "@/lib/tauri";
 import { useThemeStore } from "@/store/useThemeStore";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import {
@@ -181,32 +180,22 @@ export function SettingsAppearancePanel() {
       <div className="mt-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
         <div className="flex items-start justify-between gap-5">
           <div>
-            <p className="text-sm font-medium text-[var(--color-fg)]">悬浮球系统毛玻璃</p>
-            <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">使用 macOS Vibrancy 或 Windows Acrylic，并实时预览材质变化。</p>
+            <p className="text-sm font-medium text-[var(--color-fg)]">全局系统毛玻璃</p>
           </div>
           <Switch
             checked={floatingOrb.glassEnabled}
             onChange={(glassEnabled) => void updateFloatingOrbAppearance({ glassEnabled }).catch(() => undefined)}
-            aria-label="启用悬浮球系统毛玻璃"
+            aria-label="启用全局系统毛玻璃"
           />
         </div>
 
         <div className={cn("mt-4 grid gap-4", !floatingOrb.glassEnabled && "opacity-45")}>
-          <label className="grid gap-2 text-xs text-[var(--color-fg-muted)]">
-            <span>macOS 系统材质</span>
-            <Select
-              size="sm"
-              disabled={!floatingOrb.glassEnabled}
-              value={floatingOrb.glassMaterial}
-              onChange={(event) => void updateFloatingOrbAppearance({
-                glassMaterial: event.target.value as FloatingOrbSettings["glassMaterial"],
-              }).catch(() => undefined)}
-            >
-              <option value="underWindow">通透背景</option>
-              <option value="content">柔和内容</option>
-              <option value="sidebar">清晰侧栏</option>
-            </Select>
-          </label>
+          <div className="grid gap-2 text-xs text-[var(--color-fg-muted)]">
+            <span>材质</span>
+            <div className="flex h-[var(--control-h-sm)] items-center rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 text-[var(--color-fg)]">
+              简单材质系统
+            </div>
+          </div>
           <Slider
             label="底色强度"
             value={floatingOrb.glassTint}
@@ -228,9 +217,6 @@ export function SettingsAppearancePanel() {
             onChange={(glassBorder) => void updateFloatingOrbAppearance({ glassBorder }).catch(() => undefined)}
           />
         </div>
-        <p className="mt-3 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          系统不开放连续的模糊半径；材质用于调整 macOS 模糊观感，Windows 主要受底色强度影响。
-        </p>
         {floatingOrbError && <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">保存悬浮球外观失败：{floatingOrbError}</p>}
       </div>
     </SettingsSection>

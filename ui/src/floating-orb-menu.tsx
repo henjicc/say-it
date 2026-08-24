@@ -4,7 +4,7 @@ import { PanelTopOpen, Power, RotateCcw } from "lucide-react";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { RangeInput } from "@/components/ui/RangeInput";
-import { applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
+import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   FLOATING_ORB_OPACITY_RANGE,
@@ -26,6 +26,7 @@ function FloatingOrbMenuApp() {
     const next = normalizeFloatingOrbAppearance(value);
     appearanceRef.current = next;
     setAppearance(next);
+    applySystemGlassToDocument(next);
   };
 
   const hideMenu = () => {

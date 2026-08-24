@@ -93,7 +93,7 @@ export function accentContrast(hex: string) {
   const luminance = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
   const blackContrast = (luminance + 0.05) / 0.05;
   const whiteContrast = 1.05 / (luminance + 0.05);
-  return blackContrast >= whiteContrast ? "#050505" : "#FFFFFF";
+  return blackContrast >= whiteContrast ? "#000000" : "#FFFFFF";
 }
 
 function hexToRgb(hex: string) {
@@ -145,20 +145,33 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   root.style.setProperty("--color-accent-light", accentLight(theme.accent));
   root.style.setProperty("--color-accent-dark", accentDark(theme.accent));
   root.style.setProperty("--color-accent-contrast", accentContrast(theme.accent));
+  root.style.setProperty("--color-accent-light-contrast", accentContrast(accentLight(theme.accent)));
+  root.style.setProperty("--color-accent-dark-contrast", accentContrast(accentDark(theme.accent)));
   const light = theme.tone === "light";
-  root.style.setProperty("--color-bg", background);
-  root.style.setProperty("--color-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));
-  root.style.setProperty("--color-bg-titlebar", mix(background, "#000000", light ? 0.04 : 0.18));
-  root.style.setProperty("--color-overlay", mix(background, "#FFFFFF", light ? 0.88 : 0.06));
+  root.style.setProperty("--theme-bg", background);
+  root.style.setProperty("--theme-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));
+  root.style.setProperty("--theme-bg-titlebar", mix(background, "#000000", light ? 0.04 : 0.18));
+  root.style.setProperty("--theme-overlay", mix(background, "#FFFFFF", light ? 0.88 : 0.06));
+  root.style.setProperty("--system-glass-color", mix(theme.accent, background, 0.72));
   root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
   root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
   root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");
   root.style.setProperty("--color-fg-faint", light ? "rgba(17, 24, 39, 0.32)" : "rgba(255, 255, 255, 0.30)");
-  root.style.setProperty("--color-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
-  root.style.setProperty("--color-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
-  root.style.setProperty("--color-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
+  root.style.setProperty("--theme-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
+  root.style.setProperty("--theme-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
+  root.style.setProperty("--theme-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
   root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.08)");
   root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.18)" : "rgba(255, 255, 255, 0.16)");
+}
+
+export function applySystemGlassToDocument(
+  settings: { glassEnabled?: boolean; glassTint?: number },
+  target = document,
+) {
+  const root = target.documentElement;
+  root.dataset.systemGlass = settings.glassEnabled === true ? "true" : "false";
+  const tint = Math.max(0, Math.min(40, Math.round(Number(settings.glassTint) || 0)));
+  root.style.setProperty("--system-glass-tint", `${tint}%`);
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => ({

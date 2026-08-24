@@ -124,6 +124,7 @@ pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::W
     let window = builder
         .build()
         .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
+    crate::desktop::floating_orb::sync_system_glass_window(&window);
 
     // 点击穿透：空闲时整块透明、不拦截鼠标。
     let _ = window.set_ignore_cursor_events(true);
