@@ -16,7 +16,8 @@ const ORB_OPACITY_MAX: u8 = 100;
 const ORB_GLASS_TINT_MAX: u8 = 40;
 const ORB_GLASS_BORDER_MAX: u8 = 30;
 const ORB_MENU_WIDTH: f64 = 280.0;
-const ORB_MENU_HEIGHT: f64 = 410.0;
+const ORB_MENU_COLLAPSED_HEIGHT: f64 = 286.0;
+const ORB_MENU_EXPANDED_HEIGHT: f64 = 444.0;
 const ORB_MENU_GAP: f64 = 8.0;
 
 fn normalized_orb_size(size: u16) -> u16 {
@@ -270,6 +271,31 @@ fn resolve_menu_position(
         preferred_x.clamp(monitor.x, max_x),
         centered_y.clamp(monitor.y, max_y),
     )
+}
+
+fn point_is_inside_window(
+    point: tauri::PhysicalPosition<f64>,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> bool {
+    point.x >= position.x as f64
+        && point.y >= position.y as f64
+        && point.x < position.x as f64 + size.width as f64
+        && point.y < position.y as f64 + size.height as f64
+}
+
+pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
+        return false;
+    };
+    let (Ok(cursor), Ok(position), Ok(size)) = (
+        app.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+    ) else {
+        return false;
+    };
+    point_is_inside_window(cursor, position, size)
 }
 
 fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<MonitorRect> {
@@ -598,7 +624,7 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
         WebviewUrl::App("floating-orb-menu.html".into()),
     )
     .title("悬浮球设置")
-    .inner_size(ORB_MENU_WIDTH, ORB_MENU_HEIGHT)
+    .inner_size(ORB_MENU_WIDTH, ORB_MENU_COLLAPSED_HEIGHT)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -634,11 +660,52 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
     Ok(window)
 }
 
-#[tauri::command]
-pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
+fn resize_and_position_floating_orb_menu(
+    app: &tauri::AppHandle,
+    menu: &tauri::WebviewWindow,
+    expanded: bool,
+) -> Result<(), String> {
     let orb = app
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
+    let height = if expanded {
+        ORB_MENU_EXPANDED_HEIGHT
+    } else {
+        ORB_MENU_COLLAPSED_HEIGHT
+    };
+    menu.set_size(tauri::LogicalSize::new(ORB_MENU_WIDTH, height))
+        .map_err(|error| format!("调整悬浮球设置面板尺寸失败：{error}"))?;
+    let scale = orb.scale_factor().unwrap_or(1.0);
+    let menu_size = tauri::PhysicalSize::new(
+        (ORB_MENU_WIDTH * scale).round() as u32,
+        (height * scale).round() as u32,
+    );
+    let position = resolve_menu_position(
+        orb.outer_position()
+            .map_err(|error| format!("读取悬浮球位置失败：{error}"))?,
+        orb.outer_size()
+            .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?,
+        menu_size,
+        (ORB_MENU_GAP * scale).round() as i32,
+        &monitor_rects(&orb),
+    );
+    menu.set_position(position)
+        .map_err(|error| format!("定位悬浮球设置面板失败：{error}"))
+}
+
+#[tauri::command]
+pub(crate) fn set_floating_orb_menu_expanded(
+    app: tauri::AppHandle,
+    expanded: bool,
+) -> Result<(), String> {
+    let menu = ensure_floating_orb_menu_window(&app)?;
+    resize_and_position_floating_orb_menu(&app, &menu, expanded)?;
+    let _ = menu.emit("floating-orb-menu-expanded", json!({ "expanded": expanded }));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
     let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
     apply_native_glass(
@@ -648,24 +715,16 @@ pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
         settings.glass_material,
         settings.glass_tint,
     );
-    let scale = orb.scale_factor().unwrap_or(1.0);
-    let position = resolve_menu_position(
-        orb.outer_position()
-            .map_err(|error| format!("读取悬浮球位置失败：{error}"))?,
-        orb.outer_size()
-            .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?,
-        menu.outer_size()
-            .map_err(|error| format!("读取悬浮球设置面板尺寸失败：{error}"))?,
-        (ORB_MENU_GAP * scale).round() as i32,
-        &monitor_rects(&orb),
-    );
-    menu.set_position(position)
-        .map_err(|error| format!("定位悬浮球设置面板失败：{error}"))?;
+    resize_and_position_floating_orb_menu(&app, &menu, false)?;
     menu.show()
         .map_err(|error| format!("显示悬浮球设置面板失败：{error}"))?;
     menu.set_focus()
         .map_err(|error| format!("激活悬浮球设置面板失败：{error}"))?;
     emit_config(&app, &settings);
+    let _ = menu.emit(
+        "floating-orb-menu-expanded",
+        json!({ "expanded": false }),
+    );
     Ok(())
 }
 
@@ -945,22 +1004,38 @@ mod tests {
             resolve_menu_position(
                 tauri::PhysicalPosition::new(200, 400),
                 tauri::PhysicalSize::new(64, 64),
-                tauri::PhysicalSize::new(280, 410),
+                tauri::PhysicalSize::new(280, 286),
                 8,
                 &monitors,
             ),
-            tauri::PhysicalPosition::new(272, 227)
+            tauri::PhysicalPosition::new(272, 289)
         );
         assert_eq!(
             resolve_menu_position(
                 tauri::PhysicalPosition::new(1840, 900),
                 tauri::PhysicalSize::new(64, 64),
-                tauri::PhysicalSize::new(280, 410),
+                tauri::PhysicalSize::new(280, 444),
                 8,
                 &monitors,
             ),
-            tauri::PhysicalPosition::new(1552, 670)
+            tauri::PhysicalPosition::new(1552, 636)
         );
+    }
+
+    #[test]
+    fn cursor_hit_test_uses_the_orb_window_bounds() {
+        let position = tauri::PhysicalPosition::new(-120, 80);
+        let size = tauri::PhysicalSize::new(48, 48);
+        assert!(point_is_inside_window(
+            tauri::PhysicalPosition::new(-100.0, 100.0),
+            position,
+            size,
+        ));
+        assert!(!point_is_inside_window(
+            tauri::PhysicalPosition::new(-72.0, 100.0),
+            position,
+            size,
+        ));
     }
 
     #[test]

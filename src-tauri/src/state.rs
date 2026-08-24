@@ -48,10 +48,10 @@ pub(crate) struct FloatingOrbPosition {
     pub(crate) y: i32,
 }
 
-pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 56;
-pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 100;
-pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 10;
-pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 8;
+pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 48;
+pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
+pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 0;
+pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
 
 fn default_floating_orb_size() -> u16 {
     DEFAULT_FLOATING_ORB_SIZE
@@ -72,9 +72,9 @@ fn default_floating_orb_glass_border() -> u8 {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum FloatingOrbGlassMaterial {
-    #[default]
     UnderWindow,
     Content,
+    #[default]
     Sidebar,
 }
 
