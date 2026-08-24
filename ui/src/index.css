@@ -35,6 +35,10 @@
   --color-accent-light: #8ec1ff;
   --color-accent-dark: #1c6fea;
   --color-accent-contrast: #ffffff;
+  --color-accent-control: #3576c9;
+  --color-accent-control-hover: #397aca;
+  --color-accent-control-active: #306ab5;
+  --color-accent-control-contrast: #ffffff;
 
   /* 圆角 */
   --radius-sm: 6px;

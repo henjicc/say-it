@@ -23,7 +23,7 @@ function NavButton({
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
         subtle ? "px-2.5 py-2 text-xs" : "px-3 py-3 text-sm",
         active
-          ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+          ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
           : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
       )}
     >

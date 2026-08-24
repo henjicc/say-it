@@ -26,14 +26,14 @@ export function Checkbox({ className, size = "md", ...props }: CheckboxProps) {
           "pointer-events-none flex h-full w-full items-center justify-center rounded-[var(--radius-sm)]",
           "border border-[var(--color-line-strong)] bg-[var(--color-surface)] transition-colors duration-[var(--dur-fast)]",
           "peer-hover:border-[var(--color-fg-subtle)]",
-          "peer-checked:border-transparent peer-checked:bg-[var(--color-accent)]",
+          "peer-checked:border-transparent peer-checked:bg-[var(--color-accent-control)]",
           "peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--accent-ring)]",
           "peer-disabled:opacity-50",
           "[&>svg]:scale-50 [&>svg]:opacity-0 [&>svg]:transition-[opacity,transform] [&>svg]:duration-[var(--dur-fast)]",
           "peer-checked:[&>svg]:scale-100 peer-checked:[&>svg]:opacity-100",
         )}
       >
-        <Check className="h-[72%] w-[72%] text-[var(--color-accent-contrast)]" strokeWidth={2.4} aria-hidden />
+        <Check className="h-[72%] w-[72%] text-[var(--color-accent-control-contrast)]" strokeWidth={2.4} aria-hidden />
       </span>
     </span>
   );

@@ -427,7 +427,7 @@ export function Select({
                   className={cn(
                     "flex min-h-9 w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-left text-sm transition-colors",
                     selected
-                      ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                      ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                       : "text-[var(--color-fg-muted)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg)]",
                     option.disabled && "cursor-not-allowed opacity-40",
                   )}

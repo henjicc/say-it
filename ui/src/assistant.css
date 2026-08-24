@@ -107,12 +107,12 @@ body,
 }
 
 .assistant-send-button {
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
+  background: var(--color-accent-control);
+  color: var(--color-accent-control-contrast);
 }
 
 .assistant-send-button:hover:not(:disabled) {
-  background: var(--color-accent-light);
+  background: var(--color-accent-control-hover);
 }
 
 .assistant-send-button:disabled {
