@@ -936,11 +936,7 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
     mark_floating_orb_interaction(&app);
     let state = app.state::<RuntimeState>();
-    if state
-        .floating_orb_runtime
-        .transient
-        .load(Ordering::Acquire)
-    {
+    if state.floating_orb_runtime.transient.load(Ordering::Acquire) {
         return;
     }
     let generation = state
@@ -1090,7 +1086,7 @@ async fn return_to_idle(
     {
         return;
     }
-    crate::desktop::mouse_gesture::reset_detection();
+    crate::desktop::mouse_gesture::resume_detection(&app);
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return;
     };
@@ -1168,10 +1164,7 @@ pub(crate) fn arm_floating_orb_submit_enter(
         .post_injection_action
         .lock()
     {
-        *action = Some(FloatingOrbPostInjectionAction {
-            target,
-            expires_at,
-        });
+        *action = Some(FloatingOrbPostInjectionAction { target, expires_at });
     }
     let timeout_app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1396,9 +1389,7 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
             }
             // 非激活悬浮球在部分 macOS 版本上仍会让前台应用查询短暂返回本应用，
             // activation_target 因而是 None。原窗口仍存在时继续使用刚冻结的目标。
-            (Some(armed), None)
-                if crate::active_app_context::app_identity(armed).is_some() =>
-            {
+            (Some(armed), None) if crate::active_app_context::app_identity(armed).is_some() => {
                 Some(armed)
             }
             _ => None,
@@ -1479,7 +1470,9 @@ pub(crate) async fn floating_orb_cancel(app: tauri::AppHandle) -> Result<(), Str
     crate::application::dictation::cancel_from_floating_orb(app).await
 }
 
-async fn send_return_key(target: crate::active_app_context::ActivationTarget) -> Result<(), String> {
+async fn send_return_key(
+    target: crate::active_app_context::ActivationTarget,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
         {
@@ -1503,9 +1496,9 @@ async fn send_return_key(target: crate::active_app_context::ActivationTarget) ->
 fn validate_submit_enter_target(
     expected: crate::active_app_context::ActivationTarget,
     current: Option<crate::active_app_context::ActivationTarget>,
-    sensitive: bool,
+    sensitive: Option<bool>,
 ) -> Result<crate::active_app_context::ActivationTarget, String> {
-    if sensitive {
+    if sensitive == Some(true) {
         return Err("安全输入框不发送回车".into());
     }
     if current.is_some_and(|current| {
@@ -1542,9 +1535,15 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
             return Err("原输入目标已关闭".to_string());
         }
         let current = crate::active_app_context::activation_target();
-        // 文本刚刚已成功注入；这里不再依赖可编辑性探针。浏览器 contenteditable
-        // 等控件会对辅助功能/UIA 报告不可编辑，继续检查会误拦截本可送达的回车。
-        let sensitive = crate::active_app_context::target_is_sensitive(action.target)?;
+        // 点击非激活悬浮球时，macOS 可能暂时无法返回前台外部窗口。文本注入前已经
+        // 完成过安全输入框检查；此时不再对失去前台可见性的目标重复做 AX 探测，
+        // 否则会把“无法读取焦点控件”误判成回车失败。
+        let sensitive = current
+            .filter(|current| {
+                crate::active_app_context::same_activation_target(*current, action.target)
+            })
+            .map(crate::active_app_context::target_is_sensitive)
+            .transpose()?;
         let target = validate_submit_enter_target(action.target, current, sensitive)?;
         send_return_key(target).await
     }
@@ -1756,10 +1755,10 @@ mod tests {
             process_id: 7,
             cursor_position: None,
         };
-        assert!(validate_submit_enter_target(target, Some(target), false).is_ok());
-        assert!(validate_submit_enter_target(target, Some(target), true).is_err());
+        assert!(validate_submit_enter_target(target, Some(target), Some(false)).is_ok());
+        assert!(validate_submit_enter_target(target, Some(target), Some(true)).is_err());
         assert_eq!(
-            validate_submit_enter_target(target, None, false)
+            validate_submit_enter_target(target, None, None)
                 .unwrap()
                 .process_id,
             target.process_id
@@ -1770,7 +1769,7 @@ mod tests {
                 window_handle: 99,
                 ..target
             }),
-            false,
+            Some(false),
         )
         .is_err());
     }
