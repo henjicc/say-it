@@ -80,6 +80,7 @@ export const CMD = {
   floatingOrbStartDragging: "floating_orb_start_dragging",
   floatingOrbActivate: "floating_orb_activate",
   floatingOrbStop: "floating_orb_stop",
+  floatingOrbCancel: "floating_orb_cancel",
   floatingOrbSubmitEnter: "floating_orb_submit_enter",
   setMouseGestureSettings: "set_mouse_gesture_settings",
   listRunningApps: "list_running_apps",

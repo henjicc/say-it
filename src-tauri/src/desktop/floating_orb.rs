@@ -1090,6 +1090,7 @@ async fn return_to_idle(
     {
         return;
     }
+    crate::desktop::mouse_gesture::reset_detection();
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return;
     };
@@ -1319,17 +1320,6 @@ async fn handle_mouse_gesture(
     if app
         .state::<RuntimeState>()
         .floating_orb_runtime
-        .post_injection_action
-        .lock()
-        .ok()
-        .and_then(|action| *action)
-        .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()))
-    {
-        return Ok(());
-    }
-    if app
-        .state::<RuntimeState>()
-        .floating_orb_runtime
         .armed
         .load(Ordering::Acquire)
     {
@@ -1482,6 +1472,11 @@ pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), Strin
     let _ = window.set_ignore_cursor_events(true);
     emit_state(&app, "processing", Some("识别中…"));
     crate::application::dictation::stop_from_floating_orb(app).await
+}
+
+#[tauri::command]
+pub(crate) async fn floating_orb_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    crate::application::dictation::cancel_from_floating_orb(app).await
 }
 
 async fn send_return_key(target: crate::active_app_context::ActivationTarget) -> Result<(), String> {

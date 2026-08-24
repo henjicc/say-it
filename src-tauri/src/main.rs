@@ -553,6 +553,7 @@ fn main() {
             floating_orb_start_dragging,
             floating_orb_activate,
             floating_orb_stop,
+            floating_orb_cancel,
             floating_orb_submit_enter,
             open_active_app_context_debug,
             close_active_app_context_debug,

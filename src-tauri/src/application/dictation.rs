@@ -882,6 +882,21 @@ pub(crate) async fn stop_from_floating_orb(app: AppHandle) -> Result<(), String>
     stop(app).await
 }
 
+pub(crate) async fn cancel_from_floating_orb(app: AppHandle) -> Result<(), String> {
+    let floating = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?
+        .trigger
+        .is_floating_orb();
+    if !floating || !is_active(&app) {
+        return Err("当前没有悬浮球语音输入可取消".into());
+    }
+    cancel(app).await
+}
+
 pub(crate) async fn stop_assistant_follow_up(app: AppHandle) -> Result<(), String> {
     let is_follow_up = app
         .state::<RuntimeState>()
@@ -1624,9 +1639,9 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     if trigger.is_floating_orb() {
         crate::desktop::complete_floating_orb(
             app.clone(),
-            "error",
+            "cancelled",
             "已取消".to_string(),
-            1000,
+            800,
         );
     } else {
         let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
