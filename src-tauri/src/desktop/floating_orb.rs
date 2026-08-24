@@ -290,6 +290,14 @@ fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return false;
     };
+    #[cfg(target_os = "macos")]
+    if window
+        .ns_window()
+        .ok()
+        .is_some_and(crate::macos_native::floating_orb_owns_pointer_event)
+    {
+        return true;
+    }
     let (Ok(cursor), Ok(position), Ok(size)) = (
         app.cursor_position(),
         window.outer_position(),
@@ -831,9 +839,12 @@ pub(crate) fn floating_orb_start_dragging(app: tauri::AppHandle) -> Result<(), S
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
     mark_floating_orb_interaction(&app);
-    window
+    let result = window
         .start_dragging()
-        .map_err(|error| format!("拖动悬浮球失败：{error}"))
+        .map_err(|error| format!("拖动悬浮球失败：{error}"));
+    // macOS 的原生拖拽可能阻塞到鼠标松开；返回后重新计时，覆盖随后才派发的 Reopen。
+    mark_floating_orb_interaction(&app);
+    result
 }
 
 fn schedule_persist_floating_orb_appearance(app: tauri::AppHandle) {

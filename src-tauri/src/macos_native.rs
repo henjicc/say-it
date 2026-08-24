@@ -167,6 +167,7 @@ unsafe extern "C" {
         ns_window: *mut c_void,
         error: *mut *mut c_char,
     ) -> bool;
+    fn sayit_macos_floating_orb_owns_pointer_event(ns_window: *mut c_void) -> bool;
     fn sayit_macos_paste_current_clipboard(error: *mut *mut c_char) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
@@ -521,6 +522,10 @@ pub(crate) fn configure_floating_orb_window(ns_window: *mut c_void) -> Result<()
             take_string(error).unwrap_or_else(|| "配置 macOS 悬浮球窗口失败".into())
         })
     }
+}
+
+pub(crate) fn floating_orb_owns_pointer_event(ns_window: *mut c_void) -> bool {
+    unsafe { sayit_macos_floating_orb_owns_pointer_event(ns_window) }
 }
 
 pub(crate) fn paste_text(text: &str) -> Result<(), String> {

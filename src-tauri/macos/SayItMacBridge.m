@@ -663,6 +663,19 @@ bool sayit_macos_configure_floating_orb_window(void *nsWindow, char **error) {
     return true;
 }
 
+bool sayit_macos_floating_orb_owns_pointer_event(void *nsWindow) {
+    if (nsWindow == NULL) return false;
+    __block bool ownsPointerEvent = false;
+    SayItRunOnMainThread(^{
+        NSWindow *window = (__bridge NSWindow *)nsWindow;
+        NSEvent *event = NSApp.currentEvent;
+        bool eventBelongsToWindow = event != nil && event.window == window;
+        bool cursorInsideWindow = NSPointInRect(NSEvent.mouseLocation, window.frame);
+        ownsPointerEvent = eventBelongsToWindow || cursorInsideWindow;
+    });
+    return ownsPointerEvent;
+}
+
 static NSDictionary *SayItWindowInfoForApplication(NSRunningApplication *application, CGWindowID targetWindowId) {
     if (application == nil || application.processIdentifier <= 0) return nil;
     CFArrayRef rawWindows = CGWindowListCopyWindowInfo(
