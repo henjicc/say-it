@@ -84,7 +84,7 @@ button {
   opacity: 0.9;
 }
 
-.floating-orb:hover .orb-state-icon,
+.floating-orb:hover .orb-icon-shell,
 .floating-orb:hover .orb-waveform {
   transform: scale(1.06);
 }
@@ -137,17 +137,24 @@ button {
   border-color: rgba(255, 107, 107, 0.42);
 }
 
-.orb-state-icon {
+.orb-icon-shell {
   position: relative;
   z-index: 1;
   width: 43%;
   height: 43%;
-  stroke-width: 1.8;
   transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.orb-state-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  stroke-width: 1.8;
 }
 
 .orb-spinner {
   animation: orb-spin 0.9s linear infinite;
+  will-change: transform;
 }
 
 .orb-waveform {
@@ -204,7 +211,7 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .floating-orb,
   .floating-orb::after,
-  .orb-state-icon,
+  .orb-icon-shell,
   .orb-waveform,
   .orb-wave-bar {
     transition: none;
@@ -214,7 +221,7 @@ button {
     transform: none;
   }
 
-  .floating-orb:hover .orb-state-icon,
+  .floating-orb:hover .orb-icon-shell,
   .floating-orb:hover .orb-waveform {
     transform: none;
   }
