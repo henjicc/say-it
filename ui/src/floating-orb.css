@@ -84,6 +84,11 @@ button {
   cursor: pointer;
 }
 
+.floating-orb.transient.armed,
+.floating-orb.transient.recording {
+  animation: orb-present 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .floating-orb.armed {
   color: var(--color-accent-light);
   border-color: var(--accent-ring);
@@ -221,6 +226,18 @@ button {
   }
 }
 
+@keyframes orb-present {
+  from {
+    opacity: 0;
+    transform: scale(0.78);
+  }
+
+  to {
+    opacity: var(--orb-opacity, 1);
+    transform: scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .floating-orb,
   .orb-icon-shell,
@@ -236,5 +253,10 @@ button {
 
   .orb-spinner {
     animation-duration: 1.8s;
+  }
+
+  .floating-orb.transient.armed,
+  .floating-orb.transient.recording {
+    animation: none;
   }
 }

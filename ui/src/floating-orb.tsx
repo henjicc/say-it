@@ -157,7 +157,7 @@ function FloatingOrbApp() {
   return (
     <button
       type="button"
-      className={`floating-orb ${phase}${appearance.glassEnabled ? " glass" : ""}`}
+      className={`floating-orb ${phase}${transient ? " transient" : ""}${appearance.glassEnabled ? " glass" : ""}`}
       style={{
         "--orb-opacity": appearance.opacity / 100,
         "--orb-glass-tint": `${appearance.glassTint}%`,

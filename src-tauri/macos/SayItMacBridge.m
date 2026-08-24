@@ -723,10 +723,10 @@ bool sayit_macos_floating_orb_owns_pointer_event(void *nsWindow) {
     __block bool ownsPointerEvent = false;
     SayItRunOnMainThread(^{
         NSWindow *window = (__bridge NSWindow *)nsWindow;
-        NSEvent *event = NSApp.currentEvent;
-        bool eventBelongsToWindow = event != nil && event.window == window;
-        bool cursorInsideWindow = NSPointInRect(NSEvent.mouseLocation, window.frame);
-        ownsPointerEvent = eventBelongsToWindow || cursorInsideWindow;
+        // NSApp.currentEvent is the last event dispatched by AppKit, not necessarily an event
+        // that is still being handled. Keeping it in this hit test makes one click on the orb
+        // suppress every later global mouse gesture until another application event arrives.
+        ownsPointerEvent = NSPointInRect(NSEvent.mouseLocation, window.frame);
     });
     return ownsPointerEvent;
 }
