@@ -15,12 +15,15 @@ export function shouldStartOrbDrag(deltaX: number, deltaY: number): boolean {
   return Math.hypot(deltaX, deltaY) >= ORB_DRAG_THRESHOLD;
 }
 
+export function floatingOrbWaveScale(value: number): number {
+  const normalized = Math.max(0, Math.min(1, Number(value) || 0));
+  return Math.min(1, Math.sqrt(normalized) * 1.8);
+}
+
 export function floatingOrbLabel(
   phase: Exclude<OrbPhase, "idle" | "busy">,
   message: string,
-  stopHovered: boolean,
 ): string {
-  if (stopHovered && phase === "recording") return "停止识别";
   if (message) return message;
   return ({
     moving: "正在启动…",

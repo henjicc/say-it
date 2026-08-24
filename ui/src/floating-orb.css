@@ -22,33 +22,35 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
-.floating-orb,
-.floating-bubble {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #fff;
-  background: rgba(12, 16, 24, 0.96);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(14px);
-}
-
 .floating-orb {
+  position: relative;
   width: 56px;
   height: 56px;
   padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   display: grid;
   place-items: center;
+  color: #fff;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(68, 117, 180, 0.28), transparent 42%),
+    rgba(12, 16, 24, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(14px);
   cursor: grab;
   touch-action: none;
   transition:
     border-color 120ms ease-out,
     background 120ms ease-out,
-    transform 120ms ease-out;
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out;
 }
 
 .floating-orb:hover {
   border-color: rgba(142, 193, 255, 0.56);
-  background: rgba(18, 31, 50, 0.97);
+  background:
+    radial-gradient(circle at 35% 28%, rgba(81, 153, 255, 0.36), transparent 44%),
+    rgba(18, 31, 50, 0.97);
 }
 
 .floating-orb:active {
@@ -56,81 +58,98 @@ button {
   transform: scale(0.96);
 }
 
-.floating-orb.busy {
-  color: #ffd166;
+.floating-orb:disabled {
+  opacity: 1;
   cursor: default;
 }
 
-.floating-orb svg {
+.floating-orb.recording {
+  border-color: rgba(81, 153, 255, 0.5);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.38),
+    0 0 calc(8px + var(--wave-level, 0) * 12px) rgba(81, 153, 255, 0.28);
+  cursor: pointer;
+}
+
+.floating-orb.recording:hover {
+  border-color: rgba(255, 77, 79, 0.52);
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 77, 79, 0.2), transparent 44%),
+    rgba(38, 16, 22, 0.97);
+}
+
+.floating-orb.moving,
+.floating-orb.processing,
+.floating-orb.smartProcessing {
+  color: #8ec1ff;
+}
+
+.floating-orb.success {
+  color: #25c36f;
+  border-color: rgba(37, 195, 111, 0.42);
+}
+
+.floating-orb.fallback,
+.floating-orb.busy {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.38);
+}
+
+.floating-orb.error {
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.orb-state-icon {
   width: 24px;
   height: 24px;
   stroke-width: 1.8;
 }
 
-.floating-orb.busy svg {
+.orb-spinner {
   animation: orb-spin 0.9s linear infinite;
 }
 
-.floating-bubble {
-  position: absolute;
-  left: 0;
-  bottom: 10px;
-  width: 172px;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: 18px;
+.orb-waveform {
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  font-size: 13px;
-  line-height: 1;
+  gap: 3px;
+}
+
+.orb-wave-bar {
+  width: 3px;
+  height: 22px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #8ec1ff, #5199ff 58%, #7b68ee);
+  box-shadow: 0 0 6px rgba(81, 153, 255, 0.38);
+  transform: scaleY(var(--bar-scale, 0.18));
+  transform-origin: center;
+  transition: transform 70ms ease-out;
+}
+
+.orb-wave-bar:nth-child(1),
+.orb-wave-bar:nth-child(5) {
+  height: 14px;
+}
+
+.orb-wave-bar:nth-child(2),
+.orb-wave-bar:nth-child(4) {
+  height: 19px;
+}
+
+.orb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
-  cursor: default;
-  transition: background 120ms ease-out, border-color 120ms ease-out;
-}
-
-.floating-bubble:disabled {
-  opacity: 1;
-}
-
-.floating-bubble.recording {
-  cursor: pointer;
-}
-
-.floating-bubble.recording svg {
-  color: #ff4d4f;
-}
-
-.floating-bubble.recording:hover {
-  border-color: rgba(255, 77, 79, 0.46);
-  background: rgba(38, 16, 22, 0.97);
-}
-
-.floating-bubble.moving svg,
-.floating-bubble.processing svg,
-.floating-bubble.smartProcessing svg {
-  color: #8ec1ff;
-  animation: orb-spin 0.9s linear infinite;
-}
-
-.floating-bubble.success svg {
-  color: #25c36f;
-}
-
-.floating-bubble.fallback svg {
-  color: #ffd166;
-}
-
-.floating-bubble.error svg {
-  color: #ff6b6b;
-}
-
-.floating-bubble svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  stroke-width: 1.8;
+  border: 0;
 }
 
 @keyframes orb-spin {
@@ -141,14 +160,11 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   .floating-orb,
-  .floating-bubble {
+  .orb-wave-bar {
     transition: none;
   }
 
-  .floating-orb.busy svg,
-  .floating-bubble.moving svg,
-  .floating-bubble.processing svg,
-  .floating-bubble.smartProcessing svg {
+  .orb-spinner {
     animation-duration: 1.8s;
   }
 }

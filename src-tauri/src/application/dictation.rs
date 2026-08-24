@@ -1157,16 +1157,31 @@ fn spawn_raw_consumer(
                     .assistant_request
                     .as_ref()
                     .is_some_and(|request| request.follow_up);
-                let waveform_config = should_show_waveform(s.mode, assistant_follow_up)
-                    .then(|| (s.prefs.dsp.clone(), s.sample_rate, assistant_follow_up));
+                let floating_orb = s.trigger.is_floating_orb();
+                let waveform_config = should_show_waveform(
+                    s.mode,
+                    assistant_follow_up,
+                    floating_orb,
+                )
+                .then(|| {
+                    (
+                        s.prefs.dsp.clone(),
+                        s.sample_rate,
+                        assistant_follow_up,
+                        floating_orb,
+                    )
+                });
                 (need_open, need_close, waveform_config)
             };
-            if let Some((params, sample_rate, assistant_follow_up)) = waveform_config {
+            if let Some((params, sample_rate, assistant_follow_up, floating_orb)) = waveform_config {
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
                 let processed = pcm16le_to_f32(&dsp.process(&samples));
                 if !processed.is_empty() {
                     let level = rms(&processed);
-                    if assistant_follow_up {
+                    if floating_orb {
+                        let peaks = summarize_rms(&processed, 5);
+                        crate::desktop::emit_floating_orb_waveform(&app, level, peaks);
+                    } else if assistant_follow_up {
                         // 追问窗展示的是实时响度而非瞬时峰值。分段 RMS 不会被单个
                         // 尖峰直接顶满，视觉上更接近用户实际说话强弱。
                         let peaks = summarize_rms(&processed, 6);
@@ -2598,8 +2613,12 @@ fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
     }
 }
 
-fn should_show_waveform(mode: Option<DictationMode>, assistant_follow_up: bool) -> bool {
-    assistant_follow_up || mode == Some(DictationMode::File)
+fn should_show_waveform(
+    mode: Option<DictationMode>,
+    assistant_follow_up: bool,
+    floating_orb: bool,
+) -> bool {
+    floating_orb || assistant_follow_up || mode == Some(DictationMode::File)
 }
 
 fn should_show_final_text_in_indicator(mode: Option<DictationMode>) -> bool {
@@ -3660,11 +3679,12 @@ mod tests {
     }
 
     #[test]
-    fn waveform_is_shown_for_file_dictation_and_inline_voice_follow_up() {
-        assert!(should_show_waveform(Some(DictationMode::File), false));
-        assert!(should_show_waveform(Some(DictationMode::Realtime), true));
-        assert!(!should_show_waveform(Some(DictationMode::Realtime), false));
-        assert!(!should_show_waveform(None, false));
+    fn waveform_is_shown_for_file_follow_up_and_floating_orb_dictation() {
+        assert!(should_show_waveform(Some(DictationMode::File), false, false));
+        assert!(should_show_waveform(Some(DictationMode::Realtime), true, false));
+        assert!(should_show_waveform(Some(DictationMode::Realtime), false, true));
+        assert!(!should_show_waveform(Some(DictationMode::Realtime), false, false));
+        assert!(!should_show_waveform(None, false, false));
     }
 
     #[test]
