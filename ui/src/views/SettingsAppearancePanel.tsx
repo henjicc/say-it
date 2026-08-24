@@ -117,10 +117,10 @@ export function SettingsAppearancePanel() {
 
           <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
             <p className="text-sm font-medium text-[var(--color-fg)]">背景色</p>
-            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">可轻微跟随强调色，也可使用独立背景基色。</p>
+            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">优先保证清晰的背景模糊，也可使用独立背景基色。</p>
             <div className="mt-3 grid grid-cols-2 gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-1">
               {[
-                { value: "followAccent", label: "跟随强调色" },
+                { value: "followAccent", label: "柔和背景" },
                 { value: "custom", label: "自定义" },
               ].map((option) => {
                 const active = theme.backgroundMode === option.value;

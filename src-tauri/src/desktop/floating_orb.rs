@@ -63,14 +63,22 @@ fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
     } else {
         (7, 10, 16)
     };
-    mix_rgb(accent, target, 0.96)
+    mix_rgb(accent, target, 0.98)
 }
 
 #[cfg(any(windows, test))]
 fn theme_glass_tint_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
     let accent =
         parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((81, 153, 255));
-    mix_rgb(accent, theme_background_rgb(value), 0.72)
+    let light = value.get("tone").and_then(Value::as_str) == Some("light");
+    let base = if value.get("backgroundMode").and_then(Value::as_str) == Some("custom") {
+        theme_background_rgb(value)
+    } else if light {
+        (248, 250, 252)
+    } else {
+        (5, 7, 11)
+    };
+    mix_rgb(accent, base, if light { 0.98 } else { 0.97 })
 }
 
 #[cfg(windows)]
@@ -1196,7 +1204,7 @@ mod tests {
                 "accent": "#FF4013",
                 "backgroundMode": "followAccent"
             })),
-            (17, 12, 16)
+            (12, 11, 16)
         );
         assert_eq!(
             theme_background_rgb(&serde_json::json!({
@@ -1211,7 +1219,7 @@ mod tests {
                 "accent": "#FF4013",
                 "backgroundMode": "followAccent"
             })),
-            (84, 27, 17)
+            (13, 9, 11)
         );
     }
 
