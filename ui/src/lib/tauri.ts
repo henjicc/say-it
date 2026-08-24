@@ -165,6 +165,9 @@ export interface FloatingOrbSettings {
   size: number;
   opacity: number;
   glassEnabled: boolean;
+  glassMaterial: "underWindow" | "content" | "sidebar";
+  glassTint: number;
+  glassBorder: number;
 }
 
 export interface AppSettings {

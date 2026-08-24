@@ -50,6 +50,8 @@ pub(crate) struct FloatingOrbPosition {
 
 pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 56;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 100;
+pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 10;
+pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 8;
 
 fn default_floating_orb_size() -> u16 {
     DEFAULT_FLOATING_ORB_SIZE
@@ -57,6 +59,23 @@ fn default_floating_orb_size() -> u16 {
 
 fn default_floating_orb_opacity() -> u8 {
     DEFAULT_FLOATING_ORB_OPACITY
+}
+
+fn default_floating_orb_glass_tint() -> u8 {
+    DEFAULT_FLOATING_ORB_GLASS_TINT
+}
+
+fn default_floating_orb_glass_border() -> u8 {
+    DEFAULT_FLOATING_ORB_GLASS_BORDER
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FloatingOrbGlassMaterial {
+    #[default]
+    UnderWindow,
+    Content,
+    Sidebar,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +91,12 @@ pub(crate) struct FloatingOrbSettings {
     pub(crate) opacity: u8,
     #[serde(default)]
     pub(crate) glass_enabled: bool,
+    #[serde(default)]
+    pub(crate) glass_material: FloatingOrbGlassMaterial,
+    #[serde(default = "default_floating_orb_glass_tint")]
+    pub(crate) glass_tint: u8,
+    #[serde(default = "default_floating_orb_glass_border")]
+    pub(crate) glass_border: u8,
 }
 
 impl Default for FloatingOrbSettings {
@@ -82,6 +107,9 @@ impl Default for FloatingOrbSettings {
             size: DEFAULT_FLOATING_ORB_SIZE,
             opacity: DEFAULT_FLOATING_ORB_OPACITY,
             glass_enabled: false,
+            glass_material: FloatingOrbGlassMaterial::default(),
+            glass_tint: DEFAULT_FLOATING_ORB_GLASS_TINT,
+            glass_border: DEFAULT_FLOATING_ORB_GLASS_BORDER,
         }
     }
 }

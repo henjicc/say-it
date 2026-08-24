@@ -228,6 +228,12 @@ mod tests {
         assert_eq!(data.floating_orb.size, 56);
         assert_eq!(data.floating_orb.opacity, 100);
         assert!(!data.floating_orb.glass_enabled);
+        assert_eq!(
+            data.floating_orb.glass_material,
+            FloatingOrbGlassMaterial::UnderWindow
+        );
+        assert_eq!(data.floating_orb.glass_tint, 10);
+        assert_eq!(data.floating_orb.glass_border, 8);
     }
 
     #[test]
