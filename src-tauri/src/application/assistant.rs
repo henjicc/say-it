@@ -1702,6 +1702,7 @@ fn ensure_answer_window(app: &AppHandle) -> Result<(), String> {
     .visible(false)
     .build()
     .map_err(|error| format!("创建智能助手回答窗失败：{error}"))?;
+    crate::desktop::floating_orb::sync_system_glass_window(&window);
     let app_handle = app.clone();
     window.on_window_event(move |event| {
         if !matches!(event, tauri::WindowEvent::Focused(false))

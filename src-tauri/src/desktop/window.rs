@@ -167,6 +167,7 @@ pub(crate) fn ensure_main_window(app: &tauri::AppHandle) -> Result<(), String> {
             })();
             match result {
                 Ok(window) => {
+                    crate::desktop::floating_orb::sync_system_glass_window(&window);
                     let _ = restore_main_window_placement(&window);
                     Ok(())
                 }

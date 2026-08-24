@@ -4,7 +4,7 @@ import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
-import { applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
+import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   floatingOrbLabel,
@@ -56,8 +56,14 @@ function FloatingOrbApp() {
   useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
 
   useTauriEvent<Partial<FloatingOrbAppearance>>("floating-orb-config", (payload) => {
-    setAppearance(normalizeFloatingOrbAppearance(payload));
+    const next = normalizeFloatingOrbAppearance(payload);
+    setAppearance(next);
+    applySystemGlassToDocument(next);
   });
+
+  useEffect(() => {
+    applySystemGlassToDocument(appearance);
+  }, [appearance.glassEnabled, appearance.glassTint]);
 
   useTauriEvent<OrbStatePayload>("floating-orb-state", (payload) => {
     const next = payload.phase || "idle";

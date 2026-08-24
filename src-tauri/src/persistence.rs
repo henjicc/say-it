@@ -232,7 +232,7 @@ mod tests {
             data.floating_orb.glass_material,
             FloatingOrbGlassMaterial::Sidebar
         );
-        assert_eq!(data.floating_orb.glass_tint, 0);
+        assert_eq!(data.floating_orb.glass_tint, 8);
         assert_eq!(data.floating_orb.glass_border, 0);
     }
 

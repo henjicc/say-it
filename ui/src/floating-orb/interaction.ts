@@ -21,7 +21,7 @@ export const DEFAULT_FLOATING_ORB_APPEARANCE = {
   opacity: 40,
   glassEnabled: false,
   glassMaterial: "sidebar" as FloatingOrbGlassMaterial,
-  glassTint: 0,
+  glassTint: 8,
   glassBorder: 0,
 } as const;
 

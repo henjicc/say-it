@@ -21,7 +21,7 @@ export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
     opacity: 40,
     glassEnabled: false,
     glassMaterial: "sidebar",
-    glassTint: 0,
+    glassTint: 8,
     glassBorder: 0,
   },
   busy: false,

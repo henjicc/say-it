@@ -11,7 +11,7 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-[var(--color-accent)] text-[var(--color-accent-contrast)] font-medium hover:bg-[var(--color-accent-light)] active:bg-[var(--color-accent-dark)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
+    "bg-[var(--color-accent)] text-[var(--color-accent-contrast)] font-medium hover:bg-[var(--color-accent-light)] hover:text-[var(--color-accent-light-contrast)] active:bg-[var(--color-accent-dark)] active:text-[var(--color-accent-dark-contrast)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
   ghost:
     "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[var(--accent-ring)] hover:bg-[var(--accent-soft)] active:bg-[var(--accent-soft-strong)] disabled:opacity-40",
   danger:

@@ -50,7 +50,7 @@ pub(crate) struct FloatingOrbPosition {
 
 pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 48;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
-pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 0;
+pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
 
 fn default_floating_orb_size() -> u16 {

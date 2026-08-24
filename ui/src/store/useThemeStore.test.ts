@@ -13,6 +13,7 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import {
+  applySystemGlassToDocument,
   applyThemeToDocument,
   defaultAccentTheme,
   useThemeStore,
@@ -49,8 +50,8 @@ describe("theme store", () => {
 
     expect(document.documentElement.dataset.uiTone).toBe("light");
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#E36B2C");
-    expect(document.documentElement.style.getPropertyValue("--color-accent-contrast")).toBe("#050505");
-    expect(document.documentElement.style.getPropertyValue("--color-bg")).toBe("#F3F1F3");
+    expect(document.documentElement.style.getPropertyValue("--color-accent-contrast")).toBe("#000000");
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F3F1F3");
   });
 
   it("uses an explicit background when follow-accent mode is disabled", () => {
@@ -60,6 +61,12 @@ describe("theme store", () => {
       background: "#221A18",
     });
 
-    expect(document.documentElement.style.getPropertyValue("--color-bg")).toBe("#221A18");
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#221A18");
+  });
+
+  it("projects global system glass state and clamps its tint", () => {
+    applySystemGlassToDocument({ glassEnabled: true, glassTint: 99 });
+    expect(document.documentElement.dataset.systemGlass).toBe("true");
+    expect(document.documentElement.style.getPropertyValue("--system-glass-tint")).toBe("40%");
   });
 });

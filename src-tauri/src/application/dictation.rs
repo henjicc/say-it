@@ -503,7 +503,7 @@ pub(crate) fn initialize(app: AppHandle) {
 pub(crate) fn request_toggle_with_profile(app: AppHandle, profile_id: Option<String>) {
     let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
+        if let Err(e) = toggle_from_shortcut(app.clone(), activation_target, profile_id).await {
             present_runtime_error(&app, e).await;
         }
     });
@@ -512,7 +512,7 @@ pub(crate) fn request_start_with_profile(app: AppHandle, profile_id: Option<Stri
     let activation_target = crate::active_app_context::activation_target();
     tauri::async_runtime::spawn(async move {
         // 长按开始也走 toggle：若另一条快捷键已启动听写，本次按下只负责停止当前会话。
-        if let Err(e) = toggle(app.clone(), activation_target, profile_id).await {
+        if let Err(e) = toggle_from_shortcut(app.clone(), activation_target, profile_id).await {
             present_runtime_error(&app, e).await;
         }
     });
@@ -571,6 +571,16 @@ fn present_request_error(app: &AppHandle, error: String) {
     if can_present {
         let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
     }
+}
+
+fn present_floating_request_error(app: &AppHandle, error: String) {
+    if let Ok(mut session) = app.state::<RuntimeState>().dictation_runtime.session.lock() {
+        if matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed) {
+            session.mark_failed(error.clone(), None);
+        }
+    }
+    publish_state(app, Some(error.clone()));
+    crate::desktop::complete_floating_orb(app.clone(), "error", error, 3000);
 }
 
 async fn present_runtime_error(app: &AppHandle, error: String) {
@@ -722,6 +732,53 @@ async fn toggle(
         DictationPhase::WaitingForVoice | DictationPhase::Recording => stop(app).await,
         _ => Ok(()),
     }
+}
+
+fn should_route_shortcut_to_floating_orb(phase: DictationPhase, enabled: bool) -> bool {
+    enabled && matches!(phase, DictationPhase::Idle | DictationPhase::Failed)
+}
+
+fn shortcut_uses_floating_orb(app: &AppHandle, phase: DictationPhase) -> bool {
+    let enabled = app
+        .state::<RuntimeState>()
+        .floating_orb
+        .lock()
+        .map(|settings| settings.enabled)
+        .unwrap_or(false);
+    should_route_shortcut_to_floating_orb(phase, enabled)
+}
+
+async fn toggle_from_shortcut(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    shortcut_profile_id: Option<String>,
+) -> Result<(), String> {
+    let phase = app
+        .state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?
+        .phase;
+    if !shortcut_uses_floating_orb(&app, phase) {
+        return toggle(app, activation_target, shortcut_profile_id).await;
+    }
+
+    crate::desktop::sync_floating_orb_window(&app)?;
+    crate::desktop::set_floating_orb_phase(&app, "recording", "聆听中…");
+    let target_confirmed = activation_target.is_some();
+    if let Err(error) = start_internal(
+        app.clone(),
+        activation_target,
+        shortcut_profile_id,
+        None,
+        DictationTrigger::FloatingOrb { target_confirmed },
+    )
+    .await
+    {
+        present_floating_request_error(&app, error);
+    }
+    Ok(())
 }
 
 async fn start(
@@ -3216,6 +3273,26 @@ mod tests {
                 .map(|target| target.process_id),
             Some(7)
         );
+    }
+
+    #[test]
+    fn enabled_floating_orb_owns_shortcut_start_but_not_active_session_stop() {
+        assert!(should_route_shortcut_to_floating_orb(
+            DictationPhase::Idle,
+            true
+        ));
+        assert!(should_route_shortcut_to_floating_orb(
+            DictationPhase::Failed,
+            true
+        ));
+        assert!(!should_route_shortcut_to_floating_orb(
+            DictationPhase::Recording,
+            true
+        ));
+        assert!(!should_route_shortcut_to_floating_orb(
+            DictationPhase::Idle,
+            false
+        ));
     }
 
     #[test]

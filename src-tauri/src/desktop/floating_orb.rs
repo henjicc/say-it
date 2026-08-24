@@ -66,12 +66,19 @@ fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
     mix_rgb(accent, target, 0.96)
 }
 
+#[cfg(any(windows, test))]
+fn theme_glass_tint_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
+    let accent =
+        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((81, 153, 255));
+    mix_rgb(accent, theme_background_rgb(value), 0.72)
+}
+
 #[cfg(windows)]
-fn current_theme_background_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
+fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
     app.state::<RuntimeState>()
         .app_settings
         .lock()
-        .map(|settings| theme_background_rgb(&settings.theme))
+        .map(|settings| theme_glass_tint_rgb(&settings.theme))
         .unwrap_or((10, 14, 22))
 }
 
@@ -135,7 +142,7 @@ fn apply_native_glass(
         let _ = window_vibrancy::clear_mica(window);
         if enabled {
             let tint_alpha = ((tint.min(ORB_GLASS_TINT_MAX) as u16 * 255) / 100) as u8;
-            let (red, green, blue) = current_theme_background_rgb(window.app_handle());
+            let (red, green, blue) = current_theme_glass_tint_rgb(window.app_handle());
             if let Err(error) =
                 window_vibrancy::apply_acrylic(window, Some((red, green, blue, tint_alpha)))
             {
@@ -145,6 +152,40 @@ fn apply_native_glass(
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = (window, enabled, radius, material, tint);
+}
+
+fn native_glass_radius(window: &tauri::WebviewWindow, settings: &FloatingOrbSettings) -> f64 {
+    match window.label() {
+        FLOATING_ORB_LABEL => orb_window_extent(settings.size) / 2.0,
+        FLOATING_ORB_MENU_LABEL => 14.0,
+        "dictation-indicator" | "assistant-answer" => 16.0,
+        _ => 0.0,
+    }
+}
+
+pub(crate) fn sync_system_glass_window(window: &tauri::WebviewWindow) {
+    let settings = current_settings(window.app_handle());
+    apply_native_glass(
+        window,
+        settings.glass_enabled,
+        native_glass_radius(window, &settings),
+        settings.glass_material,
+        settings.glass_tint,
+    );
+}
+
+fn sync_system_glass_windows(app: &tauri::AppHandle) {
+    for label in [
+        "main",
+        FLOATING_ORB_LABEL,
+        FLOATING_ORB_MENU_LABEL,
+        "dictation-indicator",
+        "assistant-answer",
+    ] {
+        if let Some(window) = app.get_webview_window(label) {
+            sync_system_glass_window(&window);
+        }
+    }
 }
 
 fn native_glass_appearance_changed(
@@ -686,15 +727,7 @@ pub(crate) fn set_floating_orb_appearance(
         return Err(error);
     }
     if native_glass_appearance_changed(&previous, &current) {
-        if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
-            apply_native_glass(
-                &menu,
-                current.glass_enabled,
-                14.0,
-                current.glass_material,
-                current.glass_tint,
-            );
-        }
+        sync_system_glass_windows(&app);
     }
     emit_config(&app, &current);
     crate::application::contract::next_revision(&state.snapshot_revision);
@@ -766,25 +799,20 @@ fn current_window_theme(app: &tauri::AppHandle) -> tauri::Theme {
 
 pub(crate) fn sync_floating_orb_theme(app: &tauri::AppHandle, value: &serde_json::Value) {
     let theme = window_theme(value);
-    let settings = current_settings(app);
-    for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
+    for label in [
+        "main",
+        FLOATING_ORB_LABEL,
+        FLOATING_ORB_MENU_LABEL,
+        "dictation-indicator",
+        "assistant-answer",
+    ] {
         if let Some(window) = app.get_webview_window(label) {
             if let Err(error) = window.set_theme(Some(theme)) {
-                eprintln!("[floating-orb] 同步窗口主题失败: {error}");
+                eprintln!("[theme] 同步窗口主题失败: {error}");
             }
-            apply_native_glass(
-                &window,
-                settings.glass_enabled,
-                if label == FLOATING_ORB_LABEL {
-                    orb_window_extent(settings.size) / 2.0
-                } else {
-                    14.0
-                },
-                settings.glass_material,
-                settings.glass_tint,
-            );
         }
     }
+    sync_system_glass_windows(app);
 }
 
 fn resize_and_position_floating_orb_menu(
@@ -1170,6 +1198,14 @@ mod tests {
                 "background": "#221A18"
             })),
             (34, 26, 24)
+        );
+        assert_eq!(
+            theme_glass_tint_rgb(&serde_json::json!({
+                "tone": "dark",
+                "accent": "#FF4013",
+                "backgroundMode": "followAccent"
+            })),
+            (84, 27, 17)
         );
     }
 
