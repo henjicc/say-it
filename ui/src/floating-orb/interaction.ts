@@ -10,6 +10,20 @@ export type OrbPhase =
   | "busy";
 
 export const ORB_DRAG_THRESHOLD = 5;
+export const DEFAULT_FLOATING_ORB_APPEARANCE = { size: 56, opacity: 100 } as const;
+
+export function normalizeFloatingOrbAppearance(payload: {
+  size?: number;
+  opacity?: number;
+}): { size: number; opacity: number } {
+  const size = [48, 56, 64].includes(Number(payload.size))
+    ? Number(payload.size)
+    : DEFAULT_FLOATING_ORB_APPEARANCE.size;
+  const opacity = [70, 85, 100].includes(Number(payload.opacity))
+    ? Number(payload.opacity)
+    : DEFAULT_FLOATING_ORB_APPEARANCE.opacity;
+  return { size, opacity };
+}
 
 export function shouldStartOrbDrag(deltaX: number, deltaY: number): boolean {
   return Math.hypot(deltaX, deltaY) >= ORB_DRAG_THRESHOLD;

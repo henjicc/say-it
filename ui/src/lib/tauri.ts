@@ -72,6 +72,8 @@ export const CMD = {
   setIndicatorLayout: "set_indicator_layout",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   setFloatingOrbEnabled: "set_floating_orb_enabled",
+  getFloatingOrbSettings: "get_floating_orb_settings",
+  showFloatingOrbMenu: "show_floating_orb_menu",
   floatingOrbActivate: "floating_orb_activate",
   floatingOrbStop: "floating_orb_stop",
   listRunningApps: "list_running_apps",
@@ -158,6 +160,8 @@ export interface AppSnapshot {
 export interface FloatingOrbSettings {
   enabled: boolean;
   position?: { x: number; y: number } | null;
+  size: number;
+  opacity: number;
 }
 
 export interface AppSettings {

@@ -17,6 +17,11 @@ body,
   -webkit-user-select: none;
 }
 
+#floating-orb-root {
+  display: grid;
+  place-items: center;
+}
+
 button {
   font-family: var(--orb-font);
   -webkit-tap-highlight-color: transparent;
@@ -24,58 +29,90 @@ button {
 
 .floating-orb {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
   display: grid;
   place-items: center;
   color: #fff;
   background:
-    radial-gradient(circle at 35% 28%, rgba(68, 117, 180, 0.28), transparent 42%),
-    rgba(12, 16, 24, 0.96);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(14px);
+    radial-gradient(circle at 34% 26%, rgba(81, 153, 255, 0.23), transparent 43%),
+    rgba(12, 17, 26, 0.97);
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.28),
+    0 1px 3px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: var(--orb-opacity, 1);
+  backdrop-filter: blur(12px);
   cursor: grab;
   touch-action: none;
   transition:
-    border-color 120ms ease-out,
-    background 120ms ease-out,
-    transform 120ms ease-out,
-    box-shadow 120ms ease-out;
+    border-color 160ms ease-out,
+    background 160ms ease-out,
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 160ms ease-out,
+    opacity 160ms ease-out;
+}
+
+.floating-orb::after {
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.06), transparent 42%);
+  opacity: 0.55;
+  pointer-events: none;
+  content: "";
+  transition: opacity 160ms ease-out;
 }
 
 .floating-orb:hover {
-  border-color: rgba(142, 193, 255, 0.56);
+  border-color: rgba(142, 193, 255, 0.46);
   background:
-    radial-gradient(circle at 35% 28%, rgba(81, 153, 255, 0.36), transparent 44%),
-    rgba(18, 31, 50, 0.97);
+    radial-gradient(circle at 34% 26%, rgba(81, 153, 255, 0.32), transparent 46%),
+    rgba(15, 24, 38, 0.98);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.3),
+    0 0 8px rgba(81, 153, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transform: translateY(-1px) scale(1.025);
+}
+
+.floating-orb:hover::after {
+  opacity: 0.9;
+}
+
+.floating-orb:hover .orb-state-icon,
+.floating-orb:hover .orb-waveform {
+  transform: scale(1.06);
 }
 
 .floating-orb:active {
   cursor: grabbing;
-  transform: scale(0.96);
+  transform: scale(0.965);
 }
 
 .floating-orb:disabled {
-  opacity: 1;
+  opacity: var(--orb-opacity, 1);
   cursor: default;
 }
 
 .floating-orb.recording {
   border-color: rgba(81, 153, 255, 0.5);
   box-shadow:
-    0 10px 26px rgba(0, 0, 0, 0.38),
-    0 0 calc(8px + var(--wave-level, 0) * 12px) rgba(81, 153, 255, 0.28);
+    0 3px 10px rgba(0, 0, 0, 0.28),
+    0 0 var(--wave-glow, 5px) rgba(81, 153, 255, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   cursor: pointer;
 }
 
 .floating-orb.recording:hover {
-  border-color: rgba(255, 77, 79, 0.52);
+  border-color: rgba(142, 193, 255, 0.62);
   background:
-    radial-gradient(circle at 35% 28%, rgba(255, 77, 79, 0.2), transparent 44%),
-    rgba(38, 16, 22, 0.97);
+    radial-gradient(circle at 34% 26%, rgba(81, 153, 255, 0.34), transparent 46%),
+    rgba(15, 24, 38, 0.98);
 }
 
 .floating-orb.moving,
@@ -85,8 +122,8 @@ button {
 }
 
 .floating-orb.success {
-  color: #25c36f;
-  border-color: rgba(37, 195, 111, 0.42);
+  color: #8ec1ff;
+  border-color: rgba(81, 153, 255, 0.44);
 }
 
 .floating-orb.fallback,
@@ -101,9 +138,12 @@ button {
 }
 
 .orb-state-icon {
-  width: 24px;
-  height: 24px;
+  position: relative;
+  z-index: 1;
+  width: 43%;
+  height: 43%;
   stroke-width: 1.8;
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .orb-spinner {
@@ -111,20 +151,23 @@ button {
 }
 
 .orb-waveform {
-  width: 30px;
-  height: 30px;
+  position: relative;
+  z-index: 1;
+  width: 54%;
+  height: 54%;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 8%;
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .orb-wave-bar {
-  width: 3px;
-  height: 22px;
+  width: 10%;
+  height: 74%;
   border-radius: 999px;
-  background: linear-gradient(180deg, #8ec1ff, #5199ff 58%, #7b68ee);
-  box-shadow: 0 0 6px rgba(81, 153, 255, 0.38);
+  background: #5199ff;
+  box-shadow: 0 0 5px rgba(81, 153, 255, 0.34);
   transform: scaleY(var(--bar-scale, 0.18));
   transform-origin: center;
   transition: transform 70ms ease-out;
@@ -132,12 +175,12 @@ button {
 
 .orb-wave-bar:nth-child(1),
 .orb-wave-bar:nth-child(5) {
-  height: 14px;
+  height: 47%;
 }
 
 .orb-wave-bar:nth-child(2),
 .orb-wave-bar:nth-child(4) {
-  height: 19px;
+  height: 64%;
 }
 
 .orb-sr-only {
@@ -160,8 +203,20 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   .floating-orb,
+  .floating-orb::after,
+  .orb-state-icon,
+  .orb-waveform,
   .orb-wave-bar {
     transition: none;
+  }
+
+  .floating-orb:hover {
+    transform: none;
+  }
+
+  .floating-orb:hover .orb-state-icon,
+  .floating-orb:hover .orb-waveform {
+    transform: none;
   }
 
   .orb-spinner {

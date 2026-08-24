@@ -528,6 +528,8 @@ fn main() {
             set_indicator_layout,
             get_indicator_monitor_metrics,
             set_floating_orb_enabled,
+            get_floating_orb_settings,
+            show_floating_orb_menu,
             floating_orb_activate,
             floating_orb_stop,
             open_active_app_context_debug,

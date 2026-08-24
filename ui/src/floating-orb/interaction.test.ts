@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { floatingOrbLabel, floatingOrbWaveScale, shouldStartOrbDrag } from "./interaction";
+import {
+  floatingOrbLabel,
+  floatingOrbWaveScale,
+  normalizeFloatingOrbAppearance,
+  shouldStartOrbDrag,
+} from "./interaction";
 
 describe("floating orb interaction", () => {
   it("starts dragging only after the five pixel threshold", () => {
@@ -16,5 +21,16 @@ describe("floating orb interaction", () => {
     expect(floatingOrbWaveScale(0)).toBe(0);
     expect(floatingOrbWaveScale(0.04)).toBeCloseTo(0.36);
     expect(floatingOrbWaveScale(2)).toBe(1);
+  });
+
+  it("normalizes size and opacity to supported menu presets", () => {
+    expect(normalizeFloatingOrbAppearance({ size: 64, opacity: 70 })).toEqual({
+      size: 64,
+      opacity: 70,
+    });
+    expect(normalizeFloatingOrbAppearance({ size: 60, opacity: 90 })).toEqual({
+      size: 56,
+      opacity: 100,
+    });
   });
 });
