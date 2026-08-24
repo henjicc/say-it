@@ -4,6 +4,7 @@ use crate::state::{
 };
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const FLOATING_ORB_LABEL: &str = "floating-orb";
 pub(crate) const FLOATING_ORB_MENU_LABEL: &str = "floating-orb-menu";
@@ -19,6 +20,7 @@ const ORB_MENU_WIDTH: f64 = 280.0;
 const ORB_MENU_COLLAPSED_HEIGHT: f64 = 286.0;
 const ORB_MENU_EXPANDED_HEIGHT: f64 = 444.0;
 const ORB_MENU_GAP: f64 = 8.0;
+const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
 
 fn normalized_orb_size(size: u16) -> u16 {
     size.clamp(ORB_SIZE_MIN, ORB_SIZE_MAX)
@@ -284,7 +286,7 @@ fn point_is_inside_window(
         && point.y < position.y as f64 + size.height as f64
 }
 
-pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
+fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return false;
     };
@@ -296,6 +298,39 @@ pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
         return false;
     };
     point_is_inside_window(cursor, position, size)
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+fn reopen_suppression_is_active(deadline_ms: u64, current_ms: u64) -> bool {
+    deadline_ms > current_ms
+}
+
+pub(crate) fn mark_floating_orb_interaction(app: &tauri::AppHandle) {
+    app.state::<RuntimeState>()
+        .floating_orb_runtime
+        .suppress_main_reopen_until_ms
+        .store(
+            now_millis().saturating_add(ORB_MAIN_REOPEN_SUPPRESSION_MS),
+            Ordering::Release,
+        );
+}
+
+pub(crate) fn should_suppress_main_reopen(app: &tauri::AppHandle) -> bool {
+    if is_cursor_over_floating_orb(app) {
+        return true;
+    }
+    let deadline_ms = app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .suppress_main_reopen_until_ms
+        .load(Ordering::Acquire);
+    reopen_suppression_is_active(deadline_ms, now_millis())
 }
 
 fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<MonitorRect> {
@@ -769,6 +804,7 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
+    mark_floating_orb_interaction(&app);
     let state = app.state::<RuntimeState>();
     let generation = state
         .floating_orb_runtime
@@ -787,6 +823,17 @@ pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
             let _ = persist_current_position(&app);
         }
     });
+}
+
+#[tauri::command]
+pub(crate) fn floating_orb_start_dragging(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window(FLOATING_ORB_LABEL)
+        .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
+    mark_floating_orb_interaction(&app);
+    window
+        .start_dragging()
+        .map_err(|error| format!("拖动悬浮球失败：{error}"))
 }
 
 fn schedule_persist_floating_orb_appearance(app: tauri::AppHandle) {
@@ -1036,6 +1083,13 @@ mod tests {
             position,
             size,
         ));
+    }
+
+    #[test]
+    fn reopen_suppression_expires_after_the_drag_window() {
+        assert!(reopen_suppression_is_active(2_500, 1_000));
+        assert!(!reopen_suppression_is_active(2_500, 2_500));
+        assert!(!reopen_suppression_is_active(2_500, 3_000));
     }
 
     #[test]
