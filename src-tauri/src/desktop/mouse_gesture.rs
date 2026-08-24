@@ -34,6 +34,7 @@ struct PointerSample {
     button_down: bool,
     left_pressed: bool,
     left_released: bool,
+    native_click_count: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -247,6 +248,13 @@ impl RapidClickRecognizer {
             return None;
         }
 
+        let required_clicks = required_clicks.clamp(3, 5);
+        if sample.native_click_count >= required_clicks {
+            self.reset();
+            self.cooldown_until = Some(sample.at + COOLDOWN);
+            return Some((sample.x.round() as i32, sample.y.round() as i32));
+        }
+
         if self.clicks.back().is_some_and(|last| {
             sample.at.duration_since(last.at) > RAPID_CLICK_INTERVAL
                 || ((sample.x - last.x).powi(2) + (sample.y - last.y).powi(2)).sqrt()
@@ -259,7 +267,7 @@ impl RapidClickRecognizer {
             y: sample.y,
             at: sample.at,
         });
-        if self.clicks.len() < required_clicks.clamp(3, 5) as usize {
+        if self.clicks.len() < required_clicks as usize {
             return None;
         }
 
@@ -275,7 +283,14 @@ static BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 static MONITOR_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 static LAST_SAMPLE_US: AtomicU64 = AtomicU64::new(0);
 
-fn send_pointer_sample(x: f64, y: f64, button_down: bool, left_pressed: bool, left_released: bool) {
+fn send_pointer_sample(
+    x: f64,
+    y: f64,
+    button_down: bool,
+    left_pressed: bool,
+    left_released: bool,
+    native_click_count: u8,
+) {
     BUTTON_DOWN.store(button_down, Ordering::Release);
     let started = MONITOR_STARTED_AT.get_or_init(Instant::now);
     let now_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
@@ -294,6 +309,7 @@ fn send_pointer_sample(x: f64, y: f64, button_down: bool, left_pressed: bool, le
             button_down,
             left_pressed,
             left_released,
+            native_click_count,
         });
     }
 }
@@ -487,7 +503,7 @@ mod platform {
     use std::ffi::c_void;
     use std::sync::Mutex;
 
-    type Callback = fn(f64, f64, bool, bool, bool);
+    type Callback = fn(f64, f64, bool, bool, bool, u8);
     static CALLBACK: OnceLock<Callback> = OnceLock::new();
     static HANDLE: Mutex<Option<usize>> = Mutex::new(None);
 
@@ -498,9 +514,10 @@ mod platform {
         button_down: bool,
         left_pressed: bool,
         left_released: bool,
+        click_count: u8,
     ) {
         if let Some(callback) = CALLBACK.get() {
-            callback(x, y, button_down, left_pressed, left_released);
+            callback(x, y, button_down, left_pressed, left_released, click_count);
         }
     }
 
@@ -538,7 +555,7 @@ mod platform {
         HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_QUIT, WNDCLASSW,
     };
 
-    type Callback = fn(f64, f64, bool, bool, bool);
+    type Callback = fn(f64, f64, bool, bool, bool, u8);
     static CALLBACK: OnceLock<Callback> = OnceLock::new();
     static THREAD_ID: Mutex<Option<u32>> = Mutex::new(None);
     static LEFT_BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
@@ -564,6 +581,7 @@ mod platform {
                         down,
                         left_down && !previous_left,
                         !left_down && previous_left,
+                        0,
                     );
                 }
             }
@@ -653,7 +671,7 @@ mod platform {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
-    type Callback = fn(f64, f64, bool, bool, bool);
+    type Callback = fn(f64, f64, bool, bool, bool, u8);
     pub(super) fn start(_callback: Callback) -> Result<(), String> {
         Err("当前平台不支持鼠标手势".into())
     }
@@ -672,6 +690,7 @@ mod tests {
             button_down: false,
             left_pressed: false,
             left_released: false,
+            native_click_count: 0,
         }
     }
 
@@ -690,6 +709,7 @@ mod tests {
                 button_down: true,
                 left_pressed: true,
                 left_released: false,
+                native_click_count: 0,
             },
             required_clicks,
         );
@@ -701,6 +721,7 @@ mod tests {
                 button_down: false,
                 left_pressed: false,
                 left_released: true,
+                native_click_count: 0,
             },
             required_clicks,
         )
@@ -748,6 +769,7 @@ mod tests {
             button_down: true,
             left_pressed: false,
             left_released: false,
+            native_click_count: 0,
         });
         assert!(recognizer.samples.is_empty());
     }
@@ -903,6 +925,7 @@ mod tests {
                 button_down: true,
                 left_pressed: true,
                 left_released: false,
+                native_click_count: 0,
             },
             3,
         );
@@ -914,6 +937,7 @@ mod tests {
                 button_down: true,
                 left_pressed: false,
                 left_released: false,
+                native_click_count: 0,
             },
             3,
         );
@@ -926,6 +950,7 @@ mod tests {
                     button_down: false,
                     left_pressed: false,
                     left_released: true,
+                    native_click_count: 0,
                 },
                 3,
             ),
@@ -949,6 +974,7 @@ mod tests {
                         button_down: true,
                         left_pressed: true,
                         left_released: false,
+                        native_click_count: 0,
                     },
                     3,
                 ),
@@ -962,6 +988,7 @@ mod tests {
                     button_down: true,
                     left_pressed: false,
                     left_released: true,
+                    native_click_count: 0,
                 },
                 3,
             );
@@ -971,5 +998,41 @@ mod tests {
                 assert_eq!(result, Some((50, 50)));
             }
         }
+    }
+
+    #[test]
+    fn macos_native_click_count_triggers_without_rebuilding_prior_click_history() {
+        let start = Instant::now();
+        let mut recognizer = RapidClickRecognizer::default();
+        assert_eq!(
+            recognizer.push(
+                PointerSample {
+                    x: 75.0,
+                    y: 90.0,
+                    at: start,
+                    button_down: true,
+                    left_pressed: true,
+                    left_released: false,
+                    native_click_count: 3,
+                },
+                3,
+            ),
+            None,
+        );
+        assert_eq!(
+            recognizer.push(
+                PointerSample {
+                    x: 75.0,
+                    y: 90.0,
+                    at: start + Duration::from_millis(40),
+                    button_down: false,
+                    left_pressed: false,
+                    left_released: true,
+                    native_click_count: 3,
+                },
+                3,
+            ),
+            Some((75, 90)),
+        );
     }
 }

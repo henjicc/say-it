@@ -8,4 +8,9 @@
 
 - 点击状态机应优先处理事件自身携带的 `leftPressed` / `leftReleased` 边沿，再参考全局按钮状态处理拖拽。
 - macOS 原生回调应以当前 `mouseDown` / `mouseUp` 事件修正 `CGEventSourceButtonState` 的滞后一拍结果。
+- 连击次数优先使用 `kCGMouseEventClickState`，它同时覆盖外接鼠标和触控板，并遵循系统连击时间；自建时间窗口只作为其他平台与异常事件的回退。
 - 回归测试必须覆盖“收到释放沿，但组合按钮状态仍为按下”的样本，而不能只测试理想化的释放状态。
+
+## 悬浮窗目标校验
+
+非激活悬浮窗在部分 macOS 版本上被点击后，`frontmostApplication` 仍可能短暂返回本应用。此时不能把 `activation_target == None` 直接解释为原输入目标丢失：应确认冻结窗口仍存在，并将粘贴或回车定向投递到该目标；只有明确检测到另一个外部窗口时才判定目标已变化。

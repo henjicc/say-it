@@ -1273,7 +1273,9 @@ async fn show_mouse_gesture_armed(
         complete_floating_orb(app, "busy", "当前有其他音频任务".into(), 1500);
         return Ok(());
     }
-    let target = focused_editable_target().await;
+    // 连击本身已经把焦点交给了用户点击的位置。这里只冻结外部窗口，不再依赖
+    // 浏览器/Electron 对 contenteditable 并不稳定的 AX 可编辑性声明。
+    let target = crate::active_app_context::activation_target();
     let window = prepare_transient_orb(&app, position).await?;
     let state = app.state::<RuntimeState>();
     state
@@ -1350,7 +1352,7 @@ async fn handle_mouse_gesture(
     if mode == MouseGestureMode::Confirm {
         return show_mouse_gesture_armed(app, position).await;
     }
-    let target = focused_editable_target().await;
+    let target = crate::active_app_context::activation_target();
     prepare_transient_orb(&app, position).await?;
     start_mouse_gesture_dictation(app, target).await
 }
@@ -1395,10 +1397,17 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
             .lock()
             .map_err(|_| "手势目标状态锁失败".to_string())?
             .take();
-        let current = focused_editable_target().await;
+        let current = crate::active_app_context::activation_target();
         let target = match (armed_target, current) {
             (Some(armed), Some(current))
                 if crate::active_app_context::same_activation_target(armed, current) =>
+            {
+                Some(armed)
+            }
+            // 非激活悬浮球在部分 macOS 版本上仍会让前台应用查询短暂返回本应用，
+            // activation_target 因而是 None。原窗口仍存在时继续使用刚冻结的目标。
+            (Some(armed), None)
+                if crate::active_app_context::app_identity(armed).is_some() =>
             {
                 Some(armed)
             }
@@ -1498,16 +1507,20 @@ async fn send_return_key(target: crate::active_app_context::ActivationTarget) ->
 
 fn validate_submit_enter_target(
     expected: crate::active_app_context::ActivationTarget,
-    current: crate::active_app_context::ActivationTarget,
+    current: Option<crate::active_app_context::ActivationTarget>,
     sensitive: bool,
-) -> Result<(), String> {
-    if !crate::active_app_context::same_activation_target(current, expected) {
-        return Err("当前输入目标已变化".into());
-    }
+) -> Result<crate::active_app_context::ActivationTarget, String> {
     if sensitive {
         return Err("安全输入框不发送回车".into());
     }
-    Ok(())
+    if current.is_some_and(|current| {
+        !crate::active_app_context::same_activation_target(current, expected)
+    }) {
+        return Err("当前输入目标已变化".into());
+    }
+    // 点击非激活悬浮球后，macOS 的前台应用查询可能短暂只看到本应用，此时
+    // activation_target 返回 None。仍向刚完成注入且窗口尚存在的冻结目标定向投递。
+    Ok(expected)
 }
 
 #[tauri::command]
@@ -1530,13 +1543,15 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
     // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
     sleep(Duration::from_millis(40)).await;
     let result = async {
-        let current = crate::active_app_context::activation_target()
-            .ok_or_else(|| "当前输入目标已变化".to_string())?;
+        if crate::active_app_context::app_identity(action.target).is_none() {
+            return Err("原输入目标已关闭".to_string());
+        }
+        let current = crate::active_app_context::activation_target();
         // 文本刚刚已成功注入；这里不再依赖可编辑性探针。浏览器 contenteditable
         // 等控件会对辅助功能/UIA 报告不可编辑，继续检查会误拦截本可送达的回车。
-        let sensitive = crate::active_app_context::target_is_sensitive(current)?;
-        validate_submit_enter_target(action.target, current, sensitive)?;
-        send_return_key(current).await
+        let sensitive = crate::active_app_context::target_is_sensitive(action.target)?;
+        let target = validate_submit_enter_target(action.target, current, sensitive)?;
+        send_return_key(target).await
     }
     .await;
     match result {
@@ -1746,14 +1761,20 @@ mod tests {
             process_id: 7,
             cursor_position: None,
         };
-        assert!(validate_submit_enter_target(target, target, false).is_ok());
-        assert!(validate_submit_enter_target(target, target, true).is_err());
+        assert!(validate_submit_enter_target(target, Some(target), false).is_ok());
+        assert!(validate_submit_enter_target(target, Some(target), true).is_err());
+        assert_eq!(
+            validate_submit_enter_target(target, None, false)
+                .unwrap()
+                .process_id,
+            target.process_id
+        );
         assert!(validate_submit_enter_target(
             target,
-            crate::active_app_context::ActivationTarget {
+            Some(crate::active_app_context::ActivationTarget {
                 window_handle: 99,
                 ..target
-            },
+            }),
             false,
         )
         .is_err());
