@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use crate::state::{
-    FloatingOrbGlassMaterial, FloatingOrbPosition, FloatingOrbSettings, RuntimeState,
+    FloatingOrbGlassMaterial, FloatingOrbPosition, FloatingOrbPostInjectionAction,
+    FloatingOrbSettings, MouseGestureMode, RuntimeState,
 };
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
 use std::sync::atomic::Ordering;
@@ -549,9 +550,16 @@ pub(crate) fn ensure_floating_orb_window(
     window
         .set_position(position)
         .map_err(|error| format!("定位悬浮球失败：{error}"))?;
-    window
-        .show()
-        .map_err(|error| format!("显示悬浮球失败：{error}"))?;
+    if !app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .transient
+        .load(Ordering::Acquire)
+    {
+        window
+            .show()
+            .map_err(|error| format!("显示悬浮球失败：{error}"))?;
+    }
     emit_config(app, &settings);
     Ok(window)
 }
@@ -925,6 +933,13 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
     mark_floating_orb_interaction(&app);
     let state = app.state::<RuntimeState>();
+    if state
+        .floating_orb_runtime
+        .transient
+        .load(Ordering::Acquire)
+    {
+        return;
+    }
     let generation = state
         .floating_orb_runtime
         .placement_generation
@@ -983,11 +998,27 @@ fn schedule_persist_floating_orb_appearance(app: tauri::AppHandle) {
 
 fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<&str>) {
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+        let runtime = &app.state::<RuntimeState>().floating_orb_runtime;
+        let can_submit = runtime
+            .post_injection_action
+            .lock()
+            .ok()
+            .and_then(|action| *action)
+            .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
         let _ = window.emit(
             "floating-orb-state",
-            json!({ "phase": phase, "message": message }),
+            json!({
+                "phase": phase,
+                "message": message,
+                "transient": runtime.transient.load(Ordering::Acquire),
+                "canSubmit": can_submit,
+            }),
         );
     }
+}
+
+fn submit_enter_is_available(expires_at: Instant, now: Instant) -> bool {
+    expires_at > now
 }
 
 async fn cursor_location() -> Option<(i32, i32)> {
@@ -1059,8 +1090,38 @@ async fn return_to_idle(
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return;
     };
-    let _ = window.set_ignore_cursor_events(false);
-    emit_state(&app, "idle", None);
+    if let Ok(mut action) = state.floating_orb_runtime.post_injection_action.lock() {
+        *action = None;
+    }
+    state
+        .floating_orb_runtime
+        .armed
+        .store(false, Ordering::Release);
+    if let Ok(mut target) = state.floating_orb_runtime.armed_target.lock() {
+        *target = None;
+    }
+    if state
+        .floating_orb_runtime
+        .transient
+        .swap(false, Ordering::AcqRel)
+    {
+        let enabled = state
+            .floating_orb
+            .lock()
+            .map(|settings| settings.enabled)
+            .unwrap_or(false);
+        if enabled {
+            let _ = window.set_position(resolved_idle_position(&window));
+            let _ = window.set_ignore_cursor_events(false);
+            let _ = window.show();
+            emit_state(&app, "idle", None);
+        } else {
+            let _ = window.hide();
+        }
+    } else {
+        let _ = window.set_ignore_cursor_events(false);
+        emit_state(&app, "idle", None);
+    }
 }
 
 pub(crate) fn complete_floating_orb(
@@ -1069,15 +1130,238 @@ pub(crate) fn complete_floating_orb(
     message: String,
     delay_ms: u64,
 ) {
+    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+        let can_submit = phase == "success"
+            && app
+                .state::<RuntimeState>()
+                .floating_orb_runtime
+                .post_injection_action
+                .lock()
+                .ok()
+                .and_then(|action| *action)
+                .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
+        let _ = window.set_ignore_cursor_events(!can_submit);
+    }
     tauri::async_runtime::spawn(return_to_idle(app, delay_ms, phase, message));
 }
 
 pub(crate) fn set_floating_orb_phase(app: &tauri::AppHandle, phase: &str, message: &str) {
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let interactive = phase == "recording";
+        let interactive = phase == "recording" || phase == "armed";
         let _ = window.set_ignore_cursor_events(!interactive);
         emit_state(app, phase, Some(message));
     }
+}
+
+pub(crate) fn arm_floating_orb_submit_enter(
+    app: &tauri::AppHandle,
+    target: crate::active_app_context::ActivationTarget,
+) {
+    let expires_at = Instant::now() + Duration::from_millis(1000);
+    if let Ok(mut action) = app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .post_injection_action
+        .lock()
+    {
+        *action = Some(FloatingOrbPostInjectionAction {
+            target,
+            expires_at,
+        });
+    }
+    let timeout_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(1000)).await;
+        let expired = timeout_app
+            .state::<RuntimeState>()
+            .floating_orb_runtime
+            .post_injection_action
+            .lock()
+            .map(|mut action| {
+                if action.is_some_and(|value| value.expires_at == expires_at) {
+                    *action = None;
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if expired {
+            if let Some(window) = timeout_app.get_webview_window(FLOATING_ORB_LABEL) {
+                let _ = window.set_ignore_cursor_events(true);
+            }
+            emit_state(&timeout_app, "success", Some("已完成并复制"));
+        }
+    });
+}
+
+fn transient_orb_position(
+    window: &tauri::WebviewWindow,
+    fallback: (i32, i32),
+) -> tauri::PhysicalPosition<i32> {
+    let cursor = window
+        .app_handle()
+        .cursor_position()
+        .ok()
+        .map(|value| (value.x.round() as i32, value.y.round() as i32))
+        .unwrap_or(fallback);
+    let size = window.outer_size().unwrap_or_else(|_| {
+        let extent = current_settings(window.app_handle()).size as u32;
+        tauri::PhysicalSize::new(extent, extent)
+    });
+    clamp_orb_position(
+        tauri::PhysicalPosition::new(
+            cursor.0.saturating_sub((size.width / 2) as i32),
+            cursor.1.saturating_sub((size.height / 2) as i32),
+        ),
+        size,
+        &monitor_rects(window),
+    )
+}
+
+async fn prepare_transient_orb(
+    app: &tauri::AppHandle,
+    position: (i32, i32),
+) -> Result<tauri::WebviewWindow, String> {
+    let state = app.state::<RuntimeState>();
+    state
+        .floating_orb_runtime
+        .transient
+        .store(true, Ordering::Release);
+    state
+        .floating_orb_runtime
+        .transition_generation
+        .fetch_add(1, Ordering::AcqRel);
+    if let Ok(mut action) = state.floating_orb_runtime.post_injection_action.lock() {
+        *action = None;
+    }
+    let window = ensure_floating_orb_window(app)?;
+    let _ = window.hide();
+    window
+        .set_position(transient_orb_position(&window, position))
+        .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("显示手势悬浮球失败：{error}"))?;
+    Ok(window)
+}
+
+async fn start_mouse_gesture_dictation(
+    app: tauri::AppHandle,
+    target: Option<crate::active_app_context::ActivationTarget>,
+) -> Result<(), String> {
+    let target_confirmed = target.is_some();
+    app.state::<RuntimeState>()
+        .floating_orb_runtime
+        .armed
+        .store(false, Ordering::Release);
+    set_floating_orb_phase(&app, "recording", "聆听中…");
+    crate::application::dictation::start_from_mouse_gesture(app, target, target_confirmed).await
+}
+
+async fn show_mouse_gesture_armed(
+    app: tauri::AppHandle,
+    position: (i32, i32),
+) -> Result<(), String> {
+    if app.state::<RuntimeState>().audio_session.is_busy()
+        || crate::application::dictation::is_active(&app)
+    {
+        prepare_transient_orb(&app, position).await?;
+        complete_floating_orb(app, "busy", "当前有其他音频任务".into(), 1500);
+        return Ok(());
+    }
+    let target = focused_editable_target().await;
+    let window = prepare_transient_orb(&app, position).await?;
+    let state = app.state::<RuntimeState>();
+    state
+        .floating_orb_runtime
+        .armed
+        .store(true, Ordering::Release);
+    if let Ok(mut current) = state.floating_orb_runtime.armed_target.lock() {
+        *current = target;
+    }
+    let generation = state
+        .floating_orb_runtime
+        .armed_generation
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
+    let _ = window.set_ignore_cursor_events(false);
+    emit_state(&app, "armed", Some("点击开始语音输入"));
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(3000)).await;
+        let state = app.state::<RuntimeState>();
+        if state
+            .floating_orb_runtime
+            .armed_generation
+            .load(Ordering::Acquire)
+            == generation
+            && state
+                .floating_orb_runtime
+                .armed
+                .swap(false, Ordering::AcqRel)
+        {
+            complete_floating_orb(app, "idle", String::new(), 0);
+        }
+    });
+    Ok(())
+}
+
+async fn handle_mouse_gesture(
+    app: tauri::AppHandle,
+    position: (i32, i32),
+    mode: MouseGestureMode,
+) -> Result<(), String> {
+    if app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .post_injection_action
+        .lock()
+        .ok()
+        .and_then(|action| *action)
+        .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()))
+    {
+        return Ok(());
+    }
+    if app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .armed
+        .load(Ordering::Acquire)
+    {
+        return Ok(());
+    }
+    if mode == MouseGestureMode::Direct
+        && crate::application::dictation::is_mouse_gesture_recording(&app)
+    {
+        return floating_orb_stop(app).await;
+    }
+    // 录音中的确认模式以及任意处理阶段都忽略手势，避免临时球覆盖当前状态。
+    if crate::application::dictation::is_active(&app) {
+        return Ok(());
+    }
+    if app.state::<RuntimeState>().audio_session.is_busy() {
+        prepare_transient_orb(&app, position).await?;
+        complete_floating_orb(app, "busy", "当前有其他音频任务".into(), 1500);
+        return Ok(());
+    }
+    if mode == MouseGestureMode::Confirm {
+        return show_mouse_gesture_armed(app, position).await;
+    }
+    let target = focused_editable_target().await;
+    prepare_transient_orb(&app, position).await?;
+    start_mouse_gesture_dictation(app, target).await
+}
+
+pub(crate) fn request_mouse_gesture(
+    app: tauri::AppHandle,
+    position: (i32, i32),
+    mode: MouseGestureMode,
+) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = handle_mouse_gesture(app.clone(), position, mode).await {
+            complete_floating_orb(app, "error", error, 3000);
+        }
+    });
 }
 
 pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &str) {
@@ -1100,6 +1384,25 @@ pub(crate) fn emit_floating_orb_waveform(app: &tauri::AppHandle, level: f32, pea
 
 #[tauri::command]
 pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), String> {
+    let runtime = &app.state::<RuntimeState>().floating_orb_runtime;
+    if runtime.armed.swap(false, Ordering::AcqRel) {
+        runtime.armed_generation.fetch_add(1, Ordering::AcqRel);
+        let armed_target = runtime
+            .armed_target
+            .lock()
+            .map_err(|_| "手势目标状态锁失败".to_string())?
+            .take();
+        let current = focused_editable_target().await;
+        let target = match (armed_target, current) {
+            (Some(armed), Some(current))
+                if crate::active_app_context::same_activation_target(armed, current) =>
+            {
+                Some(armed)
+            }
+            _ => None,
+        };
+        return start_mouse_gesture_dictation(app, target).await;
+    }
     let enabled = app
         .state::<RuntimeState>()
         .floating_orb
@@ -1167,6 +1470,70 @@ pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), Strin
     let _ = window.set_ignore_cursor_events(true);
     emit_state(&app, "processing", Some("识别中…"));
     crate::application::dictation::stop_from_floating_orb(app).await
+}
+
+async fn send_return_key() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(target_os = "macos")]
+        {
+            crate::macos_native::press_return()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+            let mut enigo = Enigo::new(&Settings::default())
+                .map_err(|error| format!("初始化键盘模拟失败：{error}"))?;
+            enigo
+                .key(Key::Return, Direction::Click)
+                .map_err(|error| format!("模拟回车失败：{error}"))
+        }
+    })
+    .await
+    .map_err(|error| format!("模拟回车任务失败：{error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(), String> {
+    let action = app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .post_injection_action
+        .lock()
+        .map_err(|_| "快捷回车状态锁失败".to_string())?
+        .take()
+        .ok_or_else(|| "快捷回车窗口已结束".to_string())?;
+    if !submit_enter_is_available(action.expires_at, Instant::now()) {
+        return Err("快捷回车窗口已结束".into());
+    }
+    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+        let _ = window.set_ignore_cursor_events(true);
+    }
+    emit_state(&app, "submitting", Some("正在发送回车…"));
+    let result = async {
+        let current = crate::active_app_context::activation_target()
+            .ok_or_else(|| "当前输入目标已变化".to_string())?;
+        if !crate::active_app_context::same_activation_target(current, action.target) {
+            return Err("当前输入目标已变化".into());
+        }
+        if !crate::active_app_context::focused_target_is_editable(current)? {
+            return Err("当前焦点已不在可编辑输入框".into());
+        }
+        if crate::active_app_context::target_is_sensitive(current)? {
+            return Err("安全输入框不发送回车".into());
+        }
+        send_return_key().await
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            complete_floating_orb(app, "submitted", "已发送回车".into(), 800);
+            Ok(())
+        }
+        Err(error) => {
+            complete_floating_orb(app, "error", "未发送回车".into(), 1500);
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1340,5 +1707,19 @@ mod tests {
             ),
             tauri::PhysicalPosition::new(1840, 512)
         );
+    }
+
+    #[test]
+    fn submit_enter_window_expires_at_the_deadline() {
+        let now = Instant::now();
+        assert!(submit_enter_is_available(
+            now + Duration::from_millis(1000),
+            now
+        ));
+        assert!(!submit_enter_is_available(now, now));
+        assert!(!submit_enter_is_available(
+            now,
+            now + Duration::from_millis(1)
+        ));
     }
 }

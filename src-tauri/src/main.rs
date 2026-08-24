@@ -294,6 +294,12 @@ fn main() {
                     })?;
                     *floating_orb = persisted.floating_orb;
                 }
+                {
+                    let mut mouse_gesture = state.mouse_gesture.lock().map_err(|_| {
+                        std::io::Error::other("mouse gesture settings lock failed while loading persisted data")
+                    })?;
+                    *mouse_gesture = persisted.mouse_gesture.normalized();
+                }
             }
 
             application::history::initialize(&app.handle()).map_err(std::io::Error::other)?;
@@ -317,6 +323,9 @@ fn main() {
 
             hotkey::init(app.handle().clone());
             application::dictation::initialize(app.handle().clone());
+            if let Err(error) = crate::desktop::mouse_gesture::initialize(&app.handle()) {
+                eprintln!("[mouse-gesture] 启动监听失败: {error}");
+            }
             application::subtitles::initialize(app.handle().clone());
             application::compare::initialize(app.handle().clone());
             // Tauri 会在 setup 前按平台配置预创建主窗口，这条路径不会经过
@@ -540,9 +549,11 @@ fn main() {
             hide_floating_orb_menu,
             floating_orb_open_main_window,
             set_floating_orb_appearance,
+            set_mouse_gesture_settings,
             floating_orb_start_dragging,
             floating_orb_activate,
             floating_orb_stop,
+            floating_orb_submit_enter,
             open_active_app_context_debug,
             close_active_app_context_debug,
             set_active_app_context_debug_overrides,

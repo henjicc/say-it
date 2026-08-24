@@ -28,6 +28,7 @@ typedef bool (*SayItFnKeyCallback)(void *context, bool pressed, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
 typedef void (*SayItAudioErrorCallback)(void *context, const char *message);
+typedef void (*SayItMouseMonitorCallback)(void *context, double x, double y, bool buttonDown);
 
 typedef struct {
     uint8_t *data;
@@ -226,6 +227,30 @@ bool sayit_macos_paste_current_clipboard(char **error) {
         return false;
     }
     return SayItPostPasteShortcut(error);
+}
+
+bool sayit_macos_press_return(char **error) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"模拟回车需要辅助功能权限");
+        return false;
+    }
+    const CGKeyCode returnKeyCode = 0x24;
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    CGEventRef keyDown = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, returnKeyCode, true);
+    CGEventRef keyUp = source == NULL ? NULL : CGEventCreateKeyboardEvent(source, returnKeyCode, false);
+    if (source == NULL || keyDown == NULL || keyUp == NULL) {
+        if (keyDown != NULL) CFRelease(keyDown);
+        if (keyUp != NULL) CFRelease(keyUp);
+        if (source != NULL) CFRelease(source);
+        SayItSetError(error, @"无法创建 macOS 回车键事件");
+        return false;
+    }
+    CGEventPost(kCGHIDEventTap, keyDown);
+    CGEventPost(kCGHIDEventTap, keyUp);
+    CFRelease(keyDown);
+    CFRelease(keyUp);
+    CFRelease(source);
+    return true;
 }
 
 bool sayit_macos_paste_text(const char *text, char **error) {
@@ -1639,6 +1664,121 @@ void *sayit_macos_keyboard_tap_start(
 void sayit_macos_keyboard_tap_stop(void *handle) {
     if (handle == NULL) return;
     SayItKeyboardTap *owner = CFBridgingRelease(handle);
+    [owner stop];
+}
+
+@interface SayItMouseMonitor : NSObject
+@property(nonatomic) SayItMouseMonitorCallback callback;
+@property(nonatomic) void *context;
+@property(nonatomic) CFMachPortRef tap;
+@property(nonatomic) CFRunLoopRef runLoop;
+@property(nonatomic) dispatch_semaphore_t ready;
+@property(nonatomic, copy) NSString *startupError;
+@end
+
+static CGEventRef SayItMouseMonitorEventCallback(
+    CGEventTapProxy proxy,
+    CGEventType type,
+    CGEventRef event,
+    void *context
+) {
+    (void)proxy;
+    SayItMouseMonitor *owner = (__bridge SayItMouseMonitor *)context;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (owner.tap != NULL) CGEventTapEnable(owner.tap, true);
+        return event;
+    }
+    if (owner.callback == NULL) return event;
+    CGPoint point = CGEventGetLocation(event);
+    bool buttonDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)
+        || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonRight)
+        || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonCenter);
+    owner.callback(owner.context, point.x, point.y, buttonDown);
+    return event;
+}
+
+@implementation SayItMouseMonitor
+- (void)startOnThread {
+    @autoreleasepool {
+        CGEventMask mask = CGEventMaskBit(kCGEventMouseMoved)
+            | CGEventMaskBit(kCGEventLeftMouseDragged)
+            | CGEventMaskBit(kCGEventRightMouseDragged)
+            | CGEventMaskBit(kCGEventOtherMouseDragged)
+            | CGEventMaskBit(kCGEventLeftMouseDown)
+            | CGEventMaskBit(kCGEventLeftMouseUp)
+            | CGEventMaskBit(kCGEventRightMouseDown)
+            | CGEventMaskBit(kCGEventRightMouseUp)
+            | CGEventMaskBit(kCGEventOtherMouseDown)
+            | CGEventMaskBit(kCGEventOtherMouseUp);
+        self.tap = CGEventTapCreate(
+            kCGSessionEventTap,
+            kCGTailAppendEventTap,
+            kCGEventTapOptionListenOnly,
+            mask,
+            SayItMouseMonitorEventCallback,
+            (__bridge void *)self
+        );
+        if (self.tap == NULL) {
+            self.startupError = @"监听全局鼠标移动需要“输入监控”或“辅助功能”权限；授权后请重启说吧！";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        self.runLoop = CFRunLoopGetCurrent();
+        CFRetain(self.runLoop);
+        CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, self.tap, 0);
+        CFRunLoopAddSource(self.runLoop, source, kCFRunLoopCommonModes);
+        CFRelease(source);
+        CGEventTapEnable(self.tap, true);
+        dispatch_semaphore_signal(self.ready);
+        CFRunLoopRun();
+    }
+}
+- (void)stop {
+    if (self.tap != NULL) {
+        CGEventTapEnable(self.tap, false);
+        CFMachPortInvalidate(self.tap);
+    }
+    if (self.runLoop != NULL) CFRunLoopStop(self.runLoop);
+}
+- (void)dealloc {
+    if (_tap != NULL) CFRelease(_tap);
+    if (_runLoop != NULL) CFRelease(_runLoop);
+}
+@end
+
+void *sayit_macos_mouse_monitor_start(
+    SayItMouseMonitorCallback callback,
+    void *context,
+    char **error
+) {
+    if (callback == NULL) {
+        SayItSetError(error, @"macOS 鼠标监听回调无效");
+        return NULL;
+    }
+    NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+    if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options)) {
+        SayItSetError(error, @"鼠标手势需要辅助功能权限；授权后请重启说吧！");
+        return NULL;
+    }
+    SayItMouseMonitor *owner = [[SayItMouseMonitor alloc] init];
+    owner.callback = callback;
+    owner.context = context;
+    owner.ready = dispatch_semaphore_create(0);
+    [NSThread detachNewThreadSelector:@selector(startOnThread) toTarget:owner withObject:nil];
+    if (dispatch_semaphore_wait(owner.ready, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+        SayItSetError(error, @"启动 macOS 鼠标监听超时");
+        return NULL;
+    }
+    if (owner.startupError != nil) {
+        SayItSetError(error, owner.startupError);
+        return NULL;
+    }
+    return (void *)CFBridgingRetain(owner);
+}
+
+void sayit_macos_mouse_monitor_stop(void *handle) {
+    if (handle == NULL) return;
+    SayItMouseMonitor *owner = CFBridgingRelease(handle);
     [owner stop];
 }
 

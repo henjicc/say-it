@@ -1,12 +1,13 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, CornerDownLeft, LoaderCircle, Mic } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
+  floatingOrbClickAction,
   floatingOrbLabel,
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
@@ -20,6 +21,8 @@ import "@/floating-orb.css";
 interface OrbStatePayload {
   phase?: OrbPhase;
   message?: string | null;
+  transient?: boolean;
+  canSubmit?: boolean;
 }
 
 interface WaveformPayload {
@@ -38,6 +41,8 @@ function clampLevel(value: unknown): number {
 function FloatingOrbApp() {
   const [phase, setPhase] = useState<OrbPhase>("idle");
   const [message, setMessage] = useState("");
+  const [transient, setTransient] = useState(false);
+  const [canSubmit, setCanSubmit] = useState(false);
   const [waveform, setWaveform] = useState(EMPTY_WAVEFORM);
   const [appearance, setAppearance] = useState<FloatingOrbAppearance>(
     DEFAULT_FLOATING_ORB_APPEARANCE,
@@ -69,6 +74,8 @@ function FloatingOrbApp() {
     const next = payload.phase || "idle";
     setPhase(next);
     setMessage(payload.message || "");
+    setTransient(payload.transient === true);
+    setCanSubmit(payload.canSubmit === true);
     if (next !== "recording") {
       setWaveform(EMPTY_WAVEFORM);
     }
@@ -93,7 +100,7 @@ function FloatingOrbApp() {
   );
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
-    if (phase !== "idle" || event.button !== 0) return;
+    if (phase !== "idle" || transient || event.button !== 0) return;
     pointer.current = {
       id: event.pointerId,
       x: event.screenX,
@@ -105,7 +112,7 @@ function FloatingOrbApp() {
 
   const onPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     const current = pointer.current;
-    if (phase !== "idle" || current.id !== event.pointerId || current.dragging) return;
+    if (phase !== "idle" || transient || current.id !== event.pointerId || current.dragging) return;
     if (!shouldStartOrbDrag(event.screenX - current.x, event.screenY - current.y)) return;
     current.dragging = true;
     void cmd(CMD.floatingOrbStartDragging).catch(() => undefined);
@@ -119,8 +126,15 @@ function FloatingOrbApp() {
     void cmd(CMD.floatingOrbActivate).catch(() => undefined);
   };
 
-  const stop = () => {
-    if (phase === "recording") void cmd(CMD.floatingOrbStop).catch(() => undefined);
+  const activate = () => {
+    const action = floatingOrbClickAction(phase, canSubmit);
+    if (action === "activate") {
+      void cmd(CMD.floatingOrbActivate).catch(() => undefined);
+    } else if (action === "stop") {
+      void cmd(CMD.floatingOrbStop).catch(() => undefined);
+    } else if (action === "submit") {
+      void cmd(CMD.floatingOrbSubmitEnter).catch(() => undefined);
+    }
   };
 
   const label = phase === "idle"
@@ -132,7 +146,13 @@ function FloatingOrbApp() {
     { length: WAVE_BAR_COUNT },
     (_, index) => waveform.peaks[index] ?? waveform.level,
   );
-  const loading = phase === "moving" || phase === "processing" || phase === "smartProcessing";
+  const loading = phase === "moving" || phase === "processing" || phase === "smartProcessing" || phase === "submitting";
+  const interactive = phase === "idle" || phase === "armed" || phase === "recording" || (phase === "success" && canSubmit);
+  const title = phase === "idle"
+    ? transient ? label : "点击开始语音输入，拖动调整位置"
+    : phase === "success" && canSubmit
+      ? "点击发送回车"
+      : label;
 
   return (
     <button
@@ -143,9 +163,9 @@ function FloatingOrbApp() {
         "--orb-glass-tint": `${appearance.glassTint}%`,
         "--orb-glass-border": `${appearance.glassBorder}%`,
       } as CSSProperties}
-      disabled={phase !== "idle" && phase !== "recording"}
-      aria-label={phase === "recording" ? "点击停止识别" : label}
-      title={phase === "idle" ? "点击开始语音输入，拖动调整位置" : label}
+      disabled={!interactive}
+      aria-label={phase === "recording" ? "点击停止识别" : phase === "success" && canSubmit ? "点击发送回车" : label}
+      title={title}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -154,11 +174,11 @@ function FloatingOrbApp() {
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (phase === "idle" || phase === "recording") {
+        if (!transient && (phase === "idle" || phase === "recording")) {
           void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
         }
       }}
-      onClick={stop}
+      onClick={activate}
     >
       {phase === "recording" ? (
         <span className="orb-waveform" aria-hidden>
@@ -175,7 +195,12 @@ function FloatingOrbApp() {
           {loading || phase === "busy" ? (
             <LoaderCircle key={phase} className="orb-state-icon orb-spinner" />
           ) : phase === "success" ? (
-            <Check className="orb-state-icon" />
+            <>
+              <Check className={`orb-state-icon${canSubmit ? " orb-success-check" : ""}`} />
+              {canSubmit && <CornerDownLeft className="orb-state-icon orb-submit-icon" />}
+            </>
+          ) : phase === "submitted" ? (
+            <CornerDownLeft className="orb-state-icon" />
           ) : phase === "fallback" ? (
             <Clipboard className="orb-state-icon" />
           ) : phase === "error" ? (

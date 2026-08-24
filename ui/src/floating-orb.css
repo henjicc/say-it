@@ -84,6 +84,12 @@ button {
   cursor: pointer;
 }
 
+.floating-orb.armed {
+  color: var(--color-accent-light);
+  border-color: var(--accent-ring);
+  cursor: pointer;
+}
+
 .floating-orb.recording:hover {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-bg) 90%, var(--color-accent) 10%);
@@ -95,9 +101,14 @@ button {
   color: var(--color-accent-light);
 }
 
-.floating-orb.success {
+.floating-orb.success,
+.floating-orb.submitted {
   color: var(--color-accent-light);
   border-color: var(--accent-ring);
+}
+
+.floating-orb.success:not(:disabled) {
+  cursor: pointer;
 }
 
 .floating-orb.fallback,
@@ -124,6 +135,21 @@ button {
   width: 100%;
   height: 100%;
   stroke-width: 1.8;
+}
+
+.orb-submit-icon {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.floating-orb.success:not(:disabled):hover .orb-success-check {
+  opacity: 0;
+}
+
+.floating-orb.success:not(:disabled):hover .orb-submit-icon {
+  opacity: 1;
 }
 
 .orb-spinner {
@@ -154,9 +180,11 @@ button {
 }
 
 [data-ui-tone="light"] .floating-orb.moving,
+[data-ui-tone="light"] .floating-orb.armed,
 [data-ui-tone="light"] .floating-orb.processing,
 [data-ui-tone="light"] .floating-orb.smartProcessing,
-[data-ui-tone="light"] .floating-orb.success {
+[data-ui-tone="light"] .floating-orb.success,
+[data-ui-tone="light"] .floating-orb.submitted {
   color: var(--color-accent-dark);
 }
 

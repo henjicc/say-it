@@ -9,6 +9,7 @@ import { hydrateModelOptions, DEFAULT_FILE_ASR_MODEL } from "@/features/asr/mode
 import { useProviderStore } from "@/store/useProviderStore";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
+import { useMouseGestureStore } from "@/store/useMouseGestureStore";
 
 function json(key: string): Record<string, unknown> | undefined {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
@@ -39,6 +40,7 @@ export async function initializeSettings(): Promise<void> {
   }});
   const snapshot = await cmd<AppSnapshot>(CMD.getAppSnapshot);
   useFloatingOrbStore.getState().hydrate(snapshot.floatingOrb);
+  useMouseGestureStore.getState().hydrate(snapshot.mouseGesture);
   if (apply(snapshot.settings)) {
     await useDictPrefs.getState().patch({});
   }

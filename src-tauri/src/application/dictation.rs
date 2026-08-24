@@ -57,15 +57,27 @@ enum DictationTrigger {
     #[default]
     Standard,
     FloatingOrb { target_confirmed: bool },
+    MouseGesture { target_confirmed: bool },
 }
 
 impl DictationTrigger {
     fn is_floating_orb(self) -> bool {
-        matches!(self, Self::FloatingOrb { .. })
+        matches!(self, Self::FloatingOrb { .. } | Self::MouseGesture { .. })
     }
 
     fn target_confirmed(self) -> bool {
-        matches!(self, Self::FloatingOrb { target_confirmed: true })
+        matches!(
+            self,
+            Self::FloatingOrb {
+                target_confirmed: true
+            } | Self::MouseGesture {
+                target_confirmed: true
+            }
+        )
+    }
+
+    fn is_mouse_gesture(self) -> bool {
+        matches!(self, Self::MouseGesture { .. })
     }
 }
 
@@ -553,6 +565,21 @@ pub(crate) fn is_floating_orb_active(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn is_mouse_gesture_recording(app: &AppHandle) -> bool {
+    app.state::<RuntimeState>()
+        .dictation_runtime
+        .session
+        .lock()
+        .map(|session| {
+            session.trigger.is_mouse_gesture()
+                && matches!(
+                    session.phase,
+                    DictationPhase::WaitingForVoice | DictationPhase::Recording
+                )
+        })
+        .unwrap_or(false)
+}
+
 fn present_request_error(app: &AppHandle, error: String) {
     let can_present = app
         .state::<RuntimeState>()
@@ -821,6 +848,21 @@ pub(crate) async fn start_from_floating_orb(
         None,
         None,
         DictationTrigger::FloatingOrb { target_confirmed },
+    )
+    .await
+}
+
+pub(crate) async fn start_from_mouse_gesture(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    target_confirmed: bool,
+) -> Result<(), String> {
+    start_internal(
+        app,
+        activation_target,
+        None,
+        None,
+        DictationTrigger::MouseGesture { target_confirmed },
     )
     .await
 }
@@ -2303,6 +2345,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
     if trigger.is_floating_orb() {
+        if !processed.is_empty() {
+            if let Some(target) = activation_target {
+                crate::desktop::arm_floating_orb_submit_enter(&app, target);
+            }
+        }
         play_floating_orb_cue(&app, "end", &prefs);
         let (message, delay) = if processed.is_empty() {
             ("未识别到内容", 2000)
@@ -3262,6 +3309,14 @@ mod tests {
         let current = activation_target(7);
         assert!(select_activation_target(
             DictationTrigger::FloatingOrb {
+                target_confirmed: false,
+            },
+            None,
+            Some(current),
+        )
+        .is_none());
+        assert!(select_activation_target(
+            DictationTrigger::MouseGesture {
                 target_confirmed: false,
             },
             None,

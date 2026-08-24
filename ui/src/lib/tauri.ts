@@ -80,6 +80,8 @@ export const CMD = {
   floatingOrbStartDragging: "floating_orb_start_dragging",
   floatingOrbActivate: "floating_orb_activate",
   floatingOrbStop: "floating_orb_stop",
+  floatingOrbSubmitEnter: "floating_orb_submit_enter",
+  setMouseGestureSettings: "set_mouse_gesture_settings",
   listRunningApps: "list_running_apps",
   resolveApplicationIdentity: "resolve_application_identity",
   openActiveAppContextDebug: "open_active_app_context_debug",
@@ -159,6 +161,17 @@ export interface AppSnapshot {
   comparison: DomainSnapshot;
   audioLab: DomainSnapshot;
   floatingOrb: FloatingOrbSettings;
+  mouseGesture: MouseGestureSnapshot;
+}
+
+export type MouseGestureMode = "confirm" | "direct";
+
+export interface MouseGestureSnapshot {
+  enabled: boolean;
+  mode: MouseGestureMode;
+  sensitivity: number;
+  available: boolean;
+  error?: string | null;
 }
 
 export interface FloatingOrbSettings {

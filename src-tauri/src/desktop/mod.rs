@@ -11,6 +11,7 @@ pub(crate) mod backend_system_audio;
 pub(crate) mod context_debug;
 pub(crate) mod floating_orb;
 pub(crate) mod indicator;
+pub(crate) mod mouse_gesture;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
 
@@ -20,5 +21,6 @@ pub(crate) use backend_system_audio::*;
 pub(crate) use context_debug::*;
 pub(crate) use floating_orb::*;
 pub(crate) use indicator::*;
+pub(crate) use mouse_gesture::*;
 pub(crate) use system_fonts::*;
 pub(crate) use window::*;

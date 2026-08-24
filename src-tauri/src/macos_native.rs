@@ -83,6 +83,7 @@ pub(crate) type FnKeyCallback = unsafe extern "C" fn(*mut c_void, bool, u64) -> 
 pub(crate) type EscapeCallback = unsafe extern "C" fn(*mut c_void, bool) -> bool;
 pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, usize);
 pub(crate) type AudioErrorCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
+pub(crate) type MouseMonitorCallback = unsafe extern "C" fn(*mut c_void, f64, f64, bool);
 
 unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);
@@ -143,6 +144,12 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_void;
     fn sayit_macos_keyboard_tap_stop(handle: *mut c_void);
+    fn sayit_macos_mouse_monitor_start(
+        callback: MouseMonitorCallback,
+        context: *mut c_void,
+        error: *mut *mut c_char,
+    ) -> *mut c_void;
+    fn sayit_macos_mouse_monitor_stop(handle: *mut c_void);
     fn sayit_macos_system_audio_start(
         callback: AudioCallback,
         error_callback: AudioErrorCallback,
@@ -173,6 +180,7 @@ unsafe extern "C" {
     fn sayit_macos_paste_current_clipboard(error: *mut *mut c_char) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
+    fn sayit_macos_press_return(error: *mut *mut c_char) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -466,6 +474,28 @@ pub(crate) fn stop_keyboard_tap(handle: usize) {
     }
 }
 
+pub(crate) fn start_mouse_monitor(callback: MouseMonitorCallback) -> Result<usize, String> {
+    let mut error = std::ptr::null_mut();
+    let handle = unsafe {
+        sayit_macos_mouse_monitor_start(callback, std::ptr::null_mut(), &mut error)
+    };
+    if handle.is_null() {
+        Err(unsafe { take_string(error) }
+            .unwrap_or_else(|| "无法启动 macOS 鼠标手势监听".into()))
+    } else {
+        if !error.is_null() {
+            let _ = unsafe { take_string(error) };
+        }
+        Ok(handle as usize)
+    }
+}
+
+pub(crate) fn stop_mouse_monitor(handle: usize) {
+    if handle != 0 {
+        unsafe { sayit_macos_mouse_monitor_stop(handle as *mut c_void) };
+    }
+}
+
 pub(crate) unsafe fn start_system_audio(
     callback: AudioCallback,
     error_callback: AudioErrorCallback,
@@ -577,6 +607,19 @@ pub(crate) fn type_text(text: &str) -> Result<(), String> {
         Err(unsafe {
             take_string(error).unwrap_or_else(|| "执行 macOS 逐字输入失败".into())
         })
+    }
+}
+
+pub(crate) fn press_return() -> Result<(), String> {
+    let mut error = std::ptr::null_mut();
+    if unsafe { sayit_macos_press_return(&mut error) } {
+        if !error.is_null() {
+            let _ = unsafe { take_string(error) };
+        }
+        Ok(())
+    } else {
+        Err(unsafe { take_string(error) }
+            .unwrap_or_else(|| "macOS 模拟回车失败".into()))
     }
 }
 
