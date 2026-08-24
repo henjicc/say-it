@@ -12,7 +12,10 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, UIA_EditControlTypeId,
+    UIA_ValuePatternId,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
@@ -89,6 +92,47 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
         Ok(())
     } else {
         Err("无法重新激活听写开始时的目标窗口".into())
+    }
+}
+
+pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
+    unsafe {
+        let initialized_here = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|error| format!("无法初始化 UI Automation 焦点检查：{error}"))?;
+            let focused = automation
+                .GetFocusedElement()
+                .map_err(|error| format!("无法读取当前焦点控件：{error}"))?;
+            let process_id = focused
+                .CurrentProcessId()
+                .map_err(|error| format!("无法确认焦点控件进程：{error}"))?;
+            if process_id != target.process_id as i32
+                || !focused
+                    .CurrentIsEnabled()
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+            if let Ok(pattern) =
+                focused.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            {
+                return pattern
+                    .CurrentIsReadOnly()
+                    .map(|value| !value.as_bool())
+                    .map_err(|error| format!("无法确认输入控件是否只读：{error}"));
+            }
+            focused
+                .CurrentControlType()
+                .map(|control_type| control_type == UIA_EditControlTypeId)
+                .map_err(|error| format!("无法读取焦点控件类型：{error}"))
+        })();
+        if initialized_here {
+            CoUninitialize();
+        }
+        result
     }
 }
 

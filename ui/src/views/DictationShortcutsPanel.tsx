@@ -96,7 +96,7 @@ export function DictationShortcutsPanel() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-[var(--color-fg)]">启用悬浮球输入</p>
             <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              点击悬浮球会尝试激活它下方的位置并开始语音输入，右键可实时调整大小、不透明度和毛玻璃效果。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
+              点击悬浮球会在需要时激活它下方的位置并开始语音输入；如果当前已经聚焦可编辑输入框，则保留原光标位置。右键可实时调整大小与不透明度，毛玻璃材质位于“设置 → 通用 → 外观”。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
             </p>
           </div>
           <Switch

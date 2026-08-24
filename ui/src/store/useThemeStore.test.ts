@@ -33,14 +33,14 @@ describe("theme store", () => {
     useThemeStore.getState().patch({ accent: "#12AB34" });
     expect(useThemeStore.getState().theme.accent).toBe("#12AB34");
     expect(emitEvent).toHaveBeenLastCalledWith("app-theme-changed", {
-      tone: "dark",
+      ...defaultAccentTheme,
       accent: "#12AB34",
     });
 
     await vi.waitFor(() => expect(cmd).toHaveBeenCalledTimes(2));
     expect(cmd.mock.calls.map((call) => call[1])).toEqual([
-      { domain: "theme", value: { tone: "dark", accent: "#FF5500" } },
-      { domain: "theme", value: { tone: "dark", accent: "#12AB34" } },
+      { domain: "theme", value: { ...defaultAccentTheme, accent: "#FF5500" } },
+      { domain: "theme", value: { ...defaultAccentTheme, accent: "#12AB34" } },
     ]);
   });
 
@@ -49,6 +49,17 @@ describe("theme store", () => {
 
     expect(document.documentElement.dataset.uiTone).toBe("light");
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#E36B2C");
-    expect(document.documentElement.style.getPropertyValue("--color-bg")).toBe("#F4F7FB");
+    expect(document.documentElement.style.getPropertyValue("--color-accent-contrast")).toBe("#050505");
+    expect(document.documentElement.style.getPropertyValue("--color-bg")).toBe("#F3F1F3");
+  });
+
+  it("uses an explicit background when follow-accent mode is disabled", () => {
+    applyThemeToDocument({
+      ...defaultAccentTheme,
+      backgroundMode: "custom",
+      background: "#221A18",
+    });
+
+    expect(document.documentElement.style.getPropertyValue("--color-bg")).toBe("#221A18");
   });
 });

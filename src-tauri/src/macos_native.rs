@@ -114,6 +114,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn sayit_macos_focused_input_security(process_id: u32, error: *mut *mut c_char) -> i32;
+    fn sayit_macos_focused_input_editable(process_id: u32, error: *mut *mut c_char) -> i32;
     fn sayit_macos_copy_selection_text(process_id: u32, error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_accessibility_context_json(
         process_id: u32,
@@ -243,6 +244,18 @@ pub(crate) fn focused_input_is_secure(process_id: u32) -> Result<bool, String> {
         1 => Ok(true),
         _ => Err(unsafe {
             take_string(error).unwrap_or_else(|| "无法确认当前输入区域安全性".into())
+        }),
+    }
+}
+
+pub(crate) fn focused_input_is_editable(process_id: u32) -> Result<bool, String> {
+    let mut error = ptr::null_mut();
+    let result = unsafe { sayit_macos_focused_input_editable(process_id, &mut error) };
+    match result {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(unsafe {
+            take_string(error).unwrap_or_else(|| "无法确认当前焦点控件是否可编辑".into())
         }),
     }
 }

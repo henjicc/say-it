@@ -118,14 +118,83 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--color-line-strong);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-fg-faint);
   background-clip: content-box;
+}
+
+/* 扁平化范围滑块：用独立进度层代替浏览器默认皮肤，避免各 WebView/平台样式漂移。 */
+.range-control {
+  position: relative;
+  width: 100%;
+  height: 20px;
+}
+
+.range-control-input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.range-control-visual {
+  position: absolute;
+  inset: 0 8px;
+  pointer-events: none;
+}
+
+.range-control-track {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-line-strong);
+  transform: translateY(-50%);
+}
+
+.range-control-fill {
+  display: block;
+  width: var(--range-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+}
+
+.range-control-thumb {
+  position: absolute;
+  top: 50%;
+  left: var(--range-progress);
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-overlay);
+  border-radius: 50%;
+  background: var(--color-accent);
+  transform: translate(-50%, -50%);
+}
+
+.range-control-input:focus-visible + .range-control-visual .range-control-thumb {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.range-control[data-disabled] {
+  opacity: 0.5;
+}
+
+.range-control[data-disabled] .range-control-input {
+  cursor: not-allowed;
 }
 
 /* 表单元素继承字体 */

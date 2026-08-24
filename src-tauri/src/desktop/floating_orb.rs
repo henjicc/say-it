@@ -17,8 +17,7 @@ const ORB_OPACITY_MAX: u8 = 100;
 const ORB_GLASS_TINT_MAX: u8 = 40;
 const ORB_GLASS_BORDER_MAX: u8 = 30;
 const ORB_MENU_WIDTH: f64 = 280.0;
-const ORB_MENU_COLLAPSED_HEIGHT: f64 = 286.0;
-const ORB_MENU_EXPANDED_HEIGHT: f64 = 444.0;
+const ORB_MENU_HEIGHT: f64 = 318.0;
 const ORB_MENU_GAP: f64 = 8.0;
 const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
 
@@ -28,6 +27,52 @@ fn normalized_orb_size(size: u16) -> u16 {
 
 fn normalized_orb_opacity(opacity: u8) -> u8 {
     opacity.clamp(ORB_OPACITY_MIN, ORB_OPACITY_MAX)
+}
+
+#[cfg(any(windows, test))]
+fn parse_hex_rgb(value: Option<&str>) -> Option<(u8, u8, u8)> {
+    let value = value?.trim();
+    let value = value.strip_prefix('#').unwrap_or(value);
+    if value.len() != 6 {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&value[0..2], 16).ok()?,
+        u8::from_str_radix(&value[2..4], 16).ok()?,
+        u8::from_str_radix(&value[4..6], 16).ok()?,
+    ))
+}
+
+#[cfg(any(windows, test))]
+fn mix_rgb(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
+    let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
+    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+}
+
+#[cfg(any(windows, test))]
+fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
+    let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
+    if custom {
+        return parse_hex_rgb(value.get("background").and_then(Value::as_str))
+            .unwrap_or((10, 14, 22));
+    }
+    let accent =
+        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((81, 153, 255));
+    let target = if value.get("tone").and_then(Value::as_str) == Some("light") {
+        (244, 247, 251)
+    } else {
+        (7, 10, 16)
+    };
+    mix_rgb(accent, target, 0.96)
+}
+
+#[cfg(windows)]
+fn current_theme_background_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
+    app.state::<RuntimeState>()
+        .app_settings
+        .lock()
+        .map(|settings| theme_background_rgb(&settings.theme))
+        .unwrap_or((10, 14, 22))
 }
 
 fn orb_window_extent(size: u16) -> f64 {
@@ -90,8 +135,9 @@ fn apply_native_glass(
         let _ = window_vibrancy::clear_mica(window);
         if enabled {
             let tint_alpha = ((tint.min(ORB_GLASS_TINT_MAX) as u16 * 255) / 100) as u8;
+            let (red, green, blue) = current_theme_background_rgb(window.app_handle());
             if let Err(error) =
-                window_vibrancy::apply_acrylic(window, Some((8, 12, 18, tint_alpha)))
+                window_vibrancy::apply_acrylic(window, Some((red, green, blue, tint_alpha)))
             {
                 eprintln!("[floating-orb] Windows Acrylic 不可用: {error}");
             }
@@ -107,8 +153,7 @@ fn native_glass_appearance_changed(
 ) -> bool {
     previous.glass_enabled != current.glass_enabled
         || (current.glass_enabled
-            && ((cfg!(target_os = "macos")
-                && previous.glass_material != current.glass_material)
+            && ((cfg!(target_os = "macos") && previous.glass_material != current.glass_material)
                 || (cfg!(windows) && previous.glass_tint != current.glass_tint)))
 }
 
@@ -667,7 +712,7 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
         WebviewUrl::App("floating-orb-menu.html".into()),
     )
     .title("悬浮球设置")
-    .inner_size(ORB_MENU_WIDTH, ORB_MENU_COLLAPSED_HEIGHT)
+    .inner_size(ORB_MENU_WIDTH, ORB_MENU_HEIGHT)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -721,11 +766,23 @@ fn current_window_theme(app: &tauri::AppHandle) -> tauri::Theme {
 
 pub(crate) fn sync_floating_orb_theme(app: &tauri::AppHandle, value: &serde_json::Value) {
     let theme = window_theme(value);
+    let settings = current_settings(app);
     for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
         if let Some(window) = app.get_webview_window(label) {
             if let Err(error) = window.set_theme(Some(theme)) {
                 eprintln!("[floating-orb] 同步窗口主题失败: {error}");
             }
+            apply_native_glass(
+                &window,
+                settings.glass_enabled,
+                if label == FLOATING_ORB_LABEL {
+                    orb_window_extent(settings.size) / 2.0
+                } else {
+                    14.0
+                },
+                settings.glass_material,
+                settings.glass_tint,
+            );
         }
     }
 }
@@ -733,22 +790,16 @@ pub(crate) fn sync_floating_orb_theme(app: &tauri::AppHandle, value: &serde_json
 fn resize_and_position_floating_orb_menu(
     app: &tauri::AppHandle,
     menu: &tauri::WebviewWindow,
-    expanded: bool,
 ) -> Result<(), String> {
     let orb = app
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
-    let height = if expanded {
-        ORB_MENU_EXPANDED_HEIGHT
-    } else {
-        ORB_MENU_COLLAPSED_HEIGHT
-    };
-    menu.set_size(tauri::LogicalSize::new(ORB_MENU_WIDTH, height))
+    menu.set_size(tauri::LogicalSize::new(ORB_MENU_WIDTH, ORB_MENU_HEIGHT))
         .map_err(|error| format!("调整悬浮球设置面板尺寸失败：{error}"))?;
     let scale = orb.scale_factor().unwrap_or(1.0);
     let menu_size = tauri::PhysicalSize::new(
         (ORB_MENU_WIDTH * scale).round() as u32,
-        (height * scale).round() as u32,
+        (ORB_MENU_HEIGHT * scale).round() as u32,
     );
     let position = resolve_menu_position(
         orb.outer_position()
@@ -764,17 +815,6 @@ fn resize_and_position_floating_orb_menu(
 }
 
 #[tauri::command]
-pub(crate) fn set_floating_orb_menu_expanded(
-    app: tauri::AppHandle,
-    expanded: bool,
-) -> Result<(), String> {
-    let menu = ensure_floating_orb_menu_window(&app)?;
-    resize_and_position_floating_orb_menu(&app, &menu, expanded)?;
-    let _ = menu.emit("floating-orb-menu-expanded", json!({ "expanded": expanded }));
-    Ok(())
-}
-
-#[tauri::command]
 pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
     let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
@@ -785,16 +825,12 @@ pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
         settings.glass_material,
         settings.glass_tint,
     );
-    resize_and_position_floating_orb_menu(&app, &menu, false)?;
+    resize_and_position_floating_orb_menu(&app, &menu)?;
     menu.show()
         .map_err(|error| format!("显示悬浮球设置面板失败：{error}"))?;
     menu.set_focus()
         .map_err(|error| format!("激活悬浮球设置面板失败：{error}"))?;
     emit_config(&app, &settings);
-    let _ = menu.emit(
-        "floating-orb-menu-expanded",
-        json!({ "expanded": false }),
-    );
     Ok(())
 }
 
@@ -805,6 +841,12 @@ pub(crate) fn hide_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
             .map_err(|error| format!("隐藏悬浮球设置面板失败：{error}"))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn floating_orb_open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_floating_orb_menu(app.clone())?;
+    crate::desktop::ensure_main_window(&app)
 }
 
 fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
@@ -932,6 +974,23 @@ async fn forward_click(position: (i32, i32)) -> Result<(), String> {
     .map_err(|error| format!("模拟点击任务失败：{error}"))?
 }
 
+async fn focused_editable_target() -> Option<crate::active_app_context::ActivationTarget> {
+    let target = crate::active_app_context::activation_target()?;
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        crate::active_app_context::focused_target_is_editable(target)
+    });
+    match tokio::time::timeout(Duration::from_millis(180), task).await {
+        Ok(Ok(Ok(true))) => Some(target),
+        _ => None,
+    }
+}
+
+fn should_forward_orb_click(
+    focused_editable_target: Option<crate::active_app_context::ActivationTarget>,
+) -> bool {
+    focused_editable_target.is_none()
+}
+
 async fn return_to_idle(
     app: tauri::AppHandle,
     delay_ms: u64,
@@ -1021,28 +1080,34 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
     }
     persist_current_position(&app)?;
     let window = ensure_floating_orb_window(&app)?;
-    let click_position = cursor_location().await;
     app.state::<RuntimeState>()
         .floating_orb_runtime
         .transition_generation
         .fetch_add(1, Ordering::AcqRel);
     let _ = window.set_ignore_cursor_events(true);
     emit_state(&app, "moving", None);
-    sleep(Duration::from_millis(16)).await;
-    let forwarded = match click_position {
-        Some(position) => forward_click(position).await.is_ok(),
-        None => false,
+    let already_focused = focused_editable_target().await;
+    let (target, target_confirmed) = if should_forward_orb_click(already_focused) {
+        let click_position = cursor_location().await;
+        sleep(Duration::from_millis(16)).await;
+        let forwarded = match click_position {
+            Some(position) => forward_click(position).await.is_ok(),
+            None => false,
+        };
+        sleep(Duration::from_millis(80)).await;
+        let target = forwarded
+            .then(crate::active_app_context::activation_target)
+            .flatten();
+        (target, forwarded && target.is_some())
+    } else {
+        (already_focused, true)
     };
-    sleep(Duration::from_millis(80)).await;
-    let target = forwarded
-        .then(crate::active_app_context::activation_target)
-        .flatten();
     emit_state(&app, "recording", Some("聆听中…"));
     let _ = window.set_ignore_cursor_events(false);
     if let Err(error) = crate::application::dictation::start_from_floating_orb(
         app.clone(),
         target,
-        forwarded && target.is_some(),
+        target_confirmed,
     )
     .await
     {
@@ -1087,6 +1152,36 @@ mod tests {
             window_theme(&serde_json::json!({"tone": "dark"})),
             tauri::Theme::Dark
         ));
+    }
+
+    #[test]
+    fn background_tint_follows_accent_or_explicit_background() {
+        assert_eq!(
+            theme_background_rgb(&serde_json::json!({
+                "tone": "dark",
+                "accent": "#FF4013",
+                "backgroundMode": "followAccent"
+            })),
+            (17, 12, 16)
+        );
+        assert_eq!(
+            theme_background_rgb(&serde_json::json!({
+                "backgroundMode": "custom",
+                "background": "#221A18"
+            })),
+            (34, 26, 24)
+        );
+    }
+
+    #[test]
+    fn focused_editable_target_skips_forwarded_pointer_click() {
+        let target = crate::active_app_context::ActivationTarget {
+            window_handle: 42,
+            process_id: 7,
+            cursor_position: None,
+        };
+        assert!(!should_forward_orb_click(Some(target)));
+        assert!(should_forward_orb_click(None));
     }
 
     #[test]
