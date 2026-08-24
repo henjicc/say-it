@@ -1814,6 +1814,14 @@ void sayit_macos_mouse_monitor_stop(void *handle) {
     [owner stop];
 }
 
+bool sayit_macos_mouse_monitor_ensure_enabled(void *handle) {
+    if (handle == NULL) return false;
+    SayItMouseMonitor *owner = (__bridge SayItMouseMonitor *)handle;
+    if (owner.tap == NULL || !CFMachPortIsValid(owner.tap)) return false;
+    if (!CGEventTapIsEnabled(owner.tap)) CGEventTapEnable(owner.tap, true);
+    return CGEventTapIsEnabled(owner.tap);
+}
+
 API_AVAILABLE(macos(13.0))
 @interface SayItSystemAudioCapture : NSObject <SCStreamOutput, SCStreamDelegate>
 @property(nonatomic) SayItAudioCallback callback;

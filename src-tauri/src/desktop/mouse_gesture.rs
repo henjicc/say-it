@@ -12,6 +12,7 @@ const MIN_SAMPLE_DISTANCE: f64 = 3.0;
 const RAPID_CLICK_INTERVAL: Duration = Duration::from_millis(420);
 const RAPID_CLICK_PRESS_MAX: Duration = Duration::from_millis(350);
 const RAPID_CLICK_RADIUS: f64 = 12.0;
+const MONITOR_HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -298,6 +299,34 @@ pub(crate) fn reset_detection() {
     RESET_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
+fn apply_monitor_health(app: &tauri::AppHandle, health: Result<(), String>) {
+    app.state::<RuntimeState>()
+        .mouse_gesture_runtime
+        .listening
+        .store(health.is_ok(), Ordering::Release);
+    if let Ok(mut error) = app
+        .state::<RuntimeState>()
+        .mouse_gesture_runtime
+        .error
+        .lock()
+    {
+        *error = health.err();
+    }
+}
+
+pub(crate) fn resume_detection(app: &tauri::AppHandle) {
+    reset_detection();
+    let enabled = app
+        .state::<RuntimeState>()
+        .mouse_gesture
+        .lock()
+        .map(|settings| settings.enabled)
+        .unwrap_or(false);
+    if enabled && MONITOR_STARTED.load(Ordering::Acquire) {
+        apply_monitor_health(app, platform::ensure_enabled());
+    }
+}
+
 fn send_pointer_sample(
     x: f64,
     y: f64,
@@ -333,6 +362,7 @@ fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
     let mut recognizer = GestureRecognizer::default();
     let mut rapid_clicks = RapidClickRecognizer::default();
     let mut reset_generation = RESET_GENERATION.load(Ordering::Acquire);
+    let mut next_health_check = Instant::now() + MONITOR_HEALTH_INTERVAL;
     loop {
         let requested_reset = RESET_GENERATION.load(Ordering::Acquire);
         if requested_reset != reset_generation {
@@ -358,6 +388,10 @@ fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
             recognizer.reset_all();
             rapid_clicks.reset_all();
             continue;
+        }
+        if Instant::now() >= next_health_check {
+            next_health_check = Instant::now() + MONITOR_HEALTH_INTERVAL;
+            apply_monitor_health(&app, platform::ensure_enabled());
         }
         if let Some(position) = sample.and_then(|sample| {
             settings
@@ -557,6 +591,14 @@ mod platform {
             }
         }
     }
+
+    pub(super) fn ensure_enabled() -> Result<(), String> {
+        let handle = HANDLE
+            .lock()
+            .map_err(|_| "macOS 鼠标监听状态锁失败")?
+            .ok_or_else(|| "macOS 全局鼠标监听未启动".to_string())?;
+        crate::macos_native::ensure_mouse_monitor_enabled(handle)
+    }
 }
 
 #[cfg(windows)]
@@ -689,6 +731,15 @@ mod platform {
             }
         }
     }
+
+    pub(super) fn ensure_enabled() -> Result<(), String> {
+        THREAD_ID
+            .lock()
+            .map_err(|_| "Windows 鼠标监听状态锁失败")?
+            .is_some()
+            .then_some(())
+            .ok_or_else(|| "Windows 全局鼠标监听未启动".to_string())
+    }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -698,6 +749,9 @@ mod platform {
         Err("当前平台不支持鼠标手势".into())
     }
     pub(super) fn stop() {}
+    pub(super) fn ensure_enabled() -> Result<(), String> {
+        Err("当前平台不支持鼠标手势".into())
+    }
 }
 
 #[cfg(test)]

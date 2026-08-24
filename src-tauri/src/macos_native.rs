@@ -151,6 +151,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_void;
     fn sayit_macos_mouse_monitor_stop(handle: *mut c_void);
+    fn sayit_macos_mouse_monitor_ensure_enabled(handle: *mut c_void) -> bool;
     fn sayit_macos_system_audio_start(
         callback: AudioCallback,
         error_callback: AudioErrorCallback,
@@ -477,12 +478,10 @@ pub(crate) fn stop_keyboard_tap(handle: usize) {
 
 pub(crate) fn start_mouse_monitor(callback: MouseMonitorCallback) -> Result<usize, String> {
     let mut error = std::ptr::null_mut();
-    let handle = unsafe {
-        sayit_macos_mouse_monitor_start(callback, std::ptr::null_mut(), &mut error)
-    };
+    let handle =
+        unsafe { sayit_macos_mouse_monitor_start(callback, std::ptr::null_mut(), &mut error) };
     if handle.is_null() {
-        Err(unsafe { take_string(error) }
-            .unwrap_or_else(|| "无法启动 macOS 鼠标手势监听".into()))
+        Err(unsafe { take_string(error) }.unwrap_or_else(|| "无法启动 macOS 鼠标手势监听".into()))
     } else {
         if !error.is_null() {
             let _ = unsafe { take_string(error) };
@@ -494,6 +493,14 @@ pub(crate) fn start_mouse_monitor(callback: MouseMonitorCallback) -> Result<usiz
 pub(crate) fn stop_mouse_monitor(handle: usize) {
     if handle != 0 {
         unsafe { sayit_macos_mouse_monitor_stop(handle as *mut c_void) };
+    }
+}
+
+pub(crate) fn ensure_mouse_monitor_enabled(handle: usize) -> Result<(), String> {
+    if handle != 0 && unsafe { sayit_macos_mouse_monitor_ensure_enabled(handle as *mut c_void) } {
+        Ok(())
+    } else {
+        Err("macOS 全局鼠标监听已失效".into())
     }
 }
 
@@ -563,9 +570,7 @@ pub(crate) fn configure_floating_orb_window(
     nonactivating: bool,
 ) -> Result<(), String> {
     let mut error = ptr::null_mut();
-    if unsafe {
-        sayit_macos_configure_floating_orb_window(ns_window, nonactivating, &mut error)
-    } {
+    if unsafe { sayit_macos_configure_floating_orb_window(ns_window, nonactivating, &mut error) } {
         Ok(())
     } else {
         Err(unsafe {
@@ -619,8 +624,7 @@ pub(crate) fn press_return(process_id: u32) -> Result<(), String> {
         }
         Ok(())
     } else {
-        Err(unsafe { take_string(error) }
-            .unwrap_or_else(|| "macOS 模拟回车失败".into()))
+        Err(unsafe { take_string(error) }.unwrap_or_else(|| "macOS 模拟回车失败".into()))
     }
 }
 
