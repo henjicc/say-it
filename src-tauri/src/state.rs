@@ -59,8 +59,6 @@ pub(crate) struct FloatingOrbSettings {
 
 #[derive(Default)]
 pub(crate) struct FloatingOrbRuntime {
-    pub(crate) transient_position: std::sync::atomic::AtomicBool,
-    pub(crate) reduced_motion: std::sync::atomic::AtomicBool,
     pub(crate) placement_generation: AtomicU64,
     pub(crate) transition_generation: AtomicU64,
 }

@@ -1,12 +1,13 @@
-import { StrictMode, useRef, useState, type PointerEvent } from "react";
+import { StrictMode, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic, Square } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
 import {
   floatingOrbLabel,
+  floatingOrbWaveScale,
   shouldStartOrbDrag,
   type OrbPhase,
 } from "@/floating-orb/interaction";
@@ -17,17 +18,43 @@ interface OrbStatePayload {
   message?: string | null;
 }
 
+interface WaveformPayload {
+  active?: boolean;
+  level?: number;
+  peaks?: number[];
+}
+
+const EMPTY_WAVEFORM = { level: 0, peaks: [] as number[] };
+const WAVE_BAR_COUNT = 5;
+
+function clampLevel(value: unknown): number {
+  return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
 function FloatingOrbApp() {
   const [phase, setPhase] = useState<OrbPhase>("idle");
   const [message, setMessage] = useState("");
-  const [stopHovered, setStopHovered] = useState(false);
+  const [waveform, setWaveform] = useState(EMPTY_WAVEFORM);
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
 
   useTauriEvent<OrbStatePayload>("floating-orb-state", (payload) => {
     const next = payload.phase || "idle";
     setPhase(next);
     setMessage(payload.message || "");
-    if (next !== "recording") setStopHovered(false);
+    if (next !== "recording") {
+      setWaveform(EMPTY_WAVEFORM);
+    }
+  });
+
+  useTauriEvent<WaveformPayload>(EVT.indicatorWaveform, (payload) => {
+    if (!payload.active) {
+      setWaveform(EMPTY_WAVEFORM);
+      return;
+    }
+    const peaks = Array.isArray(payload.peaks)
+      ? payload.peaks.map((value) => floatingOrbWaveScale(clampLevel(value))).slice(-WAVE_BAR_COUNT)
+      : [];
+    setWaveform({ level: floatingOrbWaveScale(clampLevel(payload.level)), peaks });
   });
 
   useTauriEvent<{ which?: "start" | "end"; kind?: string }>(
@@ -61,59 +88,62 @@ function FloatingOrbApp() {
     if (current.id !== event.pointerId) return;
     pointer.current = { id: -1, x: 0, y: 0, dragging: false };
     if (current.dragging || phase !== "idle") return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    void cmd(CMD.floatingOrbActivate, { reducedMotion }).catch(() => undefined);
+    void cmd(CMD.floatingOrbActivate).catch(() => undefined);
   };
 
   const stop = () => {
     if (phase === "recording") void cmd(CMD.floatingOrbStop).catch(() => undefined);
   };
 
-  if (phase === "idle" || phase === "busy") {
-    return (
-      <button
-        type="button"
-        className={`floating-orb ${phase}`}
-        aria-label={phase === "busy" ? "当前有其他音频任务" : "开始悬浮球语音输入；拖动可调整位置"}
-        title={phase === "busy" ? "当前有其他音频任务" : "点击开始语音输入，拖动调整位置"}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => {
-          pointer.current = { id: -1, x: 0, y: 0, dragging: false };
-        }}
-      >
-        {phase === "busy" ? <LoaderCircle aria-hidden /> : <Mic aria-hidden />}
-      </button>
-    );
-  }
-
-  const label = floatingOrbLabel(phase, message, stopHovered);
-
-  const Icon = stopHovered && phase === "recording"
-    ? Square
-    : phase === "moving" || phase === "processing" || phase === "smartProcessing"
-      ? LoaderCircle
-      : phase === "success"
-        ? Check
-        : phase === "fallback"
-          ? Clipboard
-          : phase === "error"
-            ? AlertTriangle
-            : Mic;
+  const label = phase === "idle"
+    ? "开始悬浮球语音输入；拖动可调整位置"
+    : phase === "busy"
+      ? "当前有其他音频任务"
+      : floatingOrbLabel(phase, message);
+  const waveformBars = Array.from(
+    { length: WAVE_BAR_COUNT },
+    (_, index) => waveform.peaks[index] ?? waveform.level,
+  );
+  const loading = phase === "moving" || phase === "processing" || phase === "smartProcessing";
 
   return (
     <button
       type="button"
-      className={`floating-bubble ${phase}${stopHovered ? " stop-hovered" : ""}`}
-      disabled={phase !== "recording"}
-      aria-label={phase === "recording" ? "停止识别" : label}
-      onPointerEnter={() => phase === "recording" && setStopHovered(true)}
-      onPointerLeave={() => setStopHovered(false)}
+      className={`floating-orb ${phase}`}
+      style={{ "--wave-level": waveform.level } as CSSProperties}
+      disabled={phase !== "idle" && phase !== "recording"}
+      aria-label={phase === "recording" ? "点击停止识别" : label}
+      title={phase === "idle" ? "点击开始语音输入，拖动调整位置" : label}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={() => {
+        pointer.current = { id: -1, x: 0, y: 0, dragging: false };
+      }}
       onClick={stop}
     >
-      <Icon aria-hidden />
-      <span>{label}</span>
+      {phase === "recording" ? (
+        <span className="orb-waveform" aria-hidden>
+          {waveformBars.map((value, index) => (
+            <span
+              key={index}
+              className="orb-wave-bar"
+              style={{ "--bar-scale": Math.max(0.18, value) } as CSSProperties}
+            />
+          ))}
+        </span>
+      ) : loading || phase === "busy" ? (
+        <LoaderCircle className="orb-state-icon orb-spinner" aria-hidden />
+      ) : phase === "success" ? (
+        <Check className="orb-state-icon" aria-hidden />
+      ) : phase === "fallback" ? (
+        <Clipboard className="orb-state-icon" aria-hidden />
+      ) : phase === "error" ? (
+        <AlertTriangle className="orb-state-icon" aria-hidden />
+      ) : (
+        <Mic className="orb-state-icon" aria-hidden />
+      )}
+      <span className="orb-sr-only" aria-live="polite">{label}</span>
     </button>
   );
 }

@@ -5,13 +5,8 @@ use std::sync::atomic::Ordering;
 
 pub(crate) const FLOATING_ORB_LABEL: &str = "floating-orb";
 const ORB_LOGICAL_SIZE: f64 = 56.0;
-const BUBBLE_LOGICAL_WIDTH: f64 = 172.0;
-const BUBBLE_LOGICAL_HEIGHT: f64 = 56.0;
 const DEFAULT_MARGIN: f64 = 24.0;
-const BUBBLE_BOTTOM_MARGIN: f64 = 28.0;
 const MIN_VISIBLE_EDGE: i32 = 16;
-const ANIMATION_STEPS: u32 = 12;
-const ANIMATION_FRAME_MS: u64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MonitorRect {
@@ -19,7 +14,6 @@ struct MonitorRect {
     y: i32,
     width: u32,
     height: u32,
-    scale_milli: u32,
 }
 
 impl MonitorRect {
@@ -30,7 +24,6 @@ impl MonitorRect {
             y: area.position.y,
             width: area.size.width,
             height: area.size.height,
-            scale_milli: (monitor.scale_factor() * 1000.0).round().max(1.0) as u32,
         }
     }
 
@@ -47,10 +40,6 @@ impl MonitorRect {
         let dx = center_x - x as i64;
         let dy = center_y - y as i64;
         dx * dx + dy * dy
-    }
-
-    fn scale(&self) -> f64 {
-        self.scale_milli as f64 / 1000.0
     }
 }
 
@@ -297,14 +286,6 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return Ok(());
     };
-    if app
-        .state::<RuntimeState>()
-        .floating_orb_runtime
-        .transient_position
-        .load(Ordering::Acquire)
-    {
-        return Ok(());
-    }
     let size = window
         .outer_size()
         .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?;
@@ -334,13 +315,6 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
     let state = app.state::<RuntimeState>();
-    if state
-        .floating_orb_runtime
-        .transient_position
-        .load(Ordering::Acquire)
-    {
-        return;
-    }
     let generation = state
         .floating_orb_runtime
         .placement_generation
@@ -366,71 +340,6 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<&str>) {
             "floating-orb-state",
             json!({ "phase": phase, "message": message }),
         );
-    }
-}
-
-fn bottom_geometry(
-    window: &tauri::WebviewWindow,
-) -> (tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
-    let start = window
-        .outer_position()
-        .unwrap_or_else(|_| resolved_idle_position(window));
-    let start_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(56, 56));
-    let monitor = monitor_for_window(start, start_size, &monitor_rects(window));
-    let Some(monitor) = monitor else {
-        return (start, start_size);
-    };
-    let scale = monitor.scale();
-    let width = (BUBBLE_LOGICAL_WIDTH * scale).round() as u32;
-    let height = (BUBBLE_LOGICAL_HEIGHT * scale).round() as u32;
-    let margin = (BUBBLE_BOTTOM_MARGIN * scale).round() as i32;
-    (
-        tauri::PhysicalPosition::new(
-            monitor
-                .x
-                .saturating_add_unsigned(monitor.width / 2)
-                .saturating_sub((width / 2) as i32),
-            monitor
-                .y
-                .saturating_add_unsigned(monitor.height)
-                .saturating_sub(height as i32)
-                .saturating_sub(margin),
-        ),
-        tauri::PhysicalSize::new(width, height),
-    )
-}
-
-async fn animate_geometry(
-    window: tauri::WebviewWindow,
-    target_position: tauri::PhysicalPosition<i32>,
-    target_size: tauri::PhysicalSize<u32>,
-    reduced_motion: bool,
-) {
-    let start_position = window.outer_position().unwrap_or(target_position);
-    let start_size = window.outer_size().unwrap_or(target_size);
-    let steps = if reduced_motion { 1 } else { ANIMATION_STEPS };
-    for step in 1..=steps {
-        let progress = step as f64 / steps as f64;
-        let eased = 1.0 - (1.0 - progress).powi(3);
-        let x = start_position.x as f64
-            + (target_position.x - start_position.x) as f64 * eased;
-        let y = start_position.y as f64
-            + (target_position.y - start_position.y) as f64 * eased;
-        let width = start_size.width as f64
-            + (target_size.width as f64 - start_size.width as f64) * eased;
-        let height = start_size.height as f64
-            + (target_size.height as f64 - start_size.height as f64) * eased;
-        let _ = window.set_position(tauri::PhysicalPosition::new(
-            x.round() as i32,
-            y.round() as i32,
-        ));
-        let _ = window.set_size(tauri::PhysicalSize::new(
-            width.round() as u32,
-            height.round() as u32,
-        ));
-        if step < steps {
-            sleep(Duration::from_millis(ANIMATION_FRAME_MS)).await;
-        }
     }
 }
 
@@ -486,22 +395,7 @@ async fn return_to_idle(
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return;
     };
-    let idle_position = resolved_idle_position(&window);
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let idle_size = tauri::PhysicalSize::new(
-        (ORB_LOGICAL_SIZE * scale).round() as u32,
-        (ORB_LOGICAL_SIZE * scale).round() as u32,
-    );
-    let reduced_motion = state
-        .floating_orb_runtime
-        .reduced_motion
-        .load(Ordering::Acquire);
-    animate_geometry(window.clone(), idle_position, idle_size, reduced_motion).await;
     let _ = window.set_ignore_cursor_events(false);
-    state
-        .floating_orb_runtime
-        .transient_position
-        .store(false, Ordering::Release);
     emit_state(&app, "idle", None);
 }
 
@@ -531,11 +425,17 @@ pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &
     }
 }
 
+pub(crate) fn emit_floating_orb_waveform(app: &tauri::AppHandle, level: f32, peaks: Vec<f32>) {
+    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+        let _ = window.emit(
+            "dictation-indicator-waveform",
+            json!({ "active": true, "level": level, "peaks": peaks }),
+        );
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn floating_orb_activate(
-    app: tauri::AppHandle,
-    reduced_motion: Option<bool>,
-) -> Result<(), String> {
+pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), String> {
     let enabled = app
         .state::<RuntimeState>()
         .floating_orb
@@ -559,41 +459,21 @@ pub(crate) async fn floating_orb_activate(
     persist_current_position(&app)?;
     let window = ensure_floating_orb_window(&app)?;
     let click_position = cursor_location().await;
-    let state = app.state::<RuntimeState>();
-    state
-        .floating_orb_runtime
-        .transient_position
-        .store(true, Ordering::Release);
-    state
-        .floating_orb_runtime
-        .reduced_motion
-        .store(reduced_motion.unwrap_or(false), Ordering::Release);
-    state
+    app.state::<RuntimeState>()
         .floating_orb_runtime
         .transition_generation
         .fetch_add(1, Ordering::AcqRel);
     let _ = window.set_ignore_cursor_events(true);
     emit_state(&app, "moving", None);
-    let (target_position, target_size) = bottom_geometry(&window);
-    let animation = animate_geometry(
-        window.clone(),
-        target_position,
-        target_size,
-        reduced_motion.unwrap_or(false),
-    );
-    let click = async {
-        sleep(Duration::from_millis(16)).await;
-        let forwarded = match click_position {
-            Some(position) => forward_click(position).await.is_ok(),
-            None => false,
-        };
-        sleep(Duration::from_millis(80)).await;
-        let target = forwarded
-            .then(crate::active_app_context::activation_target)
-            .flatten();
-        (forwarded, target)
+    sleep(Duration::from_millis(16)).await;
+    let forwarded = match click_position {
+        Some(position) => forward_click(position).await.is_ok(),
+        None => false,
     };
-    let (_, (forwarded, target)) = tokio::join!(animation, click);
+    sleep(Duration::from_millis(80)).await;
+    let target = forwarded
+        .then(crate::active_app_context::activation_target)
+        .flatten();
     emit_state(&app, "recording", Some("聆听中…"));
     let _ = window.set_ignore_cursor_events(false);
     if let Err(error) = crate::application::dictation::start_from_floating_orb(
@@ -630,7 +510,6 @@ mod tests {
             y: 0,
             width: 1920,
             height: 1080,
-            scale_milli: 1000,
         }];
         assert_eq!(
             clamp_orb_position(
@@ -649,7 +528,6 @@ mod tests {
             y: 0,
             width: 1920,
             height: 1080,
-            scale_milli: 1000,
         }];
         assert_eq!(
             clamp_orb_position(
@@ -668,7 +546,6 @@ mod tests {
             y: 0,
             width: 1920,
             height: 1080,
-            scale_milli: 1000,
         }];
         assert_eq!(
             resolve_idle_position(
