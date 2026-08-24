@@ -28,11 +28,23 @@ describe("floating orb interaction", () => {
       size: 64,
       opacity: 70,
       glassEnabled: true,
+      glassMaterial: "underWindow",
+      glassTint: 10,
+      glassBorder: 8,
     });
-    expect(normalizeFloatingOrbAppearance({ size: 20, opacity: 140 })).toEqual({
+    expect(normalizeFloatingOrbAppearance({
+      size: 20,
+      opacity: 140,
+      glassMaterial: "invalid",
+      glassTint: 99,
+      glassBorder: -5,
+    })).toEqual({
       size: 44,
       opacity: 100,
       glassEnabled: false,
+      glassMaterial: "underWindow",
+      glassTint: 40,
+      glassBorder: 0,
     });
   });
 });

@@ -12,16 +12,26 @@ export type OrbPhase =
 export const ORB_DRAG_THRESHOLD = 5;
 export const FLOATING_ORB_SIZE_RANGE = { min: 44, max: 72 } as const;
 export const FLOATING_ORB_OPACITY_RANGE = { min: 40, max: 100 } as const;
+export const FLOATING_ORB_GLASS_TINT_RANGE = { min: 0, max: 40 } as const;
+export const FLOATING_ORB_GLASS_BORDER_RANGE = { min: 0, max: 30 } as const;
+export const FLOATING_ORB_GLASS_MATERIALS = ["underWindow", "content", "sidebar"] as const;
+export type FloatingOrbGlassMaterial = (typeof FLOATING_ORB_GLASS_MATERIALS)[number];
 export const DEFAULT_FLOATING_ORB_APPEARANCE = {
   size: 56,
   opacity: 100,
   glassEnabled: false,
+  glassMaterial: "underWindow" as FloatingOrbGlassMaterial,
+  glassTint: 10,
+  glassBorder: 8,
 } as const;
 
 export interface FloatingOrbAppearance {
   size: number;
   opacity: number;
   glassEnabled: boolean;
+  glassMaterial: FloatingOrbGlassMaterial;
+  glassTint: number;
+  glassBorder: number;
 }
 
 function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
@@ -33,6 +43,9 @@ export function normalizeFloatingOrbAppearance(payload: {
   size?: number;
   opacity?: number;
   glassEnabled?: boolean;
+  glassMaterial?: string;
+  glassTint?: number;
+  glassBorder?: number;
 }): FloatingOrbAppearance {
   return {
     size: clampInteger(
@@ -48,6 +61,23 @@ export function normalizeFloatingOrbAppearance(payload: {
       DEFAULT_FLOATING_ORB_APPEARANCE.opacity,
     ),
     glassEnabled: payload.glassEnabled === true,
+    glassMaterial: FLOATING_ORB_GLASS_MATERIALS.includes(
+      payload.glassMaterial as FloatingOrbGlassMaterial,
+    )
+      ? payload.glassMaterial as FloatingOrbGlassMaterial
+      : DEFAULT_FLOATING_ORB_APPEARANCE.glassMaterial,
+    glassTint: clampInteger(
+      payload.glassTint,
+      FLOATING_ORB_GLASS_TINT_RANGE.min,
+      FLOATING_ORB_GLASS_TINT_RANGE.max,
+      DEFAULT_FLOATING_ORB_APPEARANCE.glassTint,
+    ),
+    glassBorder: clampInteger(
+      payload.glassBorder,
+      FLOATING_ORB_GLASS_BORDER_RANGE.min,
+      FLOATING_ORB_GLASS_BORDER_RANGE.max,
+      DEFAULT_FLOATING_ORB_APPEARANCE.glassBorder,
+    ),
   };
 }
 

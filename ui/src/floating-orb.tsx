@@ -49,7 +49,7 @@ function FloatingOrbApp() {
       .catch(() => undefined);
   }, []);
 
-  useTauriEvent<{ size?: number; opacity?: number; glassEnabled?: boolean }>("floating-orb-config", (payload) => {
+  useTauriEvent<Partial<FloatingOrbAppearance>>("floating-orb-config", (payload) => {
     setAppearance(normalizeFloatingOrbAppearance(payload));
   });
 
@@ -128,6 +128,8 @@ function FloatingOrbApp() {
       className={`floating-orb ${phase}${appearance.glassEnabled ? " glass" : ""}`}
       style={{
         "--orb-opacity": appearance.opacity / 100,
+        "--orb-glass-tint": appearance.glassTint / 100,
+        "--orb-glass-border": appearance.glassBorder / 100,
       } as CSSProperties}
       disabled={phase !== "idle" && phase !== "recording"}
       aria-label={phase === "recording" ? "点击停止识别" : label}

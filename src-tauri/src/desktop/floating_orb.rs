@@ -1,19 +1,22 @@
 use crate::prelude::*;
-use crate::state::{FloatingOrbPosition, FloatingOrbSettings, RuntimeState};
+use crate::state::{
+    FloatingOrbGlassMaterial, FloatingOrbPosition, FloatingOrbSettings, RuntimeState,
+};
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
 use std::sync::atomic::Ordering;
 
 pub(crate) const FLOATING_ORB_LABEL: &str = "floating-orb";
 pub(crate) const FLOATING_ORB_MENU_LABEL: &str = "floating-orb-menu";
-const ORB_SHADOW_PADDING: f64 = 4.0;
 const DEFAULT_MARGIN: f64 = 24.0;
 const MIN_VISIBLE_EDGE: i32 = 16;
 const ORB_SIZE_MIN: u16 = 44;
 const ORB_SIZE_MAX: u16 = 72;
 const ORB_OPACITY_MIN: u8 = 40;
 const ORB_OPACITY_MAX: u8 = 100;
+const ORB_GLASS_TINT_MAX: u8 = 40;
+const ORB_GLASS_BORDER_MAX: u8 = 30;
 const ORB_MENU_WIDTH: f64 = 280.0;
-const ORB_MENU_HEIGHT: f64 = 256.0;
+const ORB_MENU_HEIGHT: f64 = 410.0;
 const ORB_MENU_GAP: f64 = 8.0;
 
 fn normalized_orb_size(size: u16) -> u16 {
@@ -25,7 +28,7 @@ fn normalized_orb_opacity(opacity: u8) -> u8 {
 }
 
 fn orb_window_extent(size: u16) -> f64 {
-    normalized_orb_size(size) as f64 + ORB_SHADOW_PADDING * 2.0
+    normalized_orb_size(size) as f64
 }
 
 fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
@@ -36,20 +39,39 @@ fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
             let mut settings = settings.clone();
             settings.size = normalized_orb_size(settings.size);
             settings.opacity = normalized_orb_opacity(settings.opacity);
+            settings.glass_tint = settings.glass_tint.min(ORB_GLASS_TINT_MAX);
+            settings.glass_border = settings.glass_border.min(ORB_GLASS_BORDER_MAX);
             settings
         })
         .unwrap_or_default()
 }
 
-fn apply_native_glass(window: &tauri::WebviewWindow, enabled: bool, radius: f64) {
+fn apply_native_glass(
+    window: &tauri::WebviewWindow,
+    enabled: bool,
+    radius: f64,
+    material: FloatingOrbGlassMaterial,
+    tint: u8,
+) {
     #[cfg(target_os = "macos")]
     {
+        let _ = tint;
         let _ = window_vibrancy::clear_vibrancy(window);
         if enabled {
+            let material = match material {
+                FloatingOrbGlassMaterial::UnderWindow => {
+                    window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground
+                }
+                FloatingOrbGlassMaterial::Content => {
+                    window_vibrancy::NSVisualEffectMaterial::ContentBackground
+                }
+                FloatingOrbGlassMaterial::Sidebar => {
+                    window_vibrancy::NSVisualEffectMaterial::Sidebar
+                }
+            };
             if let Err(error) = window_vibrancy::apply_vibrancy(
                 window,
-                // HudWindow 自带明显的灰色材质层；这里需要保留桌面背景并只做背景模糊。
-                window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
+                material,
                 Some(window_vibrancy::NSVisualEffectState::Active),
                 Some(radius),
             ) {
@@ -59,17 +81,32 @@ fn apply_native_glass(window: &tauri::WebviewWindow, enabled: bool, radius: f64)
     }
     #[cfg(windows)]
     {
+        let _ = material;
         let _ = window_vibrancy::clear_blur(window);
         let _ = window_vibrancy::clear_acrylic(window);
         let _ = window_vibrancy::clear_mica(window);
         if enabled {
-            if let Err(error) = window_vibrancy::apply_acrylic(window, Some((8, 12, 18, 72))) {
+            let tint_alpha = ((tint.min(ORB_GLASS_TINT_MAX) as u16 * 255) / 100) as u8;
+            if let Err(error) =
+                window_vibrancy::apply_acrylic(window, Some((8, 12, 18, tint_alpha)))
+            {
                 eprintln!("[floating-orb] Windows Acrylic 不可用: {error}");
             }
         }
     }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let _ = (window, enabled, radius);
+    let _ = (window, enabled, radius, material, tint);
+}
+
+fn native_glass_appearance_changed(
+    previous: &FloatingOrbSettings,
+    current: &FloatingOrbSettings,
+) -> bool {
+    previous.glass_enabled != current.glass_enabled
+        || (current.glass_enabled
+            && ((cfg!(target_os = "macos")
+                && previous.glass_material != current.glass_material)
+                || (cfg!(windows) && previous.glass_tint != current.glass_tint)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,7 +369,13 @@ pub(crate) fn ensure_floating_orb_window(
         let _ = window.destroy();
         return Err(error);
     }
-    apply_native_glass(&window, settings.glass_enabled, extent / 2.0);
+    apply_native_glass(
+        &window,
+        settings.glass_enabled,
+        extent / 2.0,
+        settings.glass_material,
+        settings.glass_tint,
+    );
     let position = resolved_idle_position(&window);
     window
         .set_position(position)
@@ -378,6 +421,9 @@ fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
         "size": normalized_orb_size(settings.size),
         "opacity": normalized_orb_opacity(settings.opacity),
         "glassEnabled": settings.glass_enabled,
+        "glassMaterial": settings.glass_material,
+        "glassTint": settings.glass_tint.min(ORB_GLASS_TINT_MAX),
+        "glassBorder": settings.glass_border.min(ORB_GLASS_BORDER_MAX),
     });
     for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
         if let Some(window) = app.get_webview_window(label) {
@@ -396,6 +442,8 @@ fn apply_floating_orb_config(
         window,
         settings.glass_enabled,
         orb_window_extent(settings.size) / 2.0,
+        settings.glass_material,
+        settings.glass_tint,
     );
     emit_config(app, &settings);
     Ok(())
@@ -477,6 +525,9 @@ pub(crate) fn set_floating_orb_appearance(
     size: u16,
     opacity: u8,
     glass_enabled: bool,
+    glass_material: FloatingOrbGlassMaterial,
+    glass_tint: u8,
+    glass_border: u8,
 ) -> Result<FloatingOrbSettings, String> {
     let state = app.state::<RuntimeState>();
     let previous = {
@@ -488,18 +539,23 @@ pub(crate) fn set_floating_orb_appearance(
         settings.size = normalized_orb_size(size);
         settings.opacity = normalized_orb_opacity(opacity);
         settings.glass_enabled = glass_enabled;
+        settings.glass_material = glass_material;
+        settings.glass_tint = glass_tint.min(ORB_GLASS_TINT_MAX);
+        settings.glass_border = glass_border.min(ORB_GLASS_BORDER_MAX);
         previous
     };
     let current = current_settings(&app);
     let result = if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
         resize_floating_orb_window(&window, current.size).map(|_| {
-            if previous.glass_enabled != current.glass_enabled
+            if native_glass_appearance_changed(&previous, &current)
                 || (current.glass_enabled && previous.size != current.size)
             {
                 apply_native_glass(
                     &window,
                     current.glass_enabled,
                     orb_window_extent(current.size) / 2.0,
+                    current.glass_material,
+                    current.glass_tint,
                 );
             }
         })
@@ -515,9 +571,15 @@ pub(crate) fn set_floating_orb_appearance(
         }
         return Err(error);
     }
-    if previous.glass_enabled != current.glass_enabled {
+    if native_glass_appearance_changed(&previous, &current) {
         if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
-            apply_native_glass(&menu, current.glass_enabled, 14.0);
+            apply_native_glass(
+                &menu,
+                current.glass_enabled,
+                14.0,
+                current.glass_material,
+                current.glass_tint,
+            );
         }
     }
     emit_config(&app, &current);
@@ -561,7 +623,14 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
         let _ = window.destroy();
         return Err(error);
     }
-    apply_native_glass(&window, current_settings(app).glass_enabled, 14.0);
+    let settings = current_settings(app);
+    apply_native_glass(
+        &window,
+        settings.glass_enabled,
+        14.0,
+        settings.glass_material,
+        settings.glass_tint,
+    );
     Ok(window)
 }
 
@@ -572,7 +641,13 @@ pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
     let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
-    apply_native_glass(&menu, settings.glass_enabled, 14.0);
+    apply_native_glass(
+        &menu,
+        settings.glass_enabled,
+        14.0,
+        settings.glass_material,
+        settings.glass_tint,
+    );
     let scale = orb.scale_factor().unwrap_or(1.0);
     let position = resolve_menu_position(
         orb.outer_position()
@@ -855,7 +930,7 @@ mod tests {
         assert_eq!(normalized_orb_opacity(85), 85);
         assert_eq!(normalized_orb_opacity(20), ORB_OPACITY_MIN);
         assert_eq!(normalized_orb_opacity(120), ORB_OPACITY_MAX);
-        assert_eq!(orb_window_extent(56), 64.0);
+        assert_eq!(orb_window_extent(56), 56.0);
     }
 
     #[test]
@@ -870,21 +945,21 @@ mod tests {
             resolve_menu_position(
                 tauri::PhysicalPosition::new(200, 400),
                 tauri::PhysicalSize::new(64, 64),
-                tauri::PhysicalSize::new(280, 256),
+                tauri::PhysicalSize::new(280, 410),
                 8,
                 &monitors,
             ),
-            tauri::PhysicalPosition::new(272, 304)
+            tauri::PhysicalPosition::new(272, 227)
         );
         assert_eq!(
             resolve_menu_position(
                 tauri::PhysicalPosition::new(1840, 900),
                 tauri::PhysicalSize::new(64, 64),
-                tauri::PhysicalSize::new(280, 256),
+                tauri::PhysicalSize::new(280, 410),
                 8,
                 &monitors,
             ),
-            tauri::PhysicalPosition::new(1552, 804)
+            tauri::PhysicalPosition::new(1552, 670)
         );
     }
 
