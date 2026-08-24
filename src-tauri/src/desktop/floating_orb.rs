@@ -48,7 +48,8 @@ fn apply_native_glass(window: &tauri::WebviewWindow, enabled: bool, radius: f64)
         if enabled {
             if let Err(error) = window_vibrancy::apply_vibrancy(
                 window,
-                window_vibrancy::NSVisualEffectMaterial::HudWindow,
+                // HudWindow 自带明显的灰色材质层；这里需要保留桌面背景并只做背景模糊。
+                window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
                 Some(window_vibrancy::NSVisualEffectState::Active),
                 Some(radius),
             ) {
@@ -62,7 +63,7 @@ fn apply_native_glass(window: &tauri::WebviewWindow, enabled: bool, radius: f64)
         let _ = window_vibrancy::clear_acrylic(window);
         let _ = window_vibrancy::clear_mica(window);
         if enabled {
-            if let Err(error) = window_vibrancy::apply_acrylic(window, Some((12, 17, 26, 170))) {
+            if let Err(error) = window_vibrancy::apply_acrylic(window, Some((8, 12, 18, 72))) {
                 eprintln!("[floating-orb] Windows Acrylic 不可用: {error}");
             }
         }
@@ -313,6 +314,7 @@ pub(crate) fn ensure_floating_orb_window(
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
+    .theme(Some(tauri::Theme::Dark))
     .focusable(false)
     .focused(false)
     .visible(false)
@@ -541,6 +543,7 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
+    .theme(Some(tauri::Theme::Dark))
     .focusable(true)
     .focused(false)
     .visible(false)

@@ -56,12 +56,12 @@ button {
 }
 
 .floating-orb.glass {
-  background: rgba(12, 17, 26, 0.58);
+  background: rgba(8, 12, 18, 0.18);
 }
 
 .floating-orb.glass:hover,
 .floating-orb.glass.recording:hover {
-  background: rgba(18, 28, 42, 0.68);
+  background: rgba(12, 20, 30, 0.26);
 }
 
 .floating-orb:hover .orb-icon-shell,
