@@ -419,7 +419,6 @@ export function IndicatorApp() {
         <div
           id="signal-panel"
           className={showProcessingPanel ? "processing" : "recording"}
-          style={{ "--wave-level": waveform.level } as React.CSSProperties}
         >
           {showWaveform ? (
             <div className="wave-bars" aria-hidden="true">

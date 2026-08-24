@@ -126,8 +126,6 @@ function FloatingOrbApp() {
       type="button"
       className={`floating-orb ${phase}`}
       style={{
-        "--wave-level": waveform.level,
-        "--wave-glow": `${5 + waveform.level * 9}px`,
         "--orb-opacity": appearance.opacity / 100,
       } as CSSProperties}
       disabled={phase !== "idle" && phase !== "recording"}
