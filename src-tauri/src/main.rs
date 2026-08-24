@@ -319,6 +319,9 @@ fn main() {
             application::dictation::initialize(app.handle().clone());
             application::subtitles::initialize(app.handle().clone());
             application::compare::initialize(app.handle().clone());
+            // Tauri 会在 setup 前按平台配置预创建主窗口，这条路径不会经过
+            // `ensure_main_window`，因此必须在持久化设置加载后主动应用系统材质。
+            crate::desktop::floating_orb::sync_system_glass_windows(&app.handle());
             let dictation_settings = {
                 let state = app.state::<RuntimeState>();
                 let guard = state.dictation.lock().map_err(|_| {

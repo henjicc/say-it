@@ -113,15 +113,21 @@ fn apply_native_glass(
         let _ = tint;
         let _ = window_vibrancy::clear_vibrancy(window);
         if enabled {
-            let material = match material {
-                FloatingOrbGlassMaterial::UnderWindow => {
-                    window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground
-                }
-                FloatingOrbGlassMaterial::Content => {
-                    window_vibrancy::NSVisualEffectMaterial::ContentBackground
-                }
-                FloatingOrbGlassMaterial::Sidebar => {
-                    window_vibrancy::NSVisualEffectMaterial::Sidebar
+            let material = if window.label() == "main" {
+                // 主窗口需要的是整个窗口背后的系统模糊，侧栏材质用于整窗时会产生
+                // 过强的乳白/灰色覆盖，看起来更像普通半透明层。
+                window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground
+            } else {
+                match material {
+                    FloatingOrbGlassMaterial::UnderWindow => {
+                        window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground
+                    }
+                    FloatingOrbGlassMaterial::Content => {
+                        window_vibrancy::NSVisualEffectMaterial::ContentBackground
+                    }
+                    FloatingOrbGlassMaterial::Sidebar => {
+                        window_vibrancy::NSVisualEffectMaterial::Sidebar
+                    }
                 }
             };
             if let Err(error) = window_vibrancy::apply_vibrancy(
@@ -174,7 +180,7 @@ pub(crate) fn sync_system_glass_window(window: &tauri::WebviewWindow) {
     );
 }
 
-fn sync_system_glass_windows(app: &tauri::AppHandle) {
+pub(crate) fn sync_system_glass_windows(app: &tauri::AppHandle) {
     for label in [
         "main",
         FLOATING_ORB_LABEL,
