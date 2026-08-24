@@ -1,30 +1,27 @@
 use crate::prelude::*;
-use crate::state::{
-    FloatingOrbPosition, FloatingOrbSettings, RuntimeState, DEFAULT_FLOATING_ORB_OPACITY,
-    DEFAULT_FLOATING_ORB_SIZE,
-};
+use crate::state::{FloatingOrbPosition, FloatingOrbSettings, RuntimeState};
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
 use std::sync::atomic::Ordering;
 
 pub(crate) const FLOATING_ORB_LABEL: &str = "floating-orb";
+pub(crate) const FLOATING_ORB_MENU_LABEL: &str = "floating-orb-menu";
 const ORB_SHADOW_PADDING: f64 = 4.0;
 const DEFAULT_MARGIN: f64 = 24.0;
 const MIN_VISIBLE_EDGE: i32 = 16;
-const ORB_SIZES: [u16; 3] = [48, 56, 64];
-const ORB_OPACITIES: [u8; 3] = [70, 85, 100];
+const ORB_SIZE_MIN: u16 = 44;
+const ORB_SIZE_MAX: u16 = 72;
+const ORB_OPACITY_MIN: u8 = 40;
+const ORB_OPACITY_MAX: u8 = 100;
+const ORB_MENU_WIDTH: f64 = 280.0;
+const ORB_MENU_HEIGHT: f64 = 256.0;
+const ORB_MENU_GAP: f64 = 8.0;
 
 fn normalized_orb_size(size: u16) -> u16 {
-    ORB_SIZES
-        .contains(&size)
-        .then_some(size)
-        .unwrap_or(DEFAULT_FLOATING_ORB_SIZE)
+    size.clamp(ORB_SIZE_MIN, ORB_SIZE_MAX)
 }
 
 fn normalized_orb_opacity(opacity: u8) -> u8 {
-    ORB_OPACITIES
-        .contains(&opacity)
-        .then_some(opacity)
-        .unwrap_or(DEFAULT_FLOATING_ORB_OPACITY)
+    opacity.clamp(ORB_OPACITY_MIN, ORB_OPACITY_MAX)
 }
 
 fn orb_window_extent(size: u16) -> f64 {
@@ -42,6 +39,36 @@ fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
             settings
         })
         .unwrap_or_default()
+}
+
+fn apply_native_glass(window: &tauri::WebviewWindow, enabled: bool, radius: f64) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window_vibrancy::clear_vibrancy(window);
+        if enabled {
+            if let Err(error) = window_vibrancy::apply_vibrancy(
+                window,
+                window_vibrancy::NSVisualEffectMaterial::HudWindow,
+                Some(window_vibrancy::NSVisualEffectState::Active),
+                Some(radius),
+            ) {
+                eprintln!("[floating-orb] macOS 毛玻璃不可用: {error}");
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = window_vibrancy::clear_blur(window);
+        let _ = window_vibrancy::clear_acrylic(window);
+        let _ = window_vibrancy::clear_mica(window);
+        if enabled {
+            if let Err(error) = window_vibrancy::apply_acrylic(window, Some((12, 17, 26, 170))) {
+                eprintln!("[floating-orb] Windows Acrylic 不可用: {error}");
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = (window, enabled, radius);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +187,53 @@ fn resolve_idle_position(
     clamp_orb_position(position, size, monitors)
 }
 
+fn resolve_menu_position(
+    orb_position: tauri::PhysicalPosition<i32>,
+    orb_size: tauri::PhysicalSize<u32>,
+    menu_size: tauri::PhysicalSize<u32>,
+    gap: i32,
+    monitors: &[MonitorRect],
+) -> tauri::PhysicalPosition<i32> {
+    let Some(monitor) = monitor_for_window(orb_position, orb_size, monitors) else {
+        return tauri::PhysicalPosition::new(
+            orb_position
+                .x
+                .saturating_add_unsigned(orb_size.width)
+                .saturating_add(gap),
+            orb_position.y,
+        );
+    };
+    let monitor_right = monitor.x.saturating_add_unsigned(monitor.width);
+    let monitor_bottom = monitor.y.saturating_add_unsigned(monitor.height);
+    let right_x = orb_position
+        .x
+        .saturating_add_unsigned(orb_size.width)
+        .saturating_add(gap);
+    let left_x = orb_position
+        .x
+        .saturating_sub(menu_size.width as i32)
+        .saturating_sub(gap);
+    let preferred_x = if right_x.saturating_add_unsigned(menu_size.width) <= monitor_right {
+        right_x
+    } else {
+        left_x
+    };
+    let max_x = monitor_right
+        .saturating_sub(menu_size.width as i32)
+        .max(monitor.x);
+    let centered_y = orb_position
+        .y
+        .saturating_add((orb_size.height / 2) as i32)
+        .saturating_sub((menu_size.height / 2) as i32);
+    let max_y = monitor_bottom
+        .saturating_sub(menu_size.height as i32)
+        .max(monitor.y);
+    tauri::PhysicalPosition::new(
+        preferred_x.clamp(monitor.x, max_x),
+        centered_y.clamp(monitor.y, max_y),
+    )
+}
+
 fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<MonitorRect> {
     window
         .available_monitors()
@@ -245,12 +319,6 @@ pub(crate) fn ensure_floating_orb_window(
     .shadow(false)
     .transparent(true)
     .visible_on_all_workspaces(true)
-    .on_menu_event(|window, event| {
-        if let Err(error) = handle_floating_orb_menu_event(window.app_handle(), event.id().as_ref())
-        {
-            eprintln!("[floating-orb] 处理右键菜单失败: {error}");
-        }
-    })
     .build()
     .map_err(|error| format!("创建悬浮球窗口失败：{error}"))?;
     #[cfg(target_os = "macos")]
@@ -262,6 +330,7 @@ pub(crate) fn ensure_floating_orb_window(
         let _ = window.destroy();
         return Err(error);
     }
+    apply_native_glass(&window, settings.glass_enabled, extent / 2.0);
     let position = resolved_idle_position(&window);
     window
         .set_position(position)
@@ -303,14 +372,15 @@ fn resize_floating_orb_window(window: &tauri::WebviewWindow, size: u16) -> Resul
 }
 
 fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let _ = window.emit(
-            "floating-orb-config",
-            json!({
-                "size": normalized_orb_size(settings.size),
-                "opacity": normalized_orb_opacity(settings.opacity),
-            }),
-        );
+    let payload = json!({
+        "size": normalized_orb_size(settings.size),
+        "opacity": normalized_orb_opacity(settings.opacity),
+        "glassEnabled": settings.glass_enabled,
+    });
+    for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.emit("floating-orb-config", payload.clone());
+        }
     }
 }
 
@@ -320,6 +390,11 @@ fn apply_floating_orb_config(
 ) -> Result<(), String> {
     let settings = current_settings(app);
     resize_floating_orb_window(window, settings.size)?;
+    apply_native_glass(
+        window,
+        settings.glass_enabled,
+        orb_window_extent(settings.size) / 2.0,
+    );
     emit_config(app, &settings);
     Ok(())
 }
@@ -338,11 +413,15 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
         window
             .show()
             .map_err(|error| format!("显示悬浮球失败：{error}"))
-    } else if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        window
-            .destroy()
-            .map_err(|error| format!("关闭悬浮球失败：{error}"))
     } else {
+        if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
+            let _ = menu.destroy();
+        }
+        if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+            window
+                .destroy()
+                .map_err(|error| format!("关闭悬浮球失败：{error}"))?;
+        }
         Ok(())
     }
 }
@@ -390,31 +469,12 @@ pub(crate) fn get_floating_orb_settings(
     Ok(current_settings(&app))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FloatingOrbMenuAction {
-    Size(u16),
-    Opacity(u8),
-    Disable,
-}
-
-fn parse_floating_orb_menu_action(id: &str) -> Option<FloatingOrbMenuAction> {
-    id.strip_prefix("floating-orb-size-")
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|value| ORB_SIZES.contains(value))
-        .map(FloatingOrbMenuAction::Size)
-        .or_else(|| {
-            id.strip_prefix("floating-orb-opacity-")
-                .and_then(|value| value.parse::<u8>().ok())
-                .filter(|value| ORB_OPACITIES.contains(value))
-                .map(FloatingOrbMenuAction::Opacity)
-        })
-        .or_else(|| (id == "floating-orb-disable").then_some(FloatingOrbMenuAction::Disable))
-}
-
-fn set_floating_orb_appearance(
-    app: &tauri::AppHandle,
-    size: Option<u16>,
-    opacity: Option<u8>,
+#[tauri::command]
+pub(crate) fn set_floating_orb_appearance(
+    app: tauri::AppHandle,
+    size: u16,
+    opacity: u8,
+    glass_enabled: bool,
 ) -> Result<FloatingOrbSettings, String> {
     let state = app.state::<RuntimeState>();
     let previous = {
@@ -423,147 +483,121 @@ fn set_floating_orb_appearance(
             .lock()
             .map_err(|_| "悬浮球配置锁失败".to_string())?;
         let previous = settings.clone();
-        if let Some(size) = size {
-            settings.size = normalized_orb_size(size);
-        }
-        if let Some(opacity) = opacity {
-            settings.opacity = normalized_orb_opacity(opacity);
-        }
+        settings.size = normalized_orb_size(size);
+        settings.opacity = normalized_orb_opacity(opacity);
+        settings.glass_enabled = glass_enabled;
         previous
     };
+    let current = current_settings(&app);
     let result = if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        apply_floating_orb_config(app, &window).and_then(|_| persist_current_position(app))
+        resize_floating_orb_window(&window, current.size).map(|_| {
+            if previous.glass_enabled != current.glass_enabled
+                || (current.glass_enabled && previous.size != current.size)
+            {
+                apply_native_glass(
+                    &window,
+                    current.glass_enabled,
+                    orb_window_extent(current.size) / 2.0,
+                );
+            }
+        })
     } else {
-        crate::persistence::save_persisted_state(app, &state)
+        Ok(())
     };
     if let Err(error) = result {
         if let Ok(mut settings) = state.floating_orb.lock() {
             *settings = previous.clone();
         }
         if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-            let _ = apply_floating_orb_config(app, &window);
+            let _ = apply_floating_orb_config(&app, &window);
         }
-        let _ = crate::persistence::save_persisted_state(app, &state);
         return Err(error);
     }
+    if previous.glass_enabled != current.glass_enabled {
+        if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
+            apply_native_glass(&menu, current.glass_enabled, 14.0);
+        }
+    }
+    emit_config(&app, &current);
     crate::application::contract::next_revision(&state.snapshot_revision);
-    state
-        .floating_orb
-        .lock()
-        .map(|settings| settings.clone())
-        .map_err(|_| "悬浮球配置锁失败".to_string())
+    schedule_persist_floating_orb_appearance(app);
+    Ok(current)
 }
 
-fn handle_floating_orb_menu_event(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
-    match parse_floating_orb_menu_action(id) {
-        Some(FloatingOrbMenuAction::Size(size)) => {
-            set_floating_orb_appearance(app, Some(size), None)?;
-        }
-        Some(FloatingOrbMenuAction::Opacity(opacity)) => {
-            set_floating_orb_appearance(app, None, Some(opacity))?;
-        }
-        Some(FloatingOrbMenuAction::Disable) => {
-            set_floating_orb_enabled(app.clone(), false)?;
-        }
-        None => {}
+fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
+        return Ok(window);
     }
-    Ok(())
+    let window = WebviewWindowBuilder::new(
+        app,
+        FLOATING_ORB_MENU_LABEL,
+        WebviewUrl::App("floating-orb-menu.html".into()),
+    )
+    .title("悬浮球设置")
+    .inner_size(ORB_MENU_WIDTH, ORB_MENU_HEIGHT)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focusable(true)
+    .focused(false)
+    .visible(false)
+    .shadow(true)
+    .transparent(true)
+    .visible_on_all_workspaces(true)
+    .build()
+    .map_err(|error| format!("创建悬浮球设置面板失败：{error}"))?;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = window
+        .ns_window()
+        .map_err(|error| format!("读取 macOS 悬浮球设置窗口失败：{error}"))
+        .and_then(crate::macos_native::configure_floating_orb_window)
+    {
+        let _ = window.destroy();
+        return Err(error);
+    }
+    apply_native_glass(&window, current_settings(app).glass_enabled, 14.0);
+    Ok(window)
 }
 
 #[tauri::command]
 pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app
+    let orb = app
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
+    let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
-    let size = normalized_orb_size(settings.size);
-    let opacity = normalized_orb_opacity(settings.opacity);
-    let size_small = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-size-48",
-        "小",
-        true,
-        size == 48,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球尺寸菜单失败：{error}"))?;
-    let size_normal = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-size-56",
-        "标准",
-        true,
-        size == 56,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球尺寸菜单失败：{error}"))?;
-    let size_large = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-size-64",
-        "大",
-        true,
-        size == 64,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球尺寸菜单失败：{error}"))?;
-    let size_menu = tauri::menu::Submenu::with_items(
-        &app,
-        "大小",
-        true,
-        &[&size_small, &size_normal, &size_large],
-    )
-    .map_err(|error| format!("创建悬浮球尺寸菜单失败：{error}"))?;
-    let opacity_low = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-opacity-70",
-        "70%",
-        true,
-        opacity == 70,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球透明度菜单失败：{error}"))?;
-    let opacity_normal = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-opacity-85",
-        "85%",
-        true,
-        opacity == 85,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球透明度菜单失败：{error}"))?;
-    let opacity_solid = tauri::menu::CheckMenuItem::with_id(
-        &app,
-        "floating-orb-opacity-100",
-        "100%",
-        true,
-        opacity == 100,
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球透明度菜单失败：{error}"))?;
-    let opacity_menu = tauri::menu::Submenu::with_items(
-        &app,
-        "不透明度",
-        true,
-        &[&opacity_low, &opacity_normal, &opacity_solid],
-    )
-    .map_err(|error| format!("创建悬浮球透明度菜单失败：{error}"))?;
-    let disable = tauri::menu::MenuItem::with_id(
-        &app,
-        "floating-orb-disable",
-        "关闭悬浮球",
-        !crate::application::dictation::is_floating_orb_active(&app),
-        None::<&str>,
-    )
-    .map_err(|error| format!("创建悬浮球关闭菜单失败：{error}"))?;
-    let menu = MenuBuilder::new(&app)
-        .item(&size_menu)
-        .item(&opacity_menu)
-        .separator()
-        .item(&disable)
-        .build()
-        .map_err(|error| format!("创建悬浮球右键菜单失败：{error}"))?;
-    window
-        .popup_menu(&menu)
-        .map_err(|error| format!("显示悬浮球右键菜单失败：{error}"))
+    apply_native_glass(&menu, settings.glass_enabled, 14.0);
+    let scale = orb.scale_factor().unwrap_or(1.0);
+    let position = resolve_menu_position(
+        orb.outer_position()
+            .map_err(|error| format!("读取悬浮球位置失败：{error}"))?,
+        orb.outer_size()
+            .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?,
+        menu.outer_size()
+            .map_err(|error| format!("读取悬浮球设置面板尺寸失败：{error}"))?,
+        (ORB_MENU_GAP * scale).round() as i32,
+        &monitor_rects(&orb),
+    );
+    menu.set_position(position)
+        .map_err(|error| format!("定位悬浮球设置面板失败：{error}"))?;
+    menu.show()
+        .map_err(|error| format!("显示悬浮球设置面板失败：{error}"))?;
+    menu.set_focus()
+        .map_err(|error| format!("激活悬浮球设置面板失败：{error}"))?;
+    emit_config(&app, &settings);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn hide_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
+        menu.hide()
+            .map_err(|error| format!("隐藏悬浮球设置面板失败：{error}"))?;
+    }
+    Ok(())
 }
 
 fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
@@ -614,6 +648,29 @@ pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
             == generation
         {
             let _ = persist_current_position(&app);
+        }
+    });
+}
+
+fn schedule_persist_floating_orb_appearance(app: tauri::AppHandle) {
+    let state = app.state::<RuntimeState>();
+    let generation = state
+        .floating_orb_runtime
+        .appearance_generation
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(250)).await;
+        let state = app.state::<RuntimeState>();
+        if state
+            .floating_orb_runtime
+            .appearance_generation
+            .load(Ordering::Acquire)
+            == generation
+        {
+            if let Err(error) = crate::persistence::save_persisted_state(&app, &state) {
+                eprintln!("[floating-orb] 保存悬浮球外观失败: {error}");
+            }
         }
     });
 }
@@ -788,31 +845,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn appearance_values_use_supported_presets() {
+    fn appearance_values_are_clamped_to_slider_ranges() {
         assert_eq!(normalized_orb_size(48), 48);
-        assert_eq!(normalized_orb_size(60), DEFAULT_FLOATING_ORB_SIZE);
+        assert_eq!(normalized_orb_size(20), ORB_SIZE_MIN);
+        assert_eq!(normalized_orb_size(90), ORB_SIZE_MAX);
         assert_eq!(normalized_orb_opacity(85), 85);
-        assert_eq!(normalized_orb_opacity(90), DEFAULT_FLOATING_ORB_OPACITY);
+        assert_eq!(normalized_orb_opacity(20), ORB_OPACITY_MIN);
+        assert_eq!(normalized_orb_opacity(120), ORB_OPACITY_MAX);
         assert_eq!(orb_window_extent(56), 64.0);
     }
 
     #[test]
-    fn menu_ids_only_accept_known_appearance_values() {
+    fn menu_prefers_the_right_side_and_flips_at_the_screen_edge() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
         assert_eq!(
-            parse_floating_orb_menu_action("floating-orb-size-64"),
-            Some(FloatingOrbMenuAction::Size(64))
+            resolve_menu_position(
+                tauri::PhysicalPosition::new(200, 400),
+                tauri::PhysicalSize::new(64, 64),
+                tauri::PhysicalSize::new(280, 256),
+                8,
+                &monitors,
+            ),
+            tauri::PhysicalPosition::new(272, 304)
         );
         assert_eq!(
-            parse_floating_orb_menu_action("floating-orb-opacity-70"),
-            Some(FloatingOrbMenuAction::Opacity(70))
-        );
-        assert_eq!(
-            parse_floating_orb_menu_action("floating-orb-disable"),
-            Some(FloatingOrbMenuAction::Disable)
-        );
-        assert_eq!(
-            parse_floating_orb_menu_action("floating-orb-opacity-90"),
-            None
+            resolve_menu_position(
+                tauri::PhysicalPosition::new(1840, 900),
+                tauri::PhysicalSize::new(64, 64),
+                tauri::PhysicalSize::new(280, 256),
+                8,
+                &monitors,
+            ),
+            tauri::PhysicalPosition::new(1552, 804)
         );
     }
 

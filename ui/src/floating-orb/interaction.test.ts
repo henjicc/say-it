@@ -23,14 +23,16 @@ describe("floating orb interaction", () => {
     expect(floatingOrbWaveScale(2)).toBe(1);
   });
 
-  it("normalizes size and opacity to supported menu presets", () => {
-    expect(normalizeFloatingOrbAppearance({ size: 64, opacity: 70 })).toEqual({
+  it("clamps continuous appearance controls to supported ranges", () => {
+    expect(normalizeFloatingOrbAppearance({ size: 63.6, opacity: 70, glassEnabled: true })).toEqual({
       size: 64,
       opacity: 70,
+      glassEnabled: true,
     });
-    expect(normalizeFloatingOrbAppearance({ size: 60, opacity: 90 })).toEqual({
-      size: 56,
+    expect(normalizeFloatingOrbAppearance({ size: 20, opacity: 140 })).toEqual({
+      size: 44,
       opacity: 100,
+      glassEnabled: false,
     });
   });
 });

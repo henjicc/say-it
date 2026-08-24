@@ -55,6 +55,15 @@ button {
   transform: translateY(-1px) scale(1.025);
 }
 
+.floating-orb.glass {
+  background: rgba(12, 17, 26, 0.58);
+}
+
+.floating-orb.glass:hover,
+.floating-orb.glass.recording:hover {
+  background: rgba(18, 28, 42, 0.68);
+}
+
 .floating-orb:hover .orb-icon-shell,
 .floating-orb:hover .orb-waveform {
   transform: scale(1.06);

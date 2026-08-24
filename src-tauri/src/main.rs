@@ -451,6 +451,10 @@ fn main() {
                 && matches!(event, WindowEvent::Moved(_))
             {
                 schedule_remember_floating_orb_position(window.app_handle().clone());
+            } else if window.label() == FLOATING_ORB_MENU_LABEL
+                && matches!(event, WindowEvent::Focused(false))
+            {
+                let _ = hide_floating_orb_menu(window.app_handle().clone());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -530,6 +534,8 @@ fn main() {
             set_floating_orb_enabled,
             get_floating_orb_settings,
             show_floating_orb_menu,
+            hide_floating_orb_menu,
+            set_floating_orb_appearance,
             floating_orb_activate,
             floating_orb_stop,
             open_active_app_context_debug,

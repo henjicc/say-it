@@ -10,7 +10,7 @@ interface FloatingOrbState {
 }
 
 export const useFloatingOrbStore = create<FloatingOrbState>((set) => ({
-  settings: { enabled: false, position: null, size: 56, opacity: 100 },
+  settings: { enabled: false, position: null, size: 56, opacity: 100, glassEnabled: false },
   busy: false,
   error: "",
   hydrate: (settings) => set({ settings, error: "" }),
