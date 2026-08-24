@@ -1,0 +1,154 @@
+:root {
+  --orb-font:
+    "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
+    system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", sans-serif;
+}
+
+html,
+body,
+#floating-orb-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button {
+  font-family: var(--orb-font);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.floating-orb,
+.floating-bubble {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  background: rgba(12, 16, 24, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(14px);
+}
+
+.floating-orb {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+  touch-action: none;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.floating-orb:hover {
+  border-color: rgba(142, 193, 255, 0.56);
+  background: rgba(18, 31, 50, 0.97);
+}
+
+.floating-orb:active {
+  cursor: grabbing;
+  transform: scale(0.96);
+}
+
+.floating-orb.busy {
+  color: #ffd166;
+  cursor: default;
+}
+
+.floating-orb svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.8;
+}
+
+.floating-orb.busy svg {
+  animation: orb-spin 0.9s linear infinite;
+}
+
+.floating-bubble {
+  position: absolute;
+  left: 0;
+  bottom: 10px;
+  width: 172px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+
+.floating-bubble:disabled {
+  opacity: 1;
+}
+
+.floating-bubble.recording {
+  cursor: pointer;
+}
+
+.floating-bubble.recording svg {
+  color: #ff4d4f;
+}
+
+.floating-bubble.recording:hover {
+  border-color: rgba(255, 77, 79, 0.46);
+  background: rgba(38, 16, 22, 0.97);
+}
+
+.floating-bubble.moving svg,
+.floating-bubble.processing svg,
+.floating-bubble.smartProcessing svg {
+  color: #8ec1ff;
+  animation: orb-spin 0.9s linear infinite;
+}
+
+.floating-bubble.success svg {
+  color: #25c36f;
+}
+
+.floating-bubble.fallback svg {
+  color: #ffd166;
+}
+
+.floating-bubble.error svg {
+  color: #ff6b6b;
+}
+
+.floating-bubble svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  stroke-width: 1.8;
+}
+
+@keyframes orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-orb,
+  .floating-bubble {
+    transition: none;
+  }
+
+  .floating-orb.busy svg,
+  .floating-bubble.moving svg,
+  .floating-bubble.processing svg,
+  .floating-bubble.smartProcessing svg {
+    animation-duration: 1.8s;
+  }
+}

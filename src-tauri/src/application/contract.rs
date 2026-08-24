@@ -51,6 +51,7 @@ pub(crate) struct AppSnapshot {
     pub(crate) transcription: DomainSnapshot,
     pub(crate) comparison: DomainSnapshot,
     pub(crate) audio_lab: DomainSnapshot,
+    pub(crate) floating_orb: crate::state::FloatingOrbSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -99,6 +100,11 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         .lock()
         .map_err(|_| "startup settings lock failed")?;
     let revision = state.snapshot_revision.load(Ordering::Acquire);
+    let floating_orb = state
+        .floating_orb
+        .lock()
+        .map_err(|_| "floating orb settings lock failed")?
+        .clone();
     let mut settings = state
         .app_settings
         .lock()
@@ -124,6 +130,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         transcription: state.transcription_runtime.domain_snapshot(),
         comparison: state.compare_runtime.domain_snapshot(),
         audio_lab: state.audio_lab_runtime.domain_snapshot(),
+        floating_orb,
     })
 }
 

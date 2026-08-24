@@ -9,6 +9,8 @@ import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { useAudioDevices } from "@/features/audio/devices";
 import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
+import { Switch } from "@/components/ui/Switch";
+import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 
 const DEFAULT_INPUT_VALUE = "";
 export function DictationShortcutsPanel() {
@@ -18,6 +20,10 @@ export function DictationShortcutsPanel() {
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
   const patchDictPrefs = useDictPrefs((s) => s.patch);
   const { inputs } = useAudioDevices();
+  const floatingOrb = useFloatingOrbStore((state) => state.settings);
+  const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
+  const floatingOrbError = useFloatingOrbStore((state) => state.error);
+  const setFloatingOrbEnabled = useFloatingOrbStore((state) => state.setEnabled);
 
   return (
     <div className="flex flex-col gap-8">
@@ -83,6 +89,28 @@ export function DictationShortcutsPanel() {
           短按仍保留系统大小写切换。过程中按 Esc 可取消。点击「录入」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
           清除后仍可使用快捷键方案，或在“语音输入”页手动开始。
         </p>
+      </SettingsSection>
+
+      <SettingsSection title="悬浮球">
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--color-fg)]">启用悬浮球输入</p>
+            <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+              点击悬浮球会尝试激活它下方的位置并开始语音输入。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
+            </p>
+          </div>
+          <Switch
+            checked={floatingOrb.enabled}
+            disabled={floatingOrbBusy}
+            onChange={(enabled) => void setFloatingOrbEnabled(enabled).catch(() => undefined)}
+            aria-label="启用悬浮球输入"
+          />
+        </div>
+        {floatingOrbError && (
+          <p className="text-xs text-[var(--color-err)]" role="alert">
+            保存悬浮球设置失败：{floatingOrbError}
+          </p>
+        )}
       </SettingsSection>
     </div>
   );

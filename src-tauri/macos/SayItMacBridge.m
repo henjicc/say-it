@@ -638,6 +638,21 @@ bool sayit_macos_indicator_visible_screen_size(
     return true;
 }
 
+bool sayit_macos_configure_floating_orb_window(void *nsWindow, char **error) {
+    if (nsWindow == NULL) {
+        SayItSetError(error, @"macOS 悬浮球窗口参数无效");
+        return false;
+    }
+    SayItRunOnMainThread(^{
+        NSWindow *window = (__bridge NSWindow *)nsWindow;
+        window.collectionBehavior = window.collectionBehavior
+            | NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary;
+        window.hidesOnDeactivate = NO;
+    });
+    return true;
+}
+
 static NSDictionary *SayItWindowInfoForApplication(NSRunningApplication *application, CGWindowID targetWindowId) {
     if (application == nil || application.processIdentifier <= 0) return nil;
     CFArrayRef rawWindows = CGWindowListCopyWindowInfo(

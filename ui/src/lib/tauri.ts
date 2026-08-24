@@ -71,6 +71,9 @@ export const CMD = {
   setIndicatorTranslation: "set_indicator_translation",
   setIndicatorLayout: "set_indicator_layout",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
+  setFloatingOrbEnabled: "set_floating_orb_enabled",
+  floatingOrbActivate: "floating_orb_activate",
+  floatingOrbStop: "floating_orb_stop",
   listRunningApps: "list_running_apps",
   resolveApplicationIdentity: "resolve_application_identity",
   openActiveAppContextDebug: "open_active_app_context_debug",
@@ -149,6 +152,12 @@ export interface AppSnapshot {
   transcription: DomainSnapshot;
   comparison: DomainSnapshot;
   audioLab: DomainSnapshot;
+  floatingOrb: FloatingOrbSettings;
+}
+
+export interface FloatingOrbSettings {
+  enabled: boolean;
+  position?: { x: number; y: number } | null;
 }
 
 export interface AppSettings {

@@ -162,10 +162,36 @@ pub(crate) fn set_startup_settings(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardDisposition {
+    RestorePrevious,
+    KeepResult,
+}
+
+pub(crate) async fn write_clipboard_text_inner(text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|error| format!("打开剪贴板失败：{error}"))?;
+        clipboard
+            .set_text(text)
+            .map_err(|error| format!("写入剪贴板失败：{error}"))
+    })
+    .await
+    .map_err(|error| format!("剪贴板任务失败：{error}"))?
+}
+
 /// 把文本注入当前拥有键盘焦点的窗口。
 /// - paste：备份剪贴板 → 写入文本 → 模拟平台粘贴键 → 还原剪贴板（更适合长中文）。
 /// - type：逐字 Unicode 模拟输入。
 pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> Result<(), String> {
+    inject_text_with_policy(text, method, ClipboardDisposition::RestorePrevious).await
+}
+
+pub(crate) async fn inject_text_with_policy(
+    text: String,
+    method: Option<String>,
+    clipboard_disposition: ClipboardDisposition,
+) -> Result<(), String> {
     let started = std::time::Instant::now();
     let text = text.trim_end_matches(['\r', '\n']).to_string();
     if text.is_empty() {
@@ -175,6 +201,29 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
     let char_count = text.chars().count();
     dlog!("[inject] 开始注入：方式={method}，{char_count} 字");
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        if clipboard_disposition == ClipboardDisposition::KeepResult {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|e| format!("打开剪贴板失败: {e}"))?;
+            clipboard
+                .set_text(text.clone())
+                .map_err(|e| format!("写入剪贴板失败: {e}"))?;
+            if method == "type" {
+                #[cfg(target_os = "macos")]
+                {
+                    return crate::macos_native::type_text(&text);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let mut enigo = Enigo::new(&EnigoSettings::default())
+                        .map_err(|e| format!("初始化输入失败: {e}"))?;
+                    return enigo
+                        .text(&text)
+                        .map_err(|e| format!("模拟输入失败: {e}"));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(60));
+            return send_keep_result_paste_shortcut();
+        }
         if method == "type" {
             #[cfg(target_os = "macos")]
             {
@@ -236,6 +285,27 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
     }
     crate::application::performance::record("text.injection", started.elapsed().as_millis() as u64);
     result
+}
+
+fn send_keep_result_paste_shortcut() -> Result<(), String> {
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("初始化输入失败: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let modifier = Key::Meta;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Key::Control;
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| format!("模拟粘贴失败: {e}"))?;
+    let click = enigo
+        .key(Key::Unicode('v'), Direction::Click)
+        .map_err(|e| format!("模拟粘贴失败: {e}"));
+    let release = enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| format!("释放粘贴按键失败: {e}"));
+    click?;
+    release
 }
 
 #[cfg(not(target_os = "macos"))]

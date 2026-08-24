@@ -29,6 +29,7 @@ export default defineConfig({
       input: {
         main: resolve(dirname, "ui/index.html"),
         indicator: resolve(dirname, "ui/indicator.html"),
+        floatingOrb: resolve(dirname, "ui/floating-orb.html"),
         contextDebug: resolve(dirname, "ui/context-debug.html"),
         assistant: resolve(dirname, "ui/assistant.html"),
       },

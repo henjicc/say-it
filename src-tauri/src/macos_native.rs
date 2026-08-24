@@ -163,6 +163,10 @@ unsafe extern "C" {
         height: *mut f64,
         error: *mut *mut c_char,
     ) -> bool;
+    fn sayit_macos_configure_floating_orb_window(
+        ns_window: *mut c_void,
+        error: *mut *mut c_char,
+    ) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
 }
@@ -503,6 +507,17 @@ pub(crate) fn indicator_visible_screen_size(ns_window: *mut c_void) -> Result<(f
     } else {
         Err(unsafe {
             take_string(error).unwrap_or_else(|| "读取 macOS 可用屏幕区域失败".into())
+        })
+    }
+}
+
+pub(crate) fn configure_floating_orb_window(ns_window: *mut c_void) -> Result<(), String> {
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_configure_floating_orb_window(ns_window, &mut error) } {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "配置 macOS 悬浮球窗口失败".into())
         })
     }
 }

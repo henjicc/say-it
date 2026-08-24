@@ -288,6 +288,12 @@ fn main() {
                     })?;
                     *obs_overlay = persisted.obs_overlay;
                 }
+                {
+                    let mut floating_orb = state.floating_orb.lock().map_err(|_| {
+                        std::io::Error::other("floating orb settings lock failed while loading persisted data")
+                    })?;
+                    *floating_orb = persisted.floating_orb;
+                }
             }
 
             application::history::initialize(&app.handle()).map_err(std::io::Error::other)?;
@@ -353,6 +359,9 @@ fn main() {
             }
 
             let _ = ensure_indicator_window(&app.handle());
+            if let Err(error) = sync_floating_orb_window(&app.handle()) {
+                eprintln!("[floating-orb] 启动悬浮球失败: {error}");
+            }
 
             let tray_menu = MenuBuilder::new(app)
                 .text("show", "打开说吧！")
@@ -438,6 +447,10 @@ fn main() {
                     let _ = hotkey::set_context_debug_active(false);
                     active_app_context::reset_debug_capture();
                 }
+            } else if window.label() == FLOATING_ORB_LABEL
+                && matches!(event, WindowEvent::Moved(_))
+            {
+                schedule_remember_floating_orb_position(window.app_handle().clone());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -514,6 +527,9 @@ fn main() {
             set_indicator_translation,
             set_indicator_layout,
             get_indicator_monitor_metrics,
+            set_floating_orb_enabled,
+            floating_orb_activate,
+            floating_orb_stop,
             open_active_app_context_debug,
             close_active_app_context_debug,
             set_active_app_context_debug_overrides,

@@ -26,6 +26,8 @@ pub(crate) struct PersistedData {
     pub(crate) startup: StartupSettings,
     #[serde(default)]
     pub(crate) obs_overlay: ObsOverlaySettings,
+    #[serde(default)]
+    pub(crate) floating_orb: FloatingOrbSettings,
 }
 
 fn default_schema_version() -> u32 {
@@ -98,6 +100,11 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .lock()
         .map_err(|_| "OBS overlay settings lock failed".to_string())?
         .clone();
+    let floating_orb = state
+        .floating_orb
+        .lock()
+        .map_err(|_| "Floating orb settings lock failed".to_string())?
+        .clone();
     let data = PersistedData {
         schema_version: default_schema_version(),
         app_settings: match app_settings_override {
@@ -119,6 +126,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
         },
         startup,
         obs_overlay,
+        floating_orb,
     };
     let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
     let file = state_file_path(app)?;
@@ -215,6 +223,8 @@ mod tests {
         let data: PersistedData = serde_json::from_str("{}").unwrap();
         assert_eq!(data.subtitle_translation_model, "none");
         assert_eq!(data.schema_version, 1);
+        assert!(!data.floating_orb.enabled);
+        assert!(data.floating_orb.position.is_none());
     }
 
     #[test]
