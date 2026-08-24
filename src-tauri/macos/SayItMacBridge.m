@@ -169,6 +169,56 @@ static bool SayItRestorePasteboard(
     return items.count == 0 || [pasteboard writeObjects:items];
 }
 
+static bool SayItPostPasteShortcut(char **error) {
+    // 直接发送物理 Command+V，避免从后台听写线程调用只能在主队列使用的
+    // Text Services Manager 键盘布局查询 API。
+    const CGKeyCode commandKeyCode = 0x37;
+    const CGKeyCode vKeyCode = 0x09;
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    if (source == NULL) {
+        SayItSetError(error, @"无法创建 macOS 键盘事件源");
+        return false;
+    }
+
+    CGEventRef commandDown = CGEventCreateKeyboardEvent(source, commandKeyCode, true);
+    CGEventRef vDown = CGEventCreateKeyboardEvent(source, vKeyCode, true);
+    CGEventRef vUp = CGEventCreateKeyboardEvent(source, vKeyCode, false);
+    CGEventRef commandUp = CGEventCreateKeyboardEvent(source, commandKeyCode, false);
+    if (commandDown == NULL || vDown == NULL || vUp == NULL || commandUp == NULL) {
+        if (commandDown != NULL) CFRelease(commandDown);
+        if (vDown != NULL) CFRelease(vDown);
+        if (vUp != NULL) CFRelease(vUp);
+        if (commandUp != NULL) CFRelease(commandUp);
+        CFRelease(source);
+        SayItSetError(error, @"无法创建 macOS 粘贴键盘事件");
+        return false;
+    }
+
+    CGEventSetFlags(commandDown, kCGEventFlagMaskCommand);
+    CGEventSetFlags(vDown, kCGEventFlagMaskCommand);
+    CGEventSetFlags(vUp, kCGEventFlagMaskCommand);
+    CGEventSetFlags(commandUp, 0);
+    CGEventPost(kCGHIDEventTap, commandDown);
+    CGEventPost(kCGHIDEventTap, vDown);
+    CGEventPost(kCGHIDEventTap, vUp);
+    CGEventPost(kCGHIDEventTap, commandUp);
+
+    CFRelease(commandDown);
+    CFRelease(vDown);
+    CFRelease(vUp);
+    CFRelease(commandUp);
+    CFRelease(source);
+    return true;
+}
+
+bool sayit_macos_paste_current_clipboard(char **error) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"模拟粘贴需要辅助功能权限");
+        return false;
+    }
+    return SayItPostPasteShortcut(error);
+}
+
 bool sayit_macos_paste_text(const char *text, char **error) {
     if (!AXIsProcessTrusted()) {
         SayItSetError(error, @"模拟粘贴需要辅助功能权限");
@@ -216,54 +266,14 @@ bool sayit_macos_paste_text(const char *text, char **error) {
         return false;
     }
 
-    // 直接发送物理 Command+V，避免从后台听写线程调用只能在主队列使用的
-    // Text Services Manager 键盘布局查询 API。
-    const CGKeyCode commandKeyCode = 0x37;
-    const CGKeyCode vKeyCode = 0x09;
-    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
-    if (source == NULL) {
+    if (!SayItPostPasteShortcut(error)) {
         SayItRunOnMainThread(^{
             if (pasteboard.changeCount == injectedChangeCount) {
                 SayItRestorePasteboard(pasteboard, snapshot);
             }
         });
-        SayItSetError(error, @"无法创建 macOS 键盘事件源");
         return false;
     }
-
-    CGEventRef commandDown = CGEventCreateKeyboardEvent(source, commandKeyCode, true);
-    CGEventRef vDown = CGEventCreateKeyboardEvent(source, vKeyCode, true);
-    CGEventRef vUp = CGEventCreateKeyboardEvent(source, vKeyCode, false);
-    CGEventRef commandUp = CGEventCreateKeyboardEvent(source, commandKeyCode, false);
-    if (commandDown == NULL || vDown == NULL || vUp == NULL || commandUp == NULL) {
-        if (commandDown != NULL) CFRelease(commandDown);
-        if (vDown != NULL) CFRelease(vDown);
-        if (vUp != NULL) CFRelease(vUp);
-        if (commandUp != NULL) CFRelease(commandUp);
-        CFRelease(source);
-        SayItRunOnMainThread(^{
-            if (pasteboard.changeCount == injectedChangeCount) {
-                SayItRestorePasteboard(pasteboard, snapshot);
-            }
-        });
-        SayItSetError(error, @"无法创建 macOS 粘贴键盘事件");
-        return false;
-    }
-
-    CGEventSetFlags(commandDown, kCGEventFlagMaskCommand);
-    CGEventSetFlags(vDown, kCGEventFlagMaskCommand);
-    CGEventSetFlags(vUp, kCGEventFlagMaskCommand);
-    CGEventSetFlags(commandUp, 0);
-    CGEventPost(kCGHIDEventTap, commandDown);
-    CGEventPost(kCGHIDEventTap, vDown);
-    CGEventPost(kCGHIDEventTap, vUp);
-    CGEventPost(kCGHIDEventTap, commandUp);
-
-    CFRelease(commandDown);
-    CFRelease(vDown);
-    CFRelease(vUp);
-    CFRelease(commandUp);
-    CFRelease(source);
 
     // 等目标应用读取完剪贴板再恢复。若期间用户或其他应用主动修改了剪贴板，
     // changeCount 会变化，此时不能用旧快照覆盖对方的新内容。

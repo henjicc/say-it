@@ -8,7 +8,7 @@
 - `kCGSessionEventTap` 收到 Caps Lock 时系统锁定状态已经改变，单纯从回调返回 `NULL` 只能阻止后续投递，不能恢复大小写状态或键盘灯。监听启动时应记录 `IOHIDGetModifierLockState`，每次触发后用 `IOHIDSetModifierLockState` 写回；初始化时同时探测写权限，不能在无法恢复状态时假装快捷键注册成功。
 - macOS 会故意延迟 Caps Lock 的普通 `flagsChanged` 事件以防误触，因此只靠 `CGEventTap` 会让“单击切换”表现得像必须长按。快捷键触发应使用 `IOHIDManager` 的原始 Caps Lock 按下值（需要“输入监控”权限），`CGEventTap` 只负责吞掉随后可能出现的系统锁定事件并恢复原锁定状态；原始 HID 与 Quartz 回调不得同时触发听写，否则长按会切换两次。
 - 听写时焦点位于其他应用，WebView 的键盘事件和普通窗口快捷键都收不到 Esc。macOS 必须在听写活动期间把 `kCGEventKeyDown`/`kCGEventKeyUp` 加入 Quartz 事件过滤器，按物理键码 53 触发领域取消并吞掉按下与释放事件；空闲后立即撤销 Esc 监听，避免常驻事件过滤器观察无关键盘输入。取消入口本身不能再限制为 Windows 编译。
-- macOS 上不能在 Tokio/阻塞工作线程里用 `enigo::Key::Unicode` 发送粘贴快捷键。enigo 会通过 Text Services Manager 查询当前键盘布局，而该 API 强制要求主队列，违规调用会触发 `dispatch_assert_queue` 并以 `SIGTRAP` 直接终止进程。听写完成后的 Command+V 应使用不查询输入法布局的 CoreGraphics 物理键事件，或显式调度到主线程；不能依赖 Rust 错误处理捕获这种系统级断言。
+- macOS 上不能在 Tokio/阻塞工作线程里用 `enigo::Key::Unicode` 发送粘贴快捷键。enigo 会通过 Text Services Manager 查询当前键盘布局，而该 API 强制要求主队列，违规调用会触发 `dispatch_assert_queue` 并以 `SIGTRAP` 直接终止进程。听写完成后的 Command+V 应使用不查询输入法布局的 CoreGraphics 物理键事件，或显式调度到主线程；不能依赖 Rust 错误处理捕获这种系统级断言。该限制适用于恢复旧剪贴板和保留识别结果两种策略，新增注入路径不得重新直接调用 enigo 键盘 API。
 - “逐字输入”同样不能继续走 enigo 的 macOS Unicode 路径。应使用 `CGEventKeyboardSetUnicodeString` 直接发送 UTF-16，并按组合字符边界分批，避免拆开代理对、emoji 或带组合符号的文字；事件必须清空修饰键标志，防止用户仍按着 Command/Option 时改变注入语义。
 - macOS 粘贴注入不能只用 `get_text()` 备份剪贴板：图片、文件和富文本会被永久覆盖。应在主线程按 `NSPasteboardItem` 的全部类型和原始数据建立快照，完成 Command+V 后再恢复；恢复前必须核对 `changeCount`，若用户或其他应用已复制新内容则放弃恢复，不能用旧快照覆盖新剪贴板。
 - ScreenCaptureKit 的系统音频输出、`capturesAudio`、采样率和声道配置从 macOS 13 起可用，运行时仍应使用可用性检查返回可操作错误。当前 sherpa-onnx 1.13.5 所带 ONNX Runtime 的 `LC_BUILD_VERSION minos` 为 15.5，应用的最低系统版本必须与最严格的内嵌动态库一致；不能只检查主程序的 minos 后继续宣称支持 macOS 11。

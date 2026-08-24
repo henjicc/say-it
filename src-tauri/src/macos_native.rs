@@ -167,6 +167,7 @@ unsafe extern "C" {
         ns_window: *mut c_void,
         error: *mut *mut c_char,
     ) -> bool;
+    fn sayit_macos_paste_current_clipboard(error: *mut *mut c_char) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
 }
@@ -529,6 +530,17 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(unsafe { take_string(error).unwrap_or_else(|| "执行 macOS 粘贴失败".into()) })
+    }
+}
+
+pub(crate) fn paste_current_clipboard() -> Result<(), String> {
+    let mut error = ptr::null_mut();
+    if unsafe { sayit_macos_paste_current_clipboard(&mut error) } {
+        Ok(())
+    } else {
+        Err(unsafe {
+            take_string(error).unwrap_or_else(|| "发送 macOS 粘贴快捷键失败".into())
+        })
     }
 }
 
