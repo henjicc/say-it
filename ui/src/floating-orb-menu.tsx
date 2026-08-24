@@ -1,7 +1,9 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
+import { ChevronDown } from "lucide-react";
 import { CMD, cmd, type FloatingOrbSettings } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { Select } from "@/components/ui/Input";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   FLOATING_ORB_GLASS_BORDER_RANGE,
@@ -10,12 +12,14 @@ import {
   FLOATING_ORB_SIZE_RANGE,
   normalizeFloatingOrbAppearance,
 } from "@/floating-orb/interaction";
+import "@/index.css";
 import "@/floating-orb-menu.css";
 
 type Appearance = ReturnType<typeof normalizeFloatingOrbAppearance>;
 
 function FloatingOrbMenuApp() {
   const [appearance, setAppearance] = useState<Appearance>(DEFAULT_FLOATING_ORB_APPEARANCE);
+  const [tuningOpen, setTuningOpen] = useState(false);
   const [error, setError] = useState("");
   const appearanceRef = useRef<Appearance>(DEFAULT_FLOATING_ORB_APPEARANCE);
 
@@ -25,23 +29,39 @@ function FloatingOrbMenuApp() {
     setAppearance(next);
   };
 
+  const hideMenu = () => {
+    setTuningOpen(false);
+    void cmd(CMD.hideFloatingOrbMenu).catch(() => undefined);
+  };
+
   useEffect(() => {
     void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings).then(receive).catch((reason) => {
       setError(String(reason));
     });
-    const hide = () => void cmd(CMD.hideFloatingOrbMenu).catch(() => undefined);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") hide();
+      if (event.key === "Escape") hideMenu();
     };
-    window.addEventListener("blur", hide);
+    window.addEventListener("blur", hideMenu);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("blur", hide);
+      window.removeEventListener("blur", hideMenu);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
 
   useTauriEvent<Partial<Appearance>>("floating-orb-config", receive);
+  useTauriEvent<{ expanded?: boolean }>("floating-orb-menu-expanded", (payload) => {
+    setTuningOpen(payload.expanded === true);
+  });
+
+  const setTuningExpanded = (expanded: boolean) => {
+    setTuningOpen(expanded);
+    setError("");
+    void cmd(CMD.setFloatingOrbMenuExpanded, { expanded }).catch((reason) => {
+      setTuningOpen(!expanded);
+      setError(String(reason));
+    });
+  };
 
   const update = (patch: Partial<Appearance>) => {
     const next = normalizeFloatingOrbAppearance({ ...appearanceRef.current, ...patch });
@@ -74,7 +94,7 @@ function FloatingOrbMenuApp() {
           type="button"
           className="orb-menu-close"
           aria-label="关闭设置面板"
-          onClick={() => void cmd(CMD.hideFloatingOrbMenu)}
+          onClick={hideMenu}
         >
           ×
         </button>
@@ -113,65 +133,74 @@ function FloatingOrbMenuApp() {
           <input
             type="checkbox"
             checked={appearance.glassEnabled}
-            onChange={(event) => update({ glassEnabled: event.target.checked })}
+            onChange={(event) => {
+              if (!event.target.checked && tuningOpen) setTuningExpanded(false);
+              update({ glassEnabled: event.target.checked });
+            }}
           />
           <span aria-hidden="true" />
           <span className="orb-menu-sr-only">启用系统毛玻璃</span>
         </label>
       </div>
 
-      <section
-        className={`orb-menu-glass-tuning${appearance.glassEnabled ? "" : " disabled"}`}
-        aria-label="毛玻璃调校"
-        aria-disabled={!appearance.glassEnabled}
+      <button
+        type="button"
+        className="orb-menu-disclosure"
+        disabled={!appearance.glassEnabled}
+        aria-expanded={tuningOpen}
+        onClick={() => setTuningExpanded(!tuningOpen)}
       >
-        <label className="orb-menu-field">
-          <span><span>macOS 系统材质</span></span>
-          <select
-            disabled={!appearance.glassEnabled}
-            value={appearance.glassMaterial}
-            onChange={(event) => update({
-              glassMaterial: event.target.value as Appearance["glassMaterial"],
-            })}
-          >
-            <option value="underWindow">通透背景</option>
-            <option value="content">柔和内容</option>
-            <option value="sidebar">清晰侧栏</option>
-          </select>
-        </label>
+        <span>材质调节</span>
+        <ChevronDown className={tuningOpen ? "expanded" : ""} aria-hidden />
+      </button>
 
-        <label className="orb-menu-field">
-          <span><span>底色强度</span><output>{appearance.glassTint}%</output></span>
-          <input
-            type="range"
-            disabled={!appearance.glassEnabled}
-            min={FLOATING_ORB_GLASS_TINT_RANGE.min}
-            max={FLOATING_ORB_GLASS_TINT_RANGE.max}
-            step={1}
-            value={appearance.glassTint}
-            onChange={(event) => update({ glassTint: Number(event.target.value) })}
-          />
-        </label>
+      {tuningOpen && (
+        <section className="orb-menu-glass-tuning" aria-label="毛玻璃调校">
+          <div className="orb-menu-field">
+            <span><span>macOS 系统材质</span></span>
+            <Select
+              size="sm"
+              aria-label="macOS 系统材质"
+              value={appearance.glassMaterial}
+              onChange={(event) => update({
+                glassMaterial: event.target.value as Appearance["glassMaterial"],
+              })}
+            >
+              <option value="underWindow">通透背景</option>
+              <option value="content">柔和内容</option>
+              <option value="sidebar">清晰侧栏</option>
+            </Select>
+          </div>
 
-        <label className="orb-menu-field">
-          <span><span>边框强度</span><output>{appearance.glassBorder}%</output></span>
-          <input
-            type="range"
-            disabled={!appearance.glassEnabled}
-            min={FLOATING_ORB_GLASS_BORDER_RANGE.min}
-            max={FLOATING_ORB_GLASS_BORDER_RANGE.max}
-            step={1}
-            value={appearance.glassBorder}
-            onChange={(event) => update({ glassBorder: Number(event.target.value) })}
-          />
-        </label>
+          <label className="orb-menu-field">
+            <span><span>底色强度</span><output>{appearance.glassTint}%</output></span>
+            <input
+              type="range"
+              min={FLOATING_ORB_GLASS_TINT_RANGE.min}
+              max={FLOATING_ORB_GLASS_TINT_RANGE.max}
+              step={1}
+              value={appearance.glassTint}
+              onChange={(event) => update({ glassTint: Number(event.target.value) })}
+            />
+          </label>
 
-        <p className="orb-menu-glass-hint">
-          {appearance.glassEnabled
-            ? "系统不开放连续的模糊半径，材质用于调整模糊观感；Windows 主要受底色强度影响。"
-            : "开启系统毛玻璃后可实时调校。"}
-        </p>
-      </section>
+          <label className="orb-menu-field">
+            <span><span>边框强度</span><output>{appearance.glassBorder}%</output></span>
+            <input
+              type="range"
+              min={FLOATING_ORB_GLASS_BORDER_RANGE.min}
+              max={FLOATING_ORB_GLASS_BORDER_RANGE.max}
+              step={1}
+              value={appearance.glassBorder}
+              onChange={(event) => update({ glassBorder: Number(event.target.value) })}
+            />
+          </label>
+
+          <p className="orb-menu-glass-hint">
+            系统不开放连续的模糊半径，材质用于调整模糊观感；Windows 主要受底色强度影响。
+          </p>
+        </section>
+      )}
 
       {error && <p className="orb-menu-error" role="alert">{error}</p>}
       <button type="button" className="orb-menu-disable" onClick={disable}>关闭悬浮球</button>

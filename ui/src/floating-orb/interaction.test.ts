@@ -28,9 +28,9 @@ describe("floating orb interaction", () => {
       size: 64,
       opacity: 70,
       glassEnabled: true,
-      glassMaterial: "underWindow",
-      glassTint: 10,
-      glassBorder: 8,
+      glassMaterial: "sidebar",
+      glassTint: 0,
+      glassBorder: 0,
     });
     expect(normalizeFloatingOrbAppearance({
       size: 20,
@@ -42,7 +42,7 @@ describe("floating orb interaction", () => {
       size: 44,
       opacity: 100,
       glassEnabled: false,
-      glassMaterial: "underWindow",
+      glassMaterial: "sidebar",
       glassTint: 40,
       glassBorder: 0,
     });

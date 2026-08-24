@@ -20,8 +20,7 @@ body,
 }
 
 button,
-input,
-select {
+input {
   font: inherit;
 }
 
@@ -76,9 +75,9 @@ select {
 
 .orb-menu-close:focus-visible,
 .orb-menu-disable:focus-visible,
+.orb-menu-disclosure:focus-visible,
 .orb-menu-switch input:focus-visible + span,
-.orb-menu-field input:focus-visible,
-.orb-menu-field select:focus-visible {
+.orb-menu-field input:focus-visible {
   outline: 2px solid #8ec1ff;
   outline-offset: 2px;
 }
@@ -114,17 +113,6 @@ select {
   background: #5199ff;
 }
 
-.orb-menu-field select {
-  width: 100%;
-  height: 30px;
-  box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 7px;
-  padding: 0 8px;
-  background: rgba(8, 12, 18, 0.54);
-  color: rgba(255, 255, 255, 0.88);
-}
-
 .orb-menu-glass-tuning {
   display: grid;
   gap: 8px;
@@ -132,13 +120,39 @@ select {
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.orb-menu-glass-tuning.disabled .orb-menu-field {
-  opacity: 0.46;
+.orb-menu-disclosure {
+  min-height: 34px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.orb-menu-glass-tuning select:disabled,
-.orb-menu-glass-tuning input:disabled {
+.orb-menu-disclosure:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.orb-menu-disclosure:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
+}
+
+.orb-menu-disclosure svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 140ms ease-out;
+}
+
+.orb-menu-disclosure svg.expanded {
+  transform: rotate(180deg);
 }
 
 .orb-menu-glass-hint {
@@ -245,7 +259,8 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb-menu-switch > span:not(.orb-menu-sr-only)::after {
+  .orb-menu-switch > span:not(.orb-menu-sr-only)::after,
+  .orb-menu-disclosure svg {
     transition: none;
   }
 }

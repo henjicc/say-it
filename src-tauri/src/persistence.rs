@@ -225,15 +225,15 @@ mod tests {
         assert_eq!(data.schema_version, 1);
         assert!(!data.floating_orb.enabled);
         assert!(data.floating_orb.position.is_none());
-        assert_eq!(data.floating_orb.size, 56);
-        assert_eq!(data.floating_orb.opacity, 100);
+        assert_eq!(data.floating_orb.size, 48);
+        assert_eq!(data.floating_orb.opacity, 40);
         assert!(!data.floating_orb.glass_enabled);
         assert_eq!(
             data.floating_orb.glass_material,
-            FloatingOrbGlassMaterial::UnderWindow
+            FloatingOrbGlassMaterial::Sidebar
         );
-        assert_eq!(data.floating_orb.glass_tint, 10);
-        assert_eq!(data.floating_orb.glass_border, 8);
+        assert_eq!(data.floating_orb.glass_tint, 0);
+        assert_eq!(data.floating_orb.glass_border, 0);
     }
 
     #[test]

@@ -535,6 +535,7 @@ fn main() {
             get_floating_orb_settings,
             show_floating_orb_menu,
             hide_floating_orb_menu,
+            set_floating_orb_menu_expanded,
             set_floating_orb_appearance,
             floating_orb_activate,
             floating_orb_stop,
@@ -598,7 +599,7 @@ fn main() {
             tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..
-            } if !has_visible_windows => {
+            } if !has_visible_windows && !is_cursor_over_floating_orb(app) => {
                 if let Err(error) = ensure_main_window(app) {
                     eprintln!("[window] Dock 重开主窗口失败: {error}");
                 }
