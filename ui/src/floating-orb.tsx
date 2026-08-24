@@ -199,7 +199,7 @@ function FloatingOrbApp() {
       ) : (
         <span className="orb-icon-shell" aria-hidden>
           {loading || phase === "busy" ? (
-            <LoaderCircle key={phase} className="orb-state-icon orb-spinner" />
+            <LoaderCircle className="orb-state-icon orb-spinner" />
           ) : phase === "success" ? (
             <>
               <Check className={`orb-state-icon${canSubmit ? " orb-success-check" : ""}`} />

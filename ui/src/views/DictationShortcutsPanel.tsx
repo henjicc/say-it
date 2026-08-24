@@ -172,6 +172,11 @@ export function DictationShortcutsPanel() {
               <option value="3">快速三击</option>
               <option value="4">快速四击</option>
               <option value="5">快速五击</option>
+              <option value="6">快速六击</option>
+              <option value="7">快速七击</option>
+              <option value="8">快速八击</option>
+              <option value="9">快速九击</option>
+              <option value="10">快速十击</option>
             </Select>
           </Field>
         </FormGrid>

@@ -17,7 +17,7 @@ export const useMouseGestureStore = create<MouseGestureState>((set, get) => ({
     mode: "confirm" as MouseGestureMode,
     sensitivity: 50,
     rapidClickEnabled: true,
-    rapidClickCount: 3,
+    rapidClickCount: 4,
     available: false,
     error: null,
   },
@@ -32,7 +32,7 @@ export const useMouseGestureStore = create<MouseGestureState>((set, get) => ({
       mode: patch.mode ?? previous.mode,
       sensitivity: Math.max(0, Math.min(100, Math.round(patch.sensitivity ?? previous.sensitivity))),
       rapidClickEnabled: patch.rapidClickEnabled ?? previous.rapidClickEnabled,
-      rapidClickCount: Math.max(3, Math.min(5, Math.round(patch.rapidClickCount ?? previous.rapidClickCount))),
+      rapidClickCount: Math.max(3, Math.min(10, Math.round(patch.rapidClickCount ?? previous.rapidClickCount))),
     };
     set({ busy: true, error: "", settings: { ...previous, ...next } });
     try {
