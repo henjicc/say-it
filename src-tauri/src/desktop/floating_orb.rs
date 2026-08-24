@@ -23,6 +23,8 @@ const ORB_MENU_GAP: f64 = 8.0;
 const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
 const ORB_MOVE_DURATION_MS: u64 = 200;
 const ORB_MOVE_FRAME_MS: u64 = 16;
+const ORB_REPOSITION_SETTLE_MS: u64 = 16;
+const ORB_REPOSITION_MAX_CHECKS: usize = 4;
 
 fn normalized_orb_size(size: u16) -> u16 {
     size.clamp(ORB_SIZE_MIN, ORB_SIZE_MAX)
@@ -1130,6 +1132,40 @@ async fn animate_orb_window_to(
     Ok(true)
 }
 
+async fn place_hidden_orb_at(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    target: tauri::PhysicalPosition<i32>,
+    generation: u64,
+) -> Result<bool, String> {
+    window
+        .set_position(target)
+        .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
+    // macOS 会把窗口位置更新排进主事件循环。若紧接着 show，系统可能先用隐藏前
+    // 的旧 frame 合成一帧，再跳到新坐标。保持内容不可见，等待 frame 真正落位。
+    for _ in 0..ORB_REPOSITION_MAX_CHECKS {
+        if app
+            .state::<RuntimeState>()
+            .floating_orb_runtime
+            .transition_generation
+            .load(Ordering::Acquire)
+            != generation
+        {
+            return Ok(false);
+        }
+        sleep(Duration::from_millis(ORB_REPOSITION_SETTLE_MS)).await;
+        if window.outer_position().ok() == Some(target) {
+            break;
+        }
+    }
+    window
+        .show()
+        .map_err(|error| format!("显示手势悬浮球失败：{error}"))?;
+    // 先让透明的定位态完成一帧合成，随后前端再切到 armed/recording 做出现动画。
+    sleep(Duration::from_millis(ORB_REPOSITION_SETTLE_MS)).await;
+    Ok(true)
+}
+
 async fn return_to_idle(
     app: tauri::AppHandle,
     delay_ms: u64,
@@ -1331,19 +1367,18 @@ async fn prepare_transient_orb(
         .unwrap_or(false);
     let was_visible = window.is_visible().unwrap_or(false);
     let _ = window.set_ignore_cursor_events(true);
-    emit_state(app, "moving", None);
     if persistent_enabled && was_visible {
+        emit_state(app, "moving", None);
         if !animate_orb_window_to(app, &window, target, generation).await? {
             return Err("悬浮球移动已被新的操作替代".into());
         }
     } else {
-        window
-            .set_position(target)
-            .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
+        let _ = window.hide();
+        emit_state(app, "positioning", None);
+        if !place_hidden_orb_at(app, &window, target, generation).await? {
+            return Err("悬浮球定位已被新的操作替代".into());
+        }
     }
-    window
-        .show()
-        .map_err(|error| format!("显示手势悬浮球失败：{error}"))?;
     Ok(window)
 }
 

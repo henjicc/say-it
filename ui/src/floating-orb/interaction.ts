@@ -2,6 +2,7 @@ export type OrbPhase =
   | "idle"
   | "armed"
   | "moving"
+  | "positioning"
   | "recording"
   | "processing"
   | "smartProcessing"
@@ -113,6 +114,7 @@ export function floatingOrbLabel(
   if (message) return message;
   return ({
     moving: "正在启动…",
+    positioning: "正在定位…",
     armed: "点击开始语音输入",
     recording: "聆听中…",
     processing: "识别中…",
