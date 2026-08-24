@@ -165,6 +165,7 @@ unsafe extern "C" {
     ) -> bool;
     fn sayit_macos_configure_floating_orb_window(
         ns_window: *mut c_void,
+        nonactivating: bool,
         error: *mut *mut c_char,
     ) -> bool;
     fn sayit_macos_floating_orb_owns_pointer_event(ns_window: *mut c_void) -> bool;
@@ -513,9 +514,14 @@ pub(crate) fn indicator_visible_screen_size(ns_window: *mut c_void) -> Result<(f
     }
 }
 
-pub(crate) fn configure_floating_orb_window(ns_window: *mut c_void) -> Result<(), String> {
+pub(crate) fn configure_floating_orb_window(
+    ns_window: *mut c_void,
+    nonactivating: bool,
+) -> Result<(), String> {
     let mut error = ptr::null_mut();
-    if unsafe { sayit_macos_configure_floating_orb_window(ns_window, &mut error) } {
+    if unsafe {
+        sayit_macos_configure_floating_orb_window(ns_window, nonactivating, &mut error)
+    } {
         Ok(())
     } else {
         Err(unsafe {

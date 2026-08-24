@@ -6,6 +6,9 @@
 
 ## 处理原则
 
+- `focusable: false` 只保证 Tauri 窗口本身不能成为键盘焦点窗口；普通 `NSWindow` 被点击时仍可能激活整个应用，并让已经打开的主窗口取得焦点。
+- 对需要在主窗口存在时仍完全不激活应用的悬浮控件，必须使用带 `NSWindowStyleMaskNonactivatingPanel` 的 `NSPanel`，而不是继续给普通 `NSWindow` 叠加焦点补丁。
+- Tauri/Tao 当前创建的是 `NSWindow` 子类，可以在 macOS 原生桥接层将悬浮球实例转换为自定义 `NSPanel` 子类；设置菜单仍保留普通窗口，否则其中的表单控件无法正常获得焦点。
 - `Reopen` 不能只凭 `has_visible_windows` 决定是否打开主窗口。
 - 处理事件时可以读取鼠标的全局物理坐标，以及悬浮窗的物理位置和尺寸，作为按下瞬间的第一层保护。
 - macOS 上优先使用 AppKit 的 `NSEvent.mouseLocation`、`NSWindow.frame` 和当前事件所属窗口做判断，避免 Tauri 全局鼠标坐标与窗口坐标原点不同导致命中失效。

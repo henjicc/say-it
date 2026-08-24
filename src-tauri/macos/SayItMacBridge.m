@@ -13,6 +13,15 @@
 #import <Vision/Vision.h>
 #import <dlfcn.h>
 #import <math.h>
+#import <objc/runtime.h>
+
+@interface SayItNonactivatingFloatingPanel : NSPanel
+@end
+
+@implementation SayItNonactivatingFloatingPanel
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
 
 typedef bool (*SayItCapsLockCallback)(void *context, uint64_t flags);
 typedef bool (*SayItFnKeyCallback)(void *context, bool pressed, uint64_t flags);
@@ -648,13 +657,20 @@ bool sayit_macos_indicator_visible_screen_size(
     return true;
 }
 
-bool sayit_macos_configure_floating_orb_window(void *nsWindow, char **error) {
+bool sayit_macos_configure_floating_orb_window(void *nsWindow, bool nonactivating, char **error) {
     if (nsWindow == NULL) {
         SayItSetError(error, @"macOS 悬浮球窗口参数无效");
         return false;
     }
     SayItRunOnMainThread(^{
         NSWindow *window = (__bridge NSWindow *)nsWindow;
+        if (nonactivating && object_getClass(window) != SayItNonactivatingFloatingPanel.class) {
+            object_setClass(window, SayItNonactivatingFloatingPanel.class);
+            window.styleMask = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel;
+            NSPanel *panel = (NSPanel *)window;
+            panel.floatingPanel = YES;
+            panel.becomesKeyOnlyIfNeeded = YES;
+        }
         window.collectionBehavior = window.collectionBehavior
             | NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorFullScreenAuxiliary;
