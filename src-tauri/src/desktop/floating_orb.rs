@@ -433,7 +433,7 @@ pub(crate) fn ensure_floating_orb_window(
     if let Err(error) = window
         .ns_window()
         .map_err(|error| format!("读取 macOS 悬浮球窗口失败：{error}"))
-        .and_then(crate::macos_native::configure_floating_orb_window)
+        .and_then(|window| crate::macos_native::configure_floating_orb_window(window, true))
     {
         let _ = window.destroy();
         return Err(error);
@@ -687,7 +687,7 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
     if let Err(error) = window
         .ns_window()
         .map_err(|error| format!("读取 macOS 悬浮球设置窗口失败：{error}"))
-        .and_then(crate::macos_native::configure_floating_orb_window)
+        .and_then(|window| crate::macos_native::configure_floating_orb_window(window, false))
     {
         let _ = window.destroy();
         return Err(error);
