@@ -21,6 +21,8 @@ const ORB_MENU_WIDTH: f64 = 280.0;
 const ORB_MENU_HEIGHT: f64 = 318.0;
 const ORB_MENU_GAP: f64 = 8.0;
 const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
+const ORB_MOVE_DURATION_MS: u64 = 200;
+const ORB_MOVE_FRAME_MS: u64 = 16;
 
 fn normalized_orb_size(size: u16) -> u16 {
     size.clamp(ORB_SIZE_MIN, ORB_SIZE_MAX)
@@ -387,6 +389,26 @@ fn point_is_inside_window(
         && point.y < position.y as f64 + size.height as f64
 }
 
+fn ease_out_cubic(progress: f64) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - progress).powi(3)
+}
+
+fn interpolate_orb_position(
+    start: tauri::PhysicalPosition<i32>,
+    target: tauri::PhysicalPosition<i32>,
+    progress: f64,
+) -> tauri::PhysicalPosition<i32> {
+    let progress = ease_out_cubic(progress);
+    let interpolate = |start: i32, target: i32| {
+        (start as f64 + (target as f64 - start as f64) * progress).round() as i32
+    };
+    tauri::PhysicalPosition::new(
+        interpolate(start.x, target.x),
+        interpolate(start.y, target.y),
+    )
+}
+
 pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return false;
@@ -645,12 +667,23 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
             .map_err(|error| format!("显示悬浮球失败：{error}"))
     } else {
         if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
-            let _ = menu.destroy();
+            let _ = menu.hide();
         }
         if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-            window
-                .destroy()
-                .map_err(|error| format!("关闭悬浮球失败：{error}"))?;
+            // macOS 上悬浮球的 NSWindow 在创建后会改造成 nonactivating panel。
+            // 运行期间销毁这个仍由 Tauri/Tao 持有的 WebView 窗口可能让 Objective-C
+            // 异常跨过 Rust 边界并直接终止进程。普通关闭只隐藏并复用窗口。
+            if !app
+                .state::<RuntimeState>()
+                .floating_orb_runtime
+                .transient
+                .load(Ordering::Acquire)
+            {
+                let _ = window.set_ignore_cursor_events(true);
+                window
+                    .hide()
+                    .map_err(|error| format!("隐藏悬浮球失败：{error}"))?;
+            }
         }
         Ok(())
     }
@@ -1063,6 +1096,40 @@ fn should_forward_orb_click(
     focused_editable_target.is_none()
 }
 
+async fn animate_orb_window_to(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    target: tauri::PhysicalPosition<i32>,
+    generation: u64,
+) -> Result<bool, String> {
+    let start = window
+        .outer_position()
+        .map_err(|error| format!("读取悬浮球动画起点失败：{error}"))?;
+    if start == target {
+        return Ok(true);
+    }
+    let frame_count = ORB_MOVE_DURATION_MS.div_ceil(ORB_MOVE_FRAME_MS).max(1);
+    for frame in 1..=frame_count {
+        if app
+            .state::<RuntimeState>()
+            .floating_orb_runtime
+            .transition_generation
+            .load(Ordering::Acquire)
+            != generation
+        {
+            return Ok(false);
+        }
+        let progress = frame as f64 / frame_count as f64;
+        window
+            .set_position(interpolate_orb_position(start, target, progress))
+            .map_err(|error| format!("移动悬浮球失败：{error}"))?;
+        if frame < frame_count {
+            sleep(Duration::from_millis(ORB_MOVE_FRAME_MS)).await;
+        }
+    }
+    Ok(true)
+}
+
 async fn return_to_idle(
     app: tauri::AppHandle,
     delay_ms: u64,
@@ -1086,8 +1153,8 @@ async fn return_to_idle(
     {
         return;
     }
-    crate::desktop::mouse_gesture::resume_detection(&app);
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
+        crate::desktop::mouse_gesture::resume_detection(&app);
         return;
     };
     if let Ok(mut action) = state.floating_orb_runtime.post_injection_action.lock() {
@@ -1100,28 +1167,50 @@ async fn return_to_idle(
     if let Ok(mut target) = state.floating_orb_runtime.armed_target.lock() {
         *target = None;
     }
-    if state
-        .floating_orb_runtime
-        .transient
-        .swap(false, Ordering::AcqRel)
-    {
+    if state.floating_orb_runtime.transient.load(Ordering::Acquire) {
         let enabled = state
             .floating_orb
             .lock()
             .map(|settings| settings.enabled)
             .unwrap_or(false);
         if enabled {
-            let _ = window.set_position(resolved_idle_position(&window));
-            let _ = window.set_ignore_cursor_events(false);
+            let _ = window.set_ignore_cursor_events(true);
             let _ = window.show();
+            let target = resolved_idle_position(&window);
+            match animate_orb_window_to(&app, &window, target, generation).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    eprintln!("[floating-orb] 归位动画失败: {error}");
+                    let _ = window.set_position(target);
+                }
+            }
+            if state
+                .floating_orb_runtime
+                .transition_generation
+                .load(Ordering::Acquire)
+                != generation
+            {
+                return;
+            }
+            state
+                .floating_orb_runtime
+                .transient
+                .store(false, Ordering::Release);
+            let _ = window.set_ignore_cursor_events(false);
             emit_state(&app, "idle", None);
         } else {
             let _ = window.hide();
+            state
+                .floating_orb_runtime
+                .transient
+                .store(false, Ordering::Release);
         }
     } else {
         let _ = window.set_ignore_cursor_events(false);
         emit_state(&app, "idle", None);
     }
+    crate::desktop::mouse_gesture::resume_detection(&app);
 }
 
 pub(crate) fn complete_floating_orb(
@@ -1225,18 +1314,33 @@ async fn prepare_transient_orb(
         .floating_orb_runtime
         .transient
         .store(true, Ordering::Release);
-    state
+    let generation = state
         .floating_orb_runtime
         .transition_generation
-        .fetch_add(1, Ordering::AcqRel);
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
     if let Ok(mut action) = state.floating_orb_runtime.post_injection_action.lock() {
         *action = None;
     }
     let window = ensure_floating_orb_window(app)?;
-    let _ = window.hide();
-    window
-        .set_position(transient_orb_position(&window, position))
-        .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
+    let target = transient_orb_position(&window, position);
+    let persistent_enabled = state
+        .floating_orb
+        .lock()
+        .map(|settings| settings.enabled)
+        .unwrap_or(false);
+    let was_visible = window.is_visible().unwrap_or(false);
+    let _ = window.set_ignore_cursor_events(true);
+    emit_state(app, "moving", None);
+    if persistent_enabled && was_visible {
+        if !animate_orb_window_to(app, &window, target, generation).await? {
+            return Err("悬浮球移动已被新的操作替代".into());
+        }
+    } else {
+        window
+            .set_position(target)
+            .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
+    }
     window
         .show()
         .map_err(|error| format!("显示手势悬浮球失败：{error}"))?;
@@ -1670,6 +1774,17 @@ mod tests {
             position,
             size,
         ));
+    }
+
+    #[test]
+    fn orb_animation_uses_an_ease_out_curve_and_reaches_the_target() {
+        let start = tauri::PhysicalPosition::new(-100, 20);
+        let target = tauri::PhysicalPosition::new(300, 220);
+        assert_eq!(interpolate_orb_position(start, target, 0.0), start);
+        assert_eq!(interpolate_orb_position(start, target, 1.0), target);
+        let halfway = interpolate_orb_position(start, target, 0.5);
+        assert!(halfway.x > 100);
+        assert!(halfway.y > 120);
     }
 
     #[test]
