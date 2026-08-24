@@ -245,6 +245,8 @@ mod tests {
         assert!(!data.mouse_gesture.enabled);
         assert_eq!(data.mouse_gesture.mode, MouseGestureMode::Confirm);
         assert_eq!(data.mouse_gesture.sensitivity, 50);
+        assert!(data.mouse_gesture.rapid_click_enabled);
+        assert_eq!(data.mouse_gesture.rapid_click_count, 3);
     }
 
     #[test]
@@ -252,12 +254,16 @@ mod tests {
         let settings: MouseGestureSettings = serde_json::from_value(serde_json::json!({
             "enabled": true,
             "mode": "direct",
-            "sensitivity": 240
+            "sensitivity": 240,
+            "rapidClickEnabled": true,
+            "rapidClickCount": 9
         }))
         .unwrap();
         let settings = settings.normalized();
         assert_eq!(settings.sensitivity, 100);
         assert_eq!(settings.mode, MouseGestureMode::Direct);
+        assert!(settings.rapid_click_enabled);
+        assert_eq!(settings.rapid_click_count, 5);
     }
 
     #[test]

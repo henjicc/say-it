@@ -83,7 +83,8 @@ pub(crate) type FnKeyCallback = unsafe extern "C" fn(*mut c_void, bool, u64) -> 
 pub(crate) type EscapeCallback = unsafe extern "C" fn(*mut c_void, bool) -> bool;
 pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, usize);
 pub(crate) type AudioErrorCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
-pub(crate) type MouseMonitorCallback = unsafe extern "C" fn(*mut c_void, f64, f64, bool);
+pub(crate) type MouseMonitorCallback =
+    unsafe extern "C" fn(*mut c_void, f64, f64, bool, bool, bool);
 
 unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);

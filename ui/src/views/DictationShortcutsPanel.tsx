@@ -136,11 +136,11 @@ export function DictationShortcutsPanel() {
               disabled={!mouseGesture.enabled}
               onChange={(event) => void updateMouseGesture({ mode: event.target.value as "confirm" | "direct" }).catch(() => undefined)}
             >
-              <option value="confirm">晃动后点击确认（推荐）</option>
-              <option value="direct">晃动直接开始或停止</option>
+              <option value="confirm">显示悬浮球，点击后开始（推荐）</option>
+              <option value="direct">直接开始或停止识别</option>
             </Select>
           </Field>
-          <Field label="触发灵敏度">
+          <Field label="晃动灵敏度">
             <Slider
               label="低误触"
               min={0}
@@ -151,6 +151,28 @@ export function DictationShortcutsPanel() {
               format={(value) => `${value}%`}
               onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
             />
+          </Field>
+          <Field label="快速连击">
+            <div className="flex h-[var(--control-h)] items-center justify-between gap-4">
+              <span className="text-sm text-[var(--color-fg)]">启用左键连击</span>
+              <Switch
+                checked={mouseGesture.rapidClickEnabled}
+                disabled={!mouseGesture.enabled}
+                onChange={(rapidClickEnabled) => void updateMouseGesture({ rapidClickEnabled }).catch(() => undefined)}
+                label="启用鼠标左键快速连击"
+              />
+            </div>
+          </Field>
+          <Field label="连击次数">
+            <Select
+              value={String(mouseGesture.rapidClickCount)}
+              disabled={!mouseGesture.enabled || !mouseGesture.rapidClickEnabled}
+              onChange={(event) => void updateMouseGesture({ rapidClickCount: Number(event.target.value) }).catch(() => undefined)}
+            >
+              <option value="3">快速三击</option>
+              <option value="4">快速四击</option>
+              <option value="5">快速五击</option>
+            </Select>
           </Field>
         </FormGrid>
         {mouseGestureError && (

@@ -28,7 +28,14 @@ typedef bool (*SayItFnKeyCallback)(void *context, bool pressed, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
 typedef void (*SayItAudioErrorCallback)(void *context, const char *message);
-typedef void (*SayItMouseMonitorCallback)(void *context, double x, double y, bool buttonDown);
+typedef void (*SayItMouseMonitorCallback)(
+    void *context,
+    double x,
+    double y,
+    bool buttonDown,
+    bool leftPressed,
+    bool leftReleased
+);
 
 typedef struct {
     uint8_t *data;
@@ -1699,7 +1706,14 @@ static CGEventRef SayItMouseMonitorEventCallback(
     bool buttonDown = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)
         || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonRight)
         || CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonCenter);
-    owner.callback(owner.context, point.x, point.y, buttonDown);
+    owner.callback(
+        owner.context,
+        point.x,
+        point.y,
+        buttonDown,
+        type == kCGEventLeftMouseDown,
+        type == kCGEventLeftMouseUp
+    );
     return event;
 }
 
