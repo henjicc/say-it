@@ -1,5 +1,8 @@
 use crate::prelude::*;
-use crate::state::{MouseGestureMode, MouseGestureSettings, RuntimeState};
+use crate::state::{
+    MouseGestureMode, MouseGestureSettings, RuntimeState, MAX_MOUSE_RAPID_CLICK_COUNT,
+    MIN_MOUSE_RAPID_CLICK_COUNT,
+};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -259,7 +262,8 @@ impl RapidClickRecognizer {
             return None;
         }
 
-        let required_clicks = required_clicks.clamp(3, 5);
+        let required_clicks =
+            required_clicks.clamp(MIN_MOUSE_RAPID_CLICK_COUNT, MAX_MOUSE_RAPID_CLICK_COUNT);
         if sample.native_click_count >= required_clicks {
             self.reset();
             self.cooldown_until = Some(sample.at + COOLDOWN);

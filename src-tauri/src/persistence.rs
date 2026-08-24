@@ -5,6 +5,8 @@ use std::path::Path;
 
 const STATE_FILE_NAME: &str = "say-it-state.json";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.vibecode.sayit"];
+const CURRENT_STATE_SCHEMA_VERSION: u32 = 2;
+const FOUR_CLICK_DEFAULT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedData {
@@ -113,7 +115,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .map_err(|_| "Mouse gesture settings lock failed".to_string())?
         .clone();
     let data = PersistedData {
-        schema_version: default_schema_version(),
+        schema_version: CURRENT_STATE_SCHEMA_VERSION,
         app_settings: match app_settings_override {
             Some(settings) => settings.clone(),
             None => state
@@ -176,6 +178,17 @@ fn persisted_state_files_exist(file: &Path) -> bool {
     file.exists() || file.with_extension("json.bak").exists()
 }
 
+fn migrate_persisted_data(data: &mut PersistedData) {
+    if data.schema_version < FOUR_CLICK_DEFAULT_SCHEMA_VERSION
+        && data.mouse_gesture.rapid_click_count == 3
+    {
+        data.mouse_gesture.rapid_click_count = DEFAULT_MOUSE_RAPID_CLICK_COUNT;
+    }
+    if data.schema_version < CURRENT_STATE_SCHEMA_VERSION {
+        data.schema_version = CURRENT_STATE_SCHEMA_VERSION;
+    }
+}
+
 fn load_persisted_data_from_path(file: &Path) -> Result<PersistedData, String> {
     let backup = file.with_extension("json.bak");
     if !file.exists() {
@@ -213,6 +226,7 @@ pub(crate) fn load_persisted_state(
         return Ok(None);
     };
     let mut data = load_persisted_data_from_path(&source)?;
+    migrate_persisted_data(&mut data);
     data.providers = normalize_settings(data.providers);
     crate::application::dictation::repair_empty_asr_model(&mut data.app_settings.dictation_prefs);
     crate::application::customization::migrate_legacy_provider_hotwords(
@@ -246,7 +260,7 @@ mod tests {
         assert_eq!(data.mouse_gesture.mode, MouseGestureMode::Confirm);
         assert_eq!(data.mouse_gesture.sensitivity, 50);
         assert!(data.mouse_gesture.rapid_click_enabled);
-        assert_eq!(data.mouse_gesture.rapid_click_count, 3);
+        assert_eq!(data.mouse_gesture.rapid_click_count, 4);
     }
 
     #[test]
@@ -256,14 +270,38 @@ mod tests {
             "mode": "direct",
             "sensitivity": 240,
             "rapidClickEnabled": true,
-            "rapidClickCount": 9
+            "rapidClickCount": 99
         }))
         .unwrap();
         let settings = settings.normalized();
         assert_eq!(settings.sensitivity, 100);
         assert_eq!(settings.mode, MouseGestureMode::Direct);
         assert!(settings.rapid_click_enabled);
-        assert_eq!(settings.rapid_click_count, 5);
+        assert_eq!(settings.rapid_click_count, 10);
+    }
+
+    #[test]
+    fn old_three_click_default_migrates_once_but_new_explicit_three_is_preserved() {
+        let mut legacy: PersistedData = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "mouse_gesture": {
+                "rapidClickCount": 3
+            }
+        }))
+        .unwrap();
+        migrate_persisted_data(&mut legacy);
+        assert_eq!(legacy.schema_version, CURRENT_STATE_SCHEMA_VERSION);
+        assert_eq!(legacy.mouse_gesture.rapid_click_count, 4);
+
+        let mut current: PersistedData = serde_json::from_value(serde_json::json!({
+            "schema_version": CURRENT_STATE_SCHEMA_VERSION,
+            "mouse_gesture": {
+                "rapidClickCount": 3
+            }
+        }))
+        .unwrap();
+        migrate_persisted_data(&mut current);
+        assert_eq!(current.mouse_gesture.rapid_click_count, 3);
     }
 
     #[test]

@@ -55,7 +55,9 @@ pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
 pub(crate) const DEFAULT_MOUSE_GESTURE_SENSITIVITY: u8 = 50;
-pub(crate) const DEFAULT_MOUSE_RAPID_CLICK_COUNT: u8 = 3;
+pub(crate) const DEFAULT_MOUSE_RAPID_CLICK_COUNT: u8 = 4;
+pub(crate) const MIN_MOUSE_RAPID_CLICK_COUNT: u8 = 3;
+pub(crate) const MAX_MOUSE_RAPID_CLICK_COUNT: u8 = 10;
 
 fn default_floating_orb_size() -> u16 {
     DEFAULT_FLOATING_ORB_SIZE
@@ -202,7 +204,9 @@ impl Default for MouseGestureSettings {
 impl MouseGestureSettings {
     pub(crate) fn normalized(mut self) -> Self {
         self.sensitivity = self.sensitivity.min(100);
-        self.rapid_click_count = self.rapid_click_count.clamp(3, 5);
+        self.rapid_click_count = self
+            .rapid_click_count
+            .clamp(MIN_MOUSE_RAPID_CLICK_COUNT, MAX_MOUSE_RAPID_CLICK_COUNT);
         self
     }
 }
