@@ -198,6 +198,9 @@ pub(crate) fn main_window_ready(window: tauri::WebviewWindow) -> Result<(), Stri
         lifecycle.mark_ready()
     };
     if should_show {
+        // 平台配置中的初始 main 窗口不是由 `ensure_main_window` 创建；WebView ready
+        // 后再同步一次，确保原生毛玻璃视图挂在最终的内容视图层级中。
+        crate::desktop::floating_orb::sync_system_glass_window(&window);
         reveal_main_window(&window);
     }
     Ok(())
