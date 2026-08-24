@@ -1,13 +1,15 @@
-import { StrictMode, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { StrictMode, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { CMD, EVT, cmd } from "@/lib/tauri";
+import { CMD, EVT, cmd, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
 import {
+  DEFAULT_FLOATING_ORB_APPEARANCE,
   floatingOrbLabel,
   floatingOrbWaveScale,
+  normalizeFloatingOrbAppearance,
   shouldStartOrbDrag,
   type OrbPhase,
 } from "@/floating-orb/interaction";
@@ -35,7 +37,20 @@ function FloatingOrbApp() {
   const [phase, setPhase] = useState<OrbPhase>("idle");
   const [message, setMessage] = useState("");
   const [waveform, setWaveform] = useState(EMPTY_WAVEFORM);
+  const [appearance, setAppearance] = useState<{ size: number; opacity: number }>(
+    DEFAULT_FLOATING_ORB_APPEARANCE,
+  );
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
+
+  useEffect(() => {
+    void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings)
+      .then((settings) => setAppearance(normalizeFloatingOrbAppearance(settings)))
+      .catch(() => undefined);
+  }, []);
+
+  useTauriEvent<{ size?: number; opacity?: number }>("floating-orb-config", (payload) => {
+    setAppearance(normalizeFloatingOrbAppearance(payload));
+  });
 
   useTauriEvent<OrbStatePayload>("floating-orb-state", (payload) => {
     const next = payload.phase || "idle";
@@ -110,7 +125,11 @@ function FloatingOrbApp() {
     <button
       type="button"
       className={`floating-orb ${phase}`}
-      style={{ "--wave-level": waveform.level } as CSSProperties}
+      style={{
+        "--wave-level": waveform.level,
+        "--wave-glow": `${5 + waveform.level * 9}px`,
+        "--orb-opacity": appearance.opacity / 100,
+      } as CSSProperties}
       disabled={phase !== "idle" && phase !== "recording"}
       aria-label={phase === "recording" ? "点击停止识别" : label}
       title={phase === "idle" ? "点击开始语音输入，拖动调整位置" : label}
@@ -119,6 +138,12 @@ function FloatingOrbApp() {
       onPointerUp={onPointerUp}
       onPointerCancel={() => {
         pointer.current = { id: -1, x: 0, y: 0, dragging: false };
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        if (phase === "idle" || phase === "recording") {
+          void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
+        }
       }}
       onClick={stop}
     >

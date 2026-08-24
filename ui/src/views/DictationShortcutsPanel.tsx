@@ -96,7 +96,7 @@ export function DictationShortcutsPanel() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-[var(--color-fg)]">启用悬浮球输入</p>
             <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              点击悬浮球会尝试激活它下方的位置并开始语音输入。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
+              点击悬浮球会尝试激活它下方的位置并开始语音输入，右键可调整大小和不透明度。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
             </p>
           </div>
           <Switch

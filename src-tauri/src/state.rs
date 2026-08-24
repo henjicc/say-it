@@ -48,13 +48,39 @@ pub(crate) struct FloatingOrbPosition {
     pub(crate) y: i32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 56;
+pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 100;
+
+fn default_floating_orb_size() -> u16 {
+    DEFAULT_FLOATING_ORB_SIZE
+}
+
+fn default_floating_orb_opacity() -> u8 {
+    DEFAULT_FLOATING_ORB_OPACITY
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FloatingOrbSettings {
     #[serde(default)]
     pub(crate) enabled: bool,
     #[serde(default)]
     pub(crate) position: Option<FloatingOrbPosition>,
+    #[serde(default = "default_floating_orb_size")]
+    pub(crate) size: u16,
+    #[serde(default = "default_floating_orb_opacity")]
+    pub(crate) opacity: u8,
+}
+
+impl Default for FloatingOrbSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            position: None,
+            size: DEFAULT_FLOATING_ORB_SIZE,
+            opacity: DEFAULT_FLOATING_ORB_OPACITY,
+        }
+    }
 }
 
 #[derive(Default)]
