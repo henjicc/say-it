@@ -100,7 +100,7 @@
 }
 
 /* 系统材质开启时，所有界面入口共享同一套透明背景令牌。原生窗口负责模糊桌面，
- * WebView 只叠加跟随强调色的轻底色，避免把系统材质重新盖成实色。 */
+ * WebView 只叠加接近中性的轻底色，强调色仅保留不抢眼的细微倾向。 */
 [data-system-glass="true"] {
   --color-bg: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-sidebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
@@ -251,14 +251,6 @@ input[type="radio"] {
   accent-color: var(--color-accent);
 }
 
-[data-ui-tone="light"] .text-white {
-  color: var(--color-fg) !important;
-}
-
-[data-ui-tone="light"] [class*="text-white/"] {
-  color: var(--color-fg-muted) !important;
-}
-
 [data-ui-tone="light"] [class*="border-white/"] {
   border-color: var(--color-line) !important;
 }
@@ -273,11 +265,6 @@ input[type="radio"] {
 
 [data-ui-tone="light"] .bg-black {
   background-color: var(--color-bg) !important;
-}
-
-[data-ui-tone="light"] button.text-white,
-[data-ui-tone="light"] button [class*="text-white"] {
-  color: var(--color-fg) !important;
 }
 
 [data-ui-tone="light"] .about-dialog {

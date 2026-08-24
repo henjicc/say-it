@@ -13,6 +13,7 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import {
+  accentContrast,
   applySystemGlassToDocument,
   applyThemeToDocument,
   defaultAccentTheme,
@@ -51,7 +52,8 @@ describe("theme store", () => {
     expect(document.documentElement.dataset.uiTone).toBe("light");
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#E36B2C");
     expect(document.documentElement.style.getPropertyValue("--color-accent-contrast")).toBe("#000000");
-    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F3F1F3");
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F4F4F7");
+    expect(document.documentElement.style.getPropertyValue("--system-glass-color")).toBe("#F8F7F8");
   });
 
   it("uses an explicit background when follow-accent mode is disabled", () => {
@@ -68,5 +70,10 @@ describe("theme store", () => {
     applySystemGlassToDocument({ glassEnabled: true, glassTint: 99 });
     expect(document.documentElement.dataset.systemGlass).toBe("true");
     expect(document.documentElement.style.getPropertyValue("--system-glass-tint")).toBe("40%");
+  });
+
+  it("chooses readable black or white text from the actual accent luminance", () => {
+    expect(accentContrast("#F4D35E")).toBe("#000000");
+    expect(accentContrast("#17324D")).toBe("#FFFFFF");
   });
 });

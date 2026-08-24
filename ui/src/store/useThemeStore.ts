@@ -133,7 +133,7 @@ export function accentDark(hex: string) {
 export function themeBackground(themeValue: Partial<AccentTheme>) {
   const theme = normalizeTheme(themeValue);
   if (theme.backgroundMode === "custom") return theme.background;
-  return mix(theme.accent, theme.tone === "light" ? "#F4F7FB" : "#070A10", 0.96);
+  return mix(theme.accent, theme.tone === "light" ? "#F4F7FB" : "#070A10", 0.98);
 }
 
 export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = document) {
@@ -152,7 +152,12 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   root.style.setProperty("--theme-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));
   root.style.setProperty("--theme-bg-titlebar", mix(background, "#000000", light ? 0.04 : 0.18));
   root.style.setProperty("--theme-overlay", mix(background, "#FFFFFF", light ? 0.88 : 0.06));
-  root.style.setProperty("--system-glass-color", mix(theme.accent, background, 0.72));
+  const glassBase = theme.backgroundMode === "custom"
+    ? background
+    : light
+      ? "#F8FAFC"
+      : "#05070B";
+  root.style.setProperty("--system-glass-color", mix(theme.accent, glassBase, light ? 0.98 : 0.97));
   root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
   root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
   root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");
