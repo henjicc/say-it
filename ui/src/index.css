@@ -143,9 +143,7 @@ input[type="radio"] {
 }
 
 [data-ui-tone="light"] body {
-  background:
-    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 34%),
-    var(--color-bg);
+  background: var(--color-bg);
 }
 
 [data-ui-tone="light"] .text-white {
@@ -184,10 +182,7 @@ input[type="radio"] {
 [data-ui-tone="light"] .about-dialog {
   border-color: rgba(17, 24, 39, 0.08);
   background: rgba(255, 255, 255, 0.96);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.85) inset,
-    0 18px 44px rgba(15, 23, 42, 0.16),
-    0 0 0 1px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
 }
 
 /* 下拉弹层进入/离开动画（自 transform-origin: top 展开） */

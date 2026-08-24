@@ -772,11 +772,18 @@ export function SubtitleEditor({
         <div className="relative select-none" style={{ width: `${timelineWidth}px`, height: `${TIMELINE_HEIGHT}px` }}>
           <div
             className="absolute inset-x-0 top-0 h-5 border-b border-[var(--color-line)]"
-            style={{
-              backgroundImage:
-                "repeating-linear-gradient(to right, var(--color-line) 0 1px, transparent 1px " + `${pxPerSec}px)`,
-            }}
           >
+            <svg
+              className="pointer-events-none absolute inset-0 h-full w-full text-[var(--color-line)]"
+              aria-hidden="true"
+            >
+              <defs>
+                <pattern id="timeline-second-ticks" width={pxPerSec} height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 0.5 0 V 20" stroke="currentColor" strokeWidth="1" />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill="url(#timeline-second-ticks)" />
+            </svg>
             {secondLabels.map((s) => (
               <span
                 key={s}
@@ -788,7 +795,7 @@ export function SubtitleEditor({
             ))}
           </div>
 
-          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[linear-gradient(180deg,rgba(17,23,34,0.9),rgba(10,13,19,0.96))]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
+          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg-sidebar)]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
             {waveformColumns.length > 0 ? (
               <canvas
                 ref={waveformCanvasRef}
