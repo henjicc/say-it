@@ -10,19 +10,45 @@ export type OrbPhase =
   | "busy";
 
 export const ORB_DRAG_THRESHOLD = 5;
-export const DEFAULT_FLOATING_ORB_APPEARANCE = { size: 56, opacity: 100 } as const;
+export const FLOATING_ORB_SIZE_RANGE = { min: 44, max: 72 } as const;
+export const FLOATING_ORB_OPACITY_RANGE = { min: 40, max: 100 } as const;
+export const DEFAULT_FLOATING_ORB_APPEARANCE = {
+  size: 56,
+  opacity: 100,
+  glassEnabled: false,
+} as const;
+
+export interface FloatingOrbAppearance {
+  size: number;
+  opacity: number;
+  glassEnabled: boolean;
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(Math.max(min, Math.min(max, number))) : fallback;
+}
 
 export function normalizeFloatingOrbAppearance(payload: {
   size?: number;
   opacity?: number;
-}): { size: number; opacity: number } {
-  const size = [48, 56, 64].includes(Number(payload.size))
-    ? Number(payload.size)
-    : DEFAULT_FLOATING_ORB_APPEARANCE.size;
-  const opacity = [70, 85, 100].includes(Number(payload.opacity))
-    ? Number(payload.opacity)
-    : DEFAULT_FLOATING_ORB_APPEARANCE.opacity;
-  return { size, opacity };
+  glassEnabled?: boolean;
+}): FloatingOrbAppearance {
+  return {
+    size: clampInteger(
+      payload.size,
+      FLOATING_ORB_SIZE_RANGE.min,
+      FLOATING_ORB_SIZE_RANGE.max,
+      DEFAULT_FLOATING_ORB_APPEARANCE.size,
+    ),
+    opacity: clampInteger(
+      payload.opacity,
+      FLOATING_ORB_OPACITY_RANGE.min,
+      FLOATING_ORB_OPACITY_RANGE.max,
+      DEFAULT_FLOATING_ORB_APPEARANCE.opacity,
+    ),
+    glassEnabled: payload.glassEnabled === true,
+  };
 }
 
 export function shouldStartOrbDrag(deltaX: number, deltaY: number): boolean {

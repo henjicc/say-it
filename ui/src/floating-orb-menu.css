@@ -1,0 +1,214 @@
+:root {
+  --menu-font:
+    "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
+    system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", sans-serif;
+}
+
+html,
+body,
+#floating-orb-menu-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: #f4f7fc;
+  font-family: var(--menu-font);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.orb-menu-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(14, 19, 29, 0.98);
+}
+
+.orb-menu-panel.glass {
+  background: rgba(14, 19, 29, 0.62);
+}
+
+.orb-menu-header,
+.orb-menu-field > span,
+.orb-menu-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.orb-menu-header {
+  min-height: 22px;
+  font-size: 14px;
+}
+
+.orb-menu-close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.orb-menu-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.orb-menu-close:focus-visible,
+.orb-menu-disable:focus-visible,
+.orb-menu-switch input:focus-visible + span,
+.orb-menu-field input:focus-visible {
+  outline: 2px solid #8ec1ff;
+  outline-offset: 2px;
+}
+
+.orb-menu-field {
+  display: grid;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+}
+
+.orb-menu-field output {
+  color: rgba(255, 255, 255, 0.56);
+  font-variant-numeric: tabular-nums;
+}
+
+.orb-menu-field input[type="range"] {
+  width: 100%;
+  height: 4px;
+  margin: 4px 0;
+  appearance: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+}
+
+.orb-menu-field input[type="range"]::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  appearance: none;
+  border: 2px solid #dceaff;
+  border-radius: 50%;
+  background: #5199ff;
+}
+
+.orb-menu-toggle-row {
+  gap: 12px;
+}
+
+.orb-menu-toggle-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.orb-menu-toggle-row strong {
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.orb-menu-toggle-row small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+}
+
+.orb-menu-switch {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 20px;
+  flex: none;
+}
+
+.orb-menu-switch input {
+  position: absolute;
+  opacity: 0;
+}
+
+.orb-menu-switch > span:not(.orb-menu-sr-only) {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+}
+
+.orb-menu-switch > span:not(.orb-menu-sr-only)::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.86);
+  content: "";
+  transition: transform 140ms ease-out;
+}
+
+.orb-menu-switch input:checked + span {
+  border-color: #5199ff;
+  background: #1c6fea;
+}
+
+.orb-menu-switch input:checked + span::after {
+  transform: translateX(16px);
+}
+
+.orb-menu-error {
+  margin: -5px 0 0;
+  color: #ff8b8b;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.orb-menu-disable {
+  min-height: 28px;
+  margin-top: auto;
+  border: 1px solid rgba(255, 107, 107, 0.26);
+  border-radius: 8px;
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff8b8b;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.orb-menu-disable:hover {
+  border-color: rgba(255, 107, 107, 0.46);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.orb-menu-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-menu-switch > span:not(.orb-menu-sr-only)::after {
+    transition: none;
+  }
+}

@@ -74,6 +74,8 @@ export const CMD = {
   setFloatingOrbEnabled: "set_floating_orb_enabled",
   getFloatingOrbSettings: "get_floating_orb_settings",
   showFloatingOrbMenu: "show_floating_orb_menu",
+  hideFloatingOrbMenu: "hide_floating_orb_menu",
+  setFloatingOrbAppearance: "set_floating_orb_appearance",
   floatingOrbActivate: "floating_orb_activate",
   floatingOrbStop: "floating_orb_stop",
   listRunningApps: "list_running_apps",
@@ -162,6 +164,7 @@ export interface FloatingOrbSettings {
   position?: { x: number; y: number } | null;
   size: number;
   opacity: number;
+  glassEnabled: boolean;
 }
 
 export interface AppSettings {

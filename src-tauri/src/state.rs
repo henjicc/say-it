@@ -70,6 +70,8 @@ pub(crate) struct FloatingOrbSettings {
     pub(crate) size: u16,
     #[serde(default = "default_floating_orb_opacity")]
     pub(crate) opacity: u8,
+    #[serde(default)]
+    pub(crate) glass_enabled: bool,
 }
 
 impl Default for FloatingOrbSettings {
@@ -79,6 +81,7 @@ impl Default for FloatingOrbSettings {
             position: None,
             size: DEFAULT_FLOATING_ORB_SIZE,
             opacity: DEFAULT_FLOATING_ORB_OPACITY,
+            glass_enabled: false,
         }
     }
 }
@@ -86,6 +89,7 @@ impl Default for FloatingOrbSettings {
 #[derive(Default)]
 pub(crate) struct FloatingOrbRuntime {
     pub(crate) placement_generation: AtomicU64,
+    pub(crate) appearance_generation: AtomicU64,
     pub(crate) transition_generation: AtomicU64,
 }
 

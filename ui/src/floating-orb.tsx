@@ -11,6 +11,7 @@ import {
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
   shouldStartOrbDrag,
+  type FloatingOrbAppearance,
   type OrbPhase,
 } from "@/floating-orb/interaction";
 import "@/floating-orb.css";
@@ -37,7 +38,7 @@ function FloatingOrbApp() {
   const [phase, setPhase] = useState<OrbPhase>("idle");
   const [message, setMessage] = useState("");
   const [waveform, setWaveform] = useState(EMPTY_WAVEFORM);
-  const [appearance, setAppearance] = useState<{ size: number; opacity: number }>(
+  const [appearance, setAppearance] = useState<FloatingOrbAppearance>(
     DEFAULT_FLOATING_ORB_APPEARANCE,
   );
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
@@ -48,7 +49,7 @@ function FloatingOrbApp() {
       .catch(() => undefined);
   }, []);
 
-  useTauriEvent<{ size?: number; opacity?: number }>("floating-orb-config", (payload) => {
+  useTauriEvent<{ size?: number; opacity?: number; glassEnabled?: boolean }>("floating-orb-config", (payload) => {
     setAppearance(normalizeFloatingOrbAppearance(payload));
   });
 
@@ -124,7 +125,7 @@ function FloatingOrbApp() {
   return (
     <button
       type="button"
-      className={`floating-orb ${phase}`}
+      className={`floating-orb ${phase}${appearance.glassEnabled ? " glass" : ""}`}
       style={{
         "--orb-opacity": appearance.opacity / 100,
       } as CSSProperties}
