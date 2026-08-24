@@ -119,6 +119,7 @@ pub(crate) struct FloatingOrbRuntime {
     pub(crate) placement_generation: AtomicU64,
     pub(crate) appearance_generation: AtomicU64,
     pub(crate) transition_generation: AtomicU64,
+    pub(crate) suppress_main_reopen_until_ms: AtomicU64,
 }
 
 #[derive(Default)]

@@ -1,6 +1,5 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type FloatingOrbSettings } from "@/lib/tauri";
@@ -96,7 +95,7 @@ function FloatingOrbApp() {
     if (phase !== "idle" || current.id !== event.pointerId || current.dragging) return;
     if (!shouldStartOrbDrag(event.screenX - current.x, event.screenY - current.y)) return;
     current.dragging = true;
-    void getCurrentWindow().startDragging();
+    void cmd(CMD.floatingOrbStartDragging).catch(() => undefined);
   };
 
   const onPointerUp = (event: PointerEvent<HTMLButtonElement>) => {
