@@ -12,9 +12,10 @@
 
 ## 正确做法
 
-- macOS 使用 `UnderWindowBackground`，并让窗口保持透明、使用深色主题。
+- macOS 使用 `UnderWindowBackground`，并让窗口保持透明；原生窗口主题必须跟随应用的亮暗色调，不能固定为深色。
 - Windows Acrylic 只保留低透明度深色 tint。
 - WebView 的玻璃状态只叠加很淡的颜色层，不使用高不透明度背景、渐变或发光。
 - 不使用 CSS `backdrop-filter` 冒充系统级毛玻璃；它无法可靠采样 WebView 窗口之外的桌面内容。
 - 原生模糊层会覆盖整个透明窗口；悬浮球窗口不能为了悬停动画额外预留透明边距，否则模糊层会在球体外形成一圈光环。
 - macOS Vibrancy 和 Windows Acrylic 都不提供稳定的连续模糊半径。调校界面应暴露系统材质、底色强度和边框强度，不要把圆角半径误当成模糊强度。
+- 悬浮窗口是独立 WebView，不能依赖主窗口的 DOM 主题变量；创建时读取持久化主题，并订阅全局主题变更事件，同时同步原生窗口主题与 WebView 令牌。

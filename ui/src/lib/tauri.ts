@@ -222,6 +222,7 @@ export const EVT = {
   pluginRegistryChanged: "plugin-registry-changed",
   historyChanged: "history-changed",
   openHistory: "open-history",
+  themeChanged: "app-theme-changed",
 } as const;
 
 export interface HistoryEntry {

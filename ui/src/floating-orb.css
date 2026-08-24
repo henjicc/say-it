@@ -33,12 +33,12 @@ button {
   height: 100%;
   padding: 0;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--color-line-strong);
   border-radius: 999px;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: rgba(12, 17, 26, 0.98);
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-bg) 96%, var(--color-fg) 4%);
   opacity: var(--orb-opacity, 1);
   cursor: grab;
   touch-action: none;
@@ -49,19 +49,19 @@ button {
 }
 
 .floating-orb:hover {
-  border-color: rgba(142, 193, 255, 0.46);
-  background: rgba(18, 28, 42, 0.98);
+  border-color: var(--accent-ring);
+  background: color-mix(in srgb, var(--color-bg) 90%, var(--color-accent) 10%);
 }
 
 .floating-orb.glass {
-  border-color: rgba(255, 255, 255, var(--orb-glass-border, 0.08));
-  background: rgba(8, 12, 18, var(--orb-glass-tint, 0.1));
+  border-color: color-mix(in srgb, var(--color-fg) var(--orb-glass-border, 8%), transparent);
+  background: color-mix(in srgb, var(--color-bg) var(--orb-glass-tint, 10%), transparent);
 }
 
 .floating-orb.glass:hover,
 .floating-orb.glass.recording:hover {
-  border-color: rgba(142, 193, 255, 0.32);
-  background: rgba(8, 12, 18, var(--orb-glass-tint, 0.1));
+  border-color: var(--accent-ring);
+  background: color-mix(in srgb, var(--color-bg) var(--orb-glass-tint, 10%), transparent);
 }
 
 .floating-orb:hover .orb-icon-shell,
@@ -80,24 +80,24 @@ button {
 }
 
 .floating-orb.recording {
-  border-color: rgba(81, 153, 255, 0.5);
+  border-color: var(--accent-ring);
   cursor: pointer;
 }
 
 .floating-orb.recording:hover {
-  border-color: rgba(142, 193, 255, 0.62);
-  background: rgba(18, 28, 42, 0.98);
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-bg) 90%, var(--color-accent) 10%);
 }
 
 .floating-orb.moving,
 .floating-orb.processing,
 .floating-orb.smartProcessing {
-  color: #8ec1ff;
+  color: var(--color-accent-light);
 }
 
 .floating-orb.success {
-  color: #8ec1ff;
-  border-color: rgba(81, 153, 255, 0.44);
+  color: var(--color-accent-light);
+  border-color: var(--accent-ring);
 }
 
 .floating-orb.fallback,
@@ -147,10 +147,17 @@ button {
   width: 10%;
   height: 74%;
   border-radius: 999px;
-  background: #5199ff;
+  background: var(--color-accent);
   transform: scaleY(var(--bar-scale, 0.18));
   transform-origin: center;
   transition: transform 70ms ease-out;
+}
+
+[data-ui-tone="light"] .floating-orb.moving,
+[data-ui-tone="light"] .floating-orb.processing,
+[data-ui-tone="light"] .floating-orb.smartProcessing,
+[data-ui-tone="light"] .floating-orb.success {
+  color: var(--color-accent-dark);
 }
 
 .orb-wave-bar:nth-child(1),

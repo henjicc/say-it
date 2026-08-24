@@ -13,7 +13,7 @@ body,
   margin: 0;
   overflow: hidden;
   background: transparent;
-  color: #f4f7fc;
+  color: var(--color-fg);
   font-family: var(--menu-font);
   user-select: none;
   -webkit-user-select: none;
@@ -32,14 +32,14 @@ input {
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--color-line-strong);
   border-radius: 14px;
-  background: rgba(14, 19, 29, 0.98);
+  background: color-mix(in srgb, var(--color-bg) 94%, var(--color-fg) 6%);
 }
 
 .orb-menu-panel.glass {
-  border-color: rgba(255, 255, 255, var(--glass-border, 0.08));
-  background: rgba(8, 12, 18, var(--glass-tint, 0.1));
+  border-color: color-mix(in srgb, var(--color-fg) var(--glass-border, 8%), transparent);
+  background: color-mix(in srgb, var(--color-bg) var(--glass-tint, 10%), transparent);
 }
 
 .orb-menu-header,
@@ -62,15 +62,15 @@ input {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.62);
+  color: var(--color-fg-subtle);
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
 }
 
 .orb-menu-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--color-surface-strong);
+  color: var(--color-fg);
 }
 
 .orb-menu-close:focus-visible,
@@ -78,19 +78,19 @@ input {
 .orb-menu-disclosure:focus-visible,
 .orb-menu-switch input:focus-visible + span,
 .orb-menu-field input:focus-visible {
-  outline: 2px solid #8ec1ff;
+  outline: 2px solid var(--color-accent-light);
   outline-offset: 2px;
 }
 
 .orb-menu-field {
   display: grid;
   gap: 6px;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--color-fg-muted);
   font-size: 12px;
 }
 
 .orb-menu-field output {
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--color-fg-subtle);
   font-variant-numeric: tabular-nums;
 }
 
@@ -100,7 +100,7 @@ input {
   margin: 4px 0;
   appearance: none;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--color-line-strong);
   cursor: pointer;
 }
 
@@ -108,16 +108,16 @@ input {
   width: 16px;
   height: 16px;
   appearance: none;
-  border: 2px solid #dceaff;
+  border: 2px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-fg));
   border-radius: 50%;
-  background: #5199ff;
+  background: var(--color-accent);
 }
 
 .orb-menu-glass-tuning {
   display: grid;
   gap: 8px;
   padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--color-line);
 }
 
 .orb-menu-disclosure {
@@ -126,18 +126,18 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--color-line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.8);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
   font-size: 12px;
   cursor: pointer;
 }
 
 .orb-menu-disclosure:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.07);
-  color: rgba(255, 255, 255, 0.94);
+  border-color: var(--color-line-strong);
+  background: var(--color-surface-hover);
+  color: var(--color-fg);
 }
 
 .orb-menu-disclosure:disabled {
@@ -157,7 +157,7 @@ input {
 
 .orb-menu-glass-hint {
   margin: 0;
-  color: rgba(255, 255, 255, 0.46);
+  color: var(--color-fg-subtle);
   font-size: 10px;
   line-height: 1.45;
 }
@@ -172,13 +172,13 @@ input {
 }
 
 .orb-menu-toggle-row strong {
-  color: rgba(255, 255, 255, 0.86);
+  color: var(--color-fg-muted);
   font-size: 12px;
   font-weight: 500;
 }
 
 .orb-menu-toggle-row small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--color-fg-subtle);
   font-size: 10px;
 }
 
@@ -198,9 +198,9 @@ input {
 .orb-menu-switch > span:not(.orb-menu-sr-only) {
   position: absolute;
   inset: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--color-line-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-surface-strong);
   cursor: pointer;
 }
 
@@ -211,14 +211,14 @@ input {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.86);
+  background: color-mix(in srgb, var(--color-fg) 86%, transparent);
   content: "";
   transition: transform 140ms ease-out;
 }
 
 .orb-menu-switch input:checked + span {
-  border-color: #5199ff;
-  background: #1c6fea;
+  border-color: var(--color-accent);
+  background: var(--color-accent-dark);
 }
 
 .orb-menu-switch input:checked + span::after {

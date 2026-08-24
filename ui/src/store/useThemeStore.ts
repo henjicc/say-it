@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { CMD, cmd } from "@/lib/tauri";
+import { CMD, EVT, cmd, emitEvent } from "@/lib/tauri";
 
 export interface AccentTheme {
   tone: "dark" | "light";
@@ -59,6 +59,23 @@ function persist(theme: AccentTheme) {
   }
 }
 
+let themeWriteQueue = Promise.resolve();
+
+function persistToBackend(theme: AccentTheme) {
+  themeWriteQueue = themeWriteQueue
+    .then(() => cmd(CMD.updateAppSettings, { domain: "theme", value: theme }))
+    .then(() => undefined)
+    .catch((error) => {
+      console.error("保存主题设置失败", error);
+    });
+}
+
+function broadcast(theme: AccentTheme) {
+  void emitEvent(EVT.themeChanged, theme).catch((error) => {
+    console.error("同步主题到悬浮窗口失败", error);
+  });
+}
+
 export function accentContrast(hex: string) {
   const color = normalizeHex(hex, defaultAccentTheme.accent).slice(1);
   const r = parseInt(color.slice(0, 2), 16) / 255;
@@ -107,14 +124,44 @@ export function accentDark(hex: string) {
   return mix(hex, "#000000", 0.32);
 }
 
+export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = document) {
+  const theme = normalizeTheme(themeValue);
+  const root = target.documentElement;
+  root.dataset.uiTone = theme.tone;
+  root.style.setProperty("--color-accent", theme.accent);
+  root.style.setProperty("--color-accent-light", accentLight(theme.accent));
+  root.style.setProperty("--color-accent-dark", accentDark(theme.accent));
+  root.style.setProperty("--color-accent-contrast", "#FFFFFF");
+  const light = theme.tone === "light";
+  root.style.setProperty("--color-bg", light ? "#F4F7FB" : "#0A0E16");
+  root.style.setProperty("--color-bg-sidebar", light ? "#EAF0F8" : "#080B12");
+  root.style.setProperty("--color-bg-titlebar", light ? "#EAF0F8" : "#080B12");
+  root.style.setProperty("--color-overlay", light ? "#FFFFFF" : "#12161F");
+  root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
+  root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
+  root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");
+  root.style.setProperty("--color-fg-faint", light ? "rgba(17, 24, 39, 0.32)" : "rgba(255, 255, 255, 0.30)");
+  root.style.setProperty("--color-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
+  root.style.setProperty("--color-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
+  root.style.setProperty("--color-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
+  root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.08)");
+  root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.18)" : "rgba(255, 255, 255, 0.16)");
+}
+
 export const useThemeStore = create<ThemeState>((set, get) => ({
   theme: readStored(),
   patch: (partial) => {
     const next = normalizeTheme({ ...get().theme, ...partial });
-    void cmd(CMD.updateAppSettings, { domain: "theme", value: next }).then(() => { persist(next); set({ theme: next }); });
+    persist(next);
+    set({ theme: next });
+    broadcast(next);
+    persistToBackend(next);
   },
   reset: () => {
-    void cmd(CMD.updateAppSettings, { domain: "theme", value: defaultAccentTheme }).then(() => { persist(defaultAccentTheme); set({ theme: defaultAccentTheme }); });
+    persist(defaultAccentTheme);
+    set({ theme: defaultAccentTheme });
+    broadcast(defaultAccentTheme);
+    persistToBackend(defaultAccentTheme);
   },
 }));
 

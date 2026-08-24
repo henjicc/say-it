@@ -1,9 +1,10 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { ChevronDown } from "lucide-react";
-import { CMD, cmd, type FloatingOrbSettings } from "@/lib/tauri";
+import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { Select } from "@/components/ui/Input";
+import { applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   FLOATING_ORB_GLASS_BORDER_RANGE,
@@ -35,6 +36,9 @@ function FloatingOrbMenuApp() {
   };
 
   useEffect(() => {
+    void cmd<AppSnapshot>(CMD.getAppSnapshot)
+      .then((snapshot) => applyThemeToDocument(snapshot.settings.theme as Partial<AccentTheme>))
+      .catch(() => undefined);
     void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings).then(receive).catch((reason) => {
       setError(String(reason));
     });
@@ -50,6 +54,7 @@ function FloatingOrbMenuApp() {
   }, []);
 
   useTauriEvent<Partial<Appearance>>("floating-orb-config", receive);
+  useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
   useTauriEvent<{ expanded?: boolean }>("floating-orb-menu-expanded", (payload) => {
     setTuningOpen(payload.expanded === true);
   });
@@ -84,8 +89,8 @@ function FloatingOrbMenuApp() {
     <main
       className={`orb-menu-panel${appearance.glassEnabled ? " glass" : ""}`}
       style={{
-        "--glass-tint": appearance.glassTint / 100,
-        "--glass-border": appearance.glassBorder / 100,
+        "--glass-tint": `${appearance.glassTint}%`,
+        "--glass-border": `${appearance.glassBorder}%`,
       } as CSSProperties}
     >
       <header className="orb-menu-header">

@@ -3,7 +3,7 @@ use crate::state::RuntimeState;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 4;
 
@@ -235,6 +235,10 @@ pub(crate) fn update_app_settings(
             .and_then(Value::as_u64)
             .unwrap_or(30) as u32;
         crate::application::history::cleanup_expired(&app, days)?;
+    }
+    if domain == "theme" {
+        crate::desktop::floating_orb::sync_floating_orb_theme(&app, &next.theme);
+        let _ = app.emit("app-theme-changed", next.theme.clone());
     }
     Ok(next)
 }
