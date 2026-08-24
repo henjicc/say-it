@@ -11,6 +11,8 @@ import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/d
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import { Switch } from "@/components/ui/Switch";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
+import { useMouseGestureStore } from "@/store/useMouseGestureStore";
+import { Slider } from "@/components/ui/Slider";
 
 const DEFAULT_INPUT_VALUE = "";
 export function DictationShortcutsPanel() {
@@ -24,6 +26,10 @@ export function DictationShortcutsPanel() {
   const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
   const floatingOrbError = useFloatingOrbStore((state) => state.error);
   const setFloatingOrbEnabled = useFloatingOrbStore((state) => state.setEnabled);
+  const mouseGesture = useMouseGestureStore((state) => state.settings);
+  const mouseGestureBusy = useMouseGestureStore((state) => state.busy);
+  const mouseGestureError = useMouseGestureStore((state) => state.error);
+  const updateMouseGesture = useMouseGestureStore((state) => state.update);
 
   return (
     <div className="flex flex-col gap-8">
@@ -109,6 +115,52 @@ export function DictationShortcutsPanel() {
         {floatingOrbError && (
           <p className="text-xs text-[var(--color-err)]" role="alert">
             保存悬浮球设置失败：{floatingOrbError}
+          </p>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="鼠标手势">
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--color-fg)]">启用鼠标晃动触发</p>
+            <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+              仅在本机内存中分析最近的鼠标轨迹，不保存或上传。拖拽和按住鼠标按键时不会触发；该功能可独立于常驻悬浮球使用。
+            </p>
+          </div>
+          <Switch
+            checked={mouseGesture.enabled}
+            disabled={mouseGestureBusy}
+            onChange={(enabled) => void updateMouseGesture({ enabled }).catch(() => undefined)}
+            label="启用鼠标晃动触发"
+          />
+        </div>
+        <FormGrid className={!mouseGesture.enabled ? "opacity-50" : undefined}>
+          <Field label="触发方式">
+            <Select
+              value={mouseGesture.mode}
+              disabled={!mouseGesture.enabled}
+              onChange={(event) => void updateMouseGesture({ mode: event.target.value as "confirm" | "direct" }).catch(() => undefined)}
+            >
+              <option value="confirm">晃动后点击确认（推荐）</option>
+              <option value="direct">晃动直接开始或停止</option>
+            </Select>
+          </Field>
+          <Field label="触发灵敏度">
+            <Slider
+              label="低误触"
+              min={0}
+              max={100}
+              step={5}
+              value={mouseGesture.sensitivity}
+              disabled={!mouseGesture.enabled}
+              format={(value) => `${value}%`}
+              onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
+            />
+          </Field>
+        </FormGrid>
+        {mouseGestureError && (
+          <p className="text-xs text-[var(--color-err)]" role="alert">
+            鼠标手势不可用：{mouseGestureError}
           </p>
         )}
       </SettingsSection>

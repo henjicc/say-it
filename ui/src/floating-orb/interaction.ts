@@ -1,5 +1,6 @@
 export type OrbPhase =
   | "idle"
+  | "armed"
   | "moving"
   | "recording"
   | "processing"
@@ -7,7 +8,11 @@ export type OrbPhase =
   | "success"
   | "fallback"
   | "error"
-  | "busy";
+  | "busy"
+  | "submitting"
+  | "submitted";
+
+export type OrbClickAction = "activate" | "stop" | "submit";
 
 export const ORB_DRAG_THRESHOLD = 5;
 export const FLOATING_ORB_SIZE_RANGE = { min: 44, max: 72 } as const;
@@ -90,6 +95,16 @@ export function floatingOrbWaveScale(value: number): number {
   return Math.min(1, Math.sqrt(normalized) * 1.8);
 }
 
+export function floatingOrbClickAction(
+  phase: OrbPhase,
+  canSubmit: boolean,
+): OrbClickAction | null {
+  if (phase === "armed") return "activate";
+  if (phase === "recording") return "stop";
+  if (phase === "success" && canSubmit) return "submit";
+  return null;
+}
+
 export function floatingOrbLabel(
   phase: Exclude<OrbPhase, "idle" | "busy">,
   message: string,
@@ -97,11 +112,14 @@ export function floatingOrbLabel(
   if (message) return message;
   return ({
     moving: "正在启动…",
+    armed: "点击开始语音输入",
     recording: "聆听中…",
     processing: "识别中…",
     smartProcessing: "处理中…",
     success: "已完成并复制",
     fallback: "已复制，请手动粘贴",
     error: "语音输入失败",
+    submitting: "正在发送回车…",
+    submitted: "已发送回车",
   } as const)[phase];
 }

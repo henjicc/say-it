@@ -28,6 +28,8 @@ pub(crate) struct PersistedData {
     pub(crate) obs_overlay: ObsOverlaySettings,
     #[serde(default)]
     pub(crate) floating_orb: FloatingOrbSettings,
+    #[serde(default)]
+    pub(crate) mouse_gesture: MouseGestureSettings,
 }
 
 fn default_schema_version() -> u32 {
@@ -105,6 +107,11 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .lock()
         .map_err(|_| "Floating orb settings lock failed".to_string())?
         .clone();
+    let mouse_gesture = state
+        .mouse_gesture
+        .lock()
+        .map_err(|_| "Mouse gesture settings lock failed".to_string())?
+        .clone();
     let data = PersistedData {
         schema_version: default_schema_version(),
         app_settings: match app_settings_override {
@@ -127,6 +134,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
         startup,
         obs_overlay,
         floating_orb,
+        mouse_gesture,
     };
     let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
     let file = state_file_path(app)?;
@@ -234,6 +242,22 @@ mod tests {
         );
         assert_eq!(data.floating_orb.glass_tint, 8);
         assert_eq!(data.floating_orb.glass_border, 0);
+        assert!(!data.mouse_gesture.enabled);
+        assert_eq!(data.mouse_gesture.mode, MouseGestureMode::Confirm);
+        assert_eq!(data.mouse_gesture.sensitivity, 50);
+    }
+
+    #[test]
+    fn mouse_gesture_sensitivity_is_clamped_when_normalized() {
+        let settings: MouseGestureSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "mode": "direct",
+            "sensitivity": 240
+        }))
+        .unwrap();
+        let settings = settings.normalized();
+        assert_eq!(settings.sensitivity, 100);
+        assert_eq!(settings.mode, MouseGestureMode::Direct);
     }
 
     #[test]

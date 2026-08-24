@@ -85,6 +85,7 @@ windows = { version = "0.58", features = [
     "Win32_System_DataExchange",
     "Win32_System_WinRT",
     "Win32_UI_Accessibility",
+    "Win32_UI_Input",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Storage_FileSystem",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  floatingOrbClickAction,
   floatingOrbLabel,
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
@@ -15,6 +16,16 @@ describe("floating orb interaction", () => {
   it("keeps state labels available to the compact icon-only window", () => {
     expect(floatingOrbLabel("recording", "聆听中…")).toBe("聆听中…");
     expect(floatingOrbLabel("fallback", "")).toBe("已复制，请手动粘贴");
+    expect(floatingOrbLabel("armed", "")).toBe("点击开始语音输入");
+    expect(floatingOrbLabel("submitted", "")).toBe("已发送回车");
+  });
+
+  it("routes a successful result to Enter without starting another dictation", () => {
+    expect(floatingOrbClickAction("armed", false)).toBe("activate");
+    expect(floatingOrbClickAction("recording", false)).toBe("stop");
+    expect(floatingOrbClickAction("success", true)).toBe("submit");
+    expect(floatingOrbClickAction("success", false)).toBeNull();
+    expect(floatingOrbClickAction("processing", true)).toBeNull();
   });
 
   it("amplifies quiet audio while keeping waveform scale bounded", () => {

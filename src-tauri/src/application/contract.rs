@@ -52,6 +52,7 @@ pub(crate) struct AppSnapshot {
     pub(crate) comparison: DomainSnapshot,
     pub(crate) audio_lab: DomainSnapshot,
     pub(crate) floating_orb: crate::state::FloatingOrbSettings,
+    pub(crate) mouse_gesture: crate::desktop::mouse_gesture::MouseGestureSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -105,6 +106,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         .lock()
         .map_err(|_| "floating orb settings lock failed")?
         .clone();
+    let mouse_gesture = crate::desktop::mouse_gesture::snapshot(&state)?;
     let mut settings = state
         .app_settings
         .lock()
@@ -131,6 +133,7 @@ pub(crate) fn get_app_snapshot(state: State<'_, RuntimeState>) -> Result<AppSnap
         comparison: state.compare_runtime.domain_snapshot(),
         audio_lab: state.audio_lab_runtime.domain_snapshot(),
         floating_orb,
+        mouse_gesture,
     })
 }
 

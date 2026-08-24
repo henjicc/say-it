@@ -37,6 +37,8 @@ pub(crate) struct RuntimeState {
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
     pub(crate) floating_orb: Mutex<FloatingOrbSettings>,
     pub(crate) floating_orb_runtime: FloatingOrbRuntime,
+    pub(crate) mouse_gesture: Mutex<MouseGestureSettings>,
+    pub(crate) mouse_gesture_runtime: MouseGestureRuntime,
     pub(crate) obs_overlay_settings: Mutex<ObsOverlaySettings>,
     pub(crate) obs_overlay_runtime: ObsOverlayRuntime,
 }
@@ -52,6 +54,7 @@ pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 48;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
+pub(crate) const DEFAULT_MOUSE_GESTURE_SENSITIVITY: u8 = 50;
 
 fn default_floating_orb_size() -> u16 {
     DEFAULT_FLOATING_ORB_SIZE
@@ -114,12 +117,84 @@ impl Default for FloatingOrbSettings {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct FloatingOrbRuntime {
     pub(crate) placement_generation: AtomicU64,
     pub(crate) appearance_generation: AtomicU64,
     pub(crate) transition_generation: AtomicU64,
     pub(crate) suppress_main_reopen_until_ms: AtomicU64,
+    pub(crate) transient: std::sync::atomic::AtomicBool,
+    pub(crate) armed: std::sync::atomic::AtomicBool,
+    pub(crate) armed_generation: AtomicU64,
+    pub(crate) armed_target: Mutex<Option<crate::active_app_context::ActivationTarget>>,
+    pub(crate) post_injection_action: Mutex<Option<FloatingOrbPostInjectionAction>>,
+}
+
+impl Default for FloatingOrbRuntime {
+    fn default() -> Self {
+        Self {
+            placement_generation: AtomicU64::new(0),
+            appearance_generation: AtomicU64::new(0),
+            transition_generation: AtomicU64::new(0),
+            suppress_main_reopen_until_ms: AtomicU64::new(0),
+            transient: std::sync::atomic::AtomicBool::new(false),
+            armed: std::sync::atomic::AtomicBool::new(false),
+            armed_generation: AtomicU64::new(0),
+            armed_target: Mutex::new(None),
+            post_injection_action: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FloatingOrbPostInjectionAction {
+    pub(crate) target: crate::active_app_context::ActivationTarget,
+    pub(crate) expires_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum MouseGestureMode {
+    #[default]
+    Confirm,
+    Direct,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MouseGestureSettings {
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) mode: MouseGestureMode,
+    #[serde(default = "default_mouse_gesture_sensitivity")]
+    pub(crate) sensitivity: u8,
+}
+
+fn default_mouse_gesture_sensitivity() -> u8 {
+    DEFAULT_MOUSE_GESTURE_SENSITIVITY
+}
+
+impl Default for MouseGestureSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: MouseGestureMode::Confirm,
+            sensitivity: DEFAULT_MOUSE_GESTURE_SENSITIVITY,
+        }
+    }
+}
+
+impl MouseGestureSettings {
+    pub(crate) fn normalized(mut self) -> Self {
+        self.sensitivity = self.sensitivity.min(100);
+        self
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct MouseGestureRuntime {
+    pub(crate) listening: std::sync::atomic::AtomicBool,
+    pub(crate) error: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
