@@ -180,7 +180,7 @@ unsafe extern "C" {
     fn sayit_macos_paste_current_clipboard(error: *mut *mut c_char) -> bool;
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
-    fn sayit_macos_press_return(error: *mut *mut c_char) -> bool;
+    fn sayit_macos_press_return(process_id: u32, error: *mut *mut c_char) -> bool;
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -610,9 +610,9 @@ pub(crate) fn type_text(text: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn press_return() -> Result<(), String> {
+pub(crate) fn press_return(process_id: u32) -> Result<(), String> {
     let mut error = std::ptr::null_mut();
-    if unsafe { sayit_macos_press_return(&mut error) } {
+    if unsafe { sayit_macos_press_return(process_id, &mut error) } {
         if !error.is_null() {
             let _ = unsafe { take_string(error) };
         }

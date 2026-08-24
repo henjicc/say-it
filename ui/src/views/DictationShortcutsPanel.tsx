@@ -102,7 +102,7 @@ export function DictationShortcutsPanel() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-[var(--color-fg)]">启用悬浮球输入</p>
             <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              点击悬浮球会在需要时激活它下方的位置并开始语音输入；如果当前已经聚焦可编辑输入框，则保留原光标位置。右键可实时调整大小与不透明度，毛玻璃材质位于“设置 → 通用 → 外观”。悬浮球听写始终把最终结果保留在剪贴板，自动输入失败时可以直接手动粘贴。
+              点击开始或停止语音输入，右键调整悬浮球；识别结果会保留在剪贴板。
             </p>
           </div>
           <Switch
@@ -121,17 +121,12 @@ export function DictationShortcutsPanel() {
 
       <SettingsSection title="鼠标手势">
         <div className="flex items-start justify-between gap-6">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--color-fg)]">启用鼠标晃动触发</p>
-            <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              仅在本机内存中分析最近的鼠标轨迹，不保存或上传。拖拽和按住鼠标按键时不会触发；该功能可独立于常驻悬浮球使用。
-            </p>
-          </div>
+          <p className="text-sm font-medium text-[var(--color-fg)]">启用鼠标手势</p>
           <Switch
             checked={mouseGesture.enabled}
             disabled={mouseGestureBusy}
             onChange={(enabled) => void updateMouseGesture({ enabled }).catch(() => undefined)}
-            label="启用鼠标晃动触发"
+            label="启用鼠标手势"
           />
         </div>
         <FormGrid className={!mouseGesture.enabled ? "opacity-50" : undefined}>
