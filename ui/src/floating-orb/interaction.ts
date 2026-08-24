@@ -8,6 +8,7 @@ export type OrbPhase =
   | "success"
   | "fallback"
   | "error"
+  | "cancelled"
   | "busy"
   | "submitting"
   | "submitted";
@@ -119,6 +120,7 @@ export function floatingOrbLabel(
     success: "已完成并复制",
     fallback: "已复制，请手动粘贴",
     error: "语音输入失败",
+    cancelled: "已取消",
     submitting: "正在发送回车…",
     submitted: "已发送回车",
   } as const)[phase];

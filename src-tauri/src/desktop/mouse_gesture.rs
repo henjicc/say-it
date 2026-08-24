@@ -81,6 +81,11 @@ impl GestureRecognizer {
         self.last_motion_at = None;
     }
 
+    fn reset_all(&mut self) {
+        self.reset();
+        self.cooldown_until = None;
+    }
+
     fn push(&mut self, sample: PointerSample) {
         if sample.button_down || sample.left_pressed || sample.left_released {
             self.reset();
@@ -198,6 +203,11 @@ impl RapidClickRecognizer {
         self.dragged = false;
     }
 
+    fn reset_all(&mut self) {
+        self.reset();
+        self.cooldown_until = None;
+    }
+
     fn push(&mut self, sample: PointerSample, required_clicks: u8) -> Option<(i32, i32)> {
         if self
             .cooldown_until
@@ -282,6 +292,11 @@ static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 static MONITOR_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 static LAST_SAMPLE_US: AtomicU64 = AtomicU64::new(0);
+static RESET_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn reset_detection() {
+    RESET_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 fn send_pointer_sample(
     x: f64,
@@ -317,7 +332,14 @@ fn send_pointer_sample(
 fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
     let mut recognizer = GestureRecognizer::default();
     let mut rapid_clicks = RapidClickRecognizer::default();
+    let mut reset_generation = RESET_GENERATION.load(Ordering::Acquire);
     loop {
+        let requested_reset = RESET_GENERATION.load(Ordering::Acquire);
+        if requested_reset != reset_generation {
+            recognizer.reset_all();
+            rapid_clicks.reset_all();
+            reset_generation = requested_reset;
+        }
         let sample = match receiver.recv_timeout(Duration::from_millis(16)) {
             Ok(sample) => {
                 recognizer.push(sample);
@@ -333,8 +355,8 @@ fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
             .map(|settings| settings.clone())
             .unwrap_or_default();
         if !settings.enabled || !MONITOR_STARTED.load(Ordering::Acquire) {
-            recognizer.reset();
-            rapid_clicks.reset();
+            recognizer.reset_all();
+            rapid_clicks.reset_all();
             continue;
         }
         if let Some(position) = sample.and_then(|sample| {
@@ -833,6 +855,23 @@ mod tests {
             .is_some());
         recognizer.push(sample(0.0, 0.0, start + Duration::from_millis(600)));
         assert!(recognizer.samples.is_empty());
+    }
+
+    #[test]
+    fn session_cleanup_clears_gesture_and_click_cooldowns() {
+        let start = Instant::now();
+        let mut gesture = GestureRecognizer {
+            cooldown_until: Some(start + COOLDOWN),
+            ..Default::default()
+        };
+        let mut clicks = RapidClickRecognizer {
+            cooldown_until: Some(start + COOLDOWN),
+            ..Default::default()
+        };
+        gesture.reset_all();
+        clicks.reset_all();
+        assert!(gesture.cooldown_until.is_none());
+        assert!(clicks.cooldown_until.is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Check, Clipboard, CornerDownLeft, LoaderCircle, Mic } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, CornerDownLeft, LoaderCircle, Mic, X } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
@@ -174,7 +174,9 @@ function FloatingOrbApp() {
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (!transient && (phase === "idle" || phase === "recording")) {
+        if (phase === "recording") {
+          void cmd(CMD.floatingOrbCancel).catch(() => undefined);
+        } else if (!transient && phase === "idle") {
           void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
         }
       }}
@@ -203,6 +205,8 @@ function FloatingOrbApp() {
             <CornerDownLeft className="orb-state-icon" />
           ) : phase === "fallback" ? (
             <Clipboard className="orb-state-icon" />
+          ) : phase === "cancelled" ? (
+            <X className="orb-state-icon" />
           ) : phase === "error" ? (
             <AlertTriangle className="orb-state-icon" />
           ) : (

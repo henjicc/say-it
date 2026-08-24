@@ -122,6 +122,11 @@ button {
   border-color: rgba(255, 107, 107, 0.42);
 }
 
+.floating-orb.cancelled {
+  color: var(--color-fg-muted);
+  border-color: var(--color-line-strong);
+}
+
 .orb-icon-shell {
   position: relative;
   z-index: 1;
