@@ -170,6 +170,8 @@ export interface MouseGestureSnapshot {
   enabled: boolean;
   mode: MouseGestureMode;
   sensitivity: number;
+  rapidClickEnabled: boolean;
+  rapidClickCount: number;
   available: boolean;
   error?: string | null;
 }

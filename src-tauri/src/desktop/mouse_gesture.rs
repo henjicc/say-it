@@ -2,13 +2,16 @@ use crate::prelude::*;
 use crate::state::{MouseGestureMode, MouseGestureSettings, RuntimeState};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;
 
 const SAMPLE_WINDOW: Duration = Duration::from_millis(650);
 const STOP_DWELL: Duration = Duration::from_millis(140);
 const COOLDOWN: Duration = Duration::from_millis(1500);
 const MIN_SAMPLE_DISTANCE: f64 = 3.0;
+const RAPID_CLICK_INTERVAL: Duration = Duration::from_millis(420);
+const RAPID_CLICK_PRESS_MAX: Duration = Duration::from_millis(350);
+const RAPID_CLICK_RADIUS: f64 = 12.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +19,8 @@ pub(crate) struct MouseGestureSnapshot {
     pub(crate) enabled: bool,
     pub(crate) mode: MouseGestureMode,
     pub(crate) sensitivity: u8,
+    pub(crate) rapid_click_enabled: bool,
+    pub(crate) rapid_click_count: u8,
     pub(crate) available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
@@ -27,6 +32,15 @@ struct PointerSample {
     y: f64,
     at: Instant,
     button_down: bool,
+    left_pressed: bool,
+    left_released: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CompletedClick {
+    x: f64,
+    y: f64,
+    at: Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,7 +81,7 @@ impl GestureRecognizer {
     }
 
     fn push(&mut self, sample: PointerSample) {
-        if sample.button_down {
+        if sample.button_down || sample.left_pressed || sample.left_released {
             self.reset();
             return;
         }
@@ -168,17 +182,97 @@ impl GestureRecognizer {
     }
 }
 
-static EVENT_SENDER: OnceLock<SyncSender<PointerSample>> = OnceLock::new();
+#[derive(Default)]
+struct RapidClickRecognizer {
+    clicks: VecDeque<CompletedClick>,
+    press: Option<PointerSample>,
+    dragged: bool,
+    cooldown_until: Option<Instant>,
+}
+
+impl RapidClickRecognizer {
+    fn reset(&mut self) {
+        self.clicks.clear();
+        self.press = None;
+        self.dragged = false;
+    }
+
+    fn push(&mut self, sample: PointerSample, required_clicks: u8) -> Option<(i32, i32)> {
+        if self
+            .cooldown_until
+            .is_some_and(|deadline| sample.at < deadline)
+        {
+            return None;
+        }
+
+        if sample.left_pressed {
+            self.press = Some(sample);
+            self.dragged = false;
+            return None;
+        }
+
+        if sample.button_down {
+            if let Some(press) = self.press {
+                let distance = ((sample.x - press.x).powi(2) + (sample.y - press.y).powi(2)).sqrt();
+                if distance > RAPID_CLICK_RADIUS {
+                    self.dragged = true;
+                    self.clicks.clear();
+                }
+            } else {
+                self.reset();
+            }
+            return None;
+        }
+
+        if !sample.left_released {
+            return None;
+        }
+        let Some(press) = self.press.take() else {
+            self.clicks.clear();
+            return None;
+        };
+        let distance = ((sample.x - press.x).powi(2) + (sample.y - press.y).powi(2)).sqrt();
+        if self.dragged
+            || sample.at.duration_since(press.at) > RAPID_CLICK_PRESS_MAX
+            || distance > RAPID_CLICK_RADIUS
+        {
+            self.reset();
+            return None;
+        }
+
+        if self.clicks.back().is_some_and(|last| {
+            sample.at.duration_since(last.at) > RAPID_CLICK_INTERVAL
+                || ((sample.x - last.x).powi(2) + (sample.y - last.y).powi(2)).sqrt()
+                    > RAPID_CLICK_RADIUS
+        }) {
+            self.clicks.clear();
+        }
+        self.clicks.push_back(CompletedClick {
+            x: sample.x,
+            y: sample.y,
+            at: sample.at,
+        });
+        if self.clicks.len() < required_clicks.clamp(3, 5) as usize {
+            return None;
+        }
+
+        self.reset();
+        self.cooldown_until = Some(sample.at + COOLDOWN);
+        Some((sample.x.round() as i32, sample.y.round() as i32))
+    }
+}
+
+static EVENT_SENDER: OnceLock<Sender<PointerSample>> = OnceLock::new();
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 static MONITOR_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 static LAST_SAMPLE_US: AtomicU64 = AtomicU64::new(0);
 
-fn send_pointer_sample(x: f64, y: f64, button_down: bool) {
+fn send_pointer_sample(x: f64, y: f64, button_down: bool, left_pressed: bool, left_released: bool) {
     BUTTON_DOWN.store(button_down, Ordering::Release);
     let started = MONITOR_STARTED_AT.get_or_init(Instant::now);
     let now_us = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
-    if !button_down {
+    if !button_down && !left_pressed && !left_released {
         let previous = LAST_SAMPLE_US.load(Ordering::Relaxed);
         if now_us.saturating_sub(previous) < 8_000 {
             return;
@@ -186,23 +280,29 @@ fn send_pointer_sample(x: f64, y: f64, button_down: bool) {
         LAST_SAMPLE_US.store(now_us, Ordering::Relaxed);
     }
     if let Some(sender) = EVENT_SENDER.get() {
-        let _ = sender.try_send(PointerSample {
+        let _ = sender.send(PointerSample {
             x,
             y,
             at: Instant::now(),
             button_down,
+            left_pressed,
+            left_released,
         });
     }
 }
 
 fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
     let mut recognizer = GestureRecognizer::default();
+    let mut rapid_clicks = RapidClickRecognizer::default();
     loop {
-        match receiver.recv_timeout(Duration::from_millis(16)) {
-            Ok(sample) => recognizer.push(sample),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        let sample = match receiver.recv_timeout(Duration::from_millis(16)) {
+            Ok(sample) => {
+                recognizer.push(sample);
+                Some(sample)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+        };
         let settings = app
             .state::<RuntimeState>()
             .mouse_gesture
@@ -211,7 +311,27 @@ fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
             .unwrap_or_default();
         if !settings.enabled || !MONITOR_STARTED.load(Ordering::Acquire) {
             recognizer.reset();
+            rapid_clicks.reset();
             continue;
+        }
+        if let Some(position) = sample.and_then(|sample| {
+            settings
+                .rapid_click_enabled
+                .then(|| rapid_clicks.push(sample, settings.rapid_click_count))
+                .flatten()
+        }) {
+            if !crate::desktop::floating_orb::is_cursor_over_floating_orb(&app) {
+                crate::desktop::floating_orb::request_mouse_gesture(
+                    app.clone(),
+                    position,
+                    settings.mode,
+                );
+            }
+            recognizer.reset();
+            continue;
+        }
+        if !settings.rapid_click_enabled {
+            rapid_clicks.reset();
         }
         if BUTTON_DOWN.load(Ordering::Acquire) {
             recognizer.reset();
@@ -244,6 +364,8 @@ pub(crate) fn snapshot(state: &RuntimeState) -> Result<MouseGestureSnapshot, Str
         enabled: settings.enabled,
         mode: settings.mode,
         sensitivity: settings.sensitivity,
+        rapid_click_enabled: settings.rapid_click_enabled,
+        rapid_click_count: settings.rapid_click_count,
         available: state
             .mouse_gesture_runtime
             .listening
@@ -254,7 +376,7 @@ pub(crate) fn snapshot(state: &RuntimeState) -> Result<MouseGestureSnapshot, Str
 
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     if EVENT_SENDER.get().is_none() {
-        let (sender, receiver) = sync_channel(1);
+        let (sender, receiver) = channel();
         let _ = EVENT_SENDER.set(sender);
         let worker_app = app.clone();
         std::thread::spawn(move || run_recognizer(worker_app, receiver));
@@ -317,6 +439,8 @@ pub(crate) fn set_mouse_gesture_settings(
     enabled: bool,
     mode: MouseGestureMode,
     sensitivity: u8,
+    rapid_click_enabled: bool,
+    rapid_click_count: u8,
 ) -> Result<MouseGestureSnapshot, String> {
     set_monitor_enabled(&app, enabled)?;
     let state = app.state::<RuntimeState>();
@@ -334,6 +458,8 @@ pub(crate) fn set_mouse_gesture_settings(
             enabled,
             mode,
             sensitivity: sensitivity.min(100),
+            rapid_click_enabled,
+            rapid_click_count,
         }
         .normalized();
     }
@@ -354,13 +480,20 @@ mod platform {
     use std::ffi::c_void;
     use std::sync::Mutex;
 
-    type Callback = fn(f64, f64, bool);
+    type Callback = fn(f64, f64, bool, bool, bool);
     static CALLBACK: OnceLock<Callback> = OnceLock::new();
     static HANDLE: Mutex<Option<usize>> = Mutex::new(None);
 
-    unsafe extern "C" fn receive(_context: *mut c_void, x: f64, y: f64, button_down: bool) {
+    unsafe extern "C" fn receive(
+        _context: *mut c_void,
+        x: f64,
+        y: f64,
+        button_down: bool,
+        left_pressed: bool,
+        left_released: bool,
+    ) {
         if let Some(callback) = CALLBACK.get() {
-            callback(x, y, button_down);
+            callback(x, y, button_down, left_pressed, left_released);
         }
     }
 
@@ -398,9 +531,10 @@ mod platform {
         HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_QUIT, WNDCLASSW,
     };
 
-    type Callback = fn(f64, f64, bool);
+    type Callback = fn(f64, f64, bool, bool, bool);
     static CALLBACK: OnceLock<Callback> = OnceLock::new();
     static THREAD_ID: Mutex<Option<u32>> = Mutex::new(None);
+    static LEFT_BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "system" fn window_proc(
         window: HWND,
@@ -411,11 +545,19 @@ mod platform {
         if message == WM_INPUT {
             let mut point = POINT::default();
             if GetCursorPos(&mut point).is_ok() {
-                let down = (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0
+                let left_down = (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0;
+                let down = left_down
                     || (GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000) != 0
                     || (GetAsyncKeyState(VK_MBUTTON.0 as i32) as u16 & 0x8000) != 0;
+                let previous_left = LEFT_BUTTON_DOWN.swap(left_down, Ordering::AcqRel);
                 if let Some(callback) = CALLBACK.get() {
-                    callback(point.x as f64, point.y as f64, down);
+                    callback(
+                        point.x as f64,
+                        point.y as f64,
+                        down,
+                        left_down && !previous_left,
+                        !left_down && previous_left,
+                    );
                 }
             }
         }
@@ -424,6 +566,7 @@ mod platform {
 
     pub(super) fn start(callback: Callback) -> Result<(), String> {
         let _ = CALLBACK.set(callback);
+        LEFT_BUTTON_DOWN.store(false, Ordering::Release);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || unsafe {
             let instance = match GetModuleHandleW(None) {
@@ -503,7 +646,7 @@ mod platform {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
-    type Callback = fn(f64, f64, bool);
+    type Callback = fn(f64, f64, bool, bool, bool);
     pub(super) fn start(_callback: Callback) -> Result<(), String> {
         Err("当前平台不支持鼠标手势".into())
     }
@@ -520,7 +663,40 @@ mod tests {
             y,
             at,
             button_down: false,
+            left_pressed: false,
+            left_released: false,
         }
+    }
+
+    fn click(
+        recognizer: &mut RapidClickRecognizer,
+        x: f64,
+        y: f64,
+        at: Instant,
+        required_clicks: u8,
+    ) -> Option<(i32, i32)> {
+        recognizer.push(
+            PointerSample {
+                x,
+                y,
+                at,
+                button_down: true,
+                left_pressed: true,
+                left_released: false,
+            },
+            required_clicks,
+        );
+        recognizer.push(
+            PointerSample {
+                x,
+                y,
+                at: at + Duration::from_millis(45),
+                button_down: false,
+                left_pressed: false,
+                left_released: true,
+            },
+            required_clicks,
+        )
     }
 
     #[test]
@@ -563,6 +739,8 @@ mod tests {
             y: 0.0,
             at: start + Duration::from_secs(1),
             button_down: true,
+            left_pressed: false,
+            left_released: false,
         });
         assert!(recognizer.samples.is_empty());
     }
@@ -626,5 +804,126 @@ mod tests {
             .is_some());
         recognizer.push(sample(0.0, 0.0, start + Duration::from_millis(600)));
         assert!(recognizer.samples.is_empty());
+    }
+
+    #[test]
+    fn three_rapid_left_clicks_trigger_on_the_final_release() {
+        let start = Instant::now();
+        let mut recognizer = RapidClickRecognizer::default();
+        assert_eq!(click(&mut recognizer, 100.0, 80.0, start, 3), None);
+        assert_eq!(
+            click(
+                &mut recognizer,
+                102.0,
+                81.0,
+                start + Duration::from_millis(180),
+                3,
+            ),
+            None,
+        );
+        assert_eq!(
+            click(
+                &mut recognizer,
+                101.0,
+                79.0,
+                start + Duration::from_millis(360),
+                3,
+            ),
+            Some((101, 79)),
+        );
+    }
+
+    #[test]
+    fn rapid_click_count_and_timeout_are_enforced() {
+        let start = Instant::now();
+        let mut recognizer = RapidClickRecognizer::default();
+        for index in 0..3 {
+            assert_eq!(
+                click(
+                    &mut recognizer,
+                    40.0,
+                    40.0,
+                    start + Duration::from_millis(index * 160),
+                    4,
+                ),
+                None,
+            );
+        }
+        assert_eq!(
+            click(
+                &mut recognizer,
+                40.0,
+                40.0,
+                start + Duration::from_millis(480),
+                4,
+            ),
+            Some((40, 40)),
+        );
+
+        let mut slow = RapidClickRecognizer::default();
+        assert_eq!(click(&mut slow, 10.0, 10.0, start, 3), None);
+        assert_eq!(
+            click(
+                &mut slow,
+                10.0,
+                10.0,
+                start + RAPID_CLICK_INTERVAL + Duration::from_millis(1),
+                3,
+            ),
+            None,
+        );
+        assert_eq!(
+            click(
+                &mut slow,
+                10.0,
+                10.0,
+                start + RAPID_CLICK_INTERVAL + Duration::from_millis(150),
+                3,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn dragging_does_not_count_as_a_rapid_click() {
+        let start = Instant::now();
+        let mut recognizer = RapidClickRecognizer::default();
+        recognizer.push(
+            PointerSample {
+                x: 0.0,
+                y: 0.0,
+                at: start,
+                button_down: true,
+                left_pressed: true,
+                left_released: false,
+            },
+            3,
+        );
+        recognizer.push(
+            PointerSample {
+                x: 30.0,
+                y: 0.0,
+                at: start + Duration::from_millis(40),
+                button_down: true,
+                left_pressed: false,
+                left_released: false,
+            },
+            3,
+        );
+        assert_eq!(
+            recognizer.push(
+                PointerSample {
+                    x: 30.0,
+                    y: 0.0,
+                    at: start + Duration::from_millis(80),
+                    button_down: false,
+                    left_pressed: false,
+                    left_released: true,
+                },
+                3,
+            ),
+            None,
+        );
+        assert!(recognizer.clicks.is_empty());
     }
 }

@@ -55,6 +55,7 @@ pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
 pub(crate) const DEFAULT_MOUSE_GESTURE_SENSITIVITY: u8 = 50;
+pub(crate) const DEFAULT_MOUSE_RAPID_CLICK_COUNT: u8 = 3;
 
 fn default_floating_orb_size() -> u16 {
     DEFAULT_FLOATING_ORB_SIZE
@@ -168,10 +169,22 @@ pub(crate) struct MouseGestureSettings {
     pub(crate) mode: MouseGestureMode,
     #[serde(default = "default_mouse_gesture_sensitivity")]
     pub(crate) sensitivity: u8,
+    #[serde(default = "default_mouse_rapid_click_enabled")]
+    pub(crate) rapid_click_enabled: bool,
+    #[serde(default = "default_mouse_rapid_click_count")]
+    pub(crate) rapid_click_count: u8,
 }
 
 fn default_mouse_gesture_sensitivity() -> u8 {
     DEFAULT_MOUSE_GESTURE_SENSITIVITY
+}
+
+fn default_mouse_rapid_click_enabled() -> bool {
+    true
+}
+
+fn default_mouse_rapid_click_count() -> u8 {
+    DEFAULT_MOUSE_RAPID_CLICK_COUNT
 }
 
 impl Default for MouseGestureSettings {
@@ -180,6 +193,8 @@ impl Default for MouseGestureSettings {
             enabled: false,
             mode: MouseGestureMode::Confirm,
             sensitivity: DEFAULT_MOUSE_GESTURE_SENSITIVITY,
+            rapid_click_enabled: true,
+            rapid_click_count: DEFAULT_MOUSE_RAPID_CLICK_COUNT,
         }
     }
 }
@@ -187,6 +202,7 @@ impl Default for MouseGestureSettings {
 impl MouseGestureSettings {
     pub(crate) fn normalized(mut self) -> Self {
         self.sensitivity = self.sensitivity.min(100);
+        self.rapid_click_count = self.rapid_click_count.clamp(3, 5);
         self
     }
 }

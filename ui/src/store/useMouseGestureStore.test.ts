@@ -13,6 +13,8 @@ const defaults = {
   enabled: false,
   mode: "confirm" as const,
   sensitivity: 50,
+  rapidClickEnabled: true,
+  rapidClickCount: 3,
   available: false,
   error: null,
 };
@@ -28,6 +30,8 @@ describe("mouse gesture store", () => {
       enabled: true,
       mode: "direct",
       sensitivity: 75,
+      rapidClickEnabled: false,
+      rapidClickCount: 4,
       available: true,
       error: null,
     });
@@ -35,6 +39,8 @@ describe("mouse gesture store", () => {
       enabled: true,
       mode: "direct",
       sensitivity: 75,
+      rapidClickEnabled: false,
+      rapidClickCount: 4,
     });
   });
 
@@ -43,14 +49,22 @@ describe("mouse gesture store", () => {
       enabled: true,
       mode: "confirm",
       sensitivity: 100,
+      rapidClickEnabled: true,
+      rapidClickCount: 5,
       available: true,
       error: null,
     });
-    await useMouseGestureStore.getState().update({ enabled: true, sensitivity: 140 });
+    await useMouseGestureStore.getState().update({
+      enabled: true,
+      sensitivity: 140,
+      rapidClickCount: 9,
+    });
     expect(cmd).toHaveBeenCalledWith("set_mouse_gesture_settings", {
       enabled: true,
       mode: "confirm",
       sensitivity: 100,
+      rapidClickEnabled: true,
+      rapidClickCount: 5,
     });
   });
 });

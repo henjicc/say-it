@@ -387,10 +387,13 @@ fn point_is_inside_window(
         && point.y < position.y as f64 + size.height as f64
 }
 
-fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
+pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return false;
     };
+    if !window.is_visible().unwrap_or(false) {
+        return false;
+    }
     #[cfg(target_os = "macos")]
     if window
         .ns_window()
