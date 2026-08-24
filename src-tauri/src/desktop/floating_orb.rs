@@ -420,7 +420,7 @@ pub(crate) fn ensure_floating_orb_window(
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
-    .theme(Some(tauri::Theme::Dark))
+    .theme(Some(current_window_theme(app)))
     .focusable(false)
     .focused(false)
     .visible(false)
@@ -674,7 +674,7 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
-    .theme(Some(tauri::Theme::Dark))
+    .theme(Some(current_window_theme(app)))
     .focusable(true)
     .focused(false)
     .visible(false)
@@ -701,6 +701,33 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
         settings.glass_tint,
     );
     Ok(window)
+}
+
+fn window_theme(value: &serde_json::Value) -> tauri::Theme {
+    if value.get("tone").and_then(serde_json::Value::as_str) == Some("light") {
+        tauri::Theme::Light
+    } else {
+        tauri::Theme::Dark
+    }
+}
+
+fn current_window_theme(app: &tauri::AppHandle) -> tauri::Theme {
+    app.state::<RuntimeState>()
+        .app_settings
+        .lock()
+        .map(|settings| window_theme(&settings.theme))
+        .unwrap_or(tauri::Theme::Dark)
+}
+
+pub(crate) fn sync_floating_orb_theme(app: &tauri::AppHandle, value: &serde_json::Value) {
+    let theme = window_theme(value);
+    for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
+        if let Some(window) = app.get_webview_window(label) {
+            if let Err(error) = window.set_theme(Some(theme)) {
+                eprintln!("[floating-orb] 同步窗口主题失败: {error}");
+            }
+        }
+    }
 }
 
 fn resize_and_position_floating_orb_menu(
@@ -1048,6 +1075,18 @@ mod tests {
         assert_eq!(normalized_orb_opacity(20), ORB_OPACITY_MIN);
         assert_eq!(normalized_orb_opacity(120), ORB_OPACITY_MAX);
         assert_eq!(orb_window_extent(56), 56.0);
+    }
+
+    #[test]
+    fn window_theme_follows_the_persisted_tone() {
+        assert!(matches!(
+            window_theme(&serde_json::json!({"tone": "light"})),
+            tauri::Theme::Light
+        ));
+        assert!(matches!(
+            window_theme(&serde_json::json!({"tone": "dark"})),
+            tauri::Theme::Dark
+        ));
     }
 
     #[test]

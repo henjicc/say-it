@@ -2,8 +2,9 @@ import { StrictMode, useEffect, useRef, useState, type CSSProperties, type Point
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, Check, Clipboard, LoaderCircle, Mic } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { CMD, EVT, cmd, type FloatingOrbSettings } from "@/lib/tauri";
+import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
+import { applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   floatingOrbLabel,
@@ -13,6 +14,7 @@ import {
   type FloatingOrbAppearance,
   type OrbPhase,
 } from "@/floating-orb/interaction";
+import "@/index.css";
 import "@/floating-orb.css";
 
 interface OrbStatePayload {
@@ -43,10 +45,15 @@ function FloatingOrbApp() {
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
 
   useEffect(() => {
+    void cmd<AppSnapshot>(CMD.getAppSnapshot)
+      .then((snapshot) => applyThemeToDocument(snapshot.settings.theme as Partial<AccentTheme>))
+      .catch(() => undefined);
     void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings)
       .then((settings) => setAppearance(normalizeFloatingOrbAppearance(settings)))
       .catch(() => undefined);
   }, []);
+
+  useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
 
   useTauriEvent<Partial<FloatingOrbAppearance>>("floating-orb-config", (payload) => {
     setAppearance(normalizeFloatingOrbAppearance(payload));
@@ -127,8 +134,8 @@ function FloatingOrbApp() {
       className={`floating-orb ${phase}${appearance.glassEnabled ? " glass" : ""}`}
       style={{
         "--orb-opacity": appearance.opacity / 100,
-        "--orb-glass-tint": appearance.glassTint / 100,
-        "--orb-glass-border": appearance.glassBorder / 100,
+        "--orb-glass-tint": `${appearance.glassTint}%`,
+        "--orb-glass-border": `${appearance.glassBorder}%`,
       } as CSSProperties}
       disabled={phase !== "idle" && phase !== "recording"}
       aria-label={phase === "recording" ? "点击停止识别" : label}

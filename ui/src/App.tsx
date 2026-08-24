@@ -5,7 +5,7 @@ import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
-import { accentDark, accentLight, useThemeStore } from "@/store/useThemeStore";
+import { applyThemeToDocument, useThemeStore } from "@/store/useThemeStore";
 import { initializeSettings } from "@/features/settings/settingsBridge";
 
 import { DictationView } from "@/views/DictationView";
@@ -59,27 +59,7 @@ export default function App() {
   }, [bridgeReady, settingsReady]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.dataset.uiTone = theme.tone;
-    root.style.setProperty("--color-accent", theme.accent);
-    root.style.setProperty("--color-accent-light", accentLight(theme.accent));
-    root.style.setProperty("--color-accent-dark", accentDark(theme.accent));
-    // 选中/强调填充控件统一使用白色文字（含亮色主题），与 Windows 原生强调按钮一致
-    root.style.setProperty("--color-accent-contrast", "#FFFFFF");
-    const light = theme.tone === "light";
-    root.style.setProperty("--color-bg", light ? "#F4F7FB" : "#0A0E16");
-    root.style.setProperty("--color-bg-sidebar", light ? "#EAF0F8" : "#080B12");
-    root.style.setProperty("--color-bg-titlebar", light ? "#EAF0F8" : "#080B12");
-    root.style.setProperty("--color-overlay", light ? "#FFFFFF" : "#12161F");
-    root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
-    root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
-    root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");
-    root.style.setProperty("--color-fg-faint", light ? "rgba(17, 24, 39, 0.32)" : "rgba(255, 255, 255, 0.30)");
-    root.style.setProperty("--color-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
-    root.style.setProperty("--color-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
-    root.style.setProperty("--color-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
-    root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.08)");
-    root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.18)" : "rgba(255, 255, 255, 0.16)");
+    applyThemeToDocument(theme);
   }, [theme]);
 
   useEffect(() => {
