@@ -9,7 +9,7 @@ import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } fr
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   FLOATING_ORB_OPACITY_RANGE,
-  FLOATING_ORB_SIZE_RANGE,
+  FLOATING_ORB_SIZE_PERCENT_RANGE,
   normalizeFloatingOrbAppearance,
 } from "@/floating-orb/interaction";
 import "@/index.css";
@@ -118,14 +118,14 @@ function FloatingOrbMenuApp() {
 
       <div className="orb-menu-content">
         <label className="orb-menu-field">
-          <span><span>大小</span><output>{appearance.size}px</output></span>
+          <span><span>大小</span><output>{(appearance.sizePercent / 10).toFixed(1)}%</output></span>
           <RangeInput
             ariaLabel="悬浮球大小"
-            min={FLOATING_ORB_SIZE_RANGE.min}
-            max={FLOATING_ORB_SIZE_RANGE.max}
+            min={FLOATING_ORB_SIZE_PERCENT_RANGE.min}
+            max={FLOATING_ORB_SIZE_PERCENT_RANGE.max}
             step={1}
-            value={appearance.size}
-            onChange={(size) => update({ size })}
+            value={appearance.sizePercent}
+            onChange={(sizePercent) => update({ sizePercent })}
           />
         </label>
 
@@ -155,7 +155,7 @@ function FloatingOrbMenuApp() {
             type="button"
             className="orb-menu-action"
             onClick={() => update({
-              size: DEFAULT_FLOATING_ORB_APPEARANCE.size,
+              sizePercent: DEFAULT_FLOATING_ORB_APPEARANCE.sizePercent,
               opacity: DEFAULT_FLOATING_ORB_APPEARANCE.opacity,
             })}
           >

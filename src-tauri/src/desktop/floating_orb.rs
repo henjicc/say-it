@@ -11,8 +11,12 @@ pub(crate) const FLOATING_ORB_LABEL: &str = "floating-orb";
 pub(crate) const FLOATING_ORB_MENU_LABEL: &str = "floating-orb-menu";
 const DEFAULT_MARGIN: f64 = 24.0;
 const MIN_VISIBLE_EDGE: i32 = 16;
-const ORB_SIZE_MIN: u16 = 44;
-const ORB_SIZE_MAX: u16 = 72;
+/// 悬浮球实际像素尺寸的安全下限/上限，无论百分比与显示器如何组合都不会突破。
+const ORB_SIZE_PX_MIN: f64 = 44.0;
+const ORB_SIZE_PX_MAX: f64 = 72.0;
+/// 大小设置的取值范围，单位为十分之一百分比（30 = 3.0%，80 = 8.0%）。
+const ORB_SIZE_PERCENT_MIN: u16 = 30;
+const ORB_SIZE_PERCENT_MAX: u16 = 80;
 const ORB_OPACITY_MIN: u8 = 40;
 const ORB_OPACITY_MAX: u8 = 100;
 const ORB_GLASS_TINT_MAX: u8 = 40;
@@ -26,8 +30,8 @@ const ORB_MOVE_FRAME_MS: u64 = 16;
 const ORB_REPOSITION_SETTLE_MS: u64 = 16;
 const ORB_REPOSITION_MAX_CHECKS: usize = 4;
 
-fn normalized_orb_size(size: u16) -> u16 {
-    size.clamp(ORB_SIZE_MIN, ORB_SIZE_MAX)
+fn normalized_orb_size_percent(size_percent: u16) -> u16 {
+    size_percent.clamp(ORB_SIZE_PERCENT_MIN, ORB_SIZE_PERCENT_MAX)
 }
 
 fn normalized_orb_opacity(opacity: u8) -> u8 {
@@ -95,8 +99,48 @@ fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
         .unwrap_or((10, 14, 22))
 }
 
-fn orb_window_extent(size: u16) -> f64 {
-    normalized_orb_size(size) as f64
+/// 参考边长：显示器逻辑分辨率（物理分辨率 / 缩放比例）中较短的一边。
+/// 用较短边而非宽或对角线，是为了在竖屏/超宽屏等极端长宽比下也不会
+/// 让悬浮球显得过大或过小，效果类似 CSS 的 vmin 单位。
+fn monitor_reference_extent(monitor: Option<&tauri::Monitor>) -> f64 {
+    monitor
+        .map(|monitor| {
+            let scale = monitor.scale_factor().max(0.1);
+            let size = monitor.size();
+            (size.width as f64 / scale).min(size.height as f64 / scale)
+        })
+        .unwrap_or(1080.0)
+}
+
+/// 把百分比大小换算为当前显示器下的逻辑像素边长，并夹在绝对安全范围内。
+fn orb_window_extent(size_percent: u16, monitor: Option<&tauri::Monitor>) -> f64 {
+    let percent = normalized_orb_size_percent(size_percent) as f64 / 10.0;
+    let reference = monitor_reference_extent(monitor);
+    (reference * percent / 100.0).clamp(ORB_SIZE_PX_MIN, ORB_SIZE_PX_MAX)
+}
+
+fn any_existing_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window("main")
+        .or_else(|| app.webview_windows().into_values().next())
+}
+
+/// 悬浮球窗口尚未创建时（首次显示前），借用其它已存在窗口查询主显示器，
+/// 仅用于给出一个合理的初始尺寸；实际所在显示器会在定位后重新校正。
+fn primary_monitor_for(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    let window = any_existing_window(app)?;
+    window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten())
+}
+
+fn window_monitor_for_sizing(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
 }
 
 fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
@@ -105,7 +149,7 @@ fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
         .lock()
         .map(|settings| {
             let mut settings = settings.clone();
-            settings.size = normalized_orb_size(settings.size);
+            settings.size_percent = normalized_orb_size_percent(settings.size_percent);
             settings.opacity = normalized_orb_opacity(settings.opacity);
             settings.glass_tint = settings.glass_tint.min(ORB_GLASS_TINT_MAX);
             settings.glass_border = settings.glass_border.min(ORB_GLASS_BORDER_MAX);
@@ -175,7 +219,9 @@ fn apply_native_glass(
 
 fn native_glass_radius(window: &tauri::WebviewWindow, settings: &FloatingOrbSettings) -> f64 {
     match window.label() {
-        FLOATING_ORB_LABEL => orb_window_extent(settings.size) / 2.0,
+        FLOATING_ORB_LABEL => {
+            orb_window_extent(settings.size_percent, window_monitor_for_sizing(window).as_ref()) / 2.0
+        }
         FLOATING_ORB_MENU_LABEL => 14.0,
         "dictation-indicator" | "assistant-answer" => 16.0,
         _ => 0.0,
@@ -489,8 +535,9 @@ fn default_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosition<i3
     };
     let area = monitor.work_area();
     let scale = monitor.scale_factor();
-    let size =
-        (orb_window_extent(current_settings(window.app_handle()).size) * scale).round() as i32;
+    let size = (orb_window_extent(current_settings(window.app_handle()).size_percent, Some(&monitor))
+        * scale)
+        .round() as i32;
     let margin = (DEFAULT_MARGIN * scale).round() as i32;
     tauri::PhysicalPosition::new(
         area.position
@@ -516,7 +563,10 @@ fn saved_position(app: &tauri::AppHandle) -> Option<tauri::PhysicalPosition<i32>
 
 fn resolved_idle_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosition<i32> {
     let scale = window.scale_factor().unwrap_or(1.0);
-    let extent = orb_window_extent(current_settings(window.app_handle()).size);
+    let extent = orb_window_extent(
+        current_settings(window.app_handle()).size_percent,
+        window_monitor_for_sizing(window).as_ref(),
+    );
     let size = tauri::PhysicalSize::new(
         (extent * scale).round() as u32,
         (extent * scale).round() as u32,
@@ -536,7 +586,8 @@ pub(crate) fn ensure_floating_orb_window(
         return Ok(window);
     }
     let settings = current_settings(app);
-    let extent = orb_window_extent(settings.size);
+    let initial_monitor = primary_monitor_for(app);
+    let extent = orb_window_extent(settings.size_percent, initial_monitor.as_ref());
     let window = WebviewWindowBuilder::new(
         app,
         FLOATING_ORB_LABEL,
@@ -577,6 +628,10 @@ pub(crate) fn ensure_floating_orb_window(
     window
         .set_position(position)
         .map_err(|error| format!("定位悬浮球失败：{error}"))?;
+    // 定位后所在的显示器可能与创建时用于估算初始尺寸的显示器不同（例如上次
+    // 会话把悬浮球留在副屏），这里按实际所在显示器重新校正一次大小，
+    // 确保百分比大小在不同屏幕上呈现一致的相对视觉尺寸。
+    let _ = resize_floating_orb_window(&window, settings.size_percent);
     if !app
         .state::<RuntimeState>()
         .floating_orb_runtime
@@ -591,8 +646,8 @@ pub(crate) fn ensure_floating_orb_window(
     Ok(window)
 }
 
-fn resize_floating_orb_window(window: &tauri::WebviewWindow, size: u16) -> Result<(), String> {
-    let extent = orb_window_extent(size);
+fn resize_floating_orb_window(window: &tauri::WebviewWindow, size_percent: u16) -> Result<(), String> {
+    let extent = orb_window_extent(size_percent, window_monitor_for_sizing(window).as_ref());
     let scale = window.scale_factor().unwrap_or(1.0);
     let target_size = tauri::PhysicalSize::new(
         (extent * scale).round() as u32,
@@ -622,7 +677,7 @@ fn resize_floating_orb_window(window: &tauri::WebviewWindow, size: u16) -> Resul
 
 fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
     let payload = json!({
-        "size": normalized_orb_size(settings.size),
+        "sizePercent": normalized_orb_size_percent(settings.size_percent),
         "opacity": normalized_orb_opacity(settings.opacity),
         "glassEnabled": settings.glass_enabled,
         "glassMaterial": settings.glass_material,
@@ -641,11 +696,11 @@ fn apply_floating_orb_config(
     window: &tauri::WebviewWindow,
 ) -> Result<(), String> {
     let settings = current_settings(app);
-    resize_floating_orb_window(window, settings.size)?;
+    resize_floating_orb_window(window, settings.size_percent)?;
     apply_native_glass(
         window,
         settings.glass_enabled,
-        orb_window_extent(settings.size) / 2.0,
+        orb_window_extent(settings.size_percent, window_monitor_for_sizing(window).as_ref()) / 2.0,
         settings.glass_material,
         settings.glass_tint,
     );
@@ -767,7 +822,7 @@ pub(crate) fn floating_orb_auto_enter_enabled(app: &tauri::AppHandle) -> bool {
 #[tauri::command]
 pub(crate) fn set_floating_orb_appearance(
     app: tauri::AppHandle,
-    size: u16,
+    size_percent: u16,
     opacity: u8,
     glass_enabled: bool,
     glass_material: FloatingOrbGlassMaterial,
@@ -781,7 +836,7 @@ pub(crate) fn set_floating_orb_appearance(
             .lock()
             .map_err(|_| "悬浮球配置锁失败".to_string())?;
         let previous = settings.clone();
-        settings.size = normalized_orb_size(size);
+        settings.size_percent = normalized_orb_size_percent(size_percent);
         settings.opacity = normalized_orb_opacity(opacity);
         settings.glass_enabled = glass_enabled;
         settings.glass_material = glass_material;
@@ -791,14 +846,15 @@ pub(crate) fn set_floating_orb_appearance(
     };
     let current = current_settings(&app);
     let result = if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        resize_floating_orb_window(&window, current.size).map(|_| {
+        resize_floating_orb_window(&window, current.size_percent).map(|_| {
             if native_glass_appearance_changed(&previous, &current)
-                || (current.glass_enabled && previous.size != current.size)
+                || (current.glass_enabled && previous.size_percent != current.size_percent)
             {
                 apply_native_glass(
                     &window,
                     current.glass_enabled,
-                    orb_window_extent(current.size) / 2.0,
+                    orb_window_extent(current.size_percent, window_monitor_for_sizing(&window).as_ref())
+                        / 2.0,
                     current.glass_material,
                     current.glass_tint,
                 );
@@ -1363,8 +1419,13 @@ fn transient_orb_position(
         .map(|value| (value.x.round() as i32, value.y.round() as i32))
         .unwrap_or(fallback);
     let size = window.outer_size().unwrap_or_else(|_| {
-        let extent = current_settings(window.app_handle()).size as u32;
-        tauri::PhysicalSize::new(extent, extent)
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let extent = orb_window_extent(
+            current_settings(window.app_handle()).size_percent,
+            window_monitor_for_sizing(window).as_ref(),
+        );
+        let physical = (extent * scale).round() as u32;
+        tauri::PhysicalSize::new(physical, physical)
     });
     clamp_orb_position(
         tauri::PhysicalPosition::new(
@@ -1763,13 +1824,20 @@ mod tests {
 
     #[test]
     fn appearance_values_are_clamped_to_slider_ranges() {
-        assert_eq!(normalized_orb_size(48), 48);
-        assert_eq!(normalized_orb_size(20), ORB_SIZE_MIN);
-        assert_eq!(normalized_orb_size(90), ORB_SIZE_MAX);
+        assert_eq!(normalized_orb_size_percent(45), 45);
+        assert_eq!(normalized_orb_size_percent(10), ORB_SIZE_PERCENT_MIN);
+        assert_eq!(normalized_orb_size_percent(500), ORB_SIZE_PERCENT_MAX);
         assert_eq!(normalized_orb_opacity(85), 85);
         assert_eq!(normalized_orb_opacity(20), ORB_OPACITY_MIN);
         assert_eq!(normalized_orb_opacity(120), ORB_OPACITY_MAX);
-        assert_eq!(orb_window_extent(56), 56.0);
+        // 无显示器信息时回退到 1080 逻辑像素参考边长：4.5% * 1080 = 48.6。
+        assert_eq!(orb_window_extent(45, None), 48.6);
+    }
+
+    #[test]
+    fn orb_extent_is_clamped_to_absolute_pixel_bounds() {
+        assert_eq!(orb_window_extent(ORB_SIZE_PERCENT_MAX, None), ORB_SIZE_PX_MAX);
+        assert_eq!(orb_window_extent(ORB_SIZE_PERCENT_MIN, None), ORB_SIZE_PX_MIN);
     }
 
     #[test]

@@ -17,14 +17,19 @@ export type OrbPhase =
 export type OrbClickAction = "activate" | "stop" | "submit";
 
 export const ORB_DRAG_THRESHOLD = 5;
-export const FLOATING_ORB_SIZE_RANGE = { min: 44, max: 72 } as const;
+/**
+ * 悬浮球大小，单位为屏幕参考边长（显示器逻辑分辨率较短边）的十分之一
+ * 百分比，例如 45 表示 4.5%。换算像素时由后端综合当前显示器的分辨率与
+ * 缩放比例计算，确保同一百分比在不同屏幕上呈现一致的相对视觉尺寸。
+ */
+export const FLOATING_ORB_SIZE_PERCENT_RANGE = { min: 30, max: 80 } as const;
 export const FLOATING_ORB_OPACITY_RANGE = { min: 40, max: 100 } as const;
 export const FLOATING_ORB_GLASS_TINT_RANGE = { min: 0, max: 40 } as const;
 export const FLOATING_ORB_GLASS_BORDER_RANGE = { min: 0, max: 30 } as const;
 export const FLOATING_ORB_GLASS_MATERIALS = ["underWindow", "content", "sidebar"] as const;
 export type FloatingOrbGlassMaterial = (typeof FLOATING_ORB_GLASS_MATERIALS)[number];
 export const DEFAULT_FLOATING_ORB_APPEARANCE = {
-  size: 48,
+  sizePercent: 45,
   opacity: 40,
   glassEnabled: false,
   glassMaterial: "sidebar" as FloatingOrbGlassMaterial,
@@ -33,7 +38,7 @@ export const DEFAULT_FLOATING_ORB_APPEARANCE = {
 } as const;
 
 export interface FloatingOrbAppearance {
-  size: number;
+  sizePercent: number;
   opacity: number;
   glassEnabled: boolean;
   glassMaterial: FloatingOrbGlassMaterial;
@@ -47,7 +52,7 @@ function clampInteger(value: unknown, min: number, max: number, fallback: number
 }
 
 export function normalizeFloatingOrbAppearance(payload: {
-  size?: number;
+  sizePercent?: number;
   opacity?: number;
   glassEnabled?: boolean;
   glassMaterial?: string;
@@ -55,11 +60,11 @@ export function normalizeFloatingOrbAppearance(payload: {
   glassBorder?: number;
 }): FloatingOrbAppearance {
   return {
-    size: clampInteger(
-      payload.size,
-      FLOATING_ORB_SIZE_RANGE.min,
-      FLOATING_ORB_SIZE_RANGE.max,
-      DEFAULT_FLOATING_ORB_APPEARANCE.size,
+    sizePercent: clampInteger(
+      payload.sizePercent,
+      FLOATING_ORB_SIZE_PERCENT_RANGE.min,
+      FLOATING_ORB_SIZE_PERCENT_RANGE.max,
+      DEFAULT_FLOATING_ORB_APPEARANCE.sizePercent,
     ),
     opacity: clampInteger(
       payload.opacity,
