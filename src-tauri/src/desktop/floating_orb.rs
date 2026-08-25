@@ -12,10 +12,10 @@ pub(crate) const FLOATING_ORB_MENU_LABEL: &str = "floating-orb-menu";
 const DEFAULT_MARGIN: f64 = 24.0;
 const MIN_VISIBLE_EDGE: i32 = 16;
 /// 悬浮球实际像素尺寸的安全下限/上限，无论百分比与显示器如何组合都不会突破。
-const ORB_SIZE_PX_MIN: f64 = 44.0;
+const ORB_SIZE_PX_MIN: f64 = 28.0;
 const ORB_SIZE_PX_MAX: f64 = 72.0;
-/// 大小设置的取值范围，单位为十分之一百分比（30 = 3.0%，80 = 8.0%）。
-const ORB_SIZE_PERCENT_MIN: u16 = 30;
+/// 大小设置的取值范围，单位为十分之一百分比（25 = 2.5%，80 = 8.0%）。
+const ORB_SIZE_PERCENT_MIN: u16 = 25;
 const ORB_SIZE_PERCENT_MAX: u16 = 80;
 const ORB_OPACITY_MIN: u8 = 40;
 const ORB_OPACITY_MAX: u8 = 100;

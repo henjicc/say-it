@@ -22,7 +22,7 @@ export const ORB_DRAG_THRESHOLD = 5;
  * 百分比，例如 45 表示 4.5%。换算像素时由后端综合当前显示器的分辨率与
  * 缩放比例计算，确保同一百分比在不同屏幕上呈现一致的相对视觉尺寸。
  */
-export const FLOATING_ORB_SIZE_PERCENT_RANGE = { min: 30, max: 80 } as const;
+export const FLOATING_ORB_SIZE_PERCENT_RANGE = { min: 25, max: 80 } as const;
 export const FLOATING_ORB_OPACITY_RANGE = { min: 40, max: 100 } as const;
 export const FLOATING_ORB_GLASS_TINT_RANGE = { min: 0, max: 40 } as const;
 export const FLOATING_ORB_GLASS_BORDER_RANGE = { min: 0, max: 30 } as const;
