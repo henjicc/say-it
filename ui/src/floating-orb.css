@@ -169,6 +169,13 @@ button {
 }
 
 .orb-spinner {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 1.8px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-top-color: currentColor;
   animation: orb-spin 0.9s linear infinite;
   will-change: transform;
 }
