@@ -1241,6 +1241,11 @@ async fn return_to_idle(
                 .floating_orb_runtime
                 .transient
                 .store(false, Ordering::Release);
+            // 窗口复用不销毁：若隐藏后"始终显示"被重新打开，会直接 show() 这个
+            // 仍持有旧 phase/ignore_cursor_events 的实例，必须在这里同步重置，
+            // 否则悬浮球会卡在隐藏前的最后状态（例如"勾"）且无法交互。
+            let _ = window.set_ignore_cursor_events(false);
+            emit_state(&app, "idle", None);
         }
     } else {
         let _ = window.set_ignore_cursor_events(false);
