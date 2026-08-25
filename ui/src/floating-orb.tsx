@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Check, Clipboard, CornerDownLeft, LoaderCircle, Mic, X } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, CornerDownLeft, Mic, X } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { playCueKind } from "@/lib/cues";
@@ -198,7 +198,7 @@ function FloatingOrbApp() {
       ) : (
         <span className="orb-icon-shell" aria-hidden>
           {loading || phase === "busy" ? (
-            <LoaderCircle className="orb-state-icon orb-spinner" />
+            <span className="orb-spinner" />
           ) : phase === "success" ? (
             <>
               <Check className={`orb-state-icon${canSubmit ? " orb-success-check" : ""}`} />
