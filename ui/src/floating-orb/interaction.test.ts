@@ -54,7 +54,7 @@ describe("floating orb interaction", () => {
       glassTint: 99,
       glassBorder: -5,
     })).toEqual({
-      sizePercent: 30,
+      sizePercent: 25,
       opacity: 100,
       glassEnabled: false,
       glassMaterial: "sidebar",
