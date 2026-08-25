@@ -181,7 +181,8 @@ export interface MouseGestureSnapshot {
 export interface FloatingOrbSettings {
   enabled: boolean;
   position?: { x: number; y: number } | null;
-  size: number;
+  /** 屏幕参考边长的十分之一百分比，如 45 表示 4.5%，详见 floating-orb/interaction.ts */
+  sizePercent: number;
   opacity: number;
   glassEnabled: boolean;
   glassMaterial: "underWindow" | "content" | "sidebar";

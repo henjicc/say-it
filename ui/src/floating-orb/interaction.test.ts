@@ -37,8 +37,10 @@ describe("floating orb interaction", () => {
   });
 
   it("clamps continuous appearance controls to supported ranges", () => {
-    expect(normalizeFloatingOrbAppearance({ size: 63.6, opacity: 70, glassEnabled: true })).toEqual({
-      size: 64,
+    expect(
+      normalizeFloatingOrbAppearance({ sizePercent: 63.6, opacity: 70, glassEnabled: true }),
+    ).toEqual({
+      sizePercent: 64,
       opacity: 70,
       glassEnabled: true,
       glassMaterial: "sidebar",
@@ -46,13 +48,13 @@ describe("floating orb interaction", () => {
       glassBorder: 0,
     });
     expect(normalizeFloatingOrbAppearance({
-      size: 20,
+      sizePercent: 5,
       opacity: 140,
       glassMaterial: "invalid",
       glassTint: 99,
       glassBorder: -5,
     })).toEqual({
-      size: 44,
+      sizePercent: 30,
       opacity: 100,
       glassEnabled: false,
       glassMaterial: "sidebar",

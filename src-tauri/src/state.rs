@@ -50,7 +50,8 @@ pub(crate) struct FloatingOrbPosition {
     pub(crate) y: i32,
 }
 
-pub(crate) const DEFAULT_FLOATING_ORB_SIZE: u16 = 48;
+/// 悬浮球大小，单位为屏幕参考边长的十分之一百分比（如 45 表示 4.5%）。
+pub(crate) const DEFAULT_FLOATING_ORB_SIZE_PERCENT: u16 = 45;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 40;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
@@ -59,8 +60,8 @@ pub(crate) const DEFAULT_MOUSE_RAPID_CLICK_COUNT: u8 = 4;
 pub(crate) const MIN_MOUSE_RAPID_CLICK_COUNT: u8 = 3;
 pub(crate) const MAX_MOUSE_RAPID_CLICK_COUNT: u8 = 10;
 
-fn default_floating_orb_size() -> u16 {
-    DEFAULT_FLOATING_ORB_SIZE
+fn default_floating_orb_size_percent() -> u16 {
+    DEFAULT_FLOATING_ORB_SIZE_PERCENT
 }
 
 fn default_floating_orb_opacity() -> u8 {
@@ -91,8 +92,11 @@ pub(crate) struct FloatingOrbSettings {
     pub(crate) enabled: bool,
     #[serde(default)]
     pub(crate) position: Option<FloatingOrbPosition>,
-    #[serde(default = "default_floating_orb_size")]
-    pub(crate) size: u16,
+    /// 屏幕参考边长（较短逻辑边）的十分之一百分比，如 45 表示 4.5%；
+    /// 换算为实际像素时综合考虑显示器分辨率与缩放比例，详见
+    /// desktop::floating_orb::orb_window_extent。
+    #[serde(default = "default_floating_orb_size_percent")]
+    pub(crate) size_percent: u16,
     #[serde(default = "default_floating_orb_opacity")]
     pub(crate) opacity: u8,
     #[serde(default)]
@@ -112,7 +116,7 @@ impl Default for FloatingOrbSettings {
         Self {
             enabled: false,
             position: None,
-            size: DEFAULT_FLOATING_ORB_SIZE,
+            size_percent: DEFAULT_FLOATING_ORB_SIZE_PERCENT,
             opacity: DEFAULT_FLOATING_ORB_OPACITY,
             glass_enabled: false,
             glass_material: FloatingOrbGlassMaterial::default(),
