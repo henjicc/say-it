@@ -2360,23 +2360,31 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
     if trigger.is_floating_orb() {
-        if !processed.is_empty() {
+        let auto_enter_target = (!processed.is_empty())
+            .then_some(activation_target)
+            .flatten()
+            .filter(|_| crate::desktop::floating_orb_auto_enter_enabled(&app));
+        if auto_enter_target.is_none() && !processed.is_empty() {
             if let Some(target) = activation_target {
                 crate::desktop::arm_floating_orb_submit_enter(&app, target);
             }
         }
         play_floating_orb_cue(&app, "end", &prefs);
-        let (message, delay) = if processed.is_empty() {
-            ("未识别到内容", 2000)
+        if let Some(target) = auto_enter_target {
+            crate::desktop::auto_submit_floating_orb_enter(app.clone(), target);
         } else {
-            ("已完成并复制", 1200)
-        };
-        crate::desktop::complete_floating_orb(
-            app.clone(),
-            "success",
-            message.to_string(),
-            delay,
-        );
+            let (message, delay) = if processed.is_empty() {
+                ("未识别到内容", 2000)
+            } else {
+                ("已完成并复制", 1200)
+            };
+            crate::desktop::complete_floating_orb(
+                app.clone(),
+                "success",
+                message.to_string(),
+                delay,
+            );
+        }
     } else {
         let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
         play_cue_async(

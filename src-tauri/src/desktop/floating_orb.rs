@@ -735,6 +735,36 @@ pub(crate) fn get_floating_orb_settings(
 }
 
 #[tauri::command]
+pub(crate) fn set_floating_orb_auto_enter(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<FloatingOrbSettings, String> {
+    let state = app.state::<RuntimeState>();
+    {
+        let mut settings = state
+            .floating_orb
+            .lock()
+            .map_err(|_| "悬浮球配置锁失败".to_string())?;
+        settings.auto_enter = enabled;
+    }
+    crate::persistence::save_persisted_state(&app, &state)?;
+    crate::application::contract::next_revision(&state.snapshot_revision);
+    state
+        .floating_orb
+        .lock()
+        .map(|settings| settings.clone())
+        .map_err(|_| "悬浮球配置锁失败".to_string())
+}
+
+pub(crate) fn floating_orb_auto_enter_enabled(app: &tauri::AppHandle) -> bool {
+    app.state::<RuntimeState>()
+        .floating_orb
+        .lock()
+        .map(|settings| settings.auto_enter)
+        .unwrap_or(false)
+}
+
+#[tauri::command]
 pub(crate) fn set_floating_orb_appearance(
     app: tauri::AppHandle,
     size: u16,
@@ -1655,6 +1685,24 @@ fn validate_submit_enter_target(
     Ok(expected)
 }
 
+async fn perform_floating_orb_submit_enter(
+    target: crate::active_app_context::ActivationTarget,
+) -> Result<(), String> {
+    if crate::active_app_context::app_identity(target).is_none() {
+        return Err("原输入目标已关闭".to_string());
+    }
+    let current = crate::active_app_context::activation_target();
+    // 点击非激活悬浮球时，macOS 可能暂时无法返回前台外部窗口。文本注入前已经
+    // 完成过安全输入框检查；此时不再对失去前台可见性的目标重复做 AX 探测，
+    // 否则会把“无法读取焦点控件”误判成回车失败。
+    let sensitive = current
+        .filter(|current| crate::active_app_context::same_activation_target(*current, target))
+        .map(crate::active_app_context::target_is_sensitive)
+        .transpose()?;
+    let target = validate_submit_enter_target(target, current, sensitive)?;
+    send_return_key(target).await
+}
+
 #[tauri::command]
 pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(), String> {
     let action = app
@@ -1674,24 +1722,7 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
     emit_state(&app, "submitting", Some("正在发送回车…"));
     // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
     sleep(Duration::from_millis(40)).await;
-    let result = async {
-        if crate::active_app_context::app_identity(action.target).is_none() {
-            return Err("原输入目标已关闭".to_string());
-        }
-        let current = crate::active_app_context::activation_target();
-        // 点击非激活悬浮球时，macOS 可能暂时无法返回前台外部窗口。文本注入前已经
-        // 完成过安全输入框检查；此时不再对失去前台可见性的目标重复做 AX 探测，
-        // 否则会把“无法读取焦点控件”误判成回车失败。
-        let sensitive = current
-            .filter(|current| {
-                crate::active_app_context::same_activation_target(*current, action.target)
-            })
-            .map(crate::active_app_context::target_is_sensitive)
-            .transpose()?;
-        let target = validate_submit_enter_target(action.target, current, sensitive)?;
-        send_return_key(target).await
-    }
-    .await;
+    let result = perform_floating_orb_submit_enter(action.target).await;
     match result {
         Ok(()) => {
             complete_floating_orb(app, "submitted", "已发送回车".into(), 800);
@@ -1703,6 +1734,27 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
             Err(error)
         }
     }
+}
+
+/// 听写完成后若已开启"自动回车"，跳过手动点击确认，直接模拟回车发送。
+pub(crate) fn auto_submit_floating_orb_enter(
+    app: tauri::AppHandle,
+    target: crate::active_app_context::ActivationTarget,
+) {
+    tauri::async_runtime::spawn(async move {
+        if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+            let _ = window.set_ignore_cursor_events(true);
+        }
+        emit_state(&app, "submitting", Some("正在发送回车…"));
+        sleep(Duration::from_millis(40)).await;
+        match perform_floating_orb_submit_enter(target).await {
+            Ok(()) => complete_floating_orb(app, "submitted", "已发送回车".into(), 800),
+            Err(error) => {
+                eprintln!("[floating-orb] 自动回车未发送: {error}");
+                complete_floating_orb(app, "error", "未发送回车".into(), 1500);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

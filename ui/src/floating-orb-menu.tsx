@@ -4,6 +4,7 @@ import { PanelTopOpen, Power, RotateCcw } from "lucide-react";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { RangeInput } from "@/components/ui/RangeInput";
+import { Switch } from "@/components/ui/Switch";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
@@ -18,6 +19,7 @@ type Appearance = ReturnType<typeof normalizeFloatingOrbAppearance>;
 
 function FloatingOrbMenuApp() {
   const [appearance, setAppearance] = useState<Appearance>(DEFAULT_FLOATING_ORB_APPEARANCE);
+  const [autoEnter, setAutoEnter] = useState(false);
   const [error, setError] = useState("");
   const appearanceRef = useRef<Appearance>(DEFAULT_FLOATING_ORB_APPEARANCE);
   const updateRevision = useRef(0);
@@ -37,7 +39,10 @@ function FloatingOrbMenuApp() {
     void cmd<AppSnapshot>(CMD.getAppSnapshot)
       .then((snapshot) => applyThemeToDocument(snapshot.settings.theme as Partial<AccentTheme>))
       .catch(() => undefined);
-    void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings).then(receive).catch((reason) => {
+    void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings).then((settings) => {
+      receive(settings);
+      setAutoEnter(settings.autoEnter === true);
+    }).catch((reason) => {
       setError(String(reason));
     });
     const onKeyDown = (event: KeyboardEvent) => {
@@ -65,6 +70,17 @@ function FloatingOrbMenuApp() {
       })
       .catch((reason) => {
         if (revision === updateRevision.current) setError(String(reason));
+      });
+  };
+
+  const toggleAutoEnter = (checked: boolean) => {
+    setAutoEnter(checked);
+    setError("");
+    void cmd<FloatingOrbSettings>(CMD.setFloatingOrbAutoEnter, { enabled: checked })
+      .then((settings) => setAutoEnter(settings.autoEnter === true))
+      .catch((reason) => {
+        setAutoEnter(!checked);
+        setError(String(reason));
       });
   };
 
@@ -124,6 +140,11 @@ function FloatingOrbMenuApp() {
             onChange={(opacity) => update({ opacity })}
           />
         </label>
+
+        <div className="orb-menu-toggle">
+          <span><strong>自动回车</strong><small>识别完成后自动发送，不再显示回车图标</small></span>
+          <Switch checked={autoEnter} onChange={toggleAutoEnter} label="自动回车" />
+        </div>
 
         <div className="orb-menu-actions">
           <button type="button" className="orb-menu-action" onClick={openMainWindow}>
