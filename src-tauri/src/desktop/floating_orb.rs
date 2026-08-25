@@ -25,6 +25,9 @@ const ORB_MENU_WIDTH: f64 = 280.0;
 const ORB_MENU_HEIGHT: f64 = 318.0;
 const ORB_MENU_GAP: f64 = 8.0;
 const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
+/// 听写完成后，允许点击悬浮球快捷发送回车的时间窗口；悬浮球在此期间保持
+/// 显示"已完成，可点击发送回车"的状态，超时后才自动回到 idle。
+pub(crate) const ORB_SUBMIT_ENTER_WINDOW_MS: u64 = 5000;
 const ORB_MOVE_DURATION_MS: u64 = 200;
 const ORB_MOVE_FRAME_MS: u64 = 16;
 const ORB_REPOSITION_SETTLE_MS: u64 = 16;
@@ -1378,7 +1381,7 @@ pub(crate) fn arm_floating_orb_submit_enter(
     app: &tauri::AppHandle,
     target: crate::active_app_context::ActivationTarget,
 ) {
-    let expires_at = Instant::now() + Duration::from_millis(1000);
+    let expires_at = Instant::now() + Duration::from_millis(ORB_SUBMIT_ENTER_WINDOW_MS);
     if let Ok(mut action) = app
         .state::<RuntimeState>()
         .floating_orb_runtime
@@ -1389,7 +1392,7 @@ pub(crate) fn arm_floating_orb_submit_enter(
     }
     let timeout_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_millis(ORB_SUBMIT_ENTER_WINDOW_MS)).await;
         let expired = timeout_app
             .state::<RuntimeState>()
             .floating_orb_runtime
@@ -1708,6 +1711,22 @@ pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), Strin
 #[tauri::command]
 pub(crate) async fn floating_orb_cancel(app: tauri::AppHandle) -> Result<(), String> {
     crate::application::dictation::cancel_from_floating_orb(app).await
+}
+
+/// 听写完成、悬浮球正显示"可点击发送回车"时，右键立即放弃该操作并回到
+/// idle，好让用户马上左键点击开始下一次识别，而不用等超时窗口结束。
+#[tauri::command]
+pub(crate) fn floating_orb_dismiss_submit_enter(app: tauri::AppHandle) -> Result<(), String> {
+    if let Ok(mut action) = app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .post_injection_action
+        .lock()
+    {
+        *action = None;
+    }
+    complete_floating_orb(app, "idle", String::new(), 0);
+    Ok(())
 }
 
 async fn send_return_key(
