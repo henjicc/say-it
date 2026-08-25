@@ -714,6 +714,11 @@ bool sayit_macos_configure_floating_orb_window(void *nsWindow, bool nonactivatin
             | NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorFullScreenAuxiliary;
         window.hidesOnDeactivate = NO;
+        // 非激活面板默认不会收到 mouseMoved:，WKWebView 里的 CSS :hover 因此
+        // 只能靠"按下拖动"时顺带的 mouseDragged 事件才会短暂触发，松开后又
+        // 没有新的鼠标事件把它清掉，看起来就是"悬停没反应、拖一下就变蓝、
+        // 松手后一直蓝"。开启这个开关让窗口持续收到鼠标移动事件即可。
+        window.acceptsMouseMovedEvents = YES;
     });
     return true;
 }
