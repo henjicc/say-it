@@ -30,7 +30,7 @@ export const FLOATING_ORB_GLASS_MATERIALS = ["underWindow", "content", "sidebar"
 export type FloatingOrbGlassMaterial = (typeof FLOATING_ORB_GLASS_MATERIALS)[number];
 export const DEFAULT_FLOATING_ORB_APPEARANCE = {
   sizePercent: 45,
-  opacity: 40,
+  opacity: 100,
   glassEnabled: false,
   glassMaterial: "sidebar" as FloatingOrbGlassMaterial,
   glassTint: 8,

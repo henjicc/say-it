@@ -248,7 +248,7 @@ mod tests {
         assert!(!data.floating_orb.enabled);
         assert!(data.floating_orb.position.is_none());
         assert_eq!(data.floating_orb.size_percent, 45);
-        assert_eq!(data.floating_orb.opacity, 40);
+        assert_eq!(data.floating_orb.opacity, 100);
         assert!(!data.floating_orb.glass_enabled);
         assert_eq!(
             data.floating_orb.glass_material,
