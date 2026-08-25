@@ -662,9 +662,14 @@ fn resize_floating_orb_window(window: &tauri::WebviewWindow, size_percent: u16) 
     let old_position = window
         .outer_position()
         .map_err(|error| format!("读取悬浮球位置失败：{error}"))?;
+    // 先用浮点算出中心点，最后统一取整一次；如果分两步各自做整数除法
+    // （差值 / 2 再相加），奇数差值会被截断，反复缩放会让偏差累积成
+    // 明显的位置漂移，而不是稳定地围绕中心缩放。
+    let center_x = old_position.x as f64 + old_size.width as f64 / 2.0;
+    let center_y = old_position.y as f64 + old_size.height as f64 / 2.0;
     let centered_position = tauri::PhysicalPosition::new(
-        old_position.x + (old_size.width as i32 - target_size.width as i32) / 2,
-        old_position.y + (old_size.height as i32 - target_size.height as i32) / 2,
+        (center_x - target_size.width as f64 / 2.0).round() as i32,
+        (center_y - target_size.height as f64 / 2.0).round() as i32,
     );
     window
         .set_size(tauri::LogicalSize::new(extent, extent))
