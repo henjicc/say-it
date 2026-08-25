@@ -149,7 +149,7 @@
 - 安装命令：`npm install`。
 - 开发命令：前端独立开发用 `npm run ui:dev`；完整桌面应用开发用 `npm run tauri:dev`。
 - 格式化/静态检查命令：当前未在 `package.json` 中配置 lint/format/typecheck 脚本；需要按改动范围使用可用工具，例如 `npx tsc --noEmit` 或 `cargo check`。
-- 测试命令：当前未配置自动化测试脚本。
+- 测试命令：前端用 `npm run test:ui`（vitest）；后端 Rust 用 `cargo test --bin say-it`（该 crate 无 lib target，`cargo test` 需指定 `--bin`）。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
 - UI 设计系统：视觉走「深蓝黑桌面风格」，产品与视觉原则见根目录 `PRODUCT.md`、`DESIGN.md`；令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
