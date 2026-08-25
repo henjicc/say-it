@@ -651,17 +651,9 @@ pub(crate) fn ensure_floating_orb_window(
 
 fn resize_floating_orb_window(window: &tauri::WebviewWindow, size_percent: u16) -> Result<(), String> {
     let extent = orb_window_extent(size_percent, window_monitor_for_sizing(window).as_ref());
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let target_size = tauri::PhysicalSize::new(
-        (extent * scale).round() as u32,
-        (extent * scale).round() as u32,
-    );
     let old_size = window
         .outer_size()
         .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?;
-    if old_size == target_size {
-        return Ok(());
-    }
     let old_position = window
         .outer_position()
         .map_err(|error| format!("读取悬浮球位置失败：{error}"))?;
@@ -670,14 +662,25 @@ fn resize_floating_orb_window(window: &tauri::WebviewWindow, size_percent: u16) 
     // 明显的位置漂移，而不是稳定地围绕中心缩放。
     let center_x = old_position.x as f64 + old_size.width as f64 / 2.0;
     let center_y = old_position.y as f64 + old_size.height as f64 / 2.0;
-    let centered_position = tauri::PhysicalPosition::new(
-        (center_x - target_size.width as f64 / 2.0).round() as i32,
-        (center_y - target_size.height as f64 / 2.0).round() as i32,
-    );
     window
         .set_size(tauri::LogicalSize::new(extent, extent))
         .map_err(|error| format!("调整悬浮球尺寸失败：{error}"))?;
-    let position = clamp_orb_position(centered_position, target_size, &monitor_rects(window));
+    // 逻辑尺寸换算成物理像素时的取整方式因平台而异，不一定和我们自己算的
+    // 一致；用 set_size 之后 OS 实际报告的尺寸来居中，而不是我们自己算的
+    // 理论值，否则每次取整偏差都会朝同一方向，反复调整就会累积成明显的
+    // 位置漂移。若实际尺寸和调整前完全一样（例如只是重新应用了一遍相同的
+    // 设置），直接跳过重新定位，避免无意义的抖动。
+    let actual_size = window
+        .outer_size()
+        .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?;
+    if actual_size == old_size {
+        return Ok(());
+    }
+    let position = tauri::PhysicalPosition::new(
+        (center_x - actual_size.width as f64 / 2.0).round() as i32,
+        (center_y - actual_size.height as f64 / 2.0).round() as i32,
+    );
+    let position = clamp_orb_position(position, actual_size, &monitor_rects(window));
     window
         .set_position(position)
         .map_err(|error| format!("调整悬浮球位置失败：{error}"))
@@ -853,10 +856,19 @@ pub(crate) fn set_floating_orb_appearance(
         previous
     };
     let current = current_settings(&app);
+    let size_changed = previous.size_percent != current.size_percent;
     let result = if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        resize_floating_orb_window(&window, current.size_percent).map(|_| {
+        // 大小没变时（例如只是拖动不透明度/毛玻璃滑杆）完全跳过 resize，
+        // 不去重新触发一次"逻辑尺寸 -> 物理像素"的换算和居中定位，
+        // 避免和大小无关的设置也悄悄挪动悬浮球的位置。
+        let resize_result = if size_changed {
+            resize_floating_orb_window(&window, current.size_percent)
+        } else {
+            Ok(())
+        };
+        resize_result.map(|_| {
             if native_glass_appearance_changed(&previous, &current)
-                || (current.glass_enabled && previous.size_percent != current.size_percent)
+                || (current.glass_enabled && size_changed)
             {
                 apply_native_glass(
                     &window,
