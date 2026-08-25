@@ -45,12 +45,14 @@ button {
   transition:
     border-color 160ms ease-out,
     background 160ms ease-out,
-    opacity 160ms ease-out;
+    opacity 160ms ease-out,
+    color 160ms ease-out;
 }
 
-.floating-orb:hover {
+.floating-orb:not(:disabled):hover {
   border-color: var(--accent-ring);
-  background: color-mix(in srgb, var(--color-bg) 90%, var(--color-accent) 10%);
+  background: color-mix(in srgb, var(--color-bg) 78%, var(--color-accent) 22%);
+  color: var(--color-accent-light);
 }
 
 .floating-orb.glass {
@@ -58,15 +60,26 @@ button {
   background: color-mix(in srgb, var(--system-glass-color) var(--orb-glass-tint, 10%), transparent);
 }
 
-.floating-orb.glass:hover,
-.floating-orb.glass.recording:hover {
+/*
+ * 毛玻璃模式下原先直接照抄了非 hover 态的同一份背景公式，导致悬停
+ * 时看起来完全没反应；这里在原有色调基础上叠加一段额外的强调色
+ * 比例，让 hover 在毛玻璃模式下也能看出明显变化。
+ */
+.floating-orb.glass:not(:disabled):hover,
+.floating-orb.glass.recording:not(:disabled):hover {
   border-color: var(--accent-ring);
-  background: color-mix(in srgb, var(--system-glass-color) var(--orb-glass-tint, 10%), transparent);
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--system-glass-color) 85%, var(--color-accent) 15%)
+      calc(var(--orb-glass-tint, 10%) + 14%),
+    transparent
+  );
+  color: var(--color-accent-light);
 }
 
-.floating-orb:hover .orb-icon-shell,
-.floating-orb:hover .orb-waveform {
-  transform: scale(1.06);
+.floating-orb:not(:disabled):hover .orb-icon-shell,
+.floating-orb:not(:disabled):hover .orb-waveform {
+  transform: scale(1.1);
 }
 
 .floating-orb:active {
@@ -103,7 +116,7 @@ button {
 
 .floating-orb.recording:hover {
   border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-bg) 90%, var(--color-accent) 10%);
+  background: color-mix(in srgb, var(--color-bg) 80%, var(--color-accent) 20%);
 }
 
 .floating-orb.moving,
@@ -211,6 +224,10 @@ button {
   color: var(--color-accent-dark);
 }
 
+[data-ui-tone="light"] .floating-orb:not(:disabled):hover {
+  color: var(--color-accent-dark);
+}
+
 .orb-wave-bar:nth-child(1),
 .orb-wave-bar:nth-child(5) {
   height: 47%;
@@ -259,8 +276,8 @@ button {
     transition: none;
   }
 
-  .floating-orb:hover .orb-icon-shell,
-  .floating-orb:hover .orb-waveform {
+  .floating-orb:not(:disabled):hover .orb-icon-shell,
+  .floating-orb:not(:disabled):hover .orb-waveform {
     transform: none;
   }
 
