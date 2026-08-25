@@ -146,8 +146,7 @@ function FloatingOrbApp() {
     { length: WAVE_BAR_COUNT },
     (_, index) => waveform.peaks[index] ?? waveform.level,
   );
-  const loading = phase === "moving"
-    || phase === "positioning"
+  const loading = phase === "positioning"
     || phase === "processing"
     || phase === "smartProcessing"
     || phase === "submitting";
