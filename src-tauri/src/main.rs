@@ -544,6 +544,7 @@ fn main() {
             set_indicator_layout,
             get_indicator_monitor_metrics,
             set_floating_orb_enabled,
+            set_floating_orb_auto_enter,
             get_floating_orb_settings,
             show_floating_orb_menu,
             hide_floating_orb_menu,

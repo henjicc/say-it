@@ -72,6 +72,7 @@ export const CMD = {
   setIndicatorLayout: "set_indicator_layout",
   getIndicatorMonitorMetrics: "get_indicator_monitor_metrics",
   setFloatingOrbEnabled: "set_floating_orb_enabled",
+  setFloatingOrbAutoEnter: "set_floating_orb_auto_enter",
   getFloatingOrbSettings: "get_floating_orb_settings",
   showFloatingOrbMenu: "show_floating_orb_menu",
   hideFloatingOrbMenu: "hide_floating_orb_menu",
@@ -186,6 +187,7 @@ export interface FloatingOrbSettings {
   glassMaterial: "underWindow" | "content" | "sidebar";
   glassTint: number;
   glassBorder: number;
+  autoEnter: boolean;
 }
 
 export interface AppSettings {

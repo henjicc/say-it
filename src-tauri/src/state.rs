@@ -103,6 +103,8 @@ pub(crate) struct FloatingOrbSettings {
     pub(crate) glass_tint: u8,
     #[serde(default = "default_floating_orb_glass_border")]
     pub(crate) glass_border: u8,
+    #[serde(default)]
+    pub(crate) auto_enter: bool,
 }
 
 impl Default for FloatingOrbSettings {
@@ -116,6 +118,7 @@ impl Default for FloatingOrbSettings {
             glass_material: FloatingOrbGlassMaterial::default(),
             glass_tint: DEFAULT_FLOATING_ORB_GLASS_TINT,
             glass_border: DEFAULT_FLOATING_ORB_GLASS_BORDER,
+            auto_enter: false,
         }
     }
 }
