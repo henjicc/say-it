@@ -179,6 +179,8 @@ function FloatingOrbApp() {
         event.preventDefault();
         if (phase === "recording") {
           void cmd(CMD.floatingOrbCancel).catch(() => undefined);
+        } else if (phase === "success" && canSubmit) {
+          void cmd(CMD.floatingOrbDismissSubmitEnter).catch(() => undefined);
         } else if (!transient && phase === "idle") {
           void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
         }

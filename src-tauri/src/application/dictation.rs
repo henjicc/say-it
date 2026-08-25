@@ -2364,10 +2364,10 @@ async fn finalize(app: AppHandle, epoch: u64) {
             .then_some(activation_target)
             .flatten()
             .filter(|_| crate::desktop::floating_orb_auto_enter_enabled(&app));
-        if auto_enter_target.is_none() && !processed.is_empty() {
-            if let Some(target) = activation_target {
-                crate::desktop::arm_floating_orb_submit_enter(&app, target);
-            }
+        let submit_enter_target =
+            (auto_enter_target.is_none() && !processed.is_empty()).then_some(activation_target).flatten();
+        if let Some(target) = submit_enter_target {
+            crate::desktop::arm_floating_orb_submit_enter(&app, target);
         }
         play_floating_orb_cue(&app, "end", &prefs);
         if let Some(target) = auto_enter_target {
@@ -2375,6 +2375,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
         } else {
             let (message, delay) = if processed.is_empty() {
                 ("未识别到内容", 2000)
+            } else if submit_enter_target.is_some() {
+                // 悬浮球需要保持展示到快捷回车窗口结束，用户才有机会点击。
+                ("已完成并复制", crate::desktop::ORB_SUBMIT_ENTER_WINDOW_MS)
             } else {
                 ("已完成并复制", 1200)
             };
