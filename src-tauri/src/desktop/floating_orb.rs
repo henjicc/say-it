@@ -28,6 +28,9 @@ const ORB_MAIN_REOPEN_SUPPRESSION_MS: u64 = 1500;
 /// 听写完成后，允许点击悬浮球快捷发送回车的时间窗口；悬浮球在此期间保持
 /// 显示"已完成，可点击发送回车"的状态，超时后才自动回到 idle。
 pub(crate) const ORB_SUBMIT_ENTER_WINDOW_MS: u64 = 5000;
+/// 发送回车的耗时超过这个阈值才展示"正在发送"loading 态，绝大多数
+/// 几十毫秒内完成的情况不会再强制闪一下加载动画。
+const ORB_SUBMIT_ENTER_SPINNER_DELAY_MS: u64 = 150;
 const ORB_MOVE_DURATION_MS: u64 = 200;
 const ORB_MOVE_FRAME_MS: u64 = 16;
 const ORB_REPOSITION_SETTLE_MS: u64 = 16;
@@ -1800,6 +1803,30 @@ async fn perform_floating_orb_submit_enter(
     send_return_key(target).await
 }
 
+/// 发送回车前的互斥等待 + 目标校验 + 按键模拟通常在几十毫秒内就能完成，
+/// 大多数情况下用户根本感知不到延迟。之前不管快慢都会先把悬浮球切到
+/// "submitting" 加载态，导致这个操作看起来"每次点击都要转一下圈"；
+/// 这里改成只有真的超过 ORB_SUBMIT_ENTER_SPINNER_DELAY_MS 还没完成时，
+/// 才展示加载态，绝大多数瞬间完成的情况就不会再闪一下动画。
+async fn submit_enter_with_delayed_feedback(
+    app: &tauri::AppHandle,
+    target: crate::active_app_context::ActivationTarget,
+) -> Result<(), String> {
+    let work = async {
+        // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
+        sleep(Duration::from_millis(40)).await;
+        perform_floating_orb_submit_enter(target).await
+    };
+    tokio::pin!(work);
+    tokio::select! {
+        result = &mut work => result,
+        _ = sleep(Duration::from_millis(ORB_SUBMIT_ENTER_SPINNER_DELAY_MS)) => {
+            emit_state(app, "submitting", Some("正在发送回车…"));
+            work.await
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(), String> {
     let action = app
@@ -1816,10 +1843,7 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
         let _ = window.set_ignore_cursor_events(true);
     }
-    emit_state(&app, "submitting", Some("正在发送回车…"));
-    // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
-    sleep(Duration::from_millis(40)).await;
-    let result = perform_floating_orb_submit_enter(action.target).await;
+    let result = submit_enter_with_delayed_feedback(&app, action.target).await;
     match result {
         Ok(()) => {
             complete_floating_orb(app, "submitted", "已发送回车".into(), 800);
@@ -1842,9 +1866,7 @@ pub(crate) fn auto_submit_floating_orb_enter(
         if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
             let _ = window.set_ignore_cursor_events(true);
         }
-        emit_state(&app, "submitting", Some("正在发送回车…"));
-        sleep(Duration::from_millis(40)).await;
-        match perform_floating_orb_submit_enter(target).await {
+        match submit_enter_with_delayed_feedback(&app, target).await {
             Ok(()) => complete_floating_orb(app, "submitted", "已发送回车".into(), 800),
             Err(error) => {
                 eprintln!("[floating-orb] 自动回车未发送: {error}");
