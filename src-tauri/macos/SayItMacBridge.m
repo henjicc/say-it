@@ -736,6 +736,47 @@ bool sayit_macos_floating_orb_owns_pointer_event(void *nsWindow) {
     return ownsPointerEvent;
 }
 
+bool sayit_macos_pointer_is_over_dock(void) {
+    __block bool overDock = false;
+    SayItRunOnMainThread(^{
+        NSPoint point = NSEvent.mouseLocation;
+        NSScreen *targetScreen = nil;
+        for (NSScreen *screen in NSScreen.screens) {
+            if (NSPointInRect(point, screen.frame)) {
+                targetScreen = screen;
+                break;
+            }
+        }
+        if (targetScreen == nil) return;
+
+        NSDictionary *preferences =
+            [NSUserDefaults.standardUserDefaults persistentDomainForName:@"com.apple.dock"];
+        NSString *orientation = preferences[@"orientation"];
+        if (![orientation isKindOfClass:NSString.class]) orientation = @"bottom";
+        BOOL autoHide = [preferences[@"autohide"] boolValue];
+        CGFloat tileSize = [preferences[@"tilesize"] doubleValue];
+        CGFloat largeSize = [preferences[@"largesize"] doubleValue];
+        CGFloat autoHideDepth = MAX(72.0, MAX(tileSize, largeSize) + 24.0);
+        NSRect frame = targetScreen.frame;
+        NSRect visible = targetScreen.visibleFrame;
+
+        if ([orientation isEqualToString:@"left"]) {
+            CGFloat occupied = MAX(0.0, NSMinX(visible) - NSMinX(frame));
+            CGFloat depth = MAX(occupied, autoHide ? autoHideDepth : 0.0);
+            overDock = point.x <= NSMinX(frame) + depth;
+        } else if ([orientation isEqualToString:@"right"]) {
+            CGFloat occupied = MAX(0.0, NSMaxX(frame) - NSMaxX(visible));
+            CGFloat depth = MAX(occupied, autoHide ? autoHideDepth : 0.0);
+            overDock = point.x >= NSMaxX(frame) - depth;
+        } else {
+            CGFloat occupied = MAX(0.0, NSMinY(visible) - NSMinY(frame));
+            CGFloat depth = MAX(occupied, autoHide ? autoHideDepth : 0.0);
+            overDock = point.y <= NSMinY(frame) + depth;
+        }
+    });
+    return overDock;
+}
+
 static NSDictionary *SayItWindowInfoForApplication(NSRunningApplication *application, CGWindowID targetWindowId) {
     if (application == nil || application.processIdentifier <= 0) return nil;
     CFArrayRef rawWindows = CGWindowListCopyWindowInfo(

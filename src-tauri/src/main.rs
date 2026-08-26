@@ -432,7 +432,8 @@ fn main() {
             if app.get_webview_window("main").is_some() {
                 remember_main_window_placement(&app.handle());
             }
-            register_initial_main_window(&app.handle(), !start_hidden);
+            register_initial_main_window(&app.handle(), !start_hidden)
+                .map_err(std::io::Error::other)?;
             if start_hidden {
                 if let Err(error) = destroy_main_window(&app.handle()) {
                     eprintln!("[window] 静默启动销毁主窗口失败: {error}");

@@ -30,10 +30,22 @@ impl MainWindowLifecycle {
         self.phase
     }
 
-    pub(crate) fn register_initial_window(&mut self, should_open: bool) {
+    pub(crate) fn register_initial_window(&mut self, should_open: bool) -> bool {
+        // 平台预创建窗口的前端可能先于 setup 尾部完成 ready 握手。此时保留
+        // 已就绪状态，避免重新退回 Creating 后永远等不到第二次握手。
+        if matches!(self.phase, MainWindowPhase::Ready | MainWindowPhase::Visible) {
+            self.open_requested = should_open;
+            self.phase = if should_open {
+                MainWindowPhase::Visible
+            } else {
+                MainWindowPhase::Ready
+            };
+            return should_open;
+        }
         self.phase = MainWindowPhase::Creating;
         self.open_requested = should_open;
         self.generation = self.generation.wrapping_add(1);
+        false
     }
 
     pub(crate) fn request_open(&mut self, window_exists: bool) -> EnsureMainWindowAction {
@@ -65,6 +77,11 @@ impl MainWindowLifecycle {
     }
 
     pub(crate) fn mark_ready(&mut self) -> bool {
+        if self.phase == MainWindowPhase::Absent {
+            // setup 尚未登记平台预创建窗口时，先记住 WebView 已就绪。
+            self.phase = MainWindowPhase::Ready;
+            return false;
+        }
         if !matches!(
             self.phase,
             MainWindowPhase::Creating | MainWindowPhase::Ready
@@ -85,14 +102,22 @@ impl MainWindowLifecycle {
         self.open_requested = false;
     }
 
-    pub(crate) fn close_completed(&mut self) {
+    pub(crate) fn close_completed(&mut self) -> bool {
+        let reopen_requested = self.open_requested;
         self.phase = MainWindowPhase::Absent;
         self.open_requested = false;
+        reopen_requested
     }
 
-    pub(crate) fn close_failed_hidden(&mut self) {
-        self.phase = MainWindowPhase::Ready;
+    pub(crate) fn close_failed_hidden(&mut self) -> bool {
+        let reopen_requested = self.open_requested;
+        self.phase = if reopen_requested {
+            MainWindowPhase::Visible
+        } else {
+            MainWindowPhase::Ready
+        };
         self.open_requested = false;
+        reopen_requested
     }
 }
 
@@ -135,18 +160,18 @@ mod tests {
     #[test]
     fn closing_does_not_restart_or_own_background_domains() {
         let mut lifecycle = MainWindowLifecycle::default();
-        lifecycle.register_initial_window(true);
+        assert!(!lifecycle.register_initial_window(true));
         assert!(lifecycle.mark_ready());
         lifecycle.begin_close();
         assert_eq!(lifecycle.phase(), MainWindowPhase::Closing);
-        lifecycle.close_completed();
+        assert!(!lifecycle.close_completed());
         assert_eq!(lifecycle.phase(), MainWindowPhase::Absent);
     }
 
     #[test]
     fn hidden_initial_window_stays_ready_until_explicit_open() {
         let mut lifecycle = MainWindowLifecycle::default();
-        lifecycle.register_initial_window(false);
+        assert!(!lifecycle.register_initial_window(false));
         assert!(!lifecycle.mark_ready());
         assert_eq!(lifecycle.phase(), MainWindowPhase::Ready);
         assert_eq!(
@@ -154,5 +179,28 @@ mod tests {
             EnsureMainWindowAction::ShowExisting
         );
         assert_eq!(lifecycle.phase(), MainWindowPhase::Visible);
+    }
+
+    #[test]
+    fn ready_before_initial_registration_is_not_lost() {
+        let mut lifecycle = MainWindowLifecycle::default();
+        assert!(!lifecycle.mark_ready());
+        assert_eq!(lifecycle.phase(), MainWindowPhase::Ready);
+        assert!(lifecycle.register_initial_window(true));
+        assert_eq!(lifecycle.phase(), MainWindowPhase::Visible);
+    }
+
+    #[test]
+    fn open_requested_while_closing_is_replayed_after_destroy() {
+        let mut lifecycle = MainWindowLifecycle::default();
+        assert!(!lifecycle.register_initial_window(true));
+        assert!(lifecycle.mark_ready());
+        lifecycle.begin_close();
+        assert_eq!(
+            lifecycle.request_open(true),
+            EnsureMainWindowAction::AwaitReady
+        );
+        assert!(lifecycle.close_completed());
+        assert_eq!(lifecycle.phase(), MainWindowPhase::Absent);
     }
 }

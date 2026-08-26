@@ -499,6 +499,16 @@ fn reopen_suppression_is_active(deadline_ms: u64, current_ms: u64) -> bool {
     deadline_ms > current_ms
 }
 
+fn should_suppress_reopen_event(
+    cursor_over_orb: bool,
+    pointer_over_dock: bool,
+    suppression_active: bool,
+) -> bool {
+    // 指针仍在悬浮球上时一定是悬浮球交互；否则 Dock 命中优先视为用户
+    // 主动打开，不能被拖拽后的延迟抑制期误伤。
+    cursor_over_orb || (!pointer_over_dock && suppression_active)
+}
+
 pub(crate) fn mark_floating_orb_interaction(app: &tauri::AppHandle) {
     app.state::<RuntimeState>()
         .floating_orb_runtime
@@ -510,15 +520,21 @@ pub(crate) fn mark_floating_orb_interaction(app: &tauri::AppHandle) {
 }
 
 pub(crate) fn should_suppress_main_reopen(app: &tauri::AppHandle) -> bool {
-    if is_cursor_over_floating_orb(app) {
-        return true;
-    }
+    let cursor_over_orb = is_cursor_over_floating_orb(app);
+    #[cfg(target_os = "macos")]
+    let pointer_over_dock = crate::macos_native::pointer_is_over_dock();
+    #[cfg(not(target_os = "macos"))]
+    let pointer_over_dock = false;
     let deadline_ms = app
         .state::<RuntimeState>()
         .floating_orb_runtime
         .suppress_main_reopen_until_ms
         .load(Ordering::Acquire);
-    reopen_suppression_is_active(deadline_ms, now_millis())
+    should_suppress_reopen_event(
+        cursor_over_orb,
+        pointer_over_dock,
+        reopen_suppression_is_active(deadline_ms, now_millis()),
+    )
 }
 
 fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<MonitorRect> {
@@ -1040,10 +1056,25 @@ pub(crate) fn hide_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn floating_orb_open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+fn floating_orb_open_main_window_inner(app: tauri::AppHandle) -> Result<(), String> {
     hide_floating_orb_menu(app.clone())?;
     crate::desktop::ensure_main_window(&app)
+}
+
+#[tauri::command]
+pub(crate) async fn floating_orb_open_main_window(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || floating_orb_open_main_window_inner(app))
+            .await
+            .map_err(|error| format!("打开主窗口任务失败：{error}"))?
+    }
+    #[cfg(not(windows))]
+    {
+        floating_orb_open_main_window_inner(app)
+    }
 }
 
 fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
@@ -2010,6 +2041,14 @@ mod tests {
         assert!(reopen_suppression_is_active(2_500, 1_000));
         assert!(!reopen_suppression_is_active(2_500, 2_500));
         assert!(!reopen_suppression_is_active(2_500, 3_000));
+    }
+
+    #[test]
+    fn dock_click_bypasses_drag_reopen_suppression() {
+        assert!(!should_suppress_reopen_event(false, true, true));
+        assert!(should_suppress_reopen_event(true, true, true));
+        assert!(should_suppress_reopen_event(false, false, true));
+        assert!(!should_suppress_reopen_event(false, false, false));
     }
 
     #[test]

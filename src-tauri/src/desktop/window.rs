@@ -101,21 +101,44 @@ fn restore_main_window_placement(window: &tauri::WebviewWindow) -> bool {
     placement.maximized
 }
 
-fn reveal_main_window(window: &tauri::WebviewWindow) {
+fn reveal_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     let maximized = restore_main_window_placement(window);
-    let _ = window.set_skip_taskbar(false);
-    let _ = window.unminimize();
-    let _ = window.show();
-    if maximized {
-        let _ = window.maximize();
+    if let Err(error) = window.set_skip_taskbar(false) {
+        dlog!("[window] 恢复主窗口任务栏显示失败: {error}");
     }
-    let _ = window.set_focus();
+    if let Err(error) = window.unminimize() {
+        dlog!("[window] 取消主窗口最小化失败: {error}");
+    }
+    window
+        .show()
+        .map_err(|error| format!("显示主窗口失败: {error}"))?;
+    if maximized {
+        if let Err(error) = window.maximize() {
+            dlog!("[window] 恢复主窗口最大化失败: {error}");
+        }
+    }
+    window
+        .set_focus()
+        .map_err(|error| format!("激活主窗口失败: {error}"))
 }
 
-pub(crate) fn register_initial_main_window(app: &tauri::AppHandle, should_open: bool) {
-    if let Ok(mut lifecycle) = app.state::<RuntimeState>().main_window_lifecycle.lock() {
-        lifecycle.register_initial_window(should_open);
+pub(crate) fn register_initial_main_window(
+    app: &tauri::AppHandle,
+    should_open: bool,
+) -> Result<(), String> {
+    let should_reveal = app
+        .state::<RuntimeState>()
+        .main_window_lifecycle
+        .lock()
+        .map_err(|_| "主窗口生命周期锁已损坏".to_string())?
+        .register_initial_window(should_open);
+    if should_reveal {
+        let window = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| "已就绪的主窗口不存在".to_string())?;
+        reveal_main_window(&window)?;
     }
+    Ok(())
 }
 
 /// 托盘、单实例和其他显式打开路径共用的幂等入口。
@@ -137,13 +160,12 @@ pub(crate) fn ensure_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     match action {
         EnsureMainWindowAction::ShowExisting => {
             if let Some(window) = existing {
-                reveal_main_window(&window);
-                Ok(())
+                reveal_main_window(&window)
             } else {
                 // 窗口在状态检查后消失；下一次点击可以重新创建。
                 let state = app.state::<RuntimeState>();
                 if let Ok(mut lifecycle) = state.main_window_lifecycle.lock() {
-                    lifecycle.close_completed();
+                    let _ = lifecycle.close_completed();
                 }
                 Err("主窗口已在打开过程中被销毁，请重试".into())
             }
@@ -201,7 +223,7 @@ pub(crate) fn main_window_ready(window: tauri::WebviewWindow) -> Result<(), Stri
         // 平台配置中的初始 main 窗口不是由 `ensure_main_window` 创建；WebView ready
         // 后再同步一次，确保原生毛玻璃视图挂在最终的内容视图层级中。
         crate::desktop::floating_orb::sync_system_glass_window(&window);
-        reveal_main_window(&window);
+        reveal_main_window(&window)?;
     }
     Ok(())
 }
@@ -210,7 +232,7 @@ pub(crate) fn main_window_ready(window: tauri::WebviewWindow) -> Result<(), Stri
 pub(crate) fn destroy_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         if let Ok(mut lifecycle) = app.state::<RuntimeState>().main_window_lifecycle.lock() {
-            lifecycle.close_completed();
+            let _ = lifecycle.close_completed();
         }
         return Ok(());
     };
@@ -220,8 +242,20 @@ pub(crate) fn destroy_main_window(app: &tauri::AppHandle) -> Result<(), String> 
     }
     match window.destroy() {
         Ok(()) => {
-            if let Ok(mut lifecycle) = app.state::<RuntimeState>().main_window_lifecycle.lock() {
-                lifecycle.close_completed();
+            let reopen_requested = app
+                .state::<RuntimeState>()
+                .main_window_lifecycle
+                .lock()
+                .map(|mut lifecycle| lifecycle.close_completed())
+                .unwrap_or(false);
+            if reopen_requested {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::task::yield_now().await;
+                    if let Err(error) = ensure_main_window(&app) {
+                        eprintln!("[window] 重放关闭期间的打开请求失败: {error}");
+                    }
+                });
             }
             Ok(())
         }
@@ -229,8 +263,14 @@ pub(crate) fn destroy_main_window(app: &tauri::AppHandle) -> Result<(), String> 
             // 销毁失败时回退到旧 hide 语义，确保用户仍能从托盘恢复。
             let _ = window.set_skip_taskbar(true);
             let _ = window.hide();
-            if let Ok(mut lifecycle) = app.state::<RuntimeState>().main_window_lifecycle.lock() {
-                lifecycle.close_failed_hidden();
+            let reopen_requested = app
+                .state::<RuntimeState>()
+                .main_window_lifecycle
+                .lock()
+                .map(|mut lifecycle| lifecycle.close_failed_hidden())
+                .unwrap_or(false);
+            if reopen_requested {
+                let _ = reveal_main_window(&window);
             }
             Err(format!("销毁主窗口失败，已回退为隐藏: {error}"))
         }
