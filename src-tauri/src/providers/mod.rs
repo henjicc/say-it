@@ -1,13 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use connector::RealtimeAsrConnector;
-
 pub mod alibabacloud;
 pub mod apple_speech;
 pub mod browser_session_capture;
 pub mod capabilities;
-pub mod connector;
 pub mod credential_store;
 pub mod local_asr;
 pub mod model_download;
@@ -560,27 +557,6 @@ pub fn set_default_provider(
     Ok(())
 }
 
-/// 按供应商 `kind` 选取实时识别连接器，返回连接器与实际生效的模型名。
-/// 新增供应商时只需在这里加一个 match 分支。
-pub fn realtime_connector_for(
-    kind: &str,
-    config: &Value,
-    model_override: Option<&str>,
-) -> Result<(Box<dyn RealtimeAsrConnector>, String), String> {
-    match kind {
-        "sdk:bailian" => {
-            let params: alibabacloud::FunAsrParams =
-                serde_json::from_value(config.clone()).map_err(|e| e.to_string())?;
-            if params.api_key.trim().is_empty() {
-                return Err("请先在设置中填写阿里云百炼 API Key".to_string());
-            }
-            let model = params.realtime_model(model_override);
-            Ok((alibabacloud::realtime_connector(&params, &model), model))
-        }
-        other => Err(format!("当前版本不支持供应商类型：{other}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,13 +743,5 @@ mod tests {
         let normalized = normalize_settings(settings);
         assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
         assert!(!has_capability(&normalized, "plugin-provider", "asr"));
-    }
-
-    #[test]
-    fn realtime_connector_for_rejects_unknown_kind() {
-        match realtime_connector_for("unknown-kind", &json!({}), None) {
-            Err(err) => assert!(err.contains("不支持供应商类型")),
-            Ok(_) => panic!("expected an error for unknown kind"),
-        }
     }
 }

@@ -1,7 +1,11 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
-use super::alibabacloud::RealtimeAsrFamily;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RealtimeAsrFamily {
+    DashscopeDuplex,
+    QwenRealtime,
+}
 
 /// 模型注册表数据，编译期从仓库根的 shared/asr-models.json 内嵌。
 static REGISTRY_JSON: &str = include_str!("../../../shared/asr-models.json");
@@ -168,11 +172,6 @@ pub fn file_transcription_route(model: &str) -> FileTranscriptionRoute {
     }
 }
 
-/// 文件转写是否使用异步任务（决定是走轮询还是同步等待）。
-pub fn uses_async_transcription_task(model: &str) -> bool {
-    file_transcription_route(model) == FileTranscriptionRoute::AsyncOss
-}
-
 /// 获取默认的实时识别模型 ID。
 pub fn default_realtime_model() -> &'static str {
     REGISTRY
@@ -320,16 +319,6 @@ mod tests {
             file_transcription_route("unknown-model"),
             FileTranscriptionRoute::AsyncOss
         );
-    }
-
-    #[test]
-    fn test_uses_async_transcription_task() {
-        // 异步 OSS 模型返回 true
-        assert!(uses_async_transcription_task("fun-asr"));
-        assert!(uses_async_transcription_task("qwen3-asr-flash-filetrans"));
-        // 同步模型返回 false
-        assert!(!uses_async_transcription_task("fun-asr-flash-2026-06-15"));
-        assert!(!uses_async_transcription_task("qwen3-asr-flash"));
     }
 
     #[test]

@@ -11,6 +11,10 @@ use genai::chat::{
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::State;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -132,6 +136,9 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         .kind
         .strip_prefix("llm:")
         .ok_or_else(|| "大语言模型供应商类型无效".to_string())?;
+    if adapter == "groq" {
+        return Err("内置 Groq 必须通过 @henjicc/ai-sdk 执行".into());
+    }
     let model = profile_value(profile, "model");
     if model.is_empty() {
         return Err(format!("请先为 {} 设置模型", profile.display_name));
@@ -219,6 +226,15 @@ pub(crate) fn validate_available_for(
     model: Option<&str>,
 ) -> Result<(), String> {
     let profile = selected_profile(state, provider_id, model)?;
+    if profile.kind == "llm:groq" {
+        groq_sdk_request(&profile, Vec::new(), "zero")?;
+        let key =
+            crate::providers::credential_store::CredentialKey::provider("llm-groq", "apiKey")?;
+        if state.credentials.get(&key)?.is_none() {
+            return Err("请先为 Groq 设置 API Key".into());
+        }
+        return Ok(());
+    }
     client_and_model(&profile).map(|_| ())
 }
 
@@ -318,32 +334,7 @@ fn request_timeout_for(profile: &ProviderProfile, default_reasoning: Option<&str
     }
 }
 
-fn final_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> ChatOptions {
-    let model_name = profile_value(profile, "model").to_ascii_lowercase();
-    if profile.kind == "llm:groq" && model_name.contains("qwen3") {
-        // Groq Qwen 3 的推理开关只接受 none/default，不接受通用的
-        // low/medium/high。保留上层的开关语义，但在供应商边界压缩为它的二值协议。
-        let reasoning_enabled = options
-            .reasoning_effort
-            .as_ref()
-            .is_some_and(|effort| !matches!(effort, ReasoningEffort::Zero));
-        options.reasoning_effort = None;
-
-        let mut extra_body = options
-            .extra_body
-            .take()
-            .unwrap_or_else(|| serde_json::json!({}));
-        if !extra_body.is_object() {
-            extra_body = serde_json::json!({});
-        }
-        extra_body["reasoning_effort"] =
-            serde_json::json!(if reasoning_enabled { "default" } else { "none" });
-        if reasoning_enabled {
-            // parsed 会把思考过程放在 delta.reasoning，便于问答流式界面与正文分开展示。
-            extra_body["reasoning_format"] = serde_json::json!("parsed");
-        }
-        options = options.with_extra_body(extra_body);
-    }
+fn final_output_options(_profile: &ProviderProfile, options: ChatOptions) -> ChatOptions {
     options
 }
 
@@ -376,6 +367,139 @@ fn final_text_from_output(output: &str) -> Result<String, String> {
         return Err("大语言模型没有返回可用的最终文本".to_string());
     }
     Ok(final_text.to_string())
+}
+
+fn groq_sdk_request(
+    profile: &ProviderProfile,
+    messages: Vec<serde_json::Value>,
+    default_reasoning: &str,
+) -> Result<serde_json::Value, String> {
+    let model_name = profile_value(profile, "model");
+    if model_name.is_empty() {
+        return Err("请先为 Groq 设置模型".into());
+    }
+    let model = llm_models_from_config(&profile.config)
+        .into_iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
+    let reasoning = match model.reasoning_effort.as_str() {
+        "auto" | "" => default_reasoning,
+        value => value,
+    };
+    let mut request = json!({
+        "modelId": model_name,
+        "messages": messages,
+        "policy": { "maxTokens": model.max_tokens.unwrap_or(4096) },
+    });
+    if matches!(reasoning, "low" | "medium" | "high") {
+        request["capabilities"] = json!({ "reasoning": true });
+        request["reasoning"] = json!({ "enabled": true, "effort": reasoning });
+    }
+    Ok(request)
+}
+
+async fn run_groq_sdk(
+    state: &RuntimeState,
+    profile: ProviderProfile,
+    messages: Vec<serde_json::Value>,
+    default_reasoning: &str,
+    request_id: String,
+) -> Result<(String, String), String> {
+    let request = groq_sdk_request(&profile, messages, default_reasoning)?;
+    let credentials = state.credentials.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
+            &profile,
+            credentials,
+            crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+            request_id.clone(),
+            cancelled,
+            HashMap::new(),
+        )?;
+        let output = runtime.run_groq(request, &request_id, false)?;
+        let text = output
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let reasoning = output
+            .get("reasoningOutput")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok::<_, String>((text, reasoning))
+    })
+    .await
+    .map_err(|error| format!("Groq SDK 工作线程失败：{error}"))?
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_groq_sdk_stream<F>(
+    state: &RuntimeState,
+    profile: ProviderProfile,
+    messages: Vec<serde_json::Value>,
+    default_reasoning: &str,
+    request_id: String,
+    cancellation: CancellationToken,
+    mut on_update: F,
+) -> Result<(String, String), String>
+where
+    F: FnMut(&str, &str),
+{
+    let request = groq_sdk_request(&profile, messages, default_reasoning)?;
+    let credentials = state.credentials.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let task_cancelled = cancelled.clone();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
+    let task_request_id = request_id.clone();
+    let mut task = tauri::async_runtime::spawn_blocking(move || {
+        let runtime =
+            crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
+                &profile,
+                credentials,
+                crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+                task_request_id.clone(),
+                task_cancelled,
+                HashMap::new(),
+                Some(event_tx),
+            )?;
+        runtime.run_groq(request, &task_request_id, true)
+    });
+    let mut output = String::new();
+    let mut reasoning = String::new();
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                cancelled.store(true, Ordering::Relaxed);
+                let _ = task.await;
+                return Err("大语言模型请求已取消".into());
+            }
+            event = event_rx.recv() => {
+                if let Some(event) = event {
+                    let event = event.get("event").unwrap_or(&event);
+                    match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "Token" => output.push_str(event.get("data").and_then(Value::as_str).unwrap_or_default()),
+                        "ReasoningToken" => reasoning.push_str(event.get("data").and_then(Value::as_str).unwrap_or_default()),
+                        _ => {}
+                    }
+                    on_update(&output, &reasoning);
+                }
+            }
+            result = &mut task => {
+                let value = result
+                    .map_err(|error| format!("Groq SDK 工作线程失败：{error}"))??;
+                if output.is_empty() {
+                    output = value.get("output").and_then(Value::as_str).unwrap_or_default().to_string();
+                }
+                if reasoning.is_empty() {
+                    reasoning = value.get("reasoningOutput").and_then(Value::as_str).unwrap_or_default().to_string();
+                }
+                on_update(&output, &reasoning);
+                return Ok((output, reasoning));
+            }
+        }
+    }
 }
 
 fn supports_web_search(profile: &ProviderProfile) -> bool {
@@ -459,6 +583,23 @@ pub(crate) async fn process_prompt_with_options(
     enable_web_search: bool,
 ) -> Result<String, String> {
     let profile = selected_profile(state, provider_id, model_override)?;
+    if profile.kind == "llm:groq" {
+        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+        let messages = vec![
+            json!({ "role": "system", "content": system_prompt }),
+            json!({ "role": "user", "content": user_prompt }),
+        ];
+        crate::development_debug_log(
+            log_scope,
+            format_args!(
+                "通过 AI SDK 调用 Groq：requestId={request_id} model={}",
+                profile_value(&profile, "model")
+            ),
+        );
+        let (output, _) =
+            run_groq_sdk(state, profile, messages, default_reasoning, request_id).await?;
+        return final_text_from_output(&output);
+    }
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
         log_scope,
@@ -529,6 +670,29 @@ where
     F: FnMut(&str, &str),
 {
     let profile = selected_profile(state, provider_id, model_override)?;
+    if profile.kind == "llm:groq" {
+        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+        let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
+        for turn in history {
+            messages.push(json!({ "role": "user", "content": turn.user }));
+            messages.push(json!({ "role": "assistant", "content": turn.assistant }));
+        }
+        messages.push(json!({ "role": "user", "content": user_prompt }));
+        let (output, reasoning) = run_groq_sdk_stream(
+            state,
+            profile,
+            messages,
+            default_reasoning,
+            request_id,
+            cancellation,
+            on_update,
+        )
+        .await?;
+        return Ok((
+            final_text_from_output(&output)?,
+            reasoning.trim().to_string(),
+        ));
+    }
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
         log_scope,
@@ -873,7 +1037,7 @@ mod tests {
 
     #[test]
     fn non_deepseek_zero_keeps_generic_reasoning_option() {
-        let options = chat_options(&llm_profile("llm:groq", "zero")).unwrap();
+        let options = chat_options(&llm_profile("llm:openai", "zero")).unwrap();
 
         assert!(matches!(
             options.reasoning_effort,
@@ -893,70 +1057,19 @@ mod tests {
             Duration::from_secs(30)
         );
         assert_eq!(
-            request_timeout(&llm_profile("llm:groq", "auto")),
+            request_timeout(&llm_profile("llm:openai", "auto")),
             Duration::from_secs(30)
         );
     }
 
     #[test]
-    fn assistant_json_mode_disables_groq_qwen3_reasoning() {
-        let mut profile = llm_profile("llm:groq", "auto");
-        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
-        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
-        let options = structured_output_options(&profile, chat_options(&profile).unwrap());
-        assert!(matches!(
-            options.response_format,
-            Some(ChatResponseFormat::JsonMode)
-        ));
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({"reasoning_effort": "none"}))
-        );
-    }
-
-    #[test]
     fn assistant_json_mode_does_not_override_other_models_reasoning() {
-        let profile = llm_profile("llm:groq", "high");
+        let profile = llm_profile("llm:openai", "high");
         let options = structured_output_options(&profile, chat_options(&profile).unwrap());
         assert!(matches!(
             options.reasoning_effort,
             Some(ReasoningEffort::High)
         ));
-    }
-
-    #[test]
-    fn smart_text_disables_default_groq_qwen3_reasoning() {
-        let mut profile = llm_profile("llm:groq", "auto");
-        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
-        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
-
-        let options = final_output_options(&profile, chat_options(&profile).unwrap());
-
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({"reasoning_effort": "none"}))
-        );
-    }
-
-    #[test]
-    fn smart_text_maps_enabled_groq_qwen3_reasoning_to_default() {
-        let mut profile = llm_profile("llm:groq", "auto");
-        profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
-        profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
-
-        let options =
-            final_output_options(&profile, chat_options_for(&profile, Some("high")).unwrap());
-
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({
-                "reasoning_effort": "default",
-                "reasoning_format": "parsed"
-            }))
-        );
     }
 
     #[test]
@@ -977,5 +1090,22 @@ mod tests {
     fn final_text_rejects_thinking_without_final_answer() {
         let error = final_text_from_output("<think>内部推理</think>").unwrap_err();
         assert!(error.contains("没有返回可用的最终文本"));
+    }
+
+    #[test]
+    fn groq_sdk_request_uses_stable_provider_contract() {
+        let profile = llm_profile("llm:groq", "high");
+        let request = groq_sdk_request(
+            &profile,
+            vec![json!({ "role": "user", "content": "hello" })],
+            "zero",
+        )
+        .unwrap();
+        assert_eq!(request["modelId"], "demo");
+        assert_eq!(request["policy"]["maxTokens"], 4096);
+        assert_eq!(request["capabilities"]["reasoning"], true);
+        assert_eq!(request["reasoning"]["effort"], "high");
+        assert!(request.get("providerId").is_none());
+        assert!(request.to_string().find("apiKey").is_none());
     }
 }

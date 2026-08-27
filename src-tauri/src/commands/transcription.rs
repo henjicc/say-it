@@ -6,16 +6,11 @@ use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::capabilities::{
     file_recognition_for_with_extensions, FileRecognitionProvider, TranscriptionParams,
-    TranscriptionTaskStatus,
 };
 use crate::state::*;
 use crate::text_align::{align_script, AlignOutput, AlignWord};
 
 const TRANSCRIPTION_EVENT: &str = "transcription-event";
-const FIRST_POLL_DELAY: Duration = Duration::from_secs(2);
-const POLL_INTERVAL: Duration = Duration::from_secs(4);
-const POLL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
 type CancelFlag = Arc<AtomicBool>;
 
 #[derive(Serialize)]
@@ -201,118 +196,27 @@ async fn run_transcription_job(
         }),
     );
 
-    if !provider.uses_async_task(&model) {
-        // 同步短音频接口（fun-asr-flash / qwen3-asr-flash）直接读取本地文件识别，
-        // 不经过临时 OSS 上传：OSS 返回的 oss:// 资源地址仅异步转写接口能解析。
-        emit_transcription_event(
-            &app,
-            &job_id,
-            "submitted",
-            json!({
-                "taskId": "",
-            }),
-        );
-        let result = provider
-            .recognize_short(&file_path, &params, Some(cancel.clone()))
-            .await;
-        if is_cancelled(&cancel) {
-            return Ok(());
-        }
-        let result = result?;
-        emit_transcription_event(
-            &app,
-            &job_id,
-            "completed",
-            json!({
-                "taskId": "",
-                "result": result,
-            }),
-        );
-        return Ok(());
-    }
-
-    let file_url = provider.upload(&model, &file_path).await?;
-    if is_cancelled(&cancel) {
-        return Ok(());
-    }
-
-    let task_id = provider.submit(&model, &file_url, &params).await?;
+    // 内置百炼 SDK、v5 插件与本地模型都由各自能力模块完成上传/轮询；
+    // 宿主只持有一个可取消的能力执行，不再暴露供应商任务协议。
     emit_transcription_event(
         &app,
         &job_id,
         "submitted",
-        json!({
-            "taskId": &task_id,
-            "fileUrl": &file_url,
-        }),
+        json!({ "taskId": "", "moduleModel": model }),
     );
-    sleep(FIRST_POLL_DELAY).await;
-
-    let started_at = Instant::now();
-    let mut poll_count = 0_u32;
-    loop {
-        if is_cancelled(&cancel) {
-            return Ok(());
-        }
-        if started_at.elapsed() >= POLL_TIMEOUT {
-            return Err("录音识别任务轮询超时，请稍后重试".to_string());
-        }
-        poll_count += 1;
-        let status = provider.query(&task_id).await?;
-        emit_transcription_event(
-            &app,
-            &job_id,
-            "polling",
-            json!({
-                "taskId": &task_id,
-                "pollCount": poll_count,
-                "taskStatus": &status.task_status,
-            }),
-        );
-        let task_status = normalized_status(&status);
-        match task_status.as_str() {
-            "PENDING" | "RUNNING" => sleep(POLL_INTERVAL).await,
-            "SUCCEEDED" => {
-                let result_url = status.successful_transcription_url()?;
-                let result = provider.fetch(&result_url).await?;
-                if is_cancelled(&cancel) {
-                    return Ok(());
-                }
-                emit_transcription_event(
-                    &app,
-                    &job_id,
-                    "completed",
-                    json!({
-                        "taskId": &task_id,
-                        "result": result,
-                    }),
-                );
-                return Ok(());
-            }
-            "FAILED" => {
-                return Err(format_failed_task(&status));
-            }
-            other => {
-                return Err(format!("录音识别任务返回未知状态：{other}"));
-            }
-        }
+    let result = provider
+        .recognize_short(&file_path, &params, Some(cancel.clone()))
+        .await?;
+    if is_cancelled(&cancel) {
+        return Ok(());
     }
-}
-
-fn normalized_status(status: &TranscriptionTaskStatus) -> String {
-    status.task_status.trim().to_ascii_uppercase()
-}
-
-fn format_failed_task(status: &TranscriptionTaskStatus) -> String {
-    match (
-        status.code.as_deref().filter(|v| !v.is_empty()),
-        status.message.as_deref().filter(|v| !v.is_empty()),
-    ) {
-        (Some(code), Some(message)) => format!("录音识别任务失败 [{code}]：{message}"),
-        (Some(code), None) => format!("录音识别任务失败 [{code}]"),
-        (None, Some(message)) => format!("录音识别任务失败：{message}"),
-        (None, None) => "录音识别任务失败".to_string(),
-    }
+    emit_transcription_event(
+        &app,
+        &job_id,
+        "completed",
+        json!({ "taskId": "", "result": result }),
+    );
+    Ok(())
 }
 
 fn is_cancelled(cancel: &CancelFlag) -> bool {
@@ -348,6 +252,7 @@ fn resolve_file_recognition_provider(
         &profile,
         plugin,
         local_model,
+        state.credentials.clone(),
         crate::application::customization::resolve_for_model(state, model),
     )
     .map_err(|error| error.to_string())
