@@ -219,9 +219,11 @@ export default () => ({
     let networkDenied = false;
     let networkError = '';
     let abortDenied = false;
+    let oversizedError = '';
     try { await runtime.credentials.get('api-key', 'groq'); } catch (_) { providerDenied = true; }
     try { await runtime.credentials.get('other', 'bailian'); } catch (_) { scopeDenied = true; }
     try { await runtime.media.read('/etc/passwd'); } catch (_) { pathDenied = true; }
+    try { await runtime.media.read('media-oversized'); } catch (error) { oversizedError = String(error.message || error); }
     const form = new FormData();
     form.append('purpose', 'asr');
     form.append('file', new Blob([media.bytes], { type: media.mimeType }), media.filename);
@@ -241,6 +243,8 @@ export default () => ({
       text: new TextDecoder().decode(media.bytes),
       mimeType: media.mimeType,
       filename: media.filename,
+      byteLength: media.bytes.byteLength,
+      oversizedError,
       secretLength: secret.length,
       providerDenied,
       scopeDenied,
@@ -257,7 +261,11 @@ export default () => ({
 "#;
     let (root, mut spec, profile) = fixture(source);
     let media = root.join("sample.wav");
-    std::fs::write(&media, "媒体内容").unwrap();
+    let media_text = "媒体内容".repeat(20_000);
+    std::fs::write(&media, &media_text).unwrap();
+    let oversized = root.join("oversized.wav");
+    let oversized_file = std::fs::File::create(&oversized).unwrap();
+    oversized_file.set_len(10 * 1024 * 1024 + 1).unwrap();
     // 本测试刻意移除网络权限，证明 SDK adapter 不能绕过 manifest capability。
     spec.permissions.clear();
     let records = Arc::new(Mutex::new(Vec::new()));
@@ -266,14 +274,22 @@ export default () => ({
         &profile,
         Duration::from_secs(5),
         Arc::new(AtomicBool::new(false)),
-        HashMap::from([("media-1".into(), media)]),
+        HashMap::from([
+            ("media-1".into(), media),
+            ("media-oversized".into(), oversized),
+        ]),
         bindings(records.clone()),
     )
     .unwrap();
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["text"], "媒体内容");
+    assert_eq!(result["text"], media_text);
+    assert_eq!(result["byteLength"], media_text.len());
+    assert!(result["oversizedError"]
+        .as_str()
+        .unwrap()
+        .contains("10 MiB"));
     assert_eq!(result["mimeType"], "audio/wav");
     assert_eq!(result["filename"], "sample.wav");
     assert_eq!(result["secretLength"], SECRET.len());

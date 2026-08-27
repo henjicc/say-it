@@ -49,6 +49,9 @@
     url: string
   }
   interface StreamReadResult { done: boolean; bytes?: number[] }
+  interface MediaDescription { size: number; mimeType: string; filename: string }
+  interface MediaChunk { bytes: number[] }
+  const MEDIA_CHUNK_BYTES = 64 * 1024
 
   const activeStreams = new Set<string>()
   const timerCallbacks = new Map<string, { handler: (...args: unknown[]) => void; args: unknown[] }>()
@@ -213,8 +216,23 @@
     },
     media: {
       read: async (ref: string) => {
-        const result = call<{ bytes: number[]; mimeType: string; filename: string }>('media.read', { ref })
-        return { ...result, bytes: new Uint8Array(result.bytes) }
+        const description = call<MediaDescription>('media.describe', { ref })
+        if (!Number.isSafeInteger(description.size) || description.size < 0) {
+          throw new Error('宿主返回了非法媒体大小')
+        }
+        const bytes = new Uint8Array(description.size)
+        for (let offset = 0; offset < bytes.byteLength; offset += MEDIA_CHUNK_BYTES) {
+          const chunk = call<MediaChunk>('media.readChunk', {
+            ref,
+            offset,
+            length: Math.min(MEDIA_CHUNK_BYTES, bytes.byteLength - offset),
+          }).bytes
+          if (chunk.length === 0 || chunk.length > bytes.byteLength - offset) {
+            throw new Error('宿主媒体分块长度不符合声明')
+          }
+          bytes.set(chunk, offset)
+        }
+        return { ...description, bytes }
       },
     },
     credentials: {
