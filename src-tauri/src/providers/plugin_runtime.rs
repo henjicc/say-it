@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tokio_util::io::ReaderStream;
 use url::Url;
+use once_cell::sync::Lazy;
 
 use super::browser_session_capture::validate_capture_for_runtime;
 use super::credential_store::CredentialKey;
@@ -44,6 +45,86 @@ const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
+
+type RuntimeOwnerMap = HashMap<String, HashMap<String, Weak<AtomicBool>>>;
+static PLUGIN_RUNTIME_OWNERS: Lazy<(Mutex<RuntimeOwnerMap>, Condvar)> =
+    Lazy::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
+
+struct RuntimeOwnerRegistration {
+    namespace: String,
+    id: String,
+}
+
+impl RuntimeOwnerRegistration {
+    fn register(namespace: String, cancelled: &Arc<AtomicBool>) -> Result<Self, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        PLUGIN_RUNTIME_OWNERS
+            .0
+            .lock()
+            .map_err(|_| "插件运行时所有权锁定失败".to_string())?
+            .entry(namespace.clone())
+            .or_default()
+            .insert(id.clone(), Arc::downgrade(cancelled));
+        Ok(Self { namespace, id })
+    }
+}
+
+impl Drop for RuntimeOwnerRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut owners) = PLUGIN_RUNTIME_OWNERS.0.lock() {
+            if let Some(namespace) = owners.get_mut(&self.namespace) {
+                namespace.remove(&self.id);
+                if namespace.is_empty() {
+                    owners.remove(&self.namespace);
+                }
+            }
+            PLUGIN_RUNTIME_OWNERS.1.notify_all();
+        }
+    }
+}
+
+/// 卸载/停用前按 source namespace 取消所有在途 QuickJS，并等待 Drop 完成 SDK
+/// unregisterSource、会话 close 与宿主网络资源回收。
+pub fn drain_plugin_namespace(namespace: &str, timeout: Duration) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
+    let mut owners = PLUGIN_RUNTIME_OWNERS
+        .0
+        .lock()
+        .map_err(|_| "插件运行时所有权锁定失败".to_string())?;
+    let mut cancelled_count = 0;
+    loop {
+        let active = owners
+            .get_mut(namespace)
+            .map(|entries| {
+                entries.retain(|_, value| {
+                    let Some(cancelled) = value.upgrade() else {
+                        return false;
+                    };
+                    if !cancelled.swap(true, Ordering::Relaxed) {
+                        cancelled_count += 1;
+                    }
+                    true
+                });
+                entries.len()
+            })
+            .unwrap_or_default();
+        if active == 0 {
+            owners.remove(namespace);
+            return Ok(cancelled_count);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "插件 {namespace} 仍有 {active} 个运行时未释放，已取消卸载"
+            ));
+        }
+        let (next, _) = PLUGIN_RUNTIME_OWNERS
+            .1
+            .wait_timeout(owners, deadline.saturating_duration_since(now))
+            .map_err(|_| "等待插件运行时释放失败".to_string())?;
+        owners = next;
+    }
+}
 
 #[derive(Clone)]
 struct SafeResolver;
@@ -582,7 +663,8 @@ impl HostState {
     }
 
     fn media_read(&self, payload: Value) -> Result<Value, String> {
-        let (path, size, mime_type, filename) = self.media_description(&payload, MAX_MEDIA_BYTES)?;
+        let (path, size, mime_type, filename) =
+            self.media_description(&payload, MAX_MEDIA_BYTES)?;
         let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
         debug_assert_eq!(bytes.len() as u64, size);
         Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
@@ -691,7 +773,10 @@ impl HostState {
             .as_ref()
             .ok_or("插件运行时未绑定 CredentialStore")?;
         let key = CredentialKey::plugin(&self.spec.plugin_id, &self.sdk_provider_id(), field)?;
-        Ok(credentials.get(&key)?.map(Value::String).unwrap_or(Value::Null))
+        Ok(credentials
+            .get(&key)?
+            .map(Value::String)
+            .unwrap_or(Value::Null))
     }
 
     fn sdk_provider_id(&self) -> String {
@@ -963,6 +1048,7 @@ pub struct JsProviderRuntime {
     events: Arc<Mutex<Vec<Value>>>,
     deadline: Arc<Mutex<Instant>>,
     cancelled: Arc<AtomicBool>,
+    _owner: RuntimeOwnerRegistration,
 }
 
 struct PluginRuntimeRecorder;
@@ -1005,17 +1091,11 @@ pub fn create_plugin_capability_runtime(
     inputs: HashMap<String, PathBuf>,
 ) -> Result<JsProviderRuntime, String> {
     let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
-    JsProviderRuntime::create_with_sdk_bindings(
-        spec,
-        profile,
-        timeout,
-        cancelled,
-        inputs,
-        sdk,
-    )
+    JsProviderRuntime::create_with_sdk_bindings(spec, profile, timeout, cancelled, inputs, sdk)
 }
 
 impl JsProviderRuntime {
+    #[cfg(test)]
     pub fn create(
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
@@ -1221,6 +1301,10 @@ impl JsProviderRuntime {
                 .map_err(|error| js_error_with_context(&ctx, error))?;
             Ok(())
         })?;
+        let owner = RuntimeOwnerRegistration::register(
+            spec.source_namespace.clone(),
+            &cancelled,
+        )?;
         Ok(Self {
             _runtime: runtime,
             context,
@@ -1228,6 +1312,7 @@ impl JsProviderRuntime {
             events,
             deadline,
             cancelled,
+            _owner: owner,
         })
     }
 
@@ -1263,8 +1348,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + timeout;
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1291,8 +1375,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + timeout;
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1329,8 +1412,7 @@ impl JsProviderRuntime {
     }
 
     pub fn finish_capability_session(&self, timeout: Duration) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + timeout;
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -2204,5 +2286,130 @@ mod tests {
         let result = runtime.call("invoke", &json!({}), Duration::from_millis(20));
         assert!(result.is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn capability(
+        module_id: &str,
+        kind: &str,
+        model_id: &str,
+        execution_mode: &str,
+    ) -> super::super::plugin_capability::PluginCapabilityManifest {
+        super::super::plugin_capability::PluginCapabilityManifest {
+            module_id: module_id.into(),
+            kind: kind.into(),
+            provider_ids: vec!["test-provider".into()],
+            model_id: model_id.into(),
+            operations: vec![kind.into()],
+            features: vec!["streaming".into()],
+            tags: vec!["scripted".into()],
+            execution_modes: vec![execution_mode.into()],
+        }
+    }
+
+    #[test]
+    fn plugin_v5_adapter_executes_translation_file_asr_and_realtime_asr() {
+        let (root, mut spec, profile) = fixture(
+            r#"export default host => ({
+                invoke(request) {
+                    if (request.operation === 'translate') {
+                        host.emit({type:'delta', text:'译'});
+                        return {text:'译文'};
+                    }
+                    if (request.operation === 'transcribeFile') return {text:'文件识别'};
+                    throw new Error(`unexpected ${request.operation}`);
+                },
+                realtimeStart() { host.emit({type:'ready'}); },
+                realtimeAudio(bytes) { if (bytes.length !== 3) throw new Error('audio mismatch'); },
+                realtimeFinish() {
+                    host.emit({type:'final', text:'实时识别'});
+                    host.emit({type:'finished'});
+                },
+                realtimeStop() {},
+            });"#,
+            None,
+        );
+        spec.source_namespace = spec.plugin_id.clone();
+        spec.capabilities = vec![
+            capability(
+                "test-provider.translation.translate",
+                "translation",
+                "translate",
+                "event-stream",
+            ),
+            capability(
+                "test-provider.speech-recognition.file",
+                "speech-recognition",
+                "file",
+                "request-response",
+            ),
+            capability(
+                "test-provider.speech-recognition.live",
+                "speech-recognition",
+                "live",
+                "realtime",
+            ),
+        ];
+        let runtime = create_plugin_capability_runtime(
+            spec,
+            &profile,
+            "scripted",
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        let translated = runtime
+            .execute_capability(
+                "test-provider.translation.translate",
+                &json!({"text":"source"}),
+                "translation",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(translated["text"], "译文");
+        let file = runtime
+            .execute_capability(
+                "test-provider.speech-recognition.file",
+                &json!({"audio":{"kind":"bytes","bytes":[1]}}),
+                "file",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(file["text"], "文件识别");
+        runtime
+            .open_capability_session(
+                "test-provider.speech-recognition.live",
+                &json!({"sampleRate":16000}),
+                "live",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        runtime.send_capability_audio(vec![1, 2, 3]).unwrap();
+        let live = runtime
+            .finish_capability_session(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(live["text"], "实时识别");
+        assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn namespace_drain_cancels_and_waits_for_runtime_owner_drop() {
+        let namespace = format!("drain-{}", uuid::Uuid::new_v4());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled).unwrap();
+        let drain_namespace = namespace.clone();
+        let drain = std::thread::spawn(move || {
+            drain_plugin_namespace(&drain_namespace, Duration::from_secs(2))
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(cancelled.load(Ordering::Relaxed));
+        drop(owner);
+        assert_eq!(drain.join().unwrap().unwrap(), 1);
+        assert_eq!(drain_plugin_namespace(&namespace, Duration::ZERO).unwrap(), 0);
     }
 }

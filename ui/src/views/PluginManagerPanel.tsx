@@ -247,7 +247,7 @@ export function PluginManagerPanel() {
       >
         <div className="p-5">
           <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            确认卸载“{pendingUninstall?.name}”吗？插件配置、登录会话、Cookie、浏览数据与已下载的模型文件都会一并删除，无法恢复。
+            确认卸载“{pendingUninstall?.name}”吗？插件代码、登录会话、Cookie、浏览数据与已下载的模型文件会被删除；非敏感配置和系统凭据会保留，重新安装后可继续使用。
           </p>
           <div className="mt-6 flex justify-end gap-2">
             <Button size="sm" variant="dangerHover" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>
