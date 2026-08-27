@@ -233,6 +233,10 @@ mod tests {
         let nonce = next_storage_key();
         PluginRuntimeSpec {
             plugin_id: format!("sayit-session-test-{nonce}"),
+            source_namespace: format!("sayit-session-test-{nonce}"),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
             root: std::path::PathBuf::new(),
             entrypoint: std::path::PathBuf::new(),
             permissions: Vec::new(),

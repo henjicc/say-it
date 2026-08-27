@@ -12,6 +12,7 @@ pub mod credential_store;
 pub mod local_asr;
 pub mod model_download;
 pub mod plugin;
+pub mod plugin_capability;
 pub mod plugin_package;
 pub mod plugin_runtime;
 pub mod plugin_secrets;

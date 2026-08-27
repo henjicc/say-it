@@ -3077,7 +3077,7 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
         };
     }
     let runtime = match registry.runtime_for_provider(&provider_id) {
-        Ok(Some(runtime)) => runtime,
+        Ok(Some(runtime)) => runtime.bind_credentials(state.credentials.clone()),
         Ok(None) => {
             return OcrProvider::Unavailable {
                 selection: selected.into(),
