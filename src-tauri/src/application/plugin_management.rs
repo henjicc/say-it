@@ -3,9 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::commands::common::read_provider_settings;
-use crate::providers::browser_session_capture::{
-    requires_capture, validate_capture_for_sync,
-};
+use crate::providers::browser_session_capture::{requires_capture, validate_capture_for_sync};
 use crate::providers::find_profile;
 use crate::providers::plugin::{
     load_registry, PluginBrowserSessionManifest, PluginRegistrySnapshot, PluginRuntimeSpec,
@@ -23,10 +21,9 @@ fn sayit_paths_from_args(args: &[String], cwd: &Path) -> Vec<String> {
     let mut paths = Vec::new();
     for argument in args {
         let candidate = PathBuf::from(argument);
-        if !candidate
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case(plugin_package::SAYIT_PACKAGE_EXTENSION))
-        {
+        if !candidate.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case(plugin_package::SAYIT_PACKAGE_EXTENSION)
+        }) {
             continue;
         }
         let candidate = if candidate.is_absolute() {
@@ -286,10 +283,12 @@ pub(crate) fn uninstall_provider_plugin(
             .providers
             .lock()
             .map_err(|_| "供应商配置锁失败".to_string())?;
-        providers.profiles.retain(|profile| {
-            profile.id != provider_id
-                || !(profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
-        });
+        if providers.profiles.iter().any(|profile| {
+            profile.id == provider_id
+                && (profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
+        }) {
+            crate::providers::remove_profile_preserving_credentials(&mut providers, &provider_id);
+        }
         *providers = crate::providers::normalize_settings(providers.clone());
     }
     reload_provider_plugins(app, state)
@@ -434,8 +433,7 @@ async fn refresh_and_save_browser_session(
         } else {
             BROWSER_SYNC_TIMEOUT_MS
         };
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             let cookies = read_browser_cookies(window, browser)?;
             let missing = missing_required_cookies(&cookies, browser);
@@ -451,10 +449,7 @@ async fn refresh_and_save_browser_session(
                     format!(" capture={capture_result}")
                 }
             ));
-            if !cookies.is_empty()
-                && missing.is_empty()
-                && capture_status(&cookies).is_ok()
-            {
+            if !cookies.is_empty() && missing.is_empty() && capture_status(&cookies).is_ok() {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -661,10 +656,7 @@ mod tests {
 
     #[test]
     fn sayit_args_resolve_relative_paths_and_ignore_other_inputs() {
-        let root = std::env::temp_dir().join(format!(
-            "sayit-import-args-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("sayit-import-args-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let package = root.join("demo.SAYIT");
         std::fs::write(&package, b"package").unwrap();
@@ -692,10 +684,7 @@ mod tests {
 
     #[test]
     fn sayit_args_deduplicate_the_same_file() {
-        let root = std::env::temp_dir().join(format!(
-            "sayit-import-args-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("sayit-import-args-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let package = root.join("demo.sayit");
         std::fs::write(&package, b"package").unwrap();

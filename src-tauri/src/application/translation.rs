@@ -1,6 +1,6 @@
 use crate::providers::capabilities::translation_for_with_plugin;
 use crate::providers::capabilities::TranslationProvider;
-use crate::providers::{default_provider_id, find_profile};
+use crate::providers::default_provider_id;
 use crate::state::RuntimeState;
 
 pub(crate) async fn translate_text(
@@ -42,13 +42,14 @@ pub(crate) fn resolve_provider(
         .clone();
     let provider_id =
         plugin_provider.unwrap_or_else(|| default_provider_id(&settings, "translation"));
-    let profile = find_profile(&settings, &provider_id)
-        .filter(|profile| profile.enabled)
-        .ok_or_else(|| format!("翻译供应商 {provider_id} 不存在或未启用"))?;
+    let profile = crate::commands::common::provider_profile_for_execution(state, &provider_id)?;
+    if !profile.enabled {
+        return Err(format!("翻译供应商 {provider_id} 不存在或未启用"));
+    }
     let plugin = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败")?
         .runtime_for_provider(&provider_id)?;
-    translation_for_with_plugin(profile, plugin).map_err(|error| error.to_string())
+    translation_for_with_plugin(&profile, plugin).map_err(|error| error.to_string())
 }

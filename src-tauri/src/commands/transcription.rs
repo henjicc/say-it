@@ -323,7 +323,6 @@ fn resolve_file_recognition_provider(
     state: &RuntimeState,
     model: &str,
 ) -> Result<FileRecognitionProvider, String> {
-    let settings = read_provider_settings(state)?;
     let (plugin_model_provider, local_model) = {
         let registry = state
             .plugin_registry
@@ -338,15 +337,14 @@ fn resolve_file_recognition_provider(
         .map(|model| model.provider_id.clone())
         .or(plugin_model_provider);
     let provider_id = resolve_provider_id(state, "asr", model_provider)?;
-    let profile = find_profile(&settings, &provider_id)
-        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let profile = provider_profile_for_execution(state, &provider_id)?;
     let plugin = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider(&provider_id)?;
     file_recognition_for_with_extensions(
-        profile,
+        &profile,
         plugin,
         local_model,
         crate::application::customization::resolve_for_model(state, model),

@@ -93,7 +93,7 @@ pub fn file_recognition_for_with_extensions(
         });
     }
     match profile.kind.as_str() {
-        "alibabacloud-funasr" => Ok(FileRecognitionProvider::AlibabaCloud {
+        "sdk:bailian" => Ok(FileRecognitionProvider::AlibabaCloud {
             api_key: api_key(profile).map_err(|message| CapabilityError {
                 provider_id: profile.id.clone(),
                 capability: "fileRecognition",
@@ -331,8 +331,8 @@ impl OcrProvider {
 fn system_ocr_recognize(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
     #[cfg(windows)]
     {
-        let image = image::load_from_memory(png)
-            .map_err(|error| format!("解码 OCR 图像失败：{error}"))?;
+        let image =
+            image::load_from_memory(png).map_err(|error| format!("解码 OCR 图像失败：{error}"))?;
         crate::ocr::windows::recognize(&image)
     }
     #[cfg(target_os = "macos")]
@@ -421,7 +421,7 @@ pub fn translation_for_with_plugin(
         });
     }
     match profile.kind.as_str() {
-        "alibabacloud-funasr" => Ok(TranslationProvider::AlibabaCloud {
+        "sdk:bailian" => Ok(TranslationProvider::AlibabaCloud {
             api_key: api_key(profile).map_err(|message| CapabilityError {
                 provider_id: profile.id.clone(),
                 capability: "translation",
@@ -502,7 +502,7 @@ pub fn customization_for_with_plugin(
         });
     }
     match profile.kind.as_str() {
-        "alibabacloud-funasr" => Ok(CustomizationProvider::AlibabaCloud {
+        "sdk:bailian" => Ok(CustomizationProvider::AlibabaCloud {
             api_key: profile
                 .config
                 .get("apiKey")
@@ -654,7 +654,7 @@ mod tests {
     }
     #[test]
     fn registered_provider_exposes_real_capabilities() {
-        let mut p = super::super::funasr_profile();
+        let mut p = super::super::bailian_profile();
         p.config["apiKey"] = json!("test");
         assert!(file_recognition_for(&p).is_ok());
         assert!(translation_for(&p).is_ok());
@@ -679,10 +679,14 @@ mod tests {
         assert_eq!(blocks[1].bounds.right, 1.0);
         assert_eq!(blocks[1].bounds.bottom, 1.0);
 
-        assert!(parse_plugin_ocr_blocks(&json!({})).unwrap_err().contains("缺少 blocks"));
-        assert!(parse_plugin_ocr_blocks(&json!({ "blocks": [{ "text": "x" }] }))
+        assert!(parse_plugin_ocr_blocks(&json!({}))
             .unwrap_err()
-            .contains("格式错误"));
+            .contains("缺少 blocks"));
+        assert!(
+            parse_plugin_ocr_blocks(&json!({ "blocks": [{ "text": "x" }] }))
+                .unwrap_err()
+                .contains("格式错误")
+        );
     }
 
     #[test]

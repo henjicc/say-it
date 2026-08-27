@@ -420,11 +420,6 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
             placeholder={profile.status?.hasApiKey ? "输入新 Key 可覆盖" : "输入 API Key"}
             onDraftChange={handleApiKeyChange}
             onBlur={handleApiKeyBlur}
-            revealStoredValue={() => cmd<string>(CMD.getProviderApiKey, { providerId: profile.id })}
-            onRevealError={(error) => {
-              setMessage(`读取 API Key 失败：${String(error)}`);
-              setMessageError(true);
-            }}
           />
         </Field>
         {isCustom && (

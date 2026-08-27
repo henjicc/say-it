@@ -42,7 +42,10 @@ fn sync_targets(state: &tauri::State<'_, RuntimeState>) -> Result<Vec<(String, S
         .iter()
         .filter(|profile| profile.enabled)
         .filter(|profile| {
-            profile.capabilities.iter().any(|item| item == "customization")
+            profile
+                .capabilities
+                .iter()
+                .any(|item| item == "customization")
                 || crate::providers::actions_for(profile)
                     .iter()
                     .any(|item| item == "manageHotwords")
@@ -55,16 +58,14 @@ fn customization_context_for(
     state: &tauri::State<'_, RuntimeState>,
     provider_id: &str,
 ) -> Result<(String, CustomizationProvider, HashMap<String, String>), String> {
-    let settings = read_provider_settings(state)?;
-    let profile = find_profile(&settings, provider_id)
-        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let profile = provider_profile_for_execution(state, provider_id)?;
     let plugin = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider(provider_id)?;
     let provider =
-        customization_for_with_plugin(profile, plugin).map_err(|error| error.to_string())?;
+        customization_for_with_plugin(&profile, plugin).map_err(|error| error.to_string())?;
     Ok((
         profile.id.clone(),
         provider,
@@ -104,7 +105,10 @@ fn apply_provider_patch(
         settings
     };
     save_persisted_state(app, state)?;
-    Ok(provider_settings_response(settings))
+    Ok(provider_settings_response(
+        settings,
+        Some(&state.credentials),
+    ))
 }
 
 /// 把全局热词推送到一个供应商：插件走统一的 `setHotwords`；阿里云为每个需要独立词表的
@@ -190,7 +194,10 @@ pub(crate) async fn customization_sync_providers(
         });
     }
     Ok(CustomizationSyncResponse {
-        providers: provider_settings_response(read_provider_settings(&state)?),
+        providers: provider_settings_response(
+            read_provider_settings(&state)?,
+            Some(&state.credentials),
+        ),
         results,
     })
 }
@@ -240,7 +247,12 @@ pub(crate) async fn customization_pull_from_provider(
 
     if let Some(vocabulary_ids) = vocabulary_ids {
         let value = serde_json::to_value(&vocabulary_ids).map_err(|e| e.to_string())?;
-        apply_provider_patch(&app, &state, &provider_id, json!({ "vocabularyIds": value }))?;
+        apply_provider_patch(
+            &app,
+            &state,
+            &provider_id,
+            json!({ "vocabularyIds": value }),
+        )?;
     }
 
     let mut prefs = crate::application::customization::prefs(&state);
@@ -273,7 +285,10 @@ pub(crate) async fn customization_clear_providers(
         });
     }
     Ok(CustomizationSyncResponse {
-        providers: provider_settings_response(read_provider_settings(&state)?),
+        providers: provider_settings_response(
+            read_provider_settings(&state)?,
+            Some(&state.credentials),
+        ),
         results,
     })
 }

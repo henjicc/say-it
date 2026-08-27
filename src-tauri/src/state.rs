@@ -7,6 +7,7 @@ pub(crate) struct RuntimeState {
     pub(crate) snapshot_revision: AtomicU64,
     pub(crate) app_settings: Mutex<crate::application::settings::AppSettings>,
     pub(crate) providers: Mutex<ProviderSettings>,
+    pub(crate) credentials: crate::providers::credential_store::CredentialStoreHandle,
     pub(crate) plugin_registry: Mutex<crate::providers::plugin::PluginRegistry>,
     pub(crate) pending_plugin_imports: Mutex<VecDeque<String>>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,

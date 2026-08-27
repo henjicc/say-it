@@ -290,7 +290,7 @@ mod tests {
     fn legacy_provider_hotwords_are_merged_once() {
         let mut settings = crate::application::settings::AppSettings::default();
         let mut providers = crate::providers::ProviderSettings::default();
-        let mut profile = crate::providers::funasr_profile();
+        let mut profile = crate::providers::bailian_profile();
         profile.config["hotwords"] =
             serde_json::json!([{"text": "说吧", "weight": 3}, {"text": "说吧", "weight": 5}]);
         providers.profiles = vec![profile];
@@ -303,8 +303,10 @@ mod tests {
         assert!(providers.profiles[0].config.get("hotwords").is_none());
 
         // 二次迁移不得覆盖用户后来的编辑结果。
-        settings.customization_prefs = serde_json::json!({"hotwords": [], "contextTemplate": "自定义"});
-        providers.profiles[0].config["hotwords"] = serde_json::json!([{"text": "残留", "weight": 3}]);
+        settings.customization_prefs =
+            serde_json::json!({"hotwords": [], "contextTemplate": "自定义"});
+        providers.profiles[0].config["hotwords"] =
+            serde_json::json!([{"text": "残留", "weight": 3}]);
         migrate_legacy_provider_hotwords(&mut settings, &mut providers);
         assert_eq!(settings.customization_prefs["contextTemplate"], "自定义");
         assert!(providers.profiles[0].config.get("hotwords").is_none());

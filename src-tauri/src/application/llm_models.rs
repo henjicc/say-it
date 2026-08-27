@@ -1,10 +1,9 @@
-use crate::commands::common::provider_settings_response;
+use crate::commands::common::{provider_profile_for_execution, provider_settings_response};
 use crate::persistence::save_persisted_state;
 use crate::providers::{
     llm_models_from_config, llm_responses_endpoint, llm_uses_responses, normalize_llm_endpoint,
-    normalize_settings, set_llm_models,
-    LlmModelAvailability, LlmModelConfig, LlmModelSource, ProviderProfile,
-    ProviderSettingsResponse,
+    normalize_settings, set_llm_models, LlmModelAvailability, LlmModelConfig, LlmModelSource,
+    ProviderProfile, ProviderSettingsResponse,
 };
 use crate::state::RuntimeState;
 use genai::adapter::AdapterKind;
@@ -160,19 +159,7 @@ pub(crate) async fn refresh_llm_models(
     state: State<'_, RuntimeState>,
 ) -> Result<ProviderSettingsResponse, String> {
     let attempted_at = now_millis();
-    let requested_profile = {
-        let guard = state
-            .providers
-            .lock()
-            .map_err(|_| "大语言模型配置锁失败".to_string())?;
-        let settings = normalize_settings(guard.clone());
-        settings
-            .profiles
-            .iter()
-            .find(|profile| profile.id == provider_id)
-            .cloned()
-            .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?
-    };
+    let requested_profile = provider_profile_for_execution(&state, &provider_id)?;
     adapter_kind(&requested_profile)?;
     provider_config(&requested_profile)?;
     {
@@ -200,6 +187,10 @@ pub(crate) async fn refresh_llm_models(
         return Err("供应商没有返回可用模型，已保留原模型列表".to_string());
     }
 
+    let current_execution_profile = provider_profile_for_execution(&state, &provider_id)?;
+    if !same_connection(&current_execution_profile, &requested_profile) {
+        return Err("供应商配置在获取模型期间发生变化，请重新刷新".to_string());
+    }
     let settings = {
         let mut guard = state
             .providers
@@ -211,9 +202,6 @@ pub(crate) async fn refresh_llm_models(
             .iter_mut()
             .find(|profile| profile.id == provider_id)
             .ok_or_else(|| format!("供应商 {provider_id} 已被删除"))?;
-        if !same_connection(profile, &requested_profile) {
-            return Err("供应商配置在获取模型期间发生变化，请重新刷新".to_string());
-        }
         let current_model = profile_value(profile, "model").to_string();
         let models = merge_remote_models(
             llm_models_from_config(&profile.config),
@@ -235,7 +223,10 @@ pub(crate) async fn refresh_llm_models(
         settings
     };
     save_persisted_state(&app, &state)?;
-    Ok(provider_settings_response(settings))
+    Ok(provider_settings_response(
+        settings,
+        Some(&state.credentials),
+    ))
 }
 
 #[cfg(test)]

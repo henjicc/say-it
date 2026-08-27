@@ -127,11 +127,10 @@ fn provider_check(state: &RuntimeState) -> SetupCheckResult {
                         };
                     }
                     let requires_key = profile.auth_kind == "api-key";
-                    let has_key = profile
-                        .config
-                        .get("apiKey")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|value| !value.trim().is_empty());
+                    let has_key =
+                        crate::providers::credential_store::key_for_profile(profile, "apiKey")
+                            .and_then(|key| state.credentials.get(&key))
+                            .is_ok_and(|value| value.is_some_and(|value| !value.trim().is_empty()));
                     if !requires_key || has_key || profile.kind.starts_with("plugin:") {
                         (ready + 1, incomplete)
                     } else {

@@ -10,8 +10,8 @@ const setView = vi.fn();
 const setSettingsTab = vi.fn();
 
 const cloudProvider = {
-  id: "funasr",
-  kind: "alibabacloud-funasr",
+  id: "bailian",
+  kind: "sdk:bailian",
   displayName: "阿里云百炼",
   authKind: "api-key",
   capabilities: ["asr"],
@@ -45,7 +45,7 @@ vi.mock("@/features/asr/modelRegistry", () => ({
   useModelCatalogRevision: () => 0,
   modelInfo: (id: string) => id === "local-model"
     ? { id, label: "离线模型", providerId: "local", protocol: "local-sherpa-offline" }
-    : { id, label: "云端模型", providerId: "funasr", protocol: "dashscope-duplex" },
+    : { id, label: "云端模型", providerId: "bailian", protocol: "dashscope-duplex" },
 }));
 
 vi.mock("@/store/useDictPrefs", () => ({
@@ -117,7 +117,7 @@ describe("OnboardingWizard", () => {
     await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "local-model" }));
     fireEvent.change(screen.getByLabelText("阿里云百炼 API Key"), { target: { value: "test-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(updateProviderConfig).toHaveBeenCalledWith("funasr", { apiKey: "test-key" }));
+    await waitFor(() => expect(updateProviderConfig).toHaveBeenCalledWith("bailian", { apiKey: "test-key" }));
 
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(screen.getByRole("heading", { name: "需要离线使用？" })).toBeInTheDocument();

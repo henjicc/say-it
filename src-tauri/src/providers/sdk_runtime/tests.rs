@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::{accept, Message};
 
-use super::{HostCredentialReader, HostRuntimeRecorder, SdkHostBindings};
+use super::{HostRuntimeRecorder, SdkHostBindings};
+use crate::providers::credential_store::{CredentialKey, CredentialStore, CredentialStoreHandle};
 use crate::providers::plugin::PluginRuntimeSpec;
 use crate::providers::plugin_runtime::JsProviderRuntime;
 use crate::providers::ProviderProfile;
@@ -48,11 +49,18 @@ fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
 #[derive(Clone)]
 struct TestCredentials;
 
-impl HostCredentialReader for TestCredentials {
-    fn get(&self, scope: &str, provider_id: &str) -> Result<Option<String>, String> {
-        assert_eq!(scope, "api-key");
-        assert_eq!(provider_id, "bailian");
+impl CredentialStore for TestCredentials {
+    fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
+        assert_eq!(key, &CredentialKey::provider("bailian", "apiKey").unwrap());
         Ok(Some(SECRET.into()))
+    }
+
+    fn set(&self, _key: &CredentialKey, _value: &str) -> Result<(), String> {
+        panic!("test runtime must not write credentials")
+    }
+
+    fn delete(&self, _key: &CredentialKey) -> Result<(), String> {
+        panic!("test runtime must not delete credentials")
     }
 }
 
@@ -71,7 +79,8 @@ fn bindings(records: Arc<Mutex<Vec<Value>>>) -> SdkHostBindings {
         provider_id: "bailian".into(),
         request_id: "request-1".into(),
         credential_scopes: HashSet::from(["api-key".into()]),
-        credentials: Arc::new(TestCredentials),
+        credential_key: CredentialKey::provider("bailian", "apiKey").unwrap(),
+        credentials: CredentialStoreHandle::from_store(Arc::new(TestCredentials)),
         recorder: Arc::new(TestRecorder(records)),
     }
 }
@@ -293,6 +302,39 @@ export default () => ({
     assert!(!serialized.contains("authorization"));
     assert!(serialized.contains("sdk.request"));
     assert!(serialized.contains("paraformer-realtime-v2"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn quickjs_initialize_receives_non_secret_config_only() {
+    let source = r#"
+export default () => {
+  let initializedConfig = null;
+  return {
+    async initialize(request) { initializedConfig = request.config; },
+    async invoke() { return initializedConfig; }
+  };
+};
+"#;
+    let (root, spec, mut profile) = fixture(source);
+    profile.auth_kind = "api-key".into();
+    profile.config = json!({"apiKey": SECRET, "region": "cn-beijing"});
+    let runtime = create_sdk_runtime(
+        source,
+        spec,
+        &profile,
+        Arc::new(AtomicBool::new(false)),
+        HashMap::new(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+
+    let result = runtime
+        .call("invoke", &json!({}), Duration::from_secs(3))
+        .unwrap();
+
+    assert_eq!(result["region"], "cn-beijing");
+    assert!(result.get("apiKey").is_none());
+    assert!(!serde_json::to_string(&result).unwrap().contains(SECRET));
     std::fs::remove_dir_all(root).unwrap();
 }
 

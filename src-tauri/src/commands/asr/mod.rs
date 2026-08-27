@@ -1,8 +1,8 @@
-mod session;
 #[cfg(target_os = "macos")]
 mod apple_session;
 mod local_session;
 mod plugin_session;
+mod session;
 
 use crate::commands::common::*;
 use crate::prelude::*;
@@ -39,10 +39,7 @@ pub(crate) async fn start_asr_stream_inner(
             resolve_provider_id(&state, "asr", model_provider)?
         }
     };
-    let settings = read_provider_settings(&state)?;
-    let profile = find_profile(&settings, &provider_id)
-        .cloned()
-        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    let profile = provider_profile_for_execution(&state, &provider_id)?;
     if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
         let model = model_override
             .filter(|model| !model.trim().is_empty())

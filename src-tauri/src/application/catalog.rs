@@ -103,7 +103,7 @@ pub(crate) fn get_model_catalog(
         .lock()
         .map_err(|_| "插件注册表锁失败")?;
     Ok(build_catalog(
-        provider_settings_response(read_provider_settings(&state)?),
+        provider_settings_response(read_provider_settings(&state)?, Some(&state.credentials)),
         &plugins,
     ))
 }
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn catalog_is_complete_and_defaults_exist() {
         let catalog = build_catalog(
-            provider_settings_response(normalize_settings(ProviderSettings::default())),
+            provider_settings_response(normalize_settings(ProviderSettings::default()), None),
             &PluginRegistry::default(),
         );
         let expected = if crate::providers::apple_speech::runtime_available() {
@@ -141,7 +141,7 @@ mod tests {
         // 内置模型都没有显式声明，必须按 category 推导出与改动前一致的行为，
         // 否则旧插件清单升级后下拉标注会集体错位。
         let catalog = build_catalog(
-            provider_settings_response(normalize_settings(ProviderSettings::default())),
+            provider_settings_response(normalize_settings(ProviderSettings::default()), None),
             &PluginRegistry::default(),
         );
         for model in &catalog.models {
@@ -198,7 +198,7 @@ mod tests {
             actions: vec![],
         });
         let catalog = build_catalog(
-            provider_settings_response(normalize_settings(settings)),
+            provider_settings_response(normalize_settings(settings), None),
             &PluginRegistry::default(),
         );
         let effective = catalog
@@ -206,6 +206,6 @@ mod tests {
             .profiles
             .iter()
             .find(|p| p.effective_capabilities.iter().any(|c| c == "asr"));
-        assert_eq!(effective.map(|p| p.id.as_str()), Some("funasr"));
+        assert_eq!(effective.map(|p| p.id.as_str()), Some("bailian"));
     }
 }

@@ -1,14 +1,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::providers::credential_store::{CredentialKey, CredentialStoreHandle};
 use serde_json::Value;
 
 pub const QUICKJS_RUNTIME_BOOTSTRAP: &str =
     include_str!(concat!(env!("OUT_DIR"), "/sayit-sdk-runtime-bootstrap.js"));
-
-pub trait HostCredentialReader: Send + Sync {
-    fn get(&self, scope: &str, provider_id: &str) -> Result<Option<String>, String>;
-}
 
 pub trait HostRuntimeRecorder: Send + Sync {
     fn record(&self, event: Value);
@@ -20,7 +17,8 @@ pub struct SdkHostBindings {
     pub provider_id: String,
     pub request_id: String,
     pub credential_scopes: HashSet<String>,
-    pub credentials: Arc<dyn HostCredentialReader>,
+    pub credential_key: CredentialKey,
+    pub credentials: CredentialStoreHandle,
     pub recorder: Arc<dyn HostRuntimeRecorder>,
 }
 

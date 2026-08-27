@@ -289,6 +289,7 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         .map(|value| value.clamp(1, 3650) as u32)
         .unwrap_or(DEFAULT_RETENTION_DAYS);
     let connection = open(app)?;
+    migrate_provider_ids(&connection)?;
     cleanup_expired_with_connection(&connection, retention_days)?;
     refresh_correction_memory(app, &connection)?;
     let app = app.clone();
@@ -315,6 +316,16 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+fn migrate_provider_ids(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute(
+            "UPDATE history_entries SET provider_id = 'bailian' WHERE provider_id = 'funasr'",
+            [],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("迁移历史供应商 ID 失败：{error}"))
 }
 
 pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, String> {
@@ -732,6 +743,33 @@ mod tests {
         assert_eq!(get_entry(&connection, "one").unwrap().output_text, "原文");
         let removed = cleanup_expired_with_connection(&connection, 30).unwrap();
         assert_eq!(removed, 1);
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_history_provider_id_migrates_idempotently() {
+        let path =
+            std::env::temp_dir().join(format!("sayit-history-id-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO history_entries (id, created_at, task_kind, source_text, output_text,
+                 provider_id, model_id, status) VALUES ('legacy', 1, 'dictation', 'a', 'a',
+                 'funasr', 'fun-asr-realtime', 'succeeded')",
+                [],
+            )
+            .unwrap();
+        migrate_provider_ids(&connection).unwrap();
+        migrate_provider_ids(&connection).unwrap();
+        let provider_id: String = connection
+            .query_row(
+                "SELECT provider_id FROM history_entries WHERE id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider_id, "bailian");
         drop(connection);
         let _ = std::fs::remove_file(path);
     }
