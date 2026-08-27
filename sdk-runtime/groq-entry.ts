@@ -1,6 +1,7 @@
 import {
   discoverGroqModels,
   GROQ_DEFAULT_MODEL_ID,
+  GROQ_LLM_MODULE_DESCRIPTOR,
   GROQ_PROVIDER_ID,
   runGroqChatStream,
   type DiscoveredModelItem,
@@ -11,6 +12,10 @@ import {
 } from '@henjicc/ai-sdk/llm/groq'
 
 export const SAYIT_GROQ_MODULE_SOURCE = 'groq-llm' as const
+
+export function sayItGroqModuleDescriptorJson(): string {
+  return JSON.stringify([GROQ_LLM_MODULE_DESCRIPTOR])
+}
 
 export interface SayItGroqRunOptions {
   timeoutMs?: number

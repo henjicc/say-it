@@ -171,6 +171,59 @@ async fn fetch_model_names(
             .map(str::to_string)
             .collect());
     }
+    if profile.kind.starts_with("plugin:")
+        && profile.capabilities.iter().any(|value| value == "llm")
+    {
+        let model_id = profile_value(profile, "model");
+        let (spec, capability, declared) = {
+            let plugins = state
+                .plugin_registry
+                .lock()
+                .map_err(|_| "插件注册表锁定失败".to_string())?;
+            let spec = plugins
+                .runtime_for_provider(&profile.id)?
+                .ok_or_else(|| format!("插件供应商 {} 没有 JavaScript runtime", profile.id))?
+                .bind_credentials(state.credentials.clone());
+            let capability = plugins
+                .llm_capability(&profile.id, model_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("插件 {} 未注册模型 {model_id} 的 LLM module", profile.id)
+                })?;
+            (spec, capability, plugins.llm_model_ids(&profile.id))
+        };
+        if !capability.model_discovery {
+            return Ok(declared);
+        }
+        let request_id = format!("plugin-llm-discovery-{}", uuid::Uuid::new_v4());
+        let profile = profile.clone();
+        let value = tauri::async_runtime::spawn_blocking(move || {
+            let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
+                spec,
+                &profile,
+                &request_id,
+                MODEL_LIST_TIMEOUT,
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )?;
+            runtime.discover_llm(&capability.module_id, &request_id, MODEL_LIST_TIMEOUT)
+        })
+        .await
+        .map_err(|error| format!("插件 LLM 模型发现工作线程失败：{error}"))??;
+        let names = value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("modelId").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if let Some(undeclared) = names.iter().find(|name| !declared.contains(name)) {
+            return Err(format!(
+                "插件模型发现返回未静态注册的模型 {undeclared}；Plugin API v5 要求先声明对应 module"
+            ));
+        }
+        return Ok(names);
+    }
     let adapter_kind = adapter_kind(profile)?;
     let provider_config = provider_config(profile)?;
     timeout(
@@ -191,12 +244,26 @@ pub(crate) async fn refresh_llm_models(
     let attempted_at = now_millis();
     let requested_profile = provider_profile_for_execution(&state, &provider_id)?;
     if requested_profile.kind == "llm:groq" {
-        let key = crate::providers::credential_store::CredentialKey::provider(
-            "llm-groq",
-            "apiKey",
-        )?;
+        let key =
+            crate::providers::credential_store::CredentialKey::provider("llm-groq", "apiKey")?;
         if state.credentials.get(&key)?.is_none() {
             return Err("请先为 Groq 设置 API Key".into());
+        }
+    } else if requested_profile.kind.starts_with("plugin:")
+        && requested_profile
+            .capabilities
+            .iter()
+            .any(|value| value == "llm")
+    {
+        let plugins = state
+            .plugin_registry
+            .lock()
+            .map_err(|_| "插件注册表锁定失败".to_string())?;
+        if plugins
+            .runtime_for_provider(&requested_profile.id)?
+            .is_none()
+        {
+            return Err("插件 LLM runtime 不可用".into());
         }
     } else {
         adapter_kind(&requested_profile)?;

@@ -125,6 +125,8 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   const isDefault = profile.effectiveCapabilities?.includes("llm") ?? false;
   const isBuiltin = profile.id === "llm-groq";
   const isCustom = profile.kind === "llm:custom";
+  const isPlugin = profile.kind.startsWith("plugin:");
+  const secretField = profile.configFields?.find((field) => field.secret);
   const [model, setModel] = useState(() => String(profile.config?.model ?? ""));
   const [models, setModels] = useState<LlmModelConfig[]>(() => modelsFromProfile(profile));
   const [endpoint, setEndpoint] = useState(() => String(profile.config?.endpoint ?? ""));
@@ -219,7 +221,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   const saveApiKeyDraft = async (draft: string) => {
     const trimmed = draft.trim();
     if (!trimmed) return;
-    const config: Record<string, unknown> = { apiKey: trimmed };
+    const config: Record<string, unknown> = { [secretField?.key ?? "apiKey"]: trimmed };
     if (isCustom) config.endpoint = endpointRef.current.trim();
     try {
       const updated = await queueConfigUpdate(config);
@@ -409,8 +411,8 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
       subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "未配置"} · ${models.length} 个模型`}
     >
       <div className="grid grid-cols-1 gap-3">
-        <Field
-          label="API Key"
+        {(!isPlugin || secretField) && <Field
+          label={secretField?.label ?? "API Key"}
           controlId={`llm-api-key-${profile.id}`}
         >
           <SecretInput
@@ -421,7 +423,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
             onDraftChange={handleApiKeyChange}
             onBlur={handleApiKeyBlur}
           />
-        </Field>
+        </Field>}
         {isCustom && (
           <Field
             label="接口地址"
@@ -444,7 +446,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
               {models.length} 个模型 · 最后更新：{formatTimestamp(profile.config?.modelsFetchedAt)}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          {!isPlugin && <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => setManualModalOpen(true)}>
               <Plus className="h-3.5 w-3.5" aria-hidden />手动添加
             </Button>
@@ -452,7 +454,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
               <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
               {refreshing ? "正在获取" : "刷新模型"}
             </Button>
-          </div>
+          </div>}
         </div>
 
         <div className={`grid grid-cols-1 gap-3 ${selectedModel ? "sm:grid-cols-[minmax(0,2fr)_minmax(14rem,1fr)]" : ""}`}>
@@ -489,7 +491,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
           </p>
         )}
 
-        {manualModels.length > 0 && (
+        {!isPlugin && manualModels.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-[var(--color-fg-subtle)]">手动模型</span>
             {manualModels.map((item) => (
@@ -515,7 +517,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
       {(!isDefault || !isBuiltin) && (
         <div className="mt-4 flex flex-wrap gap-2">
           {!isDefault && <Button size="sm" onClick={() => void setDefault("llm", profile.id)}>设为默认</Button>}
-          {!isBuiltin && <Button size="sm" variant="danger" onClick={deleteProfile}>删除供应商</Button>}
+          {!isBuiltin && !isPlugin && <Button size="sm" variant="danger" onClick={deleteProfile}>删除供应商</Button>}
         </div>
       )}
       {message && (
@@ -547,7 +549,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
 }
 
 export function SettingsLlmPanel() {
-  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.kind.startsWith("llm:"));
+  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.capabilities.includes("llm"));
   const defaults = useProviderStore((state) => state.defaults);
   const setDefault = useProviderStore((state) => state.setDefault);
   const add = useProviderStore((state) => state.addLlmProvider);

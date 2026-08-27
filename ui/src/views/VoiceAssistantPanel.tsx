@@ -151,7 +151,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const [previewInstruction, setPreviewInstruction] = useState(action === "ask" ? "这段话有哪些潜在风险？" : action === "translateSpeech" ? "Please send the updated proposal tomorrow afternoon." : "改成一封简洁、专业的邮件");
   const [previewResult, setPreviewResult] = useState("");
   const [previewing, setPreviewing] = useState(false);
-  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.kind.startsWith("llm:"));
+  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const defaults = useProviderStore((state) => state.defaults);
   const pluginOptions = optionsForScene("subtitleTranslation");
   const modelOptions = useMemo(() => profiles.flatMap((profile) => modelsFromProfile(profile).map((model) => ({ value: modelValue(profile.id, model), label: `${profile.displayName} · ${model}` }))), [profiles]);

@@ -24,6 +24,9 @@ const host = Object.freeze({
   crypto: Object.freeze({ randomBytes: size => new Uint8Array(size), sha256: () => '0'.repeat(64), hmacSha256: () => '0'.repeat(64) }),
   time: Object.freeze({ now: () => 0, sleep: () => {} }),
   storage: Object.freeze({ get: () => null, set: () => {}, delete: () => {} }),
+  resource: Object.freeze({ readBytes() { throw new Error('烟雾测试不读取资源'); }, readText() { throw new Error('烟雾测试不读取资源'); } }),
+  cancellation: Object.freeze({ isCancelled: () => false }),
+  credentials: Object.freeze({ get: async () => 'fixture-secret' }),
   emit: event => emitted.push(event),
   log: () => {},
 });
@@ -65,12 +68,14 @@ def main() -> int:
     if process.returncode != 0:
         raise SystemExit(f"SMOKE FAILED: {process.stderr[-1000:]}")
     result = json.loads(process.stdout.strip().splitlines()[-1])
-    categories = {model["category"] for model in manifest["models"]}
+    descriptors = manifest.get("capabilities", [])
+    kinds = {descriptor.get("kind") for descriptor in descriptors}
+    modes = {mode for descriptor in descriptors for mode in descriptor.get("executionModes", [])}
     methods = set(result["methods"])
-    if "realtime" in categories and not {"realtimeStart", "realtimeAudio", "realtimeFinish", "realtimeStop"}.issubset(methods):
+    if "realtime" in modes and not {"realtimeStart", "realtimeAudio", "realtimeFinish", "realtimeStop"}.issubset(methods):
         raise SystemExit("SMOKE FAILED: 实时模型缺少 realtimeStart/realtimeAudio/realtimeFinish/realtimeStop")
     capabilities = set(manifest["provider"]["capabilities"])
-    if (categories & {"file", "translation", "ocr"} or "ocr" in capabilities) and "invoke" not in methods:
+    if (kinds & {"llm", "translation"} or modes & {"request-response", "event-stream"} or "ocr" in capabilities) and "invoke" not in methods:
         raise SystemExit("SMOKE FAILED: 一次性模型缺少 invoke")
     print(f"SMOKE OK: {manifest['id']} ({', '.join(sorted(methods))})")
     return 0

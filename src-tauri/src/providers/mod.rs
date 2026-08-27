@@ -453,7 +453,7 @@ pub fn llm_uses_responses(adapter: &str) -> bool {
 }
 
 fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
-    if !profile.kind.starts_with("llm:") {
+    if !profile.capabilities.iter().any(|value| value == "llm") {
         return;
     }
     if !profile.config.is_object() {

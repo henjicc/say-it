@@ -35,6 +35,17 @@ export default function createProvider(host) {
       connectionId = null;
     },
 
+    invoke(request) {
+      if (request.operation === "discoverModels") {
+        return [{modelId: "replace-chat", displayName: "待替换对话模型", contextWindow: null, maxOutputTokens: null}];
+      }
+      if (request.operation !== "chat") throw new Error(`未实现操作：${request.operation}`);
+      // 按供应商协议执行 chat；流式正文/推理分别 emit text/reasoning，终态由 SDK 统一归一。
+      host.emit({type: "text", text: "请替换为真实供应商返回"});
+      host.emit({type: "finish", finishReason: "stop"});
+      return {output: "请替换为真实供应商返回", reasoningOutput: "", usage: null, finishReason: "stop"};
+    },
+
     onHostEvent(event) {
       if (event.connectionId !== connectionId) return;
       if (event.type === "websocketOpen") host.emit({type: "ready"});

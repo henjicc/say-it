@@ -65,7 +65,7 @@ export function SmartTextPanel() {
   const tab = useUiStore((state) => state.smartTextTab);
   const setTab = useUiStore((state) => state.setSmartTextTab);
   const llmProfiles = useProviderStore((state) => state.profiles).filter(
-    (profile) => profile.enabled && profile.kind.startsWith("llm:"),
+    (profile) => profile.enabled && profile.capabilities.includes("llm"),
   );
   const llmDefaults = useProviderStore((state) => state.defaults);
   const llmOptions = llmProfiles.flatMap((profile) => {

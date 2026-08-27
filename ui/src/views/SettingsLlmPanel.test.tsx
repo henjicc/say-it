@@ -1,11 +1,12 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsLlmPanel } from "./SettingsLlmPanel";
 
 const invoke = vi.fn();
 const addLlmProvider = vi.fn();
 const refreshLlmModels = vi.fn();
 const setDefault = vi.fn();
+let profiles: Array<Record<string, unknown>> = [];
 
 vi.mock("@/lib/tauri", () => ({
   CMD: { openExternalLink: "open_external_link" },
@@ -14,7 +15,7 @@ vi.mock("@/lib/tauri", () => ({
 
 vi.mock("@/store/useProviderStore", () => ({
   useProviderStore: (selector: (state: unknown) => unknown) => selector({
-    profiles: [],
+    profiles,
     defaults: { llm: "" },
     addLlmProvider,
     refreshLlmModels,
@@ -23,11 +24,36 @@ vi.mock("@/store/useProviderStore", () => ({
 }));
 
 describe("SettingsLlmPanel", () => {
+  afterEach(cleanup);
   beforeEach(() => {
+    profiles = [];
     invoke.mockReset().mockResolvedValue(undefined);
     addLlmProvider.mockReset().mockResolvedValue({ id: "llm-new" });
     refreshLlmModels.mockReset().mockResolvedValue({ config: { models: [] } });
     setDefault.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("shows capability-based plugin LLM without manual or removal controls", () => {
+    profiles = [{
+      id: "fixture-llm",
+      kind: "plugin:fixture-llm",
+      displayName: "Fixture LLM",
+      authKind: "none",
+      capabilities: ["llm"],
+      enabled: true,
+      configFields: [],
+      config: {
+        model: "chat",
+        models: [{
+          name: "chat", source: "remote", availability: "available",
+          reasoningEffort: "auto", temperature: null, maxTokens: null,
+        }],
+      },
+    }];
+    render(<SettingsLlmPanel />);
+    expect(screen.getByRole("combobox", { name: "当前模型" })).toHaveTextContent("chat");
+    expect(screen.queryByRole("button", { name: "手动添加" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除供应商" })).not.toBeInTheDocument();
   });
 
   it("keeps preset details hidden and requires an API key before adding", async () => {

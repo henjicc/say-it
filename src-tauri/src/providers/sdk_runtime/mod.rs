@@ -18,6 +18,10 @@ pub const AI_SDK_GROQ_BUNDLE: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-ai-sdk-groq.js"
 ));
+pub const AI_SDK_LLM_MODULES_BUNDLE: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/sayit-ai-sdk-runtime/sayit-ai-sdk-llm-modules.js"
+));
 pub const AI_SDK_BOOTSTRAP: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-ai-sdk-bootstrap.js"

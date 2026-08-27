@@ -1,0 +1,45 @@
+{
+  "apiVersion": 5,
+  "id": "fixture-llm",
+  "name": "Fixture LLM",
+  "version": "1.0.0",
+  "provider": {
+    "id": "fixture-llm",
+    "displayName": "Fixture LLM",
+    "authKind": "none",
+    "capabilities": ["llm"],
+    "config": {},
+    "configFields": [],
+    "actions": []
+  },
+  "source": {"namespace": "fixture-llm"},
+  "capabilities": [{
+    "moduleId": "fixture-llm.llm.chat",
+    "kind": "llm",
+    "providerIds": ["fixture-llm"],
+    "modelId": "chat",
+    "operations": ["chat", "discover-models"],
+    "features": ["reasoning", "usage", "sampling"],
+    "tags": ["fixture"],
+    "executionModes": ["request-response", "event-stream"],
+    "acceptedInputKinds": ["text", "image"],
+    "modelDiscovery": true,
+    "contextWindow": 32768,
+    "maxOutputTokens": 4096
+  }],
+  "models": [{
+    "id": "chat",
+    "label": "Fixture Chat",
+    "providerId": "fixture-llm",
+    "capabilityId": "fixture-llm.llm.chat",
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  }],
+  "runtime": {
+    "kind": "javascript",
+    "entrypoint": "connector/index.js",
+    "hostApiVersion": 1,
+    "permissions": [],
+    "network": {"allowedHosts": []}
+  }
+}

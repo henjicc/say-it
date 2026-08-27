@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
+use once_cell::sync::Lazy;
 use rand::RngCore;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
@@ -20,7 +21,6 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tokio_util::io::ReaderStream;
 use url::Url;
-use once_cell::sync::Lazy;
 
 use super::browser_session_capture::validate_capture_for_runtime;
 use super::credential_store::CredentialKey;
@@ -28,7 +28,7 @@ use super::plugin::PluginRuntimeSpec;
 use super::plugin_secrets;
 use super::sdk_runtime::{
     HostRuntimeRecorder, SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE,
-    AI_SDK_GROQ_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
+    AI_SDK_GROQ_BUNDLE, AI_SDK_LLM_MODULES_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
 };
 use super::ProviderProfile;
 
@@ -1094,6 +1094,26 @@ pub fn create_plugin_capability_runtime(
     JsProviderRuntime::create_with_sdk_bindings(spec, profile, timeout, cancelled, inputs, sdk)
 }
 
+pub fn create_plugin_llm_runtime(
+    spec: PluginRuntimeSpec,
+    profile: &ProviderProfile,
+    request_id: &str,
+    timeout: Duration,
+    cancelled: Arc<AtomicBool>,
+    event_tx: Option<mpsc::Sender<Value>>,
+) -> Result<JsProviderRuntime, String> {
+    let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
+    JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
+        spec,
+        profile,
+        timeout,
+        cancelled,
+        HashMap::new(),
+        event_tx,
+        sdk,
+    )
+}
+
 impl JsProviderRuntime {
     #[cfg(test)]
     pub fn create(
@@ -1249,6 +1269,8 @@ impl JsProviderRuntime {
                 ctx.eval::<(), _>(AI_SDK_CAPABILITIES_BUNDLE)
                     .map_err(js_error)?;
                 ctx.eval::<(), _>(AI_SDK_GROQ_BUNDLE).map_err(js_error)?;
+                ctx.eval::<(), _>(AI_SDK_LLM_MODULES_BUNDLE)
+                    .map_err(js_error)?;
                 ctx.eval::<(), _>(AI_SDK_BOOTSTRAP).map_err(js_error)?;
             }
             ctx.eval::<(), _>(HOST_BOOTSTRAP).map_err(js_error)?;
@@ -1301,10 +1323,7 @@ impl JsProviderRuntime {
                 .map_err(|error| js_error_with_context(&ctx, error))?;
             Ok(())
         })?;
-        let owner = RuntimeOwnerRegistration::register(
-            spec.source_namespace.clone(),
-            &cancelled,
-        )?;
+        let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
         Ok(Self {
             _runtime: runtime,
             context,
@@ -1349,7 +1368,7 @@ impl JsProviderRuntime {
         timeout: Duration,
     ) -> Result<Value, String> {
         *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
-        self.context.with(|ctx| {
+        let result = self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
                 .get("__sayitPluginCapabilityExecute")
@@ -1365,6 +1384,85 @@ impl JsProviderRuntime {
             let result = self.finish_promise_with_host_events(&ctx, promise)?;
             serde_json::from_str(&result)
                 .map_err(|error| format!("插件 capability 返回值不是合法 JSON：{error}"))
+        });
+        if result.is_err() {
+            if let Ok(mut host) = self.host.lock() {
+                host.close_active_resources();
+            }
+        }
+        result
+    }
+
+    pub fn execute_llm(
+        &self,
+        module_id: &str,
+        payload: &Value,
+        request_id: &str,
+        streaming: bool,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        let result = self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginLlmExecute")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call((
+                    module_id,
+                    serde_json::to_string(payload).map_err(|error| error.to_string())?,
+                    request_id,
+                    streaming,
+                    timeout.as_millis().min(u64::MAX as u128) as u64,
+                ))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            let result = self.finish_promise_with_host_events(&ctx, promise)?;
+            serde_json::from_str(&result)
+                .map_err(|error| format!("插件 LLM 返回值不是合法 JSON：{error}"))
+        });
+        if result.is_err() {
+            if let Ok(mut host) = self.host.lock() {
+                host.close_active_resources();
+            }
+        }
+        result
+    }
+
+    pub fn discover_llm(
+        &self,
+        module_id: &str,
+        request_id: &str,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginLlmDiscover")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call((
+                    module_id,
+                    request_id,
+                    timeout.as_millis().min(u64::MAX as u128) as u64,
+                ))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            let result = self.finish_promise_with_host_events(&ctx, promise)?;
+            serde_json::from_str(&result)
+                .map_err(|error| format!("插件 LLM 模型发现返回值不是合法 JSON：{error}"))
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn cancel_llm(&self, request_id: &str) -> Result<(), String> {
+        self.context.with(|ctx| {
+            let cancel: Function = ctx
+                .globals()
+                .get("__sayitPluginLlmCancel")
+                .map_err(js_error)?;
+            cancel
+                .call::<_, ()>((request_id,))
+                .map_err(|error| js_error_with_context(&ctx, error))
         })
     }
 
@@ -1568,7 +1666,7 @@ impl Drop for JsProviderRuntime {
             let _ = self.context.with(|ctx| -> Result<(), String> {
                 let dispose: Function = ctx
                     .globals()
-                    .get("__sayitDisposePluginCapabilities")
+                    .get("__sayitDisposePluginModules")
                     .map_err(js_error)?;
                 let promise: Promise = dispose
                     .call((namespace,))
@@ -2010,6 +2108,7 @@ const HOST_BOOTSTRAP: &str = r#"
     cancellation: Object.freeze({ isCancelled: () => call('cancel.isCancelled') }),
     emit: event => {
       globalThis.__sayitPluginCapabilities?.handleProviderEvent(event);
+      globalThis.__sayitPluginLlm?.handleProviderEvent(event);
       return call('emit', { event });
     },
     credentials: Object.freeze({ get: field => call('plugin.credential.get', { field }) }),
@@ -2047,14 +2146,25 @@ const HOST_BOOTSTRAP: &str = r#"
     return 'null';
   };
   globalThis.__sayitRegisterPluginCapabilities = (sourceNamespace, definitionsJson) => {
+    const definitions = JSON.parse(definitionsJson);
     const factory = globalThis.__sayitAiSdkCapabilities?.createSayItPluginCapabilityRuntime;
     if (typeof factory !== 'function') throw new Error('AI SDK bundle 缺少 Plugin API v5 adapter');
-    globalThis.__sayitPluginCapabilities = factory(
-      globalThis.__sayitCreateRuntimeContext(),
-      sourceNamespace,
-      JSON.parse(definitionsJson),
-      globalThis.__sayitProvider,
-    );
+    const capabilities = definitions.filter(definition => definition.kind !== 'llm');
+    if (capabilities.length > 0) {
+      globalThis.__sayitPluginCapabilities = factory(
+        globalThis.__sayitCreateRuntimeContext(), sourceNamespace, capabilities,
+        globalThis.__sayitProvider,
+      );
+    }
+    const llmDefinitions = definitions.filter(definition => definition.kind === 'llm');
+    if (llmDefinitions.length > 0) {
+      const llmFactory = globalThis.__sayitAiSdkLlmModules?.createSayItPluginLlmRuntime;
+      if (typeof llmFactory !== 'function') throw new Error('AI SDK bundle 缺少 Plugin LLM adapter');
+      globalThis.__sayitPluginLlm = llmFactory(
+        globalThis.__sayitCreateRuntimeContext(), sourceNamespace, llmDefinitions,
+        globalThis.__sayitProvider,
+      );
+    }
   };
   globalThis.__sayitPluginCapabilityExecute = async (moduleId, payloadJson, requestId, timeoutMs) => {
     if (!globalThis.__sayitPluginCapabilities) throw new Error('插件 capability 尚未注册');
@@ -2093,13 +2203,39 @@ const HOST_BOOTSTRAP: &str = r#"
     await session?.close();
     return 'null';
   };
-  globalThis.__sayitDisposePluginCapabilities = async sourceNamespace => {
+  globalThis.__sayitPluginLlmExecute = async (moduleId, payloadJson, requestId, streaming, timeoutMs) => {
+    if (!globalThis.__sayitPluginLlm) throw new Error('插件 LLM module 尚未注册');
+    const events = [];
+    const value = await globalThis.__sayitPluginLlm.execute(
+      moduleId, JSON.parse(payloadJson),
+      { requestId, timeoutMs, mode: streaming ? 'event-stream' : 'request-response', onEvent: event => {
+        events.push(event);
+        globalThis.__sayitHost.emit({ type: 'llm', requestId, event });
+      } },
+    );
+    return JSON.stringify({ ...value, events });
+  };
+  globalThis.__sayitPluginLlmDiscover = async (moduleId, requestId, timeoutMs) => {
+    if (!globalThis.__sayitPluginLlm) throw new Error('插件 LLM module 尚未注册');
+    const value = await globalThis.__sayitPluginLlm.discover(moduleId, { requestId, timeoutMs });
+    return JSON.stringify(value);
+  };
+  globalThis.__sayitPluginLlmCancel = requestId => {
+    globalThis.__sayitPluginLlm?.cancel(requestId);
+  };
+  globalThis.__sayitDisposePluginModules = async sourceNamespace => {
     await globalThis.__sayitPluginCapabilitySession?.close();
     globalThis.__sayitPluginCapabilitySession = undefined;
     if (globalThis.__sayitPluginCapabilities) {
       await globalThis.__sayitPluginCapabilities.unregisterSource(sourceNamespace);
       await globalThis.__sayitPluginCapabilities.dispose();
       globalThis.__sayitPluginCapabilities = undefined;
+    }
+    if (globalThis.__sayitPluginLlm) {
+      await globalThis.__sayitPluginLlm.drainSource(sourceNamespace);
+      await globalThis.__sayitPluginLlm.unregisterSource(sourceNamespace);
+      await globalThis.__sayitPluginLlm.dispose();
+      globalThis.__sayitPluginLlm = undefined;
     }
     return 'null';
   };
@@ -2303,6 +2439,10 @@ mod tests {
             features: vec!["streaming".into()],
             tags: vec!["scripted".into()],
             execution_modes: vec![execution_mode.into()],
+            accepted_input_kinds: vec![],
+            model_discovery: false,
+            context_window: None,
+            max_output_tokens: None,
         }
     }
 
@@ -2410,6 +2550,113 @@ mod tests {
         assert!(cancelled.load(Ordering::Relaxed));
         drop(owner);
         assert_eq!(drain.join().unwrap().unwrap(), 1);
-        assert_eq!(drain_plugin_namespace(&namespace, Duration::ZERO).unwrap(), 0);
+        assert_eq!(
+            drain_plugin_namespace(&namespace, Duration::ZERO).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn plugin_v5_llm_uses_sdk_events_discovery_and_releases_resources() {
+        let (root, mut spec, profile) = fixture(
+            r#"export default host => ({
+                invoke(request) {
+                    if (request.operation === 'discoverModels') return [{modelId:'chat', displayName:'Chat', contextWindow:32768, maxOutputTokens:4096}];
+                    if (request.operation !== 'chat') throw new Error(`unexpected ${request.operation}`);
+                    host.emit({type:'reasoning', text:'思'});
+                    host.emit({type:'text', text:'答'});
+                    host.emit({type:'usage', data:{inputTokens:3, outputTokens:1, reasoningTokens:1, totalTokens:5}});
+                    host.emit({type:'finish', finishReason:'stop'});
+                    return {output:'答', reasoningOutput:'思', usage:null, finishReason:null};
+                }
+            });"#,
+            None,
+        );
+        spec.source_namespace = spec.plugin_id.clone();
+        let mut llm = capability("test-provider.llm.chat", "llm", "chat", "event-stream");
+        llm.execution_modes.insert(0, "request-response".into());
+        llm.accepted_input_kinds = vec!["text".into(), "image".into()];
+        llm.features = vec!["reasoning".into(), "usage".into()];
+        llm.model_discovery = true;
+        spec.capabilities = vec![llm];
+        let runtime = create_plugin_llm_runtime(
+            spec,
+            &profile,
+            "llm-scripted",
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .unwrap();
+        let result = runtime
+            .execute_llm(
+                "test-provider.llm.chat",
+                &json!({
+                    "providerId":"test-provider", "modelId":"chat",
+                    "messages":[{"role":"user","content":"问题"}]
+                }),
+                "llm-scripted",
+                true,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(result["output"], "答");
+        assert_eq!(result["reasoningOutput"], "思");
+        assert_eq!(result["usage"]["totalTokens"], 5);
+        assert_eq!(result["finishReason"], "stop");
+        let event_types = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event.get("type").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_types,
+            ["ReasoningToken", "Token", "Usage", "Finish", "Done"]
+        );
+        let discovered = runtime
+            .discover_llm("test-provider.llm.chat", "discover", Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(discovered[0]["modelId"], "chat");
+        assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_v5_llm_timeout_closes_host_resources() {
+        let (root, mut spec, profile) = fixture(
+            "export default () => ({ invoke() { return new Promise(() => {}); } });",
+            None,
+        );
+        spec.source_namespace = spec.plugin_id.clone();
+        let mut llm = capability("test-provider.llm.chat", "llm", "chat", "request-response");
+        llm.accepted_input_kinds = vec!["text".into()];
+        spec.capabilities = vec![llm];
+        let runtime = create_plugin_llm_runtime(
+            spec,
+            &profile,
+            "llm-timeout",
+            Duration::from_millis(30),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .unwrap();
+        let error = runtime
+            .execute_llm(
+                "test-provider.llm.chat",
+                &json!({"providerId":"test-provider","modelId":"chat","messages":[]}),
+                "llm-timeout",
+                false,
+                Duration::from_millis(30),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("超时") || error.contains("interrupted"),
+            "{error}"
+        );
+        assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
