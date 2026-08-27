@@ -52,5 +52,6 @@ pub(crate) fn resolve_provider(
         .map_err(|_| "插件注册表锁失败")?
         .runtime_for_provider(&provider_id)?
         .map(|spec| spec.bind_credentials(state.credentials.clone()));
-    translation_for_with_plugin(&profile, plugin).map_err(|error| error.to_string())
+    translation_for_with_plugin(&profile, plugin, state.credentials.clone())
+        .map_err(|error| error.to_string())
 }

@@ -77,7 +77,7 @@ pub fn build_catalog(
                 is_default_file: model.is_default_file,
                 is_qwen_realtime: matches!(
                     registry::realtime_asr_family(&model.id),
-                    crate::providers::alibabacloud::RealtimeAsrFamily::QwenRealtime
+                    crate::providers::registry::RealtimeAsrFamily::QwenRealtime
                 ),
                 is_qwen_file: model.id.starts_with("qwen3-asr-flash-filetrans"),
                 is_qwen_short_audio_file: route == FileTranscriptionRoute::SyncQwen,

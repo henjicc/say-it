@@ -4,6 +4,8 @@ use std::sync::Arc;
 use crate::providers::credential_store::{CredentialKey, CredentialStoreHandle};
 use serde_json::Value;
 
+pub mod online;
+
 pub const QUICKJS_RUNTIME_BOOTSTRAP: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-sdk-runtime-bootstrap.js"

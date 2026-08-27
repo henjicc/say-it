@@ -1,11 +1,8 @@
 use super::{alibabacloud, ProviderProfile, RequestCustomization};
-pub use alibabacloud::{
-    HotwordEntry, TranscriptionParams, TranscriptionResult, TranscriptionTaskStatus,
-};
+pub use alibabacloud::{HotwordEntry, TranscriptionParams, TranscriptionResult};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,25 +30,21 @@ fn unsupported(profile: &ProviderProfile, capability: &'static str) -> Capabilit
         message: format!("供应商 {} 不支持 {capability} 能力", profile.display_name),
     }
 }
-fn api_key(profile: &ProviderProfile) -> Result<String, String> {
-    let key = profile
-        .config
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if key.is_empty() {
-        Err("请先在设置中填写阿里云百炼 API Key".into())
-    } else {
-        Ok(key.into())
-    }
+fn bailian_api_key(
+    credentials: &super::credential_store::CredentialStoreHandle,
+) -> Result<String, String> {
+    let key = super::credential_store::CredentialKey::provider("bailian", "apiKey")?;
+    credentials
+        .get(&key)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "请先在设置中填写阿里云百炼 API Key".into())
 }
 
 #[derive(Clone)]
 pub enum FileRecognitionProvider {
-    AlibabaCloud {
-        api_key: String,
-        vocabulary_ids: HashMap<String, String>,
+    BailianSdk {
+        profile: ProviderProfile,
+        credentials: super::credential_store::CredentialStoreHandle,
         customization: RequestCustomization,
     },
     Plugin {
@@ -74,12 +67,19 @@ pub fn file_recognition_for_with_plugin(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
-    file_recognition_for_with_extensions(profile, plugin, None, RequestCustomization::default())
+    file_recognition_for_with_extensions(
+        profile,
+        plugin,
+        None,
+        super::credential_store::CredentialStoreHandle::default(),
+        RequestCustomization::default(),
+    )
 }
 pub fn file_recognition_for_with_extensions(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
     local: Option<LocalModelSpec>,
+    credentials: super::credential_store::CredentialStoreHandle,
     customization: RequestCustomization,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
     if let Some(spec) = local {
@@ -93,17 +93,9 @@ pub fn file_recognition_for_with_extensions(
         });
     }
     match profile.kind.as_str() {
-        "sdk:bailian" => Ok(FileRecognitionProvider::AlibabaCloud {
-            api_key: api_key(profile).map_err(|message| CapabilityError {
-                provider_id: profile.id.clone(),
-                capability: "fileRecognition",
-                message,
-            })?,
-            vocabulary_ids: profile
-                .config
-                .get("vocabularyIds")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
+        "sdk:bailian" => Ok(FileRecognitionProvider::BailianSdk {
+            profile: profile.clone(),
+            credentials,
             customization,
         }),
         _ => Err(unsupported(profile, "fileRecognition")),
@@ -111,13 +103,6 @@ pub fn file_recognition_for_with_extensions(
 }
 
 impl FileRecognitionProvider {
-    pub fn uses_async_task(&self, model: &str) -> bool {
-        match self {
-            Self::AlibabaCloud { .. } => alibabacloud::uses_async_transcription_task(model),
-            Self::Plugin { .. } => false,
-            Self::Local { .. } => false,
-        }
-    }
     pub async fn recognize_short(
         &self,
         path: &str,
@@ -125,21 +110,28 @@ impl FileRecognitionProvider {
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<TranscriptionResult, String> {
         match self {
-            Self::AlibabaCloud {
-                api_key,
+            Self::BailianSdk {
+                profile,
+                credentials,
                 customization,
-                ..
-            } => alibabacloud::recognize_short_audio(api_key, path, params, customization).await,
+            } => {
+                super::sdk_runtime::online::recognize_bailian_file(
+                    profile.clone(),
+                    credentials.clone(),
+                    path.to_string(),
+                    params.clone(),
+                    customization.clone(),
+                    cancel,
+                )
+                .await
+            }
             Self::Plugin {
                 spec,
                 profile,
                 customization,
             } => {
-                let module_id = spec.capability_id(
-                    &params.model_id(),
-                    "speech-recognition",
-                    false,
-                )?;
+                let module_id =
+                    spec.capability_id(&params.model_id(), "speech-recognition", false)?;
                 let mut payload = serde_json::Map::new();
                 payload.insert("filePath".into(), serde_json::json!(path));
                 payload.insert(
@@ -205,58 +197,6 @@ impl FileRecognitionProvider {
                 }
                 Ok(result)
             }
-        }
-    }
-    pub async fn upload(&self, model: &str, path: &str) -> Result<String, String> {
-        match self {
-            Self::AlibabaCloud { api_key, .. } => {
-                alibabacloud::upload_for_model(api_key, model, path).await
-            }
-            Self::Plugin { .. } => Err("插件文件识别不使用宿主上传流程".into()),
-            Self::Local { .. } => Err("本地文件识别不使用上传流程".into()),
-        }
-    }
-    pub async fn submit(
-        &self,
-        model: &str,
-        url: &str,
-        params: &TranscriptionParams,
-    ) -> Result<String, String> {
-        match self {
-            Self::AlibabaCloud {
-                api_key,
-                vocabulary_ids,
-                ..
-            } => {
-                alibabacloud::submit_transcription_task(
-                    api_key,
-                    url,
-                    params,
-                    vocabulary_ids
-                        .get(model)
-                        .map(String::as_str)
-                        .unwrap_or_default(),
-                )
-                .await
-            }
-            Self::Plugin { .. } => Err("插件文件识别不使用宿主异步任务流程".into()),
-            Self::Local { .. } => Err("本地文件识别不使用异步任务流程".into()),
-        }
-    }
-    pub async fn query(&self, id: &str) -> Result<TranscriptionTaskStatus, String> {
-        match self {
-            Self::AlibabaCloud { api_key, .. } => {
-                alibabacloud::query_transcription_task(api_key, id).await
-            }
-            Self::Plugin { .. } => Err("插件文件识别不使用宿主轮询流程".into()),
-            Self::Local { .. } => Err("本地文件识别不使用轮询流程".into()),
-        }
-    }
-    pub async fn fetch(&self, url: &str) -> Result<TranscriptionResult, String> {
-        match self {
-            Self::AlibabaCloud { .. } => alibabacloud::fetch_transcription_result(url).await,
-            Self::Plugin { .. } => Err("插件文件识别不使用宿主结果下载流程".into()),
-            Self::Local { .. } => Err("本地文件识别不使用结果下载流程".into()),
         }
     }
 }
@@ -351,7 +291,7 @@ fn system_ocr_recognize(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
     }
 }
 
-/// v4 插件 `recognizeImage` 返回约定：`{ blocks: [{ text, region: { x, y, width, height }, confidence? }] }`，
+/// v5 插件 `recognizeImage` 返回约定：`{ blocks: [{ text, region: { x, y, width, height }, confidence? }] }`，
 /// 坐标为相对图像宽高的 0~1 归一化值；越界值会被收敛到合法区间。
 fn parse_plugin_ocr_blocks(value: &Value) -> Result<Vec<OcrTextBlock>, String> {
     #[derive(Deserialize)]
@@ -403,8 +343,9 @@ fn parse_plugin_ocr_blocks(value: &Value) -> Result<Vec<OcrTextBlock>, String> {
 
 #[derive(Clone)]
 pub enum TranslationProvider {
-    AlibabaCloud {
-        api_key: String,
+    BailianSdk {
+        profile: ProviderProfile,
+        credentials: super::credential_store::CredentialStoreHandle,
     },
     Plugin {
         spec: PluginRuntimeSpec,
@@ -413,11 +354,16 @@ pub enum TranslationProvider {
 }
 #[cfg(test)]
 pub fn translation_for(profile: &ProviderProfile) -> Result<TranslationProvider, CapabilityError> {
-    translation_for_with_plugin(profile, None)
+    translation_for_with_plugin(
+        profile,
+        None,
+        super::credential_store::CredentialStoreHandle::default(),
+    )
 }
 pub fn translation_for_with_plugin(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
+    credentials: super::credential_store::CredentialStoreHandle,
 ) -> Result<TranslationProvider, CapabilityError> {
     if let Some(spec) = plugin {
         return Ok(TranslationProvider::Plugin {
@@ -426,12 +372,9 @@ pub fn translation_for_with_plugin(
         });
     }
     match profile.kind.as_str() {
-        "sdk:bailian" => Ok(TranslationProvider::AlibabaCloud {
-            api_key: api_key(profile).map_err(|message| CapabilityError {
-                provider_id: profile.id.clone(),
-                capability: "translation",
-                message,
-            })?,
+        "sdk:bailian" => Ok(TranslationProvider::BailianSdk {
+            profile: profile.clone(),
+            credentials,
         }),
         _ => Err(unsupported(profile, "translation")),
     }
@@ -449,9 +392,20 @@ impl TranslationProvider {
         F: FnMut(&str) + Send,
     {
         match self {
-            Self::AlibabaCloud { api_key } => {
-                alibabacloud::translate_streaming(api_key, model, text, source, target, on_delta)
-                    .await
+            Self::BailianSdk {
+                profile,
+                credentials,
+            } => {
+                super::sdk_runtime::online::translate_bailian(
+                    profile.clone(),
+                    credentials.clone(),
+                    model.to_string(),
+                    text.to_string(),
+                    source.to_string(),
+                    target.to_string(),
+                    on_delta,
+                )
+                .await
             }
             Self::Plugin { spec, profile } => {
                 let module_id = spec.capability_id(model, "translation", false)?;
@@ -485,7 +439,7 @@ impl TranslationProvider {
 #[derive(Clone)]
 pub enum CustomizationProvider {
     AlibabaCloud {
-        api_key: String,
+        credentials: super::credential_store::CredentialStoreHandle,
     },
     Plugin {
         spec: PluginRuntimeSpec,
@@ -496,11 +450,16 @@ pub enum CustomizationProvider {
 pub fn customization_for(
     profile: &ProviderProfile,
 ) -> Result<CustomizationProvider, CapabilityError> {
-    customization_for_with_plugin(profile, None)
+    customization_for_with_plugin(
+        profile,
+        None,
+        super::credential_store::CredentialStoreHandle::default(),
+    )
 }
 pub fn customization_for_with_plugin(
     profile: &ProviderProfile,
     plugin: Option<PluginRuntimeSpec>,
+    credentials: super::credential_store::CredentialStoreHandle,
 ) -> Result<CustomizationProvider, CapabilityError> {
     if let Some(spec) = plugin {
         return Ok(CustomizationProvider::Plugin {
@@ -509,26 +468,15 @@ pub fn customization_for_with_plugin(
         });
     }
     match profile.kind.as_str() {
-        "sdk:bailian" => Ok(CustomizationProvider::AlibabaCloud {
-            api_key: profile
-                .config
-                .get("apiKey")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-        }),
+        "sdk:bailian" => Ok(CustomizationProvider::AlibabaCloud { credentials }),
         _ => Err(unsupported(profile, "customization")),
     }
 }
 impl CustomizationProvider {
     pub fn ensure_ready(&self) -> Result<(), String> {
         match self {
-            Self::AlibabaCloud { api_key } if api_key.is_empty() => {
-                Err("请先在设置中填写阿里云百炼 API Key".into())
-            }
+            Self::AlibabaCloud { credentials } => bailian_api_key(credentials).map(|_| ()),
             Self::Plugin { .. } => Ok(()),
-            _ => Ok(()),
         }
     }
     pub fn targets(&self) -> &'static [(&'static str, &'static str)] {
@@ -544,35 +492,47 @@ impl CustomizationProvider {
         words: &[HotwordEntry],
     ) -> Result<String, String> {
         match self {
-            Self::AlibabaCloud { api_key } => {
-                alibabacloud::create_vocabulary(api_key, model, prefix, words).await
+            Self::AlibabaCloud { credentials } => {
+                alibabacloud::create_vocabulary(
+                    &bailian_api_key(credentials)?,
+                    model,
+                    prefix,
+                    words,
+                )
+                .await
             }
             Self::Plugin { .. } => Err("插件热词使用统一 setHotwords 操作".into()),
         }
     }
     pub async fn update(&self, id: &str, words: &[HotwordEntry]) -> Result<(), String> {
         match self {
-            Self::AlibabaCloud { api_key } => {
-                alibabacloud::update_vocabulary(api_key, id, words).await
+            Self::AlibabaCloud { credentials } => {
+                alibabacloud::update_vocabulary(&bailian_api_key(credentials)?, id, words).await
             }
             Self::Plugin { .. } => Err("插件热词使用统一 setHotwords 操作".into()),
         }
     }
     pub async fn delete(&self, id: &str) -> Result<(), String> {
         match self {
-            Self::AlibabaCloud { api_key } => alibabacloud::delete_vocabulary(api_key, id).await,
+            Self::AlibabaCloud { credentials } => {
+                alibabacloud::delete_vocabulary(&bailian_api_key(credentials)?, id).await
+            }
             Self::Plugin { .. } => Err("插件热词使用统一 clearHotwords 操作".into()),
         }
     }
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
         match self {
-            Self::AlibabaCloud { api_key } => alibabacloud::list_vocabulary(api_key, prefix).await,
+            Self::AlibabaCloud { credentials } => {
+                alibabacloud::list_vocabulary(&bailian_api_key(credentials)?, prefix).await
+            }
             Self::Plugin { .. } => Err("插件热词使用统一 getHotwords 操作".into()),
         }
     }
     pub async fn query(&self, id: &str) -> Result<Vec<HotwordEntry>, String> {
         match self {
-            Self::AlibabaCloud { api_key } => alibabacloud::query_vocabulary(api_key, id).await,
+            Self::AlibabaCloud { credentials } => {
+                alibabacloud::query_vocabulary(&bailian_api_key(credentials)?, id).await
+            }
             Self::Plugin { .. } => Err("插件热词使用统一 getHotwords 操作".into()),
         }
     }

@@ -26,7 +26,7 @@ pub(crate) struct CustomizationSyncResponse {
     pub(crate) providers: ProviderSettingsResponse,
 }
 
-fn funasr_config_vocabulary_ids(config: &Value) -> HashMap<String, String> {
+fn configured_vocabulary_ids(config: &Value) -> HashMap<String, String> {
     config
         .get("vocabularyIds")
         .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value.clone()).ok())
@@ -65,12 +65,12 @@ fn customization_context_for(
         .map_err(|_| "插件注册表锁失败".to_string())?
         .runtime_for_provider(provider_id)?
         .map(|spec| spec.bind_credentials(state.credentials.clone()));
-    let provider =
-        customization_for_with_plugin(&profile, plugin).map_err(|error| error.to_string())?;
+    let provider = customization_for_with_plugin(&profile, plugin, state.credentials.clone())
+        .map_err(|error| error.to_string())?;
     Ok((
         profile.id.clone(),
         provider,
-        funasr_config_vocabulary_ids(&profile.config),
+        configured_vocabulary_ids(&profile.config),
     ))
 }
 

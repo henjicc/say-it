@@ -10,6 +10,9 @@ use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ProviderConfig};
 use genai::Client;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
 use tokio::time::timeout;
@@ -36,7 +39,6 @@ fn profile_value<'a>(profile: &'a ProviderProfile, key: &str) -> &'a str {
 
 fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
     match profile.kind.strip_prefix("llm:") {
-        Some("groq") => Ok(AdapterKind::Groq),
         Some("openai") => Ok(AdapterKind::OpenAI),
         Some("anthropic") => Ok(AdapterKind::Anthropic),
         Some("gemini") => Ok(AdapterKind::Gemini),
@@ -140,7 +142,35 @@ pub(crate) fn merge_remote_models(
     merged
 }
 
-async fn fetch_model_names(profile: &ProviderProfile) -> Result<Vec<String>, String> {
+async fn fetch_model_names(
+    state: &RuntimeState,
+    profile: &ProviderProfile,
+) -> Result<Vec<String>, String> {
+    if profile.kind == "llm:groq" {
+        let profile = profile.clone();
+        let credentials = state.credentials.clone();
+        let request_id = format!("groq-discovery-{}", uuid::Uuid::new_v4());
+        let value = tauri::async_runtime::spawn_blocking(move || {
+            let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
+                &profile,
+                credentials,
+                crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+                request_id,
+                Arc::new(AtomicBool::new(false)),
+                HashMap::new(),
+            )?;
+            runtime.discover_groq()
+        })
+        .await
+        .map_err(|error| format!("Groq 模型发现工作线程失败：{error}"))??;
+        return Ok(value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("modelId").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect());
+    }
     let adapter_kind = adapter_kind(profile)?;
     let provider_config = provider_config(profile)?;
     timeout(
@@ -160,8 +190,18 @@ pub(crate) async fn refresh_llm_models(
 ) -> Result<ProviderSettingsResponse, String> {
     let attempted_at = now_millis();
     let requested_profile = provider_profile_for_execution(&state, &provider_id)?;
-    adapter_kind(&requested_profile)?;
-    provider_config(&requested_profile)?;
+    if requested_profile.kind == "llm:groq" {
+        let key = crate::providers::credential_store::CredentialKey::provider(
+            "llm-groq",
+            "apiKey",
+        )?;
+        if state.credentials.get(&key)?.is_none() {
+            return Err("请先为 Groq 设置 API Key".into());
+        }
+    } else {
+        adapter_kind(&requested_profile)?;
+        provider_config(&requested_profile)?;
+    }
     {
         let mut guard = state
             .providers
@@ -182,7 +222,7 @@ pub(crate) async fn refresh_llm_models(
     }
     save_persisted_state(&app, &state)?;
 
-    let names = fetch_model_names(&requested_profile).await?;
+    let names = fetch_model_names(&state, &requested_profile).await?;
     if names.iter().all(|name| name.trim().is_empty()) {
         return Err("供应商没有返回可用模型，已保留原模型列表".to_string());
     }
