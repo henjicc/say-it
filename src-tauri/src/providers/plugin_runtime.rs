@@ -23,7 +23,10 @@ use url::Url;
 use super::browser_session_capture::validate_capture_for_runtime;
 use super::plugin::PluginRuntimeSpec;
 use super::plugin_secrets;
-use super::sdk_runtime::{SdkHostBindings, QUICKJS_RUNTIME_BOOTSTRAP};
+use super::sdk_runtime::{
+    SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE, AI_SDK_GROQ_BUNDLE,
+    QUICKJS_RUNTIME_BOOTSTRAP,
+};
 use super::ProviderProfile;
 
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -956,6 +959,7 @@ impl JsProviderRuntime {
         })));
         let context = Context::full(&runtime).map_err(js_error)?;
         let events = Arc::new(Mutex::new(Vec::new()));
+        let load_ai_sdk = sdk.is_some();
         let host = Arc::new(Mutex::new(HostState::new(
             spec.clone(),
             inputs,
@@ -1001,6 +1005,12 @@ impl JsProviderRuntime {
                 .map_err(js_error)?;
             ctx.eval::<(), _>(QUICKJS_RUNTIME_BOOTSTRAP)
                 .map_err(js_error)?;
+            if load_ai_sdk {
+                ctx.eval::<(), _>(AI_SDK_CAPABILITIES_BUNDLE)
+                    .map_err(js_error)?;
+                ctx.eval::<(), _>(AI_SDK_GROQ_BUNDLE).map_err(js_error)?;
+                ctx.eval::<(), _>(AI_SDK_BOOTSTRAP).map_err(js_error)?;
+            }
             ctx.eval::<(), _>(HOST_BOOTSTRAP).map_err(js_error)?;
             let source = std::fs::read(&spec.entrypoint).map_err(|error| error.to_string())?;
             let entry_name = spec
