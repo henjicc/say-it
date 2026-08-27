@@ -9,6 +9,7 @@
     "ui:build": "vite build",
     "ui:preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "sdk-runtime:typecheck": "tsc -p tsconfig.sdk-runtime.json",
     "test:ui": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run typecheck && npm run test:ui && npm run ui:build && npm run test:rust",

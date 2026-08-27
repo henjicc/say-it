@@ -1,7 +1,24 @@
 fn main() {
+    build_sdk_runtime_bridge();
     build_macos_native_bridge();
     copy_sherpa_runtime_for_cargo_tests();
     tauri_build::build()
+}
+
+fn build_sdk_runtime_bridge() {
+    let out_dir = std::env::var("OUT_DIR").expect("Cargo 缺少 OUT_DIR");
+    let output = std::path::Path::new(&out_dir).join("sayit-sdk-runtime-bootstrap.js");
+    let status = std::process::Command::new("node")
+        .arg("../scripts/build-ai-sdk-runtime.mjs")
+        .arg(&output)
+        .status()
+        .expect("无法启动 Node 构建 SDK Runtime bridge");
+    if !status.success() {
+        panic!("SDK Runtime bridge 构建失败");
+    }
+    println!("cargo:rerun-if-changed=../sdk-runtime/web-compat.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/host-adapter.ts");
+    println!("cargo:rerun-if-changed=../scripts/build-ai-sdk-runtime.mjs");
 }
 
 fn build_macos_native_bridge() {
