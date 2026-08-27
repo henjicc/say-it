@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,15 +20,19 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tokio_util::io::ReaderStream;
 use url::Url;
 
-use super::plugin::PluginRuntimeSpec;
 use super::browser_session_capture::validate_capture_for_runtime;
+use super::plugin::PluginRuntimeSpec;
 use super::plugin_secrets;
+use super::sdk_runtime::{SdkHostBindings, QUICKJS_RUNTIME_BOOTSTRAP};
 use super::ProviderProfile;
 
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STACK_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_EVENTS: usize = 1024;
 
 #[derive(Clone)]
@@ -129,7 +133,13 @@ impl Loader for SafeLoader {
 
 enum WsCommand {
     Send(Message),
-    Close,
+    Close { code: Option<u16>, reason: String },
+}
+
+struct HttpStreamState {
+    response: reqwest::Response,
+    pending: VecDeque<u8>,
+    total_bytes: usize,
 }
 
 struct HostState {
@@ -137,11 +147,15 @@ struct HostState {
     inputs: HashMap<String, PathBuf>,
     events: Arc<Mutex<Vec<Value>>>,
     ws_connections: HashMap<String, mpsc::UnboundedSender<WsCommand>>,
+    http_streams: HashMap<String, HttpStreamState>,
+    timers: HashMap<String, Arc<AtomicBool>>,
     ws_events_tx: std::sync::mpsc::Sender<Value>,
     ws_events_rx: std::sync::mpsc::Receiver<Value>,
     cancelled: Arc<AtomicBool>,
     event_tx: Option<mpsc::Sender<Value>>,
     deadline: Arc<Mutex<Instant>>,
+    sdk: Option<SdkHostBindings>,
+    spans: HashMap<String, Instant>,
 }
 
 impl HostState {
@@ -152,6 +166,7 @@ impl HostState {
         cancelled: Arc<AtomicBool>,
         event_tx: Option<mpsc::Sender<Value>>,
         deadline: Arc<Mutex<Instant>>,
+        sdk: Option<SdkHostBindings>,
     ) -> Self {
         let (ws_events_tx, ws_events_rx) = std::sync::mpsc::channel();
         Self {
@@ -159,11 +174,15 @@ impl HostState {
             inputs,
             events,
             ws_connections: HashMap::new(),
+            http_streams: HashMap::new(),
+            timers: HashMap::new(),
             ws_events_tx,
             ws_events_rx,
             cancelled,
             event_tx,
             deadline,
+            sdk,
+            spans: HashMap::new(),
         }
     }
 
@@ -253,9 +272,19 @@ impl HostState {
                 .map_err(|_| "插件资源不是 UTF-8 文本".into()),
             "cancel.isCancelled" => Ok(json!(self.cancelled.load(Ordering::Relaxed))),
             "http.request" => self.http_request(payload),
+            "http.stream.open" => self.http_stream_open(payload),
+            "http.stream.read" => self.http_stream_read(payload),
+            "http.stream.close" => self.http_stream_close(payload),
             "websocket.open" => self.websocket_open(payload),
             "websocket.send" => self.websocket_send(payload),
             "websocket.close" => self.websocket_close(payload),
+            "media.read" => self.media_read(payload),
+            "credential.get" => self.credential_get(payload),
+            "runtime.log" => self.runtime_log(payload),
+            "runtime.trace.start" => self.runtime_trace_start(payload),
+            "runtime.trace.end" => self.runtime_trace_end(payload),
+            "timer.open" => self.timer_open(payload),
+            "timer.close" => self.timer_close(payload),
             "emit" => {
                 let event = payload.get("event").cloned().unwrap_or(payload);
                 if let Some(tx) = &self.event_tx {
@@ -292,11 +321,37 @@ impl HostState {
         }
     }
 
-    fn take_ws_events(&self) -> Vec<Value> {
+    fn close_active_resources(&mut self) {
+        for (_, tx) in self.ws_connections.drain() {
+            let _ = tx.send(WsCommand::Close {
+                code: None,
+                reason: String::new(),
+            });
+        }
+        self.http_streams.clear();
+        for (_, stopped) in self.timers.drain() {
+            stopped.store(true, Ordering::Relaxed);
+        }
+        self.spans.clear();
+    }
+
+    fn take_host_events(&mut self) -> Vec<Value> {
         let mut events = Vec::new();
         while events.len() < MAX_EVENTS {
             match self.ws_events_rx.try_recv() {
-                Ok(event) => events.push(event),
+                Ok(event) => {
+                    if event.get("type").and_then(Value::as_str) == Some("websocketClose") {
+                        if let Some(id) = event.get("connectionId").and_then(Value::as_str) {
+                            self.ws_connections.remove(id);
+                        }
+                    }
+                    if event.get("type").and_then(Value::as_str) == Some("timerFired") {
+                        if let Some(id) = event.get("timerId").and_then(Value::as_str) {
+                            self.timers.remove(id);
+                        }
+                    }
+                    events.push(event);
+                }
                 Err(_) => break,
             }
         }
@@ -362,6 +417,91 @@ impl HostState {
     }
 
     fn http_request(&self, payload: Value) -> Result<Value, String> {
+        let response = self.open_http_response(payload)?;
+        tauri::async_runtime::block_on(async {
+            let status = response.status().as_u16();
+            let response_headers = response_headers(&response);
+            let mut stream = response.bytes_stream();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|error| error.to_string())?;
+                if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                    return Err("HTTP 响应超过 16 MiB 限制".into());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(json!({
+                "status": status,
+                "headers": response_headers,
+                "bodyText": String::from_utf8_lossy(&bytes),
+                "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            }))
+        })
+    }
+
+    fn http_stream_open(&mut self, payload: Value) -> Result<Value, String> {
+        let response = self.open_http_response(payload)?;
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        let result = json!({
+            "streamId": stream_id,
+            "status": response.status().as_u16(),
+            "headers": response_headers(&response),
+            "url": response.url().as_str(),
+        });
+        self.http_streams.insert(
+            stream_id,
+            HttpStreamState {
+                response,
+                pending: VecDeque::new(),
+                total_bytes: 0,
+            },
+        );
+        Ok(result)
+    }
+
+    fn http_stream_read(&mut self, payload: Value) -> Result<Value, String> {
+        let stream_id = payload
+            .get("streamId")
+            .and_then(Value::as_str)
+            .ok_or("流式读取缺少 streamId")?;
+        let mut state = self
+            .http_streams
+            .remove(stream_id)
+            .ok_or("HTTP 流不存在或已关闭")?;
+        if state.pending.is_empty() {
+            let chunk = tauri::async_runtime::block_on(async {
+                tokio::select! {
+                    chunk = state.response.chunk() => chunk.map_err(|error| error.to_string()),
+                    _ = wait_for_stop(self.cancelled.clone(), self.deadline.clone()) => {
+                        Err(stop_reason(&self.cancelled, &self.deadline))
+                    }
+                }
+            })?;
+            let Some(chunk) = chunk else {
+                return Ok(json!({"done": true}));
+            };
+            state.total_bytes = state.total_bytes.saturating_add(chunk.len());
+            if state.total_bytes > MAX_STREAM_BYTES {
+                return Err("HTTP 流超过 64 MiB 限制".into());
+            }
+            state.pending.extend(chunk);
+        }
+        let count = state.pending.len().min(MAX_STREAM_CHUNK_BYTES);
+        let bytes: Vec<u8> = state.pending.drain(..count).collect();
+        self.http_streams.insert(stream_id.to_string(), state);
+        Ok(json!({"done": false, "bytes": bytes}))
+    }
+
+    fn http_stream_close(&mut self, payload: Value) -> Result<Value, String> {
+        let stream_id = payload
+            .get("streamId")
+            .and_then(Value::as_str)
+            .ok_or("关闭流缺少 streamId")?;
+        self.http_streams.remove(stream_id);
+        Ok(Value::Null)
+    }
+
+    fn open_http_response(&self, payload: Value) -> Result<reqwest::Response, String> {
         require_network_permission(&self.spec)?;
         let method = payload
             .get("method")
@@ -407,7 +547,9 @@ impl HostState {
                 }
                 let response = tokio::select! {
                     response = request.send() => response.map_err(|error| error.to_string())?,
-                    _ = wait_for_stop(self.cancelled.clone(), self.deadline.clone()) => return Err("插件操作已取消或超时".into()),
+                    _ = wait_for_stop(self.cancelled.clone(), self.deadline.clone()) => {
+                        return Err(stop_reason(&self.cancelled, &self.deadline));
+                    },
                 };
                 if response.status().is_redirection() {
                     let location = response
@@ -420,35 +562,144 @@ impl HostState {
                     url = parse_allowed_url(&self.spec, next.as_str(), &["https"])?;
                     continue;
                 }
-                let status = response.status().as_u16();
-                let response_headers = response
-                    .headers()
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.to_string(),
-                            Value::String(value.to_str().unwrap_or_default().to_string()),
-                        )
-                    })
-                    .collect::<serde_json::Map<_, _>>();
-                let mut stream = response.bytes_stream();
-                let mut bytes = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(|error| error.to_string())?;
-                    if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-                        return Err("HTTP 响应超过 16 MiB 限制".into());
-                    }
-                    bytes.extend_from_slice(&chunk);
-                }
-                return Ok(json!({
-                    "status": status,
-                    "headers": response_headers,
-                    "bodyText": String::from_utf8_lossy(&bytes),
-                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
-                }));
+                return Ok(response);
             }
             Err("HTTP 重定向次数过多".into())
         })
+    }
+
+    fn media_read(&self, payload: Value) -> Result<Value, String> {
+        let reference = payload
+            .get("ref")
+            .and_then(Value::as_str)
+            .ok_or("媒体读取缺少 ref")?;
+        let path = self.inputs.get(reference).ok_or("无效或过期的媒体句柄")?;
+        let metadata = path.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.len() > MAX_MEDIA_BYTES {
+            return Err("媒体句柄不是普通文件或超过 256 MiB".into());
+        }
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("media")
+            .to_string();
+        let mime_type = media_mime_type(path);
+        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
+    }
+
+    fn credential_get(&self, payload: Value) -> Result<Value, String> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or("当前运行上下文未注入 SDK 凭据作用域")?;
+        let scope = payload
+            .get("scope")
+            .and_then(Value::as_str)
+            .ok_or("凭据读取缺少 scope")?;
+        let provider_id = payload
+            .get("providerId")
+            .and_then(Value::as_str)
+            .ok_or("凭据读取缺少 providerId")?;
+        if !sdk.permits_credential(scope, provider_id) {
+            return Err("SDK 运行上下文无权读取该供应商凭据".into());
+        }
+        let value = sdk.credentials.get(scope, provider_id)?;
+        Ok(json!({"value": value}))
+    }
+
+    fn runtime_log(&self, payload: Value) -> Result<Value, String> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or("当前运行上下文未注入 SDK 日志作用域")?;
+        let context = payload.get("context").cloned().unwrap_or(Value::Null);
+        sdk.recorder.record(json!({
+            "type": "log",
+            "ownerId": sdk.owner_id,
+            "requestId": sdk.request_id,
+            "providerId": sdk.provider_id,
+            "level": safe_log_level(payload.get("level").and_then(Value::as_str)),
+            "metadata": sanitize_runtime_metadata(&context),
+        }));
+        Ok(Value::Null)
+    }
+
+    fn runtime_trace_start(&mut self, payload: Value) -> Result<Value, String> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or("当前运行上下文未注入 SDK 追踪作用域")?;
+        let span_id = uuid::Uuid::new_v4().to_string();
+        self.spans.insert(span_id.clone(), Instant::now());
+        sdk.recorder.record(json!({
+            "type": "trace.start",
+            "spanId": span_id,
+            "ownerId": sdk.owner_id,
+            "requestId": sdk.request_id,
+            "providerId": sdk.provider_id,
+            "name": safe_identifier(payload.get("name").and_then(Value::as_str)),
+            "metadata": sanitize_runtime_metadata(payload.get("attributes").unwrap_or(&Value::Null)),
+        }));
+        Ok(json!({"spanId": span_id}))
+    }
+
+    fn runtime_trace_end(&mut self, payload: Value) -> Result<Value, String> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or("当前运行上下文未注入 SDK 追踪作用域")?;
+        let span_id = payload
+            .get("spanId")
+            .and_then(Value::as_str)
+            .ok_or("结束追踪缺少 spanId")?;
+        let started = self
+            .spans
+            .remove(span_id)
+            .ok_or("追踪 span 不存在或已结束")?;
+        sdk.recorder.record(json!({
+            "type": "trace.end",
+            "spanId": span_id,
+            "ownerId": sdk.owner_id,
+            "requestId": sdk.request_id,
+            "providerId": sdk.provider_id,
+            "durationMs": started.elapsed().as_millis(),
+            "failed": !payload.get("error").unwrap_or(&Value::Null).is_null(),
+        }));
+        Ok(Value::Null)
+    }
+
+    fn timer_open(&mut self, payload: Value) -> Result<Value, String> {
+        let millis = payload
+            .get("millis")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or_default()
+            .min(30.0 * 60.0 * 1000.0) as u64;
+        let timer_id = uuid::Uuid::new_v4().to_string();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let task_stopped = stopped.clone();
+        let event_id = timer_id.clone();
+        let events = self.ws_events_tx.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(millis)).await;
+            if !task_stopped.load(Ordering::Relaxed) {
+                let _ = events.send(json!({"type":"timerFired","timerId":event_id}));
+            }
+        });
+        self.timers.insert(timer_id.clone(), stopped);
+        Ok(json!({"timerId":timer_id}))
+    }
+
+    fn timer_close(&mut self, payload: Value) -> Result<Value, String> {
+        let timer_id = payload
+            .get("timerId")
+            .and_then(Value::as_str)
+            .ok_or("关闭定时器缺少 timerId")?;
+        if let Some(stopped) = self.timers.remove(timer_id) {
+            stopped.store(true, Ordering::Relaxed);
+        }
+        Ok(Value::Null)
     }
 
     fn websocket_open(&mut self, payload: Value) -> Result<Value, String> {
@@ -466,11 +717,27 @@ impl HostState {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
+        let protocols = match payload.get("protocols") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(value)) => vec![value.clone()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                        .ok_or_else(|| "WebSocket protocols 必须是非空字符串".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => return Err("WebSocket protocols 必须是字符串或字符串数组".into()),
+        };
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let events = self.ws_events_tx.clone();
         let event_id = id.clone();
         let cancelled = self.cancelled.clone();
+        let deadline = self.deadline.clone();
         tauri::async_runtime::spawn(async move {
             let connection = (|| {
                 let mut request = url
@@ -489,10 +756,23 @@ impl HostState {
                         .map_err(|error| error.to_string())?;
                     request.headers_mut().insert(name, value);
                 }
+                if !protocols.is_empty() {
+                    let value = protocols
+                        .join(", ")
+                        .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
+                        .map_err(|error| format!("非法 WebSocket subprotocol：{error}"))?;
+                    request.headers_mut().insert(
+                        tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+                        value,
+                    );
+                }
                 Ok::<_, String>(request)
             })();
             match connection {
-                Ok(request) => match tokio_tungstenite::connect_async(request).await {
+                Ok(request) => match tokio::select! {
+                    result = tokio_tungstenite::connect_async(request) => result.map_err(|error| error.to_string()),
+                    _ = wait_for_stop(cancelled.clone(), deadline.clone()) => Err(stop_reason(&cancelled, &deadline)),
+                } {
                     Ok((stream, _)) => {
                         let (mut writer, mut reader) = stream.split();
                         let _ =
@@ -501,7 +781,15 @@ impl HostState {
                             tokio::select! {
                                 command = rx.recv() => match command {
                                     Some(WsCommand::Send(message)) => { if writer.send(message).await.is_err() { break; } }
-                                    Some(WsCommand::Close) | None => { let _ = writer.close().await; break; }
+                                    Some(WsCommand::Close { code, reason }) => {
+                                        let frame = code.map(|code| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                            code: code.into(),
+                                            reason: reason.into(),
+                                        });
+                                        let _ = writer.send(Message::Close(frame)).await;
+                                        break;
+                                    }
+                                    None => { let _ = writer.close().await; break; }
                                 },
                                 incoming = reader.next() => match incoming {
                                     Some(Ok(Message::Text(text))) => { let _ = events.send(json!({"type":"websocketMessage","connectionId":event_id,"text":text.as_str()})); }
@@ -510,7 +798,7 @@ impl HostState {
                                     Some(Ok(_)) => {}
                                     Some(Err(error)) => { let _ = events.send(json!({"type":"websocketError","connectionId":event_id,"message":error.to_string()})); break; }
                                 },
-                            _ = wait_for_cancel(cancelled.clone()) => break,
+                            _ = wait_for_stop(cancelled.clone(), deadline.clone()) => break,
                             }
                         }
                     }
@@ -552,7 +840,18 @@ impl HostState {
             .and_then(Value::as_str)
             .ok_or("缺少 connectionId")?;
         if let Some(tx) = self.ws_connections.remove(id) {
-            let _ = tx.send(WsCommand::Close);
+            let code = payload
+                .get("code")
+                .and_then(Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok());
+            let reason = payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .chars()
+                .take(123)
+                .collect();
+            let _ = tx.send(WsCommand::Close { code, reason });
         }
         Ok(Value::Null)
     }
@@ -560,9 +859,7 @@ impl HostState {
 
 impl Drop for HostState {
     fn drop(&mut self) {
-        for (_, tx) in self.ws_connections.drain() {
-            let _ = tx.send(WsCommand::Close);
-        }
+        self.close_active_resources();
     }
 }
 
@@ -583,7 +880,9 @@ impl JsProviderRuntime {
         cancelled: Arc<AtomicBool>,
         inputs: HashMap<String, PathBuf>,
     ) -> Result<Self, String> {
-        Self::create_with_event_sender(spec, profile, timeout, cancelled, inputs, None)
+        Self::create_with_event_sender_and_sdk(
+            spec, profile, timeout, cancelled, inputs, None, None,
+        )
     }
 
     fn create_with_event_sender(
@@ -593,6 +892,41 @@ impl JsProviderRuntime {
         cancelled: Arc<AtomicBool>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
+    ) -> Result<Self, String> {
+        Self::create_with_event_sender_and_sdk(
+            spec, profile, timeout, cancelled, inputs, event_tx, None,
+        )
+    }
+
+    // 9.13 安装真实 SDK bundle 后由统一 SdkRuntimeHost 调用；9.12b 先锁定宿主注入边界。
+    #[allow(dead_code)]
+    pub fn create_with_sdk_bindings(
+        spec: PluginRuntimeSpec,
+        profile: &ProviderProfile,
+        timeout: Duration,
+        cancelled: Arc<AtomicBool>,
+        inputs: HashMap<String, PathBuf>,
+        sdk: SdkHostBindings,
+    ) -> Result<Self, String> {
+        Self::create_with_event_sender_and_sdk(
+            spec,
+            profile,
+            timeout,
+            cancelled,
+            inputs,
+            None,
+            Some(sdk),
+        )
+    }
+
+    fn create_with_event_sender_and_sdk(
+        spec: PluginRuntimeSpec,
+        profile: &ProviderProfile,
+        timeout: Duration,
+        cancelled: Arc<AtomicBool>,
+        inputs: HashMap<String, PathBuf>,
+        event_tx: Option<mpsc::Sender<Value>>,
+        sdk: Option<SdkHostBindings>,
     ) -> Result<Self, String> {
         if spec.trust == "signed-untrusted" {
             return Err(format!(
@@ -629,6 +963,7 @@ impl JsProviderRuntime {
             cancelled.clone(),
             event_tx,
             deadline.clone(),
+            sdk,
         )));
         let session = plugin_secrets::load_session(&spec)?;
         if let Err(reason) = validate_capture_for_runtime(
@@ -663,6 +998,8 @@ impl JsProviderRuntime {
             .map_err(js_error)?;
             ctx.globals()
                 .set("__sayitHostCall", host_call)
+                .map_err(js_error)?;
+            ctx.eval::<(), _>(QUICKJS_RUNTIME_BOOTSTRAP)
                 .map_err(js_error)?;
             ctx.eval::<(), _>(HOST_BOOTSTRAP).map_err(js_error)?;
             let source = std::fs::read(&spec.entrypoint).map_err(|error| error.to_string())?;
@@ -713,7 +1050,7 @@ impl JsProviderRuntime {
         if self.cancelled.load(Ordering::Relaxed) {
             return Err("插件操作已取消".into());
         }
-        self.context.with(|ctx| {
+        let result = self.context.with(|ctx| {
             let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
             let promise: Promise = call
                 .call((
@@ -724,13 +1061,19 @@ impl JsProviderRuntime {
             let result = self.finish_promise_with_host_events(&ctx, promise)?;
             serde_json::from_str(&result)
                 .map_err(|error| format!("插件返回值不是合法 JSON：{error}"))
-        })
+        });
+        if result.is_err() {
+            if let Ok(mut host) = self.host.lock() {
+                host.close_active_resources();
+            }
+        }
+        result
     }
 
     pub fn call_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
         *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
             Instant::now() + Duration::from_secs(5);
-        self.context.with(|ctx| {
+        let result = self.context.with(|ctx| {
             let call: Function = ctx.globals().get("__sayitAudio").map_err(js_error)?;
             let audio = TypedArray::<u8>::new(ctx.clone(), bytes).map_err(js_error)?;
             let promise: Promise = call
@@ -738,7 +1081,13 @@ impl JsProviderRuntime {
                 .map_err(|error| js_error_with_context(&ctx, error))?;
             self.finish_promise_with_host_events(&ctx, promise)?;
             Ok(())
-        })
+        });
+        if result.is_err() {
+            if let Ok(mut host) = self.host.lock() {
+                host.close_active_resources();
+            }
+        }
+        result
     }
 
     fn finish_promise_with_host_events<'js>(
@@ -758,9 +1107,10 @@ impl JsProviderRuntime {
                 .host
                 .lock()
                 .map_err(|_| "宿主状态锁定失败")?
-                .take_ws_events();
+                .take_host_events();
             for event in events {
                 progressed = true;
+                self.dispatch_sdk_host_event(ctx, &event)?;
                 let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
                 let callback: Promise = call
                     .call((
@@ -794,11 +1144,23 @@ impl JsProviderRuntime {
             .host
             .lock()
             .map_err(|_| "宿主状态锁定失败")?
-            .take_ws_events();
+            .take_host_events();
         for event in events {
+            self.context
+                .with(|ctx| self.dispatch_sdk_host_event(&ctx, &event))?;
             self.call("onHostEvent", &event, Duration::from_secs(5))?;
         }
         Ok(())
+    }
+
+    fn dispatch_sdk_host_event<'js>(&self, ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
+        let dispatcher: Function = ctx
+            .globals()
+            .get("__sayitDispatchHostEventJson")
+            .map_err(js_error)?;
+        dispatcher
+            .call::<_, ()>((serde_json::to_string(event).map_err(|error| error.to_string())?,))
+            .map_err(|error| js_error_with_context(ctx, error))
     }
 
     pub fn take_events(&self) -> Vec<Value> {
@@ -806,6 +1168,20 @@ impl JsProviderRuntime {
             .lock()
             .map(|mut events| events.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sdk_resource_counts(&self) -> (usize, usize, usize) {
+        self.host
+            .lock()
+            .map(|state| {
+                (
+                    state.http_streams.len(),
+                    state.ws_connections.len(),
+                    state.spans.len() + state.timers.len(),
+                )
+            })
+            .unwrap_or((usize::MAX, usize::MAX, usize::MAX))
     }
 }
 
@@ -950,14 +1326,18 @@ fn deadline_expired(deadline: &Arc<Mutex<Instant>>) -> bool {
         .unwrap_or(true)
 }
 
-async fn wait_for_stop(cancelled: Arc<AtomicBool>, deadline: Arc<Mutex<Instant>>) {
-    while !cancelled.load(Ordering::Relaxed) && !deadline_expired(&deadline) {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+fn stop_reason(cancelled: &Arc<AtomicBool>, deadline: &Arc<Mutex<Instant>>) -> String {
+    if cancelled.load(Ordering::Relaxed) {
+        "SDK_RUNTIME_CANCELLED".into()
+    } else if deadline_expired(deadline) {
+        "SDK_RUNTIME_TIMEOUT".into()
+    } else {
+        "SDK_RUNTIME_STOPPED".into()
     }
 }
 
-async fn wait_for_cancel(cancelled: Arc<AtomicBool>) {
-    while !cancelled.load(Ordering::Relaxed) {
+async fn wait_for_stop(cancelled: Arc<AtomicBool>, deadline: Arc<Mutex<Instant>>) {
+    while !cancelled.load(Ordering::Relaxed) && !deadline_expired(&deadline) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -996,10 +1376,93 @@ fn request_body(
             .map(|value| Some(RequestBody::Bytes(value)))
             .map_err(|error| error.to_string());
     }
+    if let Some(value) = payload.get("bodyBytes") {
+        return value_bytes(value).map(|value| Some(RequestBody::Bytes(value)));
+    }
     Ok(payload
         .get("bodyText")
         .and_then(Value::as_str)
         .map(|value| RequestBody::Bytes(value.as_bytes().to_vec())))
+}
+
+fn response_headers(response: &reqwest::Response) -> serde_json::Map<String, Value> {
+    response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                Value::String(value.to_str().unwrap_or_default().to_string()),
+            )
+        })
+        .collect()
+}
+
+fn media_mime_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "opus" => "audio/opus",
+        "ogg" => "audio/ogg",
+        "m4a" | "mp4" => "audio/mp4",
+        "flac" => "audio/flac",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+fn safe_log_level(value: Option<&str>) -> &'static str {
+    match value {
+        Some("warn") => "warn",
+        Some("error") => "error",
+        _ => "info",
+    }
+}
+
+fn safe_identifier(value: Option<&str>) -> String {
+    value
+        .unwrap_or("sdk.runtime")
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | ':')
+        })
+        .take(96)
+        .collect()
+}
+
+fn sanitize_runtime_metadata(value: &Value) -> Value {
+    let Some(object) = value.as_object() else {
+        return Value::Null;
+    };
+    let mut result = serde_json::Map::new();
+    for key in [
+        "event",
+        "modelId",
+        "stage",
+        "durationMs",
+        "bytes",
+        "chars",
+        "errorCode",
+        "taskId",
+    ] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        let safe = match value {
+            Value::String(value) => Value::String(value.chars().take(160).collect()),
+            Value::Number(_) | Value::Bool(_) | Value::Null => value.clone(),
+            _ => continue,
+        };
+        result.insert(key.into(), safe);
+    }
+    Value::Object(result)
 }
 
 fn payload_bytes(payload: &Value) -> Result<Vec<u8>, String> {

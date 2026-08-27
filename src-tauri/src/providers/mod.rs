@@ -15,6 +15,7 @@ pub mod plugin_package;
 pub mod plugin_runtime;
 pub mod plugin_secrets;
 pub mod registry;
+pub mod sdk_runtime;
 #[cfg(test)]
 mod testing;
 
