@@ -1167,13 +1167,6 @@ impl PluginRegistry {
             .and_then(|plugin| plugin.manifest.browser_session.clone())
     }
 
-    pub fn provider_id_for_plugin(&self, plugin_id: &str) -> Option<&str> {
-        self.plugins
-            .iter()
-            .find(|plugin| plugin.manifest.id == plugin_id)
-            .map(|plugin| plugin.manifest.provider.id.as_str())
-    }
-
     pub fn runtime_for_provider_id_by_plugin(
         &self,
         plugin_id: &str,

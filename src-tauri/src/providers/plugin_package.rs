@@ -915,9 +915,11 @@ mod tests {
     #[test]
     fn signing_payload_is_stable_across_hash_map_order() {
         let mut left: PluginManifest = serde_json::from_value(serde_json::json!({
-            "apiVersion": 3,
+            "apiVersion": 5,
             "id": "test", "name": "Test", "version": "1.0.0",
             "provider": {"id":"test","displayName":"Test","config":{}},
+            "source": {"namespace":"test"},
+            "capabilities": [],
             "models": [],
             "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1},
             "integrity": {"algorithm":"sha256","files":{"b":"02","a":"01"}}
@@ -936,34 +938,31 @@ mod tests {
     }
 
     #[test]
-    fn signing_payload_ignores_absent_optional_model_fields() {
-        // 签名载荷是对 PluginManifest 重新序列化得到的，因此模型上任何"缺省即不写"的
-        // 可选字段都必须 skip_serializing_if。曾经 emitsPartialResults 缺省时被序列化成
-        // null，导致此前签名的插件与模型包全部验签失败（用户端表现为"插件签名验证失败"）。
-        let signed_before: serde_json::Value = serde_json::json!({
-            "apiVersion": 4,
+    fn signing_payload_serializes_only_v5_model_reference_contract() {
+        let source: serde_json::Value = serde_json::json!({
+            "apiVersion": 5,
             "id": "test", "name": "Test", "version": "1.0.0",
             "provider": {"id":"test","displayName":"Test","config":{}},
+            "source": {"namespace":"test"},
+            "capabilities": [{
+                "moduleId":"test.speech-recognition.m","kind":"speech-recognition",
+                "providerIds":["test"],"modelId":"m","operations":["speech-recognition"],
+                "features":["partial-results"],"tags":[],"executionModes":["realtime"]
+            }],
             "models": [{
-                "id":"m","label":"M","providerId":"test","category":"realtime",
-                "protocol":"plugin-realtime-v1","supportsVocabulary":false,
-                "supportsAlignmentTimestamps":false,
-                "scenes":["dictationRealtime"],
-                "isDefaultRealtime":false,"isDefaultFile":false
+                "id":"m","label":"M","providerId":"test",
+                "capabilityId":"test.speech-recognition.m"
             }],
             "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1}
         });
-        let manifest: PluginManifest = serde_json::from_value(signed_before.clone()).unwrap();
+        let manifest: PluginManifest = serde_json::from_value(source).unwrap();
         let reserialized = serde_json::to_value(&manifest).unwrap();
         let model = &reserialized["models"][0];
-        for field in ["emitsPartialResults", "supportsContext"] {
-            assert!(
-                model.get(field).is_none(),
-                "缺省的可选字段 {field} 不得出现在重新序列化结果里，否则旧签名全部失效：{model}"
-            );
+        assert_eq!(model["capabilityId"], "test.speech-recognition.m");
+        for deprecated in ["category", "protocol", "scenes", "supportsVocabulary"] {
+            assert!(model.get(deprecated).is_none(), "v5 不应序列化旧字段 {deprecated}");
         }
     }
-
 
     #[test]
     fn signed_package_detects_tampering_and_trusts_pinned_key() {
@@ -975,14 +974,18 @@ mod tests {
         )
         .unwrap();
         let mut manifest: PluginManifest = serde_json::from_value(serde_json::json!({
-            "apiVersion": 3,
+            "apiVersion": 5,
             "id": "signed-test", "name": "Signed Test", "version": "1.0.0",
             "provider": {"id":"signed-test","displayName":"Signed Test","capabilities":["asr"],"config":{}},
+            "source": {"namespace":"signed-test"},
+            "capabilities": [{
+                "moduleId":"signed-test.speech-recognition.signed-live","kind":"speech-recognition",
+                "providerIds":["signed-test"],"modelId":"signed-live","operations":["speech-recognition"],
+                "features":["partial-results"],"tags":[],"executionModes":["realtime"]
+            }],
             "models": [{
                 "id":"signed-live","label":"Signed Live","providerId":"signed-test",
-                "category":"realtime","protocol":"plugin-realtime-v1",
-                "supportsVocabulary":false,"supportsAlignmentTimestamps":false,
-                "scenes":["dictationRealtime"],"isDefaultRealtime":false,"isDefaultFile":false
+                "capabilityId":"signed-test.speech-recognition.signed-live"
             }],
             "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1},
             "integrity": {"algorithm":"sha256","files":{"connector/index.js": sha256_file(&root.join("connector/index.js")).unwrap()}},
@@ -1025,7 +1028,10 @@ mod tests {
             "signed-untrusted"
         );
         let pack = manifest.model_pack.as_ref().unwrap();
-        let embedded = pack.files.iter().all(|file| root.join(&file.path).is_file());
+        let embedded = pack
+            .files
+            .iter()
+            .all(|file| root.join(&file.path).is_file());
         if !embedded {
             assert!(pack.files.iter().all(|file| {
                 !root.join(&file.path).exists()

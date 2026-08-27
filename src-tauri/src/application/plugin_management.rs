@@ -221,13 +221,20 @@ pub(crate) fn set_provider_plugin_enabled(
     enabled: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
-    let provider_id = state
+    let (provider_id, runtime) = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .provider_id_for_plugin(&plugin_id)
-        .map(str::to_owned)
+        .runtime_for_provider_id_by_plugin(&plugin_id)?
         .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
+    if !enabled {
+        if let Some(runtime) = runtime {
+            plugin_runtime::drain_plugin_namespace(
+                &runtime.source_namespace,
+                std::time::Duration::from_secs(5),
+            )?;
+        }
+    }
 
     let providers = {
         let mut providers = state
@@ -269,6 +276,10 @@ pub(crate) fn uninstall_provider_plugin(
         .runtime_for_provider_id_by_plugin(&plugin_id)?
         .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
     if let Some(spec) = spec {
+        plugin_runtime::drain_plugin_namespace(
+            &spec.source_namespace,
+            std::time::Duration::from_secs(5),
+        )?;
         plugin_secrets::clear_session(&spec)?;
         if let Some(window) = app.get_webview_window(&login_window_label(&provider_id)) {
             window
@@ -283,11 +294,13 @@ pub(crate) fn uninstall_provider_plugin(
             .providers
             .lock()
             .map_err(|_| "供应商配置锁失败".to_string())?;
-        if providers.profiles.iter().any(|profile| {
+        if let Some(profile) = providers.profiles.iter_mut().find(|profile| {
             profile.id == provider_id
                 && (profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
         }) {
-            crate::providers::remove_profile_preserving_credentials(&mut providers, &provider_id);
+            // 项目尚未发布：卸载删除执行包与运行数据，但保留一次配置，重装时直接恢复。
+            // secret 本就只在 CredentialStore，不在 profile.config 中。
+            profile.enabled = false;
         }
         *providers = crate::providers::normalize_settings(providers.clone());
     }

@@ -3920,7 +3920,7 @@ mod tests {
         std::fs::write(
             plugin.join("manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "apiVersion": 4,
+                "apiVersion": 5,
                 "id": "remote-ocr",
                 "name": "Remote OCR",
                 "version": "1.0.0",
@@ -3931,6 +3931,8 @@ mod tests {
                     "capabilities": ["ocr"],
                     "config": {}
                 },
+                "source": {"namespace":"remote-ocr"},
+                "capabilities": [],
                 "models": [],
                 "runtime": {
                     "kind": "javascript",

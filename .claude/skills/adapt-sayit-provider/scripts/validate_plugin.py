@@ -9,8 +9,6 @@ import re
 import sys
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
 ID = re.compile(r"^[a-z0-9.-]{1,64}$")
 ACTION_ID = re.compile(r"^[A-Za-z0-9.-]{1,64}$")
 COOKIE_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$")
@@ -103,6 +101,7 @@ def validate_integrity(root: Path, data: dict) -> str:
         return "integrity-only"
     if signature.get("algorithm", "").lower() != "ed25519":
         fail("signature.algorithm 必须为 ed25519")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     public = base64.b64decode(signature.get("publicKey", ""), validate=True)
     signed = base64.b64decode(signature.get("value", ""), validate=True)
     Ed25519PublicKey.from_public_bytes(public).verify(signed, signing_payload(data))
