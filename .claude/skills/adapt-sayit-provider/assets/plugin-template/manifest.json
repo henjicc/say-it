@@ -1,5 +1,5 @@
 {
-  "apiVersion": 4,
+  "apiVersion": 5,
   "id": "replace-provider",
   "name": "待替换供应商",
   "version": "0.1.0",
@@ -8,23 +8,31 @@
     "displayName": "待替换供应商",
     "authKind": "api-key",
     "capabilities": ["asr"],
-    "config": {"apiKey": ""},
+    "config": {},
     "configFields": [
       {"key": "apiKey", "label": "API Key", "fieldType": "password", "secret": true}
     ],
     "actions": []
   },
+  "source": {"namespace": "replace-provider"},
+  "capabilities": [
+    {
+      "moduleId": "replace-provider.speech-recognition.replace-realtime",
+      "kind": "speech-recognition",
+      "providerIds": ["replace-provider"],
+      "modelId": "replace-realtime",
+      "operations": ["speech-recognition"],
+      "features": ["streaming", "partial-results"],
+      "tags": [],
+      "executionModes": ["realtime"]
+    }
+  ],
   "models": [
     {
       "id": "replace-realtime",
       "label": "待替换实时模型",
       "providerId": "replace-provider",
-      "category": "realtime",
-      "protocol": "plugin-realtime-v1",
-      "supportsVocabulary": false,
-      "supportsAlignmentTimestamps": false,
-      "emitsPartialResults": true,
-      "scenes": ["dictationRealtime", "subtitles"],
+      "capabilityId": "replace-provider.speech-recognition.replace-realtime",
       "isDefaultRealtime": false,
       "isDefaultFile": false
     }

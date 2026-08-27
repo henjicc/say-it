@@ -154,14 +154,14 @@ fn build_archive(
 }
 
 fn validate_manifest_shape(manifest: &Value) -> Result<(), String> {
-    if manifest.get("apiVersion").and_then(Value::as_u64) != Some(4)
+    if manifest.get("apiVersion").and_then(Value::as_u64) != Some(5)
         || manifest.pointer("/runtime/kind").and_then(Value::as_str) != Some("model-pack")
         || manifest
             .get("modelPack")
             .and_then(Value::as_object)
             .is_none()
     {
-        return Err("描述文件 manifest 必须是 API v4 model-pack".into());
+        return Err("描述文件 manifest 必须是 API v5 model-pack".into());
     }
     if manifest.get("integrity").is_some() || manifest.get("signature").is_some() {
         return Err("描述文件不得预先包含 integrity 或 signature".into());

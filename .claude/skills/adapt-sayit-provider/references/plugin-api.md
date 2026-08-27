@@ -1,4 +1,4 @@
-# 「说吧！」供应商插件 API v4
+# 「说吧！」供应商插件 API v5
 
 ## 包结构
 
@@ -25,7 +25,25 @@ provider.sayit
 
 ```json
 {
-  "apiVersion": 4,
+  "apiVersion": 5,
+  "id": "example-provider",
+  "source": { "namespace": "example-provider" },
+  "capabilities": [{
+    "moduleId": "example-provider.speech-recognition.example-live",
+    "kind": "speech-recognition",
+    "providerIds": ["example-provider"],
+    "modelId": "example-live",
+    "operations": ["speech-recognition"],
+    "features": ["streaming", "partial-results"],
+    "tags": [],
+    "executionModes": ["realtime"]
+  }],
+  "models": [{
+    "id": "example-live", "label": "Example Live",
+    "providerId": "example-provider",
+    "capabilityId": "example-provider.speech-recognition.example-live",
+    "isDefaultRealtime": false, "isDefaultFile": false
+  }],
   "runtime": {
     "kind": "javascript",
     "entrypoint": "connector/index.js",
@@ -38,7 +56,7 @@ provider.sayit
 
 权限只有 `network`、`localNetwork`、`browserSession`、`cookies`。声明 `network` 时白名单不能为空；仅允许精确主机或 `*.` 开头的子域规则，不写协议、端口和路径。
 
-`localNetwork` 仅用于连接本机服务：允许 `http://` / `ws://` 访问字面主机 `127.0.0.1`、`localhost`、`[::1]`，不要求写入 `allowedHosts`。它不允许局域网 IP、主机别名或公网明文地址。插件若还访问公网，必须同时声明 `network` 并列出最小公网主机白名单。v3 不允许声明 `localNetwork`。
+`localNetwork` 仅用于连接本机服务：允许 `http://` / `ws://` 访问字面主机 `127.0.0.1`、`localhost`、`[::1]`，不要求写入 `allowedHosts`。它不允许局域网 IP、主机别名或公网明文地址。插件若还访问公网，必须同时声明 `network` 并列出最小公网主机白名单。
 
 网页会话插件可在 `browserSession` 中声明 `requiredCookieNames`。它是会话完整性校验用的非敏感 Cookie 名列表；宿主在保存前必须能从 `allowedUrls` 读取所有名称，否则拒绝覆盖原有受保护会话。`allowedUrls` 要覆盖实际登录页及需要读取路径级 Cookie 的页面，例如登录页为 `/chat` 时不要只写站点根路径。
 
@@ -67,78 +85,21 @@ provider.sayit
 
 `cookieName` 必须同时出现在 `requiredCookieNames`。宿主会在同步会话和每次运行前按此规则校验短时凭据的格式、时效、目标 URL 与必要参数；任何插件都可使用这项声明。
 
-模型协议与场景：
+## Capability 与模型目录
 
-- `plugin-realtime-v1`：`realtime`，场景含 `dictationRealtime` 或 `subtitles`。
-- `plugin-file-v1`：`file`，场景含 `dictationFile` 或 `transcription`。
-- `plugin-translation-v1`：`translation`，场景含 `subtitleTranslation`。
-- `plugin-ocr-v1`：`ocr`，场景含 `activeAppContext`。纯 OCR 插件可不声明模型，此时宿主按供应商生成场景下拉项。
+Plugin API 只接受 v5。`source.namespace` 必须与插件 ID 一致，宿主会强制补成 SDK source
+`{ kind: "plugin", namespace }`，不接受插件伪造内置来源，也不保留 v3/v4 执行分支。
 
-## 模型能力字段（必须逐项如实声明）
+`capabilities` 使用 SDK descriptor 的可移植子集：`moduleId`、`kind`、`providerIds`、`modelId`、
+`operations`、`features`、`tags`、`executionModes`。ASR 的 `kind` 为 `speech-recognition`，翻译为
+`translation`；执行模式只允许 `request-response`、`event-stream`、`realtime`，其中 realtime
+仅允许语音识别。宿主使用真实 SDK CapabilityClient 拒绝重复 module ID 和重复 provider/kind/model
+坐标，错误会同时指出待注册 module 和已占用 module/source。
 
-这些字段直接决定用户在下拉里看到什么、以及哪些功能对该模型开放。宿主无法探测真实行为，
-声明错了就是错的，**不要照抄模板默认值**。
-
-### `category` + `emitsPartialResults`：出字方式
-
-两者共同决定下拉标注，用户靠它判断"要不要等"：
-
-| 实际行为 | `category` | `emitsPartialResults` | 下拉显示 |
-| --- | --- | --- | --- |
-| 边说边出字，中间结果可变 | `realtime` | `true` | 不加后缀 |
-| 走实时会话，但说完一句才整句出字，无中间态 | `realtime` | `false` | `（整句）` |
-| 停止后才开始识别 | `file` | `false` | `（非实时）` |
-
-`category` 只区分"实时会话"与"文件批处理"，**装不下第二种**。只要模型不产出可变的中间
-结果，就必须显式写 `"emitsPartialResults": false`，否则会被当成真流式，用户以为卡住了。
-
-省略该字段时宿主按 `category` 兜底（`realtime` → `true`），仅为兼容旧清单，新模型一律显式声明。
-
-### `supportsAlignmentTimestamps`：是否返回时间戳
-
-指识别结果能否带**逐句或逐词的时间信息**。它 gate 了录音识别里的**文稿对齐**功能，
-声明 `false` 的模型会被挡在功能外并提示用户换模型。
-
-- 只有结果里真的带可用时间戳才写 `true`。
-- 判断依据是**宿主最终能拿到什么**，不是模型理论上支持什么。若模型能返回时间戳但连接器
-  没有把它透传进 `sentences`，仍然写 `false`——写 `true` 会让功能拿到空时间轴而失败。
-- 文件识别结果的 `sentences` 为空数组时，必须写 `false`。
-
-### `supportsVocabulary` 与 `supportsContext`：热词与上下文
-
-宿主只维护**一份全局热词与上下文**（用户在「热词上下文」页面配置），按模型声明分别下发：
-
-| 字段 | 含义 | 下发内容 |
-| --- | --- | --- |
-| `supportsVocabulary` | 供应商接受带权重的词表 | `hotwords: [{ text, weight }]` |
-| `supportsContext` | 供应商接受一段上下文文本，靠其中出现的原词纠正专有名词 | `context: "..."`（已渲染并截断到 400 字符） |
-
-两者相互独立：可以都声明、都不声明，或只声明其一；都声明时两个字段一起下发。
-`supportsContext` 是可选字段，**省略等于 `false`**，宿主不会向未声明的模型下发上下文。
-只有连接器真的把对应内容送给供应商并生效时才写 `true`——写错就是静默失效，宿主无法探测。
-
-**权重的适配责任在连接器**：宿主的权重固定为 1–5 的整数。若供应商不支持权重，直接忽略
-`weight` 只取 `text`；若供应商的权重区间不同（如 0–1 的浮点或 1–10 的整数），在连接器里
-线性换算，不要把 1–5 原样透传。若供应商只接受纯词列表，用分隔符拼接 `text` 即可。
-
-热词与上下文在下面这些调用里出现（**字段为空时不会出现**，据此可以区分"用户没配"和"模型不支持"）：
-
-```js
-// 实时：模型声明的能力决定收到哪些字段
-realtimeStart({ providerId, model, sampleRate, config, hotwords, context })
-// 文件：同上
-invoke({ operation: "transcribeFile", payload: { filePath, params, hotwords, context } })
-```
-
-`setHotwords` / `getHotwords` / `clearHotwords` 是另一回事：它们用于**需要预先在云端建词表**的
-供应商，由用户在「热词上下文 → 供应商同步」里触发。随请求下发的模型不需要实现这三个操作。
-
-### 声明前先实测
-
-新接入的模型必须跑一遍真实音频，并据实回填上述字段；同时留意结果**是否带标点**——
-不带标点的模型在长听写和字幕场景体验差异很大，应在 `label` 或插件说明里提示用户。
-
-API v3 兼容说明：宿主继续接受 v3 的 `asr`、`translation`、`customization` JavaScript 插件；v3 不得声明 `ocr`、`localNetwork` 或 `model-pack`。新插件默认使用 v4，不要为了兼容主动降级。
+`models` 不再重复声明 `category`、`protocol`、`scenes` 或 `supports*`。每项只保存
+`id`、`label`、`providerId`、`capabilityId` 与两个可选默认项；宿主从已校验 descriptor 投影应用目录。
+真实能力通过 features 声明：`partial-results`、`timestamps`、`vocabulary`、`context`。只有连接器
+确实把对应结果或输入透传到宿主时才能声明。每个 capability 必须恰好有一个 models 条目。
 
 ## 入口接口
 
@@ -158,7 +119,7 @@ export default function createProvider(host) {
 }
 ```
 
-方法可以返回普通值或 Promise。每个实时会话和一次性调用使用独立上下文，模块全局状态不能跨会话共享。`initialize` 可选，接收供应商配置、受保护会话和权限快照；实时方法的请求不保证再次附带 `session`，需要在 `initialize` 时把当前会话保留在该会话上下文中，不能用空请求覆盖它。
+这些方法是轻量插件 ABI，由宿主的唯一适配器注册成 SDK capability；插件不打包 SDK，也不得复制 CapabilityClient。方法可以返回普通值或 Promise。每个实时会话和一次性调用使用独立上下文，模块全局状态不能跨会话共享。`initialize` 可选，接收非敏感配置、受保护会话和权限快照；secret 字段不在 request.config 中，必须按声明字段调用 `await host.credentials.get(field)`。
 
 `realtimeAudio` 接收单声道 16 kHz PCM16 小端序的 `Uint8Array`。插件不得自行采集麦克风、处理系统设备或注入文本。
 
@@ -200,6 +161,7 @@ host.storage.delete(key)
 host.resource.readBytes(relativePath)
 host.resource.readText(relativePath)
 host.cancellation.isCancelled()
+host.credentials.get(field)
 host.emit(event)
 host.log(level, message)
 ```

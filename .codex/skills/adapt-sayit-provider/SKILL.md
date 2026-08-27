@@ -1,6 +1,6 @@
 ---
 name: adapt-sayit-provider
-description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！」JavaScript 供应商插件。用于调研官方 ASR、OCR、翻译 API 或用户明确提供的逆向项目、实现 API v4 连接器、校验签名并产出单个 .sayit 文件。
+description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！」JavaScript 供应商插件。用于调研官方 ASR、OCR、翻译 API 或用户明确提供的逆向项目、实现 API v5 capability 连接器、校验签名并产出单个 .sayit 文件。
 ---
 
 # 适配「说吧！」供应商
@@ -30,15 +30,15 @@ description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！
 
 ## 关键约束
 
-- 新插件默认使用 API v4；运行时固定为 `javascript`，宿主 API 固定为 v1。只有维护既有插件且未使用 `ocr`、`localNetwork` 时才保留 v3。
-- 模型协议只能使用 `plugin-realtime-v1`、`plugin-file-v1`、`plugin-translation-v1`、`plugin-ocr-v1`，并与能力、类别和场景严格匹配。
-- 模型能力字段必须按实测如实声明，宿主无法探测真实行为，照抄模板默认值就是错的：实时模型必须显式写 `emitsPartialResults`（真流式 `true`，说完一句才整句出字的写 `false`，否则用户看不到「（整句）」标注、以为界面卡住）；`supportsAlignmentTimestamps` 按宿主最终能否拿到时间戳判断，连接器没把时间戳透传进 `sentences` 就必须写 `false`。判定表见 [插件接口规范](references/plugin-api.md) 的「模型能力字段」。
+- 插件只使用 API v5；运行时固定为 `javascript`，宿主 API 固定为 v1。项目不保留 v3/v4 双执行兼容，新包不得降级。
+- `source.namespace` 必须等于插件 ID；ASR/翻译在 `capabilities` 声明 SDK descriptor 子集，`models` 只保存展示名、坐标引用和默认项。类别、场景、协议与可用功能由宿主通过真实 SDK descriptor 投影，不能在展示层重复声明第二份真相。
+- `features` 必须按实测如实声明：实时中间结果用 `partial-results`、时间戳用 `timestamps`、热词用 `vocabulary`、上下文用 `context`。连接器没有把对应数据透传到宿主就不得声明。
 - 音频由宿主完成 DSP 和 PCM16 转换，以 `Uint8Array` 传给 `realtimeAudio`。
 - 文件识别只能使用宿主给出的不透明输入句柄；不得接收或猜测本地路径。
 - OCR 统一通过 `invoke({ operation: "recognizeImage", payload })`；输入是 PNG Base64 与用途，输出必须是带 0~1 归一化区域的文本块。
 - 翻译统一通过 `invoke({ operation: "translate", payload })`；增量用 `host.emit({ type: "delta", ... })`，最终结果由 `invoke` 返回。
 - 公网网络仅能访问 `runtime.network.allowedHosts` 中声明的 HTTPS/WSS 主机；跳转目标也必须在白名单内。
-- 只有确需连接本机服务时才声明 v4 `localNetwork`。它只额外允许 `127.0.0.1`、`localhost`、`[::1]` 的 HTTP/WS，不得借此访问局域网地址；若还访问公网，必须另加 `network` 与最小 `allowedHosts`。
+- 只有确需连接本机服务时才声明 `localNetwork`。它只额外允许 `127.0.0.1`、`localhost`、`[::1]` 的 HTTP/WS，不得借此访问局域网地址；若还访问公网，必须另加 `network` 与最小 `allowedHosts`。
 - Cookie 与登录会话由宿主独立 WebView 和系统凭据库管理，插件只能接收本次调用允许的会话数据。
 - `browserSession.capturedUrlCookie` 适用于页面把 `{ issuedAt, url }` 以 Base64URL JSON 写入 Cookie 的短时凭据场景；完整字段、校验规则和示例见 [插件接口规范](references/plugin-api.md)。
 - 只声明实际需要的权限、模型、操作和登录 URL；日志必须脱敏，不记录凭据、音频或用户文本。

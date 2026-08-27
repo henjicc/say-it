@@ -117,8 +117,8 @@ def validate(root: Path) -> dict:
         fail("manifest.json 不存在")
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     api_version = data.get("apiVersion")
-    if api_version not in {3, 4}:
-        fail("apiVersion 必须为宿主支持的 3 或 4")
+    if api_version != 5:
+        fail("apiVersion 必须为 5；宿主不保留 v3/v4 执行兼容")
     provider = data.get("provider") or {}
     for label, value in (("插件", data.get("id")), ("供应商", provider.get("id"))):
         if not isinstance(value, str) or not ID.fullmatch(value):
@@ -126,8 +126,6 @@ def validate(root: Path) -> dict:
     if not str(data.get("name", "")).strip() or not str(data.get("version", "")).strip():
         fail("name 和 version 不能为空")
     capabilities = set(provider.get("capabilities", []))
-    if api_version < 4 and "ocr" in capabilities:
-        fail("ocr 能力需要 apiVersion 4")
     if not capabilities & {"asr", "translation", "customization", "ocr"}:
         fail("provider.capabilities 未声明受支持能力")
     if not isinstance(provider.get("config", {}), dict):
@@ -150,8 +148,6 @@ def validate(root: Path) -> dict:
     permissions = set(runtime.get("permissions", []))
     if permissions - PERMISSIONS:
         fail(f"未知权限：{sorted(permissions - PERMISSIONS)}")
-    if api_version < 4 and "localNetwork" in permissions:
-        fail("localNetwork 权限需要 apiVersion 4")
     allowed_hosts = (runtime.get("network") or {}).get("allowedHosts", [])
     if "network" in permissions and not allowed_hosts:
         fail("声明 network 权限时 allowedHosts 不能为空")
@@ -191,6 +187,41 @@ def validate(root: Path) -> dict:
         if not required.issubset(actions):
             fail(f"browserSession 必须声明操作：{sorted(required)}")
 
+    source = data.get("source") or {}
+    if source.get("namespace") != data.get("id"):
+        fail("source.namespace 必须与插件 ID 一致")
+    descriptors = data.get("capabilities")
+    if not isinstance(descriptors, list):
+        fail("capabilities 必须是数组")
+    descriptor_ids: set[str] = set()
+    descriptor_models: dict[str, tuple[str, str]] = {}
+    for descriptor in descriptors:
+        module_id = descriptor.get("moduleId")
+        if not isinstance(module_id, str) or not ID.fullmatch(module_id) or module_id in descriptor_ids:
+            fail(f"capability moduleId 不合法或重复：{module_id!r}")
+        descriptor_ids.add(module_id)
+        kind = descriptor.get("kind")
+        if kind not in {"speech-recognition", "translation"}:
+            fail(f"capability {module_id} 的 kind 不受支持")
+        provider_ids = descriptor.get("providerIds")
+        if provider_ids != [provider.get("id")]:
+            fail(f"capability {module_id} 的 providerIds 必须只包含本插件供应商")
+        model_id = descriptor.get("modelId")
+        if not isinstance(model_id, str) or not ID.fullmatch(model_id):
+            fail(f"capability {module_id} 的 modelId 不合法")
+        execution_modes = descriptor.get("executionModes")
+        if not isinstance(execution_modes, list) or not execution_modes:
+            fail(f"capability {module_id} 缺少 executionModes")
+        if set(execution_modes) - {"request-response", "event-stream", "realtime"}:
+            fail(f"capability {module_id} 含未知 executionMode")
+        if "realtime" in execution_modes and kind != "speech-recognition":
+            fail(f"capability {module_id} 只有语音识别可声明 realtime")
+        for field in ("operations", "features", "tags"):
+            value = descriptor.get(field, [])
+            if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+                fail(f"capability {module_id} 的 {field} 必须是非空字符串数组")
+        descriptor_models[module_id] = (kind, model_id)
+
     models = data.get("models")
     if not isinstance(models, list):
         fail("models 必须是数组")
@@ -207,31 +238,15 @@ def validate(root: Path) -> dict:
             fail(f"模型 {model_id} 的 providerId 不匹配")
         if not isinstance(model.get("label"), str) or not model["label"].strip():
             fail(f"模型 {model_id} 缺少 label")
-        # 宿主对这些字段没有默认值，缺失或类型错误会让插件装上后加载失败，
-        # 必须在打包阶段就拦下来。
-        for field in ("supportsVocabulary", "supportsAlignmentTimestamps",
-                      "isDefaultRealtime", "isDefaultFile"):
+        for field in ("isDefaultRealtime", "isDefaultFile"):
             if not isinstance(model.get(field), bool):
                 fail(f"模型 {model_id} 的 {field} 必须是布尔值")
-        category, protocol, scenes = model.get("category"), model.get("protocol"), set(model.get("scenes", []))
-        partial = model.get("emitsPartialResults")
-        if partial is not None and not isinstance(partial, bool):
-            fail(f"模型 {model_id} 的 emitsPartialResults 必须是布尔值")
-        # 实时模型有真流式与"整句"两种出字方式，宿主无法探测，只能靠声明区分：
-        # 漏声明会被当成真流式，用户看不到「（整句）」标注，以为界面卡住。
-        if category == "realtime" and partial is None:
-            fail(f"模型 {model_id} 是实时模型，必须显式声明 emitsPartialResults")
-        valid = (
-            category == "realtime" and "asr" in capabilities and protocol == "plugin-realtime-v1" and bool(scenes & {"dictationRealtime", "subtitles"})
-        ) or (
-            category == "file" and "asr" in capabilities and protocol == "plugin-file-v1" and bool(scenes & {"dictationFile", "transcription"})
-        ) or (
-            category == "translation" and "translation" in capabilities and protocol == "plugin-translation-v1" and "subtitleTranslation" in scenes
-        ) or (
-            category == "ocr" and "ocr" in capabilities and protocol == "plugin-ocr-v1" and "activeAppContext" in scenes
-        )
-        if not valid:
-            fail(f"模型 {model_id} 的类别、协议或场景组合不受支持")
+        capability_id = model.get("capabilityId")
+        descriptor = descriptor_models.get(capability_id)
+        if descriptor is None or descriptor[1] != model_id:
+            fail(f"模型 {model_id} 的 capabilityId 不存在或坐标不匹配")
+    if set(descriptor_models) != {model.get("capabilityId") for model in models}:
+        fail("每个 capability 必须恰好由 models 条目引用")
     package_files(root)
     data["_trust"] = validate_integrity(root, data)
     return data

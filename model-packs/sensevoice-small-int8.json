@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "apiVersion": 4,
+    "apiVersion": 5,
     "id": "official.sherpa-sensevoice-small",
     "name": "SenseVoice Small 多语种 INT8",
     "version": "1.0.0",
@@ -11,6 +11,8 @@
       "capabilities": ["asr"],
       "config": {}
     },
+    "source": { "namespace": "official.sherpa-sensevoice-small" },
+    "capabilities": [],
     "models": [
       {
         "id": "local-sensevoice-sentence-int8",
