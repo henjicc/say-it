@@ -60,6 +60,10 @@ fn fixture(
     std::fs::write(root.join("connector/index.js"), source).unwrap();
     let spec = PluginRuntimeSpec {
         plugin_id: format!("sdk-{provider_id}-{}", uuid::Uuid::new_v4()),
+        source_namespace: "@henjicc/ai-sdk".into(),
+        capabilities: vec![],
+        secret_fields: vec![],
+        credentials: None,
         root: root.clone(),
         entrypoint: root.join("connector/index.js"),
         permissions: vec!["localNetwork".into()],

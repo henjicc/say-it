@@ -5,12 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::registry::ModelInfo;
+use super::plugin_capability::{PluginCapabilityManifest, PluginSourceManifest};
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
 
-pub const PLUGIN_API_VERSION: u32 = 4;
-/// 宿主兼容的最低插件 API 版本：v3 在线插件（asr/translation/customization）继续可用；
-/// ocr 能力、localNetwork 权限等 v4 语义仅在 apiVersion = 4 时允许声明。
-pub const PLUGIN_MIN_API_VERSION: u32 = 3;
+pub const PLUGIN_API_VERSION: u32 = 5;
 pub const PLUGIN_HOST_API_VERSION: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ALLOWED_PERMISSIONS: &[&str] = &["network", "browserSession", "cookies", "localNetwork"];
@@ -23,6 +21,9 @@ pub struct PluginManifest {
     pub name: String,
     pub version: String,
     pub provider: PluginProviderManifest,
+    pub source: PluginSourceManifest,
+    #[serde(default)]
+    pub capabilities: Vec<PluginCapabilityManifest>,
     #[serde(default)]
     pub models: Vec<ModelInfo>,
     pub runtime: PluginRuntimeManifest,
@@ -162,9 +163,13 @@ pub struct InstalledPlugin {
     pub trust: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PluginRuntimeSpec {
     pub plugin_id: String,
+    pub source_namespace: String,
+    pub capabilities: Vec<PluginCapabilityManifest>,
+    pub secret_fields: Vec<String>,
+    pub credentials: Option<super::credential_store::CredentialStoreHandle>,
     pub root: PathBuf,
     pub entrypoint: PathBuf,
     pub permissions: Vec<String>,
@@ -172,6 +177,41 @@ pub struct PluginRuntimeSpec {
     pub browser_session: Option<PluginBrowserSessionManifest>,
     pub data_dir: PathBuf,
     pub trust: String,
+}
+
+impl PluginRuntimeSpec {
+    pub fn bind_credentials(
+        mut self,
+        credentials: super::credential_store::CredentialStoreHandle,
+    ) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    pub fn capability_id(
+        &self,
+        model_id: &str,
+        kind: &str,
+        realtime: bool,
+    ) -> Result<&str, String> {
+        self.capabilities
+            .iter()
+            .find(|capability| {
+                capability.model_id == model_id
+                    && capability.kind == kind
+                    && capability
+                        .execution_modes
+                        .iter()
+                        .any(|mode| (mode == "realtime") == realtime)
+            })
+            .map(|capability| capability.module_id.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "插件 {} 未注册模型 {model_id} 的 {kind} capability",
+                    self.plugin_id
+                )
+            })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -297,10 +337,39 @@ fn load_registry_from_with_trust(
                         .models
                         .iter()
                         .any(|model| model_ids.contains(&model.id));
+                let capability_registry_error = if !duplicate {
+                    let mut definitions = registry
+                        .plugins
+                        .iter()
+                        .filter(|installed| installed.manifest.runtime.kind == "javascript")
+                        .map(|installed| {
+                            (
+                                installed.manifest.id.as_str(),
+                                installed.manifest.source.namespace.as_str(),
+                                installed.manifest.capabilities.as_slice(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if manifest.runtime.kind == "javascript" {
+                        definitions.push((
+                            manifest.id.as_str(),
+                            manifest.source.namespace.as_str(),
+                            manifest.capabilities.as_slice(),
+                        ));
+                    }
+                    super::plugin_capability::validate_registry_with_sdk(&definitions).err()
+                } else {
+                    None
+                };
                 if duplicate {
                     registry.errors.push(PluginLoadError {
                         path: manifest_path.display().to_string(),
                         message: "插件、供应商或模型 ID 与已加载插件重复".into(),
+                    });
+                } else if let Some(message) = capability_registry_error {
+                    registry.errors.push(PluginLoadError {
+                        path: manifest_path.display().to_string(),
+                        message,
                     });
                 } else {
                     ids.insert(manifest.id.clone());
@@ -349,25 +418,16 @@ pub(crate) fn validate_plugin_dir(root: &Path) -> Result<PluginManifest, String>
 }
 
 fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
-    if manifest.api_version < PLUGIN_MIN_API_VERSION {
-        return Err("旧进程插件不兼容，请用新版 Skill 重新生成".into());
-    }
-    if manifest.api_version > PLUGIN_API_VERSION {
-        return Err(format!("不支持的插件 API 版本：{}", manifest.api_version));
+    if manifest.api_version != PLUGIN_API_VERSION {
+        return Err(format!(
+            "插件 API 仅支持 v{PLUGIN_API_VERSION}；当前为 v{}，请用新版 Skill 重新生成",
+            manifest.api_version
+        ));
     }
     validate_id("插件", &manifest.id)?;
     validate_id("供应商", &manifest.provider.id)?;
     if manifest.name.trim().is_empty() || manifest.version.trim().is_empty() {
         return Err("插件名称和版本不能为空".into());
-    }
-    if manifest.api_version < 4
-        && manifest
-            .provider
-            .capabilities
-            .iter()
-            .any(|capability| capability == "ocr")
-    {
-        return Err("ocr 能力需要插件 API 版本 4".into());
     }
     if !manifest.provider.capabilities.iter().any(|capability| {
         matches!(
@@ -416,9 +476,6 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         return Err("模型包能力只允许 asr 或 ocr".into());
     }
     let is_model_pack = manifest.runtime.kind == "model-pack";
-    if is_model_pack && manifest.api_version < 4 {
-        return Err("model-pack 运行时需要插件 API 版本 4".into());
-    }
     if !is_model_pack && manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
         return Err(format!(
             "不支持的宿主 API 版本：{}",
@@ -428,9 +485,6 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     for permission in &manifest.runtime.permissions {
         if !ALLOWED_PERMISSIONS.contains(&permission.as_str()) {
             return Err(format!("未知插件权限：{permission}"));
-        }
-        if permission == "localNetwork" && manifest.api_version < 4 {
-            return Err("localNetwork 权限需要插件 API 版本 4".into());
         }
     }
     if is_model_pack && !manifest.runtime.permissions.is_empty() {
@@ -553,6 +607,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if manifest.models.is_empty() && !ocr_only {
         return Err("插件至少需要声明一个模型".into());
     }
+    if manifest.source.namespace != manifest.id {
+        return Err("插件 source.namespace 必须与插件 ID 一致".into());
+    }
     let mut model_ids = HashSet::new();
     for model in &manifest.models {
         validate_id("模型", &model.id)?;
@@ -604,54 +661,7 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                     _ => false,
                 }
             } else {
-                match model.category.as_str() {
-                    "realtime" => {
-                        manifest
-                            .provider
-                            .capabilities
-                            .iter()
-                            .any(|value| value == "asr")
-                            && model.protocol == "plugin-realtime-v1"
-                            && model
-                                .scenes
-                                .iter()
-                                .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
-                    }
-                    "file" => {
-                        manifest
-                            .provider
-                            .capabilities
-                            .iter()
-                            .any(|value| value == "asr")
-                            && model.protocol == "plugin-file-v1"
-                            && model
-                                .scenes
-                                .iter()
-                                .any(|scene| scene == "dictationFile" || scene == "transcription")
-                    }
-                    "translation" => {
-                        manifest
-                            .provider
-                            .capabilities
-                            .iter()
-                            .any(|value| value == "translation")
-                            && model.protocol == "plugin-translation-v1"
-                            && model
-                                .scenes
-                                .iter()
-                                .any(|scene| scene == "subtitleTranslation")
-                    }
-                    "ocr" => {
-                        manifest
-                            .provider
-                            .capabilities
-                            .iter()
-                            .any(|value| value == "ocr")
-                            && model.protocol == "plugin-ocr-v1"
-                            && model.scenes.iter().any(|scene| scene == "activeAppContext")
-                    }
-                    _ => false,
-                }
+                true
             };
         if !valid_model {
             return Err(format!("模型 {} 的类别、协议或场景组合不受支持", model.id));
@@ -1017,6 +1027,17 @@ impl PluginRegistry {
             .ok_or("JavaScript 插件缺少 entrypoint")?;
         Ok(Some(PluginRuntimeSpec {
             plugin_id: plugin.manifest.id.clone(),
+            source_namespace: plugin.manifest.source.namespace.clone(),
+            capabilities: plugin.manifest.capabilities.clone(),
+            secret_fields: plugin
+                .manifest
+                .provider
+                .config_fields
+                .iter()
+                .filter(|field| field.secret)
+                .map(|field| field.key.clone())
+                .collect(),
+            credentials: None,
             root: plugin.root.clone(),
             entrypoint: safe_entrypoint(&plugin.root, entrypoint)?,
             permissions: plugin.manifest.runtime.permissions.clone(),

@@ -135,6 +135,11 @@ impl FileRecognitionProvider {
                 profile,
                 customization,
             } => {
+                let module_id = spec.capability_id(
+                    &params.model_id(),
+                    "speech-recognition",
+                    false,
+                )?;
                 let mut payload = serde_json::Map::new();
                 payload.insert("filePath".into(), serde_json::json!(path));
                 payload.insert(
@@ -142,10 +147,10 @@ impl FileRecognitionProvider {
                     serde_json::to_value(params).map_err(|error| error.to_string())?,
                 );
                 customization.write_into(&mut payload);
-                let value = plugin_runtime::invoke_cancellable(
+                let value = plugin_runtime::execute_capability_cancellable(
                     spec,
                     profile,
-                    "transcribeFile",
+                    module_id,
                     Value::Object(payload),
                     Duration::from_secs(30 * 60),
                     cancel,
@@ -449,14 +454,16 @@ impl TranslationProvider {
                     .await
             }
             Self::Plugin { spec, profile } => {
-                let value = plugin_runtime::invoke(
+                let module_id = spec.capability_id(model, "translation", false)?;
+                let value = plugin_runtime::execute_capability_cancellable(
                     spec,
                     profile,
-                    "translate",
+                    module_id,
                     serde_json::json!({
                         "model": model, "text": text, "source": source, "target": target
                     }),
                     Duration::from_secs(2 * 60),
+                    None,
                     |event| {
                         if let Some(text) = event.get("text").and_then(Value::as_str) {
                             on_delta(text);
@@ -707,6 +714,10 @@ mod tests {
         .unwrap();
         let spec = PluginRuntimeSpec {
             plugin_id: "ocr-plugin".into(),
+            source_namespace: "ocr-plugin".into(),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
             root: root.clone(),
             entrypoint: root.join("connector/index.js"),
             permissions: vec![],

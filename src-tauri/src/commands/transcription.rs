@@ -342,7 +342,8 @@ fn resolve_file_recognition_provider(
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .runtime_for_provider(&provider_id)?;
+        .runtime_for_provider(&provider_id)?
+        .map(|spec| spec.bind_credentials(state.credentials.clone()));
     file_recognition_for_with_extensions(
         &profile,
         plugin,

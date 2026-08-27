@@ -24,6 +24,10 @@ fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
     std::fs::write(root.join("connector/index.js"), source).unwrap();
     let spec = PluginRuntimeSpec {
         plugin_id: format!("test-{}", uuid::Uuid::new_v4()),
+        source_namespace: "test".into(),
+        capabilities: vec![],
+        secret_fields: vec![],
+        credentials: None,
         root: root.clone(),
         entrypoint: root.join("connector/index.js"),
         permissions: vec![],

@@ -558,6 +558,10 @@ mod tests {
         let provider = OcrProvider::Plugin {
             spec: crate::providers::plugin::PluginRuntimeSpec {
                 plugin_id: "test-plugin-ocr".into(),
+                source_namespace: "test-plugin-ocr".into(),
+                capabilities: vec![],
+                secret_fields: vec![],
+                credentials: None,
                 root: root.clone(),
                 entrypoint: root.join("connector/index.js"),
                 permissions: vec![],

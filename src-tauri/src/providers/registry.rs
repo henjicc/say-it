@@ -24,6 +24,9 @@ pub struct ModelInfo {
     pub provider_id: String,
     pub category: String,
     pub protocol: String,
+    /// Plugin API v5 模型指向的 SDK capability module。内置/本地模型无需声明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
     pub supports_vocabulary: bool,
     /// 是否支持「上下文增强」：识别请求可以携带一段自然语言/词表文本，模型据此修正专有名词。
     ///

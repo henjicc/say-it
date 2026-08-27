@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
 use crate::providers::plugin::PluginRuntimeSpec;
+use crate::providers::plugin_runtime;
 use crate::providers::plugin_runtime::JsProviderRuntime;
 use crate::providers::{ProviderProfile, RequestCustomization};
 use crate::state::*;
@@ -69,9 +70,18 @@ fn run_plugin_session(
     customization: RequestCustomization,
 ) {
     let cancelled = Arc::new(AtomicBool::new(false));
-    let runtime = match JsProviderRuntime::create(
+    let module_id = match plugin.capability_id(&model, "speech-recognition", true) {
+        Ok(value) => value.to_string(),
+        Err(error) => {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+            cleanup_stream(&streams, &session_id);
+            return;
+        }
+    };
+    let runtime = match plugin_runtime::create_plugin_capability_runtime(
         plugin.clone(),
         &profile,
+        &session_id,
         SESSION_TIMEOUT,
         cancelled,
         HashMap::new(),
@@ -89,9 +99,10 @@ fn run_plugin_session(
     start_payload.insert("sampleRate".into(), json!(OUTPUT_RATE));
     start_payload.insert("config".into(), profile.config.clone());
     customization.write_into(&mut start_payload);
-    if let Err(error) = runtime.call(
-        "realtimeStart",
+    if let Err(error) = runtime.open_capability_session(
+        &module_id,
         &Value::Object(start_payload),
+        &session_id,
         Duration::from_secs(30),
     ) {
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
@@ -103,7 +114,7 @@ fn run_plugin_session(
         &app,
         &session_id,
         "opened",
-        json!({ "message": "JavaScript plugin opened", "model": model, "pluginId": plugin.plugin_id }),
+        json!({ "message": "SDK plugin capability opened", "model": model, "pluginId": plugin.plugin_id, "moduleId": module_id }),
     );
     flush_events(&runtime, &app, &session_id);
     let mut finishing_at = None;
@@ -117,7 +128,7 @@ fn run_plugin_session(
                     .map(|dsp| dsp.process(&samples))
                     .unwrap_or_default();
                 if !bytes.is_empty() {
-                    if let Err(error) = runtime.call_audio(bytes) {
+                    if let Err(error) = runtime.send_capability_audio(bytes) {
                         emit_asr_stream_event(
                             &app,
                             &session_id,
@@ -129,14 +140,14 @@ fn run_plugin_session(
                 }
             }
             Ok(AsrStreamInput::Finish) => {
-                if let Err(error) = runtime.call("realtimeFinish", &Value::Null, FINISH_TIMEOUT) {
+                if let Err(error) = runtime.finish_capability_session(FINISH_TIMEOUT) {
                     emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
                     break;
                 }
                 finishing_at = Some(Instant::now());
             }
             Ok(AsrStreamInput::Stop) => {
-                let _ = runtime.call("realtimeStop", &Value::Null, Duration::from_secs(3));
+                let _ = runtime.close_capability_session();
                 stop = true;
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,

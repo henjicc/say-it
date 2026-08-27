@@ -22,11 +22,12 @@ use tokio_util::io::ReaderStream;
 use url::Url;
 
 use super::browser_session_capture::validate_capture_for_runtime;
+use super::credential_store::CredentialKey;
 use super::plugin::PluginRuntimeSpec;
 use super::plugin_secrets;
 use super::sdk_runtime::{
-    SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE, AI_SDK_GROQ_BUNDLE,
-    QUICKJS_RUNTIME_BOOTSTRAP,
+    HostRuntimeRecorder, SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE,
+    AI_SDK_GROQ_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
 };
 use super::ProviderProfile;
 
@@ -291,6 +292,7 @@ impl HostState {
             "media.describe" => self.media_describe(payload),
             "media.readChunk" => self.media_read_chunk(payload),
             "credential.get" => self.credential_get(payload),
+            "plugin.credential.get" => self.plugin_credential_get(payload),
             "runtime.log" => self.runtime_log(payload),
             "runtime.trace.start" => self.runtime_trace_start(payload),
             "runtime.trace.end" => self.runtime_trace_end(payload),
@@ -675,6 +677,30 @@ impl HostState {
         Ok(json!({"value": value}))
     }
 
+    fn plugin_credential_get(&self, payload: Value) -> Result<Value, String> {
+        let field = payload
+            .get("field")
+            .and_then(Value::as_str)
+            .ok_or("插件凭据读取缺少 field")?;
+        if !self.spec.secret_fields.iter().any(|value| value == field) {
+            return Err(format!("插件未声明 secret 配置字段：{field}"));
+        }
+        let credentials = self
+            .spec
+            .credentials
+            .as_ref()
+            .ok_or("插件运行时未绑定 CredentialStore")?;
+        let key = CredentialKey::plugin(&self.spec.plugin_id, &self.sdk_provider_id(), field)?;
+        Ok(credentials.get(&key)?.map(Value::String).unwrap_or(Value::Null))
+    }
+
+    fn sdk_provider_id(&self) -> String {
+        self.sdk
+            .as_ref()
+            .map(|binding| binding.provider_id.clone())
+            .unwrap_or_default()
+    }
+
     fn runtime_log(&self, payload: Value) -> Result<Value, String> {
         let sdk = self
             .sdk
@@ -939,6 +965,56 @@ pub struct JsProviderRuntime {
     cancelled: Arc<AtomicBool>,
 }
 
+struct PluginRuntimeRecorder;
+
+impl HostRuntimeRecorder for PluginRuntimeRecorder {
+    fn record(&self, _event: Value) {}
+}
+
+fn plugin_sdk_bindings(
+    spec: &PluginRuntimeSpec,
+    profile: &ProviderProfile,
+    request_id: &str,
+) -> Result<SdkHostBindings, String> {
+    let field = spec
+        .secret_fields
+        .first()
+        .map(String::as_str)
+        .unwrap_or("apiKey");
+    Ok(SdkHostBindings {
+        owner_id: spec.source_namespace.clone(),
+        provider_id: profile.id.clone(),
+        request_id: request_id.to_string(),
+        credential_scopes: spec
+            .capabilities
+            .iter()
+            .map(|capability| capability.kind.clone())
+            .collect(),
+        credential_key: CredentialKey::plugin(&spec.plugin_id, &profile.id, field)?,
+        credentials: spec.credentials.clone().unwrap_or_default(),
+        recorder: Arc::new(PluginRuntimeRecorder),
+    })
+}
+
+pub fn create_plugin_capability_runtime(
+    spec: PluginRuntimeSpec,
+    profile: &ProviderProfile,
+    request_id: &str,
+    timeout: Duration,
+    cancelled: Arc<AtomicBool>,
+    inputs: HashMap<String, PathBuf>,
+) -> Result<JsProviderRuntime, String> {
+    let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
+    JsProviderRuntime::create_with_sdk_bindings(
+        spec,
+        profile,
+        timeout,
+        cancelled,
+        inputs,
+        sdk,
+    )
+}
+
 impl JsProviderRuntime {
     pub fn create(
         spec: PluginRuntimeSpec,
@@ -982,6 +1058,26 @@ impl JsProviderRuntime {
             cancelled,
             inputs,
             None,
+            Some(sdk),
+        )
+    }
+
+    pub(crate) fn create_with_sdk_bindings_and_event_sender(
+        spec: PluginRuntimeSpec,
+        profile: &ProviderProfile,
+        timeout: Duration,
+        cancelled: Arc<AtomicBool>,
+        inputs: HashMap<String, PathBuf>,
+        event_tx: Option<mpsc::Sender<Value>>,
+        sdk: SdkHostBindings,
+    ) -> Result<Self, String> {
+        Self::create_with_event_sender_and_sdk(
+            spec,
+            profile,
+            timeout,
+            cancelled,
+            inputs,
+            event_tx,
             Some(sdk),
         )
     }
@@ -1094,6 +1190,22 @@ impl JsProviderRuntime {
             ctx.globals()
                 .set("__sayitProvider", provider)
                 .map_err(js_error)?;
+            if !spec.capabilities.is_empty() {
+                if !load_ai_sdk {
+                    return Err("Plugin API v5 capability 必须通过 SDK RuntimeContext 加载".into());
+                }
+                let register: Function = ctx
+                    .globals()
+                    .get("__sayitRegisterPluginCapabilities")
+                    .map_err(js_error)?;
+                register
+                    .call::<_, ()>((
+                        spec.source_namespace.as_str(),
+                        serde_json::to_string(&spec.capabilities)
+                            .map_err(|error| error.to_string())?,
+                    ))
+                    .map_err(|error| js_error_with_context(&ctx, error))?;
+            }
             let init: Function = ctx.globals().get("__sayitInitialize").map_err(js_error)?;
             let request = json!({
                 "providerId": profile.id,
@@ -1142,6 +1254,109 @@ impl JsProviderRuntime {
             }
         }
         result
+    }
+
+    pub fn execute_capability(
+        &self,
+        module_id: &str,
+        payload: &Value,
+        request_id: &str,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
+            Instant::now() + timeout;
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginCapabilityExecute")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call((
+                    module_id,
+                    serde_json::to_string(payload).map_err(|error| error.to_string())?,
+                    request_id,
+                    timeout.as_millis().min(u64::MAX as u128) as u64,
+                ))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            let result = self.finish_promise_with_host_events(&ctx, promise)?;
+            serde_json::from_str(&result)
+                .map_err(|error| format!("插件 capability 返回值不是合法 JSON：{error}"))
+        })
+    }
+
+    pub fn open_capability_session(
+        &self,
+        module_id: &str,
+        payload: &Value,
+        request_id: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
+            Instant::now() + timeout;
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginCapabilityOpen")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call((
+                    module_id,
+                    serde_json::to_string(payload).map_err(|error| error.to_string())?,
+                    request_id,
+                    timeout.as_millis().min(u64::MAX as u128) as u64,
+                ))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            self.finish_promise_with_host_events(&ctx, promise)?;
+            Ok(())
+        })
+    }
+
+    pub fn send_capability_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
+            Instant::now() + Duration::from_secs(5);
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginCapabilitySendAudio")
+                .map_err(js_error)?;
+            let audio = TypedArray::<u8>::new(ctx.clone(), bytes).map_err(js_error)?;
+            let promise: Promise = call
+                .call((audio,))
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            self.finish_promise_with_host_events(&ctx, promise)?;
+            Ok(())
+        })
+    }
+
+    pub fn finish_capability_session(&self, timeout: Duration) -> Result<Value, String> {
+        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
+            Instant::now() + timeout;
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginCapabilityFinish")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call(())
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            let result = self.finish_promise_with_host_events(&ctx, promise)?;
+            serde_json::from_str(&result)
+                .map_err(|error| format!("插件 capability 收尾结果不是合法 JSON：{error}"))
+        })
+    }
+
+    pub fn close_capability_session(&self) -> Result<(), String> {
+        self.context.with(|ctx| {
+            let call: Function = ctx
+                .globals()
+                .get("__sayitPluginCapabilityClose")
+                .map_err(js_error)?;
+            let promise: Promise = call
+                .call(())
+                .map_err(|error| js_error_with_context(&ctx, error))?;
+            self.finish_promise_with_host_events(&ctx, promise)?;
+            Ok(())
+        })
     }
 
     pub fn call_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
@@ -1256,6 +1471,87 @@ impl JsProviderRuntime {
                 )
             })
             .unwrap_or((usize::MAX, usize::MAX, usize::MAX))
+    }
+}
+
+impl Drop for JsProviderRuntime {
+    fn drop(&mut self) {
+        let namespace = self
+            .host
+            .lock()
+            .ok()
+            .map(|host| host.spec.source_namespace.clone())
+            .unwrap_or_default();
+        if !namespace.is_empty() {
+            let _ = self.context.with(|ctx| -> Result<(), String> {
+                let dispose: Function = ctx
+                    .globals()
+                    .get("__sayitDisposePluginCapabilities")
+                    .map_err(js_error)?;
+                let promise: Promise = dispose
+                    .call((namespace,))
+                    .map_err(|error| js_error_with_context(&ctx, error))?;
+                promise
+                    .finish::<String>()
+                    .map_err(|error| js_error_with_context(&ctx, error))?;
+                Ok(())
+            });
+        }
+        if let Ok(mut host) = self.host.lock() {
+            host.close_active_resources();
+        }
+    }
+}
+
+pub async fn execute_capability_cancellable<F>(
+    spec: &PluginRuntimeSpec,
+    profile: &ProviderProfile,
+    module_id: &str,
+    mut payload: Value,
+    timeout: Duration,
+    cancel: Option<Arc<AtomicBool>>,
+    mut on_event: F,
+) -> Result<Value, String>
+where
+    F: FnMut(&Value) + Send,
+{
+    let spec = spec.clone();
+    let profile = profile.clone();
+    let module_id = module_id.to_string();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let cancelled = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let (inputs, input_descriptor) = take_input_handle(&mut payload)?;
+    if let Some(input) = input_descriptor {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("input".into(), input);
+        }
+    }
+    let sdk = plugin_sdk_bindings(&spec, &profile, &request_id)?;
+    let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
+    let mut task = tokio::task::spawn_blocking(move || {
+        let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
+            spec,
+            &profile,
+            timeout,
+            cancelled,
+            inputs,
+            Some(event_tx),
+            sdk,
+        )?;
+        let result = runtime.execute_capability(&module_id, &payload, &request_id, timeout)?;
+        runtime.dispatch_host_events()?;
+        Ok::<_, String>(result)
+    });
+    loop {
+        tokio::select! {
+            result = &mut task => {
+                while let Ok(event) = event_rx.try_recv() {
+                    on_event(&event);
+                }
+                return result.map_err(|error| format!("插件 capability 运行线程失败：{error}"))?;
+            }
+            Some(event) = event_rx.recv() => on_event(&event),
+        }
     }
 }
 
@@ -1630,7 +1926,11 @@ const HOST_BOOTSTRAP: &str = r#"
     storage: Object.freeze({ get: key => call('storage.get', { key }), set: (key, value) => call('storage.set', { key, value }), delete: key => call('storage.delete', { key }) }),
     resource: Object.freeze({ readBytes: path => new Uint8Array(call('resource.readBytes', { path })), readText: path => call('resource.readText', { path }) }),
     cancellation: Object.freeze({ isCancelled: () => call('cancel.isCancelled') }),
-    emit: event => call('emit', { event }),
+    emit: event => {
+      globalThis.__sayitPluginCapabilities?.handleProviderEvent(event);
+      return call('emit', { event });
+    },
+    credentials: Object.freeze({ get: field => call('plugin.credential.get', { field }) }),
     log: (level, message) => call('log', { level, message: String(message) }),
   });
   // QuickJS 不内置浏览器的 TextDecoder。这里仅补齐 UTF-8 兼容层；新插件应优先使用 host.text.decodeUtf8。
@@ -1664,6 +1964,63 @@ const HOST_BOOTSTRAP: &str = r#"
     await fn.call(globalThis.__sayitProvider, audio);
     return 'null';
   };
+  globalThis.__sayitRegisterPluginCapabilities = (sourceNamespace, definitionsJson) => {
+    const factory = globalThis.__sayitAiSdkCapabilities?.createSayItPluginCapabilityRuntime;
+    if (typeof factory !== 'function') throw new Error('AI SDK bundle 缺少 Plugin API v5 adapter');
+    globalThis.__sayitPluginCapabilities = factory(
+      globalThis.__sayitCreateRuntimeContext(),
+      sourceNamespace,
+      JSON.parse(definitionsJson),
+      globalThis.__sayitProvider,
+    );
+  };
+  globalThis.__sayitPluginCapabilityExecute = async (moduleId, payloadJson, requestId, timeoutMs) => {
+    if (!globalThis.__sayitPluginCapabilities) throw new Error('插件 capability 尚未注册');
+    const value = await globalThis.__sayitPluginCapabilities.execute(
+      moduleId,
+      JSON.parse(payloadJson),
+      { requestId, timeoutMs },
+    );
+    return JSON.stringify(value === undefined ? null : value);
+  };
+  globalThis.__sayitPluginCapabilityOpen = async (moduleId, payloadJson, requestId, timeoutMs) => {
+    if (!globalThis.__sayitPluginCapabilities) throw new Error('插件 capability 尚未注册');
+    if (globalThis.__sayitPluginCapabilitySession) throw new Error('插件 realtime session 已存在');
+    globalThis.__sayitPluginCapabilitySession = await globalThis.__sayitPluginCapabilities.openSession(
+      moduleId,
+      JSON.parse(payloadJson),
+      { requestId, timeoutMs },
+    );
+    return 'null';
+  };
+  globalThis.__sayitPluginCapabilitySendAudio = async audio => {
+    if (!globalThis.__sayitPluginCapabilitySession) throw new Error('插件 realtime session 尚未打开');
+    await globalThis.__sayitPluginCapabilitySession.send({ bytes: audio });
+    return 'null';
+  };
+  globalThis.__sayitPluginCapabilityFinish = async () => {
+    if (!globalThis.__sayitPluginCapabilitySession) throw new Error('插件 realtime session 尚未打开');
+    const session = globalThis.__sayitPluginCapabilitySession;
+    const value = await session.finish();
+    globalThis.__sayitPluginCapabilitySession = undefined;
+    return JSON.stringify(value === undefined ? null : value);
+  };
+  globalThis.__sayitPluginCapabilityClose = async () => {
+    const session = globalThis.__sayitPluginCapabilitySession;
+    globalThis.__sayitPluginCapabilitySession = undefined;
+    await session?.close();
+    return 'null';
+  };
+  globalThis.__sayitDisposePluginCapabilities = async sourceNamespace => {
+    await globalThis.__sayitPluginCapabilitySession?.close();
+    globalThis.__sayitPluginCapabilitySession = undefined;
+    if (globalThis.__sayitPluginCapabilities) {
+      await globalThis.__sayitPluginCapabilities.unregisterSource(sourceNamespace);
+      await globalThis.__sayitPluginCapabilities.dispose();
+      globalThis.__sayitPluginCapabilities = undefined;
+    }
+    return 'null';
+  };
 })();
 "#;
 
@@ -1683,6 +2040,10 @@ mod tests {
         }
         let spec = PluginRuntimeSpec {
             plugin_id: format!("test-{}", uuid::Uuid::new_v4()),
+            source_namespace: "test".into(),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
             root: root.clone(),
             entrypoint: root.join("connector/index.js"),
             permissions: vec![],
@@ -1709,6 +2070,10 @@ mod tests {
     fn host_whitelist_distinguishes_exact_and_subdomain_rules() {
         let spec = PluginRuntimeSpec {
             plugin_id: "test".into(),
+            source_namespace: "test".into(),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
             root: PathBuf::new(),
             entrypoint: PathBuf::new(),
             permissions: vec!["network".into()],
@@ -1730,6 +2095,10 @@ mod tests {
     fn local_network_permission_allows_loopback_plaintext_only() {
         let spec = PluginRuntimeSpec {
             plugin_id: "test".into(),
+            source_namespace: "test".into(),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
             root: PathBuf::new(),
             entrypoint: PathBuf::new(),
             permissions: vec!["localNetwork".into()],
