@@ -4,8 +4,10 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::plugin_capability::{
+    PluginCapabilityManifest, PluginModelManifest, PluginSourceManifest,
+};
 use super::registry::ModelInfo;
-use super::plugin_capability::{PluginCapabilityManifest, PluginSourceManifest};
 use super::{ProviderConfigField, ProviderProfile, ProviderSettings};
 
 pub const PLUGIN_API_VERSION: u32 = 5;
@@ -25,7 +27,7 @@ pub struct PluginManifest {
     #[serde(default)]
     pub capabilities: Vec<PluginCapabilityManifest>,
     #[serde(default)]
-    pub models: Vec<ModelInfo>,
+    pub models: Vec<PluginModelDeclaration>,
     pub runtime: PluginRuntimeManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_pack: Option<ModelPackManifest>,
@@ -160,7 +162,32 @@ pub struct PluginNetworkManifest {
 pub struct InstalledPlugin {
     pub root: PathBuf,
     pub manifest: PluginManifest,
+    /// 经 SDK descriptor 或本地模型包规则投影后的应用模型目录。
+    pub models: Vec<ModelInfo>,
     pub trust: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum PluginModelDeclaration {
+    Capability(PluginModelManifest),
+    Local(ModelInfo),
+}
+
+impl PluginModelDeclaration {
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Self::Capability(model) => &model.id,
+            Self::Local(model) => &model.id,
+        }
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Capability(model) => &model.label,
+            Self::Local(model) => &model.label,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -336,7 +363,7 @@ fn load_registry_from_with_trust(
                     || manifest
                         .models
                         .iter()
-                        .any(|model| model_ids.contains(&model.id));
+                        .any(|model| model_ids.contains(model.id()));
                 let capability_registry_error = if !duplicate {
                     let mut definitions = registry
                         .plugins
@@ -374,7 +401,7 @@ fn load_registry_from_with_trust(
                 } else {
                     ids.insert(manifest.id.clone());
                     provider_ids.insert(manifest.provider.id.clone());
-                    model_ids.extend(manifest.models.iter().map(|model| model.id.clone()));
+                    model_ids.extend(plugin.models.iter().map(|model| model.id.clone()));
                     registry.plugins.push(plugin);
                 }
             }
@@ -396,6 +423,7 @@ fn load_manifest(
     let manifest: PluginManifest =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
     validate_manifest(plugin_root, &manifest)?;
+    let models = project_manifest_models(&manifest)?;
     let trust = if manifest.runtime.kind == "model-pack" {
         super::plugin_package::verify_installed_model_pack(plugin_root, &manifest, trusted)?
     } else {
@@ -404,6 +432,7 @@ fn load_manifest(
     Ok(InstalledPlugin {
         root: plugin_root.to_path_buf(),
         manifest,
+        models,
         trust,
     })
 }
@@ -610,8 +639,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if manifest.source.namespace != manifest.id {
         return Err("插件 source.namespace 必须与插件 ID 一致".into());
     }
+    let projected_models = project_manifest_models(manifest)?;
     let mut model_ids = HashSet::new();
-    for model in &manifest.models {
+    for model in &projected_models {
         validate_id("模型", &model.id)?;
         if !model_ids.insert(model.id.clone()) {
             return Err(format!("模型 ID 重复：{}", model.id));
@@ -650,14 +680,16 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                                 _ => false,
                             }
                     }
-                    Some("ppocr-mnn") => manifest
-                        .provider
-                        .capabilities
-                        .iter()
-                        .any(|value| value == "ocr")
-                        && model.category == "ocr"
-                        && model.protocol == "local-ppocr-mnn"
-                        && model.scenes.iter().any(|scene| scene == "activeAppContext"),
+                    Some("ppocr-mnn") => {
+                        manifest
+                            .provider
+                            .capabilities
+                            .iter()
+                            .any(|value| value == "ocr")
+                            && model.category == "ocr"
+                            && model.protocol == "local-ppocr-mnn"
+                            && model.scenes.iter().any(|scene| scene == "activeAppContext")
+                    }
                     _ => false,
                 }
             } else {
@@ -668,6 +700,33 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn project_manifest_models(manifest: &PluginManifest) -> Result<Vec<ModelInfo>, String> {
+    if manifest.runtime.kind == "model-pack" {
+        return manifest
+            .models
+            .iter()
+            .map(|model| match model {
+                PluginModelDeclaration::Local(model) => Ok(model.clone()),
+                PluginModelDeclaration::Capability(_) => {
+                    Err("模型包 models 必须声明本地模型目录字段".into())
+                }
+            })
+            .collect();
+    }
+    let models = manifest
+        .models
+        .iter()
+        .map(|model| match model {
+            PluginModelDeclaration::Capability(model) => Ok(model.clone()),
+            PluginModelDeclaration::Local(_) => Err(
+                "JavaScript Plugin API v5 models 只允许 id/label/providerId/capabilityId 与默认项"
+                    .into(),
+            ),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    super::plugin_capability::project_models(&manifest.provider.id, &manifest.capabilities, &models)
 }
 
 fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), String> {
@@ -954,12 +1013,7 @@ impl PluginRegistry {
                     version: plugin.manifest.version.clone(),
                     provider_id: plugin.manifest.provider.id.clone(),
                     permissions: plugin.manifest.runtime.permissions.clone(),
-                    models: plugin
-                        .manifest
-                        .models
-                        .iter()
-                        .map(|model| model.id.clone())
-                        .collect(),
+                    models: plugin.models.iter().map(|model| model.id.clone()).collect(),
                     trust: plugin.trust.clone(),
                     actions: plugin.manifest.provider.actions.clone(),
                     has_browser_session: plugin.manifest.browser_session.is_some(),
@@ -992,9 +1046,7 @@ impl PluginRegistry {
     }
 
     pub fn models(&self) -> impl Iterator<Item = &ModelInfo> {
-        self.plugins
-            .iter()
-            .flat_map(|plugin| plugin.manifest.models.iter())
+        self.plugins.iter().flat_map(|plugin| plugin.models.iter())
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelInfo> {
@@ -1058,7 +1110,6 @@ impl PluginRegistry {
         let plugin = self.plugins.iter().find(|plugin| {
             plugin.manifest.runtime.kind == "model-pack"
                 && plugin
-                    .manifest
                     .models
                     .iter()
                     .any(|model| model.id == model_id.trim())
@@ -1203,7 +1254,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adapt_skill_v4_template_matches_host_manifest_contract() {
+    fn adapt_skill_v5_template_matches_host_manifest_contract() {
         let root = std::env::temp_dir().join(format!(
             "sayit-adapt-skill-template-{}",
             uuid::Uuid::new_v4()
@@ -1253,7 +1304,7 @@ mod tests {
         std::fs::write(
             plugin.join("manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "apiVersion": 3,
+                "apiVersion": 5,
                 "id": "test-provider",
                 "name": "Test Provider",
                 "version": "1.0.0",
@@ -1264,17 +1315,18 @@ mod tests {
                     "config": { "token": "" },
                     "configFields": [{ "key": "token", "label": "Token", "fieldType": "password", "secret": true }]
                 },
+                "source": { "namespace": "test-provider" },
+                "capabilities": [{
+                    "moduleId": "test-provider.speech-recognition.test-realtime",
+                    "kind": "speech-recognition", "providerIds": ["test-provider"],
+                    "modelId": "test-realtime", "operations": ["speech-recognition"],
+                    "features": ["streaming", "partial-results"], "tags": [],
+                    "executionModes": ["realtime"]
+                }],
                 "models": [{
-                    "id": "test-realtime",
-                    "label": "Test Realtime",
+                    "id": "test-realtime", "label": "Test Realtime",
                     "providerId": "test-provider",
-                    "category": "realtime",
-                    "protocol": "plugin-realtime-v1",
-                    "supportsVocabulary": false,
-                    "supportsAlignmentTimestamps": false,
-                    "scenes": ["dictationRealtime"],
-                    "isDefaultRealtime": false,
-                    "isDefaultFile": false
+                    "capabilityId": "test-provider.speech-recognition.test-realtime"
                 }],
                 "runtime": { "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1, "permissions": ["network"], "network": {"allowedHosts": ["api.example.com"]} }
             }))
@@ -1311,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_v3_privileged_multicapability_manifest_without_provider_specific_code() {
+    fn loads_v5_privileged_multicapability_manifest_without_provider_specific_code() {
         let root = std::env::temp_dir().join(format!("sayit-plugin-v2-{}", uuid::Uuid::new_v4()));
         let plugin = root.join("web-provider");
         std::fs::create_dir_all(plugin.join("connector")).unwrap();
@@ -1323,17 +1375,23 @@ mod tests {
         std::fs::write(
             plugin.join("manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "apiVersion": 3,
+                "apiVersion": 5,
                 "id": "web-provider", "name": "Web Provider", "version": "1.0.0",
                 "provider": {
                     "id": "web-provider", "displayName": "Web Provider",
                     "capabilities": ["asr", "translation", "customization"], "config": {},
                     "actions": ["openLogin", "syncSession", "clearSession", "diagnose"]
                 },
+                "source": {"namespace":"web-provider"},
+                "capabilities": [
+                    {"moduleId":"web-provider.speech-recognition.web-live","kind":"speech-recognition","providerIds":["web-provider"],"modelId":"web-live","operations":["speech-recognition"],"features":["streaming","partial-results","vocabulary"],"tags":[],"executionModes":["realtime"]},
+                    {"moduleId":"web-provider.speech-recognition.web-file","kind":"speech-recognition","providerIds":["web-provider"],"modelId":"web-file","operations":["speech-recognition"],"features":["timestamps","vocabulary"],"tags":[],"executionModes":["request-response"]},
+                    {"moduleId":"web-provider.translation.web-translation","kind":"translation","providerIds":["web-provider"],"modelId":"web-translation","operations":["translation"],"features":["streaming"],"tags":[],"executionModes":["event-stream"]}
+                ],
                 "models": [
-                    {"id":"web-live","label":"Live","providerId":"web-provider","category":"realtime","protocol":"plugin-realtime-v1","supportsVocabulary":true,"supportsAlignmentTimestamps":false,"scenes":["dictationRealtime","subtitles"],"isDefaultRealtime":false,"isDefaultFile":false},
-                    {"id":"web-file","label":"File","providerId":"web-provider","category":"file","protocol":"plugin-file-v1","supportsVocabulary":true,"supportsAlignmentTimestamps":true,"scenes":["dictationFile","transcription"],"isDefaultRealtime":false,"isDefaultFile":false},
-                    {"id":"web-translation","label":"Translation","providerId":"web-provider","category":"translation","protocol":"plugin-translation-v1","supportsVocabulary":false,"supportsAlignmentTimestamps":false,"scenes":["subtitleTranslation"],"isDefaultRealtime":false,"isDefaultFile":false}
+                    {"id":"web-live","label":"Live","providerId":"web-provider","capabilityId":"web-provider.speech-recognition.web-live"},
+                    {"id":"web-file","label":"File","providerId":"web-provider","capabilityId":"web-provider.speech-recognition.web-file"},
+                    {"id":"web-translation","label":"Translation","providerId":"web-provider","capabilityId":"web-provider.translation.web-translation"}
                 ],
                 "runtime": {"entrypoint":"connector/index.js","hostApiVersion":1,"permissions":["network","browserSession","cookies"],"network":{"allowedHosts":["vendor.example"]}},
                 "browserSession": {
@@ -1402,6 +1460,8 @@ mod tests {
                     "capabilities": ["ocr"],
                     "config": {}
                 },
+                "source": {"namespace":"ocr-provider"},
+                "capabilities": [],
                 "models": [],
                 "runtime": { "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1 }
             }))
@@ -1411,9 +1471,9 @@ mod tests {
     }
 
     #[test]
-    fn v4_ocr_only_plugin_loads_without_models() {
+    fn v5_ocr_only_plugin_loads_without_models() {
         let root = std::env::temp_dir().join(format!("sayit-plugin-ocr-{}", uuid::Uuid::new_v4()));
-        write_ocr_manifest(&root, 4);
+        write_ocr_manifest(&root, 5);
         let manifest = validate_plugin_dir(&root).unwrap();
         assert_eq!(manifest.provider.capabilities, vec!["ocr"]);
         assert!(manifest.models.is_empty());
@@ -1421,82 +1481,41 @@ mod tests {
     }
 
     #[test]
-    fn v3_plugin_cannot_declare_ocr_capability() {
-        let root =
-            std::env::temp_dir().join(format!("sayit-plugin-ocr-v3-{}", uuid::Uuid::new_v4()));
-        write_ocr_manifest(&root, 3);
-        let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("ocr 能力需要插件 API 版本 4"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn v3_plugin_cannot_declare_local_network_permission() {
-        let root =
-            std::env::temp_dir().join(format!("sayit-plugin-localnet-{}", uuid::Uuid::new_v4()));
-        let connector = root.join("connector");
-        std::fs::create_dir_all(&connector).unwrap();
-        std::fs::write(connector.join("index.js"), b"export default () => ({})").unwrap();
-        let manifest = |api_version: u32| {
-            serde_json::json!({
-                "apiVersion": api_version,
-                "id": "local-provider",
-                "name": "Local Provider",
-                "version": "1.0.0",
-                "provider": { "id": "local-provider", "displayName": "Local", "capabilities": ["asr"], "config": {} },
-                "models": [{
-                    "id": "local-live", "label": "Local Live", "providerId": "local-provider",
-                    "category": "realtime", "protocol": "plugin-realtime-v1",
-                    "supportsVocabulary": false, "supportsAlignmentTimestamps": false,
-                    "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
-                }],
-                "runtime": {
-                    "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1,
-                    "permissions": ["localNetwork"]
-                }
-            })
-        };
-        std::fs::write(
-            root.join("manifest.json"),
-            serde_json::to_vec(&manifest(3)).unwrap(),
-        )
-        .unwrap();
-        let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("localNetwork 权限需要插件 API 版本 4"));
-
-        std::fs::write(
-            root.join("manifest.json"),
-            serde_json::to_vec(&manifest(4)).unwrap(),
-        )
-        .unwrap();
-        let manifest = validate_plugin_dir(&root).unwrap();
-        assert_eq!(manifest.runtime.permissions, vec!["localNetwork"]);
-        std::fs::remove_dir_all(root).unwrap();
+    fn rejects_v3_and_v4_without_compatibility_branches() {
+        for version in [3, 4] {
+            let root = std::env::temp_dir().join(format!(
+                "sayit-plugin-old-v{version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            write_ocr_manifest(&root, version);
+            let error = validate_plugin_dir(&root).unwrap_err();
+            assert!(error.contains("插件 API 仅支持 v5"), "{error}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
     fn rejects_api_version_above_current() {
-        let root = std::env::temp_dir().join(format!("sayit-plugin-v5-{}", uuid::Uuid::new_v4()));
-        write_ocr_manifest(&root, 5);
+        let root = std::env::temp_dir().join(format!("sayit-plugin-v6-{}", uuid::Uuid::new_v4()));
+        write_ocr_manifest(&root, 6);
         let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("不支持的插件 API 版本：5"));
+        assert!(error.contains("插件 API 仅支持 v5"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn rejects_legacy_process_plugin_with_actionable_message() {
+    fn rejects_v2_before_runtime_compatibility_checks() {
         let root =
             std::env::temp_dir().join(format!("sayit-plugin-legacy-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("manifest.json"), r#"{"apiVersion":2,"id":"legacy","name":"Legacy","version":"1","provider":{"id":"legacy","displayName":"Legacy"},"models":[],"runtime":{"kind":"process","entrypoint":"connector.exe"}}"#).unwrap();
+        write_ocr_manifest(&root, 2);
         let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("旧进程插件不兼容"));
+        assert!(error.contains("插件 API 仅支持 v5"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
     fn model_pack_manifest() -> Value {
         serde_json::json!({
-            "apiVersion": 4,
+            "apiVersion": 5,
             "id": "local-paraformer",
             "name": "Local Paraformer",
             "version": "1.0.0",
@@ -1506,6 +1525,8 @@ mod tests {
                 "capabilities": ["asr"],
                 "config": {}
             },
+            "source": {"namespace":"local-paraformer"},
+            "capabilities": [],
             "models": [{
                 "id": "local-paraformer-live",
                 "label": "Local Paraformer",
@@ -1532,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_embedded_model_pack_is_valid_without_javascript() {
+    fn v5_embedded_model_pack_is_valid_without_javascript() {
         let root = std::env::temp_dir().join(format!("sayit-model-pack-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("model.bin"), b"x").unwrap();

@@ -359,7 +359,7 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
             model_labels: manifest
                 .models
                 .into_iter()
-                .map(|model| model.label)
+                .map(|model| model.label().to_string())
                 .collect(),
             trust,
             signing_key_id: manifest.signature.map(|signature| signature.key_id),

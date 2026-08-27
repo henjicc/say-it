@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "apiVersion": 4,
+    "apiVersion": 5,
     "id": "official.ppocr-v6-tiny",
     "name": "PP-OCRv6 Tiny 本地模型",
     "version": "1.0.0",
@@ -11,6 +11,8 @@
       "capabilities": ["ocr"],
       "config": {}
     },
+    "source": { "namespace": "official.ppocr-v6-tiny" },
+    "capabilities": [],
     "models": [
       {
         "id": "local-ppocr-v6-tiny",

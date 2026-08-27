@@ -1,9 +1,11 @@
 export default function createProvider(host) {
   let connectionId = null;
+  let apiKey = null;
 
   return {
-    initialize(request) {
-      if (!request.config?.apiKey) {
+    async initialize() {
+      apiKey = await host.credentials.get("apiKey");
+      if (!apiKey) {
         host.log("warn", "尚未配置供应商凭据");
       }
     },
@@ -15,6 +17,7 @@ export default function createProvider(host) {
       // 按供应商协议构造 WSS 地址和鉴权信息；不要在日志中输出凭据。
       connectionId = host.websocket.open({
         url: `wss://api.example.com/realtime?model=${encodeURIComponent(request.model)}`,
+        headers: {Authorization: `Bearer ${apiKey}`},
       }).connectionId;
     },
 
