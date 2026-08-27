@@ -7,7 +7,7 @@ fn main() {
 
 fn build_sdk_runtime_bridge() {
     let out_dir = std::env::var("OUT_DIR").expect("Cargo 缺少 OUT_DIR");
-    let output = std::path::Path::new(&out_dir).join("sayit-sdk-runtime-bootstrap.js");
+    let output = std::path::Path::new(&out_dir).join("sayit-ai-sdk-runtime");
     let status = std::process::Command::new("node")
         .arg("../scripts/build-ai-sdk-runtime.mjs")
         .arg(&output)
@@ -18,7 +18,12 @@ fn build_sdk_runtime_bridge() {
     }
     println!("cargo:rerun-if-changed=../sdk-runtime/web-compat.ts");
     println!("cargo:rerun-if-changed=../sdk-runtime/host-adapter.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/capability-entry.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/groq-entry.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/sdk-bootstrap.ts");
     println!("cargo:rerun-if-changed=../scripts/build-ai-sdk-runtime.mjs");
+    println!("cargo:rerun-if-changed=../package.json");
+    println!("cargo:rerun-if-changed=../package-lock.json");
 }
 
 fn build_macos_native_bridge() {
