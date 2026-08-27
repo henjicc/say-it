@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -36,6 +37,11 @@ const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
+// SDK 0.2.1 的 MediaReader 仍要求最终形成 Uint8Array，且 QuickJS 上限为 64 MiB。
+// 通过宿主分块避免单个超大 JSON；同时把 SDK 媒体明确收紧到官方短音频 10 MiB 上限，
+// 避免异步文件在 SDK 内多次复制后触发不可预测的 OOM。
+const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
 
 #[derive(Clone)]
@@ -282,6 +288,8 @@ impl HostState {
             "websocket.send" => self.websocket_send(payload),
             "websocket.close" => self.websocket_close(payload),
             "media.read" => self.media_read(payload),
+            "media.describe" => self.media_describe(payload),
+            "media.readChunk" => self.media_read_chunk(payload),
             "credential.get" => self.credential_get(payload),
             "runtime.log" => self.runtime_log(payload),
             "runtime.trace.start" => self.runtime_trace_start(payload),
@@ -572,23 +580,79 @@ impl HostState {
     }
 
     fn media_read(&self, payload: Value) -> Result<Value, String> {
+        let (path, size, mime_type, filename) = self.media_description(&payload, MAX_MEDIA_BYTES)?;
+        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        debug_assert_eq!(bytes.len() as u64, size);
+        Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
+    }
+
+    fn media_describe(&self, payload: Value) -> Result<Value, String> {
+        if self.sdk.is_none() {
+            return Err("当前运行上下文未注入 SDK 媒体作用域".into());
+        }
+        let (_, size, mime_type, filename) =
+            self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
+        Ok(json!({"size":size,"mimeType":mime_type,"filename":filename}))
+    }
+
+    fn media_read_chunk(&self, payload: Value) -> Result<Value, String> {
+        if self.sdk.is_none() {
+            return Err("当前运行上下文未注入 SDK 媒体作用域".into());
+        }
+        let (path, size, _, _) = self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
+        let offset = payload
+            .get("offset")
+            .and_then(Value::as_u64)
+            .ok_or("媒体分块读取缺少 offset")?;
+        let requested = payload
+            .get("length")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or("媒体分块读取缺少 length")?;
+        if requested == 0 || requested > MAX_MEDIA_CHUNK_BYTES {
+            return Err("媒体分块大小必须在 1 到 64 KiB 之间".into());
+        }
+        if offset >= size {
+            return Ok(json!({"bytes":[]}));
+        }
+        let remaining = usize::try_from(size - offset).unwrap_or(usize::MAX);
+        let mut bytes = vec![0_u8; requested.min(remaining)];
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| error.to_string())?;
+        file.read_exact(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(json!({"bytes":bytes}))
+    }
+
+    fn media_description(
+        &self,
+        payload: &Value,
+        max_bytes: u64,
+    ) -> Result<(&Path, u64, String, String), String> {
         let reference = payload
             .get("ref")
             .and_then(Value::as_str)
             .ok_or("媒体读取缺少 ref")?;
         let path = self.inputs.get(reference).ok_or("无效或过期的媒体句柄")?;
         let metadata = path.metadata().map_err(|error| error.to_string())?;
-        if !metadata.is_file() || metadata.len() > MAX_MEDIA_BYTES {
-            return Err("媒体句柄不是普通文件或超过 256 MiB".into());
+        if !metadata.is_file() || metadata.len() > max_bytes {
+            return Err(format!(
+                "媒体句柄不是普通文件或超过 {} MiB",
+                max_bytes / (1024 * 1024)
+            ));
         }
         let filename = path
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("media")
             .to_string();
-        let mime_type = media_mime_type(path);
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-        Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
+        Ok((
+            path,
+            metadata.len(),
+            media_mime_type(path).to_string(),
+            filename,
+        ))
     }
 
     fn credential_get(&self, payload: Value) -> Result<Value, String> {
