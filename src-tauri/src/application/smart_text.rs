@@ -3,6 +3,7 @@ use crate::providers::{
     llm_uses_responses, normalize_llm_endpoint, normalize_settings, ProviderProfile,
 };
 use crate::state::RuntimeState;
+use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, ReasoningEffort,
@@ -10,7 +11,6 @@ use genai::chat::{
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
-use futures_util::StreamExt;
 use tauri::State;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -112,10 +112,12 @@ fn selected_profile(
     } else {
         requested_provider_id.to_string()
     };
-    let mut profile = find_profile(&settings, &provider_id)
+    let profile = find_profile(&settings, &provider_id)
         .filter(|profile| profile.enabled && profile.kind.starts_with("llm:"))
-        .cloned()
         .ok_or_else(|| "请先在“设置 → 模型”中配置可用的大语言模型".to_string())?;
+    let provider_id = profile.id.clone();
+    drop(settings);
+    let mut profile = crate::commands::common::provider_profile_for_execution(state, &provider_id)?;
     if let Some(model) = requested_model
         .map(str::trim)
         .filter(|model| !model.is_empty())
@@ -143,13 +145,18 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         let endpoint = profile_value(profile, "endpoint");
         let endpoint = if endpoint.is_empty() {
             llm_responses_endpoint(adapter)
-                .ok_or_else(|| format!("供应商 {} 未配置 Responses API 地址", profile.display_name))?
+                .ok_or_else(|| {
+                    format!("供应商 {} 未配置 Responses API 地址", profile.display_name)
+                })?
                 .to_string()
         } else {
             endpoint.to_string()
         };
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(format!("{} 的 Responses API 接口地址无效", profile.display_name));
+            return Err(format!(
+                "{} 的 Responses API 接口地址无效",
+                profile.display_name
+            ));
         }
         let target_resolver = ServiceTargetResolver::from_resolver_fn(
             move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
@@ -221,10 +228,7 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
 }
 
 fn supports_explicit_reasoning_zero(profile: &ProviderProfile) -> bool {
-    !matches!(
-        profile.kind.strip_prefix("llm:"),
-        Some("kimi" | "bigmodel")
-    )
+    !matches!(profile.kind.strip_prefix("llm:"), Some("kimi" | "bigmodel"))
 }
 
 fn chat_options_for(
@@ -256,13 +260,12 @@ fn chat_options_for(
     };
     // 指南中的 Kimi K3 与 GLM-5.3 没有关闭思考的协议值；对这两类模型不能伪造
     // `reasoning_effort=zero`，否则会被接口拒绝，只能保留供应商默认行为。
-    let configured_reasoning = if configured_reasoning == "zero"
-        && !supports_explicit_reasoning_zero(profile)
-    {
-        "auto"
-    } else {
-        configured_reasoning
-    };
+    let configured_reasoning =
+        if configured_reasoning == "zero" && !supports_explicit_reasoning_zero(profile) {
+            "auto"
+        } else {
+            configured_reasoning
+        };
     let reasoning = match configured_reasoning {
         "auto" | "" => None,
         // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
@@ -333,11 +336,8 @@ fn final_output_options(profile: &ProviderProfile, mut options: ChatOptions) -> 
         if !extra_body.is_object() {
             extra_body = serde_json::json!({});
         }
-        extra_body["reasoning_effort"] = serde_json::json!(if reasoning_enabled {
-            "default"
-        } else {
-            "none"
-        });
+        extra_body["reasoning_effort"] =
+            serde_json::json!(if reasoning_enabled { "default" } else { "none" });
         if reasoning_enabled {
             // parsed 会把思考过程放在 delta.reasoning，便于问答流式界面与正文分开展示。
             extra_body["reasoning_format"] = serde_json::json!("parsed");
@@ -482,7 +482,10 @@ pub(crate) async fn process_prompt_with_options(
             chat_options_for(&profile, Some(default_reasoning))?,
         )
     } else {
-        final_output_options(&profile, chat_options_for(&profile, Some(default_reasoning))?)
+        final_output_options(
+            &profile,
+            chat_options_for(&profile, Some(default_reasoning))?,
+        )
     };
     let request_timeout = request_timeout_for(&profile, Some(default_reasoning));
     let response = timeout(
@@ -778,18 +781,24 @@ mod tests {
         let profile = llm_profile("llm:deepseek", "auto");
         let disabled = chat_options_for(&profile, Some("zero")).unwrap();
         assert!(disabled.reasoning_effort.is_none());
-        assert_eq!(disabled.extra_body, Some(serde_json::json!({
-            "thinking": { "type": "disabled" }
-        })));
+        assert_eq!(
+            disabled.extra_body,
+            Some(serde_json::json!({
+                "thinking": { "type": "disabled" }
+            }))
+        );
 
         let enabled = chat_options_for(&profile, Some("high")).unwrap();
         assert!(matches!(
             enabled.reasoning_effort,
             Some(ReasoningEffort::High)
         ));
-        assert_eq!(enabled.extra_body, Some(serde_json::json!({
-            "thinking": { "type": "enabled" }
-        })));
+        assert_eq!(
+            enabled.extra_body,
+            Some(serde_json::json!({
+                "thinking": { "type": "enabled" }
+            }))
+        );
     }
 
     #[test]
@@ -937,10 +946,8 @@ mod tests {
         profile.config["model"] = serde_json::json!("qwen/qwen3.6-27b");
         profile.config["models"][0]["name"] = serde_json::json!("qwen/qwen3.6-27b");
 
-        let options = final_output_options(
-            &profile,
-            chat_options_for(&profile, Some("high")).unwrap(),
-        );
+        let options =
+            final_output_options(&profile, chat_options_for(&profile, Some("high")).unwrap());
 
         assert!(options.reasoning_effort.is_none());
         assert_eq!(

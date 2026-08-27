@@ -493,7 +493,6 @@ fn main() {
             list_providers,
             set_default_provider,
             update_provider_config,
-            get_provider_api_key,
             add_llm_provider,
             refresh_llm_models,
             remove_llm_provider,

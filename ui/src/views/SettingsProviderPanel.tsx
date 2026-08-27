@@ -107,10 +107,22 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
             >
               {field.label}
             </CheckField>
+          ) : field.secret ? (
+            <Field key={field.key} label={field.label}>
+              <SecretInput
+                id={`plugin-secret-${provider.id}-${field.key}`}
+                draftValue={String(draft[field.key] ?? "")}
+                hasStoredValue={Boolean(provider.status?.hasApiKey)}
+                placeholder={provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
+                onDraftChange={(value) =>
+                  setDraft((current) => ({ ...current, [field.key]: value }))
+                }
+              />
+            </Field>
           ) : (
             <Field key={field.key} label={field.label}>
               <Input
-                type={field.secret ? "password" : field.fieldType === "number" ? "number" : "text"}
+                type={field.fieldType === "number" ? "number" : "text"}
                 value={String(draft[field.key] ?? "")}
                 placeholder={field.secret && provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
                 onChange={(event) =>
@@ -134,7 +146,7 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
   );
 }
 
-function FunAsrProviderConfig({ provider }: { provider: ProviderProfile }) {
+function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
   const providerStatus = useProviderStore((state) => state.statusText);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const [apiKey, setApiKey] = useState("");
@@ -243,7 +255,7 @@ function FunAsrProviderConfig({ provider }: { provider: ProviderProfile }) {
 
       <div className="mt-3">
         <SecretInput
-          id="funasr-api-key"
+          id="bailian-api-key"
           aria-label="阿里云百炼 API Key"
           draftValue={apiKey}
           hasStoredValue={hasApiKey}
@@ -252,8 +264,6 @@ function FunAsrProviderConfig({ provider }: { provider: ProviderProfile }) {
             setApiKey(value);
             setApiKeyDirty(true);
           }}
-          revealStoredValue={() => cmd<string>(CMD.getProviderApiKey, { providerId: provider.id })}
-          onRevealError={(error) => setMessage(`读取 API Key 失败：${String(error)}`)}
         />
       </div>
       <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
@@ -366,8 +376,8 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
         />
       );
     }
-    if (provider.kind === "alibabacloud-funasr") {
-      return <FunAsrProviderConfig key={provider.id} provider={provider} />;
+    if (provider.kind === "sdk:bailian") {
+      return <BailianProviderConfig key={provider.id} provider={provider} />;
     }
     if (hasPluginConfiguration(provider)) {
       return <PluginProviderConfig key={provider.id} provider={provider} />;

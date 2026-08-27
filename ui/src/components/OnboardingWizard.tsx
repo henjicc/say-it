@@ -344,7 +344,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                   </Button>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {selectedProvider.kind === "alibabacloud-funasr" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
+                  {selectedProvider.kind === "sdk:bailian" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
                   <Button size="sm" onClick={() => openSettings("model")}>打开完整设置</Button>
                 </div>
               </div>

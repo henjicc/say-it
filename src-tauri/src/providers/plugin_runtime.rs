@@ -604,7 +604,7 @@ impl HostState {
         if !sdk.permits_credential(scope, provider_id) {
             return Err("SDK 运行上下文无权读取该供应商凭据".into());
         }
-        let value = sdk.credentials.get(scope, provider_id)?;
+        let value = sdk.credentials.get(&sdk.credential_key)?;
         Ok(json!({"value": value}))
     }
 
@@ -1023,7 +1023,7 @@ impl JsProviderRuntime {
             let init: Function = ctx.globals().get("__sayitInitialize").map_err(js_error)?;
             let request = json!({
                 "providerId": profile.id,
-                "config": profile.config,
+                "config": crate::providers::sanitized_config(profile),
                 "session": session,
                 "permissions": spec.permissions,
             });

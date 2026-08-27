@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { Eye, EyeOff } from "lucide-react";
 import { Input } from "./Input";
 import { cn } from "@/lib/cn";
 import { InputAffixButton } from "./InputAffixButton";
@@ -11,8 +11,6 @@ export interface SecretInputProps
   draftValue: string;
   hasStoredValue: boolean;
   onDraftChange: (value: string) => void;
-  revealStoredValue?: () => Promise<string>;
-  onRevealError?: (error: unknown) => void;
 }
 
 /**
@@ -22,8 +20,6 @@ export function SecretInput({
   draftValue,
   hasStoredValue,
   onDraftChange,
-  revealStoredValue,
-  onRevealError,
   className,
   placeholder,
   disabled,
@@ -34,48 +30,26 @@ export function SecretInput({
   const inputRef = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState(false);
   const [visible, setVisible] = useState(false);
-  const [revealedValue, setRevealedValue] = useState("");
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (draftValue || !hasStoredValue) return;
     setVisible(false);
-    setRevealedValue("");
   }, [draftValue, hasStoredValue]);
 
   const showingStoredMask = hasStoredValue && !editing && !visible && !draftValue;
-  const inputValue = visible && !draftValue ? revealedValue : draftValue;
-  const canToggle = Boolean(draftValue || (hasStoredValue && revealStoredValue));
+  const canToggle = Boolean(draftValue);
 
   const hideSecret = () => {
     setVisible(false);
-    setRevealedValue("");
     setEditing(inputRef.current === document.activeElement);
   };
 
-  const toggleVisibility = async () => {
+  const toggleVisibility = () => {
     if (visible) {
       hideSecret();
       return;
     }
-    if (draftValue) {
-      setVisible(true);
-      return;
-    }
-    if (!hasStoredValue || !revealStoredValue) return;
-
-    setLoading(true);
-    try {
-      const secret = await revealStoredValue();
-      setRevealedValue(secret);
-      setVisible(true);
-      setEditing(false);
-    } catch (error) {
-      hideSecret();
-      onRevealError?.(error);
-    } finally {
-      setLoading(false);
-    }
+    if (draftValue) setVisible(true);
   };
 
   return (
@@ -84,10 +58,9 @@ export function SecretInput({
         {...props}
         ref={inputRef}
         type={visible ? "text" : "password"}
-        value={inputValue}
+        value={draftValue}
         placeholder={showingStoredMask ? STORED_SECRET_MASK : placeholder}
         disabled={disabled}
-        aria-busy={loading || undefined}
         onFocus={(event) => {
           setEditing(true);
           onFocus?.(event);
@@ -95,12 +68,10 @@ export function SecretInput({
         onBlur={(event) => {
           setEditing(false);
           setVisible(false);
-          setRevealedValue("");
           onBlur?.(event);
         }}
         onChange={(event) => {
           setEditing(true);
-          setRevealedValue("");
           onDraftChange(event.target.value);
         }}
         className={cn(
@@ -113,12 +84,10 @@ export function SecretInput({
         label={visible ? "隐藏密钥" : "显示密钥"}
         pressed={visible}
         keepFocus
-        onClick={() => void toggleVisibility()}
-        disabled={disabled || loading || !canToggle}
+        onClick={toggleVisibility}
+        disabled={disabled || !canToggle}
       >
-        {loading ? (
-          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden />
-        ) : visible ? (
+        {visible ? (
           <EyeOff className="h-4 w-4" aria-hidden />
         ) : (
           <Eye className="h-4 w-4" aria-hidden />

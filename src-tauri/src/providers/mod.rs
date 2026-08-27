@@ -8,6 +8,7 @@ pub mod apple_speech;
 pub mod browser_session_capture;
 pub mod capabilities;
 pub mod connector;
+pub mod credential_store;
 pub mod local_asr;
 pub mod model_download;
 pub mod plugin;
@@ -43,7 +44,7 @@ impl RequestCustomization {
     }
 }
 
-pub const FUNASR_PROVIDER_ID: &str = "funasr";
+pub const BAILIAN_PROVIDER_ID: &str = "bailian";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
@@ -162,9 +163,9 @@ impl Default for ProviderSettings {
         Self {
             profiles: builtin_profiles(),
             defaults: ProviderDefaults {
-                asr: FUNASR_PROVIDER_ID.to_string(),
+                asr: BAILIAN_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
-                translation: FUNASR_PROVIDER_ID.to_string(),
+                translation: BAILIAN_PROVIDER_ID.to_string(),
                 ocr: SYSTEM_OCR_PROVIDER_ID.to_string(),
             },
         }
@@ -212,7 +213,7 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
         return profile.config_fields.clone();
     }
     match profile.kind.as_str() {
-        "alibabacloud-funasr" => vec![ProviderConfigField {
+        "sdk:bailian" => vec![ProviderConfigField {
             key: "apiKey".into(),
             label: "API Key".into(),
             field_type: "password".into(),
@@ -232,6 +233,12 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                 secret: false,
             },
         ],
+        _ if profile.auth_kind == "api-key" => vec![ProviderConfigField {
+            key: "apiKey".into(),
+            label: "API Key".into(),
+            field_type: "password".into(),
+            secret: true,
+        }],
         _ => Vec::new(),
     }
 }
@@ -241,7 +248,7 @@ pub fn actions_for(profile: &ProviderProfile) -> Vec<String> {
         return profile.actions.clone();
     }
     match profile.kind.as_str() {
-        "alibabacloud-funasr" => vec!["manageHotwords".into(), "testRealtimeAsr".into()],
+        "sdk:bailian" => vec!["manageHotwords".into(), "testRealtimeAsr".into()],
         _ => Vec::new(),
     }
 }
@@ -273,10 +280,10 @@ pub struct SetDefaultProviderRequest {
     pub provider_id: String,
 }
 
-pub fn funasr_profile() -> ProviderProfile {
+pub fn bailian_profile() -> ProviderProfile {
     ProviderProfile {
-        id: FUNASR_PROVIDER_ID.to_string(),
-        kind: "alibabacloud-funasr".to_string(),
+        id: BAILIAN_PROVIDER_ID.to_string(),
+        kind: "sdk:bailian".to_string(),
         display_name: "阿里云百炼".to_string(),
         auth_kind: "api-key".to_string(),
         // 同一把百炼 Key 同时供 ASR 识别与 Qwen-MT 翻译（llm 能力）使用，不新增独立供应商。
@@ -287,7 +294,6 @@ pub fn funasr_profile() -> ProviderProfile {
         ],
         enabled: true,
         config: json!({
-            "apiKey": "",
             "vocabularyIds": {},
             "languageHints": [],
             "semanticPunctuationEnabled": false,
@@ -310,7 +316,6 @@ pub fn groq_llm_profile() -> ProviderProfile {
         capabilities: vec!["llm".to_string()],
         enabled: true,
         config: json!({
-            "apiKey": "",
             "model": "openai/gpt-oss-20b",
             "models": [LlmModelConfig::manual("openai/gpt-oss-20b")]
         }),
@@ -368,10 +373,16 @@ pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a 
     settings.profiles.iter().find(|profile| profile.id == id)
 }
 
+/// 删除供应商配置时只移除 profile；系统凭据按产品语义保留，便于重新安装插件或恢复配置。
+/// 凭据只允许由未来明确的“忘记凭据”操作删除，卸载/移除供应商不得隐式清理。
+pub fn remove_profile_preserving_credentials(settings: &mut ProviderSettings, id: &str) {
+    settings.profiles.retain(|profile| profile.id != id);
+}
+
 /// 内置供应商清单：新增供应商时在这里追加一个 profile 构造函数。
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
     vec![
-        funasr_profile(),
+        bailian_profile(),
         groq_llm_profile(),
         system_ocr_profile(),
         apple_speech_profile(),
@@ -455,12 +466,12 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
 }
 
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
-    let migrate_legacy_llm_default = settings.defaults.llm.is_empty()
-        || settings.defaults.llm == FUNASR_PROVIDER_ID;
+    let migrate_legacy_llm_default =
+        settings.defaults.llm.is_empty() || settings.defaults.llm == BAILIAN_PROVIDER_ID;
     for builtin in builtin_profiles() {
         match settings.profiles.iter_mut().find(|p| p.id == builtin.id) {
             Some(existing) => {
-                // 只修正内置供应商的固定字段，config 保留用户已保存的值（apiKey/热词等）。
+                // 只修正内置供应商的固定字段，非密钥 config 保留用户已保存的值。
                 existing.kind = builtin.kind;
                 existing.display_name = builtin.display_name;
                 existing.auth_kind = builtin.auth_kind;
@@ -556,7 +567,7 @@ pub fn realtime_connector_for(
     model_override: Option<&str>,
 ) -> Result<(Box<dyn RealtimeAsrConnector>, String), String> {
     match kind {
-        "alibabacloud-funasr" => {
+        "sdk:bailian" => {
             let params: alibabacloud::FunAsrParams =
                 serde_json::from_value(config.clone()).map_err(|e| e.to_string())?;
             if params.api_key.trim().is_empty() {
@@ -615,19 +626,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_json_without_llm_field_preserves_key_hotwords_and_defaults() {
+    fn current_settings_preserve_non_secret_config_and_defaults() {
         let settings: ProviderSettings = serde_json::from_str(LEGACY_STATE_JSON).unwrap();
-        assert_eq!(settings.defaults.llm, "");
+        let mut settings = settings;
+        settings.profiles[0].id = BAILIAN_PROVIDER_ID.into();
+        settings.profiles[0].kind = "sdk:bailian".into();
+        settings.defaults.asr = BAILIAN_PROVIDER_ID.into();
 
         let normalized = normalize_settings(settings);
-        let profile = find_profile(&normalized, FUNASR_PROVIDER_ID).unwrap();
+        let profile = find_profile(&normalized, BAILIAN_PROVIDER_ID).unwrap();
         assert_eq!(profile.config["apiKey"], "sk-legacy-key");
         assert_eq!(profile.config["hotwords"][0]["text"], "说吧");
         assert_eq!(
             profile.config["vocabularyIds"]["fun-asr-realtime"],
             "vocab-123"
         );
-        assert_eq!(normalized.defaults.asr, "funasr");
+        assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
         // 旧 JSON 没有 ocr 默认值：normalize 后自动落到内置系统 OCR。
@@ -637,7 +651,10 @@ mod tests {
     #[test]
     fn ocr_default_falls_back_to_system_ocr_and_can_be_switched() {
         let mut settings = normalize_settings(ProviderSettings::default());
-        assert_eq!(default_provider_id(&settings, "ocr"), SYSTEM_OCR_PROVIDER_ID);
+        assert_eq!(
+            default_provider_id(&settings, "ocr"),
+            SYSTEM_OCR_PROVIDER_ID
+        );
         assert!(has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"));
 
         settings.profiles.push(ProviderProfile {
@@ -654,7 +671,7 @@ mod tests {
         set_default_provider(&mut settings, "ocr", "plugin-ocr").unwrap();
         assert_eq!(default_provider_id(&settings, "ocr"), "plugin-ocr");
 
-        let err = set_default_provider(&mut settings, "ocr", FUNASR_PROVIDER_ID).unwrap_err();
+        let err = set_default_provider(&mut settings, "ocr", BAILIAN_PROVIDER_ID).unwrap_err();
         assert!(err.contains("不支持"));
     }
 
@@ -696,7 +713,7 @@ mod tests {
 
         let normalized = normalize_settings(settings);
         assert!(find_profile(&normalized, "future-llm").is_some());
-        assert!(find_profile(&normalized, FUNASR_PROVIDER_ID).is_some());
+        assert!(find_profile(&normalized, BAILIAN_PROVIDER_ID).is_some());
     }
 
     #[test]
@@ -717,14 +734,14 @@ mod tests {
     #[test]
     fn capability_helpers_are_generic_and_not_hardcoded_to_asr() {
         let settings = ProviderSettings::default();
-        assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "asr"));
-        // funasr（阿里云百炼）同时承担 Qwen-MT 翻译，带 llm 能力。
-        assert!(has_capability(&settings, FUNASR_PROVIDER_ID, "llm"));
+        assert!(has_capability(&settings, BAILIAN_PROVIDER_ID, "asr"));
+        // 百炼同时承担 Qwen-MT 翻译，带 llm 能力。
+        assert!(has_capability(&settings, BAILIAN_PROVIDER_ID, "llm"));
         assert_eq!(default_provider_id(&settings, "llm"), GROQ_LLM_PROVIDER_ID);
 
         let mut settings = settings;
-        set_default_provider(&mut settings, "llm", FUNASR_PROVIDER_ID).unwrap();
-        assert_eq!(default_provider_id(&settings, "llm"), FUNASR_PROVIDER_ID);
+        set_default_provider(&mut settings, "llm", BAILIAN_PROVIDER_ID).unwrap();
+        assert_eq!(default_provider_id(&settings, "llm"), BAILIAN_PROVIDER_ID);
 
         let err = set_default_provider(&mut settings, "llm", "unknown-provider").unwrap_err();
         assert!(err.contains("不支持"));
@@ -747,7 +764,7 @@ mod tests {
         settings.defaults.asr = "plugin-provider".to_string();
 
         let normalized = normalize_settings(settings);
-        assert_eq!(normalized.defaults.asr, FUNASR_PROVIDER_ID);
+        assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
         assert!(!has_capability(&normalized, "plugin-provider", "asr"));
     }
 

@@ -33,6 +33,35 @@ pub(crate) fn read_provider_settings(state: &RuntimeState) -> Result<ProviderSet
         .map(|v| normalize_settings(v.clone()))
 }
 
+/// 只为宿主内置执行链构造带密钥的短生命周期 profile。插件 profile 永不回灌 secret，
+/// QuickJS 只能通过受 provider + scope 限制的 RuntimeContext 读取系统凭据。
+pub(crate) fn provider_profile_for_execution(
+    state: &RuntimeState,
+    provider_id: &str,
+) -> Result<ProviderProfile, String> {
+    let settings = read_provider_settings(state)?;
+    let mut profile = find_profile(&settings, provider_id)
+        .cloned()
+        .ok_or_else(|| format!("供应商 {provider_id} 不存在"))?;
+    if profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:") {
+        return Ok(profile);
+    }
+    for field in config_fields_for(&profile)
+        .into_iter()
+        .filter(|field| field.secret)
+    {
+        let key = crate::providers::credential_store::key_for_profile(&profile, &field.key)?;
+        if let Some(value) = state.credentials.get(&key)? {
+            let config = profile
+                .config
+                .as_object_mut()
+                .ok_or_else(|| "供应商配置格式异常".to_string())?;
+            config.insert(field.key, value.into());
+        }
+    }
+    Ok(profile)
+}
+
 pub(crate) fn resolve_provider_id(
     state: &RuntimeState,
     capability: &str,
@@ -49,7 +78,10 @@ pub(crate) fn resolve_provider_id(
     Ok(selected)
 }
 
-pub(crate) fn provider_settings_response(settings: ProviderSettings) -> ProviderSettingsResponse {
+pub(crate) fn provider_settings_response(
+    settings: ProviderSettings,
+    credentials: Option<&crate::providers::credential_store::CredentialStoreHandle>,
+) -> ProviderSettingsResponse {
     let profiles = settings
         .profiles
         .iter()
@@ -60,11 +92,10 @@ pub(crate) fn provider_settings_response(settings: ProviderSettings) -> Provider
         .map(|profile| {
             let fields = config_fields_for(profile);
             let has_key = fields.iter().filter(|field| field.secret).any(|field| {
-                profile.config.get(&field.key).is_some_and(|value| {
-                    value
-                        .as_str()
-                        .map(|value| !value.trim().is_empty())
-                        .unwrap_or(true)
+                credentials.is_some_and(|credentials| {
+                    crate::providers::credential_store::key_for_profile(profile, &field.key)
+                        .and_then(|key| credentials.get(&key))
+                        .is_ok_and(|value| value.is_some_and(|value| !value.trim().is_empty()))
                 })
             });
             let configured = if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
