@@ -13,13 +13,13 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-if (sdkVersion !== '0.2.1' || sdkLock?.version !== sdkVersion) {
-  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.1')
+if (sdkVersion !== '0.2.2' || sdkLock?.version !== sdkVersion) {
+  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.2')
 }
 if (
   typeof sdkLock.integrity !== 'string'
   || typeof sdkLock.resolved !== 'string'
-  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.1/')
+  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.2/')
 ) {
   throw new Error('AI SDK lock 缺少 GitHub Packages resolved/integrity')
 }
@@ -50,6 +50,21 @@ const groq = await bundleSdkEntry({
   output: 'sayit-ai-sdk-groq.js',
   forbiddenInputs: ['/dist/generation', '/dist/catalog/', '/dist/capabilities/'],
 })
+const llmModules = await bundleSdkEntry({
+  entry: 'llm-modules-entry.ts',
+  globalName: '__sayitAiSdkLlmModules',
+  output: 'sayit-ai-sdk-llm-modules.js',
+  forbiddenInputs: [
+    '/dist/generation',
+    '/dist/catalog/',
+    '/dist/capabilities/speech-recognition/',
+    '/dist/capabilities/translation/',
+    '/dist/capabilities/realtime',
+    '/dist/capabilities/client',
+    '/dist/capabilities/builtin-descriptors',
+    '/dist/providers/',
+  ],
+})
 
 const manifest = {
   sdk: {
@@ -67,11 +82,13 @@ const manifest = {
       'bailian-translation',
     ],
     groq: ['groq-llm'],
+    llmModules: ['plugin-llm'],
   },
   bundles: {
     bridge: describeFile(bridgePath, 2),
     capabilities,
     groq,
+    llmModules,
     bootstrap: describeFile(sdkBootstrapPath, 1),
   },
 }

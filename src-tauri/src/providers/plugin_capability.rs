@@ -27,6 +27,14 @@ pub struct PluginCapabilityManifest {
     #[serde(default)]
     pub tags: Vec<String>,
     pub execution_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_input_kinds: Vec<String>,
+    #[serde(default)]
+    pub model_discovery: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -62,13 +70,23 @@ struct ValidatedDescriptor {
 pub fn validate_registry_with_sdk(
     plugins: &[(&str, &str, &[PluginCapabilityManifest])],
 ) -> Result<(), String> {
-    let payload = plugins
+    let capability_payload = plugins
         .iter()
         .map(|(plugin_id, namespace, capabilities)| {
             serde_json::json!({
                 "pluginId": plugin_id,
                 "sourceNamespace": namespace,
-                "capabilities": capabilities,
+                "capabilities": capabilities.iter().filter(|item| item.kind != "llm").collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let llm_payload = plugins
+        .iter()
+        .map(|(plugin_id, namespace, capabilities)| {
+            serde_json::json!({
+                "pluginId": plugin_id,
+                "sourceNamespace": namespace,
+                "capabilities": capabilities.iter().filter(|item| item.kind == "llm").collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();
@@ -94,12 +112,40 @@ pub fn validate_registry_with_sdk(
         let validate: Function = bundle
             .get("validateSayItPluginCapabilityRegistry")
             .map_err(|_| "AI SDK capability bundle 缺少插件 v5 validator".to_string())?;
-        let json = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
-        validate
-            .call::<_, String>((json,))
+        let json = serde_json::to_string(&capability_payload).map_err(|error| error.to_string())?;
+        validate.call::<_, String>((json,)).map_err(|error| {
+            format!(
+                "SDK capability 注册校验失败：{}",
+                CaughtError::from_error(&ctx, error)
+            )
+        })?;
+        ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_GROQ_BUNDLE)
+            .map_err(|error| error.to_string())?;
+        ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_LLM_MODULES_BUNDLE)
+            .map_err(|error| error.to_string())?;
+        let groq: rquickjs::Object = ctx
+            .globals()
+            .get("__sayitAiSdkGroq")
+            .map_err(|error| error.to_string())?;
+        let builtin_descriptors: Function = groq
+            .get("sayItGroqModuleDescriptorJson")
+            .map_err(|_| "AI SDK Groq bundle 缺少 module descriptor".to_string())?;
+        let builtin_json: String = builtin_descriptors
+            .call(())
+            .map_err(|error| error.to_string())?;
+        let llm_bundle: rquickjs::Object = ctx
+            .globals()
+            .get("__sayitAiSdkLlmModules")
+            .map_err(|error| error.to_string())?;
+        let validate_llm: Function = llm_bundle
+            .get("validateSayItPluginLlmRegistry")
+            .map_err(|_| "AI SDK LLM modules bundle 缺少插件 validator".to_string())?;
+        let llm_json = serde_json::to_string(&llm_payload).map_err(|error| error.to_string())?;
+        validate_llm
+            .call::<_, String>((llm_json, builtin_json))
             .map_err(|error| {
                 format!(
-                    "SDK capability 注册校验失败：{}",
+                    "SDK LLM module 注册校验失败：{}",
                     CaughtError::from_error(&ctx, error)
                 )
             })?;
@@ -112,7 +158,12 @@ pub fn project_models(
     capabilities: &[PluginCapabilityManifest],
     models: &[PluginModelManifest],
 ) -> Result<Vec<ModelInfo>, String> {
-    let descriptors = validate_and_snapshot(capabilities)?;
+    let executable_capabilities = capabilities
+        .iter()
+        .filter(|capability| capability.kind != "llm")
+        .cloned()
+        .collect::<Vec<_>>();
+    let descriptors = validate_and_snapshot(&executable_capabilities)?;
     let by_id = descriptors
         .iter()
         .map(|descriptor| (descriptor.id.as_str(), descriptor))
@@ -121,20 +172,38 @@ pub fn project_models(
     let mut result = Vec::with_capacity(models.len());
     for model in models {
         if model.provider_id != provider_id {
-            return Err(format!("模型 {} 的 providerId 必须为 {provider_id}", model.id));
+            return Err(format!(
+                "模型 {} 的 providerId 必须为 {provider_id}",
+                model.id
+            ));
         }
         if !model_ids.insert(model.id.as_str()) {
             return Err(format!("模型 ID 重复：{}", model.id));
         }
-        let descriptor = by_id.get(model.capability_id.as_str()).ok_or_else(|| {
-            format!(
-                "模型 {} 引用了不存在的 capabilityId：{}",
-                model.id, model.capability_id
-            )
-        })?;
-        if descriptor.model_id != model.id
-            || descriptor.provider_ids.as_slice() != [provider_id]
-        {
+        let manifest_descriptor = capabilities
+            .iter()
+            .find(|descriptor| descriptor.module_id == model.capability_id)
+            .ok_or_else(|| {
+                format!(
+                    "模型 {} 引用了不存在的 capabilityId：{}",
+                    model.id, model.capability_id
+                )
+            })?;
+        if manifest_descriptor.kind == "llm" {
+            if manifest_descriptor.model_id != model.id
+                || manifest_descriptor.provider_ids.as_slice() != [provider_id]
+            {
+                return Err(format!(
+                    "模型 {} 与 capability {} 的 provider/model 坐标不一致",
+                    model.id, manifest_descriptor.module_id
+                ));
+            }
+            continue;
+        }
+        let descriptor = by_id
+            .get(model.capability_id.as_str())
+            .ok_or_else(|| format!("capability {} 未通过 SDK 校验", model.capability_id))?;
+        if descriptor.model_id != model.id || descriptor.provider_ids.as_slice() != [provider_id] {
             return Err(format!(
                 "模型 {} 与 capability {} 的 provider/model 坐标不一致",
                 model.id, descriptor.id
@@ -149,10 +218,7 @@ pub fn project_models(
                 "realtime",
                 vec!["dictationRealtime".into(), "subtitles".into()],
             ),
-            "speech-recognition" => (
-                "file",
-                vec!["dictationFile".into(), "transcription".into()],
-            ),
+            "speech-recognition" => ("file", vec!["dictationFile".into(), "transcription".into()]),
             "translation" => ("translation", vec!["subtitleTranslation".into()]),
             other => {
                 return Err(format!(
@@ -244,6 +310,31 @@ mod tests {
             features: vec!["streaming".into(), "partial-results".into()],
             tags: vec![],
             execution_modes: vec!["realtime".into()],
+            accepted_input_kinds: vec![],
+            model_discovery: false,
+            context_window: None,
+            max_output_tokens: None,
+        }
+    }
+
+    fn llm_capability(
+        module_id: &str,
+        provider_id: &str,
+        model_id: &str,
+    ) -> PluginCapabilityManifest {
+        PluginCapabilityManifest {
+            module_id: module_id.into(),
+            kind: "llm".into(),
+            provider_ids: vec![provider_id.into()],
+            model_id: model_id.into(),
+            operations: vec!["chat".into(), "discover-models".into()],
+            features: vec!["reasoning".into(), "usage".into(), "sampling".into()],
+            tags: vec!["plugin".into()],
+            execution_modes: vec!["request-response".into(), "event-stream".into()],
+            accepted_input_kinds: vec!["text".into(), "image".into()],
+            model_discovery: true,
+            context_window: Some(32_768),
+            max_output_tokens: Some(4_096),
         }
     }
 
@@ -269,9 +360,39 @@ mod tests {
         let first = capability("demo.first");
         let mut second = first.clone();
         second.module_id = "demo.second".into();
-        let error = validate_registry_with_sdk(&[("demo", "demo", &[first, second])])
-            .unwrap_err();
+        let error = validate_registry_with_sdk(&[("demo", "demo", &[first, second])]).unwrap_err();
         assert!(error.contains("demo.first"), "{error}");
         assert!(error.contains("demo.second"), "{error}");
+    }
+
+    #[test]
+    fn llm_validator_accepts_future_input_kinds_and_rejects_missing_text() {
+        let valid = llm_capability("demo.llm.chat", "demo", "demo-chat");
+        validate_registry_with_sdk(&[("demo", "demo", std::slice::from_ref(&valid))]).unwrap();
+        let mut invalid = valid;
+        invalid.accepted_input_kinds = vec!["image".into()];
+        let error = validate_registry_with_sdk(&[("demo", "demo", &[invalid])]).unwrap_err();
+        assert!(error.contains("必须接受 text 输入"), "{error}");
+    }
+
+    #[test]
+    fn llm_validator_rejects_builtin_groq_coordinates() {
+        let conflict = llm_capability("demo.llm.groq-conflict", "groq", "openai/gpt-oss-20b");
+        let error = validate_registry_with_sdk(&[("demo", "demo", &[conflict])]).unwrap_err();
+        assert!(error.contains("groq.chat.openai/gpt-oss-20b"), "{error}");
+        assert!(error.contains("demo.llm.groq-conflict"), "{error}");
+    }
+
+    #[test]
+    fn llm_validator_rejects_cross_plugin_model_coordinate_conflict() {
+        let first = llm_capability("first.llm.chat", "shared", "chat");
+        let second = llm_capability("second.llm.chat", "shared", "chat");
+        let error = validate_registry_with_sdk(&[
+            ("first", "first", &[first]),
+            ("second", "second", &[second]),
+        ])
+        .unwrap_err();
+        assert!(error.contains("first.llm.chat"), "{error}");
+        assert!(error.contains("second.llm.chat"), "{error}");
     }
 }

@@ -1,11 +1,11 @@
 ---
 name: adapt-sayit-provider
-description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！」JavaScript 供应商插件。用于调研官方 ASR、OCR、翻译 API 或用户明确提供的逆向项目、实现 API v5 capability 连接器、校验签名并产出单个 .sayit 文件。
+description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！」JavaScript 供应商插件。用于调研官方 ASR、OCR、翻译、LLM API 或用户明确提供的逆向项目、实现 API v5 capability 连接器、校验签名并产出单个 .sayit 文件。
 ---
 
 # 适配「说吧！」供应商
 
-创建由「说吧！」内嵌 JavaScript 运行时执行的 ASR、OCR 或翻译供应商插件。不得修改或依赖「说吧！」源代码，不得生成 EXE、动态库、WASM 或其他平台相关产物。校验和签名脚本需要 Python 3 与 `cryptography`，烟雾测试需要 Node.js。
+创建由「说吧！」内嵌 JavaScript 运行时执行的 ASR、OCR、翻译或 LLM 供应商插件。不得修改或依赖「说吧！」源代码，不得生成 EXE、动态库、WASM 或其他平台相关产物。校验和签名脚本需要 Python 3 与 `cryptography`，烟雾测试需要 Node.js。
 
 ## 工作目录边界
 
@@ -37,6 +37,7 @@ description: 在当前工作目录中创建跨 Windows 与 macOS 的「说吧！
 - 文件识别只能使用宿主给出的不透明输入句柄；不得接收或猜测本地路径。
 - OCR 统一通过 `invoke({ operation: "recognizeImage", payload })`；输入是 PNG Base64 与用途，输出必须是带 0~1 归一化区域的文本块。
 - 翻译统一通过 `invoke({ operation: "translate", payload })`；增量用 `host.emit({ type: "delta", ... })`，最终结果由 `invoke` 返回。
+- LLM 统一通过 `invoke({ operation: "chat", payload })`；正文与推理增量分别使用 `host.emit({type:"text"|"reasoning", text})`，usage/finish/error 由宿主 SDK 归一。模型发现只能返回清单中已静态声明 module 的模型。
 - 公网网络仅能访问 `runtime.network.allowedHosts` 中声明的 HTTPS/WSS 主机；跳转目标也必须在白名单内。
 - 只有确需连接本机服务时才声明 `localNetwork`。它只额外允许 `127.0.0.1`、`localhost`、`[::1]` 的 HTTP/WS，不得借此访问局域网地址；若还访问公网，必须另加 `network` 与最小 `allowedHosts`。
 - Cookie 与登录会话由宿主独立 WebView 和系统凭据库管理，插件只能接收本次调用允许的会话数据。

@@ -139,10 +139,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.2.1");
+    assert_eq!(manifest["sdk"]["version"], "0.2.2");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-btK7UpegIEe0hN3r6Zuutx5dI2cbc0wKOqHlqldTb8c+cBh/6yCLDae5/crBoRpOdax5Vt6SxJIfiPOr1peV0Q=="
+        "sha512-6VMyZwxz/oVTKmGAlfMQyAjVxLgjJISDdE5df2sQhvFpxAp4cXJvB3kvMWKIjI9HIl+Y7CsOqfpA9lvz2MM6QA=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -150,6 +150,10 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     assert!(manifest["bundles"]["groq"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0));
+    assert!(manifest["bundles"]["llmModules"]["bytes"]
+        .as_u64()
+        .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
+    assert_eq!(manifest["bundles"]["llmModules"]["modules"], 12);
 
     let source = r#"
 export default () => ({
@@ -183,7 +187,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.2.1");
+    assert_eq!(result["version"], "0.2.2");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 12);
     assert_eq!(

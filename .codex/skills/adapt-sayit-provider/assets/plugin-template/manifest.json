@@ -7,7 +7,7 @@
     "id": "replace-provider",
     "displayName": "待替换供应商",
     "authKind": "api-key",
-    "capabilities": ["asr"],
+    "capabilities": ["asr", "llm"],
     "config": {},
     "configFields": [
       {"key": "apiKey", "label": "API Key", "fieldType": "password", "secret": true}
@@ -25,6 +25,18 @@
       "features": ["streaming", "partial-results"],
       "tags": [],
       "executionModes": ["realtime"]
+    },
+    {
+      "moduleId": "replace-provider.llm.replace-chat",
+      "kind": "llm",
+      "providerIds": ["replace-provider"],
+      "modelId": "replace-chat",
+      "operations": ["chat", "discover-models"],
+      "features": ["streaming", "reasoning", "usage", "sampling"],
+      "tags": [],
+      "executionModes": ["request-response", "event-stream"],
+      "acceptedInputKinds": ["text"],
+      "modelDiscovery": false
     }
   ],
   "models": [
@@ -33,6 +45,14 @@
       "label": "待替换实时模型",
       "providerId": "replace-provider",
       "capabilityId": "replace-provider.speech-recognition.replace-realtime",
+      "isDefaultRealtime": false,
+      "isDefaultFile": false
+    },
+    {
+      "id": "replace-chat",
+      "label": "待替换对话模型",
+      "providerId": "replace-provider",
+      "capabilityId": "replace-provider.llm.replace-chat",
       "isDefaultRealtime": false,
       "isDefaultFile": false
     }

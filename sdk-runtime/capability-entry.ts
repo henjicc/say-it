@@ -462,7 +462,7 @@ function assertBuiltinSourceNamespace(descriptors: readonly CapabilityDescriptor
       descriptor.source.kind !== 'builtin'
       || descriptor.source.namespace !== SAYIT_AI_SDK_SOURCE_NAMESPACE
     ) {
-      throw new Error(`SDK module ${descriptor.id} 的 source namespace 不符合 0.2.1 契约`)
+      throw new Error(`SDK module ${descriptor.id} 的 source namespace 不符合 0.2.2 契约`)
     }
   }
 }

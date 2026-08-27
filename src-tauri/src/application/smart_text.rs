@@ -117,7 +117,9 @@ fn selected_profile(
         requested_provider_id.to_string()
     };
     let profile = find_profile(&settings, &provider_id)
-        .filter(|profile| profile.enabled && profile.kind.starts_with("llm:"))
+        .filter(|profile| {
+            profile.enabled && profile.capabilities.iter().any(|value| value == "llm")
+        })
         .ok_or_else(|| "请先在“设置 → 模型”中配置可用的大语言模型".to_string())?;
     let provider_id = profile.id.clone();
     drop(settings);
@@ -235,7 +237,200 @@ pub(crate) fn validate_available_for(
         }
         return Ok(());
     }
+    if is_plugin_llm(&profile) {
+        resolve_plugin_llm(state, &profile).map(|_| ())?;
+        return Ok(());
+    }
     client_and_model(&profile).map(|_| ())
+}
+
+fn is_plugin_llm(profile: &ProviderProfile) -> bool {
+    profile.kind.starts_with("plugin:") && profile.capabilities.iter().any(|value| value == "llm")
+}
+
+fn resolve_plugin_llm(
+    state: &RuntimeState,
+    profile: &ProviderProfile,
+) -> Result<
+    (
+        crate::providers::plugin::PluginRuntimeSpec,
+        crate::providers::plugin_capability::PluginCapabilityManifest,
+    ),
+    String,
+> {
+    let model = profile_value(profile, "model");
+    if model.is_empty() {
+        return Err(format!("请先为 {} 选择模型", profile.display_name));
+    }
+    let plugins = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁定失败".to_string())?;
+    let spec = plugins
+        .runtime_for_provider(&profile.id)?
+        .ok_or_else(|| format!("插件供应商 {} 没有 JavaScript runtime", profile.id))?
+        .bind_credentials(state.credentials.clone());
+    let capability = plugins
+        .llm_capability(&profile.id, model)
+        .cloned()
+        .ok_or_else(|| format!("插件 {} 未注册模型 {model} 的 LLM module", profile.id))?;
+    Ok((spec, capability))
+}
+
+fn plugin_llm_request(
+    profile: &ProviderProfile,
+    messages: Vec<Value>,
+    default_reasoning: &str,
+    structured_json: bool,
+) -> Result<Value, String> {
+    let model_name = profile_value(profile, "model");
+    let model = llm_models_from_config(&profile.config)
+        .into_iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
+    let reasoning = match model.reasoning_effort.as_str() {
+        "auto" | "" => default_reasoning,
+        value => value,
+    };
+    let mut request = json!({
+        "providerId": profile.id,
+        "modelId": model_name,
+        "messages": messages,
+        "policy": { "maxTokens": model.max_tokens.unwrap_or(4096) },
+        "capabilities": { "jsonOutput": structured_json },
+    });
+    if matches!(reasoning, "low" | "medium" | "high") {
+        request["capabilities"]["reasoning"] = Value::Bool(true);
+        request["reasoning"] = json!({ "enabled": true, "effort": reasoning });
+    }
+    Ok(request)
+}
+
+async fn run_plugin_llm(
+    state: &RuntimeState,
+    profile: ProviderProfile,
+    messages: Vec<Value>,
+    default_reasoning: &str,
+    structured_json: bool,
+    request_id: String,
+) -> Result<(String, String), String> {
+    let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
+    let (spec, capability) = resolve_plugin_llm(state, &profile)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
+            spec,
+            &profile,
+            &request_id,
+            DEFAULT_REQUEST_TIMEOUT,
+            cancelled,
+            None,
+        )?;
+        let output = runtime.execute_llm(
+            &capability.module_id,
+            &request,
+            &request_id,
+            false,
+            DEFAULT_REQUEST_TIMEOUT,
+        )?;
+        Ok::<_, String>((
+            output
+                .get("output")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            output
+                .get("reasoningOutput")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))
+    })
+    .await
+    .map_err(|error| format!("插件 LLM 工作线程失败：{error}"))?
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_plugin_llm_stream<F>(
+    state: &RuntimeState,
+    profile: ProviderProfile,
+    messages: Vec<Value>,
+    default_reasoning: &str,
+    request_id: String,
+    cancellation: CancellationToken,
+    mut on_update: F,
+) -> Result<(String, String), String>
+where
+    F: FnMut(&str, &str),
+{
+    let request = plugin_llm_request(&profile, messages, default_reasoning, false)?;
+    let (spec, capability) = resolve_plugin_llm(state, &profile)?;
+    if !capability
+        .execution_modes
+        .iter()
+        .any(|mode| mode == "event-stream")
+    {
+        return run_plugin_llm(
+            state,
+            profile,
+            request["messages"].as_array().cloned().unwrap_or_default(),
+            default_reasoning,
+            false,
+            request_id,
+        )
+        .await;
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let task_cancelled = cancelled.clone();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
+    let task_request_id = request_id.clone();
+    let mut task = tauri::async_runtime::spawn_blocking(move || {
+        let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
+            spec,
+            &profile,
+            &task_request_id,
+            DEFAULT_REQUEST_TIMEOUT,
+            task_cancelled,
+            Some(event_tx),
+        )?;
+        runtime.execute_llm(
+            &capability.module_id,
+            &request,
+            &task_request_id,
+            true,
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+    });
+    let mut output = String::new();
+    let mut reasoning = String::new();
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                cancelled.store(true, Ordering::Relaxed);
+                let _ = task.await;
+                return Err("大语言模型请求已取消".into());
+            }
+            event = event_rx.recv() => {
+                if let Some(event) = event {
+                    if event.get("type").and_then(Value::as_str) != Some("llm") { continue; }
+                    let event = event.get("event").unwrap_or(&event);
+                    match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "Token" => output.push_str(event.get("data").and_then(Value::as_str).unwrap_or_default()),
+                        "ReasoningToken" => reasoning.push_str(event.get("data").and_then(Value::as_str).unwrap_or_default()),
+                        _ => {}
+                    }
+                    on_update(&output, &reasoning);
+                }
+            }
+            result = &mut task => {
+                let value = result.map_err(|error| format!("插件 LLM 工作线程失败：{error}"))??;
+                if output.is_empty() { output = value.get("output").and_then(Value::as_str).unwrap_or_default().to_string(); }
+                if reasoning.is_empty() { reasoning = value.get("reasoningOutput").and_then(Value::as_str).unwrap_or_default().to_string(); }
+                on_update(&output, &reasoning);
+                return Ok((output, reasoning));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -600,6 +795,23 @@ pub(crate) async fn process_prompt_with_options(
             run_groq_sdk(state, profile, messages, default_reasoning, request_id).await?;
         return final_text_from_output(&output);
     }
+    if is_plugin_llm(&profile) {
+        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+        let messages = vec![
+            json!({ "role": "system", "content": system_prompt }),
+            json!({ "role": "user", "content": user_prompt }),
+        ];
+        let (output, _) = run_plugin_llm(
+            state,
+            profile,
+            messages,
+            default_reasoning,
+            structured_json,
+            request_id,
+        )
+        .await?;
+        return final_text_from_output(&output);
+    }
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
         log_scope,
@@ -679,6 +891,29 @@ where
         }
         messages.push(json!({ "role": "user", "content": user_prompt }));
         let (output, reasoning) = run_groq_sdk_stream(
+            state,
+            profile,
+            messages,
+            default_reasoning,
+            request_id,
+            cancellation,
+            on_update,
+        )
+        .await?;
+        return Ok((
+            final_text_from_output(&output)?,
+            reasoning.trim().to_string(),
+        ));
+    }
+    if is_plugin_llm(&profile) {
+        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+        let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
+        for turn in history {
+            messages.push(json!({ "role": "user", "content": turn.user }));
+            messages.push(json!({ "role": "assistant", "content": turn.assistant }));
+        }
+        messages.push(json!({ "role": "user", "content": user_prompt }));
+        let (output, reasoning) = run_plugin_llm_stream(
             state,
             profile,
             messages,

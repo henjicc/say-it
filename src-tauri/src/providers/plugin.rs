@@ -461,7 +461,7 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if !manifest.provider.capabilities.iter().any(|capability| {
         matches!(
             capability.as_str(),
-            "asr" | "translation" | "customization" | "ocr"
+            "asr" | "translation" | "customization" | "ocr" | "llm"
         )
     }) {
         return Err("插件供应商未声明受支持的能力".into());
@@ -638,6 +638,55 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     }
     if manifest.source.namespace != manifest.id {
         return Err("插件 source.namespace 必须与插件 ID 一致".into());
+    }
+    if !is_model_pack {
+        super::plugin_capability::validate_registry_with_sdk(&[(
+            manifest.id.as_str(),
+            manifest.source.namespace.as_str(),
+            manifest.capabilities.as_slice(),
+        )])?;
+    }
+    let mut declared_model_ids = HashSet::new();
+    for model in &manifest.models {
+        validate_id("模型", model.id())?;
+        if !declared_model_ids.insert(model.id().to_string()) {
+            return Err(format!("模型 ID 重复：{}", model.id()));
+        }
+        if let PluginModelDeclaration::Capability(model) = model {
+            if model.provider_id != manifest.provider.id {
+                return Err(format!(
+                    "模型 {} 的 providerId 必须为 {}",
+                    model.id, manifest.provider.id
+                ));
+            }
+        }
+    }
+    for capability in &manifest.capabilities {
+        if capability.kind == "llm" {
+            if !manifest
+                .provider
+                .capabilities
+                .iter()
+                .any(|value| value == "llm")
+            {
+                return Err("声明 LLM module 时 provider.capabilities 必须包含 llm".into());
+            }
+            if !capability
+                .module_id
+                .starts_with(&format!("{}.", manifest.id))
+            {
+                return Err(format!(
+                    "LLM module {} 必须以插件 namespace 开头",
+                    capability.module_id
+                ));
+            }
+            if capability.provider_ids.as_slice() != [manifest.provider.id.as_str()] {
+                return Err(format!(
+                    "LLM module {} 的 providerId 必须为 {}",
+                    capability.module_id, manifest.provider.id
+                ));
+            }
+        }
     }
     let projected_models = project_manifest_models(manifest)?;
     let mut model_ids = HashSet::new();
@@ -1057,6 +1106,39 @@ impl PluginRegistry {
         self.model(model).map(|model| model.provider_id.clone())
     }
 
+    pub fn llm_capability(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Option<&PluginCapabilityManifest> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.manifest.provider.id == provider_id)
+            .and_then(|plugin| {
+                plugin.manifest.capabilities.iter().find(|capability| {
+                    capability.kind == "llm"
+                        && capability.model_id == model_id
+                        && capability.provider_ids.as_slice() == [provider_id]
+                })
+            })
+    }
+
+    pub fn llm_model_ids(&self, provider_id: &str) -> Vec<String> {
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.manifest.provider.id == provider_id)
+            .map(|plugin| {
+                plugin
+                    .manifest
+                    .capabilities
+                    .iter()
+                    .filter(|capability| capability.kind == "llm")
+                    .map(|capability| capability.model_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn runtime_for_provider(
         &self,
         provider_id: &str,
@@ -1229,6 +1311,50 @@ impl PluginRegistry {
                     actions: provider.actions.clone(),
                 }),
             }
+            if provider
+                .capabilities
+                .iter()
+                .any(|capability| capability == "llm")
+            {
+                let declared = plugin
+                    .manifest
+                    .capabilities
+                    .iter()
+                    .filter(|capability| capability.kind == "llm")
+                    .map(|capability| super::LlmModelConfig::remote(capability.model_id.clone()))
+                    .collect::<Vec<_>>();
+                if let Some(profile) = settings
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == provider_id)
+                {
+                    let existing = super::llm_models_from_config(&profile.config);
+                    let models = declared
+                        .into_iter()
+                        .map(|mut model| {
+                            if let Some(saved) =
+                                existing.iter().find(|saved| saved.name == model.name)
+                            {
+                                model.reasoning_effort = saved.reasoning_effort.clone();
+                                model.temperature = saved.temperature;
+                                model.max_tokens = saved.max_tokens;
+                            }
+                            model
+                        })
+                        .collect::<Vec<_>>();
+                    super::set_llm_models(&mut profile.config, &models).ok();
+                    let selected = profile
+                        .config
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if !models.iter().any(|model| model.name == selected) {
+                        if let Some(first) = models.first() {
+                            profile.config["model"] = Value::String(first.name.clone());
+                        }
+                    }
+                }
+            }
         }
         *settings = super::normalize_settings(settings.clone());
     }
@@ -1270,6 +1396,18 @@ mod tests {
         assert_eq!(manifest.api_version, PLUGIN_API_VERSION);
         assert_eq!(manifest.runtime.kind, "javascript");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn minimal_llm_fixture_matches_v5_sdk_contract() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugin-llm-v5");
+        let manifest = validate_plugin_dir(&root).unwrap();
+        assert_eq!(manifest.api_version, PLUGIN_API_VERSION);
+        assert_eq!(manifest.capabilities[0].kind, "llm");
+        assert_eq!(
+            manifest.capabilities[0].accepted_input_kinds,
+            ["text", "image"]
+        );
     }
 
     #[test]

@@ -125,7 +125,7 @@ def validate(root: Path) -> dict:
     if not str(data.get("name", "")).strip() or not str(data.get("version", "")).strip():
         fail("name 和 version 不能为空")
     capabilities = set(provider.get("capabilities", []))
-    if not capabilities & {"asr", "translation", "customization", "ocr"}:
+    if not capabilities & {"asr", "translation", "customization", "ocr", "llm"}:
         fail("provider.capabilities 未声明受支持能力")
     if not isinstance(provider.get("config", {}), dict):
         fail("provider.config 必须是 JSON 对象")
@@ -200,7 +200,7 @@ def validate(root: Path) -> dict:
             fail(f"capability moduleId 不合法或重复：{module_id!r}")
         descriptor_ids.add(module_id)
         kind = descriptor.get("kind")
-        if kind not in {"speech-recognition", "translation"}:
+        if kind not in {"speech-recognition", "translation", "llm"}:
             fail(f"capability {module_id} 的 kind 不受支持")
         provider_ids = descriptor.get("providerIds")
         if provider_ids != [provider.get("id")]:
@@ -215,6 +215,18 @@ def validate(root: Path) -> dict:
             fail(f"capability {module_id} 含未知 executionMode")
         if "realtime" in execution_modes and kind != "speech-recognition":
             fail(f"capability {module_id} 只有语音识别可声明 realtime")
+        if kind == "llm":
+            if not module_id.startswith(f"{data['id']}."):
+                fail(f"LLM module {module_id} 必须以插件 namespace 开头")
+            if set(execution_modes) - {"request-response", "event-stream"}:
+                fail(f"LLM module {module_id} 只允许 request-response/event-stream")
+            input_kinds = descriptor.get("acceptedInputKinds")
+            if not isinstance(input_kinds, list) or "text" not in input_kinds:
+                fail(f"LLM module {module_id} 必须在 acceptedInputKinds 声明 text")
+            if set(input_kinds) - {"text", "image", "audio", "video"}:
+                fail(f"LLM module {module_id} 含未知 acceptedInputKinds")
+            if not isinstance(descriptor.get("modelDiscovery", False), bool):
+                fail(f"LLM module {module_id} 的 modelDiscovery 必须为布尔值")
         for field in ("operations", "features", "tags"):
             value = descriptor.get(field, [])
             if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):

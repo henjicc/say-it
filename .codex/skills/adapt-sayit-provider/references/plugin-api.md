@@ -92,7 +92,7 @@ Plugin API 只接受 v5。`source.namespace` 必须与插件 ID 一致，宿主�
 
 `capabilities` 使用 SDK descriptor 的可移植子集：`moduleId`、`kind`、`providerIds`、`modelId`、
 `operations`、`features`、`tags`、`executionModes`。ASR 的 `kind` 为 `speech-recognition`，翻译为
-`translation`；执行模式只允许 `request-response`、`event-stream`、`realtime`，其中 realtime
+`translation`，LLM 为 `llm`；执行模式只允许 `request-response`、`event-stream`、`realtime`，其中 realtime
 仅允许语音识别。宿主使用真实 SDK CapabilityClient 拒绝重复 module ID 和重复 provider/kind/model
 坐标，错误会同时指出待注册 module 和已占用 module/source。
 
@@ -100,6 +100,12 @@ Plugin API 只接受 v5。`source.namespace` 必须与插件 ID 一致，宿主�
 `id`、`label`、`providerId`、`capabilityId` 与两个可选默认项；宿主从已校验 descriptor 投影应用目录。
 真实能力通过 features 声明：`partial-results`、`timestamps`、`vocabulary`、`context`。只有连接器
 确实把对应结果或输入透传到宿主时才能声明。每个 capability 必须恰好有一个 models 条目。
+
+LLM module 还必须声明 `acceptedInputKinds`（至少含 `text`，可扩展 `image`、`audio`、`video`）、
+`modelDiscovery`，以及可选的 `contextWindow`、`maxOutputTokens`。`executionModes` 仅允许
+`request-response`、`event-stream`。`features` 使用 `reasoning`、`usage`、`sampling`、`tool-call`、
+`parallel-tools`、`json-output`、`structured-schema`；不得夸大实际能力。模型发现只能返回清单中
+已静态声明且已有 module 的模型 ID，不能把临时发现结果直接变成不可执行选项。
 
 ## 入口接口
 
@@ -128,6 +134,14 @@ export default function createProvider(host) {
 `transcribeFile` 的 `payload` 与 `realtimeStart` 的请求还可能带 `hotwords` 与 `context`，规则见上文的模型能力字段。
 
 翻译操作接收宿主提供的文本、源语言、目标语言与模型等字段；不要依赖未声明字段。流式增量通过 `host.emit({ type: "delta", text })` 发出，最终返回供应商响应中归一化后的结果。
+
+LLM 调用进入 `invoke({ operation: "chat", payload })`。`payload` 是 SDK 聊天请求，包含
+`providerId`、`modelId`、`messages`、`requestId`、`mode` 以及可选 reasoning/capabilities/policy。
+正文和推理增量分别发送 `{type:"text",text}`、`{type:"reasoning",text}`；用量发送
+`{type:"usage",data}`，结束发送 `{type:"finish",finishReason}`，失败发送 `{type:"error",message}`。
+最终返回 `{output,reasoningOutput,usage,finishReason}`；SDK 统一发射 `Usage → Finish → Done`。
+模型发现进入 `invoke({operation:"discoverModels",payload})`，返回
+`[{modelId,displayName,contextWindow,maxOutputTokens}]`。
 
 OCR 操作固定为：
 

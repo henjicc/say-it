@@ -43,7 +43,7 @@ export function HomeView() {
   const [message, setMessage] = useState("");
   const asrModel = useDictPrefs((state) => state.prefs.asrModel);
   const patchDict = useDictPrefs((state) => state.patch);
-  const profiles = useProviderStore((state) => state.profiles).filter((item) => item.enabled && item.kind.startsWith("llm:"));
+  const profiles = useProviderStore((state) => state.profiles).filter((item) => item.enabled && item.capabilities.includes("llm"));
   const defaults = useProviderStore((state) => state.defaults);
   const setDefault = useProviderStore((state) => state.setDefault);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
