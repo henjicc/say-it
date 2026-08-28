@@ -150,6 +150,7 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     assert!(manifest["bundles"]["groq"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0));
+    assert_eq!(manifest["bundles"]["groq"]["modules"], 99);
     assert!(manifest["bundles"]["llmModules"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
@@ -286,6 +287,18 @@ export default () => ({
     const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['groq-llm'] });
     const events = [];
     try {
+      let mediaRejected = '';
+      try {
+        await sdk.groq.run(
+          {
+            baseUrl: request.payload.baseUrl,
+            messages: [{ role: 'user', content: [{ type: 'image', imageUrl: 'https://example.invalid/x.png' }] }],
+          },
+          'scripted-groq-media',
+        );
+      } catch (error) {
+        mediaRejected = String(error);
+      }
       const output = await sdk.groq.run(
         { baseUrl: request.payload.baseUrl, messages: [{ role: 'user', content: 'fixture' }] },
         'scripted-groq',
@@ -298,6 +311,7 @@ export default () => ({
         capabilitiesLoaded: sdk.capabilities !== undefined,
         providerId: sdk.groq.providerId,
         modelId: sdk.groq.defaultModelId,
+        mediaRejected,
       };
     } finally {
       await sdk.dispose();
@@ -323,6 +337,11 @@ export default () => ({
     assert_eq!(result["capabilitiesLoaded"], false);
     assert_eq!(result["providerId"], "groq");
     assert_eq!(result["modelId"], "openai/gpt-oss-20b");
+    assert!(result["mediaRejected"]
+        .as_str()
+        .is_some_and(|error| error.contains("当前只接受文本消息")),
+        "{result}"
+    );
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
     groq_server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();

@@ -48,7 +48,15 @@ const groq = await bundleSdkEntry({
   entry: 'groq-entry.ts',
   globalName: '__sayitAiSdkGroq',
   output: 'sayit-ai-sdk-groq.js',
-  forbiddenInputs: ['/dist/generation', '/dist/catalog/', '/dist/capabilities/'],
+  forbiddenInputs: [
+    '/dist/generation',
+    '/dist/catalog/',
+    '/dist/capabilities/',
+    '/dist/upload/',
+    '/dist/providers/endpoints/',
+    '/dist/providers/ppio-media',
+  ],
+  plugins: [groqTextOnlyPreprocessPlugin()],
 })
 const llmModules = await bundleSdkEntry({
   entry: 'llm-modules-entry.ts',
@@ -126,7 +134,7 @@ function transpileScripts(names) {
   })
 }
 
-async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs }) {
+async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs, plugins = [] }) {
   const outputPath = path.join(outputRoot, output)
   const result = await build({
     absWorkingDir: projectRoot,
@@ -142,6 +150,7 @@ async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs }) {
     legalComments: 'none',
     sourcemap: false,
     metafile: true,
+    plugins,
     logLevel: 'silent',
   })
   const inputs = Object.keys(result.metafile.inputs).map(value => value.replaceAll('\\', '/'))
@@ -154,6 +163,20 @@ async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs }) {
     throw new Error(`${entry} 产物包含 Node/WebView 或全局 fetch 依赖`)
   }
   return describeFile(outputPath, inputs.length)
+}
+
+function groqTextOnlyPreprocessPlugin() {
+  const replacement = path.join(projectRoot, 'sdk-runtime', 'groq-text-only-preprocess.ts')
+  return {
+    name: 'sayit-groq-text-only-preprocess',
+    setup(buildContext) {
+      buildContext.onResolve({ filter: /^\.\.\/upload\/preprocess\.js$/ }, args => {
+        const importer = args.importer.replaceAll('\\', '/')
+        if (!importer.endsWith('/dist/llm/chat.js')) return undefined
+        return { path: replacement }
+      })
+    },
+  }
 }
 
 function describeFile(file, modules) {
