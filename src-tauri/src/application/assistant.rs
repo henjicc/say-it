@@ -995,6 +995,9 @@ pub(crate) async fn assistant_stop(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn assistant_cancel(app: AppHandle) -> Result<(), String> {
+    app.state::<RuntimeState>()
+        .assistant_runtime
+        .cancel_generation();
     crate::application::dictation::dictation_cancel(app).await
 }
 
@@ -1025,6 +1028,7 @@ pub(crate) async fn process(
     }
     match request.action {
         AssistantAction::TranslateSpeech => {
+            let cancellation = state.assistant_runtime.begin_generation();
             let output = if prefs.translation_engine == "dedicated" {
                 crate::application::translation::translate_text(
                     state,
@@ -1032,6 +1036,7 @@ pub(crate) async fn process(
                     spoken_text,
                     &prefs.source_language,
                     &prefs.target_language,
+                    cancellation.clone(),
                 )
                 .await?
             } else {
@@ -1045,6 +1050,9 @@ pub(crate) async fn process(
                 )
                 .await?
             };
+            if cancellation.is_cancelled() {
+                return Err("翻译请求已取消".into());
+            }
             Ok(ProcessedAssistant {
                 output,
                 reasoning: String::new(),
@@ -1503,6 +1511,7 @@ pub(crate) async fn preview_assistant(
             &spoken_text,
             &prefs.source_language,
             &prefs.target_language,
+            CancellationToken::new(),
         )
         .await;
     }

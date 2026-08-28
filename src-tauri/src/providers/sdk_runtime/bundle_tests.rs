@@ -116,6 +116,25 @@ fn create_runtime(
     (root, runtime)
 }
 
+fn create_runtime_with_cancelled(
+    source: &str,
+    provider_id: &str,
+    scopes: &[&str],
+    cancelled: Arc<AtomicBool>,
+) -> (PathBuf, JsProviderRuntime) {
+    let (root, spec, profile, bindings) = fixture(source, provider_id, scopes);
+    let runtime = JsProviderRuntime::create_with_sdk_bindings(
+        spec,
+        &profile,
+        Duration::from_secs(5),
+        cancelled,
+        HashMap::new(),
+        bindings,
+    )
+    .unwrap();
+    (root, runtime)
+}
+
 fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -273,6 +292,67 @@ export default () => ({
 }
 
 #[test]
+fn cancelling_translation_aborts_http_stream_and_releases_resources() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 16 * 1024];
+        let _ = stream.read(&mut request);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{{"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        request_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(2));
+    });
+    let source = r#"
+export default () => ({
+  async invoke(request) {
+    const sdk = globalThis.__sayitCreateSdkRuntime({
+      sources: ['bailian-translation'],
+      capabilityOptions: {
+        bailianTranslation: { endpoint: `${request.payload.baseUrl}/translate`, defaultStream: false },
+      },
+    });
+    try {
+      return await sdk.capabilities.execute(
+        'bailian.translation.qwen-mt-flash',
+        { source: '取消', sourceLanguage: 'zh', targetLanguage: 'en' },
+        { requestId: 'cancelled-translation' },
+      );
+    } finally {
+      await sdk.dispose();
+      globalThis.__sayitDisposeRuntimeContext();
+    }
+  }
+});
+"#;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let (root, runtime) =
+        create_runtime_with_cancelled(source, "bailian", &["translation"], cancelled.clone());
+    let cancel_worker = thread::spawn(move || {
+        request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+    });
+    let result = runtime.call(
+        "invoke",
+        &json!({"payload":{"baseUrl":format!("http://{address}")}}),
+        Duration::from_secs(5),
+    );
+    cancel_worker.join().unwrap();
+    assert!(result.unwrap_err().contains("取消"));
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    let _ = release_tx.send(());
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn executes_groq_stream_through_host_transport_without_loading_capabilities() {
     let sse = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"scripted groq\"},\"finish_reason\":\"stop\"}],",
@@ -337,9 +417,10 @@ export default () => ({
     assert_eq!(result["capabilitiesLoaded"], false);
     assert_eq!(result["providerId"], "groq");
     assert_eq!(result["modelId"], "openai/gpt-oss-20b");
-    assert!(result["mediaRejected"]
-        .as_str()
-        .is_some_and(|error| error.contains("当前只接受文本消息")),
+    assert!(
+        result["mediaRejected"]
+            .as_str()
+            .is_some_and(|error| error.contains("当前只接受文本消息")),
         "{result}"
     );
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));

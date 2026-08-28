@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
+use tokio_util::sync::CancellationToken;
 
 const DOMAIN_EVENT: &str = "domain-event";
 const REPLACE_CONTINUE_GAP: Duration = Duration::from_millis(2_500);
@@ -333,6 +334,7 @@ struct Session {
     audio_prefs: AudioPrefs,
     document: SubtitleDocument,
     translation: TranslationDocument,
+    translation_cancellation: CancellationToken,
     last_voice_at: Option<Instant>,
     reconnect_attempts: u32,
     opening: bool,
@@ -517,6 +519,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
             lease: Some(lease),
             prefs,
             audio_prefs,
+            translation_cancellation: CancellationToken::new(),
             ..Session::default()
         };
     }
@@ -555,13 +558,20 @@ async fn start(app: AppHandle) -> Result<(), String> {
 }
 
 fn cleanup_start_failure(state: &RuntimeState, source: SourceKind) {
-    let (asr, lease) = state
+    let (asr, lease, translation_cancellation) = state
         .subtitle_runtime
         .session
         .lock()
         .ok()
-        .map(|mut session| (session.asr_session_id.take(), session.lease.take()))
+        .map(|mut session| {
+            (
+                session.asr_session_id.take(),
+                session.lease.take(),
+                session.translation_cancellation.clone(),
+            )
+        })
         .unwrap_or_default();
+    translation_cancellation.cancel();
     if let Some(id) = asr {
         let _ = stop_asr_stream_inner(&id, state);
     }
@@ -590,7 +600,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
 
 async fn stop_locked(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let (source, asr, lease) = {
+    let (source, asr, lease, translation_cancellation) = {
         let mut session = state
             .subtitle_runtime
             .session
@@ -604,8 +614,10 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
             session.source,
             session.asr_session_id.take(),
             session.lease.take(),
+            session.translation_cancellation.clone(),
         )
     };
+    translation_cancellation.cancel();
     publish_state(&app);
     if let Some(id) = asr {
         let _ = stop_asr_stream_inner(&id, &state);
@@ -918,15 +930,17 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
             .lock()
             .map_err(|_| "字幕状态锁失败")?;
         let model = session.prefs.translation_model.clone();
+        let cancellation = session.translation_cancellation.clone();
         let provider = crate::application::translation::resolve_provider(&state, &model)?;
         Ok((
             model,
             session.prefs.translation_source_lang.clone(),
             session.prefs.translation_target_lang.clone(),
+            cancellation,
             provider,
         ))
     })();
-    let (model, source_lang, target_lang, provider) = match prepared {
+    let (model, source_lang, target_lang, cancellation, provider) = match prepared {
         Ok(value) => value,
         Err(error) => {
             app.state::<RuntimeState>()
@@ -945,15 +959,22 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
         let hub = app.state::<RuntimeState>().backend_events.sender_clone();
         let delta_hub = hub.clone();
         let result = provider
-            .translate_streaming(&model, &text, &source_lang, &target_lang, move |partial| {
-                let _ = delta_hub.send(BackendEvent::SubtitleTranslation {
-                    epoch,
-                    segment_seq,
-                    text: partial.into(),
-                    done: false,
-                    error: None,
-                });
-            })
+            .translate_streaming(
+                &model,
+                &text,
+                &source_lang,
+                &target_lang,
+                cancellation,
+                move |partial| {
+                    let _ = delta_hub.send(BackendEvent::SubtitleTranslation {
+                        epoch,
+                        segment_seq,
+                        text: partial.into(),
+                        done: false,
+                        error: None,
+                    });
+                },
+            )
             .await;
         let event = match result {
             Ok(text) => BackendEvent::SubtitleTranslation {
