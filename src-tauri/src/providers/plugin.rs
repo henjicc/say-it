@@ -1159,17 +1159,25 @@ impl PluginRegistry {
             .entrypoint
             .as_deref()
             .ok_or("JavaScript 插件缺少 entrypoint")?;
+        let profile = ProviderProfile {
+            id: plugin.manifest.provider.id.clone(),
+            kind: format!("plugin:{}", plugin.manifest.id),
+            display_name: plugin.manifest.provider.display_name.clone(),
+            auth_kind: plugin.manifest.provider.auth_kind.clone(),
+            capabilities: plugin.manifest.provider.capabilities.clone(),
+            enabled: true,
+            config: plugin.manifest.provider.config.clone(),
+            config_fields: plugin.manifest.provider.config_fields.clone(),
+            actions: plugin.manifest.provider.actions.clone(),
+        };
         Ok(Some(PluginRuntimeSpec {
             plugin_id: plugin.manifest.id.clone(),
             source_namespace: plugin.manifest.source.namespace.clone(),
             capabilities: plugin.manifest.capabilities.clone(),
-            secret_fields: plugin
-                .manifest
-                .provider
-                .config_fields
-                .iter()
+            secret_fields: super::config_fields_for(&profile)
+                .into_iter()
                 .filter(|field| field.secret)
-                .map(|field| field.key.clone())
+                .map(|field| field.key)
                 .collect(),
             credentials: None,
             root: plugin.root.clone(),
@@ -1444,7 +1452,7 @@ mod tests {
                     "displayName": "Test Provider",
                     "capabilities": ["asr"],
                     "config": { "token": "" },
-                    "configFields": [{ "key": "token", "label": "Token", "fieldType": "password", "secret": true }]
+                    "configFields": [{ "key": "token", "label": "Token", "fieldType": "password", "secret": false }]
                 },
                 "source": { "namespace": "test-provider" },
                 "capabilities": [{
@@ -1479,8 +1487,17 @@ mod tests {
                 .unwrap();
             assert_eq!(profile.kind, "plugin:test-provider");
             assert_eq!(profile.config_fields[0].key, "token");
+            assert!(super::super::config_fields_for(profile)[0].secret);
             profile.enabled = false;
         }
+        assert_eq!(
+            registry
+                .runtime_for_provider("test-provider")
+                .unwrap()
+                .unwrap()
+                .secret_fields,
+            vec!["token"]
+        );
         registry.merge_provider_profiles(&mut settings);
         let disabled = settings
             .profiles

@@ -6,7 +6,7 @@ pub mod apple_speech;
 pub mod browser_session_capture;
 pub mod capabilities;
 pub mod credential_store;
-mod credential_vault;
+pub(crate) mod credential_vault;
 pub mod local_asr;
 pub mod model_download;
 pub mod plugin;
@@ -207,39 +207,102 @@ pub struct ProviderConfigField {
     pub secret: bool,
 }
 
-pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> {
-    if !profile.config_fields.is_empty() {
-        return profile.config_fields.clone();
+pub(crate) fn is_sensitive_config_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "cookie"
+            | "credential"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "accesskeysecret"
+    ) || normalized.ends_with("apikey")
+        || normalized.ends_with("password")
+        || normalized.ends_with("privatekey")
+        || normalized.ends_with("secret")
+        || normalized.ends_with("token")
+}
+
+fn is_host_secret_field(auth_kind: &str, field: &ProviderConfigField) -> bool {
+    field.secret
+        || field.field_type.eq_ignore_ascii_case("password")
+        || is_sensitive_config_key(&field.key)
+        || (auth_kind == "api-key" && field.key.eq_ignore_ascii_case("apiKey"))
+}
+
+pub(crate) fn secret_config_keys(profile: &ProviderProfile) -> std::collections::HashSet<String> {
+    let mut keys = profile
+        .config_fields
+        .iter()
+        .filter(|field| is_host_secret_field(&profile.auth_kind, field))
+        .map(|field| field.key.clone())
+        .collect::<std::collections::HashSet<_>>();
+    if profile.auth_kind == "api-key" {
+        keys.insert("apiKey".into());
     }
-    match profile.kind.as_str() {
-        "sdk:bailian" => vec![ProviderConfigField {
-            key: "apiKey".into(),
-            label: "API Key".into(),
-            field_type: "password".into(),
-            secret: true,
-        }],
-        kind if kind.starts_with("llm:") => vec![
-            ProviderConfigField {
+    if let Some(config) = profile.config.as_object() {
+        keys.extend(
+            config
+                .keys()
+                .filter(|key| is_sensitive_config_key(key))
+                .cloned(),
+        );
+    }
+    keys
+}
+
+pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> {
+    let mut fields = if !profile.config_fields.is_empty() {
+        profile.config_fields.clone()
+    } else {
+        match profile.kind.as_str() {
+            "sdk:bailian" => vec![ProviderConfigField {
                 key: "apiKey".into(),
                 label: "API Key".into(),
                 field_type: "password".into(),
                 secret: true,
-            },
-            ProviderConfigField {
-                key: "model".into(),
-                label: "模型".into(),
-                field_type: "text".into(),
-                secret: false,
-            },
-        ],
-        _ if profile.auth_kind == "api-key" => vec![ProviderConfigField {
+            }],
+            kind if kind.starts_with("llm:") => vec![
+                ProviderConfigField {
+                    key: "apiKey".into(),
+                    label: "API Key".into(),
+                    field_type: "password".into(),
+                    secret: true,
+                },
+                ProviderConfigField {
+                    key: "model".into(),
+                    label: "模型".into(),
+                    field_type: "text".into(),
+                    secret: false,
+                },
+            ],
+            _ if profile.auth_kind == "api-key" => vec![ProviderConfigField {
+                key: "apiKey".into(),
+                label: "API Key".into(),
+                field_type: "password".into(),
+                secret: true,
+            }],
+            _ => Vec::new(),
+        }
+    };
+    for field in &mut fields {
+        field.secret = is_host_secret_field(&profile.auth_kind, field);
+    }
+    if profile.auth_kind == "api-key" && !fields.iter().any(|field| field.secret) {
+        fields.push(ProviderConfigField {
             key: "apiKey".into(),
             label: "API Key".into(),
             field_type: "password".into(),
             secret: true,
-        }],
-        _ => Vec::new(),
+        });
     }
+    fields
 }
 
 pub fn actions_for(profile: &ProviderProfile) -> Vec<String> {
@@ -255,11 +318,8 @@ pub fn actions_for(profile: &ProviderProfile) -> Vec<String> {
 pub fn sanitized_config(profile: &ProviderProfile) -> Value {
     let mut sanitized = profile.config.clone();
     if let Some(obj) = sanitized.as_object_mut() {
-        obj.remove("apiKey");
-        for field in config_fields_for(profile) {
-            if field.secret {
-                obj.remove(&field.key);
-            }
+        for field in secret_config_keys(profile) {
+            obj.remove(&field);
         }
     }
     sanitized
@@ -624,6 +684,43 @@ mod tests {
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
         // 旧 JSON 没有 ocr 默认值：normalize 后自动落到内置系统 OCR。
         assert_eq!(normalized.defaults.ocr, SYSTEM_OCR_PROVIDER_ID);
+    }
+
+    #[test]
+    fn malicious_manifest_cannot_downgrade_secret_fields_exposed_to_webview() {
+        let profile = ProviderProfile {
+            id: "malicious".into(),
+            kind: "plugin:malicious".into(),
+            display_name: "Malicious".into(),
+            auth_kind: "api-key".into(),
+            capabilities: vec!["asr".into()],
+            enabled: true,
+            config: json!({
+                "apiKey": "api-secret",
+                "clientSecret": "client-secret",
+                "token": "token-secret",
+                "passwordValue": "password-secret",
+                "region": "cn-test"
+            }),
+            config_fields: vec![
+                ProviderConfigField {
+                    key: "clientSecret".into(),
+                    label: "Client secret".into(),
+                    field_type: "text".into(),
+                    secret: false,
+                },
+                ProviderConfigField {
+                    key: "passwordValue".into(),
+                    label: "Password".into(),
+                    field_type: "password".into(),
+                    secret: false,
+                },
+            ],
+            actions: vec![],
+        };
+
+        assert!(config_fields_for(&profile).iter().all(|field| field.secret));
+        assert_eq!(sanitized_config(&profile), json!({"region": "cn-test"}));
     }
 
     #[test]

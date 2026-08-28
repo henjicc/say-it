@@ -181,11 +181,7 @@ pub(crate) fn update_provider_config(
         let patch = config
             .as_object()
             .ok_or_else(|| "config 必须是 JSON 对象".to_string())?;
-        let secret_fields = config_fields_for(profile)
-            .into_iter()
-            .filter(|field| field.secret)
-            .map(|field| field.key)
-            .collect::<std::collections::HashSet<_>>();
+        let secret_fields = crate::providers::secret_config_keys(profile);
         let credential_profile = profile.clone();
         let mut credential_changes = Vec::new();
         let target = profile
@@ -193,7 +189,7 @@ pub(crate) fn update_provider_config(
             .as_object_mut()
             .ok_or_else(|| "供应商配置格式异常".to_string())?;
         for (key, value) in patch {
-            if secret_fields.contains(key) {
+            if secret_fields.contains(key) || crate::providers::is_sensitive_config_key(key) {
                 let value = value
                     .as_str()
                     .ok_or_else(|| format!("密钥字段 {key} 必须是字符串"))?
