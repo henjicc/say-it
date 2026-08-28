@@ -29,6 +29,7 @@ cc = "1"
 ocr-rs = { path = "vendor/ocr-rs" }
 
 [dependencies]
+aes-gcm = "0.10"
 base64 = "0.22.1"
 ed25519-dalek = { version = "2.2", features = ["pem"] }
 futures-util = "0.3.31"
@@ -67,7 +68,7 @@ rquickjs = { version = "0.12.1", features = ["futures", "loader", "macro"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 hmac = "0.12"
 rand = "0.9"
-keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native"] }
+zeroize = "1"
 tauri-plugin-global-shortcut = "2"
 window-vibrancy = "0.6"
 
@@ -89,7 +90,6 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Storage_FileSystem",
-    "Win32_Security_Cryptography",
     "Media_Ocr",
     "Graphics_Imaging",
     "Storage_Streams",

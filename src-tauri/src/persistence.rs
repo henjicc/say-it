@@ -1,16 +1,16 @@
 use crate::obs_overlay::ObsOverlaySettings;
 use crate::prelude::*;
 use crate::providers::credential_store::{
-    key_for_profile, redact_error, CredentialKey, CredentialStore, SystemCredentialStore,
+    key_for_profile, redact_error, CredentialKey, CredentialStore, LocalCredentialStore,
 };
 use crate::state::*;
 use std::path::Path;
 
 const STATE_FILE_NAME: &str = "say-it-state.json";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.vibecode.sayit"];
-const CURRENT_STATE_SCHEMA_VERSION: u32 = 3;
+const CURRENT_STATE_SCHEMA_VERSION: u32 = 4;
 const FOUR_CLICK_DEFAULT_SCHEMA_VERSION: u32 = 2;
-const CREDENTIAL_MIGRATION_SCHEMA_VERSION: u32 = 3;
+const CREDENTIAL_MIGRATION_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedData {
@@ -402,12 +402,12 @@ fn migrate_credentials_and_ids(
         for (key, value) in &credentials {
             match store.get(key)? {
                 Some(existing) if existing == *value => continue,
-                Some(_) => return Err("系统凭据库已有不同值，拒绝覆盖".into()),
+                Some(_) => return Err("本地加密凭据库已有不同值，拒绝覆盖".into()),
                 None => {
                     store.set(key, value)?;
                     journal.push((key.clone(), None));
                     if store.get(key)?.as_deref() != Some(value.as_str()) {
-                        return Err("系统凭据写入后校验不一致".into());
+                        return Err("本地加密凭据写入后校验不一致".into());
                     }
                 }
             }
@@ -428,7 +428,7 @@ fn migrate_credentials_and_ids(
                 "凭据与供应商 ID 迁移失败，原配置保留且下次会重试：{error}"
             )),
             Err(rollback) => Err(format!(
-                "凭据与供应商 ID 迁移失败；原配置仍保留，但系统凭据回滚异常：{error}；{}",
+                "凭据与供应商 ID 迁移失败；原配置仍保留，但本地加密凭据回滚异常：{error}；{}",
                 redact_error(&rollback, &secrets)
             )),
         };
@@ -474,7 +474,7 @@ pub(crate) fn load_persisted_state(
     };
     let mut data = load_persisted_data_from_path(&source)?;
     migrate_persisted_data(&mut data);
-    migrate_credentials_and_ids(&source, &mut data, &SystemCredentialStore)?;
+    migrate_credentials_and_ids(&source, &mut data, &LocalCredentialStore::default())?;
     data.providers = normalize_settings(data.providers);
     crate::application::dictation::repair_empty_asr_model(&mut data.app_settings.dictation_prefs);
     crate::application::customization::migrate_legacy_provider_hotwords(
@@ -495,10 +495,12 @@ mod tests {
         values: Mutex<HashMap<CredentialKey, String>>,
         fail_set_for: Mutex<Option<CredentialKey>>,
         deletes: Mutex<usize>,
+        reads: Mutex<usize>,
     }
 
     impl CredentialStore for FakeCredentialStore {
         fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
+            *self.reads.lock().unwrap() += 1;
             Ok(self.values.lock().unwrap().get(key).cloned())
         }
 
@@ -710,6 +712,52 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("groq-test-secret")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_v2_migrates_into_real_local_vault_without_plaintext() {
+        let mut data = legacy_data();
+        let (dir, file) = migration_file("local-vault", &data);
+        let store = LocalCredentialStore::from_directory(dir.join("credentials"));
+
+        migrate_credentials_and_ids(&file, &mut data, &store).unwrap();
+
+        assert_eq!(data.schema_version, 4);
+        assert_eq!(
+            store
+                .get(&CredentialKey::provider("bailian", "apiKey").unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("bailian-test-secret")
+        );
+        let vault = fs::read_to_string(dir.join("credentials/vault.json")).unwrap();
+        assert!(!vault.contains("bailian-test-secret"));
+        assert!(!vault.contains("groq-test-secret"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_v3_without_plaintext_advances_to_v4_without_legacy_store_reads() {
+        let mut data = legacy_data();
+        migrate_provider_ids(&mut data.providers);
+        migrate_app_provider_ids(&mut data.app_settings);
+        strip_plaintext_credentials(&mut data.providers);
+        data.schema_version = 3;
+        let store = FakeCredentialStore::default();
+        let (dir, file) = migration_file("v3-no-system-read", &data);
+
+        migrate_credentials_and_ids(&file, &mut data, &store).unwrap();
+
+        assert_eq!(data.schema_version, 4);
+        assert_eq!(*store.reads.lock().unwrap(), 0);
+        assert!(store.values.lock().unwrap().is_empty());
+        assert_eq!(
+            serde_json::from_str::<PersistedData>(&fs::read_to_string(file).unwrap())
+                .unwrap()
+                .schema_version,
+            4
         );
         fs::remove_dir_all(dir).unwrap();
     }

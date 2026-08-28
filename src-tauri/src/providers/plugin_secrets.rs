@@ -1,88 +1,22 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::credential_store::{CredentialKey, CredentialStoreHandle};
 use super::plugin::PluginRuntimeSpec;
 
-const KEYCHAIN_SERVICE: &str = "com.sayit.provider-plugin-session";
 const LEGACY_SESSION_FILE: &str = "session.dpapi";
-// Windows Credential Manager 的凭据 Blob 上限为 2560 字节；password 以 UTF-16 编码。
-// 1200 个 UTF-16 代码单元可为实现细节保留余量，并避免截断非 BMP 字符。
-const KEYCHAIN_CHUNK_UTF16_LIMIT: usize = 1_200;
-const MAX_SESSION_CHUNKS: usize = 512;
-static SESSION_STORAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ChunkedSessionReference {
-    format: String,
-    storage_key: String,
-    chunks: usize,
-}
 
 pub fn load_session(spec: &PluginRuntimeSpec) -> Result<Value, String> {
-    let entry = session_entry(spec)?;
-    match entry.get_password() {
-        Ok(value) => load_stored_session(spec, &value),
-        Err(keyring::Error::NoEntry) => migrate_legacy_session(spec),
-        Err(error) => Err(format!("读取系统凭据存储失败：{error}")),
-    }
+    load_session_with_store(spec, &CredentialStoreHandle::default())
 }
 
 pub fn save_session(spec: &PluginRuntimeSpec, session: &Value) -> Result<(), String> {
-    let value = serde_json::to_string(session).map_err(|error| error.to_string())?;
-    let chunks = split_for_keychain(&value);
-    if chunks.len() > MAX_SESSION_CHUNKS {
-        return Err("登录会话过大，无法安全保存到系统凭据存储".into());
-    }
-
-    let entry = session_entry(spec)?;
-    let previous = match entry.get_password() {
-        Ok(value) => parse_chunked_reference(&value),
-        Err(keyring::Error::NoEntry) => None,
-        Err(error) => return Err(format!("读取当前登录会话失败：{error}")),
-    };
-    let reference = ChunkedSessionReference {
-        format: "chunked-v1".into(),
-        storage_key: next_storage_key(),
-        chunks: chunks.len(),
-    };
-
-    let mut stored = 0;
-    for (index, chunk) in chunks.iter().enumerate() {
-        if let Err(error) = session_chunk_entry(spec, &reference, index)?.set_password(chunk) {
-            delete_chunks(spec, &reference, stored);
-            return Err(format!("写入系统凭据存储失败：{error}"));
-        }
-        stored += 1;
-    }
-
-    let descriptor = serde_json::to_string(&reference).map_err(|error| error.to_string())?;
-    if let Err(error) = entry.set_password(&descriptor) {
-        delete_chunks(spec, &reference, stored);
-        return Err(format!("写入系统凭据存储失败：{error}"));
-    }
-    if let Some(previous) = previous {
-        delete_chunks(spec, &previous, previous.chunks);
-    }
-    Ok(())
+    save_session_with_store(spec, session, &CredentialStoreHandle::default())
 }
 
 pub fn clear_session(spec: &PluginRuntimeSpec) -> Result<(), String> {
-    let entry = session_entry(spec)?;
-    let reference = match entry.get_password() {
-        Ok(value) => parse_chunked_reference(&value),
-        Err(keyring::Error::NoEntry) => None,
-        Err(error) => return Err(format!("读取当前登录会话失败：{error}")),
-    };
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(error) => return Err(format!("清除系统凭据存储失败：{error}")),
-    }
-    if let Some(reference) = reference {
-        delete_chunks(spec, &reference, reference.chunks);
-    }
+    clear_session_with_store(spec, &CredentialStoreHandle::default())?;
+    // 旧 DPAPI 文件只在用户显式清除会话或卸载插件时随插件数据一起删除；启动时
+    // 不再调用任何平台凭据 API，也不会尝试解密或导入它。
     let legacy = spec.data_dir.join(LEGACY_SESSION_FILE);
     if legacy.exists() {
         std::fs::remove_file(legacy).map_err(|error| error.to_string())?;
@@ -90,150 +24,45 @@ pub fn clear_session(spec: &PluginRuntimeSpec) -> Result<(), String> {
     Ok(())
 }
 
-fn session_entry(spec: &PluginRuntimeSpec) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &spec.plugin_id)
-        .map_err(|error| format!("打开系统凭据存储失败：{error}"))
-}
-
-fn session_chunk_entry(
+fn load_session_with_store(
     spec: &PluginRuntimeSpec,
-    reference: &ChunkedSessionReference,
-    index: usize,
-) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(
-        KEYCHAIN_SERVICE,
-        &format!(
-            "{}:session:{}:{index}",
-            spec.plugin_id, reference.storage_key
-        ),
-    )
-    .map_err(|error| format!("打开系统凭据存储失败：{error}"))
-}
-
-fn load_stored_session(spec: &PluginRuntimeSpec, value: &str) -> Result<Value, String> {
-    let value = if let Some(reference) = parse_chunked_reference(value) {
-        let mut content = String::new();
-        for index in 0..reference.chunks {
-            let chunk = session_chunk_entry(spec, &reference, index)?
-                .get_password()
-                .map_err(|error| format!("读取登录会话分片失败：{error}"))?;
-            content.push_str(&chunk);
-        }
-        content
-    } else {
-        value.to_string()
-    };
-    serde_json::from_str(&value).map_err(|error| format!("插件会话数据损坏：{error}"))
-}
-
-fn parse_chunked_reference(value: &str) -> Option<ChunkedSessionReference> {
-    let reference = serde_json::from_str::<ChunkedSessionReference>(value).ok()?;
-    (reference.format == "chunked-v1"
-        && !reference.storage_key.is_empty()
-        && (1..=MAX_SESSION_CHUNKS).contains(&reference.chunks))
-    .then_some(reference)
-}
-
-fn split_for_keychain(value: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut current_units = 0;
-    for character in value.chars() {
-        let units = character.len_utf16();
-        if current_units + units > KEYCHAIN_CHUNK_UTF16_LIMIT && !current.is_empty() {
-            chunks.push(current);
-            current = String::new();
-            current_units = 0;
-        }
-        current.push(character);
-        current_units += units;
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
-}
-
-fn next_storage_key() -> String {
-    let sequence = SESSION_STORAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("{nanos:x}-{sequence:x}")
-}
-
-fn delete_chunks(spec: &PluginRuntimeSpec, reference: &ChunkedSessionReference, count: usize) {
-    for index in 0..count {
-        if let Ok(entry) = session_chunk_entry(spec, reference, index) {
-            if let Err(error) = entry.delete_credential() {
-                if !matches!(error, keyring::Error::NoEntry) {
-                    crate::dlog!("[plugin] 清理过期登录会话分片失败：{error}");
-                }
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn migrate_legacy_session(spec: &PluginRuntimeSpec) -> Result<Value, String> {
-    let path = spec.data_dir.join(LEGACY_SESSION_FILE);
-    if !path.exists() {
+    store: &CredentialStoreHandle,
+) -> Result<Value, String> {
+    let key = CredentialKey::plugin_session(&spec.plugin_id)?;
+    let Some(value) = store.get(&key)? else {
         return Ok(Value::Null);
-    }
-    let encrypted = std::fs::read(&path).map_err(|error| error.to_string())?;
-    let plain = unprotect(&encrypted)?;
-    let session: Value =
-        serde_json::from_slice(&plain).map_err(|error| format!("旧版插件会话数据损坏：{error}"))?;
-    save_session(spec, &session)?;
-    std::fs::remove_file(path).map_err(|error| error.to_string())?;
-    Ok(session)
+    };
+    serde_json::from_str(&value).map_err(|_| "插件登录会话数据损坏".to_string())
 }
 
-#[cfg(not(windows))]
-fn migrate_legacy_session(_spec: &PluginRuntimeSpec) -> Result<Value, String> {
-    Ok(Value::Null)
+fn save_session_with_store(
+    spec: &PluginRuntimeSpec,
+    session: &Value,
+    store: &CredentialStoreHandle,
+) -> Result<(), String> {
+    let key = CredentialKey::plugin_session(&spec.plugin_id)?;
+    let value = serde_json::to_string(session).map_err(|error| error.to_string())?;
+    store.write_verified(&key, &value)
 }
 
-#[cfg(windows)]
-fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
-    use windows::Win32::Foundation::{LocalFree, HLOCAL};
-    use windows::Win32::Security::Cryptography::{
-        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
-    };
-
-    let input = CRYPT_INTEGER_BLOB {
-        cbData: data.len().try_into().map_err(|_| "会话数据过大")?,
-        pbData: data.as_ptr() as *mut u8,
-    };
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    unsafe {
-        CryptUnprotectData(
-            &input,
-            None,
-            None,
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        )
-        .map_err(|error| error.to_string())?;
-        let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output.pbData.cast()));
-        Ok(bytes)
-    }
+fn clear_session_with_store(
+    spec: &PluginRuntimeSpec,
+    store: &CredentialStoreHandle,
+) -> Result<(), String> {
+    let key = CredentialKey::plugin_session(&spec.plugin_id)?;
+    store.store().delete(&key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::credential_store::LocalCredentialStore;
+    use std::sync::Arc;
 
-    #[cfg(any(windows, target_os = "macos"))]
-    fn test_spec() -> PluginRuntimeSpec {
-        let nonce = next_storage_key();
+    fn test_spec(root: &std::path::Path, plugin_id: &str) -> PluginRuntimeSpec {
         PluginRuntimeSpec {
-            plugin_id: format!("sayit-session-test-{nonce}"),
-            source_namespace: format!("sayit-session-test-{nonce}"),
+            plugin_id: plugin_id.into(),
+            source_namespace: plugin_id.into(),
             capabilities: vec![],
             secret_fields: vec![],
             credentials: None,
@@ -242,95 +71,74 @@ mod tests {
             permissions: Vec::new(),
             allowed_hosts: Vec::new(),
             browser_session: None,
-            data_dir: std::env::temp_dir().join(format!("sayit-session-test-{nonce}")),
+            data_dir: root.join("plugin-data").join(plugin_id),
             trust: "trusted".into(),
         }
     }
 
-    #[test]
-    fn session_chunks_keep_utf16_boundary_and_original_content() {
-        let value = format!(
-            "{}😀{}",
-            "a".repeat(KEYCHAIN_CHUNK_UTF16_LIMIT - 1),
-            "b".repeat(10)
-        );
-        let chunks = split_for_keychain(&value);
-        assert!(chunks
-            .iter()
-            .all(|chunk| chunk.encode_utf16().count() <= KEYCHAIN_CHUNK_UTF16_LIMIT));
-        assert_eq!(chunks.concat(), value);
+    fn test_store(name: &str) -> (std::path::PathBuf, CredentialStoreHandle) {
+        let root = std::env::temp_dir().join(format!(
+            "say-it-plugin-session-{name}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = LocalCredentialStore::from_directory(root.join("credentials"));
+        (root, CredentialStoreHandle::from_store(Arc::new(store)))
     }
 
     #[test]
-    fn only_explicit_chunked_reference_is_recognized() {
-        assert!(parse_chunked_reference(
-            r#"{"format":"chunked-v1","storageKey":"key","chunks":2}"#
-        )
-        .is_some());
-        assert!(parse_chunked_reference(
-            r#"{"format":"chunked-v1","storageKey":"key","chunks":0}"#
-        )
-        .is_none());
-        assert!(parse_chunked_reference(r#"{"cookies":[]}"#).is_none());
-    }
-
-    #[test]
-    #[cfg(any(windows, target_os = "macos"))]
-    #[cfg_attr(
-        target_os = "macos",
-        ignore = "会向当前用户的 macOS 钥匙串写入并清理临时测试凭据"
-    )]
-    fn long_session_round_trips_through_system_credentials() {
-        let spec = test_spec();
+    fn long_session_round_trips_through_local_encrypted_vault() {
+        let (root, store) = test_store("round-trip");
+        let spec = test_spec(&root, "com.example.session");
         let session = serde_json::json!({
             "cookies": [{ "name": "session", "value": "x".repeat(6_000) }]
         });
-        save_session(&spec, &session).unwrap();
-        assert!(
-            parse_chunked_reference(&session_entry(&spec).unwrap().get_password().unwrap())
-                .is_some()
-        );
-        assert_eq!(load_session(&spec).unwrap(), session);
-        clear_session(&spec).unwrap();
-        assert!(matches!(
-            session_entry(&spec).unwrap().get_password(),
-            Err(keyring::Error::NoEntry)
-        ));
-    }
-
-    #[cfg(windows)]
-    fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
-        use windows::core::w;
-        use windows::Win32::Foundation::{LocalFree, HLOCAL};
-        use windows::Win32::Security::Cryptography::{
-            CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
-        };
-        let input = CRYPT_INTEGER_BLOB {
-            cbData: data.len().try_into().map_err(|_| "会话数据过大")?,
-            pbData: data.as_ptr() as *mut u8,
-        };
-        let mut output = CRYPT_INTEGER_BLOB::default();
-        unsafe {
-            CryptProtectData(
-                &input,
-                w!("SayIt provider plugin session"),
-                None,
-                None,
-                None,
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-            .map_err(|error| error.to_string())?;
-            let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-            let _ = LocalFree(HLOCAL(output.pbData.cast()));
-            Ok(bytes)
-        }
+        save_session_with_store(&spec, &session, &store).unwrap();
+        assert_eq!(load_session_with_store(&spec, &store).unwrap(), session);
+        clear_session_with_store(&spec, &store).unwrap();
+        assert_eq!(load_session_with_store(&spec, &store).unwrap(), Value::Null);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    #[cfg(windows)]
-    fn legacy_dpapi_data_can_be_migrated() {
-        let plain = br#"{"cookie":"secret"}"#;
-        assert_eq!(unprotect(&protect(plain).unwrap()).unwrap(), plain);
+    fn plugin_sessions_are_namespaced_and_clear_does_not_touch_provider_credentials() {
+        let (root, store) = test_store("isolation");
+        let first = test_spec(&root, "com.example.first");
+        let second = test_spec(&root, "com.example.second");
+        let provider_key = CredentialKey::plugin("com.example.first", "shared", "apiKey").unwrap();
+        store.store().set(&provider_key, "retained").unwrap();
+        save_session_with_store(&first, &serde_json::json!({"token":"first"}), &store).unwrap();
+        save_session_with_store(&second, &serde_json::json!({"token":"second"}), &store).unwrap();
+
+        clear_session_with_store(&first, &store).unwrap();
+
+        assert_eq!(
+            load_session_with_store(&first, &store).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            load_session_with_store(&second, &store).unwrap(),
+            serde_json::json!({"token":"second"})
+        );
+        assert_eq!(
+            store.get(&provider_key).unwrap().as_deref(),
+            Some("retained")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_platform_file_is_never_read_during_load() {
+        let (root, store) = test_store("legacy-not-read");
+        let spec = test_spec(&root, "com.example.legacy");
+        std::fs::create_dir_all(&spec.data_dir).unwrap();
+        std::fs::write(
+            spec.data_dir.join(LEGACY_SESSION_FILE),
+            b"not-a-secret-store",
+        )
+        .unwrap();
+
+        assert_eq!(load_session_with_store(&spec, &store).unwrap(), Value::Null);
+        assert!(spec.data_dir.join(LEGACY_SESSION_FILE).exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

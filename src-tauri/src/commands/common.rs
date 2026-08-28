@@ -34,7 +34,7 @@ pub(crate) fn read_provider_settings(state: &RuntimeState) -> Result<ProviderSet
 }
 
 /// 只为宿主内置执行链构造带密钥的短生命周期 profile。插件 profile 永不回灌 secret，
-/// QuickJS 只能通过受 provider + scope 限制的 RuntimeContext 读取系统凭据。
+/// QuickJS 只能通过受 provider + scope 限制的 RuntimeContext 短生命周期读取本地加密凭据。
 pub(crate) fn provider_profile_for_execution(
     state: &RuntimeState,
     provider_id: &str,

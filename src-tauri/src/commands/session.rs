@@ -56,7 +56,7 @@ fn rollback_credential_changes(
         Ok(())
     } else {
         Err(redact_error(
-            &format!("恢复系统凭据失败：{}", errors.join("；")),
+            &format!("恢复本地加密凭据失败：{}", errors.join("；")),
             &secrets,
         ))
     }

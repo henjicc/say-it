@@ -91,6 +91,10 @@ fn resolve_root_from(default_root: &Path) -> PathBuf {
 /// 启动时调用一次；后续 `data_root()` 全程返回同一路径。
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
     let root = data_root(app)?;
+    // 凭据主密钥始终留在当前用户的默认应用私有目录；即使用户把普通数据根迁到
+    // 外置或共享位置，也不能让主密钥与可迁移数据一起移动。
+    let credential_directory = default_root(app)?.join("credentials");
+    crate::providers::credential_store::configure_local_vault(&credential_directory)?;
     if crate::debug_log_enabled() {
         eprintln!("[data-root] 数据根目录：{}", root.display());
     }

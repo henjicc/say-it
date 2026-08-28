@@ -51,6 +51,7 @@ describe("SettingsLlmPanel", () => {
       },
     }];
     render(<SettingsLlmPanel />);
+    expect(screen.getByText("API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "当前模型" })).toHaveTextContent("chat");
     expect(screen.queryByRole("button", { name: "手动添加" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除供应商" })).not.toBeInTheDocument();

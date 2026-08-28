@@ -112,6 +112,7 @@ describe("OnboardingWizard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(screen.getByRole("heading", { name: "选择主识别模型" })).toBeInTheDocument();
+    expect(screen.getByText("API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("combobox", { name: "语音识别模型" }));
     fireEvent.click(await screen.findByRole("option", { name: "离线模型" }));
     await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "local-model" }));

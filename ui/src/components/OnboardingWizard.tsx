@@ -328,6 +328,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
               <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] p-4">
                 <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-fg)]"><KeyRound className="h-4 w-4 text-[var(--color-accent-light)]" aria-hidden />配置 {selectedProvider.displayName} 密钥</div>
                 <p className="mt-1.5 text-xs leading-5 text-[var(--color-fg-subtle)]">也可以稍后前往“设置 → 模型 → ASR 供应商”配置。</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--color-fg-subtle)]">API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。</p>
                 <div className="mt-3 flex items-stretch gap-2">
                   <div className="min-w-0 flex-1">
                     <SecretInput

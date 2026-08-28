@@ -40,7 +40,7 @@ function primaryCapabilityOf(provider: ProviderProfile): ProviderSectionCapabili
 
 function providerConfigurationStatus(provider: ProviderProfile) {
   if (provider.authKind === "none") return "无需配置";
-  return provider.status?.configured || provider.status?.hasApiKey ? "已配置" : "未配置";
+  return provider.status?.configured || provider.status?.hasApiKey ? "已配置" : "需要填写";
 }
 
 function hasPluginConfiguration(provider: ProviderProfile) {
@@ -241,7 +241,7 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
   return (
     <Collapse
       title={provider.displayName}
-      subtitle={hasApiKey ? "已配置" : "未配置"}
+      subtitle={hasApiKey ? "已配置" : "需要填写"}
     >
       <p className="text-xs text-[var(--color-fg-subtle)]">
         <button
@@ -267,7 +267,7 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
         />
       </div>
       <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-        当前状态：{hasApiKey ? "已配置" : "未配置"}
+        当前状态：{hasApiKey ? "已配置" : "需要填写 API Key"}
         {apiKeySaving ? " · 正在自动保存..." : providerStatus ? ` · ${providerStatus}` : ""}
       </p>
 
@@ -389,6 +389,11 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
 
   return (
     <SettingsSection title={SECTION_TITLES[capability]}>
+      {capability === "asr" && (
+        <p className="text-xs text-[var(--color-fg-subtle)]">
+          API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。
+        </p>
+      )}
       {rendered.length > 0 ? (
         rendered
       ) : (
