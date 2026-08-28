@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use super::plugin::LocalModelSpec;
 use super::plugin::PluginRuntimeSpec;
@@ -386,6 +387,7 @@ impl TranslationProvider {
         text: &str,
         source: &str,
         target: &str,
+        cancellation: CancellationToken,
         mut on_delta: F,
     ) -> Result<String, String>
     where
@@ -403,13 +405,16 @@ impl TranslationProvider {
                     text.to_string(),
                     source.to_string(),
                     target.to_string(),
+                    cancellation,
                     on_delta,
                 )
                 .await
             }
             Self::Plugin { spec, profile } => {
                 let module_id = spec.capability_id(model, "translation", false)?;
-                let value = plugin_runtime::execute_capability_cancellable(
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let operation_cancelled = cancelled.clone();
+                let operation = plugin_runtime::execute_capability_cancellable(
                     spec,
                     profile,
                     module_id,
@@ -417,14 +422,22 @@ impl TranslationProvider {
                         "model": model, "text": text, "source": source, "target": target
                     }),
                     Duration::from_secs(2 * 60),
-                    None,
+                    Some(operation_cancelled),
                     |event| {
                         if let Some(text) = event.get("text").and_then(Value::as_str) {
                             on_delta(text);
                         }
                     },
-                )
-                .await?;
+                );
+                tokio::pin!(operation);
+                let value = tokio::select! {
+                    result = &mut operation => result?,
+                    _ = cancellation.cancelled() => {
+                        cancelled.store(true, std::sync::atomic::Ordering::Release);
+                        let _ = operation.await;
+                        return Err("翻译请求已取消".into());
+                    }
+                };
                 value
                     .get("text")
                     .and_then(Value::as_str)

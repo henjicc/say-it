@@ -2,6 +2,7 @@ use crate::providers::capabilities::translation_for_with_plugin;
 use crate::providers::capabilities::TranslationProvider;
 use crate::providers::default_provider_id;
 use crate::state::RuntimeState;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn translate_text(
     state: &RuntimeState,
@@ -9,13 +10,21 @@ pub(crate) async fn translate_text(
     text: &str,
     source_language: &str,
     target_language: &str,
+    cancellation: CancellationToken,
 ) -> Result<String, String> {
     if text.trim().is_empty() {
         return Ok(String::new());
     }
     let provider = resolve_provider(state, model)?;
     provider
-        .translate_streaming(model, text, source_language, target_language, |_| {})
+        .translate_streaming(
+            model,
+            text,
+            source_language,
+            target_language,
+            cancellation,
+            |_| {},
+        )
         .await
 }
 

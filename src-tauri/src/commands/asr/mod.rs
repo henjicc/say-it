@@ -8,6 +8,10 @@ use crate::commands::common::*;
 use crate::prelude::*;
 use crate::state::*;
 
+fn stream_dsp(params: Option<DspParams>, input_sample_rate: u32) -> StreamDsp {
+    StreamDsp::new(params.unwrap_or_default(), input_sample_rate)
+}
+
 pub(crate) async fn start_asr_stream_inner(
     app: tauri::AppHandle,
     state: &RuntimeState,
@@ -128,6 +132,18 @@ pub(crate) fn asr_stream_finish_inner(
         .clone();
     tx.send(AsrStreamInput::Finish)
         .map_err(|_| "ASR stream channel closed".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitted_dsp_params_still_produce_realtime_pcm() {
+        let mut dsp = stream_dsp(None, 48_000);
+        let pcm = dsp.process(&vec![0.25; 4_800]);
+        assert!(!pcm.is_empty());
+    }
 }
 
 pub(crate) fn stop_asr_stream_inner(session_id: &str, state: &RuntimeState) -> Result<(), String> {

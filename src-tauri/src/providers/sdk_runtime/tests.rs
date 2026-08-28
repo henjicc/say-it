@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -143,6 +144,78 @@ fn spawn_stalled_http() -> (String, thread::JoinHandle<()>) {
     (format!("http://{address}/stalled"), handle)
 }
 
+fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut expected_bytes = None;
+    loop {
+        let count = stream.read(&mut chunk).unwrap();
+        if count == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..count]);
+        if expected_bytes.is_none() {
+            if let Some(header_end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or_default();
+                expected_bytes = Some(header_end + 4 + content_length);
+            }
+        }
+        if expected_bytes.is_some_and(|expected| request.len() >= expected) {
+            break;
+        }
+    }
+    request
+}
+
+fn spawn_redirect_http(
+    status: u16,
+) -> (
+    String,
+    Receiver<Vec<u8>>,
+    thread::JoinHandle<()>,
+    thread::JoinHandle<()>,
+) {
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_address = target.local_addr().unwrap();
+    let redirect = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redirect_address = redirect.local_addr().unwrap();
+    let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+    let target_handle = thread::spawn(move || {
+        let (mut stream, _) = target.accept().unwrap();
+        captured_tx.send(read_http_request(&mut stream)).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    });
+    let redirect_handle = thread::spawn(move || {
+        let (mut stream, _) = redirect.accept().unwrap();
+        let _ = read_http_request(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 {status} Redirect\r\nLocation: http://{target_address}/target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+    (
+        format!("http://{redirect_address}/start"),
+        captured_rx,
+        redirect_handle,
+        target_handle,
+    )
+}
+
 fn create_sdk_runtime(
     source: &str,
     mut spec: PluginRuntimeSpec,
@@ -272,6 +345,85 @@ export default () => ({
 }
 
 #[test]
+fn quickjs_fetch_applies_redirect_method_body_and_cross_origin_header_rules() {
+    let source = r#"
+export default () => ({
+  async invoke(request) {
+    const runtime = globalThis.__sayitCreateRuntimeContext();
+    const results = [];
+    for (const url of request.payload.urls) {
+      const response = await runtime.transport.fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer redirect-secret',
+          Cookie: 'session=redirect-secret',
+          'Proxy-Authorization': 'Basic redirect-secret',
+          'Content-Type': 'text/plain',
+          'X-Request-Id': 'request-1',
+        },
+        body: 'payload',
+      });
+      results.push({ status: response.status, text: await response.text() });
+    }
+    return results;
+  }
+});
+"#;
+    let (found_url, found_request, found_redirect, found_target) = spawn_redirect_http(302);
+    let (temporary_url, temporary_request, temporary_redirect, temporary_target) =
+        spawn_redirect_http(307);
+    let (root, spec, profile) = fixture(source);
+    let runtime = create_sdk_runtime(
+        source,
+        spec,
+        &profile,
+        Arc::new(AtomicBool::new(false)),
+        HashMap::new(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let result = runtime
+        .call(
+            "invoke",
+            &json!({"payload":{"urls":[found_url, temporary_url]}}),
+            Duration::from_secs(3),
+        )
+        .unwrap();
+    assert_eq!(
+        result,
+        json!([{"status":200,"text":"ok"},{"status":200,"text":"ok"}])
+    );
+
+    let found = String::from_utf8(found_request.recv().unwrap()).unwrap();
+    let found_lower = found.to_ascii_lowercase();
+    assert!(found.starts_with("GET /target HTTP/1.1\r\n"), "{found}");
+    assert!(!found_lower.contains("authorization:"), "{found}");
+    assert!(!found_lower.contains("cookie:"), "{found}");
+    assert!(!found_lower.contains("content-type:"), "{found}");
+    assert!(!found.ends_with("payload"), "{found}");
+    assert!(found_lower.contains("x-request-id: request-1"), "{found}");
+
+    let temporary = String::from_utf8(temporary_request.recv().unwrap()).unwrap();
+    let temporary_lower = temporary.to_ascii_lowercase();
+    assert!(
+        temporary.starts_with("POST /target HTTP/1.1\r\n"),
+        "{temporary}"
+    );
+    assert!(!temporary_lower.contains("authorization:"), "{temporary}");
+    assert!(!temporary_lower.contains("cookie:"), "{temporary}");
+    assert!(
+        temporary_lower.contains("content-type: text/plain"),
+        "{temporary}"
+    );
+    assert!(temporary.ends_with("payload"), "{temporary}");
+
+    found_redirect.join().unwrap();
+    found_target.join().unwrap();
+    temporary_redirect.join().unwrap();
+    temporary_target.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn injects_scoped_credentials_media_logging_and_trace_without_leaks() {
     let source = r#"
 export default () => ({
@@ -303,6 +455,8 @@ export default () => ({
     controller.abort();
     try { await runtime.transport.fetch('http://127.0.0.1:1/', { signal: controller.signal }); } catch (_) { abortDenied = true; }
     runtime.logger.info(`authorization=${secret}`, { event: 'sdk.request', token: secret, bytes: media.bytes.length });
+    runtime.logger.warn(secret, { event: 'sdk.retry' });
+    runtime.logger.info('稳定日志消息', { event: 'sdk.complete', bytes: media.bytes.length });
     const span = runtime.tracer.startSpan('sdk.asr', { modelId: 'paraformer-realtime-v2', authorization: secret });
     span.end(new Error(secret));
     return {
@@ -379,7 +533,21 @@ export default () => ({
         .unwrap()
         .contains("未声明 network"));
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
-    let serialized = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+    let records = records.lock().unwrap();
+    let log_messages = records
+        .iter()
+        .filter(|event| event["type"] == "log")
+        .map(|event| event["message"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        log_messages,
+        [
+            "[日志包含敏感字段，已脱敏]",
+            "[日志包含敏感字段，已脱敏]",
+            "稳定日志消息"
+        ]
+    );
+    let serialized = serde_json::to_string(&*records).unwrap();
     assert!(!serialized.contains(SECRET));
     assert!(!serialized.contains("authorization"));
     assert!(serialized.contains("sdk.request"));

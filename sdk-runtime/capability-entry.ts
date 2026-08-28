@@ -104,6 +104,7 @@ export interface SayItPluginCapabilityRuntime {
 interface PluginEventRouter {
   set(handler: ((event: unknown) => void | Promise<void>) | undefined): void
   handle(event: unknown): void
+  drain(): Promise<void>
 }
 
 export function createSayItCapabilityRuntime(
@@ -203,14 +204,27 @@ export function createSayItPluginCapabilityRuntime(
     },
     unregisterSource: async namespace => {
       ensureActive()
-      return await client.unregisterSource(namespace)
+      let removed = 0
+      try {
+        await eventRouter.drain()
+      } finally {
+        removed = await client.unregisterSource(namespace)
+      }
+      return removed
     },
     handleProviderEvent: event => eventRouter.handle(event),
     dispose: async () => {
       if (disposed) return
-      await client.unregisterSource(sourceNamespace)
-      disposed = true
-      await client.dispose()
+      try {
+        await eventRouter.drain()
+      } finally {
+        try {
+          await client.unregisterSource(sourceNamespace)
+        } finally {
+          disposed = true
+          await client.dispose()
+        }
+      }
     },
   }
 }
@@ -306,6 +320,7 @@ function pluginExecuteModule(
         const operation = descriptor.kind === 'translation' ? 'translate' : 'transcribeFile'
         return await provider.invoke({ operation, payload: legacyPayload(input) })
       } finally {
+        await eventRouter.drain()
         eventRouter.set(undefined)
       }
     },
@@ -356,13 +371,17 @@ function pluginRealtimeModule(
           await provider.realtimeAudio!(bytes)
         },
         finish: async () => {
-          const immediate = await provider.realtimeFinish!()
-          if (immediate !== undefined && immediate !== null) resolveFinished(immediate)
+          await provider.realtimeFinish!()
+          await eventRouter.drain()
           return await finished
         },
         close: async () => {
-          eventRouter.set(undefined)
-          await provider.realtimeStop!()
+          try {
+            await eventRouter.drain()
+          } finally {
+            eventRouter.set(undefined)
+            await provider.realtimeStop!()
+          }
         },
       }
     },
@@ -400,9 +419,17 @@ function validationProvider(): SayItPluginProviderAdapter {
 
 function createPluginEventRouter(): PluginEventRouter {
   let handler: ((event: unknown) => void | Promise<void>) | undefined
+  let pending = Promise.resolve()
   return {
-    set: next => { handler = next },
-    handle: event => { void handler?.(event) },
+    set: next => {
+      if (next && !handler) pending = Promise.resolve()
+      handler = next
+    },
+    handle: event => {
+      const current = handler
+      if (current) pending = pending.then(async () => await current(event))
+    },
+    drain: async () => await pending,
   }
 }
 

@@ -35,7 +35,7 @@ pub(super) async fn start_bailian_sdk_stream(
             task_id,
             streams,
             rx,
-            params.map(|params| StreamDsp::new(params, input_sample_rate)),
+            super::stream_dsp(params, input_sample_rate),
             model,
             profile,
             credentials,
@@ -50,7 +50,7 @@ fn run_sdk_session(
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    mut dsp: Option<StreamDsp>,
+    mut dsp: StreamDsp,
     model: String,
     profile: ProviderProfile,
     credentials: crate::providers::credential_store::CredentialStoreHandle,
@@ -92,10 +92,7 @@ fn run_sdk_session(
     while !stop {
         match rx.try_recv() {
             Ok(AsrStreamInput::RawF32(samples)) => {
-                let bytes = dsp
-                    .as_mut()
-                    .map(|dsp| dsp.process(&samples))
-                    .unwrap_or_default();
+                let bytes = dsp.process(&samples);
                 if !bytes.is_empty() {
                     if let Err(error) = runtime.realtime_audio(bytes) {
                         emit_asr_stream_event(

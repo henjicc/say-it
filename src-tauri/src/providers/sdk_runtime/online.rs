@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -355,11 +356,15 @@ pub async fn translate_bailian<F>(
     text: String,
     source_language: String,
     target_language: String,
+    cancellation: CancellationToken,
     mut on_delta: F,
 ) -> Result<String, String>
 where
     F: FnMut(&str),
 {
+    if cancellation.is_cancelled() {
+        return Err("翻译请求已取消".into());
+    }
     let request_id = format!("bailian-translation-{}", uuid::Uuid::new_v4());
     let module_id = format!("bailian.translation.{model}");
     let input = json!({
@@ -369,6 +374,8 @@ where
         "options": { "stream": true },
     });
     let (event_tx, mut event_rx) = mpsc::channel(128);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let task_cancelled = cancelled.clone();
     let task_request_id = request_id.clone();
     let mut task = tauri::async_runtime::spawn_blocking(move || {
         let runtime = BuiltinSdkRuntime::create_with_event_sender(
@@ -376,7 +383,7 @@ where
             credentials,
             BuiltinSdkScope::Translation,
             task_request_id.clone(),
-            Arc::new(AtomicBool::new(false)),
+            task_cancelled,
             HashMap::new(),
             Some(event_tx),
         )?;
@@ -385,6 +392,11 @@ where
     let mut accumulated = String::new();
     loop {
         tokio::select! {
+            _ = cancellation.cancelled() => {
+                cancelled.store(true, std::sync::atomic::Ordering::Release);
+                let _ = task.await;
+                return Err("翻译请求已取消".into());
+            }
             event = event_rx.recv() => {
                 if let Some(event) = event {
                     let event = event.get("event").unwrap_or(&event);
@@ -498,6 +510,24 @@ fn builtin_root() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pre_cancelled_translation_stops_before_credentials_or_network() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = translate_bailian(
+            crate::providers::bailian_profile(),
+            CredentialStoreHandle::default(),
+            "qwen-mt-flash".into(),
+            "待翻译".into(),
+            "zh".into(),
+            "en".into(),
+            cancellation,
+            |_| {},
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "翻译请求已取消");
+    }
 
     #[test]
     fn maps_sdk_asr_output_to_existing_transcription_contract() {

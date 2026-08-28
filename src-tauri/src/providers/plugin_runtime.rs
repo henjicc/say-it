@@ -626,11 +626,13 @@ impl HostState {
 
     fn open_http_response(&self, payload: Value) -> Result<reqwest::Response, String> {
         require_network_permission(&self.spec)?;
-        let method = payload
+        let mut method = payload
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or("GET")
-            .to_uppercase();
+            .to_uppercase()
+            .parse::<reqwest::Method>()
+            .map_err(|_| "非法 HTTP 方法")?;
         let mut url = parse_allowed_url(
             &self.spec,
             payload
@@ -639,20 +641,19 @@ impl HostState {
                 .ok_or("HTTP 请求缺少 url")?,
             &["https"],
         )?;
-        let headers = payload
+        let mut headers = payload
             .get("headers")
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let body = request_body(&payload, &self.inputs)?;
+        let mut body = request_body(&payload, &self.inputs)?;
         tauri::async_runtime::block_on(async {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|error| error.to_string())?;
             for _ in 0..=5 {
-                let mut request =
-                    client.request(method.parse().map_err(|_| "非法 HTTP 方法")?, url.clone());
+                let mut request = client.request(method.clone(), url.clone());
                 for (name, value) in &headers {
                     if let Some(value) = value.as_str() {
                         request = request.header(name, value);
@@ -674,15 +675,16 @@ impl HostState {
                         return Err(stop_reason(&self.cancelled, &self.deadline));
                     },
                 };
-                if response.status().is_redirection() {
-                    let location = response
-                        .headers()
-                        .get(reqwest::header::LOCATION)
-                        .ok_or("HTTP 重定向缺少 Location")?
-                        .to_str()
-                        .map_err(|error| error.to_string())?;
-                    let next = url.join(location).map_err(|error| error.to_string())?;
-                    url = parse_allowed_url(&self.spec, next.as_str(), &["https"])?;
+                if let Some(next) = prepare_fetch_redirect(
+                    &self.spec,
+                    response.status(),
+                    &url,
+                    response.headers().get(reqwest::header::LOCATION),
+                    &mut method,
+                    &mut headers,
+                    &mut body,
+                )? {
+                    url = next;
                     continue;
                 }
                 return Ok(response);
@@ -869,6 +871,7 @@ impl HostState {
             "requestId": sdk.request_id,
             "providerId": sdk.provider_id,
             "level": safe_log_level(payload.get("level").and_then(Value::as_str)),
+            "message": sanitize_runtime_message(payload.get("message")),
             "metadata": sanitize_runtime_metadata(&context),
         }));
         Ok(Value::Null)
@@ -2006,6 +2009,85 @@ fn request_body(
         .map(|value| RequestBody::Bytes(value.as_bytes().to_vec())))
 }
 
+const FETCH_REDIRECT_STATUSES: &[reqwest::StatusCode] = &[
+    reqwest::StatusCode::MOVED_PERMANENTLY,
+    reqwest::StatusCode::FOUND,
+    reqwest::StatusCode::SEE_OTHER,
+    reqwest::StatusCode::TEMPORARY_REDIRECT,
+    reqwest::StatusCode::PERMANENT_REDIRECT,
+];
+
+const FETCH_BODY_HEADERS: &[&str] = &[
+    "content-encoding",
+    "content-language",
+    "content-location",
+    "content-type",
+    "content-length",
+    "transfer-encoding",
+];
+
+const CROSS_ORIGIN_CREDENTIAL_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+    "x-api-key",
+    "x-auth-token",
+];
+
+fn prepare_fetch_redirect(
+    spec: &PluginRuntimeSpec,
+    status: reqwest::StatusCode,
+    current_url: &Url,
+    location: Option<&reqwest::header::HeaderValue>,
+    method: &mut reqwest::Method,
+    headers: &mut serde_json::Map<String, Value>,
+    body: &mut Option<RequestBody>,
+) -> Result<Option<Url>, String> {
+    if !FETCH_REDIRECT_STATUSES.contains(&status) {
+        return Ok(None);
+    }
+    let location = location
+        .ok_or("HTTP 重定向缺少 Location")?
+        .to_str()
+        .map_err(|error| error.to_string())?;
+    let joined = current_url
+        .join(location)
+        .map_err(|error| error.to_string())?;
+    // 每一跳都重新经过协议、回环权限与 allowedHosts 校验，不能信任 Location。
+    let next_url = parse_allowed_url(spec, joined.as_str(), &["https"])?;
+
+    let switches_to_get = ((status == reqwest::StatusCode::MOVED_PERMANENTLY
+        || status == reqwest::StatusCode::FOUND)
+        && *method == reqwest::Method::POST)
+        || (status == reqwest::StatusCode::SEE_OTHER
+            && *method != reqwest::Method::GET
+            && *method != reqwest::Method::HEAD);
+    if switches_to_get {
+        *method = reqwest::Method::GET;
+        *body = None;
+        remove_headers(headers, FETCH_BODY_HEADERS);
+    }
+    if !same_origin(current_url, &next_url) {
+        remove_headers(headers, CROSS_ORIGIN_CREDENTIAL_HEADERS);
+    }
+    Ok(Some(next_url))
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn remove_headers(headers: &mut serde_json::Map<String, Value>, names: &[&str]) {
+    headers.retain(|name, _| {
+        !names
+            .iter()
+            .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
+    });
+}
+
 fn response_headers(response: &reqwest::Response) -> serde_json::Map<String, Value> {
     response
         .headers()
@@ -2045,6 +2127,13 @@ fn safe_log_level(value: Option<&str>) -> &'static str {
         Some("error") => "error",
         _ => "info",
     }
+}
+
+fn sanitize_runtime_message(value: Option<&Value>) -> String {
+    redact(value.and_then(Value::as_str).unwrap_or_default())
+        .chars()
+        .take(160)
+        .collect()
 }
 
 fn safe_identifier(value: Option<&str>) -> String {
@@ -2129,7 +2218,20 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 fn redact(message: &str) -> String {
     let mut result = message.to_string();
-    for marker in ["authorization", "cookie", "token", "secret", "password"] {
+    for marker in [
+        "authorization",
+        "bearer ",
+        "cookie",
+        "token",
+        "secret",
+        "password",
+        "api-key",
+        "api_key",
+        "apikey",
+        "access-key",
+        "access_key",
+        "sk-",
+    ] {
         if result.to_ascii_lowercase().contains(marker) {
             result = "[日志包含敏感字段，已脱敏]".into();
             break;
@@ -2380,6 +2482,178 @@ mod tests {
         assert!(parse_allowed_url(&spec, "http://localhost:8000", &["https"]).is_err());
     }
 
+    fn redirect_spec() -> PluginRuntimeSpec {
+        PluginRuntimeSpec {
+            plugin_id: "redirect-test".into(),
+            source_namespace: "redirect-test".into(),
+            capabilities: vec![],
+            secret_fields: vec![],
+            credentials: None,
+            root: PathBuf::new(),
+            entrypoint: PathBuf::new(),
+            permissions: vec!["network".into()],
+            allowed_hosts: vec!["api.example.com".into(), "upload.example.com".into()],
+            browser_session: None,
+            data_dir: PathBuf::new(),
+            trust: "unsigned".into(),
+        }
+    }
+
+    fn redirect_location(value: &'static str) -> reqwest::header::HeaderValue {
+        reqwest::header::HeaderValue::from_static(value)
+    }
+
+    #[test]
+    fn fetch_redirect_only_follows_standard_redirect_statuses() {
+        let spec = redirect_spec();
+        let current = Url::parse("https://api.example.com/v1/jobs").unwrap();
+        let location = redirect_location("/v1/result");
+        let mut method = reqwest::Method::POST;
+        let mut headers = serde_json::Map::from_iter([
+            ("Content-Type".into(), json!("application/json")),
+            ("Authorization".into(), json!("Bearer test")),
+        ]);
+        let mut body = Some(RequestBody::Bytes(b"payload".to_vec()));
+
+        let redirected = prepare_fetch_redirect(
+            &spec,
+            reqwest::StatusCode::NOT_MODIFIED,
+            &current,
+            Some(&location),
+            &mut method,
+            &mut headers,
+            &mut body,
+        )
+        .unwrap();
+
+        assert!(redirected.is_none());
+        assert_eq!(method, reqwest::Method::POST);
+        assert!(body.is_some());
+        assert!(headers.contains_key("Content-Type"));
+        assert!(headers.contains_key("Authorization"));
+    }
+
+    #[test]
+    fn fetch_redirect_rewrites_post_and_see_other_but_preserves_307_and_308() {
+        let spec = redirect_spec();
+        let current = Url::parse("https://api.example.com/v1/jobs").unwrap();
+        let location = redirect_location("/v1/result");
+
+        for status in [
+            reqwest::StatusCode::MOVED_PERMANENTLY,
+            reqwest::StatusCode::FOUND,
+        ] {
+            let mut method = reqwest::Method::POST;
+            let mut headers = serde_json::Map::from_iter([
+                ("Content-Type".into(), json!("application/json")),
+                ("CONTENT-LENGTH".into(), json!("7")),
+                ("X-Request-Id".into(), json!("request-1")),
+            ]);
+            let mut body = Some(RequestBody::Bytes(b"payload".to_vec()));
+            prepare_fetch_redirect(
+                &spec,
+                status,
+                &current,
+                Some(&location),
+                &mut method,
+                &mut headers,
+                &mut body,
+            )
+            .unwrap();
+            assert_eq!(method, reqwest::Method::GET, "status={status}");
+            assert!(body.is_none(), "status={status}");
+            assert!(!headers.contains_key("Content-Type"), "status={status}");
+            assert!(!headers.contains_key("CONTENT-LENGTH"), "status={status}");
+            assert_eq!(headers["X-Request-Id"], "request-1");
+        }
+
+        let mut method = reqwest::Method::PUT;
+        let mut headers = serde_json::Map::from_iter([(
+            "Content-Type".into(),
+            json!("application/octet-stream"),
+        )]);
+        let mut body = Some(RequestBody::Bytes(b"payload".to_vec()));
+        prepare_fetch_redirect(
+            &spec,
+            reqwest::StatusCode::SEE_OTHER,
+            &current,
+            Some(&location),
+            &mut method,
+            &mut headers,
+            &mut body,
+        )
+        .unwrap();
+        assert_eq!(method, reqwest::Method::GET);
+        assert!(body.is_none());
+        assert!(headers.is_empty());
+
+        for status in [
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            reqwest::StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let mut method = reqwest::Method::POST;
+            let mut headers =
+                serde_json::Map::from_iter([("Content-Type".into(), json!("application/json"))]);
+            let mut body = Some(RequestBody::Bytes(b"payload".to_vec()));
+            prepare_fetch_redirect(
+                &spec,
+                status,
+                &current,
+                Some(&location),
+                &mut method,
+                &mut headers,
+                &mut body,
+            )
+            .unwrap();
+            assert_eq!(method, reqwest::Method::POST, "status={status}");
+            assert!(matches!(body, Some(RequestBody::Bytes(ref value)) if value == b"payload"));
+            assert_eq!(headers["Content-Type"], "application/json");
+        }
+    }
+
+    #[test]
+    fn fetch_redirect_strips_cross_origin_credentials_and_rechecks_allowed_host() {
+        let spec = redirect_spec();
+        let current = Url::parse("https://api.example.com/v1/jobs").unwrap();
+        let cross_origin = redirect_location("https://upload.example.com/result");
+        let mut method = reqwest::Method::GET;
+        let mut headers = serde_json::Map::from_iter([
+            ("Authorization".into(), json!("Bearer test")),
+            ("COOKIE".into(), json!("session=test")),
+            ("Proxy-Authorization".into(), json!("Basic test")),
+            ("X-Api-Key".into(), json!("test")),
+            ("X-Request-Id".into(), json!("request-1")),
+        ]);
+        let mut body = None;
+        let next = prepare_fetch_redirect(
+            &spec,
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            &current,
+            Some(&cross_origin),
+            &mut method,
+            &mut headers,
+            &mut body,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(next.as_str(), "https://upload.example.com/result");
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers["X-Request-Id"], "request-1");
+
+        let forbidden = redirect_location("https://evil.example.net/steal");
+        assert!(prepare_fetch_redirect(
+            &spec,
+            reqwest::StatusCode::FOUND,
+            &current,
+            Some(&forbidden),
+            &mut method,
+            &mut headers,
+            &mut body,
+        )
+        .unwrap_err()
+        .contains("无权访问主机"));
+    }
+
     #[test]
     fn local_network_permission_allows_loopback_plaintext_only() {
         let spec = PluginRuntimeSpec {
@@ -2534,6 +2808,7 @@ mod tests {
                 realtimeFinish() {
                     host.emit({type:'final', text:'实时识别'});
                     host.emit({type:'finished'});
+                    return {ack:true};
                 },
                 realtimeStop() {},
             });"#,
