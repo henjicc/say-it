@@ -63,7 +63,10 @@ static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadR
             std::thread::Builder::new()
                 .name(format!("sayit-credential-read-{index}"))
                 .spawn(move || loop {
-                    let request = receiver.lock().ok().and_then(|receiver| receiver.recv().ok());
+                    let request = receiver
+                        .lock()
+                        .ok()
+                        .and_then(|receiver| receiver.recv().ok());
                     let Some(request) = request else {
                         break;
                     };
@@ -824,7 +827,7 @@ impl HostState {
             .map_err(|_| "SDK 凭据读取截止时间锁定失败")?;
         let credential_deadline = operation_deadline.min(Instant::now() + MAX_CREDENTIAL_READ_WAIT);
         if Instant::now() >= credential_deadline {
-            return Err("SDK_RUNTIME_TIMEOUT：系统凭据读取未在宿主截止时间内完成".into());
+            return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
         }
         let (response, result) = std::sync::mpsc::sync_channel(1);
         CREDENTIAL_READ_WORKERS
@@ -833,20 +836,20 @@ impl HostState {
                 key: key.clone(),
                 response,
             })
-            .map_err(|_| "系统凭据读取队列繁忙，请稍后重试".to_string())?;
+            .map_err(|_| "本地加密凭据读取队列繁忙，请稍后重试".to_string())?;
         loop {
             if self.cancelled.load(Ordering::Relaxed) {
                 return Err("SDK_RUNTIME_CANCELLED".into());
             }
             let remaining = credential_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err("SDK_RUNTIME_TIMEOUT：系统凭据读取未在宿主截止时间内完成".into());
+                return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
             }
             match result.recv_timeout(remaining.min(Duration::from_millis(25))) {
                 Ok(value) => return value,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("系统凭据读取工作线程意外退出".into())
+                    return Err("本地加密凭据读取工作线程意外退出".into())
                 }
             }
         }

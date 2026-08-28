@@ -6,6 +6,7 @@ pub mod apple_speech;
 pub mod browser_session_capture;
 pub mod capabilities;
 pub mod credential_store;
+mod credential_vault;
 pub mod local_asr;
 pub mod model_download;
 pub mod plugin;
@@ -371,7 +372,7 @@ pub fn find_profile<'a>(settings: &'a ProviderSettings, id: &str) -> Option<&'a 
     settings.profiles.iter().find(|profile| profile.id == id)
 }
 
-/// 删除供应商配置时只移除 profile；系统凭据按产品语义保留，便于重新安装插件或恢复配置。
+/// 删除供应商配置时只移除 profile；本地加密凭据按产品语义保留，便于重新安装插件或恢复配置。
 /// 凭据只允许由未来明确的“忘记凭据”操作删除，卸载/移除供应商不得隐式清理。
 pub fn remove_profile_preserving_credentials(settings: &mut ProviderSettings, id: &str) {
     settings.profiles.retain(|profile| profile.id != id);

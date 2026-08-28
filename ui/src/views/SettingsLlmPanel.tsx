@@ -408,7 +408,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   return (
     <Collapse
       title={profile.displayName}
-      subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "未配置"} · ${models.length} 个模型`}
+      subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "需要填写"} · ${models.length} 个模型`}
     >
       <div className="grid grid-cols-1 gap-3">
         {(!isPlugin || secretField) && <Field
@@ -636,6 +636,9 @@ export function SettingsLlmPanel() {
 
   return (
     <SettingsSection title="大语言模型">
+      <p className="text-xs text-[var(--color-fg-subtle)]">
+        API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。
+      </p>
       <Field
         label="默认模型供应商"
         controlId="default-llm-provider"

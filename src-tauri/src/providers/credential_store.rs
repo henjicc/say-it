@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
-const CREDENTIAL_SERVICE: &str = "com.henjicc.sayit.credentials";
+use super::credential_vault::LocalCredentialVault;
+
+static LOCAL_VAULT_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CredentialKey {
@@ -16,6 +19,10 @@ impl CredentialKey {
 
     pub fn plugin(plugin_id: &str, provider_id: &str, field: &str) -> Result<Self, String> {
         Self::new(&format!("plugin-{plugin_id}"), provider_id, field)
+    }
+
+    pub(crate) fn plugin_session(plugin_id: &str) -> Result<Self, String> {
+        Self::new("plugin-session", plugin_id, "browserSession")
     }
 
     fn new(namespace: &str, provider_id: &str, field: &str) -> Result<Self, String> {
@@ -49,58 +56,71 @@ pub trait CredentialStore: Send + Sync {
     fn delete(&self, key: &CredentialKey) -> Result<(), String>;
 }
 
-#[derive(Default)]
-pub struct SystemCredentialStore;
+#[derive(Clone, Debug)]
+pub struct LocalCredentialStore {
+    directory: Option<PathBuf>,
+}
 
-impl CredentialStore for SystemCredentialStore {
-    fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
-        #[cfg(any(target_os = "macos", windows))]
+impl Default for LocalCredentialStore {
+    fn default() -> Self {
+        #[cfg(test)]
         {
-            let entry = keyring::Entry::new(CREDENTIAL_SERVICE, &key.account())
-                .map_err(|error| format!("打开系统凭据项失败：{error}"))?;
-            return match entry.get_password() {
-                Ok(value) => Ok(Some(value)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(error) => Err(format!("读取系统凭据失败：{error}")),
+            let directory = std::env::var_os("SAY_IT_LOCAL_VAULT_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!(
+                        "say-it-test-vault-{}-{}",
+                        std::process::id(),
+                        uuid::Uuid::new_v4()
+                    ))
+                });
+            return Self {
+                directory: Some(directory),
             };
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            let _ = key;
-            Err("当前 Linux 构建未配置系统凭据库，不能保存在线供应商密钥".into())
+        #[cfg(not(test))]
+        Self { directory: None }
+    }
+}
+
+impl LocalCredentialStore {
+    #[cfg(test)]
+    pub(crate) fn from_directory(directory: PathBuf) -> Self {
+        Self {
+            directory: Some(directory),
         }
+    }
+
+    fn vault(&self) -> Result<LocalCredentialVault, String> {
+        let directory = self
+            .directory
+            .clone()
+            .or_else(|| LOCAL_VAULT_DIRECTORY.get().cloned())
+            .ok_or("本地加密凭据库尚未初始化")?;
+        LocalCredentialVault::open(directory)
+    }
+}
+
+pub(crate) fn configure_local_vault(directory: &Path) -> Result<(), String> {
+    match LOCAL_VAULT_DIRECTORY.set(directory.to_path_buf()) {
+        Ok(()) => {}
+        Err(requested) if LOCAL_VAULT_DIRECTORY.get() == Some(&requested) => {}
+        Err(_) => return Err("本地加密凭据库不能在运行期间切换目录".into()),
+    }
+    LocalCredentialVault::open(directory.to_path_buf()).map(|_| ())
+}
+
+impl CredentialStore for LocalCredentialStore {
+    fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
+        self.vault()?.get(&key.account())
     }
 
     fn set(&self, key: &CredentialKey, value: &str) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", windows))]
-        {
-            return keyring::Entry::new(CREDENTIAL_SERVICE, &key.account())
-                .map_err(|error| format!("打开系统凭据项失败：{error}"))?
-                .set_password(value)
-                .map_err(|error| format!("写入系统凭据失败：{error}"));
-        }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            let _ = (key, value);
-            Err("当前 Linux 构建未配置系统凭据库，不能保存在线供应商密钥".into())
-        }
+        self.vault()?.set(&key.account(), value)
     }
 
     fn delete(&self, key: &CredentialKey) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", windows))]
-        {
-            let entry = keyring::Entry::new(CREDENTIAL_SERVICE, &key.account())
-                .map_err(|error| format!("打开系统凭据项失败：{error}"))?;
-            return match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(error) => Err(format!("删除系统凭据失败：{error}")),
-            };
-        }
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            let _ = key;
-            Err("当前 Linux 构建未配置系统凭据库，不能删除在线供应商密钥".into())
-        }
+        self.vault()?.delete(&key.account())
     }
 }
 
@@ -109,7 +129,7 @@ pub struct CredentialStoreHandle(Arc<dyn CredentialStore>);
 
 impl Default for CredentialStoreHandle {
     fn default() -> Self {
-        Self(Arc::new(SystemCredentialStore))
+        Self(Arc::new(LocalCredentialStore::default()))
     }
 }
 
@@ -134,8 +154,8 @@ impl CredentialStoreHandle {
                     None => self.0.delete(key),
                 };
                 let reason = match verification {
-                    Ok(_) => "系统凭据写入后校验不一致".to_string(),
-                    Err(error) => format!("系统凭据写入后校验失败：{error}"),
+                    Ok(_) => "本地加密凭据写入后校验不一致".to_string(),
+                    Err(error) => format!("本地加密凭据写入后校验失败：{error}"),
                 };
                 restore.map_err(|error| format!("{reason}；恢复旧凭据失败：{error}"))?;
                 Err(reason)
@@ -273,5 +293,33 @@ mod tests {
             .all(|profile| profile.id != "temporary"));
         assert_eq!(fake.get(&key).unwrap().as_deref(), Some("retained"));
         assert_eq!(*fake.deletes.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn production_credential_modules_have_no_system_store_or_prompt_path() {
+        let manifest = include_str!("../../Cargo.toml");
+        let sources = concat!(
+            include_str!("credential_store.rs"),
+            include_str!("credential_vault.rs"),
+            include_str!("plugin_secrets.rs")
+        );
+        let forbidden = [
+            ["key", "ring ="].concat(),
+            ["key", "ring::"].concat(),
+            ["get_", "password("].concat(),
+            ["set_", "password("].concat(),
+            ["Crypt", "UnprotectData"].concat(),
+            ["Security", ".framework"].concat(),
+        ];
+        for token in forbidden {
+            assert!(
+                !manifest.contains(&token),
+                "Cargo.toml 仍包含系统凭据依赖：{token}"
+            );
+            assert!(
+                !sources.contains(&token),
+                "凭据实现仍包含系统凭据调用：{token}"
+            );
+        }
     }
 }
