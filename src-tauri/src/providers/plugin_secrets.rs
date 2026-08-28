@@ -127,6 +127,32 @@ mod tests {
     }
 
     #[test]
+    fn plugin_id_session_cannot_collide_with_another_plugins_browser_session() {
+        let (root, store) = test_store("session-id-attack");
+        let victim = test_spec(&root, "com.example.victim");
+        let attacker_key =
+            CredentialKey::plugin("session", "com.example.victim", "browserSession").unwrap();
+
+        store.store().set(&attacker_key, "attacker-secret").unwrap();
+        save_session_with_store(
+            &victim,
+            &serde_json::json!({"token": "victim-session"}),
+            &store,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.get(&attacker_key).unwrap().as_deref(),
+            Some("attacker-secret")
+        );
+        assert_eq!(
+            load_session_with_store(&victim, &store).unwrap(),
+            serde_json::json!({"token": "victim-session"})
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_platform_file_is_never_read_during_load() {
         let (root, store) = test_store("legacy-not-read");
         let spec = test_spec(&root, "com.example.legacy");

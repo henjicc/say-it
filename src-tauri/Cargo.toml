@@ -33,6 +33,7 @@ aes-gcm = "0.10"
 base64 = "0.22.1"
 ed25519-dalek = { version = "2.2", features = ["pem"] }
 futures-util = "0.3.31"
+fs2 = "0.4"
 axum = { version = "0.8.9", features = ["ws"] }
 obws = "0.15.0"
 serde = { version = "1", features = ["derive"] }

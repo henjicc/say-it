@@ -7,53 +7,127 @@ static LOCAL_VAULT_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CredentialKey {
-    namespace: String,
-    provider_id: String,
+    owner: CredentialOwner,
     field: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CredentialOwner {
+    Provider {
+        provider_id: String,
+    },
+    Plugin {
+        plugin_id: String,
+        provider_id: String,
+    },
+    PluginSession {
+        plugin_id: String,
+    },
 }
 
 impl CredentialKey {
     pub fn provider(provider_id: &str, field: &str) -> Result<Self, String> {
-        Self::new("provider", provider_id, field)
-    }
-
-    pub fn plugin(plugin_id: &str, provider_id: &str, field: &str) -> Result<Self, String> {
-        Self::new(&format!("plugin-{plugin_id}"), provider_id, field)
-    }
-
-    pub(crate) fn plugin_session(plugin_id: &str) -> Result<Self, String> {
-        Self::new("plugin-session", plugin_id, "browserSession")
-    }
-
-    fn new(namespace: &str, provider_id: &str, field: &str) -> Result<Self, String> {
-        for (label, value) in [
-            ("namespace", namespace),
-            ("providerId", provider_id),
-            ("field", field),
-        ] {
-            if value.trim().is_empty()
-                || value.len() > 160
-                || value.chars().any(|ch| ch == ':' || ch.is_control())
-            {
-                return Err(format!("凭据 {label} 不合法"));
-            }
-        }
+        validate_component("providerId", provider_id)?;
+        validate_component("field", field)?;
         Ok(Self {
-            namespace: namespace.to_string(),
-            provider_id: provider_id.to_string(),
+            owner: CredentialOwner::Provider {
+                provider_id: provider_id.to_string(),
+            },
             field: field.to_string(),
         })
     }
 
-    fn account(&self) -> String {
-        format!("{}:{}:{}", self.namespace, self.provider_id, self.field)
+    pub fn plugin(plugin_id: &str, provider_id: &str, field: &str) -> Result<Self, String> {
+        validate_component("pluginId", plugin_id)?;
+        validate_component("providerId", provider_id)?;
+        validate_component("field", field)?;
+        Ok(Self {
+            owner: CredentialOwner::Plugin {
+                plugin_id: plugin_id.to_string(),
+                provider_id: provider_id.to_string(),
+            },
+            field: field.to_string(),
+        })
     }
+
+    pub(crate) fn plugin_session(plugin_id: &str) -> Result<Self, String> {
+        validate_component("pluginId", plugin_id)?;
+        Ok(Self {
+            owner: CredentialOwner::PluginSession {
+                plugin_id: plugin_id.to_string(),
+            },
+            field: "browserSession".to_string(),
+        })
+    }
+
+    fn account(&self) -> String {
+        match &self.owner {
+            CredentialOwner::Provider { provider_id } => {
+                format!("credential:v1:provider:{provider_id}:{}", self.field)
+            }
+            CredentialOwner::Plugin {
+                plugin_id,
+                provider_id,
+            } => format!(
+                "credential:v1:plugin:{plugin_id}:{provider_id}:{}",
+                self.field
+            ),
+            CredentialOwner::PluginSession { plugin_id } => {
+                format!("credential:v1:plugin-session:{plugin_id}:{}", self.field)
+            }
+        }
+    }
+
+    fn unambiguous_legacy_account(&self) -> Option<String> {
+        match &self.owner {
+            CredentialOwner::Provider { provider_id } => {
+                Some(format!("provider:{provider_id}:{}", self.field))
+            }
+            CredentialOwner::Plugin {
+                plugin_id,
+                provider_id,
+            } if plugin_id != "session" => {
+                Some(format!("plugin-{plugin_id}:{provider_id}:{}", self.field))
+            }
+            CredentialOwner::Plugin { .. } | CredentialOwner::PluginSession { .. } => None,
+        }
+    }
+}
+
+fn validate_component(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty()
+        || value.len() > 160
+        || value.chars().any(|ch| ch == ':' || ch.is_control())
+    {
+        return Err(format!("凭据 {label} 不合法"));
+    }
+    Ok(())
 }
 
 pub trait CredentialStore: Send + Sync {
     fn get(&self, key: &CredentialKey) -> Result<Option<String>, String>;
     fn set(&self, key: &CredentialKey, value: &str) -> Result<(), String>;
     fn delete(&self, key: &CredentialKey) -> Result<(), String>;
+
+    fn write_verified(&self, key: &CredentialKey, value: &str) -> Result<(), String> {
+        let previous = self.get(key)?;
+        self.set(key, value)?;
+        match self.get(key) {
+            Ok(Some(actual)) if actual == value => Ok(()),
+            verification => {
+                let restore = match previous {
+                    Some(previous) => self.set(key, &previous),
+                    None => self.delete(key),
+                };
+                let reason = match verification {
+                    Ok(_) => "本地加密凭据写入后校验不一致".to_string(),
+                    Err(error) => format!("本地加密凭据写入后校验失败：{error}"),
+                };
+                restore.map_err(|error| format!("{reason}；恢复旧凭据失败：{error}"))?;
+                Err(reason)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +186,14 @@ pub(crate) fn configure_local_vault(directory: &Path) -> Result<(), String> {
 
 impl CredentialStore for LocalCredentialStore {
     fn get(&self, key: &CredentialKey) -> Result<Option<String>, String> {
-        self.vault()?.get(&key.account())
+        let vault = self.vault()?;
+        match vault.get(&key.account())? {
+            Some(value) => Ok(Some(value)),
+            None => match key.unambiguous_legacy_account() {
+                Some(legacy) => vault.get(&legacy),
+                None => Ok(None),
+            },
+        }
     }
 
     fn set(&self, key: &CredentialKey, value: &str) -> Result<(), String> {
@@ -120,7 +201,17 @@ impl CredentialStore for LocalCredentialStore {
     }
 
     fn delete(&self, key: &CredentialKey) -> Result<(), String> {
-        self.vault()?.delete(&key.account())
+        let vault = self.vault()?;
+        vault.delete(&key.account())?;
+        if let Some(legacy) = key.unambiguous_legacy_account() {
+            vault.delete(&legacy)?;
+        }
+        Ok(())
+    }
+
+    fn write_verified(&self, key: &CredentialKey, value: &str) -> Result<(), String> {
+        let vault = self.vault()?;
+        vault.write_verified(&key.account(), value)
     }
 }
 
@@ -144,23 +235,7 @@ impl CredentialStoreHandle {
     }
 
     pub fn write_verified(&self, key: &CredentialKey, value: &str) -> Result<(), String> {
-        let previous = self.0.get(key)?;
-        self.0.set(key, value)?;
-        match self.0.get(key) {
-            Ok(Some(actual)) if actual == value => Ok(()),
-            verification => {
-                let restore = match previous {
-                    Some(previous) => self.0.set(key, &previous),
-                    None => self.0.delete(key),
-                };
-                let reason = match verification {
-                    Ok(_) => "本地加密凭据写入后校验不一致".to_string(),
-                    Err(error) => format!("本地加密凭据写入后校验失败：{error}"),
-                };
-                restore.map_err(|error| format!("{reason}；恢复旧凭据失败：{error}"))?;
-                Err(reason)
-            }
-        }
+        self.0.write_verified(key, value)
     }
 
     pub(crate) fn store(&self) -> &dyn CredentialStore {
@@ -257,6 +332,19 @@ mod tests {
             key_for_profile(&provider, "apiKey").unwrap(),
             CredentialKey::provider("shared", "apiKey").unwrap()
         );
+    }
+
+    #[test]
+    fn structured_accounts_keep_provider_plugin_and_plugin_session_disjoint() {
+        let provider = CredentialKey::provider("victim", "browserSession").unwrap();
+        let plugin = CredentialKey::plugin("session", "victim", "browserSession").unwrap();
+        let plugin_session = CredentialKey::plugin_session("victim").unwrap();
+
+        assert_ne!(provider.account(), plugin.account());
+        assert_ne!(provider.account(), plugin_session.account());
+        assert_ne!(plugin.account(), plugin_session.account());
+        assert!(plugin.unambiguous_legacy_account().is_none());
+        assert!(plugin_session.unambiguous_legacy_account().is_none());
     }
 
     #[test]

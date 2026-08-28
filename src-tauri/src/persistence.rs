@@ -3,14 +3,60 @@ use crate::prelude::*;
 use crate::providers::credential_store::{
     key_for_profile, redact_error, CredentialKey, CredentialStore, LocalCredentialStore,
 };
+use crate::providers::credential_vault::{remove_file_durably, write_private_file_atomically};
 use crate::state::*;
+use fs2::FileExt;
+use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 const STATE_FILE_NAME: &str = "say-it-state.json";
 const LEGACY_APP_IDENTIFIERS: &[&str] = &["com.vibecode.sayit"];
 const CURRENT_STATE_SCHEMA_VERSION: u32 = 4;
 const FOUR_CLICK_DEFAULT_SCHEMA_VERSION: u32 = 2;
 const CREDENTIAL_MIGRATION_SCHEMA_VERSION: u32 = 4;
+static CREDENTIAL_MIGRATION_PROCESS_LOCK: Mutex<()> = Mutex::new(());
+
+struct CredentialMigrationLock {
+    file: fs::File,
+    _process_guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for CredentialMigrationLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn lock_credential_migration(file: &Path) -> Result<CredentialMigrationLock, String> {
+    let process_guard = CREDENTIAL_MIGRATION_PROCESS_LOCK
+        .lock()
+        .map_err(|_| "凭据迁移进程内锁已损坏".to_string())?;
+    let lock_path = file.with_extension("json.credentials-migration.lock");
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock_file = options
+        .open(&lock_path)
+        .map_err(|error| format!("打开凭据迁移跨进程锁失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("收紧凭据迁移锁权限失败：{error}"))?;
+    }
+    lock_file
+        .lock_exclusive()
+        .map_err(|error| format!("获取凭据迁移跨进程锁失败：{error}"))?;
+    Ok(CredentialMigrationLock {
+        file: lock_file,
+        _process_guard: process_guard,
+    })
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct PersistedData {
@@ -150,34 +196,13 @@ pub(crate) fn save_persisted_state_with_app_settings(
 }
 
 fn atomic_write_with_backup(file: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = file.with_extension("json.tmp");
     let backup = file.with_extension("json.bak");
-    {
-        let mut output =
-            fs::File::create(&tmp).map_err(|e| format!("创建配置临时文件失败：{e}"))?;
-        use std::io::Write;
-        output
-            .write_all(bytes)
-            .map_err(|e| format!("写入配置临时文件失败：{e}"))?;
-        output
-            .sync_all()
-            .map_err(|e| format!("刷新配置临时文件失败：{e}"))?;
-    }
     if file.exists() {
-        fs::copy(file, &backup).map_err(|e| format!("备份原配置失败：{e}"))?;
-        // Unix（包括 macOS）的 rename 可原子替换同目录目标。先删除旧文件会制造一个
-        // 掉电窗口，使主配置暂时不存在；Windows 则仍需先移除目标文件。
-        #[cfg(windows)]
-        fs::remove_file(file).map_err(|e| format!("替换配置前移除旧文件失败：{e}"))?;
+        let previous = fs::read(file).map_err(|e| format!("读取原配置失败：{e}"))?;
+        write_private_file_atomically(&backup, &previous)
+            .map_err(|e| format!("备份原配置失败：{e}"))?;
     }
-    if let Err(error) = fs::rename(&tmp, file) {
-        if !file.exists() && backup.exists() {
-            let _ = fs::copy(&backup, file);
-        }
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("提交配置文件失败，已尝试恢复备份：{error}"));
-    }
-    Ok(())
+    write_private_file_atomically(file, bytes).map_err(|e| format!("提交配置文件失败：{e}"))
 }
 
 fn persisted_state_files_exist(file: &Path) -> bool {
@@ -249,14 +274,11 @@ fn migrate_app_provider_ids(settings: &mut crate::application::settings::AppSett
 
 fn ensure_no_plaintext_credentials(settings: &ProviderSettings) -> Result<(), String> {
     for profile in &settings.profiles {
-        for field in crate::providers::config_fields_for(profile)
-            .into_iter()
-            .filter(|field| field.secret)
-        {
-            if profile.config.get(&field.key).is_some() {
+        for field in crate::providers::secret_config_keys(profile) {
+            if profile.config.get(&field).is_some() {
                 return Err(format!(
                     "拒绝持久化供应商 {} 的明文凭据字段 {}",
-                    profile.id, field.key
+                    profile.id, field
                 ));
             }
         }
@@ -279,10 +301,8 @@ fn collect_plaintext_credentials(
         if destination.kind == "alibabacloud-funasr" {
             destination.kind = "sdk:bailian".into();
         }
-        let mut secret_fields = crate::providers::config_fields_for(profile)
+        let mut secret_fields = crate::providers::secret_config_keys(profile)
             .into_iter()
-            .filter(|field| field.secret)
-            .map(|field| field.key)
             .collect::<Vec<_>>();
         // 旧 kind 只在 schema v2 迁移器中识别；运行时和 catalog 不保留 alias。
         if profile.kind == "alibabacloud-funasr"
@@ -308,11 +328,7 @@ fn collect_plaintext_credentials(
 
 fn strip_plaintext_credentials(settings: &mut ProviderSettings) {
     for profile in &mut settings.profiles {
-        let secret_fields = crate::providers::config_fields_for(profile)
-            .into_iter()
-            .filter(|field| field.secret)
-            .map(|field| field.key)
-            .collect::<Vec<_>>();
+        let secret_fields = crate::providers::secret_config_keys(profile);
         if let Some(config) = profile.config.as_object_mut() {
             for field in secret_fields {
                 config.remove(&field);
@@ -323,10 +339,18 @@ fn strip_plaintext_credentials(settings: &mut ProviderSettings) {
 
 fn rollback_credentials(
     store: &dyn CredentialStore,
-    journal: &[(CredentialKey, Option<String>)],
+    journal: &[(CredentialKey, Option<String>, String)],
 ) -> Result<(), String> {
     let mut errors = Vec::new();
-    for (key, previous) in journal.iter().rev() {
+    for (key, previous, written) in journal.iter().rev() {
+        match store.get(key) {
+            Ok(Some(current)) if current == *written => {}
+            Ok(_) => continue,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        }
         let result = match previous {
             Some(value) => store.set(key, value),
             None => store.delete(key),
@@ -342,45 +366,176 @@ fn rollback_credentials(
     }
 }
 
-fn write_sanitized_state_pair(file: &Path, bytes: &[u8]) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum CredentialMigrationPhase {
+    Prepared,
+    Committed,
+    RolledBack,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CredentialMigrationMarker {
+    phase: CredentialMigrationPhase,
+    primary_existed: bool,
+    backup_existed: bool,
+}
+
+struct StateMigrationCommitError {
+    message: String,
+    state_restored: bool,
+}
+
+fn credential_migration_paths(file: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        file.with_extension("json.credentials-migration.marker"),
+        file.with_extension("json.credentials-migration.primary.rollback"),
+        file.with_extension("json.credentials-migration.backup.rollback"),
+    )
+}
+
+fn write_migration_marker(
+    marker_path: &Path,
+    marker: &CredentialMigrationMarker,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(marker)
+        .map_err(|error| format!("序列化凭据迁移事务标记失败：{error}"))?;
+    write_private_file_atomically(marker_path, &bytes)
+        .map_err(|error| format!("提交凭据迁移事务标记失败：{error}"))
+}
+
+fn cleanup_migration_artifacts(file: &Path) -> Result<(), String> {
+    let (marker, primary_rollback, backup_rollback) = credential_migration_paths(file);
+    remove_file_durably(&primary_rollback)
+        .map_err(|error| format!("清理凭据迁移主配置快照失败：{error}"))?;
+    remove_file_durably(&backup_rollback)
+        .map_err(|error| format!("清理凭据迁移备份快照失败：{error}"))?;
+    remove_file_durably(&marker).map_err(|error| format!("清理凭据迁移事务标记失败：{error}"))
+}
+
+fn restore_migration_target(target: &Path, rollback: &Path, existed: bool) -> Result<(), String> {
+    if !existed {
+        return remove_file_durably(target);
+    }
+    let bytes = fs::read(rollback).map_err(|error| format!("读取凭据迁移回滚快照失败：{error}"))?;
+    write_private_file_atomically(target, &bytes)
+        .map_err(|error| format!("恢复凭据迁移原配置失败：{error}"))
+}
+
+fn rollback_prepared_migration(
+    file: &Path,
+    marker_path: &Path,
+    mut marker: CredentialMigrationMarker,
+) -> Result<(), String> {
     let backup = file.with_extension("json.bak");
-    let primary_tmp = file.with_extension("json.migration.tmp");
-    let backup_tmp = file.with_extension("json.bak.migration.tmp");
+    let (_, primary_rollback, backup_rollback) = credential_migration_paths(file);
+    restore_migration_target(file, &primary_rollback, marker.primary_existed)?;
+    restore_migration_target(&backup, &backup_rollback, marker.backup_existed)?;
+    marker.phase = CredentialMigrationPhase::RolledBack;
+    write_migration_marker(marker_path, &marker)?;
+    cleanup_migration_artifacts(file)
+}
+
+fn recover_credential_migration(file: &Path) -> Result<(), String> {
+    let (marker_path, primary_rollback, backup_rollback) = credential_migration_paths(file);
+    if !marker_path.exists() {
+        remove_file_durably(&primary_rollback)?;
+        remove_file_durably(&backup_rollback)?;
+        return Ok(());
+    }
+    let marker: CredentialMigrationMarker = serde_json::from_slice(
+        &fs::read(&marker_path).map_err(|error| format!("读取凭据迁移事务标记失败：{error}"))?,
+    )
+    .map_err(|error| format!("凭据迁移事务标记损坏，拒绝猜测恢复：{error}"))?;
+    match marker.phase {
+        CredentialMigrationPhase::Prepared => {
+            rollback_prepared_migration(file, &marker_path, marker)
+        }
+        CredentialMigrationPhase::Committed | CredentialMigrationPhase::RolledBack => {
+            cleanup_migration_artifacts(file)
+        }
+    }
+}
+
+fn prepare_credential_migration(file: &Path) -> Result<CredentialMigrationMarker, String> {
+    recover_credential_migration(file)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败：{error}"))?;
     }
-    let write_tmp = |path: &Path| -> Result<(), String> {
-        use std::io::Write;
-        let mut output =
-            fs::File::create(path).map_err(|error| format!("创建迁移临时文件失败：{error}"))?;
-        output
-            .write_all(bytes)
-            .and_then(|_| output.sync_all())
-            .map_err(|error| format!("写入迁移临时文件失败：{error}"))
+    let backup = file.with_extension("json.bak");
+    let (marker_path, primary_rollback, backup_rollback) = credential_migration_paths(file);
+    if file.exists() {
+        write_private_file_atomically(
+            &primary_rollback,
+            &fs::read(file).map_err(|error| format!("读取迁移前主配置失败：{error}"))?,
+        )?;
+    }
+    if backup.exists() {
+        write_private_file_atomically(
+            &backup_rollback,
+            &fs::read(&backup).map_err(|error| format!("读取迁移前备份失败：{error}"))?,
+        )?;
+    }
+    let marker = CredentialMigrationMarker {
+        phase: CredentialMigrationPhase::Prepared,
+        primary_existed: file.exists(),
+        backup_existed: backup.exists(),
     };
-    write_tmp(&primary_tmp)?;
-    if let Err(error) = write_tmp(&backup_tmp) {
-        let _ = fs::remove_file(&primary_tmp);
+    if let Err(error) = write_migration_marker(&marker_path, &marker) {
+        let _ = remove_file_durably(&primary_rollback);
+        let _ = remove_file_durably(&backup_rollback);
         return Err(error);
     }
-    #[cfg(windows)]
-    if backup.exists() {
-        fs::remove_file(&backup).map_err(|error| format!("替换迁移备份失败：{error}"))?;
+    Ok(marker)
+}
+
+fn write_sanitized_state_pair(file: &Path, bytes: &[u8]) -> Result<(), StateMigrationCommitError> {
+    let marker =
+        prepare_credential_migration(file).map_err(|message| StateMigrationCommitError {
+            message,
+            state_restored: true,
+        })?;
+    let backup = file.with_extension("json.bak");
+    let (marker_path, _, _) = credential_migration_paths(file);
+    let commit = write_private_file_atomically(&backup, bytes)
+        .map_err(|error| format!("提交无明文备份失败：{error}"))
+        .and_then(|_| {
+            write_private_file_atomically(file, bytes)
+                .map_err(|error| format!("提交无明文主配置失败：{error}"))
+        });
+    if let Err(message) = commit {
+        return match rollback_prepared_migration(file, &marker_path, marker) {
+            Ok(()) => Err(StateMigrationCommitError {
+                message,
+                state_restored: true,
+            }),
+            Err(rollback) => Err(StateMigrationCommitError {
+                message: format!("{message}；恢复迁移前配置失败：{rollback}"),
+                state_restored: false,
+            }),
+        };
     }
-    if let Err(error) = fs::rename(&backup_tmp, &backup) {
-        let _ = fs::remove_file(&primary_tmp);
-        let _ = fs::remove_file(&backup_tmp);
-        return Err(format!("提交无明文备份失败：{error}"));
+    let committed = CredentialMigrationMarker {
+        phase: CredentialMigrationPhase::Committed,
+        ..marker
+    };
+    if let Err(message) = write_migration_marker(&marker_path, &committed) {
+        return match rollback_prepared_migration(file, &marker_path, committed) {
+            Ok(()) => Err(StateMigrationCommitError {
+                message,
+                state_restored: true,
+            }),
+            Err(rollback) => Err(StateMigrationCommitError {
+                message: format!("{message}；恢复迁移前配置失败：{rollback}"),
+                state_restored: false,
+            }),
+        };
     }
-    #[cfg(windows)]
-    if file.exists() {
-        fs::remove_file(file).map_err(|error| format!("替换迁移主配置失败：{error}"))?;
-    }
-    if let Err(error) = fs::rename(&primary_tmp, file) {
-        let _ = fs::remove_file(&primary_tmp);
-        return Err(format!("提交无明文主配置失败：{error}"));
-    }
-    Ok(())
+    cleanup_migration_artifacts(file).map_err(|message| StateMigrationCommitError {
+        message,
+        state_restored: false,
+    })
 }
 
 fn migrate_credentials_and_ids(
@@ -388,24 +543,39 @@ fn migrate_credentials_and_ids(
     data: &mut PersistedData,
     store: &dyn CredentialStore,
 ) -> Result<(), String> {
+    let _migration_lock = lock_credential_migration(file)?;
     if data.schema_version >= CREDENTIAL_MIGRATION_SCHEMA_VERSION {
         ensure_no_plaintext_credentials(&data.providers)?;
+        let backup = file.with_extension("json.bak");
+        let backup_requires_repair = fs::read_to_string(&backup)
+            .ok()
+            .and_then(|text| serde_json::from_str::<PersistedData>(&text).ok())
+            .is_none_or(|backup_data| {
+                backup_data.schema_version < CREDENTIAL_MIGRATION_SCHEMA_VERSION
+                    || ensure_no_plaintext_credentials(&backup_data.providers).is_err()
+            });
+        if backup_requires_repair {
+            let bytes = serde_json::to_vec_pretty(data).map_err(|error| error.to_string())?;
+            write_private_file_atomically(&backup, &bytes)
+                .map_err(|error| format!("修复旧配置备份失败：{error}"))?;
+        }
         return Ok(());
     }
+    let original_data = data.clone();
     let credentials = collect_plaintext_credentials(&data.providers)?;
     let secrets = credentials
         .iter()
         .map(|(_, value)| value.clone())
         .collect::<Vec<_>>();
     let mut journal = Vec::new();
-    let migrate_result = (|| -> Result<(), String> {
+    let prepare_result = (|| -> Result<Vec<u8>, String> {
         for (key, value) in &credentials {
             match store.get(key)? {
                 Some(existing) if existing == *value => continue,
                 Some(_) => return Err("本地加密凭据库已有不同值，拒绝覆盖".into()),
                 None => {
                     store.set(key, value)?;
-                    journal.push((key.clone(), None));
+                    journal.push((key.clone(), None, value.clone()));
                     if store.get(key)?.as_deref() != Some(value.as_str()) {
                         return Err("本地加密凭据写入后校验不一致".into());
                     }
@@ -417,12 +587,34 @@ fn migrate_credentials_and_ids(
         strip_plaintext_credentials(&mut data.providers);
         data.schema_version = CREDENTIAL_MIGRATION_SCHEMA_VERSION;
         ensure_no_plaintext_credentials(&data.providers)?;
-        let bytes = serde_json::to_vec_pretty(data).map_err(|error| error.to_string())?;
-        write_sanitized_state_pair(file, &bytes)
+        serde_json::to_vec_pretty(data).map_err(|error| error.to_string())
     })();
-    if let Err(error) = migrate_result {
+    let bytes = match prepare_result {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            *data = original_data;
+            let rollback = rollback_credentials(store, &journal);
+            let error = redact_error(&error, &secrets);
+            return match rollback {
+                Ok(()) => Err(format!(
+                    "凭据与供应商 ID 迁移失败，原配置保留且下次会重试：{error}"
+                )),
+                Err(rollback) => Err(format!(
+                    "凭据与供应商 ID 迁移失败；原配置仍保留，但本地加密凭据回滚异常：{error}；{}",
+                    redact_error(&rollback, &secrets)
+                )),
+            };
+        }
+    };
+    if let Err(commit) = write_sanitized_state_pair(file, &bytes) {
+        *data = original_data;
+        let error = redact_error(&commit.message, &secrets);
+        if !commit.state_restored {
+            return Err(format!(
+                "凭据与供应商 ID 迁移未能恢复原配置；为避免丢失，已保留本地加密凭据：{error}"
+            ));
+        }
         let rollback = rollback_credentials(store, &journal);
-        let error = redact_error(&error, &secrets);
         return match rollback {
             Ok(()) => Err(format!(
                 "凭据与供应商 ID 迁移失败，原配置保留且下次会重试：{error}"
@@ -437,12 +629,16 @@ fn migrate_credentials_and_ids(
 }
 
 fn load_persisted_data_from_path(file: &Path) -> Result<PersistedData, String> {
+    recover_credential_migration(file)?;
     let backup = file.with_extension("json.bak");
     if !file.exists() {
         let text = fs::read_to_string(&backup)
             .map_err(|error| format!("主配置不存在且读取备份失败：{error}"))?;
-        return serde_json::from_str(&text)
-            .map_err(|error| format!("主配置不存在且备份损坏：{error}"));
+        let data = serde_json::from_str(&text)
+            .map_err(|error| format!("主配置不存在且备份损坏：{error}"))?;
+        write_private_file_atomically(file, text.as_bytes())
+            .map_err(|error| format!("从备份恢复主配置失败：{error}"))?;
+        return Ok(data);
     }
 
     let text = fs::read_to_string(file).map_err(|error| format!("读取配置文件失败：{error}"))?;
@@ -451,9 +647,12 @@ fn load_persisted_data_from_path(file: &Path) -> Result<PersistedData, String> {
         Err(primary) => {
             let backup_text = fs::read_to_string(&backup)
                 .map_err(|_| format!("配置文件损坏且备份不可用：{primary}"))?;
-            serde_json::from_str(&backup_text).map_err(|backup_error| {
+            let data = serde_json::from_str(&backup_text).map_err(|backup_error| {
                 format!("配置文件及备份均损坏：主文件 {primary}；备份 {backup_error}")
-            })
+            })?;
+            write_private_file_atomically(file, backup_text.as_bytes())
+                .map_err(|error| format!("从备份恢复损坏主配置失败：{error}"))?;
+            Ok(data)
         }
     }
 }
@@ -651,6 +850,26 @@ mod tests {
     }
 
     #[test]
+    fn atomic_state_replace_failure_keeps_primary_and_durable_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "say-it-persistence-replace-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("state.json");
+        atomic_write_with_backup(&file, b"one").unwrap();
+        crate::providers::credential_vault::fail_next_replace(&file);
+
+        assert!(atomic_write_with_backup(&file, b"two").is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one");
+        assert_eq!(
+            fs::read_to_string(file.with_extension("json.bak")).unwrap(),
+            "one"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn missing_primary_state_recovers_from_backup() {
         let dir = std::env::temp_dir().join(format!(
             "say-it-persistence-recovery-{}",
@@ -786,6 +1005,130 @@ mod tests {
     }
 
     #[test]
+    fn primary_replace_failure_restores_retryable_state_before_vault_rollback() {
+        let mut data = legacy_data();
+        let store = FakeCredentialStore::default();
+        let (dir, file) = migration_file("primary-replace-failure", &data);
+        let original_primary = fs::read(&file).unwrap();
+        let original_backup = fs::read(file.with_extension("json.bak")).unwrap();
+        crate::providers::credential_vault::fail_next_replace(&file);
+
+        let error = migrate_credentials_and_ids(&file, &mut data, &store).unwrap_err();
+
+        assert!(error.contains("下次会重试"));
+        assert_eq!(data.schema_version, 2);
+        assert_eq!(fs::read(&file).unwrap(), original_primary);
+        assert_eq!(
+            fs::read(file.with_extension("json.bak")).unwrap(),
+            original_backup
+        );
+        assert!(store.values.lock().unwrap().is_empty());
+        let (marker, primary_rollback, backup_rollback) = credential_migration_paths(&file);
+        assert!(!marker.exists());
+        assert!(!primary_rollback.exists());
+        assert!(!backup_rollback.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_rolls_back_prepared_migration_after_crash_point() {
+        let data = legacy_data();
+        let (dir, file) = migration_file("prepared-crash", &data);
+        let original_primary = fs::read(&file).unwrap();
+        let original_backup = fs::read(file.with_extension("json.bak")).unwrap();
+        let marker = prepare_credential_migration(&file).unwrap();
+        let sanitized = serde_json::to_vec_pretty(&PersistedData {
+            schema_version: CREDENTIAL_MIGRATION_SCHEMA_VERSION,
+            providers: ProviderSettings::default(),
+            ..data.clone()
+        })
+        .unwrap();
+        write_private_file_atomically(&file.with_extension("json.bak"), &sanitized).unwrap();
+        write_private_file_atomically(&file, &sanitized).unwrap();
+        assert!(matches!(marker.phase, CredentialMigrationPhase::Prepared));
+
+        let recovered = load_persisted_data_from_path(&file).unwrap();
+
+        assert_eq!(recovered.schema_version, 2);
+        assert_eq!(fs::read(&file).unwrap(), original_primary);
+        assert_eq!(
+            fs::read(file.with_extension("json.bak")).unwrap(),
+            original_backup
+        );
+        let (marker, primary_rollback, backup_rollback) = credential_migration_paths(&file);
+        assert!(!marker.exists());
+        assert!(!primary_rollback.exists());
+        assert!(!backup_rollback.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_finishes_committed_migration_cleanup_without_restoring_plaintext() {
+        let data = legacy_data();
+        let (dir, file) = migration_file("committed-crash", &data);
+        let marker = prepare_credential_migration(&file).unwrap();
+        let mut sanitized_data = data.clone();
+        migrate_provider_ids(&mut sanitized_data.providers);
+        strip_plaintext_credentials(&mut sanitized_data.providers);
+        sanitized_data.schema_version = CREDENTIAL_MIGRATION_SCHEMA_VERSION;
+        let sanitized = serde_json::to_vec_pretty(&sanitized_data).unwrap();
+        write_private_file_atomically(&file.with_extension("json.bak"), &sanitized).unwrap();
+        write_private_file_atomically(&file, &sanitized).unwrap();
+        let (marker_path, _, _) = credential_migration_paths(&file);
+        write_migration_marker(
+            &marker_path,
+            &CredentialMigrationMarker {
+                phase: CredentialMigrationPhase::Committed,
+                ..marker
+            },
+        )
+        .unwrap();
+
+        let recovered = load_persisted_data_from_path(&file).unwrap();
+
+        assert_eq!(
+            recovered.schema_version,
+            CREDENTIAL_MIGRATION_SCHEMA_VERSION
+        );
+        assert!(!fs::read_to_string(&file).unwrap().contains("test-secret"));
+        assert!(!fs::read_to_string(file.with_extension("json.bak"))
+            .unwrap()
+            .contains("test-secret"));
+        let (marker, primary_rollback, backup_rollback) = credential_migration_paths(&file);
+        assert!(!marker.exists());
+        assert!(!primary_rollback.exists());
+        assert!(!backup_rollback.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_schema_repairs_stale_plaintext_backup() {
+        let mut current = legacy_data();
+        let legacy = current.clone();
+        migrate_provider_ids(&mut current.providers);
+        strip_plaintext_credentials(&mut current.providers);
+        current.schema_version = CREDENTIAL_MIGRATION_SCHEMA_VERSION;
+        let (dir, file) = migration_file("stale-plaintext-backup", &current);
+        fs::write(
+            file.with_extension("json.bak"),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        migrate_credentials_and_ids(&file, &mut current, &FakeCredentialStore::default()).unwrap();
+
+        let backup = fs::read_to_string(file.with_extension("json.bak")).unwrap();
+        assert!(!backup.contains("test-secret"));
+        assert_eq!(
+            serde_json::from_str::<PersistedData>(&backup)
+                .unwrap()
+                .schema_version,
+            CREDENTIAL_MIGRATION_SCHEMA_VERSION
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn credential_migration_is_idempotent_and_current_state_rejects_plaintext() {
         let mut data = legacy_data();
         let store = FakeCredentialStore::default();
@@ -801,5 +1144,43 @@ mod tests {
             .unwrap_err()
             .contains("拒绝持久化"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_v4_rejects_secret_fields_downgraded_by_plugin_manifest() {
+        for (label, auth_kind, key, field_type) in [
+            ("auth-kind", "api-key", "apiKey", "text"),
+            ("password-field", "none", "opaqueValue", "password"),
+            ("sensitive-name", "none", "clientSecret", "text"),
+        ] {
+            let mut data: PersistedData = serde_json::from_value(serde_json::json!({
+                "schema_version": CREDENTIAL_MIGRATION_SCHEMA_VERSION
+            }))
+            .unwrap();
+            data.providers.profiles.push(ProviderProfile {
+                id: format!("malicious-plugin-{label}"),
+                kind: format!("plugin:malicious-plugin-{label}"),
+                display_name: "Malicious plugin".into(),
+                auth_kind: auth_kind.into(),
+                capabilities: vec!["asr".into()],
+                enabled: true,
+                config: serde_json::json!({key: "must-not-persist"}),
+                config_fields: vec![crate::providers::ProviderConfigField {
+                    key: key.into(),
+                    label: "Credential".into(),
+                    field_type: field_type.into(),
+                    secret: false,
+                }],
+                actions: vec![],
+            });
+            let store = FakeCredentialStore::default();
+            let (dir, file) = migration_file(label, &data);
+
+            let error = migrate_credentials_and_ids(&file, &mut data, &store).unwrap_err();
+
+            assert!(error.contains("拒绝持久化"));
+            assert!(!error.contains("must-not-persist"));
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
