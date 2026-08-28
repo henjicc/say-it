@@ -69,6 +69,24 @@ impl CredentialStore for TestCredentials {
 }
 
 #[derive(Clone)]
+struct BlockingCredentials;
+
+impl CredentialStore for BlockingCredentials {
+    fn get(&self, _key: &CredentialKey) -> Result<Option<String>, String> {
+        thread::sleep(Duration::from_millis(250));
+        Ok(Some(SECRET.into()))
+    }
+
+    fn set(&self, _key: &CredentialKey, _value: &str) -> Result<(), String> {
+        unreachable!("blocking fixture never writes credentials")
+    }
+
+    fn delete(&self, _key: &CredentialKey) -> Result<(), String> {
+        unreachable!("blocking fixture never deletes credentials")
+    }
+}
+
+#[derive(Clone)]
 struct TestRecorder(Arc<Mutex<Vec<Value>>>);
 
 impl HostRuntimeRecorder for TestRecorder {
@@ -143,6 +161,50 @@ fn create_sdk_runtime(
         bindings(records),
     )
     .unwrap_or_else(|error| panic!("SDK QuickJS fixture 创建失败 ({source}): {error}"))
+}
+
+#[test]
+fn bounds_blocking_credential_store_by_host_deadline() {
+    let source = r#"
+export default () => ({
+  async invoke() {
+    const runtime = globalThis.__sayitCreateRuntimeContext();
+    await runtime.credentials.get('api-key', 'bailian');
+    return { unexpected: true };
+  }
+});
+"#;
+    let (root, spec, profile) = fixture(source);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let bindings = SdkHostBindings {
+        owner_id: "builtin:bailian".into(),
+        provider_id: "bailian".into(),
+        request_id: "blocked-credential".into(),
+        credential_scopes: HashSet::from(["api-key".into()]),
+        credential_key: CredentialKey::provider("bailian", "apiKey").unwrap(),
+        credentials: CredentialStoreHandle::from_store(Arc::new(BlockingCredentials)),
+        recorder: Arc::new(TestRecorder(records)),
+    };
+    let runtime = JsProviderRuntime::create_with_sdk_bindings(
+        spec,
+        &profile,
+        Duration::from_secs(1),
+        Arc::new(AtomicBool::new(false)),
+        HashMap::new(),
+        bindings,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let error = runtime
+        .call("invoke", &json!({}), Duration::from_millis(50))
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(
+        error.contains("SDK_RUNTIME_TIMEOUT") || error.contains("插件操作超时"),
+        "{error}"
+    );
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

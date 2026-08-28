@@ -102,6 +102,28 @@ impl BuiltinSdkRuntime {
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
+        Self::create_with_recorder(
+            profile,
+            credentials,
+            scope,
+            request_id,
+            cancelled,
+            inputs,
+            event_tx,
+            Arc::new(StructuredRecorder),
+        )
+    }
+
+    fn create_with_recorder(
+        profile: &ProviderProfile,
+        credentials: CredentialStoreHandle,
+        scope: BuiltinSdkScope,
+        request_id: impl Into<String>,
+        cancelled: Arc<AtomicBool>,
+        inputs: HashMap<String, PathBuf>,
+        event_tx: Option<mpsc::Sender<Value>>,
+        recorder: Arc<dyn HostRuntimeRecorder>,
+    ) -> Result<Self, String> {
         let request_id = request_id.into();
         let spec = runtime_spec(scope)?;
         let credential_key = CredentialKey::provider(scope.credential_owner(), "apiKey")?;
@@ -112,7 +134,7 @@ impl BuiltinSdkRuntime {
             credential_scopes: HashSet::from([scope.credential_scope().into()]),
             credential_key,
             credentials,
-            recorder: Arc::new(StructuredRecorder),
+            recorder,
         };
         let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
             spec,
@@ -129,6 +151,28 @@ impl BuiltinSdkRuntime {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn create_for_live_test(
+        profile: &ProviderProfile,
+        credentials: CredentialStoreHandle,
+        scope: BuiltinSdkScope,
+        request_id: impl Into<String>,
+        cancelled: Arc<AtomicBool>,
+        inputs: HashMap<String, PathBuf>,
+        recorder: Arc<dyn HostRuntimeRecorder>,
+    ) -> Result<Self, String> {
+        Self::create_with_recorder(
+            profile,
+            credentials,
+            scope,
+            request_id,
+            cancelled,
+            inputs,
+            None,
+            recorder,
+        )
+    }
+
     pub fn execute_capability(
         &self,
         source: &str,
@@ -136,13 +180,7 @@ impl BuiltinSdkRuntime {
         input: Value,
         request_id: &str,
     ) -> Result<Value, String> {
-        self.execute_capability_with_timeout(
-            source,
-            module_id,
-            input,
-            request_id,
-            self.timeout,
-        )
+        self.execute_capability_with_timeout(source, module_id, input, request_id, self.timeout)
     }
 
     fn execute_capability_with_timeout(
@@ -238,6 +276,11 @@ impl BuiltinSdkRuntime {
         self.runtime
             .call("realtimeStop", &Value::Null, Duration::from_secs(5))
             .map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(super) fn resource_counts(&self) -> (usize, usize, usize) {
+        self.runtime.sdk_resource_counts()
     }
 }
 

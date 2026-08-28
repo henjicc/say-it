@@ -45,6 +45,35 @@ const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
+const MAX_CREDENTIAL_READ_WAIT: Duration = Duration::from_secs(10);
+const CREDENTIAL_WORKER_COUNT: usize = 4;
+
+struct CredentialReadRequest {
+    credentials: super::credential_store::CredentialStoreHandle,
+    key: CredentialKey,
+    response: std::sync::mpsc::SyncSender<Result<Option<String>, String>>,
+}
+
+static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadRequest>> =
+    Lazy::new(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<CredentialReadRequest>(16);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..CREDENTIAL_WORKER_COUNT {
+            let receiver = receiver.clone();
+            std::thread::Builder::new()
+                .name(format!("sayit-credential-read-{index}"))
+                .spawn(move || loop {
+                    let request = receiver.lock().ok().and_then(|receiver| receiver.recv().ok());
+                    let Some(request) = request else {
+                        break;
+                    };
+                    let result = request.credentials.get(&request.key);
+                    let _ = request.response.send(result);
+                })
+                .expect("credential read worker must start");
+        }
+        sender
+    });
 
 type RuntimeOwnerMap = HashMap<String, HashMap<String, Weak<AtomicBool>>>;
 static PLUGIN_RUNTIME_OWNERS: Lazy<(Mutex<RuntimeOwnerMap>, Condvar)> =
@@ -755,7 +784,7 @@ impl HostState {
         if !sdk.permits_credential(scope, provider_id) {
             return Err("SDK 运行上下文无权读取该供应商凭据".into());
         }
-        let value = sdk.credentials.get(&sdk.credential_key)?;
+        let value = self.read_credential(&sdk.credentials, &sdk.credential_key)?;
         Ok(json!({"value": value}))
     }
 
@@ -773,10 +802,52 @@ impl HostState {
             .as_ref()
             .ok_or("插件运行时未绑定 CredentialStore")?;
         let key = CredentialKey::plugin(&self.spec.plugin_id, &self.sdk_provider_id(), field)?;
-        Ok(credentials
-            .get(&key)?
+        Ok(self
+            .read_credential(credentials, &key)?
             .map(Value::String)
             .unwrap_or(Value::Null))
+    }
+
+    fn read_credential(
+        &self,
+        credentials: &super::credential_store::CredentialStoreHandle,
+        key: &CredentialKey,
+    ) -> Result<Option<String>, String> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err("SDK_RUNTIME_CANCELLED".into());
+        }
+        let operation_deadline = *self
+            .deadline
+            .lock()
+            .map_err(|_| "SDK 凭据读取截止时间锁定失败")?;
+        let credential_deadline = operation_deadline.min(Instant::now() + MAX_CREDENTIAL_READ_WAIT);
+        if Instant::now() >= credential_deadline {
+            return Err("SDK_RUNTIME_TIMEOUT：系统凭据读取未在宿主截止时间内完成".into());
+        }
+        let (response, result) = std::sync::mpsc::sync_channel(1);
+        CREDENTIAL_READ_WORKERS
+            .try_send(CredentialReadRequest {
+                credentials: credentials.clone(),
+                key: key.clone(),
+                response,
+            })
+            .map_err(|_| "系统凭据读取队列繁忙，请稍后重试".to_string())?;
+        loop {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err("SDK_RUNTIME_CANCELLED".into());
+            }
+            let remaining = credential_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("SDK_RUNTIME_TIMEOUT：系统凭据读取未在宿主截止时间内完成".into());
+            }
+            match result.recv_timeout(remaining.min(Duration::from_millis(25))) {
+                Ok(value) => return value,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("系统凭据读取工作线程意外退出".into())
+                }
+            }
+        }
     }
 
     fn sdk_provider_id(&self) -> String {
