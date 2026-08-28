@@ -41,7 +41,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@henjicc/ai-sdk": "0.2.3",
+    "@henjicc/ai-sdk": "0.2.4",
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "clsx": "^2.1.1",
