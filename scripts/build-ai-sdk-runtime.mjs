@@ -13,13 +13,13 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-if (sdkVersion !== '0.2.3' || sdkLock?.version !== sdkVersion) {
-  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.3')
+if (sdkVersion !== '0.2.4' || sdkLock?.version !== sdkVersion) {
+  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.4')
 }
 if (
   typeof sdkLock.integrity !== 'string'
   || typeof sdkLock.resolved !== 'string'
-  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.3/')
+  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.4/')
 ) {
   throw new Error('AI SDK lock 缺少 GitHub Packages resolved/integrity')
 }
@@ -55,8 +55,9 @@ const groq = await bundleSdkEntry({
     '/dist/upload/',
     '/dist/providers/endpoints/',
     '/dist/providers/ppio-media',
+    '/dist/llm/bigmodel/',
   ],
-  plugins: [groqTextOnlyPreprocessPlugin()],
+  plugins: [groqBundleBoundaryPlugin()],
 })
 const llmModules = await bundleSdkEntry({
   entry: 'llm-modules-entry.ts',
@@ -71,6 +72,7 @@ const llmModules = await bundleSdkEntry({
     '/dist/capabilities/client',
     '/dist/capabilities/builtin-descriptors',
     '/dist/providers/',
+    '/dist/llm/bigmodel/',
   ],
 })
 
@@ -165,15 +167,21 @@ async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs, plug
   return describeFile(outputPath, inputs.length)
 }
 
-function groqTextOnlyPreprocessPlugin() {
-  const replacement = path.join(projectRoot, 'sdk-runtime', 'groq-text-only-preprocess.ts')
+function groqBundleBoundaryPlugin() {
+  const preprocessReplacement = path.join(projectRoot, 'sdk-runtime', 'groq-text-only-preprocess.ts')
+  const endpointIdentityReplacement = path.join(projectRoot, 'sdk-runtime', 'groq-endpoint-identity.ts')
   return {
-    name: 'sayit-groq-text-only-preprocess',
+    name: 'sayit-groq-bundle-boundary',
     setup(buildContext) {
       buildContext.onResolve({ filter: /^\.\.\/upload\/preprocess\.js$/ }, args => {
         const importer = args.importer.replaceAll('\\', '/')
         if (!importer.endsWith('/dist/llm/chat.js')) return undefined
-        return { path: replacement }
+        return { path: preprocessReplacement }
+      })
+      buildContext.onResolve({ filter: /^\.\/endpointProfiles\.js$/ }, args => {
+        const importer = args.importer.replaceAll('\\', '/')
+        if (!importer.includes('/dist/llm/')) return undefined
+        return { path: endpointIdentityReplacement }
       })
     },
   }
