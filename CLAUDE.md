@@ -166,7 +166,7 @@
 - 发布流程：先同步更新 `src-tauri/tauri.conf.json` 和 `package.json` 的 `version`，提交后推送 `v*.*.*` 格式的 tag，会触发 `.github/workflows/release.yml` 自动构建并直接发布 GitHub Release。
 - 新增/扩展识别模型、协议族或供应商时，先读取 `docs/rules/新增供应商与模型操作手册.md` 按场景执行，不要重新摸索。
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
-- `.sayit` 同时承载 API v5 JavaScript 供应商插件与 v4 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
+- `.sayit` 同时承载 API v5 JavaScript 供应商插件与 API v5 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
 - 热词与上下文全局唯一一份，存在 `AppSettings.customizationPrefs`（配置领域 `customization`），权威实现在 `src-tauri/src/application/customization.rs`；按模型的 `supportsVocabulary` / `supportsContext` 分别下发，供应商配置里不得再存热词。上下文只由模板决定（模板留空即不下发），要带热词必须在模板里显式插入 `{{hotwords}}`；智能处理提示词用 `{{global_context}}` 引用渲染后的上下文，用 `{{hotwords}}` 引用全局热词列表（大模型不受供应商词表接口限制，可直接拿到原词）。热词修改后自动防抖同步到需要云端词表的供应商。
 - 听写后处理顺序固定为「智能处理 → 本地规则」：本地规则是对最终文本的确定性兜底，必须作用在大模型输出之上。
