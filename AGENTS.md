@@ -170,6 +170,6 @@
 - 发布流程：先同步更新 `src-tauri/tauri.conf.json` 和 `package.json` 的 `version`，提交后推送 `v*.*.*` 格式的 tag，会触发 `.github/workflows/release.yml` 自动构建并直接发布 GitHub Release。
 - 新增/扩展识别模型、协议族或供应商时，先读取 `docs/rules/新增供应商与模型操作手册.md` 按场景执行，不要重新摸索。
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
-- `.sayit` 同时承载 API v3/v4 JavaScript 供应商插件与 v4 无代码模型包；在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
+- `.sayit` 同时承载 API v5 JavaScript 供应商插件与 v4 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
 - sherpa-onnx VAD（`sherpa-onnx-offline` 引擎）必须按 `vadWindowSize` 小块喂入，且不得在语音未确认时 `reset()`；细节见 `docs/experience/sherpa-onnx-VAD喂入块过大与误reset导致无识别结果.md`。
