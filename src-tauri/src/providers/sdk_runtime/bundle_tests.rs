@@ -158,10 +158,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.2.2");
+    assert_eq!(manifest["sdk"]["version"], "0.2.3");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-6VMyZwxz/oVTKmGAlfMQyAjVxLgjJISDdE5df2sQhvFpxAp4cXJvB3kvMWKIjI9HIl+Y7CsOqfpA9lvz2MM6QA=="
+        "sha512-l/s48EeQvOyGU5w0+xF3EKIRZmHwlk37qVX2ftMGBJUx8xQNNDvq7FSUAGpDaGYzVCmR5gquSvb4atyYuVZOPg=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -207,7 +207,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.2.2");
+    assert_eq!(result["version"], "0.2.3");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 12);
     assert_eq!(
@@ -477,6 +477,84 @@ export default () => ({
         'bailian.speech-recognition.qwen3-asr-flash-realtime',
         { mediaType: 'audio/pcm', sampleRateHz: 16000, channels: 1 },
         { requestId: 'scripted-realtime', onEvent: event => events.push(event.type) },
+      );
+      await session.send({ bytes: new Uint8Array([1, 2, 3]) });
+      const output = await session.finish();
+      await session.close();
+      return { text: output.text, events };
+    } finally {
+      await capabilities.dispose();
+      globalThis.__sayitDisposeRuntimeContext();
+    }
+  }
+});
+"#;
+    let (root, runtime) = create_runtime(source, "bailian", &["speech-recognition"]);
+    let result = runtime
+        .call(
+            "invoke",
+            &json!({"payload":{"url":format!("ws://{address}/realtime")}}),
+            Duration::from_secs(3),
+        )
+        .unwrap();
+    assert_eq!(result["text"], "脚本化实时识别");
+    assert_eq!(result["events"], json!(["started", "final", "completed"]));
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn fun_asr_bundle_ignores_official_empty_sentence_begin_and_keeps_final() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = accept(stream).unwrap();
+        let run_task = socket.read().unwrap().into_text().unwrap();
+        assert!(run_task.contains("run-task"));
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"task-started","task_id":"scripted-fun"}}"#.into(),
+            ))
+            .unwrap();
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_begin":true,"sentence_end":false,"begin_time":0,"end_time":null,"text":"","words":[]}},"usage":null}}"#.into(),
+            ))
+            .unwrap();
+        assert!(socket.read().unwrap().is_binary());
+        let finish_task = socket.read().unwrap().into_text().unwrap();
+        assert!(finish_task.contains("finish-task"));
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_end":true,"begin_time":0,"end_time":820,"text":"脚本化实时识别","words":[]}},"usage":{"duration":1}}}"#.into(),
+            ))
+            .unwrap();
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"task-finished","task_id":"scripted-fun"},"payload":{}}"#
+                    .into(),
+            ))
+            .unwrap();
+        let _ = socket.close(None);
+    });
+    let source = r#"
+export default () => ({
+  async invoke(request) {
+    const hostRuntime = globalThis.__sayitCreateRuntimeContext();
+    const hostConnect = hostRuntime.realtime.connect;
+    hostRuntime.realtime.connect = (_url, options) => hostConnect(request.payload.url, options);
+    const capabilities = globalThis.__sayitAiSdkCapabilities.createSayItCapabilityRuntime(hostRuntime, {
+      sources: ['bailian-speech-recognition-realtime'],
+      bailianSpeechRecognitionRealtime: { funWebSocketUrl: 'wss://scripted.invalid/realtime' },
+    });
+    const events = [];
+    try {
+      const session = await capabilities.openSession(
+        'bailian.speech-recognition.fun-asr-realtime',
+        { mediaType: 'audio/pcm', sampleRateHz: 16000, channels: 1 },
+        { requestId: 'scripted-fun-realtime', onEvent: event => events.push(event.type) },
       );
       await session.send({ bytes: new Uint8Array([1, 2, 3]) });
       const output = await session.finish();
