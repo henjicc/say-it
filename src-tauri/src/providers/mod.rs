@@ -44,6 +44,8 @@ impl RequestCustomization {
 }
 
 pub const BAILIAN_PROVIDER_ID: &str = "bailian";
+pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
+pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
@@ -366,13 +368,42 @@ pub fn bailian_profile() -> ProviderProfile {
     }
 }
 
+pub fn volcengine_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: VOLCENGINE_PROVIDER_ID.to_string(),
+        kind: "sdk:volcengine".to_string(),
+        display_name: "火山引擎".to_string(),
+        auth_kind: "api-key".to_string(),
+        capabilities: vec!["asr".to_string()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
+pub fn siliconflow_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: SILICONFLOW_PROVIDER_ID.to_string(),
+        kind: "sdk:siliconflow".to_string(),
+        display_name: "硅基流动".to_string(),
+        auth_kind: "api-key".to_string(),
+        capabilities: vec!["asr".to_string()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
 pub fn groq_llm_profile() -> ProviderProfile {
     ProviderProfile {
         id: GROQ_LLM_PROVIDER_ID.to_string(),
         kind: "llm:groq".to_string(),
         display_name: "Groq".to_string(),
         auth_kind: "api-key".to_string(),
-        capabilities: vec!["llm".to_string()],
+        // Groq 的 LLM 与 Whisper ASR 复用同一份供应商配置和加密凭据。
+        capabilities: vec!["llm".to_string(), "asr".to_string()],
         enabled: true,
         config: json!({
             "model": "openai/gpt-oss-20b",
@@ -442,6 +473,8 @@ pub fn remove_profile_preserving_credentials(settings: &mut ProviderSettings, id
 pub fn builtin_profiles() -> Vec<ProviderProfile> {
     vec![
         bailian_profile(),
+        volcengine_profile(),
+        siliconflow_profile(),
         groq_llm_profile(),
         system_ocr_profile(),
         apple_speech_profile(),
@@ -769,6 +802,23 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0], LlmModelConfig::manual("legacy-model"));
         assert_eq!(profile.config["apiKey"], "secret");
+        assert!(profile.capabilities.iter().any(|value| value == "asr"));
+    }
+
+    #[test]
+    fn p0_asr_profiles_use_stable_ids_and_generic_api_key_fields() {
+        let settings = ProviderSettings::default();
+        for id in [VOLCENGINE_PROVIDER_ID, SILICONFLOW_PROVIDER_ID] {
+            let profile = find_profile(&settings, id).unwrap();
+            assert!(profile.capabilities.iter().any(|value| value == "asr"));
+            let fields = config_fields_for(profile);
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].key, "apiKey");
+            assert!(fields[0].secret);
+        }
+        let groq = find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap();
+        assert!(groq.capabilities.iter().any(|value| value == "llm"));
+        assert!(groq.capabilities.iter().any(|value| value == "asr"));
     }
 
     #[test]

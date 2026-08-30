@@ -607,7 +607,7 @@ async fn run_groq_sdk(
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
             credentials,
-            crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+            crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
             request_id.clone(),
             cancelled,
             HashMap::new(),
@@ -653,7 +653,7 @@ where
             crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
                 &profile,
                 credentials,
-                crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+                crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
                 task_request_id.clone(),
                 task_cancelled,
                 HashMap::new(),

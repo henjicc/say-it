@@ -77,15 +77,28 @@ pub(crate) async fn start_asr_stream_inner(
         )
         .await;
     }
-    if profile.kind == "sdk:bailian" {
+    if let Some(route) = model_override
+        .as_deref()
+        .and_then(crate::providers::registry::builtin_sdk_asr_route)
+    {
+        if route.provider_id != profile.id {
+            return Err(format!(
+                "模型 {} 属于供应商 {}，不能由 {} 执行",
+                route.module_id, route.provider_id, profile.id
+            ));
+        }
+        if !route.realtime {
+            return Err(format!("模型 {} 不是实时识别模型", route.module_id));
+        }
         let model = model_override
             .filter(|model| !model.trim().is_empty())
-            .ok_or_else(|| "百炼实时识别必须指定模型".to_string())?;
-        return sdk_session::start_bailian_sdk_stream(
+            .ok_or_else(|| "内置 SDK 实时识别必须指定模型".to_string())?;
+        return sdk_session::start_sdk_stream(
             app,
             state,
             profile,
             model,
+            route,
             sample_rate.unwrap_or(48_000),
             params,
         )

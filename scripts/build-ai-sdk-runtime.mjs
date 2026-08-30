@@ -13,13 +13,13 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-if (sdkVersion !== '0.2.6' || sdkLock?.version !== sdkVersion) {
-  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.6')
+if (sdkVersion !== '0.2.7' || sdkLock?.version !== sdkVersion) {
+  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.7')
 }
 if (
   typeof sdkLock.integrity !== 'string'
   || typeof sdkLock.resolved !== 'string'
-  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.6/')
+  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.7/')
 ) {
   throw new Error('AI SDK lock 缺少 GitHub Packages resolved/integrity')
 }
@@ -90,6 +90,10 @@ const manifest = {
       'bailian-speech-recognition',
       'bailian-speech-recognition-realtime',
       'bailian-translation',
+      'volcengine-speech-recognition',
+      'volcengine-speech-recognition-realtime',
+      'siliconflow-speech-recognition',
+      'groq-speech-recognition',
     ],
     groq: ['groq-llm'],
     llmModules: ['plugin-llm'],

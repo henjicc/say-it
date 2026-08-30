@@ -154,7 +154,7 @@ async fn fetch_model_names(
             let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
                 &profile,
                 credentials,
-                crate::providers::sdk_runtime::online::BuiltinSdkScope::Groq,
+                crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
                 request_id,
                 Arc::new(AtomicBool::new(false)),
                 HashMap::new(),

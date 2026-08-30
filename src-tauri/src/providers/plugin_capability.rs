@@ -235,6 +235,7 @@ pub fn project_models(
             category: category.into(),
             protocol: PLUGIN_CAPABILITY_PROTOCOL.into(),
             capability_id: Some(descriptor.id.clone()),
+            sdk_capability_source: None,
             supports_vocabulary: feature("vocabulary"),
             supports_context: feature("context").then_some(true),
             supports_alignment_timestamps: feature("timestamps"),

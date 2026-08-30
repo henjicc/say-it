@@ -19,40 +19,85 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(45);
 const FILE_ASR_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuiltinSdkScope {
-    SpeechRecognition,
-    Translation,
-    Groq,
+pub struct BuiltinSdkScope {
+    profile_id: &'static str,
+    provider_id: &'static str,
+    credential_owner: &'static str,
+    credential_scope: &'static str,
+    allowed_hosts: &'static [&'static str],
 }
 
 impl BuiltinSdkScope {
-    fn provider_id(self) -> &'static str {
-        match self {
-            Self::SpeechRecognition | Self::Translation => "bailian",
-            Self::Groq => "groq",
+    pub const BAILIAN_SPEECH_RECOGNITION: Self = Self {
+        profile_id: "bailian",
+        provider_id: "bailian",
+        credential_owner: "bailian",
+        credential_scope: "speech-recognition",
+        allowed_hosts: &["*.aliyuncs.com"],
+    };
+    pub const BAILIAN_TRANSLATION: Self = Self {
+        profile_id: "bailian",
+        provider_id: "bailian",
+        credential_owner: "bailian",
+        credential_scope: "translation",
+        allowed_hosts: &["*.aliyuncs.com"],
+    };
+    pub const GROQ_LLM: Self = Self {
+        profile_id: "llm-groq",
+        provider_id: "groq",
+        credential_owner: "llm-groq",
+        credential_scope: "llm",
+        allowed_hosts: &["api.groq.com"],
+    };
+
+    pub fn speech_recognition(profile: &ProviderProfile) -> Result<Self, String> {
+        match profile.kind.as_str() {
+            "sdk:bailian" => Ok(Self::BAILIAN_SPEECH_RECOGNITION),
+            "sdk:volcengine" => Ok(Self {
+                profile_id: "volcengine",
+                provider_id: "volcengine",
+                credential_owner: "volcengine",
+                credential_scope: "speech-recognition",
+                allowed_hosts: &["openspeech.bytedance.com"],
+            }),
+            "sdk:siliconflow" => Ok(Self {
+                profile_id: "siliconflow",
+                provider_id: "siliconflow",
+                credential_owner: "siliconflow",
+                credential_scope: "speech-recognition",
+                allowed_hosts: &["api.siliconflow.cn"],
+            }),
+            "llm:groq" => Ok(Self {
+                profile_id: "llm-groq",
+                provider_id: "groq",
+                credential_owner: "llm-groq",
+                credential_scope: "speech-recognition",
+                allowed_hosts: &["api.groq.com"],
+            }),
+            _ => Err(format!(
+                "供应商 {} 没有内置 SDK 语音识别运行时",
+                profile.display_name
+            )),
         }
+    }
+
+    fn provider_id(self) -> &'static str {
+        self.provider_id
     }
 
     fn credential_owner(self) -> &'static str {
-        match self {
-            Self::SpeechRecognition | Self::Translation => "bailian",
-            Self::Groq => "llm-groq",
-        }
+        self.credential_owner
     }
 
     fn credential_scope(self) -> &'static str {
-        match self {
-            Self::SpeechRecognition => "speech-recognition",
-            Self::Translation => "translation",
-            Self::Groq => "llm",
-        }
+        self.credential_scope
     }
 
     fn allowed_hosts(self) -> Vec<String> {
-        match self {
-            Self::SpeechRecognition | Self::Translation => vec!["*.aliyuncs.com".into()],
-            Self::Groq => vec!["api.groq.com".into()],
-        }
+        self.allowed_hosts
+            .iter()
+            .map(|host| (*host).into())
+            .collect()
     }
 }
 
@@ -125,6 +170,12 @@ impl BuiltinSdkRuntime {
         event_tx: Option<mpsc::Sender<Value>>,
         recorder: Arc<dyn HostRuntimeRecorder>,
     ) -> Result<Self, String> {
+        if profile.id != scope.profile_id {
+            return Err(format!(
+                "内置 SDK scope {} 不能绑定供应商配置 {}",
+                scope.provider_id, profile.id
+            ));
+        }
         let request_id = request_id.into();
         let spec = runtime_spec(scope)?;
         let credential_key = CredentialKey::provider(scope.credential_owner(), "apiKey")?;
@@ -238,6 +289,7 @@ impl BuiltinSdkRuntime {
 
     pub fn realtime_start(
         &self,
+        source: &str,
         module_id: &str,
         input: Value,
         request_id: &str,
@@ -246,6 +298,7 @@ impl BuiltinSdkRuntime {
             .call(
                 "realtimeStart",
                 &json!({
+                    "source": source,
                     "moduleId": module_id,
                     "input": input,
                     "requestId": request_id,
@@ -285,7 +338,7 @@ impl BuiltinSdkRuntime {
     }
 }
 
-pub async fn recognize_bailian_file(
+pub async fn recognize_sdk_file(
     profile: ProviderProfile,
     credentials: CredentialStoreHandle,
     path: String,
@@ -293,9 +346,18 @@ pub async fn recognize_bailian_file(
     customization: crate::providers::RequestCustomization,
     cancelled: Option<Arc<AtomicBool>>,
 ) -> Result<crate::providers::alibabacloud::TranscriptionResult, String> {
-    let request_id = format!("bailian-asr-{}", uuid::Uuid::new_v4());
     let model = params.model_id();
-    let module_id = format!("bailian.speech-recognition.{model}");
+    let route = crate::providers::registry::builtin_sdk_asr_route(&model)
+        .filter(|route| !route.realtime)
+        .ok_or_else(|| format!("模型 {model} 没有内置 SDK 文件识别路由"))?;
+    if route.provider_id != profile.id {
+        return Err(format!(
+            "模型 {model} 属于供应商 {}，不能由 {} 执行",
+            route.provider_id, profile.id
+        ));
+    }
+    let scope = BuiltinSdkScope::speech_recognition(&profile)?;
+    let request_id = format!("{}-asr-{}", scope.provider_id(), uuid::Uuid::new_v4());
     let vocabulary_id = profile
         .config
         .get("vocabularyIds")
@@ -331,21 +393,21 @@ pub async fn recognize_bailian_file(
         let runtime = BuiltinSdkRuntime::create(
             &profile,
             credentials,
-            BuiltinSdkScope::SpeechRecognition,
+            scope,
             request_id.clone(),
             cancel,
             HashMap::from([("input-audio".into(), PathBuf::from(path))]),
         )?;
         runtime.execute_capability_with_timeout(
-            "asr",
-            &module_id,
+            &route.source,
+            &route.module_id,
             input,
             &request_id,
             FILE_ASR_TIMEOUT,
         )
     })
     .await
-    .map_err(|error| format!("百炼 SDK 识别工作线程失败：{error}"))??;
+    .map_err(|error| format!("内置 SDK 识别工作线程失败：{error}"))??;
     sdk_asr_to_legacy(value)
 }
 
@@ -381,7 +443,7 @@ where
         let runtime = BuiltinSdkRuntime::create_with_event_sender(
             &profile,
             credentials,
-            BuiltinSdkScope::Translation,
+            BuiltinSdkScope::BAILIAN_TRANSLATION,
             task_request_id.clone(),
             task_cancelled,
             HashMap::new(),
@@ -469,7 +531,7 @@ fn sdk_asr_to_legacy(
             "sentences": sentences,
         }],
     }))
-    .map_err(|error| format!("百炼 SDK 识别结果映射失败：{error}"))
+    .map_err(|error| format!("内置 SDK 识别结果映射失败：{error}"))
 }
 
 fn runtime_spec(scope: BuiltinSdkScope) -> Result<PluginRuntimeSpec, String> {
@@ -495,7 +557,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.2.5");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.2.7");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -510,6 +572,47 @@ fn builtin_root() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p0_asr_scopes_keep_provider_hosts_and_credential_owners_isolated() {
+        let volcengine =
+            BuiltinSdkScope::speech_recognition(&crate::providers::volcengine_profile()).unwrap();
+        assert_eq!(volcengine.provider_id(), "volcengine");
+        assert_eq!(volcengine.credential_owner(), "volcengine");
+        assert_eq!(volcengine.allowed_hosts(), ["openspeech.bytedance.com"]);
+
+        let siliconflow =
+            BuiltinSdkScope::speech_recognition(&crate::providers::siliconflow_profile()).unwrap();
+        assert_eq!(siliconflow.provider_id(), "siliconflow");
+        assert_eq!(siliconflow.allowed_hosts(), ["api.siliconflow.cn"]);
+
+        let groq =
+            BuiltinSdkScope::speech_recognition(&crate::providers::groq_llm_profile()).unwrap();
+        assert_eq!(groq.provider_id(), "groq");
+        assert_eq!(
+            groq.credential_owner(),
+            crate::providers::GROQ_LLM_PROVIDER_ID
+        );
+        assert_eq!(groq.credential_scope(), "speech-recognition");
+        assert_eq!(groq.allowed_hosts(), ["api.groq.com"]);
+    }
+
+    #[test]
+    fn sdk_scope_rejects_a_different_provider_profile_before_runtime_creation() {
+        let scope =
+            BuiltinSdkScope::speech_recognition(&crate::providers::volcengine_profile()).unwrap();
+        let error = BuiltinSdkRuntime::create(
+            &crate::providers::bailian_profile(),
+            CredentialStoreHandle::default(),
+            scope,
+            "mismatched-provider",
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .err()
+        .expect("不同供应商的 profile 与 SDK scope 必须被拒绝");
+        assert!(error.contains("不能绑定供应商配置 bailian"));
+    }
 
     #[tokio::test]
     async fn pre_cancelled_translation_stops_before_credentials_or_network() {

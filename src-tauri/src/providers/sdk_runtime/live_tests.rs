@@ -98,7 +98,7 @@ fn run_asr(recorder: &AuditRecorder, model: &str, protocol: &str, audio: &Path) 
             "options": {},
         }),
         HashMap::from([("input-audio".into(), audio.to_path_buf())]),
-        BuiltinSdkScope::SpeechRecognition,
+        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
     )
 }
 
@@ -115,7 +115,7 @@ fn run_translation(recorder: &AuditRecorder, model: &str) -> LiveCaseResult {
             "options": { "stream": true },
         }),
         HashMap::new(),
-        BuiltinSdkScope::Translation,
+        BuiltinSdkScope::BAILIAN_TRANSLATION,
     )
 }
 
@@ -131,7 +131,7 @@ fn run_realtime(
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &profile,
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::SpeechRecognition,
+        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
         request_id.clone(),
         Arc::new(AtomicBool::new(false)),
         HashMap::new(),
@@ -151,6 +151,7 @@ fn run_realtime(
     let module_id = format!("bailian.speech-recognition.{model}");
     let result = runtime
         .realtime_start(
+            "bailian-speech-recognition-realtime",
             &module_id,
             json!({
                 "mediaType": "audio/pcm",
@@ -192,7 +193,7 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &profile,
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::Groq,
+        BuiltinSdkScope::GROQ_LLM,
         request_id.clone(),
         Arc::new(AtomicBool::new(false)),
         HashMap::new(),
@@ -254,7 +255,7 @@ fn run_pre_cancel(recorder: &AuditRecorder) -> LiveCaseResult {
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &groq_llm_profile(),
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::Groq,
+        BuiltinSdkScope::GROQ_LLM,
         request_id.clone(),
         cancelled.clone(),
         HashMap::new(),
@@ -348,12 +349,35 @@ fn live_catalog_maps_all_nine_bailian_asr_models() {
 }
 
 #[test]
+fn p0_catalog_exposes_only_runnable_say_it_routes() {
+    let catalog: Vec<Value> = serde_json::from_str(ASR_CATALOG).expect("ASR catalog");
+    let ids = catalog
+        .iter()
+        .filter_map(|model| model.get("id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"seedasr-2.0-realtime"));
+    assert!(!ids.contains(&"seedasr-2.0-file"));
+    assert!(ids.contains(&"FunAudioLLM/SenseVoiceSmall"));
+    assert!(ids.contains(&"TeleAI/TeleSpeechASR"));
+    assert!(ids.contains(&"whisper-large-v3-turbo"));
+    assert!(ids.contains(&"whisper-large-v3"));
+    assert_eq!(
+        catalog
+            .iter()
+            .find(|model| model.get("id").and_then(Value::as_str) == Some("whisper-large-v3"))
+            .and_then(|model| model.get("providerId"))
+            .and_then(Value::as_str),
+        Some("llm-groq")
+    );
+}
+
+#[test]
 fn classifies_missing_bailian_credential_without_network() {
     let request_id = "missing-bailian-key";
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &bailian_profile(),
         CredentialStoreHandle::from_store(Arc::new(MissingCredentials)),
-        BuiltinSdkScope::SpeechRecognition,
+        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
         request_id,
         Arc::new(AtomicBool::new(false)),
         HashMap::new(),
