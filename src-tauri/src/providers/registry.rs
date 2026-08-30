@@ -28,9 +28,12 @@ pub struct ModelInfo {
     pub provider_id: String,
     pub category: String,
     pub protocol: String,
-    /// Plugin API v5 模型指向的 SDK capability module。内置/本地模型无需声明。
+    /// 内置 SDK 或 Plugin API v5 模型指向的 SDK capability module。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_id: Option<String>,
+    /// 内置 SDK 模型按需加载的 capability source；插件和本地模型不声明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_capability_source: Option<String>,
     pub supports_vocabulary: bool,
     /// 是否支持「上下文增强」：识别请求可以携带一段自然语言/词表文本，模型据此修正专有名词。
     ///
@@ -83,6 +86,26 @@ pub fn models() -> &'static [ModelInfo] {
 pub fn model_info(id: &str) -> Option<&'static ModelInfo> {
     let normalized = id.trim();
     REGISTRY.iter().find(|info| info.id == normalized)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltinSdkAsrRoute {
+    pub provider_id: String,
+    pub source: String,
+    pub module_id: String,
+    pub realtime: bool,
+}
+
+/// 内置在线 ASR 的执行坐标完全由共享模型目录声明；没有 source 的插件、本地和系统模型
+/// 不会误入内置 SDK 运行时。
+pub fn builtin_sdk_asr_route(model: &str) -> Option<BuiltinSdkAsrRoute> {
+    let info = model_info(model)?;
+    Some(BuiltinSdkAsrRoute {
+        provider_id: info.provider_id.clone(),
+        source: info.sdk_capability_source.as_ref()?.clone(),
+        module_id: info.capability_id.as_ref()?.clone(),
+        realtime: info.category == "realtime",
+    })
 }
 
 /// 判断模型的实时识别协议族。表内模型直接查表，表外模型按前缀兜底。
@@ -202,6 +225,24 @@ mod tests {
     }
 
     #[test]
+    fn builtin_sdk_routes_are_declared_by_model_catalog() {
+        let volcengine = builtin_sdk_asr_route("seedasr-2.0-realtime").unwrap();
+        assert_eq!(
+            volcengine,
+            BuiltinSdkAsrRoute {
+                provider_id: "volcengine".into(),
+                source: "volcengine-speech-recognition-realtime".into(),
+                module_id: "volcengine.speech-recognition.seedasr-2.0-realtime".into(),
+                realtime: true,
+            }
+        );
+        let groq = builtin_sdk_asr_route("whisper-large-v3-turbo").unwrap();
+        assert_eq!(groq.source, "groq-speech-recognition");
+        assert!(!groq.realtime);
+        assert!(builtin_sdk_asr_route("apple-speech-transcriber-live").is_none());
+    }
+
+    #[test]
     fn apple_system_model_keeps_one_stable_entry() {
         let model = model_info("apple-speech-transcriber-live").unwrap();
         assert_eq!(model.label, "Apple 系统本地识别（系统语言）");
@@ -218,8 +259,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 9 个云端模型，加上 macOS 上按能力选择新旧引擎的 Apple 本地实时模型。
-        assert_eq!(REGISTRY.len(), 10, "当前应有 10 个模型");
+        // 9 个百炼、5 个 P0 云端模型，加上 Apple 本地实时模型。
+        assert_eq!(REGISTRY.len(), 15, "当前应有 15 个模型");
     }
 
     #[test]

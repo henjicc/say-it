@@ -10,11 +10,12 @@ use crate::state::*;
 
 const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
 
-pub(super) async fn start_bailian_sdk_stream(
+pub(super) async fn start_sdk_stream(
     app: tauri::AppHandle,
     state: &RuntimeState,
     profile: ProviderProfile,
     model: String,
+    route: crate::providers::registry::BuiltinSdkAsrRoute,
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
@@ -37,6 +38,7 @@ pub(super) async fn start_bailian_sdk_stream(
             rx,
             super::stream_dsp(params, input_sample_rate),
             model,
+            route,
             profile,
             credentials,
         );
@@ -52,14 +54,23 @@ fn run_sdk_session(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
     mut dsp: StreamDsp,
     model: String,
+    route: crate::providers::registry::BuiltinSdkAsrRoute,
     profile: ProviderProfile,
     credentials: crate::providers::credential_store::CredentialStoreHandle,
 ) {
     let cancelled = Arc::new(AtomicBool::new(false));
+    let scope = match BuiltinSdkScope::speech_recognition(&profile) {
+        Ok(scope) => scope,
+        Err(error) => {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+            cleanup_stream(&streams, &session_id);
+            return;
+        }
+    };
     let runtime = match BuiltinSdkRuntime::create(
         &profile,
         credentials,
-        BuiltinSdkScope::SpeechRecognition,
+        scope,
         session_id.clone(),
         cancelled,
         HashMap::new(),
@@ -71,10 +82,12 @@ fn run_sdk_session(
             return;
         }
     };
-    let module_id = format!("bailian.speech-recognition.{model}");
-    if let Err(error) =
-        runtime.realtime_start(&module_id, realtime_input(&profile, &model), &session_id)
-    {
+    if let Err(error) = runtime.realtime_start(
+        &route.source,
+        &route.module_id,
+        realtime_input(&profile, &model),
+        &session_id,
+    ) {
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
         cleanup_stream(&streams, &session_id);
         return;
@@ -83,7 +96,7 @@ fn run_sdk_session(
         &app,
         &session_id,
         "opened",
-        json!({ "message": "AI SDK realtime ASR opened", "model": model, "moduleId": module_id }),
+        json!({ "message": "AI SDK realtime ASR opened", "model": model, "moduleId": route.module_id }),
     );
     flush_events(&runtime, &app, &session_id);
 
@@ -153,6 +166,13 @@ fn run_sdk_session(
 }
 
 fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
+    if profile.kind != "sdk:bailian" {
+        return json!({
+            "mediaType": "audio/pcm",
+            "sampleRateHz": OUTPUT_RATE,
+            "channels": 1,
+        });
+    }
     let config = &profile.config;
     let vocabulary_id = config
         .get("vocabularyIds")
@@ -233,10 +253,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn realtime_model_maps_to_sdk_module_id() {
+    fn realtime_routes_come_from_the_shared_model_catalog() {
+        let route =
+            crate::providers::registry::builtin_sdk_asr_route("seedasr-2.0-realtime").unwrap();
+        assert_eq!(route.source, "volcengine-speech-recognition-realtime");
         assert_eq!(
-            format!("bailian.speech-recognition.{}", "fun-asr-realtime"),
-            "bailian.speech-recognition.fun-asr-realtime"
+            route.module_id,
+            "volcengine.speech-recognition.seedasr-2.0-realtime"
         );
     }
 
@@ -249,5 +272,17 @@ mod tests {
         assert_eq!(input["options"]["vocabularyId"], "vocab-1");
         assert_eq!(input["hints"], json!(["zh", "en"]));
         assert!(input.to_string().find("apiKey").is_none());
+    }
+
+    #[test]
+    fn volcengine_realtime_input_only_contains_supported_audio_contract() {
+        let input = realtime_input(
+            &crate::providers::volcengine_profile(),
+            "seedasr-2.0-realtime",
+        );
+        assert_eq!(
+            input,
+            json!({ "mediaType": "audio/pcm", "sampleRateHz": 16_000, "channels": 1 })
+        );
     }
 }

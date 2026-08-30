@@ -2,7 +2,20 @@ const capabilitySources = Object.freeze({
   asr: 'bailian-speech-recognition',
   realtimeAsr: 'bailian-speech-recognition-realtime',
   translation: 'bailian-translation',
+  volcengineAsr: 'volcengine-speech-recognition',
+  volcengineRealtimeAsr: 'volcengine-speech-recognition-realtime',
+  siliconflowAsr: 'siliconflow-speech-recognition',
+  groqAsr: 'groq-speech-recognition',
 })
+const allowedCapabilitySources = new Set(Object.values(capabilitySources))
+
+const resolveCapabilitySource = source => {
+  const resolved = capabilitySources[source] ?? source
+  if (!allowedCapabilitySources.has(resolved)) {
+    throw new Error(`未知内置 SDK capability source：${source}`)
+  }
+  return resolved
+}
 
 export default host => {
   let realtimeRuntime
@@ -24,7 +37,7 @@ export default host => {
       const operation = request.operation
       if (operation === 'capability.execute') {
         const sdk = globalThis.__sayitCreateSdkRuntime({
-          sources: [capabilitySources[request.source]],
+          sources: [resolveCapabilitySource(request.source)],
         })
         try {
           return await sdk.capabilities.execute(request.moduleId, request.input, {
@@ -67,7 +80,7 @@ export default host => {
     async realtimeStart(request) {
       await disposeRealtime()
       realtimeRuntime = globalThis.__sayitCreateSdkRuntime({
-        sources: [capabilitySources.realtimeAsr],
+        sources: [resolveCapabilitySource(request.source ?? 'realtimeAsr')],
       })
       realtimeSession = await realtimeRuntime.capabilities.openSession(
         request.moduleId,

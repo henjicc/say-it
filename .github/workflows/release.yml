@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -14,6 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+          registry-url: https://npm.pkg.github.com
+          scope: '@henjicc'
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -22,6 +28,8 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: install frontend dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install
 
       - name: build Windows installer
@@ -74,6 +82,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+          registry-url: https://npm.pkg.github.com
+          scope: '@henjicc'
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -123,6 +133,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: install native and frontend dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           brew install opus
           npm install

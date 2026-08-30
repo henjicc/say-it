@@ -43,7 +43,7 @@ fn bailian_api_key(
 
 #[derive(Clone)]
 pub enum FileRecognitionProvider {
-    BailianSdk {
+    BuiltinSdk {
         profile: ProviderProfile,
         credentials: super::credential_store::CredentialStoreHandle,
         customization: RequestCustomization,
@@ -94,11 +94,13 @@ pub fn file_recognition_for_with_extensions(
         });
     }
     match profile.kind.as_str() {
-        "sdk:bailian" => Ok(FileRecognitionProvider::BailianSdk {
-            profile: profile.clone(),
-            credentials,
-            customization,
-        }),
+        "sdk:bailian" | "sdk:volcengine" | "sdk:siliconflow" | "llm:groq" => {
+            Ok(FileRecognitionProvider::BuiltinSdk {
+                profile: profile.clone(),
+                credentials,
+                customization,
+            })
+        }
         _ => Err(unsupported(profile, "fileRecognition")),
     }
 }
@@ -111,12 +113,12 @@ impl FileRecognitionProvider {
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<TranscriptionResult, String> {
         match self {
-            Self::BailianSdk {
+            Self::BuiltinSdk {
                 profile,
                 credentials,
                 customization,
             } => {
-                super::sdk_runtime::online::recognize_bailian_file(
+                super::sdk_runtime::online::recognize_sdk_file(
                     profile.clone(),
                     credentials.clone(),
                     path.to_string(),
@@ -639,6 +641,9 @@ mod tests {
         assert!(file_recognition_for(&p).is_ok());
         assert!(translation_for(&p).is_ok());
         assert!(customization_for(&p).is_ok());
+
+        assert!(file_recognition_for(&super::super::siliconflow_profile()).is_ok());
+        assert!(file_recognition_for(&super::super::groq_llm_profile()).is_ok());
     }
 
     #[test]

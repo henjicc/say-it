@@ -5,6 +5,10 @@
     'bailian-speech-recognition',
     'bailian-speech-recognition-realtime',
     'bailian-translation',
+    'volcengine-speech-recognition',
+    'volcengine-speech-recognition-realtime',
+    'siliconflow-speech-recognition',
+    'groq-speech-recognition',
   ] as const
   const GROQ_SOURCE = 'groq-llm' as const
   type CapabilitySource = typeof CAPABILITY_SOURCES[number]

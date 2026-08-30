@@ -158,10 +158,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.2.5");
+    assert_eq!(manifest["sdk"]["version"], "0.2.7");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-6WCgQEWM+EenbBT7njFQEx21jlwrO9KVIdJHHeXula8vImZ3fgcLjnEs+B1W6HaYqv2Cd5DCMk+Ug0wO0eNrLA=="
+        "sha512-1J38LuRPTddVb4vUINzbz8uilCub+M0KC3vM8xbDn40yv3weGrVkN7pfZJEKJIffojddZxuXc8qkyOA/Qr3vaw=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -169,7 +169,7 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     assert!(manifest["bundles"]["groq"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0));
-    assert_eq!(manifest["bundles"]["groq"]["modules"], 100);
+    assert_eq!(manifest["bundles"]["groq"]["modules"], 101);
     assert!(manifest["bundles"]["llmModules"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
@@ -183,6 +183,10 @@ export default () => ({
         'bailian-speech-recognition',
         'bailian-speech-recognition-realtime',
         'bailian-translation',
+        'volcengine-speech-recognition',
+        'volcengine-speech-recognition-realtime',
+        'siliconflow-speech-recognition',
+        'groq-speech-recognition',
       ],
     });
     try {
@@ -207,18 +211,27 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.2.5");
+    assert_eq!(result["version"], "0.2.7");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 12);
+    assert_eq!(result["count"], 18);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
     );
-    assert!(result["ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|id| id.as_str().unwrap().starts_with("bailian.")));
+    let ids = result["ids"].as_array().unwrap();
+    for expected in [
+        "volcengine.speech-recognition.seedasr-2.0-file",
+        "volcengine.speech-recognition.seedasr-2.0-realtime",
+        "siliconflow.speech-recognition.FunAudioLLM/SenseVoiceSmall",
+        "siliconflow.speech-recognition.TeleAI/TeleSpeechASR",
+        "groq.speech-recognition.whisper-large-v3-turbo",
+        "groq.speech-recognition.whisper-large-v3",
+    ] {
+        assert!(
+            ids.iter().any(|id| id.as_str() == Some(expected)),
+            "缺少 {expected}"
+        );
+    }
     assert!(result["sources"]
         .as_array()
         .unwrap()

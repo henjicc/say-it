@@ -19,6 +19,26 @@ import {
   type BailianRealtimeModuleOptions,
 } from '@henjicc/ai-sdk/capabilities/speech-recognition/bailian/realtime'
 import {
+  createVolcengineAsrModule,
+  volcengineFileAsrPresets,
+  type VolcengineAsrModuleOptions,
+} from '@henjicc/ai-sdk/capabilities/speech-recognition/volcengine'
+import {
+  createVolcengineRealtimeAsrModule,
+  volcengineRealtimeAsrPresets,
+  type VolcengineRealtimeModuleOptions,
+} from '@henjicc/ai-sdk/capabilities/speech-recognition/volcengine/realtime'
+import {
+  createSiliconFlowAsrModule,
+  siliconFlowAsrPresets,
+  type SiliconFlowAsrModuleOptions,
+} from '@henjicc/ai-sdk/capabilities/speech-recognition/siliconflow'
+import {
+  createGroqAsrModule,
+  groqAsrPresets,
+  type GroqAsrModuleOptions,
+} from '@henjicc/ai-sdk/capabilities/speech-recognition/groq'
+import {
   BAILIAN_QWEN_MT_PRESETS,
   createBailianQwenMtTranslationModule,
   type BailianQwenMtModuleConfig,
@@ -31,6 +51,10 @@ export const SAYIT_CAPABILITY_MODULE_SOURCES = [
   'bailian-speech-recognition',
   'bailian-speech-recognition-realtime',
   'bailian-translation',
+  'volcengine-speech-recognition',
+  'volcengine-speech-recognition-realtime',
+  'siliconflow-speech-recognition',
+  'groq-speech-recognition',
 ] as const
 
 export type SayItCapabilityModuleSource = typeof SAYIT_CAPABILITY_MODULE_SOURCES[number]
@@ -40,6 +64,10 @@ export interface SayItCapabilityRuntimeOptions {
   bailianSpeechRecognition?: BailianAsrModuleOptions
   bailianSpeechRecognitionRealtime?: BailianRealtimeModuleOptions
   bailianTranslation?: BailianQwenMtModuleConfig
+  volcengineSpeechRecognition?: VolcengineAsrModuleOptions
+  volcengineSpeechRecognitionRealtime?: VolcengineRealtimeModuleOptions
+  siliconflowSpeechRecognition?: SiliconFlowAsrModuleOptions
+  groqSpeechRecognition?: GroqAsrModuleOptions
 }
 
 export interface SayItCapabilityRuntime {
@@ -467,6 +495,31 @@ function registerSources(
       client.register(
         createBailianQwenMtTranslationModule(preset.modelId, options.bailianTranslation)
       )
+    }
+  }
+  if (sources.has('volcengine-speech-recognition')) {
+    for (const preset of volcengineFileAsrPresets) {
+      client.register(createVolcengineAsrModule(preset, options.volcengineSpeechRecognition))
+    }
+  }
+  if (sources.has('volcengine-speech-recognition-realtime')) {
+    for (const preset of volcengineRealtimeAsrPresets) {
+      client.registerRealtime(
+        createVolcengineRealtimeAsrModule(
+          preset,
+          options.volcengineSpeechRecognitionRealtime
+        )
+      )
+    }
+  }
+  if (sources.has('siliconflow-speech-recognition')) {
+    for (const preset of siliconFlowAsrPresets) {
+      client.register(createSiliconFlowAsrModule(preset, options.siliconflowSpeechRecognition))
+    }
+  }
+  if (sources.has('groq-speech-recognition')) {
+    for (const preset of groqAsrPresets) {
+      client.register(createGroqAsrModule(preset, options.groqSpeechRecognition))
     }
   }
 }
