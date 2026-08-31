@@ -608,25 +608,108 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use std::cell::RefCell;
     use std::sync::Mutex;
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
     };
-    use windows::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK};
+    use windows::Win32::UI::Input::{
+        GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
+        RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
         GetMessageW, PostThreadMessageW, RegisterClassW, TranslateMessage, CW_USEDEFAULT,
-        HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_QUIT, WNDCLASSW,
+        HWND_MESSAGE, MSG, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_5_DOWN,
+        RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+        RI_MOUSE_RIGHT_BUTTON_DOWN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_QUIT, WNDCLASSW,
     };
 
     type Callback = fn(f64, f64, bool, bool, bool, u8);
     static CALLBACK: OnceLock<Callback> = OnceLock::new();
     static THREAD_ID: Mutex<Option<u32>> = Mutex::new(None);
-    static LEFT_BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
+    thread_local! {
+        // 每次监听线程重建都有独立状态，旧线程退出不能污染新线程的按钮状态。
+        static BUTTONS: RefCell<RawMouseButtons> = RefCell::new(RawMouseButtons::default());
+    }
+
+    const BUTTON_DOWN_FLAGS: u32 = RI_MOUSE_LEFT_BUTTON_DOWN
+        | RI_MOUSE_RIGHT_BUTTON_DOWN
+        | RI_MOUSE_MIDDLE_BUTTON_DOWN
+        | RI_MOUSE_BUTTON_4_DOWN
+        | RI_MOUSE_BUTTON_5_DOWN;
+
+    #[derive(Default)]
+    struct RawMouseButtons {
+        down_flags: u32,
+    }
+
+    impl RawMouseButtons {
+        fn push(&mut self, flags: u32, mut emit: impl FnMut(bool, bool, bool)) {
+            // 同一包若同时携带按下和释放，也要形成完整点击，不能把两个沿合成一个样本。
+            let packets =
+                if flags & RI_MOUSE_LEFT_BUTTON_DOWN != 0 && flags & RI_MOUSE_LEFT_BUTTON_UP != 0 {
+                    [
+                        Some(flags & !RI_MOUSE_LEFT_BUTTON_UP),
+                        Some(RI_MOUSE_LEFT_BUTTON_UP),
+                    ]
+                } else {
+                    [Some(flags), None]
+                };
+            for flags in packets.into_iter().flatten() {
+                self.down_flags |= flags & BUTTON_DOWN_FLAGS;
+                // RAWMOUSE 每个按钮的 UP 标记紧邻其 DOWN 标记，高一位。
+                self.down_flags &= !((flags >> 1) & BUTTON_DOWN_FLAGS);
+                emit(
+                    self.down_flags != 0,
+                    flags & RI_MOUSE_LEFT_BUTTON_DOWN != 0,
+                    flags & RI_MOUSE_LEFT_BUTTON_UP != 0,
+                );
+            }
+        }
+    }
+
+    fn mouse_button_flags(raw: &RAWINPUT, copied: u32) -> Result<Option<u32>, String> {
+        if copied < std::mem::size_of::<RAWINPUTHEADER>() as u32 {
+            return Err("Windows 原始鼠标输入头不完整".into());
+        }
+        if raw.header.dwType != RIM_TYPEMOUSE.0 {
+            return Ok(None);
+        }
+        if copied < std::mem::size_of::<RAWINPUT>() as u32 {
+            return Err("Windows 原始鼠标输入数据不完整".into());
+        }
+        // 已验证设备类型及结构长度，才能读取对应的 union 分支。
+        Ok(Some(
+            unsafe { raw.data.mouse.Anonymous.Anonymous.usButtonFlags } as u32,
+        ))
+    }
+
+    fn read_mouse_button_flags(lparam: LPARAM) -> Result<Option<u32>, String> {
+        // 本窗口只注册鼠标；使用对齐的固定结构，不在高频输入回调里分配字节缓冲区。
+        let mut raw = RAWINPUT::default();
+        let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+        let copied = unsafe {
+            GetRawInputData(
+                HRAWINPUT(lparam.0 as *mut _),
+                RID_INPUT,
+                Some((&mut raw as *mut RAWINPUT).cast()),
+                &mut size,
+                std::mem::size_of::<RAWINPUTHEADER>() as u32,
+            )
+        };
+        if copied == u32::MAX {
+            return Err(format!(
+                "读取 Windows 原始鼠标输入失败：{}",
+                windows::core::Error::from_win32()
+            ));
+        }
+        mouse_button_flags(&raw, copied)
+    }
 
     unsafe extern "system" fn window_proc(
         window: HWND,
@@ -635,31 +718,42 @@ mod platform {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_INPUT {
-            let mut point = POINT::default();
-            if GetCursorPos(&mut point).is_ok() {
-                let left_down = (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0;
-                let down = left_down
-                    || (GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000) != 0
-                    || (GetAsyncKeyState(VK_MBUTTON.0 as i32) as u16 & 0x8000) != 0;
-                let previous_left = LEFT_BUTTON_DOWN.swap(left_down, Ordering::AcqRel);
-                if let Some(callback) = CALLBACK.get() {
-                    callback(
-                        point.x as f64,
-                        point.y as f64,
-                        down,
-                        left_down && !previous_left,
-                        !left_down && previous_left,
-                        0,
-                    );
+            // WM_INPUT 是队列中的事件；GetAsyncKeyState 是处理时的最新状态，
+            // 无法还原排队期间的按下/释放。连击边沿必须以当前原始输入包为准。
+            match read_mouse_button_flags(lparam) {
+                Ok(Some(flags)) => {
+                    let mut point = POINT::default();
+                    let position = GetCursorPos(&mut point);
+                    BUTTONS.with(|buttons| {
+                        buttons.borrow_mut().push(flags, |down, pressed, released| {
+                            if position.is_ok() {
+                                if let Some(callback) = CALLBACK.get() {
+                                    callback(
+                                        point.x as f64,
+                                        point.y as f64,
+                                        down,
+                                        pressed,
+                                        released,
+                                        0,
+                                    );
+                                }
+                            }
+                        });
+                    });
+                    if let Err(error) = position {
+                        eprintln!("[mouse-gesture] 读取鼠标位置失败：{error}");
+                    }
                 }
+                Ok(None) => {}
+                Err(error) => eprintln!("[mouse-gesture] {error}"),
             }
         }
+        // 前台原始输入仍需 DefWindowProc 完成系统清理。
         DefWindowProcW(window, message, wparam, lparam)
     }
 
     pub(super) fn start(callback: Callback) -> Result<(), String> {
         let _ = CALLBACK.set(callback);
-        LEFT_BUTTON_DOWN.store(false, Ordering::Release);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || unsafe {
             let instance = match GetModuleHandleW(None) {
@@ -710,6 +804,21 @@ mod platform {
                 let _ = ready_tx.send(Err(format!("注册 Windows 原始鼠标输入失败：{error}")));
                 return;
             }
+            // 全局状态只用于启动时初始化已按住的按钮，不参与后续点击边沿推断。
+            BUTTONS.with(|buttons| {
+                let mut buttons = buttons.borrow_mut();
+                for (key, flag) in [
+                    (VK_LBUTTON, RI_MOUSE_LEFT_BUTTON_DOWN),
+                    (VK_RBUTTON, RI_MOUSE_RIGHT_BUTTON_DOWN),
+                    (VK_MBUTTON, RI_MOUSE_MIDDLE_BUTTON_DOWN),
+                    (VK_XBUTTON1, RI_MOUSE_BUTTON_4_DOWN),
+                    (VK_XBUTTON2, RI_MOUSE_BUTTON_5_DOWN),
+                ] {
+                    if (GetAsyncKeyState(key.0 as i32) as u16 & 0x8000) != 0 {
+                        buttons.down_flags |= flag;
+                    }
+                }
+            });
             let thread_id = GetCurrentThreadId();
             let _ = ready_tx.send(Ok(thread_id));
             let mut message = MSG::default();
@@ -743,6 +852,209 @@ mod platform {
             .is_some()
             .then_some(())
             .ok_or_else(|| "Windows 全局鼠标监听未启动".to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::Win32::UI::Input::RIM_TYPEKEYBOARD;
+        use windows::Win32::UI::WindowsAndMessaging::RI_MOUSE_WHEEL;
+
+        fn packet(flags: u32) -> RAWINPUT {
+            let mut raw = RAWINPUT::default();
+            raw.header.dwType = RIM_TYPEMOUSE.0;
+            raw.header.dwSize = std::mem::size_of::<RAWINPUT>() as u32;
+            raw.data.mouse.Anonymous.Anonymous.usButtonFlags = flags as u16;
+            raw
+        }
+
+        fn feed(
+            buttons: &mut RawMouseButtons,
+            recognizer: &mut RapidClickRecognizer,
+            flags: u32,
+            at: Instant,
+            x: f64,
+            count: u8,
+        ) -> Option<(i32, i32)> {
+            let raw = packet(flags);
+            let flags = mouse_button_flags(&raw, raw.header.dwSize)
+                .unwrap()
+                .unwrap();
+            let mut result = None;
+            buttons.push(flags, |down, pressed, released| {
+                let detected = recognizer.push(
+                    PointerSample {
+                        x,
+                        y: 80.0,
+                        at,
+                        button_down: down,
+                        left_pressed: pressed,
+                        left_released: released,
+                        native_click_count: 0,
+                    },
+                    count,
+                );
+                if detected.is_some() {
+                    assert!(result.is_none(), "同一输入包不能重复触发");
+                    result = detected;
+                }
+            });
+            result
+        }
+
+        #[test]
+        fn queued_raw_edges_trigger_three_to_ten_clicks_without_mouse_motion() {
+            // 即使处理消息时按钮已经全部松开，原始包仍保留每次按下和释放。
+            for count in MIN_MOUSE_RAPID_CLICK_COUNT..=MAX_MOUSE_RAPID_CLICK_COUNT {
+                let start = Instant::now();
+                let mut buttons = RawMouseButtons::default();
+                let mut recognizer = RapidClickRecognizer::default();
+                for index in 0..count {
+                    let at = start + Duration::from_millis(index as u64 * 160);
+                    assert_eq!(
+                        feed(
+                            &mut buttons,
+                            &mut recognizer,
+                            RI_MOUSE_LEFT_BUTTON_DOWN,
+                            at,
+                            100.0,
+                            count
+                        ),
+                        None
+                    );
+                    assert_eq!(
+                        feed(
+                            &mut buttons,
+                            &mut recognizer,
+                            RI_MOUSE_LEFT_BUTTON_UP,
+                            at + Duration::from_millis(35),
+                            100.0,
+                            count
+                        ),
+                        (index + 1 == count).then_some((100, 80)),
+                    );
+                }
+                assert_eq!(buttons.down_flags, 0);
+                assert_eq!(
+                    feed(
+                        &mut buttons,
+                        &mut recognizer,
+                        RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP,
+                        start + Duration::from_millis(count as u64 * 160),
+                        100.0,
+                        count
+                    ),
+                    None
+                );
+            }
+        }
+
+        #[test]
+        fn combined_press_and_release_packet_keeps_both_edges() {
+            let mut buttons = RawMouseButtons::default();
+            let mut events = Vec::new();
+            buttons.push(
+                RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP,
+                |down, pressed, released| {
+                    events.push((down, pressed, released));
+                },
+            );
+            assert_eq!(events, [(true, true, false), (false, false, true)]);
+            assert_eq!(buttons.down_flags, 0);
+        }
+
+        #[test]
+        fn motion_and_wheel_packets_do_not_invent_button_edges() {
+            for button in [
+                RI_MOUSE_LEFT_BUTTON_DOWN,
+                RI_MOUSE_RIGHT_BUTTON_DOWN,
+                RI_MOUSE_MIDDLE_BUTTON_DOWN,
+                RI_MOUSE_BUTTON_4_DOWN,
+                RI_MOUSE_BUTTON_5_DOWN,
+            ] {
+                let mut buttons = RawMouseButtons::default();
+                buttons.push(button, |down, _, _| assert!(down));
+                for flags in [0, RI_MOUSE_WHEEL, 0] {
+                    buttons.push(flags, |down, pressed, released| {
+                        assert_eq!((down, pressed, released), (true, false, false))
+                    });
+                }
+                buttons.push(button << 1, |down, pressed, released| {
+                    assert_eq!(
+                        (down, pressed, released),
+                        (false, false, button == RI_MOUSE_LEFT_BUTTON_DOWN)
+                    );
+                });
+            }
+        }
+
+        #[test]
+        fn raw_button_state_preserves_drag_rejection_even_when_cursor_returns() {
+            let start = Instant::now();
+            let mut buttons = RawMouseButtons::default();
+            let mut recognizer = RapidClickRecognizer::default();
+            for index in 0..3 {
+                let at = start + Duration::from_millis(index * 160);
+                assert_eq!(
+                    feed(
+                        &mut buttons,
+                        &mut recognizer,
+                        RI_MOUSE_LEFT_BUTTON_DOWN,
+                        at,
+                        100.0,
+                        3
+                    ),
+                    None
+                );
+                assert_eq!(
+                    feed(
+                        &mut buttons,
+                        &mut recognizer,
+                        0,
+                        at + Duration::from_millis(10),
+                        130.0,
+                        3
+                    ),
+                    None
+                );
+                assert_eq!(
+                    feed(
+                        &mut buttons,
+                        &mut recognizer,
+                        0,
+                        at + Duration::from_millis(20),
+                        100.0,
+                        3
+                    ),
+                    None
+                );
+                assert_eq!(
+                    feed(
+                        &mut buttons,
+                        &mut recognizer,
+                        RI_MOUSE_LEFT_BUTTON_UP,
+                        at + Duration::from_millis(35),
+                        100.0,
+                        3
+                    ),
+                    None
+                );
+            }
+            assert!(recognizer.clicks.is_empty());
+        }
+
+        #[test]
+        fn raw_input_decoder_rejects_truncated_mouse_packets_and_ignores_other_devices() {
+            let mut raw = packet(RI_MOUSE_LEFT_BUTTON_UP);
+            assert_eq!(
+                mouse_button_flags(&raw, raw.header.dwSize).unwrap(),
+                Some(RI_MOUSE_LEFT_BUTTON_UP)
+            );
+            assert!(mouse_button_flags(&raw, 0).is_err());
+            assert!(mouse_button_flags(&raw, raw.header.dwSize - 1).is_err());
+            raw.header.dwType = RIM_TYPEKEYBOARD.0;
+            assert_eq!(mouse_button_flags(&raw, raw.header.dwSize).unwrap(), None);
+        }
     }
 }
 
