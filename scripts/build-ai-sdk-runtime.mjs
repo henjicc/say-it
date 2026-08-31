@@ -13,15 +13,18 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-if (sdkVersion !== '0.2.7' || sdkLock?.version !== sdkVersion) {
-  throw new Error('Say-It 必须精确锁定 @henjicc/ai-sdk@0.2.7')
+const expectedSdkVersion = '0.2.8'
+const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.2.8.tgz'
+const expectedSdkShasum = '71ba4c98c7f93a5ea1b434f2a5dded82e7d73223'
+const expectedSdkIntegrity = 'sha512-QJBuHiXKsIKXMBA96/sxQDAvGTZwoNBr2ER0bxjApgbx0zHRkYUKZtB0r/tZkT5OvZx5vlPsEbepcWdNWO/KeA=='
+if (sdkVersion !== expectedSdkVersion || sdkLock?.version !== sdkVersion) {
+  throw new Error(`Say-It 必须精确锁定 @henjicc/ai-sdk@${expectedSdkVersion}`)
 }
 if (
-  typeof sdkLock.integrity !== 'string'
-  || typeof sdkLock.resolved !== 'string'
-  || !sdkLock.resolved.startsWith('https://npm.pkg.github.com/download/@henjicc/ai-sdk/0.2.7/')
+  sdkLock.integrity !== expectedSdkIntegrity
+  || sdkLock.resolved !== expectedSdkTarball
 ) {
-  throw new Error('AI SDK lock 缺少 GitHub Packages resolved/integrity')
+  throw new Error('AI SDK lock 与公共 npm 发布产物不一致')
 }
 if (packageManifest.devDependencies?.esbuild !== '0.25.12') {
   throw new Error('SDK Runtime bundler 必须精确锁定 esbuild@0.25.12')
@@ -82,7 +85,7 @@ const manifest = {
     version: sdkVersion,
     resolved: sdkLock.resolved,
     integrity: sdkLock.integrity,
-    shasum: sdkLock.resolved.split('/').at(-1),
+    shasum: expectedSdkShasum,
     sourceNamespace: '@henjicc/ai-sdk',
   },
   moduleSources: {
