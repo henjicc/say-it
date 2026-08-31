@@ -6,6 +6,7 @@ import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib
 import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { OrbWaveform } from "@/floating-orb/OrbWaveform";
 import { useErrorDetailsDialog } from "@/floating-orb/useErrorDetailsDialog";
+import { useOrbStroke } from "@/floating-orb/useOrbStroke";
 import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
@@ -43,6 +44,8 @@ function clampLevel(value: unknown): number {
 }
 
 function FloatingOrbApp() {
+  const orb = useRef<HTMLButtonElement>(null);
+  const strokeWidth = useOrbStroke(orb);
   const [phase, setPhase] = useState<OrbPhase>("idle");
   const phaseRef = useRef<OrbPhase>("idle");
   const [message, setMessage] = useState("");
@@ -178,9 +181,11 @@ function FloatingOrbApp() {
 
   return (
     <button
+      ref={orb}
       type="button"
       className={`floating-orb ${phase}${transient ? " transient" : ""}${appearance.glassEnabled ? " glass" : ""}${hovering ? " hover-tracked" : ""}`}
       style={{
+        "--orb-stroke-width": `${strokeWidth}px`,
         "--orb-opacity": appearance.opacity / 100,
         "--orb-glass-tint": `${appearance.glassTint}%`,
         "--orb-glass-border": `${appearance.glassBorder}%`,
