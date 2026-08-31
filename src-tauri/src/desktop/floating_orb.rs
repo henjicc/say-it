@@ -1270,8 +1270,12 @@ fn schedule_persist_floating_orb_appearance(app: tauri::AppHandle) {
 }
 
 fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<&str>) {
+    let state = app.state::<RuntimeState>();
+    let runtime = &state.floating_orb_runtime;
+    runtime
+        .error_visible
+        .store(phase == "error", Ordering::Release);
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let runtime = &app.state::<RuntimeState>().floating_orb_runtime;
         let can_submit = runtime
             .post_injection_action
             .lock()
@@ -1292,6 +1296,11 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<&str>) {
 
 fn submit_enter_is_available(expires_at: Instant, now: Instant) -> bool {
     expires_at > now
+}
+
+fn orb_accepts_pointer_events(phase: &str, can_submit: bool) -> bool {
+    matches!(phase, "idle" | "armed" | "recording" | "error")
+        || (phase == "success" && can_submit)
 }
 
 async fn cursor_location() -> Option<(i32, i32)> {
@@ -1509,14 +1518,14 @@ pub(crate) fn complete_floating_orb(
                 .ok()
                 .and_then(|action| *action)
                 .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
-        let _ = window.set_ignore_cursor_events(!can_submit);
+        let _ = window.set_ignore_cursor_events(!orb_accepts_pointer_events(phase, can_submit));
     }
     tauri::async_runtime::spawn(return_to_idle(app, delay_ms, phase, message));
 }
 
 pub(crate) fn set_floating_orb_phase(app: &tauri::AppHandle, phase: &str, message: &str) {
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let interactive = phase == "recording" || phase == "armed";
+        let interactive = orb_accepts_pointer_events(phase, false);
         let _ = window.set_ignore_cursor_events(!interactive);
         emit_state(app, phase, Some(message));
     }
@@ -1861,6 +1870,21 @@ pub(crate) async fn floating_orb_cancel(app: tauri::AppHandle) -> Result<(), Str
     crate::application::dictation::cancel_from_floating_orb(app).await
 }
 
+/// 只撤销悬浮球的错误反馈，不取消听写会话或改写历史记录。
+#[tauri::command]
+pub(crate) async fn floating_orb_dismiss_error(app: tauri::AppHandle) -> Result<(), String> {
+    if app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .error_visible
+        .swap(false, Ordering::AcqRel)
+    {
+        // 复用归位逻辑并使原来的延迟复位失效；已自动复位/进入新状态的请求不再生效。
+        return_to_idle(app, 0, "idle", String::new()).await;
+    }
+    Ok(())
+}
+
 /// 听写完成、悬浮球正显示"可点击发送回车"时，右键立即放弃该操作并回到
 /// idle，好让用户马上左键点击开始下一次识别，而不用等超时窗口结束。
 #[tauri::command]
@@ -1984,7 +2008,7 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
         }
         Err(error) => {
             eprintln!("[floating-orb] 快捷回车未发送: {error}");
-            complete_floating_orb(app, "error", "未发送回车".into(), 1500);
+            complete_floating_orb(app, "error", format!("未发送回车：{error}"), 1500);
             Err(error)
         }
     }
@@ -2003,7 +2027,7 @@ pub(crate) fn auto_submit_floating_orb_enter(
             Ok(()) => complete_floating_orb(app, "submitted", "已发送回车".into(), 800),
             Err(error) => {
                 eprintln!("[floating-orb] 自动回车未发送: {error}");
-                complete_floating_orb(app, "error", "未发送回车".into(), 1500);
+                complete_floating_orb(app, "error", format!("未发送回车：{error}"), 1500);
             }
         }
     });
@@ -2012,6 +2036,20 @@ pub(crate) fn auto_submit_floating_orb_enter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_feedback_remains_clickable_without_enabling_processing_clicks() {
+        assert!(orb_accepts_pointer_events("error", false));
+        assert!(orb_accepts_pointer_events("error", true));
+        for phase in ["idle", "armed", "recording"] {
+            assert!(orb_accepts_pointer_events(phase, false));
+        }
+        assert!(orb_accepts_pointer_events("success", true));
+        assert!(!orb_accepts_pointer_events("success", false));
+        for phase in ["processing", "smartProcessing", "submitting", "moving"] {
+            assert!(!orb_accepts_pointer_events(phase, true));
+        }
+    }
 
     #[test]
     fn config_event_projects_full_settings_including_menu_switches() {

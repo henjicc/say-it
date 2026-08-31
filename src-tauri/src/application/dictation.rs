@@ -2751,6 +2751,7 @@ async fn fail_internal(
     hotkey::set_dictation_active(false);
     if floating {
         let (phase, message, delay) = floating_feedback.unwrap_or(("error", error.clone(), 3000));
+        let message = floating_failure_details(phase, message, &error);
         crate::desktop::complete_floating_orb(app.clone(), phase, message, delay);
     } else {
         let can_use_raw_text = state
@@ -2764,6 +2765,14 @@ async fn fail_internal(
     }
     publish_state(&app, Some(error.clone()));
     Err(error)
+}
+
+fn floating_failure_details(phase: &str, message: String, error: &str) -> String {
+    if phase == "error" && message != error && !error.is_empty() {
+        format!("{message}\n\n{error}")
+    } else {
+        message
+    }
 }
 
 fn remove_temp(path: Option<PathBuf>) {
@@ -3438,6 +3447,30 @@ fn play_floating_orb_cue(app: &AppHandle, which: &'static str, prefs: &Dictation
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_error_details_preserve_the_reason_alongside_recovery_hints() {
+        assert_eq!(
+            floating_failure_details(
+                "error",
+                "复制失败，请在历史记录中查看".into(),
+                "剪贴板被占用"
+            ),
+            "复制失败，请在历史记录中查看\n\n剪贴板被占用"
+        );
+        assert_eq!(
+            floating_failure_details("error", "识别失败".into(), "识别失败"),
+            "识别失败"
+        );
+        assert_eq!(
+            floating_failure_details("error", "未识别到内容".into(), ""),
+            "未识别到内容"
+        );
+        assert_eq!(
+            floating_failure_details("fallback", "已复制，请手动粘贴".into(), "注入失败"),
+            "已复制，请手动粘贴"
+        );
+    }
 
     fn activation_target(process_id: u32) -> crate::active_app_context::ActivationTarget {
         crate::active_app_context::ActivationTarget {

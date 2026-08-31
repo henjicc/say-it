@@ -557,6 +557,7 @@ fn main() {
             floating_orb_stop,
             floating_orb_cancel,
             floating_orb_dismiss_submit_enter,
+            floating_orb_dismiss_error,
             floating_orb_submit_enter,
             open_active_app_context_debug,
             close_active_app_context_debug,
