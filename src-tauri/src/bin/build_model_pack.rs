@@ -175,7 +175,10 @@ fn validate_manifest_shape(manifest: &Value) -> Result<(), String> {
 ///
 /// 下载后不做校验，交给 `validate_source` 统一按清单 SHA256 复核——下载损坏与
 /// 源文件被篡改是同一类问题，只留一处判定。
-fn ensure_sources_present(descriptor: &BuildDescriptor, descriptor_dir: &Path) -> Result<(), String> {
+fn ensure_sources_present(
+    descriptor: &BuildDescriptor,
+    descriptor_dir: &Path,
+) -> Result<(), String> {
     let files = descriptor
         .manifest
         .pointer("/modelPack/files")
@@ -209,8 +212,8 @@ fn ensure_sources_present(descriptor: &BuildDescriptor, descriptor_dir: &Path) -
     if missing.is_empty() {
         return Ok(());
     }
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| format!("创建下载运行时失败：{error}"))?;
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|error| format!("创建下载运行时失败：{error}"))?;
     for (path, source, url) in missing {
         println!("源文件缺失，开始下载 {path}");
         println!("  <- {url}");
@@ -249,7 +252,12 @@ async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
         if written >= next_report {
             match total {
                 0 => println!("     {} MB", written / 1_048_576),
-                total => println!("     {}% ({} / {} MB)", written * 100 / total, written / 1_048_576, total / 1_048_576),
+                total => println!(
+                    "     {}% ({} / {} MB)",
+                    written * 100 / total,
+                    written / 1_048_576,
+                    total / 1_048_576
+                ),
             }
             next_report = written + 32 * 1_048_576;
         }

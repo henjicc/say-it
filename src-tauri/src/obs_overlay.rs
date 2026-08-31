@@ -385,8 +385,9 @@ mod tests {
             ..Default::default()
         };
         let url = overlay_url(&settings);
-        assert!(url
-            .starts_with("http://127.0.0.1:12345/obs/overlay?token=secret&canvasWidth=1920&canvasHeight=1080&v="));
+        assert!(url.starts_with(
+            "http://127.0.0.1:12345/obs/overlay?token=secret&canvasWidth=1920&canvasHeight=1080&v="
+        ));
         // 同一份页面内容的版本指纹必须稳定，否则每次同步都会触发 OBS 重载页面、字幕闪断。
         assert_eq!(url, overlay_url(&settings));
     }

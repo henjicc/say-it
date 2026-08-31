@@ -538,8 +538,7 @@ mod tests {
 
     #[test]
     fn plugin_provider_runs_through_scene_capture_worker() {
-        let root =
-            std::env::temp_dir().join(format!("sayit-context-ocr-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("sayit-context-ocr-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("connector")).unwrap();
         std::fs::write(
             root.join("connector/index.js"),

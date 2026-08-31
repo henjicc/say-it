@@ -334,6 +334,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response.selection_editable, Some(false));
-        assert_eq!(response.selection_bounds.as_ref().map(|value| value.x), Some(-120.5));
+        assert_eq!(
+            response.selection_bounds.as_ref().map(|value| value.x),
+            Some(-120.5)
+        );
     }
 }

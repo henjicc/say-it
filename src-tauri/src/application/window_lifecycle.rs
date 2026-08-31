@@ -33,7 +33,10 @@ impl MainWindowLifecycle {
     pub(crate) fn register_initial_window(&mut self, should_open: bool) -> bool {
         // 平台预创建窗口的前端可能先于 setup 尾部完成 ready 握手。此时保留
         // 已就绪状态，避免重新退回 Creating 后永远等不到第二次握手。
-        if matches!(self.phase, MainWindowPhase::Ready | MainWindowPhase::Visible) {
+        if matches!(
+            self.phase,
+            MainWindowPhase::Ready | MainWindowPhase::Visible
+        ) {
             self.open_requested = should_open;
             self.phase = if should_open {
                 MainWindowPhase::Visible

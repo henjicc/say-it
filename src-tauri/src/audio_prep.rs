@@ -32,10 +32,11 @@ pub fn decode_to_mono_16k(file_path: &str) -> Result<Vec<f32>, String> {
     match decode_with_symphonia(file_path) {
         Ok(samples) => Ok(samples),
         #[cfg(target_os = "macos")]
-        Err(primary_error) => crate::macos_native::decode_audio_file(Path::new(file_path))
-            .map_err(|native_error| {
+        Err(primary_error) => {
+            crate::macos_native::decode_audio_file(Path::new(file_path)).map_err(|native_error| {
                 format!("{primary_error}；macOS 原生音频解码也失败：{native_error}")
-            }),
+            })
+        }
         #[cfg(not(target_os = "macos"))]
         Err(error) => Err(error),
     }

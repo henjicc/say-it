@@ -84,7 +84,10 @@ pub struct AlignOutput {
 /// 以及片段化的“识别修正”结果。
 pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<AlignOutput, String> {
     if script_lines.is_empty() {
-        return Ok(AlignOutput { lines: Vec::new(), optimized_segments: Vec::new() });
+        return Ok(AlignOutput {
+            lines: Vec::new(),
+            optimized_segments: Vec::new(),
+        });
     }
     let asr_tokens = tokenize::build_asr_tokens(words);
     if asr_tokens.is_empty() {
@@ -115,7 +118,10 @@ pub fn align_script(words: &[AlignWord], script_lines: &[String]) -> Result<Alig
         &asr_tokens,
     );
 
-    Ok(AlignOutput { lines, optimized_segments })
+    Ok(AlignOutput {
+        lines,
+        optimized_segments,
+    })
 }
 
 #[cfg(test)]

@@ -45,9 +45,7 @@ pub fn inspect_pack(model_dir: &Path, pack: &ModelPackManifest) -> PackInspectio
         };
         let path = model_dir.join(relative);
         if path.exists() {
-            if std::fs::metadata(&path)
-                .is_ok_and(|metadata| metadata.len() == file.size_bytes)
-            {
+            if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() == file.size_bytes) {
                 ready_bytes = ready_bytes.saturating_add(file.size_bytes);
             } else {
                 has_corrupt = true;

@@ -49,7 +49,14 @@ button {
     color 160ms ease-out;
 }
 
-.floating-orb:not(:disabled):hover {
+/*
+ * 悬浮球常年悬停在其它前台应用之上，macOS 只把持续的鼠标移动/进入/
+ * 离开事件派发给当前前台应用的窗口，:hover 因此平时几乎不会生效；
+ * .hover-tracked 是后端轮询真实指针位置后由前端切换的 class，作为
+ * :hover 在这种场景下的替代/补充，两者共用同一套视觉效果。
+ */
+.floating-orb:not(:disabled):hover,
+.floating-orb.hover-tracked:not(:disabled) {
   border-color: var(--accent-ring);
   background: color-mix(in srgb, var(--color-bg) 78%, var(--color-accent) 22%);
   color: var(--color-accent-light);
@@ -66,7 +73,9 @@ button {
  * 比例，让 hover 在毛玻璃模式下也能看出明显变化。
  */
 .floating-orb.glass:not(:disabled):hover,
-.floating-orb.glass.recording:not(:disabled):hover {
+.floating-orb.glass.recording:not(:disabled):hover,
+.floating-orb.glass.hover-tracked:not(:disabled),
+.floating-orb.glass.recording.hover-tracked:not(:disabled) {
   border-color: var(--accent-ring);
   background: color-mix(
     in srgb,
@@ -78,7 +87,9 @@ button {
 }
 
 .floating-orb:not(:disabled):hover .orb-icon-shell,
-.floating-orb:not(:disabled):hover .orb-waveform {
+.floating-orb:not(:disabled):hover .orb-waveform,
+.floating-orb.hover-tracked:not(:disabled) .orb-icon-shell,
+.floating-orb.hover-tracked:not(:disabled) .orb-waveform {
   transform: scale(1.1);
 }
 
@@ -114,7 +125,8 @@ button {
   cursor: pointer;
 }
 
-.floating-orb.recording:hover {
+.floating-orb.recording:hover,
+.floating-orb.recording.hover-tracked {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-bg) 80%, var(--color-accent) 20%);
 }
@@ -173,11 +185,13 @@ button {
   transition: opacity 120ms ease-out;
 }
 
-.floating-orb.success:not(:disabled):hover .orb-success-check {
+.floating-orb.success:not(:disabled):hover .orb-success-check,
+.floating-orb.success.hover-tracked:not(:disabled) .orb-success-check {
   opacity: 0;
 }
 
-.floating-orb.success:not(:disabled):hover .orb-submit-icon {
+.floating-orb.success:not(:disabled):hover .orb-submit-icon,
+.floating-orb.success.hover-tracked:not(:disabled) .orb-submit-icon {
   opacity: 1;
 }
 
@@ -224,7 +238,8 @@ button {
   color: var(--color-accent-dark);
 }
 
-[data-ui-tone="light"] .floating-orb:not(:disabled):hover {
+[data-ui-tone="light"] .floating-orb:not(:disabled):hover,
+[data-ui-tone="light"] .floating-orb.hover-tracked:not(:disabled) {
   color: var(--color-accent-dark);
 }
 
@@ -277,7 +292,9 @@ button {
   }
 
   .floating-orb:not(:disabled):hover .orb-icon-shell,
-  .floating-orb:not(:disabled):hover .orb-waveform {
+  .floating-orb:not(:disabled):hover .orb-waveform,
+  .floating-orb.hover-tracked:not(:disabled) .orb-icon-shell,
+  .floating-orb.hover-tracked:not(:disabled) .orb-waveform {
     transform: none;
   }
 

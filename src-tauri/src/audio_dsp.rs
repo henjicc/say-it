@@ -97,7 +97,13 @@ struct BiquadCoeffs {
 
 impl BiquadCoeffs {
     fn identity() -> Self {
-        Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 }
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+        }
     }
 
     /// RBJ Audio EQ Cookbook 低频搁架系数。
@@ -116,7 +122,13 @@ impl BiquadCoeffs {
         let a0 = (a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha;
         let a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_w0);
         let a2 = (a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
-        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
     }
 
     /// RBJ Audio EQ Cookbook 高频搁架系数。
@@ -135,7 +147,13 @@ impl BiquadCoeffs {
         let a0 = (a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha;
         let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_w0);
         let a2 = (a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
-        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
     }
 }
 
@@ -149,7 +167,13 @@ struct Biquad {
 
 impl Biquad {
     fn new(c: BiquadCoeffs) -> Self {
-        Self { c, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
+        Self {
+            c,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
     }
 
     #[inline]
@@ -175,8 +199,18 @@ struct ShelfEq {
 impl ShelfEq {
     fn new(rate: f32, bass_gain_db: f32, treble_gain_db: f32) -> Self {
         Self {
-            bass: Biquad::new(BiquadCoeffs::low_shelf(rate, EQ_BASS_FREQ, bass_gain_db, EQ_SHELF_Q)),
-            treble: Biquad::new(BiquadCoeffs::high_shelf(rate, EQ_TREBLE_FREQ, treble_gain_db, EQ_SHELF_Q)),
+            bass: Biquad::new(BiquadCoeffs::low_shelf(
+                rate,
+                EQ_BASS_FREQ,
+                bass_gain_db,
+                EQ_SHELF_Q,
+            )),
+            treble: Biquad::new(BiquadCoeffs::high_shelf(
+                rate,
+                EQ_TREBLE_FREQ,
+                treble_gain_db,
+                EQ_SHELF_Q,
+            )),
             active: bass_gain_db != 0.0 || treble_gain_db != 0.0,
         }
     }
@@ -323,7 +357,8 @@ pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> Offli
     } else {
         s48
     };
-    ShelfEq::new(RATE_48K as f32, params.bass_gain_db, params.treble_gain_db).process_slice(&mut wet);
+    ShelfEq::new(RATE_48K as f32, params.bass_gain_db, params.treble_gain_db)
+        .process_slice(&mut wet);
 
     // 据降噪后的响度算需要的增益，限制最大提升量。
     let wet_lufs = integrated_lufs(&wet);

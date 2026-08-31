@@ -1,7 +1,7 @@
 use crate::{
     obs_overlay::{
-        overlay_status as read_overlay_status, overlay_url,
-        save_obs_overlay_settings, ObsOverlayStatus,
+        overlay_status as read_overlay_status, overlay_url, save_obs_overlay_settings,
+        ObsOverlayStatus,
     },
     state::RuntimeState,
 };
@@ -227,7 +227,8 @@ pub(crate) async fn install_obs_overlay(
     settings.obs_canvas_height = video.base_height;
     let source_width = request.source_width.clamp(160, video.base_width.max(160));
     let source_height = request.source_height.clamp(72, video.base_height.max(72));
-    let browser_settings = browser_source_settings(&overlay_url(&settings), source_width, source_height);
+    let browser_settings =
+        browser_source_settings(&overlay_url(&settings), source_width, source_height);
     let inputs = client.inputs().list(None).await.map_err(obs_error)?;
     let scene_item_id;
     if let Some(input_uuid) = settings
@@ -496,7 +497,7 @@ fn overlay_source_dimensions(
     let height = (font_size * 1.38 * lines as f64 * rows as f64
         + 20.0 * rows as f64
         + if rows > 1 { 10.0 } else { 0.0 })
-        .ceil() as u32;
+    .ceil() as u32;
     (
         width.clamp(160, canvas_width.max(160)),
         height.clamp(72, canvas_height.max(72)),

@@ -80,12 +80,10 @@ fn open_active_app_context_debug_inner(app: tauri::AppHandle) -> Result<(), Stri
         let _ = window.close();
         return Err(error);
     }
-    window
-        .show()
-        .map_err(|error| {
-            let _ = crate::hotkey::set_context_debug_active(false);
-            format!("显示上下文调试窗口失败：{error}")
-        })?;
+    window.show().map_err(|error| {
+        let _ = crate::hotkey::set_context_debug_active(false);
+        format!("显示上下文调试窗口失败：{error}")
+    })?;
     let _ = window.set_focus();
 
     let _ = window.emit(

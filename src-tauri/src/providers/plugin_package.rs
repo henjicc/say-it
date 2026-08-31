@@ -960,7 +960,10 @@ mod tests {
         let model = &reserialized["models"][0];
         assert_eq!(model["capabilityId"], "test.speech-recognition.m");
         for deprecated in ["category", "protocol", "scenes", "supportsVocabulary"] {
-            assert!(model.get(deprecated).is_none(), "v5 不应序列化旧字段 {deprecated}");
+            assert!(
+                model.get(deprecated).is_none(),
+                "v5 不应序列化旧字段 {deprecated}"
+            );
         }
     }
 

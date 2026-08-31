@@ -35,10 +35,7 @@ unsafe extern "C" fn receive_system_audio(context: *mut c_void, samples: *const 
     push_backend_mic_samples(state, samples);
 }
 
-unsafe extern "C" fn receive_system_audio_error(
-    context: *mut c_void,
-    message: *const c_char,
-) {
+unsafe extern "C" fn receive_system_audio_error(context: *mut c_void, message: *const c_char) {
     if context.is_null() {
         return;
     }
@@ -115,10 +112,7 @@ pub(crate) fn start_backend_system_audio_inner(
     }
 
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
-    let capture = start_native_capture(
-        Arc::clone(&state.backend_system_audio),
-        worker_tx.clone(),
-    )?;
+    let capture = start_native_capture(Arc::clone(&state.backend_system_audio), worker_tx.clone())?;
     {
         let mut guard = state
             .backend_system_audio

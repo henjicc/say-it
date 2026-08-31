@@ -206,8 +206,8 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
             // 原生探针会在读取正文前自行检查密码控件。这里不重复执行全局 UIA
             // GetFocusedElement，因为该调用在 Chromium/Electron 上可能耗尽整个 800ms 配额。
             ActiveAppContextExtractionMethod::NativeText => match native_probe::capture(
-                    target,
-                    &mut context,
+                target,
+                &mut context,
                 options.deadline,
                 options.max_chars,
                 cancelled,
@@ -227,43 +227,43 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                 Ok(true) => {
                     context
                         .diagnostics
-                            .push("焦点位于受保护输入控件，已停止上下文读取。".into());
-                        CaptureStatus::Sensitive
+                        .push("焦点位于受保护输入控件，已停止上下文读取。".into());
+                    CaptureStatus::Sensitive
+                }
+                Ok(false) => match capture_and_recognize(
+                    &mut context,
+                    target.window_handle,
+                    options.debug,
+                    options.occluding_window_handle,
+                    options.deadline,
+                    cancelled,
+                    options.ocr_provider,
+                    options.max_capture_side_override,
+                ) {
+                    Ok(()) if context.ocr_text.is_empty() => {
+                        context
+                            .diagnostics
+                            .push("整窗截图成功，但 OCR 没有识别到文字。".into());
+                        CaptureStatus::Empty
                     }
-                    Ok(false) => match capture_and_recognize(
-                        &mut context,
-                        target.window_handle,
-                        options.debug,
-                        options.occluding_window_handle,
-                        options.deadline,
-                        cancelled,
-                        options.ocr_provider,
-                        options.max_capture_side_override,
-                    ) {
-                        Ok(()) if context.ocr_text.is_empty() => {
-                            context
-                                .diagnostics
-                                .push("整窗截图成功，但 OCR 没有识别到文字。".into());
-                            CaptureStatus::Empty
-                        }
-                        Ok(()) => {
-                            context.source = Some(ContextSource::Ocr);
-                            CaptureStatus::Captured
-                        }
-                        Err(error) => {
-                            context.diagnostics.push(error);
-                            if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
-                                CaptureStatus::TimedOut
-                            } else {
-                                CaptureStatus::Failed
-                            }
-                        }
-                    },
+                    Ok(()) => {
+                        context.source = Some(ContextSource::Ocr);
+                        CaptureStatus::Captured
+                    }
                     Err(error) => {
                         context.diagnostics.push(error);
                         if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
                             CaptureStatus::TimedOut
                         } else {
+                            CaptureStatus::Failed
+                        }
+                    }
+                },
+                Err(error) => {
+                    context.diagnostics.push(error);
+                    if cancelled.load(Ordering::Acquire) || expired(options.deadline) {
+                        CaptureStatus::TimedOut
+                    } else {
                         CaptureStatus::Failed
                     }
                 }

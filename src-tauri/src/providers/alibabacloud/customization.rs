@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 定制热词列表所用的固定接口地址（华北2/北京）。
-const CUSTOMIZATION_URL: &str = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/customization";
+const CUSTOMIZATION_URL: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/customization";
 
 /// 需要建热词表的模型（与 target_model 一一对应）及各自的列表前缀。
 /// 阿里云要求识别时使用的模型必须与词表创建时的 target_model 完全一致，否则热词静默不生效，
@@ -149,11 +150,17 @@ pub async fn list_vocabulary(api_key: &str, prefix: &str) -> Result<Vec<String>,
         .filter(|item: &VocabularySummary| item.status == "OK")
         .collect();
     summaries.sort_by(|a, b| b.gmt_modified.cmp(&a.gmt_modified));
-    Ok(summaries.into_iter().map(|item| item.vocabulary_id).collect())
+    Ok(summaries
+        .into_iter()
+        .map(|item| item.vocabulary_id)
+        .collect())
 }
 
 /// 查询指定热词列表的完整内容。
-pub async fn query_vocabulary(api_key: &str, vocabulary_id: &str) -> Result<Vec<HotwordEntry>, String> {
+pub async fn query_vocabulary(
+    api_key: &str,
+    vocabulary_id: &str,
+) -> Result<Vec<HotwordEntry>, String> {
     let body = json!({
         "model": "speech-biasing",
         "input": {

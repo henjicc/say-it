@@ -103,10 +103,7 @@ pub(crate) fn enforce_total_budget(context: &mut CapturedActiveAppContext, max_c
 }
 
 /// 选区是待编辑的原文，不能像提示词上下文一样折叠换行和空格。
-pub(crate) fn enforce_selection_budget(
-    context: &mut CapturedActiveAppContext,
-    max_chars: usize,
-) {
+pub(crate) fn enforce_selection_budget(context: &mut CapturedActiveAppContext, max_chars: usize) {
     context.focused_text = None;
     context.caret_context = None;
     context.visible_text.clear();
@@ -171,7 +168,10 @@ mod tests {
             ..Default::default()
         };
         enforce_selection_budget(&mut context, 100);
-        assert_eq!(context.selected_text.as_deref(), Some("  第一行\n  第二行  "));
+        assert_eq!(
+            context.selected_text.as_deref(),
+            Some("  第一行\n  第二行  ")
+        );
         assert!(context.focused_text.is_none());
     }
 }
