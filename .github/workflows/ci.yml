@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   verify:
@@ -26,8 +25,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          registry-url: https://npm.pkg.github.com
-          scope: '@henjicc'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -36,8 +33,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install opus
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build Apple system speech helper
         if: runner.os == 'macOS'
         run: node scripts/build-macos-speech.mjs --require-sdk-26
