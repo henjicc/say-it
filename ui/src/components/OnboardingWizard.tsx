@@ -243,9 +243,15 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
       : "blocked";
 
   return (
-    <Modal open={open} onClose={onClose} title="首次使用设置" className="max-w-[680px]">
-      <div className="flex min-h-[450px] flex-col">
-        <div className="border-b border-[var(--color-line)] px-6 py-4">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="首次使用设置"
+      className="h-[var(--onboarding-dialog-h)] max-w-[var(--onboarding-dialog-w)]"
+      bodyClassName="flex flex-col overflow-hidden"
+    >
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 border-b border-[var(--color-line)] px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-semibold text-[var(--color-fg)]">{STEPS[step].title}</p>
@@ -260,7 +266,9 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col gap-4 px-6 py-5">
+        {/* 每一步独立滚动；切换步骤重建滚动容器，避免沿用上一页的滚动位置。 */}
+        <div key={step} role="region" aria-label={`${STEPS[step].title}设置内容`} tabIndex={0} className="min-h-0 flex-1 overflow-y-auto break-words px-6 py-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent-ring)]">
+          <div className="flex min-h-full flex-col gap-4">
           {step === 0 && <>
             <div>
               <h2 className="text-lg font-semibold text-[var(--color-fg)]">授予必要权限</h2>
@@ -379,9 +387,10 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
           </>}
 
           {message && <p role="status" className="mt-auto text-xs leading-5 text-[var(--color-fg-subtle)]">{message}</p>}
+          </div>
         </div>
 
-        <div className="flex items-center justify-between border-t border-[var(--color-line)] px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-t border-[var(--color-line)] px-6 py-4">
           <Button onClick={() => setStep((current) => Math.max(0, current - 1))} disabled={step === 0 || running !== null}>
             <ChevronLeft className="h-4 w-4" aria-hidden />上一步
           </Button>

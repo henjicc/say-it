@@ -9,6 +9,7 @@ export function Modal({
   title,
   children,
   className,
+  bodyClassName,
   overlayClassName,
   scope = "viewport",
   showHeader,
@@ -20,6 +21,7 @@ export function Modal({
   title?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  bodyClassName?: string;
   overlayClassName?: string;
   scope?: "viewport" | "container";
   showHeader?: boolean;
@@ -31,6 +33,7 @@ export function Modal({
     title,
     children,
     className,
+    bodyClassName,
     overlayClassName,
     scope,
     showHeader,
@@ -43,7 +46,7 @@ export function Modal({
   // 打开状态的完整内容，避免正文先消失导致弹窗尺寸跳变。
   useLayoutEffect(() => {
     if (open) lastOpenVisualState.current = visualState;
-  }, [ariaLabel, children, className, open, overlayClassName, scope, showCloseButton, showHeader, title]);
+  }, [ariaLabel, bodyClassName, children, className, open, overlayClassName, scope, showCloseButton, showHeader, title]);
 
   useEffect(() => {
     if (!open) return;
@@ -90,7 +93,7 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
       >
         {shouldShowHeader && (
-          <div className="flex items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
             <h3 className="text-base font-semibold text-[var(--color-fg)]">{visuals.title}</h3>
             {visuals.showCloseButton && (
               <Button size="sm" onClick={onClose}>
@@ -99,7 +102,7 @@ export function Modal({
             )}
           </div>
         )}
-        <div className="min-h-0 flex-1 overflow-y-auto">{visuals.children}</div>
+        <div className={cn("min-h-0 flex-1 overflow-y-auto", visuals.bodyClassName)}>{visuals.children}</div>
       </div>
     </div>
   );

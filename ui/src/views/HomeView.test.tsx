@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomeView } from "./HomeView";
+import { CMD, cmd } from "@/lib/tauri";
 
 vi.mock("@/lib/tauri", () => ({
   CMD: { getSetupStatus: "get_setup_status", getUsageSummary: "get_usage_summary" },
@@ -40,10 +41,10 @@ describe("HomeView", () => {
     expect(screen.getByRole("heading", { name: "快速设置" })).toBeInTheDocument();
     expect(screen.getByText("主语音识别模型")).toBeInTheDocument();
     expect(screen.getByText("全局默认智能模型")).toBeInTheDocument();
-    expect(screen.getByText("环境状态")).toBeInTheDocument();
+    expect(screen.queryByText("环境状态")).not.toBeInTheDocument();
     expect(screen.queryByText("智能优化和智能助手默认跟随此设置。")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "环境状态" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "环境状态" })).not.toBeInTheDocument();
     expect(await screen.findByRole("combobox", { name: "语音输入触发方式" })).toHaveTextContent("单击切换");
-    expect(screen.getByText(/正在检查环境…|所有关键能力均可用/)).toBeInTheDocument();
+    expect(cmd).not.toHaveBeenCalledWith(CMD.getSetupStatus);
   });
 });

@@ -88,6 +88,8 @@
   --sidebar-w: 232px;
   --control-h: 44px;
   --control-h-sm: 34px;
+  --onboarding-dialog-w: 680px;
+  --onboarding-dialog-h: 680px;
 
   --dur-fast: 120ms;
   --dur-base: 200ms;
