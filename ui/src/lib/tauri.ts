@@ -242,6 +242,7 @@ export const EVT = {
   historyChanged: "history-changed",
   openHistory: "open-history",
   themeChanged: "app-theme-changed",
+  floatingOrbConfig: "floating-orb-config",
 } as const;
 
 export interface HistoryEntry {
@@ -322,8 +323,9 @@ export function cmdSilent(command: string, args?: Record<string, unknown>): Prom
 export function on<T = unknown>(
   event: string,
   handler: (payload: T, raw: Event<T>) => void,
+  target?: string,
 ): Promise<UnlistenFn> {
-  return listen<T>(event, (e) => handler(e.payload, e));
+  return listen<T>(event, (e) => handler(e.payload, e), target ? { target } : undefined);
 }
 
 export function emitEvent(event: string, payload?: unknown): Promise<void> {

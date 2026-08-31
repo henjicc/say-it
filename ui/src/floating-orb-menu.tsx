@@ -56,7 +56,10 @@ function FloatingOrbMenuApp() {
     };
   }, []);
 
-  useTauriEvent<Partial<Appearance>>("floating-orb-config", receive);
+  useTauriEvent<FloatingOrbSettings>(EVT.floatingOrbConfig, (settings) => {
+    receive(settings);
+    setAutoEnter(settings.autoEnter === true);
+  });
   useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
   const update = (patch: Partial<Appearance>) => {
     const revision = ++updateRevision.current;

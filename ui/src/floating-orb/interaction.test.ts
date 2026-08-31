@@ -5,6 +5,7 @@ import {
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
   shouldStartOrbDrag,
+  shouldHandleOrbClick,
 } from "./interaction";
 
 describe("floating orb interaction", () => {
@@ -23,11 +24,18 @@ describe("floating orb interaction", () => {
   });
 
   it("routes a successful result to Enter without starting another dictation", () => {
+    expect(floatingOrbClickAction("idle", false)).toBe("activate");
     expect(floatingOrbClickAction("armed", false)).toBe("activate");
     expect(floatingOrbClickAction("recording", false)).toBe("stop");
     expect(floatingOrbClickAction("success", true)).toBe("submit");
     expect(floatingOrbClickAction("success", false)).toBeNull();
     expect(floatingOrbClickAction("processing", true)).toBeNull();
+  });
+
+  it("ignores the click after dragging but preserves keyboard activation", () => {
+    expect(shouldHandleOrbClick(1, true)).toBe(false);
+    expect(shouldHandleOrbClick(1, false)).toBe(true);
+    expect(shouldHandleOrbClick(0, true)).toBe(true);
   });
 
   it("amplifies quiet audio while keeping waveform scale bounded", () => {

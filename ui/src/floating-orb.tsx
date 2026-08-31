@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AlertTriangle, Check, Clipboard, CornerDownLeft, Mic, X } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
-import { playCueKind } from "@/lib/cues";
+import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
@@ -12,6 +12,7 @@ import {
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
   shouldStartOrbDrag,
+  shouldHandleOrbClick,
   type FloatingOrbAppearance,
   type OrbPhase,
 } from "@/floating-orb/interaction";
@@ -50,6 +51,7 @@ function FloatingOrbApp() {
     DEFAULT_FLOATING_ORB_APPEARANCE,
   );
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
+  const dragged = useRef(false);
 
   useEffect(() => {
     void cmd<AppSnapshot>(CMD.getAppSnapshot)
@@ -62,7 +64,7 @@ function FloatingOrbApp() {
 
   useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
 
-  useTauriEvent<Partial<FloatingOrbAppearance>>("floating-orb-config", (payload) => {
+  useTauriEvent<Partial<FloatingOrbAppearance>>(EVT.floatingOrbConfig, (payload) => {
     const next = normalizeFloatingOrbAppearance(payload);
     setAppearance(next);
     applySystemGlassToDocument(next);
@@ -102,17 +104,13 @@ function FloatingOrbApp() {
       ? payload.peaks.map((value) => floatingOrbWaveScale(clampLevel(value))).slice(-WAVE_BAR_COUNT)
       : [];
     setWaveform({ level: floatingOrbWaveScale(clampLevel(payload.level)), peaks });
-  });
+  }, true, "floating-orb");
 
-  useTauriEvent<{ which?: "start" | "end"; kind?: string }>(
-    EVT.indicatorPlayCue,
-    (payload) => {
-      if (payload.kind) playCueKind(payload.kind, payload.which || "start");
-    },
-  );
+  useCuePlayback(EVT.indicatorPlayCue, "floating-orb");
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (phase !== "idle" || transient || event.button !== 0) return;
+    dragged.current = false;
     pointer.current = {
       id: event.pointerId,
       x: event.screenX,
@@ -127,6 +125,7 @@ function FloatingOrbApp() {
     if (phase !== "idle" || transient || current.id !== event.pointerId || current.dragging) return;
     if (!shouldStartOrbDrag(event.screenX - current.x, event.screenY - current.y)) return;
     current.dragging = true;
+    dragged.current = true;
     void cmd(CMD.floatingOrbStartDragging).catch(() => undefined);
   };
 
@@ -134,8 +133,6 @@ function FloatingOrbApp() {
     const current = pointer.current;
     if (current.id !== event.pointerId) return;
     pointer.current = { id: -1, x: 0, y: 0, dragging: false };
-    if (current.dragging || phase !== "idle") return;
-    void cmd(CMD.floatingOrbActivate).catch(() => undefined);
   };
 
   const activate = () => {
@@ -197,7 +194,11 @@ function FloatingOrbApp() {
           void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
         }
       }}
-      onClick={activate}
+      onClick={(event) => {
+        const handle = shouldHandleOrbClick(event.detail, dragged.current);
+        dragged.current = false;
+        if (handle) activate();
+      }}
     >
       {phase === "recording" ? (
         <span className="orb-waveform" aria-hidden>

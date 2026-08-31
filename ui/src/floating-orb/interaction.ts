@@ -97,6 +97,11 @@ export function shouldStartOrbDrag(deltaX: number, deltaY: number): boolean {
   return Math.hypot(deltaX, deltaY) >= ORB_DRAG_THRESHOLD;
 }
 
+export function shouldHandleOrbClick(detail: number, dragged: boolean): boolean {
+  // 键盘激活没有鼠标点击次数；拖动结束产生的合成 click 不得启动听写。
+  return detail === 0 || !dragged;
+}
+
 export function floatingOrbWaveScale(value: number): number {
   const normalized = Math.max(0, Math.min(1, Number(value) || 0));
   return Math.min(1, Math.sqrt(normalized) * 1.8);
@@ -106,7 +111,7 @@ export function floatingOrbClickAction(
   phase: OrbPhase,
   canSubmit: boolean,
 ): OrbClickAction | null {
-  if (phase === "armed") return "activate";
+  if (phase === "idle" || phase === "armed") return "activate";
   if (phase === "recording") return "stop";
   if (phase === "success" && canSubmit) return "submit";
   return null;
