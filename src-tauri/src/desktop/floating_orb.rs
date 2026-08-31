@@ -1733,8 +1733,10 @@ pub(crate) fn request_mouse_gesture(
 }
 
 pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &str) {
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let _ = window.emit(
+    if app.get_webview_window(FLOATING_ORB_LABEL).is_some() {
+        // Tauri 的 window.emit 仍是全局广播；隐藏指示器也会收到并再播一次。
+        let _ = app.emit_to(
+            FLOATING_ORB_LABEL,
             "dictation-indicator-play-cue",
             json!({ "which": which, "kind": kind }),
         );
@@ -1742,8 +1744,9 @@ pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &
 }
 
 pub(crate) fn emit_floating_orb_waveform(app: &tauri::AppHandle, level: f32, peaks: Vec<f32>) {
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let _ = window.emit(
+    if app.get_webview_window(FLOATING_ORB_LABEL).is_some() {
+        let _ = app.emit_to(
+            FLOATING_ORB_LABEL,
             "dictation-indicator-waveform",
             json!({ "active": true, "level": level, "peaks": peaks }),
         );
