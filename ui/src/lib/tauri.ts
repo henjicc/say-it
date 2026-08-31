@@ -255,7 +255,7 @@ export interface HistoryEntry {
   processName: string;
   providerId: string;
   modelId: string;
-  status: "succeeded" | "failed" | "cancelled";
+  status: "recognized" | "processed" | "succeeded" | "failed" | "cancelled";
   error?: string | null;
   durationMs: number;
 }
