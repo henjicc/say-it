@@ -2986,7 +2986,9 @@ mod tests {
             spec,
             &profile,
             "llm-timeout",
-            Duration::from_millis(30),
+            // Runtime initialization loads the real SDK bundle and is not the
+            // behavior under test. Keep the short deadline on execute_llm.
+            Duration::from_secs(5),
             Arc::new(AtomicBool::new(false)),
             None,
         )
