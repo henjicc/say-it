@@ -1041,7 +1041,9 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
     .focusable(true)
     .focused(false)
     .visible(false)
-    .shadow(true)
+    // Windows 的原生阴影会给无边框窗口附加 1px 白边；菜单圆角由透明 WebView
+    // 内的面板绘制，不能开启这层矩形原生边框。其他平台保留现有阴影。
+    .shadow(!cfg!(windows))
     .transparent(true)
     .visible_on_all_workspaces(true)
     .build()

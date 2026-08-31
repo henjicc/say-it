@@ -16,6 +16,16 @@ Windows 在 28～72 DIP 范围内，选择最接近目标且**逻辑尺寸、缩
 
 ## 窗口命令与复用状态
 
+### 无边框菜单的矩形白边
+
+`decorations(false)` 配合 `shadow(true)` 并不意味着 Windows 上完全没有原生边框。
+[Tauri 的阴影说明](https://docs.rs/tauri/latest/tauri/window/struct.WindowBuilder.html#method.shadow)
+明确指出，无边框窗口开启原生阴影会附带 1px 白边。前端圆角外出现矩形白框时，先检查这个配置，不能靠修改 CSS 边框、背景或扩大窗口掩盖。
+
+悬浮球菜单在 Windows 使用 `shadow(false)`，保留透明窗口与现有 CSS 圆角；其他平台保留原阴影。修改构建参数后必须重启应用，以重建隐藏复用的菜单窗口。验收需覆盖浅色/深色桌面背景、菜单四角及连续关闭重开。
+
+### 窗口命令
+
 - Windows 上，悬浮球开关、外观调整和首次打开菜单不在 WebView2 同步 IPC 回调中执行，使用 `#[cfg_attr(windows, tauri::command(async))]` 派发；其他平台保留原同步方式。
 - [Tauri 窗口构建文档](https://docs.rs/tauri/2.11.0/tauri/webview/struct.WebviewWindowBuilder.html) 明确提示 Windows 同步命令创建 WebView 的死锁风险。开关关闭还包含保存配置与原生窗口操作，不应阻塞 IPC 回调。
 - 隐藏复用窗口时若设置了 `ignore_cursor_events(true)`，重新启用必须恢复为 `false`，否则球虽然出现，却无法点击或拖动。
