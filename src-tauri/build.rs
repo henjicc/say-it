@@ -1,5 +1,6 @@
 fn main() {
     build_sdk_runtime_bridge();
+    #[cfg(target_os = "macos")]
     build_macos_native_bridge();
     copy_sherpa_runtime_for_cargo_tests();
     tauri_build::build()
@@ -29,6 +30,7 @@ fn build_sdk_runtime_bridge() {
     println!("cargo:rerun-if-changed=../package-lock.json");
 }
 
+#[cfg(target_os = "macos")]
 fn build_macos_native_bridge() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
