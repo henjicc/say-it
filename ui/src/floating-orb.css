@@ -87,14 +87,22 @@ button {
 }
 
 .floating-orb:not(:disabled):hover .orb-icon-shell,
-.floating-orb:not(:disabled):hover .orb-waveform,
-.floating-orb.hover-tracked:not(:disabled) .orb-icon-shell,
-.floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+.floating-orb.hover-tracked:not(:disabled) .orb-icon-shell {
   transform: scale(1.1);
+}
+
+.floating-orb:not(:disabled):hover .orb-waveform,
+.floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+  /* 改变布局尺寸后重新对齐像素，不能再缩放已对齐的细条。 */
+  width: 59.4%;
+  height: 59.4%;
 }
 
 .floating-orb:active {
   cursor: grabbing;
+}
+
+.floating-orb:not(.recording):active {
   transform: scale(0.965);
 }
 
@@ -212,15 +220,14 @@ button {
   z-index: 1;
   width: 54%;
   height: 54%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8%;
-  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: width 160ms cubic-bezier(0.2, 0.8, 0.2, 1), height 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .orb-wave-bar {
-  width: 10%;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  margin-block: auto;
   /* 直接重绘实际高度，避免 WebView2 在分数缩放下缩小合成图层时留下旧边缘。 */
   height: calc(var(--bar-height, 74%) * var(--bar-scale, 0.18));
   border-radius: 999px;
@@ -295,6 +302,12 @@ button {
   .floating-orb.hover-tracked:not(:disabled) .orb-icon-shell,
   .floating-orb.hover-tracked:not(:disabled) .orb-waveform {
     transform: none;
+  }
+
+  .floating-orb:not(:disabled):hover .orb-waveform,
+  .floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+    width: 54%;
+    height: 54%;
   }
 
   .orb-spinner {

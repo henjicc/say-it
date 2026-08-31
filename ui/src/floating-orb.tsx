@@ -4,6 +4,8 @@ import { AlertTriangle, Check, Clipboard, CornerDownLeft, Mic, X } from "lucide-
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { useCuePlayback } from "@/hooks/useCuePlayback";
+import { OrbWaveform } from "@/floating-orb/OrbWaveform";
+import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
@@ -33,7 +35,6 @@ interface WaveformPayload {
 }
 
 const EMPTY_WAVEFORM = { level: 0, peaks: [] as number[] };
-const WAVE_BAR_COUNT = 5;
 
 function clampLevel(value: unknown): number {
   return Math.max(0, Math.min(1, Number(value) || 0));
@@ -201,15 +202,7 @@ function FloatingOrbApp() {
       }}
     >
       {phase === "recording" ? (
-        <span className="orb-waveform" aria-hidden>
-          {waveformBars.map((value, index) => (
-            <span
-              key={index}
-              className="orb-wave-bar"
-              style={{ "--bar-scale": Math.max(0.18, value) } as CSSProperties}
-            />
-          ))}
-        </span>
+        <OrbWaveform levels={waveformBars} />
       ) : (
         <span className="orb-icon-shell" aria-hidden>
           {loading || phase === "busy" ? (
