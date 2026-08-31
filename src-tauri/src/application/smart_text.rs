@@ -1,6 +1,6 @@
 use crate::providers::{
     default_provider_id, find_profile, llm_models_from_config, llm_responses_endpoint,
-    llm_uses_responses, normalize_llm_endpoint, normalize_settings, ProviderProfile,
+    llm_uses_responses, normalize_llm_endpoint, ProviderProfile,
 };
 use crate::state::RuntimeState;
 use futures_util::StreamExt;
@@ -105,11 +105,9 @@ fn selected_profile(
     requested_provider_id: Option<&str>,
     requested_model: Option<&str>,
 ) -> Result<ProviderProfile, String> {
-    let settings = state
-        .providers
-        .lock()
-        .map_err(|_| "大语言模型配置锁失败".to_string())?;
-    let settings = normalize_settings(settings.clone());
+    // 只持有配置快照。用同名变量遮蔽 MutexGuard 并不会释放原锁，
+    // 下方 provider_profile_for_execution 再读配置时会在同一线程永久等待。
+    let settings = crate::commands::common::read_provider_settings(state)?;
     let requested_provider_id = requested_provider_id.unwrap_or_default().trim();
     let provider_id = if requested_provider_id.is_empty() || requested_provider_id == "default" {
         default_provider_id(&settings, "llm")
@@ -1034,6 +1032,28 @@ pub(crate) async fn preview_smart_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_profile_releases_settings_lock_before_loading_execution_profile() {
+        let state = Arc::new(RuntimeState::default());
+        let mut profile = llm_profile("plugin:test-lock", "auto");
+        profile.id = "test-lock".into();
+        state.providers.lock().unwrap().profiles.push(profile);
+        let worker_state = state.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = selected_profile(&worker_state, Some("test-lock"), Some("override"));
+            let _ = sender.send(result);
+        });
+        let profile = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("供应商读取重复获取同一把锁，智能处理会永久卡住")
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(profile.id, "test-lock");
+        assert_eq!(profile.config["model"], "override");
+        assert!(state.providers.try_lock().is_ok());
+    }
 
     #[test]
     fn render_prompt_replaces_every_text_placeholder() {
