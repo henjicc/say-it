@@ -40,6 +40,7 @@ function clampLevel(value: unknown): number {
 
 function FloatingOrbApp() {
   const [phase, setPhase] = useState<OrbPhase>("idle");
+  const phaseRef = useRef<OrbPhase>("idle");
   const [message, setMessage] = useState("");
   const [transient, setTransient] = useState(false);
   const [canSubmit, setCanSubmit] = useState(false);
@@ -80,17 +81,20 @@ function FloatingOrbApp() {
 
   useTauriEvent<OrbStatePayload>("floating-orb-state", (payload) => {
     const next = payload.phase || "idle";
+    const previous = phaseRef.current;
+    phaseRef.current = next;
     setPhase(next);
     setMessage(payload.message || "");
     setTransient(payload.transient === true);
     setCanSubmit(payload.canSubmit === true);
-    if (next !== "recording") {
+    if (next !== "recording" || previous !== "recording") {
       setWaveform(EMPTY_WAVEFORM);
     }
   });
 
   useTauriEvent<WaveformPayload>(EVT.indicatorWaveform, (payload) => {
-    if (!payload.active) {
+    // 状态与音频事件可能在同一批渲染前到达，使用即时投影拒绝停止后的迟到帧。
+    if (phaseRef.current !== "recording" || !payload.active) {
       setWaveform(EMPTY_WAVEFORM);
       return;
     }
@@ -208,7 +212,7 @@ function FloatingOrbApp() {
       ) : (
         <span className="orb-icon-shell" aria-hidden>
           {loading || phase === "busy" ? (
-            <span className="orb-spinner" />
+            <span key={phase} className="orb-spinner" />
           ) : phase === "success" ? (
             <>
               <Check className={`orb-state-icon${canSubmit ? " orb-success-check" : ""}`} />

@@ -3281,12 +3281,20 @@ fn play_cue_async(
             sleep(Duration::from_millis(100)).await;
         }
         if let CuePlaybackTarget::IndicatorWindow = target {
-            if let Some(window) = app.get_webview_window("dictation-indicator") {
-                let _ = window.emit(event, json!({ "which": which, "kind": kind }));
+            if app.get_webview_window("dictation-indicator").is_some() {
+                let _ = app.emit_to(
+                    "dictation-indicator",
+                    event,
+                    json!({ "which": which, "kind": kind }),
+                );
                 return;
             }
         }
-        let _ = app.emit(event, json!({ "which": which, "kind": kind }));
+        let _ = app.emit_to(
+            "main",
+            "dictation-play-cue",
+            json!({ "which": which, "kind": kind }),
+        );
     });
 }
 

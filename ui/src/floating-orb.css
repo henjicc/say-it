@@ -221,12 +221,11 @@ button {
 
 .orb-wave-bar {
   width: 10%;
-  height: 74%;
+  /* 直接重绘实际高度，避免 WebView2 在分数缩放下缩小合成图层时留下旧边缘。 */
+  height: calc(var(--bar-height, 74%) * var(--bar-scale, 0.18));
   border-radius: 999px;
   background: var(--color-accent);
-  transform: scaleY(var(--bar-scale, 0.18));
-  transform-origin: center;
-  transition: transform 70ms ease-out;
+  transition: height 70ms ease-out;
 }
 
 [data-ui-tone="light"] .floating-orb.moving,
@@ -245,12 +244,12 @@ button {
 
 .orb-wave-bar:nth-child(1),
 .orb-wave-bar:nth-child(5) {
-  height: 47%;
+  --bar-height: 47%;
 }
 
 .orb-wave-bar:nth-child(2),
 .orb-wave-bar:nth-child(4) {
-  height: 64%;
+  --bar-height: 64%;
 }
 
 .orb-sr-only {
