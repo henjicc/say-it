@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronRight, CircleAlert, Clock3, Languages, Mic, Sparkles, TextCursorInput, WandSparkles } from "lucide-react";
-import { Button } from "@/components/ui/Button";
+import { CheckCircle2, Clock3, Languages, Mic, Sparkles, TextCursorInput, WandSparkles } from "lucide-react";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
@@ -10,10 +9,9 @@ import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { loadShortcutBindings, shortcutTargetKey, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
 import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
-import { CMD, EVT, cmd, on, type SetupStatus, type UsageSummary } from "@/lib/tauri";
+import { CMD, EVT, cmd, on, type UsageSummary } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useUiStore } from "@/store/useUiStore";
 
 const actionMeta = {
   dictationMain: { title: "语音输入", description: "把口述内容直接变成清晰文字", icon: Mic },
@@ -38,7 +36,6 @@ export function HomeView() {
   useModelCatalogRevision();
   const [shortcuts, setShortcuts] = useState<ShortcutBindingItem[]>([]);
   const [busy, setBusy] = useState("");
-  const [setup, setSetup] = useState<SetupStatus>();
   const [usage, setUsage] = useState<UsageSummary>({ successfulActions: 0, outputChars: 0, spokenDurationMs: 0, estimatedTimeSavedMs: 0 });
   const [message, setMessage] = useState("");
   const asrModel = useDictPrefs((state) => state.prefs.asrModel);
@@ -47,8 +44,6 @@ export function HomeView() {
   const defaults = useProviderStore((state) => state.defaults);
   const setDefault = useProviderStore((state) => state.setDefault);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
   const visibleShortcuts = useMemo(() => shortcuts.filter((item) => Boolean(itemKey(item))), [shortcuts]);
   const smartModelOptions = useMemo(() => profiles.flatMap((profile) => {
     const models = Array.isArray(profile.config?.models)
@@ -65,7 +60,6 @@ export function HomeView() {
   const refreshUsage = () => cmd<UsageSummary>(CMD.getUsageSummary).then(setUsage).catch(() => {});
   useEffect(() => {
     void loadShortcutBindings().then((items) => setShortcuts(ensureMainShortcut(items))).catch((error) => setMessage(String(error)));
-    void cmd<SetupStatus>(CMD.getSetupStatus).then(setSetup).catch(() => {});
     void refreshUsage();
     let unlisten: (() => void) | undefined;
     void on(EVT.historyChanged, refreshUsage).then((value) => { unlisten = value; });
@@ -84,7 +78,6 @@ export function HomeView() {
     catch (error) { if (!reportShortcutConflict(error)) setMessage(String(error)); setShortcuts(ensureMainShortcut(await loadShortcutBindings().catch(() => shortcuts))); }
     finally { setBusy(""); }
   };
-  const openStatus = () => { setSettingsTab("general"); setView("settings"); };
   const changeSmartModel = async (value: string) => {
     if (!value) return;
     try {
@@ -95,7 +88,6 @@ export function HomeView() {
       await setDefault("llm", providerId);
     } catch (error) { setMessage(`切换智能模型失败：${String(error)}`); }
   };
-  const blocked = setup?.checks.filter((item) => item.status !== "ready") ?? [];
 
   return <div className="flex flex-col gap-8">
     <SettingsSection title="快捷操作">
@@ -114,16 +106,9 @@ export function HomeView() {
     </SettingsSection>
 
     <SettingsSection title="快速设置">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <Field label="主语音识别模型"><Select value={asrModel} onChange={(event) => void patchDict({ asrModel: event.target.value })}>{DICTATION_ASR_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
         <Field label="全局默认智能模型"><Select value={selectedSmartModel} onChange={(event) => void changeSmartModel(event.target.value)}><option value="">尚未配置</option>{smartModelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
-        <Field label="环境状态" controlId="home-environment-status" className="md:col-span-2 xl:col-span-1">
-          <button id="home-environment-status" type="button" onClick={openStatus} className="flex h-[var(--control-h)] w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-3 text-left transition-colors hover:border-[var(--color-line-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]">
-            {setup && blocked.length === 0 ? <CheckCircle2 className="h-4.5 w-4.5 shrink-0 text-[var(--color-ok)]" /> : <CircleAlert className="h-4.5 w-4.5 shrink-0 text-[var(--color-warn)]" />}
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-fg)]">{!setup ? "正在检查环境…" : blocked.length === 0 ? "所有关键能力均可用" : `${blocked.length} 项需要处理`}</span>
-            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-fg-faint)]" />
-          </button>
-        </Field>
       </div>
     </SettingsSection>
 

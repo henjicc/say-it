@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 const invoke = vi.fn();
@@ -83,6 +83,7 @@ const setupStatus = {
 };
 
 describe("OnboardingWizard", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     invoke.mockReset();
     patchDictPrefs.mockReset().mockResolvedValue(undefined);
@@ -127,5 +128,27 @@ describe("OnboardingWizard", () => {
     expect(screen.getByRole("button", { name: "打开插件管理" })).toBeInTheDocument();
     expect(screen.queryByText("处理后音量")).not.toBeInTheDocument();
     expect(screen.queryByText("快捷键与输入")).not.toBeInTheDocument();
+  });
+
+  it("keeps a fixed dialog and separate footer while replacing each step's scroll region", async () => {
+    render(<OnboardingWizard open onClose={() => undefined} />);
+    await screen.findByText("麦克风可以正常使用");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveClass("h-[var(--onboarding-dialog-h)]", "max-h-[85vh]");
+    const previous = screen.getByRole("button", { name: "上一步" });
+    expect(previous.parentElement).toHaveClass("shrink-0");
+    let content = screen.getByRole("region", { name: "权限设置内容" });
+    expect(content).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(content).not.toContainElement(previous);
+    for (const name of ["识别模型设置内容", "离线模型设置内容"]) {
+      content.scrollTop = 160;
+      fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+      const next = screen.getByRole("region", { name });
+      expect(next).not.toBe(content);
+      expect(next.scrollTop).toBe(0);
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(screen.getByRole("button", { name: "上一步" })).toBe(previous);
+      content = next;
+    }
   });
 });
