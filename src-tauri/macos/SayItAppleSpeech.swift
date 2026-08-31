@@ -437,6 +437,112 @@ private func makeBuffer(data: Data, format: AVAudioFormat) throws -> AVAudioPCMB
     return buffer
 }
 
+#if SAYIT_HAS_SPEECH_ANALYZER
+/// macOS 26 provides `AnalyzerInput`, but Apple's convenience
+/// `AnalyzerInputConverter` is only available from macOS 27. Keep conversion
+/// here so the macOS 26 deployment target continues to use SpeechAnalyzer.
+@available(macOS 26.0, *)
+private final class SpeechAnalyzerBufferConverter {
+    private let analyzerFormat: AVAudioFormat
+    private let sourceFormat: AVAudioFormat
+    private let converter: AVAudioConverter?
+
+    init(sourceFormat: AVAudioFormat, analyzerFormat: AVAudioFormat) throws {
+        self.sourceFormat = sourceFormat
+        self.analyzerFormat = analyzerFormat
+        if sourceFormat == analyzerFormat {
+            converter = nil
+        } else {
+            guard let converter = AVAudioConverter(from: sourceFormat, to: analyzerFormat) else {
+                throw SpeechHelperError.invalidAudioFormat
+            }
+            self.converter = converter
+        }
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) throws -> [AnalyzerInput] {
+        guard let converter else {
+            return [AnalyzerInput(buffer: buffer)]
+        }
+
+        var pendingInput: AVAudioPCMBuffer? = buffer
+        var inputs: [AnalyzerInput] = []
+        while true {
+            let output = try makeOutputBuffer(for: buffer.frameLength)
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+                guard let input = pendingInput else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                pendingInput = nil
+                inputStatus.pointee = .haveData
+                return input
+            }
+            if let conversionError {
+                throw conversionError
+            }
+            if output.frameLength > 0 {
+                inputs.append(AnalyzerInput(buffer: output))
+            }
+            switch status {
+            case .haveData:
+                continue
+            case .inputRanDry, .endOfStream:
+                return inputs
+            case .error:
+                throw SpeechHelperError.invalidAudioFormat
+            @unknown default:
+                throw SpeechHelperError.invalidAudioFormat
+            }
+        }
+    }
+
+    func flush() throws -> [AnalyzerInput] {
+        guard let converter else { return [] }
+
+        var inputs: [AnalyzerInput] = []
+        while true {
+            let output = try makeOutputBuffer(for: 4_096)
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            if let conversionError {
+                throw conversionError
+            }
+            if output.frameLength > 0 {
+                inputs.append(AnalyzerInput(buffer: output))
+            }
+            switch status {
+            case .haveData:
+                continue
+            case .inputRanDry, .endOfStream:
+                return inputs
+            case .error:
+                throw SpeechHelperError.invalidAudioFormat
+            @unknown default:
+                throw SpeechHelperError.invalidAudioFormat
+            }
+        }
+    }
+
+    private func makeOutputBuffer(for inputFrames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        let sampleRateRatio = analyzerFormat.sampleRate / sourceFormat.sampleRate
+        let estimatedFrames = ceil(Double(inputFrames) * sampleRateRatio) + 64
+        let capacity = AVAudioFrameCount(max(1, min(estimatedFrames, Double(UInt32.max))))
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: analyzerFormat,
+            frameCapacity: capacity
+        ) else {
+            throw SpeechHelperError.invalidAudioFormat
+        }
+        return output
+    }
+}
+#endif
+
 private func transcribeLegacy(
     localeIdentifier: String,
     sampleRate: Double,
@@ -663,7 +769,10 @@ private func transcribeAnalyzer(
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         try await analyzer.prepareToAnalyze(in: analyzerFormat)
-        let converter = AnalyzerInputConverter(analyzerFormat: analyzerFormat)
+        let converter = try SpeechAnalyzerBufferConverter(
+            sourceFormat: sourceFormat,
+            analyzerFormat: analyzerFormat
+        )
         let (inputSequence, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
         let resultTask = Task { () -> (text: String, error: String?) in
@@ -708,7 +817,7 @@ private func transcribeAnalyzer(
             let complete = pending.prefix(usableCount)
             pending.removeFirst(usableCount)
             let buffer = try makeBuffer(data: Data(complete), format: sourceFormat)
-            for input in try converter.convert(buffer, at: nil) {
+            for input in try converter.convert(buffer) {
                 inputBuilder.yield(input)
             }
         }
