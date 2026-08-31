@@ -11,10 +11,13 @@ $buildDir = Join-Path $repoRoot 'src-tauri\target\context-probe-build'
 $binaryDir = Join-Path $repoRoot 'src-tauri\binaries'
 $outputPath = Join-Path $binaryDir 'context-probe-x86_64-pc-windows-msvc.exe'
 
+if (Test-Path -LiteralPath $buildDir) {
+    Remove-Item -LiteralPath $buildDir -Recurse -Force
+}
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 New-Item -ItemType Directory -Path $binaryDir -Force | Out-Null
 
-$configureArgs = @('-S', $sourceDir, '-B', $buildDir, '-G', 'Visual Studio 17 2022', '-A', 'x64')
+$configureArgs = @('-S', $sourceDir, '-B', $buildDir, '-A', 'x64')
 & cmake @configureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
 
