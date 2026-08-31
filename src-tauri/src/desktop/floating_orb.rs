@@ -122,7 +122,13 @@ fn monitor_reference_extent(monitor: Option<&tauri::Monitor>) -> f64 {
 fn orb_window_extent(size_percent: u16, monitor: Option<&tauri::Monitor>) -> f64 {
     let percent = normalized_orb_size_percent(size_percent) as f64 / 10.0;
     let reference = monitor_reference_extent(monitor);
-    (reference * percent / 100.0).clamp(ORB_SIZE_PX_MIN, ORB_SIZE_PX_MAX)
+    let extent = (reference * percent / 100.0).clamp(ORB_SIZE_PX_MIN, ORB_SIZE_PX_MAX);
+    // WebView2 的 CSS 视口按整数逻辑像素布局；例如 48.6 DIP 在 200% 下
+    // 只有 97 个物理像素，49 CSS px 的圆会被右侧/底部的原生边界裁掉。
+    // 不额外扩张透明窗口，避免系统毛玻璃在球外形成光环。
+    #[cfg(windows)]
+    let extent = extent.round();
+    extent
 }
 
 fn any_existing_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -804,6 +810,9 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
         let _ = window.set_always_on_top(true);
         apply_floating_orb_config(app, &window)?;
         window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| format!("恢复悬浮球交互失败：{error}"))?;
+        window
             .show()
             .map_err(|error| format!("显示悬浮球失败：{error}"))
     } else {
@@ -830,7 +839,10 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
     }
 }
 
-#[tauri::command]
+// Windows 的窗口操作不能在 WebView2 同步 IPC 回调中重入事件循环。
+// 仅切换命令派发线程，macOS 保留原来的调用方式。
+#[cfg_attr(windows, tauri::command(async))]
+#[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn set_floating_orb_enabled(
     app: tauri::AppHandle,
     enabled: bool,
@@ -903,7 +915,8 @@ pub(crate) fn floating_orb_auto_enter_enabled(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-#[tauri::command]
+#[cfg_attr(windows, tauri::command(async))]
+#[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn set_floating_orb_appearance(
     app: tauri::AppHandle,
     size_percent: u16,
@@ -1083,7 +1096,8 @@ fn resize_and_position_floating_orb_menu(
         .map_err(|error| format!("定位悬浮球设置面板失败：{error}"))
 }
 
-#[tauri::command]
+#[cfg_attr(windows, tauri::command(async))]
+#[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
     let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
@@ -1973,8 +1987,25 @@ mod tests {
         assert_eq!(normalized_orb_opacity(85), 85);
         assert_eq!(normalized_orb_opacity(20), ORB_OPACITY_MIN);
         assert_eq!(normalized_orb_opacity(120), ORB_OPACITY_MAX);
-        // 无显示器信息时回退到 1080 逻辑像素参考边长：4.5% * 1080 = 48.6。
-        assert_eq!(orb_window_extent(45, None), 48.6);
+        // Windows 对齐整数 CSS 像素；其他平台保留原有的小数尺寸。
+        assert_eq!(
+            orb_window_extent(45, None),
+            if cfg!(windows) { 49.0 } else { 48.6 }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_orb_extent_does_not_round_a_css_circle_outside_its_window() {
+        for percent in ORB_SIZE_PERCENT_MIN..=ORB_SIZE_PERCENT_MAX {
+            let extent = orb_window_extent(percent, None);
+            assert_eq!(extent.fract(), 0.0, "sizePercent={percent}");
+            for scale in [1.0, 2.0, 3.0] {
+                let physical = tauri::LogicalSize::new(extent, extent).to_physical::<u32>(scale);
+                assert_eq!(physical.width as f64, extent * scale);
+                assert_eq!(physical.height, physical.width);
+            }
+        }
     }
 
     #[test]
