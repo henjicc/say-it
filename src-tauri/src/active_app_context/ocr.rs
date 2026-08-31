@@ -550,7 +550,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut profile = crate::providers::windows_ocr_profile();
+        let mut profile = crate::providers::system_ocr_profile();
         profile.id = "test-plugin-ocr".into();
         profile.kind = "plugin:test-plugin-ocr".into();
         profile.display_name = "Test Plugin OCR".into();
