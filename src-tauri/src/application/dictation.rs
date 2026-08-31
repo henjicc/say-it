@@ -424,6 +424,8 @@ struct Session {
     started_at: Option<Instant>,
     assistant_request: Option<crate::application::assistant::AssistantRequest>,
     history_allowed: bool,
+    /// ASR 完成后立即落盘的记录；后续阶段只能更新它，不能覆盖原文或另建重复记录。
+    history_id: Option<String>,
     error: Option<String>,
     pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
@@ -1586,6 +1588,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         active_app_context,
         active_app_context_cancellation,
         trigger,
+        history,
     ) = {
         let mut s = state
             .dictation_runtime
@@ -1600,6 +1603,14 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             s.active_app_context.take(),
             s.active_app_context_cancellation.take(),
             s.trigger,
+            s.history_id.take().map(|id| {
+                (
+                    id,
+                    s.started_at
+                        .map(|time| time.elapsed().as_millis() as u64)
+                        .unwrap_or(0),
+                )
+            }),
         );
         s.epoch = state
             .dictation_runtime
@@ -1619,6 +1630,13 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.trigger = DictationTrigger::Standard;
         ids
     };
+    if let Some((id, duration)) = history {
+        if let Err(error) =
+            crate::application::history::update_result(&app, &id, None, "cancelled", None, duration)
+        {
+            eprintln!("[history] 保存取消状态失败：{error}");
+        }
+    }
     if let Some(cancellation) = active_app_context_cancellation {
         cancellation.cancel();
     }
@@ -1857,6 +1875,9 @@ async fn prepare_target_for_injection(
 }
 
 async fn finalize(app: AppHandle, epoch: u64) {
+    let state = app.state::<RuntimeState>();
+    let operation = state.dictation_runtime.operation.clone();
+    let begin_guard = operation.lock().await;
     let (
         text,
         prefs,
@@ -1925,6 +1946,52 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.trigger,
         )
     };
+    // 原文必须先落盘，再释放 ASR / 等待上下文 / 调用智能处理 / 向目标软件输入。
+    let initial_history = if history_allowed && !text.is_empty() {
+        let identity = assistant_request
+            .as_ref()
+            .and_then(|request| request.identity.clone())
+            .or_else(|| app_identity.clone())
+            .unwrap_or_default();
+        crate::application::history::record(
+            &app,
+            crate::application::history::NewHistoryEntry {
+                task_kind: assistant_request
+                    .as_ref()
+                    .map(|request| request.action.task_kind())
+                    .unwrap_or("dictation")
+                    .into(),
+                source_text: assistant_request
+                    .as_ref()
+                    .and_then(|request| request.selection.as_ref())
+                    .map(|selection| selection.text.clone())
+                    .unwrap_or_else(|| text.clone()),
+                output_text: text.clone(),
+                instruction: assistant_request
+                    .as_ref()
+                    .filter(|request| {
+                        request.action
+                            != crate::application::assistant::AssistantAction::TranslateSpeech
+                    })
+                    .map(|_| text.clone())
+                    .unwrap_or_default(),
+                app_name: identity.app_name,
+                process_name: identity.process_name,
+                provider_id: history_provider_id(&state, &prefs.asr_model),
+                model_id: prefs.asr_model.clone(),
+                status: "recognized".into(),
+                error: None,
+                duration_ms: recorded_duration_ms,
+            },
+        )
+        .map(Some)
+    } else {
+        Ok(None)
+    };
+    let history_id = initial_history.as_ref().ok().cloned().flatten();
+    if let Ok(mut session) = state.dictation_runtime.session.lock() {
+        session.history_id = history_id.clone();
+    }
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
     if let Some(id) = asr {
         let state = app.state::<RuntimeState>();
@@ -1932,8 +1999,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     let state = app.state::<RuntimeState>();
     {
-        let operation = state.dictation_runtime.operation.clone();
-        let _guard = operation.lock().await;
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
@@ -1952,6 +2017,20 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
             }
         }
+    }
+    drop(begin_guard);
+    if let Err(error) = initial_history {
+        cleanup_stale_finalize(&state, lease, temp_path);
+        let _ = fail_with_raw_fallback(
+            app,
+            epoch,
+            format!("识别原文保存失败：{error}"),
+            text,
+            method,
+            FloatingFallbackKind::Processing,
+        )
+        .await;
+        return;
     }
     let active_app_context = if assistant_request.is_some() {
         drop(active_app_context);
@@ -2029,8 +2108,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 remove_temp(temp_path.clone());
                 let identity = request.identity.clone().unwrap_or_default();
                 if history_allowed {
-                    let _ = crate::application::history::record(
+                    if let Err(error) = crate::application::history::record_or_update(
                         &app,
+                        history_id.as_deref(),
                         crate::application::history::NewHistoryEntry {
                             task_kind: request.action.task_kind().into(),
                             source_text: request
@@ -2038,7 +2118,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                                 .as_ref()
                                 .map(|value| value.text.clone())
                                 .unwrap_or_else(|| raw_text.clone()),
-                            output_text: String::new(),
+                            output_text: raw_text.clone(),
                             instruction: if request.action
                                 == crate::application::assistant::AssistantAction::TranslateSpeech
                             {
@@ -2054,7 +2134,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
                             error: Some(error.clone()),
                             duration_ms: request.started_at.elapsed().as_millis() as u64,
                         },
-                    );
+                    ) {
+                        eprintln!("[history] 保存助手失败结果失败：{error}");
+                    }
                 }
                 crate::application::assistant::publish_answer(
                     &app,
@@ -2169,6 +2251,20 @@ async fn finalize(app: AppHandle, epoch: u64) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
     }
+    if let Some(id) = history_id.as_deref() {
+        if let Err(error) = crate::application::history::update_result(
+            &app,
+            id,
+            Some(&processed),
+            "processed",
+            None,
+            started_at
+                .map(|time| time.elapsed().as_millis() as u64)
+                .unwrap_or(0),
+        ) {
+            eprintln!("[history] 保存处理结果失败（原文已保留）：{error}");
+        }
+    }
     let result = if processed.is_empty() {
         Ok(())
     } else if trigger.is_floating_orb() {
@@ -2241,8 +2337,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
             let identity = request.identity.clone().unwrap_or_default();
             if history_allowed {
-                let _ = crate::application::history::record(
+                if let Err(error) = crate::application::history::record_or_update(
                     &app,
+                    history_id.as_deref(),
                     crate::application::history::NewHistoryEntry {
                         task_kind: request.action.task_kind().into(),
                         source_text: raw_text.clone(),
@@ -2256,7 +2353,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
                         error: Some(e.clone()),
                         duration_ms: request.started_at.elapsed().as_millis() as u64,
                     },
-                );
+                ) {
+                    eprintln!("[history] 保存助手输入失败结果失败：{error}");
+                }
             }
             drop(_guard);
             let _ = fail(app, epoch, e).await;
@@ -2329,9 +2428,10 @@ async fn finalize(app: AppHandle, epoch: u64) {
         })
         .map(|_| raw_text.clone())
         .unwrap_or_default();
-    if history_allowed {
-        let _ = crate::application::history::record(
+    if history_allowed && (!history_source.is_empty() || !processed.is_empty()) {
+        if let Err(error) = crate::application::history::record_or_update(
             &app,
+            history_id.as_deref(),
             crate::application::history::NewHistoryEntry {
                 task_kind: task_kind.into(),
                 source_text: history_source,
@@ -2349,7 +2449,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     .or_else(|| started_at.map(|value| value.elapsed().as_millis() as u64))
                     .unwrap_or(0),
             },
-        );
+        ) {
+            eprintln!("[history] 保存最终结果失败（原文已保留）：{error}");
+        }
     }
     let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
@@ -2555,6 +2657,8 @@ async fn fail_internal(
         active_app_context,
         active_app_context_cancellation,
         history,
+        history_id,
+        duration_ms,
         floating,
     ) = {
         let mut s = state
@@ -2604,6 +2708,10 @@ async fn fail_internal(
             s.active_app_context.take(),
             s.active_app_context_cancellation.take(),
             history,
+            s.history_id.clone(),
+            s.started_at
+                .map(|time| time.elapsed().as_millis() as u64)
+                .unwrap_or(0),
             floating,
         )
     };
@@ -2623,7 +2731,22 @@ async fn fail_internal(
     }
     let _ = release_backend_mic_inner(&state);
     if let Some(entry) = history {
-        let _ = crate::application::history::record(&app, entry);
+        if let Err(error) =
+            crate::application::history::record_or_update(&app, history_id.as_deref(), entry)
+        {
+            eprintln!("[history] 保存失败结果失败：{error}");
+        }
+    } else if let Some(id) = history_id {
+        if let Err(error) = crate::application::history::update_result(
+            &app,
+            &id,
+            None,
+            "failed",
+            Some(&error),
+            duration_ms,
+        ) {
+            eprintln!("[history] 保存失败状态失败：{error}");
+        }
     }
     hotkey::set_dictation_active(false);
     if floating {

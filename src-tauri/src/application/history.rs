@@ -290,6 +290,7 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         .unwrap_or(DEFAULT_RETENTION_DAYS);
     let connection = open(app)?;
     migrate_provider_ids(&connection)?;
+    recover_interrupted_entries(&connection)?;
     cleanup_expired_with_connection(&connection, retention_days)?;
     refresh_correction_memory(app, &connection)?;
     let app = app.clone();
@@ -328,7 +329,34 @@ fn migrate_provider_ids(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("迁移历史供应商 ID 失败：{error}"))
 }
 
+fn history_recording_allowed(
+    prefs: &serde_json::Value,
+    app_name: &str,
+    process_name: &str,
+) -> bool {
+    prefs.get("enabled").and_then(serde_json::Value::as_bool) != Some(false)
+        && !prefs
+            .get("excludedApps")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .any(|value| {
+                value.eq_ignore_ascii_case(process_name.trim())
+                    || value.eq_ignore_ascii_case(app_name.trim())
+            })
+}
+
 pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, String> {
+    record_or_update(app, None, entry)
+}
+
+/// 后处理只更新同一条记录的结果，原文与创建时间始终保留；已删除的记录不会被复活。
+pub(crate) fn record_or_update(
+    app: &AppHandle,
+    id: Option<&str>,
+    entry: NewHistoryEntry,
+) -> Result<String, String> {
     if WRITES_PAUSED.load(Ordering::Acquire) {
         return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
     }
@@ -342,24 +370,18 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
         .map_err(|_| "应用配置锁失败".to_string())?
         .history_prefs
         .clone();
-    if prefs.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+    if !history_recording_allowed(&prefs, &entry.app_name, &entry.process_name) {
         return Ok(String::new());
     }
-    let excluded = prefs
-        .get("excludedApps")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .any(|value| {
-            value.eq_ignore_ascii_case(entry.process_name.trim())
-                || value.eq_ignore_ascii_case(entry.app_name.trim())
-        });
-    if excluded {
+    if id == Some("") {
         return Ok(String::new());
     }
-    let id = Uuid::new_v4().to_string();
+    let existing_id = id;
+    let id = id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let explicit_correction = entry.task_kind == "editSelection"
+        && entry.status == "succeeded"
         && !entry.source_text.trim().is_empty()
         && entry.source_text != entry.output_text;
     let correction = explicit_correction.then(|| {
@@ -373,7 +395,46 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始历史写入事务失败：{error}"))?;
+    if existing_id.is_some() {
+        if !update_result_with_connection(
+            &transaction,
+            &id,
+            Some(&entry.output_text),
+            &entry.status,
+            entry.error.as_deref(),
+            entry.duration_ms,
+        )? {
+            return Ok(String::new());
+        }
+    } else {
+        insert_entry(&transaction, &id, &entry)?;
+    }
+    if let Some((before, after, app_name)) = correction {
+        transaction
+            .execute(
+                "INSERT INTO correction_samples (id, entry_id, before_text, after_text, app_name, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![Uuid::new_v4().to_string(), id, before, after, app_name, now_seconds()],
+            )
+            .map_err(|error| format!("保存选区编辑纠错样本失败：{error}"))?;
+    }
     transaction
+        .commit()
+        .map_err(|error| format!("提交历史写入失败：{error}"))?;
+    if explicit_correction {
+        refresh_correction_memory(app, &connection)?;
+    }
+    let kind = if existing_id.is_some() {
+        "updated"
+    } else {
+        "created"
+    };
+    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":kind,"id":id}));
+    Ok(id)
+}
+
+fn insert_entry(connection: &Connection, id: &str, entry: &NewHistoryEntry) -> Result<(), String> {
+    connection
         .execute(
             "INSERT INTO history_entries
              (id, created_at, task_kind, source_text, output_text, instruction, app_name,
@@ -396,23 +457,74 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
             ],
         )
         .map_err(|error| format!("写入历史失败：{error}"))?;
-    if let Some((before, after, app_name)) = correction {
-        transaction
-            .execute(
-                "INSERT INTO correction_samples (id, entry_id, before_text, after_text, app_name, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![Uuid::new_v4().to_string(), id, before, after, app_name, now_seconds()],
-            )
-            .map_err(|error| format!("保存选区编辑纠错样本失败：{error}"))?;
+    Ok(())
+}
+
+fn update_result_with_connection(
+    connection: &Connection,
+    id: &str,
+    output: Option<&str>,
+    status: &str,
+    error: Option<&str>,
+    duration_ms: u64,
+) -> Result<bool, String> {
+    connection
+        .execute(
+            "UPDATE history_entries SET output_text = COALESCE(?2, output_text), status = ?3,
+         error = ?4, duration_ms = ?5 WHERE id = ?1 AND status IN ('recognized', 'processed')",
+            params![id, output, status, error, duration_ms as i64],
+        )
+        .map(|changed| changed > 0)
+        .map_err(|error| format!("更新历史结果失败：{error}"))
+}
+
+pub(crate) fn update_result(
+    app: &AppHandle,
+    id: &str,
+    output: Option<&str>,
+    status: &str,
+    error: Option<&str>,
+    duration_ms: u64,
+) -> Result<(), String> {
+    if id.is_empty() {
+        return Ok(());
     }
-    transaction
-        .commit()
-        .map_err(|error| format!("提交历史写入失败：{error}"))?;
-    if explicit_correction {
-        refresh_correction_memory(app, &connection)?;
+    if WRITES_PAUSED.load(Ordering::Acquire) {
+        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
     }
-    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"created","id":id}));
-    Ok(id)
+    let connection = open(app)?;
+    let identity = connection
+        .query_row(
+            "SELECT app_name, process_name FROM history_entries WHERE id = ?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取历史所属应用失败：{error}"))?;
+    let Some((app_name, process_name)) = identity else {
+        return Ok(());
+    };
+    let prefs = app
+        .state::<crate::state::RuntimeState>()
+        .app_settings
+        .lock()
+        .map_err(|_| "应用配置锁失败".to_string())?
+        .history_prefs
+        .clone();
+    if !history_recording_allowed(&prefs, &app_name, &process_name) {
+        return Ok(());
+    }
+    if update_result_with_connection(&connection, id, output, status, error, duration_ms)? {
+        let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
+    }
+    Ok(())
+}
+
+fn recover_interrupted_entries(connection: &Connection) -> Result<usize, String> {
+    connection.execute(
+        "UPDATE history_entries SET status = 'failed', error = '上次任务未完成，已保留识别原文和现有结果'
+         WHERE status IN ('recognized', 'processed')", [],
+    ).map_err(|error| format!("恢复未完成历史记录失败：{error}"))
 }
 
 fn map_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
@@ -486,6 +598,10 @@ pub(crate) fn update_history_text(
         return Err("修正后的文本不能为空".into());
     }
     let connection = open(&app)?;
+    let current = get_entry(&connection, &id)?;
+    if matches!(current.status.as_str(), "recognized" | "processed") {
+        return Err("本次任务仍在处理，请完成后再修正；现在可以复制原文".into());
+    }
     let previous: Option<(String, String)> = connection
         .query_row(
             "SELECT output_text, app_name FROM history_entries WHERE id = ?1",
@@ -544,6 +660,9 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
         let connection = open(&app)?;
         get_entry(&connection, &id)?
     };
+    if matches!(entry.status.as_str(), "recognized" | "processed") {
+        return Err("本次任务仍在处理，不能重复注入；现在可以复制原文".into());
+    }
     if entry.output_text.trim().is_empty() {
         return Err("这条记录没有可重试注入的结果".into());
     }
@@ -710,6 +829,106 @@ mod tests {
         assert!(saved > 0);
         let (_, saved) = output_metrics("短", 120_000);
         assert_eq!(saved, 0);
+    }
+
+    #[test]
+    fn recognized_text_is_durable_before_processing_and_updates_in_place() {
+        let path =
+            std::env::temp_dir().join(format!("sayit-history-stages-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        let mut raw = entry("原始识别结果");
+        raw.status = "recognized".into();
+        insert_entry(&connection, "one", &raw).unwrap();
+        let created_at = get_entry(&connection, "one").unwrap().created_at;
+        drop(connection);
+
+        // 模拟后处理尚未完成甚至进程退出：另一个连接已能恢复原文。
+        let connection = open_path(&path).unwrap();
+        assert_eq!(
+            get_entry(&connection, "one").unwrap().source_text,
+            "原始识别结果"
+        );
+        assert!(update_result_with_connection(
+            &connection,
+            "one",
+            Some("优化后的结果"),
+            "processed",
+            None,
+            20
+        )
+        .unwrap());
+        // 输入目标失败也不丢优化后的内容，更不覆盖 ASR 原文。
+        assert!(update_result_with_connection(
+            &connection,
+            "one",
+            None,
+            "failed",
+            Some("输入失败"),
+            30
+        )
+        .unwrap());
+        let saved = get_entry(&connection, "one").unwrap();
+        assert_eq!(saved.source_text, "原始识别结果");
+        assert_eq!(saved.output_text, "优化后的结果");
+        assert_eq!(saved.created_at, created_at);
+        assert_eq!(saved.status, "failed");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM history_entries", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM correction_samples", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn late_processing_cannot_overwrite_cancelled_completed_or_deleted_history() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE history_entries (id TEXT PRIMARY KEY, output_text TEXT, status TEXT, error TEXT, duration_ms INTEGER);
+            INSERT INTO history_entries VALUES ('cancelled', '原文', 'cancelled', NULL, 1), ('done', '结果', 'succeeded', NULL, 1);").unwrap();
+        for id in ["cancelled", "done", "deleted"] {
+            assert!(!update_result_with_connection(
+                &connection,
+                id,
+                Some("迟到结果"),
+                "processed",
+                None,
+                2
+            )
+            .unwrap());
+        }
+    }
+
+    #[test]
+    fn restart_marks_only_unfinished_history_and_preserves_both_texts() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE history_entries (id TEXT, source_text TEXT, output_text TEXT, status TEXT, error TEXT);
+            INSERT INTO history_entries VALUES ('raw', '原文', '原文', 'recognized', NULL), ('processed', '原文', '优化', 'processed', NULL), ('done', '原文', '完成', 'succeeded', NULL);").unwrap();
+        assert_eq!(recover_interrupted_entries(&connection).unwrap(), 2);
+        assert_eq!(recover_interrupted_entries(&connection).unwrap(), 0);
+        let saved: (String, String, String) = connection.query_row("SELECT source_text, output_text, status FROM history_entries WHERE id = 'processed'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(saved, ("原文".into(), "优化".into(), "failed".into()));
+    }
+
+    #[test]
+    fn staged_history_respects_recording_opt_out_and_excluded_apps() {
+        assert!(!history_recording_allowed(
+            &serde_json::json!({"enabled": false}),
+            "Notepad",
+            "notepad.exe"
+        ));
+        let prefs = serde_json::json!({"enabled": true, "excludedApps": ["NOTEPAD.EXE"]});
+        assert!(!history_recording_allowed(&prefs, "Notepad", "notepad.exe"));
+        assert!(history_recording_allowed(&prefs, "Editor", "editor.exe"));
     }
 
     fn entry(output: &str) -> NewHistoryEntry {

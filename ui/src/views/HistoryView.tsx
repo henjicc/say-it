@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Clipboard, Pencil, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { CMD, EVT, cmd, on, type HistoryEntry, type HistoryPage } from "@/lib/tauri";
+import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage } from "@/lib/tauri";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
 
 const PAGE_SIZE = 30;
 
@@ -13,7 +14,7 @@ function taskLabel(kind: HistoryEntry["taskKind"]) {
 }
 
 function statusLabel(status: HistoryEntry["status"]) {
-  return ({ succeeded: "已完成", failed: "失败", cancelled: "已取消" } as const)[status] || status;
+  return ({ recognized: "原文已保存", processed: "结果已保存，待输入", succeeded: "已完成", failed: "失败", cancelled: "已取消" } as const)[status] || status;
 }
 
 export function HistoryView() {
@@ -26,26 +27,25 @@ export function HistoryView() {
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const loadVersion = useRef(0);
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     setLoading(true);
     try {
-      setPage(await cmd<HistoryPage>(CMD.queryHistory, {
+      const next = await cmd<HistoryPage>(CMD.queryHistory, {
         query: { search, status, taskKind, offset, limit: PAGE_SIZE },
-      }));
+      });
+      if (version === loadVersion.current) setPage(next);
     } catch (error) {
-      setMessage(String(error));
+      if (version === loadVersion.current) setMessage(String(error));
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
   }, [offset, search, status, taskKind]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void on(EVT.historyChanged, () => void load()).then((value) => { unlisten = value; });
-    return () => unlisten?.();
-  }, [load]);
+  useTauriEvent(EVT.historyChanged, () => void load());
   useEffect(() => setOffset(0), [search, status, taskKind]);
 
   const range = useMemo(() => {
@@ -108,7 +108,7 @@ export function HistoryView() {
             <Input className="pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索历史" aria-label="搜索历史" />
           </label>
           <Select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="结果状态">
-            <option value="">全部状态</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>
+            <option value="">全部状态</option><option value="recognized">原文已保存</option><option value="processed">结果已保存，待输入</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>
           </Select>
           <Select value={taskKind} onChange={(event) => setTaskKind(event.target.value)} aria-label="任务类型">
             <option value="">全部类型</option><option value="dictation">听写</option><option value="translateSpeech">语音翻译</option><option value="editSelection">选区编辑</option><option value="ask">语音问答</option>
@@ -130,13 +130,20 @@ export function HistoryView() {
               <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{entry.outputText || entry.sourceText}</p>
             )}
             {entry.error && <p className="mt-2 text-xs text-[var(--color-err)]">{entry.error}</p>}
+            {entry.sourceText && entry.sourceText !== entry.outputText && (
+              <details className="mt-3 text-sm text-[var(--color-fg-subtle)]">
+                <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">{entry.taskKind === "dictation" ? "识别原文" : "原始内容"}</summary>
+                <p className="mt-2 whitespace-pre-wrap break-words leading-6">{entry.sourceText}</p>
+                <Button size="sm" className="mt-2" onClick={() => void copy(entry.sourceText)}>复制原文</Button>
+              </details>
+            )}
             <div className="mt-4 flex flex-wrap gap-2">
               <Button size="sm" onClick={() => void copy(entry.outputText || entry.sourceText)}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
-              <Button size="sm" disabled={!entry.outputText} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
+              <Button size="sm" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
               {editing === entry.id ? <>
                 <Button size="sm" variant="primary" onClick={() => void save(entry)}><Check className="h-3.5 w-3.5" aria-hidden />保存</Button>
                 <Button size="sm" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
-              </> : <Button size="sm" onClick={() => { setEditing(entry.id); setDraft(entry.outputText || entry.sourceText); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+              </> : <Button size="sm" disabled={entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(entry.outputText || entry.sourceText); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
               <Button size="sm" variant="dangerHover" onClick={() => void remove(entry.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
             </div>
           </article>
