@@ -12,6 +12,7 @@ interface FloatingOrbState {
 }
 
 let appearanceRevision = 0;
+let settingsRevision = 0;
 
 export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
   settings: {
@@ -27,12 +28,16 @@ export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
   },
   busy: false,
   error: "",
-  hydrate: (settings) => set({ settings, error: "" }),
+  hydrate: (settings) => {
+    settingsRevision += 1;
+    set({ settings, error: "" });
+  },
   setEnabled: async (enabled) => {
+    const revision = settingsRevision;
     set({ busy: true, error: "" });
     try {
       const settings = await cmd<FloatingOrbSettings>(CMD.setFloatingOrbEnabled, { enabled });
-      set({ settings });
+      if (revision === settingsRevision) set({ settings });
     } catch (error) {
       set({ error: String(error) });
       throw error;
@@ -42,14 +47,19 @@ export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
   },
   updateAppearance: async (patch) => {
     const revision = ++appearanceRevision;
+    const snapshotRevision = settingsRevision;
     const current = get().settings;
     const appearance = normalizeFloatingOrbAppearance({ ...current, ...patch });
     set({ settings: { ...current, ...appearance }, error: "" });
     try {
       const settings = await cmd<FloatingOrbSettings>(CMD.setFloatingOrbAppearance, { ...appearance });
-      if (revision === appearanceRevision) set({ settings, error: "" });
+      if (revision === appearanceRevision && snapshotRevision === settingsRevision) {
+        set({ settings, error: "" });
+      }
     } catch (error) {
-      if (revision === appearanceRevision) set({ settings: current, error: String(error) });
+      if (revision === appearanceRevision) {
+        set({ ...(snapshotRevision === settingsRevision ? { settings: current } : {}), error: String(error) });
+      }
       throw error;
     }
   },

@@ -785,20 +785,23 @@ fn resize_floating_orb_window(
         .map_err(|error| format!("调整悬浮球位置失败：{error}"))
 }
 
-fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
-    let payload = json!({
+fn config_payload(settings: &FloatingOrbSettings) -> serde_json::Value {
+    json!({
+        "enabled": settings.enabled,
+        "position": settings.position,
+        "autoEnter": settings.auto_enter,
         "sizePercent": normalized_orb_size_percent(settings.size_percent),
         "opacity": normalized_orb_opacity(settings.opacity),
         "glassEnabled": settings.glass_enabled,
         "glassMaterial": settings.glass_material,
         "glassTint": settings.glass_tint.min(ORB_GLASS_TINT_MAX),
         "glassBorder": settings.glass_border.min(ORB_GLASS_BORDER_MAX),
-    });
-    for label in [FLOATING_ORB_LABEL, FLOATING_ORB_MENU_LABEL] {
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.emit("floating-orb-config", payload.clone());
-        }
-    }
+    })
+}
+
+fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
+    // 配置是跨窗口状态：只广播一次，主窗口也必须同步菜单中的修改。
+    let _ = app.emit("floating-orb-config", config_payload(settings));
 }
 
 fn apply_floating_orb_config(
@@ -887,18 +890,21 @@ pub(crate) fn set_floating_orb_enabled(
         .and_then(|_| sync_floating_orb_window(&app))
     {
         if let Ok(mut settings) = state.floating_orb.lock() {
-            *settings = previous;
+            *settings = previous.clone();
         }
         let _ = crate::persistence::save_persisted_state(&app, &state);
         let _ = sync_floating_orb_window(&app);
+        emit_config(&app, &previous);
         return Err(error);
     }
     crate::application::contract::next_revision(&state.snapshot_revision);
-    state
+    let settings = state
         .floating_orb
         .lock()
         .map(|settings| settings.clone())
-        .map_err(|_| "悬浮球配置锁失败".to_string())
+        .map_err(|_| "悬浮球配置锁失败".to_string())?;
+    emit_config(&app, &settings);
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -923,11 +929,13 @@ pub(crate) fn set_floating_orb_auto_enter(
     }
     crate::persistence::save_persisted_state(&app, &state)?;
     crate::application::contract::next_revision(&state.snapshot_revision);
-    state
+    let settings = state
         .floating_orb
         .lock()
         .map(|settings| settings.clone())
-        .map_err(|_| "悬浮球配置锁失败".to_string())
+        .map_err(|_| "悬浮球配置锁失败".to_string())?;
+    emit_config(&app, &settings);
+    Ok(settings)
 }
 
 pub(crate) fn floating_orb_auto_enter_enabled(app: &tauri::AppHandle) -> bool {
@@ -2004,6 +2012,23 @@ pub(crate) fn auto_submit_floating_orb_enter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_event_projects_full_settings_including_menu_switches() {
+        let settings = FloatingOrbSettings {
+            enabled: false,
+            auto_enter: true,
+            ..FloatingOrbSettings::default()
+        };
+        let payload = config_payload(&settings);
+        assert_eq!(payload["enabled"], false);
+        assert_eq!(payload["autoEnter"], true);
+        let projected: FloatingOrbSettings = serde_json::from_value(payload).unwrap();
+        assert_eq!(projected.enabled, settings.enabled);
+        assert_eq!(projected.auto_enter, settings.auto_enter);
+        assert_eq!(projected.size_percent, settings.size_percent);
+        assert_eq!(projected.opacity, settings.opacity);
+    }
 
     #[test]
     fn appearance_values_are_clamped_to_slider_ranges() {

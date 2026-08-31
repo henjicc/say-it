@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertTriangle, Lock, LockOpen, RotateCw, X } from "lucide-react";
 import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { playCueKind } from "@/lib/cues";
+import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { subtitleFontStack } from "@/lib/platform";
 
 type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle" | "error";
@@ -217,11 +217,7 @@ export function IndicatorApp() {
     setErrorActionBusy(false);
   });
 
-  useTauriEvent<{ which?: "start" | "end"; kind?: string }>(EVT.indicatorPlayCue, (payload) => {
-    if ((payload.which === "start" || payload.which === "end") && payload.kind) {
-      playCueKind(payload.kind, payload.which);
-    }
-  });
+  useCuePlayback(EVT.indicatorPlayCue, "dictation-indicator");
 
   useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
     payload.fade ? original.swapText(payload.text || "") : original.renderText(payload.text || "");
@@ -242,7 +238,7 @@ export function IndicatorApp() {
       level,
       peaks: active ? [...prev.peaks, ...peaks].slice(-WAVE_BAR_COUNT) : [],
     }));
-  });
+  }, true, "dictation-indicator");
 
   useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
     setMode(payload.mode || "dictation");

@@ -9,6 +9,7 @@ export function useTauriEvent<T = unknown>(
   event: string,
   handler: (payload: T) => void,
   enabled = true,
+  target?: string,
 ) {
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
@@ -18,7 +19,9 @@ export function useTauriEvent<T = unknown>(
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
-    on<T>(event, (payload) => handlerRef.current(payload)).then((fn) => {
+    on<T>(event, (payload) => {
+      if (!cancelled) handlerRef.current(payload);
+    }, target).then((fn) => {
       if (cancelled) {
         fn();
       } else {
@@ -30,5 +33,5 @@ export function useTauriEvent<T = unknown>(
       cancelled = true;
       unlisten?.();
     };
-  }, [event, enabled]);
+  }, [event, enabled, target]);
 }
