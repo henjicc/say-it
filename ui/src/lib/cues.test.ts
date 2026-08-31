@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/store/useDictPrefs", () => ({ useDictPrefs: { getState: vi.fn() } }));
 
-const oscillators: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; frequency: { setValueAtTime: ReturnType<typeof vi.fn>; exponentialRampToValueAtTime: ReturnType<typeof vi.fn> } }[] = [];
+const oscillators: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; frequency: { value: number } }[] = [];
 let playCueKind: typeof import("./cues").playCueKind;
 
 describe("cue sound envelopes", () => {
@@ -16,7 +16,7 @@ describe("cue sound envelopes", () => {
       createOscillator() {
         const oscillator = {
           type: "sine", connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
-          frequency: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+          frequency: { value: 0 },
         };
         oscillators.push(oscillator);
         return oscillator;
@@ -30,20 +30,18 @@ describe("cue sound envelopes", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([
-    ["beep-up", "start", 660, 990],
-    ["beep-down", "end", 880, 520],
-  ] as const)("plays %s as one continuous tone", (kind, which, from, to) => {
+    ["beep-up", "start", [660, 990], 0.1, 0.02],
+    ["beep-down", "end", [880, 520], 0.12, 0.02],
+    ["beep-double", "start", [880, 880], 0.07, 0.05],
+  ] as const)("preserves the original %s frequencies and timing", (kind, which, frequencies, duration, gap) => {
     playCueKind(kind, which);
-    expect(oscillators).toHaveLength(1);
-    expect(oscillators[0].start).toHaveBeenCalledTimes(1);
-    expect(oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(from, expect.any(Number));
-    expect(oscillators[0].frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(to, expect.any(Number));
-  });
-
-  it("keeps two separate attacks only for the explicit double preset", () => {
-    playCueKind("beep-double", "start");
     expect(oscillators).toHaveLength(2);
-    expect(oscillators[1].start.mock.calls[0][0]).toBeGreaterThan(oscillators[0].stop.mock.calls[0][0]);
+    oscillators.forEach((oscillator, index) => {
+      const start = 0.01 + index * (duration + gap);
+      expect(oscillator.frequency.value).toBe(frequencies[index]);
+      expect(oscillator.start).toHaveBeenCalledExactlyOnceWith(start);
+      expect(oscillator.stop).toHaveBeenCalledExactlyOnceWith(start + duration + 0.02);
+    });
   });
 
   it("does not produce a fallback beep for the none preset", () => {
