@@ -165,13 +165,54 @@ fn run_sdk_session(
     );
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkRealtimeAsrInput {
+    media_type: &'static str,
+    sample_rate_hz: u32,
+    channels: u8,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<SdkBailianRealtimeOptions>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkBailianRealtimeOptions {
+    format: &'static str,
+    max_sentence_silence_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vocabulary_id: Option<String>,
+    semantic_punctuation_enabled: bool,
+    multi_threshold_mode_enabled: bool,
+    heartbeat: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speech_noise_threshold: Option<f64>,
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
+    let mut input = SdkRealtimeAsrInput {
+        media_type: "audio/pcm",
+        sample_rate_hz: OUTPUT_RATE,
+        channels: 1,
+        hints: Vec::new(),
+        options: None,
+    };
     if profile.kind != "sdk:bailian" {
-        return json!({
-            "mediaType": "audio/pcm",
-            "sampleRateHz": OUTPUT_RATE,
-            "channels": 1,
-        });
+        return serde_json::to_value(input).expect("SDK 实时识别输入只包含可序列化基础类型");
     }
     let config = &profile.config;
     let vocabulary_id = config
@@ -179,21 +220,29 @@ fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
         .and_then(|value| value.get(model))
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty());
-    json!({
-        "mediaType": "audio/pcm",
-        "sampleRateHz": OUTPUT_RATE,
-        "channels": 1,
-        "hints": config.get("languageHints").cloned().unwrap_or_else(|| json!([])),
-        "options": {
-            "format": "pcm",
-            "maxSentenceSilenceMs": config.get("maxSentenceSilence").and_then(Value::as_u64).unwrap_or(1300),
-            "vocabularyId": vocabulary_id,
-            "semanticPunctuationEnabled": config.get("semanticPunctuationEnabled").and_then(Value::as_bool).unwrap_or(false),
-            "multiThresholdModeEnabled": config.get("multiThresholdModeEnabled").and_then(Value::as_bool).unwrap_or(false),
-            "heartbeat": config.get("heartbeat").and_then(Value::as_bool).unwrap_or(false),
-            "speechNoiseThreshold": config.get("speechNoiseThreshold").and_then(Value::as_f64),
-        },
-    })
+    input.hints = string_list(config.get("languageHints"));
+    input.options = Some(SdkBailianRealtimeOptions {
+        format: "pcm",
+        max_sentence_silence_ms: config
+            .get("maxSentenceSilence")
+            .and_then(Value::as_u64)
+            .unwrap_or(1300),
+        vocabulary_id: vocabulary_id.map(str::to_string),
+        semantic_punctuation_enabled: config
+            .get("semanticPunctuationEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        multi_threshold_mode_enabled: config
+            .get("multiThresholdModeEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        heartbeat: config
+            .get("heartbeat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        speech_noise_threshold: config.get("speechNoiseThreshold").and_then(Value::as_f64),
+    });
+    serde_json::to_value(input).expect("SDK 实时识别输入只包含可序列化基础类型")
 }
 
 fn flush_events(runtime: &BuiltinSdkRuntime, app: &tauri::AppHandle, session_id: &str) -> bool {
@@ -272,6 +321,16 @@ mod tests {
         assert_eq!(input["options"]["vocabularyId"], "vocab-1");
         assert_eq!(input["hints"], json!(["zh", "en"]));
         assert!(input.to_string().find("apiKey").is_none());
+        assert!(!input.to_string().contains("null"));
+    }
+
+    #[test]
+    fn realtime_input_omits_absent_optional_fields() {
+        let input = realtime_input(&crate::providers::bailian_profile(), "fun-asr-realtime");
+        assert!(input.get("hints").is_none());
+        assert!(input["options"].get("vocabularyId").is_none());
+        assert!(input["options"].get("speechNoiseThreshold").is_none());
+        assert!(!input.to_string().contains("null"));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -117,6 +118,84 @@ impl HostRuntimeRecorder for StructuredRecorder {
 pub struct BuiltinSdkRuntime {
     runtime: JsProviderRuntime,
     timeout: Duration,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkFileAsrOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vocabulary_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diarization_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    special_word_filter: Option<String>,
+}
+
+impl SdkFileAsrOptions {
+    fn is_empty(&self) -> bool {
+        self.context.is_none()
+            && self.vocabulary_id.is_none()
+            && self.diarization_enabled.is_none()
+            && self.speaker_count.is_none()
+            && self.channel_id.is_none()
+            && self.special_word_filter.is_none()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkFileAsrInput {
+    audio: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
+    timestamps: bool,
+    #[serde(skip_serializing_if = "SdkFileAsrOptions::is_empty")]
+    options: SdkFileAsrOptions,
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn sdk_file_asr_input(
+    params: &crate::providers::alibabacloud::TranscriptionParams,
+    customization: &crate::providers::RequestCustomization,
+    vocabulary_id: Option<String>,
+) -> Value {
+    let hints = params
+        .language_hints
+        .iter()
+        .filter_map(|value| non_empty_string(value))
+        .collect::<Vec<_>>();
+    let language = (hints.len() == 1).then(|| hints[0].clone());
+    serde_json::to_value(SdkFileAsrInput {
+        audio: json!({ "kind": "media-ref", "ref": "input-audio" }),
+        language,
+        hints,
+        timestamps: true,
+        options: SdkFileAsrOptions {
+            context: non_empty_string(&customization.context),
+            vocabulary_id,
+            diarization_enabled: params.diarization_enabled,
+            speaker_count: params.speaker_count,
+            channel_id: params
+                .channel_id
+                .as_ref()
+                .filter(|value| !value.is_null())
+                .cloned(),
+            special_word_filter: non_empty_string(&params.special_word_filter),
+        },
+    })
+    .expect("SDK 文件识别输入只包含可序列化基础类型")
 }
 
 impl BuiltinSdkRuntime {
@@ -365,29 +444,7 @@ pub async fn recognize_sdk_file(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string);
-    let language = (params.language_hints.len() == 1)
-        .then(|| params.language_hints[0].trim().to_string())
-        .filter(|value| !value.is_empty());
-    let hints = params
-        .language_hints
-        .iter()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    let input = json!({
-        "audio": { "kind": "media-ref", "ref": "input-audio" },
-        "language": language,
-        "hints": hints,
-        "timestamps": true,
-        "options": {
-            "context": customization.context.trim(),
-            "vocabularyId": vocabulary_id,
-            "diarizationEnabled": params.diarization_enabled,
-            "speakerCount": params.speaker_count,
-            "channelId": params.channel_id,
-            "specialWordFilter": params.special_word_filter.trim(),
-        },
-    });
+    let input = sdk_file_asr_input(&params, &customization, vocabulary_id);
     let cancel = cancelled.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let value = tauri::async_runtime::spawn_blocking(move || {
         let runtime = BuiltinSdkRuntime::create(
@@ -649,5 +706,65 @@ mod tests {
         assert_eq!(result.transcripts[0].text, "你好");
         assert_eq!(result.transcripts[0].sentences[0].begin_time, 10);
         assert_eq!(result.transcripts[0].sentences[0].words[0].text, "你");
+    }
+
+    #[test]
+    fn sdk_file_asr_input_omits_absent_optional_fields_instead_of_serializing_null() {
+        let mut params = crate::providers::alibabacloud::TranscriptionParams::default();
+        params.channel_id = Some(Value::Null);
+        let input = sdk_file_asr_input(
+            &params,
+            &crate::providers::RequestCustomization::default(),
+            None,
+        );
+        assert_eq!(
+            input,
+            json!({
+                "audio": { "kind": "media-ref", "ref": "input-audio" },
+                "timestamps": true,
+            })
+        );
+        assert!(!input.to_string().contains("null"));
+    }
+
+    #[test]
+    fn sdk_file_asr_input_keeps_valid_language_hints_and_provider_options() {
+        let params = crate::providers::alibabacloud::TranscriptionParams {
+            language_hints: vec![" zh ".into(), "en".into()],
+            diarization_enabled: Some(true),
+            speaker_count: Some(2),
+            channel_id: Some(json!(1)),
+            special_word_filter: " names ".into(),
+            ..Default::default()
+        };
+        let customization = crate::providers::RequestCustomization {
+            context: " product terms ".into(),
+            ..Default::default()
+        };
+        let input = sdk_file_asr_input(&params, &customization, Some("vocabulary-1".into()));
+        assert!(input.get("language").is_none());
+        assert_eq!(input["hints"], json!(["zh", "en"]));
+        assert_eq!(
+            input["options"],
+            json!({
+                "context": "product terms",
+                "vocabularyId": "vocabulary-1",
+                "diarizationEnabled": true,
+                "speakerCount": 2,
+                "channelId": 1,
+                "specialWordFilter": "names",
+            })
+        );
+
+        let single_language = sdk_file_asr_input(
+            &crate::providers::alibabacloud::TranscriptionParams {
+                language_hints: vec![" zh ".into()],
+                ..Default::default()
+            },
+            &crate::providers::RequestCustomization::default(),
+            None,
+        );
+        assert_eq!(single_language["language"], "zh");
+        assert_eq!(single_language["hints"], json!(["zh"]));
     }
 }
