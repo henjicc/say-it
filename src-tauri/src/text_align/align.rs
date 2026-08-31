@@ -90,7 +90,14 @@ pub(super) fn align_tokens(script: &[u32], asr: &[u32]) -> Vec<TokenLink> {
             let mut seg_a = 0;
             let mut seg_free = free_start;
             for &(si, ai) in &anchors {
-                stack.push((s_lo + seg_s, s_lo + si, a_lo + seg_a, a_lo + ai, seg_free, false));
+                stack.push((
+                    s_lo + seg_s,
+                    s_lo + si,
+                    a_lo + seg_a,
+                    a_lo + ai,
+                    seg_free,
+                    false,
+                ));
                 seg_s = si + n;
                 seg_a = ai + n;
                 seg_free = false;
@@ -205,7 +212,11 @@ fn nw_full(
 
     m_prev[0] = 0;
     for j in 1..=m {
-        iy_prev[j] = if free_start { 0 } else { GAP_OPEN + GAP_EXTEND * (j as i32 - 1) };
+        iy_prev[j] = if free_start {
+            0
+        } else {
+            GAP_OPEN + GAP_EXTEND * (j as i32 - 1)
+        };
         if j >= 2 {
             tb[j] = 2 << 4;
         }
@@ -216,7 +227,11 @@ fn nw_full(
         ix_cur[0] = GAP_OPEN + GAP_EXTEND * (i as i32 - 1);
         tb[i * width] = if i >= 2 { 1 << 2 } else { 0 };
         for j in 1..=m {
-            let subst = if s[i - 1] == a[j - 1] { SCORE_MATCH } else { SCORE_MISMATCH };
+            let subst = if s[i - 1] == a[j - 1] {
+                SCORE_MATCH
+            } else {
+                SCORE_MISMATCH
+            };
             let (diag_best, diag_state) = best3(m_prev[j - 1], ix_prev[j - 1], iy_prev[j - 1]);
             m_cur[j] = diag_best + subst;
             let (ix_best, ix_state) = best3(
@@ -349,7 +364,11 @@ fn nw_banded(
                 tb[i * bw] = if i >= 2 { 1 << 2 } else { 0 };
                 continue;
             }
-            let subst = if s[i - 1] == a[j - 1] { SCORE_MATCH } else { SCORE_MISMATCH };
+            let subst = if s[i - 1] == a[j - 1] {
+                SCORE_MATCH
+            } else {
+                SCORE_MISMATCH
+            };
             let (diag_best, diag_state) = best3(
                 read(&m_prev, prev_lo, j - 1),
                 read(&ix_prev, prev_lo, j - 1),
@@ -409,7 +428,11 @@ fn nw_banded(
         } else if j > hi {
             state = 2;
         }
-        let flags = if j >= lo && j <= hi { tb[i * bw + (j - lo)] } else { 0 };
+        let flags = if j >= lo && j <= hi {
+            tb[i * bw + (j - lo)]
+        } else {
+            0
+        };
         match state {
             0 => {
                 i -= 1;

@@ -257,10 +257,22 @@ mod tests {
 
     #[test]
     fn capture_dimensions_bound_large_windows_without_changing_aspect_ratio() {
-        assert_eq!(scaled_dimensions(1_280, 720, MAX_CAPTURE_SIDE), (1_280, 720));
-        assert_eq!(scaled_dimensions(1_920, 1_080, MAX_CAPTURE_SIDE), (1_600, 900));
-        assert_eq!(scaled_dimensions(3_862, 2_122, MAX_CAPTURE_SIDE), (1_600, 879));
-        assert_eq!(scaled_dimensions(2_160, 3_840, MAX_CAPTURE_SIDE), (900, 1_600));
+        assert_eq!(
+            scaled_dimensions(1_280, 720, MAX_CAPTURE_SIDE),
+            (1_280, 720)
+        );
+        assert_eq!(
+            scaled_dimensions(1_920, 1_080, MAX_CAPTURE_SIDE),
+            (1_600, 900)
+        );
+        assert_eq!(
+            scaled_dimensions(3_862, 2_122, MAX_CAPTURE_SIDE),
+            (1_600, 879)
+        );
+        assert_eq!(
+            scaled_dimensions(2_160, 3_840, MAX_CAPTURE_SIDE),
+            (900, 1_600)
+        );
     }
 
     #[test]

@@ -67,13 +67,10 @@ fn copy_sherpa_runtime_for_cargo_tests() {
     let Ok(profile) = std::env::var("PROFILE") else {
         return;
     };
-    let Some(profile_dir) = std::path::Path::new(&out_dir)
-        .ancestors()
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name == std::ffi::OsStr::new(&profile))
-        })
-    else {
+    let Some(profile_dir) = std::path::Path::new(&out_dir).ancestors().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name == std::ffi::OsStr::new(&profile))
+    }) else {
         return;
     };
     let deps_dir = profile_dir.join("deps");

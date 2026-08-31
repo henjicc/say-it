@@ -43,7 +43,11 @@ pub(super) fn build_aligned_lines(
                 last_hit = Some(j);
             }
         }
-        ratios.push(if tokens == 0 { 0.0 } else { match_count as f32 / tokens as f32 });
+        ratios.push(if tokens == 0 {
+            0.0
+        } else {
+            match_count as f32 / tokens as f32
+        });
         // 命中太少的行不信任自身命中（CJK 常见字在差异区可能随机配对导致边界漂移），改用内插
         let reliable = (hit_count >= 2 && hit_count * 5 >= tokens)
             || (tokens > 0 && tokens <= 3 && match_count >= 1);
@@ -92,7 +96,10 @@ pub(super) fn build_optimized_segments(
     let mut tagged: Vec<(u64, OptimizedSegment)> = Vec::new();
 
     if total > 0 {
-        let mut bad: Vec<bool> = links.iter().map(|l| !matches!(l, TokenLink::Match(_))).collect();
+        let mut bad: Vec<bool> = links
+            .iter()
+            .map(|l| !matches!(l, TokenLink::Match(_)))
+            .collect();
         reclassify_short_bad_runs(&mut bad);
         reclassify_hitless_good_runs(&mut bad, links);
 
@@ -206,13 +213,19 @@ fn build_keep_segment(
     claimed: &mut [bool],
 ) -> (OptimizedSegment, u64) {
     let (line_start, line_end) = line_range;
-    let text_start = if start == line_start { 0 } else { token_spans[start].0 };
+    let text_start = if start == line_start {
+        0
+    } else {
+        token_spans[start].0
+    };
     let text_end = if end == line_end {
         script_lines[line_index].len()
     } else {
         token_spans[end].0
     };
-    let text = script_lines[line_index][text_start..text_end].trim().to_string();
+    let text = script_lines[line_index][text_start..text_end]
+        .trim()
+        .to_string();
 
     let mut match_count = 0usize;
     let mut begin_ms: Option<u64> = None;
@@ -245,7 +258,10 @@ fn build_keep_segment(
 /// 扫描未被任何保留片段认领的 ASR token（按时间连续），时长达标的合并为一段
 /// “识别插入”。既覆盖被丢弃坏段对应的音频，也覆盖夹在两个好段之间、文稿里
 /// 完全没写但音频确实说了的即兴内容——两者对这一步是同一件事。
-fn collect_orphan_segments(asr_tokens: &[AsrToken], claimed: &[bool]) -> Vec<(u64, OptimizedSegment)> {
+fn collect_orphan_segments(
+    asr_tokens: &[AsrToken],
+    claimed: &[bool],
+) -> Vec<(u64, OptimizedSegment)> {
     let mut out = Vec::new();
     let n = asr_tokens.len();
     let mut i = 0;
@@ -263,7 +279,13 @@ fn collect_orphan_segments(asr_tokens: &[AsrToken], claimed: &[bool]) -> Vec<(u6
         if end_ms.saturating_sub(begin_ms) >= MIN_ASR_INSERTION_MS {
             let word_begin = asr_tokens[i..j].iter().map(|t| t.word_index).min().unwrap();
             let word_end = asr_tokens[i..j].iter().map(|t| t.word_index).max().unwrap();
-            out.push((begin_ms, OptimizedSegment::Asr { word_begin, word_end }));
+            out.push((
+                begin_ms,
+                OptimizedSegment::Asr {
+                    word_begin,
+                    word_end,
+                },
+            ));
         }
         i = j;
     }
@@ -295,15 +317,27 @@ fn fill_missing(
         while end < n && timings[end].is_none() {
             end += 1;
         }
-        let left = if start == 0 { audio_begin } else { out[start - 1].1 };
+        let left = if start == 0 {
+            audio_begin
+        } else {
+            out[start - 1].1
+        };
         let right = (if end == n { audio_end } else { out[end].0 }).max(left);
         let span = right - left;
         let total: u64 = weights[start..end].iter().map(|&w| w as u64).sum();
         let mut acc = 0u64;
         for k in start..end {
-            let b = if total == 0 { left } else { left + span * acc / total };
+            let b = if total == 0 {
+                left
+            } else {
+                left + span * acc / total
+            };
             acc += weights[k] as u64;
-            let e = if total == 0 { left } else { left + span * acc / total };
+            let e = if total == 0 {
+                left
+            } else {
+                left + span * acc / total
+            };
             out[k] = (b, e);
         }
         i = end;

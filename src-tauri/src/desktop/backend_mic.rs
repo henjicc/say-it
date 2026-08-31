@@ -11,10 +11,7 @@ fn rms_f32(samples: &[f32]) -> f32 {
     (sum / samples.len() as f32).sqrt()
 }
 
-pub(crate) fn push_backend_mic_samples(
-    mic: &Arc<Mutex<BackendMicState>>,
-    input: Vec<f32>,
-) {
+pub(crate) fn push_backend_mic_samples(mic: &Arc<Mutex<BackendMicState>>, input: Vec<f32>) {
     if input.is_empty() {
         return;
     }
@@ -323,25 +320,21 @@ pub(crate) fn start_backend_mic_inner(
         guard.current_device = resolved_device_name.clone();
     }
     std::thread::spawn(move || {
-        let stream = match build_backend_mic_stream(
-            mic.clone(),
-            worker_for_stream,
-            &device,
-            &config,
-        ) {
-            Ok(stream) => stream,
-            Err(err) => {
-                dlog!("[backend-mic] {err}");
-                if let Ok(mut guard) = mic.lock() {
-                    guard.last_error = Some(err.clone());
-                    guard.worker = None;
-                    guard.sample_rate = 0;
-                    guard.channels = 0;
+        let stream =
+            match build_backend_mic_stream(mic.clone(), worker_for_stream, &device, &config) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    dlog!("[backend-mic] {err}");
+                    if let Ok(mut guard) = mic.lock() {
+                        guard.last_error = Some(err.clone());
+                        guard.worker = None;
+                        guard.sample_rate = 0;
+                        guard.channels = 0;
+                    }
+                    let _ = startup_tx.send(Err(err));
+                    return;
                 }
-                let _ = startup_tx.send(Err(err));
-                return;
-            }
-        };
+            };
         if let Err(err) = stream.play() {
             let message = format!("启动麦克风输入流失败: {err}");
             dlog!("[backend-mic] {message}");
@@ -355,9 +348,7 @@ pub(crate) fn start_backend_mic_inner(
             return;
         }
         let _ = startup_tx.send(Ok(()));
-        dlog!(
-            "[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}"
-        );
+        dlog!("[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}");
         let mut stop_reply: Option<std::sync::mpsc::Sender<()>> = None;
         while let Ok(command) = worker_rx.recv() {
             match command {
@@ -681,6 +672,9 @@ mod tests {
             BackendMicCommand::CaptureError { message } => assert_eq!(message, "设备已断开"),
             _ => panic!("expected capture error"),
         }
-        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 }

@@ -5,8 +5,10 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::{Emitter, Manager};
 
+use crate::application::contract::{
+    next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot,
+};
 use crate::audio_dsp::{process_offline, DspParams};
-use crate::application::contract::{next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot};
 
 const WAVE_POINTS: usize = 860;
 
@@ -50,15 +52,27 @@ pub(crate) struct AudioLabSnapshot {
 impl AudioLabRuntime {
     pub(crate) fn begin(&self, sample_rate: u32) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
-        if state.recording { return Err("音频调校正在录音".into()); }
-        *state = AudioLabState { recording: true, sample_rate, ..Default::default() };
+        if state.recording {
+            return Err("音频调校正在录音".into());
+        }
+        *state = AudioLabState {
+            recording: true,
+            sample_rate,
+            ..Default::default()
+        };
         Ok(())
     }
     pub(crate) fn append(&self, samples: &[f32]) {
-        if let Ok(mut state) = self.state.lock() { if state.recording { state.raw.extend_from_slice(samples); } }
+        if let Ok(mut state) = self.state.lock() {
+            if state.recording {
+                state.raw.extend_from_slice(samples);
+            }
+        }
     }
     fn abort(&self) {
-        if let Ok(mut state) = self.state.lock() { *state = AudioLabState::default(); }
+        if let Ok(mut state) = self.state.lock() {
+            *state = AudioLabState::default();
+        }
     }
     fn fail(&self, error: String) {
         if let Ok(mut state) = self.state.lock() {
@@ -71,15 +85,29 @@ impl AudioLabRuntime {
     pub(crate) fn stop(&self) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
         state.recording = false;
-        if state.raw.is_empty() { return Err("未录到音频".into()); }
+        if state.raw.is_empty() {
+            return Err("未录到音频".into());
+        }
         Ok(())
     }
     pub(crate) fn reprocess(&self, params: DspParams) -> Result<AudioLabSnapshot, String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
-        if state.raw.is_empty() { return Err("请先录制音频".into()); }
+        if state.raw.is_empty() {
+            return Err("请先录制音频".into());
+        }
         let result = process_offline(&state.raw, state.sample_rate, &params);
         state.processed = crate::state::decode_f32_base64(&result.processed_base64)?;
-        state.stats = Some(AudioLabStats { in_lufs: result.in_lufs, out_lufs: result.out_lufs, in_peak_db: result.in_peak_db, out_peak_db: result.out_peak_db, clipped_samples: state.processed.iter().filter(|sample| sample.abs() >= 0.999).count() });
+        state.stats = Some(AudioLabStats {
+            in_lufs: result.in_lufs,
+            out_lufs: result.out_lufs,
+            in_peak_db: result.in_peak_db,
+            out_peak_db: result.out_peak_db,
+            clipped_samples: state
+                .processed
+                .iter()
+                .filter(|sample| sample.abs() >= 0.999)
+                .count(),
+        });
         Ok(snapshot(&state))
     }
     pub(crate) fn snapshot(&self) -> Result<AudioLabSnapshot, String> {
@@ -87,28 +115,73 @@ impl AudioLabRuntime {
         Ok(snapshot(&state))
     }
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
-        match self.state.lock() { Ok(state) => DomainSnapshot { state: if state.error.is_some() { DomainRunState::Failed } else if state.recording { DomainRunState::Running } else { DomainRunState::Idle }, session_id: None }, Err(_) => DomainSnapshot { state: DomainRunState::Failed, session_id: None } }
+        match self.state.lock() {
+            Ok(state) => DomainSnapshot {
+                state: if state.error.is_some() {
+                    DomainRunState::Failed
+                } else if state.recording {
+                    DomainRunState::Running
+                } else {
+                    DomainRunState::Idle
+                },
+                session_id: None,
+            },
+            Err(_) => DomainSnapshot {
+                state: DomainRunState::Failed,
+                session_id: None,
+            },
+        }
     }
     pub(crate) fn write_wav(&self, processed: bool) -> Result<String, String> {
         let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
-        let samples = if processed { &state.processed } else { &state.raw };
-        if samples.is_empty() { return Err("没有可播放的音频".into()); }
+        let samples = if processed {
+            &state.processed
+        } else {
+            &state.raw
+        };
+        if samples.is_empty() {
+            return Err("没有可播放的音频".into());
+        }
         let rate = if processed { 48_000 } else { state.sample_rate };
         let data_len = (samples.len() * 2) as u32;
         let mut bytes = Vec::with_capacity(44 + data_len as usize);
-        bytes.extend_from_slice(b"RIFF"); bytes.extend_from_slice(&(36 + data_len).to_le_bytes()); bytes.extend_from_slice(b"WAVEfmt ");
-        bytes.extend_from_slice(&16u32.to_le_bytes()); bytes.extend_from_slice(&1u16.to_le_bytes()); bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&rate.to_le_bytes()); bytes.extend_from_slice(&(rate * 2).to_le_bytes()); bytes.extend_from_slice(&2u16.to_le_bytes()); bytes.extend_from_slice(&16u16.to_le_bytes()); bytes.extend_from_slice(b"data"); bytes.extend_from_slice(&data_len.to_le_bytes());
-        for sample in samples { bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes()); }
-        let path = std::env::temp_dir().join(format!("say-it-audio-lab-{}.wav", if processed { "processed" } else { "raw" }));
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(
+                &((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes(),
+            );
+        }
+        let path = std::env::temp_dir().join(format!(
+            "say-it-audio-lab-{}.wav",
+            if processed { "processed" } else { "raw" }
+        ));
         std::fs::write(&path, bytes).map_err(|error| format!("写入试听文件失败：{error}"))?;
-        path.to_str().map(str::to_owned).ok_or_else(|| "试听文件路径无效".into())
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "试听文件路径无效".into())
     }
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_start(app: tauri::AppHandle, state: tauri::State<'_, crate::state::RuntimeState>, device_name: Option<String>) -> Result<AudioLabSnapshot, String> {
-    let lease = state.audio_session.acquire(crate::application::audio_session::AudioOwner::AudioLab)?;
+pub(crate) fn audio_lab_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::state::RuntimeState>,
+    device_name: Option<String>,
+) -> Result<AudioLabSnapshot, String> {
+    let lease = state
+        .audio_session
+        .acquire(crate::application::audio_session::AudioOwner::AudioLab)?;
     match state.audio_lab_lease.lock() {
         Ok(mut current) => *current = Some(lease),
         Err(_) => {
@@ -127,7 +200,8 @@ pub(crate) fn audio_lab_start(app: tauri::AppHandle, state: tauri::State<'_, cra
         cleanup_start_failure(&state);
         return Err(error);
     }
-    let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state) {
+    let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state)
+    {
         Ok(attached) => attached,
         Err(error) => {
             cleanup_start_failure(&state);
@@ -136,15 +210,25 @@ pub(crate) fn audio_lab_start(app: tauri::AppHandle, state: tauri::State<'_, cra
     };
     tauri::async_runtime::spawn(async move {
         while let Some(crate::state::AsrStreamInput::RawF32(samples)) = receiver.recv().await {
-            if let Some(runtime) = app.try_state::<crate::state::RuntimeState>() { runtime.audio_lab_runtime.append(&samples); }
+            if let Some(runtime) = app.try_state::<crate::state::RuntimeState>() {
+                runtime.audio_lab_runtime.append(&samples);
+            }
         }
-        let Some(state) = app.try_state::<crate::state::RuntimeState>() else { return; };
-        let capture_error = state.backend_mic.lock().ok().and_then(|mut capture| capture.last_error.take());
+        let Some(state) = app.try_state::<crate::state::RuntimeState>() else {
+            return;
+        };
+        let capture_error = state
+            .backend_mic
+            .lock()
+            .ok()
+            .and_then(|mut capture| capture.last_error.take());
         if let Some(error) = capture_error {
             state.audio_lab_runtime.fail(error);
             let _ = crate::desktop::backend_mic::release_backend_mic_inner(&state);
             if let Ok(mut current) = state.audio_lab_lease.lock() {
-                if let Some(lease) = current.take() { let _ = state.audio_session.release(&lease); }
+                if let Some(lease) = current.take() {
+                    let _ = state.audio_session.release(&lease);
+                }
             }
             publish(&app);
         }
@@ -156,41 +240,100 @@ fn cleanup_start_failure(state: &crate::state::RuntimeState) {
     state.audio_lab_runtime.abort();
     let _ = crate::desktop::backend_mic::release_backend_mic_inner(state);
     if let Ok(mut current) = state.audio_lab_lease.lock() {
-        if let Some(lease) = current.take() { let _ = state.audio_session.release(&lease); }
+        if let Some(lease) = current.take() {
+            let _ = state.audio_session.release(&lease);
+        }
     }
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_stop(state: tauri::State<'_, crate::state::RuntimeState>) -> Result<AudioLabSnapshot, String> {
+pub(crate) fn audio_lab_stop(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+) -> Result<AudioLabSnapshot, String> {
     crate::desktop::backend_mic::pause_backend_mic_inner(&state)?;
     crate::desktop::backend_mic::release_backend_mic_inner(&state)?;
-    if let Some(lease) = state.audio_lab_lease.lock().map_err(|_| "音频会话锁失败")?.take() { state.audio_session.release(&lease)?; }
+    if let Some(lease) = state
+        .audio_lab_lease
+        .lock()
+        .map_err(|_| "音频会话锁失败")?
+        .take()
+    {
+        state.audio_session.release(&lease)?;
+    }
     state.audio_lab_runtime.stop()?;
     state.audio_lab_runtime.snapshot()
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_reprocess(state: tauri::State<'_, crate::state::RuntimeState>, params: DspParams) -> Result<AudioLabSnapshot, String> { state.audio_lab_runtime.reprocess(params) }
+pub(crate) fn audio_lab_reprocess(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+    params: DspParams,
+) -> Result<AudioLabSnapshot, String> {
+    state.audio_lab_runtime.reprocess(params)
+}
 
 #[tauri::command]
-pub(crate) fn get_audio_lab_runtime(state: tauri::State<'_, crate::state::RuntimeState>) -> Result<AudioLabSnapshot, String> { state.audio_lab_runtime.snapshot() }
+pub(crate) fn get_audio_lab_runtime(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+) -> Result<AudioLabSnapshot, String> {
+    state.audio_lab_runtime.snapshot()
+}
 
 #[tauri::command]
-pub(crate) fn audio_lab_audio_path(state: tauri::State<'_, crate::state::RuntimeState>, processed: bool) -> Result<String, String> { state.audio_lab_runtime.write_wav(processed) }
+pub(crate) fn audio_lab_audio_path(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+    processed: bool,
+) -> Result<String, String> {
+    state.audio_lab_runtime.write_wav(processed)
+}
 
 fn snapshot(state: &AudioLabState) -> AudioLabSnapshot {
-    AudioLabSnapshot { recording: state.recording, sample_rate: state.sample_rate, duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64, raw_waveform: summarize(&state.raw), processed_waveform: summarize(&state.processed), stats: state.stats.clone(), error: state.error.clone() }
+    AudioLabSnapshot {
+        recording: state.recording,
+        sample_rate: state.sample_rate,
+        duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64,
+        raw_waveform: summarize(&state.raw),
+        processed_waveform: summarize(&state.processed),
+        stats: state.stats.clone(),
+        error: state.error.clone(),
+    }
 }
 fn publish(app: &tauri::AppHandle) {
     let state = app.state::<crate::state::RuntimeState>();
     let revision = next_revision(&state.snapshot_revision);
-    let payload = state.audio_lab_runtime.snapshot().ok().and_then(|snapshot| serde_json::to_value(snapshot).ok()).unwrap_or_else(|| json!({}));
-    let _ = app.emit("domain-event", DomainEventEnvelope { revision, domain: "audioLab".into(), event_type: "stateChanged".into(), session_id: None, payload });
+    let payload = state
+        .audio_lab_runtime
+        .snapshot()
+        .ok()
+        .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+        .unwrap_or_else(|| json!({}));
+    let _ = app.emit(
+        "domain-event",
+        DomainEventEnvelope {
+            revision,
+            domain: "audioLab".into(),
+            event_type: "stateChanged".into(),
+            session_id: None,
+            payload,
+        },
+    );
 }
 fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
-    if samples.is_empty() { return Vec::new(); }
+    if samples.is_empty() {
+        return Vec::new();
+    }
     let width = samples.len().min(WAVE_POINTS);
-    (0..width).map(|index| { let start = index * samples.len() / width; let end = ((index + 1) * samples.len() / width).max(start + 1); samples[start..end].iter().fold([1.0_f32, -1.0_f32], |[min, max], sample| [min.min(*sample), max.max(*sample)]) }).collect()
+    (0..width)
+        .map(|index| {
+            let start = index * samples.len() / width;
+            let end = ((index + 1) * samples.len() / width).max(start + 1);
+            samples[start..end]
+                .iter()
+                .fold([1.0_f32, -1.0_f32], |[min, max], sample| {
+                    [min.min(*sample), max.max(*sample)]
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]

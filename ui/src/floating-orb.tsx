@@ -43,6 +43,7 @@ function FloatingOrbApp() {
   const [message, setMessage] = useState("");
   const [transient, setTransient] = useState(false);
   const [canSubmit, setCanSubmit] = useState(false);
+  const [hovering, setHovering] = useState(false);
   const [waveform, setWaveform] = useState(EMPTY_WAVEFORM);
   const [appearance, setAppearance] = useState<FloatingOrbAppearance>(
     DEFAULT_FLOATING_ORB_APPEARANCE,
@@ -69,6 +70,13 @@ function FloatingOrbApp() {
   useEffect(() => {
     applySystemGlassToDocument(appearance);
   }, [appearance.glassEnabled, appearance.glassTint]);
+
+  // 悬浮球常年悬停在其它前台应用之上，macOS 只把持续的鼠标移动/进入/
+  // 离开事件派发给当前前台应用的窗口，原生 CSS :hover 因此平时完全不
+  // 生效，只有按住拖动时才会因为 mouseDragged 顺带触发、松手后又没有
+  // 后续事件把它清掉。后端改用轮询真实指针位置来判断悬停，这里只是
+  // 被动接收结果、切一个 class，不再依赖 :hover。
+  useTauriEvent<boolean>("floating-orb-hover", setHovering);
 
   useTauriEvent<OrbStatePayload>("floating-orb-state", (payload) => {
     const next = payload.phase || "idle";
@@ -160,7 +168,7 @@ function FloatingOrbApp() {
   return (
     <button
       type="button"
-      className={`floating-orb ${phase}${transient ? " transient" : ""}${appearance.glassEnabled ? " glass" : ""}`}
+      className={`floating-orb ${phase}${transient ? " transient" : ""}${appearance.glassEnabled ? " glass" : ""}${hovering ? " hover-tracked" : ""}`}
       style={{
         "--orb-opacity": appearance.opacity / 100,
         "--orb-glass-tint": `${appearance.glassTint}%`,

@@ -41,7 +41,10 @@ pub(super) fn build_asr_tokens(words: &[super::AlignWord]) -> Vec<AsrToken> {
 /// 规整并切分文本：CJK 单字一 token、连续拉丁字母一 token、数字逐字符一 token，
 /// 标点/空白/符号只作分隔。
 fn tokenize_text(text: &str) -> Vec<String> {
-    tokenize_with_spans(text).into_iter().map(|(t, _, _)| t).collect()
+    tokenize_with_spans(text)
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect()
 }
 
 /// 同 `tokenize_text`，额外返回每个 token 在原始字符串中的字节范围
@@ -68,7 +71,12 @@ pub(super) fn tokenize_with_spans(text: &str) -> Vec<(String, usize, usize)> {
     tokens
 }
 
-fn flush_latin_spans(latin: &mut String, start: usize, end: usize, tokens: &mut Vec<(String, usize, usize)>) {
+fn flush_latin_spans(
+    latin: &mut String,
+    start: usize,
+    end: usize,
+    tokens: &mut Vec<(String, usize, usize)>,
+) {
     if !latin.is_empty() {
         tokens.push((std::mem::take(latin), start, end));
     }

@@ -152,9 +152,9 @@ fn capture_accessibility_text(
             {
                 context.source = Some(ContextSource::Accessibility);
                 CaptureStatus::Captured
-            } else if context.use_metadata_fallback(
-                "当前焦点控件没有暴露可读文本，仅使用应用与窗口信息。",
-            ) {
+            } else if context
+                .use_metadata_fallback("当前焦点控件没有暴露可读文本，仅使用应用与窗口信息。")
+            {
                 CaptureStatus::Captured
             } else {
                 CaptureStatus::Empty
@@ -162,7 +162,8 @@ fn capture_accessibility_text(
         }
         Err(error) => {
             context.diagnostics.push(error);
-            if context.use_metadata_fallback("辅助功能文本读取失败，仅使用应用与窗口信息。") {
+            if context.use_metadata_fallback("辅助功能文本读取失败，仅使用应用与窗口信息。")
+            {
                 CaptureStatus::Captured
             } else {
                 CaptureStatus::Failed

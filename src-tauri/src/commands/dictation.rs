@@ -216,9 +216,7 @@ pub(crate) async fn inject_text_with_policy(
                 {
                     let mut enigo = Enigo::new(&EnigoSettings::default())
                         .map_err(|e| format!("初始化输入失败: {e}"))?;
-                    return enigo
-                        .text(&text)
-                        .map_err(|e| format!("模拟输入失败: {e}"));
+                    return enigo.text(&text).map_err(|e| format!("模拟输入失败: {e}"));
                 }
             }
             std::thread::sleep(Duration::from_millis(60));
@@ -295,8 +293,7 @@ pub(crate) async fn inject_text_with_policy(
 #[cfg(not(target_os = "macos"))]
 fn send_keep_result_paste_shortcut() -> Result<(), String> {
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| format!("初始化输入失败: {e}"))?;
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("初始化输入失败: {e}"))?;
     let modifier = Key::Control;
     enigo
         .key(modifier, Direction::Press)

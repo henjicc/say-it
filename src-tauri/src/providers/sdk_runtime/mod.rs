@@ -56,8 +56,8 @@ impl SdkHostBindings {
 #[cfg(test)]
 mod bundle_tests;
 #[cfg(test)]
-mod tests;
+mod live_result;
 #[cfg(test)]
 mod live_tests;
 #[cfg(test)]
-mod live_result;
+mod tests;

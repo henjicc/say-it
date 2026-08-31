@@ -5,8 +5,7 @@ use crate::commands::asr::{
     asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
 };
 use crate::commands::dictation::{
-    inject_text_inner, inject_text_with_policy, write_clipboard_text_inner,
-    ClipboardDisposition,
+    inject_text_inner, inject_text_with_policy, write_clipboard_text_inner, ClipboardDisposition,
 };
 use crate::commands::transcription::{transcription_cancel_inner, transcription_start_inner};
 use crate::desktop::{
@@ -56,8 +55,12 @@ enum DictationMode {
 enum DictationTrigger {
     #[default]
     Standard,
-    FloatingOrb { target_confirmed: bool },
-    MouseGesture { target_confirmed: bool },
+    FloatingOrb {
+        target_confirmed: bool,
+    },
+    MouseGesture {
+        target_confirmed: bool,
+    },
 }
 
 impl DictationTrigger {
@@ -1272,22 +1275,19 @@ fn spawn_raw_consumer(
                     .as_ref()
                     .is_some_and(|request| request.follow_up);
                 let floating_orb = s.trigger.is_floating_orb();
-                let waveform_config = should_show_waveform(
-                    s.mode,
-                    assistant_follow_up,
-                    floating_orb,
-                )
-                .then(|| {
-                    (
-                        s.prefs.dsp.clone(),
-                        s.sample_rate,
-                        assistant_follow_up,
-                        floating_orb,
-                    )
-                });
+                let waveform_config =
+                    should_show_waveform(s.mode, assistant_follow_up, floating_orb).then(|| {
+                        (
+                            s.prefs.dsp.clone(),
+                            s.sample_rate,
+                            assistant_follow_up,
+                            floating_orb,
+                        )
+                    });
                 (need_open, need_close, waveform_config)
             };
-            if let Some((params, sample_rate, assistant_follow_up, floating_orb)) = waveform_config {
+            if let Some((params, sample_rate, assistant_follow_up, floating_orb)) = waveform_config
+            {
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
                 let processed = pcm16le_to_f32(&dsp.process(&samples));
                 if !processed.is_empty() {
@@ -1637,12 +1637,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     remove_temp(temp_path);
     hotkey::set_dictation_active(false);
     if trigger.is_floating_orb() {
-        crate::desktop::complete_floating_orb(
-            app.clone(),
-            "cancelled",
-            "已取消".to_string(),
-            800,
-        );
+        crate::desktop::complete_floating_orb(app.clone(), "cancelled", "已取消".to_string(), 800);
     } else {
         let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
     }
@@ -1954,8 +1949,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             if trigger.is_floating_orb() {
                 crate::desktop::set_floating_orb_phase(&app, "smartProcessing", "处理中…");
             } else {
-                let _ =
-                    crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+                let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
             }
         }
     }
@@ -2364,8 +2358,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
             .then_some(activation_target)
             .flatten()
             .filter(|_| crate::desktop::floating_orb_auto_enter_enabled(&app));
-        let submit_enter_target =
-            (auto_enter_target.is_none() && !processed.is_empty()).then_some(activation_target).flatten();
+        let submit_enter_target = (auto_enter_target.is_none() && !processed.is_empty())
+            .then_some(activation_target)
+            .flatten();
         if let Some(target) = submit_enter_target {
             crate::desktop::arm_floating_orb_submit_enter(&app, target);
         }
@@ -2522,11 +2517,7 @@ async fn fail_with_raw_fallback(
                     .to_string(),
                     3000,
                 )),
-                Err(_) => Some((
-                    "error",
-                    "复制失败，请在历史记录中查看".to_string(),
-                    3000,
-                )),
+                Err(_) => Some(("error", "复制失败，请在历史记录中查看".to_string(), 3000)),
             }
         }
     } else {
@@ -2603,11 +2594,7 @@ async fn fail_internal(
         let floating = s.trigger.is_floating_orb();
         s.mark_failed(
             error.clone(),
-            if floating {
-                None
-            } else {
-                pending_fallback
-            },
+            if floating { None } else { pending_fallback },
         );
         (
             s.lease.take(),
@@ -2640,8 +2627,7 @@ async fn fail_internal(
     }
     hotkey::set_dictation_active(false);
     if floating {
-        let (phase, message, delay) = floating_feedback
-            .unwrap_or(("error", error.clone(), 3000));
+        let (phase, message, delay) = floating_feedback.unwrap_or(("error", error.clone(), 3000));
         crate::desktop::complete_floating_orb(app.clone(), phase, message, delay);
     } else {
         let can_use_raw_text = state
@@ -3838,10 +3824,26 @@ mod tests {
 
     #[test]
     fn waveform_is_shown_for_file_follow_up_and_floating_orb_dictation() {
-        assert!(should_show_waveform(Some(DictationMode::File), false, false));
-        assert!(should_show_waveform(Some(DictationMode::Realtime), true, false));
-        assert!(should_show_waveform(Some(DictationMode::Realtime), false, true));
-        assert!(!should_show_waveform(Some(DictationMode::Realtime), false, false));
+        assert!(should_show_waveform(
+            Some(DictationMode::File),
+            false,
+            false
+        ));
+        assert!(should_show_waveform(
+            Some(DictationMode::Realtime),
+            true,
+            false
+        ));
+        assert!(should_show_waveform(
+            Some(DictationMode::Realtime),
+            false,
+            true
+        ));
+        assert!(!should_show_waveform(
+            Some(DictationMode::Realtime),
+            false,
+            false
+        ));
         assert!(!should_show_waveform(None, false, false));
     }
 

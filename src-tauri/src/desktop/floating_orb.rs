@@ -226,7 +226,10 @@ fn apply_native_glass(
 fn native_glass_radius(window: &tauri::WebviewWindow, settings: &FloatingOrbSettings) -> f64 {
     match window.label() {
         FLOATING_ORB_LABEL => {
-            orb_window_extent(settings.size_percent, window_monitor_for_sizing(window).as_ref()) / 2.0
+            orb_window_extent(
+                settings.size_percent,
+                window_monitor_for_sizing(window).as_ref(),
+            ) / 2.0
         }
         FLOATING_ORB_MENU_LABEL => 14.0,
         "dictation-indicator" | "assistant-answer" => 16.0,
@@ -488,6 +491,49 @@ pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
     point_is_inside_window(cursor, position, size)
 }
 
+/// 悬浮球在其它应用处于前台时（这正是它存在的意义）不会收到窗口本地的
+/// mouseMoved/mouseEntered/mouseExited 事件——macOS 只把这类持续追踪事件
+/// 派发给当前前台应用的窗口，跟是否设置 acceptsMouseMovedEvents 无关；
+/// 只有 mouseDown/mouseUp 这类离散点击事件会照常送达。这就是 CSS
+/// `:hover` 平时完全不生效、只有按住拖动时才短暂"生效"、松手后又永远
+/// 卡住不清除的根本原因。这里改成用 cursor_position() 轮询真实指针
+/// 位置（不依赖任何事件订阅，不受前台应用状态影响），只在悬停状态
+/// 发生变化时才发一次事件，前端据此切换一个 class 来驱动视觉效果，
+/// 不再依赖原生 :hover。
+const ORB_HOVER_POLL_INTERVAL_MS: u64 = 60;
+
+fn cursor_is_over_floating_orb_now(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> bool {
+    if !window.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let (Ok(cursor), Ok(position), Ok(size)) = (
+        app.cursor_position(),
+        window.outer_position(),
+        window.outer_size(),
+    ) else {
+        return false;
+    };
+    point_is_inside_window(cursor, position, size)
+}
+
+pub(crate) fn start_floating_orb_hover_watcher(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut hovering = false;
+        loop {
+            sleep(Duration::from_millis(ORB_HOVER_POLL_INTERVAL_MS)).await;
+            let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
+                hovering = false;
+                continue;
+            };
+            let now_hovering = cursor_is_over_floating_orb_now(&app, &window);
+            if now_hovering != hovering {
+                hovering = now_hovering;
+                let _ = window.emit("floating-orb-hover", hovering);
+            }
+        }
+    });
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -557,8 +603,10 @@ fn default_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosition<i3
     };
     let area = monitor.work_area();
     let scale = monitor.scale_factor();
-    let size = (orb_window_extent(current_settings(window.app_handle()).size_percent, Some(&monitor))
-        * scale)
+    let size = (orb_window_extent(
+        current_settings(window.app_handle()).size_percent,
+        Some(&monitor),
+    ) * scale)
         .round() as i32;
     let margin = (DEFAULT_MARGIN * scale).round() as i32;
     tauri::PhysicalPosition::new(
@@ -668,7 +716,10 @@ pub(crate) fn ensure_floating_orb_window(
     Ok(window)
 }
 
-fn resize_floating_orb_window(window: &tauri::WebviewWindow, size_percent: u16) -> Result<(), String> {
+fn resize_floating_orb_window(
+    window: &tauri::WebviewWindow,
+    size_percent: u16,
+) -> Result<(), String> {
     let extent = orb_window_extent(size_percent, window_monitor_for_sizing(window).as_ref());
     let old_size = window
         .outer_size()
@@ -730,7 +781,10 @@ fn apply_floating_orb_config(
     apply_native_glass(
         window,
         settings.glass_enabled,
-        orb_window_extent(settings.size_percent, window_monitor_for_sizing(window).as_ref()) / 2.0,
+        orb_window_extent(
+            settings.size_percent,
+            window_monitor_for_sizing(window).as_ref(),
+        ) / 2.0,
         settings.glass_material,
         settings.glass_tint,
     );
@@ -892,8 +946,10 @@ pub(crate) fn set_floating_orb_appearance(
                 apply_native_glass(
                     &window,
                     current.glass_enabled,
-                    orb_window_extent(current.size_percent, window_monitor_for_sizing(&window).as_ref())
-                        / 2.0,
+                    orb_window_extent(
+                        current.size_percent,
+                        window_monitor_for_sizing(&window).as_ref(),
+                    ) / 2.0,
                     current.glass_material,
                     current.glass_tint,
                 );
@@ -1062,9 +1118,7 @@ fn floating_orb_open_main_window_inner(app: tauri::AppHandle) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub(crate) async fn floating_orb_open_main_window(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub(crate) async fn floating_orb_open_main_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         tauri::async_runtime::spawn_blocking(move || floating_orb_open_main_window_inner(app))
@@ -1925,8 +1979,14 @@ mod tests {
 
     #[test]
     fn orb_extent_is_clamped_to_absolute_pixel_bounds() {
-        assert_eq!(orb_window_extent(ORB_SIZE_PERCENT_MAX, None), ORB_SIZE_PX_MAX);
-        assert_eq!(orb_window_extent(ORB_SIZE_PERCENT_MIN, None), ORB_SIZE_PX_MIN);
+        assert_eq!(
+            orb_window_extent(ORB_SIZE_PERCENT_MAX, None),
+            ORB_SIZE_PX_MAX
+        );
+        assert_eq!(
+            orb_window_extent(ORB_SIZE_PERCENT_MIN, None),
+            ORB_SIZE_PX_MIN
+        );
     }
 
     #[test]

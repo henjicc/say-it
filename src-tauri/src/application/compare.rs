@@ -353,10 +353,7 @@ fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
                 cell.error_message = error.clone();
             }
         }
-        (
-            std::mem::take(&mut compare.sessions),
-            compare.lease.take(),
-        )
+        (std::mem::take(&mut compare.sessions), compare.lease.take())
     };
     let _ = release_backend_mic_inner(&state);
     for (session_id, _) in sessions {

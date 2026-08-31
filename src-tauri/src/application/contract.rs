@@ -169,7 +169,11 @@ mod tests {
         assert_eq!(next_revision(&revision), 1);
         assert_eq!(next_revision(&revision), 2);
         assert_eq!(
-            serde_json::to_value(DomainSnapshot { state: DomainRunState::Idle, session_id: None }).unwrap(),
+            serde_json::to_value(DomainSnapshot {
+                state: DomainRunState::Idle,
+                session_id: None
+            })
+            .unwrap(),
             json!({"state":"idle"})
         );
     }

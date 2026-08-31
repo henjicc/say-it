@@ -68,14 +68,8 @@ fn place_indicator_window(
 
     #[cfg(target_os = "macos")]
     if let Ok(ns_window) = window.ns_window() {
-        if crate::macos_native::place_indicator_window(
-            ns_window,
-            width,
-            height,
-            anchor,
-            offset_y,
-        )
-        .is_ok()
+        if crate::macos_native::place_indicator_window(ns_window, width, height, anchor, offset_y)
+            .is_ok()
         {
             return;
         }
@@ -102,7 +96,9 @@ fn place_indicator_window(
     }
 }
 
-pub(crate) fn ensure_indicator_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+pub(crate) fn ensure_indicator_window(
+    app: &tauri::AppHandle,
+) -> Result<tauri::WebviewWindow, String> {
     if let Some(win) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         return Ok(win);
     }
@@ -169,9 +165,15 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
         "dictation-indicator-error",
         json!({ "message": "", "canUseRawText": false }),
     );
-    let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
+    let _ = window.emit(
+        "dictation-indicator-text",
+        json!({ "text": "", "fade": false }),
+    );
     let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
-    let _ = window.emit("dictation-indicator-waveform", json!({ "active": false, "level": 0, "peaks": [] }));
+    let _ = window.emit(
+        "dictation-indicator-waveform",
+        json!({ "active": false, "level": 0, "peaks": [] }),
+    );
     Ok(())
 }
 
@@ -215,7 +217,10 @@ pub(crate) fn show_dictation_indicator_error(
         DICTATION_INDICATOR_OFFSET_Y,
     );
     let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
-    let _ = window.emit("dictation-indicator-text", json!({ "text": "", "fade": false }));
+    let _ = window.emit(
+        "dictation-indicator-text",
+        json!({ "text": "", "fade": false }),
+    );
     let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
     let _ = window.emit(
         "dictation-indicator-waveform",
@@ -232,9 +237,12 @@ pub(crate) fn show_dictation_indicator_error(
     Ok(())
 }
 
-
 #[tauri::command]
-pub(crate) fn set_indicator_text(app: tauri::AppHandle, text: String, fade: Option<bool>) -> Result<(), String> {
+pub(crate) fn set_indicator_text(
+    app: tauri::AppHandle,
+    text: String,
+    fade: Option<bool>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         let _ = window.emit(
             "dictation-indicator-text",
@@ -256,7 +264,9 @@ pub(crate) fn set_indicator_translation(app: tauri::AppHandle, text: String) -> 
 
 /// 返回指示器窗口所在显示器的逻辑尺寸，供前端把百分比换算成像素。
 #[tauri::command]
-pub(crate) fn get_indicator_monitor_metrics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+pub(crate) fn get_indicator_monitor_metrics(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
     let window = ensure_indicator_window(&app)?;
     #[cfg(target_os = "macos")]
     if let Ok(ns_window) = window.ns_window() {
@@ -285,8 +295,12 @@ pub(crate) fn set_indicator_layout(
     offset_y: Option<f64>,
 ) -> Result<(), String> {
     let window = ensure_indicator_window(&app)?;
-    let width = width.unwrap_or(DEFAULT_INDICATOR_WIDTH).clamp(160.0, 2400.0);
-    let height = height.unwrap_or(DEFAULT_INDICATOR_HEIGHT).clamp(56.0, 720.0);
+    let width = width
+        .unwrap_or(DEFAULT_INDICATOR_WIDTH)
+        .clamp(160.0, 2400.0);
+    let height = height
+        .unwrap_or(DEFAULT_INDICATOR_HEIGHT)
+        .clamp(56.0, 720.0);
     let anchor = anchor.unwrap_or_else(|| "bottom".to_string());
     let offset_y = offset_y.unwrap_or(36.0).clamp(-240.0, 240.0);
     place_indicator_window(&window, width, height, &anchor, offset_y);

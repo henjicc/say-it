@@ -24,7 +24,11 @@ fn lines(items: &[&str]) -> Vec<String> {
 
 fn assert_timeline_valid(out: &[AlignedLine]) {
     for line in out {
-        assert!(line.begin_ms <= line.end_ms, "行 {} 起止倒置", line.line_index);
+        assert!(
+            line.begin_ms <= line.end_ms,
+            "行 {} 起止倒置",
+            line.line_index
+        );
     }
     for pair in out.windows(2) {
         assert!(
@@ -38,16 +42,23 @@ fn assert_timeline_valid(out: &[AlignedLine]) {
 
 fn as_script(seg: &OptimizedSegment) -> (usize, &str, u64, u64, f32) {
     match seg {
-        OptimizedSegment::Script { line_index, text, begin_ms, end_ms, match_ratio } => {
-            (*line_index, text.as_str(), *begin_ms, *end_ms, *match_ratio)
-        }
+        OptimizedSegment::Script {
+            line_index,
+            text,
+            begin_ms,
+            end_ms,
+            match_ratio,
+        } => (*line_index, text.as_str(), *begin_ms, *end_ms, *match_ratio),
         OptimizedSegment::Asr { .. } => panic!("expected script segment, got asr"),
     }
 }
 
 fn as_asr(seg: &OptimizedSegment) -> (usize, usize) {
     match seg {
-        OptimizedSegment::Asr { word_begin, word_end } => (*word_begin, *word_end),
+        OptimizedSegment::Asr {
+            word_begin,
+            word_end,
+        } => (*word_begin, *word_end),
         OptimizedSegment::Script { .. } => panic!("expected asr segment, got script"),
     }
 }
@@ -61,7 +72,9 @@ fn exact_match_uses_word_times() {
         w("明天", 2000, 2600),
         w("再见", 2600, 3200),
     ];
-    let out = align_script(&words, &lines(&["今天天气很好", "明天再见"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["今天天气很好", "明天再见"]))
+        .unwrap()
+        .lines;
     assert_eq!(out.len(), 2);
     assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 1800));
     assert_eq!((out[1].begin_ms, out[1].end_ms), (2000, 3200));
@@ -75,7 +88,9 @@ fn exact_match_uses_word_times() {
 fn script_extra_chars_keep_line_times() {
     // 文稿比音频多字（ASR 漏识别），仍按已匹配 token 取行时间
     let words = char_words("今天天气很好", 0, 100);
-    let out = align_script(&words, &lines(&["今天天气真的很好"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["今天天气真的很好"]))
+        .unwrap()
+        .lines;
     assert_eq!(out[0].begin_ms, 0);
     assert_eq!(out[0].end_ms, 600);
     assert!(out[0].match_ratio < 1.0 && out[0].match_ratio >= 0.7);
@@ -86,7 +101,9 @@ fn script_extra_chars_keep_line_times() {
 fn asr_fillers_are_skipped() {
     // ASR 里的语气词/口头语不拉偏行时间
     let words = char_words("嗯今天那个天气很好", 0, 100);
-    let out = align_script(&words, &lines(&["今天天气很好"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["今天天气很好"]))
+        .unwrap()
+        .lines;
     assert_eq!(out[0].begin_ms, 100);
     assert_eq!(out[0].end_ms, 900);
     assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
@@ -96,7 +113,9 @@ fn asr_fillers_are_skipped() {
 fn substitution_keeps_timing_and_lowers_ratio() {
     // 识别错字（替换对）不影响行时间，但拉低匹配率
     let words = char_words("今天天汽很好", 0, 100);
-    let out = align_script(&words, &lines(&["今天天气很好"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["今天天气很好"]))
+        .unwrap()
+        .lines;
     assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 600));
     assert!(out[0].match_ratio < 1.0);
     assert!(!out[0].interpolated);
@@ -121,8 +140,14 @@ fn unmatched_line_is_interpolated() {
 
 #[test]
 fn mixed_cjk_latin() {
-    let words = vec![w("我用", 0, 600), w("github", 600, 1200), w("写代码", 1200, 1800)];
-    let out = align_script(&words, &lines(&["我用 GitHub 写代码"])).unwrap().lines;
+    let words = vec![
+        w("我用", 0, 600),
+        w("github", 600, 1200),
+        w("写代码", 1200, 1800),
+    ];
+    let out = align_script(&words, &lines(&["我用 GitHub 写代码"]))
+        .unwrap()
+        .lines;
     assert_eq!((out[0].begin_ms, out[0].end_ms), (0, 1800));
     assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
 }
@@ -147,7 +172,9 @@ fn min_duration_is_enforced() {
 fn leading_audio_junk_is_free() {
     // 片头与文稿无关的内容不产生罚分，也不拉偏第一行时间（半全局对齐）
     let words = char_words("废话闲聊几句吧正文从这里开始", 0, 100);
-    let out = align_script(&words, &lines(&["正文从这里开始"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["正文从这里开始"]))
+        .unwrap()
+        .lines;
     assert_eq!(out[0].begin_ms, 700);
     assert!((out[0].match_ratio - 1.0).abs() < f32::EPSILON);
 }
@@ -155,13 +182,18 @@ fn leading_audio_junk_is_free() {
 #[test]
 fn empty_inputs() {
     assert!(align_script(&[], &lines(&["你好"])).is_err());
-    assert!(align_script(&[w("你好", 0, 100)], &[]).unwrap().lines.is_empty());
+    assert!(align_script(&[w("你好", 0, 100)], &[])
+        .unwrap()
+        .lines
+        .is_empty());
 }
 
 #[test]
 fn blank_line_gets_zero_width_slot() {
     let words = char_words("今天天气很好明天再见", 0, 100);
-    let out = align_script(&words, &lines(&["今天天气很好", "", "明天再见"])).unwrap().lines;
+    let out = align_script(&words, &lines(&["今天天气很好", "", "明天再见"]))
+        .unwrap()
+        .lines;
     assert!(out[1].interpolated);
     assert_eq!(out[1].begin_ms, out[1].end_ms);
     assert_timeline_valid(&out);
@@ -297,12 +329,18 @@ fn optimized_merges_replacement_across_line_boundary() {
     // 连续两行文稿音频里说的是完全不同的内容（且各自都不短），应合并为一段识别插入，
     // 而不是分别产出两段
     let head = "开场白导入语";
-    let real_middle: String = (0..30u32).map(|i| char::from_u32(0x9000 + i).unwrap()).collect();
+    let real_middle: String = (0..30u32)
+        .map(|i| char::from_u32(0x9000 + i).unwrap())
+        .collect();
     let tail = "结束语收尾";
     let audio_text = format!("{head}{real_middle}{tail}");
     let words = char_words(&audio_text, 0, 100);
-    let fake_line_a: String = (0..15u32).map(|i| char::from_u32(0x6000 + i).unwrap()).collect();
-    let fake_line_b: String = (0..15u32).map(|i| char::from_u32(0x6100 + i).unwrap()).collect();
+    let fake_line_a: String = (0..15u32)
+        .map(|i| char::from_u32(0x6000 + i).unwrap())
+        .collect();
+    let fake_line_b: String = (0..15u32)
+        .map(|i| char::from_u32(0x6100 + i).unwrap())
+        .collect();
     let out = align_script(&words, &lines(&[head, &fake_line_a, &fake_line_b, tail])).unwrap();
     let segs = out.optimized_segments;
     assert_eq!(segs.len(), 3, "{segs:?}");
