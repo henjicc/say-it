@@ -8,17 +8,14 @@ function getCueCtx(): AudioContext {
   return cueCtx;
 }
 
-function beep(freqs: number[], dur = 0.12, gap = 0.02, endFrequency?: number) {
+function beep(freqs: number[], dur = 0.12, gap = 0.02) {
   const ctx = getCueCtx();
   let time = ctx.currentTime + 0.01;
   for (const freq of freqs) {
     const oscillator = ctx.createOscillator();
     const gain = ctx.createGain();
     oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(freq, time);
-    if (endFrequency !== undefined) {
-      oscillator.frequency.exponentialRampToValueAtTime(endFrequency, time + dur);
-    }
+    oscillator.frequency.value = freq;
     gain.gain.setValueAtTime(0.0001, time);
     gain.gain.exponentialRampToValueAtTime(0.25, time + 0.012);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
@@ -31,9 +28,8 @@ function beep(freqs: number[], dur = 0.12, gap = 0.02, endFrequency?: number) {
 }
 
 function beepPreset(kind: string) {
-  // 升降调是一声连续滑音；只有显式选择“双响”才分成两次起音。
-  if (kind === "beep-up") beep([660], 0.16, 0, 990);
-  else if (kind === "beep-down") beep([880], 0.18, 0, 520);
+  if (kind === "beep-up") beep([660, 990], 0.1);
+  else if (kind === "beep-down") beep([880, 520], 0.12);
   else if (kind === "beep-double") beep([880, 880], 0.07, 0.05);
   else beep([770], 0.12);
 }
