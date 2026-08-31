@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   floatingOrbClickAction,
+  floatingOrbContextAction,
   floatingOrbLabel,
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
@@ -36,6 +37,27 @@ describe("floating orb interaction", () => {
     expect(shouldHandleOrbClick(1, true)).toBe(false);
     expect(shouldHandleOrbClick(1, false)).toBe(true);
     expect(shouldHandleOrbClick(0, true)).toBe(true);
+  });
+
+  it("opens details on an error and dismisses only the error on right click", () => {
+    for (const canSubmit of [false, true]) {
+      for (const transient of [false, true]) {
+        expect(floatingOrbClickAction("error", canSubmit)).toBe("showError");
+        expect(floatingOrbContextAction("error", canSubmit, transient)).toBe("dismissError");
+      }
+    }
+  });
+
+  it("preserves recording cancellation, submit dismissal and the idle menu", () => {
+    expect(floatingOrbContextAction("recording", false, true)).toBe("cancel");
+    expect(floatingOrbContextAction("success", true, false)).toBe("dismissSubmit");
+    expect(floatingOrbContextAction("success", false, false)).toBeNull();
+    expect(floatingOrbContextAction("idle", false, false)).toBe("menu");
+    expect(floatingOrbContextAction("idle", false, true)).toBeNull();
+    for (const phase of ["processing", "smartProcessing", "moving", "submitting"] as const) {
+      expect(floatingOrbClickAction(phase, false)).toBeNull();
+      expect(floatingOrbContextAction(phase, false, false)).toBeNull();
+    }
   });
 
   it("amplifies quiet audio while keeping waveform scale bounded", () => {

@@ -14,7 +14,8 @@ export type OrbPhase =
   | "submitting"
   | "submitted";
 
-export type OrbClickAction = "activate" | "stop" | "submit";
+export type OrbClickAction = "activate" | "stop" | "submit" | "showError";
+export type OrbContextAction = "cancel" | "dismissSubmit" | "dismissError" | "menu";
 
 export const ORB_DRAG_THRESHOLD = 5;
 /**
@@ -114,6 +115,19 @@ export function floatingOrbClickAction(
   if (phase === "idle" || phase === "armed") return "activate";
   if (phase === "recording") return "stop";
   if (phase === "success" && canSubmit) return "submit";
+  if (phase === "error") return "showError";
+  return null;
+}
+
+export function floatingOrbContextAction(
+  phase: OrbPhase,
+  canSubmit: boolean,
+  transient: boolean,
+): OrbContextAction | null {
+  if (phase === "error") return "dismissError";
+  if (phase === "recording") return "cancel";
+  if (phase === "success" && canSubmit) return "dismissSubmit";
+  if (phase === "idle" && !transient) return "menu";
   return null;
 }
 

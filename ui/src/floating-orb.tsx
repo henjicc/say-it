@@ -5,11 +5,13 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
 import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { OrbWaveform } from "@/floating-orb/OrbWaveform";
+import { useErrorDetailsDialog } from "@/floating-orb/useErrorDetailsDialog";
 import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
 import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   floatingOrbClickAction,
+  floatingOrbContextAction,
   floatingOrbLabel,
   floatingOrbWaveScale,
   normalizeFloatingOrbAppearance,
@@ -53,6 +55,7 @@ function FloatingOrbApp() {
   );
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
   const dragged = useRef(false);
+  const showErrorDetails = useErrorDetailsDialog();
 
   useEffect(() => {
     void cmd<AppSnapshot>(CMD.getAppSnapshot)
@@ -144,6 +147,10 @@ function FloatingOrbApp() {
       void cmd(CMD.floatingOrbStop).catch(() => undefined);
     } else if (action === "submit") {
       void cmd(CMD.floatingOrbSubmitEnter).catch(() => undefined);
+    } else if (action === "showError") {
+      void showErrorDetails(message).catch((error) => {
+        console.error("[floating-orb] 打开错误详情失败", error);
+      });
     }
   };
 
@@ -160,12 +167,14 @@ function FloatingOrbApp() {
     || phase === "processing"
     || phase === "smartProcessing"
     || phase === "submitting";
-  const interactive = phase === "idle" || phase === "armed" || phase === "recording" || (phase === "success" && canSubmit);
+  const interactive = floatingOrbClickAction(phase, canSubmit) !== null;
   const title = phase === "idle"
     ? transient ? label : "点击开始语音输入，拖动调整位置"
     : phase === "success" && canSubmit
       ? "点击发送回车"
-      : label;
+      : phase === "error"
+        ? "左键查看错误详情，右键清除错误"
+        : label;
 
   return (
     <button
@@ -177,7 +186,8 @@ function FloatingOrbApp() {
         "--orb-glass-border": `${appearance.glassBorder}%`,
       } as CSSProperties}
       disabled={!interactive}
-      aria-label={phase === "recording" ? "点击停止识别" : phase === "success" && canSubmit ? "点击发送回车" : label}
+      aria-label={phase === "recording" ? "点击停止识别" : phase === "error" ? title : phase === "success" && canSubmit ? "点击发送回车" : label}
+      aria-haspopup={phase === "error" ? "dialog" : undefined}
       title={title}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -187,11 +197,16 @@ function FloatingOrbApp() {
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (phase === "recording") {
+        const action = floatingOrbContextAction(phase, canSubmit, transient);
+        if (action === "dismissError") {
+          void cmd(CMD.floatingOrbDismissError).catch((error) => {
+            console.error("[floating-orb] 清除错误提示失败", error);
+          });
+        } else if (action === "cancel") {
           void cmd(CMD.floatingOrbCancel).catch(() => undefined);
-        } else if (phase === "success" && canSubmit) {
+        } else if (action === "dismissSubmit") {
           void cmd(CMD.floatingOrbDismissSubmitEnter).catch(() => undefined);
-        } else if (!transient && phase === "idle") {
+        } else if (action === "menu") {
           void cmd(CMD.showFloatingOrbMenu).catch(() => undefined);
         }
       }}

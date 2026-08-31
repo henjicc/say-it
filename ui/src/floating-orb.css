@@ -161,9 +161,12 @@ button {
   border-color: rgba(255, 209, 102, 0.38);
 }
 
-.floating-orb.error {
+.floating-orb.error,
+.floating-orb.error:not(:disabled):hover,
+.floating-orb.error.hover-tracked:not(:disabled) {
   color: #ff6b6b;
   border-color: rgba(255, 107, 107, 0.42);
+  cursor: pointer;
 }
 
 .floating-orb.cancelled {
