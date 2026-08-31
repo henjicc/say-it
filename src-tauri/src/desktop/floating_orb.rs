@@ -123,12 +123,27 @@ fn orb_window_extent(size_percent: u16, monitor: Option<&tauri::Monitor>) -> f64
     let percent = normalized_orb_size_percent(size_percent) as f64 / 10.0;
     let reference = monitor_reference_extent(monitor);
     let extent = (reference * percent / 100.0).clamp(ORB_SIZE_PX_MIN, ORB_SIZE_PX_MAX);
-    // WebView2 的 CSS 视口按整数逻辑像素布局；例如 48.6 DIP 在 200% 下
-    // 只有 97 个物理像素，49 CSS px 的圆会被右侧/底部的原生边界裁掉。
-    // 不额外扩张透明窗口，避免系统毛玻璃在球外形成光环。
     #[cfg(windows)]
-    let extent = extent.round();
+    let extent = windows_orb_extent(
+        extent,
+        monitor.map_or(1.0, |monitor| monitor.scale_factor()),
+    );
     extent
+}
+
+#[cfg(windows)]
+fn windows_orb_extent(extent: f64, scale: f64) -> f64 {
+    // 同时对齐 CSS 和物理像素，而不是只取整 DIP：150% 下 65 DIP 会变成
+    // 98px 窗口，但 WebView2 的绘制区域会向上取到 99px，裁掉右侧和底部。
+    // 在允许范围内选最近的双重整数尺寸（150% 为偶数 DIP，125% 为 4 的倍数）。
+    (ORB_SIZE_PX_MIN as u32..=ORB_SIZE_PX_MAX as u32)
+        .map(f64::from)
+        .filter(|logical| {
+            let physical = logical * scale;
+            (physical - physical.round()).abs() < 1e-6
+        })
+        .min_by(|a, b| (a - extent).abs().total_cmp(&(b - extent).abs()))
+        .unwrap_or_else(|| extent.round())
 }
 
 fn any_existing_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -664,7 +679,7 @@ pub(crate) fn ensure_floating_orb_window(
     let settings = current_settings(app);
     let initial_monitor = primary_monitor_for(app);
     let extent = orb_window_extent(settings.size_percent, initial_monitor.as_ref());
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         FLOATING_ORB_LABEL,
         WebviewUrl::App("floating-orb.html".into()),
@@ -681,9 +696,17 @@ pub(crate) fn ensure_floating_orb_window(
     .visible(false)
     .shadow(false)
     .transparent(true)
-    .visible_on_all_workspaces(true)
-    .build()
-    .map_err(|error| format!("创建悬浮球窗口失败：{error}"))?;
+    .visible_on_all_workspaces(true);
+    // 无边框仍保留 Windows 的默认最小跟踪宽度；只设 inner_size/resizable
+    // 会把小圆窗撑成胶囊。显式覆盖最小尺寸，并移除无意义的最大/最小化按钮。
+    #[cfg(windows)]
+    let builder = builder
+        .min_inner_size(ORB_SIZE_PX_MIN, ORB_SIZE_PX_MIN)
+        .maximizable(false)
+        .minimizable(false);
+    let window = builder
+        .build()
+        .map_err(|error| format!("创建悬浮球窗口失败：{error}"))?;
     #[cfg(target_os = "macos")]
     if let Err(error) = window
         .ns_window()
@@ -1997,15 +2020,23 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_orb_extent_does_not_round_a_css_circle_outside_its_window() {
-        for percent in ORB_SIZE_PERCENT_MIN..=ORB_SIZE_PERCENT_MAX {
-            let extent = orb_window_extent(percent, None);
-            assert_eq!(extent.fract(), 0.0, "sizePercent={percent}");
-            for scale in [1.0, 2.0, 3.0] {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0] {
+            for tenth in 280..=720 {
+                let extent = windows_orb_extent(tenth as f64 / 10.0, scale);
+                assert_eq!(extent.fract(), 0.0);
+                assert!((ORB_SIZE_PX_MIN..=ORB_SIZE_PX_MAX).contains(&extent));
                 let physical = tauri::LogicalSize::new(extent, extent).to_physical::<u32>(scale);
                 assert_eq!(physical.width as f64, extent * scale);
                 assert_eq!(physical.height, physical.width);
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fractional_scale_avoids_the_reported_98px_viewport() {
+        assert_eq!(windows_orb_extent(64.8, 1.5), 64.0);
+        assert_eq!(windows_orb_extent(48.6, 1.25), 48.0);
     }
 
     #[test]
