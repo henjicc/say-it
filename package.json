@@ -12,7 +12,7 @@
     "sdk-runtime:typecheck": "tsc -p tsconfig.sdk-runtime.json",
     "sdk-runtime:build": "node scripts/build-ai-sdk-runtime.mjs 工作区/sdk-runtime-build",
     "test:ui": "vitest run",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:rust": "node scripts/run-rust-tests.mjs",
     "test:ai:live": "node scripts/run-ai-live.mjs",
     "check": "npm run typecheck && npm run test:ui && npm run ui:build && npm run test:rust",
     "context-probe:build": "node scripts/build-context-probe.mjs",
