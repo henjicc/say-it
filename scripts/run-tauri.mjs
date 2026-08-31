@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
 
 const [command, ...args] = process.argv.slice(2);
@@ -25,7 +26,13 @@ if (process.platform === "darwin" && !env.OPUS_LIB_DIR && !env.LIBOPUS_LIB_DIR) 
   if (opusLibrary) env.OPUS_LIB_DIR = dirname(opusLibrary);
 }
 
-const result = spawnSync("tauri", [command, ...args], { stdio: "inherit", env });
+// Windows 的 npm 命令入口是 .cmd，不能直接作为 spawnSync 的可执行文件。
+const require = createRequire(import.meta.url);
+const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
+const result = spawnSync(process.execPath, [tauriCli, command, ...args], {
+  stdio: "inherit",
+  env,
+});
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 if (process.platform === "darwin" && command === "build" && !args.includes("--no-bundle")) {
