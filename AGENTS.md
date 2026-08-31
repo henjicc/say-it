@@ -169,6 +169,7 @@
 - 已知陷阱和非显而易见行为：`vite.config.ts` 以 `ui/` 为 root，并配置 `main` 与 `indicator` 两个打包入口；`tauri.conf.json` 中主窗口初始 `visible: false`、`decorations: false`，窗口显示逻辑在后端控制；`ui/dist/`、`src-tauri/target/` 不应手工维护；主题为运行时切换——`App.tsx` 根据 `useThemeStore` 在 `<html>` 上写 `data-ui-tone` 并覆写 `--color-*` 令牌，`index.css` 靠 `[data-ui-tone="light"]` 选择器补齐亮色，暗色为主要方向、亮色仅保证可用不破版。
 - 发布流程：先同步更新 `src-tauri/tauri.conf.json` 和 `package.json` 的 `version`，提交后推送 `v*.*.*` 格式的 tag，会触发 `.github/workflows/release.yml` 自动构建并直接发布 GitHub Release。
 - 新增/扩展识别模型、协议族或供应商时，先读取 `docs/rules/新增供应商与模型操作手册.md` 按场景执行，不要重新摸索。
+- 使用 `@henjicc/ai-sdk` 的功能升级或排障时，先对照当前精确版本的公共类型并冻结实际送入 SDK 的 DTO，再做同版本 SDK 最小直调：合法输入在 SDK 内失败或供应商请求偏离官方契约才回 Henji-AI 主仓修 SDK；Rust→QuickJS 序列化、凭据、HTTP/WS、媒体引用、取消、超时和资源释放问题在 say-it 修。`field?: T` 表示字段省略或值为 `T`，Rust 的 `None` 必须用 `skip_serializing_if` 等方式省略，不能写成 `null`；不得为掩盖宿主错误而放宽 SDK 校验，也不得在本仓复制 SDK provider/parser。
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
 - `.sayit` 同时承载 API v5 JavaScript 供应商插件与 API v5 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
