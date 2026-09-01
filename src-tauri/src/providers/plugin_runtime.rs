@@ -36,6 +36,7 @@ pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STACK_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
@@ -279,6 +280,7 @@ struct HostState {
     deadline: Arc<Mutex<Instant>>,
     sdk: Option<SdkHostBindings>,
     spans: HashMap<String, Instant>,
+    pending_request_bodies: HashMap<String, Vec<u8>>,
 }
 
 impl HostState {
@@ -306,7 +308,20 @@ impl HostState {
             deadline,
             sdk,
             spans: HashMap::new(),
+            pending_request_bodies: HashMap::new(),
         }
+    }
+
+    fn store_request_body(&mut self, bytes: &[u8]) -> Result<String, String> {
+        if bytes.len() > MAX_REQUEST_BODY_BYTES {
+            return Err("HTTP 请求体超过 16 MiB 限制".into());
+        }
+        // JS 调用会紧接着同步消费此句柄；只保留最新一份，避免恶意或异常脚本囤积宿主内存。
+        self.pending_request_bodies.clear();
+        let id = uuid::Uuid::new_v4().to_string();
+        self.pending_request_bodies
+            .insert(id.clone(), bytes.to_vec());
+        Ok(id)
     }
 
     fn call(&mut self, operation: &str, payload: Value) -> Result<Value, String> {
@@ -459,6 +474,7 @@ impl HostState {
             stopped.store(true, Ordering::Relaxed);
         }
         self.spans.clear();
+        self.pending_request_bodies.clear();
     }
 
     fn take_host_events(&mut self) -> Vec<Value> {
@@ -542,7 +558,7 @@ impl HostState {
         std::fs::rename(temporary, target).map_err(|error| error.to_string())
     }
 
-    fn http_request(&self, payload: Value) -> Result<Value, String> {
+    fn http_request(&mut self, payload: Value) -> Result<Value, String> {
         let response = self.open_http_response(payload)?;
         tauri::async_runtime::block_on(async {
             let status = response.status().as_u16();
@@ -627,7 +643,7 @@ impl HostState {
         Ok(Value::Null)
     }
 
-    fn open_http_response(&self, payload: Value) -> Result<reqwest::Response, String> {
+    fn open_http_response(&mut self, payload: Value) -> Result<reqwest::Response, String> {
         require_network_permission(&self.spec)?;
         let mut method = payload
             .get("method")
@@ -649,7 +665,7 @@ impl HostState {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let mut body = request_body(&payload, &self.inputs)?;
+        let mut body = request_body(&payload, &self.inputs, &mut self.pending_request_bodies)?;
         tauri::async_runtime::block_on(async {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -1340,6 +1356,36 @@ impl JsProviderRuntime {
             ctx.globals()
                 .set("__sayitHostCall", host_call)
                 .map_err(js_error)?;
+            let request_body_state = host.clone();
+            let store_request_body = Function::new(
+                ctx.clone(),
+                move |bytes: TypedArray<u8>| -> Result<String, JsError> {
+                    let bytes = bytes.as_bytes().ok_or_else(|| {
+                        JsError::new_from_js_message(
+                            "Uint8Array",
+                            "request body",
+                            "请求体缓冲区已失效",
+                        )
+                    })?;
+                    request_body_state
+                        .lock()
+                        .map_err(|_| {
+                            JsError::new_from_js_message(
+                                "HostState",
+                                "request body",
+                                "宿主状态锁定失败",
+                            )
+                        })?
+                        .store_request_body(bytes)
+                        .map_err(|message| {
+                            JsError::new_from_js_message("Uint8Array", "request body", message)
+                        })
+                },
+            )
+            .map_err(js_error)?;
+            ctx.globals()
+                .set("__sayitHostStoreRequestBody", store_request_body)
+                .map_err(js_error)?;
             ctx.eval::<(), _>(QUICKJS_RUNTIME_BOOTSTRAP)
                 .map_err(js_error)?;
             if load_ai_sdk {
@@ -1992,7 +2038,15 @@ enum RequestBody {
 fn request_body(
     payload: &Value,
     inputs: &HashMap<String, PathBuf>,
+    pending_request_bodies: &mut HashMap<String, Vec<u8>>,
 ) -> Result<Option<RequestBody>, String> {
+    if let Some(id) = payload.get("bodyBufferId").and_then(Value::as_str) {
+        return pending_request_bodies
+            .remove(id)
+            .map(RequestBody::Bytes)
+            .map(Some)
+            .ok_or_else(|| "无效或已使用的请求体句柄".into());
+    }
     if let Some(id) = payload.get("inputId").and_then(Value::as_str) {
         let path = inputs.get(id).ok_or("无效或过期的输入句柄")?;
         return Ok(Some(RequestBody::Input(path.clone())));

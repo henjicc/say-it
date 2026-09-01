@@ -13,18 +13,23 @@
     __sayitHostCall?: (operation: string, payload: string) => string
   }).__sayitHostCall
   if (typeof rawCall !== 'function') throw new Error('SDK RuntimeContext 缺少 Rust Host API')
+  const rawStoreRequestBody = (globalThis as typeof globalThis & {
+    __sayitHostStoreRequestBody?: (body: Uint8Array) => string
+  }).__sayitHostStoreRequestBody
+  if (typeof rawStoreRequestBody !== 'function') throw new Error('SDK RuntimeContext 缺少二进制请求体 Host API')
 
   const call = <T>(operation: string, payload: unknown = {}): T => {
     const result = JSON.parse(rawCall(operation, JSON.stringify(payload))) as HostResult
     if (!result.ok) throw new Error(result.error || `宿主调用失败：${operation}`)
     return result.value as T
   }
-  const bytes = (value: ArrayBuffer | ArrayBufferView): number[] => {
-    const view = value instanceof ArrayBuffer
+  const byteView = (value: ArrayBuffer | ArrayBufferView): Uint8Array =>
+    value instanceof ArrayBuffer
       ? new Uint8Array(value)
       : new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-    return Array.from(view)
-  }
+  const storeRequestBody = (value: ArrayBuffer | ArrayBufferView): Record<string, unknown> => ({
+    bodyBufferId: rawStoreRequestBody(byteView(value)),
+  })
   const headerRecord = (headers?: HeadersInit): Record<string, string> => {
     const result: Record<string, string> = {}
     new Headers(headers).forEach((value, name) => { result[name] = value })
@@ -33,11 +38,11 @@
   const requestBody = (body: BodyInit | null | undefined): { payload: Record<string, unknown>; contentType?: string } => {
     if (body === undefined || body === null) return { payload: {} }
     if (typeof body === 'string') return { payload: { bodyText: body } }
-    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return { payload: { bodyBytes: bytes(body) } }
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return { payload: storeRequestBody(body) }
     const serialized = (body as unknown as {
       __sayitSerializeBody?: () => { bytes: Uint8Array; contentType: string }
     }).__sayitSerializeBody?.()
-    if (serialized) return { payload: { bodyBytes: Array.from(serialized.bytes) }, contentType: serialized.contentType }
+    if (serialized) return { payload: storeRequestBody(serialized.bytes), contentType: serialized.contentType }
     throw new TypeError('QuickJS Transport 只接受 string/ArrayBuffer/TypedArray 请求体')
   }
   const abortError = (): Error => Object.assign(new Error('操作已取消'), { name: 'AbortError' })
