@@ -13,6 +13,7 @@ import { useDictPrefs } from "@/store/useDictPrefs";
 import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { isMacOS, isWindows } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
 const shortcutActionButtonClassName = "shrink-0 self-stretch";
@@ -46,18 +47,15 @@ export function SubtitleGeneralPanel() {
     <div className="flex flex-col gap-7">
       <SettingsSection title="基础设置">
         <FormGrid>
-          <Field layout="row" label="识别模型">
-            <Select
+          <Field layout="row" label="识别模型" controlId="subtitle-asr-model">
+            <ModelPicker
+              id="subtitle-asr-model"
               value={prefs.asrModel}
               disabled={running}
-              onChange={(event) => patch({ asrModel: event.target.value })}
-            >
-              {SUBTITLE_ASR_MODEL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
+              options={SUBTITLE_ASR_MODEL_OPTIONS}
+              panelLabel="选择语音识别模型"
+              onChange={(value) => patch({ asrModel: value })}
+            />
           </Field>
           <Field layout="row" label="全局快捷键">
             <div className="flex items-stretch gap-2">

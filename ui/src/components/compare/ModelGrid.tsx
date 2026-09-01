@@ -1,10 +1,8 @@
 import { Button } from "@/components/ui/Button";
-import { Select } from "@/components/ui/Input";
 import { ResultCard } from "@/components/compare/ResultCard";
-import { mergedModelOptions, type CompareModelKind } from "@/features/compare/models";
+import { mergedModelOptions } from "@/features/compare/models";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import { COMPARE_COLS, COMPARE_MAX_ROWS, COMPARE_MIN_ROWS, useCompareStore } from "@/store/useCompareStore";
-
-const KIND_LABEL: Record<CompareModelKind, string> = { realtime: "实时", file: "非实时" };
 
 export function ModelGrid() {
   const cellModels = useCompareStore((s) => s.prefs.cellModels);
@@ -15,21 +13,24 @@ export function ModelGrid() {
   const phase = useCompareStore((s) => s.phase);
   const disabled = phase !== "idle";
   const rows = cellModels.length / COMPARE_COLS;
-  const options = mergedModelOptions();
+  const options = [
+    { value: "", label: "不选择模型", providerId: "none", providerLabel: "通用" },
+    ...mergedModelOptions(),
+  ];
 
   return (
     <div className="flex flex-col gap-3">
       <div className="grid grid-cols-2 gap-3">
         {cellModels.map((value, index) => (
           <div key={index} className="flex flex-col gap-2">
-            <Select value={value} disabled={disabled} onChange={(e) => setCellModel(index, e.target.value)}>
-              <option value="">（未选择模型）</option>
-              {options.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {`${option.label}（${KIND_LABEL[option.kind]}）`}
-                </option>
-              ))}
-            </Select>
+            <ModelPicker
+              value={value}
+              options={options}
+              disabled={disabled}
+              aria-label={`对比模型 ${index + 1}`}
+              panelLabel="选择语音识别模型"
+              onChange={(nextValue) => setCellModel(index, nextValue)}
+            />
             {value && <ResultCard runtime={cellRuntime[index]} />}
           </div>
         ))}

@@ -1,7 +1,7 @@
 [
   {
     "id": "apple-speech-transcriber-live",
-    "label": "Apple 系统本地识别（系统语言）",
+    "label": "Apple 系统本地识别",
     "providerId": "apple-speech",
     "category": "realtime",
     "protocol": "builtin-macos-speech",
@@ -14,7 +14,7 @@
   },
   {
     "id": "seedasr-2.0-realtime",
-    "label": "火山引擎 SeedASR 2.0（实时）",
+    "label": "火山引擎 SeedASR 2.0",
     "providerId": "volcengine",
     "category": "realtime",
     "protocol": "sdk-capability-realtime",

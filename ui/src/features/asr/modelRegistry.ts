@@ -8,7 +8,14 @@ export interface ModelInfo {
   isDefaultRealtime: boolean; isDefaultFile: boolean; isQwenRealtime: boolean;
   isQwenFile: boolean; isQwenShortAudioFile: boolean; isFunasrFlashFile: boolean;
 }
-export interface AsrModelOption { value: string; label: string }
+export type AsrModelMode = "realtime" | "nonRealtime";
+export interface AsrModelOption {
+  value: string;
+  label: string;
+  providerId: string;
+  providerLabel?: string;
+  mode?: AsrModelMode;
+}
 export interface OcrModelOption extends AsrModelOption {
   providerId: string;
   remote: boolean;
@@ -55,25 +62,31 @@ export function currentCatalog(): ModelCatalogResponse {
   return catalog;
 }
 export function modelInfo(id: string) { return catalog?.models.find((item) => item.id === id.trim()); }
-/**
- * 出字方式标注。语音输入下拉把实时与非实时模型混在一起，实时字幕下拉里也可能混入
- * 无中间结果的整句模型，用户必须能在选之前就看出差别：
- *
- * - 真流式（边说边出字）：不加后缀
- * - 整句模型：走实时会话，但说完一句才整句出字，没有中间态
- * - 非实时：停止后才开始识别
- */
-function outputModeSuffix(item: ModelInfo, scene: string): string {
-  if (scene === "dictationFile" && item.category === "file") return "（非实时）";
-  if ((scene === "dictationRealtime" || scene === "subtitles") && !item.emitsPartialResults) {
-    return "（整句）";
-  }
-  return "";
+export function asrModelMode(item: Pick<ModelInfo, "category">): AsrModelMode | undefined {
+  if (item.category === "realtime") return "realtime";
+  if (item.category === "file") return "nonRealtime";
+  return undefined;
+}
+export function asrModelModeLabel(mode: AsrModelMode): string {
+  return mode === "realtime" ? "实时" : "非实时";
+}
+export function asrModelDisplayLabel(item: Pick<ModelInfo, "label" | "category">): string {
+  const mode = asrModelMode(item);
+  if (!mode) return item.label;
+  const baseLabel = item.label.replace(/\s*[（(](?:实时|非实时)[）)]\s*$/u, "");
+  return `${baseLabel}（${asrModelModeLabel(mode)}）`;
 }
 export function optionsForScene(scene: string): AsrModelOption[] {
-  return currentCatalog().models.filter((item) => item.scenes.includes(scene)).map((item) => ({
+  const current = currentCatalog();
+  const providerNames = new Map(
+    (current.providers.profiles || []).map((provider) => [provider.id, provider.displayName]),
+  );
+  return current.models.filter((item) => item.scenes.includes(scene)).map((item) => ({
     value: item.id,
-    label: `${item.label}${outputModeSuffix(item, scene)}`,
+    label: asrModelDisplayLabel(item),
+    providerId: item.providerId,
+    providerLabel: providerNames.get(item.providerId) || item.providerId,
+    mode: asrModelMode(item),
   }));
 }
 export function ocrOptionsForScene(scene: string): OcrModelOption[] {

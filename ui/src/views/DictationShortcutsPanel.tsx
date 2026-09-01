@@ -6,6 +6,7 @@ import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAudioDevices } from "@/features/audio/devices";
 import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
@@ -35,14 +36,14 @@ export function DictationShortcutsPanel() {
     <div className="flex flex-col gap-8">
       <SettingsSection title="识别设置">
         <FormGrid>
-          <Field label="识别模型">
-            <Select value={asrModel} onChange={(e) => patchDictPrefs({ asrModel: e.target.value })}>
-              {DICTATION_ASR_MODEL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
+          <Field label="识别模型" controlId="dictation-asr-model">
+            <ModelPicker
+              id="dictation-asr-model"
+              value={asrModel}
+              options={DICTATION_ASR_MODEL_OPTIONS}
+              panelLabel="选择语音识别模型"
+              onChange={(value) => patchDictPrefs({ asrModel: value })}
+            />
           </Field>
           <Field label="声音来源">
             <Select

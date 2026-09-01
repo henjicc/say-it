@@ -28,6 +28,7 @@ import {
   isSupportedFileModel,
 } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -266,14 +267,14 @@ export function TranscriptionView() {
           </p>
 
           <FormGrid>
-            <Field label="识别模型">
-              <Select value={params.model} onChange={(event) => setParams({ model: event.target.value })}>
-                {FILE_ASR_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
+            <Field label="识别模型" controlId="transcription-asr-model">
+              <ModelPicker
+                id="transcription-asr-model"
+                value={params.model}
+                options={FILE_ASR_MODEL_OPTIONS}
+                panelLabel="选择语音识别模型"
+                onChange={(value) => setParams({ model: value })}
+              />
             </Field>
           </FormGrid>
 
