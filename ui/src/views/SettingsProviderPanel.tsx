@@ -43,7 +43,7 @@ function providerConfigurationStatus(provider: ProviderProfile) {
   return provider.status?.configured || provider.status?.hasApiKey ? "已配置" : "需要填写";
 }
 
-function hasPluginConfiguration(provider: ProviderProfile) {
+function hasProviderConfiguration(provider: ProviderProfile) {
   return Boolean(
     provider.configFields?.length ||
     provider.actions?.length ||
@@ -51,28 +51,77 @@ function hasPluginConfiguration(provider: ProviderProfile) {
   );
 }
 
-function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
+function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const loadProviders = useProviderStore((state) => state.load);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
-  const [message, setMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const draftRef = useRef<Record<string, unknown>>({});
+  const saveTimersRef = useRef(new Map<string, number>());
+  const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const configFields = provider.configFields || [];
 
-  useEffect(() => setDraft(provider.config || {}), [provider.config]);
+  useEffect(() => {
+    setDraft((current) => {
+      const next = { ...(provider.config || {}) };
+      for (const field of configFields) {
+        if (field.secret && current[field.key]) next[field.key] = current[field.key];
+      }
+      draftRef.current = next;
+      return next;
+    });
+  }, [provider.config]);
 
-  const save = async () => {
-    const patch: Record<string, unknown> = {};
-    for (const field of configFields) {
-      const value = draft[field.key];
-      if (field.secret && (value === undefined || value === "")) continue;
-      patch[field.key] = field.fieldType === "number" && value !== "" ? Number(value) : value;
-    }
+  useEffect(() => () => {
+    for (const timer of saveTimersRef.current.values()) window.clearTimeout(timer);
+    saveTimersRef.current.clear();
+    draftRef.current = {};
+  }, []);
+
+  const queueConfigUpdate = (config: Record<string, unknown>): Promise<ProviderProfile> => {
+    const operation = configSaveQueueRef.current.then(() => updateProviderConfig(provider.id, config));
+    configSaveQueueRef.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+
+  const persistField = async (field: NonNullable<ProviderProfile["configFields"]>[number], rawValue: unknown) => {
+    if (field.secret && (typeof rawValue !== "string" || !rawValue.trim())) return;
+    const value = field.fieldType === "number" && rawValue !== "" ? Number(rawValue) : rawValue;
     try {
-      await updateProviderConfig(provider.id, patch);
-      setMessage("插件配置已保存。");
+      await queueConfigUpdate({ [field.key]: value });
+      setErrorMessage("");
+      if (field.secret && draftRef.current[field.key] === rawValue) {
+        const next = { ...draftRef.current, [field.key]: "" };
+        draftRef.current = next;
+        setDraft(next);
+      }
     } catch (error) {
-      setMessage(`保存失败：${String(error)}`);
+      setErrorMessage(`自动保存失败：${String(error)}`);
     }
+  };
+
+  const updateField = (
+    field: NonNullable<ProviderProfile["configFields"]>[number],
+    value: unknown,
+    immediate = false,
+  ) => {
+    const next = { ...draftRef.current, [field.key]: value };
+    draftRef.current = next;
+    setDraft(next);
+    setErrorMessage("");
+    const previousTimer = saveTimersRef.current.get(field.key);
+    if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+    if (immediate) {
+      saveTimersRef.current.delete(field.key);
+      void persistField(field, value);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      saveTimersRef.current.delete(field.key);
+      void persistField(field, draftRef.current[field.key]);
+    }, 500);
+    saveTimersRef.current.set(field.key, timer);
   };
 
   const runAction = async (action: string) => {
@@ -86,9 +135,9 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
         action,
       });
       await loadProviders();
-      setMessage(String(result.message || result.status || "操作完成。"));
+      setActionMessage(String(result.message || result.status || "操作完成。"));
     } catch (error) {
-      setMessage(`操作失败：${String(error)}`);
+      setActionMessage(`操作失败：${String(error)}`);
     }
   };
 
@@ -103,20 +152,19 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
             <CheckField
               key={field.key}
               checked={Boolean(draft[field.key])}
-              onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
+              onChange={(value) => updateField(field, value, true)}
             >
               {field.label}
             </CheckField>
           ) : field.secret ? (
             <Field key={field.key} label={field.label}>
               <SecretInput
-                id={`plugin-secret-${provider.id}-${field.key}`}
+                id={`provider-secret-${provider.id}-${field.key}`}
                 draftValue={String(draft[field.key] ?? "")}
                 hasStoredValue={Boolean(provider.status?.hasApiKey)}
                 placeholder={provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
-                onDraftChange={(value) =>
-                  setDraft((current) => ({ ...current, [field.key]: value }))
-                }
+                onDraftChange={(value) => updateField(field, value)}
+                onBlur={() => updateField(field, draftRef.current[field.key] ?? "", true)}
               />
             </Field>
           ) : (
@@ -125,117 +173,153 @@ function PluginProviderConfig({ provider }: { provider: ProviderProfile }) {
                 type={field.fieldType === "number" ? "number" : "text"}
                 value={String(draft[field.key] ?? "")}
                 placeholder={field.secret && provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
-                onChange={(event) =>
-                  setDraft((current) => ({ ...current, [field.key]: event.target.value }))
-                }
+                onChange={(event) => updateField(field, event.target.value)}
+                onBlur={() => updateField(field, draftRef.current[field.key] ?? "", true)}
               />
             </Field>
           ),
         )}
         <div className="flex flex-wrap gap-2">
-          {configFields.length > 0 && <Button size="sm" onClick={save}>保存插件配置</Button>}
           {(provider.actions || []).filter((action) => action !== "manageHotwords").map((action) => (
             <Button key={action} size="sm" onClick={() => void runAction(action)}>
               {PLUGIN_ACTION_LABELS[action] || action}
             </Button>
           ))}
         </div>
-        {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+        {errorMessage && <p className="text-xs text-[var(--color-danger)]">{errorMessage}</p>}
+        {actionMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
       </div>
     </Collapse>
   );
 }
 
+interface BailianAdvancedConfig {
+  languageHints: string[];
+  semanticPunctuationEnabled: boolean;
+  maxSentenceSilence: number;
+  multiThresholdModeEnabled: boolean;
+  heartbeat: boolean;
+  speechNoiseThreshold: string;
+}
+
+function bailianAdvancedConfig(config: Record<string, unknown> | undefined): BailianAdvancedConfig {
+  return {
+    languageHints: Array.isArray(config?.languageHints) ? config.languageHints as string[] : [],
+    semanticPunctuationEnabled: Boolean(config?.semanticPunctuationEnabled),
+    maxSentenceSilence: Number(config?.maxSentenceSilence ?? 1300),
+    multiThresholdModeEnabled: Boolean(config?.multiThresholdModeEnabled),
+    heartbeat: Boolean(config?.heartbeat),
+    speechNoiseThreshold: config?.speechNoiseThreshold === null || config?.speechNoiseThreshold === undefined
+      ? ""
+      : String(config.speechNoiseThreshold),
+  };
+}
+
 function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
-  const providerStatus = useProviderStore((state) => state.statusText);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const [apiKey, setApiKey] = useState("");
-  const [apiKeyDirty, setApiKeyDirty] = useState(false);
-  const [apiKeySaving, setApiKeySaving] = useState(false);
-  const [message, setMessage] = useState("");
-  const [languageHints, setLanguageHints] = useState<string[]>([]);
-  const [semanticPunctuation, setSemanticPunctuation] = useState(false);
-  const [maxSentenceSilence, setMaxSentenceSilence] = useState(1300);
-  const [multiThresholdMode, setMultiThresholdMode] = useState(false);
-  const [heartbeat, setHeartbeat] = useState(false);
-  const [noiseThreshold, setNoiseThreshold] = useState("");
+  const [advanced, setAdvanced] = useState(() => bailianAdvancedConfig(provider.config));
+  const [errorMessage, setErrorMessage] = useState("");
 
   const hasApiKey = !!provider.status?.hasApiKey;
-  const saveRequestRef = useRef(0);
+  const apiKeyRef = useRef("");
+  const advancedRef = useRef(advanced);
+  const apiKeyTimerRef = useRef<number | null>(null);
+  const advancedTimerRef = useRef<number | null>(null);
+  const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
-  useEffect(() => {
-    const config = provider.config;
-    if (!config) return;
-    setLanguageHints(Array.isArray(config.languageHints) ? (config.languageHints as string[]) : []);
-    setSemanticPunctuation(!!config.semanticPunctuationEnabled);
-    setMaxSentenceSilence(Number(config.maxSentenceSilence ?? 1300));
-    setMultiThresholdMode(!!config.multiThresholdModeEnabled);
-    setHeartbeat(!!config.heartbeat);
-    setNoiseThreshold(
-      config.speechNoiseThreshold === null || config.speechNoiseThreshold === undefined
-        ? ""
-        : String(config.speechNoiseThreshold),
-    );
-  }, [provider.config]);
+  useEffect(() => () => {
+    if (apiKeyTimerRef.current !== null) window.clearTimeout(apiKeyTimerRef.current);
+    if (advancedTimerRef.current !== null) window.clearTimeout(advancedTimerRef.current);
+    apiKeyRef.current = "";
+  }, []);
 
-  useEffect(() => {
-    if (!apiKeyDirty) return;
-    const nextApiKey = apiKey.trim();
-    if (!nextApiKey) {
-      setApiKeySaving(false);
+  const queueConfigUpdate = (config: Record<string, unknown>): Promise<ProviderProfile> => {
+    const operation = configSaveQueueRef.current.then(() => updateProviderConfig(provider.id, config));
+    configSaveQueueRef.current = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+
+  const persistApiKey = async (value: string) => {
+    const nextApiKey = value.trim();
+    if (!nextApiKey) return;
+    try {
+      await queueConfigUpdate({ apiKey: nextApiKey });
+      setErrorMessage("");
+      if (apiKeyRef.current === value) {
+        apiKeyRef.current = "";
+        setApiKey("");
+      }
+    } catch (error) {
+      setErrorMessage(`自动保存失败：${String(error)}`);
+    }
+  };
+
+  const updateApiKey = (value: string, immediate = false) => {
+    apiKeyRef.current = value;
+    setApiKey(value);
+    setErrorMessage("");
+    if (apiKeyTimerRef.current !== null) window.clearTimeout(apiKeyTimerRef.current);
+    if (immediate) {
+      apiKeyTimerRef.current = null;
+      void persistApiKey(value);
       return;
     }
-
-    setApiKeySaving(true);
-    const timer = window.setTimeout(async () => {
-      const requestId = saveRequestRef.current + 1;
-      saveRequestRef.current = requestId;
-
-      try {
-        await updateProviderConfig(provider.id, { apiKey: nextApiKey });
-        if (saveRequestRef.current !== requestId) return;
-        setApiKeyDirty(false);
-        setApiKey("");
-        setMessage("API Key 已自动保存。");
-      } catch (error) {
-        if (saveRequestRef.current === requestId) setMessage(`保存失败：${String(error)}`);
-      } finally {
-        if (saveRequestRef.current === requestId) setApiKeySaving(false);
-      }
+    apiKeyTimerRef.current = window.setTimeout(() => {
+      apiKeyTimerRef.current = null;
+      void persistApiKey(apiKeyRef.current);
     }, 500);
+  };
 
-    return () => window.clearTimeout(timer);
-  }, [apiKey, apiKeyDirty, updateProviderConfig, provider.id]);
+  const persistAdvanced = async (value: BailianAdvancedConfig) => {
+    const threshold = value.speechNoiseThreshold.trim();
+    try {
+      await queueConfigUpdate({
+        languageHints: value.languageHints,
+        semanticPunctuationEnabled: value.semanticPunctuationEnabled,
+        maxSentenceSilence: value.maxSentenceSilence,
+        multiThresholdModeEnabled: value.multiThresholdModeEnabled,
+        heartbeat: value.heartbeat,
+        speechNoiseThreshold: threshold === "" ? null : Number(threshold),
+      });
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(`自动保存失败：${String(error)}`);
+    }
+  };
+
+  const updateAdvanced = (patch: Partial<BailianAdvancedConfig>, immediate = false) => {
+    const next = { ...advancedRef.current, ...patch };
+    advancedRef.current = next;
+    setAdvanced(next);
+    setErrorMessage("");
+    if (advancedTimerRef.current !== null) window.clearTimeout(advancedTimerRef.current);
+    if (immediate) {
+      advancedTimerRef.current = null;
+      void persistAdvanced(next);
+      return;
+    }
+    advancedTimerRef.current = window.setTimeout(() => {
+      advancedTimerRef.current = null;
+      void persistAdvanced(advancedRef.current);
+    }, 500);
+  };
 
   const openApiKeyPage = async () => {
     try {
       await cmd(CMD.openApiKeyPage);
     } catch (error) {
-      setMessage(`打开链接失败：${String(error)}`);
+      setErrorMessage(`打开链接失败：${String(error)}`);
     }
   };
 
   const toggleLanguageHint = (lang: string) => {
-    setLanguageHints((prev) =>
-      prev.includes(lang) ? prev.filter((value) => value !== lang) : [...prev, lang],
-    );
-  };
-
-  const saveAdvanced = async () => {
-    try {
-      const threshold = noiseThreshold.trim();
-      await updateProviderConfig(provider.id, {
-        languageHints,
-        semanticPunctuationEnabled: semanticPunctuation,
-        maxSentenceSilence,
-        multiThresholdModeEnabled: multiThresholdMode,
-        heartbeat,
-        speechNoiseThreshold: threshold === "" ? null : Number(threshold),
-      });
-      setMessage("高级参数已保存。");
-    } catch (error) {
-      setMessage(`保存失败：${String(error)}`);
-    }
+    const languageHints = advancedRef.current.languageHints;
+    updateAdvanced({
+      languageHints: languageHints.includes(lang)
+        ? languageHints.filter((value) => value !== lang)
+        : [...languageHints, lang],
+    }, true);
   };
 
   return (
@@ -260,16 +344,10 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
           draftValue={apiKey}
           hasStoredValue={hasApiKey}
           placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
-          onDraftChange={(value) => {
-            setApiKey(value);
-            setApiKeyDirty(true);
-          }}
+          onDraftChange={(value) => updateApiKey(value)}
+          onBlur={() => updateApiKey(apiKeyRef.current, true)}
         />
       </div>
-      <p className="mt-2 text-xs text-[var(--color-fg-subtle)]">
-        当前状态：{hasApiKey ? "已配置" : "需要填写 API Key"}
-        {apiKeySaving ? " · 正在自动保存..." : providerStatus ? ` · ${providerStatus}` : ""}
-      </p>
 
       <div className="mt-4 flex flex-col gap-3">
         <Collapse
@@ -288,7 +366,7 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
               ].map((lang) => (
                 <CheckField
                   key={lang.value}
-                  checked={languageHints.includes(lang.value)}
+                  checked={advanced.languageHints.includes(lang.value)}
                   onChange={() => toggleLanguageHint(lang.value)}
                 >
                   {lang.label}
@@ -298,8 +376,8 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
           </div>
           <CheckField
             className="mt-3"
-            checked={semanticPunctuation}
-            onChange={setSemanticPunctuation}
+            checked={advanced.semanticPunctuationEnabled}
+            onChange={(value) => updateAdvanced({ semanticPunctuationEnabled: value }, true)}
           >
             语义断句（semantic_punctuation_enabled）
           </CheckField>
@@ -309,20 +387,24 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
               min={200}
               max={6000}
               step={100}
-              value={maxSentenceSilence}
+              value={advanced.maxSentenceSilence}
               format={(value) => `${value.toFixed(0)} ms`}
-              onChange={setMaxSentenceSilence}
+              onChange={(value) => updateAdvanced({ maxSentenceSilence: value })}
             />
           </div>
           <CheckField
             className="mt-3"
-            checked={multiThresholdMode}
-            onChange={setMultiThresholdMode}
-            disabled={semanticPunctuation}
+            checked={advanced.multiThresholdModeEnabled}
+            onChange={(value) => updateAdvanced({ multiThresholdModeEnabled: value }, true)}
+            disabled={advanced.semanticPunctuationEnabled}
           >
             多阈值模式（multi_threshold_mode_enabled，防止 VAD 断句切割过长，仅在语义断句关闭时生效）
           </CheckField>
-          <CheckField className="mt-3" checked={heartbeat} onChange={setHeartbeat}>
+          <CheckField
+            className="mt-3"
+            checked={advanced.heartbeat}
+            onChange={(value) => updateAdvanced({ heartbeat: value }, true)}
+          >
             心跳包（heartbeat，长时间静音保活连接）
           </CheckField>
           <Field label="噪音判定阈值（speech_noise_threshold，-1.0 ~ 1.0，留空使用默认）" className="mt-3">
@@ -331,17 +413,15 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
               min={-1}
               max={1}
               step={0.1}
-              value={noiseThreshold}
-              onChange={(event) => setNoiseThreshold(event.target.value)}
+              value={advanced.speechNoiseThreshold}
+              onChange={(event) => updateAdvanced({ speechNoiseThreshold: event.target.value })}
+              onBlur={() => updateAdvanced({ speechNoiseThreshold: advancedRef.current.speechNoiseThreshold }, true)}
             />
           </Field>
-          <Button size="sm" className="mt-3" onClick={saveAdvanced}>
-            保存高级参数
-          </Button>
         </Collapse>
       </div>
 
-      {message && <p className="mt-3 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {errorMessage && <p className="mt-3 text-xs text-[var(--color-danger)]">{errorMessage}</p>}
     </Collapse>
   );
 }
@@ -379,8 +459,8 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     if (provider.kind === "sdk:bailian") {
       return <BailianProviderConfig key={provider.id} provider={provider} />;
     }
-    if (hasPluginConfiguration(provider)) {
-      return <PluginProviderConfig key={provider.id} provider={provider} />;
+    if (hasProviderConfiguration(provider)) {
+      return <ProviderConfigEditor key={provider.id} provider={provider} />;
     }
     return null;
   };

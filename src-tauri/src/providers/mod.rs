@@ -270,6 +270,18 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                 field_type: "password".into(),
                 secret: true,
             }],
+            "sdk:volcengine" => vec![ProviderConfigField {
+                key: "apiKey".into(),
+                label: "APP Key".into(),
+                field_type: "password".into(),
+                secret: true,
+            }],
+            "llm:groq" => vec![ProviderConfigField {
+                key: "apiKey".into(),
+                label: "API Key".into(),
+                field_type: "password".into(),
+                secret: true,
+            }],
             kind if kind.starts_with("llm:") => vec![
                 ProviderConfigField {
                     key: "apiKey".into(),
@@ -806,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_asr_profiles_use_stable_ids_and_generic_api_key_fields() {
+    fn p0_asr_profiles_use_stable_ids_and_expected_credential_fields() {
         let settings = ProviderSettings::default();
         for id in [VOLCENGINE_PROVIDER_ID, SILICONFLOW_PROVIDER_ID] {
             let profile = find_profile(&settings, id).unwrap();
@@ -816,9 +828,14 @@ mod tests {
             assert_eq!(fields[0].key, "apiKey");
             assert!(fields[0].secret);
         }
+        let volcengine = find_profile(&settings, VOLCENGINE_PROVIDER_ID).unwrap();
+        assert_eq!(config_fields_for(volcengine)[0].label, "APP Key");
         let groq = find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap();
         assert!(groq.capabilities.iter().any(|value| value == "llm"));
         assert!(groq.capabilities.iter().any(|value| value == "asr"));
+        let groq_fields = config_fields_for(groq);
+        assert_eq!(groq_fields.len(), 1);
+        assert_eq!(groq_fields[0].key, "apiKey");
     }
 
     #[test]
