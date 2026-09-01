@@ -30,7 +30,8 @@ pub(crate) struct RuntimeState {
     pub(crate) compare_runtime: crate::application::compare::CompareRuntime,
     pub(crate) audio_lab_runtime: crate::application::audio_lab::AudioLabRuntime,
     pub(crate) assistant_runtime: crate::application::assistant::AssistantRuntime,
-    pub(crate) correction_samples: Mutex<Vec<crate::application::history::CorrectionSample>>,
+    pub(crate) learning_rules: Mutex<Vec<crate::application::learning::LearningRule>>,
+    pub(crate) preference_profiles: Mutex<Vec<crate::application::learning::PreferenceProfile>>,
     pub(crate) audio_lab_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) main_window_lifecycle:
         Mutex<crate::application::window_lifecycle::MainWindowLifecycle>,

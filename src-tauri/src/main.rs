@@ -54,6 +54,11 @@ use application::history::{
     discard_history_final_text, get_usage_summary, open_history_window, query_history,
     retry_history_injection, update_history_text,
 };
+use application::learning::{
+    clear_learning_memory, confirm_history_learning, confirm_preference_summary,
+    delete_learning_rule, generate_preference_summary, get_learning_overview, query_learning_rules,
+    reject_history_learning, set_learning_rule_enabled, set_learning_rule_scope,
+};
 use application::llm_models::refresh_llm_models;
 use application::performance::get_performance_metrics;
 use application::plugin_management::{
@@ -622,6 +627,16 @@ fn main() {
             get_usage_summary,
             clear_usage_summary,
             open_history_window,
+            get_learning_overview,
+            query_learning_rules,
+            confirm_history_learning,
+            reject_history_learning,
+            set_learning_rule_scope,
+            set_learning_rule_enabled,
+            delete_learning_rule,
+            generate_preference_summary,
+            confirm_preference_summary,
+            clear_learning_memory,
             get_setup_status,
             run_setup_check,
             request_setup_permissions,

@@ -2089,9 +2089,32 @@ async fn finalize(app: AppHandle, epoch: u64) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
     }
-    // 顺序：先智能处理，再本地规则。本地规则是用户对最终文本的确定性兜底修正
-    // （替换、去重、标点归一），必须作用在大模型输出之上，否则会被智能处理重新改写。
+    // 普通听写固定采用：ASR 原文 → 现有本地规则 → 智能处理 → 个性化精确纠错。
+    // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
+    let locally_processed = if assistant_request.is_some() {
+        text.clone()
+    } else {
+        match apply_rules(&text, &prefs, effective.local_rules_enabled) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(lease) = &lease {
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    error,
+                    raw_text.clone(),
+                    method.clone(),
+                    FloatingFallbackKind::Processing,
+                )
+                .await;
+                return;
+            }
+        }
+    };
     let assistant_processed = if let Some(request) = assistant_request.as_ref() {
         match crate::application::assistant::process(&app, &state, request, &text).await {
             Ok(value) => Some(value),
@@ -2185,9 +2208,13 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         let smart_result = crate::application::smart_text::process_smart_text(
             &state,
-            &text,
+            &locally_processed,
             &template.prompt,
             &active_app_context,
+            app_identity
+                .as_ref()
+                .map(|identity| identity.app_name.as_str())
+                .unwrap_or_default(),
             &prefs.smart_llm_provider_id,
             &prefs.smart_llm_model,
         )
@@ -2216,32 +2243,27 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
     } else {
-        text
+        locally_processed
     };
-    let processed = if assistant_processed.is_some() {
-        smart_processed
+    let learning_app_name = assistant_request
+        .as_ref()
+        .and_then(|request| request.identity.as_ref())
+        .or(app_identity.as_ref())
+        .map(|identity| identity.app_name.as_str())
+        .unwrap_or_default();
+    let learned = if assistant_processed.is_none() {
+        crate::application::learning::apply_active_rules(
+            &state,
+            &smart_processed,
+            learning_app_name,
+        )
     } else {
-        match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
-            Ok(v) => v,
-            Err(e) => {
-                let state = app.state::<RuntimeState>();
-                if let Some(lease) = &lease {
-                    let _ = state.audio_session.release(lease);
-                }
-                remove_temp(temp_path.clone());
-                let _ = fail_with_raw_fallback(
-                    app,
-                    epoch,
-                    e,
-                    raw_text.clone(),
-                    method.clone(),
-                    FloatingFallbackKind::Processing,
-                )
-                .await;
-                return;
-            }
+        crate::application::learning::AppliedLearning {
+            text: smart_processed,
+            rule_ids: Vec::new(),
         }
     };
+    let processed = learned.text;
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
@@ -2266,6 +2288,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 .unwrap_or(0),
         ) {
             eprintln!("[history] 保存处理结果失败（原文已保留）：{error}");
+        }
+        if let Err(error) =
+            crate::application::learning::record_rule_applications(&app, id, &learned.rule_ids)
+        {
+            crate::application::diagnostics::event(
+                "warn",
+                "learning.ruleApplicationsFailed",
+                serde_json::json!({"historyId":id,"errorCode":"historyWriteFailed","detail":error}),
+            );
         }
     }
     let result = if processed.is_empty() {

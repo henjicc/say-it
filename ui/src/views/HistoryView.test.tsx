@@ -11,6 +11,15 @@ vi.mock("@/lib/tauri", () => ({
     discardHistoryFinalText: "discard_history_final_text",
     retryHistoryInjection: "retry_history_injection",
     deleteHistoryEntry: "delete_history_entry",
+    getLearningOverview: "get_learning_overview",
+    queryLearningRules: "query_learning_rules",
+    confirmHistoryLearning: "confirm_history_learning",
+    rejectHistoryLearning: "reject_history_learning",
+    setLearningRuleScope: "set_learning_rule_scope",
+    setLearningRuleEnabled: "set_learning_rule_enabled",
+    deleteLearningRule: "delete_learning_rule",
+    generatePreferenceSummary: "generate_preference_summary",
+    confirmPreferenceSummary: "confirm_preference_summary",
   },
   EVT: { historyChanged: "history-changed" },
   cmd: (...args: unknown[]) => cmd(...args),
@@ -25,7 +34,12 @@ describe("HistoryView", () => {
   beforeEach(() => {
     events.clear();
     cmd.mockReset();
-    cmd.mockResolvedValue({ items: [{ id: "one", createdAt: 1, taskKind: "dictation", sourceText: "你好", outputText: "你好，世界", smartProcessingApplied: true, diffSegments: [], instruction: "", appName: "Notepad", processName: "notepad.exe", providerId: "fake", modelId: "fake", status: "succeeded", durationMs: 20 }], total: 1 });
+    cmd.mockImplementation((name: string) => {
+      if (name === "get_learning_overview") return Promise.resolve({ observationEnabled: false, learningEnabled: false, cloudContextEnabled: false, pendingCount: 0, activeRuleCount: 0, eligibleSampleCount: 0, eligibleEntryCount: 0, summaryAvailable: false });
+      if (name === "query_learning_rules") return Promise.resolve([]);
+      if (name === "query_history") return Promise.resolve({ items: [{ id: "one", createdAt: 1, taskKind: "dictation", sourceText: "你好", outputText: "你好，世界", smartProcessingApplied: true, learningStatus: "none", appliedRuleIds: [], diffSegments: [], instruction: "", appName: "Notepad", processName: "notepad.exe", providerId: "fake", modelId: "fake", status: "succeeded", durationMs: 20 }], total: 1 });
+      return Promise.resolve(undefined);
+    });
   });
 
   it("renders observed draft differences and requires confirmation for medium confidence", async () => {
@@ -72,5 +86,19 @@ describe("HistoryView", () => {
     expect(await screen.findByText("你好，世界")).toBeInTheDocument();
     await act(async () => finishOld({ items: [], total: 0 }));
     expect(screen.getByText("你好，世界")).toBeInTheDocument();
+  });
+
+  it("shows active learning rules and allows temporarily disabling them", async () => {
+    cmd.mockImplementation((name: string) => {
+      if (name === "query_history") return Promise.resolve({ items: [], total: 0 });
+      if (name === "get_learning_overview") return Promise.resolve({ observationEnabled: true, learningEnabled: true, cloudContextEnabled: false, pendingCount: 0, activeRuleCount: 1, eligibleSampleCount: 2, eligibleEntryCount: 2, summaryAvailable: false });
+      if (name === "query_learning_rules") return Promise.resolve([{ id: "rule-one", pairKey: "pair", beforeText: "开放AI", afterText: "OpenAI", appName: "Notes", scope: "app", origin: "observed", status: "active", evidenceCount: 2, confirmedCount: 0, negativeCount: 0, hotwordSuggested: false }]);
+      return Promise.resolve(undefined);
+    });
+    render(<HistoryView />);
+    expect(await screen.findByText(/开放AI/)).toBeInTheDocument();
+    expect(screen.getByText(/2 次证据 · 生效中/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "停用" }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("set_learning_rule_enabled", { id: "rule-one", enabled: false }));
   });
 });

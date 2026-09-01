@@ -1256,8 +1256,7 @@ async fn process_llm_action(
     }
     let feature = feature_preferences(prefs, action);
     let selected_template = active_template(feature, action.task_kind())?;
-    let corrections =
-        crate::application::history::relevant_corrections(state, selected_text, app_name);
+    let corrections = String::new();
     let payload = serde_json::json!({
         "action": action.task_kind(),
         "selectedText": selected_text,
@@ -1322,8 +1321,7 @@ async fn process_ask_action(
     }
     let feature = feature_preferences(prefs, AssistantAction::Ask);
     let selected_template = active_template(feature, "ask")?;
-    let corrections =
-        crate::application::history::relevant_corrections(state, selected_text, app_name);
+    let corrections = String::new();
     let payload = serde_json::json!({
         "action": AssistantAction::Ask.task_kind(),
         "selectedText": selected_text,

@@ -121,6 +121,16 @@ export const CMD = {
   deleteHistoryEntry: "delete_history_entry",
   clearHistory: "clear_history",
   openHistoryWindow: "open_history_window",
+  getLearningOverview: "get_learning_overview",
+  queryLearningRules: "query_learning_rules",
+  confirmHistoryLearning: "confirm_history_learning",
+  rejectHistoryLearning: "reject_history_learning",
+  setLearningRuleScope: "set_learning_rule_scope",
+  setLearningRuleEnabled: "set_learning_rule_enabled",
+  deleteLearningRule: "delete_learning_rule",
+  generatePreferenceSummary: "generate_preference_summary",
+  confirmPreferenceSummary: "confirm_preference_summary",
+  clearLearningMemory: "clear_learning_memory",
   getSetupStatus: "get_setup_status",
   runSetupCheck: "run_setup_check",
   requestSetupPermissions: "request_setup_permissions",
@@ -265,6 +275,10 @@ export interface HistoryEntry {
   finalTextSource?: "keyboard" | "click" | "autoEnter" | "manual" | null;
   finalTextObservedAt?: number | null;
   smartProcessingApplied: boolean;
+  learningStatus: "none" | "pending" | "candidate" | "active" | "rejected";
+  correctionKind?: "lexical" | "punctuation" | "format" | "style" | "rewrite" | "sensitive" | "unknown" | null;
+  learningScope?: "app" | "global" | null;
+  appliedRuleIds: string[];
   diffSegments: Array<{ kind: "equal" | "delete" | "insert"; text: string }>;
   instruction: string;
   appName: string;
@@ -287,6 +301,49 @@ export interface HistoryPage {
   items: HistoryEntry[];
   total: number;
   recoveryNotice?: string | null;
+}
+
+export interface LearningRule {
+  id: string;
+  pairKey: string;
+  beforeText: string;
+  afterText: string;
+  appName: string;
+  scope: "app" | "global";
+  origin: "manual" | "observed";
+  status: "candidate" | "active" | "disabled";
+  evidenceCount: number;
+  confirmedCount: number;
+  negativeCount: number;
+  lastUsedAt?: number | null;
+  hotwordSuggested: boolean;
+}
+
+export interface PreferenceProfile {
+  id: string;
+  scope: "app" | "global";
+  appName: string;
+  summaryText: string;
+  profile: Record<string, unknown>;
+  status: "draft" | "active" | "superseded";
+  sampleCount: number;
+  generationMethod: "llm";
+  createdAt: number;
+  confirmedAt?: number | null;
+}
+
+export interface LearningOverview {
+  observationEnabled: boolean;
+  learningEnabled: boolean;
+  cloudContextEnabled: boolean;
+  pendingCount: number;
+  activeRuleCount: number;
+  eligibleSampleCount: number;
+  eligibleEntryCount: number;
+  summaryAvailable: boolean;
+  structuredStatistics: Record<string, unknown>;
+  activeProfile?: PreferenceProfile | null;
+  draftProfile?: PreferenceProfile | null;
 }
 
 export interface SetupCheckResult {

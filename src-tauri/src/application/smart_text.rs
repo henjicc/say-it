@@ -708,6 +708,7 @@ pub(crate) async fn process_smart_text(
     text: &str,
     template: &str,
     active_app_context: &str,
+    active_app_name: &str,
     provider_id: &str,
     model_override: &str,
 ) -> Result<String, String> {
@@ -724,11 +725,14 @@ pub(crate) async fn process_smart_text(
         &global_context,
         &hotwords,
     )?;
-    let corrections =
-        crate::application::history::relevant_corrections(state, text, active_app_context);
-    if !corrections.is_empty() {
-        prompt.push_str("\n\n");
-        prompt.push_str(&corrections);
+    let learning_context =
+        crate::application::learning::build_context(state, text, active_app_name, provider_id);
+    if !learning_context.is_empty() {
+        prompt.push_str("\n\n已确认的个性化学习上下文（仅在当前内容相关时采用，JSON）：\n");
+        prompt.push_str(
+            &serde_json::to_string(&learning_context)
+                .map_err(|error| format!("序列化个性化学习上下文失败：{error}"))?,
+        );
     }
     process_prompt(
         state,
@@ -1070,6 +1074,7 @@ pub(crate) async fn preview_smart_text(
         &text,
         &prompt,
         active_app_context.as_deref().unwrap_or_default(),
+        "",
         provider_id.as_deref().unwrap_or("default"),
         model.as_deref().unwrap_or_default(),
     )

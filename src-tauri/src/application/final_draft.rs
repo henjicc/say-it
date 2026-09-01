@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -9,7 +10,8 @@ use crate::active_app_context::{ActivationTarget, AppIdentity};
 
 const MAX_DRAFT_CHARS: usize = 6000;
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(120);
-const SEND_CLEAR_WINDOW: Duration = Duration::from_millis(1500);
+const KEYBOARD_CLEAR_WINDOW: Duration = Duration::from_secs(2);
+const CLICK_CLEAR_WINDOW: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DraftSnapshot {
@@ -157,14 +159,39 @@ impl PlatformObserver {
 
 struct SendCandidate {
     at: Instant,
+    clear_window: Duration,
     confidence: &'static str,
     source: &'static str,
+    value: String,
+    revision: u64,
 }
 
+#[cfg(test)]
 fn confirmed_candidate(candidate: Option<&SendCandidate>) -> Option<(&'static str, &'static str)> {
     candidate
-        .filter(|candidate| candidate.at.elapsed() <= SEND_CLEAR_WINDOW)
+        .filter(|candidate| candidate.at.elapsed() <= candidate.clear_window)
         .map(|candidate| (candidate.confidence, candidate.source))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationPhase {
+    Prepared,
+    Injected,
+    Observing,
+    SendCandidate,
+    WaitingForClear,
+    Completed,
+    Abandoned,
+}
+
+#[derive(Clone)]
+struct PendingFinalDraft {
+    epoch: u64,
+    final_text: String,
+    baseline: String,
+    correction_after: Option<String>,
+    confidence: &'static str,
+    source: &'static str,
 }
 
 struct ActiveSession {
@@ -176,6 +203,8 @@ struct ActiveSession {
     original_suffix: String,
     observer: PlatformObserver,
     armed: bool,
+    phase: ObservationPhase,
+    revision: u64,
     last_nonempty: String,
     candidate: Option<SendCandidate>,
 }
@@ -184,6 +213,7 @@ struct ActiveSession {
 pub(crate) struct FinalDraftRuntime {
     epoch: AtomicU64,
     active: Mutex<Option<ActiveSession>>,
+    pending: Mutex<HashMap<String, PendingFinalDraft>>,
 }
 
 fn observation_allowed(app: &AppHandle, identity: &AppIdentity) -> bool {
@@ -193,10 +223,7 @@ fn observation_allowed(app: &AppHandle, identity: &AppIdentity) -> bool {
     };
     let prefs = &settings.history_prefs;
     prefs.get("enabled").and_then(serde_json::Value::as_bool) != Some(false)
-        && prefs
-            .get("finalDraftLearningEnabled")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+        && crate::application::learning::observation_enabled(&state)
         && !prefs
             .get("excludedApps")
             .and_then(serde_json::Value::as_array)
@@ -244,6 +271,9 @@ pub(crate) async fn prepare(
     if let Ok(mut active) = runtime.active.lock() {
         active.take();
     }
+    if let Ok(mut pending) = runtime.pending.lock() {
+        pending.retain(|_, value| value.epoch >= epoch);
+    }
     let process_id = target.process_id;
     let started = tauri::async_runtime::spawn_blocking(move || {
         PlatformDraftObserverPort::start(process_id, MAX_DRAFT_CHARS)
@@ -287,6 +317,8 @@ pub(crate) async fn prepare(
         original_suffix,
         observer,
         armed: false,
+        phase: ObservationPhase::Prepared,
+        revision: 0,
         last_nonempty: snapshot.value,
         candidate: None,
     };
@@ -327,6 +359,7 @@ pub(crate) fn mark_injected(app: &AppHandle, epoch: u64) {
                         && snapshot.value == session.expected_after_injection =>
                 {
                     session.armed = true;
+                    session.phase = ObservationPhase::Injected;
                     session.last_nonempty = snapshot.value;
                 }
                 Ok(_) => cancel_reason = Some("injectionMismatch"),
@@ -350,6 +383,11 @@ pub(crate) fn mark_injected(app: &AppHandle, epoch: u64) {
         "finalDraft.observing",
         json!({"sessionId":epoch}),
     );
+    if let Ok(mut active) = runtime.active.lock() {
+        if let Some(session) = active.as_mut().filter(|session| session.epoch == epoch) {
+            session.phase = ObservationPhase::Observing;
+        }
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(OBSERVATION_TIMEOUT).await;
@@ -406,6 +444,9 @@ pub(crate) fn cancel_history(app: &AppHandle, history_id: &str) {
             json!({"historyId":history_id,"errorCode":"historyDeleted"}),
         );
     }
+    if let Ok(mut pending) = runtime.pending.lock() {
+        pending.remove(history_id);
+    };
 }
 
 pub(crate) fn mark_auto_enter(app: &AppHandle) {
@@ -415,9 +456,13 @@ pub(crate) fn mark_auto_enter(app: &AppHandle) {
         if let Some(session) = active.as_mut().filter(|session| session.armed) {
             session.candidate = Some(SendCandidate {
                 at: Instant::now(),
+                clear_window: KEYBOARD_CLEAR_WINDOW,
                 confidence: "high",
                 source: "autoEnter",
+                value: session.last_nonempty.clone(),
+                revision: session.revision,
             });
+            session.phase = ObservationPhase::SendCandidate;
         }
     };
 }
@@ -448,52 +493,119 @@ fn handle_event(app: &AppHandle, epoch: u64, event: ObserverEvent) -> bool {
             return true;
         };
         match event.kind {
-            ObserverEventKind::FocusChanged => should_end = true,
+            ObserverEventKind::FocusChanged => {
+                if let Some(candidate) = session
+                    .candidate
+                    .as_ref()
+                    .filter(|candidate| candidate.at.elapsed() <= candidate.clear_window)
+                {
+                    completed = Some((
+                        session.history_id.clone(),
+                        candidate.value.clone(),
+                        session.expected_after_injection.clone(),
+                        session.original_prefix.clone(),
+                        session.original_suffix.clone(),
+                        "medium",
+                        candidate.source,
+                        candidate.at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    ));
+                    session.phase = ObservationPhase::Completed;
+                } else {
+                    session.phase = ObservationPhase::Abandoned;
+                }
+                should_end = true;
+            }
             ObserverEventKind::ReturnPressed if session.armed => {
                 if let Some(value) = event.value.filter(|value| !value.is_empty()) {
+                    session.revision = session.revision.saturating_add(1);
                     session.last_nonempty = value;
                 }
                 if !session.candidate.as_ref().is_some_and(|candidate| {
-                    candidate.source == "autoEnter" && candidate.at.elapsed() <= SEND_CLEAR_WINDOW
+                    candidate.source == "autoEnter"
+                        && candidate.at.elapsed() <= candidate.clear_window
                 }) {
                     session.candidate = Some(SendCandidate {
                         at: Instant::now(),
+                        clear_window: KEYBOARD_CLEAR_WINDOW,
                         confidence: "high",
                         source: "keyboard",
+                        value: session.last_nonempty.clone(),
+                        revision: session.revision,
                     });
                 }
+                session.phase = ObservationPhase::SendCandidate;
             }
             ObserverEventKind::Clicked if session.armed => {
                 if let Some(value) = event.value.filter(|value| !value.is_empty()) {
+                    session.revision = session.revision.saturating_add(1);
                     session.last_nonempty = value;
                 }
                 session.candidate = Some(SendCandidate {
                     at: Instant::now(),
+                    clear_window: CLICK_CLEAR_WINDOW,
                     confidence: "medium",
                     source: "click",
+                    value: session.last_nonempty.clone(),
+                    revision: session.revision,
                 });
+                session.phase = ObservationPhase::SendCandidate;
             }
             ObserverEventKind::ValueChanged if session.armed => match event.value {
                 Some(value) if value.is_empty() => {
-                    if let Some((confidence, source)) =
-                        confirmed_candidate(session.candidate.as_ref())
+                    if let Some(candidate) = session
+                        .candidate
+                        .as_ref()
+                        .filter(|candidate| candidate.at.elapsed() <= candidate.clear_window)
                     {
                         completed = Some((
                             session.history_id.clone(),
-                            session.last_nonempty.clone(),
+                            candidate.value.clone(),
                             session.expected_after_injection.clone(),
                             session.original_prefix.clone(),
                             session.original_suffix.clone(),
-                            confidence,
-                            source,
+                            candidate.confidence,
+                            candidate.source,
+                            candidate.at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
                         ));
+                        session.phase = ObservationPhase::Completed;
+                    } else {
+                        session.phase = ObservationPhase::Abandoned;
                     }
                     should_end = true;
                 }
                 Some(value) => {
+                    session.revision = session.revision.saturating_add(1);
                     session.last_nonempty = value;
+                    if let Some(candidate) = session.candidate.as_mut() {
+                        if candidate.at.elapsed() <= candidate.clear_window {
+                            candidate.value = session.last_nonempty.clone();
+                            candidate.revision = session.revision;
+                            session.phase = ObservationPhase::WaitingForClear;
+                        }
+                    }
                 }
-                None => should_end = true,
+                None => {
+                    if let Some(candidate) = session
+                        .candidate
+                        .as_ref()
+                        .filter(|candidate| candidate.at.elapsed() <= candidate.clear_window)
+                    {
+                        completed = Some((
+                            session.history_id.clone(),
+                            candidate.value.clone(),
+                            session.expected_after_injection.clone(),
+                            session.original_prefix.clone(),
+                            session.original_suffix.clone(),
+                            "medium",
+                            candidate.source,
+                            candidate.at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                        ));
+                        session.phase = ObservationPhase::Completed;
+                    } else {
+                        session.phase = ObservationPhase::Abandoned;
+                    }
+                    should_end = true;
+                }
             },
             _ => {}
         }
@@ -501,7 +613,16 @@ fn handle_event(app: &AppHandle, epoch: u64, event: ObserverEvent) -> bool {
             active.take();
         }
     }
-    if let Some((history_id, final_text, baseline, prefix, suffix, confidence, source)) = completed
+    if let Some((
+        history_id,
+        final_text,
+        baseline,
+        prefix,
+        suffix,
+        confidence,
+        source,
+        candidate_to_clear_ms,
+    )) = completed
     {
         let correction_after = attributable_middle(&final_text, &prefix, &suffix);
         crate::application::diagnostics::event(
@@ -512,6 +633,7 @@ fn handle_event(app: &AppHandle, epoch: u64, event: ObserverEvent) -> bool {
                 "sessionId":epoch,
                 "confidence":confidence,
                 "source":source,
+                "candidateToClearMs":candidate_to_clear_ms,
                 "finalTextChars":final_text.chars().count(),
                 "finalTextFingerprint":crate::application::diagnostics::fingerprint(&final_text),
             }),
@@ -520,19 +642,16 @@ fn handle_event(app: &AppHandle, epoch: u64, event: ObserverEvent) -> bool {
             "finalDraft.completed",
             json!({"historyId":history_id,"finalText":final_text}),
         );
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = crate::application::history::record_observed_final_text(
-                &app,
-                &history_id,
-                &final_text,
-                &baseline,
-                correction_after.as_deref(),
-                confidence,
-                source,
-            );
-        });
+        save_or_queue(
+            app,
+            epoch,
+            history_id,
+            final_text,
+            baseline,
+            correction_after,
+            confidence,
+            source,
+        );
     } else if should_end {
         crate::application::diagnostics::event(
             "debug",
@@ -541,6 +660,96 @@ fn handle_event(app: &AppHandle, epoch: u64, event: ObserverEvent) -> bool {
         );
     }
     should_end
+}
+
+fn save_or_queue(
+    app: &AppHandle,
+    epoch: u64,
+    history_id: String,
+    final_text: String,
+    baseline: String,
+    correction_after: Option<String>,
+    confidence: &'static str,
+    source: &'static str,
+) {
+    match crate::application::history::record_observed_final_text(
+        app,
+        &history_id,
+        &final_text,
+        &baseline,
+        correction_after.as_deref(),
+        confidence,
+        source,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            let runtime = &app
+                .state::<crate::state::RuntimeState>()
+                .final_draft_runtime;
+            if let Ok(mut pending) = runtime.pending.lock() {
+                pending.insert(
+                    history_id.clone(),
+                    PendingFinalDraft {
+                        epoch,
+                        final_text,
+                        baseline,
+                        correction_after,
+                        confidence,
+                        source,
+                    },
+                );
+            }
+            crate::application::diagnostics::event(
+                "debug",
+                "finalDraft.pending",
+                json!({"historyId":history_id,"sessionId":epoch}),
+            );
+        }
+        Err(_) => crate::application::diagnostics::event(
+            "warn",
+            "finalDraft.persistFailed",
+            json!({"historyId":history_id,"sessionId":epoch,"errorCode":"historyWriteFailed"}),
+        ),
+    }
+}
+
+pub(crate) fn consume_pending(app: &AppHandle, history_id: &str) {
+    let runtime = &app
+        .state::<crate::state::RuntimeState>()
+        .final_draft_runtime;
+    let pending = runtime
+        .pending
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.remove(history_id));
+    let Some(pending) = pending else {
+        return;
+    };
+    match crate::application::history::record_observed_final_text(
+        app,
+        history_id,
+        &pending.final_text,
+        &pending.baseline,
+        pending.correction_after.as_deref(),
+        pending.confidence,
+        pending.source,
+    ) {
+        Ok(true) => crate::application::diagnostics::event(
+            "debug",
+            "finalDraft.pendingConsumed",
+            json!({"historyId":history_id,"sessionId":pending.epoch}),
+        ),
+        Ok(false) => {
+            if let Ok(mut values) = runtime.pending.lock() {
+                values.insert(history_id.to_owned(), pending);
+            }
+        }
+        Err(_) => crate::application::diagnostics::event(
+            "warn",
+            "finalDraft.pendingPersistFailed",
+            json!({"historyId":history_id,"sessionId":pending.epoch,"errorCode":"historyWriteFailed"}),
+        ),
+    }
 }
 
 fn attributable_middle(final_text: &str, prefix: &str, suffix: &str) -> Option<String> {
@@ -633,13 +842,19 @@ mod tests {
     fn return_and_click_candidates_have_fixed_confidence() {
         let keyboard = SendCandidate {
             at: Instant::now(),
+            clear_window: KEYBOARD_CLEAR_WINDOW,
             confidence: "high",
             source: "keyboard",
+            value: "草稿".into(),
+            revision: 1,
         };
         let click = SendCandidate {
             at: Instant::now(),
+            clear_window: CLICK_CLEAR_WINDOW,
             confidence: "medium",
             source: "click",
+            value: "草稿".into(),
+            revision: 1,
         };
         assert_eq!(
             confirmed_candidate(Some(&keyboard)),
@@ -652,9 +867,12 @@ mod tests {
     #[test]
     fn expired_send_candidate_does_not_confirm_a_later_clear() {
         let expired = SendCandidate {
-            at: Instant::now() - SEND_CLEAR_WINDOW - Duration::from_millis(1),
+            at: Instant::now() - KEYBOARD_CLEAR_WINDOW - Duration::from_millis(1),
+            clear_window: KEYBOARD_CLEAR_WINDOW,
             confidence: "high",
             source: "keyboard",
+            value: "草稿".into(),
+            revision: 1,
         };
         assert_eq!(confirmed_candidate(Some(&expired)), None);
     }
@@ -663,8 +881,11 @@ mod tests {
     fn automatic_enter_is_high_confidence_and_plain_clear_is_not_a_send() {
         let automatic = SendCandidate {
             at: Instant::now(),
+            clear_window: KEYBOARD_CLEAR_WINDOW,
             confidence: "high",
             source: "autoEnter",
+            value: "草稿".into(),
+            revision: 1,
         };
         assert_eq!(
             confirmed_candidate(Some(&automatic)),
