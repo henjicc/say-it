@@ -4,11 +4,12 @@ import { SettingsProviderPanel } from "./SettingsProviderPanel";
 
 const loadProviders = vi.fn();
 const updateProviderConfig = vi.fn();
+const invoke = vi.fn();
 let profiles: Array<Record<string, unknown>> = [];
 
 vi.mock("@/lib/tauri", () => ({
-  CMD: { openApiKeyPage: "open_api_key_page", runProviderPluginAction: "run_provider_plugin_action" },
-  cmd: vi.fn(),
+  CMD: { openExternalLink: "open_external_link", runProviderPluginAction: "run_provider_plugin_action" },
+  cmd: (...args: unknown[]) => invoke(...args),
 }));
 
 vi.mock("@/store/useProviderStore", () => ({
@@ -24,6 +25,7 @@ describe("SettingsProviderPanel", () => {
 
   beforeEach(() => {
     profiles = [];
+    invoke.mockReset().mockResolvedValue(undefined);
     loadProviders.mockReset().mockResolvedValue(undefined);
     updateProviderConfig.mockReset().mockImplementation(async (providerId: string) =>
       profiles.find((profile) => profile.id === providerId));
@@ -53,11 +55,36 @@ describe("SettingsProviderPanel", () => {
         status: { hasApiKey: false },
         config: {},
       },
+      {
+        id: "siliconflow",
+        kind: "sdk:siliconflow",
+        displayName: "硅基流动",
+        authKind: "api-key",
+        capabilities: ["asr"],
+        enabled: true,
+        configFields: [{ key: "apiKey", label: "API Key", fieldType: "password", secret: true }],
+        status: { hasApiKey: false },
+        config: {},
+      },
     ];
 
     render(<SettingsProviderPanel />);
 
     expect(screen.getByLabelText("APP Key")).toBeInTheDocument();
+    const apiKeyLinks = screen.getAllByRole("link", { name: "点击此处获取 API Key" });
+    expect(apiKeyLinks.map((link) => link.getAttribute("href"))).toEqual(expect.arrayContaining([
+      "https://console.groq.com/keys",
+      "https://cloud.siliconflow.cn/account/ak",
+    ]));
+    const volcengineLink = screen.getByRole("link", { name: "点击此处获取 APP Key" });
+    expect(volcengineLink).toHaveAttribute(
+      "href",
+      "https://console.volcengine.com/speech/new/setting/apikeys",
+    );
+    fireEvent.click(volcengineLink);
+    expect(invoke).toHaveBeenCalledWith("open_external_link", {
+      url: "https://console.volcengine.com/speech/new/setting/apikeys",
+    });
     expect(screen.queryByText("模型")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /保存/ })).not.toBeInTheDocument();
   });
