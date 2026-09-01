@@ -173,4 +173,5 @@
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
 - `.sayit` 同时承载 API v5 JavaScript 供应商插件与 API v5 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
+- 内置供应商的模型 ID 只能来自模型目录并由对应场景选择，禁止在供应商配置中暴露自由填写的模型 ID。供应商密钥和设置字段采用静默自动保存：文本/密钥停止输入或失焦后保存，开关立即保存；不显示保存按钮和成功提示，只在失败时显示错误。
 - sherpa-onnx VAD（`sherpa-onnx-offline` 引擎）必须按 `vadWindowSize` 小块喂入，且不得在语音未确认时 `reset()`；细节见 `docs/experience/sherpa-onnx-VAD喂入块过大与误reset导致无识别结果.md`。
