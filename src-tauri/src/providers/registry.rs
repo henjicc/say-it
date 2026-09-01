@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn apple_system_model_keeps_one_stable_entry() {
         let model = model_info("apple-speech-transcriber-live").unwrap();
-        assert_eq!(model.label, "Apple 系统本地识别（系统语言）");
+        assert_eq!(model.label, "Apple 系统本地识别");
         assert_eq!(model.protocol, "builtin-macos-speech");
         assert_eq!(
             model

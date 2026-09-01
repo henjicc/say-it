@@ -17,6 +17,11 @@ import {
   type OcrModelOption,
 } from "@/features/asr/modelRegistry";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
+import { ModelPicker } from "@/features/models/ModelPicker";
+import {
+  FOLLOW_DEFAULT_LLM_OPTION,
+  llmModelPickerOptions,
+} from "@/features/models/llmModelOptions";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
 import {
   GLOBAL_CONTEXT_PLACEHOLDER,
@@ -68,14 +73,7 @@ export function SmartTextPanel() {
     (profile) => profile.enabled && profile.capabilities.includes("llm"),
   );
   const llmDefaults = useProviderStore((state) => state.defaults);
-  const llmOptions = llmProfiles.flatMap((profile) => {
-    const models = Array.isArray(profile.config?.models)
-      ? profile.config.models.flatMap((item) => item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string" ? [String((item as { name: string }).name)] : [])
-      : [];
-    const current = typeof profile.config?.model === "string" ? profile.config.model : "";
-    if (current && !models.includes(current)) models.unshift(current);
-    return models.map((model) => ({ value: JSON.stringify([profile.id, model]), label: `${profile.displayName} · ${model}` }));
-  });
+  const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(llmProfiles)];
   const selectedLlm = prefs.smartLlmProviderId === "default" ? "default" : JSON.stringify([prefs.smartLlmProviderId, prefs.smartLlmModel]);
   const recentDeletion = prefs.smartTemplateTrash.find(
     (entry) => entry.recoveryId === recentRecoveryId,
@@ -318,20 +316,23 @@ export function SmartTextPanel() {
           识别结束后先把文本交给默认大语言模型，再对模型返回的内容执行本地处理，最终注入处理结果。
         </p>
         <FormGrid>
-          <Field label="智能模型" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
-            <Select value={selectedLlm} onChange={(event) => {
-              if (event.target.value === "default") {
-                void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
-                return;
-              }
-              try {
-                const [providerId, model] = JSON.parse(event.target.value) as [string, string];
-                void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
-              } catch { /* 选项值由页面生成 */ }
-            }}>
-              <option value="default">跟随全局默认智能模型</option>
-              {llmOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </Select>
+          <Field label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
+            <ModelPicker
+              id="smart-text-llm-model"
+              value={selectedLlm}
+              options={llmOptions}
+              panelLabel="选择智能模型"
+              onChange={(value) => {
+                if (value === "default") {
+                  void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
+                  return;
+                }
+                try {
+                  const [providerId, model] = JSON.parse(value) as [string, string];
+                  void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
+                } catch { /* 选项值由页面生成 */ }
+              }}
+            />
           </Field>
           <Field label="处理时机">
             <Select

@@ -13,10 +13,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
-import { Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   modelInfo,
   useModelCatalogRevision,
@@ -306,16 +306,14 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
               <p className="mt-2 text-sm leading-6 text-[var(--color-fg-muted)]">云端模型效果稳定但需要密钥；本地模型无需密钥，安装后可完全离线使用。</p>
             </div>
             <Field label="语音识别模型" controlId="onboarding-asr-model">
-              <Select
+              <ModelPicker
                 id="onboarding-asr-model"
                 value={selectedModel}
                 disabled={running !== null}
-                onChange={(event) => void selectModel(event.target.value)}
-              >
-                {DICTATION_ASR_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </Select>
+                options={DICTATION_ASR_MODEL_OPTIONS}
+                panelLabel="选择语音识别模型"
+                onChange={(value) => void selectModel(value)}
+              />
             </Field>
             <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
               {selectedModelInfo && isOfflineModel(selectedModelInfo)

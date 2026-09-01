@@ -12,6 +12,7 @@ import {
   API_KEY_URLS_BY_ADAPTER,
   providerApiKeyUrl,
 } from "@/features/settings/apiKeyLinks";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   useProviderStore,
   type LlmModelAvailability,
@@ -477,15 +478,19 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
             label="当前模型"
             controlId={`llm-model-${profile.id}`}
           >
-            <Select
+            <ModelPicker
               id={`llm-model-${profile.id}`}
               value={model}
-              searchable
+              options={models.map((item) => ({
+                value: item.name,
+                label: modelLabel(item),
+                providerId: profile.id,
+                providerLabel: profile.displayName,
+              }))}
+              panelLabel="选择智能模型"
               searchPlaceholder="搜索模型…"
-              onChange={(event) => void changeModel(event.target.value)}
-            >
-              {models.map((item) => <option key={item.name} value={item.name}>{modelLabel(item)}</option>)}
-            </Select>
+              onChange={(value) => void changeModel(value)}
+            />
           </Field>
 
           {selectedModel && (

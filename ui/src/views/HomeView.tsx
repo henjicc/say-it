@@ -6,6 +6,8 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { ModelPicker } from "@/features/models/ModelPicker";
+import { llmModelPickerOptions } from "@/features/models/llmModelOptions";
 import { loadShortcutBindings, shortcutTargetKey, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
 import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
@@ -45,14 +47,7 @@ export function HomeView() {
   const setDefault = useProviderStore((state) => state.setDefault);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const visibleShortcuts = useMemo(() => shortcuts.filter((item) => Boolean(itemKey(item))), [shortcuts]);
-  const smartModelOptions = useMemo(() => profiles.flatMap((profile) => {
-    const models = Array.isArray(profile.config?.models)
-      ? profile.config.models.flatMap((item) => item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string" ? [String((item as { name: string }).name)] : [])
-      : [];
-    const current = typeof profile.config?.model === "string" ? profile.config.model : "";
-    if (current && !models.includes(current)) models.unshift(current);
-    return models.map((model) => ({ value: JSON.stringify([profile.id, model]), label: `${profile.displayName} · ${model}` }));
-  }), [profiles]);
+  const smartModelOptions = useMemo(() => llmModelPickerOptions(profiles), [profiles]);
   const defaultSmartProfile = profiles.find((item) => item.id === defaults.llm);
   const defaultSmartModel = typeof defaultSmartProfile?.config?.model === "string" ? defaultSmartProfile.config.model : "";
   const selectedSmartModel = defaults.llm && defaultSmartModel ? JSON.stringify([defaults.llm, defaultSmartModel]) : "";
@@ -107,8 +102,25 @@ export function HomeView() {
 
     <SettingsSection title="快速设置">
       <div className="grid gap-4 md:grid-cols-2">
-        <Field label="主语音识别模型"><Select value={asrModel} onChange={(event) => void patchDict({ asrModel: event.target.value })}>{DICTATION_ASR_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
-        <Field label="全局默认智能模型"><Select value={selectedSmartModel} onChange={(event) => void changeSmartModel(event.target.value)}><option value="">尚未配置</option>{smartModelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
+        <Field label="主语音识别模型" controlId="home-asr-model">
+          <ModelPicker
+            id="home-asr-model"
+            value={asrModel}
+            options={DICTATION_ASR_MODEL_OPTIONS}
+            panelLabel="选择语音识别模型"
+            onChange={(value) => void patchDict({ asrModel: value })}
+          />
+        </Field>
+        <Field label="全局默认智能模型" controlId="home-llm-model">
+          <ModelPicker
+            id="home-llm-model"
+            value={selectedSmartModel}
+            options={smartModelOptions}
+            panelLabel="选择智能模型"
+            placeholder="尚未配置"
+            onChange={(value) => void changeSmartModel(value)}
+          />
+        </Field>
       </div>
     </SettingsSection>
 

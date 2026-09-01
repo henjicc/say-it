@@ -9,10 +9,16 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { ModelPicker } from "@/features/models/ModelPicker";
+import {
+  FOLLOW_DEFAULT_LLM_OPTION,
+  llmModelPickerOptions,
+  llmModelValue,
+} from "@/features/models/llmModelOptions";
 import { TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
-import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
+import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore, type AssistantActionKey, type AssistantTabKey } from "@/store/useUiStore";
 
 export interface AssistantPromptTemplate { id: string; name: string; prompt: string }
@@ -109,17 +115,6 @@ export function normalizeAssistantPrefs(value: Record<string, unknown>): Assista
   };
 }
 
-function modelsFromProfile(profile: ProviderProfile): string[] {
-  const configured = profile.config?.models;
-  const models = Array.isArray(configured) ? configured.flatMap((item) => {
-    const name = item && typeof item === "object" ? (item as { name?: unknown }).name : undefined;
-    return typeof name === "string" && name.trim() ? [name.trim()] : [];
-  }) : [];
-  const current = profile.config?.model;
-  if (typeof current === "string" && current.trim() && !models.includes(current.trim())) models.unshift(current.trim());
-  return models;
-}
-const modelValue = (providerId: string, model: string) => JSON.stringify([providerId, model]);
 function parseModel(value: string) {
   if (value === "default") return { llmProviderId: "default", llmModel: "" };
   try { const parsed = JSON.parse(value); if (Array.isArray(parsed) && parsed.length === 2) return { llmProviderId: String(parsed[0]), llmModel: String(parsed[1]) }; } catch { /* generated values only */ }
@@ -154,7 +149,10 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const defaults = useProviderStore((state) => state.defaults);
   const pluginOptions = optionsForScene("subtitleTranslation");
-  const modelOptions = useMemo(() => profiles.flatMap((profile) => modelsFromProfile(profile).map((model) => ({ value: modelValue(profile.id, model), label: `${profile.displayName} · ${model}` }))), [profiles]);
+  const modelOptions = useMemo(
+    () => [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles)],
+    [profiles],
+  );
   const feature = prefs[action];
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
   const title = action === "translateSpeech" ? "语音翻译" : action === "editSelection" ? "选区编辑" : "语音问答";
@@ -201,7 +199,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
       setMessage("试运行完成；不会注入或写入历史。");
     } catch (error) { setMessage(`试运行失败：${String(error)}`); } finally { setPreviewing(false); }
   };
-  const selectedModel = feature.llmProviderId === "default" ? "default" : modelValue(feature.llmProviderId, feature.llmModel);
+  const selectedModel = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
   const defaultProfile = profiles.find((item) => item.id === defaults.llm);
 
   return <div className="flex flex-col gap-8">
@@ -213,7 +211,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
           <Field label="源语言"><Select value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
           <Field label="目标语言"><Select value={prefs.targetLanguage} onChange={(event) => void save({ ...prefs, targetLanguage: event.target.value })}>{TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>
         </>}
-        {action === "translateSpeech" && prefs.translationEngine === "dedicated" ? <Field label="专用翻译模型"><Select value={prefs.translationModel} onChange={(event) => void save({ ...prefs, translationModel: event.target.value })}><option value="none">无（暂不启用）</option>{TRANSLATION_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}{pluginOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field> : <Field label="智能模型" hint={`跟随默认时使用：${defaultProfile?.displayName ?? "尚未配置"}`}><Select value={selectedModel} onChange={(event) => selectModel(event.target.value)}><option value="default">跟随全局默认智能模型</option>{modelOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field>}
+        {action === "translateSpeech" && prefs.translationEngine === "dedicated" ? <Field label="专用翻译模型"><Select value={prefs.translationModel} onChange={(event) => void save({ ...prefs, translationModel: event.target.value })}><option value="none">无（暂不启用）</option>{TRANSLATION_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}{pluginOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Field> : <Field label="智能模型" controlId={`assistant-${action}-llm-model`} hint={`跟随默认时使用：${defaultProfile?.displayName ?? "尚未配置"}`}><ModelPicker id={`assistant-${action}-llm-model`} value={selectedModel} options={modelOptions} panelLabel="选择智能模型" onChange={selectModel} /></Field>}
       </FormGrid>
     </SettingsSection>
 
