@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -17,6 +17,8 @@ const NORMAL_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const CONTENT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const NORMAL_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const CONTENT_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const NORMAL_SEGMENT_BYTES: u64 = 5 * 1024 * 1024;
+const CONTENT_SEGMENT_BYTES: u64 = 2 * 1024 * 1024;
 const CONTENT_ENABLE_SECONDS: u64 = 30 * 60;
 
 static LOGGER: OnceLock<DiagnosticLogger> = OnceLock::new();
@@ -24,6 +26,8 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 struct RollingFile {
     day: String,
+    segment: u32,
+    size: u64,
     file: Option<File>,
     prefix: &'static str,
 }
@@ -32,6 +36,8 @@ impl RollingFile {
     fn new(prefix: &'static str) -> Self {
         Self {
             day: String::new(),
+            segment: 0,
+            size: 0,
             file: None,
             prefix,
         }
@@ -41,65 +47,78 @@ impl RollingFile {
         let day = date_key(now_seconds());
         if self.day != day || self.file.is_none() {
             self.file.take();
-            if self.prefix == "say-it-content" {
-                cleanup_files(
-                    directory,
-                    "say-it-content-",
-                    None,
-                    CONTENT_RETENTION,
-                    CONTENT_MAX_BYTES,
-                )?;
-            } else {
-                cleanup_files(
-                    directory,
-                    "say-it-",
-                    Some("say-it-content-"),
-                    NORMAL_RETENTION,
-                    NORMAL_MAX_BYTES,
-                )?;
-            }
             self.day = day;
-            self.file = Some(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(directory.join(format!("{}-{}.jsonl", self.prefix, self.day)))
-                    .map_err(|error| format!("打开诊断日志失败：{error}"))?,
-            );
+            self.segment = latest_segment(directory, self.prefix, &self.day);
+            self.open(directory)?;
         }
-        let current_path = directory.join(format!("{}-{}.jsonl", self.prefix, self.day));
-        let (excluded_prefix, max_bytes) = if self.prefix == "say-it-content" {
-            (None, CONTENT_MAX_BYTES)
+        let incoming = line.len().saturating_add(1) as u64;
+        let segment_limit = if self.prefix == "say-it-content" {
+            CONTENT_SEGMENT_BYTES
         } else {
-            (Some("say-it-content-"), NORMAL_MAX_BYTES)
+            NORMAL_SEGMENT_BYTES
         };
+        if self.size > 0 && self.size.saturating_add(incoming) > segment_limit {
+            self.file.take();
+            self.segment = self.segment.saturating_add(1);
+            self.open(directory)?;
+        }
         let file = self.file.as_mut().ok_or("诊断日志尚未打开")?;
-        reserve_log_capacity(
-            directory,
-            &format!("{}-", self.prefix),
-            excluded_prefix,
-            &current_path,
-            file,
-            max_bytes,
-            line.len().saturating_add(1) as u64,
-        )?;
         file.write_all(line)
             .and_then(|_| file.write_all(b"\n"))
-            .map_err(|error| format!("写入诊断日志失败：{error}"))
+            .map_err(|error| format!("写入诊断日志失败：{error}"))?;
+        self.size = self.size.saturating_add(incoming);
+        Ok(())
+    }
+
+    fn open(&mut self, directory: &Path) -> Result<(), String> {
+        if self.prefix == "say-it-content" {
+            cleanup_files(
+                directory,
+                "say-it-content-",
+                None,
+                CONTENT_RETENTION,
+                CONTENT_MAX_BYTES.saturating_sub(CONTENT_SEGMENT_BYTES),
+            )?;
+        } else {
+            cleanup_files(
+                directory,
+                "say-it-",
+                Some("say-it-content-"),
+                NORMAL_RETENTION,
+                NORMAL_MAX_BYTES.saturating_sub(NORMAL_SEGMENT_BYTES),
+            )?;
+        }
+        let path = directory.join(format!(
+            "{}-{}-{:03}.jsonl",
+            self.prefix, self.day, self.segment
+        ));
+        let file = open_private_append(&path)?;
+        self.size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        self.file = Some(file);
+        Ok(())
     }
 
     fn close(&mut self) {
         self.file.take();
         self.day.clear();
+        self.segment = 0;
+        self.size = 0;
     }
+}
+
+enum LogCommand {
+    Normal(Vec<u8>),
+    Content(Vec<u8>),
+    CloseContent,
+    Flush(mpsc::Sender<()>),
+    Clear(mpsc::Sender<Result<(), String>>),
 }
 
 struct DiagnosticLogger {
     directory: PathBuf,
     version: String,
     fingerprint_key: [u8; 32],
-    normal: Mutex<RollingFile>,
-    content: Mutex<RollingFile>,
+    sender: mpsc::Sender<LogCommand>,
     content_deadline: AtomicU64,
     content_generation: AtomicU64,
 }
@@ -122,29 +141,34 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| format!("创建应用日志目录失败：{error}"))?;
     let mut key = [0u8; 32];
     rand::rng().fill_bytes(&mut key);
-    let logger = DiagnosticLogger {
-        directory,
-        version: app.package_info().version.to_string(),
-        fingerprint_key: key,
-        normal: Mutex::new(RollingFile::new("say-it")),
-        content: Mutex::new(RollingFile::new("say-it-content")),
-        content_deadline: AtomicU64::new(0),
-        content_generation: AtomicU64::new(0),
-    };
     cleanup_files(
-        &logger.directory,
+        &directory,
         "say-it-",
         Some("say-it-content-"),
         NORMAL_RETENTION,
         NORMAL_MAX_BYTES,
     )?;
     cleanup_files(
-        &logger.directory,
+        &directory,
         "say-it-content-",
         None,
         CONTENT_RETENTION,
         CONTENT_MAX_BYTES,
     )?;
+    let (sender, receiver) = mpsc::channel();
+    let worker_directory = directory.clone();
+    std::thread::Builder::new()
+        .name("sayit-diagnostics".into())
+        .spawn(move || run_writer(worker_directory, receiver))
+        .map_err(|error| format!("启动诊断日志写入器失败：{error}"))?;
+    let logger = DiagnosticLogger {
+        directory,
+        version: app.package_info().version.to_string(),
+        fingerprint_key: key,
+        sender,
+        content_deadline: AtomicU64::new(0),
+        content_generation: AtomicU64::new(0),
+    };
     let _ = LOGGER.set(logger);
     event(
         "info",
@@ -201,9 +225,7 @@ pub(crate) fn event(level: &str, name: &str, metadata: Value) {
     let Ok(line) = serde_json::to_vec(&record) else {
         return;
     };
-    if let Ok(mut writer) = logger.normal.lock() {
-        let _ = writer.write(&logger.directory, &line);
-    }
+    let _ = logger.sender.send(LogCommand::Normal(line));
 }
 
 pub(crate) fn content_event(name: &str, content: Value) {
@@ -224,9 +246,7 @@ pub(crate) fn content_event(name: &str, content: Value) {
     let Ok(line) = serde_json::to_vec(&record) else {
         return;
     };
-    if let Ok(mut writer) = logger.content.lock() {
-        let _ = writer.write(&logger.directory, &line);
-    }
+    let _ = logger.sender.send(LogCommand::Content(line));
 }
 
 pub(crate) fn legacy_debug_log(component: &str, message: &str) {
@@ -264,18 +284,14 @@ pub(crate) fn set_content_diagnostics(enabled: bool) -> Result<DiagnosticStatus,
             if let Some(logger) = LOGGER.get() {
                 if logger.content_generation.load(Ordering::Acquire) == generation {
                     logger.content_deadline.store(0, Ordering::Release);
-                    if let Ok(mut writer) = logger.content.lock() {
-                        writer.close();
-                    }
+                    let _ = logger.sender.send(LogCommand::CloseContent);
                     event("info", "diagnostics.contentExpired", json!({}));
                 }
             }
         });
     } else {
         logger.content_deadline.store(0, Ordering::Release);
-        if let Ok(mut writer) = logger.content.lock() {
-            writer.close();
-        }
+        let _ = logger.sender.send(LogCommand::CloseContent);
     }
     event(
         "info",
@@ -288,17 +304,12 @@ pub(crate) fn set_content_diagnostics(enabled: bool) -> Result<DiagnosticStatus,
 #[tauri::command]
 pub(crate) fn clear_diagnostic_logs() -> Result<(), String> {
     let logger = LOGGER.get().ok_or("诊断日志尚未初始化")?;
-    logger.normal.lock().map_err(|_| "诊断日志锁失败")?.close();
-    logger.content.lock().map_err(|_| "正文日志锁失败")?.close();
-    for entry in std::fs::read_dir(&logger.directory)
-        .map_err(|error| format!("读取日志目录失败：{error}"))?
-    {
-        let entry = entry.map_err(|error| format!("读取日志文件失败：{error}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("say-it-") && name.ends_with(".jsonl") {
-            std::fs::remove_file(entry.path()).map_err(|error| format!("删除日志失败：{error}"))?;
-        }
-    }
+    let (sender, receiver) = mpsc::channel();
+    logger
+        .sender
+        .send(LogCommand::Clear(sender))
+        .map_err(|_| "诊断日志写入器已停止")?;
+    receiver.recv().map_err(|_| "诊断日志写入器未响应")??;
     event("info", "diagnostics.cleared", json!({}));
     Ok(())
 }
@@ -306,6 +317,7 @@ pub(crate) fn clear_diagnostic_logs() -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn open_diagnostic_directory(app: AppHandle) -> Result<(), String> {
     let logger = LOGGER.get().ok_or("诊断日志尚未初始化")?;
+    flush(logger)?;
     app.opener()
         .open_path(
             logger.directory.to_string_lossy().into_owned(),
@@ -354,7 +366,10 @@ pub(crate) fn export_diagnostic_bundle(
         .lock()
         .map(|settings| json!({
             "historyEnabled": settings.history_prefs.get("enabled").and_then(Value::as_bool).unwrap_or(true),
-            "finalDraftLearningEnabled": settings.history_prefs.get("finalDraftLearningEnabled").and_then(Value::as_bool).unwrap_or(false),
+            "finalDraftObservationEnabled": settings.history_prefs.get("finalDraftObservationEnabled").and_then(Value::as_bool).unwrap_or(false),
+            "correctionLearningEnabled": settings.history_prefs.get("correctionLearningEnabled").and_then(Value::as_bool).unwrap_or(false),
+            "cloudLearningContextEnabled": settings.history_prefs.get("cloudLearningContextEnabled").and_then(Value::as_bool).unwrap_or(false),
+            "learningMemoryRetentionDays": settings.history_prefs.get("learningMemoryRetentionDays").and_then(Value::as_u64).unwrap_or(180),
             "historyRetentionDays": settings.history_prefs.get("retentionDays").and_then(Value::as_u64).unwrap_or(30),
             "verboseLogging": settings.diagnostics_prefs.get("verboseLogging").and_then(Value::as_bool).unwrap_or(false),
         }))
@@ -407,6 +422,98 @@ fn status() -> Result<DiagnosticStatus, String> {
 
 fn content_enabled(logger: &DiagnosticLogger) -> bool {
     logger.content_deadline.load(Ordering::Acquire) > now_seconds()
+}
+
+fn flush(logger: &DiagnosticLogger) -> Result<(), String> {
+    let (sender, receiver) = mpsc::channel();
+    logger
+        .sender
+        .send(LogCommand::Flush(sender))
+        .map_err(|_| "诊断日志写入器已停止")?;
+    receiver
+        .recv()
+        .map_err(|_| "诊断日志写入器未响应".to_string())
+}
+
+fn run_writer(directory: PathBuf, receiver: mpsc::Receiver<LogCommand>) {
+    let mut normal = RollingFile::new("say-it");
+    let mut content = RollingFile::new("say-it-content");
+    while let Ok(command) = receiver.recv() {
+        match command {
+            LogCommand::Normal(line) => {
+                let _ = normal.write(&directory, &line);
+            }
+            LogCommand::Content(line) => {
+                let _ = content.write(&directory, &line);
+            }
+            LogCommand::CloseContent => content.close(),
+            LogCommand::Flush(response) => {
+                if let Some(file) = normal.file.as_mut() {
+                    let _ = file.flush();
+                }
+                if let Some(file) = content.file.as_mut() {
+                    let _ = file.flush();
+                }
+                let _ = response.send(());
+            }
+            LogCommand::Clear(response) => {
+                normal.close();
+                content.close();
+                let result = clear_files(&directory);
+                let _ = response.send(result);
+            }
+        }
+    }
+}
+
+fn clear_files(directory: &Path) -> Result<(), String> {
+    for entry in
+        std::fs::read_dir(directory).map_err(|error| format!("读取日志目录失败：{error}"))?
+    {
+        let entry = entry.map_err(|error| format!("读取日志文件失败：{error}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("say-it-") && name.ends_with(".jsonl") {
+            std::fs::remove_file(entry.path()).map_err(|error| format!("删除日志失败：{error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn latest_segment(directory: &Path, prefix: &str, day: &str) -> u32 {
+    let stem = format!("{prefix}-{day}-");
+    std::fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_prefix(&stem)
+                .and_then(|suffix| suffix.strip_suffix(".jsonl"))
+                .and_then(|segment| segment.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn open_private_append(path: &Path) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| format!("打开诊断日志失败：{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("设置诊断日志权限失败：{error}"))?;
+    }
+    Ok(file)
 }
 
 fn sanitize(value: Value) -> Value {
@@ -489,69 +596,6 @@ fn cleanup_files(
         if std::fs::remove_file(path).is_ok() {
             total = total.saturating_sub(size);
         }
-    }
-    Ok(())
-}
-
-fn reserve_log_capacity(
-    directory: &Path,
-    prefix: &str,
-    excluded_prefix: Option<&str>,
-    current_path: &Path,
-    current_file: &mut File,
-    max_bytes: u64,
-    incoming_bytes: u64,
-) -> Result<(), String> {
-    if incoming_bytes > max_bytes {
-        return Err("单条诊断日志超过文件总量限制".into());
-    }
-    let mut current_size = current_file
-        .metadata()
-        .map_err(|error| format!("读取当前日志大小失败：{error}"))?
-        .len();
-    if current_size.saturating_add(incoming_bytes) > max_bytes {
-        current_file
-            .set_len(0)
-            .map_err(|error| format!("截断当前诊断日志失败：{error}"))?;
-        current_size = 0;
-    }
-
-    let mut files = Vec::new();
-    for entry in
-        std::fs::read_dir(directory).map_err(|error| format!("读取日志目录失败：{error}"))?
-    {
-        let entry = entry.map_err(|error| format!("读取日志文件失败：{error}"))?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path == current_path
-            || !name.starts_with(prefix)
-            || excluded_prefix.is_some_and(|excluded| name.starts_with(excluded))
-            || !name.ends_with(".jsonl")
-        {
-            continue;
-        }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("读取日志元数据失败：{error}"))?;
-        files.push((
-            path,
-            metadata.modified().unwrap_or(UNIX_EPOCH),
-            metadata.len(),
-        ));
-    }
-    files.sort_by_key(|(_, modified, _)| *modified);
-    let mut total =
-        current_size.saturating_add(files.iter().map(|(_, _, size)| *size).sum::<u64>());
-    for (path, _, size) in files {
-        if total.saturating_add(incoming_bytes) <= max_bytes {
-            break;
-        }
-        if std::fs::remove_file(path).is_ok() {
-            total = total.saturating_sub(size);
-        }
-    }
-    if total.saturating_add(incoming_bytes) > max_bytes {
-        return Err("诊断日志目录已达到总量限制".into());
     }
     Ok(())
 }
@@ -641,7 +685,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let mut writer = RollingFile::new("say-it");
         writer.write(&directory, b"first").unwrap();
-        let path = directory.join(format!("say-it-{}.jsonl", date_key(now_seconds())));
+        let path = directory.join(format!("say-it-{}-000.jsonl", date_key(now_seconds())));
         writer.close();
         std::fs::remove_file(&path).unwrap();
         writer.write(&directory, b"second").unwrap();
@@ -650,31 +694,21 @@ mod tests {
     }
 
     #[test]
-    fn capacity_reservation_removes_old_files_and_never_exceeds_limit() {
+    fn rolling_writer_uses_private_permissions_on_unix() {
         let directory =
             std::env::temp_dir().join(format!("sayit-diagnostics-cap-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
-        let old = directory.join("say-it-2025-01-01.jsonl");
-        let current = directory.join("say-it-2026-01-01.jsonl");
-        std::fs::write(&old, [0u8; 8]).unwrap();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&current)
-            .unwrap();
-        file.write_all(&[0u8; 4]).unwrap();
-        reserve_log_capacity(
-            &directory,
-            "say-it-",
-            Some("say-it-content-"),
-            &current,
-            &mut file,
-            10,
-            5,
-        )
-        .unwrap();
-        assert!(!old.exists());
-        assert!(current.metadata().unwrap().len() + 5 <= 10);
+        let mut writer = RollingFile::new("say-it");
+        writer.write(&directory, b"private").unwrap();
+        let current = directory.join(format!("say-it-{}-000.jsonl", date_key(now_seconds())));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                current.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let _ = std::fs::remove_dir_all(directory);
     }
 }

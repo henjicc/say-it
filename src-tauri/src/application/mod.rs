@@ -11,6 +11,7 @@ pub(crate) mod dictation;
 pub(crate) mod events;
 pub(crate) mod final_draft;
 pub(crate) mod history;
+pub(crate) mod learning;
 pub(crate) mod llm_models;
 pub(crate) mod performance;
 pub(crate) mod plugin_management;

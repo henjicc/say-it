@@ -30,6 +30,10 @@ pub(crate) struct HistoryEntry {
     pub(crate) final_text_source: Option<String>,
     pub(crate) final_text_observed_at: Option<i64>,
     pub(crate) smart_processing_applied: bool,
+    pub(crate) learning_status: String,
+    pub(crate) correction_kind: Option<String>,
+    pub(crate) learning_scope: Option<String>,
+    pub(crate) applied_rule_ids: Vec<String>,
     pub(crate) diff_segments: Vec<TextDiffSegment>,
     pub(crate) instruction: String,
     pub(crate) app_name: String,
@@ -87,16 +91,6 @@ pub(crate) struct NewHistoryEntry {
     pub(crate) duration_ms: u64,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CorrectionSample {
-    pub(crate) before_text: String,
-    pub(crate) after_text: String,
-    pub(crate) app_name: String,
-    pub(crate) origin: String,
-    pub(crate) confidence: String,
-}
-
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageSummary {
@@ -121,7 +115,7 @@ fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
     crate::application::data_root::data_file(app, HISTORY_FILE)
 }
 
-fn open_path(path: &Path) -> Result<Connection, String> {
+pub(crate) fn open_path(path: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(path).map_err(|error| format!("打开历史数据库失败：{error}"))?;
     connection
@@ -142,6 +136,10 @@ fn open_path(path: &Path) -> Result<Connection, String> {
                final_text_source TEXT,
                final_text_observed_at INTEGER,
                smart_processing_applied INTEGER NOT NULL DEFAULT 0,
+               learning_status TEXT NOT NULL DEFAULT 'none',
+               correction_kind TEXT,
+               learning_scope TEXT,
+               applied_rule_ids TEXT NOT NULL DEFAULT '[]',
                instruction TEXT NOT NULL DEFAULT '',
                app_name TEXT NOT NULL DEFAULT '',
                process_name TEXT NOT NULL DEFAULT '',
@@ -161,8 +159,58 @@ fn open_path(path: &Path) -> Result<Connection, String> {
                app_name TEXT NOT NULL DEFAULT '',
                origin TEXT NOT NULL DEFAULT 'manual',
                confidence TEXT NOT NULL DEFAULT 'confirmed',
+               capture_confidence TEXT NOT NULL DEFAULT 'confirmed',
+               learning_status TEXT NOT NULL DEFAULT 'pending',
+               correction_kind TEXT NOT NULL DEFAULT 'unknown',
+               normalized_before TEXT NOT NULL DEFAULT '',
+               normalized_after TEXT NOT NULL DEFAULT '',
+               pair_key TEXT NOT NULL DEFAULT '',
+               rule_key TEXT NOT NULL DEFAULT '',
+               scope TEXT NOT NULL DEFAULT 'app',
+               confirmed_at INTEGER,
                created_at INTEGER NOT NULL,
                FOREIGN KEY(entry_id) REFERENCES history_entries(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS correction_rules (
+               id TEXT PRIMARY KEY,
+               pair_key TEXT NOT NULL,
+               rule_key TEXT NOT NULL UNIQUE,
+               before_text TEXT NOT NULL,
+               after_text TEXT NOT NULL,
+               app_name TEXT NOT NULL DEFAULT '',
+               scope TEXT NOT NULL DEFAULT 'app',
+               origin TEXT NOT NULL DEFAULT 'observed',
+               status TEXT NOT NULL DEFAULT 'candidate',
+               evidence_count INTEGER NOT NULL DEFAULT 0,
+               confirmed_count INTEGER NOT NULL DEFAULT 0,
+               negative_count INTEGER NOT NULL DEFAULT 0,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL,
+               last_used_at INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS correction_rules_lookup_idx ON correction_rules(status, scope, app_name);
+             CREATE TABLE IF NOT EXISTS preference_profiles (
+               id TEXT PRIMARY KEY,
+               scope TEXT NOT NULL,
+               app_name TEXT NOT NULL DEFAULT '',
+               summary_text TEXT NOT NULL,
+               profile_json TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'draft',
+               sample_count INTEGER NOT NULL DEFAULT 0,
+               generation_method TEXT NOT NULL DEFAULT 'llm',
+               created_at INTEGER NOT NULL,
+               confirmed_at INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS history_rule_applications (
+               history_id TEXT NOT NULL,
+               rule_id TEXT NOT NULL,
+               before_text TEXT NOT NULL,
+               after_text TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               negative_feedback_at INTEGER,
+               PRIMARY KEY(history_id, rule_id),
+               FOREIGN KEY(history_id) REFERENCES history_entries(id) ON DELETE CASCADE,
+               FOREIGN KEY(rule_id) REFERENCES correction_rules(id) ON DELETE CASCADE
              );
              CREATE TABLE IF NOT EXISTS usage_totals (
                id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -201,6 +249,10 @@ fn migrate_history_schema(connection: &Connection) -> Result<(), String> {
         ("final_text_source", "TEXT"),
         ("final_text_observed_at", "INTEGER"),
         ("smart_processing_applied", "INTEGER NOT NULL DEFAULT 0"),
+        ("learning_status", "TEXT NOT NULL DEFAULT 'none'"),
+        ("correction_kind", "TEXT"),
+        ("learning_scope", "TEXT"),
+        ("applied_rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
     ] {
         if !history.contains(column) {
             connection
@@ -215,6 +267,15 @@ fn migrate_history_schema(connection: &Connection) -> Result<(), String> {
     for (column, definition) in [
         ("origin", "TEXT NOT NULL DEFAULT 'manual'"),
         ("confidence", "TEXT NOT NULL DEFAULT 'confirmed'"),
+        ("capture_confidence", "TEXT NOT NULL DEFAULT 'confirmed'"),
+        ("learning_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("correction_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("normalized_before", "TEXT NOT NULL DEFAULT ''"),
+        ("normalized_after", "TEXT NOT NULL DEFAULT ''"),
+        ("pair_key", "TEXT NOT NULL DEFAULT ''"),
+        ("rule_key", "TEXT NOT NULL DEFAULT ''"),
+        ("scope", "TEXT NOT NULL DEFAULT 'app'"),
+        ("confirmed_at", "INTEGER"),
     ] {
         if !samples.contains(column) {
             connection
@@ -224,6 +285,20 @@ fn migrate_history_schema(connection: &Connection) -> Result<(), String> {
                 )
                 .map_err(|error| format!("升级纠错字段 {column} 失败：{error}"))?;
         }
+    }
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS correction_samples_pair_idx ON correction_samples(pair_key, app_name);",
+        )
+        .map_err(|error| format!("创建学习证据索引失败：{error}"))?;
+    let applications = table_columns(connection, "history_rule_applications")?;
+    if !applications.contains("negative_feedback_at") {
+        connection
+            .execute(
+                "ALTER TABLE history_rule_applications ADD COLUMN negative_feedback_at INTEGER",
+                [],
+            )
+            .map_err(|error| format!("升级规则反馈字段失败：{error}"))?;
     }
     Ok(())
 }
@@ -288,7 +363,7 @@ pub(crate) fn clear_usage_summary(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn open(app: &AppHandle) -> Result<Connection, String> {
+pub(crate) fn open(app: &AppHandle) -> Result<Connection, String> {
     let path = history_path(app)?;
     match open_path(&path) {
         Ok(connection) => Ok(connection),
@@ -370,27 +445,58 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
     migrate_provider_ids(&connection)?;
     recover_interrupted_entries(&connection)?;
     cleanup_expired_with_connection(&connection, retention_days)?;
-    refresh_correction_memory(app, &connection)?;
+    crate::application::learning::migrate_existing_samples(app, &connection)?;
+    let memory_days = app
+        .state::<crate::state::RuntimeState>()
+        .app_settings
+        .lock()
+        .ok()
+        .and_then(|settings| {
+            settings
+                .history_prefs
+                .get("learningMemoryRetentionDays")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(180) as u32;
+    crate::application::learning::cleanup_stale_rules(&connection, memory_days)?;
+    crate::application::learning::refresh_cache(app, &connection)?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(86_400));
         interval.tick().await;
         loop {
             interval.tick().await;
-            let days = app
+            let (days, memory_days) = app
                 .state::<crate::state::RuntimeState>()
                 .app_settings
                 .lock()
                 .ok()
-                .and_then(|settings| {
-                    settings
-                        .history_prefs
-                        .get("retentionDays")
-                        .and_then(serde_json::Value::as_u64)
+                .map(|settings| {
+                    (
+                        settings
+                            .history_prefs
+                            .get("retentionDays")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(DEFAULT_RETENTION_DAYS as u64)
+                            as u32,
+                        settings
+                            .history_prefs
+                            .get("learningMemoryRetentionDays")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(180) as u32,
+                    )
                 })
-                .unwrap_or(DEFAULT_RETENTION_DAYS as u64) as u32;
+                .unwrap_or((DEFAULT_RETENTION_DAYS, 180));
             if let Err(error) = cleanup_expired(&app, days) {
                 eprintln!("[history] 每日清理失败：{error}");
+            }
+            if let Ok(connection) = open(&app) {
+                let _ = crate::application::learning::refresh_statistics(&connection);
+                if crate::application::learning::cleanup_stale_rules(&connection, memory_days)
+                    .is_ok()
+                {
+                    let _ = crate::application::learning::refresh_cache(&app, &connection);
+                }
             }
         }
     });
@@ -487,20 +593,25 @@ pub(crate) fn record_or_update(
     } else {
         insert_entry(&transaction, &id, &entry)?;
     }
-    if let Some((before, after, app_name)) = correction {
-        transaction
-            .execute(
-                "INSERT INTO correction_samples (id, entry_id, before_text, after_text, app_name, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![Uuid::new_v4().to_string(), id, before, after, app_name, now_seconds()],
-            )
-            .map_err(|error| format!("保存选区编辑纠错样本失败：{error}"))?;
-    }
     transaction
         .commit()
         .map_err(|error| format!("提交历史写入失败：{error}"))?;
-    if explicit_correction {
-        refresh_correction_memory(app, &connection)?;
+    if let Some((before, after, app_name)) = correction {
+        crate::application::learning::record_correction(
+            app,
+            &id,
+            &before,
+            &after,
+            &app_name,
+            "manual",
+            "confirmed",
+            None,
+        )?;
+    }
+    if entry.status == "succeeded" {
+        crate::application::final_draft::consume_pending(app, &id);
+    } else if matches!(entry.status.as_str(), "failed" | "cancelled") {
+        crate::application::final_draft::cancel_history(app, &id);
     }
     let kind = if existing_id.is_some() {
         "updated"
@@ -594,6 +705,11 @@ pub(crate) fn update_result(
         return Ok(());
     }
     if update_result_with_connection(&connection, id, output, status, error, duration_ms)? {
+        if status == "succeeded" {
+            crate::application::final_draft::consume_pending(app, id);
+        } else if matches!(status, "failed" | "cancelled") {
+            crate::application::final_draft::cancel_history(app, id);
+        }
         let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
     }
     Ok(())
@@ -628,14 +744,22 @@ fn map_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
         final_text_source: row.get(8)?,
         final_text_observed_at: row.get(9)?,
         smart_processing_applied: row.get::<_, i64>(10)? != 0,
-        instruction: row.get(11)?,
-        app_name: row.get(12)?,
-        process_name: row.get(13)?,
-        provider_id: row.get(14)?,
-        model_id: row.get(15)?,
-        status: row.get(16)?,
-        error: row.get(17)?,
-        duration_ms: row.get::<_, i64>(18)?.max(0) as u64,
+        learning_status: row.get(11)?,
+        correction_kind: row.get(12)?,
+        learning_scope: row.get(13)?,
+        applied_rule_ids: row
+            .get::<_, String>(14)
+            .ok()
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default(),
+        instruction: row.get(15)?,
+        app_name: row.get(16)?,
+        process_name: row.get(17)?,
+        provider_id: row.get(18)?,
+        model_id: row.get(19)?,
+        status: row.get(20)?,
+        error: row.get(21)?,
+        duration_ms: row.get::<_, i64>(22)?.max(0) as u64,
     })
 }
 
@@ -687,6 +811,14 @@ fn manual_correction_pair(
     (output.to_owned(), after.to_owned())
 }
 
+pub(crate) fn manual_correction_pair_for_learning(
+    output: &str,
+    baseline: Option<&str>,
+    final_text: &str,
+) -> (String, String) {
+    manual_correction_pair(output, baseline, final_text)
+}
+
 #[tauri::command]
 pub(crate) fn query_history(app: AppHandle, query: HistoryQuery) -> Result<HistoryPage, String> {
     let connection = open(&app)?;
@@ -709,7 +841,8 @@ pub(crate) fn query_history(app: AppHandle, query: HistoryQuery) -> Result<Histo
         .prepare(&format!(
             "SELECT id, created_at, task_kind, source_text, output_text, final_text, final_text_baseline,
                     final_text_confidence, final_text_source, final_text_observed_at,
-                    smart_processing_applied, instruction, app_name, process_name, provider_id,
+                    smart_processing_applied, learning_status, correction_kind, learning_scope,
+                    applied_rule_ids, instruction, app_name, process_name, provider_id,
                     model_id, status, error, duration_ms
              FROM history_entries {where_clause}
              ORDER BY created_at DESC LIMIT ?4 OFFSET ?5"
@@ -780,29 +913,20 @@ pub(crate) fn confirm_history_final_text(
         )
         .map_err(|error| format!("更新历史文本失败：{error}"))?;
     transaction
-        .execute("DELETE FROM correction_samples WHERE entry_id = ?1", [&id])
-        .map_err(|error| format!("替换自动纠错样本失败：{error}"))?;
-    if before != correction_after {
-        transaction
-            .execute(
-                "INSERT INTO correction_samples
-                 (id, entry_id, before_text, after_text, app_name, origin, confidence, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'manual', 'confirmed', ?6)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    id,
-                    before,
-                    correction_after,
-                    app_name,
-                    now_seconds()
-                ],
-            )
-            .map_err(|error| format!("保存纠错样本失败：{error}"))?;
-    }
-    transaction
         .commit()
         .map_err(|error| format!("提交修正失败：{error}"))?;
-    refresh_correction_memory(&app, &connection)?;
+    if before != correction_after {
+        crate::application::learning::record_correction(
+            &app,
+            &id,
+            &before,
+            &correction_after,
+            &app_name,
+            "manual",
+            "confirmed",
+            None,
+        )?;
+    }
     let entry = get_entry(&connection, &id)?;
     crate::application::diagnostics::event(
         "info",
@@ -828,6 +952,7 @@ pub(crate) fn discard_history_final_text(
     id: String,
 ) -> Result<HistoryEntry, String> {
     let connection = open(&app)?;
+    let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始忽略观察结果事务失败：{error}"))?;
@@ -851,7 +976,7 @@ pub(crate) fn discard_history_final_text(
     transaction
         .commit()
         .map_err(|error| format!("提交忽略观察结果失败：{error}"))?;
-    refresh_correction_memory(&app, &connection)?;
+    crate::application::learning::recompute_pairs(&app, &connection, &pairs)?;
     let entry = get_entry(&connection, &id)?;
     crate::application::diagnostics::event(
         "info",
@@ -870,7 +995,7 @@ pub(crate) fn record_observed_final_text(
     correction_after: Option<&str>,
     confidence: &str,
     source: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if !matches!(confidence, "high" | "medium") {
         return Err("最终草稿可信度无效".into());
     }
@@ -881,10 +1006,21 @@ pub(crate) fn record_observed_final_text(
         return Err("空的最终草稿不会保存".into());
     }
     let connection = open(app)?;
-    let entry = get_entry(&connection, id)?;
-    if entry.status != "succeeded" || entry.task_kind != "dictation" {
-        return Ok(());
+    let target = connection
+        .query_row(
+            "SELECT status, task_kind FROM history_entries WHERE id = ?1",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取最终草稿目标失败：{error}"))?;
+    let Some((status, task_kind)) = target else {
+        return Ok(false);
+    };
+    if status != "succeeded" || task_kind != "dictation" {
+        return Ok(false);
     }
+    let entry = get_entry(&connection, id)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始保存最终草稿事务失败：{error}"))?;
@@ -906,36 +1042,28 @@ pub(crate) fn record_observed_final_text(
         .map_err(|error| format!("保存最终草稿失败：{error}"))?
         == 0
     {
-        return Ok(());
+        return Ok(false);
     }
-    transaction
-        .execute(
-            "DELETE FROM correction_samples WHERE entry_id = ?1 AND origin = 'observed'",
-            [id],
-        )
-        .map_err(|error| format!("更新自动纠错样本失败：{error}"))?;
     let correction_after = correction_after.filter(|value| !value.trim().is_empty());
-    if confidence == "high" && correction_after.is_some_and(|value| value != entry.output_text) {
-        transaction
-            .execute(
-                "INSERT INTO correction_samples
-                 (id, entry_id, before_text, after_text, app_name, origin, confidence, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'observed', 'high', ?6)",
-                params![
-                    Uuid::new_v4().to_string(),
-                    id,
-                    entry.output_text,
-                    correction_after.unwrap(),
-                    entry.app_name,
-                    now_seconds()
-                ],
-            )
-            .map_err(|error| format!("保存自动纠错样本失败：{error}"))?;
-    }
     transaction
         .commit()
         .map_err(|error| format!("提交最终草稿失败：{error}"))?;
-    refresh_correction_memory(app, &connection)?;
+    let (learning_status, correction_kind) =
+        if let Some(after) = correction_after.filter(|value| *value != entry.output_text) {
+            crate::application::learning::record_correction(
+                app,
+                id,
+                &entry.output_text,
+                after,
+                &entry.app_name,
+                "observed",
+                confidence,
+                None,
+            )?
+        } else {
+            ("none".into(), None)
+        };
+    crate::application::learning::record_negative_feedback(app, id, final_text)?;
     crate::application::diagnostics::event(
         "info",
         "history.observedFinalTextSaved",
@@ -943,11 +1071,12 @@ pub(crate) fn record_observed_final_text(
             "historyId":id,
             "confidence":confidence,
             "source":source,
-            "learned":confidence == "high" && correction_after.is_some_and(|value| value != entry.output_text),
+            "learningStatus":learning_status,
+            "correctionKind":correction_kind,
         }),
     );
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
-    Ok(())
+    Ok(true)
 }
 
 fn get_entry(connection: &Connection, id: &str) -> Result<HistoryEntry, String> {
@@ -955,7 +1084,8 @@ fn get_entry(connection: &Connection, id: &str) -> Result<HistoryEntry, String> 
         .query_row(
             "SELECT id, created_at, task_kind, source_text, output_text, final_text, final_text_baseline,
                     final_text_confidence, final_text_source, final_text_observed_at,
-                    smart_processing_applied, instruction, app_name, process_name, provider_id,
+                    smart_processing_applied, learning_status, correction_kind, learning_scope,
+                    applied_rule_ids, instruction, app_name, process_name, provider_id,
                     model_id, status, error, duration_ms
              FROM history_entries WHERE id = ?1",
             [id],
@@ -1016,13 +1146,14 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
 pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), String> {
     crate::application::final_draft::cancel_history(&app, &id);
     let connection = open(&app)?;
+    let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let changed = connection
         .execute("DELETE FROM history_entries WHERE id = ?1", [&id])
         .map_err(|error| format!("删除历史记录失败：{error}"))?;
     if changed == 0 {
         return Err("历史记录不存在".into());
     }
-    refresh_correction_memory(&app, &connection)?;
+    crate::application::learning::recompute_pairs(&app, &connection, &pairs)?;
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"deleted","id":id}));
     Ok(())
 }
@@ -1032,15 +1163,15 @@ pub(crate) fn clear_history(app: AppHandle) -> Result<(), String> {
     crate::application::final_draft::cancel_current(&app, "historyCleared");
     let connection = open(&app)?;
     connection
-        .execute_batch("DELETE FROM correction_samples; DELETE FROM history_entries;")
+        .execute_batch(
+            "DELETE FROM history_rule_applications;
+             DELETE FROM correction_samples;
+             DELETE FROM correction_rules;
+             DELETE FROM preference_profiles;
+             DELETE FROM history_entries;",
+        )
         .map_err(|error| format!("清空历史失败：{error}"))?;
-    if let Ok(mut samples) = app
-        .state::<crate::state::RuntimeState>()
-        .correction_samples
-        .lock()
-    {
-        samples.clear();
-    }
+    crate::application::learning::refresh_cache(&app, &connection)?;
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"cleared"}));
     Ok(())
 }
@@ -1050,68 +1181,6 @@ pub(crate) fn open_history_window(app: AppHandle) -> Result<(), String> {
     crate::desktop::ensure_main_window(&app)?;
     app.emit(OPEN_HISTORY_EVENT, ())
         .map_err(|error| error.to_string())
-}
-
-fn refresh_correction_memory(app: &AppHandle, connection: &Connection) -> Result<(), String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT before_text, after_text, app_name, origin, confidence
-         FROM correction_samples
-         WHERE confidence IN ('confirmed', 'high')
-         ORDER BY CASE WHEN confidence = 'confirmed' THEN 0 ELSE 1 END, created_at DESC
-         LIMIT 100",
-        )
-        .map_err(|error| format!("准备纠错样本查询失败：{error}"))?;
-    let samples = statement
-        .query_map([], |row| {
-            Ok(CorrectionSample {
-                before_text: row.get(0)?,
-                after_text: row.get(1)?,
-                app_name: row.get(2)?,
-                origin: row.get(3)?,
-                confidence: row.get(4)?,
-            })
-        })
-        .map_err(|error| format!("查询纠错样本失败：{error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("读取纠错样本失败：{error}"))?;
-    *app.state::<crate::state::RuntimeState>()
-        .correction_samples
-        .lock()
-        .map_err(|_| "纠错样本状态锁失败")? = samples;
-    Ok(())
-}
-
-pub(crate) fn relevant_corrections(
-    state: &crate::state::RuntimeState,
-    text: &str,
-    active_context: &str,
-) -> String {
-    let Ok(samples) = state.correction_samples.lock() else {
-        return String::new();
-    };
-    let mut selected = samples
-        .iter()
-        .filter(|sample| {
-            text.contains(&sample.before_text)
-                || (!sample.app_name.is_empty()
-                    && active_context
-                        .to_lowercase()
-                        .contains(&sample.app_name.to_lowercase()))
-        })
-        .take(3)
-        .peekable();
-    if selected.peek().is_none() {
-        return String::new();
-    }
-    let mut output = String::from("用户确认或高可信观察到的纠错示例（仅在相关时参考）：\n");
-    for sample in selected {
-        output.push_str(&format!(
-            "- {} → {}\n",
-            sample.before_text, sample.after_text
-        ));
-    }
-    output
 }
 
 pub(crate) fn cleanup_expired(app: &AppHandle, retention_days: u32) -> Result<usize, String> {

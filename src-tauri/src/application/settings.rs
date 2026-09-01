@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +71,10 @@ fn default_history_prefs() -> Value {
         "enabled":true,
         "retentionDays":30,
         "excludedApps":[],
-        "finalDraftLearningEnabled":false
+        "finalDraftObservationEnabled":false,
+        "correctionLearningEnabled":false,
+        "cloudLearningContextEnabled":false,
+        "learningMemoryRetentionDays":180
     })
 }
 fn default_diagnostics_prefs() -> Value {
@@ -101,9 +104,23 @@ impl Default for AppSettings {
 
 pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
     if let Some(history) = settings.history_prefs.as_object_mut() {
+        let legacy_learning = history
+            .get("finalDraftLearningEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         history
-            .entry("finalDraftLearningEnabled")
+            .entry("finalDraftObservationEnabled")
+            .or_insert(Value::Bool(legacy_learning));
+        history
+            .entry("correctionLearningEnabled")
+            .or_insert(Value::Bool(legacy_learning));
+        history
+            .entry("cloudLearningContextEnabled")
             .or_insert(Value::Bool(false));
+        history
+            .entry("learningMemoryRetentionDays")
+            .or_insert(Value::Number(180.into()));
+        history.remove("finalDraftLearningEnabled");
     } else {
         settings.history_prefs = default_history_prefs();
     }
@@ -225,11 +242,46 @@ pub(crate) fn update_app_settings(
         {
             return Err("历史排除应用必须是数组".into());
         }
+        for (field, label) in [
+            ("finalDraftObservationEnabled", "最终草稿观察开关"),
+            ("correctionLearningEnabled", "纠错学习开关"),
+            ("cloudLearningContextEnabled", "云端学习上下文开关"),
+        ] {
+            if value
+                .get(field)
+                .is_some_and(|enabled| !enabled.is_boolean())
+            {
+                return Err(format!("{label}必须是布尔值"));
+            }
+        }
+        let memory_days = value
+            .get("learningMemoryRetentionDays")
+            .and_then(Value::as_u64)
+            .unwrap_or(180);
+        if !(1..=3650).contains(&memory_days) {
+            return Err("学习记忆保留天数必须在 1～3650 之间".into());
+        }
         if value
-            .get("finalDraftLearningEnabled")
-            .is_some_and(|enabled| !enabled.is_boolean())
+            .get("correctionLearningEnabled")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && value
+                .get("finalDraftObservationEnabled")
+                .and_then(Value::as_bool)
+                != Some(true)
         {
-            return Err("最终草稿学习开关必须是布尔值".into());
+            return Err("开启纠错学习前必须先开启发送前修改记录".into());
+        }
+        if value
+            .get("cloudLearningContextEnabled")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && value
+                .get("correctionLearningEnabled")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err("允许云端参考学习记录前必须先开启个性化纠错".into());
         }
     }
     if domain == "diagnostics"
@@ -410,7 +462,10 @@ mod tests {
         );
         assert_eq!(v.assistant_prefs["ask"]["activeTemplateId"], "ask-direct");
         assert!(v.setup_results.is_object());
-        assert_eq!(v.history_prefs["finalDraftLearningEnabled"], false);
+        assert_eq!(v.history_prefs["finalDraftObservationEnabled"], false);
+        assert_eq!(v.history_prefs["correctionLearningEnabled"], false);
+        assert_eq!(v.history_prefs["cloudLearningContextEnabled"], false);
+        assert_eq!(v.history_prefs["learningMemoryRetentionDays"], 180);
         assert_eq!(v.diagnostics_prefs["verboseLogging"], false);
     }
     #[test]
@@ -422,7 +477,30 @@ mod tests {
         migrate_loaded_settings(&mut settings);
         assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
         assert_eq!(settings.diagnostics_prefs["verboseLogging"], true);
-        assert_eq!(settings.history_prefs["finalDraftLearningEnabled"], false);
+        assert_eq!(
+            settings.history_prefs["finalDraftObservationEnabled"],
+            false
+        );
+        assert_eq!(settings.history_prefs["correctionLearningEnabled"], false);
+    }
+
+    #[test]
+    fn legacy_final_draft_learning_splits_into_observation_and_learning() {
+        let mut settings = AppSettings::default();
+        settings.schema_version = 5;
+        settings.history_prefs = serde_json::json!({
+            "enabled": true,
+            "retentionDays": 30,
+            "excludedApps": [],
+            "finalDraftLearningEnabled": true
+        });
+        migrate_loaded_settings(&mut settings);
+        assert_eq!(settings.history_prefs["finalDraftObservationEnabled"], true);
+        assert_eq!(settings.history_prefs["correctionLearningEnabled"], true);
+        assert!(settings
+            .history_prefs
+            .get("finalDraftLearningEnabled")
+            .is_none());
     }
     #[test]
     fn rejects_non_object_domain() {
