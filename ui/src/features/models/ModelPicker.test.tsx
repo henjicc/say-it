@@ -11,14 +11,38 @@ const asrOptions: ModelPickerOption[] = [
 ];
 
 describe("ModelPicker", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   it("locates the current ASR model and combines local, mode, and search filters at a fixed size", async () => {
     const onChange = vi.fn();
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
+    const rect = (top: number, height: number, width = 400): DOMRect => ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: width,
+      width,
+      height,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      if (this.getAttribute("role") === "combobox") return rect(100, 44);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function () {
+      if (this.getAttribute("role") === "listbox") return 120;
+      if (this.getAttribute("role") === "option" && this.getAttribute("aria-selected") === "true") return 460;
+      return 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.getAttribute("role") === "option" ? 40 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () {
+      return this.getAttribute("role") === "listbox" ? 260 : 0;
     });
     render(
       <ModelPicker
@@ -37,7 +61,7 @@ describe("ModelPicker", () => {
     expect(dialog.className).toContain("model-picker-panel");
     const search = within(dialog).getByRole("textbox", { name: "搜索语音识别模型" });
     await waitFor(() => expect(search).toHaveFocus());
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    expect(within(dialog).getByRole("listbox", { name: "语音识别模型" }).scrollTop).toBe(230);
     expect(within(dialog).queryByText("当前选择")).not.toBeInTheDocument();
     expect(within(dialog).getByRole("option", { name: "Whisper（非实时）" })).toHaveAttribute("aria-selected", "true");
     expect(within(dialog).getByRole("button", { name: "供应商：全部" })).toHaveAttribute("aria-pressed", "true");
