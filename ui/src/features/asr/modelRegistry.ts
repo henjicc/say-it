@@ -14,6 +14,8 @@ export interface AsrModelOption {
   label: string;
   providerId: string;
   providerLabel?: string;
+  filterProviderId?: string;
+  filterProviderLabel?: string;
   mode?: AsrModelMode;
 }
 export interface OcrModelOption extends AsrModelOption {
@@ -76,18 +78,27 @@ export function asrModelDisplayLabel(item: Pick<ModelInfo, "label" | "category">
   const baseLabel = item.label.replace(/\s*[（(](?:实时|非实时)[）)]\s*$/u, "");
   return `${baseLabel}（${asrModelModeLabel(mode)}）`;
 }
+export function isLocalAsrModel(item: Pick<ModelInfo, "category" | "protocol">): boolean {
+  return Boolean(asrModelMode(item))
+    && (item.protocol === "builtin-macos-speech" || item.protocol.startsWith("local-"));
+}
 export function optionsForScene(scene: string): AsrModelOption[] {
   const current = currentCatalog();
   const providerNames = new Map(
     (current.providers.profiles || []).map((provider) => [provider.id, provider.displayName]),
   );
-  return current.models.filter((item) => item.scenes.includes(scene)).map((item) => ({
-    value: item.id,
-    label: asrModelDisplayLabel(item),
-    providerId: item.providerId,
-    providerLabel: providerNames.get(item.providerId) || item.providerId,
-    mode: asrModelMode(item),
-  }));
+  return current.models.filter((item) => item.scenes.includes(scene)).map((item) => {
+    const local = isLocalAsrModel(item);
+    return {
+      value: item.id,
+      label: asrModelDisplayLabel(item),
+      providerId: item.providerId,
+      providerLabel: providerNames.get(item.providerId) || item.providerId,
+      filterProviderId: local ? "local" : undefined,
+      filterProviderLabel: local ? "本地" : undefined,
+      mode: asrModelMode(item),
+    };
+  });
 }
 export function ocrOptionsForScene(scene: string): OcrModelOption[] {
   const current = currentCatalog();

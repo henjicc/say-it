@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import {
@@ -14,6 +14,8 @@ export interface ModelPickerOption {
   triggerLabel?: string;
   providerId?: string;
   providerLabel?: string;
+  filterProviderId?: string;
+  filterProviderLabel?: string;
   mode?: AsrModelMode;
 }
 
@@ -22,7 +24,7 @@ interface PickerLayout {
   top?: number;
   bottom?: number;
   width: number;
-  maxHeight: number;
+  height: number;
   openUpward: boolean;
 }
 
@@ -45,8 +47,8 @@ const modeFilters: Array<{ value: "all" | AsrModelMode; label: string }> = [
   { value: "nonRealtime", label: "非实时" },
 ];
 
-const optionProviderId = (option: ModelPickerOption) => option.providerId || "other";
-const optionProviderLabel = (option: ModelPickerOption) => option.providerLabel || "其他";
+const optionProviderId = (option: ModelPickerOption) => option.filterProviderId || option.providerId || "other";
+const optionProviderLabel = (option: ModelPickerOption) => option.filterProviderLabel || option.providerLabel || "其他";
 
 function FilterChip({
   active,
@@ -96,6 +98,7 @@ export function ModelPicker({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const selectedOptionRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [rendered, setRendered] = useState(false);
   const [layout, setLayout] = useState<PickerLayout | null>(null);
@@ -127,21 +130,24 @@ export function ModelPicker({
     const viewportMargin = 8;
     const triggerGap = 6;
     const availableWidth = Math.max(280, window.innerWidth - viewportMargin * 2);
-    const width = Math.min(Math.max(rect.width, 600), availableWidth);
+    const width = Math.min(520, availableWidth);
     const left = Math.min(
       Math.max(viewportMargin, rect.left),
       Math.max(viewportMargin, window.innerWidth - width - viewportMargin),
     );
     const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - viewportMargin - triggerGap);
     const spaceAbove = Math.max(0, rect.top - viewportMargin - triggerGap);
-    const openUpward = spaceBelow < 340 && spaceAbove > spaceBelow;
+    const preferredHeight = 440;
+    const openUpward = spaceBelow >= preferredHeight
+      ? false
+      : spaceAbove >= preferredHeight || spaceAbove > spaceBelow;
     const availableHeight = openUpward ? spaceAbove : spaceBelow;
     setLayout({
       left,
       top: openUpward ? undefined : rect.bottom + triggerGap,
       bottom: openUpward ? window.innerHeight - rect.top + triggerGap : undefined,
       width,
-      maxHeight: Math.max(180, Math.min(520, availableHeight)),
+      height: Math.max(180, Math.min(preferredHeight, availableHeight)),
       openUpward,
     });
   }, []);
@@ -150,7 +156,10 @@ export function ModelPicker({
     if (!open) return;
     setRendered(true);
     measurePanel();
-    const frame = window.requestAnimationFrame(() => searchRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      searchRef.current?.focus();
+      selectedOptionRef.current?.scrollIntoView?.({ block: "center" });
+    });
     window.addEventListener("resize", measurePanel);
     window.addEventListener("scroll", measurePanel, true);
     return () => {
@@ -239,7 +248,7 @@ export function ModelPicker({
             top: layout.top,
             bottom: layout.bottom,
             width: layout.width,
-            maxHeight: layout.maxHeight,
+            height: layout.height,
             transformOrigin: layout.openUpward ? "bottom" : "top",
           }}
           className={cn(
@@ -262,18 +271,10 @@ export function ModelPicker({
               />
             </div>
 
-            {selected && (
-              <div className="mt-3 flex min-w-0 items-center gap-3 rounded-[var(--radius-md)] bg-[var(--accent-soft)] px-3 py-2.5">
-                <span className="shrink-0 text-xs text-[var(--color-accent-light)]">当前选择</span>
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-fg)]">{selected.label}</span>
-                <span className="shrink-0 text-xs text-[var(--color-fg-subtle)]">{optionProviderLabel(selected)}</span>
-              </div>
-            )}
-
             <div className="mt-3 grid gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="w-12 shrink-0 text-xs text-[var(--color-fg-subtle)]">供应商</span>
-                <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5" role="group" aria-label="按供应商筛选">
+                <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1" role="group" aria-label="按供应商筛选">
                   <FilterChip active={providerId === "all"} ariaLabel="供应商：全部" onClick={() => setProviderId("all")}>全部</FilterChip>
                   {providers.map((provider) => (
                     <FilterChip
@@ -305,7 +306,7 @@ export function ModelPicker({
             </div>
           </div>
 
-          <div id={listboxId} role="listbox" aria-label={panelLabel.replace(/^选择/u, "")} className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div id={listboxId} role="listbox" aria-label={panelLabel.replace(/^选择/u, "")} className="min-h-0 flex-1 overflow-y-auto py-2 pl-2 pr-1">
             {visibleOptions.length === 0 && (
               <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
             )}
@@ -314,28 +315,26 @@ export function ModelPicker({
               return (
                 <button
                   key={option.value}
+                  ref={isSelected ? selectedOptionRef : undefined}
                   type="button"
                   role="option"
                   aria-label={option.label}
                   aria-selected={isSelected}
                   onClick={() => commit(option.value)}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-[var(--radius-md)] px-3 py-2.5 text-left transition-colors duration-[var(--dur-fast)]",
+                    "flex w-full items-center gap-3 rounded-[var(--radius-md)] py-2.5 pl-3 pr-2 text-left transition-colors duration-[var(--dur-fast)]",
                     isSelected
                       ? "bg-[var(--accent-soft-strong)] text-[var(--color-fg)]"
                       : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{option.label}</span>
-                    <span className="mt-0.5 block truncate text-xs text-[var(--color-fg-subtle)]">{optionProviderLabel(option)}</span>
+                    <span className="block whitespace-normal break-words text-sm font-medium leading-5">{option.label}</span>
+                    <span className="mt-0.5 block whitespace-normal break-words text-xs text-[var(--color-fg-subtle)]">{optionProviderLabel(option)}</span>
                   </span>
                   {option.mode && <span className="shrink-0 rounded-full border border-[var(--color-line)] px-2 py-1 text-[11px] text-[var(--color-fg-subtle)]">
                     {asrModelModeLabel(option.mode)}
                   </span>}
-                  <span className="grid h-5 w-5 shrink-0 place-items-center text-[var(--color-accent-light)]">
-                    {isSelected && <Check className="h-4 w-4" aria-hidden />}
-                  </span>
                 </button>
               );
             })}
