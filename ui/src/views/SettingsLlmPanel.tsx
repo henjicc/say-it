@@ -10,7 +10,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import {
   ApiKeyLink,
   API_KEY_URLS_BY_ADAPTER,
-  llmApiKeyUrl,
+  providerApiKeyUrl,
 } from "@/features/settings/apiKeyLinks";
 import {
   useProviderStore,
@@ -130,7 +130,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   const isBuiltin = profile.id === "llm-groq";
   const isCustom = profile.kind === "llm:custom";
   const isPlugin = profile.kind.startsWith("plugin:");
-  const apiKeyUrl = llmApiKeyUrl(profile.kind);
+  const apiKeyUrl = providerApiKeyUrl(profile);
   const secretField = profile.configFields?.find((field) => field.secret);
   const [model, setModel] = useState(() => String(profile.config?.model ?? ""));
   const [models, setModels] = useState<LlmModelConfig[]>(() => modelsFromProfile(profile));

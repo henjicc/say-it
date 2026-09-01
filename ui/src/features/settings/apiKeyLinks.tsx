@@ -23,10 +23,12 @@ export const ASR_API_KEY_URLS: Readonly<Record<string, string>> = {
   "llm-groq": API_KEY_URLS_BY_ADAPTER.groq,
 };
 
-export function llmApiKeyUrl(kind: string): string | undefined {
-  if (!kind.startsWith("llm:")) return undefined;
-  const adapter = kind.slice("llm:".length) as keyof typeof API_KEY_URLS_BY_ADAPTER;
-  return API_KEY_URLS_BY_ADAPTER[adapter];
+export function providerApiKeyUrl(provider: { id: string; kind: string }): string | undefined {
+  if (provider.kind.startsWith("llm:")) {
+    const adapter = provider.kind.slice("llm:".length) as keyof typeof API_KEY_URLS_BY_ADAPTER;
+    return API_KEY_URLS_BY_ADAPTER[adapter];
+  }
+  return ASR_API_KEY_URLS[provider.id];
 }
 
 export function ApiKeyLink({

@@ -93,26 +93,55 @@ describe("SettingsLlmPanel", () => {
     }));
   });
 
-  it("shows the official API key link beside an existing LLM credential field", async () => {
-    profiles = [{
-      id: "llm-openai",
-      kind: "llm:openai",
-      displayName: "OpenAI",
-      authKind: "api-key",
-      capabilities: ["llm"],
-      enabled: true,
-      configFields: [{ key: "apiKey", label: "API Key", fieldType: "password", secret: true }],
-      status: { hasApiKey: false },
-      config: { model: "gpt-4o-mini", models: [] },
-    }];
+  it("shows official API key links for every built-in LLM provider", async () => {
+    const providers = [
+      ["groq", "https://console.groq.com/keys"],
+      ["openai", "https://platform.openai.com/api-keys"],
+      ["anthropic", "https://platform.claude.com/settings/keys"],
+      ["gemini", "https://aistudio.google.com/app/apikey"],
+      ["volcengine", "https://console.volcengine.com/ark/apiKey"],
+      ["kimi", "https://platform.kimi.com/console/api-keys"],
+      ["bigmodel", "https://open.bigmodel.cn/usercenter/apikeys"],
+      ["deepseek", "https://platform.deepseek.com/api_keys"],
+      ["mimo", "https://platform.xiaomimimo.com/"],
+      ["minimax", "https://platform.minimaxi.com/console/access?tab=api-keys"],
+      ["open_router", "https://openrouter.ai/settings/keys"],
+    ] as const;
+    profiles = [
+      {
+        id: "bailian",
+        kind: "sdk:bailian",
+        displayName: "阿里云百炼",
+        authKind: "api-key",
+        capabilities: ["asr", "llm", "translation"],
+        enabled: true,
+        configFields: [{ key: "apiKey", label: "API Key", fieldType: "password", secret: true }],
+        status: { hasApiKey: false },
+        config: { models: [] },
+      },
+      ...providers.map(([adapter]) => ({
+        id: `llm-${adapter}`,
+        kind: `llm:${adapter}`,
+        displayName: adapter,
+        authKind: "api-key",
+        capabilities: ["llm"],
+        enabled: true,
+        configFields: [{ key: "apiKey", label: "API Key", fieldType: "password", secret: true }],
+        status: { hasApiKey: false },
+        config: { models: [] },
+      })),
+    ];
 
     render(<SettingsLlmPanel />);
 
-    const keyLink = screen.getByRole("link", { name: "点击此处获取 API Key" });
-    expect(keyLink).toHaveAttribute("href", "https://platform.openai.com/api-keys");
-    fireEvent.click(keyLink);
+    const keyLinks = screen.getAllByRole("link", { name: "点击此处获取 API Key" });
+    expect(keyLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key",
+      ...providers.map(([, url]) => url),
+    ]);
+    fireEvent.click(keyLinks[0]);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_external_link", {
-      url: "https://platform.openai.com/api-keys",
+      url: "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key",
     }));
   });
 });

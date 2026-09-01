@@ -6,7 +6,11 @@ import { Input } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { ApiKeyLink, ASR_API_KEY_URLS } from "@/features/settings/apiKeyLinks";
+import {
+  ApiKeyLink,
+  ASR_API_KEY_URLS,
+  providerApiKeyUrl,
+} from "@/features/settings/apiKeyLinks";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   useProviderStore,
@@ -62,7 +66,7 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
   const saveTimersRef = useRef(new Map<string, number>());
   const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const configFields = provider.configFields || [];
-  const apiKeyUrl = ASR_API_KEY_URLS[provider.id];
+  const apiKeyUrl = providerApiKeyUrl(provider);
   const credentialLabel = configFields.find((field) => field.secret)?.label ?? "API Key";
 
   useEffect(() => {
