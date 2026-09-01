@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { ApiKeyLink, ASR_API_KEY_URLS } from "@/features/settings/apiKeyLinks";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   useProviderStore,
@@ -61,6 +62,8 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
   const saveTimersRef = useRef(new Map<string, number>());
   const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const configFields = provider.configFields || [];
+  const apiKeyUrl = ASR_API_KEY_URLS[provider.id];
+  const credentialLabel = configFields.find((field) => field.secret)?.label ?? "API Key";
 
   useEffect(() => {
     setDraft((current) => {
@@ -147,6 +150,15 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
       subtitle={providerConfigurationStatus(provider)}
     >
       <div className="flex flex-col gap-3">
+        {apiKeyUrl && (
+          <p className="text-xs text-[var(--color-fg-subtle)]">
+            <ApiKeyLink
+              url={apiKeyUrl}
+              label={`点击此处获取 ${credentialLabel}`}
+              onError={(error) => setErrorMessage(`打开密钥页面失败：${error}`)}
+            />
+          </p>
+        )}
         {configFields.map((field) =>
           field.fieldType === "boolean" ? (
             <CheckField
@@ -305,14 +317,6 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
     }, 500);
   };
 
-  const openApiKeyPage = async () => {
-    try {
-      await cmd(CMD.openApiKeyPage);
-    } catch (error) {
-      setErrorMessage(`打开链接失败：${String(error)}`);
-    }
-  };
-
   const toggleLanguageHint = (lang: string) => {
     const languageHints = advancedRef.current.languageHints;
     updateAdvanced({
@@ -328,13 +332,11 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
       subtitle={hasApiKey ? "已配置" : "需要填写"}
     >
       <p className="text-xs text-[var(--color-fg-subtle)]">
-        <button
-          type="button"
-          onClick={openApiKeyPage}
-          className="text-[var(--color-accent-light)] underline-offset-4 hover:underline"
-        >
-          点击此处获取 API Key
-        </button>
+        <ApiKeyLink
+          url={ASR_API_KEY_URLS.bailian}
+          label="点击此处获取 API Key"
+          onError={(error) => setErrorMessage(`打开密钥页面失败：${error}`)}
+        />
       </p>
 
       <div className="mt-3">

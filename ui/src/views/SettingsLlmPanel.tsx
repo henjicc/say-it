@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
 import { Field } from "@/components/ui/Field";
@@ -7,7 +7,11 @@ import { Input, Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { CMD, cmd } from "@/lib/tauri";
+import {
+  ApiKeyLink,
+  API_KEY_URLS_BY_ADAPTER,
+  llmApiKeyUrl,
+} from "@/features/settings/apiKeyLinks";
 import {
   useProviderStore,
   type LlmModelAvailability,
@@ -18,18 +22,18 @@ import {
 } from "@/store/useProviderStore";
 
 const PRESETS = [
-  { adapter: "groq", name: "Groq", model: "openai/gpt-oss-20b", apiKeyUrl: "https://console.groq.com/keys" },
-  { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini", apiKeyUrl: "https://platform.openai.com/api-keys" },
-  { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5", apiKeyUrl: "https://platform.claude.com/settings/keys" },
-  { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash", apiKeyUrl: "https://aistudio.google.com/app/apikey" },
-  { adapter: "volcengine", name: "火山方舟 Doubao", model: "doubao-seed-evolving", apiKeyUrl: "https://console.volcengine.com/ark/apiKey" },
-  { adapter: "kimi", name: "Kimi", model: "kimi-k3", apiKeyUrl: "https://platform.kimi.com/console/api-keys" },
-  { adapter: "bigmodel", name: "智谱 GLM", model: "glm-5.3", apiKeyUrl: "https://open.bigmodel.cn/usercenter/apikeys" },
-  { adapter: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash", apiKeyUrl: "https://platform.deepseek.com/api_keys" },
-  { adapter: "mimo", name: "小米 MiMo", model: "mimo-v2.5", apiKeyUrl: "https://platform.xiaomimimo.com/" },
-  { adapter: "bailian", name: "阿里云百炼 Qwen", model: "qwen3.8-max", apiKeyUrl: "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key" },
-  { adapter: "minimax", name: "MiniMax", model: "MiniMax-M3", apiKeyUrl: "https://platform.minimaxi.com/console/access?tab=api-keys" },
-  { adapter: "open_router", name: "OpenRouter", model: "google/gemini-2.0-flash-001", apiKeyUrl: "https://openrouter.ai/settings/keys" },
+  { adapter: "groq", name: "Groq", model: "openai/gpt-oss-20b", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.groq },
+  { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.openai },
+  { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.anthropic },
+  { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.gemini },
+  { adapter: "volcengine", name: "火山方舟 Doubao", model: "doubao-seed-evolving", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.volcengine },
+  { adapter: "kimi", name: "Kimi", model: "kimi-k3", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.kimi },
+  { adapter: "bigmodel", name: "智谱 GLM", model: "glm-5.3", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.bigmodel },
+  { adapter: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.deepseek },
+  { adapter: "mimo", name: "小米 MiMo", model: "mimo-v2.5", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.mimo },
+  { adapter: "bailian", name: "阿里云百炼 Qwen", model: "qwen3.8-max", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.bailian },
+  { adapter: "minimax", name: "MiniMax", model: "MiniMax-M3", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.minimax },
+  { adapter: "open_router", name: "OpenRouter", model: "google/gemini-2.0-flash-001", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.open_router },
   { adapter: "custom", name: "自定义 OpenAI 兼容接口", model: "", apiKeyUrl: null },
 ] as const;
 
@@ -126,6 +130,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   const isBuiltin = profile.id === "llm-groq";
   const isCustom = profile.kind === "llm:custom";
   const isPlugin = profile.kind.startsWith("plugin:");
+  const apiKeyUrl = llmApiKeyUrl(profile.kind);
   const secretField = profile.configFields?.find((field) => field.secret);
   const [model, setModel] = useState(() => String(profile.config?.model ?? ""));
   const [models, setModels] = useState<LlmModelConfig[]>(() => modelsFromProfile(profile));
@@ -414,6 +419,16 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
         {(!isPlugin || secretField) && <Field
           label={secretField?.label ?? "API Key"}
           controlId={`llm-api-key-${profile.id}`}
+          hint={apiKeyUrl ? (
+            <ApiKeyLink
+              url={apiKeyUrl}
+              label="点击此处获取 API Key"
+              onError={(error) => {
+                setMessage(`打开 API Key 管理页失败：${error}`);
+                setMessageError(true);
+              }}
+            />
+          ) : undefined}
         >
           <SecretInput
             id={`llm-api-key-${profile.id}`}
@@ -619,19 +634,11 @@ export function SettingsLlmPanel() {
   const customEndpointValid = adapter !== "custom" || /^https?:\/\//.test(endpoint.trim());
   const canSubmit = Boolean(apiKey.trim()) && customEndpointValid;
   const apiKeyHint = selectedPreset.apiKeyUrl ? (
-    <a
-      href={selectedPreset.apiKeyUrl}
-      className="inline-flex items-center gap-1 text-[var(--color-accent-light)] underline underline-offset-2 hover:text-[var(--color-accent)]"
-      onClick={(event) => {
-        event.preventDefault();
-        void cmd(CMD.openExternalLink, { url: selectedPreset.apiKeyUrl }).catch((error) => {
-          setMessage(`打开 API Key 管理页失败：${String(error)}`);
-        });
-      }}
-    >
-      前往 {selectedPreset.name} API Key 管理页
-      <ExternalLink className="h-3.5 w-3.5" aria-hidden />
-    </a>
+    <ApiKeyLink
+      url={selectedPreset.apiKeyUrl}
+      label={`前往 ${selectedPreset.name} API Key 管理页`}
+      onError={(error) => setMessage(`打开 API Key 管理页失败：${error}`)}
+    />
   ) : undefined;
 
   return (

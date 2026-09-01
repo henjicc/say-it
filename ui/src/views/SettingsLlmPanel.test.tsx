@@ -6,6 +6,7 @@ const invoke = vi.fn();
 const addLlmProvider = vi.fn();
 const refreshLlmModels = vi.fn();
 const setDefault = vi.fn();
+const updateConfig = vi.fn();
 let profiles: Array<Record<string, unknown>> = [];
 
 vi.mock("@/lib/tauri", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/store/useProviderStore", () => ({
     addLlmProvider,
     refreshLlmModels,
     setDefault,
+    updateConfig,
   }),
 }));
 
@@ -31,6 +33,7 @@ describe("SettingsLlmPanel", () => {
     addLlmProvider.mockReset().mockResolvedValue({ id: "llm-new" });
     refreshLlmModels.mockReset().mockResolvedValue({ config: { models: [] } });
     setDefault.mockReset().mockResolvedValue(undefined);
+    updateConfig.mockReset().mockResolvedValue(undefined);
   });
 
   it("shows capability-based plugin LLM without manual or removal controls", () => {
@@ -87,6 +90,29 @@ describe("SettingsLlmPanel", () => {
       model: "openai/gpt-oss-20b",
       apiKey: "gsk-test",
       endpoint: "",
+    }));
+  });
+
+  it("shows the official API key link beside an existing LLM credential field", async () => {
+    profiles = [{
+      id: "llm-openai",
+      kind: "llm:openai",
+      displayName: "OpenAI",
+      authKind: "api-key",
+      capabilities: ["llm"],
+      enabled: true,
+      configFields: [{ key: "apiKey", label: "API Key", fieldType: "password", secret: true }],
+      status: { hasApiKey: false },
+      config: { model: "gpt-4o-mini", models: [] },
+    }];
+
+    render(<SettingsLlmPanel />);
+
+    const keyLink = screen.getByRole("link", { name: "点击此处获取 API Key" });
+    expect(keyLink).toHaveAttribute("href", "https://platform.openai.com/api-keys");
+    fireEvent.click(keyLink);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_external_link", {
+      url: "https://platform.openai.com/api-keys",
     }));
   });
 });
