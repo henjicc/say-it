@@ -216,6 +216,8 @@
     }
 
     __sayitBytes(): Uint8Array { return new Uint8Array(this.data) }
+
+    __sayitBorrowBytes(): Uint8Array { return this.data }
   }
 
   class SayItFormData {
@@ -244,7 +246,7 @@
         if (entry.value instanceof SayItBlob) {
           disposition += `; filename="${quote(entry.filename ?? 'blob')}"`
           parts.push(encoder.encode(`--${boundary}\r\n${disposition}\r\nContent-Type: ${entry.value.type || 'application/octet-stream'}\r\n\r\n`))
-          parts.push(entry.value.__sayitBytes())
+          parts.push(entry.value.__sayitBorrowBytes())
         } else {
           parts.push(encoder.encode(`--${boundary}\r\n${disposition}\r\n\r\n${entry.value}`))
         }

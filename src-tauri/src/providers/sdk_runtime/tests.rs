@@ -216,6 +216,20 @@ fn spawn_redirect_http(
     )
 }
 
+fn spawn_captured_http() -> (String, Receiver<Vec<u8>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        captured_tx.send(read_http_request(&mut stream)).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    });
+    (format!("http://{address}/upload"), captured_rx, handle)
+}
+
 fn create_sdk_runtime(
     source: &str,
     mut spec: PluginRuntimeSpec,
@@ -234,6 +248,77 @@ fn create_sdk_runtime(
         bindings(records),
     )
     .unwrap_or_else(|error| panic!("SDK QuickJS fixture 创建失败 ({source}): {error}"))
+}
+
+#[test]
+fn quickjs_multipart_uses_native_request_body_without_json_array_oom() {
+    let source = r#"
+export default () => ({
+  async invoke(request) {
+    const runtime = globalThis.__sayitCreateRuntimeContext();
+    const media = await runtime.media.read('media-1');
+    const uploadBytes = new Uint8Array(media.bytes.byteLength);
+    uploadBytes.set(media.bytes);
+    const form = new FormData();
+    form.append('model', 'whisper-large-v3-turbo');
+    form.append('file', new Blob([uploadBytes], { type: media.mimeType }), media.filename);
+    const response = await runtime.transport.fetch(request.payload.url, {
+      method: 'POST',
+      body: form,
+    });
+    return {
+      status: response.status,
+      text: await response.text(),
+      byteLength: media.bytes.byteLength,
+    };
+  }
+});
+"#;
+    let (url, captured, server) = spawn_captured_http();
+    let (root, spec, profile) = fixture(source);
+    let media = root.join("sample.wav");
+    let media_bytes = 10 * 1024 * 1024;
+    std::fs::File::create(&media)
+        .unwrap()
+        .set_len(media_bytes as u64)
+        .unwrap();
+    let runtime = create_sdk_runtime(
+        source,
+        spec,
+        &profile,
+        Arc::new(AtomicBool::new(false)),
+        HashMap::from([("media-1".into(), media)]),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+
+    let result = runtime
+        .call(
+            "invoke",
+            &json!({"payload":{"url":url}}),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(result["status"], 200);
+    assert_eq!(result["text"], "ok");
+    assert_eq!(result["byteLength"], media_bytes);
+
+    let request = captured.recv().unwrap();
+    let header_end = request
+        .windows(4)
+        .position(|value| value == b"\r\n\r\n")
+        .unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+    assert!(headers.contains("content-type: multipart/form-data; boundary="));
+    assert!(request.len() > media_bytes);
+    assert!(request
+        .windows(b"filename=\"sample.wav\"".len())
+        .any(|value| value == b"filename=\"sample.wav\""));
+    assert!(request
+        .windows(b"whisper-large-v3-turbo".len())
+        .any(|value| value == b"whisper-large-v3-turbo"));
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
