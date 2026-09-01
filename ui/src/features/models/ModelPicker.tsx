@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Search } from "lucide-react";
 import { Input } from "@/components/ui/Input";
@@ -98,7 +98,9 @@ export function ModelPicker({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listboxRef = useRef<HTMLDivElement>(null);
   const selectedOptionRef = useRef<HTMLButtonElement>(null);
+  const shouldPositionSelectedRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [rendered, setRendered] = useState(false);
   const [layout, setLayout] = useState<PickerLayout | null>(null);
@@ -154,12 +156,10 @@ export function ModelPicker({
 
   useEffect(() => {
     if (!open) return;
+    shouldPositionSelectedRef.current = true;
     setRendered(true);
     measurePanel();
-    const frame = window.requestAnimationFrame(() => {
-      searchRef.current?.focus();
-      selectedOptionRef.current?.scrollIntoView?.({ block: "center" });
-    });
+    const frame = window.requestAnimationFrame(() => searchRef.current?.focus());
     window.addEventListener("resize", measurePanel);
     window.addEventListener("scroll", measurePanel, true);
     return () => {
@@ -168,6 +168,21 @@ export function ModelPicker({
       window.removeEventListener("scroll", measurePanel, true);
     };
   }, [measurePanel, open]);
+
+  useLayoutEffect(() => {
+    if (!open || !rendered || !layout || !shouldPositionSelectedRef.current) return;
+    const listbox = listboxRef.current;
+    const selectedOption = selectedOptionRef.current;
+    if (!listbox || !selectedOption) return;
+
+    listbox.scrollTop = Math.max(
+      0,
+      selectedOption.offsetTop
+        - listbox.offsetTop
+        - (listbox.clientHeight - selectedOption.offsetHeight) / 2,
+    );
+    shouldPositionSelectedRef.current = false;
+  }, [layout, open, rendered]);
 
   useEffect(() => {
     if (open || rendered) return;
@@ -312,7 +327,7 @@ export function ModelPicker({
             </div>
           </div>
 
-          <div id={listboxId} role="listbox" aria-label={panelLabel.replace(/^选择/u, "")} className="min-h-0 flex-1 overflow-y-auto py-2 pl-2 pr-1">
+          <div ref={listboxRef} id={listboxId} role="listbox" aria-label={panelLabel.replace(/^选择/u, "")} className="min-h-0 flex-1 overflow-y-auto py-2 pl-2 pr-1">
             {visibleOptions.length === 0 && (
               <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
             )}
