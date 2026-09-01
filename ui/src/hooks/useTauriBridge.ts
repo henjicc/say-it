@@ -3,7 +3,6 @@ import { CMD, EVT, cmd, on, type AppSnapshot, type DomainEventEnvelope } from "@
 import { useTauriEvent } from "./useTauriEvent";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
-import { syncDebugLogToBackend } from "@/store/useDictPrefs";
 import { useCuePlayback } from "./useCuePlayback";
 import { useFloatingOrbSync } from "./useFloatingOrbSync";
 import {
@@ -54,7 +53,6 @@ export function useTauriBridge() {
   useEffect(() => {
     let cancelled = false;
     let unlistenDomain: (() => void) | undefined;
-    syncDebugLogToBackend();
     const uninstallSubtitleHotkeyFallback = installSubtitleFocusHotkeyFallback();
     const applyDomainEvent = (event: DomainEventEnvelope) => {
       if (event.domain === "dictation") applyDictationRuntime((event.payload || {}) as never);

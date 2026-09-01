@@ -674,6 +674,7 @@ pub(crate) fn load_persisted_state(
     let mut data = load_persisted_data_from_path(&source)?;
     migrate_persisted_data(&mut data);
     migrate_credentials_and_ids(&source, &mut data, &LocalCredentialStore::default())?;
+    crate::application::settings::migrate_loaded_settings(&mut data.app_settings);
     data.providers = normalize_settings(data.providers);
     crate::application::dictation::repair_empty_asr_model(&mut data.app_settings.dictation_prefs);
     crate::application::customization::migrate_legacy_provider_hotwords(

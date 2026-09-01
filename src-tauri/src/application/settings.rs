@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +27,8 @@ pub(crate) struct AppSettings {
     pub(crate) assistant_prefs: Value,
     #[serde(default = "default_history_prefs")]
     pub(crate) history_prefs: Value,
+    #[serde(default = "default_diagnostics_prefs")]
+    pub(crate) diagnostics_prefs: Value,
     #[serde(default)]
     pub(crate) onboarding_version: u32,
     #[serde(default = "empty_object")]
@@ -65,7 +67,15 @@ fn default_assistant_prefs() -> Value {
         .expect("default assistant preferences must serialize")
 }
 fn default_history_prefs() -> Value {
-    serde_json::json!({"enabled":true,"retentionDays":30,"excludedApps":[]})
+    serde_json::json!({
+        "enabled":true,
+        "retentionDays":30,
+        "excludedApps":[],
+        "finalDraftLearningEnabled":false
+    })
+}
+fn default_diagnostics_prefs() -> Value {
+    serde_json::json!({"verboseLogging":false})
 }
 
 impl Default for AppSettings {
@@ -79,6 +89,7 @@ impl Default for AppSettings {
             customization_prefs: empty_object(),
             assistant_prefs: default_assistant_prefs(),
             history_prefs: default_history_prefs(),
+            diagnostics_prefs: default_diagnostics_prefs(),
             onboarding_version: 0,
             setup_results: empty_object(),
             theme: default_theme(),
@@ -86,6 +97,25 @@ impl Default for AppSettings {
             custom_cue_end: None,
         }
     }
+}
+
+pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
+    if let Some(history) = settings.history_prefs.as_object_mut() {
+        history
+            .entry("finalDraftLearningEnabled")
+            .or_insert(Value::Bool(false));
+    } else {
+        settings.history_prefs = default_history_prefs();
+    }
+    if settings.schema_version < 5 {
+        let legacy_verbose = settings
+            .dictation_prefs
+            .get("debugLog")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        settings.diagnostics_prefs = serde_json::json!({"verboseLogging":legacy_verbose});
+    }
+    settings.schema_version = SETTINGS_SCHEMA_VERSION;
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -195,6 +225,19 @@ pub(crate) fn update_app_settings(
         {
             return Err("历史排除应用必须是数组".into());
         }
+        if value
+            .get("finalDraftLearningEnabled")
+            .is_some_and(|enabled| !enabled.is_boolean())
+        {
+            return Err("最终草稿学习开关必须是布尔值".into());
+        }
+    }
+    if domain == "diagnostics"
+        && value
+            .get("verboseLogging")
+            .is_some_and(|enabled| !enabled.is_boolean())
+    {
+        return Err("详细日志开关必须是布尔值".into());
     }
     let mut next = state
         .app_settings
@@ -209,6 +252,7 @@ pub(crate) fn update_app_settings(
         "customization" => next.customization_prefs = value,
         "assistant" => next.assistant_prefs = value,
         "history" => next.history_prefs = value,
+        "diagnostics" => next.diagnostics_prefs = value,
         "theme" => next.theme = value,
         _ => return Err(format!("未知配置领域：{domain}")),
     }
@@ -233,7 +277,16 @@ pub(crate) fn update_app_settings(
         }
         return Err(error);
     }
+    if domain == "diagnostics" {
+        crate::application::diagnostics::set_verbose(
+            next.diagnostics_prefs
+                .get("verboseLogging")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+    }
     if domain == "history" {
+        crate::application::final_draft::cancel_current(&app, "settingsChanged");
         let days = next
             .history_prefs
             .get("retentionDays")
@@ -357,6 +410,19 @@ mod tests {
         );
         assert_eq!(v.assistant_prefs["ask"]["activeTemplateId"], "ask-direct");
         assert!(v.setup_results.is_object());
+        assert_eq!(v.history_prefs["finalDraftLearningEnabled"], false);
+        assert_eq!(v.diagnostics_prefs["verboseLogging"], false);
+    }
+    #[test]
+    fn legacy_debug_log_migrates_once_to_diagnostics() {
+        let mut settings = AppSettings::default();
+        settings.schema_version = 4;
+        settings.dictation_prefs = serde_json::json!({"debugLog":true});
+        settings.diagnostics_prefs = serde_json::json!({});
+        migrate_loaded_settings(&mut settings);
+        assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert_eq!(settings.diagnostics_prefs["verboseLogging"], true);
+        assert_eq!(settings.history_prefs["finalDraftLearningEnabled"], false);
     }
     #[test]
     fn rejects_non_object_domain() {

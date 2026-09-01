@@ -41,13 +41,18 @@ use application::catalog::get_model_catalog;
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
 use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
+use application::diagnostics::{
+    clear_diagnostic_logs, export_diagnostic_bundle, get_diagnostic_status,
+    open_diagnostic_directory, set_content_diagnostics,
+};
 use application::dictation::{
     dictation_cancel, dictation_start, dictation_stop, dictation_toggle, dictation_use_raw_text,
     get_dictation_runtime, list_running_apps, preview_dictation_cue,
 };
 use application::history::{
-    clear_history, clear_usage_summary, delete_history_entry, get_usage_summary,
-    open_history_window, query_history, retry_history_injection, update_history_text,
+    clear_history, clear_usage_summary, confirm_history_final_text, delete_history_entry,
+    discard_history_final_text, get_usage_summary, open_history_window, query_history,
+    retry_history_injection, update_history_text,
 };
 use application::llm_models::refresh_llm_models;
 use application::performance::get_performance_metrics;
@@ -139,7 +144,7 @@ pub fn debug_log_enabled() -> bool {
 // 发布构建完全移除实际日志输出，避免把这类数据写入用户机器日志。
 #[cfg(debug_assertions)]
 pub(crate) fn development_debug_log(component: &str, message: impl std::fmt::Display) {
-    eprintln!("[{component}][dev] {message}");
+    application::diagnostics::legacy_debug_log(component, &message.to_string());
 }
 
 #[cfg(not(debug_assertions))]
@@ -148,6 +153,7 @@ pub(crate) fn development_debug_log(_component: &str, _message: impl std::fmt::D
 #[tauri::command]
 fn set_debug_log(enabled: bool) {
     DEBUG_LOG.store(enabled, Ordering::Relaxed);
+    application::diagnostics::set_verbose(enabled);
 }
 
 #[tauri::command]
@@ -168,7 +174,8 @@ fn debug_model_call_state(message: String) {
 macro_rules! dlog {
     ($($arg:tt)*) => {{
         if $crate::debug_log_enabled() {
-            eprintln!($($arg)*);
+            let message = format!($($arg)*);
+            $crate::application::diagnostics::legacy_debug_log("dlog", &message);
         }
     }};
 }
@@ -217,10 +224,12 @@ fn main() {
         .manage(RuntimeState::default())
         .setup(|app| {
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            application::diagnostics::initialize(&app.handle()).map_err(std::io::Error::other)?;
             #[cfg(target_os = "macos")]
             if let Err(error) = migrate_legacy_macos_autostart(&app.handle()) {
                 eprintln!("[autostart] {error}");
             }
+
             #[cfg(windows)]
             {
                 let development_probe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -301,6 +310,21 @@ fn main() {
                     *mouse_gesture = persisted.mouse_gesture.normalized();
                 }
             }
+
+            let verbose_logging = app
+                .state::<RuntimeState>()
+                .app_settings
+                .lock()
+                .ok()
+                .and_then(|settings| {
+                    settings
+                        .diagnostics_prefs
+                        .get("verboseLogging")
+                        .and_then(serde_json::Value::as_bool)
+                })
+                .unwrap_or(false);
+            DEBUG_LOG.store(verbose_logging, Ordering::Relaxed);
+            application::diagnostics::set_verbose(verbose_logging);
 
             application::history::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::plugin_management::initialize(&app.handle())?;
@@ -585,9 +609,16 @@ fn main() {
             uninstall_obs_overlay,
             query_history,
             update_history_text,
+            confirm_history_final_text,
+            discard_history_final_text,
             retry_history_injection,
             delete_history_entry,
             clear_history,
+            get_diagnostic_status,
+            set_content_diagnostics,
+            clear_diagnostic_logs,
+            open_diagnostic_directory,
+            export_diagnostic_bundle,
             get_usage_summary,
             clear_usage_summary,
             open_history_window,

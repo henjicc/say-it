@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
-import { CheckField } from "@/components/ui/Field";
 import { LogPanel } from "@/components/ui/LogPanel";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
@@ -12,7 +11,6 @@ import { DictationShortcutsPanel } from "@/views/DictationShortcutsPanel";
 import { cn } from "@/lib/cn";
 import { contextDebugShortcutHint, contextDebugShortcutLabel } from "@/lib/platform";
 import { useDictationStore } from "@/store/useDictationStore";
-import { useDictPrefs } from "@/store/useDictPrefs";
 import { toggleDictation, clearDictLog } from "@/features/dictation/controller";
 import { CMD, cmd } from "@/lib/tauri";
 import { useUiStore, type DictationTabKey } from "@/store/useUiStore";
@@ -34,8 +32,6 @@ export function DictationView() {
   const tab = useUiStore((state) => state.dictationTab);
   const setTab = useUiStore((state) => state.setDictationTab);
   const { statusText, statusTone, latestText, log, recording } = useDictationStore();
-  const prefs = useDictPrefs((s) => s.prefs);
-  const patch = useDictPrefs((s) => s.patch);
   const [contextDebugOpening, setContextDebugOpening] = useState(false);
   const [contextDebugNotice, setContextDebugNotice] = useState("");
 
@@ -110,9 +106,6 @@ export function DictationView() {
                 <Button size="sm" onClick={clearDictLog}>
                   清空日志
                 </Button>
-                <CheckField checked={prefs.debugLog} onChange={(v) => patch({ debugLog: v })}>
-                  输出调试日志
-                </CheckField>
               </div>
               <LogPanel className="mt-2">{log}</LogPanel>
             </div>

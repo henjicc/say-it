@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant as StdInstant;
 use tauri::State;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -775,7 +776,25 @@ pub(crate) async fn process_prompt_with_options(
     default_reasoning: &str,
     enable_web_search: bool,
 ) -> Result<String, String> {
+    let started = StdInstant::now();
     let profile = selected_profile(state, provider_id, model_override)?;
+    crate::application::diagnostics::event(
+        "debug",
+        "smartText.requested",
+        json!({
+            "scope":log_scope,
+            "providerId":&profile.id,
+            "modelId":profile_value(&profile, "model"),
+            "systemPromptChars":system_prompt.chars().count(),
+            "systemPromptFingerprint":crate::application::diagnostics::fingerprint(system_prompt),
+            "userPromptChars":user_prompt.chars().count(),
+            "userPromptFingerprint":crate::application::diagnostics::fingerprint(user_prompt),
+        }),
+    );
+    crate::application::diagnostics::content_event(
+        "smartText.requested",
+        json!({"scope":log_scope,"systemPrompt":system_prompt,"userPrompt":user_prompt}),
+    );
     if profile.kind == "llm:groq" {
         let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
         let messages = vec![
@@ -789,9 +808,11 @@ pub(crate) async fn process_prompt_with_options(
                 profile_value(&profile, "model")
             ),
         );
-        let (output, _) =
-            run_groq_sdk(state, profile, messages, default_reasoning, request_id).await?;
-        return final_text_from_output(&output);
+        let result = run_groq_sdk(state, profile, messages, default_reasoning, request_id)
+            .await
+            .and_then(|(output, _)| final_text_from_output(&output));
+        log_prompt_completion(log_scope, started, &result);
+        return result;
     }
     if is_plugin_llm(&profile) {
         let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
@@ -799,7 +820,7 @@ pub(crate) async fn process_prompt_with_options(
             json!({ "role": "system", "content": system_prompt }),
             json!({ "role": "user", "content": user_prompt }),
         ];
-        let (output, _) = run_plugin_llm(
+        let result = run_plugin_llm(
             state,
             profile,
             messages,
@@ -807,8 +828,10 @@ pub(crate) async fn process_prompt_with_options(
             structured_json,
             request_id,
         )
-        .await?;
-        return final_text_from_output(&output);
+        .await
+        .and_then(|(output, _)| final_text_from_output(&output));
+        log_prompt_completion(log_scope, started, &result);
+        return result;
     }
     let (client, model) = client_and_model(&profile)?;
     crate::development_debug_log(
@@ -858,7 +881,31 @@ pub(crate) async fn process_prompt_with_options(
             output
         ),
     );
-    final_text_from_output(output)
+    let result = final_text_from_output(output);
+    log_prompt_completion(log_scope, started, &result);
+    result
+}
+
+fn log_prompt_completion(scope: &str, started: StdInstant, result: &Result<String, String>) {
+    let output = result.as_ref().ok();
+    crate::application::diagnostics::event(
+        if result.is_ok() { "debug" } else { "warn" },
+        "smartText.completed",
+        json!({
+            "scope":scope,
+            "status":if result.is_ok() { "succeeded" } else { "failed" },
+            "durationMs":started.elapsed().as_millis(),
+            "outputTextChars":output.map(|value| value.chars().count()).unwrap_or(0),
+            "outputTextFingerprint":output.map(|value| crate::application::diagnostics::fingerprint(value)).unwrap_or_default(),
+            "errorCode":result.as_ref().err().map(|_| "requestFailed"),
+        }),
+    );
+    if let Some(output) = output {
+        crate::application::diagnostics::content_event(
+            "smartText.completed",
+            json!({"scope":scope,"outputText":output}),
+        );
+    }
 }
 
 /// 智能问答专用流式调用。结构化 JSON 只适合机器解析，问答则直接以 Markdown 正文

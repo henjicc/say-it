@@ -115,6 +115,8 @@ export const CMD = {
   uninstallObsOverlay: "uninstall_obs_overlay",
   queryHistory: "query_history",
   updateHistoryText: "update_history_text",
+  confirmHistoryFinalText: "confirm_history_final_text",
+  discardHistoryFinalText: "discard_history_final_text",
   retryHistoryInjection: "retry_history_injection",
   deleteHistoryEntry: "delete_history_entry",
   clearHistory: "clear_history",
@@ -140,6 +142,11 @@ export const CMD = {
   getPerformanceMetrics: "get_performance_metrics",
   getUsageSummary: "get_usage_summary",
   clearUsageSummary: "clear_usage_summary",
+  getDiagnosticStatus: "get_diagnostic_status",
+  setContentDiagnostics: "set_content_diagnostics",
+  clearDiagnosticLogs: "clear_diagnostic_logs",
+  openDiagnosticDirectory: "open_diagnostic_directory",
+  exportDiagnosticBundle: "export_diagnostic_bundle",
 } as const;
 
 export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";
@@ -201,6 +208,7 @@ export interface AppSettings {
   customizationPrefs: Record<string, unknown>;
   assistantPrefs: Record<string, unknown>;
   historyPrefs: Record<string, unknown>;
+  diagnosticsPrefs: Record<string, unknown>;
   onboardingVersion: number;
   setupResults: Record<string, unknown>;
   theme: Record<string, unknown>;
@@ -252,6 +260,12 @@ export interface HistoryEntry {
   taskKind: "dictation" | "translateSpeech" | "editSelection" | "ask";
   sourceText: string;
   outputText: string;
+  finalText?: string | null;
+  finalTextConfidence?: "high" | "medium" | "confirmed" | null;
+  finalTextSource?: "keyboard" | "click" | "autoEnter" | "manual" | null;
+  finalTextObservedAt?: number | null;
+  smartProcessingApplied: boolean;
+  diffSegments: Array<{ kind: "equal" | "delete" | "insert"; text: string }>;
   instruction: string;
   appName: string;
   processName: string;
@@ -260,6 +274,13 @@ export interface HistoryEntry {
   status: "recognized" | "processed" | "succeeded" | "failed" | "cancelled";
   error?: string | null;
   durationMs: number;
+}
+
+export interface DiagnosticStatus {
+  directory: string;
+  verboseLogging: boolean;
+  contentLoggingEnabled: boolean;
+  contentLoggingRemainingSeconds: number;
 }
 
 export interface HistoryPage {

@@ -23,6 +23,7 @@ pub(crate) struct RuntimeState {
     pub(crate) audio_session: crate::application::audio_session::AudioSessionCoordinator,
     pub(crate) legacy_audio_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) dictation_runtime: crate::application::dictation::DictationRuntime,
+    pub(crate) final_draft_runtime: crate::application::final_draft::FinalDraftRuntime,
     pub(crate) active_app_context: crate::active_app_context::ContextCaptureService,
     pub(crate) subtitle_runtime: crate::application::subtitles::SubtitleRuntime,
     pub(crate) transcription_runtime: crate::application::transcription::TranscriptionRuntime,

@@ -17,6 +17,21 @@ function statusLabel(status: HistoryEntry["status"]) {
   return ({ recognized: "原文已保存", processed: "结果已保存，待输入", succeeded: "已完成", failed: "失败", cancelled: "已取消" } as const)[status] || status;
 }
 
+function finalTextLabel(entry: HistoryEntry) {
+  if (entry.finalTextConfidence === "confirmed") return "已确认并学习";
+  if (entry.finalTextConfidence === "high") return "高可信 · 已学习";
+  if (entry.finalTextConfidence === "medium") return "待确认";
+  return "";
+}
+
+function finalTextSourceLabel(source: HistoryEntry["finalTextSource"]) {
+  return ({ keyboard: "回车发送", click: "点击发送", autoEnter: "自动回车", manual: "手工确认" } as const)[source || "keyboard"];
+}
+
+function primaryText(entry: HistoryEntry) {
+  return entry.finalText || entry.outputText || entry.sourceText;
+}
+
 export function HistoryView() {
   const [page, setPage] = useState<HistoryPage>({ items: [], total: 0, recoveryNotice: null });
   const [search, setSearch] = useState("");
@@ -64,9 +79,28 @@ export function HistoryView() {
 
   async function save(entry: HistoryEntry) {
     try {
-      await cmd(CMD.updateHistoryText, { id: entry.id, outputText: draft });
+      await cmd(CMD.confirmHistoryFinalText, { id: entry.id, finalText: draft });
       setEditing(null);
       setMessage("已保存，并记录为一条显式纠错样本");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function confirmObserved(entry: HistoryEntry) {
+    if (!entry.finalText) return;
+    try {
+      await cmd(CMD.confirmHistoryFinalText, { id: entry.id, finalText: entry.finalText });
+      setMessage("已确认最终草稿并加入学习样本");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function discardObserved(entry: HistoryEntry) {
+    try {
+      await cmd(CMD.discardHistoryFinalText, { id: entry.id });
+      setMessage("已忽略本次观察结果");
     } catch (error) {
       setMessage(String(error));
     }
@@ -121,16 +155,40 @@ export function HistoryView() {
           <article key={entry.id} className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
             <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--color-fg-subtle)]">
               <span>{taskLabel(entry.taskKind)}</span><span>·</span><span>{statusLabel(entry.status)}</span>
+              {entry.smartProcessingApplied && <><span>·</span><span>经过智能处理</span></>}
+              {entry.finalTextConfidence && <><span>·</span><span>{finalTextLabel(entry)}（{finalTextSourceLabel(entry.finalTextSource)}）</span></>}
               {entry.appName && <><span>·</span><span>{entry.appName}</span></>}
               <span className="ml-auto">{new Date(entry.createdAt * 1000).toLocaleString()}</span>
             </div>
             {editing === entry.id ? (
               <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} aria-label="修正结果" autoFocus />
             ) : (
-              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{entry.outputText || entry.sourceText}</p>
+              <div>
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{primaryText(entry)}</p>
+                {entry.finalText && entry.diffSegments.length > 0 && (
+                  <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3 text-sm leading-6" aria-label="最终草稿差异">
+                    {entry.diffSegments.map((segment, index) => (
+                      <span
+                        key={`${segment.kind}-${index}`}
+                        className={segment.kind === "delete"
+                          ? "bg-[var(--color-err)]/15 text-[var(--color-err)] line-through"
+                          : segment.kind === "insert"
+                            ? "bg-[var(--color-ok)]/15 text-[var(--color-ok)]"
+                            : "text-[var(--color-fg-subtle)]"}
+                      >{segment.text}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             {entry.error && <p className="mt-2 text-xs text-[var(--color-err)]">{entry.error}</p>}
-            {entry.sourceText && entry.sourceText !== entry.outputText && (
+            {entry.finalText && entry.outputText && entry.finalText !== entry.outputText && (
+              <details className="mt-3 text-sm text-[var(--color-fg-subtle)]">
+                <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">系统输出</summary>
+                <p className="mt-2 whitespace-pre-wrap break-words leading-6">{entry.outputText}</p>
+              </details>
+            )}
+            {entry.sourceText && entry.sourceText !== primaryText(entry) && (
               <details className="mt-3 text-sm text-[var(--color-fg-subtle)]">
                 <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">{entry.taskKind === "dictation" ? "识别原文" : "原始内容"}</summary>
                 <p className="mt-2 whitespace-pre-wrap break-words leading-6">{entry.sourceText}</p>
@@ -138,12 +196,16 @@ export function HistoryView() {
               </details>
             )}
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void copy(entry.outputText || entry.sourceText)}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+              <Button size="sm" onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
               <Button size="sm" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
               {editing === entry.id ? <>
                 <Button size="sm" variant="primary" onClick={() => void save(entry)}><Check className="h-3.5 w-3.5" aria-hidden />保存</Button>
                 <Button size="sm" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
-              </> : <Button size="sm" disabled={entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(entry.outputText || entry.sourceText); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+              </> : <Button size="sm" disabled={entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+              {entry.finalTextConfidence === "medium" && <>
+                <Button size="sm" variant="primary" onClick={() => void confirmObserved(entry)}><Check className="h-3.5 w-3.5" aria-hidden />确认并学习</Button>
+                <Button size="sm" onClick={() => void discardObserved(entry)}><X className="h-3.5 w-3.5" aria-hidden />忽略</Button>
+              </>}
               <Button size="sm" variant="dangerHover" onClick={() => void remove(entry.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
             </div>
           </article>
