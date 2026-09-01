@@ -316,6 +316,50 @@ input[type="radio"] {
   }
 }
 
+/* 模型面板比普通下拉框更大，需要更明确的位移和纵向展开才能被感知。 */
+.model-picker-panel {
+  backface-visibility: hidden;
+  will-change: opacity, transform;
+}
+
+.model-picker-panel[data-side="bottom"] {
+  --model-picker-shift-y: -10px;
+}
+
+.model-picker-panel[data-side="top"] {
+  --model-picker-shift-y: 10px;
+}
+
+.model-picker-panel[data-state="open"] {
+  animation: model-picker-in 220ms var(--ease-out) both;
+}
+
+.model-picker-panel[data-state="closed"] {
+  animation: model-picker-out 170ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes model-picker-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--model-picker-shift-y), 0) scaleX(0.985) scaleY(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes model-picker-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, var(--model-picker-shift-y), 0) scaleX(0.99) scaleY(0.96);
+  }
+}
+
 @keyframes modal-overlay-in {
   from {
     opacity: 0;

@@ -32,6 +32,9 @@ describe("ModelPicker", () => {
 
     fireEvent.click(screen.getByRole("combobox", { name: "识别模型" }));
     const dialog = await screen.findByRole("dialog", { name: "选择语音识别模型" });
+    expect(dialog).toHaveAttribute("data-state", "open");
+    expect(dialog).toHaveAttribute("data-side", "bottom");
+    expect(dialog.className).toContain("model-picker-panel");
     const search = within(dialog).getByRole("textbox", { name: "搜索语音识别模型" });
     await waitFor(() => expect(search).toHaveFocus());
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
@@ -61,7 +64,8 @@ describe("ModelPicker", () => {
     });
     fireEvent.click(within(dialog).getByRole("option", { name: "Qwen Realtime（实时）" }));
     expect(onChange).toHaveBeenCalledWith("qwen-live");
-    expect(dialog.className).toContain("dropdown-out");
+    expect(dialog).toHaveAttribute("data-state", "closed");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择语音识别模型" })).not.toBeInTheDocument());
   });
 
   it("uses the same searchable supplier panel for LLMs without ASR mode filters", async () => {

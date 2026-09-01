@@ -170,11 +170,17 @@ export function ModelPicker({
   }, [measurePanel, open]);
 
   useEffect(() => {
-    if (open) return;
+    if (open || rendered) return;
     setQuery("");
     setProviderId("all");
     setMode("all");
-  }, [open]);
+  }, [open, rendered]);
+
+  useEffect(() => {
+    if (open || !rendered) return;
+    const fallback = window.setTimeout(() => setRendered(false), 220);
+    return () => window.clearTimeout(fallback);
+  }, [open, rendered]);
 
   useEffect(() => {
     if (!open) return;
@@ -240,9 +246,11 @@ export function ModelPicker({
               closeAndFocus();
             }
           }}
-          onAnimationEnd={() => {
-            if (!open) setRendered(false);
+          onAnimationEnd={(event) => {
+            if (event.currentTarget === event.target && !open) setRendered(false);
           }}
+          data-side={layout.openUpward ? "top" : "bottom"}
+          data-state={open ? "open" : "closed"}
           style={{
             left: layout.left,
             top: layout.top,
@@ -252,10 +260,8 @@ export function ModelPicker({
             transformOrigin: layout.openUpward ? "bottom" : "top",
           }}
           className={cn(
-            "fixed z-[var(--z-portal-popover)] flex flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
-            open
-              ? "animate-[dropdown-in_140ms_var(--ease-out)]"
-              : "pointer-events-none animate-[dropdown-out_110ms_var(--ease-out)_forwards]",
+            "model-picker-panel fixed z-[var(--z-portal-popover)] flex flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line-strong)] bg-[var(--color-overlay)] shadow-[var(--shadow-popover)]",
+            !open && "pointer-events-none",
           )}
         >
           <div className="shrink-0 border-b border-[var(--color-line)] p-3">
