@@ -1301,8 +1301,7 @@ fn submit_enter_is_available(expires_at: Instant, now: Instant) -> bool {
 }
 
 fn orb_accepts_pointer_events(phase: &str, can_submit: bool) -> bool {
-    matches!(phase, "idle" | "armed" | "recording" | "error")
-        || (phase == "success" && can_submit)
+    matches!(phase, "idle" | "armed" | "recording" | "error") || (phase == "success" && can_submit)
 }
 
 async fn cursor_location() -> Option<(i32, i32)> {
@@ -2022,6 +2021,7 @@ pub(crate) fn auto_submit_floating_orb_enter(
     target: crate::active_app_context::ActivationTarget,
 ) {
     tauri::async_runtime::spawn(async move {
+        crate::application::final_draft::mark_auto_enter(&app);
         if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
             let _ = window.set_ignore_cursor_events(true);
         }

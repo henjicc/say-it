@@ -9,15 +9,17 @@ import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
 
 interface HistoryPrefs {
   enabled: boolean;
+  finalDraftLearningEnabled: boolean;
   retentionDays: number;
   excludedApps: string[];
 }
 
-const defaults: HistoryPrefs = { enabled: true, retentionDays: 30, excludedApps: [] };
+const defaults: HistoryPrefs = { enabled: true, finalDraftLearningEnabled: false, retentionDays: 30, excludedApps: [] };
 
 function normalize(value: Record<string, unknown>): HistoryPrefs {
   return {
     enabled: value.enabled !== false,
+    finalDraftLearningEnabled: value.finalDraftLearningEnabled === true,
     retentionDays: Math.min(3650, Math.max(1, Number(value.retentionDays) || 30)),
     excludedApps: Array.isArray(value.excludedApps) ? value.excludedApps.filter((item): item is string => typeof item === "string") : [],
   };
@@ -70,8 +72,17 @@ export function SettingsHistoryPanel() {
     <SettingsSection title="本地历史">
       <p className="text-xs text-[var(--color-fg-subtle)]">历史只保存在当前数据目录，不保存音频；安全输入框永不记录。</p>
       <FormGrid>
-        <Field label="保存历史" hint="关闭后新任务不再写入，已有记录不会自动删除。">
-          <Switch checked={prefs.enabled} onChange={(enabled) => void save({ ...prefs, enabled })} aria-label="保存历史" />
+        <Field label="保存历史" controlId="history-enabled" hint="关闭后新任务不再写入，已有记录不会自动删除。">
+          <Switch id="history-enabled" checked={prefs.enabled} onChange={(enabled) => void save({ ...prefs, enabled })} label="保存历史" />
+        </Field>
+        <Field label="学习最终草稿" controlId="history-final-draft-learning" hint="开启后，仅限本次听写对应输入框，最长观察 120 秒；不会常驻采集键盘或其他文本。">
+          <Switch
+            id="history-final-draft-learning"
+            checked={prefs.finalDraftLearningEnabled}
+            disabled={!prefs.enabled}
+            onChange={(finalDraftLearningEnabled) => void save({ ...prefs, finalDraftLearningEnabled })}
+            label="学习最终草稿"
+          />
         </Field>
         <Field label="保留天数" hint="范围 1～3650 天，过期记录会自动清理。">
           <NumberInput value={prefs.retentionDays} min={1} max={3650} onValueChange={(retentionDays) => void save({ ...prefs, retentionDays })} aria-label="历史保留天数" />

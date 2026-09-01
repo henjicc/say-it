@@ -28,6 +28,7 @@ typedef bool (*SayItFnKeyCallback)(void *context, bool pressed, uint64_t flags);
 typedef bool (*SayItEscapeCallback)(void *context, bool pressed);
 typedef void (*SayItAudioCallback)(void *context, const float *samples, size_t count);
 typedef void (*SayItAudioErrorCallback)(void *context, const char *message);
+typedef void (*SayItFinalDraftObserverCallback)(void *context, int32_t eventType, const char *value);
 typedef void (*SayItMouseMonitorCallback)(
     void *context,
     double x,
@@ -1451,6 +1452,313 @@ char *sayit_macos_vision_ocr_png(const uint8_t *bytes, size_t length, char **err
         }
         return SayItCopyJSON(blocks, error);
     }
+}
+
+@interface SayItFinalDraftObserver : NSObject
+@property(nonatomic) pid_t processId;
+@property(nonatomic) uint32_t maxChars;
+@property(nonatomic) SayItFinalDraftObserverCallback callback;
+@property(nonatomic) void *context;
+@property(nonatomic) AXObserverRef observer;
+@property(nonatomic) AXUIElementRef applicationElement;
+@property(nonatomic) AXUIElementRef focusedElement;
+@property(nonatomic) CFMachPortRef eventTap;
+@property(nonatomic) CFRunLoopRef runLoop;
+@property(nonatomic) dispatch_semaphore_t ready;
+@property(nonatomic) dispatch_semaphore_t stopped;
+@property(nonatomic) BOOL didStop;
+@property(nonatomic, copy) NSString *startupError;
+@property(nonatomic, copy) NSDictionary *initialSnapshot;
+@property(nonatomic, copy) NSString *latestValue;
+@end
+
+static NSDictionary *SayItFinalDraftSnapshot(AXUIElementRef element, uint32_t maxChars) {
+    if (element == NULL) return nil;
+    NSString *value = SayItAXStringAttribute(element, kAXValueAttribute);
+    if (value == nil) return nil;
+    NSUInteger limit = MAX((NSUInteger)1, (NSUInteger)maxChars);
+    BOOL truncated = value.length > limit;
+    NSString *limited = truncated ? SayItTruncateAccessibilityText(value, limit) : value;
+    CFTypeRef rangeValue = NULL;
+    AXError rangeError = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, &rangeValue);
+    if (rangeError != kAXErrorSuccess
+        || rangeValue == NULL
+        || CFGetTypeID(rangeValue) != AXValueGetTypeID()
+        || AXValueGetType((AXValueRef)rangeValue) != kAXValueCFRangeType) {
+        if (rangeValue != NULL) CFRelease(rangeValue);
+        return nil;
+    }
+    CFRange range = CFRangeMake(0, 0);
+    BOOL valid = AXValueGetValue((AXValueRef)rangeValue, kAXValueCFRangeType, &range)
+        && range.location >= 0
+        && range.length >= 0;
+    CFRelease(rangeValue);
+    if (!valid) return nil;
+    return @{
+        @"value": limited ?: @"",
+        @"selectionLocation": @((NSUInteger)range.location),
+        @"selectionLength": @((NSUInteger)range.length),
+        @"truncated": @(truncated),
+    };
+}
+
+static void SayItFinalDraftAXCallback(
+    AXObserverRef observer,
+    AXUIElementRef element,
+    CFStringRef notification,
+    void *context
+) {
+    (void)observer;
+    SayItFinalDraftObserver *owner = (__bridge SayItFinalDraftObserver *)context;
+    if (owner.callback == NULL) return;
+    if (CFEqual(notification, kAXFocusedUIElementChangedNotification)) {
+        owner.callback(owner.context, 2, NULL);
+        return;
+    }
+    if (element != owner.focusedElement) return;
+    NSDictionary *snapshot = SayItFinalDraftSnapshot(owner.focusedElement, owner.maxChars);
+    if ([snapshot[@"truncated"] boolValue]) {
+        owner.callback(owner.context, 1, NULL);
+        return;
+    }
+    NSString *value = snapshot[@"value"];
+    owner.latestValue = value;
+    owner.callback(owner.context, 1, value.UTF8String);
+}
+
+static CGEventRef SayItFinalDraftEventCallback(
+    CGEventTapProxy proxy,
+    CGEventType type,
+    CGEventRef event,
+    void *context
+) {
+    (void)proxy;
+    SayItFinalDraftObserver *owner = (__bridge SayItFinalDraftObserver *)context;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (owner.eventTap != NULL) CGEventTapEnable(owner.eventTap, true);
+        return event;
+    }
+    if (owner.callback == NULL
+        || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != owner.processId) {
+        return event;
+    }
+    if (type == kCGEventKeyDown) {
+        int64_t keyCode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        if (keyCode == 36 || keyCode == 76) {
+            NSString *value = owner.latestValue;
+            owner.callback(owner.context, 3, value.UTF8String);
+        }
+    } else if (type == kCGEventLeftMouseDown) {
+        NSString *value = owner.latestValue;
+        owner.callback(owner.context, 4, value.UTF8String);
+    }
+    return event;
+}
+
+@implementation SayItFinalDraftObserver
+- (void)startOnThread {
+    @autoreleasepool {
+        self.applicationElement = AXUIElementCreateApplication(self.processId);
+        if (self.applicationElement == NULL) {
+            self.startupError = @"无法创建目标应用辅助功能元素";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        AXUIElementSetMessagingTimeout(self.applicationElement, 0.2f);
+        CFTypeRef focused = NULL;
+        AXError focusedError = AXUIElementCopyAttributeValue(
+            self.applicationElement,
+            kAXFocusedUIElementAttribute,
+            &focused
+        );
+        if (focusedError != kAXErrorSuccess || focused == NULL || CFGetTypeID(focused) != AXUIElementGetTypeID()) {
+            if (focused != NULL) CFRelease(focused);
+            self.startupError = @"当前应用没有可观察的焦点输入框";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        self.focusedElement = (AXUIElementRef)focused;
+        AXUIElementSetMessagingTimeout(self.focusedElement, 0.15f);
+        CFTypeRef subrole = NULL;
+        AXError subroleError = AXUIElementCopyAttributeValue(self.focusedElement, kAXSubroleAttribute, &subrole);
+        BOOL secure = subroleError == kAXErrorSuccess
+            && subrole != NULL
+            && CFGetTypeID(subrole) == CFStringGetTypeID()
+            && CFEqual(subrole, kAXSecureTextFieldSubrole);
+        if (subrole != NULL) CFRelease(subrole);
+        if (secure) {
+            self.startupError = @"安全输入框不会启动最终草稿观察";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        NSNumber *editable = SayItAXSelectionEditable(self.focusedElement);
+        if (editable == nil || !editable.boolValue) {
+            self.startupError = @"当前焦点控件不是可安全观察的输入框";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        self.initialSnapshot = SayItFinalDraftSnapshot(self.focusedElement, self.maxChars);
+        if (self.initialSnapshot == nil) {
+            self.startupError = @"焦点输入框没有暴露完整文本与光标范围";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        self.latestValue = self.initialSnapshot[@"value"];
+        AXError observerError = AXObserverCreate(self.processId, SayItFinalDraftAXCallback, &_observer);
+        if (observerError != kAXErrorSuccess || self.observer == NULL) {
+            self.startupError = @"无法创建输入框值变化观察器";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        AXError valueError = AXObserverAddNotification(
+            self.observer,
+            self.focusedElement,
+            kAXValueChangedNotification,
+            (__bridge void *)self
+        );
+        if (valueError != kAXErrorSuccess) {
+            self.startupError = @"当前输入框不支持值变化通知";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        (void)AXObserverAddNotification(
+            self.observer,
+            self.focusedElement,
+            kAXSelectedTextChangedNotification,
+            (__bridge void *)self
+        );
+        (void)AXObserverAddNotification(
+            self.observer,
+            self.applicationElement,
+            kAXFocusedUIElementChangedNotification,
+            (__bridge void *)self
+        );
+
+        CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventLeftMouseDown);
+        self.eventTap = CGEventTapCreate(
+            kCGSessionEventTap,
+            kCGTailAppendEventTap,
+            kCGEventTapOptionListenOnly,
+            mask,
+            SayItFinalDraftEventCallback,
+            (__bridge void *)self
+        );
+        if (self.eventTap == NULL) {
+            self.startupError = @"无法创建最终草稿发送动作监听器";
+            dispatch_semaphore_signal(self.ready);
+            return;
+        }
+        self.runLoop = CFRunLoopGetCurrent();
+        CFRetain(self.runLoop);
+        CFRunLoopAddSource(
+            self.runLoop,
+            AXObserverGetRunLoopSource(self.observer),
+            kCFRunLoopCommonModes
+        );
+        CFRunLoopSourceRef tapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, self.eventTap, 0);
+        CFRunLoopAddSource(self.runLoop, tapSource, kCFRunLoopCommonModes);
+        CFRelease(tapSource);
+        CGEventTapEnable(self.eventTap, true);
+        dispatch_semaphore_signal(self.ready);
+        if (self.didStop) {
+            dispatch_semaphore_signal(self.stopped);
+            return;
+        }
+        CFRunLoopRun();
+        dispatch_semaphore_signal(self.stopped);
+    }
+}
+- (void)stop {
+    @synchronized (self) {
+        if (self.didStop) return;
+        self.didStop = YES;
+        self.callback = NULL;
+    }
+    if (self.eventTap != NULL) {
+        CGEventTapEnable(self.eventTap, false);
+        CFMachPortInvalidate(self.eventTap);
+    }
+    if (self.runLoop != NULL) {
+        CFRunLoopStop(self.runLoop);
+        dispatch_semaphore_wait(self.stopped, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
+    }
+}
+- (void)dealloc {
+    if (_observer != NULL) CFRelease(_observer);
+    if (_applicationElement != NULL) CFRelease(_applicationElement);
+    if (_focusedElement != NULL) CFRelease(_focusedElement);
+    if (_eventTap != NULL) CFRelease(_eventTap);
+    if (_runLoop != NULL) CFRelease(_runLoop);
+}
+@end
+
+void *sayit_macos_final_draft_observer_start(
+    uint32_t processId,
+    uint32_t maxChars,
+    SayItFinalDraftObserverCallback callback,
+    void *context,
+    char **initialJson,
+    char **error
+) {
+    if (!AXIsProcessTrusted()) {
+        SayItSetError(error, @"最终草稿观察需要辅助功能权限");
+        return NULL;
+    }
+    if (processId == 0 || callback == NULL || initialJson == NULL) {
+        SayItSetError(error, @"最终草稿观察参数无效");
+        return NULL;
+    }
+    if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != (pid_t)processId) {
+        SayItSetError(error, @"最终草稿观察目标已不在前台");
+        return NULL;
+    }
+    SayItFinalDraftObserver *owner = [[SayItFinalDraftObserver alloc] init];
+    owner.processId = (pid_t)processId;
+    owner.maxChars = maxChars;
+    owner.callback = callback;
+    owner.context = context;
+    owner.ready = dispatch_semaphore_create(0);
+    owner.stopped = dispatch_semaphore_create(0);
+    [NSThread detachNewThreadSelector:@selector(startOnThread) toTarget:owner withObject:nil];
+    if (dispatch_semaphore_wait(owner.ready, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+        [owner stop];
+        SayItSetError(error, @"启动最终草稿观察器超时");
+        return NULL;
+    }
+    if (owner.startupError != nil) {
+        [owner stop];
+        SayItSetError(error, owner.startupError);
+        return NULL;
+    }
+    *initialJson = SayItCopyJSON(owner.initialSnapshot, error);
+    if (*initialJson == NULL) {
+        [owner stop];
+        return NULL;
+    }
+    return (void *)CFBridgingRetain(owner);
+}
+
+char *sayit_macos_final_draft_observer_snapshot(void *handle, char **error) {
+    if (handle == NULL) {
+        SayItSetError(error, @"最终草稿观察器不存在");
+        return NULL;
+    }
+    SayItFinalDraftObserver *owner = (__bridge SayItFinalDraftObserver *)handle;
+    NSDictionary *snapshot = SayItFinalDraftSnapshot(owner.focusedElement, owner.maxChars);
+    if (snapshot == nil) {
+        SayItSetError(error, @"当前输入框已无法读取");
+        return NULL;
+    }
+    if (![snapshot[@"truncated"] boolValue]) {
+        owner.latestValue = snapshot[@"value"];
+    }
+    return SayItCopyJSON(snapshot, error);
+}
+
+void sayit_macos_final_draft_observer_stop(void *handle) {
+    if (handle == NULL) return;
+    SayItFinalDraftObserver *owner = CFBridgingRelease(handle);
+    [owner stop];
 }
 
 @interface SayItKeyboardTap : NSObject

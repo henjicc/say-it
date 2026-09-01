@@ -23,6 +23,14 @@ pub(crate) struct HistoryEntry {
     pub(crate) task_kind: String,
     pub(crate) source_text: String,
     pub(crate) output_text: String,
+    pub(crate) final_text: Option<String>,
+    #[serde(skip)]
+    pub(crate) final_text_baseline: Option<String>,
+    pub(crate) final_text_confidence: Option<String>,
+    pub(crate) final_text_source: Option<String>,
+    pub(crate) final_text_observed_at: Option<i64>,
+    pub(crate) smart_processing_applied: bool,
+    pub(crate) diff_segments: Vec<TextDiffSegment>,
     pub(crate) instruction: String,
     pub(crate) app_name: String,
     pub(crate) process_name: String,
@@ -31,6 +39,13 @@ pub(crate) struct HistoryEntry {
     pub(crate) status: String,
     pub(crate) error: Option<String>,
     pub(crate) duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TextDiffSegment {
+    pub(crate) kind: String,
+    pub(crate) text: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
@@ -61,6 +76,7 @@ pub(crate) struct NewHistoryEntry {
     pub(crate) task_kind: String,
     pub(crate) source_text: String,
     pub(crate) output_text: String,
+    pub(crate) smart_processing_applied: bool,
     pub(crate) instruction: String,
     pub(crate) app_name: String,
     pub(crate) process_name: String,
@@ -77,6 +93,8 @@ pub(crate) struct CorrectionSample {
     pub(crate) before_text: String,
     pub(crate) after_text: String,
     pub(crate) app_name: String,
+    pub(crate) origin: String,
+    pub(crate) confidence: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -118,6 +136,12 @@ fn open_path(path: &Path) -> Result<Connection, String> {
                task_kind TEXT NOT NULL,
                source_text TEXT NOT NULL,
                output_text TEXT NOT NULL,
+               final_text TEXT,
+               final_text_baseline TEXT,
+               final_text_confidence TEXT,
+               final_text_source TEXT,
+               final_text_observed_at INTEGER,
+               smart_processing_applied INTEGER NOT NULL DEFAULT 0,
                instruction TEXT NOT NULL DEFAULT '',
                app_name TEXT NOT NULL DEFAULT '',
                process_name TEXT NOT NULL DEFAULT '',
@@ -135,6 +159,8 @@ fn open_path(path: &Path) -> Result<Connection, String> {
                before_text TEXT NOT NULL,
                after_text TEXT NOT NULL,
                app_name TEXT NOT NULL DEFAULT '',
+               origin TEXT NOT NULL DEFAULT 'manual',
+               confidence TEXT NOT NULL DEFAULT 'confirmed',
                created_at INTEGER NOT NULL,
                FOREIGN KEY(entry_id) REFERENCES history_entries(id) ON DELETE CASCADE
              );
@@ -147,7 +173,59 @@ fn open_path(path: &Path) -> Result<Connection, String> {
              );",
         )
         .map_err(|error| format!("初始化历史数据库失败：{error}"))?;
+    migrate_history_schema(&connection)?;
     Ok(connection)
+}
+
+fn table_columns(
+    connection: &Connection,
+    table: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("读取历史表结构失败：{error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("查询历史表结构失败：{error}"))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|error| format!("解析历史表结构失败：{error}"))?;
+    Ok(columns)
+}
+
+fn migrate_history_schema(connection: &Connection) -> Result<(), String> {
+    let history = table_columns(connection, "history_entries")?;
+    for (column, definition) in [
+        ("final_text", "TEXT"),
+        ("final_text_baseline", "TEXT"),
+        ("final_text_confidence", "TEXT"),
+        ("final_text_source", "TEXT"),
+        ("final_text_observed_at", "INTEGER"),
+        ("smart_processing_applied", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !history.contains(column) {
+            connection
+                .execute(
+                    &format!("ALTER TABLE history_entries ADD COLUMN {column} {definition}"),
+                    [],
+                )
+                .map_err(|error| format!("升级历史字段 {column} 失败：{error}"))?;
+        }
+    }
+    let samples = table_columns(connection, "correction_samples")?;
+    for (column, definition) in [
+        ("origin", "TEXT NOT NULL DEFAULT 'manual'"),
+        ("confidence", "TEXT NOT NULL DEFAULT 'confirmed'"),
+    ] {
+        if !samples.contains(column) {
+            connection
+                .execute(
+                    &format!("ALTER TABLE correction_samples ADD COLUMN {column} {definition}"),
+                    [],
+                )
+                .map_err(|error| format!("升级纠错字段 {column} 失败：{error}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn output_metrics(text: &str, spoken_duration_ms: u64) -> (u64, u64) {
@@ -437,15 +515,16 @@ fn insert_entry(connection: &Connection, id: &str, entry: &NewHistoryEntry) -> R
     connection
         .execute(
             "INSERT INTO history_entries
-             (id, created_at, task_kind, source_text, output_text, instruction, app_name,
-              process_name, provider_id, model_id, status, error, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             (id, created_at, task_kind, source_text, output_text, smart_processing_applied,
+              instruction, app_name, process_name, provider_id, model_id, status, error, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 id,
                 now_seconds(),
                 entry.task_kind,
                 entry.source_text,
                 entry.output_text,
+                entry.smart_processing_applied,
                 entry.instruction,
                 entry.app_name,
                 entry.process_name,
@@ -528,21 +607,84 @@ fn recover_interrupted_entries(connection: &Connection) -> Result<usize, String>
 }
 
 fn map_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
+    let output_text: String = row.get(4)?;
+    let final_text: Option<String> = row.get(5)?;
+    let final_text_baseline: Option<String> = row.get(6)?;
+    let diff_baseline = final_text_baseline.as_deref().unwrap_or(&output_text);
     Ok(HistoryEntry {
         id: row.get(0)?,
         created_at: row.get(1)?,
         task_kind: row.get(2)?,
         source_text: row.get(3)?,
-        output_text: row.get(4)?,
-        instruction: row.get(5)?,
-        app_name: row.get(6)?,
-        process_name: row.get(7)?,
-        provider_id: row.get(8)?,
-        model_id: row.get(9)?,
-        status: row.get(10)?,
-        error: row.get(11)?,
-        duration_ms: row.get::<_, i64>(12)?.max(0) as u64,
+        diff_segments: final_text
+            .as_deref()
+            .filter(|value| *value != diff_baseline)
+            .map(|value| diff_segments(diff_baseline, value))
+            .unwrap_or_default(),
+        output_text,
+        final_text,
+        final_text_baseline,
+        final_text_confidence: row.get(7)?,
+        final_text_source: row.get(8)?,
+        final_text_observed_at: row.get(9)?,
+        smart_processing_applied: row.get::<_, i64>(10)? != 0,
+        instruction: row.get(11)?,
+        app_name: row.get(12)?,
+        process_name: row.get(13)?,
+        provider_id: row.get(14)?,
+        model_id: row.get(15)?,
+        status: row.get(16)?,
+        error: row.get(17)?,
+        duration_ms: row.get::<_, i64>(18)?.max(0) as u64,
     })
+}
+
+fn diff_segments(before: &str, after: &str) -> Vec<TextDiffSegment> {
+    use similar::{ChangeTag, TextDiff};
+    let mut segments: Vec<TextDiffSegment> = Vec::new();
+    for change in TextDiff::from_chars(before, after).iter_all_changes() {
+        let kind = match change.tag() {
+            ChangeTag::Equal => "equal",
+            ChangeTag::Delete => "delete",
+            ChangeTag::Insert => "insert",
+        };
+        if let Some(last) = segments.last_mut().filter(|last| last.kind == kind) {
+            last.text.push_str(change.value());
+        } else {
+            segments.push(TextDiffSegment {
+                kind: kind.into(),
+                text: change.value().into(),
+            });
+        }
+    }
+    segments
+}
+
+fn manual_correction_pair(
+    output: &str,
+    baseline: Option<&str>,
+    final_text: &str,
+) -> (String, String) {
+    let Some(baseline) = baseline.filter(|baseline| *baseline != output && !output.is_empty())
+    else {
+        return (output.to_owned(), final_text.to_owned());
+    };
+    let mut matches = baseline.match_indices(output);
+    let Some((start, _)) = matches.next() else {
+        return (baseline.to_owned(), final_text.to_owned());
+    };
+    if matches.next().is_some() {
+        return (baseline.to_owned(), final_text.to_owned());
+    }
+    let prefix = &baseline[..start];
+    let suffix = &baseline[start + output.len()..];
+    let Some(rest) = final_text.strip_prefix(prefix) else {
+        return (baseline.to_owned(), final_text.to_owned());
+    };
+    let Some(after) = rest.strip_suffix(suffix) else {
+        return (baseline.to_owned(), final_text.to_owned());
+    };
+    (output.to_owned(), after.to_owned())
 }
 
 #[tauri::command]
@@ -551,7 +693,7 @@ pub(crate) fn query_history(app: AppHandle, query: HistoryQuery) -> Result<Histo
     let search = format!("%{}%", query.search.trim());
     let status = query.status.trim();
     let task_kind = query.task_kind.trim();
-    let where_clause = "WHERE (?1 = '%%' OR source_text LIKE ?1 OR output_text LIKE ?1 OR instruction LIKE ?1 OR app_name LIKE ?1)
+    let where_clause = "WHERE (?1 = '%%' OR source_text LIKE ?1 OR output_text LIKE ?1 OR final_text LIKE ?1 OR instruction LIKE ?1 OR app_name LIKE ?1)
                         AND (?2 = '' OR status = ?2)
                         AND (?3 = '' OR task_kind = ?3)";
     let total = connection
@@ -565,8 +707,10 @@ pub(crate) fn query_history(app: AppHandle, query: HistoryQuery) -> Result<Histo
     let limit = query.limit.clamp(1, MAX_PAGE_SIZE);
     let mut statement = connection
         .prepare(&format!(
-            "SELECT id, created_at, task_kind, source_text, output_text, instruction, app_name,
-                    process_name, provider_id, model_id, status, error, duration_ms
+            "SELECT id, created_at, task_kind, source_text, output_text, final_text, final_text_baseline,
+                    final_text_confidence, final_text_source, final_text_observed_at,
+                    smart_processing_applied, instruction, app_name, process_name, provider_id,
+                    model_id, status, error, duration_ms
              FROM history_entries {where_clause}
              ORDER BY created_at DESC LIMIT ?4 OFFSET ?5"
         ))
@@ -593,8 +737,16 @@ pub(crate) fn update_history_text(
     id: String,
     output_text: String,
 ) -> Result<HistoryEntry, String> {
-    let output_text = output_text.trim().to_string();
-    if output_text.is_empty() {
+    confirm_history_final_text(app, id, output_text)
+}
+
+#[tauri::command]
+pub(crate) fn confirm_history_final_text(
+    app: AppHandle,
+    id: String,
+    final_text: String,
+) -> Result<HistoryEntry, String> {
+    if final_text.trim().is_empty() {
         return Err("修正后的文本不能为空".into());
     }
     let connection = open(&app)?;
@@ -602,32 +754,48 @@ pub(crate) fn update_history_text(
     if matches!(current.status.as_str(), "recognized" | "processed") {
         return Err("本次任务仍在处理，请完成后再修正；现在可以复制原文".into());
     }
-    let previous: Option<(String, String)> = connection
+    let previous: Option<(String, Option<String>, String)> = connection
         .query_row(
-            "SELECT output_text, app_name FROM history_entries WHERE id = ?1",
+            "SELECT output_text, final_text_baseline, app_name FROM history_entries WHERE id = ?1",
             [&id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|error| format!("读取待修正记录失败：{error}"))?;
-    let Some((before, app_name)) = previous else {
+    let Some((output_text, baseline, app_name)) = previous else {
         return Err("历史记录不存在".into());
     };
+    let (before, correction_after) =
+        manual_correction_pair(&output_text, baseline.as_deref(), &final_text);
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始修正事务失败：{error}"))?;
     transaction
         .execute(
-            "UPDATE history_entries SET output_text = ?1 WHERE id = ?2",
-            params![output_text, id],
+            "UPDATE history_entries
+             SET final_text = ?1, final_text_confidence = 'confirmed',
+                 final_text_source = 'manual', final_text_observed_at = ?2
+             WHERE id = ?3",
+            params![final_text, now_seconds(), id],
         )
         .map_err(|error| format!("更新历史文本失败：{error}"))?;
-    if before != output_text {
+    transaction
+        .execute("DELETE FROM correction_samples WHERE entry_id = ?1", [&id])
+        .map_err(|error| format!("替换自动纠错样本失败：{error}"))?;
+    if before != correction_after {
         transaction
             .execute(
-                "INSERT INTO correction_samples (id, entry_id, before_text, after_text, app_name, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![Uuid::new_v4().to_string(), id, before, output_text, app_name, now_seconds()],
+                "INSERT INTO correction_samples
+                 (id, entry_id, before_text, after_text, app_name, origin, confidence, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'manual', 'confirmed', ?6)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    before,
+                    correction_after,
+                    app_name,
+                    now_seconds()
+                ],
             )
             .map_err(|error| format!("保存纠错样本失败：{error}"))?;
     }
@@ -636,15 +804,159 @@ pub(crate) fn update_history_text(
         .map_err(|error| format!("提交修正失败：{error}"))?;
     refresh_correction_memory(&app, &connection)?;
     let entry = get_entry(&connection, &id)?;
+    crate::application::diagnostics::event(
+        "info",
+        "history.finalTextConfirmed",
+        serde_json::json!({
+            "historyId":&id,
+            "finalTextChars":final_text.chars().count(),
+            "finalTextFingerprint":crate::application::diagnostics::fingerprint(&final_text),
+            "status":"confirmed",
+        }),
+    );
+    crate::application::diagnostics::content_event(
+        "history.finalTextConfirmed",
+        serde_json::json!({"historyId":&id,"finalText":&final_text}),
+    );
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
     Ok(entry)
+}
+
+#[tauri::command]
+pub(crate) fn discard_history_final_text(
+    app: AppHandle,
+    id: String,
+) -> Result<HistoryEntry, String> {
+    let connection = open(&app)?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("开始忽略观察结果事务失败：{error}"))?;
+    let changed = transaction
+        .execute(
+            "UPDATE history_entries
+             SET final_text = NULL, final_text_confidence = NULL, final_text_source = NULL,
+                 final_text_observed_at = NULL, final_text_baseline = NULL WHERE id = ?1",
+            [&id],
+        )
+        .map_err(|error| format!("忽略观察结果失败：{error}"))?;
+    if changed == 0 {
+        return Err("历史记录不存在".into());
+    }
+    transaction
+        .execute(
+            "DELETE FROM correction_samples WHERE entry_id = ?1 AND origin = 'observed'",
+            [&id],
+        )
+        .map_err(|error| format!("删除自动纠错样本失败：{error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("提交忽略观察结果失败：{error}"))?;
+    refresh_correction_memory(&app, &connection)?;
+    let entry = get_entry(&connection, &id)?;
+    crate::application::diagnostics::event(
+        "info",
+        "history.finalTextDiscarded",
+        serde_json::json!({"historyId":&id,"status":"discarded"}),
+    );
+    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
+    Ok(entry)
+}
+
+pub(crate) fn record_observed_final_text(
+    app: &AppHandle,
+    id: &str,
+    final_text: &str,
+    final_text_baseline: &str,
+    correction_after: Option<&str>,
+    confidence: &str,
+    source: &str,
+) -> Result<(), String> {
+    if !matches!(confidence, "high" | "medium") {
+        return Err("最终草稿可信度无效".into());
+    }
+    if !matches!(source, "keyboard" | "click" | "autoEnter") {
+        return Err("最终草稿来源无效".into());
+    }
+    if final_text.trim().is_empty() {
+        return Err("空的最终草稿不会保存".into());
+    }
+    let connection = open(app)?;
+    let entry = get_entry(&connection, id)?;
+    if entry.status != "succeeded" || entry.task_kind != "dictation" {
+        return Ok(());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("开始保存最终草稿事务失败：{error}"))?;
+    if transaction
+        .execute(
+            "UPDATE history_entries SET final_text = ?1, final_text_baseline = ?2,
+             final_text_confidence = ?3, final_text_source = ?4, final_text_observed_at = ?5
+             WHERE id = ?6 AND status = 'succeeded' AND task_kind = 'dictation'
+               AND COALESCE(final_text_confidence, '') != 'confirmed'",
+            params![
+                final_text,
+                final_text_baseline,
+                confidence,
+                source,
+                now_seconds(),
+                id
+            ],
+        )
+        .map_err(|error| format!("保存最终草稿失败：{error}"))?
+        == 0
+    {
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "DELETE FROM correction_samples WHERE entry_id = ?1 AND origin = 'observed'",
+            [id],
+        )
+        .map_err(|error| format!("更新自动纠错样本失败：{error}"))?;
+    let correction_after = correction_after.filter(|value| !value.trim().is_empty());
+    if confidence == "high" && correction_after.is_some_and(|value| value != entry.output_text) {
+        transaction
+            .execute(
+                "INSERT INTO correction_samples
+                 (id, entry_id, before_text, after_text, app_name, origin, confidence, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'observed', 'high', ?6)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    entry.output_text,
+                    correction_after.unwrap(),
+                    entry.app_name,
+                    now_seconds()
+                ],
+            )
+            .map_err(|error| format!("保存自动纠错样本失败：{error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("提交最终草稿失败：{error}"))?;
+    refresh_correction_memory(app, &connection)?;
+    crate::application::diagnostics::event(
+        "info",
+        "history.observedFinalTextSaved",
+        serde_json::json!({
+            "historyId":id,
+            "confidence":confidence,
+            "source":source,
+            "learned":confidence == "high" && correction_after.is_some_and(|value| value != entry.output_text),
+        }),
+    );
+    let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"updated","id":id}));
+    Ok(())
 }
 
 fn get_entry(connection: &Connection, id: &str) -> Result<HistoryEntry, String> {
     connection
         .query_row(
-            "SELECT id, created_at, task_kind, source_text, output_text, instruction, app_name,
-                    process_name, provider_id, model_id, status, error, duration_ms
+            "SELECT id, created_at, task_kind, source_text, output_text, final_text, final_text_baseline,
+                    final_text_confidence, final_text_source, final_text_observed_at,
+                    smart_processing_applied, instruction, app_name, process_name, provider_id,
+                    model_id, status, error, duration_ms
              FROM history_entries WHERE id = ?1",
             [id],
             map_entry,
@@ -663,7 +975,12 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
     if matches!(entry.status.as_str(), "recognized" | "processed") {
         return Err("本次任务仍在处理，不能重复注入；现在可以复制原文".into());
     }
-    if entry.output_text.trim().is_empty() {
+    let injection_text = entry
+        .final_text
+        .clone()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| entry.output_text.clone());
+    if injection_text.trim().is_empty() {
         return Err("这条记录没有可重试注入的结果".into());
     }
     if let Some(window) = app.get_webview_window("main") {
@@ -692,11 +1009,12 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
             }
         ));
     }
-    crate::commands::dictation::inject_text_inner(entry.output_text, Some("paste".into())).await
+    crate::commands::dictation::inject_text_inner(injection_text, Some("paste".into())).await
 }
 
 #[tauri::command]
 pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), String> {
+    crate::application::final_draft::cancel_history(&app, &id);
     let connection = open(&app)?;
     let changed = connection
         .execute("DELETE FROM history_entries WHERE id = ?1", [&id])
@@ -711,6 +1029,7 @@ pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), Str
 
 #[tauri::command]
 pub(crate) fn clear_history(app: AppHandle) -> Result<(), String> {
+    crate::application::final_draft::cancel_current(&app, "historyCleared");
     let connection = open(&app)?;
     connection
         .execute_batch("DELETE FROM correction_samples; DELETE FROM history_entries;")
@@ -734,15 +1053,23 @@ pub(crate) fn open_history_window(app: AppHandle) -> Result<(), String> {
 }
 
 fn refresh_correction_memory(app: &AppHandle, connection: &Connection) -> Result<(), String> {
-    let mut statement = connection.prepare(
-        "SELECT before_text, after_text, app_name FROM correction_samples ORDER BY created_at DESC LIMIT 100"
-    ).map_err(|error| format!("准备纠错样本查询失败：{error}"))?;
+    let mut statement = connection
+        .prepare(
+            "SELECT before_text, after_text, app_name, origin, confidence
+         FROM correction_samples
+         WHERE confidence IN ('confirmed', 'high')
+         ORDER BY CASE WHEN confidence = 'confirmed' THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 100",
+        )
+        .map_err(|error| format!("准备纠错样本查询失败：{error}"))?;
     let samples = statement
         .query_map([], |row| {
             Ok(CorrectionSample {
                 before_text: row.get(0)?,
                 after_text: row.get(1)?,
                 app_name: row.get(2)?,
+                origin: row.get(3)?,
+                confidence: row.get(4)?,
             })
         })
         .map_err(|error| format!("查询纠错样本失败：{error}"))?
@@ -777,7 +1104,7 @@ pub(crate) fn relevant_corrections(
     if selected.peek().is_none() {
         return String::new();
     }
-    let mut output = String::from("用户明确确认过的纠错示例（仅在相关时参考）：\n");
+    let mut output = String::from("用户确认或高可信观察到的纠错示例（仅在相关时参考）：\n");
     for sample in selected {
         output.push_str(&format!(
             "- {} → {}\n",
@@ -931,11 +1258,83 @@ mod tests {
         assert!(history_recording_allowed(&prefs, "Editor", "editor.exe"));
     }
 
+    #[test]
+    fn legacy_schema_migrates_final_draft_and_sample_origin_idempotently() {
+        let path = std::env::temp_dir().join(format!(
+            "sayit-history-migration-{}.sqlite3",
+            Uuid::new_v4()
+        ));
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch(
+            "CREATE TABLE history_entries (
+               id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, task_kind TEXT NOT NULL,
+               source_text TEXT NOT NULL, output_text TEXT NOT NULL, instruction TEXT NOT NULL DEFAULT '',
+               app_name TEXT NOT NULL DEFAULT '', process_name TEXT NOT NULL DEFAULT '',
+               provider_id TEXT NOT NULL DEFAULT '', model_id TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL, error TEXT, duration_ms INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE correction_samples (
+               id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, before_text TEXT NOT NULL,
+               after_text TEXT NOT NULL, app_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
+             );
+             INSERT INTO history_entries VALUES ('one', 1, 'dictation', '原文', '结果', '', '', '', '', '', 'succeeded', NULL, 0);
+             INSERT INTO correction_samples VALUES ('sample', 'one', '原文', '结果', '', 1);"
+        ).unwrap();
+        drop(legacy);
+
+        let connection = open_path(&path).unwrap();
+        migrate_history_schema(&connection).unwrap();
+        let entry = get_entry(&connection, "one").unwrap();
+        assert_eq!(entry.final_text, None);
+        assert!(!entry.smart_processing_applied);
+        let sample: (String, String) = connection
+            .query_row(
+                "SELECT origin, confidence FROM correction_samples WHERE id = 'sample'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sample, ("manual".into(), "confirmed".into()));
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn final_draft_diff_uses_full_injected_baseline_without_overwriting_system_output() {
+        let path =
+            std::env::temp_dir().join(format!("sayit-history-final-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        insert_entry(&connection, "one", &entry("系统结果")).unwrap();
+        connection.execute(
+            "UPDATE history_entries SET final_text = '前缀系统修改后缀', final_text_baseline = '前缀系统结果后缀',
+             final_text_confidence = 'high', final_text_source = 'keyboard' WHERE id = 'one'",
+            [],
+        ).unwrap();
+        let saved = get_entry(&connection, "one").unwrap();
+        assert_eq!(saved.output_text, "系统结果");
+        assert_eq!(saved.final_text.as_deref(), Some("前缀系统修改后缀"));
+        assert!(saved
+            .diff_segments
+            .iter()
+            .any(|segment| segment.kind == "delete"));
+        assert!(saved
+            .diff_segments
+            .iter()
+            .any(|segment| segment.kind == "insert"));
+        assert_eq!(
+            manual_correction_pair("系统结果", Some("前缀系统结果后缀"), "前缀系统修改后缀",),
+            ("系统结果".into(), "系统修改".into())
+        );
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
     fn entry(output: &str) -> NewHistoryEntry {
         NewHistoryEntry {
             task_kind: "dictation".into(),
             source_text: output.into(),
             output_text: output.into(),
+            smart_processing_applied: false,
             instruction: String::new(),
             app_name: "Test".into(),
             process_name: "test.exe".into(),

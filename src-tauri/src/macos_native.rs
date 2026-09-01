@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
 use std::ptr;
+use tokio::sync::mpsc;
 
 use crate::ocr::{NormalizedRegion, OcrTextBlock};
 
@@ -54,6 +55,58 @@ pub(crate) struct MacAccessibilityContext {
     pub(crate) caret_context: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MacFinalDraftSnapshot {
+    pub(crate) value: String,
+    pub(crate) selection_location: usize,
+    pub(crate) selection_length: usize,
+    #[serde(default)]
+    pub(crate) truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MacFinalDraftEventKind {
+    ValueChanged,
+    FocusChanged,
+    ReturnPressed,
+    Clicked,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MacFinalDraftEvent {
+    pub(crate) kind: MacFinalDraftEventKind,
+    pub(crate) value: Option<String>,
+}
+
+struct FinalDraftCallbackContext {
+    sender: mpsc::UnboundedSender<MacFinalDraftEvent>,
+}
+
+pub(crate) struct MacFinalDraftObserver {
+    native: usize,
+    context: usize,
+}
+
+unsafe impl Send for MacFinalDraftObserver {}
+
+impl Drop for MacFinalDraftObserver {
+    fn drop(&mut self) {
+        if self.native != 0 {
+            unsafe { sayit_macos_final_draft_observer_stop(self.native as *mut c_void) };
+            self.native = 0;
+        }
+        if self.context != 0 {
+            unsafe {
+                drop(Box::from_raw(
+                    self.context as *mut FinalDraftCallbackContext,
+                ))
+            };
+            self.context = 0;
+        }
+    }
+}
+
 #[repr(C)]
 struct NativeByteBuffer {
     data: *mut u8,
@@ -85,6 +138,7 @@ pub(crate) type AudioCallback = unsafe extern "C" fn(*mut c_void, *const f32, us
 pub(crate) type AudioErrorCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
 pub(crate) type MouseMonitorCallback =
     unsafe extern "C" fn(*mut c_void, f64, f64, bool, bool, bool, u8);
+pub(crate) type FinalDraftObserverCallback = unsafe extern "C" fn(*mut c_void, i32, *const c_char);
 
 unsafe extern "C" {
     fn sayit_macos_free_string(value: *mut c_char);
@@ -184,6 +238,19 @@ unsafe extern "C" {
     fn sayit_macos_paste_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_type_text(text: *const c_char, error: *mut *mut c_char) -> bool;
     fn sayit_macos_press_return(process_id: u32, error: *mut *mut c_char) -> bool;
+    fn sayit_macos_final_draft_observer_start(
+        process_id: u32,
+        max_chars: u32,
+        callback: FinalDraftObserverCallback,
+        context: *mut c_void,
+        initial_json: *mut *mut c_char,
+        error: *mut *mut c_char,
+    ) -> *mut c_void;
+    fn sayit_macos_final_draft_observer_snapshot(
+        handle: *mut c_void,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    fn sayit_macos_final_draft_observer_stop(handle: *mut c_void);
 }
 
 unsafe fn take_string(value: *mut c_char) -> Option<String> {
@@ -203,6 +270,99 @@ unsafe fn native_result(value: *mut c_char, error: *mut c_char) -> Result<String
         Ok(value)
     } else {
         Err(take_string(error).unwrap_or_else(|| "macOS 原生能力调用失败".into()))
+    }
+}
+
+unsafe extern "C" fn final_draft_callback(
+    context: *mut c_void,
+    event_type: i32,
+    value: *const c_char,
+) {
+    if context.is_null() {
+        return;
+    }
+    let kind = match event_type {
+        1 => MacFinalDraftEventKind::ValueChanged,
+        2 => MacFinalDraftEventKind::FocusChanged,
+        3 => MacFinalDraftEventKind::ReturnPressed,
+        4 => MacFinalDraftEventKind::Clicked,
+        _ => return,
+    };
+    let value = (!value.is_null()).then(|| CStr::from_ptr(value).to_string_lossy().into_owned());
+    let context = &*(context as *mut FinalDraftCallbackContext);
+    let _ = context.sender.send(MacFinalDraftEvent { kind, value });
+}
+
+pub(crate) fn start_final_draft_observer(
+    process_id: u32,
+    max_chars: u32,
+) -> Result<
+    (
+        MacFinalDraftObserver,
+        MacFinalDraftSnapshot,
+        mpsc::UnboundedReceiver<MacFinalDraftEvent>,
+    ),
+    String,
+> {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let context = Box::into_raw(Box::new(FinalDraftCallbackContext { sender }));
+    let mut initial = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    let native = unsafe {
+        sayit_macos_final_draft_observer_start(
+            process_id,
+            max_chars,
+            final_draft_callback,
+            context.cast(),
+            &mut initial,
+            &mut error,
+        )
+    };
+    if native.is_null() {
+        unsafe { drop(Box::from_raw(context)) };
+        return Err(unsafe {
+            take_string(error).unwrap_or_else(|| "启动 macOS 最终草稿观察器失败".into())
+        });
+    }
+    let json = match unsafe { native_result(initial, error) } {
+        Ok(json) => json,
+        Err(error) => {
+            unsafe {
+                sayit_macos_final_draft_observer_stop(native);
+                drop(Box::from_raw(context));
+            }
+            return Err(error);
+        }
+    };
+    let snapshot = match serde_json::from_str(&json) {
+        Ok(snapshot) => snapshot,
+        Err(parse_error) => {
+            unsafe {
+                sayit_macos_final_draft_observer_stop(native);
+                drop(Box::from_raw(context));
+            }
+            return Err(format!("解析 macOS 输入框快照失败：{parse_error}"));
+        }
+    };
+    Ok((
+        MacFinalDraftObserver {
+            native: native as usize,
+            context: context as usize,
+        },
+        snapshot,
+        receiver,
+    ))
+}
+
+impl MacFinalDraftObserver {
+    pub(crate) fn snapshot(&self) -> Result<MacFinalDraftSnapshot, String> {
+        let mut error = ptr::null_mut();
+        let value = unsafe {
+            sayit_macos_final_draft_observer_snapshot(self.native as *mut c_void, &mut error)
+        };
+        let json = unsafe { native_result(value, error)? };
+        serde_json::from_str(&json)
+            .map_err(|parse_error| format!("解析 macOS 输入框快照失败：{parse_error}"))
     }
 }
 

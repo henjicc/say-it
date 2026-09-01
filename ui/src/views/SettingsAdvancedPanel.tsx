@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
-import { CheckField } from "@/components/ui/Field";
+import { CheckField, Field } from "@/components/ui/Field";
+import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
-import { CMD, cmd, cmdSilent } from "@/lib/tauri";
+import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useAudioStore } from "@/store/useAudioStore";
 import { parseSubtitleSource, useSubtitleStore } from "@/store/useSubtitleStore";
@@ -32,6 +35,119 @@ const fmt = {
 const fmtMs = (value: number) => `${(value / 1000).toFixed(1)} 秒`;
 const fmtThreshold = (value: number) => value.toFixed(4);
 const levelWidth = (value: number) => `${Math.min(100, value * 140)}%`;
+
+export function DiagnosticSection() {
+  const [verboseLogging, setVerboseLogging] = useState(false);
+  const [status, setStatus] = useState<DiagnosticStatus | null>(null);
+  const [includeContent, setIncludeContent] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    void Promise.all([
+      cmd<AppSnapshot>(CMD.getAppSnapshot),
+      cmd<DiagnosticStatus>(CMD.getDiagnosticStatus),
+    ]).then(([snapshot, nextStatus]) => {
+      setVerboseLogging(snapshot.settings.diagnosticsPrefs.verboseLogging === true);
+      setStatus(nextStatus);
+    }).catch((error) => setMessage(String(error)));
+  }, []);
+
+  useEffect(() => {
+    if (!status?.contentLoggingEnabled) return;
+    const timer = window.setInterval(() => {
+      setStatus((current) => current ? {
+        ...current,
+        contentLoggingRemainingSeconds: Math.max(0, current.contentLoggingRemainingSeconds - 1),
+        contentLoggingEnabled: current.contentLoggingRemainingSeconds > 1,
+      } : current);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [status?.contentLoggingEnabled]);
+
+  async function updateVerbose(enabled: boolean) {
+    setVerboseLogging(enabled);
+    try {
+      await cmd(CMD.updateAppSettings, { domain: "diagnostics", value: { verboseLogging: enabled } });
+    } catch (error) {
+      setVerboseLogging(!enabled);
+      setMessage(String(error));
+    }
+  }
+
+  async function updateContent(enabled: boolean) {
+    if (enabled && !window.confirm("临时正文日志会记录输入文本，可能包含隐私内容。确定开启 30 分钟吗？")) return;
+    try {
+      setStatus(await cmd<DiagnosticStatus>(CMD.setContentDiagnostics, { enabled }));
+      setMessage(enabled ? "正文日志已开启，将在 30 分钟后自动关闭" : "正文日志已关闭");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function clearLogs() {
+    if (!window.confirm("确定清空全部诊断日志（包括正文日志）吗？")) return;
+    try {
+      await cmd(CMD.clearDiagnosticLogs);
+      setIncludeContent(false);
+      setStatus(await cmd<DiagnosticStatus>(CMD.getDiagnosticStatus));
+      setMessage("诊断日志已清空");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function exportBundle() {
+    const destination = await saveDialog({
+      defaultPath: "say-it-diagnostics.zip",
+      filters: [{ name: "ZIP 压缩包", extensions: ["zip"] }],
+    });
+    if (!destination) return;
+    try {
+      await cmd(CMD.exportDiagnosticBundle, { destination, includeContent });
+      setMessage(includeContent ? "诊断包已导出，其中包含输入文本" : "诊断包已导出（不含正文）");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  return (
+    <SettingsSection title="诊断日志">
+      <FormGrid>
+        <Field label="详细元数据日志" controlId="diagnostic-verbose-logging">
+          <Switch id="diagnostic-verbose-logging" checked={verboseLogging} onChange={(enabled) => void updateVerbose(enabled)} label="详细元数据日志" />
+        </Field>
+        <Field
+          label="临时正文日志"
+          controlId="diagnostic-content-logging"
+          hint={status?.contentLoggingEnabled
+            ? `包含输入文本，将在 ${Math.ceil(status.contentLoggingRemainingSeconds / 60)} 分钟内自动关闭。`
+            : "默认关闭；开启后记录输入文本，30 分钟后自动关闭，重启不会恢复。"}
+        >
+          <Switch id="diagnostic-content-logging" checked={status?.contentLoggingEnabled === true} onChange={(enabled) => void updateContent(enabled)} label="临时正文日志" />
+        </Field>
+        <Field label="日志目录" controlId="diagnostic-open-directory">
+          <Button id="diagnostic-open-directory" onClick={() => void cmd(CMD.openDiagnosticDirectory).catch((error) => setMessage(String(error)))}>打开日志目录</Button>
+        </Field>
+        <Field label="清空日志" controlId="diagnostic-clear-logs">
+          <Button id="diagnostic-clear-logs" variant="dangerHover" onClick={() => void clearLogs()}>清空诊断日志</Button>
+        </Field>
+        <Field
+          label="导出诊断包"
+          controlId="diagnostic-export-bundle"
+          hint="默认仅包含版本、平台、非敏感配置投影和普通日志，不包含历史数据库、凭据、音频或截图。"
+          className="sm:col-span-2"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <Button id="diagnostic-export-bundle" onClick={() => void exportBundle()}>导出诊断包</Button>
+            <CheckField checked={includeContent} onChange={setIncludeContent}>包含正文日志</CheckField>
+            {includeContent && <span role="alert" className="text-xs text-[var(--color-err)]">风险：导出包包含输入文本</span>}
+          </div>
+        </Field>
+      </FormGrid>
+      {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+    </SettingsSection>
+  );
+}
 
 function LevelMeter({ value }: { value: number }) {
   return (
@@ -297,6 +413,7 @@ export function SettingsAdvancedPanel() {
     <div className="flex flex-col gap-8">
       <SilenceDisconnectSection />
       <AudioLabSections />
+      <DiagnosticSection />
     </div>
   );
 }
