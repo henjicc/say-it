@@ -11,6 +11,19 @@ vi.mock("@/lib/tauri", () => ({
     models: [
       ...builtinModels,
       {
+        id: "local-plugin-fixture",
+        label: "本地插件模型",
+        providerId: "local-plugin",
+        category: "realtime",
+        protocol: "local-sherpa-online",
+        supportsVocabulary: false,
+        supportsAlignmentTimestamps: false,
+        emitsPartialResults: true,
+        scenes: ["dictationRealtime"],
+        isDefaultRealtime: false,
+        isDefaultFile: false,
+      },
+      {
         id: "translation-fixture",
         label: "插件翻译模型",
         providerId: "plugin-translation",
@@ -31,6 +44,7 @@ vi.mock("@/lib/tauri", () => ({
         { id: "bailian", kind: "sdk", displayName: "阿里云百炼", capabilities: ["asr"], enabled: true },
         { id: "siliconflow", kind: "sdk", displayName: "硅基流动", capabilities: ["asr"], enabled: true },
         { id: "llm-groq", kind: "llm", displayName: "Groq", capabilities: ["asr"], enabled: true },
+        { id: "local-plugin", kind: "plugin", displayName: "本地模型插件", capabilities: ["asr"], enabled: true },
       ],
     },
   })),
@@ -52,6 +66,10 @@ describe("ASR model labels", () => {
       .toBe("Apple 系统本地识别（实时）");
     expect(options.find((option) => option.value === "seedasr-2.0-realtime")?.label)
       .toBe("火山引擎 SeedASR 2.0（实时）");
+    expect(options.filter((option) => option.filterProviderId === "local").map((option) => option.value))
+      .toEqual(["apple-speech-transcriber-live", "local-plugin-fixture"]);
+    expect(options.filter((option) => option.filterProviderId === "local").every((option) => option.filterProviderLabel === "本地"))
+      .toBe(true);
   });
 
   it("does not add ASR timing labels to non-ASR catalog entries", () => {
