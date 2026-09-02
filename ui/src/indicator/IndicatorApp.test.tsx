@@ -59,6 +59,7 @@ describe("dictation indicator presentation", () => {
     expect(pill?.querySelector(".dot")).not.toBeInTheDocument();
     expect(screen.queryByText("聆听中…")).not.toBeInTheDocument();
     expect(pill?.querySelector(".orb-waveform")).toBeInTheDocument();
+    expect(pill?.querySelectorAll(".orb-wave-bar")).toHaveLength(9);
 
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "processing" }));
     expect(view.container.querySelector("#pill")).toHaveClass("processing");
