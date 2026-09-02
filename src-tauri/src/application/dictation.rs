@@ -23,6 +23,7 @@ use tauri::AppHandle;
 
 const DOMAIN_EVENT: &str = "domain-event";
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
+const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
 const MAX_APP_PROFILES: usize = 100;
 const MAX_SMART_PROCESSING_MIN_CHARS: u32 = 10_000;
@@ -100,6 +101,25 @@ fn select_activation_target(
 enum FloatingFallbackKind {
     Processing,
     Delivery,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DeliveryOutcome {
+    Injected,
+    ClipboardFallback { delivery_error: String },
+    Failed(String),
+}
+
+fn clipboard_delivery_outcome(
+    delivery_error: String,
+    clipboard_result: Result<(), String>,
+) -> DeliveryOutcome {
+    match clipboard_result {
+        Ok(()) => DeliveryOutcome::ClipboardFallback { delivery_error },
+        Err(clipboard_error) => DeliveryOutcome::Failed(format!(
+            "{delivery_error}；写入剪贴板也失败：{clipboard_error}"
+        )),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1168,6 +1188,11 @@ async fn start_internal(
             Some("bottom".into()),
             Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
         );
+        if mode == DictationMode::File {
+            // 非实时模型从录音态第一帧就显示静态波形；首批 PCM 到达后再更新实际幅度，
+            // 避免快捷键刚触发时短暂误显示成纯文字处理态。
+            emit_waveform(&app, 0.0, vec![]);
+        }
         let _ = crate::desktop::set_indicator_state(app.clone(), "recording".into());
     }
     crate::application::performance::record(
@@ -2299,7 +2324,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
         }
     }
-    let result = if processed.is_empty() {
+    let injection_result = if processed.is_empty() {
         Ok(())
     } else if trigger.is_floating_orb() {
         match write_clipboard_text_inner(processed.clone()).await {
@@ -2416,24 +2441,51 @@ async fn finalize(app: AppHandle, epoch: u64) {
             None => Err("听写开始时的目标窗口已丢失".into()),
         }
     };
+    let delivery_outcome = match injection_result {
+        Ok(()) => DeliveryOutcome::Injected,
+        Err(delivery_error) if assistant_request.is_none() && !processed.is_empty() => {
+            clipboard_delivery_outcome(
+                delivery_error,
+                write_clipboard_text_inner(processed.clone()).await,
+            )
+        }
+        Err(error) => DeliveryOutcome::Failed(error),
+    };
+    let used_clipboard_fallback =
+        matches!(&delivery_outcome, DeliveryOutcome::ClipboardFallback { .. });
     if let Some(lease) = lease {
         let _ = state.audio_session.release(&lease);
     }
     remove_temp(temp_path);
+    let delivery_error = match &delivery_outcome {
+        DeliveryOutcome::Injected => None,
+        DeliveryOutcome::ClipboardFallback { delivery_error } => Some(delivery_error.as_str()),
+        DeliveryOutcome::Failed(error) => Some(error.as_str()),
+    };
     crate::application::diagnostics::event(
-        if result.is_ok() { "info" } else { "warn" },
+        if matches!(&delivery_outcome, DeliveryOutcome::Injected) {
+            "info"
+        } else {
+            "warn"
+        },
         "dictation.injectionFinished",
         serde_json::json!({
             "sessionId":epoch,
             "historyId":&history_id,
-            "status":if result.is_ok() { "succeeded" } else { "failed" },
+            "status":match &delivery_outcome {
+                DeliveryOutcome::Injected => "succeeded",
+                DeliveryOutcome::ClipboardFallback { .. } => "clipboardFallback",
+                DeliveryOutcome::Failed(_) => "failed",
+            },
             "outputTextChars":processed.chars().count(),
             "outputTextFingerprint":crate::application::diagnostics::fingerprint(&processed),
             "smartProcessingApplied":assistant_request.is_none() && should_process_smart_text,
-            "errorCode":result.as_ref().err().map(|_| "injectionFailed"),
+            "errorCode":delivery_error.map(|_| "injectionFailed"),
+            "detail":delivery_error,
         }),
     );
-    if let Err(e) = result {
+    if let DeliveryOutcome::Failed(e) = &delivery_outcome {
+        let e = e.clone();
         if let Some(request) = assistant_request.as_ref() {
             crate::application::assistant::publish_answer(
                 &app,
@@ -2581,19 +2633,27 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let _ = crate::application::history::record_usage(&app, &processed, recorded_duration_ms);
     hotkey::set_dictation_active(false);
     if trigger.is_floating_orb() {
-        let auto_enter_target = (!processed.is_empty())
+        let auto_enter_target = (!used_clipboard_fallback && !processed.is_empty())
             .then_some(activation_target)
             .flatten()
             .filter(|_| crate::desktop::floating_orb_auto_enter_enabled(&app));
-        let submit_enter_target = (auto_enter_target.is_none() && !processed.is_empty())
-            .then_some(activation_target)
-            .flatten();
+        let submit_enter_target =
+            (!used_clipboard_fallback && auto_enter_target.is_none() && !processed.is_empty())
+                .then_some(activation_target)
+                .flatten();
         if let Some(target) = submit_enter_target {
             crate::desktop::arm_floating_orb_submit_enter(&app, target);
         }
         play_floating_orb_cue(&app, "end", &prefs);
         if let Some(target) = auto_enter_target {
             crate::desktop::auto_submit_floating_orb_enter(app.clone(), target);
+        } else if used_clipboard_fallback {
+            crate::desktop::complete_floating_orb(
+                app.clone(),
+                "fallback",
+                "已复制，请手动粘贴".to_string(),
+                CLIPBOARD_FALLBACK_NOTICE_MS,
+            );
         } else {
             let (message, delay) = if processed.is_empty() {
                 ("未识别到内容", 2000)
@@ -2611,7 +2671,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
         }
     } else {
-        let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+        if used_clipboard_fallback {
+            let _ = crate::desktop::show_dictation_indicator_clipboard_fallback(&app);
+            schedule_clipboard_fallback_hide(app.clone(), epoch);
+        } else {
+            let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+        }
         play_cue_async(
             app.clone(),
             "end",
@@ -2624,6 +2689,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         None,
         processed,
         !trigger.is_floating_orb()
+            && !used_clipboard_fallback
             && should_show_final_text_in_indicator(mode)
             && !assistant_request
                 .as_ref()
@@ -2907,6 +2973,22 @@ fn remove_temp(path: Option<PathBuf>) {
             let _ = tokio::fs::remove_file(path).await;
         });
     }
+}
+
+fn schedule_clipboard_fallback_hide(app: AppHandle, epoch: u64) {
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(CLIPBOARD_FALLBACK_NOTICE_MS)).await;
+        let should_hide = app
+            .state::<RuntimeState>()
+            .dictation_runtime
+            .session
+            .lock()
+            .map(|session| session.epoch == epoch && session.phase == DictationPhase::Idle)
+            .unwrap_or(false);
+        if should_hide {
+            let _ = crate::desktop::set_indicator_state(app, "hidden".into());
+        }
+    });
 }
 
 fn schedule_release(app: AppHandle, epoch: u64, generation: u64, delay: u64) {
@@ -3752,6 +3834,20 @@ mod tests {
         assert!(session.begin_pending_fallback().is_err());
         assert_eq!(session.phase, DictationPhase::Failed);
         assert_eq!(session.error.as_deref(), Some("实时识别连接失败"));
+    }
+
+    #[test]
+    fn completed_text_uses_clipboard_as_a_successful_delivery_fallback() {
+        assert_eq!(
+            clipboard_delivery_outcome("目标窗口已关闭".into(), Ok(())),
+            DeliveryOutcome::ClipboardFallback {
+                delivery_error: "目标窗口已关闭".into()
+            }
+        );
+        assert_eq!(
+            clipboard_delivery_outcome("目标窗口已关闭".into(), Err("剪贴板被占用".into())),
+            DeliveryOutcome::Failed("目标窗口已关闭；写入剪贴板也失败：剪贴板被占用".into())
+        );
     }
 
     #[test]

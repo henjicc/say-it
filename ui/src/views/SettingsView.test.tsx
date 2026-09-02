@@ -32,7 +32,10 @@ describe("SettingsView", () => {
     const search = screen.getByRole("combobox", { name: "搜索设置项" });
     fireEvent.change(search, { target: { value: "提示音" } });
 
-    expect(screen.getByRole("option", { name: /提示音/ })).toBeInTheDocument();
+    const option = screen.getByRole("option", { name: /提示音/ });
+    expect(option).toBeInTheDocument();
+    expect(option).toHaveClass("bg-[var(--color-accent-control)]");
+    expect(screen.queryByRole("button", { name: "清空设置搜索" })).not.toBeInTheDocument();
   });
 
   it("switches tabs and focuses the matched control", async () => {

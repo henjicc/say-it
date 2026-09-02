@@ -177,7 +177,7 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
     Ok(())
 }
 
-/// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "subtitle" | "error" | "hidden"。
+/// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "fallback" | "subtitle" | "error" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
 pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Result<(), String> {
@@ -233,6 +233,36 @@ pub(crate) fn show_dictation_indicator_error(
         json!({ "message": message, "canUseRawText": can_use_raw_text }),
     );
     let _ = window.emit("dictation-indicator-state", json!({ "state": "error" }));
+    hotkey::set_dictation_active(false);
+    Ok(())
+}
+
+/// 文本已经生成、只是原输入窗口不可再注入时，改为明确的剪贴板交付提示。
+/// 这不是识别或智能处理失败，因此不展示错误操作区，也不允许窗口抢焦点。
+pub(crate) fn show_dictation_indicator_clipboard_fallback(
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let window = ensure_indicator_window(app)?;
+    place_indicator_window(
+        &window,
+        DEFAULT_INDICATOR_WIDTH,
+        DEFAULT_INDICATOR_HEIGHT,
+        "bottom",
+        DICTATION_INDICATOR_OFFSET_Y,
+    );
+    let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
+    let _ = window.emit(
+        "dictation-indicator-text",
+        json!({ "text": "", "fade": false }),
+    );
+    let _ = window.emit("dictation-indicator-translation", json!({ "text": "" }));
+    let _ = window.emit(
+        "dictation-indicator-waveform",
+        json!({ "active": false, "level": 0, "peaks": [] }),
+    );
+    let _ = window.set_ignore_cursor_events(true);
+    raise_indicator_window(&window);
+    let _ = window.emit("dictation-indicator-state", json!({ "state": "fallback" }));
     hotkey::set_dictation_active(false);
     Ok(())
 }
