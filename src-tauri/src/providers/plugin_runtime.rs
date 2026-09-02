@@ -1,7 +1,8 @@
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +49,70 @@ const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
 const MAX_CREDENTIAL_READ_WAIT: Duration = Duration::from_secs(10);
 const CREDENTIAL_WORKER_COUNT: usize = 4;
+// QuickJS 自身最多使用 1 MiB；网络/TLS 已投递到异步运行时后，剩余空间只承载
+// 解释器、序列化和窄宿主桥。该边界只属于 JS 运行时线程，不再放大全局 tokio 栈。
+const JS_WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
+static JS_WORKER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn spawn_js_worker<T, F>(
+    role: &str,
+    task: F,
+) -> Result<tokio::sync::oneshot::Receiver<T>, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let sequence = JS_WORKER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let role = role
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .take(32)
+        .collect::<String>();
+    let name = format!("sayit-js-{role}-{sequence}");
+    let thread_name = name.clone();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name)
+        .stack_size(JS_WORKER_STACK_BYTES)
+        .spawn(move || {
+            crate::stack_diagnostics::prepare_current_thread();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+            crate::stack_diagnostics::forget_current_thread();
+            match result {
+                Ok(result) => {
+                    let _ = sender.send(result);
+                }
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
+        .map_err(|error| format!("启动 JavaScript 运行时线程失败：{error}"))?;
+    crate::application::diagnostics::event(
+        "debug",
+        "javascriptRuntime.threadStarted",
+        json!({"threadName":thread_name,"stackBytes":JS_WORKER_STACK_BYTES}),
+    );
+    Ok(receiver)
+}
+
+fn wait_for_host_io<T, F>(future: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, String>> + Send + 'static,
+{
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    tauri::async_runtime::spawn(async move {
+        let _ = sender.send(future.await);
+    });
+    receiver
+        .recv()
+        .map_err(|_| "宿主异步 I/O 任务意外退出".to_string())?
+}
 
 struct CredentialReadRequest {
     credentials: super::credential_store::CredentialStoreHandle,
@@ -560,13 +625,21 @@ impl HostState {
 
     fn http_request(&mut self, payload: Value) -> Result<Value, String> {
         let response = self.open_http_response(payload)?;
-        tauri::async_runtime::block_on(async {
+        let cancelled = self.cancelled.clone();
+        let deadline = self.deadline.clone();
+        wait_for_host_io(async move {
             let status = response.status().as_u16();
             let response_headers = response_headers(&response);
             let mut stream = response.bytes_stream();
             let mut bytes = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(|error| error.to_string())?;
+            loop {
+                let chunk = tokio::select! {
+                    chunk = stream.next() => chunk.transpose().map_err(|error| error.to_string())?,
+                    _ = wait_for_stop(cancelled.clone(), deadline.clone()) => {
+                        return Err(stop_reason(&cancelled, &deadline));
+                    }
+                };
+                let Some(chunk) = chunk else { break };
                 if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                     return Err("HTTP 响应超过 16 MiB 限制".into());
                 }
@@ -611,14 +684,20 @@ impl HostState {
             .remove(stream_id)
             .ok_or("HTTP 流不存在或已关闭")?;
         if state.pending.is_empty() {
-            let chunk = tauri::async_runtime::block_on(async {
+            let cancelled = self.cancelled.clone();
+            let deadline = self.deadline.clone();
+            let (next_state, chunk) = wait_for_host_io(async move {
                 tokio::select! {
-                    chunk = state.response.chunk() => chunk.map_err(|error| error.to_string()),
-                    _ = wait_for_stop(self.cancelled.clone(), self.deadline.clone()) => {
-                        Err(stop_reason(&self.cancelled, &self.deadline))
+                    chunk = state.response.chunk() => {
+                        let chunk = chunk.map_err(|error| error.to_string())?;
+                        Ok((state, chunk))
+                    },
+                    _ = wait_for_stop(cancelled.clone(), deadline.clone()) => {
+                        Err(stop_reason(&cancelled, &deadline))
                     }
                 }
             })?;
+            state = next_state;
             let Some(chunk) = chunk else {
                 return Ok(json!({"done": true}));
             };
@@ -666,7 +745,10 @@ impl HostState {
             .cloned()
             .unwrap_or_default();
         let mut body = request_body(&payload, &self.inputs, &mut self.pending_request_bodies)?;
-        tauri::async_runtime::block_on(async {
+        let spec = self.spec.clone();
+        let cancelled = self.cancelled.clone();
+        let deadline = self.deadline.clone();
+        wait_for_host_io(async move {
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -690,12 +772,12 @@ impl HostState {
                 }
                 let response = tokio::select! {
                     response = request.send() => response.map_err(|error| error.to_string())?,
-                    _ = wait_for_stop(self.cancelled.clone(), self.deadline.clone()) => {
-                        return Err(stop_reason(&self.cancelled, &self.deadline));
+                    _ = wait_for_stop(cancelled.clone(), deadline.clone()) => {
+                        return Err(stop_reason(&cancelled, &deadline));
                     },
                 };
                 if let Some(next) = prepare_fetch_redirect(
-                    &self.spec,
+                    &spec,
                     response.status(),
                     &url,
                     response.headers().get(reqwest::header::LOCATION),
@@ -1831,7 +1913,7 @@ where
     }
     let sdk = plugin_sdk_bindings(&spec, &profile, &request_id)?;
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
-    let mut task = tokio::task::spawn_blocking(move || {
+    let mut task = spawn_js_worker("plugin-capability", move || {
         let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
             spec,
             &profile,
@@ -1844,7 +1926,7 @@ where
         let result = runtime.execute_capability(&module_id, &payload, &request_id, timeout)?;
         runtime.dispatch_host_events()?;
         Ok::<_, String>(result)
-    });
+    })?;
     loop {
         tokio::select! {
             result = &mut task => {
@@ -1895,7 +1977,7 @@ where
         }
     }
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
-    let mut task = tokio::task::spawn_blocking(move || {
+    let mut task = spawn_js_worker("plugin-invoke", move || {
         let runtime = JsProviderRuntime::create_with_event_sender(
             spec,
             &profile,
@@ -1911,7 +1993,7 @@ where
         )?;
         runtime.dispatch_host_events()?;
         Ok::<_, String>(result)
-    });
+    })?;
     loop {
         tokio::select! {
             result = &mut task => {
@@ -2405,13 +2487,18 @@ const HOST_BOOTSTRAP: &str = r#"
     );
     return JSON.stringify(value === undefined ? null : value);
   };
-  globalThis.__sayitPluginCapabilityOpen = async (moduleId, payloadJson, requestId, timeoutMs) => {
+  globalThis.__sayitPluginCapabilityOpen = async (moduleId, payloadJson, requestId) => {
     if (!globalThis.__sayitPluginCapabilities) throw new Error('插件 capability 尚未注册');
     if (globalThis.__sayitPluginCapabilitySession) throw new Error('插件 realtime session 已存在');
+    // 注意：SDK 里 openSession 的 timeoutMs 是"从 open() 起整段会话的强制超时"，
+    // 不会随后续 send/finish 活动续期；宿主等待 open() 握手完成的等待时长由 Rust 侧
+    // 独立的 self.deadline watchdog 负责（调用方仍会传第四个参数，这里不接收/不转发），
+    // 不能当成会话生命周期上限转发进去，否则长时间实时听写会在固定时长后被硬切断。
+    // 真正的会话生命周期上限交给 finish()/close() 自然驱动结束。
     globalThis.__sayitPluginCapabilitySession = await globalThis.__sayitPluginCapabilities.openSession(
       moduleId,
       JSON.parse(payloadJson),
-      { requestId, timeoutMs },
+      { requestId },
     );
     return 'null';
   };
@@ -2475,6 +2562,32 @@ const HOST_BOOTSTRAP: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_io_runs_outside_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let worker = wait_for_host_io(async move { Ok(std::thread::current().id()) }).unwrap();
+        assert_ne!(worker, caller);
+    }
+
+    #[test]
+    fn quickjs_worker_has_a_dedicated_named_thread() {
+        let caller = std::thread::current().id();
+        let result = spawn_js_worker("test", || {
+            (
+                std::thread::current().id(),
+                std::thread::current()
+                    .name()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .unwrap()
+        .blocking_recv()
+        .unwrap();
+        assert_ne!(result.0, caller);
+        assert!(result.1.starts_with("sayit-js-test-"), "{}", result.1);
+    }
 
     fn fixture(
         source: &str,

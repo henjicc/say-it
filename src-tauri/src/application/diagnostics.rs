@@ -391,7 +391,8 @@ pub(crate) fn export_diagnostic_bundle(
             && name.ends_with(".jsonl");
         let is_content =
             include_content && name.starts_with("say-it-content-") && name.ends_with(".jsonl");
-        if !is_normal && !is_content {
+        let is_stack_overflow = name == "say-it-stack-overflow.log";
+        if !is_normal && !is_content && !is_stack_overflow {
             continue;
         }
         let mut source =

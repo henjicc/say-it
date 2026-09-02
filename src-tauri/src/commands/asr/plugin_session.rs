@@ -11,7 +11,7 @@ use crate::providers::{ProviderProfile, RequestCustomization};
 use crate::state::*;
 
 const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
-const SESSION_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
+const RUNTIME_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) async fn start_plugin_asr_stream(
     app: tauri::AppHandle,
@@ -40,7 +40,7 @@ pub(super) async fn start_plugin_asr_stream(
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    if let Err(error) = plugin_runtime::spawn_js_worker("plugin-asr", move || {
         run_plugin_session(
             app,
             task_id,
@@ -52,7 +52,10 @@ pub(super) async fn start_plugin_asr_stream(
             profile,
             customization,
         );
-    });
+    }) {
+        cleanup_stream(&state.asr_streams, &session_id);
+        return Err(error);
+    }
 
     Ok(AsrStreamStartResponse { session_id })
 }
@@ -82,7 +85,7 @@ fn run_plugin_session(
         plugin.clone(),
         &profile,
         &session_id,
-        SESSION_TIMEOUT,
+        RUNTIME_INITIALIZE_TIMEOUT,
         cancelled,
         HashMap::new(),
     ) {

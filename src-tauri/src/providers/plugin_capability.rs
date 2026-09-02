@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use rquickjs::{CaughtError, Context, Function, Runtime};
+use rquickjs::{CaughtError, Context, Function, Runtime, TypedArray};
 use serde::{Deserialize, Serialize};
 
 use super::registry::ModelInfo;
@@ -100,6 +100,13 @@ pub fn validate_registry_with_sdk(
         .map_err(|error| error.to_string())?;
         ctx.globals()
             .set("__sayitHostCall", host_call)
+            .map_err(|error| error.to_string())?;
+        let store_request_body = Function::new(ctx.clone(), |_bytes: TypedArray<u8>| {
+            "manifest-validation-body".to_string()
+        })
+        .map_err(|error| error.to_string())?;
+        ctx.globals()
+            .set("__sayitHostStoreRequestBody", store_request_body)
             .map_err(|error| error.to_string())?;
         ctx.eval::<(), _>(super::sdk_runtime::QUICKJS_RUNTIME_BOOTSTRAP)
             .map_err(|error| error.to_string())?;
@@ -273,6 +280,13 @@ fn validate_and_snapshot(
         .map_err(|error| error.to_string())?;
         ctx.globals()
             .set("__sayitHostCall", host_call)
+            .map_err(|error| error.to_string())?;
+        let store_request_body = Function::new(ctx.clone(), |_bytes: TypedArray<u8>| {
+            "manifest-validation-body".to_string()
+        })
+        .map_err(|error| error.to_string())?;
+        ctx.globals()
+            .set("__sayitHostStoreRequestBody", store_request_body)
             .map_err(|error| error.to_string())?;
         ctx.eval::<(), _>(super::sdk_runtime::QUICKJS_RUNTIME_BOOTSTRAP)
             .map_err(|error| error.to_string())?;

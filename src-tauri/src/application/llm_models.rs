@@ -150,17 +150,20 @@ async fn fetch_model_names(
         let profile = profile.clone();
         let credentials = state.credentials.clone();
         let request_id = format!("groq-discovery-{}", uuid::Uuid::new_v4());
-        let value = tauri::async_runtime::spawn_blocking(move || {
-            let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
-                &profile,
-                credentials,
-                crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
-                request_id,
-                Arc::new(AtomicBool::new(false)),
-                HashMap::new(),
-            )?;
-            runtime.discover_groq()
-        })
+        let value = crate::providers::plugin_runtime::spawn_js_worker(
+            "builtin-llm-discovery",
+            move || {
+                let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
+                    &profile,
+                    credentials,
+                    crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
+                    request_id,
+                    Arc::new(AtomicBool::new(false)),
+                    HashMap::new(),
+                )?;
+                runtime.discover_groq()
+            },
+        )?
         .await
         .map_err(|error| format!("Groq 模型发现工作线程失败：{error}"))??;
         return Ok(value
@@ -197,19 +200,20 @@ async fn fetch_model_names(
         }
         let request_id = format!("plugin-llm-discovery-{}", uuid::Uuid::new_v4());
         let profile = profile.clone();
-        let value = tauri::async_runtime::spawn_blocking(move || {
-            let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
-                spec,
-                &profile,
-                &request_id,
-                MODEL_LIST_TIMEOUT,
-                Arc::new(AtomicBool::new(false)),
-                None,
-            )?;
-            runtime.discover_llm(&capability.module_id, &request_id, MODEL_LIST_TIMEOUT)
-        })
-        .await
-        .map_err(|error| format!("插件 LLM 模型发现工作线程失败：{error}"))??;
+        let value =
+            crate::providers::plugin_runtime::spawn_js_worker("plugin-llm-discovery", move || {
+                let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
+                    spec,
+                    &profile,
+                    &request_id,
+                    MODEL_LIST_TIMEOUT,
+                    Arc::new(AtomicBool::new(false)),
+                    None,
+                )?;
+                runtime.discover_llm(&capability.module_id, &request_id, MODEL_LIST_TIMEOUT)
+            })?
+            .await
+            .map_err(|error| format!("插件 LLM 模型发现工作线程失败：{error}"))??;
         let names = value
             .as_array()
             .into_iter()
