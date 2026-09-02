@@ -18,6 +18,7 @@ mod ocr;
 mod persistence;
 mod prelude;
 mod providers;
+mod stack_diagnostics;
 mod state;
 mod text_align;
 #[cfg(windows)]
@@ -83,6 +84,8 @@ use persistence::*;
 use state::*;
 
 static DEBUG_LOG: AtomicBool = AtomicBool::new(false);
+// 持有自定义 tokio 运行时，防止其被提前 drop 导致 tauri::async_runtime::set 的 handle 失效。
+static ASYNC_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
 #[cfg(target_os = "macos")]
 const MACOS_AUTOSTART_LABEL: &str = "com.henjicc.sayit.autostart";
@@ -186,6 +189,21 @@ macro_rules! dlog {
 }
 
 fn main() {
+    // 保留 tokio 默认栈，只用自定义 runtime 为工作线程注册可符号化的栈溢出取证。
+    // 深度不可控的 QuickJS 有自己的线程边界，不能再靠放大全局 worker 栈兜底。
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name_fn(|| {
+            static INDEX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            format!("sayit-tokio-{}", INDEX.fetch_add(1, Ordering::Relaxed))
+        })
+        .on_thread_start(stack_diagnostics::prepare_current_thread)
+        .on_thread_stop(stack_diagnostics::forget_current_thread)
+        .build()
+        .expect("创建异步运行时失败");
+    tauri::async_runtime::set(async_runtime.handle().clone());
+    let _ = ASYNC_RUNTIME.set(async_runtime);
+
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     #[cfg(windows)]
@@ -230,6 +248,13 @@ fn main() {
         .setup(|app| {
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::diagnostics::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            if let Err(error) = stack_diagnostics::install(&app.handle()) {
+                application::diagnostics::event(
+                    "error",
+                    "diagnostics.stackOverflowHandlerFailed",
+                    json!({"message":error}),
+                );
+            }
             #[cfg(target_os = "macos")]
             if let Err(error) = migrate_legacy_macos_autostart(&app.handle()) {
                 eprintln!("[autostart] {error}");

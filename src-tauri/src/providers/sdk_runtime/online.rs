@@ -446,7 +446,7 @@ pub async fn recognize_sdk_file(
         .map(str::to_string);
     let input = sdk_file_asr_input(&params, &customization, vocabulary_id);
     let cancel = cancelled.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-    let value = tauri::async_runtime::spawn_blocking(move || {
+    let value = crate::providers::plugin_runtime::spawn_js_worker("builtin-file-asr", move || {
         let runtime = BuiltinSdkRuntime::create(
             &profile,
             credentials,
@@ -462,7 +462,7 @@ pub async fn recognize_sdk_file(
             &request_id,
             FILE_ASR_TIMEOUT,
         )
-    })
+    })?
     .await
     .map_err(|error| format!("内置 SDK 识别工作线程失败：{error}"))??;
     sdk_asr_to_legacy(value)
@@ -496,18 +496,19 @@ where
     let cancelled = Arc::new(AtomicBool::new(false));
     let task_cancelled = cancelled.clone();
     let task_request_id = request_id.clone();
-    let mut task = tauri::async_runtime::spawn_blocking(move || {
-        let runtime = BuiltinSdkRuntime::create_with_event_sender(
-            &profile,
-            credentials,
-            BuiltinSdkScope::BAILIAN_TRANSLATION,
-            task_request_id.clone(),
-            task_cancelled,
-            HashMap::new(),
-            Some(event_tx),
-        )?;
-        runtime.execute_capability("translation", &module_id, input, &task_request_id)
-    });
+    let mut task =
+        crate::providers::plugin_runtime::spawn_js_worker("builtin-translation", move || {
+            let runtime = BuiltinSdkRuntime::create_with_event_sender(
+                &profile,
+                credentials,
+                BuiltinSdkScope::BAILIAN_TRANSLATION,
+                task_request_id.clone(),
+                task_cancelled,
+                HashMap::new(),
+                Some(event_tx),
+            )?;
+            runtime.execute_capability("translation", &module_id, input, &task_request_id)
+        })?;
     let mut accumulated = String::new();
     loop {
         tokio::select! {

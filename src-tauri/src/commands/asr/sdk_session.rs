@@ -30,19 +30,24 @@ pub(super) async fn start_sdk_stream(
     let credentials = state.credentials.clone();
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        run_sdk_session(
-            app,
-            task_id,
-            streams,
-            rx,
-            super::stream_dsp(params, input_sample_rate),
-            model,
-            route,
-            profile,
-            credentials,
-        );
-    });
+    if let Err(error) =
+        crate::providers::plugin_runtime::spawn_js_worker("builtin-asr", move || {
+            run_sdk_session(
+                app,
+                task_id,
+                streams,
+                rx,
+                super::stream_dsp(params, input_sample_rate),
+                model,
+                route,
+                profile,
+                credentials,
+            );
+        })
+    {
+        cleanup_stream(&state.asr_streams, &session_id);
+        return Err(error);
+    }
     Ok(AsrStreamStartResponse { session_id })
 }
 

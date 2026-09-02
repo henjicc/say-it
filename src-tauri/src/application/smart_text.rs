@@ -316,7 +316,7 @@ async fn run_plugin_llm(
     let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
     let cancelled = Arc::new(AtomicBool::new(false));
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
         let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
             spec,
             &profile,
@@ -344,7 +344,7 @@ async fn run_plugin_llm(
                 .unwrap_or_default()
                 .to_string(),
         ))
-    })
+    })?
     .await
     .map_err(|error| format!("插件 LLM 工作线程失败：{error}"))?
 }
@@ -383,23 +383,24 @@ where
     let task_cancelled = cancelled.clone();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
-    let mut task = tauri::async_runtime::spawn_blocking(move || {
-        let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
-            spec,
-            &profile,
-            &task_request_id,
-            DEFAULT_REQUEST_TIMEOUT,
-            task_cancelled,
-            Some(event_tx),
-        )?;
-        runtime.execute_llm(
-            &capability.module_id,
-            &request,
-            &task_request_id,
-            true,
-            DEFAULT_REQUEST_TIMEOUT,
-        )
-    });
+    let mut task =
+        crate::providers::plugin_runtime::spawn_js_worker("plugin-llm-stream", move || {
+            let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
+                spec,
+                &profile,
+                &task_request_id,
+                DEFAULT_REQUEST_TIMEOUT,
+                task_cancelled,
+                Some(event_tx),
+            )?;
+            runtime.execute_llm(
+                &capability.module_id,
+                &request,
+                &task_request_id,
+                true,
+                DEFAULT_REQUEST_TIMEOUT,
+            )
+        })?;
     let mut output = String::new();
     let mut reasoning = String::new();
     loop {
@@ -602,7 +603,7 @@ async fn run_groq_sdk(
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(AtomicBool::new(false));
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
             credentials,
@@ -623,7 +624,7 @@ async fn run_groq_sdk(
             .unwrap_or_default()
             .to_string();
         Ok::<_, String>((text, reasoning))
-    })
+    })?
     .await
     .map_err(|error| format!("Groq SDK 工作线程失败：{error}"))?
 }
@@ -647,19 +648,20 @@ where
     let task_cancelled = cancelled.clone();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
-    let mut task = tauri::async_runtime::spawn_blocking(move || {
-        let runtime =
-            crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
-                &profile,
-                credentials,
-                crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
-                task_request_id.clone(),
-                task_cancelled,
-                HashMap::new(),
-                Some(event_tx),
-            )?;
-        runtime.run_groq(request, &task_request_id, true)
-    });
+    let mut task =
+        crate::providers::plugin_runtime::spawn_js_worker("builtin-llm-stream", move || {
+            let runtime =
+                crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
+                    &profile,
+                    credentials,
+                    crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
+                    task_request_id.clone(),
+                    task_cancelled,
+                    HashMap::new(),
+                    Some(event_tx),
+                )?;
+            runtime.run_groq(request, &task_request_id, true)
+        })?;
     let mut output = String::new();
     let mut reasoning = String::new();
     loop {
