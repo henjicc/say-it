@@ -69,10 +69,10 @@ fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
     let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
     if custom {
         return parse_hex_rgb(value.get("background").and_then(Value::as_str))
-            .unwrap_or((10, 14, 22));
+            .unwrap_or((15, 15, 15));
     }
     let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((81, 153, 255));
+        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
     let target = if value.get("tone").and_then(Value::as_str) == Some("light") {
         (244, 247, 251)
     } else {
@@ -84,7 +84,7 @@ fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
 #[cfg(any(windows, test))]
 fn theme_glass_tint_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
     let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((81, 153, 255));
+        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
     let light = value.get("tone").and_then(Value::as_str) == Some("light");
     let base = if value.get("backgroundMode").and_then(Value::as_str) == Some("custom") {
         theme_background_rgb(value)
@@ -102,7 +102,7 @@ fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
         .app_settings
         .lock()
         .map(|settings| theme_glass_tint_rgb(&settings.theme))
-        .unwrap_or((10, 14, 22))
+        .unwrap_or((15, 15, 15))
 }
 
 /// 参考边长：显示器逻辑分辨率（物理分辨率 / 缩放比例）中较短的一边。

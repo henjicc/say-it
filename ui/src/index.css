@@ -6,13 +6,13 @@
  */
 @theme {
   /* 背景层级：应用底 → 侧栏/标题栏 → 控件面 → 浮层 */
-  --color-bg: #0a0e16;
-  --color-bg-sidebar: #080b12;
-  --color-bg-titlebar: #080b12;
+  --color-bg: #0f0f0f;
+  --color-bg-sidebar: #0c0c0c;
+  --color-bg-titlebar: #0c0c0c;
   --color-surface: rgba(255, 255, 255, 0.035);
   --color-surface-hover: rgba(255, 255, 255, 0.06);
   --color-surface-strong: rgba(255, 255, 255, 0.08);
-  --color-overlay: #12161f;
+  --color-overlay: #1e1e1e;
 
   /* 边框/分割线 */
   --color-line: rgba(255, 255, 255, 0.08);
@@ -31,13 +31,13 @@
   --color-rec: #ff4d4f;
 
   /* 品牌强调 */
-  --color-accent: #5199ff;
-  --color-accent-light: #8ec1ff;
-  --color-accent-dark: #1c6fea;
+  --color-accent: #286ec8;
+  --color-accent-light: #719fdb;
+  --color-accent-dark: #1b4b88;
   --color-accent-contrast: #ffffff;
-  --color-accent-control: #3576c9;
-  --color-accent-control-hover: #397aca;
-  --color-accent-control-active: #306ab5;
+  --color-accent-control: #286ec8;
+  --color-accent-control-hover: #3577cb;
+  --color-accent-control-active: #2463b4;
   --color-accent-control-contrast: #ffffff;
 
   /* 圆角 */
@@ -66,14 +66,14 @@
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
 :root {
-  --theme-bg: #0a0e16;
-  --theme-bg-sidebar: #080b12;
-  --theme-bg-titlebar: #080b12;
-  --theme-overlay: #12161f;
+  --theme-bg: #0f0f0f;
+  --theme-bg-sidebar: #0c0c0c;
+  --theme-bg-titlebar: #0c0c0c;
+  --theme-overlay: #1e1e1e;
   --theme-surface: rgba(255, 255, 255, 0.035);
   --theme-surface-hover: rgba(255, 255, 255, 0.06);
   --theme-surface-strong: rgba(255, 255, 255, 0.08);
-  --system-glass-color: #1c3456;
+  --system-glass-color: #101217;
   --system-glass-tint: 8%;
 
   --color-bg: var(--theme-bg);
@@ -103,6 +103,13 @@
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
   --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+[data-settings-search-hit="true"] {
+  border-radius: var(--radius-md);
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 4px;
+  transition: outline-color var(--dur-base) var(--ease-out);
 }
 
 /* 系统材质开启时，所有界面入口共享同一套透明背景令牌。原生窗口负责模糊桌面，

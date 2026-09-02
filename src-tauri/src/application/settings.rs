@@ -57,9 +57,9 @@ fn empty_object() -> Value {
 fn default_theme() -> Value {
     serde_json::json!({
         "tone":"dark",
-        "accent":"#5199FF",
-        "backgroundMode":"followAccent",
-        "background":"#0A0E16"
+        "accent":"#286EC8",
+        "backgroundMode":"custom",
+        "background":"#0F0F0F"
     })
 }
 fn default_assistant_prefs() -> Value {
@@ -452,8 +452,9 @@ mod tests {
         assert_eq!(v.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
-        assert_eq!(v.theme["backgroundMode"], "followAccent");
-        assert_eq!(v.theme["background"], "#0A0E16");
+        assert_eq!(v.theme["accent"], "#286EC8");
+        assert_eq!(v.theme["backgroundMode"], "custom");
+        assert_eq!(v.theme["background"], "#0F0F0F");
         assert_eq!(v.assistant_prefs["translationModel"], "none");
         assert_eq!(v.assistant_prefs["translationEngine"], "llm");
         assert_eq!(

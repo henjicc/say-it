@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
+import { SettingsSearch, type SettingsSearchItem } from "@/features/settings/SettingsSearch";
 import { SettingsProviderPanel } from "@/views/SettingsProviderPanel";
 import { SettingsLlmPanel } from "@/views/SettingsLlmPanel";
 import { PluginManagerPanel } from "@/views/PluginManagerPanel";
@@ -26,13 +28,66 @@ const TABS: TabItem<SettingsTabKey>[] = [
 export function SettingsView() {
   const tab = useUiStore((state) => state.settingsTab);
   const setTab = useUiStore((state) => state.setSettingsTab);
+  const [pendingTarget, setPendingTarget] = useState<SettingsSearchItem | null>(null);
+
+  useEffect(() => {
+    if (!pendingTarget || pendingTarget.tab !== tab) return;
+    let highlightTimer = 0;
+    let secondFrame = 0;
+    let highlightedElement: HTMLElement | null = null;
+    let cancelled = false;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        const panel = document.getElementById(`settings-tabs-${tab}-panel`);
+        if (!panel) return;
+        const targetText = pendingTarget.targetText.trim();
+        const candidates = Array.from(panel.querySelectorAll<HTMLElement>("h2, h3, label, p, span, button"));
+        const target = candidates.find((element) => element.textContent?.trim() === targetText)
+          ?? candidates.find((element) => element.textContent?.trim().includes(targetText));
+
+        let owner = target ?? panel;
+        const focusSelector = "input:not([type='hidden']):not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex='-1'])";
+        let focusable = owner.matches(focusSelector) ? owner : undefined;
+        while (!focusable && owner !== panel) {
+          focusable = owner.querySelector<HTMLElement>(focusSelector) ?? undefined;
+          if (!focusable && owner.parentElement) owner = owner.parentElement;
+        }
+
+        const highlight = owner === panel ? target ?? panel : owner;
+        highlightedElement = highlight;
+        highlight.dataset.settingsSearchHit = "true";
+        const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+        highlight.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+        focusable?.focus({ preventScroll: true });
+        highlightTimer = window.setTimeout(() => {
+          delete highlight.dataset.settingsSearchHit;
+          highlightedElement = null;
+          setPendingTarget((current) => current?.id === pendingTarget.id ? null : current);
+        }, 1400);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(highlightTimer);
+      if (highlightedElement) delete highlightedElement.dataset.settingsSearchHit;
+    };
+  }, [pendingTarget, tab]);
+
+  const navigateToSetting = (item: SettingsSearchItem) => {
+    setPendingTarget({ ...item });
+    setTab(item.tab);
+  };
 
   return (
     <div className="flex flex-col gap-7">
-      <PageHeader
-        title="设置"
-        description="配置识别模型与密钥、插件、麦克风、启动与外观，并集中管理按键、模型对比和音频链路。"
-      />
+      <div className="flex flex-col gap-3">
+        <PageHeader title="设置" />
+        <SettingsSearch onSelect={navigateToSetting} />
+      </div>
 
       <Tabs<SettingsTabKey>
         id="settings-tabs"
