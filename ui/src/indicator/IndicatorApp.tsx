@@ -6,7 +6,6 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { subtitleFontStack } from "@/lib/platform";
 import { OrbWaveform } from "@/floating-orb/OrbWaveform";
-import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
 import { floatingOrbWaveScale } from "@/floating-orb/interaction";
 
 type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "fallback" | "subtitle" | "error";
@@ -44,6 +43,20 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   subtitle: "实时字幕",
   error: "处理失败",
 };
+
+const INDICATOR_WAVE_BAR_COUNT = 9;
+
+function resampleWaveLevels(levels: number[], fallback: number) {
+  if (levels.length === 0) return Array(INDICATOR_WAVE_BAR_COUNT).fill(fallback) as number[];
+  if (levels.length === 1) return Array(INDICATOR_WAVE_BAR_COUNT).fill(levels[0]) as number[];
+  return Array.from({ length: INDICATOR_WAVE_BAR_COUNT }, (_, index) => {
+    const position = index * (levels.length - 1) / (INDICATOR_WAVE_BAR_COUNT - 1);
+    const lower = Math.floor(position);
+    const upper = Math.min(levels.length - 1, Math.ceil(position));
+    const progress = position - lower;
+    return levels[lower] + (levels[upper] - levels[lower]) * progress;
+  });
+}
 
 const MAX_RENDER_CHARS = 20000;
 const FRESH_FADE_MAX = 10;
@@ -237,7 +250,7 @@ export function IndicatorApp() {
     }
     // 复用悬浮球那套感知响度曲线（floatingOrbWaveScale），和悬浮球波形观感保持一致。
     const peaks = Array.isArray(payload.peaks)
-      ? payload.peaks.map((value) => floatingOrbWaveScale(Number(value) || 0)).slice(-WAVE_BAR_COUNT)
+      ? payload.peaks.map((value) => floatingOrbWaveScale(Number(value) || 0))
       : [];
     setWaveform({ active: true, level: floatingOrbWaveScale(Number(payload.level) || 0), peaks });
   }, true, "dictation-indicator");
@@ -282,10 +295,7 @@ export function IndicatorApp() {
   const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
   const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
-  const waveformBars = Array.from(
-    { length: WAVE_BAR_COUNT },
-    (_, index) => waveform.peaks[index] ?? waveform.level,
-  );
+  const waveformBars = resampleWaveLevels(waveform.peaks, waveform.level);
   const showTranslationRow =
     mode === "subtitle" && subtitleConfig.translationEnabled && subtitleConfig.translationLayout === "bilingual";
   const translationFirst = subtitleConfig.translationOrder === "translationFirst";
@@ -423,7 +433,7 @@ export function IndicatorApp() {
       {pillPhase !== "subtitle" && pillPhase !== "fallback" && (
         <div className={`pill ${pillVisualPhase}${showWaveform ? " pill-wave" : ""}`} id="pill">
           {showWaveform ? (
-            <OrbWaveform levels={waveformBars} />
+            <OrbWaveform levels={waveformBars} variant="dense" />
           ) : (
             <>
               <span className="dot" />

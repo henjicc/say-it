@@ -25,4 +25,15 @@ describe("floating orb waveform pixel geometry", () => {
     // 5 × 5px + 4 × 4px = 41px；居中后从第 82 个物理像素开始。
     expect(layout.offsets.map((offset) => Math.round((offset + 50.27) * 1.5))).toEqual([82, 91, 100, 109, 118]);
   });
+
+  it("supports nine thinner bars for the compact indicator", () => {
+    const layout = floatingOrbWaveLayout(80, 0, 1, {
+      barCount: 9,
+      barRatio: 0.03,
+      gapRatio: 0.07,
+    });
+    expect(layout.offsets).toHaveLength(9);
+    expect(layout.width).toBe(2);
+    expect(layout.offsets.at(-1)! + layout.width - layout.offsets[0]).toBe(66);
+  });
 });

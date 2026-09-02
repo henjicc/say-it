@@ -41,12 +41,12 @@ body,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  width: 164px;
-  height: 42px;
+  gap: 8px;
+  width: 128px;
+  height: 40px;
   box-sizing: border-box;
   padding: 0 12px;
-  border-radius: 21px;
+  border-radius: 20px;
   background: rgba(12, 16, 24, 0.94);
   color: #fff;
   font: 13px/1.2 var(--font-sans);
@@ -59,7 +59,7 @@ body,
 .pill-wave .orb-waveform {
   position: relative;
   flex: none;
-  width: 48px;
+  width: 80px;
   height: 26px;
 }
 
@@ -75,18 +75,32 @@ body,
 }
 
 .pill-wave .orb-wave-bar:nth-child(1),
-.pill-wave .orb-wave-bar:nth-child(5) {
-  --bar-height: 47%;
+.pill-wave .orb-wave-bar:nth-child(9) {
+  --bar-height: 46%;
 }
 
 .pill-wave .orb-wave-bar:nth-child(2),
-.pill-wave .orb-wave-bar:nth-child(4) {
-  --bar-height: 64%;
+.pill-wave .orb-wave-bar:nth-child(8) {
+  --bar-height: 58%;
+}
+
+.pill-wave .orb-wave-bar:nth-child(3),
+.pill-wave .orb-wave-bar:nth-child(7) {
+  --bar-height: 70%;
+}
+
+.pill-wave .orb-wave-bar:nth-child(4),
+.pill-wave .orb-wave-bar:nth-child(6) {
+  --bar-height: 82%;
+}
+
+.pill-wave .orb-wave-bar:nth-child(5) {
+  --bar-height: 94%;
 }
 
 .dot {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   flex: none;
 }
