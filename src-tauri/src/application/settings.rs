@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 6;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +60,14 @@ fn default_theme() -> Value {
         "accent":"#286EC8",
         "backgroundMode":"custom",
         "background":"#0F0F0F"
+    })
+}
+fn previous_default_theme() -> Value {
+    serde_json::json!({
+        "tone":"dark",
+        "accent":"#5199FF",
+        "backgroundMode":"followAccent",
+        "background":"#0A0E16"
     })
 }
 fn default_assistant_prefs() -> Value {
@@ -132,6 +140,9 @@ pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
             .unwrap_or(false);
         settings.diagnostics_prefs = serde_json::json!({"verboseLogging":legacy_verbose});
     }
+    if settings.schema_version < 7 && settings.theme == previous_default_theme() {
+        settings.theme = default_theme();
+    }
     settings.schema_version = SETTINGS_SCHEMA_VERSION;
 }
 
@@ -190,7 +201,11 @@ pub(crate) fn import_legacy_settings(
     if current.theme == default_theme() {
         if let Some(v) = legacy.theme {
             valid_object(&v)?;
-            current.theme = v;
+            current.theme = if v == previous_default_theme() {
+                default_theme()
+            } else {
+                v
+            };
         }
     }
     if current.custom_cue_start.is_none() {
@@ -502,6 +517,26 @@ mod tests {
             .history_prefs
             .get("finalDraftLearningEnabled")
             .is_none());
+    }
+    #[test]
+    fn previous_default_theme_migrates_without_overwriting_custom_colors() {
+        let mut defaults = AppSettings::default();
+        defaults.schema_version = 6;
+        defaults.theme = previous_default_theme();
+        migrate_loaded_settings(&mut defaults);
+        assert_eq!(defaults.theme, default_theme());
+
+        let mut customized = AppSettings::default();
+        customized.schema_version = 6;
+        customized.theme = serde_json::json!({
+            "tone":"dark",
+            "accent":"#E36B2C",
+            "backgroundMode":"custom",
+            "background":"#221A18"
+        });
+        let expected = customized.theme.clone();
+        migrate_loaded_settings(&mut customized);
+        assert_eq!(customized.theme, expected);
     }
     #[test]
     fn rejects_non_object_domain() {
