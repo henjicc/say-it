@@ -550,6 +550,28 @@ where
     }
 }
 
+/// SDK 的毫秒时间戳契约是 `number`，供应商按秒返回时会得到小数毫秒（例如 Groq 的
+/// 25049.99936）；本地契约用整数毫秒，因此统一四舍五入并钳到非负范围。
+fn sdk_millis(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Number(number) => {
+            if let Some(value) = number.as_u64() {
+                Some(value)
+            } else if let Some(value) = number.as_i64() {
+                Some(value.max(0) as u64)
+            } else {
+                let value = number.as_f64()?;
+                if value.is_finite() {
+                    Some(value.round().max(0.0) as u64)
+                } else {
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 fn sdk_asr_to_legacy(
     value: Value,
 ) -> Result<crate::providers::alibabacloud::TranscriptionResult, String> {
@@ -566,22 +588,22 @@ fn sdk_asr_to_legacy(
                 .flatten()
                 .map(|word| {
                     json!({
-                        "beginTime": word.get("startMs").and_then(Value::as_u64).unwrap_or_default(),
-                        "endTime": word.get("endMs").and_then(Value::as_u64).unwrap_or_default(),
+                        "beginTime": sdk_millis(word.get("startMs")).unwrap_or_default(),
+                        "endTime": sdk_millis(word.get("endMs")).unwrap_or_default(),
                         "text": word.get("text").and_then(Value::as_str).unwrap_or_default(),
                     })
                 })
                 .collect::<Vec<_>>();
             json!({
-                "beginTime": segment.get("startMs").and_then(Value::as_u64).unwrap_or_default(),
-                "endTime": segment.get("endMs").and_then(Value::as_u64).unwrap_or_default(),
+                "beginTime": sdk_millis(segment.get("startMs")).unwrap_or_default(),
+                "endTime": sdk_millis(segment.get("endMs")).unwrap_or_default(),
                 "text": segment.get("text").and_then(Value::as_str).unwrap_or_default(),
                 "words": words,
             })
         })
         .collect::<Vec<_>>();
     serde_json::from_value(json!({
-        "durationMs": value.get("durationMs").cloned().unwrap_or(Value::Null),
+        "durationMs": sdk_millis(value.get("durationMs")),
         "transcripts": [{
             "channelId": Value::Null,
             "text": value.get("text").and_then(Value::as_str).unwrap_or_default(),
@@ -706,6 +728,27 @@ mod tests {
         assert_eq!(result.transcripts[0].text, "你好");
         assert_eq!(result.transcripts[0].sentences[0].begin_time, 10);
         assert_eq!(result.transcripts[0].sentences[0].words[0].text, "你");
+    }
+
+    #[test]
+    fn maps_fractional_sdk_milliseconds_by_rounding() {
+        let result = sdk_asr_to_legacy(json!({
+            "text": "hello",
+            "durationMs": 25049.99936,
+            "segments": [{
+                "text": "hello",
+                "startMs": 1234.5,
+                "endMs": 2000.4,
+                "words": [{ "text": "hello", "startMs": -0.2, "endMs": 999.6 }],
+            }],
+        }))
+        .unwrap();
+        assert_eq!(result.duration_ms, Some(25050));
+        let sentence = &result.transcripts[0].sentences[0];
+        assert_eq!(sentence.begin_time, 1235);
+        assert_eq!(sentence.end_time, 2000);
+        assert_eq!(sentence.words[0].begin_time, 0);
+        assert_eq!(sentence.words[0].end_time, 1000);
     }
 
     #[test]
