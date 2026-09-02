@@ -112,6 +112,11 @@
   transition: outline-color var(--dur-base) var(--ease-out);
 }
 
+.settings-search-input::-webkit-search-cancel-button {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
 /* 系统材质开启时，所有界面入口共享同一套透明背景令牌。原生窗口负责模糊桌面，
  * WebView 只叠加接近中性的轻底色，强调色仅保留不抢眼的细微倾向。 */
 [data-system-glass="true"] {

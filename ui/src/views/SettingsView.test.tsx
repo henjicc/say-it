@@ -35,7 +35,7 @@ describe("SettingsView", () => {
     const option = screen.getByRole("option", { name: /提示音/ });
     expect(option).toBeInTheDocument();
     expect(option).toHaveClass("bg-[var(--color-accent-control)]");
-    expect(screen.queryByRole("button", { name: "清空设置搜索" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "清空设置搜索" })).toBeInTheDocument();
   });
 
   it("switches tabs and focuses the matched control", async () => {

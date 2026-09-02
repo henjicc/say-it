@@ -44,7 +44,7 @@ describe("dictation indicator presentation", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps the dot and label while adding the recording waveform", () => {
+  it("shows only the waveform while recording and text during processing", () => {
     const view = render(<IndicatorApp />);
 
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "recording" }));
@@ -56,14 +56,20 @@ describe("dictation indicator presentation", () => {
 
     const pill = view.container.querySelector("#pill");
     expect(pill).toHaveClass("recording", "pill-wave");
-    expect(pill?.querySelector(".dot")).toBeInTheDocument();
-    expect(screen.getByText("聆听中…")).toBeInTheDocument();
+    expect(pill?.querySelector(".dot")).not.toBeInTheDocument();
+    expect(screen.queryByText("聆听中…")).not.toBeInTheDocument();
     expect(pill?.querySelector(".orb-waveform")).toBeInTheDocument();
 
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "processing" }));
     expect(view.container.querySelector("#pill")).toHaveClass("processing");
     expect(view.container.querySelector("#pill .dot")).toBeInTheDocument();
     expect(screen.getByText("识别中…")).toBeInTheDocument();
+    expect(view.container.querySelector("#pill .orb-waveform")).not.toBeInTheDocument();
+
+    act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "smartProcessing" }));
+    expect(view.container.querySelector("#pill")).toHaveClass("processing");
+    expect(screen.getByText("处理中…")).toBeInTheDocument();
+    expect(view.container.querySelector("#pill .orb-waveform")).not.toBeInTheDocument();
   });
 
   it("presents clipboard delivery as guidance instead of an error", () => {
