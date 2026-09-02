@@ -18,9 +18,9 @@ const THEME_KEY = "sayItAccentTheme";
 
 export const defaultAccentTheme: AccentTheme = {
   tone: "dark",
-  accent: "#5199FF",
-  backgroundMode: "followAccent",
-  background: "#0A0E16",
+  accent: "#286EC8",
+  backgroundMode: "custom",
+  background: "#0F0F0F",
 };
 
 function normalizeHex(value: string, fallback: string) {

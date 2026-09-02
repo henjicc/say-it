@@ -30,6 +30,18 @@ describe("theme store", () => {
     useThemeStore.setState({ theme: defaultAccentTheme });
   });
 
+  it("uses the product default accent and base background", () => {
+    expect(defaultAccentTheme).toEqual({
+      tone: "dark",
+      accent: "#286EC8",
+      backgroundMode: "custom",
+      background: "#0F0F0F",
+    });
+    applyThemeToDocument(defaultAccentTheme);
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#0F0F0F");
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#286EC8");
+  });
+
   it("applies rapid accent changes immediately and persists them in order", async () => {
     useThemeStore.getState().patch({ accent: "#FF5500" });
     expect(useThemeStore.getState().theme.accent).toBe("#FF5500");
