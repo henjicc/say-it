@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
+import { Search } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import type { SettingsTabKey } from "@/store/useUiStore";
@@ -122,7 +122,7 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
         aria-expanded={showResults}
         aria-activedescendant={showResults && results[activeIndex] ? `${listboxId}-${results[activeIndex].id}` : undefined}
         placeholder="搜索设置项，例如“开机自启”“提示音”“强调色”"
-        className="pl-11 pr-11"
+        className="pl-11 pr-4"
         autoComplete="off"
         spellCheck={false}
         onFocus={() => setOpen(true)}
@@ -133,20 +133,6 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
         }}
         onKeyDown={handleKeyDown}
       />
-      {query && (
-        <button
-          type="button"
-          aria-label="清空设置搜索"
-          className="absolute right-2 top-1/2 grid h-[var(--control-h-sm)] w-[var(--control-h-sm)] -translate-y-1/2 place-items-center rounded-[var(--radius-md)] text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
-          onClick={() => {
-            setQuery("");
-            setOpen(false);
-          }}
-        >
-          <X className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-        </button>
-      )}
-
       {showResults && (
         <div
           id={listboxId}
@@ -166,7 +152,7 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
               className={cn(
                 "flex w-full items-center justify-between gap-4 rounded-[var(--radius-md)] px-3 py-2.5 text-left transition-colors",
                 index === activeIndex
-                  ? "bg-[var(--accent-soft)] text-[var(--color-fg)]"
+                  ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                   : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
               )}
               onPointerMove={() => setActiveIndex(index)}
@@ -174,9 +160,19 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
             >
               <span className="min-w-0">
                 <span className="block truncate text-sm font-medium">{item.label}</span>
-                <span className="mt-0.5 block truncate text-xs text-[var(--color-fg-subtle)]">{item.section}</span>
+                <span className={cn(
+                  "mt-0.5 block truncate text-xs",
+                  index === activeIndex
+                    ? "text-[var(--color-accent-control-contrast)] opacity-75"
+                    : "text-[var(--color-fg-subtle)]",
+                )}>{item.section}</span>
               </span>
-              <span className="shrink-0 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-fg-subtle)]">{item.tabLabel}</span>
+              <span className={cn(
+                "shrink-0 rounded-[var(--radius-pill)] border px-2 py-0.5 text-[11px]",
+                index === activeIndex
+                  ? "border-current text-[var(--color-accent-control-contrast)] opacity-75"
+                  : "border-[var(--color-line)] text-[var(--color-fg-subtle)]",
+              )}>{item.tabLabel}</span>
             </button>
           ))}
         </div>

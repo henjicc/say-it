@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AlertTriangle, Lock, LockOpen, RotateCw, X } from "lucide-react";
+import { AlertTriangle, ClipboardCheck, Lock, LockOpen, RotateCw, X } from "lucide-react";
 import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { subtitleFontStack } from "@/lib/platform";
+import { OrbWaveform } from "@/floating-orb/OrbWaveform";
+import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
+import { floatingOrbWaveScale } from "@/floating-orb/interaction";
 
-type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "subtitle" | "error";
+type Phase = "hidden" | "recording" | "processing" | "smartProcessing" | "fallback" | "subtitle" | "error";
 type IndicatorMode = "dictation" | "subtitle";
 
 interface SubtitleConfig {
@@ -37,6 +40,7 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   recording: "聆听中…",
   processing: "识别中…",
   smartProcessing: "处理中…",
+  fallback: "已复制，请粘贴使用",
   subtitle: "实时字幕",
   error: "处理失败",
 };
@@ -44,7 +48,6 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
 const MAX_RENDER_CHARS = 20000;
 const FRESH_FADE_MAX = 10;
 const OVERLAP_SEARCH_MAX = 200;
-const WAVE_BAR_COUNT = 24;
 
 /**
  * 一路独立的字幕文本轨道：管理"稳定前缀 + 新增高亮 + 滚动/平移定位"的整套渲染逻辑。
@@ -228,16 +231,15 @@ export function IndicatorApp() {
   });
 
   useTauriEvent<{ active?: boolean; level?: number; peaks?: number[] }>(EVT.indicatorWaveform, (payload) => {
-    const active = !!payload.active;
-    const level = Math.max(0, Math.min(1, Number(payload.level) || 0));
+    if (!payload.active) {
+      setWaveform({ active: false, level: 0, peaks: [] });
+      return;
+    }
+    // 复用悬浮球那套感知响度曲线（floatingOrbWaveScale），和悬浮球波形观感保持一致。
     const peaks = Array.isArray(payload.peaks)
-      ? payload.peaks.map((value) => Math.max(0, Math.min(1, Number(value) || 0)))
+      ? payload.peaks.map((value) => floatingOrbWaveScale(Number(value) || 0)).slice(-WAVE_BAR_COUNT)
       : [];
-    setWaveform((prev) => ({
-      active,
-      level,
-      peaks: active ? [...prev.peaks, ...peaks].slice(-WAVE_BAR_COUNT) : [],
-    }));
+    setWaveform({ active: true, level: floatingOrbWaveScale(Number(payload.level) || 0), peaks });
   }, true, "dictation-indicator");
 
   useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
@@ -280,9 +282,10 @@ export function IndicatorApp() {
   const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
   const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
   const showWaveform = mode === "dictation" && phase === "recording" && waveform.active;
-  const showProcessingPanel =
-    mode === "dictation" && (phase === "processing" || phase === "smartProcessing") && !original.hasText;
-  const waveformBars = Array.from({ length: WAVE_BAR_COUNT }, (_, index) => waveform.peaks[index] ?? 0);
+  const waveformBars = Array.from(
+    { length: WAVE_BAR_COUNT },
+    (_, index) => waveform.peaks[index] ?? waveform.level,
+  );
   const showTranslationRow =
     mode === "subtitle" && subtitleConfig.translationEnabled && subtitleConfig.translationLayout === "bilingual";
   const translationFirst = subtitleConfig.translationOrder === "translationFirst";
@@ -411,36 +414,19 @@ export function IndicatorApp() {
           </div>
         </div>
       )}
-      {(showWaveform || showProcessingPanel) && (
-        <div
-          id="signal-panel"
-          className={showProcessingPanel ? "processing" : "recording"}
-        >
-          {showWaveform ? (
-            <div className="wave-bars" aria-hidden="true">
-              {waveformBars.map((value, index) => (
-                <span
-                  key={index}
-                  className="wave-bar"
-                  style={{ "--bar-height": `${Math.max(8, 8 + value * 34)}px` } as React.CSSProperties}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="loader-dots" aria-hidden="true">
-              <span className="loader-dot" />
-              <span className="loader-dot" />
-              <span className="loader-dot" />
-            </div>
-          )}
+      {mode === "dictation" && phase === "fallback" && (
+        <div id="fallback-panel" role="status" aria-live="polite">
+          <ClipboardCheck aria-hidden="true" />
+          <span>已经把结果放到你的剪贴板里了，你粘贴就可以用了</span>
         </div>
       )}
-      {pillPhase !== "subtitle" && (
-        <div className={`pill ${pillVisualPhase}`} id="pill">
+      {pillPhase !== "subtitle" && pillPhase !== "fallback" && (
+        <div className={`pill ${pillVisualPhase}${showWaveform ? " pill-wave" : ""}`} id="pill">
           <span className="dot" />
           <span className="label" id="label">
             {LABELS[pillPhase]}
           </span>
+          {showWaveform && <OrbWaveform levels={waveformBars} />}
         </div>
       )}
     </div>
