@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import type { SettingsTabKey } from "@/store/useUiStore";
@@ -122,7 +122,7 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
         aria-expanded={showResults}
         aria-activedescendant={showResults && results[activeIndex] ? `${listboxId}-${results[activeIndex].id}` : undefined}
         placeholder="搜索设置项，例如“开机自启”“提示音”“强调色”"
-        className="pl-11 pr-4"
+        className="settings-search-input pl-11 pr-11"
         autoComplete="off"
         spellCheck={false}
         onFocus={() => setOpen(true)}
@@ -133,6 +133,21 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
         }}
         onKeyDown={handleKeyDown}
       />
+      {query.length > 0 && (
+        <button
+          type="button"
+          aria-label="清空设置搜索"
+          className="absolute right-2 top-1/2 z-10 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-[var(--radius-sm)] text-[var(--color-fg-faint)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setQuery("");
+            setActiveIndex(0);
+            setOpen(false);
+          }}
+        >
+          <X className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden />
+        </button>
+      )}
       {showResults && (
         <div
           id={listboxId}

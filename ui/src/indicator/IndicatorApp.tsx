@@ -422,11 +422,16 @@ export function IndicatorApp() {
       )}
       {pillPhase !== "subtitle" && pillPhase !== "fallback" && (
         <div className={`pill ${pillVisualPhase}${showWaveform ? " pill-wave" : ""}`} id="pill">
-          <span className="dot" />
-          <span className="label" id="label">
-            {LABELS[pillPhase]}
-          </span>
-          {showWaveform && <OrbWaveform levels={waveformBars} />}
+          {showWaveform ? (
+            <OrbWaveform levels={waveformBars} />
+          ) : (
+            <>
+              <span className="dot" />
+              <span className="label" id="label">
+                {LABELS[pillPhase]}
+              </span>
+            </>
+          )}
         </div>
       )}
     </div>

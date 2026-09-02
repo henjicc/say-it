@@ -55,13 +55,12 @@ body,
   backdrop-filter: blur(14px);
 }
 
-/* 复用悬浮球的 OrbWaveform 组件（同一套像素对齐布局算法 + 感知响度曲线），
-   这里只重新定义容器尺寸和配色；圆点、文字和胶囊外框在录音/处理间保持不变。 */
+/* 录音时只显示波形；胶囊外框与识别/处理状态保持同一尺寸。 */
 .pill-wave .orb-waveform {
   position: relative;
   flex: none;
-  width: 34px;
-  height: 24px;
+  width: 48px;
+  height: 26px;
 }
 
 .pill-wave .orb-wave-bar {
