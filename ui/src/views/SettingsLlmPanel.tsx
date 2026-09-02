@@ -23,7 +23,7 @@ import {
 } from "@/store/useProviderStore";
 
 const PRESETS = [
-  { adapter: "groq", name: "Groq", model: "openai/gpt-oss-20b", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.groq },
+  { adapter: "groq", name: "Groq", model: "qwen/qwen3.8-27b", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.groq },
   { adapter: "openai", name: "OpenAI", model: "gpt-4o-mini", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.openai },
   { adapter: "anthropic", name: "Anthropic", model: "claude-haiku-4-5", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.anthropic },
   { adapter: "gemini", name: "Google Gemini", model: "gemini-2.5-flash", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.gemini },
@@ -551,7 +551,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
           <Field label="模型名称" hint="填写供应商接受的完整模型 ID">
             <Input
               value={manualName}
-              placeholder="例如 openai/gpt-oss-20b"
+              placeholder="例如 qwen/qwen3.8-27b"
               onChange={(event) => setManualName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void addManualModel();
