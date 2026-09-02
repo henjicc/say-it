@@ -47,6 +47,8 @@ pub const BAILIAN_PROVIDER_ID: &str = "bailian";
 pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
 pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
+pub const GROQ_DEFAULT_LLM_MODEL_ID: &str = "qwen/qwen3.8-27b";
+const PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID: &str = "openai/gpt-oss-20b";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
@@ -418,8 +420,8 @@ pub fn groq_llm_profile() -> ProviderProfile {
         capabilities: vec!["llm".to_string(), "asr".to_string()],
         enabled: true,
         config: json!({
-            "model": "openai/gpt-oss-20b",
-            "models": [LlmModelConfig::manual("openai/gpt-oss-20b")]
+            "model": GROQ_DEFAULT_LLM_MODEL_ID,
+            "models": [LlmModelConfig::manual(GROQ_DEFAULT_LLM_MODEL_ID)]
         }),
         config_fields: vec![],
         actions: vec![],
@@ -569,6 +571,26 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     let _ = set_llm_models(&mut profile.config, &models);
 }
 
+fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
+    if profile.id != GROQ_LLM_PROVIDER_ID
+        || profile.config.get("model").and_then(Value::as_str)
+            != Some(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)
+    {
+        return;
+    }
+    let models = llm_models_from_config(&profile.config);
+    if models != vec![LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)] {
+        return;
+    }
+    if let Some(config) = profile.config.as_object_mut() {
+        config.insert("model".to_string(), json!(GROQ_DEFAULT_LLM_MODEL_ID));
+    }
+    let _ = set_llm_models(
+        &mut profile.config,
+        &[LlmModelConfig::manual(GROQ_DEFAULT_LLM_MODEL_ID)],
+    );
+}
+
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
     let migrate_legacy_llm_default =
         settings.defaults.llm.is_empty() || settings.defaults.llm == BAILIAN_PROVIDER_ID;
@@ -582,6 +604,7 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
                 existing.capabilities = builtin.capabilities;
                 existing.config_fields = builtin.config_fields;
                 existing.actions = builtin.actions;
+                migrate_previous_groq_default_model(existing);
                 // enabled 现状仍强制为 true：UI 尚无停用开关，先维持现状。
                 existing.enabled = true;
             }
@@ -815,6 +838,54 @@ mod tests {
         assert_eq!(models[0], LlmModelConfig::manual("legacy-model"));
         assert_eq!(profile.config["apiKey"], "secret");
         assert!(profile.capabilities.iter().any(|value| value == "asr"));
+    }
+
+    #[test]
+    fn groq_uses_qwen_38_by_default_and_only_migrates_the_untouched_old_default() {
+        let fresh = groq_llm_profile();
+        assert_eq!(fresh.config["model"], GROQ_DEFAULT_LLM_MODEL_ID);
+        assert_eq!(
+            llm_models_from_config(&fresh.config),
+            vec![LlmModelConfig::manual(GROQ_DEFAULT_LLM_MODEL_ID)]
+        );
+
+        let mut settings = ProviderSettings::default();
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        groq.config = json!({
+            "model": PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "models": [LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)]
+        });
+        let normalized = normalize_settings(settings);
+        let migrated = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
+        assert_eq!(migrated.config["model"], GROQ_DEFAULT_LLM_MODEL_ID);
+
+        let mut customized = ProviderSettings::default();
+        let groq = customized
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        groq.config = json!({
+            "model": PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "models": [{
+                "name": PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+                "source": "manual",
+                "availability": "unknown",
+                "reasoningEffort": "high",
+                "temperature": 0.1,
+                "maxTokens": null
+            }]
+        });
+        let normalized = normalize_settings(customized);
+        let preserved = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
+        assert_eq!(
+            preserved.config["model"],
+            PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID
+        );
     }
 
     #[test]

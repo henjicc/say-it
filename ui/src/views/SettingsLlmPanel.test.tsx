@@ -87,7 +87,7 @@ describe("SettingsLlmPanel", () => {
     await waitFor(() => expect(addLlmProvider).toHaveBeenCalledWith({
       adapter: "groq",
       displayName: "Groq",
-      model: "openai/gpt-oss-20b",
+      model: "qwen/qwen3.8-27b",
       apiKey: "gsk-test",
       endpoint: "",
     }));
