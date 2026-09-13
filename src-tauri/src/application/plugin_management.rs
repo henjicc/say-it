@@ -94,6 +94,15 @@ pub(crate) fn take_pending_provider_plugin_imports(
 }
 
 pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    // 先清理上次运行遗留的安装/预览暂存目录，再加载注册表。清理失败不阻断启动
+    // ——扫描端已经会跳过点号目录，残骸只是占磁盘，不会被当成已安装插件。
+    if let Err(error) = crate::providers::plugin::cleanup_plugin_staging(app) {
+        crate::application::diagnostics::event(
+            "warn",
+            "plugin.stagingCleanupIncomplete",
+            serde_json::json!({ "message": error }),
+        );
+    }
     let registry = load_registry(app)?;
     let state = app.state::<RuntimeState>();
     {
