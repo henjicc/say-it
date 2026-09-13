@@ -30,7 +30,6 @@ describe("DiagnosticSection", () => {
     cmd.mockReset();
     saveDialog.mockReset();
     saveDialog.mockResolvedValue("/tmp/say-it-diagnostics.zip");
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     cmd.mockImplementation((command: string) => {
       if (command === "get_app_snapshot") return Promise.resolve({ settings: { diagnosticsPrefs: { verboseLogging: false } } });
       if (command === "get_diagnostic_status") return Promise.resolve({ directory: "/tmp/logs", verboseLogging: false, contentLoggingEnabled: false, contentLoggingRemainingSeconds: 0 });
@@ -54,8 +53,18 @@ describe("DiagnosticSection", () => {
   it("requires confirmation before starting the temporary content log", async () => {
     render(<DiagnosticSection />);
     const toggle = await screen.findByRole("switch", { name: "临时正文日志" });
+
+    // 确认框必须是应用内 Modal：window.confirm 在这套无边框窗口里不呈现，
+    // 用它等于没有确认。未点确认之前，命令不得下发。
     fireEvent.click(toggle);
+    expect(await screen.findByText("开启临时正文日志")).toBeInTheDocument();
+    expect(cmd).not.toHaveBeenCalledWith("set_content_diagnostics", { enabled: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(cmd).not.toHaveBeenCalledWith("set_content_diagnostics", { enabled: true });
+
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole("button", { name: "开启 30 分钟" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("set_content_diagnostics", { enabled: true }));
-    expect(window.confirm).toHaveBeenCalled();
   });
 });

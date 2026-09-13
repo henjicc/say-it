@@ -67,16 +67,23 @@ describe("SettingsHistoryPanel", () => {
         learningMemoryRetentionDays: 180,
       } },
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<SettingsHistoryPanel />);
     const cloud = await screen.findByRole("switch", { name: "云端参考学习记录" });
+
+    // 确认框必须是应用内 Modal；未点确认之前不得把开关写回后端。
     fireEvent.click(cloud);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("开启云端学习上下文")).toBeInTheDocument();
     expect(cmd).not.toHaveBeenCalledWith("update_app_settings", expect.objectContaining({
       value: expect.objectContaining({ cloudLearningContextEnabled: true }),
     }));
-    confirm.mockReturnValue(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(cmd).not.toHaveBeenCalledWith("update_app_settings", expect.objectContaining({
+      value: expect.objectContaining({ cloudLearningContextEnabled: true }),
+    }));
+
     fireEvent.click(cloud);
+    fireEvent.click(await screen.findByRole("button", { name: "开启" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("update_app_settings", {
       domain: "history",
       value: expect.objectContaining({ cloudLearningContextEnabled: true }),

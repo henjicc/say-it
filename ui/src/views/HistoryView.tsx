@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage, type LearningOverview, type LearningRule } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useUiStore } from "@/store/useUiStore";
@@ -39,6 +40,7 @@ function primaryText(entry: HistoryEntry) {
 }
 
 export function HistoryView() {
+  const { confirm, dialog } = useConfirm();
   const [page, setPage] = useState<HistoryPage>({ items: [], total: 0, recoveryNotice: null });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
@@ -163,7 +165,15 @@ export function HistoryView() {
   }
 
   async function removeRule(rule: LearningRule) {
-    if (!window.confirm(`确定删除学习规则“${rule.beforeText} → ${rule.afterText}”吗？`)) return;
+    if (
+      !(await confirm({
+        title: "确认删除学习规则",
+        message: `确定删除学习规则“${rule.beforeText} → ${rule.afterText}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.deleteLearningRule, { id: rule.id });
       setMessage("学习规则已删除");
@@ -201,7 +211,17 @@ export function HistoryView() {
   }
 
   async function generateSummary() {
-    if (!window.confirm("将向当前默认大语言模型发送最多 30 条脱敏的局部修改样本，用于生成表达偏好草稿。是否继续？")) return;
+    if (
+      !(await confirm({
+        title: "生成表达偏好草稿",
+        message:
+          "将向当前默认大语言模型发送最多 30 条脱敏的局部修改样本，用于生成表达偏好草稿。是否继续？",
+        confirmLabel: "发送并生成",
+        danger: false,
+      }))
+    ) {
+      return;
+    }
     try {
       setMessage("正在生成表达偏好草稿…");
       await cmd(CMD.generatePreferenceSummary, { scope: "global", providerId: "default", allowCloud: true });
@@ -228,7 +248,15 @@ export function HistoryView() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm("确定删除这条本地历史吗？")) return;
+    if (
+      !(await confirm({
+        title: "确认删除历史记录",
+        message: "确定删除这条本地历史吗？删除后不可恢复。",
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.deleteHistoryEntry, { id });
       setMessage("记录已删除");
@@ -388,6 +416,7 @@ export function HistoryView() {
         </div>
       </section>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </div>
   );
 }

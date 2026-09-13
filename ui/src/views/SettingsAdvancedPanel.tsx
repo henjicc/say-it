@@ -6,6 +6,7 @@ import { CheckField, Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
@@ -38,6 +39,7 @@ const fmtThreshold = (value: number) => value.toFixed(4);
 const levelWidth = (value: number) => `${Math.min(100, value * 140)}%`;
 
 export function DiagnosticSection() {
+  const { confirm, dialog } = useConfirm();
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [status, setStatus] = useState<DiagnosticStatus | null>(null);
   const [includeContent, setIncludeContent] = useState(false);
@@ -76,7 +78,17 @@ export function DiagnosticSection() {
   }
 
   async function updateContent(enabled: boolean) {
-    if (enabled && !window.confirm("临时正文日志会记录输入文本，可能包含隐私内容。确定开启 30 分钟吗？")) return;
+    if (
+      enabled &&
+      !(await confirm({
+        title: "开启临时正文日志",
+        message: "临时正文日志会记录输入文本，可能包含隐私内容。确定开启 30 分钟吗？",
+        confirmLabel: "开启 30 分钟",
+        danger: false,
+      }))
+    ) {
+      return;
+    }
     try {
       setStatus(await cmd<DiagnosticStatus>(CMD.setContentDiagnostics, { enabled }));
       setMessage(enabled ? "正文日志已开启，将在 30 分钟后自动关闭" : "正文日志已关闭");
@@ -86,7 +98,15 @@ export function DiagnosticSection() {
   }
 
   async function clearLogs() {
-    if (!window.confirm("确定清空全部诊断日志（包括正文日志）吗？")) return;
+    if (
+      !(await confirm({
+        title: "确认清空诊断日志",
+        message: "将清空全部诊断日志，包括正文日志。此操作不可撤销。",
+        confirmLabel: "清空日志",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearDiagnosticLogs);
       setIncludeContent(false);
@@ -146,6 +166,7 @@ export function DiagnosticSection() {
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </SettingsSection>
   );
 }
