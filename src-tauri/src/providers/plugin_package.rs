@@ -12,7 +12,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use super::plugin::{
-    plugins_dir, safe_model_file_path, validate_plugin_dir, ModelPackManifest, PluginManifest,
+    plugin_staging_dir, plugins_dir, safe_model_file_path, validate_plugin_dir, ModelPackManifest, PluginManifest,
     PluginSignatureManifest,
 };
 
@@ -223,8 +223,9 @@ pub fn install_from_directory(
     }
 
     let plugins = plugins_dir(app)?;
+    let staging = plugin_staging_dir(app)?;
     let target = plugins.join(&manifest.id);
-    let stage = plugins.join(format!(".install-{}-{}", manifest.id, Uuid::new_v4()));
+    let stage = staging.join(format!(".install-{}-{}", manifest.id, Uuid::new_v4()));
     if let Err(error) = copy_directory(&source, &stage) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
@@ -246,7 +247,7 @@ pub fn install_from_directory(
         if current_id != manifest.id {
             return Err("已安装插件目录与新插件 ID 不一致".into());
         }
-        let temporary = plugins.join(format!(".replace-{}-{}", manifest.id, Uuid::new_v4()));
+        let temporary = staging.join(format!(".replace-{}-{}", manifest.id, Uuid::new_v4()));
         std::fs::rename(&target, &temporary).map_err(|error| error.to_string())?;
         displaced = Some(temporary);
         Some(current_version)
@@ -306,8 +307,7 @@ pub fn install_from_path(
             "请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包或开发目录"
         ));
     }
-    let plugins = plugins_dir(app)?;
-    let extracted = plugins.join(format!(".archive-{}", Uuid::new_v4()));
+    let extracted = plugin_staging_dir(app)?.join(format!(".archive-{}", Uuid::new_v4()));
     let result = extract_archive(&source, &extracted, Some(app)).and_then(|_| {
         if let Some(expected) = expected_archive_sha256 {
             verify_expected_archive_hash(&source, expected)?;
@@ -337,8 +337,7 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
     {
         return Err(format!("请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包"));
     }
-    let plugins = plugins_dir(app)?;
-    let extracted = plugins.join(format!(".preview-{}", Uuid::new_v4()));
+    let extracted = plugin_staging_dir(app)?.join(format!(".preview-{}", Uuid::new_v4()));
     let archive_sha256 = sha256_file(&source)?;
     let result = (|| {
         extract_archive(&source, &extracted, None)?;

@@ -317,6 +317,55 @@ pub fn plugins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     crate::application::data_root::data_subdir(app, "plugins")
 }
 
+/// 安装/预览/替换过程中的暂存目录，与 `plugins/` 同级而**不在其内部**。
+///
+/// 同一个数据根下，所以 `rename` 到 `plugins/` 仍是同卷移动。放在外面是因为
+/// `plugins/` 会被 `load_registry_from_with_trust` 当作已安装插件扫描——暂存目录
+/// 里有完整的 manifest.json，一旦残留就会被当成已安装插件加载。
+pub fn plugin_staging_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    crate::application::data_root::data_subdir(app, "plugin-staging")
+}
+
+/// 目录名是否是暂存目录：安装流程用的几个前缀都以 `.` 开头，正常插件 ID 不会。
+fn is_staging_dir_name(name: &std::ffi::OsStr) -> bool {
+    name.to_string_lossy().starts_with('.')
+}
+
+/// 启动时清理遗留的暂存目录。
+///
+/// 进程被杀、断电或 Windows 下"文件被占用"都会让清理失败，残骸会一直占着磁盘；
+/// 旧版本还会把它们建在 `plugins/` 内部，所以这里两个位置都扫。
+pub fn cleanup_plugin_staging(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut sweep = |root: PathBuf, only_dot_prefixed: bool| {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            if only_dot_prefixed && !is_staging_dir_name(&entry.file_name()) {
+                continue;
+            }
+            let path = entry.path();
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if let Err(error) = removed {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+    };
+    sweep(plugin_staging_dir(app)?, false);
+    // 旧版本把暂存目录建在 plugins/ 内部，这些残骸同样要清掉。
+    sweep(plugins_dir(app)?, true);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("；"))
+    }
+}
+
 pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {
     let trusted = super::plugin_package::load_trusted_keys(app)?;
     load_registry_from_with_trust(&plugins_dir(app)?, &trusted)
@@ -346,6 +395,13 @@ fn load_registry_from_with_trust(
         .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        // 点号前缀是安装/预览/替换过程中的暂存目录（`.install-*`/`.preview-*`/
+        // `.archive-*`/`.replace-*`）。它们本不该出现在这里——现在一律建在
+        // `plugin-staging/` 下——但进程被杀、断电或清理失败都会留下残骸，而这些
+        // 目录里就有完整的 manifest.json。当成已安装插件加载的后果是：用户明确
+        // 取消或从未批准的插件被注册、自动启用并执行代码；且 '.'(0x2E) 排在字母
+        // 数字之前，`.replace-<id>-*` 还会先于真正的新版本被加载并占用其 ID。
+        .filter(|entry| !is_staging_dir_name(&entry.file_name()))
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.file_name());
 
@@ -1430,6 +1486,93 @@ mod tests {
         assert!(validate_id("插件", "web-provider.1").is_ok());
         assert!(validate_id("插件", "供应商").is_err());
         assert!(validate_id("插件", "Upper").is_err());
+    }
+
+    fn write_plugin_fixture(dir: &Path, id: &str, version: &str) {
+        let connector = dir.join("connector");
+        std::fs::create_dir_all(&connector).unwrap();
+        std::fs::write(connector.join("index.js"), b"export default () => ({})").unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": 5,
+                "id": id,
+                "name": "Fixture",
+                "version": version,
+                "provider": {
+                    "id": id,
+                    "displayName": "Fixture",
+                    "capabilities": ["asr"],
+                    "config": { "token": "" },
+                    "configFields": [{ "key": "token", "label": "Token", "fieldType": "password", "secret": false }]
+                },
+                "source": { "namespace": id },
+                "capabilities": [{
+                    "moduleId": format!("{id}.speech-recognition.rt"),
+                    "kind": "speech-recognition", "providerIds": [id],
+                    "modelId": format!("{id}-rt"), "operations": ["speech-recognition"],
+                    "features": ["streaming"], "tags": [],
+                    "executionModes": ["realtime"]
+                }],
+                "models": [{
+                    "id": format!("{id}-rt"), "label": "RT",
+                    "providerId": id,
+                    "capabilityId": format!("{id}.speech-recognition.rt")
+                }],
+                "runtime": { "kind": "javascript", "entrypoint": "connector/index.js", "hostApiVersion": 1, "permissions": [], "network": {"allowedHosts": []} }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// 回归：安装/预览过程中的暂存目录哪怕残留在 plugins/ 里，也绝不能被当成
+    /// 已安装插件加载。
+    ///
+    /// 这些目录里有完整的 manifest.json。预览一个 .sayit 时整包就会被解开，若用户
+    /// 随后点了「取消」而清理又失败（Windows 上杀软持句柄很常见）或进程被杀，
+    /// 残骸留在这里就等于「预览 == 安装」——未经批准的插件下次启动被注册、
+    /// 自动启用并执行代码。
+    #[test]
+    fn staging_leftovers_are_never_loaded_as_installed_plugins() {
+        let root = std::env::temp_dir().join(format!("sayit-staging-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_plugin_fixture(&root.join(".preview-0f0f"), "previewed", "1.0.0");
+        write_plugin_fixture(&root.join(".archive-1a1a"), "archived", "1.0.0");
+        write_plugin_fixture(&root.join(".install-x-2b2b"), "installing", "1.0.0");
+
+        let registry = load_registry_from(&root).unwrap();
+
+        assert!(registry.plugins.is_empty(), "暂存目录不得被加载为插件");
+        assert!(
+            registry.errors.is_empty(),
+            "暂存目录应当被直接跳过，而不是当成加载失败的插件报错"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回归：升级残留的 `.replace-*` 旧副本不得盖过真正的新版本。
+    ///
+    /// 目录按文件名排序，'.'(0x2E) 排在字母数字之前，所以 `.replace-<id>-*` 会
+    /// 先被加载并占用该 ID，真正的新版本随后被判成「ID 重复」丢弃——用户重装
+    /// 多少次跑的都还是旧版本。
+    #[test]
+    fn replace_leftover_does_not_shadow_the_real_plugin() {
+        let root = std::env::temp_dir().join(format!("sayit-staging-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_plugin_fixture(&root.join(".replace-demo-9c9c"), "demo", "1.0.0");
+        write_plugin_fixture(&root.join("demo"), "demo", "2.0.0");
+
+        let registry = load_registry_from(&root).unwrap();
+
+        assert_eq!(registry.plugins.len(), 1);
+        assert_eq!(
+            registry.plugins[0].manifest.version, "2.0.0",
+            "应当加载真正的新版本，而不是排序靠前的 .replace-* 旧副本"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
