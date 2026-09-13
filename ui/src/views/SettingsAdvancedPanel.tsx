@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
 import { CheckField, Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
+import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
@@ -145,6 +146,55 @@ export function DiagnosticSection() {
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+    </SettingsSection>
+  );
+}
+
+function DataResetSection() {
+  const [pendingReset, setPendingReset] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function reset() {
+    setBusy(true);
+    try {
+      await cmd(CMD.requestDataReset);
+    } catch (error) {
+      setBusy(false);
+      setMessage(String(error));
+    }
+  }
+
+  return (
+    <SettingsSection title="重置数据">
+      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+        清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。多用于排查多设备开发时的数据不一致问题。重置后应用会立即重启。
+      </p>
+      <FormGrid>
+        <Field label="重置全部数据" controlId="data-reset" hint="不可撤销，请谨慎操作。">
+          <Button id="data-reset" variant="dangerHover" onClick={() => setPendingReset(true)}>重置数据并重启</Button>
+        </Field>
+      </FormGrid>
+      {message && <p role="status" className="text-xs text-[var(--color-err)]">{message}</p>}
+      <Modal
+        open={pendingReset}
+        onClose={() => !busy && setPendingReset(false)}
+        title="确认重置全部数据"
+        showCloseButton={false}
+        className="max-w-[430px]"
+      >
+        <div className="p-5">
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            将清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。此操作不可撤销，确认后应用会立即重启。
+          </p>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button size="sm" variant="dangerHover" disabled={busy} onClick={() => void reset()}>
+              {busy ? "正在重置…" : "确认重置"}
+            </Button>
+            <Button size="sm" variant="primary" autoFocus disabled={busy} onClick={() => setPendingReset(false)}>取消</Button>
+          </div>
+        </div>
+      </Modal>
     </SettingsSection>
   );
 }
@@ -414,6 +464,7 @@ export function SettingsAdvancedPanel() {
       <SilenceDisconnectSection />
       <AudioLabSections />
       <DiagnosticSection />
+      <DataResetSection />
     </div>
   );
 }

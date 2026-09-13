@@ -209,6 +209,18 @@ fn persisted_state_files_exist(file: &Path) -> bool {
     file.exists() || file.with_extension("json.bak").exists()
 }
 
+/// 「重置数据」需要一并删除的旧 identifier 状态文件（含 `.bak` 备份）。
+///
+/// `load_persisted_state` 在当前数据根没有状态文件时会回退到这些路径（兼容改包名
+/// 之前的老用户），所以重置必须一并清掉它们——否则删空当前状态文件恰好制造出回退
+/// 条件，重启后加载的是改包名之前的那份旧配置，而不是出厂默认。
+pub(crate) fn legacy_state_files_to_reset(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
+    Ok(legacy_state_file_paths(app)?
+        .into_iter()
+        .flat_map(|path| [path.with_extension("json.bak"), path])
+        .collect())
+}
+
 fn migrate_persisted_data(data: &mut PersistedData) {
     if data.schema_version < FOUR_CLICK_DEFAULT_SCHEMA_VERSION
         && data.mouse_gesture.rapid_click_count == 3
