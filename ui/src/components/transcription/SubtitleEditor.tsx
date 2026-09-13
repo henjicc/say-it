@@ -627,6 +627,11 @@ export function SubtitleEditor({
   useEffect(() => {
     const onUndoRedoKeydown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
+      // 与上面的空格键处理一致：输入框里的撤销/重做交还给浏览器原生行为。
+      // 这个监听挂在 window 上且是捕获阶段，不加这道守卫的话，只要本编辑器处于
+      // 挂载状态，主窗口里任何 input/textarea 的原生撤销都会被吃掉并错误地
+      // 改为撤销字幕改动（例如文稿对齐页上方的文稿框）。
+      if (isTypingTarget(event.target)) return;
       const key = event.key.toLowerCase();
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
