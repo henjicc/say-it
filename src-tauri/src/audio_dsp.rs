@@ -413,6 +413,26 @@ pub struct StreamDsp {
     peak_lin: f32,
 }
 
+/// 自适应增益的一阶平滑系数：越大收敛越快。
+///
+/// 抬高增益（`desired > current`，通常是进入安静段）走慢速，避免静默期把底噪迅速
+/// 放大造成抽气感；压低增益（进入说话段）走快速，好让增益尽快跟上、避免被
+/// `peak_lin` 硬钳削平。
+///
+/// 这两个方向**不能写反**：反过来的话静默期增益会飞快爬到 `max_gain_db` 顶格，
+/// 用户开口后又迟迟落不下来，每句话开头约一秒被硬削波，首字识别率明显下降。
+/// 该链路在 local/plugin/sdk/apple 全部实时识别路径上，且默认参数即生效。
+const GAIN_RISE_COEFF: f32 = 0.03;
+const GAIN_FALL_COEFF: f32 = 0.08;
+
+fn gain_smoothing_coeff(desired: f32, current: f32) -> f32 {
+    if desired > current {
+        GAIN_RISE_COEFF
+    } else {
+        GAIN_FALL_COEFF
+    }
+}
+
 impl StreamDsp {
     pub fn new(params: DspParams, in_rate: u32) -> Self {
         let meter = EbuR128::new(1, RATE_48K, Mode::M).expect("ebur128 init");
@@ -525,8 +545,7 @@ impl StreamDsp {
             } else {
                 self.gain
             };
-            // 提升慢一点、回落快一点，避免抽气感与削波。
-            let coeff = if desired > self.gain { 0.08 } else { 0.03 };
+            let coeff = gain_smoothing_coeff(desired, self.gain);
             self.gain += (desired - self.gain) * coeff;
 
             for j in 0..FRAME {
@@ -560,3 +579,29 @@ impl StreamDsp {
 
 // 16k 是输出采样率常量，导出供主模块在日志里引用（统计时长）。
 pub const OUTPUT_RATE: u32 = RATE_16K;
+
+#[cfg(test)]
+mod gain_tests {
+    use super::*;
+
+    /// 回归：抬高增益必须比压低增益慢。
+    /// 这两个方向曾被写反（提升 0.08 / 回落 0.03），导致静默后开口的首秒被硬削波。
+    #[test]
+    fn gain_rises_slower_than_it_falls() {
+        let rising = gain_smoothing_coeff(2.0, 1.0);
+        let falling = gain_smoothing_coeff(1.0, 2.0);
+        assert!(
+            rising < falling,
+            "抬高增益的系数（{rising}）必须小于压低增益的系数（{falling}）：\
+             coeff 越大收敛越快，写反会让说话首秒被钳位削平"
+        );
+    }
+
+    /// 增益等于目标时不应再往上抬，按「压低」分支处理即可（差值为 0，不产生变化）。
+    #[test]
+    fn gain_holds_steady_when_already_at_target() {
+        let gain = 1.5_f32;
+        let coeff = gain_smoothing_coeff(gain, gain);
+        assert_eq!(gain + (gain - gain) * coeff, gain);
+    }
+}
