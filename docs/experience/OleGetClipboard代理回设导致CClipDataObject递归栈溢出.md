@@ -22,7 +22,15 @@
 
 ## 回归检查
 
-- Windows 粘贴实现中不得重新出现 `OleGetClipboard`、`OleSetClipboard` 或 `OleFlushClipboard`。
+- **检查范围是整个仓库，不只是主进程的粘贴实现。** 首次修复（`41bbc1c`）只改了
+  `src-tauri/src/windows_native.rs`，而 `src-tauri/context-probe/src/main.cpp` 里
+  同样的写法一直留着——那是个独立进程，栈溢出表现为探针无声崩溃，且崩溃时机恰好
+  在「已复制选区、尚未恢复备份」之后，用户剪贴板照样丢。因为本条当时写的是
+  「Windows 粘贴实现」，范围太窄才漏掉。用
+  `grep -rn "OleGetClipboard\|OleSetClipboard" src-tauri/` 全仓核对。
+- 全仓不得出现把 `OleGetClipboard` 的返回值交给 `OleSetClipboard` 的写法。
+  单独调用 `OleFlushClipboard()` 让延迟渲染格式落地是**允许且必要**的，
+  快照前需要它；被禁的是"代理回设"这个组合。
 - 文本、图片、文件列表、HTML/富文本等多个剪贴板格式应在粘贴后保持可用。
 - 如果用户在注入完成与恢复之间复制了新内容，应用不得覆盖新剪贴板。
 - 栈溢出日志中不应再出现连续的 `ole32!CClipDataObject::GetData` 帧。
