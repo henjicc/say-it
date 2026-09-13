@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(data.schema_version, 1);
         assert!(!data.floating_orb.enabled);
         assert!(data.floating_orb.position.is_none());
-        assert_eq!(data.floating_orb.size_percent, 45);
+        assert_eq!(data.floating_orb.size_percent, 30);
         assert_eq!(data.floating_orb.opacity, 100);
         assert!(!data.floating_orb.glass_enabled);
         assert_eq!(

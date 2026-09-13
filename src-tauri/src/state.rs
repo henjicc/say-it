@@ -53,8 +53,8 @@ pub(crate) struct FloatingOrbPosition {
     pub(crate) y: i32,
 }
 
-/// 悬浮球大小，单位为屏幕参考边长的十分之一百分比（如 45 表示 4.5%）。
-pub(crate) const DEFAULT_FLOATING_ORB_SIZE_PERCENT: u16 = 45;
+/// 悬浮球大小，单位为屏幕参考边长的十分之一百分比（如 30 表示 3%）。
+pub(crate) const DEFAULT_FLOATING_ORB_SIZE_PERCENT: u16 = 30;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 100;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
