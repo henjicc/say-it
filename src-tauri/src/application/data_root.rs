@@ -320,9 +320,23 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     validate_target_contents(&target, target_is_default)?;
     probe_writable(&target)?;
 
-    let plan = collect_migration_plan(&current)?;
-    ensure_free_space(&target, plan.total_bytes)?;
+    // 顺序不能反：`pause_for_data_root_migration` 会先停掉历史写入再做一次
+    // `wal_checkpoint(TRUNCATE)`。若在它之前收集复制清单，checkpoint 之后新生成的
+    // `history.sqlite3-wal` 就不在清单里，而迁移末尾的 `remove_migratable_entries`
+    // 会把旧目录连同这个 wal 一起删掉——落在其中的提交静默丢失。
     crate::application::history::pause_for_data_root_migration(app)?;
+    // 暂停之后的每一条失败路径都必须先恢复写入，否则历史会一直停在暂停态直到重启。
+    let plan = match collect_migration_plan(&current) {
+        Ok(plan) => plan,
+        Err(error) => {
+            crate::application::history::resume_after_failed_data_root_migration();
+            return Err(error);
+        }
+    };
+    if let Err(error) = ensure_free_space(&target, plan.total_bytes) {
+        crate::application::history::resume_after_failed_data_root_migration();
+        return Err(error);
+    }
 
     let app_for_progress = app.clone();
     let mut last_emit = Instant::now();
