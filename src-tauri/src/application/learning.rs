@@ -335,15 +335,11 @@ fn classify_correction(before: &str, after: &str) -> Classification {
     }
 }
 
-pub(crate) fn observation_enabled(state: &crate::state::RuntimeState) -> bool {
-    state.app_settings.lock().ok().and_then(|settings| {
-        settings
-            .history_prefs
-            .get("finalDraftObservationEnabled")
-            .and_then(Value::as_bool)
-    }) == Some(true)
-}
-
+/// 注意：本模块这几个开关读取函数都会 `lock()` `state.app_settings`，
+/// 调用方不得持有该锁的守卫——`std::sync::Mutex` 非可重入，同线程二次加锁会自死锁
+/// 并永久占住这把锁，导致此后所有读应用配置的路径连锁挂死。需要在已持锁的上下文里
+/// 判断时，直接从手上的 `history_prefs` 读对应字段
+/// （范例见 `final_draft::observation_allowed_for`）。
 fn learning_enabled(state: &crate::state::RuntimeState) -> bool {
     state.app_settings.lock().ok().and_then(|settings| {
         settings
