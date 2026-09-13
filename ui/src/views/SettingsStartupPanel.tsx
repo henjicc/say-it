@@ -111,16 +111,29 @@ function DataRootSection() {
           <p className="mt-1.5 break-all font-mono text-xs text-[var(--color-fg-subtle)]">
             {status ? status.configuredRoot : "读取中…"}
           </p>
+          {status?.restartRequired && (
+            <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-warn)]">
+              上一次更改尚未生效，重启后才会切换到该目录；在此之前无法再次更改位置。
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="ghost" size="sm" disabled={migrating || !status} onClick={() => void pickAndMigrate()}>
+          {/* 上一次迁移尚未重启生效时禁止再迁：此时进程仍在旧根目录，而旧目录的数据
+              已经被搬空，再迁一次会把指针指向一个空目录，重启后数据"消失"。
+              后端 migrate_blocking 也有同样的校验，这里只是提前把入口关掉。 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={migrating || !status || status.restartRequired}
+            onClick={() => void pickAndMigrate()}
+          >
             {migrating ? "迁移中…" : "更改位置"}
           </Button>
           {status?.isCustom && (
             <Button
               variant="ghost"
               size="sm"
-              disabled={migrating}
+              disabled={migrating || status.restartRequired}
               onClick={() => void migrateTo(status.defaultRoot)}
             >
               恢复默认位置
