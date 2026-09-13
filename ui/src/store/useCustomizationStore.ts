@@ -97,6 +97,16 @@ function hotwordsFingerprint(prefs: CustomizationPrefs): string {
 
 interface CustomizationState {
   prefs: CustomizationPrefs;
+  /**
+   * 是否已经从 Rust 权威配置填充过。
+   *
+   * 本 store **没有 localStorage 镜像**，热词与上下文模板的唯一来源就是启动时的
+   * hydrateCustomizationPrefs。若初始化失败（自定义数据目录所在盘未挂载、settings
+   * 落盘失败等），store 会停在空默认值上；此时用户随手加一条热词，patch 就会把
+   * `{ ...空默认值, 新热词 }` 整份发给后端，把磁盘上真实的几百条热词与上下文模板
+   * 覆盖掉，且不可恢复。所以未填充时一律拒绝写入。
+   */
+  hydrated: boolean;
   syncState: SyncState;
   syncMessage: string;
   syncResults: ProviderSyncResult[];
@@ -156,11 +166,15 @@ function scheduleAutoSync() {
 
 export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   prefs: defaults(),
+  hydrated: false,
   syncState: "idle",
   syncMessage: "",
   syncResults: [],
 
   patch: async (partial) => {
+    if (!get().hydrated) {
+      throw new Error("热词与上下文尚未加载完成，暂时无法保存；请重启应用后重试。");
+    }
     const next = { ...get().prefs, ...partial };
     await cmd(CMD.updateAppSettings, { domain: "customization", value: next });
     set({ prefs: next });
@@ -190,5 +204,5 @@ export function hydrateCustomizationPrefs(value: Record<string, unknown> | undef
   const prefs = normalize(value);
   // 启动时的已存配置视为与云端一致，不因为打开应用就触发一次同步。
   syncedFingerprint = hotwordsFingerprint(prefs);
-  useCustomizationStore.setState({ prefs });
+  useCustomizationStore.setState({ prefs, hydrated: true });
 }
