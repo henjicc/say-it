@@ -108,7 +108,7 @@ pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<boo
             let process_id = focused
                 .CurrentProcessId()
                 .map_err(|error| format!("无法确认焦点控件进程：{error}"))?;
-            if process_id != target.process_id as i32
+            if !focused_process_matches(target, process_id)
                 || !focused
                     .CurrentIsEnabled()
                     .map(|value| value.as_bool())
@@ -522,6 +522,25 @@ fn expired(deadline: Instant) -> bool {
     Instant::now() >= deadline
 }
 
+/// UIA 焦点控件所属进程是否就是目标窗口所属的那个应用。
+///
+/// 不能直接拿 `target.process_id` 比：它来自 `GetForegroundWindow` +
+/// `GetWindowThreadProcessId`，对 UWP/打包应用拿到的是 `ApplicationFrameHost.exe`
+/// 的宿主 PID，而 `GetFocusedElement()` 返回的元素位于应用自己的进程，两者必然不等。
+/// 不过这层解析就会让所有 UWP 应用的焦点判定直接短路成「不匹配」——密码框保护
+/// 与可编辑判定双双失效。`baseline_context` / `app_identity` 已经统一走
+/// `resolve_real_process`，这里补齐。
+///
+/// 宿主 PID 也照旧接受：解析失败时至少退回原有行为，不会比之前更严。
+fn focused_process_matches(target: ActivationTarget, focused_process_id: i32) -> bool {
+    if focused_process_id == target.process_id as i32 {
+        return true;
+    }
+    let window = HWND(target.window_handle as *mut std::ffi::c_void);
+    resolve_real_process(window, target.process_id)
+        .is_some_and(|resolved| focused_process_id == resolved as i32)
+}
+
 pub(super) fn focused_target_is_password(target: ActivationTarget) -> Result<bool, String> {
     unsafe {
         let initialized_here = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
@@ -535,7 +554,7 @@ pub(super) fn focused_target_is_password(target: ActivationTarget) -> Result<boo
             let process_id = focused
                 .CurrentProcessId()
                 .map_err(|error| format!("无法确认焦点控件进程：{error}"))?;
-            if process_id != target.process_id as i32 {
+            if !focused_process_matches(target, process_id) {
                 return Ok(false);
             }
             focused
