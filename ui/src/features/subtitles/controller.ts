@@ -30,7 +30,10 @@ export interface SubtitleRuntimeSnapshot {
   originalText: string;
   translationText: string;
   obsOutputActive: boolean;
+  /** 致命失败：整个字幕会话已停止，伴随 phase === "failed"。 */
   error?: string;
+  /** 翻译失败：字幕本身仍在滚动，只是译文出不来，phase 不变。 */
+  translationError?: string;
 }
 
 function applyRuntime(snapshot: SubtitleRuntimeSnapshot) {
@@ -42,16 +45,21 @@ function applyRuntime(snapshot: SubtitleRuntimeSnapshot) {
     running,
     latestText: snapshot.originalText || "",
     obsOutputActive: snapshot.obsOutputActive === true,
+    // 翻译失败是非致命的，phase 仍是 running/waitingForVoice。原先只在 failed 时
+    // 展示 error，其余一律覆盖成「实时字幕已开启」，于是翻译供应商未启用/欠费时
+    // 用户只看到译文永远空白 + 绿色的"已开启"，三处 UI 都没有任何线索。
     statusText: failed
       ? snapshot.error || "实时字幕运行失败"
-      : reconnecting
-        ? "实时字幕重新连接中…"
-        : waiting
-          ? "实时字幕已开启，正在等待声音…"
-          : running
-            ? "实时字幕已开启"
-            : "实时字幕未开启",
-    statusTone: failed ? "err" : running ? "ok" : "",
+      : snapshot.translationError
+        ? snapshot.translationError
+        : reconnecting
+          ? "实时字幕重新连接中…"
+          : waiting
+            ? "实时字幕已开启，正在等待声音…"
+            : running
+              ? "实时字幕已开启"
+              : "实时字幕未开启",
+    statusTone: failed || snapshot.translationError ? "err" : running ? "ok" : "",
   });
 }
 
