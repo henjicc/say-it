@@ -180,6 +180,16 @@ pub(crate) fn import_legacy_settings(
     if current.legacy_imported && retry != Some(true) {
         return Ok(current);
     }
+    // 本次启动刚消费过「重置数据」标记：后端数据已清空，但前端 localStorage 镜像
+    // 里仍是重置前的旧配置（该镜像在 WebView2 目录内，不在数据根，不受重置影响）。
+    // 照常导入会把听写/字幕/对比偏好与主题整套复活，使「恢复到刚安装时的状态」
+    // 名存实亡。这里跳过导入，并把 legacy_imported 落盘，避免下次启动再导一遍。
+    if crate::application::data_root::reset_just_consumed() && retry != Some(true) {
+        current.schema_version = SETTINGS_SCHEMA_VERSION;
+        current.legacy_imported = true;
+        save_settings_then_commit(&app, &state, current.clone())?;
+        return Ok(current);
+    }
     if current.dictation_prefs == empty_object() {
         if let Some(v) = legacy.dictation_prefs {
             valid_object(&v)?;

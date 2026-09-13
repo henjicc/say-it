@@ -41,7 +41,9 @@ use application::audio_lab::{
 use application::catalog::get_model_catalog;
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
-use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
+use application::data_root::{
+    get_data_root_status, migrate_data_root, request_data_reset, restart_app,
+};
 use application::diagnostics::{
     clear_diagnostic_logs, export_diagnostic_bundle, get_diagnostic_status,
     open_diagnostic_directory, set_content_diagnostics,
@@ -246,8 +248,21 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
+            // 必须在任何模块打开状态文件/历史数据库之前执行，否则 Windows 下删除会因文件
+            // 被占用而失败；失败不阻断启动。标记已被无条件消费，不会重复清空，所以
+            // 未删掉的条目只能靠下面的诊断事件告知用户手动清理——release 是
+            // windows_subsystem="windows"，eprintln 用户看不到。
+            let reset_outcome = application::data_root::consume_pending_reset(&app.handle());
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::diagnostics::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            if let Err(error) = reset_outcome {
+                application::diagnostics::event(
+                    "error",
+                    "dataRoot.resetIncomplete",
+                    json!({ "message": error }),
+                );
+                eprintln!("[data-root] 重置数据未完全成功：{error}");
+            }
             if let Err(error) = stack_diagnostics::install(&app.handle()) {
                 application::diagnostics::event(
                     "error",
@@ -542,6 +557,7 @@ fn main() {
             get_data_root_status,
             migrate_data_root,
             restart_app,
+            request_data_reset,
             update_app_settings,
             update_custom_cue,
             get_session_status,

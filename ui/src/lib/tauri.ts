@@ -102,6 +102,7 @@ export const CMD = {
   getDataRootStatus: "get_data_root_status",
   migrateDataRoot: "migrate_data_root",
   restartApp: "restart_app",
+  requestDataReset: "request_data_reset",
   setDebugLog: "set_debug_log",
   setHotkeyCapturing: "set_hotkey_capturing",
   debugModelCallState: "debug_model_call_state",
