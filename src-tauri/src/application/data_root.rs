@@ -303,6 +303,18 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     let default = default_root(app)?;
     let current = data_root(app)?;
 
+    // 上一次迁移尚未重启生效时，绝不能再迁一次。
+    //
+    // `current` 是 OnceLock 缓存的「本次进程生效根目录」，而指针文件已经指向上一次
+    // 的新目录，且旧根目录里的可迁移数据在上次迁移末尾就已被清空。此时再发起迁移，
+    // `collect_migration_plan(&current)` 会在这个空目录上收集到空计划、复制 0 个文件、
+    // 「校验通过」，然后把指针改写到新的空目录——重启后应用变成全新安装状态，真实
+    // 数据留在上一次的目录里，而 UI 不会给出任何指向它的线索。
+    //
+    // 这条路径很容易走到：上次迁移若在「旧数据清理」阶段部分失败，命令会返回 Err，
+    // 用户看到「迁移失败」后非常自然地会再迁一次。
+    ensure_previous_migration_applied(&default, &current)?;
+
     std::fs::create_dir_all(&target).map_err(|error| format!("创建目标目录失败：{error}"))?;
     let canonical_target =
         std::fs::canonicalize(&target).map_err(|error| format!("解析目标目录失败：{error}"))?;
@@ -390,6 +402,19 @@ struct MigrationPlan {
     /// 相对数据根目录的文件相对路径列表。
     files: Vec<PathBuf>,
     total_bytes: u64,
+}
+
+/// 迁移前置校验：指针文件指向的根目录必须就是本次进程生效的根目录。
+///
+/// 两者不一致意味着上一次迁移已经改了指针但还没重启，此时 `current` 是那个已经被
+/// 搬空的旧目录——再迁一次会收集到空计划、复制 0 个文件并「校验通过」，然后把指针
+/// 改写到新的空目录，重启后应用变成全新安装状态。
+fn ensure_previous_migration_applied(default: &Path, current: &Path) -> Result<(), String> {
+    if same_path(&resolve_root_from(default), current) {
+        Ok(())
+    } else {
+        Err("上一次迁移尚未生效，请先重启应用再更改数据目录".into())
+    }
 }
 
 fn collect_migration_plan(source_root: &Path) -> Result<MigrationPlan, String> {
@@ -772,6 +797,40 @@ mod tests {
         std::fs::create_dir_all(target.join("plugins")).unwrap();
         assert!(validate_target_contents(&target, true).is_err());
         std::fs::remove_dir_all(target).unwrap();
+    }
+
+    /// 回归：上一次迁移改了指针但还没重启时，必须拒绝再次迁移。
+    ///
+    /// 此时进程仍在旧根目录，而旧目录的可迁移数据在上次迁移末尾已被清空。再迁一次
+    /// 会在这个空目录上收集到空计划、复制 0 个文件并「校验通过」，然后把指针改写到
+    /// 新的空目录——重启后应用变成全新安装状态，真实数据留在上一次的目录里且 UI
+    /// 不会给出任何指向它的线索。
+    #[test]
+    fn migration_is_refused_until_the_previous_one_takes_effect() {
+        let default = temp_dir("migrate-guard-default");
+        let migrated = temp_dir("migrate-guard-new");
+
+        // 指针缺失：生效目录就是默认目录，允许迁移。
+        assert!(ensure_previous_migration_applied(&default, &default).is_ok());
+
+        // 指针已指向新目录，但本次进程仍在默认目录 —— 必须拒绝。
+        std::fs::write(
+            default.join(POINTER_FILE),
+            serde_json::to_vec(&PointerFile {
+                root: migrated.display().to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let refused = ensure_previous_migration_applied(&default, &default);
+        assert!(refused.is_err(), "指针已切换却未重启时不得再次迁移");
+        assert!(refused.unwrap_err().contains("重启"), "错误信息应当告诉用户去重启");
+
+        // 重启之后：生效目录与指针一致，恢复允许。
+        assert!(ensure_previous_migration_applied(&default, &migrated).is_ok());
+
+        let _ = std::fs::remove_dir_all(&default);
+        let _ = std::fs::remove_dir_all(&migrated);
     }
 
     #[test]
