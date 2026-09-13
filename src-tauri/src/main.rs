@@ -519,6 +519,12 @@ fn main() {
                     }
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        // 快捷键录入态只能由前端发 set_hotkey_capturing{active:false} 复位，
+                        // 而下面的 destroy_main_window 直接销毁 webview，React 的清理回调
+                        // 根本不会执行。不在这里兜底的话，用户在「录入」状态下关掉主窗口，
+                        // CAPTURING 会一直为真，钩子从此吞掉 CapsLock/NumLock/ScrollLock
+                        // ——影响的是整个系统，且重开主窗口也不会恢复。
+                        hotkey::set_capturing(false);
                         if let Err(error) = destroy_main_window(&window.app_handle()) {
                             eprintln!("[window] 关闭主窗口失败: {error}");
                         }
