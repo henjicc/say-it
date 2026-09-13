@@ -419,7 +419,18 @@ pub(crate) fn release_backend_system_audio_inner(state: &RuntimeState) -> Result
         guard.worker.take()
     };
     if let Some(worker) = worker {
-        let _ = worker.send(BackendMicCommand::Stop { reply: None });
+        // 必须等旧 worker 收尾完成再清状态。它的收尾块（drop(stream) 之后）是
+        // **无条件**覆写 worker/sample_rate/raw_txs/current_device 等共享字段的，
+        // 而 drop(stream) 在 WASAPI 下要等音频线程 join，通常十几到几十毫秒。
+        // 不等的话，这段时间里若有新会话启动（连按两下听写热键即可），旧线程的
+        // 收尾会把新会话的状态整个抹掉：raw_txs 被清空导致「麦克风采集已意外停止」，
+        // 或 worker 被置 None 导致「后端麦克风未启动」；更糟的是新会话那条 cpal
+        // 流由新 worker 持有而 sender 已被抹掉，谁也停不掉它，麦克风一直开着。
+        // `reply` 正是为此设计的（见 state.rs 中 BackendMicCommand::Stop 的注释），
+        // macOS 的系统音频路径早已这么做，这里补齐。
+        let (reply, receiver) = std::sync::mpsc::channel();
+        let _ = worker.send(BackendMicCommand::Stop { reply: Some(reply) });
+        let _ = receiver.recv_timeout(Duration::from_secs(5));
     }
     let mut guard = state
         .backend_system_audio
