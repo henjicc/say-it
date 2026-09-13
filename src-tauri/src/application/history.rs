@@ -326,7 +326,7 @@ pub(crate) fn record_usage(
         return Ok(());
     }
     let (output_chars, saved_ms) = output_metrics(output, spoken_duration_ms);
-    open(app)?.execute(
+    open_for_write(app)?.execute(
         "INSERT INTO usage_totals (id, successful_actions, output_chars, spoken_duration_ms, estimated_time_saved_ms)
          VALUES (1, 1, ?1, ?2, ?3)
          ON CONFLICT(id) DO UPDATE SET
@@ -356,13 +356,30 @@ pub(crate) fn get_usage_summary(app: AppHandle) -> Result<UsageSummary, String> 
 
 #[tauri::command]
 pub(crate) fn clear_usage_summary(app: AppHandle) -> Result<(), String> {
-    open(&app)?
+    open_for_write(&app)?
         .execute("DELETE FROM usage_totals WHERE id = 1", [])
         .map_err(|error| format!("清空本地使用统计失败：{error}"))?;
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"usageCleared"}));
     Ok(())
 }
 
+/// 写入用的数据库入口：迁移期间一律拒绝。
+///
+/// 暂停标志曾经只在 record_or_update 与 update_result 两处检查，而同一个库还有
+/// 用量统计、文本修正、删除、清空、过期清理等近十个写入口没有守卫。它们在迁移
+/// 过程中照常提交并向前端 emit 成功事件，可这些提交落在 checkpoint 之后新生成的
+/// -wal 里，不在复制清单内，随后连同旧目录一起被删——用户看到「已修正/已删除/
+/// 已清空」，重启后全部复原，且全程没有任何错误提示。
+///
+/// 所以守卫收敛到这一个入口：凡是要写库的路径都必须走它，只读路径继续用 `open`。
+pub(crate) fn open_for_write(app: &AppHandle) -> Result<Connection, String> {
+    if WRITES_PAUSED.load(Ordering::Acquire) {
+        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
+    }
+    open(app)
+}
+
+/// 只读入口。迁移期间仍可读，因此**不要**用它写库。
 pub(crate) fn open(app: &AppHandle) -> Result<Connection, String> {
     let path = history_path(app)?;
     match open_path(&path) {
@@ -441,6 +458,8 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         })
         .map(|value| value.clamp(1, 3650) as u32)
         .unwrap_or(DEFAULT_RETENTION_DAYS);
+    // 这里刻意用 `open` 而不是 `open_for_write`：启动期的建表/迁移/中断恢复必须
+    // 无条件执行，不能被迁移暂停标志挡住（此时也不可能正处于迁移中）。
     let connection = open(app)?;
     migrate_provider_ids(&connection)?;
     recover_interrupted_entries(&connection)?;
@@ -490,7 +509,7 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
             if let Err(error) = cleanup_expired(&app, days) {
                 eprintln!("[history] 每日清理失败：{error}");
             }
-            if let Ok(connection) = open(&app) {
+            if let Ok(connection) = open_for_write(&app) {
                 let _ = crate::application::learning::refresh_statistics(&connection);
                 if crate::application::learning::cleanup_stale_rules(&connection, memory_days)
                     .is_ok()
@@ -541,9 +560,6 @@ pub(crate) fn record_or_update(
     id: Option<&str>,
     entry: NewHistoryEntry,
 ) -> Result<String, String> {
-    if WRITES_PAUSED.load(Ordering::Acquire) {
-        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
-    }
     if entry.source_text.trim().is_empty() && entry.output_text.trim().is_empty() {
         return Err("空内容不会写入历史".into());
     }
@@ -575,7 +591,7 @@ pub(crate) fn record_or_update(
             entry.app_name.clone(),
         )
     });
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始历史写入事务失败：{error}"))?;
@@ -679,10 +695,7 @@ pub(crate) fn update_result(
     if id.is_empty() {
         return Ok(());
     }
-    if WRITES_PAUSED.load(Ordering::Acquire) {
-        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
-    }
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let identity = connection
         .query_row(
             "SELECT app_name, process_name FROM history_entries WHERE id = ?1",
@@ -882,7 +895,7 @@ pub(crate) fn confirm_history_final_text(
     if final_text.trim().is_empty() {
         return Err("修正后的文本不能为空".into());
     }
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let current = get_entry(&connection, &id)?;
     if matches!(current.status.as_str(), "recognized" | "processed") {
         return Err("本次任务仍在处理，请完成后再修正；现在可以复制原文".into());
@@ -951,7 +964,7 @@ pub(crate) fn discard_history_final_text(
     app: AppHandle,
     id: String,
 ) -> Result<HistoryEntry, String> {
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let transaction = connection
         .unchecked_transaction()
@@ -1005,7 +1018,7 @@ pub(crate) fn record_observed_final_text(
     if final_text.trim().is_empty() {
         return Err("空的最终草稿不会保存".into());
     }
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let target = connection
         .query_row(
             "SELECT status, task_kind FROM history_entries WHERE id = ?1",
@@ -1145,7 +1158,7 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
 #[tauri::command]
 pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), String> {
     crate::application::final_draft::cancel_history(&app, &id);
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let changed = connection
         .execute("DELETE FROM history_entries WHERE id = ?1", [&id])
@@ -1161,7 +1174,7 @@ pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), Str
 #[tauri::command]
 pub(crate) fn clear_history(app: AppHandle) -> Result<(), String> {
     crate::application::final_draft::cancel_current(&app, "historyCleared");
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     connection
         .execute_batch(
             "DELETE FROM history_rule_applications;
@@ -1184,7 +1197,7 @@ pub(crate) fn open_history_window(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn cleanup_expired(app: &AppHandle, retention_days: u32) -> Result<usize, String> {
-    cleanup_expired_with_connection(&open(app)?, retention_days)
+    cleanup_expired_with_connection(&open_for_write(app)?, retention_days)
 }
 
 fn cleanup_expired_with_connection(
