@@ -82,12 +82,18 @@ export default host => {
       realtimeRuntime = globalThis.__sayitCreateSdkRuntime({
         sources: [resolveCapabilitySource(request.source ?? 'realtimeAsr')],
       })
+      // 注意：SDK 里 openSession 的 timeoutMs 是"从 open() 起整段会话的强制超时"，
+      // 内部直接 setTimeout(abort, timeoutMs)，不会随后续 send/finish 活动续期。
+      // 调用方仍会传 request.timeoutMs（那是单次请求预算，默认 45 秒），这里
+      // 不转发——否则超过该时长的实时听写/实时字幕会被硬切断。等待 open() 握手
+      // 完成的时长由 Rust 侧 realtime_start 传给 runtime.call 的超时参数负责；
+      // 会话生命周期交给 finish()/close() 自然驱动结束。
+      // 插件路径的同一决策见 plugin_runtime.rs 的 __sayitPluginCapabilityOpen。
       realtimeSession = await realtimeRuntime.capabilities.openSession(
         request.moduleId,
         request.input,
         {
           requestId: request.requestId,
-          timeoutMs: request.timeoutMs,
           onEvent: event => host.emit({ type: 'sdk.capability', event }),
         },
       )

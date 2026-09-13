@@ -811,4 +811,37 @@ mod tests {
         assert_eq!(single_language["language"], "zh");
         assert_eq!(single_language["hints"], json!(["zh"]));
     }
+
+    /// 回归：SDK 的 `openSession` 把 `timeoutMs` 当作「从 open() 起整段会话的强制
+    /// 超时」，内部直接 `setTimeout(abort, timeoutMs)` 且不随 send/finish 续期。
+    /// 而 `DEFAULT_TIMEOUT` 是**单次请求**预算（45 秒），一旦转发进去，任何超过
+    /// 该时长的实时听写/实时字幕都会被硬切断。插件路径（plugin_runtime.rs 的
+    /// `__sayitPluginCapabilityOpen`）早已刻意不转发，内置 SDK 这条路径曾漏掉。
+    ///
+    /// 这里对 `include_str!` 进来的入口源码做契约检查：非实时路径仍应带
+    /// `timeoutMs`（那是正确的单次请求超时），唯独 `realtimeStart` 不得带。
+    #[test]
+    fn realtime_start_must_not_forward_timeout_into_open_session() {
+        let start = BUILTIN_SOURCE
+            .find("async realtimeStart(")
+            .expect("入口应当定义 realtimeStart");
+        let rest = &BUILTIN_SOURCE[start + "async realtimeStart(".len()..];
+        let end = rest.find("async realtime").unwrap_or(rest.len());
+        let body = &rest[..end];
+
+        assert!(
+            body.contains("openSession"),
+            "realtimeStart 应当通过 openSession 打开会话"
+        );
+        // 匹配属性赋值而不是单词本身——realtimeStart 里有一段解释为何不转发的注释，
+        // 那段注释提到了 request.timeoutMs，不应被误判成转发。
+        assert!(
+            !body.contains("timeoutMs:"),
+            "realtimeStart 不得把 timeoutMs 转发进 openSession：             那会让实时会话在固定时长后被硬切断"
+        );
+        assert!(
+            BUILTIN_SOURCE.contains("timeoutMs: request.timeoutMs"),
+            "非实时路径仍应保留单次请求超时，否则本测试已失去意义"
+        );
+    }
 }
