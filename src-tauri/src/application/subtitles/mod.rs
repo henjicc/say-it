@@ -355,6 +355,11 @@ struct Session {
     reconnect_attempts: u32,
     opening: bool,
     obs_active: bool,
+    /// 翻译失败（非致命）。与 `error` 分开：`error` 代表整个字幕会话失败并伴随
+    /// `phase = Failed`，而翻译失败时字幕本身仍在正常滚动，只是译文出不来。
+    /// 混在一起会导致前端永远看不到它——`applyRuntime` 只在 phase 为 failed 时
+    /// 才展示 error，其余情况一律覆盖成「实时字幕已开启」。
+    translation_error: Option<String>,
     obs_disconnected_at: Option<Instant>,
     error: Option<String>,
 }
@@ -396,6 +401,7 @@ pub(crate) struct SubtitleSnapshot {
     translation_text: String,
     obs_output_active: bool,
     error: Option<String>,
+    translation_error: Option<String>,
 }
 
 pub(crate) fn initialize(app: AppHandle) {
@@ -501,6 +507,12 @@ async fn toggle(app: AppHandle) -> Result<(), String> {
 async fn start(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let (prefs, audio_prefs) = read_prefs(&state)?;
+    // 翻译模型的配置性错误（供应商未启用、没填 Key、插件被停用）必须在开始时就
+    // 拦下来。否则字幕会正常滚动、译文永远空白，而每个 clause 都在后台静默失败
+    // ——用户看不到任何线索，只会以为翻译模型不行。
+    if prefs.translation_enabled() {
+        crate::application::translation::validate_available(&state, &prefs.translation_model)?;
+    }
     let epoch = state.subtitle_runtime.epochs.fetch_add(1, Ordering::AcqRel) + 1;
     let (source, device) = prefs.source();
     let lease = state.audio_session.acquire(AudioOwner::Subtitles)?;
@@ -1025,8 +1037,9 @@ fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: String, error
         return;
     }
     if let Some(error) = error {
-        session.error = Some(format!("字幕翻译失败：{error}"));
+        session.translation_error = Some(format!("字幕翻译失败：{error}"));
     } else {
+        session.translation_error = None;
         session.apply_translation(epoch, seq, text);
     }
     drop(session);
@@ -1303,6 +1316,7 @@ fn snapshot(state: &RuntimeState) -> Result<SubtitleSnapshot, String> {
         translation_text: session.translation.display(&session.prefs),
         obs_output_active: session.obs_active,
         error: session.error.clone(),
+        translation_error: session.translation_error.clone(),
     })
 }
 
