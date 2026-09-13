@@ -597,6 +597,74 @@ mod gain_tests {
         );
     }
 
+    /// 生成 `seconds` 秒 48k 单声道信号：频率为 0 时是等幅底噪替身（直流小值 + 交替符号）。
+    fn tone(seconds: f32, freq: f32, amplitude: f32) -> Vec<f32> {
+        let count = (RATE_48K as f32 * seconds) as usize;
+        (0..count)
+            .map(|i| {
+                let t = i as f32 / RATE_48K as f32;
+                if freq <= 0.0 {
+                    if i % 2 == 0 { amplitude } else { -amplitude }
+                } else {
+                    amplitude * (2.0 * std::f32::consts::PI * freq * t).sin()
+                }
+            })
+            .collect()
+    }
+
+    fn clipped_ratio(pcm16_le: &[u8]) -> f32 {
+        if pcm16_le.len() < 2 {
+            return 0.0;
+        }
+        let samples: Vec<i16> = pcm16_le
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let clipped = samples.iter().filter(|s| s.unsigned_abs() >= 28_000).count();
+        clipped as f32 / samples.len() as f32
+    }
+
+    /// 行为回归：静默段之后突然开口，增益必须迅速回落。
+    ///
+    /// 这是系数写反的可听后果，比断言常量本身更有说服力。关掉降噪以隔离增益级——
+    /// RNNoise 会把合成正弦当噪声抑制掉，那样根本没有信号到达增益级。
+    ///
+    /// 实测（2 秒近静音 → 0.3 秒 -25 dBFS 正弦）：
+    /// - 正确方向：增益 99.8 → 12.1，削波 57%
+    /// - 写反方向：增益 100.0 → 43.1，削波 83%
+    #[test]
+    fn gain_recovers_quickly_when_speech_starts_after_silence() {
+        let params = DspParams {
+            denoise_enabled: false,
+            ..DspParams::default()
+        };
+        let mut dsp = StreamDsp::new(params, RATE_48K);
+
+        // 两秒极低电平底噪，让增益爬到 max_gain_db（默认 40dB = 100 倍）顶格。
+        for _ in 0..20 {
+            dsp.process(&tone(0.1, 0.0, 0.0005));
+        }
+        let peak_gain = dsp.gain;
+        assert!(
+            peak_gain > 90.0,
+            "用例前提：静默段应把增益顶到接近 100 倍，实际 {peak_gain:.1}"
+        );
+
+        // 突然开口：-25 dBFS 左右的 300Hz 正弦。
+        let speech = dsp.process(&tone(0.3, 300.0, 0.056));
+        let recovered_gain = dsp.gain;
+
+        assert!(
+            recovered_gain < peak_gain * 0.25,
+            "开口 0.3 秒后增益应已回落到峰值的四分之一以下，实际 {recovered_gain:.1}/{peak_gain:.1}：             回落太慢意味着这段音频被硬钳成方波，正好盖住每句话的首字"
+        );
+        assert!(
+            clipped_ratio(&speech) < 0.7,
+            "开口后被削到钳位上限的样本比例过高：{:.1}%",
+            clipped_ratio(&speech) * 100.0
+        );
+    }
+
     /// 增益等于目标时不应再往上抬，按「压低」分支处理即可（差值为 0，不产生变化）。
     #[test]
     fn gain_holds_steady_when_already_at_target() {
