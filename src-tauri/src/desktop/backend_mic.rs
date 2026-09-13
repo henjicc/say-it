@@ -110,7 +110,9 @@ pub(crate) fn interleaved_to_mono_f32_from_u16(input: &[u16], channels: usize) -
         .collect()
 }
 
-fn report_backend_mic_capture_error(
+/// 向 worker 上报采集失败，同一条流只报一次。
+/// 系统音频 loopback（backend_system_audio.rs）复用同一套 worker 状态机，因此共用它。
+pub(crate) fn report_backend_mic_capture_error(
     worker: &std::sync::mpsc::Sender<BackendMicCommand>,
     capture_failed: &std::sync::atomic::AtomicBool,
     message: String,

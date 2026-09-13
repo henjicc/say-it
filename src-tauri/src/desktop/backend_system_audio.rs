@@ -1,6 +1,6 @@
 use crate::desktop::backend_mic::{
     flush_backend_mic_buffer, interleaved_to_mono_f32_from_f32, interleaved_to_mono_f32_from_i16,
-    interleaved_to_mono_f32_from_u16, push_backend_mic_samples,
+    interleaved_to_mono_f32_from_u16, push_backend_mic_samples, report_backend_mic_capture_error,
 };
 use crate::prelude::*;
 use crate::state::*;
@@ -18,12 +18,28 @@ fn find_output_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Dev
 
 fn build_backend_system_audio_stream(
     system_audio: Arc<Mutex<BackendMicState>>,
+    worker: std::sync::mpsc::Sender<BackendMicCommand>,
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
 ) -> Result<cpal::Stream, String> {
     let stream_config: cpal::StreamConfig = config.clone().into();
     let channels = stream_config.channels.max(1) as usize;
-    let err_fn = |err| dlog!("[backend-system-audio] 输入流错误: {err}");
+    let capture_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // 流意外停止（拔掉/禁用播放设备、被独占模式抢占、驱动重置）必须上报给 worker，
+    // 否则 worker 会一直阻塞在 recv()、raw_txs 里的 sender 不被 drop，字幕的 raw
+    // consumer 永远挂着：界面仍显示「运行中」但字幕永久定格，AudioOwner::Subtitles
+    // 租约也不释放，用户连听写都启动不了。此前这里只有一行 dlog，
+    // 于是 worker 的 CaptureError 分支在 Windows 上根本不可达。
+    let error_callback = || {
+        let worker = worker.clone();
+        let capture_failed = capture_failed.clone();
+        move |error: cpal::StreamError| {
+            let message = format!("系统音频 loopback 输入流意外停止：{error}");
+            dlog!("[backend-system-audio] {message}");
+            report_backend_mic_capture_error(&worker, &capture_failed, message);
+        }
+    };
 
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
@@ -35,7 +51,7 @@ fn build_backend_system_audio_stream(
                         interleaved_to_mono_f32_from_f32(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
@@ -48,7 +64,7 @@ fn build_backend_system_audio_stream(
                         interleaved_to_mono_f32_from_i16(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
@@ -61,7 +77,7 @@ fn build_backend_system_audio_stream(
                         interleaved_to_mono_f32_from_u16(data, channels),
                     );
                 },
-                err_fn,
+                error_callback(),
                 None,
             )
             .map_err(|e| format!("创建系统音频 loopback 输入流失败: {e}")),
@@ -151,9 +167,14 @@ pub(crate) fn start_backend_system_audio_inner(
     let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
     let system_audio = state.backend_system_audio.clone();
+    let worker_for_stream = worker_tx.clone();
     std::thread::spawn(move || {
-        let stream = match build_backend_system_audio_stream(system_audio.clone(), &device, &config)
-        {
+        let stream = match build_backend_system_audio_stream(
+            system_audio.clone(),
+            worker_for_stream,
+            &device,
+            &config,
+        ) {
             Ok(stream) => stream,
             Err(err) => {
                 dlog!("[backend-system-audio] {err}");
