@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
+import { Button } from "@/components/ui/Button";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
@@ -44,12 +45,17 @@ export default function App() {
   const systemGlass = useFloatingOrbStore((s) => s.settings);
   const [settingsReady, setSettingsReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [initError, setInitError] = useState("");
 
   const bridgeReady = useTauriBridge();
 
   useEffect(() => {
+    // 初始化失败不能当作正常启动。这里是前端唯一一次从 Rust 拉取权威配置的地方，
+    // 失败意味着各个 store 停在空默认值上；照常渲染的话，用户一次正常编辑就会把
+    // 默认值整份写回后端，覆盖掉磁盘上的真实配置（热词与上下文没有 localStorage
+    // 镜像，覆盖后不可恢复）。所以要把错误显式呈现出来，而不是只写 console。
     void initializeSettings()
-      .catch((error) => console.error("应用目录与设置初始化失败", error))
+      .catch((error: unknown) => setInitError(String(error)))
       .finally(() => setSettingsReady(true));
   }, []);
 
@@ -92,6 +98,21 @@ export default function App() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg)] text-[var(--color-fg)]">
       {!settingsReady ? null : <>
       <Titlebar />
+      {initError && (
+        <div
+          role="alert"
+          className="flex flex-none items-start gap-3 border-b border-[var(--color-line)] bg-[color-mix(in_srgb,var(--color-err)_10%,transparent)] px-9 py-3"
+        >
+          <div className="min-w-0 flex-1 text-xs leading-relaxed text-[var(--color-err)]">
+            应用设置加载失败，当前显示的可能不是你的真实配置。
+            <span className="opacity-80">请先重启应用；在此之前请勿修改设置，以免覆盖磁盘上的配置。</span>
+            <span className="mt-1 block break-all font-mono opacity-70">{initError}</span>
+          </div>
+          <Button size="sm" variant="primary" onClick={() => void cmd(CMD.restartApp)}>
+            立即重启
+          </Button>
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
         <Sidebar />
         <main className="min-h-0 flex-1 overflow-y-auto px-9 py-8">
