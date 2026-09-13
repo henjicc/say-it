@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import type { ShortcutCombo, ShortcutTriggerMode } from "@/features/dictation/hotkeys";
 import {
@@ -22,6 +23,7 @@ const TRIGGER_OPTIONS: Array<{ value: ShortcutTriggerMode; label: string }> = [
 ];
 
 export function SettingsKeyBindingsPanel() {
+  const { confirm, dialog } = useConfirm();
   const [items, setItems] = useState<ShortcutBindingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -84,8 +86,16 @@ export function SettingsKeyBindingsPanel() {
   const changeTrigger = (item: ShortcutBindingItem, triggerMode: ShortcutTriggerMode) =>
     runMutation(item, () => updateShortcutBinding(item, item, triggerMode));
 
-  const clear = (item: ShortcutBindingItem) => {
-    if (!window.confirm(`确定清除“${item.name}”的快捷键吗？对应功能配置会继续保留。`)) return;
+  const clear = async (item: ShortcutBindingItem) => {
+    if (
+      !(await confirm({
+        title: "确认清除快捷键",
+        message: `确定清除“${item.name}”的快捷键吗？对应功能配置会继续保留。`,
+        confirmLabel: "清除",
+      }))
+    ) {
+      return;
+    }
     void runMutation(item, () => clearShortcutBinding(item));
   };
 
@@ -131,7 +141,7 @@ export function SettingsKeyBindingsPanel() {
                       className="h-7 w-7"
                       disabled={mutating}
                       label={`清除 ${item.name} 的快捷键`}
-                      onClick={() => clear(item)}
+                      onClick={() => void clear(item)}
                     >
                       <Trash2 className="h-3.5 w-3.5" aria-hidden />
                     </IconButton>
@@ -214,6 +224,7 @@ export function SettingsKeyBindingsPanel() {
       {renderGroup("语音输入", groups.dictation)}
       {renderGroup("智能助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}
+      {dialog}
     </div>
   );
 }

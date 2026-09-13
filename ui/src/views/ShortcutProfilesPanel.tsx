@@ -7,6 +7,7 @@ import { FormGrid } from "@/components/ui/FormGrid";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import {
   MAX_DICTATION_SHORTCUT_PROFILES,
@@ -71,6 +72,7 @@ function shortcutTriggerLabel(mode: ShortcutTriggerMode): string {
 }
 
 export function ShortcutProfilesPanel() {
+  const { confirm, dialog } = useConfirm();
   const prefs = useDictPrefs((state) => state.prefs);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
   const focusedProfileId = useUiStore((state) => state.focusedShortcutProfileId);
@@ -111,8 +113,16 @@ export function ShortcutProfilesPanel() {
     untouchedDraftIds.current.delete(id);
     save(profiles.map((profile) => (profile.id === id ? { ...profile, ...partial } : profile)));
   };
-  const remove = (profile: DictationShortcutProfile) => {
-    if (!window.confirm(`确定删除快捷键方案“${profile.name}”吗？`)) return;
+  const remove = async (profile: DictationShortcutProfile) => {
+    if (
+      !(await confirm({
+        title: "确认删除快捷键方案",
+        message: `确定删除快捷键方案“${profile.name}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     untouchedDraftIds.current.delete(profile.id);
     save(profiles.filter((item) => item.id !== profile.id));
     if (editingId === profile.id) setEditingId(null);
@@ -185,7 +195,7 @@ export function ShortcutProfilesPanel() {
                   variant="dangerHover"
                   className="h-7 w-7 shrink-0"
                   label="删除快捷键方案"
-                  onClick={() => remove(profile)}
+                  onClick={() => void remove(profile)}
                 >
                   <Trash2 className="h-3.5 w-3.5" aria-hidden />
                 </IconButton>
@@ -344,6 +354,7 @@ export function ShortcutProfilesPanel() {
           添加快捷键方案
         </Button>
       </div>
+      {dialog}
     </div>
   );
 }

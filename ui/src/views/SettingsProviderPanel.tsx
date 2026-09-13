@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import {
   ApiKeyLink,
   ASR_API_KEY_URLS,
@@ -57,6 +58,7 @@ function hasProviderConfiguration(provider: ProviderProfile) {
 }
 
 function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
+  const { confirm, dialog } = useConfirm();
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const loadProviders = useProviderStore((state) => state.load);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -134,8 +136,15 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
   const runAction = async (action: string) => {
     if (
       ["openLogin", "syncSession", "clearSession"].includes(action) &&
-      !window.confirm(`插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`)
-    ) return;
+      !(await confirm({
+        title: "确认执行插件操作",
+        message: `插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`,
+        confirmLabel: "继续",
+        danger: action === "clearSession",
+      }))
+    ) {
+      return;
+    }
     try {
       const result = await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, {
         providerId: provider.id,
@@ -205,6 +214,7 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
         {errorMessage && <p className="text-xs text-[var(--color-danger)]">{errorMessage}</p>}
         {actionMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
       </div>
+      {dialog}
     </Collapse>
   );
 }

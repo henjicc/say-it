@@ -7,6 +7,7 @@ import { Input, Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import {
   ApiKeyLink,
   API_KEY_URLS_BY_ADAPTER,
@@ -123,6 +124,7 @@ function validateModels(models: LlmModelConfig[]): string | null {
 }
 
 function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
+  const { confirm, dialog } = useConfirm();
   const updateConfig = useProviderStore((state) => state.updateConfig);
   const refreshModels = useProviderStore((state) => state.refreshLlmModels);
   const setDefault = useProviderStore((state) => state.setDefault);
@@ -402,7 +404,15 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
   };
 
   const deleteProfile = async () => {
-    if (!window.confirm(`确定删除“${profile.displayName}”吗？`)) return;
+    if (
+      !(await confirm({
+        title: "确认删除供应商",
+        message: `确定删除“${profile.displayName}”吗？已保存的配置会一并移除。`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     try {
       await remove(profile.id);
     } catch (error) {
@@ -564,6 +574,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
           </div>
         </div>
       </Modal>
+      {dialog}
     </Collapse>
   );
 }

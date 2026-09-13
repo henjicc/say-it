@@ -4,6 +4,7 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { NumberInput, Textarea } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
 
@@ -40,6 +41,7 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
 }
 
 export function SettingsHistoryPanel() {
+  const { confirm, dialog } = useConfirm();
   const [prefs, setPrefs] = useState<HistoryPrefs>(defaults);
   const [excludedText, setExcludedText] = useState("");
   const [message, setMessage] = useState("");
@@ -63,7 +65,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clear() {
-    if (!window.confirm("确定清空全部本地历史和纠错样本吗？此操作不可撤销。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空全部历史",
+        message: "将清空全部本地历史和纠错样本。此操作不可撤销。",
+        confirmLabel: "清空历史",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearHistory);
       setMessage("本地历史和纠错样本已清空");
@@ -73,7 +83,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clearUsage() {
-    if (!window.confirm("确定清空本地累计使用统计吗？历史记录不会受到影响。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空使用统计",
+        message: "将清空本地累计使用统计，历史记录不会受到影响。",
+        confirmLabel: "清空统计",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearUsageSummary);
       setMessage("本地累计使用统计已清空");
@@ -83,7 +101,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clearLearning() {
-    if (!window.confirm("确定清空全部个性化学习记忆吗？历史正文会保留，此操作不可撤销。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空学习记忆",
+        message: "将清空全部个性化学习记忆，历史正文会保留。此操作不可撤销。",
+        confirmLabel: "清空记忆",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearLearningMemory);
       setMessage("个性化学习记忆已清空");
@@ -92,8 +118,17 @@ export function SettingsHistoryPanel() {
     }
   }
 
-  function setCloudLearningContext(enabled: boolean) {
-    if (enabled && !window.confirm("开启后，云端智能处理会接收最多三条与当前文本直接相关、已脱敏的局部纠错，以及一条已确认的表达偏好。是否继续？")) {
+  async function setCloudLearningContext(enabled: boolean) {
+    if (
+      enabled &&
+      !(await confirm({
+        title: "开启云端学习上下文",
+        message:
+          "开启后，云端智能处理会接收最多三条与当前文本直接相关、已脱敏的局部纠错，以及一条已确认的表达偏好。是否继续？",
+        confirmLabel: "开启",
+        danger: false,
+      }))
+    ) {
       return;
     }
     void save({ ...prefs, cloudLearningContextEnabled: enabled });
@@ -138,7 +173,7 @@ export function SettingsHistoryPanel() {
             id="history-cloud-learning"
             checked={prefs.cloudLearningContextEnabled}
             disabled={!prefs.correctionLearningEnabled}
-            onChange={setCloudLearningContext}
+            onChange={(enabled) => void setCloudLearningContext(enabled)}
             label="云端参考学习记录"
           />
         </Field>
@@ -165,6 +200,7 @@ export function SettingsHistoryPanel() {
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </SettingsSection>
   );
 }

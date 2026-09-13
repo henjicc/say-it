@@ -8,6 +8,7 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { cn } from "@/lib/cn";
 import {
@@ -53,6 +54,7 @@ function newProfile(): AppProfile {
 }
 
 export function AppProfilesPanel() {
+  const { confirm, dialog } = useConfirm();
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
   const profiles = prefs.appProfiles;
@@ -90,9 +92,17 @@ export function AppProfilesPanel() {
     [next[index], next[target]] = [next[target], next[index]];
     void trackRuleWrite(patch({ appProfiles: next }));
   };
-  const deleteProfile = (profile: AppProfile) => {
+  const deleteProfile = async (profile: AppProfile) => {
     const label = profile.name.trim() || profile.matchers[0] || "未命名规则";
-    if (!window.confirm(`确定删除软件规则“${label}”吗？`)) return;
+    if (
+      !(await confirm({
+        title: "确认删除软件规则",
+        message: `确定删除软件规则“${label}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     void trackRuleWrite(patch({ appProfiles: profiles.filter((p) => p.id !== profile.id) }));
     if (editingId === profile.id) setEditingId(null);
   };
@@ -205,7 +215,7 @@ export function AppProfilesPanel() {
                     variant="dangerHover"
                     className="h-7 w-7 shrink-0"
                     label="删除软件规则"
-                    onClick={() => deleteProfile(profile)}
+                    onClick={() => void deleteProfile(profile)}
                   >
                     <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                   </IconButton>
@@ -356,6 +366,7 @@ export function AppProfilesPanel() {
           </Button>
         </div>
       </div>
+      {dialog}
     </div>
   );
 }

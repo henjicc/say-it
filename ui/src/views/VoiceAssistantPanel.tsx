@@ -7,6 +7,7 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
@@ -139,6 +140,7 @@ export function VoiceAssistantView() {
 }
 
 function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
+  const { confirm, dialog } = useConfirm();
   useModelCatalogRevision();
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
   const [message, setMessage] = useState("");
@@ -171,14 +173,32 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
     const item = { id: crypto.randomUUID(), name: "新模板", prompt: "在这里填写这个功能的处理规则。保留事实，不添加未经提供的信息。" };
     void updateFeature({ ...feature, activeTemplateId: item.id, templates: [...feature.templates, item] });
   };
-  const deleteTemplate = () => {
-    if (!active || feature.templates.length <= 1 || !window.confirm(`确定删除“${active.name}”吗？`)) return;
+  const deleteTemplate = async () => {
+    if (!active || feature.templates.length <= 1) return;
+    if (
+      !(await confirm({
+        title: "确认删除模板",
+        message: `确定删除“${active.name}”吗？删除后可在下方回收站找回。`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     const templates = feature.templates.filter((item) => item.id !== active.id);
     const deleted = { recoveryId: crypto.randomUUID(), template: active, deletedAt: Date.now() };
     void updateFeature({ ...feature, activeTemplateId: templates[0].id, templates, templateTrash: [deleted, ...feature.templateTrash].slice(0, 20) });
   };
   const resetTemplate = async () => {
-    if (!active || !window.confirm(`恢复“${active.name}”的内置内容吗？`)) return;
+    if (!active) return;
+    if (
+      !(await confirm({
+        title: "恢复内置内容",
+        message: `将把“${active.name}”恢复为内置内容，当前改动会被覆盖。`,
+        confirmLabel: "恢复",
+      }))
+    ) {
+      return;
+    }
     try {
       const factory = await cmd<AssistantPrefs>(CMD.getDefaultAssistantPreferences);
       const original = factory[action].templates.find((item) => item.id === active.id);
@@ -222,7 +242,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
         <Field label="模板名称"><Input value={active?.name ?? ""} maxLength={80} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.currentTarget.value } : item) } })} /></Field>
         <Field label="任务提示词" className="sm:col-span-2" hint="协议、安全和结构化输出规则由应用保护，此处只控制任务效果。"><Textarea rows={8} value={active?.prompt ?? ""} maxLength={12000} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.currentTarget.value } : item) } })} /></Field>
       </FormGrid>
-      <div className="flex items-center gap-3"><Button size="sm" variant="danger" disabled={feature.templates.length <= 1} onClick={deleteTemplate}><Trash2 className="h-3.5 w-3.5" />删除当前模板</Button><span className="text-xs text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span></div>
+      <div className="flex items-center gap-3"><Button size="sm" variant="danger" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除当前模板</Button><span className="text-xs text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span></div>
       {feature.templateTrash.length > 0 && <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3"><p className="mb-2 text-xs font-medium text-[var(--color-fg-muted)]">模板回收站</p>{feature.templateTrash.map((entry) => <div key={entry.recoveryId} className="flex items-center justify-between border-t border-[var(--color-line)] py-2 first:border-0"><span className="text-xs text-[var(--color-fg-subtle)]">{entry.template.name}</span><Button size="sm" variant="ghost" onClick={() => restore(entry)}><ArchiveRestore className="h-3.5 w-3.5" />恢复</Button></div>)}</div>}
     </SettingsSection>
 
@@ -234,6 +254,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
       <div className="flex items-center gap-3"><Button variant="primary" disabled={previewing || !previewInstruction.trim()} onClick={() => void runPreview()}>{previewing ? "正在调用模型…" : "运行测试"}</Button><span className="text-xs text-[var(--color-fg-subtle)]">真实请求可能产生供应商用量。</span></div>
       {previewResult && <Field label="模型结果"><Textarea rows={7} readOnly value={previewResult} /></Field>}
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </SettingsSection>
   </div>;
 }
