@@ -35,6 +35,7 @@ import {
   isTypingTarget,
   isInteractiveTarget,
   joinTexts,
+  roundCueTimes,
   type DragMode,
   type DragState,
   type PanState,
@@ -197,10 +198,17 @@ export function SubtitleEditor({
     nextBegin: index < cues.length - 1 ? cues[index + 1].beginMs : Number.POSITIVE_INFINITY,
   });
 
-  /** 提交一次字幕数组变更；同时记下这是「自己触发的」变更，供下面的 effect 区分外部切换（换文件/切 Tab）。 */
+  /**
+   * 提交一次字幕数组变更；同时记下这是「自己触发的」变更，供下面的 effect 区分外部切换（换文件/切 Tab）。
+   *
+   * 时间码在这里统一取整：本组件所有写回都经由 applyCues，在唯一收口处理可以一次
+   * 覆盖拖动/拉伸/拆分/设为播放头等全部路径，也保证撤销栈里存的都是整数快照。
+   * 不取整的话，导出 SRT 会被 Rust 侧的 i64 反序列化拒收（见 roundCueTimes 注释）。
+   */
   const applyCues = (next: EditableCue[]) => {
-    expectedCuesRef.current = next;
-    onCuesChange(next);
+    const rounded = roundCueTimes(next);
+    expectedCuesRef.current = rounded;
+    onCuesChange(rounded);
   };
 
   /** 将变更前的快照压入撤销栈，并清空重做栈；用于拖动/文本编辑等连续操作的收尾，以及各类一次性操作。 */
