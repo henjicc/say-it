@@ -238,9 +238,25 @@ struct TranslationDocument {
 }
 
 impl TranslationDocument {
+    /// ASR 会话断开时调用：清掉只对该会话有意义的分句游标。
+    ///
+    /// 不清的话，上一段话的字节游标会被带进重连后新会话的第一个 partial，
+    /// 轻则吞掉新句开头的若干字节（译文缺句首），重则落在多字节字符中间导致
+    /// `dispatch` 切片 panic。
+    fn reset_partial(&mut self) {
+        self.partial_offset = 0;
+    }
+
     fn dispatch(&mut self, text: &str, final_result: bool) -> Vec<(u64, String)> {
         let mut out = vec![];
-        if self.partial_offset > text.len() {
+        // `partial_offset` 是**字节**游标。它只在 `commit()` 里归零，而 ASR 会话中断
+        // （"ended"/"closed"/"error"、静音断开）不会 commit，于是上一段话的游标会被
+        // 带进重连后新会话的第一个 partial。此时它既可能越界，也可能落在新文本某个
+        // 多字节字符的中间——后者会让下面的切片直接 panic。而 dispatch 是在持有
+        // `subtitle_runtime.session` 守卫时调用的，一次 panic 会 poison 那把锁，
+        // 此后 start/stop/toggle/snapshot 全部返回「字幕状态锁失败」，音频租约也
+        // 永不释放，只能重启应用。两种情况一律归零重新开始。
+        if self.partial_offset > text.len() || !text.is_char_boundary(self.partial_offset) {
             self.partial_offset = 0;
         }
         let mut tail = &text[self.partial_offset..];
@@ -809,6 +825,7 @@ fn disconnect_for_silence(app: &AppHandle, epoch: u64) {
             }
             session.phase = SubtitlePhase::WaitingForVoice;
             session.last_voice_at = None;
+            session.translation.reset_partial();
             session.asr_session_id.take()
         });
     if let Some(id) = id {
@@ -872,6 +889,7 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
             }
             "ended" | "closed" | "error" => {
                 session.asr_session_id = None;
+                session.translation.reset_partial();
                 if session.audio_prefs.subtitle_silence_disconnect_enabled {
                     session.phase = SubtitlePhase::WaitingForVoice;
                 } else {
@@ -1433,6 +1451,41 @@ mod tests {
                 "Microsoft YaHei"
             }
         );
+    }
+
+    /// 回归：`partial_offset` 是字节游标，ASR 会话中断不会 commit，因此它会被带进
+    /// 重连后新会话的第一个 partial。若该偏移落在新文本某个多字节字符中间，
+    /// `&text[offset..]` 会 panic；而 dispatch 是在持有 session 锁时调用的，
+    /// 一次 panic 会 poison 那把锁，整个字幕域从此不可恢复。
+    #[test]
+    fn dispatch_recovers_when_stale_offset_lands_inside_a_multibyte_char() {
+        let mut document = TranslationDocument::default();
+        // 上一句以 ASCII 标点收尾，clause_cut 把游标停在字节 4。
+        let first = document.dispatch("Yes.", false);
+        assert_eq!(first.len(), 1);
+        assert_eq!(document.partial_offset, 4);
+
+        // 会话中断后重连，新会话第一个 partial 是纯中文：字节 4 落在“好”(3..6) 内部。
+        let text = "你好世界";
+        assert!(!text.is_char_boundary(4), "用例前提：字节 4 不是字符边界");
+        let out = document.dispatch(text, true);
+
+        assert_eq!(document.partial_offset, text.len());
+        assert_eq!(
+            out.last().map(|(_, value)| value.as_str()),
+            Some("你好世界"),
+            "游标应当归零重来，整句都要派发出去，不能吞掉句首"
+        );
+    }
+
+    /// 会话断开时应主动清游标，而不是依赖 dispatch 的兜底。
+    #[test]
+    fn reset_partial_clears_cursor_across_sessions() {
+        let mut document = TranslationDocument::default();
+        document.dispatch("Yes.", false);
+        assert_ne!(document.partial_offset, 0);
+        document.reset_partial();
+        assert_eq!(document.partial_offset, 0);
     }
 
     #[test]
