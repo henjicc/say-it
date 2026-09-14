@@ -1378,6 +1378,23 @@ fn spawn_raw_consumer(
     });
 }
 
+/// 刚建好的 ASR 流是否仍然属于当前会话。
+///
+/// 判定同时看 epoch 与阶段：`stop()` / `fail_internal()` 不推进 epoch，只靠 epoch
+/// 判断会把已经收尾的会话误判成仍在进行。
+fn asr_stream_still_wanted(state: &RuntimeState, epoch: u64) -> Result<bool, String> {
+    let session = state
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?;
+    Ok(session.epoch == epoch
+        && matches!(
+            session.phase,
+            DictationPhase::Recording | DictationPhase::WaitingForVoice
+        ))
+}
+
 async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
     let (model, rate, dsp) = {
         let state = app.state::<RuntimeState>();
@@ -1405,6 +1422,22 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(dsp),
     )
     .await?;
+    // 建流是一段耗时 await（云端握手 / 本地模型加载，常见数百毫秒到数秒），期间会话
+    // 可能已经结束或被新会话取代，因此必须在把这条流挂回麦克风**之前**确认它仍然有效。
+    //
+    // 只比 epoch 不够：epoch 只在 `start_internal` 推进，`stop()` / `fail_internal()` 都不推进。
+    // stop() 若在建流期间完成，它看到 `asr_session_id` 仍是 None，会走「无 ASR 会话」分支
+    // 直接 finalize 把会话收尾，而此处的 epoch 依然相等。于是刚建好的流会被挂回麦克风并
+    // 写进一个已经结束的会话：`Pause` 只清路由不停 cpal 流、`keep_alive_ms` 默认 60 秒，
+    // 麦克风会在这段时间里继续把真实环境音上传给云端供应商（隐私与计费问题），
+    // 而这条流永远不会被 `stop_asr_stream_inner` 关闭。
+    //
+    // 挂接本身是无条件覆盖麦克风路由的，所以校验只能前置——放在挂接之后就已经把新会话的
+    // 路由冲掉了。
+    if !asr_stream_still_wanted(&state, epoch)? {
+        let _ = stop_asr_stream_inner(&response.session_id, &state);
+        return Ok(());
+    }
     if let Err(error) = attach_backend_mic_to_asr_inner(&response.session_id, &state) {
         let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Err(error);
@@ -1414,8 +1447,14 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         .session
         .lock()
         .map_err(|_| "听写状态锁失败")?;
-    if s.epoch != epoch {
-        stop_asr_stream_inner(&response.session_id, &state)?;
+    if s.epoch != epoch
+        || !matches!(
+            s.phase,
+            DictationPhase::Recording | DictationPhase::WaitingForVoice
+        )
+    {
+        drop(s);
+        let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Ok(());
     }
     s.asr_session_id = Some(response.session_id);
@@ -3870,6 +3909,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(apply_rules("中AA", &p, true).unwrap(), "中A");
+    }
+
+    /// 回归：刚建好的 ASR 流是否仍属于当前会话，必须同时看 epoch **和**阶段。
+    ///
+    /// epoch 只在 `start_internal` 推进，`stop()` / `fail_internal()` 都不推进。只比 epoch
+    /// 的话，「建流期间用户按停止」会被误判成会话仍在进行：刚建好的流被挂回麦克风并写进
+    /// 已结束的会话，麦克风在 keep_alive_ms（默认 60 秒）内继续把环境音上传给云端供应商，
+    /// 而这条流永远不会被关闭。
+    #[test]
+    fn asr_stream_is_abandoned_once_the_session_left_recording() {
+        let state = crate::state::RuntimeState::default();
+        let epoch = 7;
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch;
+            session.phase = DictationPhase::Recording;
+        }
+        assert!(asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 用户在建流期间按了停止：epoch 不变，只有阶段回到 Idle。
+        state.dictation_runtime.session.lock().unwrap().phase = DictationPhase::Idle;
+        assert!(
+            !asr_stream_still_wanted(&state, epoch).unwrap(),
+            "会话已收尾时必须放弃这条流，只比 epoch 会漏掉 stop() 这条路径"
+        );
+
+        // 失败态同理。
+        state.dictation_runtime.session.lock().unwrap().phase = DictationPhase::Failed;
+        assert!(!asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 被新会话取代：epoch 已推进。
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch + 1;
+            session.phase = DictationPhase::Recording;
+        }
+        assert!(!asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 等待声音阶段仍然需要这条流。
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch + 1;
+            session.phase = DictationPhase::WaitingForVoice;
+        }
+        assert!(asr_stream_still_wanted(&state, epoch + 1).unwrap());
     }
 
     /// 回归：听写后处理顺序固定为「ASR 原文 → 智能处理 → 本地规则 → 个性化精确纠错」。
