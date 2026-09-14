@@ -2114,32 +2114,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
     }
-    // 普通听写固定采用：ASR 原文 → 现有本地规则 → 智能处理 → 个性化精确纠错。
+    // 普通听写固定采用：ASR 原文 → 智能处理 → 本地规则 → 个性化精确纠错。
+    // 本地规则是用户对**最终文本**的确定性兜底修正，必须作用在大模型输出之上；
+    // 顺序反过来的话，用户为聊天框关掉的句末标点会被 LLM 重新补回、自定义查找替换
+    // 也会被改回去，现象是「规则开着但没生效」且没有任何提示。
     // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
-    let locally_processed = if assistant_request.is_some() {
-        text.clone()
-    } else {
-        match apply_rules(&text, &prefs, effective.local_rules_enabled) {
-            Ok(value) => value,
-            Err(error) => {
-                if let Some(lease) = &lease {
-                    let _ = state.audio_session.release(lease);
-                }
-                remove_temp(temp_path.clone());
-                let _ = fail_with_raw_fallback(
-                    app,
-                    epoch,
-                    error,
-                    raw_text.clone(),
-                    method.clone(),
-                    FloatingFallbackKind::Processing,
-                )
-                .await;
-                return;
-            }
-        }
-    };
     let assistant_processed = if let Some(request) = assistant_request.as_ref() {
         match crate::application::assistant::process(&app, &state, request, &text).await {
             Ok(value) => Some(value),
@@ -2233,7 +2213,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         let smart_result = crate::application::smart_text::process_smart_text(
             &state,
-            &locally_processed,
+            &text,
             &template.prompt,
             &active_app_context,
             app_identity
@@ -2268,7 +2248,31 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
     } else {
-        locally_processed
+        text.clone()
+    };
+    // 本地规则在这里才执行：作用对象是智能处理之后的最终文本。
+    let locally_processed = if assistant_request.is_some() {
+        smart_processed
+    } else {
+        match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(lease) = &lease {
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    error,
+                    raw_text.clone(),
+                    method.clone(),
+                    FloatingFallbackKind::Processing,
+                )
+                .await;
+                return;
+            }
+        }
     };
     let learning_app_name = assistant_request
         .as_ref()
@@ -2279,12 +2283,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let learned = if assistant_processed.is_none() {
         crate::application::learning::apply_active_rules(
             &state,
-            &smart_processed,
+            &locally_processed,
             learning_app_name,
         )
     } else {
         crate::application::learning::AppliedLearning {
-            text: smart_processed,
+            text: locally_processed,
             rule_ids: Vec::new(),
         }
     };
@@ -3866,6 +3870,44 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(apply_rules("中AA", &p, true).unwrap(), "中A");
+    }
+
+    /// 回归：听写后处理顺序固定为「ASR 原文 → 智能处理 → 本地规则 → 个性化精确纠错」。
+    ///
+    /// 本地规则是用户对**最终文本**的确定性兜底修正，必须作用在大模型输出之上
+    /// （CLAUDE.md 的硬性约定）。反过来的话，用户为聊天框关掉的句末标点会被 LLM
+    /// 重新补回、自定义查找替换也会被改回去，现象是「规则开着但没生效」且无任何提示。
+    ///
+    /// 这个顺序曾被提交 8398053 在一次大改动里顺带翻转，且静默存活了很久——纯函数
+    /// 单测覆盖不到 `finalize` 里的调用顺序，所以这里对源码本身做契约检查：
+    /// 只看 `#[cfg(test)]` 之前的生产代码区间，避免匹配到测试自身。
+    #[test]
+    fn local_rules_must_run_after_smart_processing() {
+        let source = include_str!("dictation.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("应当存在测试模块")];
+
+        let smart_at = production
+            .find("smart_text::process_smart_text(")
+            .expect("finalize 应当调用 process_smart_text");
+        let rules_at = production
+            .find("apply_rules(&smart_processed")
+            .expect("本地规则必须作用在 smart_processed 上");
+        let learning_at = production
+            .find("learning::apply_active_rules(")
+            .expect("finalize 应当调用 apply_active_rules");
+
+        assert!(
+            smart_at < rules_at,
+            "本地规则必须跑在智能处理**之后**：它是对最终文本的确定性兜底"
+        );
+        assert!(
+            rules_at < learning_at,
+            "个性化精确纠错应当作用在本地规则之后"
+        );
+        assert!(
+            !production.contains("apply_rules(&text"),
+            "本地规则不得再作用在 ASR 原文上"
+        );
     }
     fn identity(process_name: &str) -> crate::active_app_context::AppIdentity {
         crate::active_app_context::AppIdentity {
