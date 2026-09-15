@@ -436,6 +436,10 @@ fn main() {
                 .lock()
                 .map_err(|_| std::io::Error::other("assistant shortcut lock failed while registering"))?
                 .clone();
+            // 注册是全有全无的（见 assistant::set_shortcuts 的说明），失败原因由
+            // set_shortcuts 留在运行时状态里，快捷键设置页会把受影响的条目标注成
+            // 「当前未生效」。这里只留一条开发期日志——release 版没有控制台，
+            // 单靠它等于彻底静默。
             if let Err(error) = application::assistant::set_shortcuts(&app.handle(), &assistant_shortcuts) {
                 eprintln!("[assistant-shortcut] {error}");
             }
