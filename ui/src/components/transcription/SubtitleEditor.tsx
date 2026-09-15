@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Combine, Plus, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -592,15 +592,47 @@ export function SubtitleEditor({
     if (audioRef.current) audioRef.current.playbackRate = rate;
   }, [rate]);
 
-  useEffect(() => {
+  // 画布只覆盖时间轴的可视窗口，跟随横向滚动平移重绘。详见 waveform.ts 的说明：
+  // 跟随整条时间轴会在十几分钟的音频上触及浏览器画布上限，整块波形静默变空白。
+  const redrawWaveform = useCallback(() => {
+    const container = timelineRef.current;
+    const canvas = waveformCanvasRef.current;
+    if (!container || !canvas) return;
     drawWaveformCanvas(
-      waveformCanvasRef.current,
+      canvas,
       waveformColumns,
-      timelineWidth,
+      container.clientWidth,
       WAVEFORM_HEIGHT,
       waveformZoom,
+      container.scrollLeft,
+      timelineWidth,
     );
   }, [timelineWidth, waveformColumns, waveformZoom]);
+
+  useEffect(() => {
+    redrawWaveform();
+  }, [redrawWaveform]);
+
+  useEffect(() => {
+    const container = timelineRef.current;
+    if (!container) return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        redrawWaveform();
+      });
+    };
+    container.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    return () => {
+      container.removeEventListener("scroll", schedule);
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [redrawWaveform]);
 
   useEffect(() => {
     const anchor = zoomAnchorRef.current;
@@ -808,12 +840,12 @@ export function SubtitleEditor({
             ))}
           </div>
 
-          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg-sidebar)]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
+          <div className="absolute inset-x-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg-sidebar)]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
             {waveformColumns.length > 0 ? (
               <canvas
                 ref={waveformCanvasRef}
-                className="block h-full w-full"
-                style={{ width: `${timelineWidth}px`, height: `${WAVEFORM_HEIGHT}px` }}
+                className="absolute left-0 top-0 block"
+                style={{ height: `${WAVEFORM_HEIGHT}px` }}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-faint)]">
