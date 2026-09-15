@@ -174,18 +174,26 @@ pub(crate) async fn customization_sync_providers(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<CustomizationSyncResponse, String> {
     let hotwords = crate::application::customization::prefs(&state).hotwords;
-    if hotwords.is_empty() {
-        return Err("请至少添加一个热词".to_string());
-    }
     let targets = sync_targets(&state)?;
     if targets.is_empty() {
         return Err("没有已启用且支持热词的供应商".to_string());
     }
     let mut results = Vec::new();
     for (provider_id, display_name) in targets {
-        let (ok, message) = match push_to_provider(&app, &state, &provider_id, &hotwords).await {
-            Ok(()) => (true, format!("已同步 {} 条热词", hotwords.len())),
-            Err(error) => (false, error),
+        // 热词被删光是一次**清空**，不是「没东西可推」。此前这里直接报错要求先去
+        // 添加热词，于是供应商侧的旧词表和 vocabularyIds 会一直留着，
+        // 识别时照样下发——用户在界面上把热词删光了，实际效果完全没变，而且除了手动
+        // 点「清除云端词表」之外没有任何入口能纠正。
+        let (ok, message) = if hotwords.is_empty() {
+            match clear_provider(&app, &state, &provider_id).await {
+                Ok(()) => (true, "热词已清空，云端词表同步清除".to_string()),
+                Err(error) => (false, error),
+            }
+        } else {
+            match push_to_provider(&app, &state, &provider_id, &hotwords).await {
+                Ok(()) => (true, format!("已同步 {} 条热词", hotwords.len())),
+                Err(error) => (false, error),
+            }
         };
         results.push(ProviderSyncResult {
             provider_id,
@@ -309,4 +317,35 @@ async fn clear_provider(
     }
     apply_provider_patch(app, state, &provider_id, json!({ "vocabularyIds": {} }))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// 热词被删光是一次**清空**，不是「没东西可推」。
+    ///
+    /// 同步命令此前对空热词直接返回「请至少添加一个热词」，于是供应商侧的旧词表和
+    /// `vocabularyIds` 会一直留着并在识别时继续下发——用户以为删干净了，实际毫无变化。
+    /// 这条路径要真跑起来需要真实的供应商凭据与网络，只能做源码契约校验。
+    #[test]
+    fn empty_hotwords_clear_the_provider_instead_of_being_rejected() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("customization.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("customization.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) async fn customization_sync_providers")
+            .expect("同步命令必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+
+        assert!(
+            !command.contains("请至少添加一个热词"),
+            "空热词不得被拒绝，它意味着要清空云端词表"
+        );
+        assert!(
+            command.contains("hotwords.is_empty()") && command.contains("clear_provider("),
+            "空热词必须走 clear_provider 清理云端词表与 vocabularyIds"
+        );
+    }
 }
