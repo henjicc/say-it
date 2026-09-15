@@ -163,17 +163,28 @@ struct SubtitleDocument {
     current: String,
     replace_line: String,
     replace_line_at: Option<Instant>,
+    /// 当前这句在单句替换模式下是否续接上一句。
+    ///
+    /// 判定只能在**新一句的第一个 partial** 到达时做——那一刻 `replace_line_at`
+    /// 还是上一句 commit 的时刻，量到的才是真正的句间停顿。译文侧原本在 final
+    /// 那一刻拿同一个陈旧时间戳重算，于是只要这句话自身说满 2.5 秒，判定就会翻成
+    /// false，`TranslationDocument::commit` 走 `replace_groups = vec![group]` 把历史
+    /// 译文整批丢掉；而 `SubtitleDocument::commit` 是无条件追加的。画面上原文累积成
+    /// 「A B C」、译文却只剩最后一句，两行完全对不上。原文与译文必须共用这一个结论。
+    replace_continuing: bool,
 }
 
 impl SubtitleDocument {
     fn on_partial(&mut self, text: String, mode: &str, now: Instant) {
-        if self.current.is_empty()
-            && mode == "replace"
-            && self
+        if self.current.is_empty() && mode == "replace" {
+            if self
                 .replace_line_at
                 .is_some_and(|at| now.duration_since(at) > REPLACE_CONTINUE_GAP)
-        {
-            self.replace_line.clear();
+            {
+                self.replace_line.clear();
+            }
+            // 清理之后还剩内容，说明这句接在上一句后面；译文要沿用同一结论。
+            self.replace_continuing = !self.replace_line.is_empty();
         }
         self.current = text;
     }
@@ -884,16 +895,14 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
                     let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
                     let now = Instant::now();
                     let mode = session.prefs.mode.clone();
-                    let continuing = !session.document.replace_line.is_empty()
-                        && session
-                            .document
-                            .replace_line_at
-                            .is_some_and(|at| now.duration_since(at) <= REPLACE_CONTINUE_GAP);
                     session.document.on_partial(text.to_string(), &mode, now);
                     if session.prefs.translation_enabled() {
                         translate = session.translation.dispatch(text, final_result);
                     }
                     if final_result {
+                        // 续接与否由 `on_partial` 在本句开头就定下来，这里只是读取，
+                        // 不能拿 final 时刻的 `now` 重算。
+                        let continuing = session.document.replace_continuing;
                         session.document.commit(&mode, now);
                         session.translation.commit(&mode, continuing);
                     }
@@ -1513,6 +1522,72 @@ mod tests {
         assert_eq!(doc.replace_line, "第一句 第二句");
         doc.on_partial("新行".into(), "replace", now + Duration::from_secs(5));
         assert_eq!(doc.display(&SubtitlePrefs::default()), "新行");
+    }
+
+    /// 原文与译文必须用同一个续接结论。此前译文在 final 时刻用上一句 commit 的
+    /// 时间戳重算，只要本句说满 `REPLACE_CONTINUE_GAP` 就会误判成「新行」，把历史
+    /// 译文全部丢掉，而原文仍在累积——直播画面上两行错位。
+    #[test]
+    fn long_sentence_keeps_translation_in_sync_with_the_source_line() {
+        let now = Instant::now();
+        let mut doc = SubtitleDocument::default();
+        let mut translation = TranslationDocument::default();
+        let prefs = SubtitlePrefs {
+            mode: "replace".into(),
+            ..SubtitlePrefs::default()
+        };
+
+        // 第一句：说完立刻 final。
+        doc.on_partial("第一句。".into(), "replace", now);
+        for (seq, _) in translation.dispatch("第一句。", true) {
+            translation.update(seq, "One.".into());
+        }
+        doc.commit("replace", now);
+        translation.commit("replace", doc.replace_continuing);
+
+        // 第二句：句间只停 0.3 秒（仍在续接窗口内），但这句本身说了 4 秒才 final。
+        let start = now + Duration::from_millis(300);
+        doc.on_partial("第二".into(), "replace", start);
+        let finish = start + Duration::from_secs(4);
+        doc.on_partial("第二句。".into(), "replace", finish);
+        for (seq, _) in translation.dispatch("第二句。", true) {
+            translation.update(seq, "Two.".into());
+        }
+        doc.commit("replace", finish);
+        translation.commit("replace", doc.replace_continuing);
+
+        assert_eq!(doc.display(&prefs), "第一句。 第二句。");
+        assert_eq!(translation.display(&prefs), "One. Two.");
+    }
+
+    /// 句间真的停够 `REPLACE_CONTINUE_GAP` 时，原文换行、译文也必须跟着换行。
+    #[test]
+    fn a_real_pause_starts_a_new_line_for_both_source_and_translation() {
+        let now = Instant::now();
+        let mut doc = SubtitleDocument::default();
+        let mut translation = TranslationDocument::default();
+        let prefs = SubtitlePrefs {
+            mode: "replace".into(),
+            ..SubtitlePrefs::default()
+        };
+
+        doc.on_partial("第一句。".into(), "replace", now);
+        for (seq, _) in translation.dispatch("第一句。", true) {
+            translation.update(seq, "One.".into());
+        }
+        doc.commit("replace", now);
+        translation.commit("replace", doc.replace_continuing);
+
+        let later = now + Duration::from_secs(5);
+        doc.on_partial("第二句。".into(), "replace", later);
+        for (seq, _) in translation.dispatch("第二句。", true) {
+            translation.update(seq, "Two.".into());
+        }
+        doc.commit("replace", later);
+        translation.commit("replace", doc.replace_continuing);
+
+        assert_eq!(doc.display(&prefs), "第二句。");
+        assert_eq!(translation.display(&prefs), "Two.");
     }
 
     #[test]
