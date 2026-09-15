@@ -195,17 +195,7 @@ jobs:
           merge-multiple: true
 
       - name: prepare release notes
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const version = require('./package.json').version;
-          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
-          const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const match = changelog.match(new RegExp(`^## \\[${escaped}\\].*?(?=^## \\[|$)`, 'ms'));
-          if (!match) throw new Error(`Release notes for version ${version} were not found in CHANGELOG.md.`);
-          const modelNotes = fs.readFileSync('model-packs/RELEASE_NOTES.md', 'utf8').trim();
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/release-notes.md', `${match[0].trim()}\n\n---\n\n${modelNotes}\n`);
-          NODE
+        run: node scripts/release-notes.mjs "$RUNNER_TEMP/release-notes.md"
 
       - name: publish GitHub release
         env:
