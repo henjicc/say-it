@@ -223,10 +223,14 @@ pub(crate) async fn compare_start(
             })
             .collect();
     }
+    // 录音模式的真实采样率由麦克风决定（44.1k 与 48k 都常见），必须先把麦克风拉起来
+    // 拿到实际值再开实时流。此前这里硬编码 48k：44.1k 设备上送去识别的 PCM 会被按
+    // 48k 解读，等于整段音频加速 8.8%，识别质量明显下降。与 `dictation.rs` 先
+    // `start_backend_mic_inner` 记录 `sample_rate`、再 `open_asr` 的顺序保持一致。
     let realtime_sample_rate = if request.source_mode == "upload" {
         16_000
     } else {
-        48_000
+        start_recording(app.clone(), &state, request.device_name, epoch)?
     };
     for (index, model) in request.models.iter().enumerate() {
         if model.trim().is_empty() {
@@ -250,13 +254,28 @@ pub(crate) async fn compare_start(
             .await;
             match opened {
                 Ok(session) => {
-                    state
-                        .compare_runtime
-                        .inner
-                        .lock()
-                        .map_err(|_| "模型对比状态锁失败")?
-                        .sessions
-                        .insert(session.session_id, index);
+                    // 录音模式下麦克风在建流之前就开始采集了，握手期间的样本只进了
+                    // `raw`。在同一把锁里登记会话并取走已采集的样本补发给新流，既不会
+                    // 丢开头，也不会和推流循环重复发送。
+                    let backlog = {
+                        let mut compare = state
+                            .compare_runtime
+                            .inner
+                            .lock()
+                            .map_err(|_| "模型对比状态锁失败")?;
+                        compare.sessions.insert(session.session_id.clone(), index);
+                        compare.raw.clone()
+                    };
+                    if !backlog.is_empty() {
+                        if let Some(handle) = state
+                            .asr_streams
+                            .lock()
+                            .ok()
+                            .and_then(|streams| streams.get(&session.session_id).cloned())
+                        {
+                            let _ = handle.tx.send(AsrStreamInput::RawF32(backlog));
+                        }
+                    }
                     state
                         .compare_runtime
                         .update_cell(index, "connecting", None, None);
@@ -267,9 +286,7 @@ pub(crate) async fn compare_start(
             }
         }
     }
-    if request.source_mode == "record" {
-        start_recording(app.clone(), &state, request.device_name, epoch)?;
-    } else {
+    if request.source_mode != "record" {
         let path = request
             .file_path
             .filter(|path| !path.trim().is_empty())
@@ -288,12 +305,13 @@ pub(crate) async fn compare_start(
     Ok(state.compare_runtime.snapshot())
 }
 
+/// 拉起麦克风并开始把 PCM 扇出给各子任务，返回**麦克风的实际采样率**。
 fn start_recording(
     app: tauri::AppHandle,
     state: &RuntimeState,
     device_name: Option<String>,
     epoch: u64,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let lease = state.audio_session.acquire(AudioOwner::Comparison)?;
     state.audio_session.attach(&lease, "comparison")?;
     let mic = start_backend_mic_inner(device_name, state)?;
@@ -348,7 +366,7 @@ fn start_recording(
             fail_recording_capture(&app, epoch, error);
         }
     });
-    Ok(())
+    Ok(mic.sample_rate)
 }
 
 fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
@@ -854,4 +872,28 @@ mod tests {
         );
     }
 
+    /// 录音模式的实时流采样率必须来自麦克风，不能在麦克风启动前猜一个 48k：
+    /// 44.1k 设备上那等于把音频按 48k 解读，整段加速 8.8%。这里只能做源码契约
+    /// 校验——真正跑一遍需要物理麦克风。
+    #[test]
+    fn record_mode_takes_the_sample_rate_from_the_microphone() {
+        let source = include_str!("compare.rs");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("compare.rs 必须有测试模块标记")];
+        let start = body
+            .find("let realtime_sample_rate")
+            .expect("compare_start 必须仍然决定 realtime_sample_rate");
+        let binding = &body[start..];
+        let binding = &binding[..binding.find("
+    };").expect("绑定表达式未闭合")];
+        assert!(
+            binding.contains("start_recording("),
+            "录音模式必须先启动麦克风、用它返回的真实采样率去开实时流"
+        );
+        assert!(
+            !binding.contains("48_000"),
+            "录音模式不得硬编码 48kHz 输入采样率"
+        );
+    }
 }
