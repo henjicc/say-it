@@ -57,6 +57,51 @@ describe("AssistantAnswerApp", () => {
     await waitFor(() => expect(cmd).toHaveBeenCalledWith(CMD.stopAssistantFollowUpVoice));
   });
 
+  /// 生成中断时后端会把已经生成出来的正文连同错误一起下发（`processed + error`
+  /// 这条路径本来就存在）。原来的 `error ? 错误 : text` 二选一渲染会把用户已经
+  /// 读到一半的回答整段抹掉，而且没有任何恢复入口。
+  it("keeps the partial answer visible alongside the error", async () => {
+    vi.mocked(cmd).mockImplementation(async (name: string) =>
+      name === "get_assistant_answer"
+        ? {
+            text: "## 已生成的前半段",
+            reasoning: "",
+            sourceText: "",
+            canInsert: false,
+            streaming: false,
+            pinned: false,
+            error: "网络连接中断",
+          }
+        : undefined);
+
+    render(<AssistantAnswerApp />);
+
+    expect(await screen.findByText("已生成的前半段")).toBeInTheDocument();
+    expect(screen.getByText("网络连接中断")).toBeInTheDocument();
+    // 正文还在，复制按钮就该可用。
+    expect(screen.getByRole("button", { name: /复制/ })).toBeEnabled();
+  });
+
+  it("falls back to the error alone when nothing was generated", async () => {
+    vi.mocked(cmd).mockImplementation(async (name: string) =>
+      name === "get_assistant_answer"
+        ? {
+            text: "",
+            reasoning: "",
+            sourceText: "",
+            canInsert: false,
+            streaming: false,
+            pinned: false,
+            error: "未读取到选区",
+          }
+        : undefined);
+
+    render(<AssistantAnswerApp />);
+
+    expect(await screen.findByText("未读取到选区")).toBeInTheDocument();
+    expect(screen.queryByText("正在等待回答…")).not.toBeInTheDocument();
+  });
+
   it("builds a fixed symmetric waveform without saturating every bar", () => {
     const targets = buildVoiceWaveTargets({ level: 1, peaks: [1, 1, 1, 1, 1, 1] });
     expect(targets).toHaveLength(VOICE_WAVE_BAR_COUNT);
