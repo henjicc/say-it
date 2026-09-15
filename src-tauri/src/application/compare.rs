@@ -34,13 +34,16 @@ pub(crate) struct CompareStartRequest {
     pub(crate) params: Option<DspParams>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompareCellSnapshot {
     pub(crate) index: usize,
     pub(crate) status: String,
     pub(crate) text: String,
     pub(crate) error_message: String,
+    /// 已经收到 `final` 的句子，仅用于服务端累计，不投影给前端。
+    #[serde(skip)]
+    pub(crate) committed: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -125,6 +128,23 @@ impl CompareRuntime {
             }
         }
     }
+    /// 实时识别 `result` 事件里的 `text` 是**当前这一句**，不是整段累计文本。
+    ///
+    /// 因此不能像 `update_cell` 那样整体替换：收到 `final` 必须把这一句落到
+    /// `committed` 上，否则下一句的第一个 partial 就会把上一句冲掉，多句录音
+    /// 最终只剩最后一句。语义与 `dictation.rs` 的 `commit_current_segment`
+    /// 和字幕侧的 `document.commit` 一致。
+    fn update_streaming(&self, index: usize, segment: &str, is_final: bool) {
+        if let Ok(mut state) = self.inner.lock() {
+            if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
+                cell.status = "streaming".into();
+                cell.text = format!("{}{segment}", cell.committed);
+                if is_final {
+                    cell.committed = cell.text.clone();
+                }
+            }
+        }
+    }
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
         let snapshot = self.snapshot();
         DomainSnapshot {
@@ -181,8 +201,7 @@ pub(crate) async fn compare_start(
         .map(|(index, _)| CompareCellSnapshot {
             index,
             status: "queued".into(),
-            text: String::new(),
-            error_message: String::new(),
+            ..Default::default()
         })
         .collect::<Vec<_>>();
     if cells.is_empty() {
@@ -679,14 +698,9 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                 return;
             };
             if kind == "result" {
-                let text = payload
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                state
-                    .compare_runtime
-                    .update_cell(index, "streaming", Some(text), None);
+                let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
+                let is_final = payload.get("final").and_then(Value::as_bool) == Some(true);
+                state.compare_runtime.update_streaming(index, text, is_final);
             } else if kind == "ended" {
                 if let Ok(mut compare) = state.compare_runtime.inner.lock() {
                     compare.sessions.remove(&session_id);
@@ -809,8 +823,7 @@ mod tests {
         runtime.reset(vec![CompareCellSnapshot {
             index: 3,
             status: "queued".into(),
-            text: String::new(),
-            error_message: String::new(),
+            ..Default::default()
         }]);
         assert_eq!(runtime.domain_snapshot().state, DomainRunState::Running);
         runtime.update_cell(3, "done", Some("结果".into()), None);
@@ -818,4 +831,27 @@ mod tests {
         assert_eq!(snapshot.cells[0].index, 3);
         assert_eq!(snapshot.cells[0].text, "结果");
     }
+
+    /// 实时流的 `result.text` 只是当前这一句。此前 `handle_event` 无视 `final`
+    /// 直接整体替换单元格文本，于是一段多句录音跑完只剩最后一句。
+    #[test]
+    fn streaming_keeps_every_finalized_sentence() {
+        let runtime = CompareRuntime::default();
+        runtime.reset(vec![CompareCellSnapshot {
+            index: 0,
+            status: "queued".into(),
+            ..Default::default()
+        }]);
+        runtime.update_streaming(0, "第一句", false);
+        runtime.update_streaming(0, "第一句话。", true);
+        runtime.update_streaming(0, "第二句", false);
+        assert_eq!(runtime.snapshot().cells[0].text, "第一句话。第二句");
+        runtime.update_streaming(0, "第二句话。", true);
+        runtime.update_streaming(0, "第三句", false);
+        assert_eq!(
+            runtime.snapshot().cells[0].text,
+            "第一句话。第二句话。第三句"
+        );
+    }
+
 }
