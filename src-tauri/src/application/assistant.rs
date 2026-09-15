@@ -1343,15 +1343,20 @@ async fn process_llm_action(
     parse_assistant_output(action, &raw)
 }
 
+/// 问答的回答本身是自由文本，不走 JSON 输出协议；但部分模型仍会按协议包一层
+/// `{"intent":"answer","text":"…"}`，所以先尝试按协议解一次。
+///
+/// 这里**不能**用「以 ``` 或 { 开头」当判据：代码类问题的回答本来就以代码围栏开头，
+/// 讲 JSON 的回答也会以 `{` 开头。一旦被误判成协议，解析失败就会把已经完整流式生成
+/// 出来的整条回答替换成「返回格式无效」，而且不可恢复——问代码问题几乎必现。
+/// 改成：能按协议解出来就用解出来的，解不出来一律当作原文。
 fn parse_assistant_answer_output(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with("```") {
-        return parse_assistant_output(AssistantAction::Ask, trimmed);
-    }
     if trimmed.is_empty() {
         return Err("大语言模型没有返回结果文本".into());
     }
-    Ok(trimmed.to_string())
+    Ok(parse_assistant_output(AssistantAction::Ask, trimmed)
+        .unwrap_or_else(|_| trimmed.to_string()))
 }
 
 async fn process_ask_action(
@@ -2138,6 +2143,45 @@ mod tests {
             .unwrap(),
             "结果"
         );
+    }
+
+    /// 问答回答走的是自由文本通道。此前用「以 ``` 或 `{` 开头」嗅探 JSON 协议，
+    /// 而代码类问题的回答本来就以代码围栏开头——嗅探命中后协议解析必然失败，
+    /// 已经完整流式生成出来的整条回答会被「返回格式无效」替换掉，不可恢复。
+    #[test]
+    fn answer_output_never_discards_a_plain_text_answer() {
+        let fenced = "```rust
+fn main() {}
+```";
+        assert_eq!(parse_assistant_answer_output(fenced).unwrap(), fenced);
+
+        let braced = "{ 这是一段以花括号开头的普通回答 }";
+        assert_eq!(parse_assistant_answer_output(braced).unwrap(), braced);
+
+        let fenced_json_sample = "```json
+{\"a\":1}
+```";
+        assert_eq!(
+            parse_assistant_answer_output(fenced_json_sample).unwrap(),
+            fenced_json_sample
+        );
+    }
+
+    /// 模型若真按协议包了一层，仍然要拆出 text，不能把整段 JSON 丢给用户。
+    #[test]
+    fn answer_output_still_unwraps_the_protocol_envelope() {
+        assert_eq!(
+            parse_assistant_answer_output(r#"{"intent":"answer","text":"结论"}"#).unwrap(),
+            "结论"
+        );
+        assert_eq!(
+            parse_assistant_answer_output("```json
+{\"intent\":\"answer\",\"text\":\"结论\"}
+```")
+                .unwrap(),
+            "结论"
+        );
+        assert!(parse_assistant_answer_output("   ").is_err());
     }
 
     #[test]
