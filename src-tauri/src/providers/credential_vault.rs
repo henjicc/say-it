@@ -324,10 +324,10 @@ fn write_private_file(path: &Path, bytes: &[u8], create_new: bool) -> Result<(),
     }
     let mut file = options
         .open(path)
-        .map_err(|error| format!("创建本地凭据文件失败：{error}"))?;
+        .map_err(|error| format!("创建临时文件失败：{error}"))?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
-        .map_err(|error| format!("写入本地凭据文件失败：{error}"))?;
+        .map_err(|error| format!("写入文件失败：{error}"))?;
     set_private_file_permissions(path)
 }
 
@@ -336,7 +336,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("收紧本地凭据文件权限失败：{error}"))?;
+            .map_err(|error| format!("收紧文件权限失败：{error}"))?;
     }
     #[cfg(not(unix))]
     let _ = path;
