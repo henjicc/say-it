@@ -145,7 +145,34 @@ fn accelerator(shortcut: &AssistantShortcut) -> Result<Option<String>, String> {
     Ok(Some(parts.join("+")))
 }
 
+static LAST_SHORTCUT_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn shortcut_error_slot() -> &'static Mutex<Option<String>> {
+    LAST_SHORTCUT_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+/// 上一次注册智能助手快捷键的失败原因；注册成功后清空。
+///
+/// `set_shortcuts` 是**全有全无**的（见其内部说明：解析必须先于任何注册完成，否则
+/// 会留下幽灵热键并把助手快捷键设置永久锁死），所以有一条解析失败就意味着三条都没
+/// 生效。启动时这个失败原本只走 `eprintln!`——release 版没有控制台，等于彻底静默，
+/// 而快捷键设置页仍按配置把三条显示成已绑定。把原因留在这里，设置页才能如实标注。
+pub(crate) fn last_shortcut_error() -> Option<String> {
+    shortcut_error_slot().lock().ok().and_then(|slot| slot.clone())
+}
+
 pub(crate) fn set_shortcuts(
+    app: &AppHandle,
+    settings: &AssistantShortcutSettings,
+) -> Result<(), String> {
+    let result = set_shortcuts_inner(app, settings);
+    if let Ok(mut slot) = shortcut_error_slot().lock() {
+        *slot = result.as_ref().err().cloned();
+    }
+    result
+}
+
+fn set_shortcuts_inner(
     app: &AppHandle,
     settings: &AssistantShortcutSettings,
 ) -> Result<(), String> {

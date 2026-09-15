@@ -172,6 +172,13 @@ export function SettingsKeyBindingsPanel() {
                     </div>
                   )}
                 </div>
+                {/* 注册失败时界面必须说出来：否则这里照样显示成已绑定，用户按了没反应
+                    也无从得知（启动时的失败原本只写进 release 版根本没有的控制台）。 */}
+                {item.registrationError && (
+                  <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">
+                    当前未生效：{item.registrationError}
+                  </p>
+                )}
                 {errors[key] && (
                   <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">{errors[key]}</p>
                 )}

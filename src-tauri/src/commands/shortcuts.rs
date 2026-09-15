@@ -43,6 +43,11 @@ pub(crate) struct ShortcutBindingItem {
     pub(crate) meta: bool,
     pub(crate) trigger_mode: ShortcutTriggerMode,
     pub(crate) trigger_mode_editable: bool,
+    /// 这条绑定当前没能真正注册进系统时的原因；正常时为 None。
+    ///
+    /// 界面此前只按配置渲染，注册失败的快捷键照样显示成已绑定，用户按了没反应也
+    /// 无从得知。
+    pub(crate) registration_error: Option<String>,
 }
 
 #[tauri::command]
@@ -517,6 +522,7 @@ fn collect_shortcut_bindings(
                 ShortcutTriggerMode::Toggle
             },
             trigger_mode_editable: true,
+            registration_error: None,
         });
     }
     items.extend(
@@ -538,6 +544,7 @@ fn collect_shortcut_bindings(
                 meta: profile.meta,
                 trigger_mode: profile.trigger_mode,
                 trigger_mode_editable: true,
+                registration_error: None,
             }),
     );
     if !subtitle.key_code.trim().is_empty() {
@@ -553,6 +560,7 @@ fn collect_shortcut_bindings(
             meta: subtitle.meta,
             trigger_mode: ShortcutTriggerMode::Toggle,
             trigger_mode_editable: false,
+            registration_error: None,
         });
     }
     items
@@ -562,6 +570,20 @@ fn collect_all_shortcut_bindings(
     dictation: &DictationSettings,
     subtitle: &SubtitleShortcutSettings,
     assistant: &crate::application::assistant::AssistantShortcutSettings,
+) -> Vec<ShortcutBindingItem> {
+    collect_all_shortcut_bindings_with(
+        dictation,
+        subtitle,
+        assistant,
+        crate::application::assistant::last_shortcut_error().as_deref(),
+    )
+}
+
+fn collect_all_shortcut_bindings_with(
+    dictation: &DictationSettings,
+    subtitle: &SubtitleShortcutSettings,
+    assistant: &crate::application::assistant::AssistantShortcutSettings,
+    assistant_error: Option<&str>,
 ) -> Vec<ShortcutBindingItem> {
     let mut items = collect_shortcut_bindings(dictation, subtitle);
     for (action, name, label) in [
@@ -582,11 +604,12 @@ fn collect_all_shortcut_bindings(
         ),
     ] {
         let shortcut = assistant.get(action);
+        let enabled = !shortcut.key_code.trim().is_empty();
         items.push(ShortcutBindingItem {
             target: ShortcutTarget::Assistant { action },
             name: name.into(),
             action_label: label.into(),
-            enabled: !shortcut.key_code.trim().is_empty(),
+            enabled,
             key_code: shortcut.key_code.clone(),
             ctrl: shortcut.ctrl,
             shift: shortcut.shift,
@@ -594,6 +617,10 @@ fn collect_all_shortcut_bindings(
             meta: shortcut.meta,
             trigger_mode: shortcut.trigger_mode,
             trigger_mode_editable: true,
+            // 注册是全有全无的，失败时三条助手快捷键都没生效。
+            registration_error: enabled
+                .then(|| assistant_error.map(str::to_owned))
+                .flatten(),
         });
     }
     items
@@ -988,6 +1015,62 @@ mod tests {
         )
         .unwrap_err()
         .contains("语音问答"));
+    }
+
+    /// 助手快捷键注册是全有全无的，一条解析失败三条都不生效。启动时这个失败原本
+    /// 只写进 release 版根本没有的控制台，而快捷键设置页照旧按配置把三条显示成
+    /// 已绑定——用户按了没反应，也没有任何线索。目录必须把失败原因带出去。
+    #[test]
+    fn assistant_catalog_reports_a_failed_registration() {
+        let assistant = crate::application::assistant::AssistantShortcutSettings {
+            translate_speech: crate::application::assistant::AssistantShortcut {
+                key_code: "F10".into(),
+                ctrl: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dictation = DictationSettings {
+            key_code: "F9".into(),
+            ..Default::default()
+        };
+
+        let items = collect_all_shortcut_bindings_with(
+            &dictation,
+            &SubtitleShortcutSettings::default(),
+            &assistant,
+            Some("注册智能助手快捷键 Control+F10 失败：已被占用"),
+        );
+        let assistant_item = items
+            .iter()
+            .find(|item| matches!(item.target, ShortcutTarget::Assistant { .. }) && item.enabled)
+            .expect("已绑定的助手快捷键必须出现在目录里");
+        assert!(assistant_item
+            .registration_error
+            .as_deref()
+            .is_some_and(|error| error.contains("已被占用")));
+
+        // 听写/字幕不受助手注册失败影响。
+        let dictation_item = items
+            .iter()
+            .find(|item| matches!(item.target, ShortcutTarget::DictationMain))
+            .expect("听写主快捷键必须出现在目录里");
+        assert_eq!(dictation_item.registration_error, None);
+
+        // 未绑定的助手项不该报错。
+        assert!(items
+            .iter()
+            .filter(|item| matches!(item.target, ShortcutTarget::Assistant { .. }) && !item.enabled)
+            .all(|item| item.registration_error.is_none()));
+
+        // 注册成功时干干净净。
+        let clean = collect_all_shortcut_bindings_with(
+            &dictation,
+            &SubtitleShortcutSettings::default(),
+            &assistant,
+            None,
+        );
+        assert!(clean.iter().all(|item| item.registration_error.is_none()));
     }
 
     #[test]
