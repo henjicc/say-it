@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { CheckField, Field } from "@/components/ui/Field";
@@ -23,16 +23,13 @@ import {
   useFilePick,
 } from "@/features/transcription/filePicker";
 import { editablePlainText, plainText } from "@/features/transcription/subtitles";
-import {
-  FILE_ASR_MODEL_OPTIONS,
-  isSupportedFileModel,
-} from "@/features/asr/modelOptions";
+import { useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
+import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
-  DEFAULT_TRANSCRIPTION_PARAMS,
   useTranscriptionStore,
   type TranscriptionParams,
   type TranscriptionTab,
@@ -49,25 +46,6 @@ const LANGUAGE_OPTIONS = [
   { value: "en", label: "英文" },
   { value: "ja", label: "日语" },
 ];
-
-function normalizeStoredParams(value: unknown): TranscriptionParams {
-  const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const speakerCount = Number(source.speakerCount);
-  return {
-    ...DEFAULT_TRANSCRIPTION_PARAMS,
-    model:
-      typeof source.model === "string" && isSupportedFileModel(source.model)
-        ? source.model
-        : DEFAULT_TRANSCRIPTION_PARAMS.model,
-    languageHints: Array.isArray(source.languageHints) ? source.languageHints.filter((item): item is string => typeof item === "string") : [],
-    diarizationEnabled: !!source.diarizationEnabled,
-    speakerCount: Number.isFinite(speakerCount) && speakerCount > 0 ? speakerCount : null,
-  };
-}
-
-function sameParams(a: TranscriptionParams, b: TranscriptionParams) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
 
 export function TranscriptionView() {
   useModelCatalogRevision();
@@ -92,9 +70,6 @@ export function TranscriptionView() {
   const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
-  const hydratedRef = useRef(false);
-  const lastSavedParamsRef = useRef("");
-
   const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
   const hasApiKey = !!asrProvider?.status?.hasApiKey;
   const running = stage === "uploading" || stage === "recognizing";
@@ -131,29 +106,26 @@ export function TranscriptionView() {
     loadProviders();
   }, [loadProviders]);
 
-  useEffect(() => {
-    const stored = normalizeStoredParams(asrProvider?.config?.transcription);
-    const key = JSON.stringify(stored);
-    lastSavedParamsRef.current = key;
-    hydratedRef.current = true;
-    if (!sameParams(params, stored)) replaceParams(stored);
-  }, [asrProvider?.config?.transcription]);
+  const saveParams = useCallback(
+    async (next: TranscriptionParams) => {
+      if (!asrProvider) return;
+      await updateProviderConfig(asrProvider.id, { transcription: next });
+    },
+    [asrProvider, updateProviderConfig],
+  );
+  const reportSave = useCallback(
+    (saveMessage: string) => setRuntime({ saveMessage }),
+    [setRuntime],
+  );
 
-  useEffect(() => {
-    if (!hydratedRef.current || !asrProvider) return;
-    const key = JSON.stringify(params);
-    if (key === lastSavedParamsRef.current) return;
-    const timer = window.setTimeout(async () => {
-      try {
-        await updateProviderConfig(asrProvider.id, { transcription: params });
-        lastSavedParamsRef.current = key;
-        setRuntime({ saveMessage: "识别参数已保存。" });
-      } catch (error) {
-        setRuntime({ saveMessage: `识别参数保存失败：${String(error)}` });
-      }
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [params, updateProviderConfig, setRuntime, asrProvider]);
+  useTranscriptionParamsSync({
+    stored: asrProvider?.config?.transcription,
+    params,
+    enabled: !!asrProvider,
+    replaceParams,
+    save: saveParams,
+    onMessage: reportSave,
+  });
 
   const statusTone: FileCardStatusTone =
     stage === "completed" ? "ok" : stage === "error" ? "err" : running ? "running" : "idle";
