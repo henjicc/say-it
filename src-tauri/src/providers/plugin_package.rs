@@ -72,14 +72,14 @@ pub fn load_trusted_keys(app: &tauri::AppHandle) -> Result<HashMap<String, Strin
 
 fn save_trusted_keys(app: &tauri::AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
     let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
-    let temp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(&TrustedKeyFile { keys: keys.clone() })
         .map_err(|error| error.to_string())?;
-    std::fs::write(&temp, bytes).map_err(|error| error.to_string())?;
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|error| error.to_string())?;
-    }
-    std::fs::rename(&temp, &path).map_err(|error| error.to_string())
+    // 原来是「先删除旧文件再改名」：两步之间只要断电或进程被杀，信任库就整份消失，
+    // 所有已签名插件同时失效，而且没有备份可恢复。复用 credential_vault 里已有的
+    // 原子替换（Windows 走 MoveFileExW REPLACE_EXISTING|WRITE_THROUGH），旧文件在
+    // 新文件完整落盘前始终有效。
+    crate::providers::credential_vault::write_private_file_atomically(&path, &bytes)
+        .map_err(|error| format!("保存插件信任库失败：{error}"))
 }
 
 pub fn verify_installation(
@@ -893,6 +893,55 @@ mod tests {
         writer.finish().unwrap();
         let extracted = root.join("extracted");
         assert!(extract_archive(&archive_path, &extracted, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 信任库原来是「先 `remove_file` 再 `rename`」：两步之间断电或进程被杀就整份
+    /// 消失，所有已签名插件同时失效，而且没有 `.bak` 可恢复。原子替换必须保证
+    /// 替换失败时旧文件原样还在，且不留临时残骸。
+    #[test]
+    fn trusted_key_store_survives_a_failed_replace() {
+        use crate::providers::credential_vault::{fail_next_replace, write_private_file_atomically};
+
+        let root = std::env::temp_dir().join(format!("sayit-trust-atomic-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(TRUST_FILE);
+        let original = serde_json::to_vec_pretty(&TrustedKeyFile {
+            keys: HashMap::from([("key-1".to_string(), "pubkey".to_string())]),
+        })
+        .unwrap();
+        write_private_file_atomically(&path, &original).unwrap();
+
+        fail_next_replace(&path);
+        write_private_file_atomically(&path, br#"{"keys":{}}"#)
+            .expect_err("注入的替换失败必须向上报错");
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "替换失败后旧信任库必须原封不动"
+        );
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "替换失败后不应留下临时文件"
+        );
+
+        // 确认 save_trusted_keys 走的就是这条原子路径，而不是又退回先删后改名。
+        let source = include_str!("plugin_package.rs");
+        let body = &source[source
+            .find("fn save_trusted_keys")
+            .expect("save_trusted_keys 必须仍然存在")..];
+        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
+        assert!(
+            body.contains("write_private_file_atomically"),
+            "信任库必须用原子替换写入"
+        );
+        assert!(
+            !body.contains("remove_file("),
+            "信任库不得先删除旧文件再改名"
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
