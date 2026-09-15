@@ -1489,7 +1489,7 @@ pub(crate) async fn continue_assistant_answer(
         Ok(_) => Err("大语言模型请求已取消".into()),
         Err(error) if cancellation.is_cancelled() => Err(error),
         Err(error) => {
-            publish_answer(&app, &request, String::new(), Some(error.clone()), false);
+            publish_answer_failure(&app, &request, error.clone());
             Err(error)
         }
     }
@@ -1613,6 +1613,24 @@ fn selection_bounds_match(
         // 不能因为可选坐标偶发缺失而让所有选区编辑失效。
         _ => true,
     }
+}
+
+/// 生成失败时发布错误，但**保留已经生成出来的正文**。
+///
+/// 追问 / 重新生成失败原本用空串覆盖 `answer.text`，而回答窗是「有 error 就只渲染
+/// error」，于是一次网络抖动就会把用户已经读了一半的流式回答整段清光，且没有任何
+/// 恢复入口。已累积的正文原样带上，错误作为附加提示显示在正文下方。
+///
+/// `can_insert` 保持 false：中断的回答是不完整的，可以复制但不该直接插进用户文档。
+fn publish_answer_failure(app: &AppHandle, request: &AssistantRequest, error: String) {
+    let kept = app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .answer
+        .lock()
+        .map(|answer| (answer.text.clone(), answer.reasoning.clone()))
+        .unwrap_or_default();
+    publish_answer_with_reasoning(app, request, kept.0, kept.1, Some(error), false);
 }
 
 pub(crate) fn publish_answer(
@@ -1924,13 +1942,7 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
             Ok(_) => Err("大语言模型请求已取消".into()),
             Err(error) if cancellation.is_cancelled() => Err(error),
             Err(error) => {
-                publish_answer(
-                    &app,
-                    &context.request,
-                    String::new(),
-                    Some(error.clone()),
-                    false,
-                );
+                publish_answer_failure(&app, &context.request, error.clone());
                 Err(error)
             }
         };
@@ -1948,13 +1960,7 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
             Ok(())
         }
         Err(error) => {
-            publish_answer(
-                &app,
-                &context.request,
-                String::new(),
-                Some(error.clone()),
-                false,
-            );
+            publish_answer_failure(&app, &context.request, error.clone());
             Err(error)
         }
     }
