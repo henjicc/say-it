@@ -11,6 +11,15 @@ export interface SecretInputProps
   draftValue: string;
   hasStoredValue: boolean;
   onDraftChange: (value: string) => void;
+  /**
+   * 可选：按需读取已保存的明文，用于让用户核对当前配置。
+   *
+   * 不提供时（多数场景）已保存的值不可见，只能覆写。提供后，草稿为空时点「显示」
+   * 会调用它，返回的明文只用于当次展示，不会进入 `onDraftChange` 或保存请求，
+   * 并在失焦、再次隐藏或开始输入时立即清除。读取失败请在回调内部自行提示并返回
+   * 空串——本组件只负责不展示。
+   */
+  onRevealStored?: () => Promise<string>;
 }
 
 /**
@@ -20,6 +29,7 @@ export function SecretInput({
   draftValue,
   hasStoredValue,
   onDraftChange,
+  onRevealStored,
   className,
   placeholder,
   disabled,
@@ -30,6 +40,8 @@ export function SecretInput({
   const inputRef = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState(false);
   const [visible, setVisible] = useState(false);
+  // 已保存的明文只在用户主动点「显示」之后短暂存在于此。
+  const [revealedStored, setRevealedStored] = useState("");
 
   useEffect(() => {
     if (draftValue || !hasStoredValue) return;
@@ -37,10 +49,12 @@ export function SecretInput({
   }, [draftValue, hasStoredValue]);
 
   const showingStoredMask = hasStoredValue && !editing && !visible && !draftValue;
-  const canToggle = Boolean(draftValue);
+  const canToggle = Boolean(draftValue) || Boolean(onRevealStored && hasStoredValue);
+  const shownValue = !draftValue && visible ? revealedStored : draftValue;
 
   const hideSecret = () => {
     setVisible(false);
+    setRevealedStored("");
     setEditing(inputRef.current === document.activeElement);
   };
 
@@ -49,7 +63,17 @@ export function SecretInput({
       hideSecret();
       return;
     }
-    if (draftValue) setVisible(true);
+    if (draftValue) {
+      setVisible(true);
+      return;
+    }
+    if (!onRevealStored || !hasStoredValue) return;
+    void onRevealStored().then((secret) => {
+      if (!secret) return;
+      setRevealedStored(secret);
+      setEditing(false);
+      setVisible(true);
+    });
   };
 
   return (
@@ -58,7 +82,7 @@ export function SecretInput({
         {...props}
         ref={inputRef}
         type={visible ? "text" : "password"}
-        value={draftValue}
+        value={shownValue}
         placeholder={showingStoredMask ? STORED_SECRET_MASK : placeholder}
         disabled={disabled}
         onFocus={(event) => {
@@ -68,10 +92,12 @@ export function SecretInput({
         onBlur={(event) => {
           setEditing(false);
           setVisible(false);
+          setRevealedStored("");
           onBlur?.(event);
         }}
         onChange={(event) => {
           setEditing(true);
+          setRevealedStored("");
           onDraftChange(event.target.value);
         }}
         className={cn(

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Copy, Eye, EyeOff } from "lucide-react";
+import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { Input, Select } from "@/components/ui/Input";
+import { SecretInput } from "@/components/ui/SecretInput";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
@@ -29,17 +30,13 @@ interface ObsConnectionStatus {
 }
 
 const defaultStatus: ObsOverlayStatus = { ready: false, connected: false, url: "", installed: false };
-const PASSWORD_MASK = "•".repeat(16);
 
 export function ObsOverlayPanel() {
   const [host, setHost] = useState("127.0.0.1");
   const [port, setPort] = useState("4455");
   const [password, setPassword] = useState("");
-  const [savedPassword, setSavedPassword] = useState("");
   const [hasSavedPassword, setHasSavedPassword] = useState(false);
-  const [passwordVisible, setPasswordVisible] = useState(false);
   const [passwordDirty, setPasswordDirty] = useState(false);
-  const [passwordEditing, setPasswordEditing] = useState(false);
   const [overlay, setOverlay] = useState<ObsOverlayStatus>(defaultStatus);
   const [connection, setConnection] = useState<ObsConnectionStatus | null>(null);
   const [sceneName, setSceneName] = useState("");
@@ -54,23 +51,10 @@ export function ObsOverlayPanel() {
     ...(passwordDirty ? { password } : {}),
   });
 
-  const passwordInputValue = passwordDirty || passwordEditing
-    ? password
-    : hasSavedPassword
-      ? passwordVisible
-        ? savedPassword
-        : PASSWORD_MASK
-      : "";
-
   const commitSavedPassword = () => {
-    if (passwordDirty) {
-      setSavedPassword(password);
-      setHasSavedPassword(!!password);
-    }
+    if (passwordDirty) setHasSavedPassword(!!password);
     setPassword("");
     setPasswordDirty(false);
-    setPasswordEditing(false);
-    setPasswordVisible(false);
   };
 
   const refreshOverlay = async () => {
@@ -90,23 +74,14 @@ export function ObsOverlayPanel() {
       .catch((reason) => setError(`读取 OBS 连接设置失败：${String(reason)}`));
   }, []);
 
-  const togglePasswordVisibility = async () => {
-    if (passwordDirty) {
-      setPasswordVisible((current) => !current);
-      return;
+  // 明文只在用户点「显示」时按需取一次，不在组件里缓存。
+  const revealSavedPassword = async () => {
+    try {
+      return await cmd<string>(CMD.getObsPassword);
+    } catch (reason) {
+      setError(`读取 OBS 密码失败：${String(reason)}`);
+      return "";
     }
-    if (!passwordVisible && hasSavedPassword && !savedPassword) {
-      try {
-        setSavedPassword(await cmd<string>(CMD.getObsPassword));
-        setPasswordEditing(false);
-        setPasswordVisible(true);
-      } catch (reason) {
-        setError(`读取 OBS 密码失败：${String(reason)}`);
-      }
-      return;
-    }
-    setPasswordEditing(false);
-    setPasswordVisible((current) => !current);
   };
 
   const connect = async () => {
@@ -227,38 +202,17 @@ export function ObsOverlayPanel() {
             <Input value={port} inputMode="numeric" onChange={(event) => setPort(event.target.value)} placeholder="4455" disabled={busy} />
           </Field>
           <Field layout="row" label="密码">
-            <div className="relative">
-              <Input
-                type={passwordVisible ? "text" : "password"}
-                value={passwordInputValue}
-                onFocus={() => {
-                  if (hasSavedPassword && !passwordVisible && !passwordDirty) {
-                    setPassword("");
-                    setPasswordEditing(true);
-                  }
-                }}
-                onBlur={() => {
-                  if (!passwordDirty) setPasswordEditing(false);
-                }}
-                onChange={(event) => {
-                  setPassword(event.target.value);
-                  setPasswordDirty(true);
-                  setPasswordEditing(true);
-                }}
-                placeholder={hasSavedPassword ? "输入新密码可覆盖当前配置" : "未启用认证可留空"}
-                className="pr-11"
-                disabled={busy}
-              />
-              <InputAffixButton
-                label={passwordVisible ? "隐藏密码" : "显示密码"}
-                pressed={passwordVisible}
-                keepFocus
-                onClick={togglePasswordVisibility}
-                disabled={busy || (!hasSavedPassword && !passwordDirty)}
-              >
-                {passwordVisible ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
-              </InputAffixButton>
-            </div>
+            <SecretInput
+              draftValue={password}
+              hasStoredValue={hasSavedPassword}
+              onDraftChange={(value) => {
+                setPassword(value);
+                setPasswordDirty(true);
+              }}
+              onRevealStored={revealSavedPassword}
+              placeholder={hasSavedPassword ? "输入新密码可覆盖当前配置" : "未启用认证可留空"}
+              disabled={busy}
+            />
           </Field>
           <Field layout="row" label="安装场景">
             <Select value={sceneName} onChange={(event) => setSceneName(event.target.value)} disabled={busy || !connection?.browserSourceAvailable}>
