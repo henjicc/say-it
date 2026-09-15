@@ -3511,6 +3511,40 @@ fn regex_escape_find(input: &str) -> String {
         if last { "\\b" } else { "" }
     )
 }
+/// 内置「合并连续标点」规则的判定依据，与前端共用 `shared/builtin-punctuation-rule.json`。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinPunctuationRule {
+    id: String,
+    flags: String,
+    replacement: String,
+    patterns: Vec<String>,
+}
+
+static BUILTIN_PUNCTUATION_RULE: std::sync::LazyLock<BuiltinPunctuationRule> =
+    std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!(
+            "../../../shared/builtin-punctuation-rule.json"
+        ))
+        .expect("shared/builtin-punctuation-rule.json 解析失败")
+    });
+
+/// 这条规则是否仍是**未被改写过的**内置标点合并规则。
+///
+/// 只认 `id` 是不够的：内置规则可以被用户编辑，改完之后它就是一条普通的正则替换规则，
+/// 必须按用户自己写的 `replacement` 执行。此前 Rust 侧只比 `id == "dedupe-punct"`，
+/// 而前端按 id + mode + flags + replacement + pattern 整体快照判定——用户改写内置规则后，
+/// 试运行预览用的是自己的替换结果，真实听写却仍走内置的标点归一化，改动等于永久无效。
+/// 判定依据两端共用 `shared/builtin-punctuation-rule.json`，避免再次分叉。
+fn is_builtin_punctuation_merge_rule(rule: &LocalRule) -> bool {
+    let builtin = &*BUILTIN_PUNCTUATION_RULE;
+    rule.id == builtin.id
+        && rule.mode != "find"
+        && rule.flags == builtin.flags
+        && rule.replacement == builtin.replacement
+        && builtin.patterns.iter().any(|pattern| *pattern == rule.pattern)
+}
+
 fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<String, String> {
     if !enabled {
         return Ok(text.into());
@@ -3531,7 +3565,7 @@ fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<Stri
             let caps = found.map_err(|e| format!("规则 {} 执行失败：{e}", rule.id))?;
             let m = caps.get(0).unwrap();
             next.push_str(&source[last..m.start()]);
-            if rule.id == "dedupe-punct" {
+            if is_builtin_punctuation_merge_rule(rule) {
                 next.push_str(&normalize_punctuation(m.as_str()));
             } else {
                 next.push_str(&expand_replacement(&rule.replacement, &caps, &source));
@@ -3909,6 +3943,65 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(apply_rules("中AA", &p, true).unwrap(), "中A");
+    }
+
+    fn punct_rule(pattern: &str, replacement: &str) -> DictationPrefs {
+        DictationPrefs {
+            local_rules_enabled: true,
+            local_rules: vec![LocalRule {
+                id: "dedupe-punct".into(),
+                enabled: true,
+                mode: "regex".into(),
+                find: String::new(),
+                pattern: pattern.into(),
+                flags: "g".into(),
+                replacement: replacement.into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 内置标点规则是可以被用户编辑的；改完它就是一条普通替换规则。
+    ///
+    /// Rust 此前只比 `id == "dedupe-punct"`，于是不论用户把 pattern / replacement 改成
+    /// 什么，真实听写都仍走内置的标点归一化；而前端试运行按整体快照判定，用的是用户
+    /// 自己的替换结果。两边给出不同答案，用户的改动等于永久无效且毫无提示。
+    #[test]
+    fn edited_builtin_punctuation_rule_uses_the_user_replacement() {
+        let untouched = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[1], "$1");
+        assert!(is_builtin_punctuation_merge_rule(&untouched.local_rules[0]));
+        // 未改动：走内置归一化，「，。」合并成「。」而不是保留第一个「，」。
+        assert_eq!(apply_rules("你好，。世界", &untouched, true).unwrap(), "你好。世界");
+
+        let edited = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[1], "");
+        assert!(!is_builtin_punctuation_merge_rule(&edited.local_rules[0]));
+        // 用户把替换改成「删除」，就必须真的删掉。
+        assert_eq!(apply_rules("你好，。世界", &edited, true).unwrap(), "你好世界");
+
+        let repatterned = punct_rule("，+", "、");
+        assert!(!is_builtin_punctuation_merge_rule(&repatterned.local_rules[0]));
+        assert_eq!(apply_rules("你好，，世界", &repatterned, true).unwrap(), "你好、世界");
+    }
+
+    /// 旧版内置 pattern 也必须被认成内置，否则老用户升级后行为会突变。
+    #[test]
+    fn legacy_builtin_punctuation_pattern_is_still_recognized() {
+        let legacy = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[0], "$1");
+        assert!(is_builtin_punctuation_merge_rule(&legacy.local_rules[0]));
+    }
+
+    /// 判定依据是两端共用的那份 JSON，改一边就会在这里暴露。
+    #[test]
+    fn builtin_punctuation_definition_matches_the_frontend_engine() {
+        let engine = include_str!("../../../ui/src/features/dictation/localRulesEngine.ts");
+        assert!(
+            engine.contains("builtin-punctuation-rule.json"),
+            "前端必须消费 shared/builtin-punctuation-rule.json，而不是另写一份常量"
+        );
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.id, "dedupe-punct");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.flags, "g");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.replacement, "$1");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.patterns.len(), 2);
     }
 
     /// 回归：刚建好的 ASR 流是否仍属于当前会话，必须同时看 epoch **和**阶段。

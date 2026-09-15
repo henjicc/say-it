@@ -1,0 +1,10 @@
+{
+  "_comment": "内置「合并连续标点」规则的判定依据。Rust (application/dictation.rs) 与前端 (features/dictation/localRulesEngine.ts) 必须用同一份，否则用户改写过这条内置规则后，试运行预览与实际听写会得出不同结果。",
+  "id": "dedupe-punct",
+  "flags": "g",
+  "replacement": "$1",
+  "patterns": [
+    "([，。！？、])\\1+",
+    "(?:…{2}|[，。！？、；：．,.!?;:])(?:[ \\t]*(?:…{2}|[，。！？、；：．,.!?;:]))+"
+  ]
+}
