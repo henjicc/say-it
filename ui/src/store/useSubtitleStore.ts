@@ -147,22 +147,36 @@ function migrateLegacySource(source: string): string {
   return source;
 }
 
+/**
+ * 把任意输入夹到 [min, max]，只有**非有限数**才回退到 fallback。
+ *
+ * 原先统一写成 `Number(x) || fallback`，而 `0 || fallback` 取的是 fallback——
+ * 于是下限为 0 或负数的档位永远设不上去：背景不透明度拖到 0 会弹回 72、
+ * 圆角拖到 0 会弹回 18、位置偏移设到 0 会弹回 6，而且错误值还会被持久化。
+ * 这三档恰好是 OBS / 录屏最常用的设置。null / undefined / 空串按缺省处理，
+ * 因为 `Number(null) === 0` 会把「没存过」误读成用户选了 0。
+ */
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = value === null || value === undefined || value === "" ? Number.NaN : Number(value);
+  return Math.min(max, Math.max(min, Number.isFinite(parsed) ? parsed : fallback));
+}
+
 function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
   return {
     ...prefs,
     asrModel: isSupportedRealtimeModel(prefs.asrModel) ? prefs.asrModel : DEFAULT_REALTIME_ASR_MODEL,
     source: migrateLegacySource(prefs.source),
-    fontSizePercent: Math.min(6, Math.max(1.5, Number(prefs.fontSizePercent) || 2.6)),
-    lineCount: Math.min(4, Math.max(1, Math.round(Number(prefs.lineCount) || 1))),
-    widthPercent: Math.min(70, Math.max(20, Number(prefs.widthPercent) || 46)),
-    offsetYPercent: Math.min(20, Math.max(-17, Number(prefs.offsetYPercent) || 6)),
-    backgroundOpacity: Math.min(100, Math.max(0, Number(prefs.backgroundOpacity) || 72)),
-    rounded: Math.min(36, Math.max(0, Number(prefs.rounded) || 18)),
+    fontSizePercent: clampNumber(prefs.fontSizePercent, 1.5, 6, 2.6),
+    lineCount: Math.round(clampNumber(prefs.lineCount, 1, 4, 1)),
+    widthPercent: clampNumber(prefs.widthPercent, 20, 70, 46),
+    offsetYPercent: clampNumber(prefs.offsetYPercent, -17, 20, 6),
+    backgroundOpacity: clampNumber(prefs.backgroundOpacity, 0, 100, 72),
+    rounded: clampNumber(prefs.rounded, 0, 36, 18),
     motionEnabled: prefs.motionEnabled !== false,
-    motionDurationMs: Math.min(400, Math.max(60, Number(prefs.motionDurationMs) || 120)),
+    motionDurationMs: clampNumber(prefs.motionDurationMs, 60, 400, 120),
     motionEasing: clampEasing(prefs.motionEasing, "ease-out"),
     fadeEnabled: prefs.fadeEnabled !== false,
-    fadeDurationMs: Math.min(500, Math.max(60, Number(prefs.fadeDurationMs) || 180)),
+    fadeDurationMs: clampNumber(prefs.fadeDurationMs, 60, 500, 180),
     fadeEasing: clampEasing(prefs.fadeEasing, "ease-out"),
     translationModel: normalizeTranslationModel(prefs.translationModel),
     translationSourceLang: prefs.translationSourceLang || DEFAULT_TRANSLATION_SOURCE_LANG,
