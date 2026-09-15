@@ -877,7 +877,8 @@ mod tests {
     /// 校验——真正跑一遍需要物理麦克风。
     #[test]
     fn record_mode_takes_the_sample_rate_from_the_microphone() {
-        let source = include_str!("compare.rs");
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("compare.rs").replace("\r\n", "\n");
         let body = &source[..source
             .find("#[cfg(test)]")
             .expect("compare.rs 必须有测试模块标记")];
@@ -885,8 +886,7 @@ mod tests {
             .find("let realtime_sample_rate")
             .expect("compare_start 必须仍然决定 realtime_sample_rate");
         let binding = &body[start..];
-        let binding = &binding[..binding.find("
-    };").expect("绑定表达式未闭合")];
+        let binding = &binding[..binding.find("\n    };").expect("绑定表达式未闭合")];
         assert!(
             binding.contains("start_recording("),
             "录音模式必须先启动麦克风、用它返回的真实采样率去开实时流"

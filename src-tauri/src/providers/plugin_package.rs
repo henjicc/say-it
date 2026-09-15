@@ -957,7 +957,8 @@ mod tests {
         );
 
         // 确认 save_trusted_keys 走的就是这条原子路径，而不是又退回先删后改名。
-        let source = include_str!("plugin_package.rs");
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("plugin_package.rs").replace("\r\n", "\n");
         let body = &source[source
             .find("fn save_trusted_keys")
             .expect("save_trusted_keys 必须仍然存在")..];
