@@ -288,6 +288,34 @@ fn optimized_drops_unspoken_line_with_nothing_to_fill() {
 }
 
 #[test]
+fn optimized_drops_short_unspoken_line_without_panicking() {
+    // 回归：中间一行很短（token 数 < MIN_BAD_RUN_TO_REPLACE = 4）且音频里完全没说。
+    //
+    // 这样的坏段会被 reclassify_short_bad_runs 翻回「好」，随后整段 good run 覆盖
+    // 前后两行、含大量命中，也就不会被 reclassify_hitless_good_runs 翻回坏。但
+    // build_optimized_segments 还会按行区间再切一刀，切出的中间那个子段里一个命中
+    // 都没有 —— build_keep_segment 曾在这里 expect 直接 panic。align_transcript 是
+    // 同步命令，panic 后该 invoke 永不返回，界面卡在处理中。
+    //
+    // 现在应当安静地丢掉该行（与长未说出行的既有行为一致），而不是 panic。
+    let mut words = char_words("第一句话说完了", 0, 100);
+    words.extend(char_words("第三句话开始了", 2000, 100));
+    let out = align_script(&words, &lines(&["第一句话说完了", "嗯", "第三句话开始了"])).unwrap();
+
+    let indexes: Vec<usize> = out
+        .optimized_segments
+        .iter()
+        .filter(|segment| matches!(segment, OptimizedSegment::Script { .. }))
+        .map(|segment| as_script(segment).0)
+        .collect();
+    assert!(
+        !indexes.contains(&1),
+        "音频里没说出来的短行不应产出保留片段，实际：{indexes:?}"
+    );
+    assert!(indexes.contains(&0) && indexes.contains(&2), "前后两行仍应保留");
+}
+
+#[test]
 fn optimized_splits_line_on_long_internal_mismatch() {
     // 一行内部有一段足够长（>=4 token）的内容音频里完全没有，其余部分正常匹配：
     // 应该拆成“保留头部”+“保留尾部”，中间因音频无对应内容而彻底消失（无可填充）

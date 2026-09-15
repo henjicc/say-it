@@ -120,7 +120,7 @@ pub(super) fn build_optimized_segments(
             while end < total && !bad[end] && end < line_range.1 {
                 end += 1;
             }
-            let (segment, begin_ms) = build_keep_segment(
+            if let Some((segment, begin_ms)) = build_keep_segment(
                 links,
                 token_spans,
                 script_lines,
@@ -130,8 +130,9 @@ pub(super) fn build_optimized_segments(
                 end,
                 asr_tokens,
                 &mut claimed,
-            );
-            tagged.push((begin_ms, segment));
+            ) {
+                tagged.push((begin_ms, segment));
+            }
             idx = end;
         }
     }
@@ -211,7 +212,7 @@ fn build_keep_segment(
     end: usize,
     asr_tokens: &[AsrToken],
     claimed: &mut [bool],
-) -> (OptimizedSegment, u64) {
+) -> Option<(OptimizedSegment, u64)> {
     let (line_start, line_end) = line_range;
     let text_start = if start == line_start {
         0
@@ -241,9 +242,17 @@ fn build_keep_segment(
             match_count += 1;
         }
     }
-    let begin_ms = begin_ms.expect("kept 段经过 reclassify_hitless_good_runs 保证至少一个命中");
-    let end_ms = end_ms.expect("kept 段经过 reclassify_hitless_good_runs 保证至少一个命中");
-    (
+    // 这里不能 expect。`reclassify_hitless_good_runs` 的「至少一个命中」不变量是在
+    // **按 bad 数组切出的 good 段**这个粒度上成立的，而调用方随后还按行区间又切了一刀
+    // （见 build_optimized_segments 里的 `end < line_range.1`）。命中完全可能落在同一个
+    // good 段的**别的行**上，于是某个按行子段内 links 全是 None —— 之前这里直接 panic，
+    // 而 align_transcript 是同步命令，panic 后该 invoke 永不返回，界面卡在处理中。
+    //
+    // 没有命中就没有可用时间轴：这段文稿内容在音频里根本没被说出来，跳过即可，
+    // 与「长未说出行被判成坏段后丢弃」的结果一致；对应音频若存在，由
+    // collect_orphan_segments 兜底。此分支不会污染 claimed —— 它只在命中时写入。
+    let (begin_ms, end_ms) = begin_ms.zip(end_ms)?;
+    Some((
         OptimizedSegment::Script {
             line_index,
             text,
@@ -252,7 +261,7 @@ fn build_keep_segment(
             match_ratio: match_count as f32 / (end - start) as f32,
         },
         begin_ms,
-    )
+    ))
 }
 
 /// 扫描未被任何保留片段认领的 ASR token（按时间连续），时长达标的合并为一段
