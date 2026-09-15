@@ -425,6 +425,22 @@ fn extract_archive(
     destination: &Path,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
+    extract_archive_capped(
+        archive_path,
+        destination,
+        app,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    )
+}
+
+/// 解包实现。上限做成参数而不是直接读常量，测试才能用一个小额度真实跑到写入上限
+/// 那条分支上——4 GB 的用例没法在测试里跑。
+fn extract_archive_capped(
+    archive_path: &Path,
+    destination: &Path,
+    app: Option<&tauri::AppHandle>,
+    max_uncompressed_bytes: u64,
+) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("插件包不是有效 ZIP：{error}"))?;
@@ -437,7 +453,7 @@ fn extract_archive(
             .checked_add(entry.size())
             .ok_or_else(|| "插件包解压大小溢出".to_string())
     })?;
-    if declared_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+    if declared_size > max_uncompressed_bytes {
         return Err("说吧包解压后超过 4 GB 上限".into());
     }
     std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
@@ -473,16 +489,29 @@ fn extract_archive(
         output
             .write_all(&prefix[..prefix_len])
             .map_err(|error| error.to_string())?;
+        // 上面的 4 GB 预检查的是**中央目录里自报的** entry.size()，构造一个 zip
+        // 炸弹只要把它填小即可（deflate 压缩比可达 1032:1）。所以真正的写入循环必须
+        // 自己数字节：既比对单条目的声明大小，也累计校验整包上限，超出立即中止。
+        // 这段解包发生在「预览」阶段、用户点安装之前，而且无法中断。
+        let declared_entry_size = entry.size();
+        let mut entry_bytes = prefix_len as u64;
         let mut buffer = vec![0_u8; 1024 * 1024];
         loop {
             let count = entry.read(&mut buffer).map_err(|error| error.to_string())?;
             if count == 0 {
                 break;
             }
+            entry_bytes = entry_bytes.saturating_add(count as u64);
+            extracted_bytes = extracted_bytes.saturating_add(count as u64);
+            if entry_bytes > declared_entry_size {
+                return Err(format!("插件包条目 {key} 的实际大小与清单声明不符"));
+            }
+            if extracted_bytes > max_uncompressed_bytes {
+                return Err("说吧包解压后超过 4 GB 上限".into());
+            }
             output
                 .write_all(&buffer[..count])
                 .map_err(|error| error.to_string())?;
-            extracted_bytes = extracted_bytes.saturating_add(count as u64);
             if let Some(app) = app {
                 let _ = app.emit(
                     "plugin-install-progress",
@@ -940,6 +969,65 @@ mod tests {
         assert!(
             !body.contains("remove_file("),
             "信任库不得先删除旧文件再改名"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 构造一枚真正的 zip 炸弹：中央目录自报 1 KiB，实际解出 ~977 KiB。
+    ///
+    /// 4 GB 预检查只看 `entry.size()`，也就是攻击者自己填的数字，所以必须由写入
+    /// 循环自己数字节。这段解包发生在**预览**阶段、用户点安装之前且无法中断，
+    /// 没有写入上限就意味着拖进一个 .sayit 就能写满磁盘。
+    #[test]
+    fn extraction_stops_when_real_bytes_exceed_the_declared_size() {
+        const REAL_SIZE: usize = 999_983;
+        const FAKE_SIZE: u32 = 1_024;
+
+        let root = std::env::temp_dir().join(format!("sayit-zip-bomb-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("bomb.sayit");
+        let mut writer = ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        writer
+            .start_file(
+                "payload.bin",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        // 全 0 的内容压缩比极高，成品包只有几百字节。
+        writer.write_all(&vec![0_u8; REAL_SIZE]).unwrap();
+        writer.finish().unwrap();
+
+        // 把本地头与中央目录里声明的解压大小改小，模拟被篡改的清单。
+        let mut bytes = std::fs::read(&archive_path).unwrap();
+        let truth = (REAL_SIZE as u32).to_le_bytes();
+        let lie = FAKE_SIZE.to_le_bytes();
+        let mut patched = 0;
+        let mut cursor = 0;
+        while cursor + 4 <= bytes.len() {
+            if bytes[cursor..cursor + 4] == truth {
+                bytes[cursor..cursor + 4].copy_from_slice(&lie);
+                patched += 1;
+                cursor += 4;
+            } else {
+                cursor += 1;
+            }
+        }
+        assert_eq!(patched, 2, "应当恰好改掉本地头和中央目录各一处声明大小");
+        std::fs::write(&archive_path, &bytes).unwrap();
+
+        let extracted = root.join("extracted");
+        // 声明大小 1 KiB 远低于上限，预检查放行；必须由写入循环拦下。
+        let error = extract_archive_capped(&archive_path, &extracted, None, 8 * 1024)
+            .expect_err("实际写入超过声明大小时必须中止解包");
+        assert!(error.contains("payload.bin"), "错误信息应指明是哪个条目：{error}");
+
+        let written = std::fs::metadata(extracted.join("payload.bin"))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        assert!(
+            written < REAL_SIZE as u64,
+            "中止后落盘的字节数不应达到完整体积，实际 {written}"
         );
 
         std::fs::remove_dir_all(root).unwrap();
