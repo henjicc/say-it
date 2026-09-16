@@ -1,11 +1,12 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { PanelTopOpen, Power, RotateCcw } from "lucide-react";
-import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
+import { CMD, EVT, cmd, type FloatingOrbSettings } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { RangeInput } from "@/components/ui/RangeInput";
 import { Switch } from "@/components/ui/Switch";
-import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
+import { applySystemGlassToDocument } from "@/store/useThemeStore";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   FLOATING_ORB_OPACITY_RANGE,
@@ -18,6 +19,7 @@ import "@/floating-orb-menu.css";
 type Appearance = ReturnType<typeof normalizeFloatingOrbAppearance>;
 
 function FloatingOrbMenuApp() {
+  useEntryTheme();
   const [appearance, setAppearance] = useState<Appearance>(DEFAULT_FLOATING_ORB_APPEARANCE);
   const [autoEnter, setAutoEnter] = useState(false);
   const [error, setError] = useState("");
@@ -36,9 +38,6 @@ function FloatingOrbMenuApp() {
   };
 
   useEffect(() => {
-    void cmd<AppSnapshot>(CMD.getAppSnapshot)
-      .then((snapshot) => applyThemeToDocument(snapshot.settings.theme as Partial<AccentTheme>))
-      .catch(() => undefined);
     void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings).then((settings) => {
       receive(settings);
       setAutoEnter(settings.autoEnter === true);
@@ -60,7 +59,6 @@ function FloatingOrbMenuApp() {
     receive(settings);
     setAutoEnter(settings.autoEnter === true);
   });
-  useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
   const update = (patch: Partial<Appearance>) => {
     const revision = ++updateRevision.current;
     const next = normalizeFloatingOrbAppearance({ ...appearanceRef.current, ...patch });

@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/Button";
 import { CMD, cmd, on } from "@/lib/tauri";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 import "./index.css";
 import "./assistant.css";
 
@@ -113,6 +114,7 @@ function VoiceWave({ frame }: { frame: VoiceWaveform }) {
 }
 
 export function AssistantAnswerApp() {
+  useEntryTheme();
   const [answer, setAnswer] = useState<Answer>(EMPTY_ANSWER);
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState("");

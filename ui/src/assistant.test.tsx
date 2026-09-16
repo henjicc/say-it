@@ -13,10 +13,17 @@ vi.mock("@/lib/tauri", () => ({
     startAssistantFollowUpVoice: "start_assistant_follow_up_voice",
     stopAssistantFollowUpVoice: "stop_assistant_follow_up_voice",
     setAssistantAnswerPinned: "set_assistant_answer_pinned",
+    getAppSnapshot: "get_app_snapshot",
   },
-  cmd: vi.fn(async (name: string) => name === "get_assistant_answer"
-    ? { text: "## 回答正文\n\n**重点**", reasoning: "先分析问题", sourceText: "选区", canInsert: true, streaming: false, pinned: false }
-    : undefined),
+  EVT: { themeChanged: "theme-changed" },
+  cmd: vi.fn(async (name: string) => {
+    if (name === "get_assistant_answer") {
+      return { text: "## 回答正文\n\n**重点**", reasoning: "先分析问题", sourceText: "选区", canInsert: true, streaming: false, pinned: false };
+    }
+    // 独立窗口启动时要自己初始化主题，这里给一份最小快照。
+    if (name === "get_app_snapshot") return { settings: { theme: {} } };
+    return undefined;
+  }),
   on: vi.fn(async () => () => undefined),
 }));
 
