@@ -2,13 +2,14 @@ import { StrictMode, useEffect, useRef, useState, type CSSProperties, type Point
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, Check, Clipboard, CornerDownLeft, Mic, X } from "lucide-react";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { CMD, EVT, cmd, type AppSnapshot, type FloatingOrbSettings } from "@/lib/tauri";
+import { CMD, EVT, cmd, type FloatingOrbSettings } from "@/lib/tauri";
 import { useCuePlayback } from "@/hooks/useCuePlayback";
 import { OrbWaveform } from "@/floating-orb/OrbWaveform";
 import { useErrorDetailsDialog } from "@/floating-orb/useErrorDetailsDialog";
 import { useOrbStroke } from "@/floating-orb/useOrbStroke";
 import { WAVE_BAR_COUNT } from "@/floating-orb/waveform";
-import { applySystemGlassToDocument, applyThemeToDocument, type AccentTheme } from "@/store/useThemeStore";
+import { applySystemGlassToDocument } from "@/store/useThemeStore";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
   floatingOrbClickAction,
@@ -59,17 +60,13 @@ function FloatingOrbApp() {
   const pointer = useRef({ id: -1, x: 0, y: 0, dragging: false });
   const dragged = useRef(false);
   const showErrorDetails = useErrorDetailsDialog();
+  useEntryTheme();
 
   useEffect(() => {
-    void cmd<AppSnapshot>(CMD.getAppSnapshot)
-      .then((snapshot) => applyThemeToDocument(snapshot.settings.theme as Partial<AccentTheme>))
-      .catch(() => undefined);
     void cmd<FloatingOrbSettings>(CMD.getFloatingOrbSettings)
       .then((settings) => setAppearance(normalizeFloatingOrbAppearance(settings)))
       .catch(() => undefined);
   }, []);
-
-  useTauriEvent<Partial<AccentTheme>>(EVT.themeChanged, applyThemeToDocument);
 
   useTauriEvent<Partial<FloatingOrbAppearance>>(EVT.floatingOrbConfig, (payload) => {
     const next = normalizeFloatingOrbAppearance(payload);

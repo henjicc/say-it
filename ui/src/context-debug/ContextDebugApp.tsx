@@ -17,6 +17,7 @@ import {
   systemOcrLabel,
 } from "@/lib/platform";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 
 const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
 
@@ -94,6 +95,7 @@ function ResultSection({ title, value }: { title: string; value?: string | null 
 }
 
 export function ContextDebugApp() {
+  useEntryTheme();
   const [result, setResult] = useState<DebugResult>();
   const [capturing, setCapturing] = useState(false);
   const [ocrModel, setOcrModel] = useState(
