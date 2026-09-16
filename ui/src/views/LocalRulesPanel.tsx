@@ -9,7 +9,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
-import { useDictPrefs } from "@/store/useDictPrefs";
+import { useDictPrefs, type DictPrefs } from "@/store/useDictPrefs";
 import { validateRule, type LocalRule } from "@/features/dictation/localRulesEngine";
 import { runLocalRules } from "@/features/dictation/localRules";
 
@@ -57,6 +57,7 @@ export function LocalRulesPanel() {
   const [previewIn, setPreviewIn] = useState(PREVIEW_SAMPLE);
   const [previewOut, setPreviewOut] = useState("");
   const [previewNote, setPreviewNote] = useState("");
+  const [saveError, setSaveError] = useState("");
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 试运行：防抖后在 worker 里跑当前规则，展示处理结果。
@@ -78,29 +79,55 @@ export function LocalRulesPanel() {
     };
   }, [previewIn, rules]);
 
+  // 保存失败必须说出来。
+  //
+  // 后端 `validate_rules` 会拒绝写不完整的正则（例如刚敲到 `([`），而这些调用原本是
+  // 裸着的浮动 promise：错误被吞掉、store 不更新、受控输入框无声回滚，用户只看到自己
+  // 刚打的字消失了。更糟的是下一次成功保存用的是渲染时捕获的旧数组，会把这中间的
+  // 改动一并清掉——所以负载也改成基于写入时的最新状态计算。
+  const save = (label: string, updater: (current: DictPrefs) => Partial<DictPrefs>) => {
+    setSaveError("");
+    void patch(updater).catch((error) => setSaveError(`${label}失败：${String(error)}`));
+  };
+  const saveRules = (
+    label: string,
+    updater: (current: LocalRule[]) => LocalRule[],
+  ) => save(label, (current) => ({ localRules: updater(current.localRules) }));
+
   const updateRule = (id: string, partial: Partial<LocalRule>) => {
-    patch({ localRules: rules.map((r) => (r.id === id ? { ...r, ...partial } : r)) });
+    saveRules("保存规则", (current) =>
+      current.map((r) => (r.id === id ? { ...r, ...partial } : r)),
+    );
   };
   // 正则规则统一排在查找替换规则之前；上移/下移只在正则规则内部重排。
   const moveRule = (index: number, dir: -1 | 1) => {
     const target = index + dir;
     if (target < 0 || target >= regexRules.length) return;
-    const next = regexRules.slice();
-    [next[index], next[target]] = [next[target], next[index]];
-    patch({ localRules: [...next, ...findRules] });
+    saveRules("调整顺序", (current) => {
+      const regex = current.filter((rule) => rule.mode !== "find");
+      const find = current.filter((rule) => rule.mode === "find");
+      if (target >= regex.length || index >= regex.length) return current;
+      const next = regex.slice();
+      [next[index], next[target]] = [next[target], next[index]];
+      return [...next, ...find];
+    });
   };
   const deleteRule = (id: string) => {
-    patch({ localRules: rules.filter((r) => r.id !== id) });
+    saveRules("删除规则", (current) => current.filter((r) => r.id !== id));
     if (editingId === id) setEditingId(null);
   };
   const addRule = () => {
     const rule = newRule();
-    patch({ localRules: [...regexRules, rule, ...findRules] });
+    saveRules("新增规则", (current) => [
+      ...current.filter((item) => item.mode !== "find"),
+      rule,
+      ...current.filter((item) => item.mode === "find"),
+    ]);
     setEditingId(rule.id);
   };
   const addFindRule = () => {
     const rule = newFindRule();
-    patch({ localRules: [...rules, rule] });
+    saveRules("新增规则", (current) => [...current, rule]);
   };
   const toggleFlag = (rule: LocalRule, flag: string, on: boolean) => {
     const set = new Set(rule.flags.split(""));
@@ -115,7 +142,7 @@ export function LocalRulesPanel() {
         title="本地处理"
         right={<Switch
           checked={prefs.localRulesEnabled}
-          onChange={(v) => patch({ localRulesEnabled: v })}
+          onChange={(v) => save("保存设置", () => ({ localRulesEnabled: v }))}
           label="启用本地快速处理"
         />}
       >
@@ -348,6 +375,7 @@ export function LocalRulesPanel() {
           </Field>
           </FormGrid>
           {previewNote && <p className="text-[11px] text-[var(--color-err)]">{previewNote}</p>}
+          {saveError && <p role="alert" className="text-[11px] text-[var(--color-err)]">{saveError}</p>}
         </SettingsSection>
       </div>
     </div>
