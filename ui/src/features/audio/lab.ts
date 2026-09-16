@@ -23,7 +23,14 @@ function apply(snapshot: Snapshot) {
 export function setCanvases(raw: HTMLCanvasElement | null, processed: HTMLCanvasElement | null) { rawCanvas = raw; processedCanvas = processed; if (last) apply(last); }
 export function applyAudioLabRuntime(snapshot: Snapshot) { apply(snapshot); if (snapshot.error) useAudioStore.setState({ recInfo: `录音失败：${snapshot.error}`, recTone: "err", recording: false }); }
 export async function loadAudioLabRuntime() { applyAudioLabRuntime(await cmd<Snapshot>(CMD.getAudioLabRuntime)); }
-export async function toggleRecord() { try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } }
+/**
+ * 连点保护：请求在途时再点一次会直接落到后端的重复启动路径。
+ *
+ * 后端已经挡住了重复启动，但前端按钮此前完全没有在途保护，用户每次手抖都要靠后端兜底，
+ * 并且两次请求的返回顺序还会让界面状态来回跳。
+ */
+let toggling = false;
+export async function toggleRecord() { if (toggling) return; toggling = true; try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } finally { toggling = false; } }
 export async function reprocess() { const snapshot = await cmd<Snapshot>(CMD.audioLabReprocess, { params: useDictPrefs.getState().dspParams() }); apply(snapshot); }
 export function paramChanged() { if (timer) clearTimeout(timer); timer = setTimeout(() => { void reprocess().catch((error) => useAudioStore.setState({ recInfo: `处理失败：${error}`, recTone: "err" })); }, 120); }
 async function play(processed: boolean) { try { const path = await cmd<string>(CMD.audioLabAudioPath, { processed }); if (!audio) audio = new Audio(); audio.src = convertFileSrc(path); await audio.play(); } catch (error) { useAudioStore.setState({ recInfo: `播放失败：${error}`, recTone: "err" }); } }
