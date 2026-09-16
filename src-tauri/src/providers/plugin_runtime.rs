@@ -614,13 +614,19 @@ impl HostState {
     fn save_storage(&self, value: &serde_json::Map<String, Value>) -> Result<(), String> {
         std::fs::create_dir_all(&self.spec.data_dir).map_err(|error| error.to_string())?;
         let target = self.spec.data_dir.join("storage.json");
-        let temporary = self.spec.data_dir.join("storage.json.tmp");
-        std::fs::write(
+        let temporary = storage_temp_path(&self.spec.data_dir);
+        if let Err(error) = std::fs::write(
             &temporary,
             serde_json::to_vec(value).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        std::fs::rename(temporary, target).map_err(|error| error.to_string())
+        ) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        if let Err(error) = std::fs::rename(&temporary, target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 
     fn http_request(&mut self, payload: Value) -> Result<Value, String> {
@@ -2354,6 +2360,15 @@ fn js_error_with_context(ctx: &Ctx<'_>, error: JsError) -> String {
 ///
 /// 没有 SDK bundle 的运行时不会注册这个全局；那种情况下本来也产生不了宿主事件，
 /// 直接跳过即可，不该因此报错。
+/// 插件 storage 落盘用的临时文件路径。
+///
+/// 必须每次唯一：同一个插件可能同时跑着多个运行时（例如听写与实时字幕各持一个），
+/// 固定用 `storage.json.tmp` 会让它们互相覆盖对方写了一半的内容，而且先完成的一方
+/// rename 之后，另一方的 rename 会因源文件已消失而失败。
+fn storage_temp_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(format!("storage.json.{}.tmp", uuid::Uuid::new_v4()))
+}
+
 fn dispatch_sdk_host_event_in<'js>(ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
     let Ok(dispatcher) = ctx
         .globals()
@@ -2994,6 +3009,82 @@ mod tests {
             .unwrap();
         assert_eq!(result["value"], "late");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 临时文件名必须每次唯一，否则同一插件的两个运行时会互相覆盖对方写了一半的
+    /// 内容，且先完成的一方 rename 之后另一方必然失败。
+    #[test]
+    fn storage_temp_paths_never_collide() {
+        let dir = PathBuf::from("/tmp/plugin-data");
+        let first = storage_temp_path(&dir);
+        let second = storage_temp_path(&dir);
+
+        assert_ne!(first, second, "两次写入不能共用同一个临时文件");
+        for path in [&first, &second] {
+            assert_eq!(path.parent(), Some(dir.as_path()));
+            assert!(path.to_string_lossy().ends_with(".tmp"), "{path:?}");
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("storage.json."),
+                "{path:?}"
+            );
+        }
+    }
+
+    /// 同一个插件可能同时跑着多个运行时（听写与实时字幕各持一个）。固定的
+    /// `storage.json.tmp` 会让它们互相覆盖对方写了一半的内容，并且先完成的那一方
+    /// rename 之后，另一方的 rename 会因源文件已消失而失败。
+    #[test]
+    fn concurrent_storage_writes_do_not_share_a_temp_file() {
+        let (root, spec, profile) = fixture(
+            "export default host => ({ invoke(request) { host.storage.set('k', request.payload.value); return { value: host.storage.get('k') }; } });",
+            None,
+        );
+        let make = || {
+            JsProviderRuntime::create(
+                spec.clone(),
+                &profile,
+                Duration::from_secs(5),
+                Arc::new(AtomicBool::new(false)),
+                HashMap::new(),
+            )
+            .unwrap()
+        };
+        let first = make();
+        let second = make();
+
+        for round in 0..20 {
+            first
+                .call(
+                    "invoke",
+                    &json!({"payload": {"value": format!("a{round}")}}),
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+            second
+                .call(
+                    "invoke",
+                    &json!({"payload": {"value": format!("b{round}")}}),
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+        }
+
+        // 写盘目录里不该留下任何临时残骸，storage.json 必须是完整可解析的。
+        let leftovers = std::fs::read_dir(spec.data_dir.as_path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "不应留下临时文件");
+        let saved = std::fs::read(spec.data_dir.join("storage.json")).unwrap();
+        serde_json::from_slice::<Value>(&saved).expect("storage.json 必须是完整的 JSON");
+
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
