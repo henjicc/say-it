@@ -49,6 +49,8 @@ pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const GROQ_DEFAULT_LLM_MODEL_ID: &str = "qwen/qwen3.8-27b";
 const PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID: &str = "openai/gpt-oss-20b";
+/// 旧默认模型的一次性迁移标记，写在 Groq 供应商配置里。
+const GROQ_DEFAULT_MODEL_MIGRATED_KEY: &str = "groqDefaultModelMigrated";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
@@ -571,8 +573,28 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     let _ = set_llm_models(&mut profile.config, &models);
 }
 
+/// 把还停在 Groq 旧默认模型上的配置迁移到新默认模型。
+///
+/// 迁移只能发生一次。`normalize_settings` 在每次供应商配置改动时都会跑，而形状守卫
+/// （模型列表恰好等于单个旧默认项）分不出「从没改过的旧默认」和「用户亲自选回去的
+/// 旧默认」：后者每次都会被静默改写，用户根本选不上这个模型。所以无论本次是否真的
+/// 改了东西，都给 Groq 配置盖上迁移标记，之后不再介入。
 fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
-    if profile.id != GROQ_LLM_PROVIDER_ID
+    if profile.id != GROQ_LLM_PROVIDER_ID {
+        return;
+    }
+    if !profile.config.is_object() {
+        profile.config = json!({});
+    }
+    let already_migrated = profile
+        .config
+        .get(GROQ_DEFAULT_MODEL_MIGRATED_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(config) = profile.config.as_object_mut() {
+        config.insert(GROQ_DEFAULT_MODEL_MIGRATED_KEY.to_string(), json!(true));
+    }
+    if already_migrated
         || profile.config.get("model").and_then(Value::as_str)
             != Some(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)
     {
@@ -884,6 +906,78 @@ mod tests {
         let preserved = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
         assert_eq!(
             preserved.config["model"],
+            PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID
+        );
+    }
+
+    /// 用户亲自选回旧默认模型时，不得再被静默改写。
+    ///
+    /// 迁移以前只有形状守卫（模型列表恰好等于单个旧默认项），而 `normalize_settings`
+    /// 每次供应商配置改动都会跑：只要用户把模型列表设成只含 openai/gpt-oss-20b，
+    /// 下一次保存就被改回新默认模型，根本选不上。
+    #[test]
+    fn the_old_groq_default_is_migrated_only_once() {
+        let mut settings = ProviderSettings::default();
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        groq.config = json!({
+            "model": PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "models": [LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)]
+        });
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
+            GROQ_DEFAULT_LLM_MODEL_ID,
+            "从未改过的旧默认应该迁移一次"
+        );
+
+        // 用户重新选回旧模型，并把模型列表也改成只剩它。
+        let mut settings = settings;
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        if let Some(config) = groq.config.as_object_mut() {
+            config.insert("model".into(), json!(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID));
+        }
+        let _ = set_llm_models(
+            &mut groq.config,
+            &[LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)],
+        );
+
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
+            PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "迁移过一次之后不得再介入用户的选择"
+        );
+    }
+
+    /// 从来没有旧默认模型的新装配置，同样不会被后来的一次迁移抓住。
+    #[test]
+    fn a_fresh_install_that_later_picks_the_old_model_keeps_it() {
+        let settings = normalize_settings(ProviderSettings::default());
+        let mut settings = settings;
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        if let Some(config) = groq.config.as_object_mut() {
+            config.insert("model".into(), json!(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID));
+        }
+        let _ = set_llm_models(
+            &mut groq.config,
+            &[LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)],
+        );
+
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
             PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID
         );
     }
