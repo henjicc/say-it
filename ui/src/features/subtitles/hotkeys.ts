@@ -22,6 +22,8 @@ let subShift = false;
 let subAlt = false;
 let subMeta = false;
 let subCapturing = false;
+// 字幕热键是否已经被后端全局接管（Windows 低级键盘钩子 / 其它平台的全局快捷键）。
+let subGlobalRegistered = false;
 
 export function configureSubtitleHotkeys(next: SubtitleHotkeyHooks) {
   hooks = next;
@@ -79,6 +81,8 @@ async function saveSubtitleShortcut() {
       meta: subMeta,
     },
   });
+  // 命令没报错就意味着后端已经按新配置重新注册（清空则是取消注册）。
+  subGlobalRegistered = subKeyCode !== "";
 }
 
 // ---- 快捷键捕获 ----
@@ -211,6 +215,12 @@ function matchesSubtitleHotkey(e: KeySig): boolean {
 
 function handleSubtitleHotkeyKeydown(e: KeySig, preventDefault?: () => void) {
   if (subCapturing) return;
+  // 全局路径已经接管时不能再兜底。
+  //
+  // Windows 的低级钩子对非锁定键只上报不吞键（只有 CapsLock 这类键才
+  // `return LRESULT(1)`），按键会继续传给前台窗口。主窗口（或悬浮窗转发）拿到同一次
+  // 按键后再 toggle 一次，字幕开了又立刻关。兜底只在全局注册未生效时才有意义。
+  if (subGlobalRegistered) return;
   if (!matchesSubtitleHotkey(e)) return;
   preventDefault?.();
   if (focusHotkeyDown) return;
@@ -255,8 +265,10 @@ export async function loadSubtitleShortcut() {
       shift?: boolean;
       alt?: boolean;
       meta?: boolean;
+      global_registered?: boolean;
     }>(CMD.getSubtitleShortcut);
     subKeyCode = d.key_code || "";
+    subGlobalRegistered = !!d.global_registered;
     subCtrl = !!d.ctrl;
     subShift = !!d.shift;
     subAlt = !!d.alt;
