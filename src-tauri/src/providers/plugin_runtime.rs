@@ -49,6 +49,15 @@ const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
+
+/// 把事件压进「没有消费者」的回退队列：满了丢最旧的，绝不因此让请求失败。
+fn push_bounded_event(events: &mut Vec<Value>, event: Value) {
+    if events.len() >= MAX_EVENTS {
+        let overflow = events.len() - MAX_EVENTS + 1;
+        events.drain(..overflow);
+    }
+    events.push(event);
+}
 const MAX_CREDENTIAL_READ_WAIT: Duration = Duration::from_secs(10);
 const CREDENTIAL_WORKER_COUNT: usize = 4;
 // QuickJS 自身最多使用 1 MiB；网络/TLS 已投递到异步运行时后，剩余空间只承载
@@ -494,17 +503,24 @@ impl HostState {
             "timer.open" => self.timer_open(payload),
             "timer.close" => self.timer_close(payload),
             "emit" => {
+                // host.emit 是单向通知，不能反过来把发出它的那次请求弄失败。
+                //
+                // 有接收端时，队列满意味着消费端跟不上、关闭意味着调用方已经不听了，
+                // 两种都不是插件的错。没有接收端时回退队列在生产路径上根本没有读取方
+                // （`take_events` 只有测试在用），以前它只增不减，累计满 MAX_EVENTS 之后每次
+                // emit 都返回 Err：任何用 host.emit 的插件最终都会随机「插件执行失败」。
                 let event = payload.get("event").cloned().unwrap_or(payload);
                 if let Some(tx) = &self.event_tx {
-                    tx.try_send(event)
-                        .map_err(|_| "插件事件队列已满或接收端已关闭")?;
+                    if let Err(error) = tx.try_send(event) {
+                        crate::dlog!(
+                            "[plugin {}] 事件未送达：{error}",
+                            self.spec.plugin_id
+                        );
+                    }
                     return Ok(Value::Null);
                 }
                 let mut events = self.events.lock().map_err(|_| "插件事件队列锁定失败")?;
-                if events.len() >= MAX_EVENTS {
-                    return Err("插件事件队列已满".into());
-                }
-                events.push(event);
+                push_bounded_event(&mut events, event);
                 Ok(Value::Null)
             }
             "log" => {
@@ -2942,6 +2958,53 @@ mod tests {
         assert!(parse_allowed_url(&spec, "https://api.example.com", &["https"]).is_err());
         // 与 https/wss 无关的协议依旧拒绝。
         assert!(parse_allowed_url(&spec, "ftp://127.0.0.1", &["https"]).is_err());
+    }
+
+    /// host.emit 失败不得弄失败整次请求。
+    ///
+    /// 非流式的 LLM 路径（smart_text 的一次性执行、模型发现）传的 event_tx 是 None，
+    /// emit 会落回内部的 Vec，而这个 Vec 在生产路径上根本没有读取方。以前它只增不减，
+    /// 累计满 1024 条之后每次 emit 都返回 Err：用了 host.emit 的插件最终都会随机报
+    /// 「插件执行失败」，且重试不会好转（同一个运行时里队列不会清空）。
+    #[test]
+    fn emitting_more_events_than_the_queue_holds_does_not_fail_the_request() {
+        let (root, spec, profile) = fixture(
+            "export default host => ({ invoke(request) { for (let i = 0; i < 2000; i += 1) { host.emit({type:'event', index:i}); } return {text:'done'}; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(20),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        let result = runtime.call(
+            "invoke",
+            &json!({"operation":"test","payload":{}}),
+            Duration::from_secs(20),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+
+        let result = result.expect("单向通知不得让整次请求失败");
+        assert_eq!(result["text"], "done");
+        // 回退队列有界，且保留的是最近的一批。
+        let events = runtime.take_events();
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(events[MAX_EVENTS - 1]["index"], 1999);
+    }
+
+    #[test]
+    fn the_fallback_event_queue_drops_the_oldest_instead_of_failing() {
+        let mut events = Vec::new();
+        for index in 0..(MAX_EVENTS + 10) {
+            push_bounded_event(&mut events, json!({ "index": index }));
+        }
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(events[0]["index"], 10);
+        assert_eq!(events[MAX_EVENTS - 1]["index"], MAX_EVENTS + 9);
     }
 
     #[test]
