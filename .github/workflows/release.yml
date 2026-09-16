@@ -9,7 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  # 构建与发布全程只读 package.json 的版本号，从不看 tag 本身。版本号漏改一处就会静默
+  # 发出「tag 是新版、资产是旧版」的 Release，CHANGELOG 取的也是旧版那一节。先卡一道。
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: verify tag matches the recorded version
+        run: node scripts/verify-release-version.mjs "${{ github.ref_name }}"
+
   build-windows:
+    needs: verify-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +64,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: verify-version
     strategy:
       fail-fast: false
       matrix:
