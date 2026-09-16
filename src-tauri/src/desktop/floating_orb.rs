@@ -409,6 +409,26 @@ fn resolve_idle_position(
     clamp_orb_position(position, size, monitors)
 }
 
+/// 这次位置变化要不要写回配置。
+///
+/// 悬浮球的位置只有用户拖出来的那一个才算数；其余移动都是从它**推导**出来的
+/// （回退默认位、夹持回可见区、缩放后重新居中）。显示器临时缺失时
+/// `resolve_idle_position` 会退回主屏默认位，而这个 set_position 同样会触发
+/// `WindowEvent::Moved`；若照写不误，用户摆在那块屏上的位置就被回退值永久覆盖，
+/// 插回显示器也再也找不回来了。
+fn should_persist_orb_position(
+    saved: Option<tauri::PhysicalPosition<i32>>,
+    size: tauri::PhysicalSize<u32>,
+    monitors: &[MonitorRect],
+    dragged_by_user: bool,
+) -> bool {
+    if dragged_by_user {
+        return true;
+    }
+    // 已保存的位置还在某块屏上：当前位置是它本人或它的夹持结果，写回无害。
+    saved.is_none_or(|saved| position_is_on_a_monitor(saved, size, monitors))
+}
+
 fn resolve_menu_position(
     orb_position: tauri::PhysicalPosition<i32>,
     orb_size: tauri::PhysicalSize<u32>,
@@ -1196,6 +1216,18 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
         let _ = window.set_position(position);
     }
     let state = app.state::<RuntimeState>();
+    let dragged_by_user = state
+        .floating_orb_runtime
+        .dragged_by_user
+        .swap(false, Ordering::AcqRel);
+    if !should_persist_orb_position(
+        saved_position(app),
+        size,
+        &monitor_rects(&window),
+        dragged_by_user,
+    ) {
+        return Ok(());
+    }
     {
         let mut settings = state
             .floating_orb
@@ -1240,6 +1272,11 @@ pub(crate) fn floating_orb_start_dragging(app: tauri::AppHandle) -> Result<(), S
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
     mark_floating_orb_interaction(&app);
+    // 拖拽是悬浮球唯一的用户摆位入口（窗口无边框，没有系统标题栏可拖）。
+    app.state::<RuntimeState>()
+        .floating_orb_runtime
+        .dragged_by_user
+        .store(true, Ordering::Release);
     let result = window
         .start_dragging()
         .map_err(|error| format!("拖动悬浮球失败：{error}"));
@@ -2275,6 +2312,66 @@ mod tests {
             ),
             tauri::PhysicalPosition::new(1904, 1064)
         );
+    }
+
+    /// 显示器临时缺失时的回退位置不得反写进配置。
+    ///
+    /// `resolve_idle_position` 退回主屏默认位后的 `set_position` 同样会触发
+    /// `WindowEvent::Moved` → `persist_current_position`。以前这里无条件写回：副屏拔掉
+    /// 一次，用户摆在副屏上的悬浮球位置就永久没了，插回去也不会回到原处。
+    #[test]
+    fn fallback_position_from_a_missing_monitor_is_not_written_back() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        let size = tauri::PhysicalSize::new(56, 56);
+        // 保存的位置在已经不存在的左侧副屏上。
+        assert!(!should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(-1700, 240)),
+            size,
+            &monitors,
+            false,
+        ));
+    }
+
+    /// 同一种状态下，用户亲手拖出来的位置仍然要存。
+    #[test]
+    fn a_user_drag_still_persists_even_while_a_monitor_is_missing() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        assert!(should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(-1700, 240)),
+            tauri::PhysicalSize::new(56, 56),
+            &monitors,
+            true,
+        ));
+    }
+
+    /// 保存的位置还在屏上（或还没存过）时，程序性移动照旧写回：
+    /// 缩放重新居中、夹持回可见区都依赖这条。
+    #[test]
+    fn derived_moves_are_written_back_while_the_saved_position_is_valid() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        let size = tauri::PhysicalSize::new(56, 56);
+        assert!(should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(1840, 512)),
+            size,
+            &monitors,
+            false,
+        ));
+        assert!(should_persist_orb_position(None, size, &monitors, false));
     }
 
     #[test]
