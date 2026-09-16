@@ -145,6 +145,24 @@ impl CompareRuntime {
             }
         }
     }
+    /// 收回启动失败的现场：phase 回到 idle、未完成的格子标成错误，并把需要在外部
+    /// 关闭的 ASR 会话与音频租约交出去。
+    fn abort(&self, error: &str) -> (HashMap<String, usize>, Option<AudioLease>) {
+        let Ok(mut state) = self.inner.lock() else {
+            return (HashMap::new(), None);
+        };
+        state.phase = "idle".into();
+        state.error = error.to_string();
+        state.recording_drain = None;
+        state.playback_progress = None;
+        for cell in &mut state.cells {
+            if !matches!(cell.status.as_str(), "done" | "error") {
+                cell.status = "error".into();
+                cell.error_message = error.to_string();
+            }
+        }
+        (std::mem::take(&mut state.sessions), state.lease.take())
+    }
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
         let snapshot = self.snapshot();
         DomainSnapshot {
@@ -208,6 +226,38 @@ pub(crate) async fn compare_start(
         return Err("请至少选择一个模型".into());
     }
     let epoch = state.compare_runtime.reset(cells);
+    if let Err(error) = start_all(&app, &state, request, epoch).await {
+        return Err(abort_start(&app, &state, error));
+    }
+    publish(&app);
+    Ok(state.compare_runtime.snapshot())
+}
+
+/// 启动流程中途失败时，把已经建立起来的东西全部收回。
+///
+/// 此前 `compare_start` 用裸 `?` 直接返回：已经建好的实时 ASR 会话不会被回收——每个各占
+/// 一个 worker 线程（SDK / 插件是 `try_recv` + sleep 无限轮询，本地 sherpa 是
+/// `blocking_recv` 永久阻塞，把 200MB+ 权重钉在内存），而 `phase` 永远停在 `starting`，
+/// 用户此后再点「开始对比」只会得到「模型对比正在运行」，只能重启应用。
+fn abort_start(app: &tauri::AppHandle, state: &RuntimeState, error: String) -> String {
+    let (sessions, lease) = state.compare_runtime.abort(&error);
+    let _ = release_backend_mic_inner(state);
+    for (session_id, _) in sessions {
+        let _ = stop_asr_stream_inner(&session_id, state);
+    }
+    if let Some(lease) = lease {
+        let _ = state.audio_session.release(&lease);
+    }
+    publish(app);
+    error
+}
+
+async fn start_all(
+    app: &tauri::AppHandle,
+    state: &RuntimeState,
+    request: CompareStartRequest,
+    epoch: u64,
+) -> Result<(), String> {
     {
         let mut compare = state
             .compare_runtime
@@ -293,7 +343,7 @@ pub(crate) async fn compare_start(
             .ok_or("请先选择音频文件")?;
         start_upload(
             app.clone(),
-            &state,
+            state,
             path,
             request.models,
             request.params,
@@ -301,8 +351,7 @@ pub(crate) async fn compare_start(
         )
         .await?;
     }
-    publish(&app);
-    Ok(state.compare_runtime.snapshot())
+    Ok(())
 }
 
 /// 拉起麦克风并开始把 PCM 扇出给各子任务，返回**麦克风的实际采样率**。
@@ -313,9 +362,22 @@ fn start_recording(
     epoch: u64,
 ) -> Result<u32, String> {
     let lease = state.audio_session.acquire(AudioOwner::Comparison)?;
-    state.audio_session.attach(&lease, "comparison")?;
-    let mic = start_backend_mic_inner(device_name, state)?;
-    let (_, mut receiver) = attach_backend_mic_raw_inner(state)?;
+    // 这几步任何一步失败都必须归还租约：AudioLease 没有 Drop，泄漏意味着音频独占权
+    // 一直挂在「模型对比」名下。
+    let started = (|| -> Result<_, String> {
+        state.audio_session.attach(&lease, "comparison")?;
+        let mic = start_backend_mic_inner(device_name, state)?;
+        let (_, receiver) = attach_backend_mic_raw_inner(state)?;
+        Ok((mic, receiver))
+    })();
+    let (mic, mut receiver) = match started {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = release_backend_mic_inner(state);
+            let _ = state.audio_session.release(&lease);
+            return Err(error);
+        }
+    };
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
     {
         let mut compare = state
@@ -848,6 +910,88 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.cells[0].index, 3);
         assert_eq!(snapshot.cells[0].text, "结果");
+    }
+
+    /// 启动中途失败必须把现场收干净，否则整个模型对比功能会一直卡死。
+    ///
+    /// 此前 `compare_start` 用裸 `?` 直接返回：已经建好的实时 ASR 会话不会被回收
+    /// （每个各占一个 worker 线程，本地 sherpa 还会把 200MB+ 权重钉在内存），而
+    /// `phase` 永远停在 `starting`，用户此后再点「开始对比」只会得到「模型对比正在
+    /// 运行」，只能重启应用。
+    #[test]
+    fn aborting_a_failed_start_releases_sessions_and_unblocks_the_next_run() {
+        let runtime = CompareRuntime::default();
+        runtime.reset(vec![
+            CompareCellSnapshot {
+                index: 0,
+                status: "connecting".into(),
+                ..Default::default()
+            },
+            CompareCellSnapshot {
+                index: 1,
+                status: "done".into(),
+                text: "已完成".into(),
+                ..Default::default()
+            },
+        ]);
+        {
+            let mut state = runtime.inner.lock().unwrap();
+            state.sessions.insert("session-a".into(), 0);
+            state.lease = Some(AudioLease {
+                owner: AudioOwner::Comparison,
+                generation: 3,
+            });
+        }
+        assert_eq!(runtime.domain_snapshot().state, DomainRunState::Running);
+
+        let (sessions, lease) = runtime.abort("麦克风被占用");
+
+        // 交出去的会话与租约，调用方才有机会真正关掉它们。
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.get("session-a"), Some(&0));
+        assert!(lease.is_some());
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, "idle", "phase 必须回到 idle，否则下一次启动被拒");
+        assert_eq!(snapshot.error, "麦克风被占用");
+        assert_eq!(snapshot.cells[0].status, "error");
+        assert_eq!(snapshot.cells[0].error_message, "麦克风被占用");
+        // 已经出结果的格子不该被抹掉。
+        assert_eq!(snapshot.cells[1].status, "done");
+        assert_eq!(snapshot.cells[1].text, "已完成");
+        assert_eq!(runtime.domain_snapshot().state, DomainRunState::Idle);
+
+        // 状态里不再残留会话与租约，重复 abort 也是安全的。
+        let (again, lease_again) = runtime.abort("再次");
+        assert!(again.is_empty());
+        assert!(lease_again.is_none());
+    }
+
+    /// `compare_start` 在 `reset` 之后不得再出现裸 `?`：任何一步失败都要走 abort_start。
+    #[test]
+    fn compare_start_routes_every_failure_through_abort() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("compare.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("compare.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) async fn compare_start")
+            .expect("compare_start 必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+        let after_reset = &command[command
+            .find("reset(cells)")
+            .expect("compare_start 必须仍然先 reset")..];
+
+        assert!(
+            after_reset.contains("abort_start("),
+            "reset 之后的失败必须经过 abort_start 收回现场"
+        );
+        assert!(
+            !after_reset.contains("?;"),
+            "reset 之后不得再用裸 ?：那会把已建立的 ASR 会话与租约留在原地，phase 卡在 starting"
+        );
     }
 
     /// 实时流的 `result.text` 只是当前这一句。此前 `handle_event` 无视 `final`
