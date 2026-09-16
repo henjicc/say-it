@@ -168,6 +168,31 @@ pub(crate) fn start_backend_system_audio_inner(
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
     let system_audio = state.backend_system_audio.clone();
     let worker_for_stream = worker_tx.clone();
+    // 与 backend_mic 相同的启动握手。
+    //
+    // 原来 worker 句柄是在 `thread::spawn` **之后**才写进共享状态的，于是建流失败时
+    // 线程里的「清空 worker」可能先执行、随后又被调用方无条件覆写成 Some(..)：
+    // `start_backend_system_audio_inner` 照样返回成功，真实的 cpal 错误只进了 dlog，
+    // 而音频一帧都不会来。更糟的是那条失败线程的收尾可能晚于下一次成功启动，
+    // 把新会话的 worker 一并抹掉。
+    let (startup_tx, startup_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    {
+        let mut guard = system_audio
+            .lock()
+            .map_err(|_| "Backend system audio lock failed".to_string())?;
+        guard.worker = Some(worker_tx.clone());
+        guard.sample_rate = sample_rate;
+        guard.channels = channels;
+        guard.session_id = None;
+        guard.tx = None;
+        guard.raw_txs.clear();
+        guard.pending.clear();
+        guard.buffer.clear();
+        guard.chunk_count = 0;
+        guard.last_rms = 0.0;
+        guard.last_error = None;
+        guard.current_device = resolved_device_name.clone();
+    }
     std::thread::spawn(move || {
         let stream = match build_backend_system_audio_stream(
             system_audio.clone(),
@@ -179,22 +204,28 @@ pub(crate) fn start_backend_system_audio_inner(
             Err(err) => {
                 dlog!("[backend-system-audio] {err}");
                 if let Ok(mut guard) = system_audio.lock() {
+                    guard.last_error = Some(err.clone());
                     guard.worker = None;
                     guard.sample_rate = 0;
                     guard.channels = 0;
                 }
+                let _ = startup_tx.send(Err(err));
                 return;
             }
         };
         if let Err(err) = stream.play() {
-            dlog!("[backend-system-audio] 启动系统音频 loopback 流失败: {err}");
+            let message = format!("启动系统音频 loopback 流失败: {err}");
+            dlog!("[backend-system-audio] {message}");
             if let Ok(mut guard) = system_audio.lock() {
+                guard.last_error = Some(message.clone());
                 guard.worker = None;
                 guard.sample_rate = 0;
                 guard.channels = 0;
             }
+            let _ = startup_tx.send(Err(message));
             return;
         }
+        let _ = startup_tx.send(Ok(()));
         dlog!("[backend-system-audio] worker 已启动 sample_rate={sample_rate} channels={channels}");
         let mut stop_reply: Option<std::sync::mpsc::Sender<()>> = None;
         while let Ok(command) = worker_rx.recv() {
@@ -277,20 +308,33 @@ pub(crate) fn start_backend_system_audio_inner(
         }
     });
 
-    let mut guard = state
-        .backend_system_audio
-        .lock()
-        .map_err(|_| "Backend system audio lock failed".to_string())?;
-    guard.worker = Some(worker_tx);
-    guard.sample_rate = sample_rate;
-    guard.channels = channels;
-    guard.session_id = None;
-    guard.tx = None;
-    guard.pending.clear();
-    guard.buffer.clear();
-    guard.chunk_count = 0;
-    guard.last_rms = 0.0;
-    guard.current_device = resolved_device_name.clone();
+    match startup_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => {
+            let guard = state
+                .backend_system_audio
+                .lock()
+                .map_err(|_| "Backend system audio lock failed".to_string())?;
+            if guard.worker.is_none() {
+                return Err(guard
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "系统音频 loopback 流已意外停止".into()));
+            }
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            let _ = worker_tx.send(BackendMicCommand::Stop { reply: None });
+            let error = "启动系统音频 loopback 流超时".to_string();
+            if let Ok(mut guard) = state.backend_system_audio.lock() {
+                guard.worker = None;
+                guard.sample_rate = 0;
+                guard.channels = 0;
+                guard.current_device = None;
+                guard.last_error = Some(error.clone());
+            }
+            return Err(error);
+        }
+    }
     dlog!(
         "[backend-system-audio] 已启动系统音频采集 sample_rate={sample_rate} channels={channels} device={resolved_device_name:?}"
     );
@@ -458,4 +502,53 @@ pub(crate) fn get_backend_system_audio_level(
         .lock()
         .map_err(|_| "Backend system audio lock failed".to_string())?;
     Ok(guard.last_rms)
+}
+
+#[cfg(test)]
+mod tests {
+    /// 系统音频的启动必须和麦克风一样：先把 worker 写进共享状态，再起线程，然后等
+    /// 启动握手。
+    ///
+    /// 原来 worker 句柄在 `thread::spawn` **之后**才写入：建流失败时线程里的「清空
+    /// worker」可能先跑，随后被调用方无条件覆写成 `Some(..)`，于是 inner 返回成功而
+    /// 音频一帧都不会来，真实的 cpal 错误只进了 dlog；那条失败线程的收尾还可能晚于
+    /// 下一次成功启动，把新会话的 worker 一并抹掉。
+    ///
+    /// 这条路径需要真实的 WASAPI loopback 设备，只能做源码契约校验。
+    #[test]
+    fn system_audio_start_registers_the_worker_before_spawning() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("backend_system_audio.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("backend_system_audio.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) fn start_backend_system_audio_inner")
+            .expect("启动函数必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+
+        let register_at = command
+            .find("guard.worker = Some(worker_tx.clone());")
+            .expect("必须把 worker 句柄写进共享状态");
+        let spawn_at = command
+            .find("std::thread::spawn")
+            .expect("必须仍然在独立线程里跑 worker");
+        let handshake_at = command
+            .find("startup_rx.recv_timeout")
+            .expect("必须等待启动握手，否则建流失败也会返回成功");
+
+        assert!(
+            register_at < spawn_at,
+            "worker 句柄必须在起线程之前登记，否则失败线程的清理会被调用方覆写"
+        );
+        assert!(
+            spawn_at < handshake_at,
+            "握手必须发生在起线程之后"
+        );
+        assert!(
+            !command.contains("guard.worker = Some(worker_tx);"),
+            "不得在起线程之后再无条件覆写 worker 句柄"
+        );
+    }
 }
