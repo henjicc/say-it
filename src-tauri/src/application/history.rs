@@ -1126,11 +1126,30 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
     if injection_text.trim().is_empty() {
         return Err("这条记录没有可重试注入的结果".into());
     }
+    let mut hidden = false;
     if let Some(window) = app.get_webview_window("main") {
         window
             .hide()
             .map_err(|error| format!("隐藏主窗口失败：{error}"))?;
+        hidden = true;
     }
+    let result = inject_into_activation_target(&entry, injection_text).await;
+    // 隐藏主窗口只是为了把焦点让给目标应用，**任何**失败路径都必须把窗口还回来：
+    // 否则错误提示会被 setMessage 到一个用户根本看不见的窗口里，表现为「点了重试
+    // 什么都没发生」。所以失败判定全部收拢到 `inject_into_activation_target` 里，
+    // 隐藏之后这里不再出现第二个失败出口。
+    if hidden && result.is_err() {
+        let _ = crate::desktop::ensure_main_window(&app);
+    }
+    result
+}
+
+/// 把文本注入当前激活窗口，并确认它确实是这条历史记录的来源应用。
+/// 调用方已经隐藏了主窗口；本函数不碰窗口，只负责成败。
+async fn inject_into_activation_target(
+    entry: &HistoryEntry,
+    injection_text: String,
+) -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let target = crate::active_app_context::activation_target()
         .ok_or_else(|| "隐藏主窗口后未找到可注入的目标窗口".to_string())?;
@@ -1141,7 +1160,6 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
             .eq_ignore_ascii_case(&entry.process_name)
         || identity.app_name.eq_ignore_ascii_case(&entry.app_name);
     if !matches {
-        let _ = crate::desktop::ensure_main_window(&app);
         return Err(format!(
             "当前目标是 {}，与历史记录来源 {} 不一致，已取消注入",
             identity.app_name,
@@ -1230,6 +1248,37 @@ pub(crate) fn resume_after_failed_data_root_migration() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 重试注入先隐藏主窗口，所以隐藏之后不允许再有第二个失败出口。
+    ///
+    /// 以前三条失败路径里有两条（拿不到激活目标、注入本身失败）直接 `return Err`，
+    /// 不恢复窗口：错误提示被 setMessage 到一个已经看不见的窗口里，用户只看到
+    /// 「点了重试什么都没发生」。真跑这条路径需要真实窗口与前台应用，
+    /// 只能做源码契约校验。
+    #[test]
+    fn retry_injection_has_a_single_failure_exit_after_hiding_the_window() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("history.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("history.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) async fn retry_history_injection")
+            .expect("重试注入命令必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+
+        let hide = command.find(".hide()").expect("重试注入必须先隐藏主窗口");
+        let after_hide = &command[hide..];
+        assert!(
+            !after_hide.contains("return Err("),
+            "隐藏主窗口之后不得再直接 return Err，失败必须收拢到统一的恢复出口"
+        );
+        assert!(
+            after_hide.contains("result.is_err()") && after_hide.contains("ensure_main_window"),
+            "失败时必须把主窗口恢复出来"
+        );
+    }
 
     #[test]
     fn usage_metrics_ignore_whitespace_and_never_report_negative_savings() {
