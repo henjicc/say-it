@@ -50,6 +50,12 @@ pub(crate) struct AudioLabSnapshot {
 }
 
 impl AudioLabRuntime {
+    pub(crate) fn is_recording(&self) -> Result<bool, String> {
+        self.state
+            .lock()
+            .map(|state| state.recording)
+            .map_err(|_| "音频调校状态锁失败".into())
+    }
     pub(crate) fn begin(&self, sample_rate: u32) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
         if state.recording {
@@ -179,6 +185,16 @@ pub(crate) fn audio_lab_start(
     state: tauri::State<'_, crate::state::RuntimeState>,
     device_name: Option<String>,
 ) -> Result<AudioLabSnapshot, String> {
+    // 重复点击「开始录音」必须在动任何资源之前就挡住。
+    //
+    // 否则整条链路会一路走到底才失败：`acquire` 对同一 owner 会推进 generation 并顶掉
+    // 旧租约，`start_backend_mic_inner` 对同一设备返回 reused，直到 `begin()` 才因为
+    // 「正在录音」报错——而失败清理里的 `abort()` 是 `*state = default()`，正在进行的
+    // 录音被整个清空、麦克风被停、租约被释放。用户只是手抖点了两下，录了一半的音频
+    // 就没了，且不可恢复。
+    if state.audio_lab_runtime.is_recording()? {
+        return Err("音频调校正在录音".into());
+    }
     let lease = state
         .audio_session
         .acquire(crate::application::audio_session::AudioOwner::AudioLab)?;
@@ -192,19 +208,20 @@ pub(crate) fn audio_lab_start(
     let started = match crate::desktop::backend_mic::start_backend_mic_inner(device_name, &state) {
         Ok(started) => started,
         Err(error) => {
-            cleanup_start_failure(&state);
+            // 还没 begin，上一次录好的素材不该被这次失败连累。
+            cleanup_start_failure(&state, false);
             return Err(error);
         }
     };
     if let Err(error) = state.audio_lab_runtime.begin(started.sample_rate) {
-        cleanup_start_failure(&state);
+        cleanup_start_failure(&state, false);
         return Err(error);
     }
     let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state)
     {
         Ok(attached) => attached,
         Err(error) => {
-            cleanup_start_failure(&state);
+            cleanup_start_failure(&state, true);
             return Err(error);
         }
     };
@@ -236,8 +253,12 @@ pub(crate) fn audio_lab_start(
     state.audio_lab_runtime.snapshot()
 }
 
-fn cleanup_start_failure(state: &crate::state::RuntimeState) {
-    state.audio_lab_runtime.abort();
+/// `discard_session` 只有在本次确实已经 `begin()` 过时才该为真——`abort()` 是
+/// `*state = default()`，对尚未开始的失败调用它会连上一次录好的素材一起抹掉。
+fn cleanup_start_failure(state: &crate::state::RuntimeState, discard_session: bool) {
+    if discard_session {
+        state.audio_lab_runtime.abort();
+    }
     let _ = crate::desktop::backend_mic::release_backend_mic_inner(state);
     if let Ok(mut current) = state.audio_lab_lease.lock() {
         if let Some(lease) = current.take() {
@@ -339,6 +360,76 @@ fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 重复点击「开始录音」不得把正在进行的录音清空。
+    ///
+    /// 整条链路原本会一路走到 `begin()` 才失败：acquire 对同 owner 推进 generation、
+    /// start_backend_mic_inner 对同设备返回 reused，而失败清理里的 `abort()` 是
+    /// `*state = default()`——已经采到的音频、采样率、统计全被抹掉，麦克风被停、租约
+    /// 被释放。用户只是手抖点了两下。
+    #[test]
+    fn restarting_while_recording_keeps_the_take_intact() {
+        let runtime = AudioLabRuntime::default();
+        runtime.begin(48_000).unwrap();
+        runtime.append(&[0.1, -0.2, 0.3]);
+        assert!(runtime.is_recording().unwrap());
+
+        // 第二次 begin 必须被拒，且不得影响已有素材。
+        assert!(runtime.begin(48_000).is_err());
+        assert!(runtime.is_recording().unwrap(), "录音状态不能被顶掉");
+
+        runtime.stop().expect("已有采样，停止应当成功");
+        let snapshot = runtime.snapshot().unwrap();
+        assert_eq!(snapshot.sample_rate, 48_000);
+        assert!(snapshot.duration_ms > 0 || !snapshot.raw_waveform.is_empty());
+    }
+
+    /// 尚未 begin 的启动失败不该连累上一次录好的素材。
+    #[test]
+    fn a_failed_start_before_begin_keeps_previous_material() {
+        let runtime = AudioLabRuntime::default();
+        runtime.begin(16_000).unwrap();
+        runtime.append(&[0.5; 256]);
+        runtime.stop().unwrap();
+
+        // 模拟 cleanup_start_failure(state, false)：不调用 abort。
+        assert!(!runtime.is_recording().unwrap());
+        let snapshot = runtime.snapshot().unwrap();
+        assert_eq!(snapshot.sample_rate, 16_000, "上一次的素材必须还在");
+
+        // 而 discard_session = true 才真正清场。
+        runtime.abort();
+        assert_eq!(runtime.snapshot().unwrap().sample_rate, 0);
+    }
+
+    /// 守卫必须在**申请任何资源之前**，否则整条链路会一路走到 begin() 才失败，
+    /// 而那时失败清理已经把正在进行的录音连同麦克风和租约一起收掉了。
+    #[test]
+    fn start_command_rejects_a_second_press_before_touching_resources() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("audio_lab.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("audio_lab.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) fn audio_lab_start")
+            .expect("audio_lab_start 必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+
+        let guard_at = command
+            .find("is_recording()")
+            .expect("必须先判断是否正在录音");
+        let acquire_at = command.find(".acquire(").expect("必须仍然申请音频租约");
+        assert!(
+            guard_at < acquire_at,
+            "重复点击的守卫必须早于 acquire，否则旧租约会被顶掉"
+        );
+        assert!(
+            command.contains("cleanup_start_failure(&state, false)"),
+            "尚未 begin 的失败不得清空已有素材"
+        );
+    }
 
     #[test]
     fn waveform_is_bounded() {
