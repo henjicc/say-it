@@ -414,6 +414,15 @@ pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// 字幕热键当前是否已成功注册为全局快捷键。
+/// 注册了就不需要前端的焦点兜底，否则同一次按键会 toggle 两次。
+pub fn subtitle_hotkey_registered() -> bool {
+    SUBTITLE_SHORTCUT
+        .get()
+        .and_then(|storage| storage.lock().ok())
+        .is_some_and(|shortcut| shortcut.is_some())
+}
+
 pub fn clear_subtitle_hotkey() {
     unregister(SUBTITLE_SHORTCUT.get());
 }
