@@ -912,7 +912,7 @@ async fn capture_selection_for_target(
     }
     let state = app.state::<RuntimeState>();
     let handle = state.active_app_context.begin_selection_capture(target);
-    let captured = state.active_app_context.resolve_for_dictation(handle).await;
+    let captured = state.active_app_context.resolve_for_selection(handle).await;
     let current_target = crate::active_app_context::activation_target()
         .ok_or_else(|| "选区读取完成前目标窗口已丢失".to_string())?;
     if !crate::active_app_context::same_activation_target(current_target, target) {
