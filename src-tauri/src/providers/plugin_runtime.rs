@@ -36,6 +36,8 @@ use super::ProviderProfile;
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STACK_BYTES: usize = 1024 * 1024;
+/// 析构时留给插件收尾脚本的预算。独立于业务超时：运行时正是因为取消或超时才被销毁的。
+const PLUGIN_DISPOSE_BUDGET: Duration = Duration::from_secs(3);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
@@ -1229,6 +1231,8 @@ pub struct JsProviderRuntime {
     events: Arc<Mutex<Vec<Value>>>,
     deadline: Arc<Mutex<Instant>>,
     cancelled: Arc<AtomicBool>,
+    /// 正在执行析构收尾脚本。置位期间中断处理器忽略 `cancelled`，只认新的 deadline。
+    disposing: Arc<AtomicBool>,
     _owner: RuntimeOwnerRegistration,
 }
 
@@ -1389,10 +1393,17 @@ impl JsProviderRuntime {
             },
         );
         let deadline = Arc::new(Mutex::new(Instant::now() + timeout));
+        let disposing = Arc::new(AtomicBool::new(false));
         let interrupt_deadline = deadline.clone();
         let interrupt_cancelled = cancelled.clone();
+        let interrupt_disposing = disposing.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            interrupt_cancelled.load(Ordering::Relaxed)
+            // 析构收尾期间忽略 `cancelled`：运行时正是因为取消或超时才被销毁的，
+            // 继续沿用那两个条件会让插件的 dispose 在第一条语句就被打断，
+            // 收尾代码（关连接、退登录、落盘）永远跑不到。收尾另有自己的 deadline。
+            let cancelled_now = interrupt_cancelled.load(Ordering::Relaxed)
+                && !interrupt_disposing.load(Ordering::Relaxed);
+            cancelled_now
                 || interrupt_deadline
                     .lock()
                     .map(|value| Instant::now() >= *value)
@@ -1550,6 +1561,7 @@ impl JsProviderRuntime {
             events,
             deadline,
             cancelled,
+            disposing,
             _owner: owner,
         })
     }
@@ -1842,7 +1854,19 @@ impl Drop for JsProviderRuntime {
             .map(|host| host.spec.source_namespace.clone())
             .unwrap_or_default();
         if !namespace.is_empty() {
-            let _ = self.context.with(|ctx| -> Result<(), String> {
+            // 给收尾脚本一个干净的执行窗口：清掉取消/超时导致的中断条件，换成独立预算。
+            // 否则中断处理器会在 dispose 的第一条语句就把它打断，而错误又被整个吞掉，
+            // 表现为插件的连接、登录态与待落盘数据全部泄漏且毫无线索。
+            self.disposing.store(true, Ordering::Relaxed);
+            if let Ok(mut deadline) = self.deadline.lock() {
+                *deadline = Instant::now() + PLUGIN_DISPOSE_BUDGET;
+            }
+            let host = self.host.clone();
+            // 收尾期间用一个独立的取消位：promise 泵也检查 cancelled，沿用原来那个会让
+            // 收尾在第一次轮询就返回「插件操作已取消」。中断处理器那边由 disposing 屏蔽。
+            let dispose_cancelled = AtomicBool::new(false);
+            let deadline = self.deadline.clone();
+            let outcome = self.context.with(|ctx| -> Result<(), String> {
                 let dispose: Function = ctx
                     .globals()
                     .get("__sayitDisposePluginModules")
@@ -1850,11 +1874,14 @@ impl Drop for JsProviderRuntime {
                 let promise: Promise = dispose
                     .call((namespace,))
                     .map_err(|error| js_error_with_context(&ctx, error))?;
-                promise
-                    .finish::<String>()
-                    .map_err(|error| js_error_with_context(&ctx, error))?;
+                // 收尾脚本同样可能 await 定时器或关闭握手，必须走会投递宿主事件的泵。
+                // 此时插件对象可能已半失效，不再回调它的 onHostEvent。
+                pump_promise::<String>(&ctx, promise, &host, &dispose_cancelled, &deadline, false)?;
                 Ok(())
             });
+            if let Err(error) = outcome {
+                crate::dlog!("[plugin-runtime] 插件收尾脚本失败：{error}");
+            }
         }
         if let Ok(mut host) = self.host.lock() {
             host.close_active_resources();
@@ -3240,6 +3267,47 @@ mod tests {
         assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
         drop(runtime);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 被取消/超时销毁的运行时，仍然要让插件的收尾脚本跑完。
+    ///
+    /// 中断处理器在 `cancelled` 或超过 deadline 时立即中断，而 Drop 里跑
+    /// `__sayitDisposePluginModules` 之前两者都没有重置——运行时正是因为取消或超时
+    /// 才被销毁的，于是收尾在第一条语句就被打断；错误还被 `let _ =` 整个吞掉，表现为
+    /// 连接、登录态与待落盘数据全部泄漏且毫无线索。
+    #[test]
+    fn dispose_script_runs_even_after_cancellation() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ invoke() { return {}; } }); \
+             globalThis.__sayitDisposePluginModules = async () => { \
+               await new Promise(r => setTimeout(r, 20)); \
+               globalThis.__sayitHost.storage.set('disposed', 'yes'); \
+               return 'null'; \
+             };",
+            None,
+        );
+        let data_dir = spec.data_dir.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            cancelled.clone(),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        // 模拟卸载/超时：先取消，再销毁。
+        cancelled.store(true, Ordering::Relaxed);
+        drop(runtime);
+
+        let saved = std::fs::read(data_dir.join("storage.json")).expect("收尾脚本应当写过盘");
+        let value: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(
+            value["disposed"], "yes",
+            "取消之后收尾脚本仍必须完整跑完：{value}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn registered_owner_count(namespace: &str) -> usize {
