@@ -1423,6 +1423,15 @@ impl JsProviderRuntime {
                 "浏览器临时会话凭据已失效：{reason}。请打开登录窗口并重新同步会话"
             ));
         }
+        // 所有权必须在**跑任何插件代码之前**登记。
+        //
+        // 原来它在模块求值 + capability 注册 + `__sayitInitialize` 全跑完之后才注册，
+        // 于是 `drain_plugin_namespace` 完全看不到「正在初始化」的运行时：既不置
+        // cancelled 也不等待就返回 0，卸载流程随后直接 `remove_dir_all` 删掉插件目录。
+        // 逃逸出来的 QuickJS 运行时会继续用已被删除的凭据跑云端识别，直到自己的
+        // deadline（最长 10 分钟）。提前登记还有一个好处：初始化期间也能被取消——
+        // 中断处理器与 promise 泵都会检查同一个 `cancelled`。
+        let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
         context.with(|ctx| -> Result<(), String> {
             let host_call_state = host.clone();
             let host_call = Function::new(
@@ -1534,7 +1543,6 @@ impl JsProviderRuntime {
             pump_promise::<String>(&ctx, promise, &host, &cancelled, &deadline, true)?;
             Ok(())
         })?;
-        let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
         Ok(Self {
             _runtime: runtime,
             context,
@@ -3232,6 +3240,68 @@ mod tests {
         assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
         drop(runtime);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn registered_owner_count(namespace: &str) -> usize {
+        PLUGIN_RUNTIME_OWNERS
+            .0
+            .lock()
+            .unwrap()
+            .get(namespace)
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
+    /// 卸载/停用必须能看见**正在初始化**的运行时。
+    ///
+    /// 所有权原本在 initialize 全跑完之后才登记，于是 `drain_plugin_namespace` 对一个
+    /// 卡在初始化里的运行时返回 0：既不置 cancelled 也不等待，卸载流程紧接着
+    /// `remove_dir_all` 删掉插件目录。逃逸的 QuickJS 会继续用已删除的凭据跑云端识别，
+    /// 直到自己的 deadline（最长 10 分钟）。
+    #[test]
+    fn drain_sees_a_runtime_that_is_still_initializing() {
+        let (root, mut spec, profile) = fixture(
+            "export default () => ({ async initialize() { await new Promise(r => setTimeout(r, 60000)); } });",
+            None,
+        );
+        spec.source_namespace = format!("init-drain-{}", uuid::Uuid::new_v4());
+        let namespace = spec.source_namespace.clone();
+
+        let worker = std::thread::spawn(move || {
+            JsProviderRuntime::create(
+                spec,
+                &profile,
+                Duration::from_secs(120),
+                Arc::new(AtomicBool::new(false)),
+                HashMap::new(),
+            )
+            .map(|_| ())
+        });
+
+        // 等初始化真的开始（初始化期间就必须已经登记在册）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registered_owner_count(&namespace) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            registered_owner_count(&namespace),
+            1,
+            "正在初始化的运行时必须已经登记所有权，否则卸载会把它漏掉"
+        );
+
+        let cancelled = drain_plugin_namespace(&namespace, Duration::from_secs(20)).unwrap();
+        assert_eq!(cancelled, 1, "drain 必须取消这个仍在初始化的运行时");
+        assert_eq!(
+            registered_owner_count(&namespace),
+            0,
+            "drain 返回时运行时必须已经释放"
+        );
+
+        assert!(
+            worker.join().unwrap().is_err(),
+            "被取消的初始化应当以失败返回，而不是继续跑下去"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
