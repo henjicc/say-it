@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::application::subtitle_document::{to_srt, SubtitleCue};
+use crate::application::transcription::DEFAULT_TRANSCRIPTION_JOB_KIND;
 use crate::commands::common::*;
 use crate::prelude::*;
 use crate::providers::capabilities::{
@@ -88,8 +89,10 @@ pub(crate) async fn transcription_start(
     state: tauri::State<'_, RuntimeState>,
     file_path: String,
     params: Option<TranscriptionParams>,
+    kind: Option<String>,
 ) -> Result<TranscriptionStartResponse, String> {
-    transcription_start_inner(app, &state, file_path, params).await
+    let kind = kind.unwrap_or_else(|| DEFAULT_TRANSCRIPTION_JOB_KIND.to_string());
+    transcription_start_inner(app, &state, file_path, params, &kind).await
 }
 
 pub(crate) async fn transcription_start_inner(
@@ -97,6 +100,7 @@ pub(crate) async fn transcription_start_inner(
     state: &RuntimeState,
     file_path: String,
     params: Option<TranscriptionParams>,
+    kind: &str,
 ) -> Result<TranscriptionStartResponse, String> {
     if file_path.trim().is_empty() {
         return Err("请选择要识别的音视频文件".to_string());
@@ -105,6 +109,8 @@ pub(crate) async fn transcription_start_inner(
     let params = params.unwrap_or_default();
     let provider_result = resolve_file_recognition_provider(&state, &params.model);
     let job_id = Uuid::new_v4().to_string();
+    // 先登记用途，再放任何事件出去。
+    state.transcription_runtime.register(&job_id, kind);
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut jobs = state
@@ -263,9 +269,15 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
         Value::Object(map) => Value::Object(map),
         other => json!({ "data": other }),
     };
+    let kind = app
+        .try_state::<RuntimeState>()
+        .map(|state| state.transcription_runtime.kind_of(job_id))
+        .unwrap_or_else(|| DEFAULT_TRANSCRIPTION_JOB_KIND.to_string());
     if let Value::Object(map) = &mut value {
         map.insert("jobId".to_string(), json!(job_id));
         map.insert("stage".to_string(), json!(stage));
+        // 用途随事件一起下发：前端据此分发，不再依赖只存在于内存的归属信息。
+        map.insert("kind".to_string(), json!(kind));
     }
     if debug_log_enabled() {
         let short = job_id.get(..8).unwrap_or(job_id);

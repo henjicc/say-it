@@ -715,7 +715,7 @@ async fn start_file_jobs(
             channel_id: None,
             special_word_filter: String::new(),
         };
-        match transcription_start_inner(app.clone(), state, path.clone(), Some(params)).await {
+        match transcription_start_inner(app.clone(), state, path.clone(), Some(params), "compare").await {
             Ok(job) => {
                 if let Ok(mut compare) = state.compare_runtime.inner.lock() {
                     compare.jobs.insert(job.job_id, index);

@@ -9,10 +9,20 @@ use serde_json::Value;
 
 use crate::application::contract::{DomainRunState, DomainSnapshot};
 
+/// 一个识别任务是为谁跑的。
+///
+/// 字幕转写、文稿对齐、模型对比、file 模式听写走的是同一条 `transcription_start`，
+/// 但它们属于完全不同的界面。用途必须由后端记住：前端的归属信息只在内存里，
+/// 主窗口重建后就没了，恢复时会把别人的任务当成自己的投影出来。
+pub(crate) const TRANSCRIPTION_JOB_KINDS: &[&str] =
+    &["transcribe", "align", "compare", "dictation"];
+pub(crate) const DEFAULT_TRANSCRIPTION_JOB_KIND: &str = "transcribe";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TranscriptionJobSnapshot {
     pub(crate) job_id: String,
+    pub(crate) kind: String,
     pub(crate) stage: String,
     pub(crate) active: bool,
     pub(crate) payload: Value,
@@ -21,16 +31,34 @@ pub(crate) struct TranscriptionJobSnapshot {
 #[derive(Default)]
 pub(crate) struct TranscriptionRuntime {
     jobs: std::sync::Mutex<HashMap<String, TranscriptionJobSnapshot>>,
+    kinds: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl TranscriptionRuntime {
+    /// 在任务发出第一个事件之前登记它的用途。
+    pub(crate) fn register(&self, job_id: &str, kind: &str) {
+        if let Ok(mut kinds) = self.kinds.lock() {
+            kinds.insert(job_id.to_string(), normalize_job_kind(kind).to_string());
+        }
+    }
+
+    pub(crate) fn kind_of(&self, job_id: &str) -> String {
+        self.kinds
+            .lock()
+            .ok()
+            .and_then(|kinds| kinds.get(job_id).cloned())
+            .unwrap_or_else(|| DEFAULT_TRANSCRIPTION_JOB_KIND.to_string())
+    }
+
     pub(crate) fn apply_event(&self, job_id: &str, stage: &str, payload: Value) {
         let active = !matches!(stage, "completed" | "error");
+        let kind = self.kind_of(job_id);
         if let Ok(mut jobs) = self.jobs.lock() {
             jobs.insert(
                 job_id.to_string(),
                 TranscriptionJobSnapshot {
                     job_id: job_id.to_string(),
+                    kind,
                     stage: stage.to_string(),
                     active,
                     payload,
@@ -74,6 +102,16 @@ impl TranscriptionRuntime {
     }
 }
 
+/// 未知用途一律归为字幕转写（历史上唯一的用途），不自己发明新值。
+pub(crate) fn normalize_job_kind(kind: &str) -> &str {
+    let kind = kind.trim();
+    TRANSCRIPTION_JOB_KINDS
+        .iter()
+        .find(|known| **known == kind)
+        .copied()
+        .unwrap_or(DEFAULT_TRANSCRIPTION_JOB_KIND)
+}
+
 #[tauri::command]
 pub(crate) fn get_transcription_runtime(
     state: tauri::State<'_, crate::state::RuntimeState>,
@@ -84,6 +122,35 @@ pub(crate) fn get_transcription_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 任务归属必须由后端记住。
+    ///
+    /// 前端以前只在内存里记了一个 alignJobId，`destroy_main_window` 后重建窗口就没了，
+    /// 恢复时把文稿对齐（以及模型对比、file 模式听写）的任务当成普通转写投影到字幕转写页。
+    #[test]
+    fn a_job_keeps_the_kind_it_was_registered_with() {
+        let runtime = TranscriptionRuntime::default();
+        runtime.register("align-1", "align");
+        runtime.register("job-1", "transcribe");
+        runtime.apply_event("align-1", "polling", serde_json::json!({}));
+        runtime.apply_event("job-1", "polling", serde_json::json!({}));
+
+        assert_eq!(runtime.get("align-1").unwrap().kind, "align");
+        assert_eq!(runtime.get("job-1").unwrap().kind, "transcribe");
+    }
+
+    /// 未登记或没见过的用途归为字幕转写（历史上唯一的用途），不自己发明新值。
+    #[test]
+    fn unknown_kinds_fall_back_to_transcribe() {
+        let runtime = TranscriptionRuntime::default();
+        runtime.register("job-2", "乱写的");
+        runtime.apply_event("job-2", "polling", serde_json::json!({}));
+        assert_eq!(runtime.get("job-2").unwrap().kind, "transcribe");
+
+        let runtime = TranscriptionRuntime::default();
+        runtime.apply_event("job-3", "polling", serde_json::json!({}));
+        assert_eq!(runtime.get("job-3").unwrap().kind, "transcribe");
+    }
 
     #[test]
     fn completed_job_remains_recoverable_but_is_not_running() {
