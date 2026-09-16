@@ -430,6 +430,13 @@ struct Session {
     segment: String,
     raw_samples: Vec<f32>,
     sample_rate: u32,
+    /// 按实际采样数算出的**说话时长**，在 `stop()` 搬走 `raw_samples` 的那一刻记下。
+    ///
+    /// `finalize` 读不到 `raw_samples`：`stop()` 早就 `mem::take` 走了，四个 finalize
+    /// 入口都在其后。原本写在 finalize 里的「按采样数算时长」分支因此从未执行过，
+    /// 一律回落到 `started_at.elapsed()`——file 模式把上传与转写的耗时也算成了说话
+    /// 时长，`history::output_metrics` 的「节省时间」于是长期 saturate 成 0。
+    recorded_ms: Option<u64>,
     injected_epoch: Option<u64>,
     lease: Option<AudioLease>,
     prefs: DictationPrefs,
@@ -1542,7 +1549,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         .session
         .lock()
         .map_err(|_| "听写状态锁失败")
-        .map(|mut s| std::mem::take(&mut s.raw_samples))?;
+        .map(|mut s| take_raw_samples(&mut s))?;
     if prefs.keep_alive_ms == 0 {
         let _ = release_backend_mic_inner(&state);
     } else {
@@ -1688,6 +1695,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.committed.clear();
         s.segment.clear();
         s.raw_samples.clear();
+        s.recorded_ms = None;
         s.error = None;
         s.pending_fallback = None;
         s.activation_target = None;
@@ -1939,6 +1947,21 @@ async fn prepare_target_for_injection(
     Ok(())
 }
 
+/// 搬走本次录音的采样，并**在同一时刻**记下按采样数算出的说话时长。
+///
+/// 时长只能在这里算：`finalize` 的四个入口全都在 `stop()` 之后，那时 `raw_samples`
+/// 已经被搬空。原本写在 finalize 里的「按采样数算时长」分支因此从未执行过，一律
+/// 回落到 `started_at.elapsed()`——file 模式把上传与转写的耗时也算进了说话时长，
+/// `history::output_metrics` 的「节省时间」于是长期 saturate 成 0。
+fn take_raw_samples(session: &mut Session) -> Vec<f32> {
+    let samples = std::mem::take(&mut session.raw_samples);
+    if session.sample_rate > 0 && !samples.is_empty() {
+        session.recorded_ms =
+            Some((samples.len() as u64).saturating_mul(1000) / session.sample_rate as u64);
+    }
+    samples
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -1999,13 +2022,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.activation_target,
             s.app_identity.clone(),
             s.started_at,
-            if s.sample_rate > 0 && !s.raw_samples.is_empty() {
-                (s.raw_samples.len() as u64).saturating_mul(1000) / s.sample_rate as u64
-            } else {
+            s.recorded_ms.unwrap_or_else(|| {
                 s.started_at
                     .map(|value| value.elapsed().as_millis() as u64)
                     .unwrap_or(0)
-            },
+            }),
             s.assistant_request.clone(),
             s.history_allowed,
             s.trigger,
@@ -4002,6 +4023,73 @@ mod tests {
         assert_eq!(BUILTIN_PUNCTUATION_RULE.flags, "g");
         assert_eq!(BUILTIN_PUNCTUATION_RULE.replacement, "$1");
         assert_eq!(BUILTIN_PUNCTUATION_RULE.patterns.len(), 2);
+    }
+
+    /// `stop()` 搬走 raw_samples 之后，finalize 必须仍然拿得到真实说话时长。
+    ///
+    /// 四个 finalize 入口全在 stop() 之后，原来那段「按采样数算时长」的代码因此
+    /// 从未执行过，一律回落到 started_at.elapsed()：file 模式把上传与转写的耗时
+    /// 也算成说话时长，history::output_metrics 的「节省时间」长期 saturate 成 0。
+    #[test]
+    fn recorded_duration_survives_the_raw_sample_handoff() {
+        let mut session = Session {
+            sample_rate: 16_000,
+            raw_samples: vec![0.0; 32_000],
+            ..Session::default()
+        };
+
+        let taken = take_raw_samples(&mut session);
+
+        assert_eq!(taken.len(), 32_000);
+        assert!(session.raw_samples.is_empty(), "采样必须被真正搬走");
+        assert_eq!(
+            session.recorded_ms,
+            Some(2_000),
+            "32000 帧 / 16kHz = 2 秒，必须在搬走的同一刻记下"
+        );
+    }
+
+    #[test]
+    fn recorded_duration_stays_unset_without_usable_samples() {
+        let mut empty = Session {
+            sample_rate: 16_000,
+            ..Session::default()
+        };
+        take_raw_samples(&mut empty);
+        assert_eq!(empty.recorded_ms, None, "没有采样时应回落到时钟时长");
+
+        let mut unknown_rate = Session {
+            sample_rate: 0,
+            raw_samples: vec![0.0; 1_000],
+            ..Session::default()
+        };
+        take_raw_samples(&mut unknown_rate);
+        assert_eq!(unknown_rate.recorded_ms, None, "采样率未知时不能瞎算");
+    }
+
+    /// finalize 必须读 `recorded_ms`，不能再去读那时早已为空的 `raw_samples`。
+    #[test]
+    fn finalize_reads_the_recorded_duration_not_the_drained_samples() {
+        let source = include_str!("dictation.rs").replace("
+", "
+");
+        let production = &source[..source.find("#[cfg(test)]").expect("应当存在测试模块")];
+        let start = production
+            .find("async fn finalize(")
+            .expect("finalize 必须仍然存在");
+        let body = &production[start..];
+        let body = &body[..body.find("
+}
+").expect("函数体未闭合")];
+
+        assert!(
+            body.contains("recorded_ms"),
+            "finalize 必须用 stop() 记下的说话时长"
+        );
+        assert!(
+            !body.contains("raw_samples"),
+            "finalize 里的 raw_samples 一定是空的，不能拿它算任何东西"
+        );
     }
 
     /// 回归：刚建好的 ASR 流是否仍属于当前会话，必须同时看 epoch **和**阶段。
