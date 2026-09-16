@@ -478,6 +478,19 @@ pub(crate) fn apply_subtitle_obs_routing(app: AppHandle) -> Result<(), String> {
     reload_prefs_and_render(&app)
 }
 
+/// 实时字幕是否正在占用共享的指示窗口。
+///
+/// 听写提示条与字幕条是**同一个**指示窗，任何延时执行的「隐藏指示窗」都必须先问一下
+/// 字幕这边，否则会把用户刚开起来的字幕条一并关掉。
+pub(crate) fn owns_indicator(state: &RuntimeState) -> bool {
+    state
+        .subtitle_runtime
+        .session
+        .lock()
+        .map(|session| !matches!(session.phase, SubtitlePhase::Idle))
+        .unwrap_or(false)
+}
+
 pub(crate) fn domain_snapshot(state: &RuntimeState) -> Result<DomainSnapshot, String> {
     let session = state
         .subtitle_runtime

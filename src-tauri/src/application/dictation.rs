@@ -3039,18 +3039,38 @@ fn remove_temp(path: Option<PathBuf>) {
     }
 }
 
+/// 「已复制到剪贴板」提示 3.2 秒后是否还该把指示窗收起来。
+///
+/// 指示窗是听写提示条与实时字幕条**共用**的同一个窗口。这次隐藏是延时执行的，
+/// 期间用户完全可能开起实时字幕——只看听写会话状态就会把刚出现的字幕条一并关掉，
+/// 而用户看不到任何原因。
+fn clipboard_notice_should_hide(
+    session_epoch: u64,
+    expected_epoch: u64,
+    dictation_phase: DictationPhase,
+    subtitle_owns_indicator: bool,
+) -> bool {
+    session_epoch == expected_epoch
+        && dictation_phase == DictationPhase::Idle
+        && !subtitle_owns_indicator
+}
+
 fn schedule_clipboard_fallback_hide(app: AppHandle, epoch: u64) {
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_millis(CLIPBOARD_FALLBACK_NOTICE_MS)).await;
-        let should_hide = app
-            .state::<RuntimeState>()
-            .dictation_runtime
-            .session
-            .lock()
-            .map(|session| session.epoch == epoch && session.phase == DictationPhase::Idle)
-            .unwrap_or(false);
-        if should_hide {
-            let _ = crate::desktop::set_indicator_state(app, "hidden".into());
+        let state = app.state::<RuntimeState>();
+        let Ok(session) = state.dictation_runtime.session.lock() else {
+            return;
+        };
+        let (session_epoch, phase) = (session.epoch, session.phase);
+        drop(session);
+        if clipboard_notice_should_hide(
+            session_epoch,
+            epoch,
+            phase,
+            crate::application::subtitles::owns_indicator(&state),
+        ) {
+            let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
         }
     });
 }
@@ -4090,6 +4110,29 @@ mod tests {
             !body.contains("raw_samples"),
             "finalize 里的 raw_samples 一定是空的，不能拿它算任何东西"
         );
+    }
+
+    /// 「已复制到剪贴板」提示的延时隐藏必须让开实时字幕。
+    ///
+    /// 指示窗是听写提示条与字幕条共用的同一个窗口，而这次隐藏是 3.2 秒之后才执行的。
+    /// 只看听写会话状态的话，用户在这期间开起实时字幕就会被这条延时任务一把关掉，
+    /// 而且看不到任何原因。
+    #[test]
+    fn clipboard_notice_hide_yields_to_a_live_subtitle_bar() {
+        // 听写已收尾、字幕没开：正常收起提示条。
+        assert!(clipboard_notice_should_hide(7, 7, DictationPhase::Idle, false));
+
+        // 这 3.2 秒里用户开了实时字幕：绝不能碰指示窗。
+        assert!(!clipboard_notice_should_hide(7, 7, DictationPhase::Idle, true));
+
+        // 已经开始了新一轮听写：本来就该跳过。
+        assert!(!clipboard_notice_should_hide(8, 7, DictationPhase::Idle, false));
+        assert!(!clipboard_notice_should_hide(
+            7,
+            7,
+            DictationPhase::Recording,
+            false
+        ));
     }
 
     /// 回归：刚建好的 ASR 流是否仍属于当前会话，必须同时看 epoch **和**阶段。
