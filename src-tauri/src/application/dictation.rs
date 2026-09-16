@@ -1610,7 +1610,7 @@ async fn start_file_job(
         special_word_filter: String::new(),
     };
     let state = app.state::<RuntimeState>();
-    let response = transcription_start_inner(app.clone(), &state, path, Some(params)).await?;
+    let response = transcription_start_inner(app.clone(), &state, path, Some(params), "dictation").await?;
     let mut s = state
         .dictation_runtime
         .session

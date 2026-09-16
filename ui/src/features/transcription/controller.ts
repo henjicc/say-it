@@ -118,14 +118,24 @@ function handleTranscribeEvent(payload: TranscriptionEventPayload) {
   }
 }
 
-/** 后端任务的最后事件投影。窗口重建后不依赖旧事件监听器，也能恢复普通转写的进度或结果。 */
+/**
+ * 后端任务的最后事件投影。窗口重建后不依赖旧事件监听器，也能恢复进度或结果。
+ *
+ * 分发看后端给的 `kind`。以前靠的是 store 里的 alignJobId，而它只存在于前端内存：
+ * `destroy_main_window` 后重建窗口就没了，于是文稿对齐任务（以及模型对比、file 模式
+ * 听写起的任务）会被当成普通转写，整个投影到「字幕转写」页上。
+ */
 export function applyTranscriptionRuntime(payload: TranscriptionEventPayload) {
   const store = useTranscriptionStore.getState();
   if (!payload.jobId) return;
-  if (store.alignJobId && payload.jobId === store.alignJobId) {
+  const kind = payload.kind || "transcribe";
+  if (kind === "align") {
+    if (!store.alignJobId) store.setRuntime({ alignJobId: payload.jobId });
     handleAlignEvent(payload);
     return;
   }
+  // 模型对比与 file 模式听写有自己的界面，不属于这两个页面。
+  if (kind !== "transcribe") return;
   if (!store.jobId || payload.jobId === store.jobId) {
     store.setRuntime({ jobId: payload.jobId });
     handleTranscribeEvent(payload);
@@ -133,10 +143,16 @@ export function applyTranscriptionRuntime(payload: TranscriptionEventPayload) {
 }
 
 export async function loadTranscriptionRuntime() {
-  const jobs = await cmd<Array<{ jobId: string; stage: string; active: boolean; payload: TranscriptionEventPayload }>>(CMD.getTranscriptionRuntime);
-  // 运行中的任务优先；若仅有已结束任务，恢复最近返回的一项，供窗口重建后查看结果。
-  const current = jobs.find((job) => job.active) || jobs.at(-1);
-  if (current) applyTranscriptionRuntime({ ...current.payload, jobId: current.jobId, stage: current.stage });
+  const jobs = await cmd<Array<{ jobId: string; kind?: string; stage: string; active: boolean; payload: TranscriptionEventPayload }>>(CMD.getTranscriptionRuntime);
+  // 两个页面各自恢复自己的任务：运行中的优先，若仅有已结束任务则恢复最近一项，
+  // 供窗口重建后查看结果。
+  for (const kind of ["transcribe", "align"]) {
+    const mine = jobs.filter((job) => (job.kind || "transcribe") === kind);
+    const current = mine.find((job) => job.active) || mine.at(-1);
+    if (current) {
+      applyTranscriptionRuntime({ ...current.payload, jobId: current.jobId, kind, stage: current.stage });
+    }
+  }
 }
 
 function handleAlignEvent(payload: TranscriptionEventPayload) {
@@ -274,6 +290,7 @@ export async function startTranscription() {
     const response = await cmd<{ jobId: string }>(CMD.transcriptionStart, {
       filePath: store.selectedFile.path,
       params: normalizeParams(store.params),
+      kind: "transcribe",
     });
     activeJobId = response.jobId;
     useTranscriptionStore.getState().setRuntime({
@@ -382,6 +399,7 @@ export async function startAlignment() {
     const response = await cmd<{ jobId: string }>(CMD.transcriptionStart, {
       filePath: file.path,
       params: normalizeParams(store.params),
+      kind: "align",
     });
     activeJobId = response.jobId;
     useTranscriptionStore.getState().setRuntime({

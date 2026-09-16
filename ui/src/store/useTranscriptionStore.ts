@@ -90,6 +90,8 @@ export interface AlignRecognitionCache {
 
 export interface TranscriptionEventPayload {
   jobId?: string;
+  /** 任务用途，由后端登记：transcribe / align / compare / dictation。 */
+  kind?: string;
   stage?: string;
   filePath?: string;
   model?: string;
