@@ -171,13 +171,25 @@ export function DiagnosticSection() {
   );
 }
 
-function DataResetSection() {
+export function DataResetSection() {
   const [pendingReset, setPendingReset] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
+  // 失败提示必须留在弹窗**里面**。
+  //
+  // 原本写在弹窗外面的状态行上，而失败时 pendingReset 不会被清掉：弹窗还开着、
+  // 遮罩把那行字整个挡住，用户按了「确认重置」之后只看到按钮从「正在重置…」跳回
+  // 「确认重置」，得不到任何失败原因。
+  function closeDialog() {
+    if (busy) return;
+    setPendingReset(false);
+    setMessage("");
+  }
+
   async function reset() {
     setBusy(true);
+    setMessage("");
     try {
       await cmd(CMD.requestDataReset);
     } catch (error) {
@@ -196,10 +208,9 @@ function DataResetSection() {
           <Button id="data-reset" variant="dangerHover" onClick={() => setPendingReset(true)}>重置数据并重启</Button>
         </Field>
       </FormGrid>
-      {message && <p role="status" className="text-xs text-[var(--color-err)]">{message}</p>}
       <Modal
         open={pendingReset}
-        onClose={() => !busy && setPendingReset(false)}
+        onClose={closeDialog}
         title="确认重置全部数据"
         showCloseButton={false}
         className="max-w-[430px]"
@@ -208,11 +219,16 @@ function DataResetSection() {
           <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
             将清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。此操作不可撤销，确认后应用会立即重启。
           </p>
+          {message && (
+            <p role="alert" className="mt-4 text-sm text-[var(--color-err)]">
+              重置失败：{message}
+            </p>
+          )}
           <div className="mt-6 flex justify-end gap-2">
             <Button size="sm" variant="dangerHover" disabled={busy} onClick={() => void reset()}>
               {busy ? "正在重置…" : "确认重置"}
             </Button>
-            <Button size="sm" variant="primary" autoFocus disabled={busy} onClick={() => setPendingReset(false)}>取消</Button>
+            <Button size="sm" variant="primary" autoFocus disabled={busy} onClick={closeDialog}>取消</Button>
           </div>
         </div>
       </Modal>
