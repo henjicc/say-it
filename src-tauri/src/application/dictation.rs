@@ -1245,6 +1245,23 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
     }
 }
 
+/// file 模式单次录音的硬上限。
+///
+/// 非实时模型把整段原始 f32 PCM 留在内存里等停止时一次性写盘，而
+/// `dictation_silence_disconnect_*` 的自动断开只作用于实时模式，file 模式没有任何自动收尾。
+/// 48kHz 单声道每分钟约 11.5MB，忘了停止就一路涨到分配失败——Rust 的分配失败直接
+/// abort 进程，整段录音连同还没落盘的 wav 一起没了，也没有 temp_audio_path 可供恢复。
+/// 到上限就自动收尾并走正常识别流程，已经说过的内容不会丢。
+const FILE_MODE_MAX_RECORDING: Duration = Duration::from_secs(30 * 60);
+const FILE_MODE_LIMIT_NOTICE: &str = "单次听写录音已达 30 分钟上限，已自动停止并开始识别。";
+
+fn file_mode_recording_is_full(samples: usize, sample_rate: u32) -> bool {
+    if sample_rate == 0 {
+        return false;
+    }
+    samples as u64 >= FILE_MODE_MAX_RECORDING.as_secs() * sample_rate as u64
+}
+
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
@@ -1255,10 +1272,12 @@ fn spawn_raw_consumer(
         // 文件听写不建立 ASR 流，因此单独持有一份流式 DSP 只供波形预览使用。
         // 原始 PCM 仍完整保留给文件识别上传，避免预览链路改变识别输入。
         let mut waveform_dsp: Option<StreamDsp> = None;
+        let mut stop_requested = false;
         while let Some(input) = rx.recv().await {
             let AsrStreamInput::RawF32(samples) = input else {
                 continue;
             };
+            let mut limit_reached = false;
             let (need_open, need_close, waveform_config) = {
                 let state = app.state::<RuntimeState>();
                 let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -1275,7 +1294,11 @@ fn spawn_raw_consumer(
                     break;
                 }
                 if s.mode == Some(DictationMode::File) {
-                    s.raw_samples.extend_from_slice(&samples);
+                    if file_mode_recording_is_full(s.raw_samples.len(), s.sample_rate) {
+                        limit_reached = true;
+                    } else {
+                        s.raw_samples.extend_from_slice(&samples);
+                    }
                 }
                 let level = rms(&samples);
                 let mut need_open = false;
@@ -1342,6 +1365,12 @@ fn spawn_raw_consumer(
                         emit_waveform(&app, level, peaks);
                     }
                 }
+            }
+            if limit_reached && !stop_requested {
+                stop_requested = true;
+                crate::dlog!("[dictation] file 模式录音达到上限，自动收尾");
+                publish_state(&app, Some(FILE_MODE_LIMIT_NOTICE.to_string()));
+                request_stop(app.clone());
             }
             if need_close {
                 disconnect_silent_asr(app.clone(), epoch);
@@ -1622,29 +1651,64 @@ async fn start_file_job(
     Ok(())
 }
 
-async fn write_wav(samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
-    let pcm = crate::audio_prep::f32_to_i16(&samples);
-    let data_len = (pcm.len() * 2) as u32;
-    let mut bytes = Vec::with_capacity(44 + data_len as usize);
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-    bytes.extend_from_slice(b"WAVEfmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&sample_rate.to_le_bytes());
-    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    bytes.extend_from_slice(&2u16.to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(b"data");
-    bytes.extend_from_slice(&data_len.to_le_bytes());
-    for v in pcm {
-        bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    let path = std::env::temp_dir().join(format!("say-it-dictation-{}.wav", Uuid::new_v4()));
-    tokio::fs::write(&path, bytes)
-        .await
+/// 每批转换并写盘的采样数。
+const WAV_WRITE_CHUNK: usize = 8_192;
+
+/// 把 f32 PCM 流式写成 16-bit 单声道 WAV。
+///
+/// 以前是先 `f32_to_i16` 造一份完整 i16 Vec，再拼一份完整的 WAV 字节 Vec，最后一次性
+/// `fs::write`：停止的那一瞬内存里同时存在三份完整录音。长录音下这几次连续的大块
+/// 分配最容易失败，而分配失败会直接 abort 进程。数据长度一开始就算得出来，
+/// 所以头部可以直接写对，不需要回填。
+fn write_wav_blocking(
+    path: &std::path::Path,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let data_len = u32::try_from(samples.len().saturating_mul(2))
+        .map_err(|_| "听写录音超过 WAV 格式上限".to_string())?;
+    let file = std::fs::File::create(path).map_err(|e| format!("写入听写录音失败：{e}"))?;
+    let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&(36 + data_len).to_le_bytes());
+    header.extend_from_slice(b"WAVEfmt ");
+    header.extend_from_slice(&16u32.to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&sample_rate.to_le_bytes());
+    header.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    header.extend_from_slice(&2u16.to_le_bytes());
+    header.extend_from_slice(&16u16.to_le_bytes());
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&data_len.to_le_bytes());
+    writer
+        .write_all(&header)
         .map_err(|e| format!("写入听写录音失败：{e}"))?;
+
+    let mut block = Vec::with_capacity(WAV_WRITE_CHUNK * 2);
+    for part in samples.chunks(WAV_WRITE_CHUNK) {
+        block.clear();
+        for value in crate::audio_prep::f32_to_i16(part) {
+            block.extend_from_slice(&value.to_le_bytes());
+        }
+        writer
+            .write_all(&block)
+            .map_err(|e| format!("写入听写录音失败：{e}"))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("写入听写录音失败：{e}"))
+}
+
+async fn write_wav(samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!("say-it-dictation-{}.wav", Uuid::new_v4()));
+    let target = path.clone();
+    tokio::task::spawn_blocking(move || write_wav_blocking(&target, &samples, sample_rate))
+        .await
+        .map_err(|e| format!("写入听写录音失败：{e}"))??;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -4117,6 +4181,66 @@ mod tests {
     /// 指示窗是听写提示条与字幕条共用的同一个窗口，而这次隐藏是 3.2 秒之后才执行的。
     /// 只看听写会话状态的话，用户在这期间开起实时字幕就会被这条延时任务一把关掉，
     /// 而且看不到任何原因。
+    #[test]
+    fn file_mode_recording_stops_at_the_hard_limit() {
+        // file 模式没有任何自动收尾（静音断开只作用于实时模式），原始 PCM 一路累积到
+        // 分配失败，而 Rust 的分配失败直接 abort 进程：整段录音连同还没落盘的 wav 一起没了。
+        let rate = 48_000u32;
+        let limit = FILE_MODE_MAX_RECORDING.as_secs() as usize * rate as usize;
+        assert!(!file_mode_recording_is_full(limit - 1, rate));
+        assert!(file_mode_recording_is_full(limit, rate));
+        // 16kHz 设备的上限按同一个时长换算，而不是同一个采样数。
+        assert!(!file_mode_recording_is_full(limit, 192_000));
+        // 采样率未知时不误判为已满。
+        assert!(!file_mode_recording_is_full(usize::MAX, 0));
+    }
+
+    #[test]
+    fn written_wav_has_a_correct_header_and_payload() {
+        let path = std::env::temp_dir().join(format!("say-it-wav-test-{}.wav", Uuid::new_v4()));
+        write_wav_blocking(&path, &[0.0, 1.0, -1.0, 0.5], 16_000).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 36 + 8);
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(&bytes[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 8);
+        assert_eq!(bytes.len(), 44 + 8);
+        let pcm: Vec<i16> = bytes[44..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(pcm, crate::audio_prep::f32_to_i16(&[0.0, 1.0, -1.0, 0.5]));
+    }
+
+    /// 写盘必须是流式的。
+    ///
+    /// 以前先造一份完整 i16 Vec、再拼一份完整 WAV 字节 Vec，停止那一瞬内存里同时存在
+    /// 三份完整录音（按停止键时的瞬时峰值约每分钟 23MB）。内存峰值没法用断言直接量，
+    /// 只能校验实现形状：按块转换写出，不先把整个文件拼在内存里。
+    #[test]
+    fn wav_writing_never_materializes_the_whole_file_in_memory() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，听 \n 的切片会失配。
+        let source = include_str!("dictation.rs").replace("\r\n", "\n");
+        let start = source
+            .find("fn write_wav_blocking(")
+            .expect("写盘函数必须仍然存在");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
+
+        assert!(
+            body.contains("samples.chunks(WAV_WRITE_CHUNK)"),
+            "必须按块转换写出"
+        );
+        assert!(
+            !body.contains("Vec::with_capacity(44 + "),
+            "不得先在内存里拼出整个文件"
+        );
+    }
+
     #[test]
     fn clipboard_notice_hide_yields_to_a_live_subtitle_bar() {
         // 听写已收尾、字幕没开：正常收起提示条。
