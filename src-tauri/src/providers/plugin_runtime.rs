@@ -1488,7 +1488,9 @@ impl JsProviderRuntime {
                 .replace('\\', "/");
             let module = Module::declare(ctx.clone(), entry_name, source).map_err(js_error)?;
             let (module, promise) = module.eval().map_err(js_error)?;
-            promise.finish::<()>().map_err(js_error)?;
+            // top-level await 同样可能等在 setTimeout / 长连接上，必须走会投递宿主事件的泵。
+            // 此刻 __sayitProvider 尚未创建，所以不回调插件的 onHostEvent。
+            pump_promise::<()>(&ctx, promise, &host, &cancelled, &deadline, false)?;
             let factory: Function = module
                 .get("default")
                 .map_err(|_| "插件入口必须默认导出 createProvider(host) 函数".to_string())?;
@@ -1523,9 +1525,7 @@ impl JsProviderRuntime {
             let promise: Promise = init
                 .call((serde_json::to_string(&request).map_err(|error| error.to_string())?,))
                 .map_err(|error| js_error_with_context(&ctx, error))?;
-            promise
-                .finish::<String>()
-                .map_err(|error| js_error_with_context(&ctx, error))?;
+            pump_promise::<String>(&ctx, promise, &host, &cancelled, &deadline, true)?;
             Ok(())
         })?;
         let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
@@ -1769,48 +1769,14 @@ impl JsProviderRuntime {
         ctx: &Ctx<'js>,
         promise: Promise<'js>,
     ) -> Result<String, String> {
-        loop {
-            if let Some(result) = promise.result::<String>() {
-                return result.map_err(|error| js_error_with_context(ctx, error));
-            }
-            let mut progressed = false;
-            while ctx.execute_pending_job() {
-                progressed = true;
-            }
-            let events = self
-                .host
-                .lock()
-                .map_err(|_| "宿主状态锁定失败")?
-                .take_host_events();
-            for event in events {
-                progressed = true;
-                self.dispatch_sdk_host_event(ctx, &event)?;
-                let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
-                let callback: Promise = call
-                    .call((
-                        "onHostEvent",
-                        serde_json::to_string(&event).map_err(|error| error.to_string())?,
-                    ))
-                    .map_err(|error| js_error_with_context(ctx, error))?;
-                callback
-                    .finish::<String>()
-                    .map_err(|error| js_error_with_context(ctx, error))?;
-            }
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err("插件操作已取消".into());
-            }
-            if self
-                .deadline
-                .lock()
-                .map(|deadline| Instant::now() >= *deadline)
-                .unwrap_or(true)
-            {
-                return Err("插件操作超时".into());
-            }
-            if !progressed {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
+        pump_promise(
+            ctx,
+            promise,
+            &self.host,
+            &self.cancelled,
+            &self.deadline,
+            true,
+        )
     }
 
     pub fn dispatch_host_events(&self) -> Result<(), String> {
@@ -1828,13 +1794,7 @@ impl JsProviderRuntime {
     }
 
     fn dispatch_sdk_host_event<'js>(&self, ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
-        let dispatcher: Function = ctx
-            .globals()
-            .get("__sayitDispatchHostEventJson")
-            .map_err(js_error)?;
-        dispatcher
-            .call::<_, ()>((serde_json::to_string(event).map_err(|error| error.to_string())?,))
-            .map_err(|error| js_error_with_context(ctx, error))
+        dispatch_sdk_host_event_in(ctx, event)
     }
 
     pub fn take_events(&self) -> Vec<Value> {
@@ -2390,6 +2350,85 @@ fn js_error_with_context(ctx: &Ctx<'_>, error: JsError) -> String {
     )
 }
 
+/// 把一条宿主事件交给 SDK 侧的分发器（它负责 resolve setTimeout / HTTP 流 / WebSocket）。
+///
+/// 没有 SDK bundle 的运行时不会注册这个全局；那种情况下本来也产生不了宿主事件，
+/// 直接跳过即可，不该因此报错。
+fn dispatch_sdk_host_event_in<'js>(ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
+    let Ok(dispatcher) = ctx
+        .globals()
+        .get::<_, Function>("__sayitDispatchHostEventJson")
+    else {
+        return Ok(());
+    };
+    dispatcher
+        .call::<_, ()>((serde_json::to_string(event).map_err(|error| error.to_string())?,))
+        .map_err(|error| js_error_with_context(ctx, error))
+}
+
+/// 驱动一个 Promise 直到 settle：既跑 QuickJS 的 job queue，也把宿主事件投递回 JS。
+///
+/// 抽成自由函数是因为**初始化阶段还没有 `Self`**。模块求值与 `__sayitInitialize` 原本用
+/// 裸 `promise.finish()`，它只驱动 job queue、不投递宿主事件，job queue 跑空而 Promise
+/// 仍 pending 时直接返回 `Error::WouldBlock`。插件作者按常规 JS 写法在 `initialize()` 里
+/// `await new Promise(r => setTimeout(r, 300))` 退避重试、或建 WebSocket 握手就必然踩中，
+/// 用户只会看到无从排查的「JavaScript 插件执行失败」，该供应商的听写/字幕/翻译/LLM 全挂。
+///
+/// `notify_provider` 控制是否顺带调用插件自己的 `onHostEvent`：模块求值阶段
+/// `__sayitProvider` 还不存在，这时只能分发给 SDK，不能回调插件。
+fn pump_promise<'js, T: rquickjs::FromJs<'js>>(
+    ctx: &Ctx<'js>,
+    promise: Promise<'js>,
+    host: &Arc<Mutex<HostState>>,
+    cancelled: &AtomicBool,
+    deadline: &Mutex<Instant>,
+    notify_provider: bool,
+) -> Result<T, String> {
+    loop {
+        if let Some(result) = promise.result::<T>() {
+            return result.map_err(|error| js_error_with_context(ctx, error));
+        }
+        let mut progressed = false;
+        while ctx.execute_pending_job() {
+            progressed = true;
+        }
+        let events = host
+            .lock()
+            .map_err(|_| "宿主状态锁定失败")?
+            .take_host_events();
+        for event in events {
+            progressed = true;
+            dispatch_sdk_host_event_in(ctx, &event)?;
+            if !notify_provider {
+                continue;
+            }
+            let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
+            let callback: Promise = call
+                .call((
+                    "onHostEvent",
+                    serde_json::to_string(&event).map_err(|error| error.to_string())?,
+                ))
+                .map_err(|error| js_error_with_context(ctx, error))?;
+            callback
+                .finish::<String>()
+                .map_err(|error| js_error_with_context(ctx, error))?;
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("插件操作已取消".into());
+        }
+        if deadline
+            .lock()
+            .map(|deadline| Instant::now() >= *deadline)
+            .unwrap_or(true)
+        {
+            return Err("插件操作超时".into());
+        }
+        if !progressed {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 const HOST_BOOTSTRAP: &str = r#"
 (() => {
   const call = (operation, payload = {}) => {
@@ -2900,6 +2939,60 @@ mod tests {
             .unwrap();
         assert_eq!(result["text"], "测试");
         assert_eq!(result["direct"], "测试");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `initialize()` 里 await 一个定时器必须能正常完成。
+    ///
+    /// 初始化阶段原本用裸 `promise.finish()` 收敛 Promise：它只驱动 QuickJS 的 job
+    /// queue，不投递宿主事件，而 `setTimeout` 正是靠 `take_host_events()` 回来的。
+    /// job queue 跑空而 Promise 仍 pending，rquickjs 直接返回 `Error::WouldBlock`，
+    /// 用户看到的是无从排查的「JavaScript 插件执行失败」，该供应商的听写/字幕/翻译/
+    /// LLM 全部不可用。插件作者写退避重试或长连接握手就必然踩中。
+    #[test]
+    fn initialize_can_await_a_host_timer() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ \
+               async initialize() { await new Promise(r => setTimeout(r, 30)); this.ready = true; }, \
+               invoke() { return { ready: this.ready === true }; } \
+             });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .expect("initialize 里 await setTimeout 不该失败");
+        let result = runtime
+            .call("invoke", &json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["ready"], true, "initialize 必须真的跑完");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 模块顶层 await 同样会等在定时器上。
+    #[test]
+    fn top_level_await_on_a_host_timer_resolves() {
+        let (root, spec, profile) = fixture(
+            "const delayed = await new Promise(r => setTimeout(() => r('late'), 30)); \
+             export default () => ({ invoke() { return { value: delayed }; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .expect("顶层 await setTimeout 不该失败");
+        let result = runtime
+            .call("invoke", &json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["value"], "late");
         std::fs::remove_dir_all(root).unwrap();
     }
 
