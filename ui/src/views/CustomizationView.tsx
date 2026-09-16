@@ -19,6 +19,7 @@ import {
   renderContextPreview,
   supportsHotwordSync,
   useCustomizationStore,
+  type CustomizationPrefs,
   type Hotword,
   type SyncState,
 } from "@/store/useCustomizationStore";
@@ -52,16 +53,34 @@ function HotwordsTab() {
     }
   }, [targets, pullProviderId]);
 
+  // 全部基于「写入时的最新状态」计算，并把失败显示出来。
+  //
+  // 此前这三个操作都用渲染时捕获的 prefs.hotwords 按下标算负载，再 `void patch(...)`
+  // 发出去：第一次保存还没返回就做第二次操作，后者会基于旧数组算出负载把前者整份
+  // 覆盖掉；而后端校验（单条 64 字符、模板 4000 字符）拒绝时，浮动的 promise 把错误
+  // 吞掉，store 不更新，受控输入框无声回滚，用户完全不知道发生了什么。
+  const save = (
+    label: string,
+    updater: (current: CustomizationPrefs) => Partial<CustomizationPrefs>,
+  ) => {
+    setMessage("");
+    void patch(updater).catch((error) => setMessage(`${label}失败：${String(error)}`));
+  };
   const updateHotword = (index: number, partial: Partial<Hotword>) => {
-    const hotwords = prefs.hotwords.map((item, i) => (i === index ? { ...item, ...partial } : item));
-    void patch({ hotwords });
+    save("保存热词", (current) => ({
+      hotwords: current.hotwords.map((item, i) => (i === index ? { ...item, ...partial } : item)),
+    }));
   };
   const removeHotword = (index: number) => {
-    void patch({ hotwords: prefs.hotwords.filter((_, i) => i !== index) });
+    save("删除热词", (current) => ({
+      hotwords: current.hotwords.filter((_, i) => i !== index),
+    }));
   };
   const addHotword = () => {
     if (prefs.hotwords.length >= MAX_HOTWORDS) return;
-    void patch({ hotwords: [...prefs.hotwords, { text: "", weight: DEFAULT_HOTWORD_WEIGHT }] });
+    save("新增热词", (current) => ({
+      hotwords: [...current.hotwords, { text: "", weight: DEFAULT_HOTWORD_WEIGHT }],
+    }));
   };
 
   const run = async (label: string, action: () => Promise<void>) => {

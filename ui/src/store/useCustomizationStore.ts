@@ -110,13 +110,26 @@ interface CustomizationState {
   syncState: SyncState;
   syncMessage: string;
   syncResults: ProviderSyncResult[];
-  patch: (partial: Partial<CustomizationPrefs>) => Promise<void>;
+  /**
+   * 写入热词/上下文。
+   *
+   * 传函数时会在**真正轮到这次写入**的那一刻拿最新的 prefs 计算负载。热词的增删改都是
+   * 按下标算的，若沿用渲染时捕获的数组，第一次保存还没返回就做第二次操作，后者会基于
+   * 旧数组算出负载并把前者整份覆盖掉。多次写入按调用顺序串行，不再互相竞争。
+   */
+  patch: (
+    partial:
+      | Partial<CustomizationPrefs>
+      | ((current: CustomizationPrefs) => Partial<CustomizationPrefs>),
+  ) => Promise<void>;
   pullFromProvider: (providerId: string) => Promise<void>;
   clearProviders: () => Promise<void>;
 }
 
 let autoSyncTimer: number | undefined;
 let syncedFingerprint: string | undefined;
+/** 串行化写入队列：热词的增删改必须按调用顺序落盘，否则彼此覆盖。 */
+let writeChain: Promise<void> = Promise.resolve();
 
 function cancelAutoSync() {
   if (autoSyncTimer !== undefined) window.clearTimeout(autoSyncTimer);
@@ -185,14 +198,21 @@ export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   syncMessage: "",
   syncResults: [],
 
-  patch: async (partial) => {
-    if (!get().hydrated) {
-      throw new Error("热词与上下文尚未加载完成，暂时无法保存；请重启应用后重试。");
-    }
-    const next = { ...get().prefs, ...partial };
-    await cmd(CMD.updateAppSettings, { domain: "customization", value: next });
-    set({ prefs: next });
-    if ("hotwords" in partial) scheduleAutoSync();
+  patch: (partial) => {
+    const run = writeChain.then(async () => {
+      if (!get().hydrated) {
+        throw new Error("热词与上下文尚未加载完成，暂时无法保存；请重启应用后重试。");
+      }
+      const current = get().prefs;
+      const changes = typeof partial === "function" ? partial(current) : partial;
+      const next = { ...current, ...changes };
+      await cmd(CMD.updateAppSettings, { domain: "customization", value: next });
+      set({ prefs: next });
+      if ("hotwords" in changes) scheduleAutoSync();
+    });
+    // 链条不能因为一次失败就断掉，但错误仍要交给调用方。
+    writeChain = run.catch(() => {});
+    return run;
   },
 
   pullFromProvider: async (providerId) => {
