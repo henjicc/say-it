@@ -109,3 +109,74 @@ describe("热词的云端同步", () => {
     expect(useCustomizationStore.getState().syncMessage).toBe("已同步到供应商");
   });
 });
+
+/** 写入是排在微任务队列上的，断言前先让出一轮。 */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("热词写入的串行与新鲜度", () => {
+  /// 增删改都按下标计算。原实现用渲染时捕获的数组算负载再 `void patch(...)`：
+  /// 第一次保存还没返回就做第二次操作，后者基于旧数组算出的负载会把前者整份覆盖掉。
+  /// 用户连着删两条，结果只删掉一条——而且没有任何提示。
+  it("保存往返期间的第二次操作基于最新状态计算，不覆盖前一次", async () => {
+    const pending: Array<() => void> = [];
+    cmd.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          pending.push(() => resolve());
+        }),
+    );
+    hydrateCustomizationPrefs({
+      hotwords: [
+        { text: "甲", weight: 4 },
+        { text: "乙", weight: 4 },
+        { text: "丙", weight: 4 },
+      ],
+      contextTemplate: "",
+    });
+    const { patch } = useCustomizationStore.getState();
+
+    // 连着删两条：第一次删「甲」，第二次删剩下里的第一条（也就是「乙」）。
+    const first = patch((current) => ({ hotwords: current.hotwords.filter((_, i) => i !== 0) }));
+    const second = patch((current) => ({ hotwords: current.hotwords.filter((_, i) => i !== 0) }));
+
+    // 串行：第二次必须等第一次落盘之后才发出。
+    await tick();
+    expect(cmd).toHaveBeenCalledTimes(1);
+    pending.shift()!();
+    await first;
+    await tick();
+    expect(cmd).toHaveBeenCalledTimes(2);
+    pending.shift()!();
+    await second;
+
+    expect(useCustomizationStore.getState().prefs.hotwords.map((item) => item.text)).toEqual([
+      "丙",
+    ]);
+  });
+
+  /// 后端校验（单条 64 字符、模板 4000 字符）拒绝时，浮动的 promise 把错误吞掉，
+  /// store 不更新，受控输入框无声回滚。调用方必须拿得到这个 rejection。
+  it("后端拒绝时 patch 会 reject，且本地状态不被改动", async () => {
+    hydrateCustomizationPrefs({ hotwords: [{ text: "原词", weight: 4 }], contextTemplate: "" });
+    cmd.mockRejectedValueOnce(new Error("单条热词不能超过 64 个字符"));
+
+    await expect(
+      useCustomizationStore.getState().patch({ hotwords: [{ text: "x".repeat(80), weight: 4 }] }),
+    ).rejects.toThrow(/64/);
+
+    expect(useCustomizationStore.getState().prefs.hotwords[0].text).toBe("原词");
+  });
+
+  it("一次失败不会堵死后续写入", async () => {
+    hydrateCustomizationPrefs({ hotwords: [], contextTemplate: "" });
+    cmd.mockRejectedValueOnce(new Error("磁盘满了"));
+
+    await expect(
+      useCustomizationStore.getState().patch({ contextTemplate: "第一次" }),
+    ).rejects.toThrow(/磁盘满了/);
+
+    cmd.mockResolvedValue({ providers: [], results: [] });
+    await useCustomizationStore.getState().patch({ contextTemplate: "第二次" });
+    expect(useCustomizationStore.getState().prefs.contextTemplate).toBe("第二次");
+  });
+});
