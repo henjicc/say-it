@@ -136,6 +136,8 @@ pub(crate) struct FloatingOrbRuntime {
     pub(crate) transition_generation: AtomicU64,
     pub(crate) suppress_main_reopen_until_ms: AtomicU64,
     pub(crate) transient: std::sync::atomic::AtomicBool,
+    /// 这次位置变化是用户亲手拖出来的（而不是回退/夹持/缩放重定位）。
+    pub(crate) dragged_by_user: std::sync::atomic::AtomicBool,
     pub(crate) error_visible: std::sync::atomic::AtomicBool,
     pub(crate) armed: std::sync::atomic::AtomicBool,
     pub(crate) armed_generation: AtomicU64,
@@ -151,6 +153,7 @@ impl Default for FloatingOrbRuntime {
             transition_generation: AtomicU64::new(0),
             suppress_main_reopen_until_ms: AtomicU64::new(0),
             transient: std::sync::atomic::AtomicBool::new(false),
+            dragged_by_user: std::sync::atomic::AtomicBool::new(false),
             error_visible: std::sync::atomic::AtomicBool::new(false),
             armed: std::sync::atomic::AtomicBool::new(false),
             armed_generation: AtomicU64::new(0),
