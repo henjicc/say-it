@@ -43,8 +43,23 @@ pub(crate) fn push_backend_mic_samples(mic: &Arc<Mutex<BackendMicState>>, input:
     }
 }
 
+/// 把攒着的音频送进 ASR 流。
+///
+/// 顺序很重要：`pending` 里装的是**更早**采集、因为当时还没有下游而被缓存下来的完整块，
+/// `buffer` 是**此刻**这一块还没攒够的残段。原实现先发 `buffer` 再发 `pending`，等于把
+/// 音频倒着送给识别侧。静音自动断开（默认 `dictationSilenceDisconnectMs = 5000`）之后
+/// 重连必定走到这条路径：说一句 → 静音 5 秒 → 再开口，新句子的开头会被排在那段预滚
+/// 之前，识别结果因此错乱。
 pub(crate) fn flush_backend_mic_buffer(guard: &mut BackendMicState) -> Result<usize, String> {
     let mut flushed = 0usize;
+    // 预滚块只补给 ASR 通道：raw_txs 在采集时就已经收到过它们了。
+    while let Some(samples) = guard.pending.pop_front() {
+        if let Some(tx) = guard.tx.as_ref() {
+            tx.send(AsrStreamInput::RawF32(samples))
+                .map_err(|_| "ASR stream channel closed".to_string())?;
+            flushed += 1;
+        }
+    }
     if !guard.buffer.is_empty() {
         let chunk = std::mem::take(&mut guard.buffer);
         guard.chunk_count += 1;
@@ -60,13 +75,6 @@ pub(crate) fn flush_backend_mic_buffer(guard: &mut BackendMicState) -> Result<us
             delivered = true;
         }
         if delivered {
-            flushed += 1;
-        }
-    }
-    while let Some(samples) = guard.pending.pop_front() {
-        if let Some(tx) = guard.tx.as_ref() {
-            tx.send(AsrStreamInput::RawF32(samples))
-                .map_err(|_| "ASR stream channel closed".to_string())?;
             flushed += 1;
         }
     }
@@ -671,6 +679,37 @@ mod tests {
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    /// 预滚块（更早采集）必须排在残块（此刻还没攒够的那一段）之前。
+    ///
+    /// 原实现先发 `buffer` 再发 `pending`，等于把音频倒着送进 ASR。静音自动断开
+    /// 默认 5 秒，说一句 → 静音 → 再开口就会走到这条路径，新句子的开头被排到
+    /// 上一段预滚之前，识别结果错乱。
+    #[test]
+    fn flush_replays_pending_chunks_before_the_partial_tail() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = BackendMicState {
+            tx: Some(tx),
+            // 时间顺序：早 → 晚
+            pending: VecDeque::from([vec![1.0], vec![2.0]]),
+            buffer: vec![3.0],
+            ..Default::default()
+        };
+
+        assert_eq!(flush_backend_mic_buffer(&mut state).unwrap(), 3);
+
+        let mut order = vec![];
+        while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
+            order.extend(samples);
+        }
+        assert_eq!(
+            order,
+            vec![1.0, 2.0, 3.0],
+            "必须按采集先后送出，残块排在所有预滚块之后"
+        );
+        assert!(state.pending.is_empty());
+        assert!(state.buffer.is_empty());
     }
 
     #[test]
