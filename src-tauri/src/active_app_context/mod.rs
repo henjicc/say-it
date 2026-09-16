@@ -364,6 +364,22 @@ impl ContextCaptureService {
         self.resolve_with_wait(handle, DICTATION_RESOLVE_WAIT).await
     }
 
+    /// 选区捕获的解析：给足捕获自己的截止时间。
+    ///
+    /// 不能用 `resolve_for_dictation`。`DICTATION_RESOLVE_WAIT` 只有 150ms，它的前提是「捕获在
+    /// 听写开始时就发起、结束时多半已完成，只做兜底短等」；而选区捕获是当场发起当场
+    /// 解析，150ms 就是全部预算。探针给自己的预算是 650ms，光剪贴板回退一项就约 370ms，
+    /// 于是在最需要它的那批应用（Chromium / Electron / VS Code / PDF）里必然超时；
+    /// 而超时会置 cancelled → 探针被 kill，此刻它正处于「已 Ctrl+C 复制、尚未恢复备份」，
+    /// 用户原有的剪贴板就此被选区文本永久覆盖。
+    pub(crate) async fn resolve_for_selection(
+        &self,
+        handle: ContextCaptureHandle,
+    ) -> CapturedActiveAppContext {
+        let max_wait = handle.deadline.saturating_duration_since(handle.started);
+        self.resolve_with_wait(handle, max_wait).await
+    }
+
     pub(crate) async fn resolve_dictation_capture(
         &self,
         handle: DictationContextCaptureHandle,
@@ -785,6 +801,54 @@ mod tests {
             result.format_for_prompt(),
             "应用：ChatGPT\n窗口可见文字：已完成的 OCR 内容"
         );
+    }
+
+    /// 选区捕获必须按自己的截止时间等，不能用听写那 150ms 的兜底短等。
+    ///
+    /// 探针自己的预算是 650ms，光剪贴板回退一项就约 370ms。拿 150ms 去等，在 Chromium /
+    /// Electron / VS Code / PDF 这批只能靠剪贴板回退的应用里必然超时：用户明明选中了文本，
+    /// 却被告知「请先选中需要修改的文本」；超时还会置 cancelled，把正在「已复制、未恢复
+    /// 备份」的探针直接 kill 掉。
+    #[tokio::test]
+    async fn selection_capture_waits_for_its_own_deadline_not_the_dictation_grace() {
+        let slow_capture = || {
+            let (sender, receiver) = oneshot::channel();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let _ = sender.send(CapturedActiveAppContext {
+                    status: CaptureStatus::Captured,
+                    selected_text: Some("选中的文本".into()),
+                    ..Default::default()
+                });
+            });
+            ContextCaptureHandle {
+                started: std::time::Instant::now(),
+                deadline: std::time::Instant::now()
+                    + ActiveAppContextExtractionMethod::NativeText.timeout(),
+                receiver: Some(receiver),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                fallback: CapturedActiveAppContext::default(),
+            }
+        };
+
+        let service = ContextCaptureService::default();
+        let handle = slow_capture();
+        let cancelled = handle.cancelled.clone();
+        let dictation = service.resolve_for_dictation(handle).await;
+        assert_eq!(
+            dictation.status,
+            CaptureStatus::TimedOut,
+            "听写的 150ms 兜底短等本来就等不到这种捕获"
+        );
+        assert!(
+            cancelled.load(Ordering::Acquire),
+            "超时会把捕获置为已取消，探针随即被 kill"
+        );
+
+        let service = ContextCaptureService::default();
+        let selection = service.resolve_for_selection(slow_capture()).await;
+        assert_eq!(selection.status, CaptureStatus::Captured);
+        assert_eq!(selection.selected_text.as_deref(), Some("选中的文本"));
     }
 
     #[tokio::test]
