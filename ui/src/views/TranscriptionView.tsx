@@ -23,7 +23,7 @@ import {
   useFilePick,
 } from "@/features/transcription/filePicker";
 import { editablePlainText, plainText } from "@/features/transcription/subtitles";
-import { useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
+import { parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
 import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
@@ -275,10 +275,7 @@ export function TranscriptionView() {
                 max={100}
                 disabled={!params.diarizationEnabled}
                 value={params.speakerCount ?? ""}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  setParams({ speakerCount: Number.isFinite(value) && value > 0 ? value : null });
-                }}
+                onChange={(event) => setParams({ speakerCount: parseSpeakerCount(event.target.value) })}
                 placeholder="自动"
               />
             </Field>

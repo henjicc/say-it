@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   normalizeStoredParams,
+  parseSpeakerCount,
   useTranscriptionParamsSync,
   type TranscriptionParamsSyncOptions,
 } from "./paramsSync";
@@ -186,5 +187,35 @@ describe("normalizeStoredParams", () => {
     expect(normalizeStoredParams(null)).toEqual(DEFAULT_TRANSCRIPTION_PARAMS);
     expect(normalizeStoredParams({ speakerCount: -1 }).speakerCount).toBeNull();
     expect(normalizeStoredParams({ languageHints: ["zh", 5] }).languageHints).toEqual(["zh"]);
+  });
+});
+
+describe("parseSpeakerCount", () => {
+  /// 后端 speaker_count 是 Option<u32>，小数会让 serde 报 invalid type: floating point，
+  /// **整个** transcription_start 的参数反序列化失败——不只是说话人分离失效。而这个值
+  /// 还会被持久化进供应商配置，重启也不自愈。仓库其它数字字段一律走 NumberInput 的
+  /// Number.parseInt，这里因为要支持「留空」才没用它，解析口径必须对齐。
+  it("只产出整数，绝不把小数交给后端", () => {
+    expect(parseSpeakerCount("3.7")).toBe(3);
+    expect(parseSpeakerCount("2.0")).toBe(2);
+    expect(parseSpeakerCount("  5  ")).toBe(5);
+    expect(Number.isInteger(parseSpeakerCount("9.99"))).toBe(true);
+  });
+
+  it("留空表示自动判断", () => {
+    expect(parseSpeakerCount("")).toBeNull();
+    expect(parseSpeakerCount("   ")).toBeNull();
+  });
+
+  it("非法与非正数一律回落到自动", () => {
+    expect(parseSpeakerCount("abc")).toBeNull();
+    expect(parseSpeakerCount("0")).toBeNull();
+    expect(parseSpeakerCount("-3")).toBeNull();
+  });
+
+  it("历史上已经写进配置的小数在读回时自愈", () => {
+    expect(normalizeStoredParams({ speakerCount: 3.7 }).speakerCount).toBe(3);
+    expect(normalizeStoredParams({ speakerCount: 0.4 }).speakerCount).toBeNull();
+    expect(normalizeStoredParams({ speakerCount: 4 }).speakerCount).toBe(4);
   });
 });

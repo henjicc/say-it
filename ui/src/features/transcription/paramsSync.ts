@@ -5,10 +5,27 @@ import { DEFAULT_TRANSCRIPTION_PARAMS, type TranscriptionParams } from "@/store/
 
 export const PARAMS_SAVE_DEBOUNCE_MS = 450;
 
+/**
+ * 解析「说话人数」输入框。空串表示自动判断。
+ *
+ * 必须取整：后端 `speaker_count` 是 `Option<u32>`，小数会让 serde 报
+ * `invalid type: floating point`，**整个** `transcription_start` 的参数反序列化失败，
+ * 即「说话人分离」之外的所有设置也一起失效。而这个值还会被 `updateProviderConfig`
+ * 持久化进供应商配置，重启并不会自愈。仓库其它数字字段一律走 `NumberInput` 的
+ * `Number.parseInt`，这里因为要支持「留空」才没用它，解析口径必须对齐。
+ */
+export function parseSpeakerCount(raw: string): number | null {
+  const text = raw.trim();
+  if (!text) return null;
+  const parsed = Number.parseInt(text, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 /** 把供应商配置里存的识别参数收敛成完整、合法的一份。 */
 export function normalizeStoredParams(value: unknown): TranscriptionParams {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const speakerCount = Number(source.speakerCount);
+  // 读回时同样取整：历史上写进去的小数必须在这里自愈，否则故障会一直持久化。
+  const speakerCount = Math.trunc(Number(source.speakerCount));
   return {
     ...DEFAULT_TRANSCRIPTION_PARAMS,
     model:
