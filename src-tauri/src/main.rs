@@ -758,7 +758,14 @@ fn main() {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        app.run(|_, _| {});
+        app.run(|_, event| {
+            // 主窗口「关闭即销毁」后，应用可能不再有任何存活窗口，运行时会自动
+            // 请求退出（code 为 None）——阻止它以保持托盘驻留。托盘「退出」和
+            // app.restart() 都带退出码，不受影响。
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
         active_app_context::shutdown();
     }
 }
