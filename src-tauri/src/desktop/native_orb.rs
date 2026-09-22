@@ -287,8 +287,9 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, KillTimer,
-        RegisterClassW, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-        GWLP_USERDATA, GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        LoadCursorW, RegisterClassW, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, GWLP_USERDATA, GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, IDC_ARROW,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, WM_CAPTURECHANGED, WM_DESTROY,
         WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCLBUTTONDOWN,
         WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -646,31 +647,7 @@ mod imp {
                     }
                 }
                 Command::SetInteractive(interactive) => {
-                    unsafe {
-                        let style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
-                        // 点击穿透等价于 WebView 的 set_ignore_cursor_events(true)。
-                        let next = if interactive {
-                            style & !(WS_EX_TRANSPARENT.0 as isize)
-                        } else {
-                            style | (WS_EX_TRANSPARENT.0 as isize)
-                        };
-                        if next != style {
-                            SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, next);
-                            let _ = SetWindowPos(
-                                self.hwnd,
-                                HWND::default(),
-                                0,
-                                0,
-                                0,
-                                0,
-                                SWP_NOMOVE
-                                    | SWP_NOSIZE
-                                    | SWP_NOZORDER
-                                    | SWP_NOACTIVATE
-                                    | SWP_FRAMECHANGED,
-                            );
-                        }
-                    }
+                    apply_interactive_style(self.hwnd, interactive);
                 }
                 Command::SetState {
                     phase,
@@ -1086,13 +1063,47 @@ mod imp {
         draw_enter_arrow(target, brush, area, style);
     }
 
-    fn run_click_action(action: OrbClickAction) {
+    /// interactive=false 等价于 WebView 的 set_ignore_cursor_events(true)。
+    /// 抽成自由函数：窗口过程在点击发生的当帧就要同步切换，不能只走命令队列。
+    fn apply_interactive_style(hwnd: HWND, interactive: bool) {
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            // 点击穿透等价于 WebView 的 set_ignore_cursor_events(true)。
+            let next = if interactive {
+                style & !(WS_EX_TRANSPARENT.0 as isize)
+            } else {
+                style | (WS_EX_TRANSPARENT.0 as isize)
+            };
+            if next != style {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
+        }
+    }
+
+    fn run_click_action(hwnd: HWND, action: OrbClickAction) {
         use crate::desktop::floating_orb as orb;
         let Some(app) = APP.get().cloned() else { return };
         match action {
             OrbClickAction::Activate => {
+                // 点击被接受的当帧就让球进入穿透态：activate 流程里用于恢复焦点的
+                // 转发点击必须穿过悬浮球落到下方的输入窗口；若等异步命令队列切换，
+                // 转发点击可能抢在切换前落回球上被吃掉，焦点回不来、文本也就粘贴不上。
+                apply_interactive_style(hwnd, false);
                 tauri::async_runtime::spawn(async move {
-                    let _ = orb::floating_orb_activate(app).await;
+                    if orb::floating_orb_activate(app).await.is_err() {
+                        // 激活在早期失败（尚未进入任何相位切换）时恢复可交互，
+                        // 否则悬浮球会永远停在穿透态，再也点不中。
+                        crate::desktop::native_orb::native_orb_set_interactive(true);
+                    }
                 });
             }
             OrbClickAction::Stop => {
@@ -1254,7 +1265,7 @@ mod imp {
                 });
                 let _ = ReleaseCapture();
                 if let Some(Some(action)) = action {
-                    run_click_action(action);
+                    run_click_action(hwnd, action);
                 }
                 LRESULT(0)
             }
@@ -1324,9 +1335,13 @@ mod imp {
                 }
             };
             let class_name = w!("SayItNativeFloatingOrb");
+            // 类光标必须显式给箭头：NULL 时悬停会沿用进入窗口前的光标
+            // （常见就是"后台忙碌"转圈），看起来像悬浮球卡住了。
+            let arrow_cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
             let class = WNDCLASSW {
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance.into(),
+                hCursor: arrow_cursor,
                 lpszClassName: class_name,
                 ..Default::default()
             };
