@@ -209,10 +209,18 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     #[cfg(windows)]
-    std::env::set_var(
-        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required",
-    );
+    {
+        // 追加而不是覆盖：外部（如本地调试需要 --remote-debugging-port 时）
+        // 预先设置的参数必须保留，否则 CDP 等调试通道会被静默抹掉。
+        const REQUIRED_ARGS: &str = "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required";
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let merged = if existing.trim().is_empty() {
+            REQUIRED_ARGS.to_string()
+        } else {
+            format!("{} {}", existing.trim(), REQUIRED_ARGS)
+        };
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+    }
 
     let builder = tauri::Builder::default();
     #[cfg(not(windows))]
