@@ -452,7 +452,11 @@ fn main() {
                 eprintln!("[assistant-shortcut] {error}");
             }
 
-            let _ = ensure_indicator_window(&app.handle());
+            // 原生听写指示器启用时不再预创建 WebView 指示窗；
+            // error/字幕态用到时仍由各路径按需创建。
+            if !crate::desktop::native_dictation_indicator_enabled() {
+                let _ = ensure_indicator_window(&app.handle());
+            }
             if let Err(error) = sync_floating_orb_window(&app.handle()) {
                 eprintln!("[floating-orb] 启动悬浮球失败: {error}");
             }

@@ -159,6 +159,13 @@ pub(crate) fn raise_indicator_window(window: &tauri::WebviewWindow) {
 /// 听写和实时字幕共用同一个悬浮窗口。每次听写启动都必须显式清掉字幕配置，
 /// 否则上一次字幕会话留下的样式会被下一次听写复用。
 pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), String> {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        // 原生指示器接管听写展示；残留的错误态 WebView 窗口要一并收掉，
+        // 否则上一轮的错误面板会盖在新一轮原生指示器旁边。
+        hide_webview_indicator_if_present(app);
+        crate::desktop::native_indicator_prepare();
+        return Ok(());
+    }
     let window = ensure_indicator_window(app)?;
     let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
     let _ = window.emit(
@@ -177,6 +184,16 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
     Ok(())
 }
 
+/// 原生指示器启用时，error/subtitle 仍走 WebView；结束后 WebView 窗口
+/// 需要主动收掉，避免与原生窗口并存。
+fn hide_webview_indicator_if_present(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+        let _ = window.emit("dictation-indicator-state", json!({ "state": "hidden" }));
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.hide();
+    }
+}
+
 /// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "fallback" | "subtitle" | "error" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
@@ -184,6 +201,34 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
     hotkey::set_dictation_active(
         state == "recording" || state == "processing" || state == "smartProcessing",
     );
+    if crate::desktop::native_dictation_indicator_enabled() {
+        match state.as_str() {
+            // 原生接管的听写状态，不再触碰 WebView 窗口。
+            "recording" | "processing" | "smartProcessing" | "fallback" => {
+                crate::desktop::native_indicator_set_state(&state);
+            }
+            // error/subtitle 有交互或复杂排版，原生只做让位，展示仍走 WebView。
+            "error" | "subtitle" => {
+                crate::desktop::native_indicator_hide();
+                return set_indicator_state_webview(&app, &state);
+            }
+            _ => {
+                crate::desktop::native_indicator_hide();
+                if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
+                    let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
+                    let _ = window.set_ignore_cursor_events(true);
+                    window
+                        .hide()
+                        .map_err(|error| format!("隐藏指示器窗口失败: {error}"))?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    set_indicator_state_webview(&app, &state)
+}
+
+fn set_indicator_state_webview(app: &tauri::AppHandle, state: &str) -> Result<(), String> {
     if state == "hidden" {
         if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
             let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
@@ -194,7 +239,7 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
         }
         return Ok(());
     }
-    let window = ensure_indicator_window(&app)?;
+    let window = ensure_indicator_window(app)?;
     let _ = window.set_ignore_cursor_events(state != "subtitle" && state != "error");
     raise_indicator_window(&window);
     let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
@@ -208,6 +253,10 @@ pub(crate) fn show_dictation_indicator_error(
     message: String,
     can_use_raw_text: bool,
 ) -> Result<(), String> {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        // error 有操作按钮，原生指示器让位给 WebView。
+        crate::desktop::native_indicator_hide();
+    }
     let window = ensure_indicator_window(app)?;
     place_indicator_window(
         &window,
@@ -242,6 +291,13 @@ pub(crate) fn show_dictation_indicator_error(
 pub(crate) fn show_dictation_indicator_clipboard_fallback(
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        hide_webview_indicator_if_present(app);
+        crate::desktop::native_indicator_prepare();
+        crate::desktop::native_indicator_set_state("fallback");
+        hotkey::set_dictation_active(false);
+        return Ok(());
+    }
     let window = ensure_indicator_window(app)?;
     place_indicator_window(
         &window,
@@ -273,6 +329,9 @@ pub(crate) fn set_indicator_text(
     text: String,
     fade: Option<bool>,
 ) -> Result<(), String> {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        crate::desktop::native_indicator_set_text(text.clone());
+    }
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         let _ = window.emit(
             "dictation-indicator-text",

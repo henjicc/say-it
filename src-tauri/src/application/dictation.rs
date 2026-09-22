@@ -1188,13 +1188,17 @@ async fn start_internal(
         let _ = prepare_dictation_indicator(&app);
     }
     if !inline_follow_up && !trigger.is_floating_orb() {
-        let _ = crate::desktop::set_indicator_layout(
-            app.clone(),
-            Some(460.0),
-            Some(188.0),
-            Some("bottom".into()),
-            Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
-        );
+        // 原生指示器几何固定，layout 只对 WebView（字幕）有意义；
+        // 跳过可避免这次调用连带创建 WebView 指示窗。
+        if !crate::desktop::native_dictation_indicator_enabled() {
+            let _ = crate::desktop::set_indicator_layout(
+                app.clone(),
+                Some(460.0),
+                Some(188.0),
+                Some("bottom".into()),
+                Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
+            );
+        }
         if mode == DictationMode::File {
             // 非实时模型从录音态第一帧就显示静态波形；首批 PCM 到达后再更新实际幅度，
             // 避免快捷键刚触发时短暂误显示成纯文字处理态。
@@ -3209,6 +3213,9 @@ fn publish_state_with_text(
 }
 
 fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        crate::desktop::native_indicator_set_waveform(level, peaks.clone());
+    }
     if let Some(w) = app.get_webview_window("dictation-indicator") {
         let _ = w.emit(
             "dictation-indicator-waveform",
