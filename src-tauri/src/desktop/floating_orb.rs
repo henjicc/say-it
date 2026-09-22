@@ -2217,7 +2217,9 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
         .fetch_add(1, Ordering::AcqRel);
     let _ = ui.set_interactive(false);
     emit_state(&app, "moving", None);
+    let editable_check_started = Instant::now();
     let already_focused = focused_editable_target().await;
+    let editable_check_ms = editable_check_started.elapsed().as_millis() as u64;
     let (target, target_confirmed) = if should_forward_orb_click(already_focused) {
         let click_position = cursor_location().await;
         sleep(Duration::from_millis(16)).await;
@@ -2233,6 +2235,18 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
     } else {
         (already_focused, true)
     };
+    // 目标捕获是首次注入失败的主要嫌疑点（UIA 冷启动可能超 180ms 配额）；
+    // 记录下来以便从诊断日志区分「捕获丢失」与「注入失败」。
+    crate::application::diagnostics::event(
+        "info",
+        "orb.activateTarget",
+        json!({
+            "editableCheckMs": editable_check_ms,
+            "alreadyFocusedEditable": already_focused.is_some(),
+            "targetCaptured": target.is_some(),
+            "targetConfirmed": target_confirmed,
+        }),
+    );
     emit_state(&app, "recording", Some("聆听中…"));
     let _ = ui.set_interactive(true);
     if let Err(error) = crate::application::dictation::start_from_floating_orb(
