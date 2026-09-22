@@ -47,6 +47,15 @@
 - 内存测量脚本 `scripts/测量进程内存.ps1` 是 UTF-8 无 BOM，必须用 **pwsh 7**
   运行；Windows PowerShell 5.1 会按 ANSI 解析直接报语法错误。
 
+## 原生窗口的渲染目标必须用软件模式
+
+`D2D1_RENDER_TARGET_TYPE_DEFAULT` 会创建 D3D11 硬件设备，把整套显卡驱动用户态 DLL
+拉进进程（NVIDIA 机器上是 nvgpucomp64 + nvwgf2umx，映射 ~180MB，驻留 ~26MB）。
+悬浮球/指示器这种几十 KB 像素的窗口毫无 GPU 加速需求，改
+`D2D1_RENDER_TARGET_TYPE_SOFTWARE`（WARP 软光栅）后视觉无差别，托盘驻留从
+90MB 降到 64MB。排查手段：`Get-Process | Select -Expand Modules` 按映射大小排序，
+GPU 驱动 DLL 一目了然。
+
 ## 原型已知行为差异（后续若要转正需补齐）
 
 - 无入场/淡出动画、无波形柱缓动（直接跳变）、无阴影/背景模糊；
