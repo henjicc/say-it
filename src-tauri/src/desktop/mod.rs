@@ -13,6 +13,9 @@ pub(crate) mod floating_orb;
 pub(crate) mod indicator;
 pub(crate) mod mouse_gesture;
 pub(crate) mod native_indicator;
+pub(crate) mod native_orb;
+#[cfg(windows)]
+pub(crate) mod native_overlay;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
 

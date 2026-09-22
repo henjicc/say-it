@@ -7,6 +7,7 @@
 //! error 与 subtitle 两种状态仍由原 WebView 路径承载。
 //!
 //! 视觉规格以 ui/src/indicator/indicator.css 的 dictation-mode 为准。
+//! 分层窗口/D2D 渲染目标/DIB/命令队列/UI 线程等基础设施见 native_overlay.rs。
 
 use std::sync::OnceLock;
 
@@ -36,7 +37,7 @@ const WAVE_BAR_MIN_SCALE: f32 = 0.18;
 
 /// 感知响度曲线，移植自 ui/src/floating-orb/interaction.ts 的 floatingOrbWaveScale。
 #[cfg(any(windows, test))]
-fn wave_scale(value: f32) -> f32 {
+pub(crate) fn wave_scale(value: f32) -> f32 {
     // JS 侧 `Number(value) || 0` 会把 NaN 归 0。
     let normalized = if value.is_nan() {
         0.0
@@ -102,50 +103,35 @@ pub(crate) fn native_indicator_hide() {
 
 #[cfg(windows)]
 mod imp {
+    use super::super::native_overlay::{
+        create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba, window_dpi,
+        LayeredSurface, OverlayThread,
+    };
     use super::{
         resample_wave_levels, wave_scale, WAVE_BAR_COUNT, WAVE_BAR_HEIGHTS, WAVE_BAR_MIN_SCALE,
     };
-    use std::collections::VecDeque;
-    use std::ffi::c_void;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
-    use windows::core::{w, HRESULT};
-    use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
-    use windows::Win32::Graphics::Direct2D::Common::{
-        D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
-    };
+    use std::sync::OnceLock;
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
-        D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
-        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
-        D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-        D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+        ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED,
+        D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
     };
     use windows::Win32::Graphics::DirectWrite::{
-        DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-        DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_REGULAR,
-        DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-        DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER,
-        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_WRAP,
+        IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS,
     };
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetMonitorInfoW,
-        MonitorFromPoint, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, HBITMAP,
-        HDC, HGDIOBJ, MONITORINFO, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, DIB_RGB_COLORS,
-        MONITOR_DEFAULTTOPRIMARY,
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        GetWindowLongPtrW, KillTimer, PeekMessageW, PostThreadMessageW, RegisterClassW, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow,
-        GWLP_USERDATA, HWND_TOPMOST, MSG, PM_NOREMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_DESTROY, WM_DPICHANGED, WM_TIMER, WM_USER,
-        WNDCLASSW, WS_EX_LAYERED,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, KillTimer, RegisterClassW, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, HWND_TOPMOST, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, WM_DESTROY, WM_DPICHANGED, WM_TIMER, WNDCLASSW,
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+        WS_POPUP,
     };
 
     // 与 indicator.rs 的 DEFAULT_INDICATOR_WIDTH/HEIGHT 保持一致。
@@ -181,10 +167,7 @@ mod imp {
     const WAVE_TIMER_ID: usize = 1;
     const WAVE_TIMER_MS: u32 = 33; // ~30fps，仅录音且有波形时启用
 
-    // 自定义消息：命令队列有内容，需要窗口线程消费。
-    const WM_COMMAND_QUEUED: u32 = WM_USER + 0x0101;
-    const RECREATE_TARGET: HRESULT = HRESULT(0x8899000Cu32 as i32);
-
+    const LOG_TAG: &str = "native-indicator";
 
     pub(super) enum Command {
         Prepare,
@@ -223,158 +206,46 @@ mod imp {
         }
     }
 
-    struct UiShared {
-        thread_id: u32,
-        queue: Mutex<VecDeque<Command>>,
-    }
-
-    static UI: OnceLock<Option<UiShared>> = OnceLock::new();
+    static UI: OnceLock<Option<OverlayThread<Command>>> = OnceLock::new();
 
     /// 任意线程可调用：命令入队并唤醒 UI 线程。UI 线程启动失败时静默丢弃，
     /// 指示器只是不显示，不影响听写主流程。
     pub(super) fn post(command: Command) {
-        let Some(shared) = UI.get_or_init(|| start_ui_thread().ok()).as_ref() else {
-            return;
-        };
-        let Ok(mut queue) = shared.queue.lock() else {
-            return;
-        };
-        queue.push_back(command);
-        drop(queue);
-        unsafe {
-            let _ = PostThreadMessageW(
-                shared.thread_id,
-                WM_COMMAND_QUEUED,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        }
-    }
-
-    fn start_ui_thread() -> Result<UiShared, String> {
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sayit-native-indicator".into())
-            .spawn(move || {
-                // 先强制创建线程消息队列，否则 ready 之前到达的
-                // PostThreadMessageW 会被系统直接丢弃。
-                let mut message = MSG::default();
-                unsafe {
-                    let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
-                    let _ = ready_tx.send(GetCurrentThreadId());
-                }
-                ui_thread_main();
-            })
-            .map_err(|error| format!("创建原生指示器线程失败：{error}"))?;
-        let thread_id = ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "启动原生指示器线程超时".to_string())?;
-        Ok(UiShared {
-            thread_id,
-            queue: Mutex::new(VecDeque::new()),
-        })
-    }
-
-    /// 预乘 alpha 颜色。
-    const fn rgba(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
-        D2D1_COLOR_F {
-            r: r * a,
-            g: g * a,
-            b: b * a,
-            a,
-        }
-    }
-
-    const fn rect_f(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
-        D2D_RECT_F {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
-    /// 内存 DC + 顶向下 32bpp DIB section。GDI 句柄用 Drop 释放，
-    /// 重复 show/hide 与尺寸重建不得泄漏。
-    struct Dib {
-        dc: HDC,
-        bitmap: HBITMAP,
-        old: HGDIOBJ,
-        width: i32,
-        height: i32,
-    }
-
-    impl Dib {
-        fn create(width: i32, height: i32) -> Option<Self> {
-            unsafe {
-                let dc = CreateCompatibleDC(None);
-                if dc.is_invalid() {
-                    return None;
-                }
-                let info = BITMAPINFO {
-                    bmiHeader: BITMAPINFOHEADER {
-                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                        biWidth: width,
-                        // 负数表示顶向下，与 D2D 坐标方向一致。
-                        biHeight: -height,
-                        biPlanes: 1,
-                        biBitCount: 32,
-                        biCompression: BI_RGB.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                let mut bits: *mut c_void = std::ptr::null_mut();
-                let bitmap =
-                    match CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0) {
-                        Ok(bitmap) => bitmap,
-                        Err(_) => {
-                            let _ = DeleteDC(dc);
-                            return None;
-                        }
-                    };
-                let old = SelectObject(dc, bitmap);
-                Some(Self {
-                    dc,
-                    bitmap,
-                    old,
-                    width,
-                    height,
+        let Some(shared) = UI
+            .get_or_init(|| {
+                OverlayThread::start("sayit-native-indicator", create_window, |hwnd, command| {
+                    with_state(hwnd, |state| state.apply(command));
                 })
-            }
-        }
+                .ok()
+            })
+            .as_ref()
+        else {
+            return;
+        };
+        shared.post(command);
     }
 
-    impl Drop for Dib {
-        fn drop(&mut self) {
-            unsafe {
-                SelectObject(self.dc, self.old);
-                let _ = DeleteObject(self.bitmap);
-                let _ = DeleteDC(self.dc);
-            }
-        }
-    }
-
-    struct WindowState {
-        hwnd: HWND,
+    /// 绘制所需的全部输入；与渲染面（LayeredSurface）分离后，
+    /// render 才能把绘制闭包借给 surface 而不违反借用规则。
+    struct IndicatorView {
         state: Option<NativeState>,
         text: String,
         wave_active: bool,
         wave_level: f32,
         wave_peaks: Vec<f32>,
-        timer_active: bool,
-        /// UpdateLayeredWindow 不会把从未显示过的窗口摆上屏幕；
-        /// 首次渲染后必须显式 ShowWindow 一次。
-        shown: bool,
         dpi: u32,
-        d2d: ID2D1Factory,
         dwrite: IDWriteFactory,
         body_format: IDWriteTextFormat,
         label_format: IDWriteTextFormat,
         fallback_format: IDWriteTextFormat,
-        target: Option<ID2D1DCRenderTarget>,
-        brush: Option<ID2D1SolidColorBrush>,
-        dib: Option<Dib>,
+    }
+
+    struct WindowState {
+        hwnd: HWND,
+        view: IndicatorView,
+        d2d: ID2D1Factory,
+        surface: LayeredSurface,
+        timer_active: bool,
     }
 
     impl WindowState {
@@ -382,18 +253,18 @@ mod imp {
             match command {
                 // 与 WebView 的 prepare 语义一致：只重置内容，不改变可见性。
                 Command::Prepare => {
-                    self.text.clear();
-                    self.wave_active = false;
-                    self.wave_peaks.clear();
-                    self.wave_level = 0.0;
+                    self.view.text.clear();
+                    self.view.wave_active = false;
+                    self.view.wave_peaks.clear();
+                    self.view.wave_level = 0.0;
                 }
                 Command::SetState(state) => {
-                    self.state = Some(state);
+                    self.view.state = Some(state);
                     // fallback 面板替代文本区与胶囊，与 WebView 行为一致。
                     if state == NativeState::Fallback {
-                        self.text.clear();
-                        self.wave_active = false;
-                        self.wave_peaks.clear();
+                        self.view.text.clear();
+                        self.view.wave_active = false;
+                        self.view.wave_peaks.clear();
                     }
                     self.sync_timer();
                     self.render();
@@ -410,26 +281,26 @@ mod imp {
                     }
                 }
                 Command::SetText(text) => {
-                    self.text = text;
-                    if self.state.is_some() {
+                    self.view.text = text;
+                    if self.view.state.is_some() {
                         self.render();
                     }
                 }
                 Command::SetWaveform { level, peaks } => {
                     // 波形数据只更新缓存，重绘交给 30fps 定时器，避免按
                     // 音频回调频率重复 BindDC + UpdateLayeredWindow。
-                    self.wave_active = true;
-                    self.wave_level = level;
-                    self.wave_peaks = peaks;
+                    self.view.wave_active = true;
+                    self.view.wave_level = level;
+                    self.view.wave_peaks = peaks;
                     self.sync_timer();
                 }
                 Command::Hide => {
-                    self.state = None;
-                    self.text.clear();
-                    self.wave_active = false;
-                    self.wave_peaks.clear();
+                    self.view.state = None;
+                    self.view.text.clear();
+                    self.view.wave_active = false;
+                    self.view.wave_peaks.clear();
                     self.sync_timer();
-                    self.shown = false;
+                    self.surface.mark_hidden();
                     unsafe {
                         let _ = ShowWindow(self.hwnd, SW_HIDE);
                     }
@@ -438,7 +309,7 @@ mod imp {
         }
 
         fn sync_timer(&mut self) {
-            let want = self.state == Some(NativeState::Recording) && self.wave_active;
+            let want = self.view.state == Some(NativeState::Recording) && self.view.wave_active;
             unsafe {
                 if want && !self.timer_active {
                     SetTimer(self.hwnd, WAVE_TIMER_ID, WAVE_TIMER_MS, None);
@@ -450,141 +321,34 @@ mod imp {
             }
         }
 
-        fn ensure_target(&mut self, dpi: u32) -> bool {
-            if self.target.is_some() {
-                return true;
-            }
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: dpi as f32,
-                dpiY: dpi as f32,
-                usage: D2D1_RENDER_TARGET_USAGE_NONE,
-                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-            };
-            let target = unsafe { self.d2d.CreateDCRenderTarget(&props) };
-            match target {
-                Ok(target) => {
-                    let brush = unsafe {
-                        target.CreateSolidColorBrush(&rgba(0.0, 0.0, 0.0, 0.0), None)
-                    };
-                    match brush {
-                        Ok(brush) => {
-                            self.brush = Some(brush);
-                            self.target = Some(target);
-                            true
-                        }
-                        Err(error) => {
-                            eprintln!("[native-indicator] 创建画刷失败：{error}");
-                            false
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!("[native-indicator] 创建 D2D 渲染目标失败：{error}");
-                    false
-                }
-            }
-        }
-
         fn render(&mut self) {
-            if self.state.is_none() {
+            if self.view.state.is_none() {
                 return;
             }
-            let dpi = unsafe {
-                let dpi = GetDpiForWindow(self.hwnd);
-                if dpi == 0 {
-                    GetDpiForSystem()
-                } else {
-                    dpi
-                }
-            };
-            self.dpi = dpi;
+            let dpi = window_dpi(self.hwnd);
+            self.view.dpi = dpi;
             let (x, y, width, height) = placement(dpi);
-            if self
-                .dib
-                .as_ref()
-                .map_or(true, |dib| dib.width != width || dib.height != height)
-            {
-                self.dib = Dib::create(width, height);
-            }
-            if !self.ensure_target(dpi) {
-                return;
-            }
-            // COM 对象克隆只是 AddRef、HDC 是 Copy，换成局部值后不再借用 self，
-            // EndDraw 失败时才能就地丢弃渲染目标。
-            let (dib_dc, dib_width, dib_height, target, brush) = {
-                let (Some(dib), Some(target), Some(brush)) =
-                    (&self.dib, &self.target, &self.brush)
-                else {
-                    return;
-                };
-                (dib.dc, dib.width, dib.height, target.clone(), brush.clone())
-            };
-            let rect = RECT {
-                left: 0,
-                top: 0,
-                right: dib_width,
-                bottom: dib_height,
-            };
-            unsafe {
-                target.SetDpi(dpi as f32, dpi as f32);
-                if let Err(error) = target.BindDC(dib_dc, &rect) {
-                    eprintln!("[native-indicator] 绑定绘制 DC 失败：{error}");
-                    return;
-                }
-                target.BeginDraw();
-                target.Clear(Some(&rgba(0.0, 0.0, 0.0, 0.0)));
-                self.draw_content(&target, &brush);
-                match target.EndDraw(None, None) {
-                    Ok(()) => {}
-                    // 设备丢失：丢弃渲染目标，下一帧重建。
-                    Err(error) if error.code() == RECREATE_TARGET => {
-                        self.target = None;
-                        self.brush = None;
-                        return;
-                    }
-                    Err(error) => {
-                        eprintln!("[native-indicator] 结束绘制失败：{error}");
-                        return;
-                    }
-                }
-                let destination = POINT { x, y };
-                let size = SIZE {
-                    cx: width,
-                    cy: height,
-                };
-                let origin = POINT { x: 0, y: 0 };
-                let blend = BLENDFUNCTION {
-                    BlendOp: AC_SRC_OVER as u8,
-                    BlendFlags: 0,
-                    SourceConstantAlpha: 255,
-                    AlphaFormat: AC_SRC_ALPHA as u8,
-                };
-                if let Err(error) = UpdateLayeredWindow(
-                    self.hwnd,
-                    None,
-                    Some(&destination),
-                    Some(&size),
-                    dib_dc,
-                    Some(&origin),
-                    COLORREF(0),
-                    Some(&blend),
-                    ULW_ALPHA,
-                ) {
-                    eprintln!("[native-indicator] 上屏失败：{error}");
-                    return;
-                }
-                if !self.shown {
-                    let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    self.shown = true;
-                }
-            }
+            let Self {
+                view,
+                d2d,
+                surface,
+                ..
+            } = self;
+            surface.render(
+                d2d,
+                dpi,
+                x,
+                y,
+                width,
+                height,
+                255,
+                LOG_TAG,
+                |target, brush| view.draw_content(target, brush),
+            );
         }
+    }
 
+    impl IndicatorView {
         fn draw_content(&self, target: &ID2D1DCRenderTarget, brush: &ID2D1SolidColorBrush) {
             let Some(state) = self.state else { return };
             // #wrap：纵向居中堆叠、底部对齐，padding-bottom 24。
@@ -909,60 +673,12 @@ mod imp {
         (x, y, width, height)
     }
 
-    fn create_text_format(
-        dwrite: &IDWriteFactory,
-        size: f32,
-        centered: bool,
-        vertical_center: bool,
-    ) -> Result<IDWriteTextFormat, String> {
-        unsafe {
-            let format = dwrite
-                .CreateTextFormat(
-                    w!("Microsoft YaHei UI"),
-                    None,
-                    DWRITE_FONT_WEIGHT_REGULAR,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    size,
-                    w!("zh-CN"),
-                )
-                .map_err(|error| format!("创建文字格式失败：{error}"))?;
-            let _ = format.SetTextAlignment(if centered {
-                DWRITE_TEXT_ALIGNMENT_CENTER
-            } else {
-                DWRITE_TEXT_ALIGNMENT_LEADING
-            });
-            let _ = format.SetParagraphAlignment(if vertical_center {
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER
-            } else {
-                DWRITE_PARAGRAPH_ALIGNMENT_NEAR
-            });
-            let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            Ok(format)
-        }
-    }
-
     fn with_state(hwnd: HWND, f: impl FnOnce(&mut WindowState)) {
         unsafe {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
             if !ptr.is_null() {
                 f(&mut *ptr);
             }
-        }
-    }
-
-    fn drain_commands(hwnd: HWND) {
-        let Some(shared) = UI.get().and_then(Option::as_ref) else {
-            return;
-        };
-        loop {
-            let command = shared
-                .queue
-                .lock()
-                .ok()
-                .and_then(|mut queue| queue.pop_front());
-            let Some(command) = command else { break };
-            with_state(hwnd, |state| state.apply(command));
         }
     }
 
@@ -973,10 +689,6 @@ mod imp {
         lparam: LPARAM,
     ) -> LRESULT {
         match message {
-            WM_COMMAND_QUEUED => {
-                drain_commands(hwnd);
-                LRESULT(0)
-            }
             WM_TIMER => {
                 with_state(hwnd, |state| state.render());
                 LRESULT(0)
@@ -985,10 +697,10 @@ mod imp {
                 let dpi = (wparam.0 & 0xFFFF) as u32;
                 with_state(hwnd, |state| {
                     if dpi != 0 {
-                        state.dpi = dpi;
+                        state.view.dpi = dpi;
                     }
                     // DPI 变化后物理尺寸改变，强制重建 DIB。
-                    state.dib = None;
+                    state.surface.discard_dib();
                     state.render();
                 });
                 LRESULT(0)
@@ -1004,13 +716,13 @@ mod imp {
         }
     }
 
-    fn ui_thread_main() {
+    fn create_window() -> Option<HWND> {
         unsafe {
             let instance = match GetModuleHandleW(None) {
                 Ok(instance) => instance,
                 Err(error) => {
                     eprintln!("[native-indicator] 读取模块句柄失败：{error}");
-                    return;
+                    return None;
                 }
             };
             let class_name = w!("SayItNativeDictationIndicator");
@@ -1022,30 +734,29 @@ mod imp {
             };
             if RegisterClassW(&class) == 0 {
                 eprintln!("[native-indicator] 注册窗口类失败");
-                return;
+                return None;
             }
-            let d2d: ID2D1Factory =
-                match D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) {
-                    Ok(factory) => factory,
-                    Err(error) => {
-                        eprintln!("[native-indicator] 创建 D2D 工厂失败：{error}");
-                        return;
-                    }
-                };
-            let dwrite: IDWriteFactory = match DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) {
+            let d2d = match create_d2d_factory() {
                 Ok(factory) => factory,
                 Err(error) => {
-                    eprintln!("[native-indicator] 创建 DirectWrite 工厂失败：{error}");
-                    return;
+                    eprintln!("[native-indicator] {error}");
+                    return None;
+                }
+            };
+            let dwrite = match create_dwrite_factory() {
+                Ok(factory) => factory,
+                Err(error) => {
+                    eprintln!("[native-indicator] {error}");
+                    return None;
                 }
             };
             let (body_format, label_format, fallback_format) = match (
-                create_text_format(&dwrite, 14.0, false, false),
-                create_text_format(&dwrite, 13.0, false, true),
-                create_text_format(&dwrite, 13.0, false, true),
+                create_text_format(&dwrite, "Microsoft YaHei UI", 14.0, false, false),
+                create_text_format(&dwrite, "Microsoft YaHei UI", 13.0, false, true),
+                create_text_format(&dwrite, "Microsoft YaHei UI", 13.0, false, true),
             ) {
                 (Ok(body), Ok(label), Ok(fallback)) => (body, label, fallback),
-                _ => return,
+                _ => return None,
             };
             let dpi = GetDpiForSystem();
             let (x, y, width, height) = placement(dpi);
@@ -1070,42 +781,29 @@ mod imp {
                 Ok(hwnd) => hwnd,
                 Err(error) => {
                     eprintln!("[native-indicator] 创建指示器窗口失败：{error}");
-                    return;
+                    return None;
                 }
             };
             let state = Box::new(WindowState {
                 hwnd,
-                state: None,
-                text: String::new(),
-                wave_active: false,
-                wave_level: 0.0,
-                wave_peaks: Vec::new(),
-                timer_active: false,
-                shown: false,
-                dpi,
+                view: IndicatorView {
+                    state: None,
+                    text: String::new(),
+                    wave_active: false,
+                    wave_level: 0.0,
+                    wave_peaks: Vec::new(),
+                    dpi,
+                    dwrite,
+                    body_format,
+                    label_format,
+                    fallback_format,
+                },
                 d2d,
-                dwrite,
-                body_format,
-                label_format,
-                fallback_format,
-                target: None,
-                brush: None,
-                dib: None,
+                surface: LayeredSurface::new(hwnd),
+                timer_active: false,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
-            let mut message = MSG::default();
-            while GetMessageW(&mut message, None, 0, 0).as_bool() {
-                // PostThreadMessageW 投递的是线程消息（hwnd 为空），不会经过
-                // 窗口过程，必须在消息循环里直接认领，否则命令永远堆积。
-                if message.hwnd.is_invalid() && message.message == WM_COMMAND_QUEUED {
-                    drain_commands(hwnd);
-                    continue;
-                }
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-            // 原型不做优雅退出；进程退出时这里一般不会执行到。
-            let _ = DestroyWindow(hwnd);
+            Some(hwnd)
         }
     }
 }
