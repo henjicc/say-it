@@ -196,23 +196,30 @@ pub(crate) fn replace_offset_x(content_width: f32, flow_width: f32) -> f32 {
     }
 }
 
-/// 位移动画/淡入的缓动。CSS 的 ease-* 是贝塞尔曲线，这里用多项式近似
-/// （ease-out 用 easeOutCubic，与原生指示器的过渡曲线一致）。
+/// CSS ease-* 的三次贝塞尔曲线；按时间 x 反解曲线参数后再取 y。
 #[cfg(any(windows, test))]
 pub(crate) fn ease_value(name: &str, t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
-    match name {
-        "linear" => t,
-        "ease-in" => t * t * t,
-        "ease-in-out" => {
-            if t < 0.5 {
-                4.0 * t * t * t
-            } else {
-                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-            }
-        }
-        _ => 1.0 - (1.0 - t).powi(3),
+    if name == "linear" || t == 0.0 || t == 1.0 {
+        return t;
     }
+    let (x1, x2) = match name {
+        "ease-in" => (0.42, 1.0),
+        "ease-in-out" => (0.42, 0.58),
+        _ => (0.0, 0.58),
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..20 {
+        let u = (low + high) * 0.5;
+        let x = 3.0 * (1.0 - u) * (1.0 - u) * u * x1 + 3.0 * (1.0 - u) * u * u * x2 + u * u * u;
+        if x < t {
+            low = u;
+        } else {
+            high = u;
+        }
+    }
+    let u = (low + high) * 0.5;
+    3.0 * (1.0 - u) * u * u + u * u * u
 }
 
 /// 行高，与 IndicatorApp 的 Math.round(fontSize * 1.38) 一致。
@@ -324,18 +331,9 @@ pub(crate) fn native_subtitle_set_translation(text: String) {
 
 #[cfg(windows)]
 mod imp {
-    /// 临时排障：字幕文本管线 trace，验证后移除。
-    fn trace(msg: &str) {
-        let path = std::env::temp_dir().join("sayit-subtitle-trace.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            use std::io::Write;
-            let _ = writeln!(f, "{msg}");
-        }
-    }
-
     use super::super::native_overlay::{
-        create_d2d_factory, create_dwrite_factory, create_text_format_weight, rect_f, rgba,
-        svg_path_geometry_stroke, window_dpi, LayeredSurface, OverlayThread, Transition,
+        create_d2d_factory, create_dc_render_target, create_dwrite_factory, create_text_format_weight, rect_f,
+        svg_path_geometry_stroke, window_dpi, Dib, LayeredSurface, OverlayThread, Transition,
     };
     use super::{
         block_height, ease_value, line_height, overlap_chars, parse_css_color, replace_offset_x,
@@ -348,21 +346,24 @@ mod imp {
     use windows::core::w;
     use windows::Foundation::Numerics::Matrix3x2;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-    use windows::Win32::Graphics::Direct2D::Common::{D2D_POINT_2F, D2D_RECT_F};
+    use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_U};
     use windows::Win32::Graphics::Direct2D::{
         ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush,
         ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_CAP_STYLE_ROUND,
         D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_LINE_JOIN_ROUND,
-        D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
+        D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, ID2D1Bitmap,
+        D2D1_BITMAP_PROPERTIES, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
     };
     use windows::Win32::Graphics::DirectWrite::{
         IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-        DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
+        DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT_LEADING,
+        DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
         DWRITE_WORD_WRAPPING_NO_WRAP,
     };
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
     };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -402,6 +403,12 @@ mod imp {
     const ICON_SIZE: f32 = 16.0;
     const ICON_STROKE: f32 = 1.45;
     const CONTROL_COUNT: usize = 3;
+    const BORDER: f32 = 1.0;
+
+    // D2D 画刷输入使用 straight alpha；仅 DIB/位图存储使用预乘 alpha。
+    fn brush_color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
+        D2D1_COLOR_F { r, g, b, a }
+    }
 
     /// 出场/退场位移幅度，与 indicator.css 的 wrapIn（translateY(10px)）一致。
     const TRANSITION_SLIDE_PX: f32 = 10.0;
@@ -563,15 +570,14 @@ mod imp {
                     let font_changed = self.view.config.font_family != config.font_family
                         || self.view.config.font_size != config.font_size;
                     let mode_changed = self.view.config.display_mode != config.display_mode;
+                    let flow_changed = self.view.config.width != config.width
+                        || self.view.config.line_count != config.line_count;
                     self.view.config = *config;
                     if font_changed {
                         self.view.format = None;
                     }
-                    if font_changed || mode_changed {
-                        for index in 0..2 {
-                            self.view.tracks[index].layout = None;
-                            self.view.update_track_offset(index, false);
-                        }
+                    if font_changed || mode_changed || flow_changed {
+                        self.view.reflow_tracks();
                     }
                     self.render();
                 }
@@ -581,16 +587,18 @@ mod imp {
                     anchor,
                     offset_y,
                 } => {
+                    let width_changed = self.view.layout_w != width;
                     self.view.layout_w = width;
                     self.view.layout_h = height;
                     self.view.anchor = anchor;
                     self.view.offset_y = offset_y;
+                    if width_changed {
+                        self.view.reflow_tracks();
+                    }
                     self.apply_configured_placement();
                 }
                 Command::SetText { text, fade } => {
-                    trace(&format!("SetText len={}", text.chars().count()));
                     self.view.set_track_text(0, &text, fade);
-                    trace(&format!("  after: displayed={} layout={}", self.view.tracks[0].displayed.chars().count(), self.view.tracks[0].layout.is_some()));
                     self.render();
                 }
                 Command::SetTranslation(text) => {
@@ -759,7 +767,7 @@ mod imp {
         }
 
         fn flow_width(&self) -> f32 {
-            (self.block_width() - PAD_X * 2.0).max(1.0)
+            (self.block_width() - (PAD_X + BORDER) * 2.0).max(1.0)
         }
 
         fn flow_height(&self) -> f32 {
@@ -876,6 +884,14 @@ mod imp {
             self.format.as_ref().map(|(_, _, format)| format.clone())
         }
 
+        /// 可视区变化时连同测量和滚动目标一起更新，避免沿用旧宽度/行数的布局。
+        fn reflow_tracks(&mut self) {
+            for index in 0..2 {
+                self.tracks[index].layout = None;
+                self.update_track_offset(index, false);
+            }
+        }
+
         /// 为两条轨道建好文本布局（文本/字体变化后 layout 置空，渲染前重建）。
         fn prepare_layouts(&mut self) {
             for index in 0..2 {
@@ -946,7 +962,6 @@ mod imp {
             // 测量需要先建布局。
             if self.tracks[index].layout.is_none() {
                 let Some(format) = self.ensure_format() else {
-                    trace("update_track_offset: ensure_format FAILED");
                     return;
                 };
                 let text = self.tracks[index].displayed.clone();
@@ -959,7 +974,6 @@ mod imp {
                     self.is_replace(),
                     self.line_height(),
                 ) else {
-                    trace("update_track_offset: build_text_layout FAILED");
                     return;
                 };
                 self.tracks[index].content_size = measure_layout(&layout);
@@ -1054,39 +1068,57 @@ mod imp {
                 radiusY: radius,
             };
             unsafe {
-                brush.SetColor(&rgba(
+                brush.SetColor(&brush_color(
                     bg_r as f32 / 255.0,
                     bg_g as f32 / 255.0,
                     bg_b as f32 / 255.0,
                     bg_a * alpha_scale,
                 ));
                 target.FillRoundedRectangle(&rounded, brush);
-                if translation {
-                    brush.SetColor(&rgba(1.0, 1.0, 1.0, 0.10 * alpha_scale));
-                    target.DrawRoundedRectangle(&rounded, brush, 1.0, None);
-                }
+                brush.SetColor(&brush_color(
+                    1.0,
+                    1.0,
+                    1.0,
+                    if translation {
+                        0.10 * alpha_scale
+                    } else {
+                        0.08
+                    },
+                ));
+                target.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect_f(
+                            rect.left + 0.5,
+                            rect.top + 0.5,
+                            rect.right - 0.5,
+                            rect.bottom - 0.5,
+                        ),
+                        radiusX: (radius - 0.5).max(0.0),
+                        radiusY: (radius - 0.5).max(0.0),
+                    },
+                    brush,
+                    BORDER,
+                    None,
+                );
             }
             let track = &self.tracks[index];
             let (Some(layout), true) = (&track.layout, track.has_text()) else {
-                trace(&format!("draw_block[{index}]: skip (layout={}, has_text={})", track.layout.is_some(), track.has_text()));
                 return;
             };
-            trace(&format!("draw_block[{index}]: flow_w={:.0} flow_h={:.0} content={:.0}x{:.0}", self.flow_width(), self.flow_height(), track.content_size.0, track.content_size.1));
             let pad_top = if translation {
                 PAD_TOP_TRANSLATION
             } else {
                 PAD_TOP_MAIN
             };
             let flow = rect_f(
-                rect.left + PAD_X,
-                rect.top + pad_top,
-                rect.right - PAD_X,
-                rect.top + pad_top + self.flow_height(),
+                rect.left + PAD_X + BORDER,
+                rect.top + pad_top + BORDER,
+                rect.right - PAD_X - BORDER,
+                rect.top + pad_top + BORDER + self.flow_height(),
             );
             let (text_r, text_g, text_b, text_a) =
                 parse_css_color(&self.config.text_color).unwrap_or((255, 255, 255, 1.0));
-            trace(&format!("draw_block[{index}]: text_color parsed a={text_a}"));
-            // swapIn 的整段淡入（blur(6px) 略去，DC 渲染目标不支持效果管线）。
+            // swapIn 的整段淡入和 6px→0 的模糊共用同一条 CSS 曲线。
             let swap_alpha = track
                 .swap_started
                 .map(|start| {
@@ -1101,8 +1133,7 @@ mod imp {
             if let Some(start) = track.fresh_started {
                 let fade = ease_value(
                     &self.config.fade_easing,
-                    (start.elapsed().as_secs_f32() * 1000.0
-                        / self.config.fade_duration_ms.max(1) as f32)
+                    (start.elapsed().as_secs_f32() * 1000.0 / self.config.fade_duration_ms.max(1) as f32)
                         .min(1.0),
                 );
                 let total_chars = track.displayed.chars().count();
@@ -1117,7 +1148,7 @@ mod imp {
                     if utf16_start < total {
                         if let Ok(fresh_brush) = unsafe {
                             target.CreateSolidColorBrush(
-                                &rgba(
+                                &brush_color(
                                     text_r as f32 / 255.0,
                                     text_g as f32 / 255.0,
                                     text_b as f32 / 255.0,
@@ -1144,23 +1175,52 @@ mod imp {
             } else {
                 (0.0, -track.offset)
             };
-            unsafe {
-                brush.SetColor(&rgba(
-                    text_r as f32 / 255.0,
-                    text_g as f32 / 255.0,
-                    text_b as f32 / 255.0,
-                    base_alpha,
-                ));
-                target.PushAxisAlignedClip(&flow, D2D1_ANTIALIAS_MODE_ALIASED);
-                target.DrawTextLayout(
-                    D2D_POINT_2F {
-                        x: flow.left + dx,
-                        y: flow.top + dy,
-                    },
+            let text_color = brush_color(
+                text_r as f32 / 255.0,
+                text_g as f32 / 255.0,
+                text_b as f32 / 255.0,
+                base_alpha,
+            );
+            let blurred = if swap_alpha < 0.999 {
+                match blurred_text_bitmap(
+                    target,
                     layout,
-                    brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                );
+                    &flow,
+                    (dx, dy),
+                    &text_color,
+                    6.0 * (1.0 - swap_alpha),
+                ) {
+                    Ok(bitmap) => Some(bitmap),
+                    Err(error) => {
+                        eprintln!("[{LOG_TAG}] 绘制字幕模糊失败，回退清晰文本：{error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            unsafe {
+                brush.SetColor(&text_color);
+                target.PushAxisAlignedClip(&flow, D2D1_ANTIALIAS_MODE_ALIASED);
+                if let Some((bitmap, destination)) = blurred {
+                    target.DrawBitmap(
+                        &bitmap,
+                        Some(&destination),
+                        1.0,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        None,
+                    );
+                } else {
+                    target.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: flow.left + dx,
+                            y: flow.top + dy,
+                        },
+                        layout,
+                        brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
                 target.PopAxisAlignedClip();
             }
         }
@@ -1210,7 +1270,7 @@ mod imp {
             let identity = Matrix3x2::identity();
             unsafe {
                 target.SetTransform(&transform);
-                brush.SetColor(&rgba(1.0, 1.0, 1.0, alpha));
+                brush.SetColor(&brush_color(1.0, 1.0, 1.0, alpha));
                 match index {
                     // Lock/LockOpen：圆角矩形锁体 + 锁梁。
                     0 => {
@@ -1264,6 +1324,77 @@ mod imp {
         }
     }
 
+    /// DC 渲染目标没有 D2D effect 管线；仅在整段换新动画期间创建软件临时画布。
+    /// 三倍 sigma 留白让可视区外的字形也能贡献模糊像素，最后仍按 flow 裁剪。
+    fn blurred_text_bitmap(
+        target: &ID2D1DCRenderTarget,
+        layout: &IDWriteTextLayout,
+        flow: &D2D_RECT_F,
+        offset: (f32, f32),
+        color: &D2D1_COLOR_F,
+        sigma: f32,
+    ) -> windows::core::Result<(ID2D1Bitmap, D2D_RECT_F)> {
+        const PAD: f32 = 18.0;
+        unsafe {
+            let (mut dpi_x, mut dpi_y) = (96.0, 96.0);
+            target.GetDpi(&mut dpi_x, &mut dpi_y);
+            let scale = dpi_x / 96.0;
+            let width = ((flow.right - flow.left + 2.0 * PAD) * scale).ceil() as u32;
+            let height = ((flow.bottom - flow.top + 2.0 * PAD) * scale).ceil() as u32;
+            let dib = Dib::create(width as i32, height as i32)
+                .ok_or_else(windows::core::Error::from_win32)?;
+            let scratch = create_dc_render_target(&target.GetFactory()?, dpi_x)?;
+            scratch.BindDC(
+                dib.dc(),
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+            )?;
+            let brush = scratch.CreateSolidColorBrush(color, None)?;
+            scratch.BeginDraw();
+            scratch.Clear(Some(&brush_color(0.0, 0.0, 0.0, 0.0)));
+            scratch.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: PAD + offset.0,
+                    y: PAD + offset.1,
+                },
+                layout,
+                &brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            scratch.EndDraw(None, None)?;
+            // BGRA 与 RGBA 的通道顺序不影响逐通道卷积；保留预乘 alpha 避免黑边。
+            let pixels = image::RgbaImage::from_raw(width, height, dib.pixels().to_vec())
+                .expect("DIB byte length matches its dimensions");
+            let blurred = image::imageops::fast_blur(&pixels, sigma * scale);
+            let bitmap = target.CreateBitmap(
+                D2D_SIZE_U { width, height },
+                Some(blurred.as_ptr().cast()),
+                width * 4,
+                &D2D1_BITMAP_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: dpi_x,
+                    dpiY: dpi_y,
+                },
+            )?;
+            Ok((
+                bitmap,
+                rect_f(
+                    flow.left - PAD,
+                    flow.top - PAD,
+                    flow.left - PAD + width as f32 / scale,
+                    flow.top - PAD + height as f32 / scale,
+                ),
+            ))
+        }
+    }
+
     fn build_text_layout(
         dwrite: &IDWriteFactory,
         format: &IDWriteTextFormat,
@@ -1286,14 +1417,17 @@ mod imp {
         .ok()?;
         unsafe {
             if replace {
-                let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
+                // 单行的居中/贴右由 replace_offset_x 完成；若继承格式的居中对齐，
+                // 字形会落在百万 DIP 布局框中部，整体平移后仍在可视区之外。
+                layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok()?;
             }
             // 贴近 CSS line-height 的行框效果。
-            let _ = layout.SetLineSpacing(
+            layout.SetLineSpacing(
                 DWRITE_LINE_SPACING_METHOD_UNIFORM,
                 line_height,
                 line_height * BASELINE_RATIO,
-            );
+            ).ok()?;
         }
         Some(layout)
     }
@@ -1306,7 +1440,290 @@ mod imp {
         (metrics.width, metrics.height)
     }
 
-    /// 主显示器工作区 + 锚点定位，物理像素。
+    #[cfg(test)]
+    mod layout_tests {
+        use super::*;
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+
+        // 真正读取软件 D2D 输出，防止“布局创建成功”掩盖画布里没有文字的回归。
+        fn assert_visible_text_pixels(state: &mut WindowState, name: &str) {
+            state.view.prepare_layouts();
+            let width = state.view.layout_w as i32;
+            let height = state.view.layout_h as i32;
+            let dib = Dib::create(width, height).unwrap();
+            unsafe {
+                let target = create_dc_render_target(&state.d2d, 96.0).unwrap();
+                target
+                    .BindDC(
+                        dib.dc(),
+                        &RECT {
+                            left: 0,
+                            top: 0,
+                            right: width,
+                            bottom: height,
+                        },
+                    )
+                    .unwrap();
+                let brush = target
+                    .CreateSolidColorBrush(&brush_color(1.0, 1.0, 1.0, 1.0), None)
+                    .unwrap();
+                if state.view.tracks[0].swap_started.is_some() {
+                    blurred_text_bitmap(
+                        &target,
+                        state.view.tracks[0].layout.as_ref().unwrap(),
+                        &rect_f(0.0, 0.0, state.view.flow_width(), state.view.flow_height()),
+                        (0.0, 0.0),
+                        &brush_color(1.0, 1.0, 1.0, 1.0),
+                        6.0,
+                    )
+                    .unwrap();
+                }
+                target.BeginDraw();
+                target.Clear(Some(&brush_color(0.0, 0.0, 0.0, 0.0)));
+                state.view.draw(&target, &brush);
+                target.EndDraw(None, None).unwrap();
+                let pixels = dib.pixels();
+                for (index, rect) in state.view.blocks() {
+                    let pad = if index == 0 {
+                        PAD_TOP_MAIN
+                    } else {
+                        PAD_TOP_TRANSLATION
+                    };
+                    let mut bright = 0;
+                    for y in (rect.top + pad) as i32..(rect.top + pad + state.view.flow_height()) as i32
+                    {
+                        for x in (rect.left + PAD_X) as i32..(rect.right - PAD_X) as i32 {
+                            let i = ((y * width + x) * 4) as usize;
+                            if pixels[i..i + 3].iter().all(|c| *c > 150) {
+                                bright += 1;
+                            }
+                        }
+                    }
+                    assert!(
+                        bright > 30,
+                        "{name}: track {index} has only {bright} text pixels"
+                    );
+                }
+                if let Some(dir) = std::env::var_os("SAYIT_SUBTITLE_TEST_SNAPSHOTS") {
+                    let mut image = pixels.to_vec();
+                    for pixel in image.chunks_exact_mut(4) {
+                        pixel.swap(0, 2);
+                    }
+                    let dir = std::path::PathBuf::from(dir);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    image::save_buffer(
+                        dir.join(format!("{name}.png")),
+                        &image,
+                        width as u32,
+                        height as u32,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        #[test]
+        fn window_commands_reflow_and_render_both_tracks_without_mouse_input() {
+            struct TestWindow(HWND);
+            impl Drop for TestWindow {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = DestroyWindow(self.0);
+                    }
+                }
+            }
+            let window = TestWindow(create_window().unwrap());
+            with_state(window.0, |state| {
+                let mut config = SubtitleConfig {
+                    display_mode: "replace".into(),
+                    width: 444.0,
+                    window_width: 444.0,
+                    window_height: 136.0,
+                    line_count: 1,
+                    font_size: 28.0,
+                    translation_enabled: true,
+                    motion_enabled: false,
+                    fade_enabled: false,
+                    ..SubtitleConfig::default()
+                };
+                state.apply(Command::SetLayout {
+                    width: 444.0,
+                    height: 136.0,
+                    anchor: "center".into(),
+                    offset_y: 0.0,
+                });
+                state.apply(Command::SetConfig(Box::new(config.clone())));
+                state.apply(Command::SetText {
+                    text: "原生字幕 Hello".into(),
+                    fade: false,
+                });
+                state.apply(Command::SetTranslation("Bilingual translation".into()));
+                assert_eq!(
+                    state
+                        .view
+                        .blocks()
+                        .iter()
+                        .map(|(i, _)| *i)
+                        .collect::<Vec<_>>(),
+                    [1, 0]
+                );
+                assert_visible_text_pixels(state, "replace-bilingual-short");
+                state.apply(Command::SetText {
+                    text: "连续追加长句显示最新内容".repeat(12),
+                    fade: false,
+                });
+                assert!(state.view.tracks[0].offset < 0.0);
+                assert_visible_text_pixels(state, "replace-bilingual-long");
+                config.display_mode = "scroll".into();
+                config.line_count = 2;
+                config.translation_order = "sourceFirst".into();
+                state.apply(Command::SetLayout {
+                    width: 444.0,
+                    height: 214.0,
+                    anchor: "center".into(),
+                    offset_y: 0.0,
+                });
+                state.apply(Command::SetConfig(Box::new(config.clone())));
+                assert_eq!(
+                    state
+                        .view
+                        .blocks()
+                        .iter()
+                        .map(|(i, _)| *i)
+                        .collect::<Vec<_>>(),
+                    [0, 1]
+                );
+                assert_visible_text_pixels(state, "scroll-bilingual");
+                let before = state.view.tracks[0].content_size.1;
+                config.width = 260.0;
+                state.apply(Command::SetConfig(Box::new(config.clone())));
+                assert!(state.view.tracks[0].content_size.1 > before);
+                let offset = state.view.tracks[0].offset;
+                config.line_count = 1;
+                state.apply(Command::SetConfig(Box::new(config.clone())));
+                assert!((state.view.tracks[0].offset - offset - 39.0).abs() < 0.1);
+                state.apply(Command::SetLayout {
+                    width: 200.0,
+                    height: 214.0,
+                    anchor: "center".into(),
+                    offset_y: 0.0,
+                });
+                assert_eq!(
+                    unsafe { state.view.tracks[0].layout.as_ref().unwrap().GetMaxWidth() },
+                    154.0
+                );
+                assert_visible_text_pixels(state, "scroll-resized");
+                state.apply(Command::SetTranslation(String::new()));
+                assert_eq!(state.view.blocks().len(), 1);
+                config.fade_enabled = true;
+                state.apply(Command::SetConfig(Box::new(config)));
+                state.apply(Command::SetText {
+                    text: "新字幕".into(),
+                    fade: false,
+                });
+                assert!(state.view.tracks[0].fresh_started.is_some());
+                // 用时钟注入覆盖淡入终点，不等待、不模拟鼠标。
+                state.view.tracks[0].fresh_started =
+                    Some(Instant::now() - std::time::Duration::from_secs(1));
+                state.view.tick(0.0);
+                assert!(state.view.tracks[0].fresh_started.is_none());
+                assert_visible_text_pixels(state, "fresh-complete");
+                state.apply(Command::SetText {
+                    text: "整段换新".into(),
+                    fade: true,
+                });
+                state.view.tracks[0].swap_started =
+                    Some(Instant::now() - std::time::Duration::from_millis(240));
+                assert_visible_text_pixels(state, "swap-blur");
+                state.view.tracks[0].swap_started =
+                    Some(Instant::now() - std::time::Duration::from_secs(1));
+                state.view.tick(0.0);
+                assert!(state.view.tracks[0].swap_started.is_none());
+                assert_visible_text_pixels(state, "swap-complete");
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn replace_text_stays_in_view_for_short_and_overflowing_lines() {
+            let dwrite = create_dwrite_factory().unwrap();
+            let format = create_text_format_weight(
+                &dwrite,
+                "Microsoft YaHei",
+                28.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                true,
+                false,
+            )
+            .unwrap();
+            let flow_width = 400.0;
+            let line_height = 39.0;
+            for text in ["原生字幕 Hello", &"长句持续追加显示最新内容".repeat(12)] {
+                let layout = build_text_layout(
+                    &dwrite,
+                    &format,
+                    text,
+                    flow_width,
+                    line_height,
+                    true,
+                    line_height,
+                )
+                .unwrap();
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                unsafe {
+                    layout.GetMetrics(&mut metrics).unwrap();
+                }
+                let offset = replace_offset_x(metrics.width, flow_width);
+                let left = metrics.left + offset;
+                let right = left + metrics.width;
+                assert!(
+                    left < flow_width && right > 0.0,
+                    "text outside viewport: left={left}, right={right}, width={flow_width}"
+                );
+                if metrics.width > flow_width {
+                    assert!((right - flow_width).abs() < 0.1);
+                } else {
+                    assert!((left - (flow_width - right)).abs() < 0.1);
+                }
+                assert_eq!(metrics.lineCount, 1);
+                assert!((metrics.height - line_height).abs() < 0.1);
+            }
+        }
+
+        #[test]
+        fn scroll_text_keeps_centered_lines_and_reveals_the_latest_line() {
+            let dwrite = create_dwrite_factory().unwrap();
+            let format = create_text_format_weight(
+                &dwrite,
+                "Microsoft YaHei",
+                28.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                true,
+                false,
+            )
+            .unwrap();
+            let layout = build_text_layout(
+                &dwrite,
+                &format,
+                "第一行\n第二行\n最新一行",
+                400.0,
+                78.0,
+                false,
+                39.0,
+            )
+            .unwrap();
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            unsafe {
+                layout.GetMetrics(&mut metrics).unwrap();
+            }
+            assert!((metrics.left - (400.0 - metrics.width) / 2.0).abs() < 0.1);
+            assert_eq!(metrics.lineCount, 3);
+            assert!((metrics.height - scroll_offset_y(metrics.height, 78.0) - 78.0).abs() < 0.1);
+        }
+    }
+
+    /// 主显示器完整边界 + 锚点定位，物理像素（与 WebView 的 monitor.size 一致）。
     fn configured_placement(
         dpi: u32,
         layout_w: f32,
@@ -1331,7 +1748,7 @@ mod imp {
                 ..Default::default()
             };
             if GetMonitorInfoW(monitor, &mut info).as_bool() {
-                area = info.rcWork;
+                area = info.rcMonitor;
             }
         }
         let margin = (offset_y * scale).round() as i32;
@@ -1459,6 +1876,7 @@ mod imp {
                     }
                     if dirty {
                         state.render();
+                        state.sync_timer();
                     }
                     // 拖拽阈值判定与悬浮球一致（阈值按 CSS 像素）。
                     let Some(press) = state.press else {
@@ -1828,7 +2246,9 @@ mod tests {
         assert_eq!(ease_value("linear", 0.5), 0.5);
         assert_eq!(ease_value("ease-in", 0.0), 0.0);
         assert_eq!(ease_value("ease-out", 1.0), 1.0);
-        assert_eq!(ease_value("ease-in-out", 0.5), 0.5);
+        assert!((ease_value("ease-in-out", 0.5) - 0.5).abs() < 0.00001);
+        assert!((ease_value("ease-out", 0.5) - 0.684643).abs() < 0.00001);
+        assert!((ease_value("ease-in", 0.5) - 0.315357).abs() < 0.00001);
         assert_eq!(ease_value("unknown-keyword", 1.0), 1.0);
         assert!(ease_value("ease-out", 0.5) > 0.5);
     }

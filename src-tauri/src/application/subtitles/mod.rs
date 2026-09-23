@@ -456,7 +456,13 @@ pub(crate) fn get_subtitle_runtime(
 }
 
 #[tauri::command]
-pub(crate) async fn sync_subtitle_presentation(app: AppHandle) -> Result<(), String> {
+pub(crate) async fn sync_subtitle_presentation(
+    app: AppHandle,
+    rehydrate: Option<bool>,
+) -> Result<(), String> {
+    if rehydrate == Some(true) && !crate::desktop::indicator::can_rehydrate_subtitle_webview() {
+        return Ok(());
+    }
     let running = {
         let state = app.state::<RuntimeState>();
         let phase = state
