@@ -486,7 +486,10 @@ mod imp {
         fn tick_animations(&mut self, dt: f32) {
             self.pulse_time += dt;
             // 波形柱向目标值指数趋近，等效 CSS 的 70ms ease-out height 过渡。
-            let target = resample_wave_levels(&self.wave_peaks, wave_scale(self.wave_level));
+            // 与 IndicatorApp.tsx 一致：每个峰值先过感知响度曲线再重采样；
+            // 原始 RMS 响度正常说话只有 0.05~0.3，不过曲线柱高会常年压在最低线。
+            let scaled_peaks: Vec<f32> = self.wave_peaks.iter().map(|v| wave_scale(*v)).collect();
+            let target = resample_wave_levels(&scaled_peaks, wave_scale(self.wave_level));
             let k = 1.0 - (-dt / WAVE_SMOOTH_S).exp();
             for (display, target) in self.wave_display.iter_mut().zip(target) {
                 *display += (target - *display) * k;
