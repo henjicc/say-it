@@ -240,6 +240,10 @@ pub(crate) fn can_rehydrate_subtitle_webview() -> bool {
         && indicator_owner() != Some(IndicatorOwner::Dictation)
 }
 
+pub(crate) fn dictation_owns_indicator() -> bool {
+    indicator_owner() == Some(IndicatorOwner::Dictation)
+}
+
 /// 共享文本通道是否路由给原生字幕窗。owner 为 None 且字幕会话仍在运行
 /// （未被 OBS 接管）时，字幕的后续更新让字幕条重新出现——与 WebView 共享窗
 /// 「听写临时接管、字幕文本恢复后回到字幕」的语义一致。

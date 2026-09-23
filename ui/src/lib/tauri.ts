@@ -48,6 +48,8 @@ export const CMD = {
   subtitleToggle: "subtitle_toggle",
   subtitleStop: "subtitle_stop",
   syncSubtitlePresentation: "sync_subtitle_presentation",
+  showSubtitlePreview: "show_subtitle_preview",
+  hideSubtitlePreview: "hide_subtitle_preview",
   applySubtitleObsRouting: "apply_subtitle_obs_routing",
   listProviders: "list_providers",
   setDefaultProvider: "set_default_provider",

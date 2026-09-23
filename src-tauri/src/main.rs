@@ -75,8 +75,8 @@ use application::setup::{
 };
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
-    apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle,
-    sync_subtitle_presentation,
+    apply_subtitle_obs_routing, get_subtitle_runtime, hide_subtitle_preview,
+    show_subtitle_preview, subtitle_stop, subtitle_toggle, sync_subtitle_presentation,
 };
 use application::transcription::get_transcription_runtime;
 use commands::*;
@@ -658,6 +658,8 @@ fn main() {
             subtitle_stop,
             get_subtitle_runtime,
             sync_subtitle_presentation,
+            show_subtitle_preview,
+            hide_subtitle_preview,
             apply_subtitle_obs_routing,
             set_debug_log,
             set_hotkey_capturing,

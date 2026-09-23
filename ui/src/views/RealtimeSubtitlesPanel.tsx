@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -28,28 +28,17 @@ const TABS: TabItem<SubtitleTabKey>[] = [
 export function RealtimeSubtitlesPanel() {
   const tab = useUiStore((state) => state.subtitleTab);
   const setTab = useUiStore((state) => state.setSubtitleTab);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewOpen = useSubtitleStore((s) => s.previewActive);
   const running = useSubtitleStore((s) => s.running);
   const prefs = useSubtitleStore((s) => s.prefs);
   const patch = useSubtitleStore((s) => s.patch);
 
-  // 开关状态放在这一层（而不是某个 tab 内部），这样切通用设置/字幕样式/字幕翻译
-  // 之间的任意 tab 时预览都不会中断，方便边看效果边调整各处设置；
-  // 真正运行、或预览开着时，持续把最新设置同步到悬浮窗。
+  // Rust 持有预览生命周期；切换子页不结束预览，草稿样式即时同步。
   useEffect(() => {
     if (running || previewOpen) syncSubtitleIndicator(prefs);
   }, [prefs, running, previewOpen]);
 
-  // 预览开关的显示/隐藏生命周期：打开时在桌面实际位置模拟播放示例内容；
-  // 关闭、真正开始字幕、或离开实时字幕这个页面（本组件卸载）时都自动收起。
-  useEffect(() => {
-    if (running || !previewOpen) return undefined;
-    // 只在开关/运行状态变化时触发一次；样式跟随交给上面那个 effect。
-    showSubtitlePreview(prefs);
-    return () => {
-      hideSubtitlePreview();
-    };
-  }, [previewOpen, running]);
+  useEffect(() => () => { void hideSubtitlePreview(); }, []);
 
   return (
     <div className="flex flex-col gap-7">
@@ -74,7 +63,7 @@ export function RealtimeSubtitlesPanel() {
               variant="ghost"
               aria-pressed={previewOpen}
               disabled={running}
-              onClick={() => setPreviewOpen(!previewOpen)}
+              onClick={() => { void (previewOpen ? hideSubtitlePreview() : showSubtitlePreview(prefs)); }}
               className={cn(
                 previewOpen && "border-[var(--accent-ring)] bg-[var(--accent-soft)] text-[var(--color-accent)]",
               )}

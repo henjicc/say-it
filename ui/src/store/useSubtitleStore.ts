@@ -81,6 +81,7 @@ type Tone = "" | "ok" | "err";
 interface SubtitleState {
   prefs: SubtitlePrefs;
   running: boolean;
+  previewActive: boolean;
   statusText: string;
   statusTone: Tone;
   latestText: string;
@@ -95,7 +96,7 @@ interface SubtitleState {
     partial: Partial<
       Pick<
         SubtitleState,
-        "running" | "statusText" | "statusTone" | "latestText" | "capturing" | "shortcutLabel" | "obsOutputActive"
+        "running" | "previewActive" | "statusText" | "statusTone" | "latestText" | "capturing" | "shortcutLabel" | "obsOutputActive"
       >
     >,
   ) => void;
@@ -209,6 +210,7 @@ function persist(prefs: SubtitlePrefs) {
 export const useSubtitleStore = create<SubtitleState>((set, get) => ({
   prefs: readStored(),
   running: false,
+  previewActive: false,
   statusText: "实时字幕未开启",
   statusTone: "",
   latestText: "",
