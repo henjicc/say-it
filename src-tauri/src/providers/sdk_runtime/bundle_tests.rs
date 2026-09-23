@@ -158,10 +158,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.2.8");
+    assert_eq!(manifest["sdk"]["version"], "0.6.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-QJBuHiXKsIKXMBA96/sxQDAvGTZwoNBr2ER0bxjApgbx0zHRkYUKZtB0r/tZkT5OvZx5vlPsEbepcWdNWO/KeA=="
+        "sha512-GzhWnVkdv2NNZjf0diI9dRBRkc/cH0O5nCjbiQrast54f+ik4Q4LbKjytrMhyMawxaSkCoHVeNQuEUwnCDkcnA=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -211,15 +211,21 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.2.8");
+    assert_eq!(result["version"], "0.6.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 18);
+    assert_eq!(result["count"], 21);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
     );
     let ids = result["ids"].as_array().unwrap();
+    for model in crate::providers::registry::models().iter().filter(|model| model.sdk_capability_source.is_some()) {
+        assert!(ids.iter().any(|id| id.as_str() == model.capability_id.as_deref()), "宿主目录中的模型 {} 没有 SDK module", model.id);
+    }
     for expected in [
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash",
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash-filetrans",
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash-streaming",
         "volcengine.speech-recognition.seedasr-2.0-file",
         "volcengine.speech-recognition.seedasr-2.0-realtime",
         "siliconflow.speech-recognition.FunAudioLLM/SenseVoiceSmall",

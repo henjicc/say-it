@@ -227,6 +227,7 @@ function pluginModule(
           ...output,
           usage: terminal.usage ?? output.usage,
           finishReason: terminal.finishReason ?? output.finishReason,
+          truncated: output.truncated || terminal.finishReason === 'length' || terminal.finishReason === 'max_tokens',
         }
       } finally {
         router.end()
@@ -288,7 +289,7 @@ function createEventRouter(): EventRouter {
 function validationModule(descriptor: LlmModuleDescriptor): LlmModule {
   return {
     descriptor,
-    execute: async () => ({ output: '', reasoningOutput: '', usage: null, finishReason: null }),
+    execute: async () => ({ output: '', reasoningOutput: '', usage: null, finishReason: null, truncated: false }),
   }
 }
 
@@ -299,6 +300,7 @@ function normalizeOutput(value: unknown): LlmModuleOutput {
     reasoningOutput: typeof value.reasoningOutput === 'string' ? value.reasoningOutput : '',
     usage: normalizeUsage(value.usage),
     finishReason: typeof value.finishReason === 'string' ? value.finishReason : null,
+    truncated: value.truncated === true || value.finishReason === 'length' || value.finishReason === 'max_tokens',
   }
 }
 

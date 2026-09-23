@@ -59,6 +59,7 @@
   const MEDIA_CHUNK_BYTES = 64 * 1024
 
   const activeStreams = new Set<string>()
+  const activeUploads = new Set<string>()
   const timerCallbacks = new Map<string, { handler: (...args: unknown[]) => void; args: unknown[] }>()
   const websocketQueues = new Map<string, {
     values: Array<{ data: string | Uint8Array }>
@@ -130,6 +131,48 @@
     }
   }
 
+  const responseFromHost = (opened: StreamOpenResult, signal?: AbortSignal | null): Response => {
+    activeStreams.add(opened.streamId)
+    let closed = false
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      signal?.removeEventListener('abort', close)
+      activeStreams.delete(opened.streamId)
+      call('http.stream.close', { streamId: opened.streamId })
+    }
+    signal?.addEventListener('abort', close, { once: true })
+    if (signal?.aborted) { close(); throw abortError() }
+    const body = new HostReadableStream(() => ({
+      read: async () => {
+        if (signal?.aborted) { close(); throw abortError() }
+        try {
+          const result = call<StreamReadResult>('http.stream.read', { streamId: opened.streamId })
+          if (result.done) { close(); return { done: true, value: undefined } }
+          return { done: false, value: new Uint8Array(result.bytes ?? []) }
+        } catch (error) { close(); throw error }
+      },
+      cancel: async () => close(),
+      releaseLock: () => undefined,
+    }))
+    return new Response(body, { status: opened.status, headers: opened.headers, url: opened.url } as ResponseInit)
+  }
+
+  // 让出 QuickJS 作业循环，使 SDK AbortSignal/计时器在网络背压期间也能执行。
+  const uploadTick = async (signal?: AbortSignal | null): Promise<void> => {
+    if (signal?.aborted) throw abortError()
+    await new Promise<void>(resolve => setTimeout(resolve, 5))
+    if (signal?.aborted) throw abortError()
+  }
+  const finishUpload = async (uploadId: string, signal?: AbortSignal | null): Promise<Response> => {
+    while (true) {
+      if (signal?.aborted) throw abortError()
+      const result = call<{ ready: false } | { ready: true; response: StreamOpenResult }>('http.upload.finish', { uploadId })
+      if (result.ready) return responseFromHost(result.response, signal)
+      await uploadTick(signal)
+    }
+  }
+
   target.__sayitCreateRuntimeContext = () => ({
     transport: {
       fetch: async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -143,40 +186,66 @@
           headers,
           ...requestBodyData.payload,
         })
-        activeStreams.add(opened.streamId)
-        let closed = false
+        return responseFromHost(opened, init.signal)
+      },
+      fetchStream: async (url: string, init: Omit<RequestInit, 'body'> & {
+        body: AsyncIterable<Uint8Array>; contentLength: number
+      }): Promise<Response> => {
+        const iterator = init.body[Symbol.asyncIterator]()
+        let uploadId: string | undefined
         const close = (): void => {
-          if (closed) return
-          closed = true
-          activeStreams.delete(opened.streamId)
-          call('http.stream.close', { streamId: opened.streamId })
+          if (!uploadId) return
+          activeUploads.delete(uploadId)
+          call('http.upload.close', { uploadId })
         }
-        const onAbort = (): void => close()
-        init.signal?.addEventListener('abort', onAbort, { once: true })
-        const responseBody = new HostReadableStream(() => ({
-          read: async () => {
-            if (init.signal?.aborted) {
-              close()
-              throw abortError()
+        try {
+          if (init.signal?.aborted) throw abortError()
+          if (!Number.isSafeInteger(init.contentLength) || init.contentLength < 0) throw new TypeError('非法流式请求体长度')
+          uploadId = call<{ uploadId: string }>('http.upload.open', {
+            url, method: init.method ?? 'POST', headers: headerRecord(init.headers), contentLength: init.contentLength,
+          }).uploadId
+          activeUploads.add(uploadId)
+          init.signal?.addEventListener('abort', close, { once: true })
+          while (true) {
+            if (init.signal?.aborted) throw abortError()
+            const next = await iterator.next()
+            if (init.signal?.aborted) throw abortError()
+            if (next.done) break
+            if (!(next.value instanceof Uint8Array)) throw new TypeError('上传分块必须是 Uint8Array')
+            for (let offset = 0; offset < next.value.length; offset += MEDIA_CHUNK_BYTES) {
+              if (init.signal?.aborted) throw abortError()
+              while (true) {
+                const progress = call<{ ready: boolean; response?: StreamOpenResult }>('http.upload.write', {
+                  uploadId, ...storeRequestBody(next.value.subarray(offset, offset + MEDIA_CHUNK_BYTES)),
+                })
+                if (progress.response) return responseFromHost(progress.response, init.signal)
+                if (progress.ready) break
+                await uploadTick(init.signal)
+              }
             }
-            let result: StreamReadResult
-            try {
-              result = call<StreamReadResult>('http.stream.read', { streamId: opened.streamId })
-            } catch (error) {
-              close()
-              throw error
-            }
-            if (result.done) {
-              close()
-              init.signal?.removeEventListener('abort', onAbort)
-              return { done: true, value: undefined }
-            }
-            return { done: false, value: new Uint8Array(result.bytes ?? []) }
-          },
-          cancel: async () => close(),
-          releaseLock: () => undefined,
-        }))
-        return new Response(responseBody, { status: opened.status, headers: opened.headers, url: opened.url } as ResponseInit)
+          }
+          return await finishUpload(uploadId, init.signal)
+        } finally {
+          init.signal?.removeEventListener('abort', close)
+          close()
+          await iterator.return?.()
+        }
+      },
+      uploadFile: async (url: string, init: {
+        ref: string; fields: readonly (readonly [string, string])[]; fileField: string; maxBytes: number; signal: AbortSignal
+      }): Promise<Response> => {
+        if (init.signal.aborted) throw abortError()
+        const opened = call<{ uploadId: string } | { error: { code: string; message: string; details: unknown } }>('http.file.open', {
+          url, ref: init.ref, fields: init.fields, fileField: init.fileField, maxBytes: init.maxBytes,
+        })
+        if ('error' in opened) throw Object.assign(new Error(opened.error.message), opened.error)
+        activeUploads.add(opened.uploadId)
+        try {
+          return await finishUpload(opened.uploadId, init.signal)
+        } finally {
+          activeUploads.delete(opened.uploadId)
+          call('http.upload.close', { uploadId: opened.uploadId })
+        }
       },
     },
     realtime: {
@@ -220,22 +289,31 @@
       },
     },
     media: {
+      describe: async (ref: string) => call<MediaDescription>('media.describe', { ref }),
+      readChunk: async (ref: string, offset: number, length: number) =>
+        new Uint8Array(call<MediaChunk>('media.readChunk', { ref, offset, length }).bytes),
       read: async (ref: string) => {
         const description = call<MediaDescription>('media.describe', { ref })
         if (!Number.isSafeInteger(description.size) || description.size < 0) {
           throw new Error('宿主返回了非法媒体大小')
         }
+        // 保留旧整文件读取的内存保护；流式入口不受此限额影响。
+        if (description.size > 10 * 1024 * 1024) throw Object.assign(new Error('整文件读取不能超过 10 MiB'), {
+          code: 'media_too_large', details: { actualBytes: description.size, maxBytes: 10 * 1024 * 1024 },
+        })
         const bytes = new Uint8Array(description.size)
-        for (let offset = 0; offset < bytes.byteLength; offset += MEDIA_CHUNK_BYTES) {
+        for (let offset = 0; offset < bytes.byteLength;) {
+          const length = Math.min(MEDIA_CHUNK_BYTES, bytes.byteLength - offset)
           const chunk = call<MediaChunk>('media.readChunk', {
             ref,
             offset,
-            length: Math.min(MEDIA_CHUNK_BYTES, bytes.byteLength - offset),
+            length,
           }).bytes
-          if (chunk.length === 0 || chunk.length > bytes.byteLength - offset) {
+          if (chunk.length === 0 || chunk.length > length) {
             throw new Error('宿主媒体分块长度不符合声明')
           }
           bytes.set(chunk, offset)
+          offset += chunk.length
         }
         return { ...description, bytes }
       },
@@ -265,10 +343,13 @@
   })
 
   target.__sayitDisposeRuntimeContext = () => {
+    call('media.releaseAll')
+    for (const uploadId of Array.from(activeUploads)) call('http.upload.close', { uploadId })
     for (const streamId of Array.from(activeStreams)) call('http.stream.close', { streamId })
     for (const connectionId of Array.from(websocketQueues.keys())) call('websocket.close', { connectionId })
     for (const timerId of Array.from(timerCallbacks.keys())) call('timer.close', { timerId })
     activeStreams.clear()
+    activeUploads.clear()
     websocketQueues.clear()
     timerCallbacks.clear()
   }
