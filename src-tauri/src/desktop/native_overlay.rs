@@ -43,8 +43,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// EndDraw 返回的设备丢失错误码：丢弃渲染目标，下一帧重建。
 pub(crate) const RECREATE_TARGET: HRESULT = HRESULT(0x8899000Cu32 as i32);
 
-/// 出场/退场过渡的时长。短促到不打断操作节奏，又足够让人感知方向。
-pub(crate) const TRANSITION_ENTER_MS: u64 = 170;
+/// 出场/退场过渡的时长。入场与 indicator.css 的 wrapIn（0.24s ease-out）一致。
+pub(crate) const TRANSITION_ENTER_MS: u64 = 240;
 pub(crate) const TRANSITION_EXIT_MS: u64 = 140;
 
 /// 窗口出现/消失的过渡动画驱动器：只输出 0..1 的视觉进度，

@@ -1033,6 +1033,18 @@ async fn start_internal(
         .epochs
         .fetch_add(1, Ordering::AcqRel)
         + 1;
+    // 会话生命周期事件：有始有终才健康。曾经出现过会话无声消失（无完成/失败/
+    // 取消任何记录）导致首次听写没有注入也没有剪贴板回退，靠这组事件定位。
+    crate::application::diagnostics::event(
+        "info",
+        "dictation.sessionStarted",
+        serde_json::json!({
+            "sessionId": epoch,
+            "floatingOrb": trigger.is_floating_orb(),
+            "mouseGesture": trigger.is_mouse_gesture(),
+            "targetCaptured": activation_target.is_some(),
+        }),
+    );
     // 先解析前台软件并定下生效配置，再决定是否捕获上下文正文：应用规则可能把智能
     // 处理切到含 {{active_app_context}} 的模板，顺序反了就拿不到上下文。
     let app_identity = activation_target.and_then(crate::active_app_context::app_identity);
@@ -1552,6 +1564,11 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         ) {
             return Ok(());
         }
+        crate::application::diagnostics::event(
+            "info",
+            "dictation.stopRequested",
+            serde_json::json!({ "sessionId": s.epoch }),
+        );
         s.phase = if s.mode == Some(DictationMode::File) {
             DictationPhase::ProcessingFile
         } else {
@@ -1752,11 +1769,17 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
                 )
             }),
         );
+        let cancelled_epoch = s.epoch;
         s.epoch = state
             .dictation_runtime
             .epochs
             .fetch_add(1, Ordering::AcqRel)
             + 1;
+        crate::application::diagnostics::event(
+            "info",
+            "dictation.sessionCancelled",
+            serde_json::json!({ "sessionId": cancelled_epoch }),
+        );
         s.phase = DictationPhase::Idle;
         s.mode = None;
         s.public_id = None;
