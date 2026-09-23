@@ -152,30 +152,17 @@ impl AudioLabRuntime {
             return Err("没有可播放的音频".into());
         }
         let rate = if processed { 48_000 } else { state.sample_rate };
-        let data_len = (samples.len() * 2) as u32;
-        let mut bytes = Vec::with_capacity(44 + data_len as usize);
-        bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-        bytes.extend_from_slice(b"WAVEfmt ");
-        bytes.extend_from_slice(&16u32.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&rate.to_le_bytes());
-        bytes.extend_from_slice(&(rate * 2).to_le_bytes());
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&16u16.to_le_bytes());
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&data_len.to_le_bytes());
-        for sample in samples {
-            bytes.extend_from_slice(
-                &((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes(),
-            );
-        }
         let path = std::env::temp_dir().join(format!(
             "say-it-audio-lab-{}.wav",
             if processed { "processed" } else { "raw" }
         ));
-        std::fs::write(&path, bytes).map_err(|error| format!("写入试听文件失败：{error}"))?;
+        crate::audio_wav::write_mono_pcm16(
+            &path,
+            samples,
+            rate,
+            crate::audio_wav::Quantization::Truncate,
+        )
+        .map_err(|error| format!("写入试听文件失败：{error}"))?;
         path.to_str()
             .map(str::to_owned)
             .ok_or_else(|| "试听文件路径无效".into())
@@ -304,11 +291,17 @@ pub(crate) fn get_audio_lab_runtime(
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_audio_path(
-    state: tauri::State<'_, crate::state::RuntimeState>,
+pub(crate) async fn audio_lab_audio_path(
+    app: tauri::AppHandle,
     processed: bool,
 ) -> Result<String, String> {
-    state.audio_lab_runtime.write_wav(processed)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<crate::state::RuntimeState>()
+            .audio_lab_runtime
+            .write_wav(processed)
+    })
+    .await
+    .map_err(|error| format!("试听文件任务失败：{error}"))?
 }
 
 fn snapshot(state: &AudioLabState) -> AudioLabSnapshot {
