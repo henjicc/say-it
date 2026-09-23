@@ -263,7 +263,7 @@ mod imp {
     };
     use super::super::native_overlay::{
         create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba, window_dpi,
-        LayeredSurface, OverlayThread,
+        LayeredSurface, OverlayThread, Transition,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
@@ -571,6 +571,7 @@ mod imp {
         y: i32,
         visible: bool,
         timer_active: bool,
+        transition: Transition,
         press: Option<(i32, i32)>,
         dragged: bool,
         d2d: ID2D1Factory,
@@ -624,6 +625,8 @@ mod imp {
                 }
                 Command::Show => {
                     self.visible = true;
+                    // 已完全显示时是空操作，不会重播动画。
+                    self.transition.show();
                     self.render();
                     unsafe {
                         let _ = SetWindowPos(
@@ -639,12 +642,18 @@ mod imp {
                     self.sync_timer();
                 }
                 Command::Hide => {
-                    self.visible = false;
-                    self.sync_timer();
-                    self.surface.mark_hidden();
-                    unsafe {
-                        let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    // 有可见内容时先播退场动画，真正隐藏推迟到动画结束
+                    // （WM_TIMER 里收尾）；期间不再接受点击。
+                    if self.transition.hide() {
+                        apply_interactive_style(self.hwnd, false);
+                    } else {
+                        self.visible = false;
+                        self.surface.mark_hidden();
+                        unsafe {
+                            let _ = ShowWindow(self.hwnd, SW_HIDE);
+                        }
                     }
+                    self.sync_timer();
                 }
                 Command::SetInteractive(interactive) => {
                     apply_interactive_style(self.hwnd, interactive);
@@ -670,8 +679,9 @@ mod imp {
         }
 
         fn sync_timer(&mut self) {
-            let want = self.visible
-                && (self.view.phase.is_spinner() || self.view.phase == OrbPhase::Recording);
+            let want = (self.visible
+                && (self.view.phase.is_spinner() || self.view.phase == OrbPhase::Recording))
+                || self.transition.is_animating();
             unsafe {
                 if want && !self.timer_active {
                     SetTimer(self.hwnd, TIMER_ID, TIMER_MS, None);
@@ -691,7 +701,9 @@ mod imp {
             if dpi != 0 {
                 self.view.dpi = dpi;
             }
-            let alpha = (self.view.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+            // 外观设置的不透明度 × 出场/退场过渡进度。
+            let alpha = (self.view.opacity.clamp(0.0, 1.0) * self.transition.visual() * 255.0)
+                .round() as u8;
             let Self {
                 view,
                 d2d,
@@ -1174,7 +1186,15 @@ mod imp {
             WM_TIMER => {
                 with_state(hwnd, |state| {
                     state.view.spinner_angle = (state.view.spinner_angle + SPINNER_STEP_DEG) % 360.0;
+                    let (_, finished) = state.transition.tick();
+                    if finished && state.transition.is_fully_hidden() {
+                        // 退场动画播完才真正隐藏。
+                        state.visible = false;
+                        state.surface.mark_hidden();
+                        let _ = ShowWindow(state.hwnd, SW_HIDE);
+                    }
                     state.render();
+                    state.sync_timer();
                 });
                 LRESULT(0)
             }
@@ -1391,6 +1411,7 @@ mod imp {
                 y: 0,
                 visible: false,
                 timer_active: false,
+                transition: Transition::new(false),
                 press: None,
                 dragged: false,
                 d2d,

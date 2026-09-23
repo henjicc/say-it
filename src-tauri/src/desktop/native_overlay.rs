@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::{w, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -42,6 +42,102 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// EndDraw 返回的设备丢失错误码：丢弃渲染目标，下一帧重建。
 pub(crate) const RECREATE_TARGET: HRESULT = HRESULT(0x8899000Cu32 as i32);
+
+/// 出场/退场过渡的时长。短促到不打断操作节奏，又足够让人感知方向。
+pub(crate) const TRANSITION_ENTER_MS: u64 = 170;
+pub(crate) const TRANSITION_EXIT_MS: u64 = 140;
+
+/// 窗口出现/消失的过渡动画驱动器：只输出 0..1 的视觉进度，
+/// 透明度与位移怎么用它由各自窗口决定。只认 Show/Hide 语义——
+/// 状态内容更新（如录音中改文案）不重播动画。
+pub(crate) struct Transition {
+    /// 未缓动的线性进度：0 完全隐藏，1 完全显示。
+    progress: f32,
+    /// +1 入场中，-1 退场中，0 静止。
+    direction: i8,
+    last_tick: Option<Instant>,
+}
+
+impl Transition {
+    pub(crate) fn new(shown: bool) -> Self {
+        Self {
+            progress: if shown { 1.0 } else { 0.0 },
+            direction: 0,
+            last_tick: None,
+        }
+    }
+
+    /// 进入或回到显示态。已完全显示时是空操作；退场中途调用则从当前位置反向回播。
+    pub(crate) fn show(&mut self) {
+        if self.progress < 1.0 && self.direction != 1 {
+            self.direction = 1;
+            self.last_tick = None;
+        }
+    }
+
+    /// 开始退场；返回当前是否有可见内容可退（没有则调用方应立即隐藏，不必等动画）。
+    pub(crate) fn hide(&mut self) -> bool {
+        if self.progress > 0.0 {
+            self.direction = -1;
+            self.last_tick = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn is_animating(&self) -> bool {
+        self.direction != 0
+    }
+
+    pub(crate) fn is_fully_hidden(&self) -> bool {
+        self.progress <= 0.0 && self.direction <= 0
+    }
+
+    /// 推进一帧，返回（缓动后的视觉进度，本次是否刚好到达终点）。
+    pub(crate) fn tick(&mut self) -> (f32, bool) {
+        let now = Instant::now();
+        let dt = self
+            .last_tick
+            .replace(now)
+            .map(|last| now.saturating_duration_since(last).as_secs_f32())
+            .unwrap_or(0.0);
+        self.advance(dt)
+    }
+
+    /// 与 tick 分离的纯推进逻辑，便于单测注入固定帧间隔。
+    pub(crate) fn advance(&mut self, dt_seconds: f32) -> (f32, bool) {
+        let mut just_finished = false;
+        if self.direction != 0 {
+            let duration_ms = if self.direction > 0 {
+                TRANSITION_ENTER_MS
+            } else {
+                TRANSITION_EXIT_MS
+            } as f32;
+            self.progress += dt_seconds * 1000.0 / duration_ms * self.direction as f32;
+            if self.direction > 0 && self.progress >= 1.0 {
+                self.progress = 1.0;
+                self.direction = 0;
+                just_finished = true;
+            } else if self.direction < 0 && self.progress <= 0.0 {
+                self.progress = 0.0;
+                self.direction = 0;
+                just_finished = true;
+            }
+        }
+        (self.visual(), just_finished)
+    }
+
+    /// 缓动后的视觉进度：入场 ease-out（先快后慢落定），退场 ease-in（加速消失）。
+    pub(crate) fn visual(&self) -> f32 {
+        let t = self.progress.clamp(0.0, 1.0);
+        if self.direction < 0 {
+            t * t
+        } else {
+            1.0 - (1.0 - t).powi(3)
+        }
+    }
+}
 
 /// 命令入队后投递给 UI 线程的线程消息。线程消息（hwnd 为空）不经过窗口过程，
 /// 必须在消息循环里手动认领，否则命令永远堆积。
@@ -362,6 +458,13 @@ impl LayeredSurface {
                 SourceConstantAlpha: constant_alpha,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
+            // 先 ShowWindow 再提交内容：对 SW_HIDE 过的窗口调用 UpdateLayeredWindow
+            // 可能直接失败，若把 ShowWindow 放在 ULW 之后会永远卡在「窗口仍隐藏、
+            // shown 标志未置位、每次渲染都失败」的死循环里。
+            if !self.shown {
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                self.shown = true;
+            }
             if let Err(error) = UpdateLayeredWindow(
                 self.hwnd,
                 None,
@@ -375,10 +478,6 @@ impl LayeredSurface {
             ) {
                 eprintln!("[{log_tag}] 上屏失败：{error}");
                 return;
-            }
-            if !self.shown {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                self.shown = true;
             }
         }
     }
@@ -426,5 +525,74 @@ pub(crate) fn create_text_format(
         });
         let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         Ok(format)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Transition, TRANSITION_ENTER_MS};
+
+    #[test]
+    fn enter_animates_from_zero_and_finishes() {
+        let mut t = Transition::new(false);
+        t.show();
+        assert!(t.is_animating());
+        assert_eq!(t.visual(), 0.0);
+        let mut finished = false;
+        while !finished {
+            finished = t.advance(0.016).1;
+        }
+        assert_eq!(t.visual(), 1.0);
+        assert!(!t.is_animating());
+    }
+
+    #[test]
+    fn exit_animates_and_reports_completion() {
+        let mut t = Transition::new(true);
+        assert!(t.hide());
+        assert!(t.is_animating());
+        let mut finished = false;
+        while !finished {
+            finished = t.advance(0.016).1;
+        }
+        assert!(t.is_fully_hidden());
+        assert_eq!(t.visual(), 0.0);
+    }
+
+    #[test]
+    fn hide_on_fully_hidden_is_a_noop_signal() {
+        let mut t = Transition::new(false);
+        assert!(!t.hide(), "已完全隐藏时不应再走动画");
+    }
+
+    #[test]
+    fn show_during_exit_reverses_from_current_progress() {
+        let mut t = Transition::new(true);
+        t.hide();
+        // 退场播到约一半。
+        t.advance(0.07);
+        let mid = t.visual();
+        assert!(mid > 0.0 && mid < 1.0);
+        t.show();
+        assert!(t.is_animating());
+        // 反转后继续向上走而不是跳变。
+        let (next, _) = t.advance(0.016);
+        assert!(next > 0.0 && next <= 1.0);
+    }
+
+    #[test]
+    fn state_change_while_shown_does_not_replay() {
+        let mut t = Transition::new(true);
+        t.show();
+        assert!(!t.is_animating(), "完全显示时 show 是空操作");
+    }
+
+    #[test]
+    fn enter_duration_is_respected() {
+        let mut t = Transition::new(false);
+        t.show();
+        // 恰好播完整个入场时长后应到达终点。
+        let _ = t.advance(TRANSITION_ENTER_MS as f32 / 1000.0);
+        assert_eq!(t.visual(), 1.0);
     }
 }
