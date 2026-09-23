@@ -164,10 +164,13 @@ impl FileRecognitionProvider {
                 }
                 let spec = spec.clone();
                 let path = path.to_string();
+                let worker_cancel = cancel.clone();
                 let result = tauri::async_runtime::spawn_blocking(move || {
-                    let samples = crate::audio_prep::decode_to_mono_16k(&path)?;
-                    let duration_ms = (samples.len() as u64).saturating_mul(1_000) / 16_000;
-                    let segments = super::local_asr::recognize_file_segments(&spec, &samples)?;
+                    let (segments, duration_ms) = super::local_asr::recognize_audio_file(
+                        &spec,
+                        &path,
+                        worker_cancel.as_deref(),
+                    )?;
                     // VAD 句段边界即字幕时间轴，逐句透传，文稿对齐与字幕转写才能用上本地模型。
                     let text = segments
                         .iter()

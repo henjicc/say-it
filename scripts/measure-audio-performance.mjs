@@ -12,6 +12,7 @@ const { values } = parseArgs({ options: {
   seconds: { type: "string", default: "300" },
   runs: { type: "string", default: "3" },
   denoise: { type: "boolean", default: false },
+  scenario: { type: "string", default: "audio-lab" },
 } });
 if (!values.executable || !values.output) {
   throw new Error("必须指定 --executable 测试程序和 --output 结果文件");
@@ -23,10 +24,16 @@ if (!Number.isInteger(seconds) || seconds < 1 || seconds > 1800
   throw new Error("seconds 必须是 1～1800 的整数，runs 必须是 1～20 的整数");
 }
 const executable = resolve(values.executable);
+const testNames = {
+  "audio-lab": "application::audio_lab::performance_tests::offline_audio_memory_profile",
+  decode: "audio_prep::performance_tests::file_decode_memory_profile",
+};
+const testName = testNames[values.scenario];
+if (!testName) throw new Error("scenario 必须是 audio-lab 或 decode");
 const measurements = [];
 for (let run = 0; run < runs; run++) {
   const result = spawnSync(executable, [
-    "application::audio_lab::performance_tests::offline_audio_memory_profile",
+    testName,
     "--ignored", "--exact", "--nocapture", "--test-threads=1",
   ], {
     encoding: "utf8",

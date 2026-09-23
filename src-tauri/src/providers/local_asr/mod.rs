@@ -12,6 +12,9 @@ use super::plugin::{LocalModelSpec, ModelPackManifest};
 
 const SAMPLE_RATE: i32 = 16_000;
 
+mod file;
+pub(crate) use file::recognize_audio_file;
+
 #[derive(Default)]
 pub struct LocalAsrOutput {
     pub partial: Option<String>,
@@ -228,12 +231,14 @@ impl OfflineVadSession {
         // 这里不能 reset：Silero VAD 依赖跨窗口的循环状态累积语音概率，语音刚起始
         // 时 detected() 仍为 false，此刻 reset 会清空模型状态与尚未成段的缓冲，使
         // detected() 永远无法置位、reset 每块反复触发，VAD 再也切不出任何句段。
-        // 缓冲增长由 recognize_file_segments 的周期性 flush_and_reset 收口。
+        // 文件模式的缓冲增长由 file 模块的周期性 flush_and_reset 收口。
         Ok(results)
     }
 }
 
-pub fn recognize_file_segments(
+// 保留原整段算法作识别质量与时间轴的独立回归参照。
+#[cfg(test)]
+fn recognize_file_segments(
     spec: &LocalModelSpec,
     samples: &[f32],
 ) -> Result<Vec<LocalSegment>, String> {
@@ -388,11 +393,9 @@ mod tests {
         println!("Paraformer PoC: {text}");
     }
 
-    #[test]
-    #[ignore = "需要 SAYIT_SENSEVOICE_POC_DIR 指向官方 SenseVoice 模型与 test.wav"]
-    fn recognizes_official_sensevoice_wave_and_vad_segment() {
+    pub(super) fn sensevoice_spec() -> LocalModelSpec {
         let model_dir = PathBuf::from(std::env::var("SAYIT_SENSEVOICE_POC_DIR").unwrap());
-        let spec = LocalModelSpec {
+        LocalModelSpec {
             plugin_id: "poc".into(),
             provider_id: "poc".into(),
             engine: "sherpa-onnx-offline".into(),
@@ -428,8 +431,14 @@ mod tests {
                 "useItn": true,
                 "numThreads": 2
             }),
-        };
-        let wave_path = model_dir.join("test.wav");
+        }
+    }
+
+    #[test]
+    #[ignore = "需要 SAYIT_SENSEVOICE_POC_DIR 指向官方 SenseVoice 模型与 test.wav"]
+    fn recognizes_official_sensevoice_wave_and_vad_segment() {
+        let spec = sensevoice_spec();
+        let wave_path = spec.model_dir.join("test.wav");
         let wave = sherpa_onnx::Wave::read(wave_path.to_str().unwrap()).unwrap();
         let direct = OfflineEngine::create(&spec)
             .unwrap()

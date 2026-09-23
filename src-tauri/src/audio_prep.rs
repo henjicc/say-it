@@ -1,10 +1,5 @@
-//! 录音识别前处理：把任意输入音视频文件解码为单声道 16kHz PCM，供后续 Opus/MP3 压缩使用。
-//!
-//! 只服务于"同步短音频识别"（fun-asr-flash / qwen3-asr-flash）：这两个模型走
-//! multimodal-generation 接口，请求体大小受限（Base64 编码后需落在文档给出的体积上限内），
-//! 直接把用户选择的原始文件（可能是高采样率/多声道/未压缩 WAV）塞进请求容易超限。
-//! 异步转写模型（fun-asr / paraformer / qwen3-asr-flash-filetrans）走 OSS 上传，体积上限是
-//! 2GB/12 小时，不需要这道预处理。
+//! 文件音频解码：下混为单声道 16kHz PCM，供本地文件识别与模型对比使用。
+//! 解码器只保留当前包；需要完整音频的调用方显式使用收集接口。
 
 use std::fs::File;
 use std::path::Path;
@@ -20,7 +15,11 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Duration, TimeBase, Timestamp};
 
-use crate::audio_dsp::resample_linear;
+mod resampler;
+use resampler::MonoResampler;
+
+#[cfg(all(test, windows))]
+mod performance_tests;
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 const OPUS_SAMPLE_RATE: u32 = 48_000;
@@ -29,10 +28,16 @@ const OPUS_MAX_FRAMES_PER_PACKET: usize = 5_760;
 /// 解码任意音视频文件的首个可解码音轨，下混为单声道并重采样到 16kHz。
 /// 返回 [-1, 1] 范围的 f32 PCM。
 pub fn decode_to_mono_16k(file_path: &str) -> Result<Vec<f32>, String> {
-    match decode_with_symphonia(file_path) {
-        Ok(samples) => Ok(samples),
+    let mut samples = Vec::new();
+    let result = decode_with_symphonia(file_path, &mut || Ok(()), &mut |chunk| {
+        samples.extend_from_slice(chunk);
+        Ok(())
+    });
+    match result {
+        Ok(_) => Ok(samples),
         #[cfg(target_os = "macos")]
         Err(primary_error) => {
+            drop(samples);
             crate::macos_native::decode_audio_file(Path::new(file_path)).map_err(|native_error| {
                 format!("{primary_error}；macOS 原生音频解码也失败：{native_error}")
             })
@@ -42,7 +47,41 @@ pub fn decode_to_mono_16k(file_path: &str) -> Result<Vec<f32>, String> {
     }
 }
 
-fn decode_with_symphonia(file_path: &str) -> Result<Vec<f32>, String> {
+/// 同步消费解码块；Windows/Linux 消费速度构成背压，不建立整段 PCM 或积压队列。
+/// macOS 目前保留完整输出，以兼容读取中途失败后的原生解码回退。
+/// 返回实际输出样本数；失败时调用方必须丢弃本次结果，不能提交部分识别结果。
+pub fn decode_mono_16k_chunks(
+    file_path: &str,
+    mut check_cancel: impl FnMut() -> Result<(), String>,
+    mut consume: impl FnMut(&[f32]) -> Result<(), String>,
+) -> Result<u64, String> {
+    check_cancel()?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let count = decode_with_symphonia(file_path, &mut check_cancel, &mut consume)?;
+        check_cancel()?;
+        Ok(count)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // 原生回退可能发生在主解码器已输出部分音频之后。macOS 暂时先完整解码，
+        // 保持失败后可从头回退的语义，避免同一段语音重复送入识别器。
+        let samples = decode_to_mono_16k(file_path)?;
+        for chunk in samples.chunks(4096) {
+            check_cancel()?;
+            consume(chunk)?;
+        }
+        check_cancel()?;
+        Ok(samples.len() as u64)
+    }
+}
+
+fn decode_with_symphonia(
+    file_path: &str,
+    check_cancel: &mut impl FnMut() -> Result<(), String>,
+    consume: &mut impl FnMut(&[f32]) -> Result<(), String>,
+) -> Result<u64, String> {
+    check_cancel()?;
     let file =
         File::open(file_path).map_err(|e| format!("打开待识别音频文件失败：{file_path}（{e}）"))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -73,7 +112,7 @@ fn decode_with_symphonia(file_path: &str) -> Result<Vec<f32>, String> {
         .ok_or_else(|| "未找到音频编码参数".to_string())?;
 
     if codec_params.codec == CODEC_ID_OPUS {
-        return decode_opus_to_mono_16k(&mut *format, &track, codec_params);
+        return decode_opus_to_mono_16k(&mut *format, &track, codec_params, check_cancel, consume);
     }
 
     let mut decoder = symphonia::default::get_codecs()
@@ -81,9 +120,11 @@ fn decode_with_symphonia(file_path: &str) -> Result<Vec<f32>, String> {
         .map_err(|e| format!("创建音频解码器失败：{e}"))?;
 
     let mut mono: Vec<f32> = Vec::new();
-    let mut in_rate: Option<u32> = None;
+    let mut resampler: Option<MonoResampler> = None;
+    let mut has_samples = false;
     let mut interleaved: Vec<f32> = Vec::new();
     loop {
+        check_cancel()?;
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
@@ -99,26 +140,32 @@ fn decode_with_symphonia(file_path: &str) -> Result<Vec<f32>, String> {
         };
         let spec = audio_buf.spec();
         let channels = spec.channels().count().max(1);
-        in_rate.get_or_insert(spec.rate());
+        if resampler.is_none() {
+            resampler = Some(MonoResampler::new(spec.rate())?);
+        }
 
         interleaved.resize(audio_buf.samples_interleaved(), 0.0);
         audio_buf.copy_to_slice_interleaved(&mut interleaved);
+        mono.clear();
         downmix_into(&interleaved, channels, &mut mono);
+        has_samples |= !mono.is_empty();
+        resampler.as_mut().unwrap().push(&mono, consume)?;
     }
 
-    if mono.is_empty() {
+    if !has_samples {
         return Err("音频文件中没有可用的音频数据".to_string());
     }
-    let in_rate = in_rate.ok_or_else(|| "无法获取音频采样率".to_string())?;
-
-    Ok(resample_linear(&mono, in_rate, TARGET_SAMPLE_RATE))
+    check_cancel()?;
+    resampler.ok_or("无法获取音频采样率")?.finish(consume)
 }
 
 fn decode_opus_to_mono_16k(
     format: &mut dyn symphonia::core::formats::FormatReader,
     track: &symphonia::core::formats::Track,
     codec_params: &symphonia::core::codecs::audio::AudioCodecParameters,
-) -> Result<Vec<f32>, String> {
+    check_cancel: &mut impl FnMut() -> Result<(), String>,
+    consume: &mut impl FnMut(&[f32]) -> Result<(), String>,
+) -> Result<u64, String> {
     let channel_count = codec_params
         .channels
         .as_ref()
@@ -140,9 +187,12 @@ fn decode_opus_to_mono_16k(
     }
 
     let mut mono = Vec::new();
+    let mut resampler = MonoResampler::new(OPUS_SAMPLE_RATE)?;
+    let mut has_samples = false;
     let mut decoded = vec![0.0_f32; OPUS_MAX_FRAMES_PER_PACKET * channel_count];
     let mut first_packet = true;
     loop {
+        check_cancel()?;
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => break,
@@ -176,14 +226,18 @@ fn decode_opus_to_mono_16k(
 
         let start = start_trim * channel_count;
         let end = (frames - end_trim) * channel_count;
+        mono.clear();
         downmix_into(&decoded[start..end], channel_count, &mut mono);
+        has_samples |= !mono.is_empty();
+        resampler.push(&mono, consume)?;
         first_packet = false;
     }
 
-    if mono.is_empty() {
+    if !has_samples {
         return Err("音频文件中没有可用的 Opus 音频数据".to_string());
     }
-    Ok(resample_linear(&mono, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE))
+    check_cancel()?;
+    resampler.finish(consume)
 }
 
 #[derive(Clone, Copy)]
@@ -258,7 +312,7 @@ pub(crate) fn write_test_stereo_wav(path: &Path, seconds: f32, rate: u32) {
     use std::io::Write;
     let num_frames = (rate as f32 * seconds) as u32;
     let data_len = num_frames * 4; // 2 channels * 2 bytes
-    let mut f = std::fs::File::create(path).unwrap();
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
     f.write_all(b"RIFF").unwrap();
     f.write_all(&(36 + data_len).to_le_bytes()).unwrap();
     f.write_all(b"WAVEfmt ").unwrap();
@@ -278,11 +332,83 @@ pub(crate) fn write_test_stereo_wav(path: &Path, seconds: f32, rate: u32) {
         f.write_all(&s16.to_le_bytes()).unwrap();
         f.write_all(&s16.to_le_bytes()).unwrap();
     }
+    f.flush().unwrap();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_decode_cancels_without_committing_or_leaking_the_file() {
+        use std::cell::Cell;
+        let path =
+            std::env::temp_dir().join(format!("say-it-decode-cancel-{}.wav", uuid::Uuid::new_v4()));
+        write_test_stereo_wav(&path, 2.0, 44_100);
+        let cancelled = Cell::new(false);
+        let mut calls = 0;
+        let error = decode_mono_16k_chunks(
+            path.to_str().unwrap(),
+            || {
+                if cancelled.get() {
+                    Err("cancelled".into())
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {
+                calls += 1;
+                cancelled.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "cancelled");
+        assert_eq!(calls, 1);
+
+        let error = decode_mono_16k_chunks(
+            path.to_str().unwrap(),
+            || Ok(()),
+            |_| Err("sink failed".into()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "sink failed");
+        let mut samples = Vec::new();
+        let count = decode_mono_16k_chunks(
+            path.to_str().unwrap(),
+            || Ok(()),
+            |part| {
+                assert!(!part.is_empty() && part.len() <= 4096);
+                samples.extend_from_slice(part);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(count, 32_000);
+        assert_eq!(samples, decode_to_mono_16k(path.to_str().unwrap()).unwrap());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_decode_rejects_missing_and_empty_audio() {
+        let path =
+            std::env::temp_dir().join(format!("say-it-decode-empty-{}.wav", uuid::Uuid::new_v4()));
+        let error = decode_mono_16k_chunks(
+            path.to_str().unwrap(),
+            || Err("cancelled".into()),
+            |_| unreachable!(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "cancelled");
+        assert!(
+            decode_mono_16k_chunks(path.to_str().unwrap(), || Ok(()), |_| unreachable!()).is_err()
+        );
+        write_test_stereo_wav(&path, 0.0, 48_000);
+        assert!(
+            decode_mono_16k_chunks(path.to_str().unwrap(), || Ok(()), |_| unreachable!()).is_err()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn decode_downmixes_and_resamples_to_16k() {
