@@ -3292,7 +3292,10 @@ fn should_show_waveform(
     assistant_follow_up: bool,
     floating_orb: bool,
 ) -> bool {
-    floating_orb || assistant_follow_up || mode == Some(DictationMode::File)
+    // 胶囊录音态已常驻波形（方案二定稿），所有模式都发波形数据；
+    // 曾经的"仅文件听写显示波形"会让实时模型下胶囊波形永远静止。
+    let _ = (mode, assistant_follow_up, floating_orb);
+    true
 }
 
 fn should_show_final_text_in_indicator(mode: Option<DictationMode>) -> bool {
@@ -4753,28 +4756,19 @@ mod tests {
     }
 
     #[test]
-    fn waveform_is_shown_for_file_follow_up_and_floating_orb_dictation() {
-        assert!(should_show_waveform(
-            Some(DictationMode::File),
-            false,
-            false
-        ));
-        assert!(should_show_waveform(
-            Some(DictationMode::Realtime),
-            true,
-            false
-        ));
-        assert!(should_show_waveform(
-            Some(DictationMode::Realtime),
-            false,
-            true
-        ));
-        assert!(!should_show_waveform(
-            Some(DictationMode::Realtime),
-            false,
-            false
-        ));
-        assert!(!should_show_waveform(None, false, false));
+    fn waveform_is_shown_for_all_dictation_modes() {
+        for (mode, follow_up, orb) in [
+            (Some(DictationMode::File), false, false),
+            (Some(DictationMode::Realtime), true, false),
+            (Some(DictationMode::Realtime), false, true),
+            (Some(DictationMode::Realtime), false, false),
+            (None, false, false),
+        ] {
+            assert!(
+                should_show_waveform(mode, follow_up, orb),
+                "mode={mode:?} follow_up={follow_up} orb={orb}"
+            );
+        }
     }
 
     #[test]
