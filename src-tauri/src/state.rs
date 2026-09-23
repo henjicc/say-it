@@ -580,16 +580,7 @@ pub(crate) struct SessionStatus {
     pub(crate) default_asr_provider: String,
 }
 
-#[derive(Clone)]
-pub(crate) struct AsrStreamHandle {
-    pub(crate) tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
-}
-
-pub(crate) enum AsrStreamInput {
-    RawF32(Vec<f32>),
-    Finish,
-    Stop,
-}
+pub(crate) use crate::asr_input::{AsrStreamHandle, AsrStreamInput, AsrStreamReceiver};
 
 #[derive(Serialize)]
 pub(crate) struct AsrStreamStartResponse {

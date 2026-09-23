@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::commands::audio::emit_asr_stream_event;
@@ -20,12 +19,12 @@ pub(super) async fn start_sdk_stream(
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let credentials = state.credentials.clone();
     let streams = state.asr_streams.clone();
@@ -58,7 +57,7 @@ fn run_sdk_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
     route: crate::providers::registry::BuiltinSdkAsrRoute,
@@ -66,7 +65,17 @@ fn run_sdk_session(
     credentials: crate::providers::credential_store::CredentialStoreHandle,
     customization: crate::providers::RequestCustomization,
 ) {
-    let cancelled = Arc::new(AtomicBool::new(false));
+    if rx.is_cancelled() {
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
+    let cancelled = rx.cancellation_flag();
     let scope = match BuiltinSdkScope::speech_recognition(&profile) {
         Ok(scope) => scope,
         Err(error) => {
@@ -109,8 +118,7 @@ fn run_sdk_session(
     flush_events(&runtime, &app, &session_id);
 
     let mut finishing_at = None;
-    let mut stop = false;
-    while !stop {
+    loop {
         match rx.try_recv() {
             Ok(AsrStreamInput::RawF32(samples)) => {
                 let bytes = dsp.process(&samples);
@@ -140,7 +148,7 @@ fn run_sdk_session(
             }
             Ok(AsrStreamInput::Stop) => {
                 let _ = runtime.realtime_stop();
-                stop = true;
+                break;
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {

@@ -81,12 +81,12 @@ pub(super) async fn start_apple_speech_stream(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
@@ -105,10 +105,20 @@ async fn run_apple_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
 ) {
+    if rx.is_cancelled() {
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
     let transport = match open_transport(OUTPUT_RATE).await {
         Ok(transport) => transport,
         Err(error) => {
@@ -127,6 +137,7 @@ async fn run_apple_session(
     let mut terminal_event = false;
     let mut stopped = false;
     let mut helper_pid = 0;
+    let cancellation = rx.cancellation();
 
     loop {
         tokio::select! {
@@ -136,7 +147,12 @@ async fn run_apple_session(
                     if pcm.is_empty() { continue; }
                     let bytes = pcm16_as_f32_bytes(&pcm);
                     let Some(channel) = writer.as_mut() else { continue; };
-                    if let Err(error) = channel.write_all(&bytes).await {
+                    let sent = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => { stopped = true; break; }
+                        result = channel.write_all(&bytes) => result,
+                    };
+                    if let Err(error) = sent {
                         emit_asr_stream_event(
                             &app,
                             &session_id,
@@ -154,12 +170,6 @@ async fn run_apple_session(
                 }
                 Some(AsrStreamInput::Stop) | None => {
                     stopped = true;
-                    writer.take();
-                    if let Some(process) = child.as_mut() {
-                        let _ = process.kill().await;
-                    } else if helper_pid > 0 {
-                        terminate_process(helper_pid);
-                    }
                     break;
                 }
             },
@@ -232,6 +242,13 @@ async fn run_apple_session(
     }
 
     writer.take();
+    if stopped {
+        if let Some(process) = child.as_mut() {
+            let _ = process.kill().await;
+        } else if helper_pid > 0 {
+            terminate_process(helper_pid);
+        }
+    }
     let exit_status = if let Some(process) = child.as_mut() {
         process.wait().await.ok()
     } else {

@@ -16,12 +16,12 @@ pub(super) async fn start_local_asr_stream(
     params: Option<DspParams>,
 ) -> Result<AsrStreamStartResponse, String> {
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
@@ -48,11 +48,21 @@ fn run_local_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
     spec: LocalModelSpec,
 ) {
+    if rx.is_cancelled() {
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
     let session = match spec.engine.as_str() {
         "sherpa-onnx-online" => OnlineSession::create(&spec).map(Session::Online),
         "sherpa-onnx-offline" => OfflineVadSession::create(&spec).map(Session::Offline),
@@ -66,6 +76,16 @@ fn run_local_session(
             return;
         }
     };
+    if rx.is_cancelled() {
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled during initialization" }),
+        );
+        return;
+    }
     emit_asr_stream_event(
         &app,
         &session_id,
@@ -95,6 +115,9 @@ fn run_local_session(
                         })
                     }
                 };
+                if rx.is_cancelled() {
+                    break;
+                }
                 match result {
                     Ok(output) => emit_output(&app, &session_id, output),
                     Err(error) => {
@@ -116,6 +139,9 @@ fn run_local_session(
                         finals: segments.into_iter().map(|item| item.text).collect(),
                     }),
                 };
+                if rx.is_cancelled() {
+                    break;
+                }
                 match result {
                     Ok(output) => {
                         emit_output(&app, &session_id, output);
