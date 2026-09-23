@@ -27,6 +27,7 @@ const OPUS_MAX_FRAMES_PER_PACKET: usize = 5_760;
 
 /// 解码任意音视频文件的首个可解码音轨，下混为单声道并重采样到 16kHz。
 /// 返回 [-1, 1] 范围的 f32 PCM。
+#[cfg(any(test, target_os = "macos"))]
 pub fn decode_to_mono_16k(file_path: &str) -> Result<Vec<f32>, String> {
     let mut samples = Vec::new();
     let result = decode_with_symphonia(file_path, &mut || Ok(()), &mut |chunk| {

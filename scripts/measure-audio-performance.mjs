@@ -38,6 +38,8 @@ const testNames = {
   "wav-export": "application::compare::performance_tests::wav_export_memory_profile",
   "compare-recording": "application::compare::performance_tests::realtime_recording_memory_profile",
   "realtime-dsp": "audio_dsp::performance_tests::realtime_dsp_memory_profile",
+  "compare-playback": "application::compare::performance_tests::uploaded_playback_memory_profile",
+  "compare-playback-legacy": "application::compare::performance_tests::uploaded_playback_memory_profile",
 };
 const testName = testNames[values.scenario];
 if (!testName) throw new Error(`未知场景，可选：${Object.keys(testNames).join("、")}`);
@@ -50,6 +52,7 @@ for (let run = 0; run < runs; run++) {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
       SAYIT_PERF_SAMPLE_RATE: String(sampleRate), SAYIT_PERF_PACKET_SIZE: String(packetSize),
+      SAYIT_PERF_PLAYBACK_LEGACY: values.scenario === "compare-playback-legacy" ? "1" : "0",
       SAYIT_PERF_DENOISE: values.denoise ? "1" : "0" },
   });
   if (result.error) throw result.error;
