@@ -262,13 +262,15 @@ mod imp {
         ORB_WAVE_BAR_MIN_SCALE,
     };
     use super::super::native_overlay::{
-        create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba, window_dpi,
-        LayeredSurface, OverlayThread, Transition,
+        create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba,
+        svg_path_geometry, window_dpi, LayeredSurface, OverlayThread, Transition,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
     use windows::core::w;
+    use windows::Foundation::Numerics::Matrix3x2;
+    use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{
         D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN, D2D_POINT_2F, D2D_SIZE_F,
@@ -321,7 +323,8 @@ mod imp {
     const WAVE_SMOOTH_S: f32 = 0.070;
 
     // Segoe MDL2 Assets 字形。
-    const GLYPH_MIC: u16 = 0xE720;
+    /// 麦克风图标（SVG path，24x24 viewBox），替代字体字形，线条更细腻。
+    const MIC_SVG_PATH: &str = "M12 15c1.66 0 2.99-1.34 2.99-3L15 6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3m6.08-3c-.42 0-.77.3-.83.71c-.37 2.61-2.72 4.39-5.25 4.39s-4.88-1.77-5.25-4.39a.84.84 0 0 0-.83-.71c-.52 0-.92.46-.85.97c.46 2.97 2.96 5.3 5.93 5.75V21c0 .55.45 1 1 1s1-.45 1-1v-2.28c2.96-.43 5.47-2.78 5.93-5.75a.857.857 0 0 0-.85-.97";
     const GLYPH_CHECK: u16 = 0xE73E;
     const GLYPH_WARNING: u16 = 0xE7BA;
 
@@ -593,6 +596,8 @@ mod imp {
         size_px: i32,
         dwrite: IDWriteFactory,
         icon_format: Option<(f32, IDWriteTextFormat)>,
+        /// 麦克风 SVG 路径几何体（设备无关资源，创建一次复用）。
+        mic_geometry: Option<ID2D1PathGeometry>,
     }
 
     struct WindowState {
@@ -874,8 +879,48 @@ mod imp {
                 OrbPhase::Fallback => draw_clipboard(target, brush, icon_area, style),
                 OrbPhase::Cancelled => draw_cross(target, brush, icon_area, style),
                 OrbPhase::Error => self.draw_glyph(target, brush, GLYPH_WARNING, logical, style),
-                // idle/armed/moving 都是麦克风。
-                _ => self.draw_glyph(target, brush, GLYPH_MIC, logical, style),
+                // idle/armed/moving 都是麦克风（SVG 路径图标）。
+                _ => self.draw_mic_svg(d2d, target, brush, logical, style),
+            }
+        }
+
+        fn draw_mic_svg(
+            &mut self,
+            d2d: &ID2D1Factory,
+            target: &ID2D1DCRenderTarget,
+            brush: &ID2D1SolidColorBrush,
+            logical: f32,
+            style: OrbStyle,
+        ) {
+            if self.mic_geometry.is_none() {
+                self.mic_geometry = svg_path_geometry(d2d, MIC_SVG_PATH).ok();
+            }
+            let Some(geometry) = &self.mic_geometry else {
+                return;
+            };
+            let area = logical * GLYPH_RATIO;
+            let offset = (logical - area) / 2.0;
+            let scale = area / 24.0;
+            unsafe {
+                // 24x24 viewBox → 图标区：缩放 + 平移到球心。
+                target.SetTransform(&Matrix3x2 {
+                    M11: scale,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: scale,
+                    M31: offset,
+                    M32: offset,
+                });
+                brush.SetColor(&color8(style.icon, style.icon_alpha));
+                target.FillGeometry(geometry, brush, None);
+                target.SetTransform(&Matrix3x2 {
+                    M11: 1.0,
+                    M12: 0.0,
+                    M21: 0.0,
+                    M22: 1.0,
+                    M31: 0.0,
+                    M32: 0.0,
+                });
             }
         }
 
@@ -1507,6 +1552,7 @@ mod imp {
                     style_from: phase_style(OrbPhase::Idle, false),
                     style_target: phase_style(OrbPhase::Idle, false),
                     style_blend_start: None,
+                    mic_geometry: None,
                     opacity: 1.0,
                     wave_level: 0.0,
                     wave_peaks: Vec::new(),
