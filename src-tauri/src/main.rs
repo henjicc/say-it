@@ -408,8 +408,8 @@ fn main() {
             crate::desktop::floating_orb::start_floating_orb_hover_watcher(app.handle().clone());
             application::subtitles::initialize(app.handle().clone());
             application::compare::initialize(app.handle().clone());
-            // Tauri 会在 setup 前按平台配置预创建主窗口，这条路径不会经过
-            // `ensure_main_window`，因此必须在持久化设置加载后主动应用系统材质。
+            // 默认主窗口按需创建；若外部配置显式预创建窗口，仍在设置加载后同步材质。
+            // 后续创建的窗口由 `ensure_main_window` 同步。
             crate::desktop::floating_orb::sync_system_glass_windows(&app.handle());
             let dictation_settings = {
                 let state = app.state::<RuntimeState>();
