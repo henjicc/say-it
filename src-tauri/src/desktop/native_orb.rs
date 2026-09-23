@@ -521,7 +521,7 @@ mod imp {
             icon: FG,
             icon_alpha: 1.0,
             border: FG,
-            border_alpha: 0.16, // --color-line-strong
+            border_alpha: 0.24, // 比 CSS 的 0.16 略强：没有 box-shadow 的深色小窗需要描边分辨
             background: BG,
         };
         match phase {
@@ -697,8 +697,8 @@ mod imp {
                     self.view.phase = phase;
                     self.view.transient = transient;
                     self.view.can_submit = can_submit;
-                    self.sync_timer();
                     self.render();
+                    self.sync_timer();
                 }
                 Command::SetWaveform { level, peaks } => {
                     // 波形数据只更新缓存，重绘交给 30fps 定时器。
@@ -1291,8 +1291,8 @@ mod imp {
                             dwHoverTime: 0,
                         };
                         let _ = TrackMouseEvent(&mut track);
-                        state.sync_timer();
                         state.render();
+                        state.sync_timer();
                     }
                     let Some((start_x, start_y)) = state.press else {
                         return false;
@@ -1385,8 +1385,8 @@ mod imp {
             WM_MOUSELEAVE_MSG => {
                 with_state(hwnd, |state| {
                     state.view.hovering = false;
-                    state.sync_timer();
                     state.render();
+                    state.sync_timer();
                 });
                 LRESULT(0)
             }
