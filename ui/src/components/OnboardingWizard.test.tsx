@@ -88,6 +88,8 @@ describe("OnboardingWizard", () => {
     invoke.mockReset();
     patchDictPrefs.mockReset().mockResolvedValue(undefined);
     loadProviders.mockReset().mockResolvedValue(undefined);
+    setView.mockReset();
+    setSettingsTab.mockReset();
     updateProviderConfig.mockReset().mockImplementation(async () => {
       cloudProvider.status = { configured: true, hasApiKey: true };
       return cloudProvider;
@@ -101,6 +103,51 @@ describe("OnboardingWizard", () => {
       }
       return undefined;
     });
+  });
+
+  it.each(["关闭", "Escape", "遮罩", "完成设置", "打开完整设置", "打开插件管理"])("persists acknowledgement before exiting through %s", async (exit) => {
+    let save: (() => void) | undefined;
+    invoke.mockImplementation(async (name: string) => {
+      if (name === "get_setup_status") return setupStatus;
+      if (name === "start_backend_mic") return { reused: false };
+      if (name === "complete_onboarding") return new Promise<void>((resolve) => { save = resolve; });
+    });
+    const onClose = vi.fn();
+    render(<OnboardingWizard open onClose={onClose} />);
+    await screen.findByText("麦克风可以正常使用");
+    expect(invoke).not.toHaveBeenCalledWith("complete_onboarding");
+
+    if (exit === "完成设置" || exit === "打开插件管理" || exit === "打开完整设置") {
+      fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+      if (exit !== "打开完整设置") fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    }
+    if (exit === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+    else if (exit === "遮罩") fireEvent.click(screen.getByRole("dialog").parentElement!);
+    else fireEvent.click(screen.getByRole("button", { name: exit }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("complete_onboarding"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(setView).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(invoke.mock.calls.filter(([name]) => name === "complete_onboarding")).toHaveLength(1);
+    save!();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    if (exit === "打开完整设置" || exit === "打开插件管理") {
+      expect(setView).toHaveBeenCalledWith("settings");
+      expect(setSettingsTab).toHaveBeenCalledWith(exit === "打开完整设置" ? "model" : "plugins");
+    }
+  });
+
+  it("keeps the wizard open when persistence fails and lets the user retry", async () => {
+    const onClose = vi.fn();
+    render(<OnboardingWizard open onClose={onClose} />);
+    await screen.findByText("麦克风可以正常使用");
+    invoke.mockRejectedValueOnce(new Error("磁盘写入失败"));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(await screen.findByText(/保存引导状态失败.*磁盘写入失败/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
   it("keeps onboarding focused on permissions, model setup, and offline installation", async () => {

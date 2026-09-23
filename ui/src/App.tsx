@@ -82,7 +82,8 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsReady) return;
-    void cmd<SetupStatus>(CMD.getSetupStatus).then((status) => setSetupOpen(!status.complete)).catch(() => {});
+    // 引导版本升级不能撤销用户已关闭的选择；后续只通过设置页手动打开。
+    void cmd<SetupStatus>(CMD.getSetupStatus).then((status) => setSetupOpen(status.onboardingVersion === 0)).catch(() => {});
     const open = () => setSetupOpen(true);
     window.addEventListener("sayit-open-setup", open);
     return () => window.removeEventListener("sayit-open-setup", open);

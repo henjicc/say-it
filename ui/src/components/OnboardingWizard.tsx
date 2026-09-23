@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -95,6 +95,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
   const [microphoneState, setMicrophoneState] = useState<CheckState>("checking");
   const [microphoneMessage, setMicrophoneMessage] = useState("正在请求麦克风访问…");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const closing = useRef(false);
 
   const selectedModel = useDictPrefs((state) => state.prefs.asrModel);
   const micDeviceId = useDictPrefs((state) => state.prefs.micDeviceId);
@@ -199,13 +200,6 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     }
   }
 
-  function openSettings(tab: "model" | "plugins") {
-    setApiKeyDraft("");
-    setView("settings");
-    setSettingsTab(tab);
-    onClose();
-  }
-
   async function openLink(url: string) {
     try {
       await cmd(CMD.openExternalLink, { url });
@@ -222,15 +216,24 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     }
   }
 
-  async function finish() {
+  async function finish(settingsTab?: "model" | "plugins") {
+    if (closing.current) return;
+    closing.current = true;
     setRunning("finish");
+    setMessage("");
     setApiKeyDraft("");
     try {
+      // 所有主动退出都表示用户已看过引导；必须落盘后再关闭，避免重启后反复弹出。
       await cmd(CMD.completeOnboarding);
+      if (settingsTab) {
+        setView("settings");
+        setSettingsTab(settingsTab);
+      }
       onClose();
     } catch (error) {
-      setMessage(String(error));
+      setMessage(`保存引导状态失败：${String(error)}`);
     } finally {
+      closing.current = false;
       setRunning(null);
     }
   }
@@ -245,7 +248,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={() => void finish()}
       title="首次使用设置"
       className="h-[var(--onboarding-dialog-h)] max-w-[var(--onboarding-dialog-w)]"
       bodyClassName="flex flex-col overflow-hidden"
@@ -352,7 +355,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {selectedProvider.kind === "sdk:bailian" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
-                  <Button size="sm" onClick={() => openSettings("model")}>打开完整设置</Button>
+                  <Button size="sm" onClick={() => void finish("model")}>打开完整设置</Button>
                 </div>
               </div>
             )}
@@ -380,7 +383,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
             )}
             <div className="flex flex-wrap gap-2">
               <Button variant="primary" onClick={() => void openLink(OFFLINE_MODEL_RELEASE_URL)}><Download className="h-4 w-4" aria-hidden />打开模型下载页</Button>
-              <Button onClick={() => openSettings("plugins")}>打开插件管理</Button>
+              <Button onClick={() => void finish("plugins")}>打开插件管理</Button>
             </div>
           </>}
 
