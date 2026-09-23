@@ -330,7 +330,7 @@ pub(crate) fn set_indicator_text(
     fade: Option<bool>,
 ) -> Result<(), String> {
     if crate::desktop::native_dictation_indicator_enabled() {
-        crate::desktop::native_indicator_set_text(text.clone());
+        crate::desktop::native_indicator_set_text(text.clone(), fade.unwrap_or(false));
     }
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         let _ = window.emit(

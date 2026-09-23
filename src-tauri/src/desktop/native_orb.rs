@@ -267,6 +267,7 @@ mod imp {
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{
@@ -311,9 +312,13 @@ mod imp {
     const WAVE_AREA_RATIO_HOVER: f32 = 0.594;
     const WAVE_BAR_RATIO: f32 = 0.1;
     const WAVE_GAP_RATIO: f32 = 0.08;
-    const SPINNER_STEP_DEG: f32 = 12.0; // 33ms 一帧，约 0.9s 一圈，与 CSS orb-spin 一致
+    const SPINNER_STEP_DEG: f32 = 6.0; // 60fps 下约 0.9s 一圈，与 CSS orb-spin 一致
     const TIMER_ID: usize = 1;
-    const TIMER_MS: u32 = 33; // ~30fps，仅 spinner/录音波形时启用
+    const TIMER_MS: u32 = 16; // ~60fps：spinner/波形/颜色过渡/出场动画共用
+    /// 相位颜色过渡时长（非高亮 ↔ 高亮不跳变）。
+    const STYLE_BLEND_S: f32 = 0.15;
+    /// 波形柱平滑时间常数，与 CSS 的 70ms ease-out height 过渡等效。
+    const WAVE_SMOOTH_S: f32 = 0.070;
 
     // Segoe MDL2 Assets 字形。
     const GLYPH_MIC: u16 = 0xE720;
@@ -482,13 +487,32 @@ mod imp {
         cursor.x >= x && cursor.x < x + size && cursor.y >= y && cursor.y < y + size
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq)]
     struct OrbStyle {
         icon: (u8, u8, u8),
         icon_alpha: f32,
         border: (u8, u8, u8),
         border_alpha: f32,
         background: (u8, u8, u8),
+    }
+
+    impl OrbStyle {
+        fn lerp(self, other: OrbStyle, t: f32) -> OrbStyle {
+            let mix = |a: (u8, u8, u8), b: (u8, u8, u8)| {
+                (
+                    (a.0 as f32 + (b.0 as f32 - a.0 as f32) * t).round() as u8,
+                    (a.1 as f32 + (b.1 as f32 - a.1 as f32) * t).round() as u8,
+                    (a.2 as f32 + (b.2 as f32 - a.2 as f32) * t).round() as u8,
+                )
+            };
+            OrbStyle {
+                icon: mix(self.icon, other.icon),
+                icon_alpha: self.icon_alpha + (other.icon_alpha - self.icon_alpha) * t,
+                border: mix(self.border, other.border),
+                border_alpha: self.border_alpha + (other.border_alpha - self.border_alpha) * t,
+                background: mix(self.background, other.background),
+            }
+        }
     }
 
     /// 各相位的颜色，与 floating-orb.css 的类规则一一对应。
@@ -558,6 +582,12 @@ mod imp {
         opacity: f32,
         wave_level: f32,
         wave_peaks: Vec<f32>,
+        /// 平滑后的波形柱高（CSS 70ms ease-out height 过渡等效）。
+        wave_display: [f32; ORB_WAVE_BAR_COUNT],
+        /// 相位/悬停颜色的 150ms 过渡。
+        style_from: OrbStyle,
+        style_target: OrbStyle,
+        style_blend_start: Option<Instant>,
         spinner_angle: f32,
         dpi: u32,
         size_px: i32,
@@ -572,6 +602,7 @@ mod imp {
         visible: bool,
         timer_active: bool,
         transition: Transition,
+        last_frame: Option<Instant>,
         press: Option<(i32, i32)>,
         dragged: bool,
         d2d: ID2D1Factory,
@@ -681,9 +712,12 @@ mod imp {
         fn sync_timer(&mut self) {
             let want = (self.visible
                 && (self.view.phase.is_spinner() || self.view.phase == OrbPhase::Recording))
-                || self.transition.is_animating();
+                || self.transition.is_animating()
+                || self.view.style_blending();
             unsafe {
                 if want && !self.timer_active {
+                    // 停顿后首帧 dt 置零，波形平滑不会因定时器重启跳变。
+                    self.last_frame = None;
                     SetTimer(self.hwnd, TIMER_ID, TIMER_MS, None);
                     self.timer_active = true;
                 } else if !want && self.timer_active {
@@ -748,6 +782,43 @@ mod imp {
     }
 
     impl OrbView {
+        /// 目标样式变化时开启 150ms 过渡；当前显示样式含过渡中插值。
+        fn current_style(&mut self) -> OrbStyle {
+            let desired = phase_style(self.phase, self.hovering);
+            if desired != self.style_target {
+                self.style_from = self.blended_style();
+                self.style_target = desired;
+                self.style_blend_start = Some(Instant::now());
+            }
+            self.blended_style()
+        }
+
+        fn blended_style(&self) -> OrbStyle {
+            let Some(start) = self.style_blend_start else {
+                return self.style_target;
+            };
+            let t = (start.elapsed().as_secs_f32() / STYLE_BLEND_S).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            self.style_from.lerp(self.style_target, eased)
+        }
+
+        fn style_blending(&self) -> bool {
+            self.style_blend_start
+                .is_some_and(|start| start.elapsed().as_secs_f32() < STYLE_BLEND_S)
+        }
+
+        /// 每帧推进：波形柱平滑 + 颜色过渡收尾。
+        fn tick_animations(&mut self, dt: f32) {
+            let target = orb_wave_levels(self.wave_level, &self.wave_peaks);
+            let k = 1.0 - (-dt / WAVE_SMOOTH_S).exp();
+            for (display, target) in self.wave_display.iter_mut().zip(target) {
+                *display += (target - *display) * k;
+            }
+            if !self.style_blending() {
+                self.style_blend_start = None;
+            }
+        }
+
         fn draw(
             &mut self,
             d2d: &ID2D1Factory,
@@ -761,7 +832,7 @@ mod imp {
             let logical = self.size_px as f32 * 96.0 / (self.dpi.max(1) as f32);
             // 描边与 CSS 的 clamp(1.25px, 3vmin, 2px) 一致；vmin 即球的边长。
             let stroke = (logical * 0.03).clamp(1.25, 2.0);
-            let style = phase_style(self.phase, self.hovering);
+            let style = self.current_style();
             let center = logical / 2.0;
             let radius = center - stroke / 2.0;
             let ellipse = D2D1_ELLIPSE {
@@ -866,7 +937,8 @@ mod imp {
             let gap = ((area * dpr * WAVE_GAP_RATIO).round() as i32).max(1) as f32 / dpr;
             let total = ORB_WAVE_BAR_COUNT as f32 * bar + (ORB_WAVE_BAR_COUNT - 1) as f32 * gap;
             let start = area_left + ((area * dpr - total * dpr) / 2.0).round() / dpr;
-            let levels = orb_wave_levels(self.wave_level, &self.wave_peaks);
+            // 用 tick_animations 平滑后的柱高（CSS 70ms ease-out 过渡等效）。
+            let levels = self.wave_display;
             unsafe {
                 brush.SetColor(&color8(ACCENT, 1.0));
                 for (index, level) in levels.iter().enumerate() {
@@ -1185,6 +1257,13 @@ mod imp {
         match message {
             WM_TIMER => {
                 with_state(hwnd, |state| {
+                    let now = Instant::now();
+                    let dt = state
+                        .last_frame
+                        .replace(now)
+                        .map(|last| now.saturating_duration_since(last).as_secs_f32())
+                        .unwrap_or(TIMER_MS as f32 / 1000.0);
+                    state.view.tick_animations(dt);
                     state.view.spinner_angle = (state.view.spinner_angle + SPINNER_STEP_DEG) % 360.0;
                     let (_, finished) = state.transition.tick();
                     if finished && state.transition.is_fully_hidden() {
@@ -1212,6 +1291,7 @@ mod imp {
                             dwHoverTime: 0,
                         };
                         let _ = TrackMouseEvent(&mut track);
+                        state.sync_timer();
                         state.render();
                     }
                     let Some((start_x, start_y)) = state.press else {
@@ -1305,6 +1385,7 @@ mod imp {
             WM_MOUSELEAVE_MSG => {
                 with_state(hwnd, |state| {
                     state.view.hovering = false;
+                    state.sync_timer();
                     state.render();
                 });
                 LRESULT(0)
@@ -1412,6 +1493,7 @@ mod imp {
                 visible: false,
                 timer_active: false,
                 transition: Transition::new(false),
+                last_frame: None,
                 press: None,
                 dragged: false,
                 d2d,
@@ -1421,6 +1503,10 @@ mod imp {
                     transient: false,
                     can_submit: false,
                     hovering: false,
+                    wave_display: [0.0; ORB_WAVE_BAR_COUNT],
+                    style_from: phase_style(OrbPhase::Idle, false),
+                    style_target: phase_style(OrbPhase::Idle, false),
+                    style_blend_start: None,
                     opacity: 1.0,
                     wave_level: 0.0,
                     wave_peaks: Vec::new(),

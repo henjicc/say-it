@@ -82,11 +82,11 @@ pub(crate) fn native_indicator_set_state(state: &str) {
     let _ = state;
 }
 
-pub(crate) fn native_indicator_set_text(text: String) {
+pub(crate) fn native_indicator_set_text(text: String, fade: bool) {
     #[cfg(windows)]
-    imp::post(imp::Command::SetText(text));
+    imp::post(imp::Command::SetText { text, fade });
     #[cfg(not(windows))]
-    let _ = text;
+    let _ = (text, fade);
 }
 
 pub(crate) fn native_indicator_set_waveform(level: f32, peaks: Vec<f32>) {
@@ -111,15 +111,17 @@ mod imp {
         resample_wave_levels, wave_scale, WAVE_BAR_COUNT, WAVE_BAR_HEIGHTS, WAVE_BAR_MIN_SCALE,
     };
     use std::sync::OnceLock;
+    use std::time::Instant;
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
-        ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED,
-        D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
+        ID2D1Brush, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
+        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
     };
     use windows::Win32::Graphics::DirectWrite::{
         IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS,
+        DWRITE_TEXT_RANGE,
     };
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
@@ -165,17 +167,27 @@ mod imp {
     const DOT_LABEL_GAP: f32 = 8.0;
 
     const WAVE_TIMER_ID: usize = 1;
-    const WAVE_TIMER_MS: u32 = 33; // ~30fps，录音波形与过渡动画共用
+    const FRAME_MS: u32 = 16; // ~60fps：波形、呼吸点、文本淡入、过渡动画共用
 
     /// 出场时从最终位置下方这么远（逻辑像素）淡入滑入；退场反向。
-    const TRANSITION_SLIDE_PX: f32 = 16.0;
+    /// 与 indicator.css 的 wrapIn（translateY(10px)）一致。
+    const TRANSITION_SLIDE_PX: f32 = 10.0;
+
+    /// 文本新增内容的淡入时长，与 indicator.css 的 freshIn 180ms 一致。
+    const TEXT_FRESH_FADE_S: f32 = 0.18;
+    /// CSS 只给 ≤10 字符的短追加挂 .fresh 淡入；长追加直接显示。
+    const TEXT_FRESH_FADE_MAX_CHARS: usize = 10;
+    /// 波形柱高度平滑的时间常数，与 indicator.css 的 height 70ms ease-out 等效。
+    const WAVE_SMOOTH_S: f32 = 0.070;
+    /// 状态点颜色过渡时长（recording 红 → processing 蓝等状态切换）。
+    const DOT_BLEND_S: f32 = 0.15;
 
     const LOG_TAG: &str = "native-indicator";
 
     pub(super) enum Command {
         Prepare,
         SetState(NativeState),
-        SetText(String),
+        SetText { text: String, fade: bool },
         SetWaveform { level: f32, peaks: Vec<f32> },
         Hide,
     }
@@ -233,9 +245,20 @@ mod imp {
     struct IndicatorView {
         state: Option<NativeState>,
         text: String,
+        /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
+        fresh_from: usize,
+        fresh_started: Option<Instant>,
+        /// 状态点呼吸相位（秒），随帧推进。
+        pulse_time: f32,
+        /// 平滑后的波形柱高（CSS 的 70ms ease-out height 过渡等效）。
+        wave_display: [f32; WAVE_BAR_COUNT],
         wave_active: bool,
         wave_level: f32,
         wave_peaks: Vec<f32>,
+        /// 状态点颜色的 150ms 过渡：from → target。
+        dot_color_from: [f32; 3],
+        dot_color_target: [f32; 3],
+        dot_blend_start: Option<Instant>,
         dpi: u32,
         dwrite: IDWriteFactory,
         body_format: IDWriteTextFormat,
@@ -250,6 +273,7 @@ mod imp {
         surface: LayeredSurface,
         timer_active: bool,
         transition: Transition,
+        last_frame: Option<Instant>,
     }
 
     impl WindowState {
@@ -258,11 +282,20 @@ mod imp {
                 // 与 WebView 的 prepare 语义一致：只重置内容，不改变可见性。
                 Command::Prepare => {
                     self.view.text.clear();
+                    self.view.fresh_from = 0;
+                    self.view.fresh_started = None;
                     self.view.wave_active = false;
                     self.view.wave_peaks.clear();
                     self.view.wave_level = 0.0;
                 }
                 Command::SetState(state) => {
+                    // 状态点颜色变化（红聆听 ↔ 蓝识别）走 150ms 过渡而不是跳变。
+                    let target_color = dot_target_color(state);
+                    if target_color != self.view.dot_color_target {
+                        self.view.dot_color_from = self.view.dot_color_now();
+                        self.view.dot_color_target = target_color;
+                        self.view.dot_blend_start = Some(Instant::now());
+                    }
                     self.view.state = Some(state);
                     // fallback 面板替代文本区与胶囊，与 WebView 行为一致。
                     if state == NativeState::Fallback {
@@ -286,8 +319,21 @@ mod imp {
                         );
                     }
                 }
-                Command::SetText(text) => {
+                Command::SetText { text, fade } => {
+                    // 与 IndicatorApp 的 fresh 淡入一致：只有短追加（≤10 字符）
+                    // 或显式 fade（swapText）才淡入，其余直接替换。
+                    let fresh_from = if fade {
+                        0
+                    } else {
+                        common_prefix_chars(&self.view.text, &text)
+                    };
+                    let fresh_len = text.chars().count().saturating_sub(fresh_from);
+                    self.view.fresh_from = fresh_from;
+                    self.view.fresh_started = (fresh_len > 0
+                        && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS)
+                    .then(Instant::now);
                     self.view.text = text;
+                    self.sync_timer();
                     if self.view.state.is_some() {
                         self.render();
                     }
@@ -319,11 +365,13 @@ mod imp {
         }
 
         fn sync_timer(&mut self) {
-            let want = (self.view.state == Some(NativeState::Recording) && self.view.wave_active)
-                || self.transition.is_animating();
+            // 可见期间持续驱动：波形、呼吸点、文本淡入、颜色过渡都需要帧时钟。
+            let want = self.view.state.is_some() || self.transition.is_animating();
             unsafe {
                 if want && !self.timer_active {
-                    SetTimer(self.hwnd, WAVE_TIMER_ID, WAVE_TIMER_MS, None);
+                    // 停顿后首帧 dt 置零，呼吸/淡入不会因定时器重启跳变。
+                    self.last_frame = None;
+                    SetTimer(self.hwnd, WAVE_TIMER_ID, FRAME_MS, None);
                     self.timer_active = true;
                 } else if !want && self.timer_active {
                     let _ = KillTimer(self.hwnd, WAVE_TIMER_ID);
@@ -365,6 +413,71 @@ mod imp {
     }
 
     impl IndicatorView {
+        /// 每帧推进：呼吸相位、波形平滑、文本淡入与点色过渡的收尾。
+        fn tick_animations(&mut self, dt: f32) {
+            self.pulse_time += dt;
+            // 波形柱向目标值指数趋近，等效 CSS 的 70ms ease-out height 过渡。
+            let target = resample_wave_levels(&self.wave_peaks, wave_scale(self.wave_level));
+            let k = 1.0 - (-dt / WAVE_SMOOTH_S).exp();
+            for (display, target) in self.wave_display.iter_mut().zip(target) {
+                *display += (target - *display) * k;
+            }
+            if self
+                .fresh_started
+                .is_some_and(|start| start.elapsed().as_secs_f32() >= TEXT_FRESH_FADE_S)
+            {
+                self.fresh_started = None;
+            }
+            if self
+                .dot_blend_start
+                .is_some_and(|start| start.elapsed().as_secs_f32() >= DOT_BLEND_S)
+            {
+                self.dot_blend_start = None;
+            }
+        }
+
+        /// 当前状态点颜色（含过渡中的插值）。
+        fn dot_color_now(&self) -> [f32; 3] {
+            let Some(start) = self.dot_blend_start else {
+                return self.dot_color_target;
+            };
+            let t = (start.elapsed().as_secs_f32() / DOT_BLEND_S).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            let from = self.dot_color_from;
+            let to = self.dot_color_target;
+            [
+                from[0] + (to[0] - from[0]) * eased,
+                from[1] + (to[1] - from[1]) * eased,
+                from[2] + (to[2] - from[2]) * eased,
+            ]
+        }
+
+        /// 状态点的呼吸：CSS pulse（录音 1s，scale 1→0.6，opacity 1→0.5）与
+        /// processingPulse（1.35s，scale 0.88→1.08，opacity 0.72→1）。
+        fn dot_pulse(&self, state: NativeState) -> (f32, f32) {
+            let period = if state == NativeState::Recording {
+                1.0
+            } else {
+                1.35
+            };
+            let osc = 0.5 - 0.5 * (std::f32::consts::TAU * self.pulse_time / period).cos();
+            if state == NativeState::Recording {
+                (1.0 - 0.4 * osc, 1.0 - 0.5 * osc)
+            } else {
+                (0.88 + 0.20 * osc, 0.72 + 0.28 * osc)
+            }
+        }
+
+        /// 文本新增部分的淡入进度（1.0 = 已完成/无新增）。
+        fn fresh_alpha(&self) -> f32 {
+            self.fresh_started
+                .map(|start| {
+                    let t = (start.elapsed().as_secs_f32() / TEXT_FRESH_FADE_S).min(1.0);
+                    1.0 - (1.0 - t).powi(3)
+                })
+                .unwrap_or(1.0)
+        }
+
         fn draw_content(&self, target: &ID2D1DCRenderTarget, brush: &ID2D1SolidColorBrush) {
             let Some(state) = self.state else { return };
             // #wrap：纵向居中堆叠、底部对齐，padding-bottom 24。
@@ -437,6 +550,35 @@ mod imp {
             let Ok(layout) = layout else {
                 return;
             };
+            // 新增内容淡入（freshIn）：给新增 UTF-16 范围单独挂半透明画刷。
+            let fade = self.fresh_alpha();
+            if fade < 1.0 && self.fresh_from < self.text.chars().count() {
+                let utf16_start: u32 = self
+                    .text
+                    .chars()
+                    .take(self.fresh_from)
+                    .map(|c| c.len_utf16() as u32)
+                    .sum();
+                let total = wide.len() as u32;
+                if utf16_start < total {
+                    if let Ok(fresh_brush) = unsafe {
+                        target.CreateSolidColorBrush(
+                            &rgba(234.0 / 255.0, 240.0 / 255.0, 1.0, fade),
+                            None,
+                        )
+                    } {
+                        unsafe {
+                            let _ = layout.SetDrawingEffect(
+                                &fresh_brush,
+                                DWRITE_TEXT_RANGE {
+                                    startPosition: utf16_start,
+                                    length: total - utf16_start,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
             let mut metrics = DWRITE_TEXT_METRICS::default();
             if unsafe { layout.GetMetrics(&mut metrics) }.is_err() {
                 return;
@@ -499,21 +641,19 @@ mod imp {
             let total = DOT_RADIUS * 2.0 + DOT_LABEL_GAP + label_w;
             let center_x = (rect.left + rect.right) / 2.0;
             let center_y = (rect.top + rect.bottom) / 2.0;
-            let dot_color = if state == NativeState::Recording {
-                rgba(1.0, 77.0 / 255.0, 79.0 / 255.0, 1.0)
-            } else {
-                rgba(109.0 / 255.0, 174.0 / 255.0, 1.0, 1.0)
-            };
+            let [cr, cg, cb] = self.dot_color_now();
+            let (dot_scale, dot_alpha) = self.dot_pulse(state);
             unsafe {
-                brush.SetColor(&dot_color);
+                brush.SetColor(&rgba(cr, cg, cb, dot_alpha));
+                let radius = DOT_RADIUS * dot_scale;
                 target.FillEllipse(
                     &D2D1_ELLIPSE {
                         point: D2D_POINT_2F {
                             x: center_x - total / 2.0 + DOT_RADIUS,
                             y: center_y,
                         },
-                        radiusX: DOT_RADIUS,
-                        radiusY: DOT_RADIUS,
+                        radiusX: radius,
+                        radiusY: radius,
                     },
                     brush,
                 );
@@ -550,7 +690,8 @@ mod imp {
             let gap = ((WAVE_AREA_W * dpr * WAVE_GAP_RATIO).round() as i32).max(1) as f32 / dpr;
             let total = WAVE_BAR_COUNT as f32 * bar + (WAVE_BAR_COUNT - 1) as f32 * gap;
             let start = area_left + ((WAVE_AREA_W * dpr - total * dpr) / 2.0).round() / dpr;
-            let levels = resample_wave_levels(&self.wave_peaks, wave_scale(self.wave_level));
+            // 用 tick_animations 平滑后的柱高（CSS 70ms ease-out 过渡等效）。
+            let levels = self.wave_display;
             unsafe {
                 brush.SetColor(&rgba(118.0 / 255.0, 167.0 / 255.0, 1.0, 1.0));
                 for (index, level) in levels.iter().enumerate() {
@@ -662,6 +803,27 @@ mod imp {
         }
     }
 
+    /// 两段文本的公共前缀字符数（char 边界安全），供「新增内容淡入」定位。
+    fn common_prefix_chars(prev: &str, next: &str) -> usize {
+        let mut count = 0;
+        for (a, b) in prev.chars().zip(next.chars()) {
+            if a != b {
+                break;
+            }
+            count += 1;
+        }
+        count
+    }
+
+    /// 状态点目标色（直线 RGB 0..1）：recording 红 / 其余蓝，与 indicator.css 一致。
+    fn dot_target_color(state: NativeState) -> [f32; 3] {
+        if state == NativeState::Recording {
+            [1.0, 77.0 / 255.0, 79.0 / 255.0]
+        } else {
+            [109.0 / 255.0, 174.0 / 255.0, 1.0]
+        }
+    }
+
     /// 主显示器工作区底部居中，物理像素坐标。
     fn placement(dpi: u32) -> (i32, i32, i32, i32) {
         let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
@@ -707,6 +869,13 @@ mod imp {
         match message {
             WM_TIMER => {
                 with_state(hwnd, |state| {
+                    let now = Instant::now();
+                    let dt = state
+                        .last_frame
+                        .replace(now)
+                        .map(|last| now.saturating_duration_since(last).as_secs_f32())
+                        .unwrap_or(FRAME_MS as f32 / 1000.0);
+                    state.view.tick_animations(dt);
                     let (_, finished) = state.transition.tick();
                     if finished && state.transition.is_fully_hidden() {
                         // 退场动画播完才清理内容并真正隐藏。
@@ -818,9 +987,16 @@ mod imp {
                 view: IndicatorView {
                     state: None,
                     text: String::new(),
+                    fresh_from: 0,
+                    fresh_started: None,
+                    pulse_time: 0.0,
+                    wave_display: [0.0; WAVE_BAR_COUNT],
                     wave_active: false,
                     wave_level: 0.0,
                     wave_peaks: Vec::new(),
+                    dot_color_from: dot_target_color(NativeState::Recording),
+                    dot_color_target: dot_target_color(NativeState::Recording),
+                    dot_blend_start: None,
                     dpi,
                     dwrite,
                     body_format,
@@ -831,6 +1007,7 @@ mod imp {
                 surface: LayeredSurface::new(hwnd),
                 timer_active: false,
                 transition: Transition::new(false),
+                last_frame: None,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
             Some(hwnd)
