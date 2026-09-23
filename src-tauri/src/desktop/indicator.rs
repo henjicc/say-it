@@ -307,6 +307,31 @@ pub(crate) fn show_dictation_indicator_error(
     Ok(())
 }
 
+/// 原生模式下的错误/结果通知：原生面板显示短文案（哪步失败、已如何兜底），
+/// 几秒后自动消失；不为可交互错误面板激活 WebView。
+pub(crate) fn show_dictation_indicator_notice(
+    app: &tauri::AppHandle,
+    message: String,
+) -> Result<(), String> {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        hide_webview_indicator_if_present(app);
+        crate::desktop::native_indicator_prepare();
+        crate::desktop::native_indicator_notice(message);
+        hotkey::set_dictation_active(false);
+        return Ok(());
+    }
+    // macOS 等仍走 WebView 错误面板。
+    show_dictation_indicator_error(app, message, false)
+}
+
+/// 开发构建专用的通知面板自检入口：直接从主窗口触发一条原生通知，
+/// 用于验证渲染与自动消失，release 中不存在此命令。
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub(crate) fn dev_show_indicator_notice(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    show_dictation_indicator_notice(&app, text)
+}
+
 /// 文本已经生成、只是原输入窗口不可再注入时，改为明确的剪贴板交付提示。
 /// 这不是识别或智能处理失败，因此不展示错误操作区，也不允许窗口抢焦点。
 pub(crate) fn show_dictation_indicator_clipboard_fallback(

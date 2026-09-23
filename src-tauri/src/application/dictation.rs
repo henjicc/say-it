@@ -628,7 +628,11 @@ fn present_request_error(app: &AppHandle, error: String) {
         .unwrap_or(false);
     publish_state(app, Some(error.clone()));
     if can_present {
-        let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
+        if crate::desktop::native_dictation_indicator_enabled() {
+            let _ = crate::desktop::show_dictation_indicator_notice(app, truncate_notice(&error));
+        } else {
+            let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
+        }
     }
 }
 
@@ -2929,7 +2933,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
 }
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
-    fail_internal(app, epoch, error, None, None).await
+    fail_internal(app, epoch, error, None, None, None).await
 }
 
 async fn fail_with_raw_fallback(
@@ -2951,31 +2955,40 @@ async fn fail_with_raw_fallback(
                 .then_some((session.activation_target, session.trigger.is_floating_orb()))
         })
         .unwrap_or((None, false));
-    // 无论走悬浮球还是指示器：只要手里已有识别原文，失败时先写进剪贴板保底，
-    // 用户至少不会连原文都拿不到；指示器的错误面板仍保留"输入未处理原文"的注入选择。
-    let clipboard_ok = if text.is_empty() {
-        false
-    } else {
-        write_clipboard_text_inner(text.clone()).await.is_ok()
+    // 已有识别原文时的恢复策略：智能处理失败优先把原文直接注入原输入框；
+    // 注入不了（目标丢失/注入失败/交付环节本就失败过）再写剪贴板保底。
+    // 用户至少要拿到原文，且知道是哪一步出的问题。
+    let step = match floating_kind {
+        FloatingFallbackKind::Processing => "智能处理",
+        FloatingFallbackKind::Delivery => "注入",
     };
-    let floating_feedback = if floating {
-        if text.is_empty() {
-            Some(("error", "未识别到内容".to_string(), 2000))
-        } else if clipboard_ok {
-            Some((
-                "fallback",
-                match floating_kind {
-                    FloatingFallbackKind::Processing => "处理失败，原文已复制",
-                    FloatingFallbackKind::Delivery => "已复制，请手动粘贴",
+    let mut feedback: Option<(&'static str, String, u64)> = None;
+    if !text.is_empty() {
+        let mut injected = false;
+        if matches!(floating_kind, FloatingFallbackKind::Processing) {
+            if let Some(target) = activation_target {
+                if crate::active_app_context::activate_target(target).is_ok() {
+                    sleep(Duration::from_millis(120)).await;
+                    injected = inject_text_inner(text.clone(), Some(method.clone()))
+                        .await
+                        .is_ok();
                 }
-                .to_string(),
-                3000,
-            ))
-        } else {
-            Some(("error", "复制失败，请在历史记录中查看".to_string(), 3000))
+            }
         }
+        let clipboard_ok = !injected && write_clipboard_text_inner(text.clone()).await.is_ok();
+        let (phase, message) = if injected {
+            ("success", format!("{step}失败，已注入原文"))
+        } else if clipboard_ok {
+            ("fallback", format!("{step}失败，原文已复制到剪贴板"))
+        } else {
+            ("error", format!("{step}失败，原文已保存在历史记录"))
+        };
+        feedback = Some((phase, message, 3500));
+    }
+    let (floating_feedback, notice_message) = if floating {
+        (feedback, None)
     } else {
-        None
+        (None, feedback)
     };
     fail_internal(
         app,
@@ -2987,6 +3000,7 @@ async fn fail_with_raw_fallback(
             activation_target,
         }),
         floating_feedback,
+        notice_message.map(|(_, message, _)| message),
     )
     .await
 }
@@ -2997,6 +3011,7 @@ async fn fail_internal(
     error: String,
     pending_fallback: Option<PendingFallback>,
     floating_feedback: Option<(&'static str, String, u64)>,
+    notice_message: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -3106,6 +3121,11 @@ async fn fail_internal(
         let (phase, message, delay) = floating_feedback.unwrap_or(("error", error.clone(), 3000));
         let message = floating_failure_details(phase, message, &error);
         crate::desktop::complete_floating_orb(app.clone(), phase, message, delay);
+    } else if crate::desktop::native_dictation_indicator_enabled() {
+        // Windows 原生模式：错误提示走原生通知面板（哪步失败 + 已如何兜底），
+        // 自动消失，不再为可交互面板激活 WebView。
+        let message = notice_message.unwrap_or_else(|| truncate_notice(&error));
+        let _ = crate::desktop::show_dictation_indicator_notice(&app, message);
     } else {
         let can_use_raw_text = state
             .dictation_runtime
@@ -3118,6 +3138,20 @@ async fn fail_internal(
     }
     publish_state(&app, Some(error.clone()));
     Err(error)
+}
+
+/// 把可能很长的内部错误（如插件抛出的 JSON 串）收成通知面板能放下的短文案：
+/// 取首行，最多 72 个字符。
+fn truncate_notice(error: &str) -> String {
+    let first_line = error.lines().next().unwrap_or("").trim();
+    const MAX: usize = 72;
+    if first_line.chars().count() > MAX {
+        let mut s: String = first_line.chars().take(MAX).collect();
+        s.push('…');
+        s
+    } else {
+        first_line.to_string()
+    }
 }
 
 fn floating_failure_details(phase: &str, message: String, error: &str) -> String {
