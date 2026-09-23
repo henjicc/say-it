@@ -5,6 +5,74 @@ use std::io::Read;
 use std::time::Instant;
 
 #[test]
+#[ignore = "独立性能采样：实时对比录音，仅本地接收器，不启动模型"]
+fn realtime_recording_memory_profile() {
+    let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(300);
+    assert!((1..=1800).contains(&seconds));
+    let initial = memory();
+    let runtime = CompareRuntime::default();
+    let epoch = runtime.reset(vec![]);
+    let mut sinks = Vec::new();
+    {
+        let mut state = runtime.inner.lock().unwrap();
+        state.phase = "recording".into();
+        state.sample_rate = 48_000;
+        for index in 0..3 {
+            let id = format!("local-test-{index}");
+            state.sessions.insert(id.clone(), index);
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+            sinks.push((id, tx, rx, 0xcbf29ce484222325_u64, 0usize));
+        }
+    }
+    runtime.complete_stream_registration(epoch, false).unwrap();
+    let chunk: Vec<f32> = (0..4096).map(|i| (i as f32 / 4096.0 - 0.5) * 0.3).collect();
+    let total = seconds * 48_000;
+    let started = Instant::now();
+    for offset in (0..total).step_by(chunk.len()) {
+        let part = &chunk[..(total - offset).min(chunk.len())];
+        let sessions = runtime.record_packet(epoch, part).unwrap();
+        for id in sessions {
+            let (_, tx, rx, hash, count) = sinks.iter_mut().find(|(key, ..)| *key == id).unwrap();
+            tx.send(AsrStreamInput::RawF32(part.to_vec())).unwrap();
+            let AsrStreamInput::RawF32(received) = rx.try_recv().unwrap() else {
+                panic!("应收到音频")
+            };
+            assert_eq!(received.len(), part.len());
+            for sample in received {
+                *hash = (*hash ^ sample.to_bits() as u64).wrapping_mul(0x100000001b3);
+            }
+            *count += part.len();
+        }
+    }
+    let elapsed = started.elapsed();
+    let after = memory();
+    let hash = sinks[0].3;
+    for (_, _, _, actual, count) in &sinks {
+        assert_eq!(*actual, hash);
+        assert_eq!(*count, total);
+    }
+    let retained_samples = runtime.inner.lock().unwrap().raw.len();
+    drop(runtime);
+    drop(sinks);
+    let released = memory();
+    println!(
+        "PERF_RESULT {}",
+        serde_json::json!({
+            "scenario": "compare-realtime-recording", "seconds": seconds,
+            "elapsedMs": elapsed.as_secs_f64() * 1000.0,
+            "outputHash": format!("{hash:016x}"), "samplesPerSink": total, "sinks": 3,
+            "retainedSamples": retained_samples,
+            "initialPrivateBytes": initial.private_usage, "retainedPrivateBytes": after.private_usage,
+            "peakPrivateBytes": after.peak_pagefile_usage, "peakWorkingSetBytes": after.peak_working_set,
+            "releasedPrivateBytes": released.private_usage,
+        })
+    );
+}
+
+#[test]
 #[ignore = "独立性能采样：release 模式、单用例、单线程"]
 fn wav_export_memory_profile() {
     let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")

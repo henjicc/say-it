@@ -69,6 +69,8 @@ pub(crate) struct PlaybackProgress {
 pub(crate) struct CompareRuntime {
     inner: Mutex<CompareState>,
     epoch: AtomicU64,
+    // 停止必须等启动登记完成，避免先搬走开头音频再接入迟到的实时模型。
+    operation: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -79,6 +81,7 @@ struct CompareState {
     jobs: HashMap<String, usize>,
     models: HashMap<usize, String>,
     raw: Vec<f32>,
+    retain_raw: bool,
     sample_rate: u32,
     recording_drain: Option<tokio::sync::oneshot::Receiver<()>>,
     // 实时流可能在写盘期间先结束，文件任务登记完之前不能提前回到 idle。
@@ -88,12 +91,66 @@ struct CompareState {
     error: String,
 }
 
+impl CompareState {
+    fn release_recording_buffer(&mut self) {
+        self.raw = Vec::new();
+        self.retain_raw = false;
+    }
+}
+
 impl CompareRuntime {
+    fn record_packet(&self, epoch: u64, samples: &[f32]) -> Option<Vec<String>> {
+        let mut state = self.inner.lock().ok()?;
+        if self.epoch.load(Ordering::Acquire) != epoch || state.phase != "recording" {
+            return None;
+        }
+        if state.retain_raw {
+            state.raw.extend_from_slice(samples);
+        }
+        Some(state.sessions.keys().cloned().collect())
+    }
+    fn complete_stream_registration(&self, epoch: u64, keep_raw: bool) -> Result<(), String> {
+        let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
+        if self.epoch.load(Ordering::Acquire) != epoch {
+            return Ok(());
+        }
+        // 全部实时消费者已收到开头音频。只有文件模型还需要停止时导出的完整录音。
+        if !keep_raw {
+            state.release_recording_buffer();
+        }
+        Ok(())
+    }
+    fn register_realtime_stream(
+        &self,
+        epoch: u64,
+        session_id: String,
+        index: usize,
+        tx: &tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+    ) -> Result<bool, String> {
+        let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
+        if self.epoch.load(Ordering::Acquire) != epoch
+            || !matches!(state.phase.as_str(), "starting" | "recording")
+        {
+            return Ok(false);
+        }
+        // 先补发再公开新会话，并与 record_packet 使用同一把锁；否则下一包可能
+        // 抢在开头音频前入队。分块也避免把长启动积压一次送进 DSP 形成大分配。
+        for chunk in state.raw.chunks(4096) {
+            tx.send(AsrStreamInput::RawF32(chunk.to_vec()))
+                .map_err(|_| "实时识别连接已关闭".to_string())?;
+        }
+        state.sessions.insert(session_id, index);
+        if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
+            cell.status = "connecting".into();
+        }
+        Ok(true)
+    }
     fn reset(&self, cells: Vec<CompareCellSnapshot>) -> u64 {
         let epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         if let Ok(mut state) = self.inner.lock() {
             *state = CompareState {
                 phase: "starting".into(),
+                retain_raw: true,
                 cells,
                 ..Default::default()
             };
@@ -169,6 +226,7 @@ impl CompareRuntime {
         state.phase = "idle".into();
         state.error = error.to_string();
         state.recording_drain = None;
+        state.release_recording_buffer();
         state.preparing_file = false;
         state.playback_progress = None;
         for cell in &mut state.cells {
@@ -214,6 +272,7 @@ pub(crate) async fn compare_start(
     request: CompareStartRequest,
 ) -> Result<CompareSnapshot, String> {
     let state = app.state::<RuntimeState>();
+    let _operation = state.compare_runtime.operation.lock().await;
     if !matches!(state.compare_runtime.snapshot().phase.as_str(), "" | "idle") {
         return Err("模型对比正在运行".into());
     }
@@ -243,6 +302,9 @@ pub(crate) async fn compare_start(
     }
     let epoch = state.compare_runtime.reset(cells);
     if let Err(error) = start_all(&app, &state, request, epoch).await {
+        if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+            return Ok(state.compare_runtime.snapshot());
+        }
         return Err(abort_start(&app, &state, error));
     }
     publish(&app);
@@ -299,6 +361,9 @@ async fn start_all(
         start_recording(app.clone(), &state, request.device_name, epoch)?
     };
     for (index, model) in request.models.iter().enumerate() {
+        if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+            return Ok(());
+        }
         if model.trim().is_empty() {
             continue;
         }
@@ -320,37 +385,48 @@ async fn start_all(
             .await;
             match opened {
                 Ok(session) => {
-                    // 录音模式下麦克风在建流之前就开始采集了，握手期间的样本只进了
-                    // `raw`。在同一把锁里登记会话并取走已采集的样本补发给新流，既不会
-                    // 丢开头，也不会和推流循环重复发送。
-                    let backlog = {
-                        let mut compare = state
-                            .compare_runtime
-                            .inner
-                            .lock()
-                            .map_err(|_| "模型对比状态锁失败")?;
-                        compare.sessions.insert(session.session_id.clone(), index);
-                        compare.raw.clone()
-                    };
-                    if !backlog.is_empty() {
-                        if let Some(handle) = state
-                            .asr_streams
-                            .lock()
-                            .ok()
-                            .and_then(|streams| streams.get(&session.session_id).cloned())
-                        {
-                            let _ = handle.tx.send(AsrStreamInput::RawF32(backlog));
+                    let handle = state
+                        .asr_streams
+                        .lock()
+                        .map_err(|_| "ASR stream lock failed".to_string())?
+                        .get(&session.session_id)
+                        .cloned();
+                    let registered = handle
+                        .ok_or_else(|| "实时识别连接已关闭".to_string())
+                        .and_then(|handle| {
+                            state.compare_runtime.register_realtime_stream(
+                                epoch, session.session_id.clone(), index, &handle.tx,
+                            )
+                        });
+                    match registered {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let _ = stop_asr_stream_inner(&session.session_id, state);
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            let _ = stop_asr_stream_inner(&session.session_id, state);
+                            if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+                                state.compare_runtime.update_cell(
+                                    index, "error", None, Some(error),
+                                );
+                            }
                         }
                     }
-                    state
-                        .compare_runtime
-                        .update_cell(index, "connecting", None, None);
                 }
-                Err(error) => state
+                Err(error) if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch => state
                     .compare_runtime
                     .update_cell(index, "error", None, Some(error)),
+                Err(_) => return Ok(()),
             }
         }
+    }
+    let keep_raw = request.models.iter().any(|model| {
+        resolve_model_info(state, model).is_some_and(|info| info.category == "file")
+    });
+    state.compare_runtime.complete_stream_registration(epoch, keep_raw)?;
+    if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+        return Ok(());
     }
     if request.source_mode != "record" {
         let path = request
@@ -396,11 +472,20 @@ fn start_recording(
     };
     let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
     {
-        let mut compare = state
-            .compare_runtime
-            .inner
-            .lock()
-            .map_err(|_| "模型对比状态锁失败")?;
+        let mut compare = match state.compare_runtime.inner.lock() {
+            Ok(compare) => compare,
+            Err(_) => {
+                let _ = release_backend_mic_inner(state);
+                let _ = state.audio_session.release(&lease);
+                return Err("模型对比状态锁失败".into());
+            }
+        };
+        if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+            drop(compare);
+            let _ = release_backend_mic_inner(state);
+            let _ = state.audio_session.release(&lease);
+            return Err("模型对比已取消".into());
+        }
         compare.phase = "recording".into();
         compare.sample_rate = mic.sample_rate;
         compare.recording_drain = Some(drain_rx);
@@ -409,17 +494,8 @@ fn start_recording(
     tauri::async_runtime::spawn(async move {
         while let Some(AsrStreamInput::RawF32(samples)) = receiver.recv().await {
             let runtime = &app.state::<RuntimeState>().compare_runtime;
-            if runtime.epoch.load(Ordering::Acquire) != epoch {
+            let Some(sessions) = runtime.record_packet(epoch, &samples) else {
                 break;
-            }
-            let sessions = {
-                let mut guard = runtime.inner.lock().ok();
-                if let Some(state) = guard.as_mut() {
-                    state.raw.extend_from_slice(&samples);
-                    state.sessions.keys().cloned().collect::<Vec<_>>()
-                } else {
-                    vec![]
-                }
             };
             for session in sessions {
                 if let Some(handle) = app
@@ -434,6 +510,9 @@ fn start_recording(
             }
         }
         let _ = drain_tx.send(());
+        if app.state::<RuntimeState>().compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+            return;
+        }
         let capture_error = app
             .state::<RuntimeState>()
             .backend_mic
@@ -461,6 +540,7 @@ fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
         compare.phase = "idle".into();
         compare.error = error.clone();
         compare.recording_drain = None;
+        compare.release_recording_buffer();
         compare.playback_progress = None;
         for cell in &mut compare.cells {
             if !matches!(cell.status.as_str(), "done" | "error") {
@@ -483,6 +563,7 @@ fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
 #[tauri::command]
 pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapshot, String> {
     let state = app.state::<RuntimeState>();
+    let _operation = state.compare_runtime.operation.lock().await;
     let epoch = state.compare_runtime.epoch.load(Ordering::Acquire);
     let snapshot = state.compare_runtime.snapshot();
     if snapshot.phase == "recording" {
@@ -598,6 +679,7 @@ pub(crate) fn compare_cancel(app: tauri::AppHandle) -> Result<CompareSnapshot, S
             .lock()
             .map_err(|_| "模型对比状态锁失败")?;
         compare.phase = "idle".into();
+        compare.release_recording_buffer();
         compare.preparing_file = false;
         (
             std::mem::take(&mut compare.sessions),
@@ -974,6 +1056,9 @@ fn publish(app: &tauri::AppHandle) {
         },
     );
 }
+
+#[cfg(test)]
+mod recording_tests;
 
 #[cfg(test)]
 mod tests {
