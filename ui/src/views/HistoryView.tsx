@@ -356,7 +356,7 @@ export function HistoryView() {
               <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} aria-label="修正结果" autoFocus />
             ) : (
               <div>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{primaryText(entry)}</p>
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{primaryText(entry) || "未获得识别文字"}</p>
                 {entry.finalText && entry.diffSegments.length > 0 && (
                   <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3 text-sm leading-6" aria-label="最终草稿差异">
                     {entry.diffSegments.map((segment, index) => (
@@ -373,7 +373,7 @@ export function HistoryView() {
                 )}
               </div>
             )}
-            {entry.error && <p className="mt-2 text-xs text-[var(--color-err)]">{entry.error}</p>}
+            {entry.error && <p className="mt-2 whitespace-pre-wrap break-words text-xs text-[var(--color-err)]">{entry.error}</p>}
             {entry.finalText && entry.outputText && entry.finalText !== entry.outputText && (
               <details className="mt-3 text-sm text-[var(--color-fg-subtle)]">
                 <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">系统输出</summary>
@@ -388,12 +388,13 @@ export function HistoryView() {
               </details>
             )}
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+              <Button size="sm" disabled={!primaryText(entry)} onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+              {entry.error && <Button size="sm" onClick={() => void copy(entry.error!)}>复制错误</Button>}
               <Button size="sm" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
               {editing === entry.id ? <>
                 <Button size="sm" variant="primary" onClick={() => void save(entry)}><Check className="h-3.5 w-3.5" aria-hidden />保存</Button>
                 <Button size="sm" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
-              </> : <Button size="sm" disabled={entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+              </> : <Button size="sm" disabled={!primaryText(entry) || entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
               {entry.finalTextConfidence === "medium" && <>
                 <Button size="sm" variant="primary" onClick={() => void confirmObserved(entry)}><Check className="h-3.5 w-3.5" aria-hidden />确认并学习</Button>
                 <Button size="sm" onClick={() => void discardObserved(entry)}><X className="h-3.5 w-3.5" aria-hidden />忽略</Button>

@@ -3038,31 +3038,12 @@ async fn fail_internal(
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
-        let history = s
-            .history_allowed
-            .then(|| {
-                pending_fallback.as_ref().map(|pending| {
-                    let identity = s.app_identity.clone().unwrap_or_default();
-                    crate::application::history::NewHistoryEntry {
-                        task_kind: "dictation".into(),
-                        source_text: pending.text.clone(),
-                        output_text: pending.text.clone(),
-                        smart_processing_applied: false,
-                        instruction: String::new(),
-                        app_name: identity.app_name,
-                        process_name: identity.process_name,
-                        provider_id: history_provider_id(&state, &s.prefs.asr_model),
-                        model_id: s.prefs.asr_model.clone(),
-                        status: "failed".into(),
-                        error: Some(error.clone()),
-                        duration_ms: s
-                            .started_at
-                            .map(|value| value.elapsed().as_millis() as u64)
-                            .unwrap_or(0),
-                    }
-                })
-            })
-            .flatten();
+        let history = failed_history_entry(
+            &s,
+            history_provider_id(&state, &s.prefs.asr_model),
+            &error,
+            pending_fallback.as_ref(),
+        );
         let floating = s.trigger.is_floating_orb();
         s.mark_failed(
             error.clone(),
@@ -3099,10 +3080,15 @@ async fn fail_internal(
     }
     let _ = release_backend_mic_inner(&state);
     if let Some(entry) = history {
-        if let Err(error) =
-            crate::application::history::record_or_update(&app, history_id.as_deref(), entry)
-        {
-            eprintln!("[history] 保存失败结果失败：{error}");
+        match crate::application::history::record_or_update(&app, history_id.as_deref(), entry) {
+            Ok(id) => {
+                if let Ok(mut session) = state.dictation_runtime.session.lock() {
+                    if session.is_current(epoch) {
+                        session.history_id = Some(id);
+                    }
+                }
+            }
+            Err(error) => eprintln!("[history] 保存失败结果失败：{error}"),
         }
     } else if let Some(id) = history_id {
         if let Err(error) = crate::application::history::update_result(
@@ -3138,6 +3124,44 @@ async fn fail_internal(
     }
     publish_state(&app, Some(error.clone()));
     Err(error)
+}
+
+fn failed_history_entry(
+    session: &Session,
+    provider_id: String,
+    error: &str,
+    pending_fallback: Option<&PendingFallback>,
+) -> Option<crate::application::history::NewHistoryEntry> {
+    if !session.history_allowed || (session.history_id.is_some() && pending_fallback.is_none()) {
+        return None;
+    }
+    let identity = session.app_identity.clone().unwrap_or_default();
+    // 尚未产出 final 的识别失败也要留痕；不要把错误提示伪装成识别文字。
+    let text = pending_fallback
+        .map(|pending| pending.text.clone())
+        .unwrap_or_else(|| format!("{}{}", session.committed, session.segment));
+    Some(crate::application::history::NewHistoryEntry {
+        task_kind: session
+            .assistant_request
+            .as_ref()
+            .map(|request| request.action.task_kind())
+            .unwrap_or("dictation")
+            .into(),
+        source_text: text.clone(),
+        output_text: text,
+        smart_processing_applied: false,
+        instruction: String::new(),
+        app_name: identity.app_name,
+        process_name: identity.process_name,
+        provider_id,
+        model_id: session.prefs.asr_model.clone(),
+        status: "failed".into(),
+        error: Some(error.into()),
+        duration_ms: session
+            .started_at
+            .map(|started| started.elapsed().as_millis() as u64)
+            .unwrap_or(0),
+    })
 }
 
 /// 把可能很长的内部错误（如插件抛出的 JSON 串）收成通知面板能放下的短文案：
@@ -3909,6 +3933,30 @@ fn play_floating_orb_cue(app: &AppHandle, which: &'static str, prefs: &Dictation
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failure_before_transcript_is_recorded_and_existing_history_is_updated() {
+        let mut session = super::Session {
+            history_allowed: true,
+            ..Default::default()
+        };
+        let entry =
+            super::failed_history_entry(&session, "bailian".into(), "完整识别错误", None).unwrap();
+        assert!(entry.source_text.is_empty());
+        assert!(entry.output_text.is_empty());
+        assert_eq!(entry.error.as_deref(), Some("完整识别错误"));
+        assert_eq!(entry.status, "failed");
+        session.committed = "已识别".into();
+        session.segment = "部分文字".into();
+        let partial =
+            super::failed_history_entry(&session, "bailian".into(), "识别中断", None).unwrap();
+        assert_eq!(partial.source_text, "已识别部分文字");
+        session.history_allowed = false;
+        assert!(super::failed_history_entry(&session, "bailian".into(), "错误", None).is_none());
+        session.history_allowed = true;
+        session.history_id = Some("existing".into());
+        assert!(super::failed_history_entry(&session, "bailian".into(), "错误", None).is_none());
+    }
+
     use super::*;
 
     #[test]
