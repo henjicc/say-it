@@ -105,7 +105,7 @@ pub(crate) fn native_indicator_hide() {
 mod imp {
     use super::super::native_overlay::{
         create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba, window_dpi,
-        LayeredSurface, OverlayThread,
+        LayeredSurface, OverlayThread, Transition,
     };
     use super::{
         resample_wave_levels, wave_scale, WAVE_BAR_COUNT, WAVE_BAR_HEIGHTS, WAVE_BAR_MIN_SCALE,
@@ -165,7 +165,10 @@ mod imp {
     const DOT_LABEL_GAP: f32 = 8.0;
 
     const WAVE_TIMER_ID: usize = 1;
-    const WAVE_TIMER_MS: u32 = 33; // ~30fps，仅录音且有波形时启用
+    const WAVE_TIMER_MS: u32 = 33; // ~30fps，录音波形与过渡动画共用
+
+    /// 出场时从最终位置下方这么远（逻辑像素）淡入滑入；退场反向。
+    const TRANSITION_SLIDE_PX: f32 = 16.0;
 
     const LOG_TAG: &str = "native-indicator";
 
@@ -246,6 +249,7 @@ mod imp {
         d2d: ID2D1Factory,
         surface: LayeredSurface,
         timer_active: bool,
+        transition: Transition,
     }
 
     impl WindowState {
@@ -266,6 +270,8 @@ mod imp {
                         self.view.wave_active = false;
                         self.view.wave_peaks.clear();
                     }
+                    // 完全显示时是空操作；只有从隐藏出现或退场被打断才播动画。
+                    self.transition.show();
                     self.sync_timer();
                     self.render();
                     unsafe {
@@ -295,21 +301,26 @@ mod imp {
                     self.sync_timer();
                 }
                 Command::Hide => {
-                    self.view.state = None;
-                    self.view.text.clear();
-                    self.view.wave_active = false;
-                    self.view.wave_peaks.clear();
-                    self.sync_timer();
-                    self.surface.mark_hidden();
-                    unsafe {
-                        let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    // 有可见内容时先播退场动画，内容清理与真正的隐藏推迟到
+                    // 动画结束（WM_TIMER 里收尾）；已经全隐藏则直接按原语义清理。
+                    if !self.transition.hide() {
+                        self.view.state = None;
+                        self.view.text.clear();
+                        self.view.wave_active = false;
+                        self.view.wave_peaks.clear();
+                        self.surface.mark_hidden();
+                        unsafe {
+                            let _ = ShowWindow(self.hwnd, SW_HIDE);
+                        }
                     }
+                    self.sync_timer();
                 }
             }
         }
 
         fn sync_timer(&mut self) {
-            let want = self.view.state == Some(NativeState::Recording) && self.view.wave_active;
+            let want = (self.view.state == Some(NativeState::Recording) && self.view.wave_active)
+                || self.transition.is_animating();
             unsafe {
                 if want && !self.timer_active {
                     SetTimer(self.hwnd, WAVE_TIMER_ID, WAVE_TIMER_MS, None);
@@ -328,6 +339,11 @@ mod imp {
             let dpi = window_dpi(self.hwnd);
             self.view.dpi = dpi;
             let (x, y, width, height) = placement(dpi);
+            // 透明度 + 纵向位移都由过渡进度驱动：入场从下方淡入滑入，退场反向。
+            let visual = self.transition.visual();
+            let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
+            let slide = ((1.0 - visual) * TRANSITION_SLIDE_PX * scale).round() as i32;
+            let alpha = (visual * 255.0).round() as u8;
             let Self {
                 view,
                 d2d,
@@ -338,10 +354,10 @@ mod imp {
                 d2d,
                 dpi,
                 x,
-                y,
+                y + slide,
                 width,
                 height,
-                255,
+                alpha,
                 LOG_TAG,
                 |target, brush| view.draw_content(target, brush),
             );
@@ -690,7 +706,20 @@ mod imp {
     ) -> LRESULT {
         match message {
             WM_TIMER => {
-                with_state(hwnd, |state| state.render());
+                with_state(hwnd, |state| {
+                    let (_, finished) = state.transition.tick();
+                    if finished && state.transition.is_fully_hidden() {
+                        // 退场动画播完才清理内容并真正隐藏。
+                        state.view.state = None;
+                        state.view.text.clear();
+                        state.view.wave_active = false;
+                        state.view.wave_peaks.clear();
+                        state.surface.mark_hidden();
+                        let _ = ShowWindow(state.hwnd, SW_HIDE);
+                    }
+                    state.render();
+                    state.sync_timer();
+                });
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -801,6 +830,7 @@ mod imp {
                 d2d,
                 surface: LayeredSurface::new(hwnd),
                 timer_active: false,
+                transition: Transition::new(false),
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
             Some(hwnd)

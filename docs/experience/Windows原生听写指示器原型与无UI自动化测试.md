@@ -56,6 +56,22 @@
 90MB 降到 64MB。排查手段：`Get-Process | Select -Expand Modules` 按映射大小排序，
 GPU 驱动 DLL 一目了然。
 
+## 隐藏后再显示：先 ShowWindow 再 UpdateLayeredWindow
+
+对 `SW_HIDE` 过的分层窗口直接 `UpdateLayeredWindow` 可能失败；若把 `ShowWindow`
+放在 ULW 之后，失败后 `shown` 标志没置位，之后每帧都重复失败，窗口永远回不来。
+`LayeredSurface::render` 里固定顺序：先 `ShowWindow(SW_SHOWNOACTIVATE)`（仅首次），
+再 ULW 提交内容。
+
+## 屏幕截图验证的坐标系陷阱
+
+PowerShell 的 `CopyFromScreen` 坐标空间随调用进程的 DPI 感知上下文变化（同一台
+双 4K@150% 机器上，不同 pwsh 进程分别报告过 3840×2160 和 2560×1440），按它算
+截图区域会截错地方，看起来像"窗口没渲染"。**用 Python PIL `ImageGrab.grab`
+（物理像素）截屏**，窗口矩形用 ctypes EnumWindows + GetWindowRect 拿，两者坐标系
+一致。pwsh 的 EnumWindows 探测还会在委托回调里吞掉 Write-Output（被外层
+`| Out-Null` 连管道吃掉），探测脚本输出要用数组收集后统一打印。
+
 ## 交互型原生窗口（悬浮球）的另外两个坑
 
 4. **窗口类光标必须显式指定。** `WNDCLASSW` 的 `hCursor` 为 NULL 时，悬停光标沿用进入
