@@ -13,10 +13,10 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-const expectedSdkVersion = '0.6.0'
-const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.6.0.tgz'
-const expectedSdkShasum = '2d02f956d6addc9fb92580cda323bc9d0904607e'
-const expectedSdkIntegrity = 'sha512-GzhWnVkdv2NNZjf0diI9dRBRkc/cH0O5nCjbiQrast54f+ik4Q4LbKjytrMhyMawxaSkCoHVeNQuEUwnCDkcnA=='
+const expectedSdkVersion = '0.6.1'
+const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.6.1.tgz'
+const expectedSdkShasum = '48a48e4692dd30695393b0c7f7432b994ede5ef1'
+const expectedSdkIntegrity = 'sha512-0gY7crODwieU82r5XOgrmKVQIzLdJqFf8gAjsz8xv0wIpJe4aL8SeBM59qVVVSGpjckaVqzFe9NryhA/hjQw8Q=='
 if (sdkVersion !== expectedSdkVersion || sdkLock?.version !== sdkVersion) {
   throw new Error(`Say-It 必须精确锁定 @henjicc/ai-sdk@${expectedSdkVersion}`)
 }

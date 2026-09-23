@@ -554,15 +554,27 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
     record_or_update(app, None, entry)
 }
 
+fn validate_entry_content(entry: &NewHistoryEntry) -> Result<(), String> {
+    let has_text = !entry.source_text.trim().is_empty() || !entry.output_text.trim().is_empty();
+    let has_failure = entry.status == "failed"
+        && entry
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty());
+    if has_text || has_failure {
+        Ok(())
+    } else {
+        Err("空内容不会写入历史".into())
+    }
+}
+
 /// 后处理只更新同一条记录的结果，原文与创建时间始终保留；已删除的记录不会被复活。
 pub(crate) fn record_or_update(
     app: &AppHandle,
     id: Option<&str>,
     entry: NewHistoryEntry,
 ) -> Result<String, String> {
-    if entry.source_text.trim().is_empty() && entry.output_text.trim().is_empty() {
-        return Err("空内容不会写入历史".into());
-    }
+    validate_entry_content(&entry)?;
     let prefs = app
         .state::<crate::state::RuntimeState>()
         .app_settings
@@ -1475,6 +1487,30 @@ mod tests {
             error: None,
             duration_ms: 12,
         }
+    }
+
+    #[test]
+    fn empty_recognition_failure_retains_error_but_empty_success_is_rejected() {
+        let mut value = entry("");
+        assert!(validate_entry_content(&value).is_err());
+        value.status = "failed".into();
+        assert!(validate_entry_content(&value).is_err());
+        value.error = Some("   ".into());
+        assert!(validate_entry_content(&value).is_err());
+        value.error = Some("实时识别失败：invalid_response\n完整错误详情".into());
+        assert!(validate_entry_content(&value).is_ok());
+        let path =
+            std::env::temp_dir().join(format!("sayit-empty-failure-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        insert_entry(&connection, "failed-before-text", &value).unwrap();
+        let saved = get_entry(&connection, "failed-before-text").unwrap();
+        assert!(saved.source_text.is_empty());
+        assert!(saved.output_text.is_empty());
+        assert_eq!(saved.status, "failed");
+        assert_eq!(saved.error, value.error);
+        assert_eq!(saved.model_id, value.model_id);
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

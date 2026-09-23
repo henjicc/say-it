@@ -158,10 +158,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.6.0");
+    assert_eq!(manifest["sdk"]["version"], "0.6.1");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-GzhWnVkdv2NNZjf0diI9dRBRkc/cH0O5nCjbiQrast54f+ik4Q4LbKjytrMhyMawxaSkCoHVeNQuEUwnCDkcnA=="
+        "sha512-0gY7crODwieU82r5XOgrmKVQIzLdJqFf8gAjsz8xv0wIpJe4aL8SeBM59qVVVSGpjckaVqzFe9NryhA/hjQw8Q=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -211,7 +211,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.6.0");
+    assert_eq!(result["version"], "0.6.1");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 21);
     assert_eq!(
@@ -524,7 +524,7 @@ export default () => ({
 }
 
 #[test]
-fn fun_asr_bundle_ignores_official_empty_sentence_begin_and_keeps_final() {
+fn fun_asr_bundle_ignores_empty_intermediate_frames_and_keeps_final() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = thread::spawn(move || {
@@ -540,6 +540,11 @@ fn fun_asr_bundle_ignores_official_empty_sentence_begin_and_keeps_final() {
         socket
             .send(Message::Text(
                 r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_begin":true,"sentence_end":false,"begin_time":0,"end_time":null,"text":"","words":[]}},"usage":null}}"#.into(),
+            ))
+            .unwrap();
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_end":false,"begin_time":0,"end_time":null,"text":"","words":[]}},"usage":null}}"#.into(),
             ))
             .unwrap();
         assert!(socket.read().unwrap().is_binary());
