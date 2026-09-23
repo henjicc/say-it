@@ -3,6 +3,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "说吧！",
         "width": 1080,
         "height": 860,

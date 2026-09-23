@@ -126,6 +126,15 @@ pub(crate) fn register_initial_main_window(
     app: &tauri::AppHandle,
     should_open: bool,
 ) -> Result<(), String> {
+    // 静默启动保持完全无 WebView；普通启动复用托盘/单实例的按需创建入口。
+    // 仍兼容显式提供预创建窗口的配置，避免 ready 握手先于 setup 时丢失状态。
+    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+        return if should_open {
+            ensure_main_window(app)
+        } else {
+            Ok(())
+        };
+    }
     let should_reveal = app
         .state::<RuntimeState>()
         .main_window_lifecycle
