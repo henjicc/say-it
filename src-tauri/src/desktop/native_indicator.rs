@@ -101,6 +101,14 @@ pub(crate) fn native_indicator_hide() {
     imp::post(imp::Command::Hide);
 }
 
+/// 原生错误/结果通知：显示自定义短文案的面板，几秒后自动消失。
+pub(crate) fn native_indicator_notice(text: String) {
+    #[cfg(windows)]
+    imp::post(imp::Command::ShowNotice(text));
+    #[cfg(not(windows))]
+    let _ = text;
+}
+
 #[cfg(windows)]
 mod imp {
     use super::super::native_overlay::{
@@ -116,7 +124,7 @@ mod imp {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
-        ID2D1Brush, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
+        ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
         D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
     };
     use windows::Win32::Graphics::DirectWrite::{
@@ -168,6 +176,9 @@ mod imp {
     const DOT_LABEL_GAP: f32 = 8.0;
 
     const WAVE_TIMER_ID: usize = 1;
+    /// 通知面板的自动消失定时器（一次性）。
+    const NOTICE_TIMER_ID: usize = 2;
+    const NOTICE_AUTO_HIDE_MS: u32 = 3500;
     const FRAME_MS: u32 = 16; // ~60fps：波形、呼吸点、文本淡入、过渡动画共用
 
     /// 出场时从最终位置下方这么远（逻辑像素）淡入滑入；退场反向。
@@ -190,6 +201,8 @@ mod imp {
         SetState(NativeState),
         SetText { text: String, fade: bool },
         SetWaveform { level: f32, peaks: Vec<f32> },
+        /// 原生错误/结果通知：自定义文案，自动消失。
+        ShowNotice(String),
         Hide,
     }
 
@@ -199,6 +212,8 @@ mod imp {
         Processing,
         SmartProcessing,
         Fallback,
+        /// 错误/结果通知（原生错误面板）：自定义短文案，几秒后自动消失。
+        Notice,
     }
 
     impl NativeState {
@@ -209,6 +224,7 @@ mod imp {
                 "smartProcessing" => Some(Self::SmartProcessing),
                 "fallback" => Some(Self::Fallback),
                 _ => None,
+                // Notice 不走 set_indicator_state 字符串通道，由 ShowNotice 命令进入。
             }
         }
 
@@ -218,6 +234,8 @@ mod imp {
                 Self::Processing => "识别中…",
                 Self::SmartProcessing => "处理中…",
                 Self::Fallback => "",
+                // Notice 不显示胶囊标签，内容走通知面板。
+                Self::Notice => "",
             }
         }
     }
@@ -256,6 +274,8 @@ mod imp {
         wave_active: bool,
         wave_level: f32,
         wave_peaks: Vec<f32>,
+        /// Notice 态的自定义文案。
+        notice_text: String,
         /// 状态点颜色的 150ms 过渡：from → target。
         dot_color_from: [f32; 3],
         dot_color_target: [f32; 3],
@@ -282,6 +302,9 @@ mod imp {
             match command {
                 // 与 WebView 的 prepare 语义一致：只重置内容，不改变可见性。
                 Command::Prepare => {
+                    unsafe {
+                        let _ = KillTimer(self.hwnd, NOTICE_TIMER_ID);
+                    }
                     self.view.text.clear();
                     self.view.fresh_from = 0;
                     self.view.fresh_started = None;
@@ -290,6 +313,9 @@ mod imp {
                     self.view.wave_level = 0.0;
                 }
                 Command::SetState(state) => {
+                    unsafe {
+                        let _ = KillTimer(self.hwnd, NOTICE_TIMER_ID);
+                    }
                     // 状态点颜色变化（红聆听 ↔ 蓝识别）走 150ms 过渡而不是跳变。
                     let target_color = dot_target_color(state);
                     if target_color != self.view.dot_color_target {
@@ -356,22 +382,53 @@ mod imp {
                     self.view.wave_peaks = peaks;
                     self.sync_timer();
                 }
-                Command::Hide => {
-                    // 有可见内容时先播退场动画，内容清理与真正的隐藏推迟到
-                    // 动画结束（WM_TIMER 里收尾）；已经全隐藏则直接按原语义清理。
-                    if !self.transition.hide() {
-                        self.view.state = None;
-                        self.view.text.clear();
-                        self.view.wave_active = false;
-                        self.view.wave_peaks.clear();
-                        self.surface.mark_hidden();
-                        unsafe {
-                            let _ = ShowWindow(self.hwnd, SW_HIDE);
-                        }
-                    }
+                Command::ShowNotice(text) => {
+                    self.view.text.clear();
+                    self.view.fresh_from = 0;
+                    self.view.fresh_started = None;
+                    self.view.wave_active = false;
+                    self.view.wave_peaks.clear();
+                    self.view.notice_text = text;
+                    self.view.state = Some(NativeState::Notice);
+                    self.transition.show();
                     self.sync_timer();
+                    self.render();
+                    unsafe {
+                        let _ = SetWindowPos(
+                            self.hwnd,
+                            HWND_TOPMOST,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                        // 一次性自动消失定时器。
+                        SetTimer(self.hwnd, NOTICE_TIMER_ID, NOTICE_AUTO_HIDE_MS, None);
+                    }
+                }
+                Command::Hide => {
+                    self.begin_exit();
                 }
             }
+        }
+
+        /// 开始退场：有可见内容先播退场动画，清理与真正隐藏推迟到动画结束。
+        fn begin_exit(&mut self) {
+            unsafe {
+                let _ = KillTimer(self.hwnd, NOTICE_TIMER_ID);
+            }
+            if !self.transition.hide() {
+                self.view.state = None;
+                self.view.text.clear();
+                self.view.wave_active = false;
+                self.view.wave_peaks.clear();
+                self.surface.mark_hidden();
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                }
+            }
+            self.sync_timer();
         }
 
         fn sync_timer(&mut self) {
@@ -493,7 +550,18 @@ mod imp {
             // #wrap：纵向居中堆叠、底部对齐，padding-bottom 24。
             let content_bottom = LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM;
             if state == NativeState::Fallback {
-                self.draw_fallback(target, brush, content_bottom);
+                self.draw_notice_panel(
+                    target,
+                    brush,
+                    content_bottom,
+                    "已经把结果放到你的剪贴板里了，你粘贴就可以用了",
+                    false,
+                );
+                return;
+            }
+            if state == NativeState::Notice {
+                let text = self.notice_text.clone();
+                self.draw_notice_panel(target, brush, content_bottom, &text, true);
                 return;
             }
             let pill_rect = rect_f(
@@ -723,11 +791,14 @@ mod imp {
             }
         }
 
-        fn draw_fallback(
+        /// 通知面板：剪贴板回退（蓝色信息）与错误/结果通知（橙色警告）共用。
+        fn draw_notice_panel(
             &self,
             target: &ID2D1DCRenderTarget,
             brush: &ID2D1SolidColorBrush,
             content_bottom: f32,
+            text: &str,
+            warn: bool,
         ) {
             let rect = rect_f(
                 (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
@@ -735,20 +806,71 @@ mod imp {
                 (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
                 content_bottom,
             );
-            self.fill_rounded(
-                target,
-                brush,
-                rect,
-                TEXT_RADIUS,
-                rgba(12.0 / 255.0, 24.0 / 255.0, 42.0 / 255.0, 0.97),
-                rgba(109.0 / 255.0, 174.0 / 255.0, 1.0, 0.34),
-            );
-            let icon_color = rgba(109.0 / 255.0, 174.0 / 255.0, 1.0, 1.0);
+            let (bg, border) = if warn {
+                (
+                    rgba(32.0 / 255.0, 22.0 / 255.0, 14.0 / 255.0, 0.97),
+                    rgba(1.0, 171.0 / 255.0, 92.0 / 255.0, 0.5),
+                )
+            } else {
+                (
+                    rgba(12.0 / 255.0, 24.0 / 255.0, 42.0 / 255.0, 0.97),
+                    rgba(109.0 / 255.0, 174.0 / 255.0, 1.0, 0.5),
+                )
+            };
+            self.fill_rounded(target, brush, rect, TEXT_RADIUS, bg, border);
+            let icon_color = if warn {
+                rgba(1.0, 171.0 / 255.0, 92.0 / 255.0, 1.0)
+            } else {
+                rgba(109.0 / 255.0, 174.0 / 255.0, 1.0, 1.0)
+            };
             let icon_cx = rect.left + FALLBACK_PAD + FALLBACK_ICON / 2.0;
             let icon_cy = (rect.top + rect.bottom) / 2.0;
             unsafe {
-                // 简化图标：圆环 + 对勾，代替 ClipboardCheck。
                 brush.SetColor(&icon_color);
+                if warn {
+                    // 警告三角 + 叹号。
+                    let r = FALLBACK_ICON / 2.0 - 1.0;
+                    let top = D2D_POINT_2F {
+                        x: icon_cx,
+                        y: icon_cy - r,
+                    };
+                    let left = D2D_POINT_2F {
+                        x: icon_cx - r,
+                        y: icon_cy + r * 0.8,
+                    };
+                    let right = D2D_POINT_2F {
+                        x: icon_cx + r,
+                        y: icon_cy + r * 0.8,
+                    };
+                    target.DrawLine(top, left, brush, 1.8, None);
+                    target.DrawLine(left, right, brush, 1.8, None);
+                    target.DrawLine(right, top, brush, 1.8, None);
+                    target.DrawLine(
+                        D2D_POINT_2F {
+                            x: icon_cx,
+                            y: icon_cy - r * 0.35,
+                        },
+                        D2D_POINT_2F {
+                            x: icon_cx,
+                            y: icon_cy + r * 0.3,
+                        },
+                        brush,
+                        1.8,
+                        None,
+                    );
+                    target.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: D2D_POINT_2F {
+                                x: icon_cx,
+                                y: icon_cy + r * 0.55,
+                            },
+                            radiusX: 1.2,
+                            radiusY: 1.2,
+                        },
+                        brush,
+                    );
+                } else {
+                // 简化图标：圆环 + 对勾，代替 ClipboardCheck。
                 target.DrawEllipse(
                     &D2D1_ELLIPSE {
                         point: D2D_POINT_2F {
@@ -793,11 +915,10 @@ mod imp {
                     2.0,
                     None,
                 );
+                }
                 brush.SetColor(&rgba(234.0 / 255.0, 242.0 / 255.0, 1.0, 1.0));
                 target.DrawText(
-                    &"已经把结果放到你的剪贴板里了，你粘贴就可以用了"
-                        .encode_utf16()
-                        .collect::<Vec<u16>>(),
+                    &text.encode_utf16().collect::<Vec<u16>>(),
                     &self.fallback_format,
                     &rect_f(
                         rect.left + FALLBACK_PAD + FALLBACK_ICON + FALLBACK_ICON_GAP,
@@ -878,6 +999,15 @@ mod imp {
     ) -> LRESULT {
         match message {
             WM_TIMER => {
+                if wparam.0 == NOTICE_TIMER_ID {
+                    with_state(hwnd, |state| {
+                        unsafe {
+                            let _ = KillTimer(hwnd, NOTICE_TIMER_ID);
+                        }
+                        state.begin_exit();
+                    });
+                    return LRESULT(0);
+                }
                 with_state(hwnd, |state| {
                     let now = Instant::now();
                     let dt = state
@@ -1004,6 +1134,7 @@ mod imp {
                     wave_active: false,
                     wave_level: 0.0,
                     wave_peaks: Vec::new(),
+                    notice_text: String::new(),
                     dot_color_from: dot_target_color(NativeState::Recording),
                     dot_color_target: dot_target_color(NativeState::Recording),
                     dot_blend_start: None,

@@ -718,7 +718,9 @@ fn main() {
             stop_assistant_follow_up_voice,
             set_assistant_answer_pinned,
             close_assistant_answer,
-            get_performance_metrics
+            get_performance_metrics,
+            #[cfg(debug_assertions)]
+            dev_show_indicator_notice
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
