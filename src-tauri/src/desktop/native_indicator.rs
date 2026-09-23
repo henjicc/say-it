@@ -122,7 +122,6 @@ mod imp {
     use std::time::Instant;
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-    use windows::Foundation::Numerics::Matrix3x2;
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
         ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
@@ -197,23 +196,6 @@ mod imp {
 
     const LOG_TAG: &str = "native-indicator";
 
-    /// 录音态展示风格：wave = 常驻波形（默认）；scale = 红点+文字，胶囊随音量伸缩。
-    /// 供两种方案对比实测，定稿后删除未选中的一支。
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum RecordingStyle {
-        Wave,
-        Scale,
-    }
-
-    fn recording_style() -> RecordingStyle {
-        static STYLE: OnceLock<RecordingStyle> = OnceLock::new();
-        *STYLE.get_or_init(|| {
-            match std::env::var("SAYIT_INDICATOR_RECORDING_STYLE").as_deref() {
-                Ok("scale") => RecordingStyle::Scale,
-                _ => RecordingStyle::Wave,
-            }
-        })
-    }
 
     pub(super) enum Command {
         Prepare,
@@ -290,8 +272,7 @@ mod imp {
         pulse_time: f32,
         /// 平滑后的波形柱高（CSS 的 70ms ease-out height 过渡等效）。
         wave_display: [f32; WAVE_BAR_COUNT],
-        /// 平滑后的整体响度（scale 方案的胶囊伸缩系数输入）。
-        level_display: f32,
+
         wave_active: bool,
         wave_level: f32,
         wave_peaks: Vec<f32>,
@@ -510,8 +491,6 @@ mod imp {
             for (display, target) in self.wave_display.iter_mut().zip(target) {
                 *display += (target - *display) * k;
             }
-            let level = wave_scale(self.wave_level);
-            self.level_display += (level - self.level_display) * k;
             if self
                 .fresh_started
                 .is_some_and(|start| start.elapsed().as_secs_f32() >= TEXT_FRESH_FADE_S)
@@ -716,50 +695,16 @@ mod imp {
             rect: D2D_RECT_F,
         ) {
             if state == NativeState::Recording {
-                match recording_style() {
-                    // 方案二：常驻波形；尚无波形数据时 wave_display 处于低位，
-                    // 收成一排小圆点（CSS 的 min-height 兜底语义）。
-                    RecordingStyle::Wave => {
-                        self.fill_rounded(
-                            target,
-                            brush,
-                            rect,
-                            PILL_RADIUS,
-                            rgba(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94),
-                            rgba(1.0, 1.0, 1.0, 0.16),
-                        );
-                        self.draw_waveform(target, brush, rect);
-                        return;
-                    }
-                    // 方案一：红点+文字，胶囊整体随响度伸缩。
-                    RecordingStyle::Scale => {
-                        // 整体缩放（含背景与内容）：绕胶囊中心做 D2D 变换。
-                        let scale = 1.0 + 0.18 * self.level_display;
-                        let cx = (rect.left + rect.right) / 2.0;
-                        let cy = (rect.top + rect.bottom) / 2.0;
-                        let matrix = Matrix3x2 {
-                            M11: scale,
-                            M12: 0.0,
-                            M21: 0.0,
-                            M22: scale,
-                            M31: cx * (1.0 - scale),
-                            M32: cy * (1.0 - scale),
-                        };
-                        unsafe {
-                            target.SetTransform(&matrix);
-                            self.draw_pill_face(target, brush, state, rect);
-                            target.SetTransform(&Matrix3x2 {
-                                M11: 1.0,
-                                M12: 0.0,
-                                M21: 0.0,
-                                M22: 1.0,
-                                M31: 0.0,
-                                M32: 0.0,
-                            });
-                        }
-                        return;
-                    }
-                }
+                self.fill_rounded(
+                    target,
+                    brush,
+                    rect,
+                    PILL_RADIUS,
+                    rgba(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94),
+                    rgba(1.0, 1.0, 1.0, 0.16),
+                );
+                self.draw_waveform(target, brush, rect);
+                return;
             }
             self.draw_pill_face(target, brush, state, rect);
         }
@@ -1207,7 +1152,6 @@ mod imp {
                     fresh_started: None,
                     pulse_time: 0.0,
                     wave_display: [0.0; WAVE_BAR_COUNT],
-                    level_display: 0.0,
                     wave_active: false,
                     wave_level: 0.0,
                     wave_peaks: Vec::new(),
