@@ -5,6 +5,80 @@ use std::io::Read;
 use std::time::Instant;
 
 #[test]
+#[ignore = "独立性能采样：本地合成文件，不调用识别服务"]
+fn uploaded_playback_memory_profile() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessIoCounters, IO_COUNTERS};
+    let io = || {
+        let mut counters = IO_COUNTERS::default();
+        unsafe {
+            GetProcessIoCounters(GetCurrentProcess(), &mut counters).unwrap();
+        }
+        counters
+    };
+    let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")
+        .unwrap_or("300".into())
+        .parse::<usize>()
+        .unwrap();
+    assert!((1..=1800).contains(&seconds));
+    let legacy = std::env::var("SAYIT_PERF_PLAYBACK_LEGACY").as_deref() == Ok("1");
+    let path =
+        std::env::temp_dir().join(format!("say-it-playback-perf-{}.wav", uuid::Uuid::new_v4()));
+    crate::audio_prep::write_test_stereo_wav(&path, seconds as f32, 48_000);
+    tauri::async_runtime::block_on(async {});
+    let initial = memory();
+    let io_before = io();
+    let started = Instant::now();
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut received = 0u64;
+    let mut consume = |part: &[f32]| {
+        assert!(part.len() <= playback::PACKET_SAMPLES);
+        received += part.len() as u64;
+        for sample in part {
+            hash = (hash ^ sample.to_bits() as u64).wrapping_mul(0x100000001b3);
+        }
+    };
+    let prepared;
+    let total;
+    if legacy {
+        let samples = crate::audio_prep::decode_to_mono_16k(path.to_str().unwrap()).unwrap();
+        total = samples.len() as u64;
+        prepared = started.elapsed();
+        for part in samples.chunks(1600) {
+            consume(part);
+        }
+    } else {
+        total = playback::inspect(path.to_str().unwrap(), || Ok(())).unwrap();
+        prepared = started.elapsed();
+        let (mut rx, worker) = playback::start(path.to_str().unwrap().to_owned(), || Ok(()));
+        while let Some(packet) = rx.blocking_recv() {
+            consume(&packet);
+        }
+        assert_eq!(
+            tauri::async_runtime::block_on(worker).unwrap().unwrap(),
+            total
+        );
+    }
+    let elapsed = started.elapsed();
+    let io_after = io();
+    let after = memory();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(received, total);
+    assert_eq!(total, seconds as u64 * 16_000);
+    println!(
+        "PERF_RESULT {}",
+        serde_json::json!({
+            "scenario": "compare-uploaded-playback", "legacy": legacy, "seconds": seconds,
+            "elapsedMs": elapsed.as_secs_f64() * 1000.0, "preparedMs": prepared.as_secs_f64() * 1000.0,
+            "outputHash": format!("{hash:016x}"), "samples": total,
+            "readBytes": io_after.ReadTransferCount - io_before.ReadTransferCount,
+            "writeBytes": io_after.WriteTransferCount - io_before.WriteTransferCount,
+            "initialPrivateBytes": initial.private_usage, "retainedPrivateBytes": after.private_usage,
+            "peakPrivateBytes": after.peak_pagefile_usage, "peakWorkingSetBytes": after.peak_working_set,
+        })
+    );
+}
+
+#[test]
 #[ignore = "独立性能采样：实时对比录音，仅本地接收器，不启动模型"]
 fn realtime_recording_memory_profile() {
     let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")

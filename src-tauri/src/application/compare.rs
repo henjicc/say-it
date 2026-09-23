@@ -24,6 +24,8 @@ use crate::desktop::backend_mic::{
 use crate::providers::capabilities::TranscriptionParams;
 use crate::state::{AsrStreamInput, RuntimeState};
 
+mod playback;
+
 #[cfg(all(test, windows))]
 mod performance_tests;
 
@@ -99,6 +101,63 @@ impl CompareState {
 }
 
 impl CompareRuntime {
+    fn check_playback_epoch(&self, epoch: u64) -> Result<(), String> {
+        if self.epoch.load(Ordering::Acquire) == epoch {
+            Ok(())
+        } else {
+            Err("模型对比已取消".into())
+        }
+    }
+    fn begin_playback(&self, epoch: u64, total: u64) -> Result<bool, String> {
+        let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
+        if self.epoch.load(Ordering::Acquire) != epoch {
+            return Ok(false);
+        }
+        state.phase = "playing".into();
+        state.playback_progress = Some(PlaybackProgress {
+            current_ms: 0,
+            duration_ms: total * 1000 / 16_000,
+        });
+        Ok(true)
+    }
+    fn advance_playback(&self, epoch: u64, sent: u64, total: u64) -> Option<Vec<String>> {
+        let mut state = self.inner.lock().ok()?;
+        if self.epoch.load(Ordering::Acquire) != epoch || state.phase != "playing" {
+            return None;
+        }
+        if state.sessions.is_empty() {
+            state.phase = "finalizing".into();
+            settle_comparison(&mut state);
+            return None;
+        }
+        state.playback_progress = Some(PlaybackProgress {
+            current_ms: sent.min(total) * 1000 / 16_000,
+            duration_ms: total * 1000 / 16_000,
+        });
+        Some(state.sessions.keys().cloned().collect())
+    }
+    fn finish_playback(&self, epoch: u64, error: Option<&String>) -> Option<Vec<String>> {
+        let mut state = self.inner.lock().ok()?;
+        if self.epoch.load(Ordering::Acquire) != epoch || state.phase != "playing" {
+            return None;
+        }
+        state.phase = "finalizing".into();
+        let sessions = if let Some(error) = error {
+            state.error = error.clone();
+            let sessions = std::mem::take(&mut state.sessions);
+            for index in sessions.values() {
+                if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == *index) {
+                    cell.status = "error".into();
+                    cell.error_message = error.clone();
+                }
+            }
+            sessions.into_keys().collect()
+        } else {
+            state.sessions.keys().cloned().collect()
+        };
+        settle_comparison(&mut state);
+        Some(sessions)
+    }
     fn record_packet(&self, epoch: u64, samples: &[f32]) -> Option<Vec<String>> {
         let mut state = self.inner.lock().ok()?;
         if self.epoch.load(Ordering::Acquire) != epoch || state.phase != "recording" {
@@ -757,42 +816,52 @@ async fn start_upload(
         .cloned()
         .collect::<Vec<_>>();
     if realtime.is_empty() {
-        state
-            .compare_runtime
-            .inner
-            .lock()
-            .map_err(|_| "模型对比状态锁失败")?
-            .phase = "finalizing".into();
-        return Ok(());
-    }
-    let samples = crate::audio_prep::decode_to_mono_16k(&path)?;
-    let total = samples.len();
-    {
         let mut compare = state
             .compare_runtime
             .inner
             .lock()
             .map_err(|_| "模型对比状态锁失败")?;
-        compare.phase = "playing".into();
-        compare.playback_progress = Some(PlaybackProgress {
-            current_ms: 0,
-            duration_ms: total as u64 * 1000 / 16_000,
-        });
+        if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+            compare.phase = "finalizing".into();
+            settle_comparison(&mut compare);
+        }
+        return Ok(());
     }
-    tauri::async_runtime::spawn(async move {
-        let chunk = 1600;
-        for (offset, part) in samples.chunks(chunk).enumerate() {
-            let runtime_state = app.state::<RuntimeState>();
-            if runtime_state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
-                return;
-            }
-            let sessions = runtime_state
+    let inspection_app = app.clone();
+    let inspection_path = path.clone();
+    let total = tauri::async_runtime::spawn_blocking(move || {
+        playback::inspect(&inspection_path, || {
+            inspection_app
+                .state::<RuntimeState>()
                 .compare_runtime
-                .inner
-                .lock()
-                .ok()
-                .map(|compare| compare.sessions.keys().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
+                .check_playback_epoch(epoch)
+        })
+    })
+    .await
+    .map_err(|error| format!("音频检查任务失败：{error}"))??;
+    if !state.compare_runtime.begin_playback(epoch, total)? {
+        return Ok(());
+    }
+    let decoder_app = app.clone();
+    let (mut packets, decoder) = playback::start(path, move || {
+        decoder_app
+            .state::<RuntimeState>()
+            .compare_runtime
+            .check_playback_epoch(epoch)
+    });
+    tauri::async_runtime::spawn(async move {
+        let mut sent = 0u64;
+        while let Some(part) = packets.recv().await {
+            let runtime_state = app.state::<RuntimeState>();
+            sent += part.len() as u64;
+            let Some(sessions) = runtime_state
+                .compare_runtime
+                .advance_playback(epoch, sent, total)
+            else {
+                // 接收端随任务释放，阻塞在有界队列上的解码线程也会退出。
+                publish(&app);
+                return;
+            };
             for id in sessions {
                 if let Some(handle) = runtime_state
                     .asr_streams
@@ -800,31 +869,36 @@ async fn start_upload(
                     .ok()
                     .and_then(|streams| streams.get(&id).cloned())
                 {
-                    let _ = handle.tx.send(AsrStreamInput::RawF32(part.to_vec()));
+                    let _ = handle.tx.send(AsrStreamInput::RawF32(part.clone()));
                 }
-            }
-            if let Ok(mut compare) = runtime_state.compare_runtime.inner.lock() {
-                compare.playback_progress = Some(PlaybackProgress {
-                    current_ms: ((offset + 1) * chunk).min(total) as u64 * 1000 / 16_000,
-                    duration_ms: total as u64 * 1000 / 16_000,
-                });
             }
             publish(&app);
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        let result = decoder
+            .await
+            .map_err(|error| format!("音频解码任务失败：{error}"))
+            .and_then(|result| result)
+            .and_then(|count| {
+                if count == total && sent == total {
+                    Ok(())
+                } else {
+                    Err("音频文件在播放期间发生变化，请重新开始对比".into())
+                }
+            });
         let state = app.state::<RuntimeState>();
-        let sessions = state
+        let Some(sessions) = state
             .compare_runtime
-            .inner
-            .lock()
-            .ok()
-            .map(|mut compare| {
-                compare.phase = "finalizing".into();
-                compare.sessions.keys().cloned().collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            .finish_playback(epoch, result.as_ref().err())
+        else {
+            return;
+        };
         for id in sessions {
-            let _ = asr_stream_finish_inner(&id, &state);
+            if result.is_ok() {
+                let _ = asr_stream_finish_inner(&id, &state);
+            } else {
+                let _ = stop_asr_stream_inner(&id, &state);
+            }
         }
         publish(&app);
     });
