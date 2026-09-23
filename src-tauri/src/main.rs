@@ -16,6 +16,8 @@ mod macos_native;
 mod obs_overlay;
 mod ocr;
 mod persistence;
+#[cfg(all(test, windows))]
+mod performance_test_support;
 mod prelude;
 mod providers;
 mod stack_diagnostics;

@@ -1,47 +1,7 @@
 //! 在独立的 release 测试进程中运行，避免其他用例污染进程峰值。
 use super::*;
-use std::ffi::c_void;
+use crate::performance_test_support::memory;
 use std::time::Instant;
-
-#[repr(C)]
-#[derive(Default)]
-struct MemoryCounters {
-    size: u32,
-    page_fault_count: u32,
-    peak_working_set: usize,
-    working_set: usize,
-    peak_paged_pool: usize,
-    paged_pool: usize,
-    peak_nonpaged_pool: usize,
-    nonpaged_pool: usize,
-    pagefile_usage: usize,
-    peak_pagefile_usage: usize,
-    private_usage: usize,
-}
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetCurrentProcess() -> *mut c_void;
-    fn K32GetProcessMemoryInfo(
-        process: *mut c_void,
-        counters: *mut MemoryCounters,
-        size: u32,
-    ) -> i32;
-}
-
-fn memory() -> MemoryCounters {
-    let mut counters = MemoryCounters {
-        size: std::mem::size_of::<MemoryCounters>() as u32,
-        ..Default::default()
-    };
-    // 使用当前进程伪句柄；结构与 Windows PROCESS_MEMORY_COUNTERS_EX 一致。
-    let size = counters.size;
-    assert_ne!(
-        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) },
-        0
-    );
-    counters
-}
 
 #[test]
 #[ignore = "独立性能采样：release 模式、单用例、单线程，不调用真实服务"]
