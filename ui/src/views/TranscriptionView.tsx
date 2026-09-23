@@ -233,10 +233,7 @@ export function TranscriptionView() {
       ) : tab === "align" ? (
         <TranscriptAlignPanel />
       ) : (
-        <SettingsSection title="通用设置">
-          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            字幕转写与文稿对齐共用这些识别设置。
-          </p>
+        <SettingsSection title="通用设置" description="这里的设置同时用于字幕转写和文稿对齐。">
 
           <FormGrid>
             <Field label="识别模型" controlId="transcription-asr-model">

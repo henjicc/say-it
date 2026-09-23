@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { Field } from "@/components/ui/Field";
 import { Select } from "@/components/ui/Input";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -63,7 +64,7 @@ export function DictationShortcutsPanel() {
         </FormGrid>
       </SettingsSection>
 
-      <SettingsSection title="输入行为">
+      <SettingsSection title="输入行为" description="主快捷键使用当前软件的处理规则。单击切换：按一次开始，再按一次结束；长按说话：按住开始，松手结束。按 Esc 可取消。点击“录入”设置按键，点击“×”清除。Caps Lock 短按仍可切换大小写。">
         <FormGrid>
           <Field label="主快捷键">
             <ShortcutRecorder
@@ -81,7 +82,7 @@ export function DictationShortcutsPanel() {
               <option value="press-hold">长按说话</option>
             </Select>
           </Field>
-          <Field label="注入方式">
+          <Field label="文字输入方式">
             <Select
               value={injectMethod}
               onChange={(e) => setInjectMethod(e.target.value as "paste" | "type")}
@@ -91,20 +92,12 @@ export function DictationShortcutsPanel() {
             </Select>
           </Field>
         </FormGrid>
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          主快捷键跟随当前软件的场景规则。「单击切换」为按一次开始、再按一次结束；「长按说话」为按住开始、松手结束，Caps Lock
-          短按仍保留系统大小写切换。过程中按 Esc 可取消。点击「录入」后按下想用的按键即可；点击输入框内的「×」可清除快捷键——
-          清除后仍可使用快捷键方案，或在“语音输入”页手动开始。
-        </p>
       </SettingsSection>
 
       <SettingsSection title="悬浮球">
         <div className="flex items-start justify-between gap-6">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--color-fg)]">启用悬浮球输入</p>
-            <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              点击开始或停止语音输入，右键调整悬浮球；识别结果会保留在剪贴板。
-            </p>
+            <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="点击悬浮球开始或停止语音输入，右键可调整外观。识别结果会保留在剪贴板。">启用悬浮球输入</HelpLabel></p>
           </div>
           <Switch
             checked={floatingOrb.enabled}

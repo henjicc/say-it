@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
@@ -9,7 +10,6 @@ import {
   HardDriveDownload,
   KeyRound,
   LoaderCircle,
-  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
@@ -257,8 +257,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
         <div className="shrink-0 border-b border-[var(--color-line)] px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-[var(--color-fg)]">{STEPS[step].title}</p>
-              <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{STEPS[step].description}</p>
+              <p className="text-sm font-semibold text-[var(--color-fg)]"><HelpLabel content={STEPS[step].description}>{STEPS[step].title}</HelpLabel></p>
             </div>
             <span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{step + 1} / {STEPS.length}</span>
           </div>
@@ -274,8 +273,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
           <div className="flex min-h-full flex-col gap-4">
           {step === 0 && <>
             <div>
-              <h2 className="text-lg font-semibold text-[var(--color-fg)]">授予必要权限</h2>
-              <p className="mt-2 text-sm leading-6 text-[var(--color-fg-muted)]">只申请语音输入必需的权限；窗口 OCR 的屏幕录制权限会在你真正启用该功能时再询问。</p>
+              <h2 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content="允许录音和把文字输入其他软件。读取屏幕文字所需的权限，会在启用时再询问。">授予必要权限</HelpLabel></h2>
             </div>
             <SetupRow
               state={microphoneState}
@@ -300,13 +298,11 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 description="Windows 基础听写无需额外授权"
               />
             )}
-            <p className="flex items-start gap-2 text-xs leading-5 text-[var(--color-fg-subtle)]"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />权限只用于录音和把文字写入当前光标位置。</p>
           </>}
 
           {step === 1 && <>
             <div>
-              <h2 className="text-lg font-semibold text-[var(--color-fg)]">选择主识别模型</h2>
-              <p className="mt-2 text-sm leading-6 text-[var(--color-fg-muted)]">云端模型效果稳定但需要密钥；本地模型无需密钥，安装后可完全离线使用。</p>
+              <h2 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content="云端模型通常需要密钥和网络；本地模型安装后可以离线使用，无需密钥。">选择主识别模型</HelpLabel></h2>
             </div>
             <Field label="语音识别模型" controlId="onboarding-asr-model">
               <ModelPicker
@@ -335,9 +331,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
             </div>
             {requiresApiKey && !hasApiKey && selectedProvider && (
               <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-fg)]"><KeyRound className="h-4 w-4 text-[var(--color-accent-light)]" aria-hidden />配置 {selectedProvider.displayName} 密钥</div>
-                <p className="mt-1.5 text-xs leading-5 text-[var(--color-fg-subtle)]">也可以稍后前往“设置 → 模型 → ASR 供应商”配置。</p>
-                <p className="mt-1 text-xs leading-5 text-[var(--color-fg-subtle)]">API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。</p>
+                <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-fg)]"><KeyRound className="h-4 w-4 text-[var(--color-accent-light)]" aria-hidden /><HelpLabel content="密钥会加密保存在这台电脑上。也可以稍后在设置的识别服务中配置。">配置 {selectedProvider.displayName} 密钥</HelpLabel></div>
                 <div className="mt-3 flex items-stretch gap-2">
                   <div className="min-w-0 flex-1">
                     <SecretInput
@@ -363,8 +357,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
 
           {step === 2 && <>
             <div>
-              <h2 className="text-lg font-semibold text-[var(--color-fg)]">需要离线使用？</h2>
-              <p className="mt-2 text-sm leading-6 text-[var(--color-fg-muted)]">离线模型是独立的 .sayit 模型包，不随安装程序下载。现在可以安装，也可以以后再做。</p>
+              <h2 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content="离线使用需要另行下载安装 .sayit 模型包，也可以稍后安装。">需要离线使用？</HelpLabel></h2>
             </div>
             <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)]">
               {[
@@ -374,7 +367,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
               ].map(([number, title, description], index) => (
                 <div key={number} className={`flex items-start gap-3 px-4 py-3 ${index ? "border-t border-[var(--color-line)]" : ""}`}>
                   <span className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-pill)] bg-[var(--accent-soft)] text-xs font-semibold text-[var(--color-accent-light)]">{number}</span>
-                  <div><p className="text-sm font-medium text-[var(--color-fg)]">{title}</p><p className="mt-0.5 text-xs leading-5 text-[var(--color-fg-subtle)]">{description}</p></div>
+                  <div><p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></p></div>
                 </div>
               ))}
             </div>

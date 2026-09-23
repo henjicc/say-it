@@ -165,9 +165,8 @@ export function PluginManagerPanel() {
   };
 
   return (
-    <SettingsSection title="插件管理">
+    <SettingsSection title="插件管理" description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-        <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理供应商插件与本地模型包；安装并启用后，对应模型会自动出现在各场景的模型下拉框。</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
           <Button size="sm" disabled={scanning} onClick={() => void reload()}>

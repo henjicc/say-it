@@ -158,7 +158,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const feature = prefs[action];
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
   const title = action === "translateSpeech" ? "语音翻译" : action === "editSelection" ? "选区编辑" : "语音问答";
-  const description = action === "translateSpeech" ? "说出内容并翻译后注入当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；目标或选区变化时不会覆盖。" : "携带当前选区提问，结果显示在独立回答窗。";
+  const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
 
   useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => setMessage(`读取设置失败：${String(error)}`)); }, []);
   const save = async (next: AssistantPrefs) => {
@@ -216,15 +216,14 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
     try {
       await cmd(CMD.updateAppSettings, { domain: "assistant", value: prefs });
       setPreviewResult(await cmd<string>(CMD.previewAssistant, { action, selectedText: action === "translateSpeech" ? "" : previewSelection, spokenText: previewInstruction }));
-      setMessage("试运行完成；不会注入或写入历史。");
+      setMessage("试运行完成，不会输入到其他软件或保存到历史。");
     } catch (error) { setMessage(`试运行失败：${String(error)}`); } finally { setPreviewing(false); }
   };
   const selectedModel = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
   const defaultProfile = profiles.find((item) => item.id === defaults.llm);
 
   return <div className="flex flex-col gap-8">
-    <SettingsSection title={title} right={<Button size="sm" onClick={() => useUiStore.setState({ view: "settings", settingsTab: "keys" })}>配置快捷键<ArrowRight className="h-3.5 w-3.5" /></Button>}>
-      <p className="max-w-[78ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">{description}</p>
+    <SettingsSection title={title} description={description} right={<Button size="sm" onClick={() => useUiStore.setState({ view: "settings", settingsTab: "keys" })}>配置快捷键<ArrowRight className="h-3.5 w-3.5" /></Button>}>
       <FormGrid>
         {action === "translateSpeech" && <>
           <Field label="翻译引擎"><Select value={prefs.translationEngine} onChange={(event) => void save({ ...prefs, translationEngine: event.target.value as AssistantPrefs["translationEngine"] })}><option value="llm">大语言模型（支持模板）</option><option value="dedicated">专用翻译模型（低延迟）</option></Select></Field>
@@ -235,12 +234,11 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
       </FormGrid>
     </SettingsSection>
 
-    <SettingsSection title="任务模板" right={<div className="flex gap-2"><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></div>}>
-      {action === "translateSpeech" && prefs.translationEngine === "dedicated" && <p className="text-xs text-[var(--color-fg-subtle)]">专用翻译模型不使用任务模板；切回大语言模型后当前模板会继续生效。</p>}
+    <SettingsSection title="任务模板" description={action === "translateSpeech" && prefs.translationEngine === "dedicated" ? "专用翻译模型不使用模板；切回智能模型后，当前模板会继续生效。" : undefined} right={<div className="flex gap-2"><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></div>}>
       <FormGrid>
         <Field label="当前模板"><Select value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
         <Field label="模板名称"><Input value={active?.name ?? ""} maxLength={80} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.currentTarget.value } : item) } })} /></Field>
-        <Field label="任务提示词" className="sm:col-span-2" hint="协议、安全和结构化输出规则由应用保护，此处只控制任务效果。"><Textarea rows={8} value={active?.prompt ?? ""} maxLength={12000} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.currentTarget.value } : item) } })} /></Field>
+        <Field label="任务提示词" className="sm:col-span-2" hint="写下你希望如何处理文字，例如语气、语言和篇幅。"><Textarea rows={8} value={active?.prompt ?? ""} maxLength={12000} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.currentTarget.value } : item) } })} /></Field>
       </FormGrid>
       <div className="flex items-center gap-3"><Button size="sm" variant="danger" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除当前模板</Button><span className="text-xs text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span></div>
       {feature.templateTrash.length > 0 && <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3"><p className="mb-2 text-xs font-medium text-[var(--color-fg-muted)]">模板回收站</p>{feature.templateTrash.map((entry) => <div key={entry.recoveryId} className="flex items-center justify-between border-t border-[var(--color-line)] py-2 first:border-0"><span className="text-xs text-[var(--color-fg-subtle)]">{entry.template.name}</span><Button size="sm" variant="ghost" onClick={() => restore(entry)}><ArchiveRestore className="h-3.5 w-3.5" />恢复</Button></div>)}</div>}
@@ -251,7 +249,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
         {action !== "translateSpeech" && <Field label={action === "ask" ? "模拟选区（可留空）" : "模拟选中文本"} className="sm:col-span-2"><Textarea rows={4} value={previewSelection} onChange={(event) => setPreviewSelection(event.target.value)} /></Field>}
         <Field label={action === "translateSpeech" ? "模拟口述内容" : action === "ask" ? "模拟问题" : "模拟语音指令"} className="sm:col-span-2"><Textarea rows={3} value={previewInstruction} onChange={(event) => setPreviewInstruction(event.target.value)} /></Field>
       </FormGrid>
-      <div className="flex items-center gap-3"><Button variant="primary" disabled={previewing || !previewInstruction.trim()} onClick={() => void runPreview()}>{previewing ? "正在调用模型…" : "运行测试"}</Button><span className="text-xs text-[var(--color-fg-subtle)]">真实请求可能产生供应商用量。</span></div>
+      <div className="flex items-center gap-3"><Button variant="primary" disabled={previewing || !previewInstruction.trim()} onClick={() => void runPreview()}>{previewing ? "正在调用模型…" : "运行测试"}</Button><span className="text-xs text-[var(--color-fg-subtle)]">试运行可能产生服务费用。</span></div>
       {previewResult && <Field label="模型结果"><Textarea rows={7} readOnly value={previewResult} /></Field>}
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       {dialog}

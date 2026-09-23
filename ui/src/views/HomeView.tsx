@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Clock3, Languages, Mic, Sparkles, TextCursorInput, WandSparkles } from "lucide-react";
 import { Field } from "@/components/ui/Field";
@@ -90,7 +91,7 @@ export function HomeView() {
         {visibleShortcuts.map((item) => {
           const key = itemKey(item) as keyof typeof actionMeta; const meta = actionMeta[key]; const Icon = meta.icon;
           return <div key={shortcutTargetKey(item.target)} className="grid items-center gap-4 border-b border-[var(--color-line)] px-4 py-3 last:border-0 md:grid-cols-[minmax(0,1fr)_minmax(380px,0.9fr)]">
-            <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] bg-[var(--accent-soft)] text-[var(--color-accent-light)]"><Icon className="h-4.5 w-4.5" /></span><div><p className="text-sm font-medium text-[var(--color-fg)]">{meta.title}</p><p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">{meta.description}</p></div></div>
+            <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-[var(--radius-md)] bg-[var(--accent-soft)] text-[var(--color-accent-light)]"><Icon className="h-4.5 w-4.5" /></span><div><p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={meta.description}>{meta.title}</HelpLabel></p></div></div>
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_130px]">
               <ShortcutRecorder value={item} disabled={Boolean(busy)} ariaLabel={`${meta.title}快捷键`} onChange={(next) => void changeShortcut(item, next)} />
               {item.triggerModeEditable ? <Select value={item.triggerMode} disabled={Boolean(busy)} aria-label={`${meta.title}触发方式`} onChange={(event) => void changeTrigger(item, event.target.value as ShortcutTriggerMode)}><option value="toggle">单击切换</option><option value="pressHold">按住说话</option></Select> : null}
@@ -124,7 +125,7 @@ export function HomeView() {
       </div>
     </SettingsSection>
 
-    <SettingsSection title="本地累计使用">
+    <SettingsSection title="本地累计使用" description="只统计次数、字数和时长，不保存正文或音频。节省时间按每分钟输入 40 个汉字或 40 个英文单词估算。">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
           { label: "成功操作", value: usage.successfulActions.toLocaleString(), suffix: "次", icon: CheckCircle2 },
@@ -133,7 +134,6 @@ export function HomeView() {
           { label: "估算节省", value: formatDuration(usage.estimatedTimeSavedMs), suffix: "", icon: Clock3 },
         ].map((item) => <div key={item.label} className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-4"><item.icon className="h-4 w-4 text-[var(--color-accent-light)]" /><p className="mt-4 text-2xl font-semibold text-[var(--color-fg)]">{item.value}<span className="ml-1 text-xs font-normal text-[var(--color-fg-subtle)]">{item.suffix}</span></p><p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{item.label}</p></div>)}
       </div>
-      <p className="text-xs text-[var(--color-fg-faint)]">仅保存聚合数字，不保存正文或音频。节省时间按中文 40 字/分钟、英文 40 词/分钟估算。</p>
     </SettingsSection>
     {message && <p role="status" className="text-xs text-[var(--color-err)]">{message}</p>}
   </div>;

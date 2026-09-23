@@ -326,8 +326,7 @@ export function HistoryView() {
           </div>
         )}
       </SettingsSection>
-      <SettingsSection title="查找记录">
-        <p className="text-xs text-[var(--color-fg-subtle)]">按正文、应用、结果和任务类型筛选。</p>
+      <SettingsSection title="查找记录" description="按文字内容、软件、处理结果和任务类型筛选。">
         <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_180px_180px]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-fg-faint)]" aria-hidden />

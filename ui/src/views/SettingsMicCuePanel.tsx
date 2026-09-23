@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useRef } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
@@ -137,10 +138,7 @@ export function SettingsMicCuePanel() {
       <SettingsSection title="提示音">
         <div className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-[var(--color-fg)]">启用音频提示</p>
-            <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              语音输入开始与结束时播放提示音。
-            </p>
+            <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="开始和结束语音输入时播放提示音。">启用音频提示</HelpLabel></p>
           </div>
           <Switch checked={prefs.cueEnabled} onChange={(v) => patch({ cueEnabled: v })} label="启用音频提示" />
         </div>

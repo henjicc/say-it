@@ -1,3 +1,4 @@
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -223,11 +224,7 @@ export function SettingsKeyBindingsPanel() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SettingsSection title="集中管理">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          在这里修改或清除所有已绑定的快捷键。处理方式、模板和方案启用状态请前往对应功能页面调整。
-        </p>
-      </SettingsSection>
+      <SectionHeader title="集中管理" description="在这里修改或清除快捷键。需要调整处理方式、模板或启用状态时，请前往对应功能页面。" />
       {renderGroup("语音输入", groups.dictation)}
       {renderGroup("智能助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}

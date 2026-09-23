@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -35,8 +36,7 @@ function ToggleRow({
   return (
     <div className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-[var(--color-fg)]">{title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">{description}</p>
+        <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></p>
       </div>
       <Switch checked={checked} onChange={onChange} disabled={disabled} label={title} />
     </div>
@@ -104,10 +104,7 @@ function DataRootSection() {
     <SettingsSection title="数据目录">
       <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-[var(--color-fg)]">存储位置</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            设置、插件和模型统一保存在此目录；更改位置会把全部数据迁移过去，完成后需要重启生效。
-          </p>
+          <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="设置、插件和模型保存在这个文件夹。更改位置会搬移全部数据，完成后重启生效。">存储位置</HelpLabel></p>
           <p className="mt-1.5 break-all font-mono text-xs text-[var(--color-fg-subtle)]">
             {status ? status.configuredRoot : "读取中…"}
           </p>

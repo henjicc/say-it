@@ -430,7 +430,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
         {(!isPlugin || secretField) && <Field
           label={secretField?.label ?? "API Key"}
           controlId={`llm-api-key-${profile.id}`}
-          hint={apiKeyUrl ? (
+          actions={apiKeyUrl ? (
             <ApiKeyLink
               url={apiKeyUrl}
               label="点击此处获取 API Key"
@@ -453,7 +453,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
         {isCustom && (
           <Field
             label="接口地址"
-            hint="OpenAI 兼容接口的基础地址，例如 https://example.com/v1/"
+            hint="填写服务商提供的服务地址（需支持 OpenAI 格式），例如 https://example.com/v1/"
           >
             <Input
               value={endpoint}
@@ -558,7 +558,7 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
 
       <Modal open={manualModalOpen} onClose={() => setManualModalOpen(false)} title="手动添加模型" className="max-w-md">
         <div className="flex flex-col gap-4 p-5">
-          <Field label="模型名称" hint="填写供应商接受的完整模型 ID">
+          <Field label="模型名称" hint="填写服务商提供的完整模型名称">
             <Input
               value={manualName}
               placeholder="例如 qwen/qwen3.8-27b"
@@ -658,10 +658,7 @@ export function SettingsLlmPanel() {
   ) : undefined;
 
   return (
-    <SettingsSection title="大语言模型">
-      <p className="text-xs text-[var(--color-fg-subtle)]">
-        API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。
-      </p>
+    <SettingsSection title="大语言模型" description="密钥会加密保存在这台电脑上。">
       <Field
         label="默认模型供应商"
         controlId="default-llm-provider"
@@ -696,11 +693,11 @@ export function SettingsLlmPanel() {
             </Select>
           </Field>
           {adapter === "custom" && (
-            <Field label="接口地址" hint="OpenAI 兼容接口的基础地址">
+            <Field label="接口地址" hint="填写服务商提供的服务地址（需支持 OpenAI 格式）">
               <Input value={endpoint} placeholder="https://example.com/v1/" onChange={(event) => setEndpoint(event.target.value)} />
             </Field>
           )}
-          <Field label="API Key（必填）" controlId="new-llm-api-key" hint={apiKeyHint}>
+          <Field label="API Key（必填）" controlId="new-llm-api-key" actions={apiKeyHint}>
             <SecretInput
               id="new-llm-api-key"
               required

@@ -1,3 +1,4 @@
+import { HelpLabel, Tooltip } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -169,19 +170,20 @@ export function FileCard(props: {
   statusTone: FileCardStatusTone;
   statusText: string;
   errorMessage?: string;
-  /** 状态行下方的补充说明（保存提示、参数说明等）。 */
+  /** 保持可见的保存反馈。 */
   hint?: React.ReactNode;
+  description?: React.ReactNode;
   /** 右下角主操作（开始识别 / 取消 / 去设置 API Key 等）。 */
   actions?: React.ReactNode;
 }) {
-  const { file, dragActive, disabled, pickState, message, onPick, statusTone, statusText, errorMessage, hint, actions } = props;
+  const { file, dragActive, disabled, pickState, message, onPick, statusTone, statusText, errorMessage, hint, description, actions } = props;
   const validationMessage = file ? validateFile(file) : "";
   const running = statusTone === "running";
 
   if (!file) {
     return (
       <div className="flex flex-col gap-2">
-        <button
+        <Tooltip content="支持 mp3、wav、m4a、mp4、flac、ogg、webm 等常见格式，单个文件最大 2GB。"><button
           type="button"
           onClick={onPick}
           disabled={disabled}
@@ -200,10 +202,7 @@ export function FileCard(props: {
           <span className="mt-3 text-base font-medium text-[var(--color-fg)]">
             {pickState === "loading" ? "正在读取文件信息…" : "选择或拖放音视频文件"}
           </span>
-          <span className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            支持 mp3、wav、m4a、mp4、flac、ogg、webm 等常见格式，单文件最大 2GB。
-          </span>
-        </button>
+        </button></Tooltip>
         {message && <p className="text-sm text-[var(--color-err)]">{message}</p>}
       </div>
     );
@@ -252,7 +251,7 @@ export function FileCard(props: {
       <div className="flex flex-wrap items-center gap-3 border-t border-[var(--color-line)] px-4 py-3">
         <span className={cn("h-2 w-2 flex-none rounded-full", statusDotClass[statusTone])} aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className={cn("text-sm", statusTextClass[statusTone])}>{statusText}</p>
+          <p className={cn("text-sm", statusTextClass[statusTone])}><HelpLabel content={description}>{statusText}</HelpLabel></p>
           {errorMessage && <p className="mt-0.5 text-xs text-[var(--color-err)]">{errorMessage}</p>}
           {hint && <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">{hint}</p>}
         </div>

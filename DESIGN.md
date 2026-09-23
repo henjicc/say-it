@@ -150,7 +150,7 @@ components:
 ### Inputs / Fields
 
 - **Style:** Input、Select 与同排 Button 标准高度统一为 44px，紧凑规格统一为 34px。
-- **Actions:** 字段操作必须通过 `Field.actions` 布局；hint 独占控件下一行。
+- **Actions:** 字段操作必须通过 `Field.actions` 布局；说明使用 Tooltip，直接悬停控件或标签约 500ms 后显示，不添加问号图标；支持键盘聚焦和 Esc 关闭。错误与风险信息通过 message 放在控件下一行。
 - **Focus:** 使用统一强调边框和可见焦点。
 - **Secrets:** 持久化密钥使用 `SecretInput`，掩码只是展示状态，不进入输入值。
 
