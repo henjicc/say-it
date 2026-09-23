@@ -12,6 +12,13 @@ use ebur128::{EbuR128, Mode};
 use nnnoiseless::DenoiseState;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod stream_reference;
+#[cfg(test)]
+mod stream_tests;
+#[cfg(all(test, windows))]
+mod performance_tests;
+
 const FRAME: usize = 480; // 48kHz 下 10ms
 const RATE_48K: u32 = 48_000;
 const RATE_16K: u32 = 16_000;
@@ -390,7 +397,11 @@ pub struct StreamDsp {
     rs_prev: f32,
     rs_init: bool,
     rs_in_idx: u64,
-    buf48: Vec<f32>,
+    // 只积累当前 10ms 帧；输入包再大也不扩展处理工作区。
+    buf48: [f32; FRAME],
+    filled48: usize,
+    denoise_input: [f32; FRAME],
+    denoise_output: [f32; FRAME],
     // 48k→16k 三抽一盒式平均状态。
     dec_acc: f32,
     dec_cnt: u32,
@@ -435,129 +446,150 @@ impl StreamDsp {
             rs_prev: 0.0,
             rs_init: false,
             rs_in_idx: 0,
-            buf48: Vec::new(),
+            buf48: [0.0; FRAME],
+            filled48: 0,
+            denoise_input: [0.0; FRAME],
+            denoise_output: [0.0; FRAME],
             dec_acc: 0.0,
             dec_cnt: 0,
             peak_lin,
         }
     }
 
-    fn resample_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        if self.in_rate == RATE_48K {
-            out.extend_from_slice(input);
-            return;
+    /// 输入麦克风原始 f32，输出 16k PCM16；不足一帧留到下次调用，不补零。
+    pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
+        if input.is_empty() {
+            return Vec::new();
         }
-        for &x in input {
-            if !self.rs_init {
-                self.rs_init = true;
+        // 只为本次返回的 PCM 预留空间；估计值不参与重采样或输出长度计算。
+        let estimated48 = if self.in_rate == RATE_48K {
+            input.len()
+        } else {
+            (input.len() as f64 * RATE_48K as f64 / self.in_rate as f64).ceil() as usize
+        };
+        let frames = estimated48.saturating_add(self.filled48) / FRAME;
+        let mut bytes = Vec::with_capacity(frames.saturating_mul(FRAME / 3 * 2));
+        if self.in_rate == RATE_48K {
+            let mut remaining = input;
+            while !remaining.is_empty() {
+                let count = remaining.len().min(FRAME - self.filled48);
+                self.buf48[self.filled48..self.filled48 + count]
+                    .copy_from_slice(&remaining[..count]);
+                self.filled48 += count;
+                remaining = &remaining[count..];
+                if self.filled48 == FRAME {
+                    self.process_frame(&mut bytes);
+                    self.filled48 = 0;
+                }
+            }
+        } else {
+            // 保留原实现的累计位置和运算顺序，改变分包不能改变插值相位。
+            for &x in input {
+                if !self.rs_init {
+                    self.rs_init = true;
+                    self.rs_prev = x;
+                    self.rs_in_idx = 1;
+                    self.rs_t = self.rs_step;
+                    self.push_resampled(x, &mut bytes);
+                    continue;
+                }
+                let cur = self.rs_in_idx as f64;
+                while self.rs_t <= cur {
+                    let frac = (self.rs_t - (cur - 1.0)) as f32;
+                    self.push_resampled(self.rs_prev + (x - self.rs_prev) * frac, &mut bytes);
+                    self.rs_t += self.rs_step;
+                }
                 self.rs_prev = x;
-                self.rs_in_idx = 1;
-                self.rs_t = self.rs_step;
-                out.push(x); // 第一帧对齐到输入起点
-                continue;
+                self.rs_in_idx += 1;
             }
-            let cur = self.rs_in_idx as f64;
-            while self.rs_t <= cur {
-                let frac = (self.rs_t - (cur - 1.0)) as f32;
-                out.push(self.rs_prev + (x - self.rs_prev) * frac);
-                self.rs_t += self.rs_step;
-            }
-            self.rs_prev = x;
-            self.rs_in_idx += 1;
+        }
+        bytes
+    }
+
+    #[inline]
+    fn push_resampled(&mut self, sample: f32, bytes: &mut Vec<u8>) {
+        self.buf48[self.filled48] = sample;
+        self.filled48 += 1;
+        if self.filled48 == FRAME {
+            self.process_frame(bytes);
+            self.filled48 = 0;
         }
     }
 
-    /// 输入麦克风原始 f32（in_rate，[-1,1]），输出 16k PCM16 小端字节（可能为空，凑够一帧才出）。
-    pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
-        let mut resampled = Vec::new();
-        self.resample_into(input, &mut resampled);
-        self.buf48.append(&mut resampled);
-
-        let mut out16: Vec<f32> = Vec::new();
-        let mut inf = [0f32; FRAME];
-        let mut outf = [0f32; FRAME];
-        let mut wet = [0f32; FRAME];
-
-        while self.buf48.len() >= FRAME {
-            let strength = self.params.denoise_strength;
-            let mut vadg = 1.0f32;
-            if self.params.denoise_enabled {
-                for j in 0..FRAME {
-                    inf[j] = self.buf48[j] * 32768.0;
-                }
-                let vad = self.denoise.process_frame(&mut outf, &inf);
-                if self.params.vad_gate > 0.0 && vad < self.params.vad_gate {
-                    vadg = 0.0;
-                }
-                for j in 0..FRAME {
-                    let w = outf[j] / 32768.0;
-                    let dry = self.buf48[j];
-                    wet[j] = (dry * (1.0 - strength) + w * strength) * vadg;
-                }
-            } else {
-                wet[..FRAME].copy_from_slice(&self.buf48[..FRAME]);
-            }
-            self.eq.process_slice(&mut wet);
-
-            // 用降噪后的动量响度驱动自适应增益。
-            // ebur128 的 momentary loudness 需要一小段历史；如果暂时拿不到，使用当前
-            // RNNoise 帧的 RMS 作为保守 fallback，避免远麦克风开头一直不被增益拉起。
-            let _ = self.meter.add_frames_f32(&wet);
-            let meter_lufs = self
-                .meter
-                .loudness_momentary()
-                .ok()
-                .map(|v| v as f32)
-                .filter(|v| v.is_finite())
-                .unwrap_or(f32::NEG_INFINITY);
-            let frame_lufs = lin_to_db(rms(&wet));
-            let m = if meter_lufs > SILENCE_LUFS {
-                meter_lufs
-            } else {
-                frame_lufs
-            };
-
-            let desired = if m > SILENCE_LUFS {
-                let mut gdb = self.params.target_lufs - m;
-                if gdb > self.params.max_gain_db {
-                    gdb = self.params.max_gain_db;
-                }
-                if gdb < -12.0 {
-                    gdb = -12.0;
-                }
-                db_to_lin(gdb)
-            } else {
-                self.gain
-            };
-            let coeff = gain_smoothing_coeff(desired, self.gain);
-            self.gain += (desired - self.gain) * coeff;
-
+    fn process_frame(&mut self, bytes: &mut Vec<u8>) {
+        debug_assert_eq!(self.filled48, FRAME);
+        if self.params.denoise_enabled {
             for j in 0..FRAME {
-                let mut s = wet[j] * self.gain;
-                if s > self.peak_lin {
-                    s = self.peak_lin;
-                } else if s < -self.peak_lin {
-                    s = -self.peak_lin;
-                }
-                self.dec_acc += s;
-                self.dec_cnt += 1;
-                if self.dec_cnt == 3 {
-                    out16.push(self.dec_acc / 3.0);
-                    self.dec_acc = 0.0;
-                    self.dec_cnt = 0;
-                }
+                self.denoise_input[j] = self.buf48[j] * 32768.0;
             }
-
-            self.buf48.drain(0..FRAME);
+            let vad = self
+                .denoise
+                .process_frame(&mut self.denoise_output, &self.denoise_input);
+            let vadg = if self.params.vad_gate > 0.0 && vad < self.params.vad_gate {
+                0.0
+            } else {
+                1.0
+            };
+            let strength = self.params.denoise_strength;
+            for j in 0..FRAME {
+                let wet = self.denoise_output[j] / 32768.0;
+                let dry = self.buf48[j];
+                self.buf48[j] = (dry * (1.0 - strength) + wet * strength) * vadg;
+            }
         }
+        self.eq.process_slice(&mut self.buf48);
 
-        let mut bytes = Vec::with_capacity(out16.len() * 2);
-        for &s in &out16 {
-            let c = s.clamp(-1.0, 1.0);
-            let v = (if c < 0.0 { c * 32768.0 } else { c * 32767.0 }) as i16;
-            bytes.extend_from_slice(&v.to_le_bytes());
+        // 动量响度和每帧 RMS 回退、增益平滑的顺序保持不变。
+        let _ = self.meter.add_frames_f32(&self.buf48);
+        let meter_lufs = self
+            .meter
+            .loudness_momentary()
+            .ok()
+            .map(|v| v as f32)
+            .filter(|v| v.is_finite())
+            .unwrap_or(f32::NEG_INFINITY);
+        let frame_lufs = lin_to_db(rms(&self.buf48));
+        let m = if meter_lufs > SILENCE_LUFS {
+            meter_lufs
+        } else {
+            frame_lufs
+        };
+        let desired = if m > SILENCE_LUFS {
+            let mut gdb = self.params.target_lufs - m;
+            if gdb > self.params.max_gain_db {
+                gdb = self.params.max_gain_db;
+            }
+            if gdb < -12.0 {
+                gdb = -12.0;
+            }
+            db_to_lin(gdb)
+        } else {
+            self.gain
+        };
+        let coeff = gain_smoothing_coeff(desired, self.gain);
+        self.gain += (desired - self.gain) * coeff;
+
+        for &wet in &self.buf48 {
+            let mut sample = wet * self.gain;
+            if sample > self.peak_lin {
+                sample = self.peak_lin;
+            } else if sample < -self.peak_lin {
+                sample = -self.peak_lin;
+            }
+            self.dec_acc += sample;
+            self.dec_cnt += 1;
+            if self.dec_cnt == 3 {
+                let value = (self.dec_acc / 3.0).clamp(-1.0, 1.0);
+                let pcm = (if value < 0.0 {
+                    value * 32768.0
+                } else {
+                    value * 32767.0
+                }) as i16;
+                bytes.extend_from_slice(&pcm.to_le_bytes());
+                self.dec_acc = 0.0;
+                self.dec_cnt = 0;
+            }
         }
-        bytes
     }
 }
 

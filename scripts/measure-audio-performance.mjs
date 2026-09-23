@@ -13,15 +13,23 @@ const { values } = parseArgs({ options: {
   runs: { type: "string", default: "3" },
   denoise: { type: "boolean", default: false },
   scenario: { type: "string", default: "audio-lab" },
+  "packet-size": { type: "string", default: "4096" },
+  "sample-rate": { type: "string", default: "48000" },
 } });
 if (!values.executable || !values.output) {
   throw new Error("必须指定 --executable 测试程序和 --output 结果文件");
 }
 const seconds = Number(values.seconds);
 const runs = Number(values.runs);
+const packetSize = Number(values["packet-size"]);
+const sampleRate = Number(values["sample-rate"]);
 if (!Number.isInteger(seconds) || seconds < 1 || seconds > 1800
     || !Number.isInteger(runs) || runs < 1 || runs > 20) {
   throw new Error("seconds 必须是 1～1800 的整数，runs 必须是 1～20 的整数");
+}
+if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
+    || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 192_000) {
+  throw new Error("packet-size 必须为 1～2880000，sample-rate 必须为 8000～192000");
 }
 const executable = resolve(values.executable);
 const testNames = {
@@ -29,9 +37,10 @@ const testNames = {
   decode: "audio_prep::performance_tests::file_decode_memory_profile",
   "wav-export": "application::compare::performance_tests::wav_export_memory_profile",
   "compare-recording": "application::compare::performance_tests::realtime_recording_memory_profile",
+  "realtime-dsp": "audio_dsp::performance_tests::realtime_dsp_memory_profile",
 };
 const testName = testNames[values.scenario];
-if (!testName) throw new Error("scenario 必须是 audio-lab、decode、wav-export 或 compare-recording");
+if (!testName) throw new Error(`未知场景，可选：${Object.keys(testNames).join("、")}`);
 const measurements = [];
 for (let run = 0; run < runs; run++) {
   const result = spawnSync(executable, [
@@ -40,6 +49,7 @@ for (let run = 0; run < runs; run++) {
   ], {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
+      SAYIT_PERF_SAMPLE_RATE: String(sampleRate), SAYIT_PERF_PACKET_SIZE: String(packetSize),
       SAYIT_PERF_DENOISE: values.denoise ? "1" : "0" },
   });
   if (result.error) throw result.error;
