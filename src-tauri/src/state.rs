@@ -595,19 +595,3 @@ pub(crate) enum AsrStreamInput {
 pub(crate) struct AsrStreamStartResponse {
     pub(crate) session_id: String,
 }
-
-pub(crate) fn decode_f32_base64(input: &str) -> Result<Vec<f32>, String> {
-    let bytes = STANDARD
-        .decode(input.trim())
-        .map_err(|e| format!("invalid base64 f32 audio: {e}"))?;
-    if bytes.len() % 4 != 0 {
-        return Err(format!(
-            "invalid f32 audio byte length: {} is not divisible by 4",
-            bytes.len()
-        ));
-    }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
-}

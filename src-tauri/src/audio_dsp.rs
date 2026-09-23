@@ -288,10 +288,9 @@ fn integrated_lufs(samples: &[f32]) -> f32 {
     }
 }
 
-/// 对整段 48k 信号做 RNNoise 降噪（含干/湿混合与 VAD 门）。返回 [-1,1] f32。
-fn denoise_all(s48: &[f32], strength: f32, vad_gate: f32) -> Vec<f32> {
+/// 就地处理 48k 信号；每帧先读入独立输入区，保留干/湿混合和尾帧补零语义。
+fn denoise_all(s48: &mut [f32], strength: f32, vad_gate: f32) {
     let mut st = DenoiseState::new();
-    let mut out = vec![0f32; s48.len()];
     let mut inf = [0f32; FRAME];
     let mut outf = [0f32; FRAME];
     let mut i = 0;
@@ -309,33 +308,20 @@ fn denoise_all(s48: &[f32], strength: f32, vad_gate: f32) -> Vec<f32> {
         for j in 0..n {
             let wet = outf[j] / 32768.0;
             let dry = s48[i + j];
-            out[i + j] = (dry * (1.0 - strength) + wet * strength) * g;
+            s48[i + j] = (dry * (1.0 - strength) + wet * strength) * g;
         }
         i += n;
     }
-    out
 }
 
-/// 离线处理结果（供调校台 A/B 试听与读数）。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Rust 内部的离线处理结果。音频所有权直接交给调校会话，不经过 IPC 编码。
 pub struct OfflineResult {
-    /// 处理后 PCM（f32 小端字节，base64）。
-    pub processed_base64: String,
+    pub processed: Vec<f32>,
     pub sample_rate: u32,
     pub in_lufs: f32,
     pub out_lufs: f32,
     pub in_peak_db: f32,
     pub out_peak_db: f32,
-}
-
-fn f32_to_base64(samples: &[f32]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let mut bytes = Vec::with_capacity(samples.len() * 4);
-    for &s in samples {
-        bytes.extend_from_slice(&s.to_le_bytes());
-    }
-    STANDARD.encode(bytes)
 }
 
 fn nan_to_neg(x: f32) -> f32 {
@@ -348,15 +334,14 @@ fn nan_to_neg(x: f32) -> f32 {
 
 /// 离线处理一整段录音：降噪 → 响度归一化到目标 LUFS → 峰值限幅。
 pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> OfflineResult {
-    let s48 = resample_to_48k(input, in_rate);
+    let mut s48 = resample_to_48k(input, in_rate);
     let in_lufs = integrated_lufs(&s48);
     let in_peak_db = lin_to_db(peak(&s48));
 
-    let mut wet = if params.denoise_enabled {
-        denoise_all(&s48, params.denoise_strength, params.vad_gate)
-    } else {
-        s48
-    };
+    if params.denoise_enabled {
+        denoise_all(&mut s48, params.denoise_strength, params.vad_gate);
+    }
+    let mut wet = s48;
     ShelfEq::new(RATE_48K as f32, params.bass_gain_db, params.treble_gain_db)
         .process_slice(&mut wet);
 
@@ -373,16 +358,15 @@ pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> Offli
     let gain = db_to_lin(gain_db);
     let peak_lin = db_to_lin(params.peak_limit_dbfs);
 
-    let out: Vec<f32> = wet
-        .iter()
-        .map(|&x| (x * gain).clamp(-peak_lin, peak_lin))
-        .collect();
+    for sample in &mut wet {
+        *sample = (*sample * gain).clamp(-peak_lin, peak_lin);
+    }
 
-    let out_lufs = integrated_lufs(&out);
-    let out_peak_db = lin_to_db(peak(&out));
+    let out_lufs = integrated_lufs(&wet);
+    let out_peak_db = lin_to_db(peak(&wet));
 
     OfflineResult {
-        processed_base64: f32_to_base64(&out),
+        processed: wet,
         sample_rate: RATE_48K,
         in_lufs: nan_to_neg(in_lufs),
         out_lufs: nan_to_neg(out_lufs),
@@ -579,6 +563,70 @@ impl StreamDsp {
 
 // 16k 是输出采样率常量，导出供主模块在日志里引用（统计时长）。
 pub const OUTPUT_RATE: u32 = RATE_16K;
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    #[test]
+    fn processing_preserves_raw_audio_and_partial_frame_duration() {
+        for rate in [16_000, 44_100, 48_000] {
+            for length in [0, 1, 479, 480, 997] {
+                let input: Vec<f32> = (0..length)
+                    .map(|index| (index % 31) as f32 / 31.0 - 0.5)
+                    .collect();
+                let original = input.clone();
+                let clean = process_offline(&input, rate, &DspParams {
+                    denoise_enabled: false,
+                    ..Default::default()
+                });
+                let dry_mix = process_offline(&input, rate, &DspParams {
+                    denoise_enabled: true,
+                    denoise_strength: 0.0,
+                    vad_gate: 0.0,
+                    ..Default::default()
+                });
+                assert_eq!(input, original, "A/B 试听必须保留原始音频");
+                assert_eq!(clean.sample_rate, RATE_48K);
+                assert_eq!(clean.processed.len(),
+                    (length as f64 * RATE_48K as f64 / rate as f64).round() as usize);
+                assert_eq!(clean.processed, dry_mix.processed,
+                    "干声混合必须保留整帧和补零尾帧的全部样本");
+                assert!(clean.processed.iter().all(|sample| sample.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn silence_stays_silent_with_finite_stats() {
+        let output = process_offline(&[0.0; 997], RATE_48K, &DspParams::default());
+        assert!(output.processed.iter().all(|sample| *sample == 0.0));
+        assert!(output.in_lufs.is_finite());
+        assert!(output.out_lufs.is_finite());
+        assert!(output.in_peak_db.is_finite());
+        assert!(output.out_peak_db.is_finite());
+    }
+
+    /// 固定信号的全量输出取自优化前的 Windows x64 release 程序；
+    /// 同时覆盖降噪开关，防止减少复制时改变样本或处理顺序。
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn output_matches_pre_optimization_reference() {
+        let input: Vec<f32> = (0..144_000)
+            .map(|index| ((index % 480) as f32 / 480.0 - 0.5) * 0.2)
+            .collect();
+        for (denoise, expected) in [(false, 0x39ec222cba68af75), (true, 0x85cb3c851ff27b5c)] {
+            let output = process_offline(&input, RATE_48K, &DspParams {
+                denoise_enabled: denoise,
+                ..Default::default()
+            });
+            let hash = output.processed.iter().fold(0xcbf29ce484222325_u64, |hash, value| {
+                (hash ^ u64::from(value.to_bits())).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(hash, expected, "降噪开关：{denoise}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod gain_tests {
