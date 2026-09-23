@@ -257,7 +257,28 @@ pub(crate) fn show_dictation_indicator_error(
         // error 有操作按钮，原生指示器让位给 WebView。
         crate::desktop::native_indicator_hide();
     }
+    // 原生模式下启动时不再预创建指示器 WebView，这里很可能是首次创建：
+    // 前端脚本加载、事件监听注册需要时间，立即 emit 的状态会全部丢进虚空，
+    // 错误面板挂载着却永远停在 hidden。新建时延迟重发一次（emit 幂等，
+    // 已就绪的窗口重复应用同一状态无副作用）。
+    let fresh = app.get_webview_window(DICTATION_INDICATOR_LABEL).is_none();
     let window = ensure_indicator_window(app)?;
+    if fresh {
+        let app = app.clone();
+        let message = message.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) else {
+                return;
+            };
+            let _ = window.emit("dictation-indicator-config", json!({ "mode": "dictation" }));
+            let _ = window.emit(
+                "dictation-indicator-error",
+                json!({ "message": message, "canUseRawText": can_use_raw_text }),
+            );
+            let _ = window.emit("dictation-indicator-state", json!({ "state": "error" }));
+        });
+    }
     place_indicator_window(
         &window,
         DEFAULT_INDICATOR_WIDTH,

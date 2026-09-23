@@ -139,8 +139,9 @@ mod imp {
     // 与 indicator.rs 的 DEFAULT_INDICATOR_WIDTH/HEIGHT 保持一致。
     const LOGICAL_WIDTH: f32 = 460.0;
     const LOGICAL_HEIGHT: f32 = 188.0;
-    // 距主显示器工作区底边的逻辑像素，与非 macOS 的 DICTATION_INDICATOR_OFFSET_Y 一致。
-    const OFFSET_Y: f32 = 36.0;
+    // 距主显示器工作区底边的逻辑像素。窗口底部自带 24px 透明内边距，
+    // -12 让可见内容最终停在任务栏上方约 12px（与 macOS 相对 Dock 的取值同理）。
+    const OFFSET_Y: f32 = -12.0;
 
     // 以下几何与 indicator.css 的 dictation-mode 一一对应。
     const WRAP_PADDING_BOTTOM: f32 = 24.0;
@@ -322,12 +323,21 @@ mod imp {
                 Command::SetText { text, fade } => {
                     // 与 IndicatorApp 的 fresh 淡入一致：只有短追加（≤10 字符）
                     // 或显式 fade（swapText）才淡入，其余直接替换。
+                    // 纯追加（新文本以旧文本为前缀）才淡入新增部分；
+                    // API 修正旧内容时公共前缀变短，此时直接替换不播动画，
+                    // 否则每次修正都会带一次闪烁。
                     let fresh_from = if fade {
                         0
+                    } else if text.starts_with(&self.view.text) {
+                        self.view.text.chars().count()
                     } else {
-                        common_prefix_chars(&self.view.text, &text)
+                        usize::MAX // 修订：不播淡入
                     };
-                    let fresh_len = text.chars().count().saturating_sub(fresh_from);
+                    let fresh_len = if fresh_from == usize::MAX {
+                        usize::MAX
+                    } else {
+                        text.chars().count().saturating_sub(fresh_from)
+                    };
                     self.view.fresh_from = fresh_from;
                     self.view.fresh_started = (fresh_len > 0
                         && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS)
@@ -539,7 +549,7 @@ mod imp {
                 rect,
                 TEXT_RADIUS,
                 rgba(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.96),
-                rgba(1.0, 1.0, 1.0, 0.08),
+                rgba(1.0, 1.0, 1.0, 0.16),
             );
             let wide: Vec<u16> = self.text.encode_utf16().collect();
             let inner_w = TEXT_W - TEXT_PAD * 2.0;
@@ -620,7 +630,7 @@ mod imp {
                 rect,
                 PILL_RADIUS,
                 rgba(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94),
-                rgba(1.0, 1.0, 1.0, 0.08),
+                rgba(1.0, 1.0, 1.0, 0.16),
             );
             if state == NativeState::Recording && self.wave_active {
                 self.draw_waveform(target, brush, rect);

@@ -63,8 +63,16 @@ GPU 驱动 DLL 一目了然。
 `LayeredSurface::render` 里固定顺序：先 `ShowWindow(SW_SHOWNOACTIVATE)`（仅首次），
 再 ULW 提交内容。
 
-## 屏幕截图验证的坐标系陷阱
+## 按需创建的 WebView 不能立即 emit
 
+听写指示器原生化后不再在启动时预创建 WebView。错误面板等路径改为用时才
+`ensure_indicator_window` 创建——但**窗口刚创建时前端脚本还没加载、事件监听还没注册，
+紧跟其后的 emit 全部丢失**，错误面板挂着却永远停在 hidden，用户看到的就是
+"识别完啥也没干"。修复：检测窗口是新建的时，500ms 后重发一遍状态（emit 幂等）。
+这与 `play_cue_async` 里"第一次创建悬浮窗给 100ms 注册时间"是同一类问题，
+但 100ms 对首次页面加载不够，新建窗口要给到 500ms。
+
+## 屏幕截图验证的坐标系陷阱
 PowerShell 的 `CopyFromScreen` 坐标空间随调用进程的 DPI 感知上下文变化（同一台
 双 4K@150% 机器上，不同 pwsh 进程分别报告过 3840×2160 和 2560×1440），按它算
 截图区域会截错地方，看起来像"窗口没渲染"。**用 Python PIL `ImageGrab.grab`
