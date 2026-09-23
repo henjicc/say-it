@@ -98,11 +98,43 @@
   --z-titlebar: 100;
   --z-modal: 200;
   --z-portal-popover: 210;
+  --z-tooltip: 220;
+  --tooltip-max-w: 360px;
 
   /* 强调色的柔和背景，用于选中/悬浮态 */
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
   --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.ui-help-label {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+.ui-help-label:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 3px;
+}
+.ui-tooltip {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: min(var(--tooltip-max-w), calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--theme-overlay);
+  color: var(--color-fg);
+  box-shadow: var(--shadow-popover);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.65;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 [data-settings-search-hit="true"] {

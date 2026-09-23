@@ -373,7 +373,7 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
           bodyClassName={NESTED_BODY_CLASS}
         >
           <div>
-            <p className="text-xs text-[var(--color-fg-subtle)]">语种提示（language_hints）</p>
+            <p className="text-xs text-[var(--color-fg-subtle)]">语种提示</p>
             <div className="mt-1.5 flex gap-4">
               {[
                 { value: "zh", label: "中文" },
@@ -484,12 +484,7 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
   const rendered = entries.map(renderEntry).filter((entry) => entry !== null);
 
   return (
-    <SettingsSection title={SECTION_TITLES[capability]}>
-      {capability === "asr" && (
-        <p className="text-xs text-[var(--color-fg-subtle)]">
-          API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。
-        </p>
-      )}
+    <SettingsSection title={SECTION_TITLES[capability]} description="密钥会加密保存在这台电脑上。">
       {rendered.length > 0 ? (
         rendered
       ) : (

@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -659,7 +660,7 @@ export function SmartTemplateManager({
     <Modal
       open={open}
       onClose={() => !busy && onClose()}
-      title="模板管理"
+      title={<HelpLabel content="双击模板名称可重命名；拖动右侧手柄可调整顺序，也可以聚焦手柄后按空格键和方向键移动。">模板管理</HelpLabel>}
       className="max-w-[780px]"
     >
       <div className="flex min-h-[560px] flex-col p-5">
@@ -820,9 +821,6 @@ export function SmartTemplateManager({
                 document.body,
               )}
             </DndContext>
-            <p className="pt-3 text-xs text-[var(--color-fg-faint)]">
-              双击模板名称可直接重命名；拖动每行右侧的手柄调整模板顺序。
-            </p>
           </div>
         ) : (
           <div
@@ -898,10 +896,7 @@ export function SmartTemplateManager({
               {trash.length === 0 ? (
                 <div className="flex min-h-[230px] flex-col items-center justify-center px-6 text-center">
                   <Archive className="h-8 w-8 text-[var(--color-fg-faint)]" strokeWidth={1.5} aria-hidden />
-                  <p className="mt-3 text-sm font-medium text-[var(--color-fg-muted)]">回收站为空</p>
-                  <p className="mt-1 max-w-[46ch] text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-                    删除的模板会保留在这里，最多保存最近 {MAX_SMART_TEXT_TEMPLATES} 个。
-                  </p>
+                  <p className="mt-3 text-sm font-medium text-[var(--color-fg-muted)]"><HelpLabel content={`删除的模板会保留在这里，最多保存最近 ${MAX_SMART_TEXT_TEMPLATES} 个。`}>回收站为空</HelpLabel></p>
                 </div>
               ) : trash.map((entry) => {
                 const selected = selectedTrashIds.has(entry.recoveryId);

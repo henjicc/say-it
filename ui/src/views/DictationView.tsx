@@ -52,7 +52,7 @@ export function DictationView() {
     <div className="flex flex-col gap-7">
       <PageHeader
         title="语音输入"
-        description="按快捷键说话，再次按下停止并注入到当前光标位置。"
+        description="按快捷键开始说话，再按一次结束，文字会自动输入到光标位置。"
       />
 
       <Tabs<DictationTabKey>
@@ -73,10 +73,7 @@ export function DictationView() {
         {tab === "apps" && <SceneRulesPanel />}
         {tab === "debug" && (
           <div className="flex flex-col gap-7">
-            <SettingsSection title="当前软件上下文调试">
-              <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-                打开置顶调试窗口后，点击任意其他软件，再按 <kbd className="font-mono text-[var(--color-accent-light)]">{contextDebugShortcutLabel}</kbd>{contextDebugShortcutHint}，即可查看当前提取方式获得的原始内容和最终提示词上下文。调试过程不录音、不调用语音识别或智能处理模型，也不保存捕获内容。
-              </p>
+            <SettingsSection title="当前软件上下文调试" description={`打开预览窗口，切换到要查看的软件，再按 ${contextDebugShortcutLabel}${contextDebugShortcutHint}，即可查看能读取到的文字。预览不会录音、调用智能模型或保存内容。`}>
               <div className="flex flex-wrap items-center gap-3">
                 <Button variant="primary" disabled={contextDebugOpening} onClick={() => void openContextDebug()}>
                   {contextDebugOpening ? "正在打开…" : "打开上下文调试窗口"}
@@ -88,7 +85,7 @@ export function DictationView() {
             </SettingsSection>
             <div>
               <Button variant={recording ? "danger" : "primary"} onClick={toggleDictation}>
-                {recording ? "停止并注入" : "手动开始"}
+                {recording ? "停止并输入" : "手动开始"}
               </Button>
               <p className={cn("mt-2 text-sm", toneClass[statusTone])}>{statusText}</p>
             </div>

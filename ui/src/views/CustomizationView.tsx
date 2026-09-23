@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -101,11 +102,7 @@ function HotwordsTab() {
       <SettingsSection
         title="热词表"
         right={<SyncStatus state={syncState} message={syncMessage} />}
-      >
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          热词用于提升人名、产品名、专业术语的识别准确率。权重越高，模型越倾向于把相近发音识别成该词；
-          不支持权重的供应商会忽略这一列。修改会自动保存，并在停顿后自动同步到需要云端词表的供应商。
-        </p>
+        description="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">
         <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {prefs.hotwords.length === 0 ? (
             <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
@@ -125,7 +122,7 @@ function HotwordsTab() {
                     size="sm" className="flex-1"
                   />
                   <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
-                    权重
+                    <HelpLabel content="数值越高，发音相近时越优先识别成这个词。部分识别服务不支持此设置。">权重</HelpLabel>
                     <NumberInput
                       value={hotword.weight}
                       min={MIN_HOTWORD_WEIGHT}
@@ -161,17 +158,13 @@ function HotwordsTab() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="供应商同步">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          部分供应商要求先把热词表上传到云端再在识别时引用，这一步已自动完成，具体建几份词表、
-          绑定哪个模型由「说吧！」处理。只支持上下文的模型无需词表，直接随请求下发。
-        </p>
+      <SettingsSection title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
         {targets.length === 0 ? (
           <p className="text-xs text-[var(--color-fg-faint)]">当前没有已启用且支持热词的供应商。</p>
         ) : (
           <Field
             label="云端词表"
-            hint="获取会用云端已有的词表覆盖上面的热词列表，上下文模板不受影响。"
+            message="获取会用云端词表替换当前热词列表，上下文模板不受影响。"
             actions={
               <>
                 <Button
@@ -282,16 +275,10 @@ function ContextTab() {
 
   return (
     <div className="flex flex-col gap-8">
-      <SettingsSection title="上下文模板">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          部分模型不接受热词表，而是接受一段上下文文本，靠其中出现的原词来纠正专有名词。
-          上下文完全由这里的模板决定：模板留空就不下发上下文；需要带上热词表时，用
-          <code className="mx-1 text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code>
-          变量引用，不插入变量就不会带热词。
-        </p>
+      <SettingsSection title="上下文模板" description="在这里写下录音中可能出现的人名、术语和背景信息，帮助支持此功能的模型识别。留空则不使用；点击“插入热词”可带上热词表。">
         <Field
           label="模板"
-          hint="上下文按词表匹配生效，需要包含音频里会出现的原词；只写语义描述不会起作用。"
+          hint="请写出录音中会出现的具体人名或术语，只有笼统描述无法帮助纠正这些词。"
         >
           <Textarea
             rows={8}
@@ -308,13 +295,10 @@ function ContextTab() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="实际下发内容">
-        <p className="text-xs text-[var(--color-fg-subtle)]">
-          变量已展开，超出 {MAX_CONTEXT_CHARS} 字符的部分会被截断（供应商侧同样限制）。 当前{" "}
-          {preview.length} / {MAX_CONTEXT_CHARS} 字符。
-        </p>
+      <SettingsSection title="发送内容预览" description={`这里是识别时会使用的背景文字，最多保留 ${MAX_CONTEXT_CHARS} 个字符。`}>
+        <span className="text-xs text-[var(--color-fg-subtle)]">{preview.length} / {MAX_CONTEXT_CHARS} 字符</span>
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2.5 text-xs text-[var(--color-fg-muted)]">
-          {preview || "（空，不会向模型下发上下文）"}
+          {preview || "（未填写，识别时不使用背景文字）"}
         </pre>
       </SettingsSection>
     </div>
@@ -329,7 +313,7 @@ export function CustomizationView() {
     <div className="flex flex-col gap-7">
       <PageHeader
         title="热词与上下文"
-        description="全局维护一份热词与上下文：支持热词的模型收到词表，支持上下文的模型收到渲染后的文本。"
+        description="添加常用词和录音背景，帮助支持此功能的模型更准确地识别。"
       />
 
       <Tabs<CustomizationTabKey>

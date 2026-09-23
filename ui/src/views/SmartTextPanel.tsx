@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
 import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -311,10 +312,7 @@ export function SmartTextPanel() {
           onChange={(value) => void patch({ smartProcessingEnabled: value })}
           label="启用智能处理"
         />}
-      >
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          识别结束后先把文本交给默认大语言模型，再对模型返回的内容执行本地处理，最终注入处理结果。
-        </p>
+        description="语音识别结束后，先用智能模型润色文字，再应用本地替换规则，最后输入到光标位置。">
         <FormGrid>
           <Field label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
             <ModelPicker
@@ -507,11 +505,11 @@ export function SmartTextPanel() {
           label="提取方式"
           hint={prefs.activeAppContextExtractionMethod === "ocr"
             ? isMacOS
-              ? "使用 macOS Vision 识别当前窗口内的可见文字，需要辅助功能与屏幕录制权限。"
+              ? "识别当前窗口截图中的文字，需要允许辅助功能和屏幕录制。"
               : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
             : isMacOS
-              ? "通过 macOS 辅助功能接口读取焦点控件的选区和文本，不需要屏幕录制权限。"
-              : "通过应用文本接口读取相关内容，不加载 OCR 模型，内存占用更低。"}
+              ? "读取当前输入框和选中的文字，需要辅助功能权限，无需屏幕录制权限。"
+              : "直接读取软件提供的文字，不识别截图，占用内存更少。"}
         >
           <Select
             value={prefs.activeAppContextExtractionMethod}
@@ -553,7 +551,7 @@ export function SmartTextPanel() {
                   htmlFor="active-app-context-ocr-follow-smart-min-chars"
                   className="text-xs font-medium text-[var(--color-fg-muted)]"
                 >
-                  OCR 跟随处理时机
+                  <HelpLabel content="只在文字达到智能处理的最少长度时读取屏幕；最少长度为 0 时，每次听写都会读取。">OCR 跟随处理时机</HelpLabel>
                 </label>
                 <Switch
                   id="active-app-context-ocr-follow-smart-min-chars"
@@ -564,9 +562,6 @@ export function SmartTextPanel() {
                   })}
                 />
               </div>
-              <p className="text-xs text-[var(--color-fg-subtle)]">
-                复用命中软件规则后生效的智能处理最少文本长度；最少长度为 0 时每次听写都会执行 OCR。
-              </p>
             </div>}
             {ocrMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{ocrMessage}</p>}
           </>

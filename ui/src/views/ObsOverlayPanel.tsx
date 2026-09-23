@@ -176,10 +176,7 @@ export function ObsOverlayPanel() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SettingsSection title="本地字幕服务">
-        <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          字幕页面仅监听本机，OBS 通过 Browser Source 读取。字体、颜色和背景跟随“字幕样式”；位置、缩放、裁切和层级在 OBS 中调整。
-        </p>
+      <SettingsSection title="本地字幕服务" description="在 OBS 中添加浏览器来源即可显示字幕。字体、颜色和背景跟随“字幕样式”，位置和大小在 OBS 中调整。">
         <FormGrid columns={1}>
           <Field layout="row" label="字幕源 URL">
             <div className="relative">
@@ -193,7 +190,7 @@ export function ObsOverlayPanel() {
         {!overlay.ready && !overlay.error && <p className="text-xs text-[var(--color-fg-subtle)]">本地字幕服务正在启动…</p>}
       </SettingsSection>
 
-      <SettingsSection title="连接 OBS" right={<Button size="sm" variant="primary" onClick={connect} disabled={busy}>连接 OBS</Button>}>
+      <SettingsSection title="连接 OBS" right={<Button size="sm" variant="primary" onClick={connect} disabled={busy}>连接 OBS</Button>} description="安装后，字幕样式会自动同步到 OBS，无需反复更新字幕源。你在 OBS 中调整的位置、缩放和裁切会保留，也可以随时切回桌面字幕。">
         <FormGrid>
           <Field layout="row" label="地址">
             <Input value={host} onChange={(event) => setHost(event.target.value)} placeholder="127.0.0.1" disabled={busy} />
@@ -227,10 +224,6 @@ export function ObsOverlayPanel() {
           </Button>
           <Button variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
         </div>
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          安装后，字幕模式、字号、宽度、行数、翻译布局、颜色和动画会实时同步，无需重复点击“更新字幕源”；在 OBS 中手动调整的位置、缩放、裁切和层级会保留。字幕输出位置可随时用右上角的“输出到桌面 / 输出到 OBS”切换，不会断开连接。
-          {overlay.installed && overlay.sourceName ? ` 当前受管理的源：${overlay.sourceName}。` : ""}
-        </p>
       </SettingsSection>
 
       {(message || error) && (

@@ -1,3 +1,5 @@
+import { Tooltip } from "@/components/ui/Tooltip";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -138,19 +140,14 @@ export function LocalRulesPanel() {
 
   return (
     <div className="flex flex-col gap-8">
-      <SettingsSection
+      <SectionHeader
         title="本地处理"
         right={<Switch
           checked={prefs.localRulesEnabled}
           onChange={(v) => save("保存设置", () => ({ localRulesEnabled: v }))}
           label="启用本地快速处理"
         />}
-      >
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          每条规则按顺序对文本做一次查找替换。点规则名展开编辑，替换内容留空即为删除。
-          规则在独立线程运行并带超时保护，写错正则也不会卡住听写。
-        </p>
-      </SettingsSection>
+        description="按列表顺序查找并替换文字。点击规则名称可编辑；替换内容留空时，会删除匹配到的文字。" />
 
       <div
         className={cn(
@@ -158,10 +155,7 @@ export function LocalRulesPanel() {
           !prefs.localRulesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        <SettingsSection title="查找替换">
-          <p className="text-xs text-[var(--color-fg-subtle)]">
-            按词整体匹配：英文词紧贴中文（无空格）或被空格 / 标点围绕都能识别到。
-          </p>
+        <SettingsSection title="查找替换" description="查找完整单词时，英文紧贴中文或两侧有空格、标点都能匹配。">
           <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
           {findRules.length === 0 && (
             <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无查找替换规则</p>
@@ -235,7 +229,7 @@ export function LocalRulesPanel() {
                     onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })}
                     title={rule.enabled ? "已启用" : "已停用"}
                   />
-                  <button
+                  <Tooltip content={rule.note}><button
                     type="button"
                     onClick={() => setEditingId(open ? null : rule.id)}
                     className={cn(
@@ -254,7 +248,7 @@ export function LocalRulesPanel() {
                         ● 正则错误
                       </span>
                     )}
-                  </button>
+                  </button></Tooltip>
                   <span
                     className={cn(
                       "shrink-0 text-[var(--color-fg-faint)] transition-transform",
@@ -334,7 +328,6 @@ export function LocalRulesPanel() {
                         </IconButton>
                       </div>
                     </div>
-                    {rule.note && <p className="text-[11px] text-[var(--color-fg-subtle)]">{rule.note}</p>}
                   </div>
                 )}
               </div>

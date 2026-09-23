@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/Button";
 import { StatusBar } from "@/components/ui/StatusBar";
@@ -39,10 +40,7 @@ export function SettingsComparePanel() {
 
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-        同一段录音或音频文件，同时喂给多个模型识别，并排比较效果。每个模型各占一格，多个实时模型会同时并发消耗对应的
-        API 调用额度，请留意用量。
-      </p>
+      <div className="text-sm font-medium"><HelpLabel content="用同一段录音或文件比较多个模型的识别效果。每个云端模型都会单独产生用量，请留意费用。">模型对比</HelpLabel></div>
 
       <SourcePicker />
       <ModelGrid />
