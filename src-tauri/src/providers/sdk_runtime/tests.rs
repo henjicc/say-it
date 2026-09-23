@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -747,7 +747,14 @@ export default () => ({
 
     let (cancel_url, cancel_server) = spawn_stalled_http();
     let (cancel_root, cancel_spec, cancel_profile) = fixture(source);
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let (asr_handle, mut asr_input) = crate::state::AsrStreamHandle::channel();
+    for _ in 0..1000 {
+        asr_handle
+            .tx
+            .send(crate::state::AsrStreamInput::RawF32(vec![0.1; 4096]))
+            .unwrap();
+    }
+    let cancelled = asr_input.cancellation_flag();
     let runtime = create_sdk_runtime(
         source,
         cancel_spec,
@@ -758,7 +765,7 @@ export default () => ({
     );
     let trigger = thread::spawn(move || {
         thread::sleep(Duration::from_millis(40));
-        cancelled.store(true, Ordering::Relaxed);
+        asr_handle.stop();
     });
     let error = runtime
         .call(
@@ -770,6 +777,10 @@ export default () => ({
     assert!(error.contains("取消") || error.contains("CANCELLED") || error.contains("interrupted"));
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
     trigger.join().unwrap();
+    assert!(matches!(
+        asr_input.try_recv(),
+        Ok(crate::state::AsrStreamInput::Stop)
+    ));
     cancel_server.join().unwrap();
     std::fs::remove_dir_all(cancel_root).unwrap();
 

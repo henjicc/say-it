@@ -166,7 +166,7 @@ pub(crate) fn stop_asr_stream_inner(session_id: &str, state: &RuntimeState) -> R
         .map_err(|_| "ASR stream lock failed".to_string())?
         .remove(session_id);
     if let Some(handle) = handle {
-        let _ = handle.tx.send(AsrStreamInput::Stop);
+        handle.stop();
     }
     Ok(())
 }

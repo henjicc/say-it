@@ -2,6 +2,7 @@
 
 mod active_app_context;
 mod application;
+mod asr_input;
 mod audio_dsp;
 mod audio_prep;
 mod audio_wav;
