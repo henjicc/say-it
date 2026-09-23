@@ -491,6 +491,17 @@ pub(crate) fn owns_indicator(state: &RuntimeState) -> bool {
         .unwrap_or(false)
 }
 
+/// 字幕会话仍在运行且应该在屏幕上占有字幕条（OBS 接管输出时不占）。
+/// 原生字幕窗用它判断「owner 空缺时文本更新要不要重新亮出字幕条」。
+pub(crate) fn wants_indicator_visible(state: &RuntimeState) -> bool {
+    state
+        .subtitle_runtime
+        .session
+        .lock()
+        .map(|session| !matches!(session.phase, SubtitlePhase::Idle) && !session.obs_active)
+        .unwrap_or(false)
+}
+
 pub(crate) fn domain_snapshot(state: &RuntimeState) -> Result<DomainSnapshot, String> {
     let session = state
         .subtitle_runtime
@@ -1187,17 +1198,37 @@ fn sync_presentation(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "字幕状态锁失败")?
         .prefs
         .clone();
-    let window = crate::desktop::ensure_indicator_window(app)?;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let (monitor_width, monitor_height) = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let size = m.size();
-            (size.width as f64 / scale, size.height as f64 / scale)
-        })
-        .unwrap_or((1920.0, 1080.0));
+    let native_subtitle = crate::desktop::native_subtitle::native_subtitle_enabled();
+    if native_subtitle {
+        crate::desktop::native_subtitle::native_subtitle_attach(app);
+    }
+    // 原生字幕窗固定在主显示器上，直接按主显示器尺寸换算；WebView 模式
+    // 沿用指示窗当前所在显示器的测量。
+    let (monitor_width, monitor_height) = if native_subtitle {
+        app.primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| {
+                let scale = m.scale_factor().max(0.1);
+                (
+                    m.size().width as f64 / scale,
+                    m.size().height as f64 / scale,
+                )
+            })
+            .unwrap_or((1920.0, 1080.0))
+    } else {
+        let window = crate::desktop::ensure_indicator_window(app)?;
+        let scale = window.scale_factor().unwrap_or(1.0);
+        window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .map(|m| {
+                let size = m.size();
+                (size.width as f64 / scale, size.height as f64 / scale)
+            })
+            .unwrap_or((1920.0, 1080.0))
+    };
     let font_size = (monitor_height * prefs.font_size_percent / 100.0).round();
     let width = (monitor_width * prefs.width_percent / 100.0).round();
     let offset_y = (monitor_height * prefs.offset_y_percent / 100.0).round();
@@ -1213,6 +1244,7 @@ fn sync_presentation(app: &AppHandle) -> Result<(), String> {
         0.0
     };
     let height = line_height * lines as f64 + extra + 28.0;
+    // 原生模式下 set_indicator_layout 内部路由到原生字幕窗，不会创建 WebView。
     crate::desktop::set_indicator_layout(
         app.clone(),
         Some(width),
@@ -1220,21 +1252,27 @@ fn sync_presentation(app: &AppHandle) -> Result<(), String> {
         Some(prefs.anchor.clone()),
         Some(offset_y),
     )?;
-    let _ = window.emit("dictation-indicator-config", json!({
-        "mode": "subtitle",
-        "subtitle": {
-            "displayMode": prefs.mode, "fontFamily": prefs.font_family, "fontSize": font_size,
-            "lineCount": lines, "textColor": prefs.text_color,
-            "backgroundColor": rgba(&prefs.background_color, prefs.background_opacity),
-            "rounded": prefs.rounded, "width": width, "windowWidth": width, "windowHeight": height,
-            "anchor": prefs.anchor, "offsetY": offset_y,
-            "motionEnabled": prefs.motion_enabled, "motionDurationMs": prefs.motion_duration_ms,
-            "motionEasing": prefs.motion_easing, "fadeEnabled": prefs.fade_enabled,
-            "fadeDurationMs": prefs.fade_duration_ms, "fadeEasing": prefs.fade_easing,
-            "translationEnabled": prefs.translation_enabled(), "translationLayout": prefs.translation_layout,
-            "translationOrder": prefs.translation_order
-        }
-    }));
+    let subtitle_config = json!({
+        "displayMode": prefs.mode, "fontFamily": prefs.font_family, "fontSize": font_size,
+        "lineCount": lines, "textColor": prefs.text_color,
+        "backgroundColor": rgba(&prefs.background_color, prefs.background_opacity),
+        "rounded": prefs.rounded, "width": width, "windowWidth": width, "windowHeight": height,
+        "anchor": prefs.anchor, "offsetY": offset_y,
+        "motionEnabled": prefs.motion_enabled, "motionDurationMs": prefs.motion_duration_ms,
+        "motionEasing": prefs.motion_easing, "fadeEnabled": prefs.fade_enabled,
+        "fadeDurationMs": prefs.fade_duration_ms, "fadeEasing": prefs.fade_easing,
+        "translationEnabled": prefs.translation_enabled(), "translationLayout": prefs.translation_layout,
+        "translationOrder": prefs.translation_order
+    });
+    if native_subtitle {
+        crate::desktop::native_subtitle::native_subtitle_set_config(subtitle_config);
+    } else {
+        let window = crate::desktop::ensure_indicator_window(app)?;
+        let _ = window.emit("dictation-indicator-config", json!({
+            "mode": "subtitle",
+            "subtitle": subtitle_config
+        }));
+    }
     let obs_active = state
         .subtitle_runtime
         .session

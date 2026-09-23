@@ -15,8 +15,8 @@ use windows::core::{w, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
-    D2D_SIZE_F, D2D1_BEZIER_SEGMENT, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED,
-    D2D1_FILL_MODE_WINDING,
+    D2D_SIZE_F, D2D1_BEZIER_SEGMENT, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW,
+    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_WINDING,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush,
@@ -27,7 +27,8 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_REGULAR,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    DWRITE_FONT_WEIGHT_REGULAR,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_WRAP,
 };
@@ -691,6 +692,24 @@ pub(crate) fn parse_svg_path(d: &str) -> Result<Vec<SvgSeg>, String> {
 
 /// 把 SVG path 的 d 字符串构建成 D2D 路径几何体（设备无关资源，可跨帧复用）。
 pub(crate) fn svg_path_geometry(d2d: &ID2D1Factory, d: &str) -> Result<ID2D1PathGeometry, String> {
+    build_svg_path_geometry(d2d, d, true)
+}
+
+/// 描边用途的 SVG 路径几何体：图形保持开放不闭合，供 DrawGeometry 描边。
+/// lucide 图标都是 stroke 风格——若按填充语义闭合图形，X、箭头等开放路径
+/// 会多出一条首尾相连的回连线。
+pub(crate) fn svg_path_geometry_stroke(
+    d2d: &ID2D1Factory,
+    d: &str,
+) -> Result<ID2D1PathGeometry, String> {
+    build_svg_path_geometry(d2d, d, false)
+}
+
+fn build_svg_path_geometry(
+    d2d: &ID2D1Factory,
+    d: &str,
+    filled: bool,
+) -> Result<ID2D1PathGeometry, String> {
     let segments = parse_svg_path(d)?;
     let geometry = unsafe { d2d.CreatePathGeometry() }
         .map_err(|error| format!("创建路径几何体失败：{error}"))?;
@@ -702,9 +721,20 @@ pub(crate) fn svg_path_geometry(d2d: &ID2D1Factory, d: &str) -> Result<ID2D1Path
             match segment {
                 SvgSeg::Move(x, y) => {
                     if figure_open {
-                        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink.EndFigure(if filled {
+                            D2D1_FIGURE_END_CLOSED
+                        } else {
+                            D2D1_FIGURE_END_OPEN
+                        });
                     }
-                    sink.BeginFigure(D2D_POINT_2F { x, y }, D2D1_FIGURE_BEGIN_FILLED);
+                    sink.BeginFigure(
+                        D2D_POINT_2F { x, y },
+                        if filled {
+                            D2D1_FIGURE_BEGIN_FILLED
+                        } else {
+                            D2D1_FIGURE_BEGIN_HOLLOW
+                        },
+                    );
                     figure_open = true;
                 }
                 SvgSeg::Line(x, y) => sink.AddLine(D2D_POINT_2F { x, y }),
@@ -745,14 +775,22 @@ pub(crate) fn svg_path_geometry(d2d: &ID2D1Factory, d: &str) -> Result<ID2D1Path
                 }
                 SvgSeg::Close => {
                     if figure_open {
-                        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                        sink.EndFigure(if filled {
+                            D2D1_FIGURE_END_CLOSED
+                        } else {
+                            D2D1_FIGURE_END_OPEN
+                        });
                         figure_open = false;
                     }
                 }
             }
         }
         if figure_open {
-            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.EndFigure(if filled {
+                D2D1_FIGURE_END_CLOSED
+            } else {
+                D2D1_FIGURE_END_OPEN
+            });
         }
         sink.Close().map_err(|error| format!("关闭路径几何体失败：{error}"))?;
     }
@@ -776,13 +814,32 @@ pub(crate) fn create_text_format(
     centered: bool,
     vertical_center: bool,
 ) -> Result<IDWriteTextFormat, String> {
+    create_text_format_weight(
+        dwrite,
+        family,
+        size,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        centered,
+        vertical_center,
+    )
+}
+
+/// 带字重的文字格式（字幕正文字重 600）。
+pub(crate) fn create_text_format_weight(
+    dwrite: &IDWriteFactory,
+    family: &str,
+    size: f32,
+    weight: DWRITE_FONT_WEIGHT,
+    centered: bool,
+    vertical_center: bool,
+) -> Result<IDWriteTextFormat, String> {
     let family_wide: Vec<u16> = family.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         let format = dwrite
             .CreateTextFormat(
                 PCWSTR(family_wide.as_ptr()),
                 None,
-                DWRITE_FONT_WEIGHT_REGULAR,
+                weight,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
                 size,

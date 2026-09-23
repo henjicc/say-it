@@ -958,18 +958,6 @@ mod imp {
         }
     }
 
-    /// 两段文本的公共前缀字符数（char 边界安全），供「新增内容淡入」定位。
-    fn common_prefix_chars(prev: &str, next: &str) -> usize {
-        let mut count = 0;
-        for (a, b) in prev.chars().zip(next.chars()) {
-            if a != b {
-                break;
-            }
-            count += 1;
-        }
-        count
-    }
-
     /// 状态点目标色（直线 RGB 0..1）：recording 红 / 其余蓝，与 indicator.css 一致。
     fn dot_target_color(state: NativeState) -> [f32; 3] {
         if state == NativeState::Recording {

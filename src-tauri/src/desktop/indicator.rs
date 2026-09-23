@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use crate::state::RuntimeState;
 
 #[cfg(windows)]
 use std::ffi::c_void;
@@ -194,6 +195,69 @@ fn hide_webview_indicator_if_present(app: &tauri::AppHandle) {
     }
 }
 
+/// 指示器共享通道（文本/翻译/状态）的当前拥有者：听写胶囊或实时字幕条。
+/// 听写与字幕是两个独立原生窗口，但业务侧共用一个指示窗语义，文本/状态
+/// 通道按 owner 路由到对应的原生窗口。WebView 路径下两者本就共享同一窗口，
+/// 不需要 owner。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum IndicatorOwner {
+    Dictation,
+    Subtitle,
+}
+
+static INDICATOR_OWNER: Mutex<Option<IndicatorOwner>> = Mutex::new(None);
+
+fn indicator_owner() -> Option<IndicatorOwner> {
+    INDICATOR_OWNER.lock().ok().and_then(|owner| *owner)
+}
+
+fn set_indicator_owner(owner: Option<IndicatorOwner>) {
+    if let Ok(mut current) = INDICATOR_OWNER.lock() {
+        *current = owner;
+    }
+}
+
+/// set_indicator_state 的 owner 转移（纯函数，便于单测）。
+/// error 不改变归属（错误面板是 WebView，字幕/听写会话仍在底层继续）。
+fn owner_after_state(
+    current: Option<IndicatorOwner>,
+    state: &str,
+    native_subtitle: bool,
+) -> Option<IndicatorOwner> {
+    match state {
+        "subtitle" if native_subtitle => Some(IndicatorOwner::Subtitle),
+        "recording" | "processing" | "smartProcessing" | "fallback" => {
+            Some(IndicatorOwner::Dictation)
+        }
+        "hidden" => None,
+        _ => current,
+    }
+}
+
+/// 共享文本通道是否路由给原生字幕窗。owner 为 None 且字幕会话仍在运行
+/// （未被 OBS 接管）时，字幕的后续更新让字幕条重新出现——与 WebView 共享窗
+/// 「听写临时接管、字幕文本恢复后回到字幕」的语义一致。
+fn route_text_to_subtitle(app: &tauri::AppHandle) -> bool {
+    if !crate::desktop::native_subtitle::native_subtitle_enabled() {
+        return false;
+    }
+    match indicator_owner() {
+        Some(IndicatorOwner::Dictation) => false,
+        Some(IndicatorOwner::Subtitle) => true,
+        None => {
+            if crate::application::subtitles::wants_indicator_visible(
+                &app.state::<RuntimeState>(),
+            ) {
+                set_indicator_owner(Some(IndicatorOwner::Subtitle));
+                crate::desktop::native_subtitle::native_subtitle_show();
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
 /// 切换指示器内容。state: "recording" | "processing" | "smartProcessing" | "fallback" | "subtitle" | "error" | "hidden"。
 /// 显示态会重新提升到 topmost，但不激活窗口，避免抢走目标程序焦点。
 #[tauri::command]
@@ -201,18 +265,34 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
     hotkey::set_dictation_active(
         state == "recording" || state == "processing" || state == "smartProcessing",
     );
+    let native_subtitle = crate::desktop::native_subtitle::native_subtitle_enabled();
+    set_indicator_owner(owner_after_state(indicator_owner(), &state, native_subtitle));
+    // 字幕条由原生窗口接管：不再创建/触碰 WebView 指示窗。
+    if state == "subtitle" && native_subtitle {
+        crate::desktop::native_subtitle::native_subtitle_attach(&app);
+        if crate::desktop::native_dictation_indicator_enabled() {
+            crate::desktop::native_indicator_hide();
+        }
+        hide_webview_indicator_if_present(&app);
+        crate::desktop::native_subtitle::native_subtitle_show();
+        return Ok(());
+    }
     if crate::desktop::native_dictation_indicator_enabled() {
         match state.as_str() {
-            // 原生接管的听写状态，不再触碰 WebView 窗口。
+            // 原生接管的听写状态，不再触碰 WebView 窗口。听写临时接管共享通道时
+            // 字幕窗先藏起来；字幕会话未结束时，后续文本更新会重新显示它。
             "recording" | "processing" | "smartProcessing" | "fallback" => {
+                crate::desktop::native_subtitle::native_subtitle_hide();
                 crate::desktop::native_indicator_set_state(&state);
             }
-            // error/subtitle 有交互或复杂排版，原生只做让位，展示仍走 WebView。
-            "error" | "subtitle" => {
+            // error 有交互或复杂排版，原生只做让位，展示仍走 WebView。
+            "error" => {
+                crate::desktop::native_subtitle::native_subtitle_hide();
                 crate::desktop::native_indicator_hide();
                 return set_indicator_state_webview(&app, &state);
             }
             _ => {
+                crate::desktop::native_subtitle::native_subtitle_hide();
                 crate::desktop::native_indicator_hide();
                 if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
                     let _ = window.emit("dictation-indicator-state", json!({ "state": state }));
@@ -224,6 +304,10 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
             }
         }
         return Ok(());
+    }
+    // 原生字幕开、原生胶囊关的组合：非字幕状态也要收掉字幕窗。
+    if native_subtitle {
+        crate::desktop::native_subtitle::native_subtitle_hide();
     }
     set_indicator_state_webview(&app, &state)
 }
@@ -384,7 +468,12 @@ pub(crate) fn set_indicator_text(
     text: String,
     fade: Option<bool>,
 ) -> Result<(), String> {
-    if crate::desktop::native_dictation_indicator_enabled() {
+    if route_text_to_subtitle(&app) {
+        crate::desktop::native_subtitle::native_subtitle_set_text(
+            text.clone(),
+            fade.unwrap_or(false),
+        );
+    } else if crate::desktop::native_dictation_indicator_enabled() {
         crate::desktop::native_indicator_set_text(text.clone(), fade.unwrap_or(false));
     }
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
@@ -400,6 +489,10 @@ pub(crate) fn set_indicator_text(
 /// 便于双语字幕分别控制各自内容而不互相打断动画。
 #[tauri::command]
 pub(crate) fn set_indicator_translation(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    // 译文只属于字幕条；听写态到达的译文（正常不会发生）丢弃。
+    if route_text_to_subtitle(&app) {
+        crate::desktop::native_subtitle::native_subtitle_set_translation(text.clone());
+    }
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
         let _ = window.emit("dictation-indicator-translation", json!({ "text": text }));
     }
@@ -438,7 +531,6 @@ pub(crate) fn set_indicator_layout(
     anchor: Option<String>,
     offset_y: Option<f64>,
 ) -> Result<(), String> {
-    let window = ensure_indicator_window(&app)?;
     let width = width
         .unwrap_or(DEFAULT_INDICATOR_WIDTH)
         .clamp(160.0, 2400.0);
@@ -447,13 +539,22 @@ pub(crate) fn set_indicator_layout(
         .clamp(56.0, 720.0);
     let anchor = anchor.unwrap_or_else(|| "bottom".to_string());
     let offset_y = offset_y.unwrap_or(36.0).clamp(-240.0, 240.0);
+    if crate::desktop::native_subtitle::native_subtitle_enabled() {
+        // 原生字幕窗自己管理几何；原生胶囊几何固定，本来就忽略它。
+        // 这里不再连带创建 WebView 指示窗。
+        crate::desktop::native_subtitle::native_subtitle_set_layout(
+            width, height, &anchor, offset_y,
+        );
+        return Ok(());
+    }
+    let window = ensure_indicator_window(&app)?;
     place_indicator_window(&window, width, height, &anchor, offset_y);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fallback_indicator_position;
+    use super::{fallback_indicator_position, owner_after_state, IndicatorOwner};
 
     #[test]
     fn fallback_position_preserves_negative_secondary_monitor_origin() {
@@ -472,6 +573,35 @@ mod tests {
         assert_eq!(
             fallback_indicator_position(200, -900, 1_600, 900, 400, 180, "center", 24),
             (800, -516)
+        );
+    }
+
+    #[test]
+    fn owner_follows_state_transitions() {
+        // 字幕状态只在原生字幕启用时接管 owner。
+        assert_eq!(
+            owner_after_state(None, "subtitle", true),
+            Some(IndicatorOwner::Subtitle)
+        );
+        assert_eq!(owner_after_state(None, "subtitle", false), None);
+        // 听写临时接管共享通道。
+        assert_eq!(
+            owner_after_state(Some(IndicatorOwner::Subtitle), "recording", true),
+            Some(IndicatorOwner::Dictation)
+        );
+        assert_eq!(
+            owner_after_state(Some(IndicatorOwner::Subtitle), "smartProcessing", true),
+            Some(IndicatorOwner::Dictation)
+        );
+        // hidden 清空归属。
+        assert_eq!(
+            owner_after_state(Some(IndicatorOwner::Dictation), "hidden", true),
+            None
+        );
+        // error 不改变归属：错误面板是 WebView，底层会话不受影响。
+        assert_eq!(
+            owner_after_state(Some(IndicatorOwner::Subtitle), "error", true),
+            Some(IndicatorOwner::Subtitle)
         );
     }
 }
