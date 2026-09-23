@@ -33,6 +33,9 @@ use super::sdk_runtime::{
 };
 use super::ProviderProfile;
 
+mod sdk_upload;
+use sdk_upload::{MediaInput, UploadState};
+
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STACK_BYTES: usize = 1024 * 1024;
@@ -43,10 +46,6 @@ const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
-// SDK 0.2.1 的 MediaReader 仍要求最终形成 Uint8Array，且 QuickJS 上限为 64 MiB。
-// 通过宿主分块避免单个超大 JSON；同时把 SDK 媒体明确收紧到官方短音频 10 MiB 上限，
-// 避免异步文件在 SDK 内多次复制后触发不可预测的 OOM。
-const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
 
@@ -357,6 +356,17 @@ struct HostState {
     sdk: Option<SdkHostBindings>,
     spans: HashMap<String, Instant>,
     pending_request_bodies: HashMap<String, Vec<u8>>,
+    uploads: HashMap<String, UploadState>,
+    media_inputs: HashMap<String, MediaInput>,
+}
+
+fn sdk_encode_utf8<'js>(ctx: Ctx<'js>, text: String) -> Result<TypedArray<'js, u8>, JsError> {
+    if text.len() > MAX_REQUEST_BODY_BYTES {
+        return Err(JsError::new_from_js_message(
+            "string", "Uint8Array", "UTF-8 编码超过 16 MiB 限制",
+        ));
+    }
+    TypedArray::new(ctx, text.into_bytes())
 }
 
 impl HostState {
@@ -385,6 +395,8 @@ impl HostState {
             sdk,
             spans: HashMap::new(),
             pending_request_bodies: HashMap::new(),
+            uploads: HashMap::new(),
+            media_inputs: HashMap::new(),
         }
     }
 
@@ -489,12 +501,21 @@ impl HostState {
             "http.stream.open" => self.http_stream_open(payload),
             "http.stream.read" => self.http_stream_read(payload),
             "http.stream.close" => self.http_stream_close(payload),
+            "http.upload.open" => self.upload_open(payload),
+            "http.upload.write" => self.upload_write(payload),
+            "http.upload.finish" => self.upload_finish(payload),
+            "http.upload.close" => self.upload_close(payload),
+            "http.file.open" => self.upload_file(payload),
             "websocket.open" => self.websocket_open(payload),
             "websocket.send" => self.websocket_send(payload),
             "websocket.close" => self.websocket_close(payload),
             "media.read" => self.media_read(payload),
             "media.describe" => self.media_describe(payload),
             "media.readChunk" => self.media_read_chunk(payload),
+            "media.releaseAll" => {
+                self.media_inputs.clear();
+                Ok(Value::Null)
+            }
             "credential.get" => self.credential_get(payload),
             "plugin.credential.get" => self.plugin_credential_get(payload),
             "runtime.log" => self.runtime_log(payload),
@@ -553,6 +574,8 @@ impl HostState {
             });
         }
         self.http_streams.clear();
+        self.uploads.clear();
+        self.media_inputs.clear();
         for (_, stopped) in self.timers.drain() {
             stopped.store(true, Ordering::Relaxed);
         }
@@ -680,6 +703,10 @@ impl HostState {
 
     fn http_stream_open(&mut self, payload: Value) -> Result<Value, String> {
         let response = self.open_http_response(payload)?;
+        Ok(self.register_http_response(response))
+    }
+
+    fn register_http_response(&mut self, response: reqwest::Response) -> Value {
         let stream_id = uuid::Uuid::new_v4().to_string();
         let result = json!({
             "streamId": stream_id,
@@ -695,7 +722,7 @@ impl HostState {
                 total_bytes: 0,
             },
         );
-        Ok(result)
+        result
     }
 
     fn http_stream_read(&mut self, payload: Value) -> Result<Value, String> {
@@ -826,20 +853,20 @@ impl HostState {
         Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
     }
 
-    fn media_describe(&self, payload: Value) -> Result<Value, String> {
+    fn media_describe(&mut self, payload: Value) -> Result<Value, String> {
         if self.sdk.is_none() {
             return Err("当前运行上下文未注入 SDK 媒体作用域".into());
         }
-        let (_, size, mime_type, filename) =
-            self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
-        Ok(json!({"size":size,"mimeType":mime_type,"filename":filename}))
+        let reference = payload.get("ref").and_then(Value::as_str)
+            .ok_or("媒体读取缺少 ref")?;
+        let input = self.sdk_media_input(reference)?;
+        input.describe()
     }
 
-    fn media_read_chunk(&self, payload: Value) -> Result<Value, String> {
+    fn media_read_chunk(&mut self, payload: Value) -> Result<Value, String> {
         if self.sdk.is_none() {
             return Err("当前运行上下文未注入 SDK 媒体作用域".into());
         }
-        let (path, size, _, _) = self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
         let offset = payload
             .get("offset")
             .and_then(Value::as_u64)
@@ -852,16 +879,9 @@ impl HostState {
         if requested == 0 || requested > MAX_MEDIA_CHUNK_BYTES {
             return Err("媒体分块大小必须在 1 到 64 KiB 之间".into());
         }
-        if offset >= size {
-            return Ok(json!({"bytes":[]}));
-        }
-        let remaining = usize::try_from(size - offset).unwrap_or(usize::MAX);
-        let mut bytes = vec![0_u8; requested.min(remaining)];
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|error| error.to_string())?;
-        file.read_exact(&mut bytes)
-            .map_err(|error| error.to_string())?;
+        let reference = payload.get("ref").and_then(Value::as_str)
+            .ok_or("媒体读取缺少 ref")?;
+        let bytes = self.sdk_media_input(reference)?.read_chunk(offset, requested)?;
         Ok(json!({"bytes":bytes}))
     }
 
@@ -1480,6 +1500,9 @@ impl JsProviderRuntime {
             ctx.globals()
                 .set("__sayitHostCall", host_call)
                 .map_err(js_error)?;
+            ctx.globals()
+                .set("__sayitHostEncodeUtf8", Function::new(ctx.clone(), sdk_encode_utf8).map_err(js_error)?)
+                .map_err(js_error)?;
             let request_body_state = host.clone();
             let store_request_body = Function::new(
                 ctx.clone(),
@@ -1852,7 +1875,7 @@ impl JsProviderRuntime {
             .lock()
             .map(|state| {
                 (
-                    state.http_streams.len(),
+                    state.http_streams.len() + state.uploads.len(),
                     state.ws_connections.len(),
                     state.spans.len() + state.timers.len(),
                 )

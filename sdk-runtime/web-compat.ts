@@ -170,6 +170,10 @@
 
   class SayItTextEncoder {
     encode(input = ''): Uint8Array {
+      const nativeEncode = (globalThis as typeof globalThis & {
+        __sayitHostEncodeUtf8?: (text: string) => Uint8Array
+      }).__sayitHostEncodeUtf8
+      if (nativeEncode) return nativeEncode(String(input))
       const bytes: number[] = []
       for (const character of String(input)) {
         const point = character.codePointAt(0) ?? 0

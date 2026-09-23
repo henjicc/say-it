@@ -120,9 +120,9 @@ mod tests {
             &PluginRegistry::default(),
         );
         let expected = if crate::providers::apple_speech::runtime_available() {
-            15
+            18
         } else {
-            14
+            17
         };
         assert_eq!(catalog.models.len(), expected);
         assert!(catalog

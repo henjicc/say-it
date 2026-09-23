@@ -19,6 +19,9 @@ use crate::providers::ProviderProfile;
 
 const SECRET: &str = "sk-sayit-test-secret";
 
+#[path = "upload_tests.rs"]
+mod upload_tests;
+
 fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
     let root = std::env::temp_dir().join(format!("sayit-sdk-runtime-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("connector")).unwrap();

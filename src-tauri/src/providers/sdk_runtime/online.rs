@@ -123,6 +123,8 @@ pub struct BuiltinSdkRuntime {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkFileAsrOptions {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    vocabulary: std::collections::BTreeMap<String, i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,7 +141,8 @@ struct SdkFileAsrOptions {
 
 impl SdkFileAsrOptions {
     fn is_empty(&self) -> bool {
-        self.context.is_none()
+        self.vocabulary.is_empty()
+            && self.context.is_none()
             && self.vocabulary_id.is_none()
             && self.diarization_enabled.is_none()
             && self.speaker_count.is_none()
@@ -166,6 +169,23 @@ fn non_empty_string(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// 新模型的即时热词直接使用全局词表；旧模型继续使用已同步的 vocabularyId。
+pub(crate) fn sdk_inline_vocabulary(
+    model: &str,
+    customization: &crate::providers::RequestCustomization,
+) -> std::collections::BTreeMap<String, i32> {
+    if !matches!(model,
+        "qwen-audio-3.1-asr-flash"
+        | "qwen-audio-3.1-asr-flash-filetrans"
+        | "qwen-audio-3.1-asr-flash-streaming"
+    ) {
+        return Default::default();
+    }
+    customization.hotwords.iter()
+        .filter_map(|word| non_empty_string(&word.text).map(|text| (text, word.weight.clamp(1, 5))))
+        .collect()
+}
+
 fn sdk_file_asr_input(
     params: &crate::providers::alibabacloud::TranscriptionParams,
     customization: &crate::providers::RequestCustomization,
@@ -183,6 +203,7 @@ fn sdk_file_asr_input(
         hints,
         timestamps: true,
         options: SdkFileAsrOptions {
+            vocabulary: sdk_inline_vocabulary(&params.model_id(), customization),
             context: non_empty_string(&customization.context),
             vocabulary_id,
             diarization_enabled: params.diarization_enabled,
@@ -599,6 +620,7 @@ fn sdk_asr_to_legacy(
                 "beginTime": sdk_millis(segment.get("startMs")).unwrap_or_default(),
                 "endTime": sdk_millis(segment.get("endMs")).unwrap_or_default(),
                 "text": segment.get("text").and_then(Value::as_str).unwrap_or_default(),
+                "speakerId": segment.get("speakerId"),
                 "words": words,
             })
         })
@@ -637,7 +659,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.2.8");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.6.0");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -721,6 +743,7 @@ mod tests {
                 "text": "你好",
                 "startMs": 10,
                 "endMs": 900,
+                "speakerId": 2,
                 "words": [{ "text": "你", "startMs": 10, "endMs": 300 }],
             }],
         }))
@@ -728,6 +751,7 @@ mod tests {
         assert_eq!(result.duration_ms, Some(1200));
         assert_eq!(result.transcripts[0].text, "你好");
         assert_eq!(result.transcripts[0].sentences[0].begin_time, 10);
+        assert_eq!(result.transcripts[0].sentences[0].speaker_id, Some(json!(2)));
         assert_eq!(result.transcripts[0].sentences[0].words[0].text, "你");
     }
 
@@ -769,6 +793,21 @@ mod tests {
             })
         );
         assert!(!input.to_string().contains("null"));
+    }
+
+    #[test]
+    fn qwen_audio_file_receives_inline_hotwords_without_changing_old_models() {
+        let customization = crate::providers::RequestCustomization {
+            hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: " 说吧 ".into(), weight: 3 }],
+            ..Default::default()
+        };
+        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans"] {
+            let params = crate::providers::alibabacloud::TranscriptionParams { model: model.into(), ..Default::default() };
+            let input = sdk_file_asr_input(&params, &customization, None);
+            assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));
+            assert!(input["options"].get("vocabularyId").is_none());
+        }
+        assert!(sdk_inline_vocabulary("fun-asr", &customization).is_empty());
     }
 
     #[test]
