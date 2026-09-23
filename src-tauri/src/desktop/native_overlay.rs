@@ -74,7 +74,12 @@ impl Transition {
 
     /// 进入或回到显示态。已完全显示时是空操作；退场中途调用则从当前位置反向回播。
     pub(crate) fn show(&mut self) {
-        if self.progress < 1.0 && self.direction != 1 {
+        if self.progress >= 1.0 {
+            // Hide 后首帧尚未推进就收到 Show：必须撤销退场方向，
+            // 否则随后定时器仍会把刚重新打开的窗口隐藏。
+            self.direction = 0;
+            self.last_tick = None;
+        } else if self.direction != 1 {
             self.direction = 1;
             self.last_tick = None;
         }
@@ -878,6 +883,17 @@ pub(crate) fn create_text_format_weight(
 #[cfg(test)]
 mod tests {
     use super::{parse_svg_path, SvgSeg, Transition, TRANSITION_ENTER_MS};
+
+    #[test]
+    fn show_cancels_exit_before_its_first_frame() {
+        let mut transition = Transition::new(true);
+        assert!(transition.hide());
+        transition.show();
+        transition.advance(1.0);
+        assert_eq!(transition.visual(), 1.0);
+        assert!(!transition.is_animating());
+        assert!(!transition.is_fully_hidden());
+    }
 
     const MIC: &str = "M12 15c1.66 0 2.99-1.34 2.99-3L15 6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3m6.08-3c-.42 0-.77.3-.83.71c-.37 2.61-2.72 4.39-5.25 4.39s-4.88-1.77-5.25-4.39a.84.84 0 0 0-.83-.71c-.52 0-.92.46-.85.97c.46 2.97 2.96 5.3 5.93 5.75V21c0 .55.45 1 1 1s1-.45 1-1v-2.28c2.96-.43 5.47-2.78 5.93-5.75a.857.857 0 0 0-.85-.97";
 

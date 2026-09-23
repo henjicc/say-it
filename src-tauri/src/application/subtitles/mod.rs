@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
+mod preview;
+pub(crate) use preview::{hide_subtitle_preview, show_subtitle_preview};
+
 const DOMAIN_EVENT: &str = "domain-event";
 const REPLACE_CONTINUE_GAP: Duration = Duration::from_millis(2_500);
 const MAX_TEXT_CHARS: usize = 1_800;
@@ -49,7 +52,7 @@ enum SourceKind {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-struct SubtitlePrefs {
+pub(crate) struct SubtitlePrefs {
     source: String,
     asr_model: String,
     mode: String,
@@ -389,6 +392,7 @@ impl Session {
 
 pub(crate) struct SubtitleRuntime {
     session: Arc<Mutex<Session>>,
+    preview: Mutex<Option<preview::Preview>>,
     operation: Arc<tokio::sync::Mutex<()>>,
     epochs: AtomicU64,
 }
@@ -397,6 +401,7 @@ impl Default for SubtitleRuntime {
     fn default() -> Self {
         Self {
             session: Arc::new(Mutex::new(Session::default())),
+            preview: Mutex::new(None),
             operation: Arc::new(tokio::sync::Mutex::new(())),
             epochs: AtomicU64::new(0),
         }
@@ -407,6 +412,7 @@ impl Default for SubtitleRuntime {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleSnapshot {
     phase: SubtitlePhase,
+    preview_active: bool,
     session_id: Option<String>,
     original_text: String,
     translation_text: String,
@@ -459,9 +465,15 @@ pub(crate) fn get_subtitle_runtime(
 pub(crate) async fn sync_subtitle_presentation(
     app: AppHandle,
     rehydrate: Option<bool>,
+    preview_prefs: Option<SubtitlePrefs>,
 ) -> Result<(), String> {
+    let state = app.state::<RuntimeState>();
+    let _guard = state.subtitle_runtime.operation.lock().await;
     if rehydrate == Some(true) && !crate::desktop::indicator::can_rehydrate_subtitle_webview() {
         return Ok(());
+    }
+    if preview::is_active(&state) {
+        return preview::refresh(&app, preview_prefs);
     }
     let running = {
         let state = app.state::<RuntimeState>();
@@ -489,23 +501,25 @@ pub(crate) fn apply_subtitle_obs_routing(app: AppHandle) -> Result<(), String> {
 /// 听写提示条与字幕条是**同一个**指示窗，任何延时执行的「隐藏指示窗」都必须先问一下
 /// 字幕这边，否则会把用户刚开起来的字幕条一并关掉。
 pub(crate) fn owns_indicator(state: &RuntimeState) -> bool {
-    state
-        .subtitle_runtime
-        .session
-        .lock()
-        .map(|session| !matches!(session.phase, SubtitlePhase::Idle))
-        .unwrap_or(false)
+    preview::is_active(state)
+        || state
+            .subtitle_runtime
+            .session
+            .lock()
+            .map(|session| !matches!(session.phase, SubtitlePhase::Idle))
+            .unwrap_or(false)
 }
 
 /// 字幕会话仍在运行且应该在屏幕上占有字幕条（OBS 接管输出时不占）。
 /// 原生字幕窗用它判断「owner 空缺时文本更新要不要重新亮出字幕条」。
 pub(crate) fn wants_indicator_visible(state: &RuntimeState) -> bool {
-    state
-        .subtitle_runtime
-        .session
-        .lock()
-        .map(|session| !matches!(session.phase, SubtitlePhase::Idle) && !session.obs_active)
-        .unwrap_or(false)
+    preview::is_active(state)
+        || state
+            .subtitle_runtime
+            .session
+            .lock()
+            .map(|session| !matches!(session.phase, SubtitlePhase::Idle) && !session.obs_active)
+            .unwrap_or(false)
 }
 
 pub(crate) fn domain_snapshot(state: &RuntimeState) -> Result<DomainSnapshot, String> {
@@ -546,6 +560,7 @@ async fn toggle(app: AppHandle) -> Result<(), String> {
 }
 
 async fn start(app: AppHandle) -> Result<(), String> {
+    preview::stop_locked(&app)?;
     let state = app.state::<RuntimeState>();
     let (prefs, audio_prefs) = read_prefs(&state)?;
     // 翻译模型的配置性错误（供应商未启用、没填 Key、插件被停用）必须在开始时就
@@ -668,6 +683,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
 }
 
 async fn stop_locked(app: AppHandle) -> Result<(), String> {
+    preview::stop_locked(&app)?;
     let state = app.state::<RuntimeState>();
     let (source, asr, lease, translation_cancellation) = {
         let mut session = state
@@ -1197,13 +1213,23 @@ fn render(app: &AppHandle) {
 
 fn sync_presentation(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let prefs = state
-        .subtitle_runtime
-        .session
-        .lock()
-        .map_err(|_| "字幕状态锁失败")?
-        .prefs
-        .clone();
+    let (prefs, obs_active) = {
+        let session = state
+            .subtitle_runtime
+            .session
+            .lock()
+            .map_err(|_| "字幕状态锁失败")?;
+        (session.prefs.clone(), session.obs_active)
+    };
+    sync_presentation_with_prefs(app, &prefs, obs_active)
+}
+
+// 正式字幕与本地预览共用尺寸、样式和原生/WebView 路由。
+fn sync_presentation_with_prefs(
+    app: &AppHandle,
+    prefs: &SubtitlePrefs,
+    obs_active: bool,
+) -> Result<(), String> {
     let native_subtitle = crate::desktop::native_subtitle::native_subtitle_enabled();
     if native_subtitle {
         crate::desktop::native_subtitle::native_subtitle_attach(app);
@@ -1279,12 +1305,6 @@ fn sync_presentation(app: &AppHandle) -> Result<(), String> {
             "subtitle": subtitle_config
         }));
     }
-    let obs_active = state
-        .subtitle_runtime
-        .session
-        .lock()
-        .map(|s| s.obs_active)
-        .unwrap_or(false);
     crate::desktop::set_indicator_state(
         app.clone(),
         if obs_active {
@@ -1377,6 +1397,7 @@ fn snapshot(state: &RuntimeState) -> Result<SubtitleSnapshot, String> {
         .map_err(|_| "字幕状态锁失败")?;
     Ok(SubtitleSnapshot {
         phase: session.phase,
+        preview_active: preview::is_active(state),
         session_id: session.public_id.clone(),
         original_text: session.document.display(&session.prefs),
         translation_text: session.translation.display(&session.prefs),
