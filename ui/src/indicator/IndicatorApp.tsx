@@ -213,7 +213,7 @@ export function IndicatorApp() {
   const original = useTextTrack(isReplaceMode);
   const translation = useTextTrack(isReplaceMode);
 
-  useTauriEvent<{ state?: Phase }>(EVT.indicatorState, (payload) => {
+  const stateReady = useTauriEvent<{ state?: Phase }>(EVT.indicatorState, (payload) => {
     const next = payload.state || "hidden";
     setPhase(next);
     if (next === "hidden") {
@@ -223,7 +223,7 @@ export function IndicatorApp() {
       setErrorState({ message: "", canUseRawText: false });
       setErrorActionBusy(false);
     }
-  });
+  }, true, undefined, true);
 
   useTauriEvent<{ message?: string; canUseRawText?: boolean }>(EVT.indicatorError, (payload) => {
     setErrorState({
@@ -235,13 +235,13 @@ export function IndicatorApp() {
 
   useCuePlayback(EVT.indicatorPlayCue, "dictation-indicator");
 
-  useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
+  const textReady = useTauriEvent<{ text?: string; fade?: boolean }>(EVT.indicatorText, (payload) => {
     payload.fade ? original.swapText(payload.text || "") : original.renderText(payload.text || "");
-  });
+  }, true, undefined, true);
 
-  useTauriEvent<{ text?: string }>(EVT.indicatorTranslation, (payload) => {
+  const translationReady = useTauriEvent<{ text?: string }>(EVT.indicatorTranslation, (payload) => {
     translation.renderText(payload.text || "");
-  });
+  }, true, undefined, true);
 
   useTauriEvent<{ active?: boolean; level?: number; peaks?: number[] }>(EVT.indicatorWaveform, (payload) => {
     if (!payload.active) {
@@ -255,11 +255,18 @@ export function IndicatorApp() {
     setWaveform({ active: true, level: floatingOrbWaveScale(Number(payload.level) || 0), peaks });
   }, true, "dictation-indicator");
 
-  useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
+  const configReady = useTauriEvent<{ mode?: IndicatorMode; subtitle?: SubtitleConfig }>(EVT.indicatorConfig, (payload) => {
     setMode(payload.mode || "dictation");
     if (payload.subtitle) setSubtitleConfig(payload.subtitle);
     if (payload.mode !== "subtitle") setSubtitleLocked(false);
-  });
+  }, true, undefined, true);
+
+  useEffect(() => {
+    // 按需创建的 WebView 可能错过首次投影；全部订阅就绪后向 Rust 重取当前状态。
+    if (stateReady && textReady && translationReady && configReady) {
+      void cmdSilent(CMD.syncSubtitlePresentation, { rehydrate: true });
+    }
+  }, [stateReady, textReady, translationReady, configReady]);
 
   useEffect(() => {
     const isMod = (code: string) =>

@@ -185,6 +185,7 @@ pub(crate) struct Dib {
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
+    bits: *const u8,
     pub(crate) width: i32,
     pub(crate) height: i32,
 }
@@ -222,6 +223,7 @@ impl Dib {
                 dc,
                 bitmap,
                 old,
+                bits: bits.cast(),
                 width,
                 height,
             })
@@ -230,6 +232,12 @@ impl Dib {
 
     pub(crate) fn dc(&self) -> HDC {
         self.dc
+    }
+
+    /// 顶向下、预乘 alpha 的 BGRA 像素；调用方须先完成 D2D EndDraw。
+    pub(crate) fn pixels(&self) -> &[u8] {
+        // CreateDIBSection 成功后像素区由 bitmap 持有，借用不超过 Dib 生命周期。
+        unsafe { std::slice::from_raw_parts(self.bits, self.width as usize * self.height as usize * 4) }
     }
 }
 
@@ -318,6 +326,26 @@ fn message_loop<C>(hwnd: HWND, queue: &Mutex<VecDeque<C>>, on_command: fn(HWND, 
     }
 }
 
+/// 主画布与临时特效画布共用软件渲染，避免为小窗口加载 GPU 设备和驱动。
+pub(crate) fn create_dc_render_target(
+    d2d: &ID2D1Factory,
+    dpi: f32,
+) -> windows::core::Result<ID2D1DCRenderTarget> {
+    unsafe {
+        d2d.CreateDCRenderTarget(&D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: dpi,
+            dpiY: dpi,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        })
+    }
+}
+
 /// 分层窗口的 D2D 渲染面：管理 DIB、DC 渲染目标与 UpdateLayeredWindow 上屏。
 pub(crate) struct LayeredSurface {
     hwnd: HWND,
@@ -354,21 +382,7 @@ impl LayeredSurface {
         if self.target.is_some() {
             return true;
         }
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            // 软件渲染：悬浮球/指示器只有几 KB 的像素量，GPU 加速无收益，
-            // 而硬件渲染目标会创建 D3D11 设备并把整套显卡驱动 DLL
-            // （nvgpucomp64 等，映射上百 MB）拉进进程。
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: dpi as f32,
-            dpiY: dpi as f32,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let target = unsafe { d2d.CreateDCRenderTarget(&props) };
+        let target = create_dc_render_target(d2d, dpi as f32);
         match target {
             Ok(target) => {
                 let brush = unsafe { target.CreateSolidColorBrush(&rgba(0.0, 0.0, 0.0, 0.0), None) };

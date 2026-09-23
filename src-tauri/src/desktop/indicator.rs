@@ -225,13 +225,19 @@ fn owner_after_state(
     native_subtitle: bool,
 ) -> Option<IndicatorOwner> {
     match state {
-        "subtitle" if native_subtitle => Some(IndicatorOwner::Subtitle),
+        "subtitle" => native_subtitle.then_some(IndicatorOwner::Subtitle),
         "recording" | "processing" | "smartProcessing" | "fallback" => {
             Some(IndicatorOwner::Dictation)
         }
         "hidden" => None,
         _ => current,
     }
+}
+
+/// 新建 WebView 的就绪回调只补发当前回退字幕，不能抢占原生字幕或听写通道。
+pub(crate) fn can_rehydrate_subtitle_webview() -> bool {
+    !crate::desktop::native_subtitle::native_subtitle_enabled()
+        && indicator_owner() != Some(IndicatorOwner::Dictation)
 }
 
 /// 共享文本通道是否路由给原生字幕窗。owner 为 None 且字幕会话仍在运行
@@ -285,8 +291,8 @@ pub(crate) fn set_indicator_state(app: tauri::AppHandle, state: String) -> Resul
                 crate::desktop::native_subtitle::native_subtitle_hide();
                 crate::desktop::native_indicator_set_state(&state);
             }
-            // error 有交互或复杂排版，原生只做让位，展示仍走 WebView。
-            "error" => {
+            // 字幕显式回退及 error 仍由 WebView 展示，不能落入隐藏分支。
+            "subtitle" | "error" => {
                 crate::desktop::native_subtitle::native_subtitle_hide();
                 crate::desktop::native_indicator_hide();
                 return set_indicator_state_webview(&app, &state);
@@ -584,6 +590,10 @@ mod tests {
             Some(IndicatorOwner::Subtitle)
         );
         assert_eq!(owner_after_state(None, "subtitle", false), None);
+        assert_eq!(
+            owner_after_state(Some(IndicatorOwner::Dictation), "subtitle", false),
+            None
+        );
         // 听写临时接管共享通道。
         assert_eq!(
             owner_after_state(Some(IndicatorOwner::Subtitle), "recording", true),
