@@ -332,6 +332,15 @@ pub(crate) fn dev_show_indicator_notice(app: tauri::AppHandle, text: String) -> 
     show_dictation_indicator_notice(&app, text)
 }
 
+/// 开发构建专用的波形驱动入口：注入合成响度，验证波形/缩放动效。
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub(crate) fn dev_indicator_waveform(level: f32, fade: Option<bool>) -> Result<(), String> {
+    let _ = fade;
+    crate::desktop::native_indicator_set_waveform(level, vec![level; 6]);
+    Ok(())
+}
+
 /// 文本已经生成、只是原输入窗口不可再注入时，改为明确的剪贴板交付提示。
 /// 这不是识别或智能处理失败，因此不展示错误操作区，也不允许窗口抢焦点。
 pub(crate) fn show_dictation_indicator_clipboard_fallback(

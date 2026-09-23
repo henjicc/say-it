@@ -720,7 +720,9 @@ fn main() {
             close_assistant_answer,
             get_performance_metrics,
             #[cfg(debug_assertions)]
-            dev_show_indicator_notice
+            dev_show_indicator_notice,
+            #[cfg(debug_assertions)]
+            dev_indicator_waveform
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
