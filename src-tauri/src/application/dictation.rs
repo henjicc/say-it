@@ -2951,22 +2951,28 @@ async fn fail_with_raw_fallback(
                 .then_some((session.activation_target, session.trigger.is_floating_orb()))
         })
         .unwrap_or((None, false));
+    // 无论走悬浮球还是指示器：只要手里已有识别原文，失败时先写进剪贴板保底，
+    // 用户至少不会连原文都拿不到；指示器的错误面板仍保留"输入未处理原文"的注入选择。
+    let clipboard_ok = if text.is_empty() {
+        false
+    } else {
+        write_clipboard_text_inner(text.clone()).await.is_ok()
+    };
     let floating_feedback = if floating {
         if text.is_empty() {
             Some(("error", "未识别到内容".to_string(), 2000))
+        } else if clipboard_ok {
+            Some((
+                "fallback",
+                match floating_kind {
+                    FloatingFallbackKind::Processing => "处理失败，原文已复制",
+                    FloatingFallbackKind::Delivery => "已复制，请手动粘贴",
+                }
+                .to_string(),
+                3000,
+            ))
         } else {
-            match write_clipboard_text_inner(text.clone()).await {
-                Ok(()) => Some((
-                    "fallback",
-                    match floating_kind {
-                        FloatingFallbackKind::Processing => "处理失败，原文已复制",
-                        FloatingFallbackKind::Delivery => "已复制，请手动粘贴",
-                    }
-                    .to_string(),
-                    3000,
-                )),
-                Err(_) => Some(("error", "复制失败，请在历史记录中查看".to_string(), 3000)),
-            }
+            Some(("error", "复制失败，请在历史记录中查看".to_string(), 3000))
         }
     } else {
         None
