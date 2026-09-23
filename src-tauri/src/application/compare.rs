@@ -24,6 +24,9 @@ use crate::desktop::backend_mic::{
 use crate::providers::capabilities::TranscriptionParams;
 use crate::state::{AsrStreamInput, RuntimeState};
 
+#[cfg(all(test, windows))]
+mod performance_tests;
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompareStartRequest {
@@ -78,6 +81,8 @@ struct CompareState {
     raw: Vec<f32>,
     sample_rate: u32,
     recording_drain: Option<tokio::sync::oneshot::Receiver<()>>,
+    // 实时流可能在写盘期间先结束，文件任务登记完之前不能提前回到 idle。
+    preparing_file: bool,
     lease: Option<AudioLease>,
     playback_progress: Option<PlaybackProgress>,
     error: String,
@@ -114,6 +119,16 @@ impl CompareRuntime {
             playback_progress: state.playback_progress.clone(),
             error: state.error.clone(),
         }
+    }
+    fn finish_file_export(&self, epoch: u64) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        if self.epoch.load(Ordering::Acquire) != epoch {
+            return false;
+        }
+        state.preparing_file = false;
+        true
     }
     fn update_cell(&self, index: usize, status: &str, text: Option<String>, error: Option<String>) {
         if let Ok(mut state) = self.inner.lock() {
@@ -154,6 +169,7 @@ impl CompareRuntime {
         state.phase = "idle".into();
         state.error = error.to_string();
         state.recording_drain = None;
+        state.preparing_file = false;
         state.playback_progress = None;
         for cell in &mut state.cells {
             if !matches!(cell.status.as_str(), "done" | "error") {
@@ -467,6 +483,7 @@ fn fail_recording_capture(app: &tauri::AppHandle, epoch: u64, error: String) {
 #[tauri::command]
 pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapshot, String> {
     let state = app.state::<RuntimeState>();
+    let epoch = state.compare_runtime.epoch.load(Ordering::Acquire);
     let snapshot = state.compare_runtime.snapshot();
     if snapshot.phase == "recording" {
         pause_backend_mic_inner(&state)?;
@@ -485,12 +502,16 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                 .map_err(|_| "模型对比尾部音频任务提前结束".to_string())?;
             crate::dlog!("[compare] 尾部音频扇出已排空，开始结束 ASR 会话");
         }
-        let (raw, rate, sessions, file_indices) = {
+        let (raw, rate, sessions, file_indices, lease) = {
             let mut compare = state
                 .compare_runtime
                 .inner
                 .lock()
                 .map_err(|_| "模型对比状态锁失败")?;
+            if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+                drop(compare);
+                return Ok(state.compare_runtime.snapshot());
+            }
             compare.phase = "finalizing".into();
             let raw = std::mem::take(&mut compare.raw);
             let sessions = compare.sessions.keys().cloned().collect::<Vec<_>>();
@@ -503,8 +524,13 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                         .map(|_| *index)
                 })
                 .collect::<Vec<_>>();
-            (raw, compare.sample_rate, sessions, file_indices)
+            compare.preparing_file = !raw.is_empty() && !file_indices.is_empty();
+            (raw, compare.sample_rate, sessions, file_indices, compare.lease.take())
         };
+        // 麦克风和尾部音频已收尾，写盘/上传期间不再占用录音租约。
+        if let Some(lease) = lease {
+            let _ = state.audio_session.release(&lease);
+        }
         for session in sessions {
             let _ = asr_stream_finish_inner(&session, &state);
         }
@@ -519,11 +545,43 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                     );
                 }
             } else {
-                let path = write_wav(&raw, rate)?;
-                start_file_jobs(app.clone(), &state, path, file_indices).await;
+                // 转移所有权，工作线程写完即释放原始 PCM，不带进后续上传等待。
+                let result = tauri::async_runtime::spawn_blocking(move || write_wav(&raw, rate))
+                    .await
+                    .map_err(|error| format!("录音文件任务失败：{error}"))
+                    .and_then(|result| result);
+                if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+                    if let Ok(path) = result {
+                        if let Err(error) = std::fs::remove_file(path) {
+                            eprintln!("[compare] 清理已取消录音文件失败：{error}");
+                        }
+                    }
+                    return Ok(state.compare_runtime.snapshot());
+                }
+                match result {
+                    Ok(path) => {
+                        start_file_jobs(app.clone(), &state, path, file_indices, epoch).await;
+                        if !state.compare_runtime.finish_file_export(epoch) {
+                            return Ok(state.compare_runtime.snapshot());
+                        }
+                    }
+                    Err(error) => {
+                        if !state.compare_runtime.finish_file_export(epoch) {
+                            return Ok(state.compare_runtime.snapshot());
+                        }
+                        for index in file_indices {
+                            state.compare_runtime.update_cell(
+                                index, "error", None, Some(error.clone()),
+                            );
+                        }
+                        settle(&state);
+                        publish(&app);
+                        return Err(error);
+                    }
+                }
             }
         }
-        release_lease(&state);
+        settle(&state);
         publish(&app);
     }
     Ok(state.compare_runtime.snapshot())
@@ -540,6 +598,7 @@ pub(crate) fn compare_cancel(app: tauri::AppHandle) -> Result<CompareSnapshot, S
             .lock()
             .map_err(|_| "模型对比状态锁失败")?;
         compare.phase = "idle".into();
+        compare.preparing_file = false;
         (
             std::mem::take(&mut compare.sessions),
             std::mem::take(&mut compare.jobs),
@@ -602,7 +661,10 @@ async fn start_upload(
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    start_file_jobs(app.clone(), state, path.clone(), file_indices).await;
+    start_file_jobs(app.clone(), state, path.clone(), file_indices, epoch).await;
+    if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+        return Ok(());
+    }
     let realtime = state
         .compare_runtime
         .inner
@@ -693,6 +755,7 @@ async fn start_file_jobs(
     state: &RuntimeState,
     path: String,
     indices: Vec<usize>,
+    epoch: u64,
 ) {
     for index in indices {
         let model = state
@@ -700,7 +763,13 @@ async fn start_file_jobs(
             .inner
             .lock()
             .ok()
-            .and_then(|compare| compare.models.get(&index).cloned());
+            .and_then(|compare| {
+                if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+                    compare.models.get(&index).cloned()
+                } else {
+                    None
+                }
+            });
         let Some(model) = model else {
             continue;
         };
@@ -717,38 +786,44 @@ async fn start_file_jobs(
         };
         match transcription_start_inner(app.clone(), state, path.clone(), Some(params), "compare").await {
             Ok(job) => {
-                if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                    compare.jobs.insert(job.job_id, index);
+                let current = if let Ok(mut compare) = state.compare_runtime.inner.lock() {
+                    if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+                        compare.jobs.insert(job.job_id.clone(), index);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !current {
+                    let _ = crate::commands::transcription::transcription_cancel_inner(&app, state, &job.job_id);
+                    return;
                 }
             }
-            Err(error) => state
+            Err(error) if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch => state
                 .compare_runtime
                 .update_cell(index, "error", None, Some(error)),
+            Err(_) => return,
         }
     }
 }
 
 fn write_wav(samples: &[f32], sample_rate: u32) -> Result<String, String> {
-    let data_len = (samples.len() * 2) as u32;
-    let mut bytes = Vec::with_capacity(44 + data_len as usize);
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-    bytes.extend_from_slice(b"WAVEfmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&sample_rate.to_le_bytes());
-    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    bytes.extend_from_slice(&2u16.to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(b"data");
-    bytes.extend_from_slice(&data_len.to_le_bytes());
-    for sample in samples {
-        bytes
-            .extend_from_slice(&((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
-    }
     let path = std::env::temp_dir().join(format!("say-it-compare-{}.wav", uuid::Uuid::new_v4()));
-    std::fs::write(&path, bytes).map_err(|e| format!("写入临时录音文件失败：{e}"))?;
+    if let Err(error) = crate::audio_wav::write_mono_pcm16(
+        &path,
+        samples,
+        sample_rate,
+        crate::audio_wav::Quantization::Truncate,
+    ) {
+        if path.exists() {
+            if let Err(cleanup) = std::fs::remove_file(&path) {
+                eprintln!("[compare] 清理未完成录音文件失败：{cleanup}");
+            }
+        }
+        return Err(format!("写入临时录音文件失败：{error}"));
+    }
     path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| "临时文件路径无效".into())
@@ -872,9 +947,16 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
 }
 fn settle(state: &RuntimeState) {
     if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-        if compare.phase == "finalizing" && compare.sessions.is_empty() && compare.jobs.is_empty() {
-            compare.phase = "idle".into();
-        }
+        settle_comparison(&mut compare);
+    }
+}
+fn settle_comparison(compare: &mut CompareState) {
+    if compare.phase == "finalizing"
+        && !compare.preparing_file
+        && compare.sessions.is_empty()
+        && compare.jobs.is_empty()
+    {
+        compare.phase = "idle".into();
     }
 }
 fn publish(app: &tauri::AppHandle) {
@@ -896,6 +978,35 @@ fn publish(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finished_streams_do_not_end_comparison_during_file_export() {
+        let runtime = CompareRuntime::default();
+        let epoch = runtime.reset(vec![]);
+        {
+            let mut state = runtime.inner.lock().unwrap();
+            state.phase = "finalizing".into();
+            state.preparing_file = true;
+            settle_comparison(&mut state);
+            assert_eq!(state.phase, "finalizing");
+        }
+        assert!(runtime.finish_file_export(epoch));
+        let mut state = runtime.inner.lock().unwrap();
+        settle_comparison(&mut state);
+        assert_eq!(state.phase, "idle");
+    }
+
+    #[test]
+    fn cancelled_export_cannot_finish_a_new_comparison() {
+        let runtime = CompareRuntime::default();
+        let old = runtime.reset(vec![]);
+        let current = runtime.reset(vec![]);
+        runtime.inner.lock().unwrap().preparing_file = true;
+        assert!(!runtime.finish_file_export(old));
+        assert!(runtime.inner.lock().unwrap().preparing_file);
+        assert!(runtime.finish_file_export(current));
+        assert!(!runtime.inner.lock().unwrap().preparing_file);
+    }
 
     #[test]
     fn reset_creates_a_running_snapshot_and_keeps_cell_index() {

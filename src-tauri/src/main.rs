@@ -4,6 +4,7 @@ mod active_app_context;
 mod application;
 mod audio_dsp;
 mod audio_prep;
+mod audio_wav;
 mod commands;
 mod desktop;
 #[cfg(windows)]

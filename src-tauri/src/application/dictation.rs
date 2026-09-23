@@ -1676,56 +1676,19 @@ async fn start_file_job(
     Ok(())
 }
 
-/// 每批转换并写盘的采样数。
-const WAV_WRITE_CHUNK: usize = 8_192;
-
-/// 把 f32 PCM 流式写成 16-bit 单声道 WAV。
-///
-/// 以前是先 `f32_to_i16` 造一份完整 i16 Vec，再拼一份完整的 WAV 字节 Vec，最后一次性
-/// `fs::write`：停止的那一瞬内存里同时存在三份完整录音。长录音下这几次连续的大块
-/// 分配最容易失败，而分配失败会直接 abort 进程。数据长度一开始就算得出来，
-/// 所以头部可以直接写对，不需要回填。
+/// 保留听写原有的四舍五入量化；调校试听和模型对比则使用截断量化。
 fn write_wav_blocking(
     path: &std::path::Path,
     samples: &[f32],
     sample_rate: u32,
 ) -> Result<(), String> {
-    use std::io::Write;
-
-    let data_len = u32::try_from(samples.len().saturating_mul(2))
-        .map_err(|_| "听写录音超过 WAV 格式上限".to_string())?;
-    let file = std::fs::File::create(path).map_err(|e| format!("写入听写录音失败：{e}"))?;
-    let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
-    let mut header = Vec::with_capacity(44);
-    header.extend_from_slice(b"RIFF");
-    header.extend_from_slice(&(36 + data_len).to_le_bytes());
-    header.extend_from_slice(b"WAVEfmt ");
-    header.extend_from_slice(&16u32.to_le_bytes());
-    header.extend_from_slice(&1u16.to_le_bytes());
-    header.extend_from_slice(&1u16.to_le_bytes());
-    header.extend_from_slice(&sample_rate.to_le_bytes());
-    header.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    header.extend_from_slice(&2u16.to_le_bytes());
-    header.extend_from_slice(&16u16.to_le_bytes());
-    header.extend_from_slice(b"data");
-    header.extend_from_slice(&data_len.to_le_bytes());
-    writer
-        .write_all(&header)
-        .map_err(|e| format!("写入听写录音失败：{e}"))?;
-
-    let mut block = Vec::with_capacity(WAV_WRITE_CHUNK * 2);
-    for part in samples.chunks(WAV_WRITE_CHUNK) {
-        block.clear();
-        for value in crate::audio_prep::f32_to_i16(part) {
-            block.extend_from_slice(&value.to_le_bytes());
-        }
-        writer
-            .write_all(&block)
-            .map_err(|e| format!("写入听写录音失败：{e}"))?;
-    }
-    writer
-        .flush()
-        .map_err(|e| format!("写入听写录音失败：{e}"))
+    crate::audio_wav::write_mono_pcm16(
+        path,
+        samples,
+        sample_rate,
+        crate::audio_wav::Quantization::Round,
+    )
+    .map_err(|error| format!("写入听写录音失败：{error}"))
 }
 
 async fn write_wav(samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
@@ -4275,17 +4238,13 @@ mod tests {
     /// finalize 必须读 `recorded_ms`，不能再去读那时早已为空的 `raw_samples`。
     #[test]
     fn finalize_reads_the_recorded_duration_not_the_drained_samples() {
-        let source = include_str!("dictation.rs").replace("
-", "
-");
+        let source = include_str!("dictation.rs").replace("\r\n", "\n");
         let production = &source[..source.find("#[cfg(test)]").expect("应当存在测试模块")];
         let start = production
             .find("async fn finalize(")
             .expect("finalize 必须仍然存在");
         let body = &production[start..];
-        let body = &body[..body.find("
-}
-").expect("函数体未闭合")];
+        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
 
         assert!(
             body.contains("recorded_ms"),
@@ -4335,31 +4294,6 @@ mod tests {
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         assert_eq!(pcm, crate::audio_prep::f32_to_i16(&[0.0, 1.0, -1.0, 0.5]));
-    }
-
-    /// 写盘必须是流式的。
-    ///
-    /// 以前先造一份完整 i16 Vec、再拼一份完整 WAV 字节 Vec，停止那一瞬内存里同时存在
-    /// 三份完整录音（按停止键时的瞬时峰值约每分钟 23MB）。内存峰值没法用断言直接量，
-    /// 只能校验实现形状：按块转换写出，不先把整个文件拼在内存里。
-    #[test]
-    fn wav_writing_never_materializes_the_whole_file_in_memory() {
-        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，听 \n 的切片会失配。
-        let source = include_str!("dictation.rs").replace("\r\n", "\n");
-        let start = source
-            .find("fn write_wav_blocking(")
-            .expect("写盘函数必须仍然存在");
-        let body = &source[start..];
-        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
-
-        assert!(
-            body.contains("samples.chunks(WAV_WRITE_CHUNK)"),
-            "必须按块转换写出"
-        );
-        assert!(
-            !body.contains("Vec::with_capacity(44 + "),
-            "不得先在内存里拼出整个文件"
-        );
     }
 
     #[test]

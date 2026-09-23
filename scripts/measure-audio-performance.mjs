@@ -27,9 +27,10 @@ const executable = resolve(values.executable);
 const testNames = {
   "audio-lab": "application::audio_lab::performance_tests::offline_audio_memory_profile",
   decode: "audio_prep::performance_tests::file_decode_memory_profile",
+  "wav-export": "application::compare::performance_tests::wav_export_memory_profile",
 };
 const testName = testNames[values.scenario];
-if (!testName) throw new Error("scenario 必须是 audio-lab 或 decode");
+if (!testName) throw new Error("scenario 必须是 audio-lab、decode 或 wav-export");
 const measurements = [];
 for (let run = 0; run < runs; run++) {
   const result = spawnSync(executable, [
