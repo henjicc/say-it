@@ -12,6 +12,9 @@ use crate::audio_dsp::{process_offline, DspParams};
 
 const WAVE_POINTS: usize = 860;
 
+#[cfg(all(test, windows))]
+mod performance_tests;
+
 #[derive(Default)]
 pub(crate) struct AudioLabRuntime {
     state: Mutex<AudioLabState>,
@@ -102,7 +105,7 @@ impl AudioLabRuntime {
             return Err("请先录制音频".into());
         }
         let result = process_offline(&state.raw, state.sample_rate, &params);
-        state.processed = crate::state::decode_f32_base64(&result.processed_base64)?;
+        state.processed = result.processed;
         state.stats = Some(AudioLabStats {
             in_lufs: result.in_lufs,
             out_lufs: result.out_lufs,
