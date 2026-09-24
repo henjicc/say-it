@@ -38,6 +38,8 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "subtitle-delivery": "application::subtitles::delivery_tests::stalled_renderer_profile",
+  "subtitle-delivery-legacy": "application::subtitles::delivery_tests::stalled_renderer_profile",
   "runtime-scheduling": "runtime_performance_tests::scheduling_profile",
   "subtitle-retention": "application::subtitles::retention::tests::long_session_profile",
   "subtitle-retention-legacy": "application::subtitles::retention::tests::long_session_profile",
@@ -94,6 +96,7 @@ for (let run = 0; run < runs; run++) {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
       SAYIT_PERF_RUNTIME_WORKERS: String(runtimeWorkers),
+      SAYIT_PERF_TRANSLATION_DELIVERY_LEGACY: values.scenario === "subtitle-delivery-legacy" ? "1" : "0",
       SAYIT_PERF_SUBTITLE_LEGACY: values.scenario === "subtitle-retention-legacy" ? "1" : "0",
       SAYIT_PERF_EVENT_LEGACY: ["event-fanout-legacy", "event-small-fanout-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_EVENT_SMALL: values.scenario.startsWith("event-small") ? "1" : "0",

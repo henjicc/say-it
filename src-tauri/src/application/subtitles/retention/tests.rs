@@ -42,7 +42,7 @@ fn rendering_and_retention_match_old_output_with_out_of_order_streams() {
         assert_eq!(dispatched, legacy.dispatch(source, true));
         for (seq, _) in dispatched {
             let long_partial = format!("  {} {seq}", " 中🙂\t".repeat(500));
-            doc.update(seq, long_partial.clone());
+            doc.update(seq, &long_partial);
             legacy.values.insert(seq, long_partial);
             same_display(&doc, &legacy);
             pending.push(seq);
@@ -60,7 +60,7 @@ fn rendering_and_retention_match_old_output_with_out_of_order_streams() {
             } else {
                 format!("译{seq}{}", "🙂 汉\n".repeat(90))
             };
-            doc.update(seq, text.clone());
+            doc.update(seq, &text);
             doc.finish(seq);
             legacy.values.insert(seq, text);
             same_display(&doc, &legacy);
@@ -68,7 +68,7 @@ fn rendering_and_retention_match_old_output_with_out_of_order_streams() {
     }
     for seq in pending.into_iter().rev() {
         let text = format!("  最终{seq}{}", "中文🙂 ".repeat(160));
-        doc.update(seq, text.clone());
+        doc.update(seq, &text);
         doc.finish(seq);
         legacy.values.insert(seq, text);
         same_display(&doc, &legacy);
@@ -81,13 +81,13 @@ fn completed_history_stays_bounded_and_late_events_cannot_restore_it() {
         let mut doc = TranslationDocument::default();
         for _ in 0..4_000 {
             let seq = doc.dispatch("一句", true)[0].0;
-            doc.update(seq, "字".repeat(300));
+            doc.update(seq, &"字".repeat(300));
             doc.finish(seq);
             doc.commit(mode, true);
         }
         assert!(doc.values.len() <= 12, "{mode}: {}", doc.values.len());
         assert!(doc.replace_groups.len() <= 7);
-        assert!(!doc.update(1, "迟到旧结果".into()));
+        assert!(!doc.update(1, "迟到旧结果"));
         assert!(!doc.values.contains_key(&1));
     }
 }
@@ -101,7 +101,7 @@ fn a_single_uncommitted_sentence_and_empty_results_are_reclaimed() {
         for (seq, _) in doc.dispatch(&text, false) {
             doc.update(
                 seq,
-                if index % 2 == 0 {
+                &if index % 2 == 0 {
                     "译".repeat(300)
                 } else {
                     String::new()
@@ -118,17 +118,17 @@ fn a_single_uncommitted_sentence_and_empty_results_are_reclaimed() {
 fn a_shorter_final_can_reveal_older_text_until_the_suffix_is_stable() {
     let mut doc = TranslationDocument::default();
     let old = doc.dispatch("旧句", true)[0].0;
-    doc.update(old, "旧译文".into());
+    doc.update(old, "旧译文");
     doc.finish(old);
     doc.commit("replace", false);
     let new = doc.dispatch("新句", true)[0].0;
-    doc.update(new, "临时".repeat(2_000));
+    doc.update(new, &"临时".repeat(2_000));
     doc.commit("replace", true);
     assert!(doc.values.contains_key(&old));
-    doc.update(new, "短最终".into());
+    doc.update(new, "短最终");
     doc.finish(new);
     assert_eq!(doc.display(&SubtitlePrefs::default()), "旧译文 短最终");
-    assert!(!doc.update(new, "完成后重复事件".into()));
+    assert!(!doc.update(new, "完成后重复事件"));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn clipping_preserves_whitespace_and_character_boundaries() {
             let text = format!("{prefix}{}", "字".repeat(size));
             let mut doc = TranslationDocument::default();
             let seq = doc.dispatch("句", true)[0].0;
-            doc.update(seq, text.clone());
+            doc.update(seq, &text);
             assert_eq!(
                 doc.display(&SubtitlePrefs::default()),
                 super::super::tail_chars(&text, MAX_TEXT_CHARS)
@@ -165,7 +165,7 @@ fn long_session_profile() {
             doc.values.insert(seq, text);
             legacy_commit(&mut doc, "replace", true);
         } else {
-            doc.update(seq, text);
+            doc.update(seq, &text);
             doc.finish(seq);
             doc.commit("replace", true);
         }
