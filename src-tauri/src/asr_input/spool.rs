@@ -1,10 +1,11 @@
 //! 慢识别积压的无损临时存储。设备发送线程不执行文件 I/O。
 use super::ResidentCharge;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(test)]
 use std::path::PathBuf;
+mod storage;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use storage::TemporaryFile;
 use tokio::sync::oneshot;
 
 const SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
@@ -99,25 +100,16 @@ impl Spool {
         self.paths.lock().unwrap().clone()
     }
     pub(super) fn reject_writes_for_test(&self) {
-        let path = std::env::temp_dir().join(format!(
-            "say-it-asr-queue-test-{}.f32",
-            uuid::Uuid::new_v4()
-        ));
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        drop(file);
-        let file = File::open(&path).unwrap();
-        self.paths.lock().unwrap().push(path.clone());
+        let file = TemporaryFile::read_only();
+        self.paths.lock().unwrap().push(file.path().to_owned());
         *self.writer.lock().unwrap() = Some(Writer {
             output: Some(Output {
-                file,
                 segment: Arc::new(Segment {
-                    path,
-                    bytes: AtomicUsize::new(0),
-                    budget: self.disk_bytes.clone(),
+                    file,
+                    charge: DiskCharge {
+                        bytes: AtomicUsize::new(0),
+                        budget: self.disk_bytes.clone(),
+                    },
                 }),
                 bytes: 0,
             }),
@@ -127,24 +119,21 @@ impl Spool {
 }
 
 struct Segment {
-    path: PathBuf,
+    // 字段按声明顺序析构：先关闭拥有删除语义的句柄，再归还实际文件预算。
+    file: TemporaryFile,
+    charge: DiskCharge,
+}
+struct DiskCharge {
     bytes: AtomicUsize,
     budget: Arc<AtomicUsize>,
 }
-impl Drop for Segment {
+impl Drop for DiskCharge {
     fn drop(&mut self) {
         self.budget
             .fetch_sub(self.bytes.load(Ordering::Acquire), Ordering::AcqRel);
-        if let Err(error) = std::fs::remove_file(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("[asr-spool] 清理临时音频失败：{error}");
-            }
-        }
     }
 }
 struct Output {
-    // 先关文件，再释放拥有删除权的路径。
-    file: File,
     segment: Arc<Segment>,
     bytes: u64,
 }
@@ -167,26 +156,17 @@ impl Writer {
             .as_ref()
             .is_none_or(|output| output.bytes + bytes > SEGMENT_BYTES)
         {
-            let path =
-                std::env::temp_dir().join(format!("say-it-asr-queue-{}.f32", uuid::Uuid::new_v4()));
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let file = options
-                .open(&path)
-                .map_err(|error| format!("创建音频暂存失败：{error}"))?;
+            let file =
+                TemporaryFile::create().map_err(|error| format!("创建音频暂存失败：{error}"))?;
             #[cfg(test)]
-            self.paths.lock().unwrap().push(path.clone());
+            self.paths.lock().unwrap().push(file.path().to_owned());
             self.output = Some(Output {
-                file,
                 segment: Arc::new(Segment {
-                    path,
-                    bytes: AtomicUsize::new(0),
-                    budget: self.disk_bytes.clone(),
+                    file,
+                    charge: DiskCharge {
+                        bytes: AtomicUsize::new(0),
+                        budget: self.disk_bytes.clone(),
+                    },
                 }),
                 bytes: 0,
             });
@@ -201,11 +181,12 @@ impl Writer {
             .map_err(|_| "音频暂存磁盘预算已达上限，本次任务已停止".to_string())?;
         output
             .segment
+            .charge
             .bytes
             .fetch_add(bytes as usize, Ordering::AcqRel);
         let offset = output.bytes;
         let mut buffer = [0u8; 16 * 1024];
-        for part in samples.chunks(buffer.len() / 4) {
+        for (index, part) in samples.chunks(buffer.len() / 4).enumerate() {
             if cancelled() {
                 return Err("音频暂存已取消".into());
             }
@@ -213,8 +194,12 @@ impl Writer {
                 encoded.copy_from_slice(&sample.to_bits().to_le_bytes());
             }
             output
+                .segment
                 .file
-                .write_all(&buffer[..part.len() * 4])
+                .write_all_at(
+                    &buffer[..part.len() * 4],
+                    offset + (index * buffer.len()) as u64,
+                )
                 .map_err(|error| format!("写入音频暂存失败：{error}"))?;
         }
         output.bytes += bytes;
@@ -230,36 +215,22 @@ pub(super) struct DiskPacket {
     offset: u64,
     samples: usize,
 }
-struct Input {
-    file: File,
-    segment: Arc<Segment>,
-}
 #[derive(Default)]
-pub(super) struct Reader {
-    input: Option<Input>,
-}
+pub(super) struct Reader;
 impl Reader {
     pub(super) fn read(&mut self, packet: DiskPacket) -> Result<Vec<f32>, String> {
-        if self
-            .input
-            .as_ref()
-            .is_none_or(|input| !Arc::ptr_eq(&input.segment, &packet.segment))
-        {
-            let file = File::open(&packet.segment.path)
-                .map_err(|error| format!("读取音频暂存失败：{error}"))?;
-            self.input = Some(Input {
-                file,
-                segment: packet.segment.clone(),
-            });
-        }
-        let file = &mut self.input.as_mut().unwrap().file;
-        file.seek(SeekFrom::Start(packet.offset))
-            .map_err(|error| format!("定位音频暂存失败：{error}"))?;
         let mut result = Vec::with_capacity(packet.samples);
         let mut buffer = [0u8; 16 * 1024];
         while result.len() < packet.samples {
             let count = (packet.samples - result.len()).min(buffer.len() / 4);
-            file.read_exact(&mut buffer[..count * 4])
+            // Windows 的定位读写仍会改变共享游标；每一段都显式给偏移，不能混用 seek + read/write。
+            packet
+                .segment
+                .file
+                .read_exact_at(
+                    &mut buffer[..count * 4],
+                    packet.offset + result.len() as u64 * 4,
+                )
                 .map_err(|error| format!("音频暂存不完整：{error}"))?;
             result.extend(
                 buffer[..count * 4]
@@ -271,5 +242,13 @@ impl Reader {
     }
 }
 
+#[cfg(test)]
+impl DiskPacket {
+    pub(super) fn truncate_for_test(&self, len: u64) {
+        self.segment.file.truncate(len);
+    }
+}
+#[cfg(test)]
+mod lifetime_tests;
 #[cfg(test)]
 mod tests;
