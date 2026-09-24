@@ -387,8 +387,11 @@ pub(crate) async fn refresh_browser_session_before_runtime(
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())?
-        .browser_for_provider(provider_id)
-        .ok_or("插件没有声明 browserSession")?;
+        .browser_for_provider(provider_id);
+    // 普通 API/无认证插件没有浏览器会话，实时识别与录音的共用前置检查应直接放行。
+    let Some(browser) = browser else {
+        return Ok(());
+    };
     if !requires_capture(&browser) {
         return Ok(());
     }
