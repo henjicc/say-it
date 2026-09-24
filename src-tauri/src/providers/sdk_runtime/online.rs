@@ -520,6 +520,7 @@ where
     let (event_tx, mut event_rx) = mpsc::channel(128);
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let task_request_id = request_id.clone();
     let mut task =
         crate::providers::plugin_runtime::spawn_js_worker("builtin-translation", move || {
