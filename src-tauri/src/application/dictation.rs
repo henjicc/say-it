@@ -418,6 +418,8 @@ fn resolve_inject_method(
         .to_string()
 }
 
+type RawRecordingResult = Result<Option<crate::audio_wav::RecordedWav>, String>;
+
 #[derive(Default)]
 struct Session {
     epoch: u64,
@@ -428,14 +430,9 @@ struct Session {
     file_job_id: Option<String>,
     committed: String,
     segment: String,
-    raw_samples: Vec<f32>,
+    recorded_samples: usize,
     sample_rate: u32,
-    /// 按实际采样数算出的**说话时长**，在 `stop()` 搬走 `raw_samples` 的那一刻记下。
-    ///
-    /// `finalize` 读不到 `raw_samples`：`stop()` 早就 `mem::take` 走了，四个 finalize
-    /// 入口都在其后。原本写在 finalize 里的「按采样数算时长」分支因此从未执行过，
-    /// 一律回落到 `started_at.elapsed()`——file 模式把上传与转写的耗时也算成了说话
-    /// 时长，`history::output_metrics` 的「节省时间」于是长期 saturate 成 0。
+    /// 停止并排空录音后冻结采样时长，避免把上传与识别耗时算进说话时长。
     recorded_ms: Option<u64>,
     injected_epoch: Option<u64>,
     lease: Option<AudioLease>,
@@ -457,7 +454,7 @@ struct Session {
     pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
     silence_streaming: bool,
-    raw_done: Option<Arc<tokio::sync::Notify>>,
+    raw_done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
     temp_audio_path: Option<PathBuf>,
     active_app_context: Option<crate::active_app_context::DictationContextCaptureHandle>,
     /// finalize 会把捕获句柄移出会话；保留独立令牌，让取消/会话替换仍能中断 OCR。
@@ -486,6 +483,7 @@ impl Session {
 
     fn mark_failed(&mut self, error: String, pending_fallback: Option<PendingFallback>) {
         self.phase = DictationPhase::Failed;
+        self.raw_done.take();
         self.error = Some(error);
         self.pending_fallback = pending_fallback;
     }
@@ -1187,13 +1185,13 @@ async fn start_internal(
             return Err(error);
         }
     };
-    let raw_done = Arc::new(tokio::sync::Notify::new());
+    let (raw_done, raw_result) = tokio::sync::oneshot::channel();
     if let Ok(mut s) = state.dictation_runtime.session.lock() {
         if s.epoch == epoch {
-            s.raw_done = Some(raw_done.clone());
+            s.raw_done = Some(raw_result);
         }
     }
-    spawn_raw_consumer(app.clone(), epoch, raw_rx, raw_done);
+    spawn_raw_consumer(app.clone(), epoch, raw_rx, raw_done, mode, mic.sample_rate);
     if mode == DictationMode::Realtime && !prefs.dictation_silence_disconnect_enabled {
         if let Err(error) = open_asr(app.clone(), epoch).await {
             cleanup_failed_start(&state, epoch);
@@ -1251,6 +1249,7 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
                 return None;
             }
             s.phase = DictationPhase::Failed;
+            s.raw_done.take();
             s.mode = None;
             s.public_id = None;
             if let Some(cancellation) = s.active_app_context_cancellation.take() {
@@ -1265,13 +1264,7 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
     }
 }
 
-/// file 模式单次录音的硬上限。
-///
-/// 非实时模型把整段原始 f32 PCM 留在内存里等停止时一次性写盘，而
-/// `dictation_silence_disconnect_*` 的自动断开只作用于实时模式，file 模式没有任何自动收尾。
-/// 48kHz 单声道每分钟约 11.5MB，忘了停止就一路涨到分配失败——Rust 的分配失败直接
-/// abort 进程，整段录音连同还没落盘的 wav 一起没了，也没有 temp_audio_path 可供恢复。
-/// 到上限就自动收尾并走正常识别流程，已经说过的内容不会丢。
+/// 保留 file 模式现有的 30 分钟自动收尾行为；PCM 已改为边录边写。
 const FILE_MODE_MAX_RECORDING: Duration = Duration::from_secs(30 * 60);
 const FILE_MODE_LIMIT_NOTICE: &str = "单次听写录音已达 30 分钟上限，已自动停止并开始识别。";
 
@@ -1286,14 +1279,36 @@ fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    done: Arc<tokio::sync::Notify>,
+    done: tokio::sync::oneshot::Sender<RawRecordingResult>,
+    mode: DictationMode,
+    sample_rate: u32,
 ) {
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut recording = if mode == DictationMode::File {
+            match crate::audio_wav::WavRecording::new(
+                sample_rate,
+                crate::audio_wav::Quantization::Round,
+            ) {
+                Ok(recording) => Some(recording),
+                Err(error) => {
+                    let error = format!("创建听写录音失败：{error}");
+                    let _ = done.send(Err(error.clone()));
+                    let _ = tauri::async_runtime::block_on(fail(app, epoch, error));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let mut write_error = None;
         // 文件听写不建立 ASR 流，因此单独持有一份流式 DSP 只供波形预览使用。
-        // 原始 PCM 仍完整保留给文件识别上传，避免预览链路改变识别输入。
+        // 文件直接按原有量化方式写盘；波形预览 DSP 不得改变识别输入。
         let mut waveform_dsp: Option<StreamDsp> = None;
         let mut stop_requested = false;
-        while let Some(input) = rx.recv().await {
+        while let Some(input) = rx.blocking_recv() {
+            if done.is_closed() {
+                return;
+            }
             let AsrStreamInput::RawF32(samples) = input else {
                 continue;
             };
@@ -1314,11 +1329,8 @@ fn spawn_raw_consumer(
                     break;
                 }
                 if s.mode == Some(DictationMode::File) {
-                    if file_mode_recording_is_full(s.raw_samples.len(), s.sample_rate) {
-                        limit_reached = true;
-                    } else {
-                        s.raw_samples.extend_from_slice(&samples);
-                    }
+                    s.recorded_samples += samples.len();
+                    limit_reached = file_mode_recording_is_full(s.recorded_samples, s.sample_rate);
                 }
                 let level = rms(&samples);
                 let mut need_open = false;
@@ -1364,6 +1376,13 @@ fn spawn_raw_consumer(
                     });
                 (need_open, need_close, waveform_config)
             };
+            // 不持有会话状态锁执行磁盘 I/O，查询状态与取消不必等写入。
+            if let Some(recording) = recording.as_mut() {
+                if let Err(error) = recording.append(&samples) {
+                    write_error = Some(format!("写入听写录音失败：{error}"));
+                    break;
+                }
+            }
             if let Some((params, sample_rate, assistant_follow_up, floating_orb)) = waveform_config
             {
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
@@ -1396,14 +1415,31 @@ fn spawn_raw_consumer(
                 disconnect_silent_asr(app.clone(), epoch);
             }
             if need_open {
-                if let Err(error) = open_asr(app.clone(), epoch).await {
-                    let _ =
-                        fail(app.clone(), epoch, format!("连接实时语音识别失败：{error}")).await;
+                if let Err(error) = tauri::async_runtime::block_on(open_asr(app.clone(), epoch)) {
+                    let _ = tauri::async_runtime::block_on(fail(
+                        app.clone(),
+                        epoch,
+                        format!("连接实时语音识别失败：{error}"),
+                    ));
                     break;
                 }
             }
         }
-        done.notify_one();
+        if done.is_closed() {
+            return;
+        }
+        let result = if let Some(error) = write_error {
+            drop(recording);
+            Err(error)
+        } else {
+            recording
+                .map(|recording| recording.finish())
+                .transpose()
+                .map_err(|error| format!("完成听写录音失败：{error}"))
+        };
+        let recording_error = result.as_ref().err().cloned();
+        // 成功结果连同文件所有权一起交给 stop；取消后接收端不存在会自动清理文件。
+        let _ = done.send(result);
 
         let state = app.state::<RuntimeState>();
         let capture_error = state
@@ -1424,12 +1460,13 @@ fn spawn_raw_consumer(
             })
             .unwrap_or(false);
         if still_recording {
-            let _ = fail(
+            let _ = tauri::async_runtime::block_on(fail(
                 app,
                 epoch,
-                capture_error.unwrap_or_else(|| "麦克风采集已意外停止".into()),
-            )
-            .await;
+                recording_error
+                    .or(capture_error)
+                    .unwrap_or_else(|| "麦克风采集已意外停止".into()),
+            ));
         }
     });
 }
@@ -1546,17 +1583,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (
-        epoch,
-        mode,
-        session_id,
-        rate,
-        prefs,
-        raw_done,
-        audio_generation,
-        inline_follow_up,
-        trigger,
-    ) = {
+    let (epoch, mode, session_id, prefs, raw_done, audio_generation, inline_follow_up, trigger) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1582,9 +1609,8 @@ async fn stop(app: AppHandle) -> Result<(), String> {
             s.epoch,
             s.mode,
             s.asr_session_id.clone(),
-            s.sample_rate,
             s.prefs.clone(),
-            s.raw_done.clone(),
+            s.raw_done.take(),
             s.lease.as_ref().map(|v| v.generation).unwrap_or(0),
             s.assistant_request
                 .as_ref()
@@ -1593,17 +1619,26 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         )
     };
     pause_backend_mic_inner(&state)?;
-    if mode == Some(DictationMode::File) {
-        if let Some(done) = raw_done {
-            let _ = tokio::time::timeout(Duration::from_secs(1), done.notified()).await;
+    let recording = if mode == Some(DictationMode::File) {
+        let result = drain_file_recording(raw_done).await;
+        match result {
+            Ok(recording) => Some(recording),
+            Err(error) => {
+                drop(_guard);
+                return fail(app, epoch, error).await;
+            }
         }
+    } else {
+        None
+    };
+    {
+        let mut session = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map_err(|_| "听写状态锁失败")?;
+        freeze_recorded_duration(&mut session);
     }
-    let raw = state
-        .dictation_runtime
-        .session
-        .lock()
-        .map_err(|_| "听写状态锁失败")
-        .map(|mut s| take_raw_samples(&mut s))?;
     if prefs.keep_alive_ms == 0 {
         let _ = release_backend_mic_inner(&state);
     } else {
@@ -1628,7 +1663,15 @@ async fn stop(app: AppHandle) -> Result<(), String> {
                 return Ok(());
             }
         }
-        Some(DictationMode::File) => start_file_job(app.clone(), epoch, raw, rate, prefs).await,
+        Some(DictationMode::File) => {
+            start_file_job(
+                app.clone(),
+                epoch,
+                recording.expect("文件录音已排空"),
+                prefs,
+            )
+            .await
+        }
         None => Ok(()),
     };
     if let Err(error) = result {
@@ -1642,19 +1685,27 @@ async fn stop(app: AppHandle) -> Result<(), String> {
 async fn start_file_job(
     app: AppHandle,
     epoch: u64,
-    raw: Vec<f32>,
-    rate: u32,
+    recording: crate::audio_wav::RecordedWav,
     prefs: DictationPrefs,
 ) -> Result<(), String> {
-    if raw.is_empty() {
+    if recording.samples == 0 {
         return Err("未录到音频".into());
     }
-    let path = write_wav(raw, rate).await?;
-    if let Ok(mut s) = app.state::<RuntimeState>().dictation_runtime.session.lock() {
-        if s.epoch == epoch {
-            s.temp_audio_path = Some(PathBuf::from(&path));
+    let path = {
+        let state = app.state::<RuntimeState>();
+        let mut session = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map_err(|_| "听写状态锁失败")?;
+        if session.epoch != epoch {
+            return Ok(());
         }
-    }
+        let path = recording.into_path();
+        let value = path.to_string_lossy().into_owned();
+        session.temp_audio_path = Some(path);
+        value
+    };
     let params = TranscriptionParams {
         model: prefs.asr_model,
         language_hints: vec![],
@@ -1664,7 +1715,8 @@ async fn start_file_job(
         special_word_filter: String::new(),
     };
     let state = app.state::<RuntimeState>();
-    let response = transcription_start_inner(app.clone(), &state, path, Some(params), "dictation").await?;
+    let response =
+        transcription_start_inner(app.clone(), &state, path, Some(params), "dictation").await?;
     let mut s = state
         .dictation_runtime
         .session
@@ -1676,28 +1728,15 @@ async fn start_file_job(
     Ok(())
 }
 
-/// 保留听写原有的四舍五入量化；调校试听和模型对比则使用截断量化。
-fn write_wav_blocking(
-    path: &std::path::Path,
-    samples: &[f32],
-    sample_rate: u32,
-) -> Result<(), String> {
-    crate::audio_wav::write_mono_pcm16(
-        path,
-        samples,
-        sample_rate,
-        crate::audio_wav::Quantization::Round,
-    )
-    .map_err(|error| format!("写入听写录音失败：{error}"))
-}
-
-async fn write_wav(samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
-    let path = std::env::temp_dir().join(format!("say-it-dictation-{}.wav", Uuid::new_v4()));
-    let target = path.clone();
-    tokio::task::spawn_blocking(move || write_wav_blocking(&target, &samples, sample_rate))
+async fn drain_file_recording(
+    done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
+) -> Result<crate::audio_wav::RecordedWav, String> {
+    let done = done.ok_or("听写录音任务不存在")?;
+    tokio::time::timeout(Duration::from_secs(10), done)
         .await
-        .map_err(|e| format!("写入听写录音失败：{e}"))??;
-    Ok(path.to_string_lossy().into_owned())
+        .map_err(|_| "听写尾部音频或文件写入超时".to_string())?
+        .map_err(|_| "听写录音任务提前结束".to_string())??
+        .ok_or_else(|| "听写录音文件不存在".into())
 }
 
 async fn cancel(app: AppHandle) -> Result<(), String> {
@@ -1752,7 +1791,8 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         s.public_id = None;
         s.committed.clear();
         s.segment.clear();
-        s.raw_samples.clear();
+        s.recorded_samples = 0;
+        s.raw_done.take();
         s.recorded_ms = None;
         s.error = None;
         s.pending_fallback = None;
@@ -2005,19 +2045,13 @@ async fn prepare_target_for_injection(
     Ok(())
 }
 
-/// 搬走本次录音的采样，并**在同一时刻**记下按采样数算出的说话时长。
-///
-/// 时长只能在这里算：`finalize` 的四个入口全都在 `stop()` 之后，那时 `raw_samples`
-/// 已经被搬空。原本写在 finalize 里的「按采样数算时长」分支因此从未执行过，一律
-/// 回落到 `started_at.elapsed()`——file 模式把上传与转写的耗时也算进了说话时长，
-/// `history::output_metrics` 的「节省时间」于是长期 saturate 成 0。
-fn take_raw_samples(session: &mut Session) -> Vec<f32> {
-    let samples = std::mem::take(&mut session.raw_samples);
-    if session.sample_rate > 0 && !samples.is_empty() {
+/// 在停止录音时冻结采样时长，不能把后续上传/转写等待算作说话时长。
+fn freeze_recorded_duration(session: &mut Session) {
+    let samples = std::mem::take(&mut session.recorded_samples);
+    if session.sample_rate > 0 && samples > 0 {
         session.recorded_ms =
-            Some((samples.len() as u64).saturating_mul(1000) / session.sample_rate as u64);
+            Some((samples as u64).saturating_mul(1000) / session.sample_rate as u64);
     }
-    samples
 }
 
 async fn finalize(app: AppHandle, epoch: u64) {
@@ -4193,27 +4227,49 @@ mod tests {
         assert_eq!(BUILTIN_PUNCTUATION_RULE.patterns.len(), 2);
     }
 
-    /// `stop()` 搬走 raw_samples 之后，finalize 必须仍然拿得到真实说话时长。
+    /// 停止并冻结计数后，finalize 必须仍然拿得到真实说话时长。
     ///
     /// 四个 finalize 入口全在 stop() 之后，原来那段「按采样数算时长」的代码因此
     /// 从未执行过，一律回落到 started_at.elapsed()：file 模式把上传与转写的耗时
     /// 也算成说话时长，history::output_metrics 的「节省时间」长期 saturate 成 0。
     #[test]
-    fn recorded_duration_survives_the_raw_sample_handoff() {
+    fn file_recording_waits_for_tail_and_propagates_worker_failure() {
+        tauri::async_runtime::block_on(async {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let worker = tauri::async_runtime::spawn_blocking(move || {
+                let mut recording = crate::audio_wav::WavRecording::new(16_000, crate::audio_wav::Quantization::Round).unwrap();
+                recording.append(&vec![0.1; 4096]).unwrap();
+                recording.append(&[0.2; 17]).unwrap();
+                let _ = tx.send(Ok(Some(recording.finish().unwrap())));
+            });
+            let recording = drain_file_recording(Some(rx)).await.unwrap();
+            assert_eq!(recording.samples, 4113);
+            worker.await.unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tx.send(Err("disk full".into())).ok().unwrap();
+            assert_eq!(drain_file_recording(Some(rx)).await.err().unwrap(), "disk full");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            drop(tx);
+            assert!(drain_file_recording(Some(rx)).await.is_err());
+            assert!(drain_file_recording(None).await.is_err());
+        });
+    }
+
+    #[test]
+    fn recorded_duration_survives_the_recording_handoff() {
         let mut session = Session {
             sample_rate: 16_000,
-            raw_samples: vec![0.0; 32_000],
+            recorded_samples: 32_000,
             ..Session::default()
         };
 
-        let taken = take_raw_samples(&mut session);
+        freeze_recorded_duration(&mut session);
 
-        assert_eq!(taken.len(), 32_000);
-        assert!(session.raw_samples.is_empty(), "采样必须被真正搬走");
+        assert_eq!(session.recorded_samples, 0, "冻结后清空计数，避免重复计算");
         assert_eq!(
             session.recorded_ms,
             Some(2_000),
-            "32000 帧 / 16kHz = 2 秒，必须在搬走的同一刻记下"
+            "32000 帧 / 16kHz = 2 秒，必须在停止时记下"
         );
     }
 
@@ -4223,19 +4279,19 @@ mod tests {
             sample_rate: 16_000,
             ..Session::default()
         };
-        take_raw_samples(&mut empty);
+        freeze_recorded_duration(&mut empty);
         assert_eq!(empty.recorded_ms, None, "没有采样时应回落到时钟时长");
 
         let mut unknown_rate = Session {
             sample_rate: 0,
-            raw_samples: vec![0.0; 1_000],
+            recorded_samples: 1_000,
             ..Session::default()
         };
-        take_raw_samples(&mut unknown_rate);
+        freeze_recorded_duration(&mut unknown_rate);
         assert_eq!(unknown_rate.recorded_ms, None, "采样率未知时不能瞎算");
     }
 
-    /// finalize 必须读 `recorded_ms`，不能再去读那时早已为空的 `raw_samples`。
+    /// finalize 必须读冻结后的时长，不能读已清空的采样计数。
     #[test]
     fn finalize_reads_the_recorded_duration_not_the_drained_samples() {
         let source = include_str!("dictation.rs").replace("\r\n", "\n");
@@ -4251,8 +4307,8 @@ mod tests {
             "finalize 必须用 stop() 记下的说话时长"
         );
         assert!(
-            !body.contains("raw_samples"),
-            "finalize 里的 raw_samples 一定是空的，不能拿它算任何东西"
+            !body.contains("recorded_samples"),
+            "finalize 不能用停止后已清空的计数计算时长"
         );
     }
 
@@ -4263,8 +4319,7 @@ mod tests {
     /// 而且看不到任何原因。
     #[test]
     fn file_mode_recording_stops_at_the_hard_limit() {
-        // file 模式没有任何自动收尾（静音断开只作用于实时模式），原始 PCM 一路累积到
-        // 分配失败，而 Rust 的分配失败直接 abort 进程：整段录音连同还没落盘的 wav 一起没了。
+        // 存储方式改变后仍保持原有 30 分钟自动收尾行为。
         let rate = 48_000u32;
         let limit = FILE_MODE_MAX_RECORDING.as_secs() as usize * rate as usize;
         assert!(!file_mode_recording_is_full(limit - 1, rate));
@@ -4278,7 +4333,7 @@ mod tests {
     #[test]
     fn written_wav_has_a_correct_header_and_payload() {
         let path = std::env::temp_dir().join(format!("say-it-wav-test-{}.wav", Uuid::new_v4()));
-        write_wav_blocking(&path, &[0.0, 1.0, -1.0, 0.5], 16_000).unwrap();
+        crate::audio_wav::write_mono_pcm16(&path, &[0.0, 1.0, -1.0, 0.5], 16_000, crate::audio_wav::Quantization::Round).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).ok();
 

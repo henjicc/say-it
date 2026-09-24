@@ -4,6 +4,9 @@ use std::path::Path;
 
 const CHUNK_SAMPLES: usize = 8_192;
 
+mod recording;
+pub(crate) use recording::{RecordedWav, WavRecording};
+
 #[derive(Clone, Copy)]
 pub(crate) enum Quantization {
     Truncate,
@@ -47,6 +50,15 @@ fn write_samples(
     samples: &[f32],
     quantization: Quantization,
 ) -> io::Result<()> {
+    encode_samples(writer, samples, quantization)?;
+    writer.flush()
+}
+
+fn encode_samples(
+    writer: &mut impl Write,
+    samples: &[f32],
+    quantization: Quantization,
+) -> io::Result<()> {
     let mut buffer = [0u8; CHUNK_SAMPLES * 2];
     for chunk in samples.chunks(CHUNK_SAMPLES) {
         for (sample, bytes) in chunk.iter().zip(buffer.chunks_exact_mut(2)) {
@@ -59,7 +71,7 @@ fn write_samples(
         }
         writer.write_all(&buffer[..chunk.len() * 2])?;
     }
-    writer.flush()
+    Ok(())
 }
 
 pub(crate) fn write_mono_pcm16(
