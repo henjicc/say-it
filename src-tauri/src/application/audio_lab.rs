@@ -1,5 +1,6 @@
 //! 音频调校会话：原始 PCM、离线 DSP 和波形摘要只驻留在 Rust。
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::json;
@@ -8,7 +9,9 @@ use tauri::{Emitter, Manager};
 use crate::application::contract::{
     next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot,
 };
-use crate::audio_dsp::{process_offline, DspParams};
+use crate::audio_dsp::{offline, DspParams};
+use crate::audio_storage::AudioBuffer;
+use crate::temporary_audio::TemporaryFile;
 
 const WAVE_POINTS: usize = 860;
 
@@ -19,6 +22,10 @@ mod performance_tests;
 pub(crate) struct AudioLabRuntime {
     state: Mutex<AudioLabState>,
     operation: tokio::sync::Mutex<()>,
+    processing_gate: Arc<tokio::sync::Mutex<()>>,
+    processing_revision: AtomicU64,
+    // 当前播放器可能继续发起分段读取；调参或重新录音不能提前删除它正在使用的文件。
+    playback: Mutex<Option<Arc<TemporaryFile>>>,
 }
 
 #[derive(Default)]
@@ -28,8 +35,10 @@ struct AudioLabState {
     recording: bool,
     stopping: bool,
     sample_rate: u32,
-    raw: Vec<f32>,
-    processed: Vec<f32>,
+    raw: AudioBuffer,
+    processed: AudioBuffer,
+    raw_preview: Option<Arc<TemporaryFile>>,
+    processed_preview: Option<Arc<TemporaryFile>>,
     stats: Option<AudioLabStats>,
     error: Option<String>,
 }
@@ -69,6 +78,7 @@ impl AudioLabRuntime {
             return Err("音频调校正在录音".into());
         }
         let epoch = state.epoch.wrapping_add(1);
+        self.processing_revision.fetch_add(1, Ordering::AcqRel);
         *state = AudioLabState {
             epoch,
             recording: true,
@@ -79,11 +89,8 @@ impl AudioLabRuntime {
     }
     #[cfg(test)]
     pub(crate) fn append(&self, samples: &[f32]) {
-        if let Ok(mut state) = self.state.lock() {
-            if state.recording {
-                state.raw.extend_from_slice(samples);
-            }
-        }
+        let epoch = self.state.lock().unwrap().epoch;
+        self.append_for(epoch, samples).unwrap();
     }
     fn abort(&self) {
         if let Ok(mut state) = self.state.lock() {
@@ -99,7 +106,11 @@ impl AudioLabRuntime {
         if state.epoch != epoch || !state.recording {
             return Err("音频调校会话已结束".into());
         }
-        state.raw.extend_from_slice(samples);
+        state
+            .raw
+            .append(samples)
+            .map_err(|e| format!("暂存录音失败：{e}"))?;
+        state.raw_preview = None;
         Ok(())
     }
     fn fail_for(&self, epoch: u64, error: String) -> bool {
@@ -169,29 +180,40 @@ impl AudioLabRuntime {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn reprocess(&self, params: DspParams) -> Result<AudioLabSnapshot, String> {
+        let revision = self.processing_revision.fetch_add(1, Ordering::AcqRel) + 1;
+        self.reprocess_at(params, revision)
+    }
+    fn reprocess_at(&self, params: DspParams, revision: u64) -> Result<AudioLabSnapshot, String> {
+        let (epoch, input, rate) = {
+            let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+            if state.raw.is_empty() {
+                return Err("请先录制音频".into());
+            }
+            (state.epoch, state.raw.snapshot(), state.sample_rate)
+        };
+        let result = offline::process_cancellable(&input, rate, &params, || {
+            self.processing_revision.load(Ordering::Acquire) != revision
+        })?;
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
-        if state.raw.is_empty() {
-            return Err("请先录制音频".into());
+        if state.epoch != epoch || self.processing_revision.load(Ordering::Acquire) != revision {
+            return Err("音频处理已被新任务替换".into());
         }
-        let result = process_offline(&state.raw, state.sample_rate, &params);
         state.processed = result.processed;
+        state.processed_preview = None;
         state.stats = Some(AudioLabStats {
             in_lufs: result.in_lufs,
             out_lufs: result.out_lufs,
             in_peak_db: result.in_peak_db,
             out_peak_db: result.out_peak_db,
-            clipped_samples: state
-                .processed
-                .iter()
-                .filter(|sample| sample.abs() >= 0.999)
-                .count(),
+            clipped_samples: result.clipped_samples,
         });
-        Ok(snapshot(&state))
+        snapshot(&state)
     }
     pub(crate) fn snapshot(&self) -> Result<AudioLabSnapshot, String> {
         let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
-        Ok(snapshot(&state))
+        snapshot(&state)
     }
     pub(crate) fn domain_snapshot(&self) -> DomainSnapshot {
         match self.state.lock() {
@@ -212,7 +234,16 @@ impl AudioLabRuntime {
         }
     }
     pub(crate) fn write_wav(&self, processed: bool) -> Result<String, String> {
-        let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        let existing = if processed {
+            &state.processed_preview
+        } else {
+            &state.raw_preview
+        };
+        if let Some(file) = existing {
+            *self.playback.lock().map_err(|_| "试听状态锁失败")? = Some(file.clone());
+            return Ok(file.readable_path().to_string_lossy().into_owned());
+        }
         let samples = if processed {
             &state.processed
         } else {
@@ -222,20 +253,26 @@ impl AudioLabRuntime {
             return Err("没有可播放的音频".into());
         }
         let rate = if processed { 48_000 } else { state.sample_rate };
-        let path = std::env::temp_dir().join(format!(
-            "say-it-audio-lab-{}.wav",
-            if processed { "processed" } else { "raw" }
-        ));
-        crate::audio_wav::write_mono_pcm16(
-            &path,
-            samples,
-            rate,
-            crate::audio_wav::Quantization::Truncate,
-        )
-        .map_err(|error| format!("写入试听文件失败：{error}"))?;
-        path.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| "试听文件路径无效".into())
+        let file =
+            TemporaryFile::create_readable().map_err(|e| format!("创建试听文件失败：{e}"))?;
+        {
+            let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file.writer());
+            crate::audio_wav::write_audio_buffer(&mut writer, samples, rate)
+                .map_err(|e| format!("写入试听文件失败：{e}"))?;
+        }
+        let path = file
+            .readable_path()
+            .to_str()
+            .ok_or("试听文件路径无效")?
+            .to_owned();
+        let file = Arc::new(file);
+        *self.playback.lock().map_err(|_| "试听状态锁失败")? = Some(file.clone());
+        if processed {
+            state.processed_preview = Some(file);
+        } else {
+            state.raw_preview = Some(file);
+        }
+        Ok(path)
     }
 }
 
@@ -296,9 +333,9 @@ pub(crate) async fn audio_lab_start(
         cleanup_start_failure(&state, true);
         return Err(error);
     }
-    tauri::async_runtime::spawn(async move {
-        let result = async {
-            while let Some(samples) = receiver.recv().await? {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| {
+            while let Some(samples) = receiver.blocking_recv()? {
                 if done.is_closed() {
                     return Err("音频调校会话已结束".into());
                 }
@@ -311,15 +348,15 @@ pub(crate) async fn audio_lab_start(
                 .try_state::<crate::state::RuntimeState>()
                 .ok_or("应用已退出")?;
             state.audio_lab_runtime.finish_input(epoch)
-        }
-        .await;
+        })();
         // stop 持有 operation 等待排空，因此必须先交付结果再尝试取得清理锁。
         let _ = done.send(result.clone());
         if let Err(error) = result {
             let Some(state) = app.try_state::<crate::state::RuntimeState>() else {
                 return;
             };
-            let _operation = state.audio_lab_runtime.operation.lock().await;
+            let _operation =
+                tauri::async_runtime::block_on(state.audio_lab_runtime.operation.lock());
             if state.audio_lab_runtime.fail_for(epoch, error) {
                 let _ = crate::desktop::backend_mic::release_backend_mic_inner(&state);
                 if let Err(error) = release_audio_lab_lease(&state) {
@@ -379,18 +416,37 @@ pub(crate) async fn audio_lab_stop(
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_reprocess(
-    state: tauri::State<'_, crate::state::RuntimeState>,
+pub(crate) async fn audio_lab_reprocess(
+    app: tauri::AppHandle,
     params: DspParams,
 ) -> Result<AudioLabSnapshot, String> {
-    state.audio_lab_runtime.reprocess(params)
+    let runtime = &app.state::<crate::state::RuntimeState>().audio_lab_runtime;
+    let revision = runtime.processing_revision.fetch_add(1, Ordering::AcqRel) + 1;
+    let gate = runtime.processing_gate.clone().lock_owned().await;
+    if runtime.processing_revision.load(Ordering::Acquire) != revision {
+        return Err("音频处理已被新任务替换".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = gate;
+        app.state::<crate::state::RuntimeState>()
+            .audio_lab_runtime
+            .reprocess_at(params, revision)
+    })
+    .await
+    .map_err(|e| format!("音频处理任务失败：{e}"))?
 }
 
 #[tauri::command]
-pub(crate) fn get_audio_lab_runtime(
-    state: tauri::State<'_, crate::state::RuntimeState>,
+pub(crate) async fn get_audio_lab_runtime(
+    app: tauri::AppHandle,
 ) -> Result<AudioLabSnapshot, String> {
-    state.audio_lab_runtime.snapshot()
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<crate::state::RuntimeState>()
+            .audio_lab_runtime
+            .snapshot()
+    })
+    .await
+    .map_err(|e| format!("读取音频调校状态失败：{e}"))?
 }
 
 #[tauri::command]
@@ -407,16 +463,22 @@ pub(crate) async fn audio_lab_audio_path(
     .map_err(|error| format!("试听文件任务失败：{error}"))?
 }
 
-fn snapshot(state: &AudioLabState) -> AudioLabSnapshot {
-    AudioLabSnapshot {
+fn snapshot(state: &AudioLabState) -> Result<AudioLabSnapshot, String> {
+    Ok(AudioLabSnapshot {
         recording: state.recording,
         sample_rate: state.sample_rate,
         duration_ms: state.raw.len() as u64 * 1000 / state.sample_rate.max(1) as u64,
-        raw_waveform: summarize(&state.raw),
-        processed_waveform: summarize(&state.processed),
+        raw_waveform: state
+            .raw
+            .waveform(WAVE_POINTS)
+            .map_err(|e| format!("读取原始波形失败：{e}"))?,
+        processed_waveform: state
+            .processed
+            .waveform(WAVE_POINTS)
+            .map_err(|e| format!("读取处理波形失败：{e}"))?,
         stats: state.stats.clone(),
         error: state.error.clone(),
-    }
+    })
 }
 fn publish(app: &tauri::AppHandle) {
     let state = app.state::<crate::state::RuntimeState>();
@@ -438,6 +500,7 @@ fn publish(app: &tauri::AppHandle) {
         },
     );
 }
+#[cfg(test)]
 fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
     if samples.is_empty() {
         return Vec::new();

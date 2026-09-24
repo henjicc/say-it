@@ -1,10 +1,11 @@
-//! 文件句柄拥有暂存数据；进程退出也不依赖 Rust 析构或下一次启动扫描。
+//! 私有浮点暂存由文件句柄持有；可按路径读取的试听文件按平台处理删除寿命。
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::PathBuf;
 
-pub(super) struct TemporaryFile {
+pub(crate) struct TemporaryFile {
     file: File,
+    readable_path: Option<PathBuf>,
     #[cfg(test)]
     path: PathBuf,
 }
@@ -33,7 +34,36 @@ fn options() -> OpenOptions {
 }
 
 impl TemporaryFile {
-    pub(super) fn create() -> io::Result<Self> {
+    // 试听协议需要按路径打开文件；Windows 只额外允许读和共享删除，不允许其他写入者。
+    pub(crate) fn create_readable() -> io::Result<Self> {
+        let path =
+            std::env::temp_dir().join(format!("say-it-audio-lab-{}.wav", uuid::Uuid::new_v4()));
+        let mut options = options();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
+            options.share_mode(FILE_SHARE_READ.0 | FILE_SHARE_DELETE.0);
+        }
+        let file = options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self {
+            file,
+            readable_path: Some(path.clone()),
+            #[cfg(test)]
+            path,
+        })
+    }
+    pub(crate) fn readable_path(&self) -> &std::path::Path {
+        self.readable_path.as_deref().expect("试听文件才公开路径")
+    }
+    pub(crate) fn writer(&self) -> &File {
+        &self.file
+    }
+    pub(crate) fn create() -> io::Result<Self> {
         let path = temporary_path();
         let file = options()
             .read(true)
@@ -51,12 +81,13 @@ impl TemporaryFile {
         let _ = path;
         Ok(Self {
             file,
+            readable_path: None,
             #[cfg(test)]
             path,
         })
     }
 
-    pub(super) fn write_all_at(&self, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
+    pub(crate) fn write_all_at(&self, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
         while !bytes.is_empty() {
             #[cfg(windows)]
             let result = {
@@ -81,7 +112,7 @@ impl TemporaryFile {
         Ok(())
     }
 
-    pub(super) fn read_exact_at(&self, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {
+    pub(crate) fn read_exact_at(&self, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {
         while !bytes.is_empty() {
             #[cfg(windows)]
             let result = {
@@ -107,21 +138,34 @@ impl TemporaryFile {
     }
 }
 
+#[cfg(unix)]
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.readable_path {
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!("清理试听文件失败：{error}");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 impl TemporaryFile {
-    pub(super) fn read_only() -> Self {
+    pub(crate) fn read_only() -> Self {
         let path = temporary_path();
         File::create_new(&path).unwrap();
         let file = options().read(true).open(&path).unwrap();
         Self::from_open_file(file, path).unwrap()
     }
-    pub(super) fn path(&self) -> &std::path::Path {
+    pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
     }
-    pub(super) fn truncate(&self, len: u64) {
+    pub(crate) fn truncate(&self, len: u64) {
         self.file.set_len(len).unwrap();
     }
-    pub(super) fn len(&self) -> u64 {
+    pub(crate) fn len(&self) -> u64 {
         self.file.metadata().unwrap().len()
     }
 }

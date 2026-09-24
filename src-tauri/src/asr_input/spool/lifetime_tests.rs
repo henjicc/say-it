@@ -16,7 +16,11 @@ impl Drop for TestProcess {
             let path = entry.unwrap().path();
             // 目录里只允许本测试的就绪标记及本测试创建的暂存文件。
             let name = path.file_name().unwrap().to_string_lossy();
-            assert!(name == "ready" || name.starts_with("say-it-asr-queue-"));
+            assert!(
+                name == "ready"
+                    || name.starts_with("say-it-asr-queue-")
+                    || name.starts_with("say-it-audio-lab-")
+            );
             std::fs::remove_file(path).unwrap();
         }
         std::fs::remove_dir(&self.root).unwrap();
@@ -26,7 +30,13 @@ impl Drop for TestProcess {
 #[test]
 fn operating_system_reclaims_files_after_forced_exit_without_rust_drop() {
     for _ in 0..3 {
-        for case in ["empty", "written", "read", "exit"] {
+        // Unix 可读试听路径只保证正常析构清理，不能套用 Windows 的关闭删除契约。
+        let cases: &[&str] = if cfg!(windows) {
+            &["empty", "written", "read", "exit", "preview"]
+        } else {
+            &["empty", "written", "read", "exit"]
+        };
+        for &case in cases {
             let root = std::env::temp_dir()
                 .join(format!("say-it-spool-lifetime-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&root).unwrap();
@@ -102,12 +112,20 @@ fn lifetime_child() {
     assert_eq!(std::env::temp_dir(), PathBuf::from(&root));
     let file = if case == "empty" {
         Some(TemporaryFile::create().unwrap())
+    } else if case == "preview" {
+        let file = TemporaryFile::create_readable().unwrap();
+        file.write_all_at(&[0x25; 8192], 0).unwrap();
+        assert_eq!(
+            std::fs::read(file.readable_path()).unwrap(),
+            vec![0x25; 8192]
+        );
+        Some(file)
     } else {
         None
     };
     let mut writer = Writer::default();
     let mut packets = Vec::new();
-    if case != "empty" {
+    if case != "empty" && case != "preview" {
         for sequence in 0..520 {
             packets.push(
                 writer

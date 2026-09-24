@@ -11,7 +11,7 @@ vi.mock("@/store/useDictPrefs", () => ({
   },
 }));
 
-const { toggleRecord } = await import("./lab");
+const { toggleRecord, reprocess } = await import("./lab");
 const { useAudioStore } = await import("@/store/useAudioStore");
 
 const idleSnapshot = { recording: false, rawWaveform: [], processedWaveform: [] };
@@ -22,6 +22,27 @@ beforeEach(() => {
 });
 
 describe("音频调校的录音开关", () => {
+  it("晚到的旧处理结果不能覆盖新参数，旧请求取消也不显示失败", async () => {
+    let oldResolve!: (value: unknown) => void;
+    let oldReject!: (error: unknown) => void;
+    cmd.mockImplementationOnce(() => new Promise((resolve) => { oldResolve = resolve; }));
+    const old = reprocess();
+    cmd.mockResolvedValueOnce({ ...idleSnapshot, rawWaveform: [[0, 1]] });
+    await reprocess();
+    expect(useAudioStore.getState().canPlay).toBe(true);
+    oldResolve(idleSnapshot);
+    await old;
+    expect(useAudioStore.getState().canPlay).toBe(true);
+
+    cmd.mockImplementationOnce(() => new Promise((_resolve, reject) => { oldReject = reject; }));
+    const cancelled = reprocess();
+    cmd.mockResolvedValueOnce({ ...idleSnapshot, rawWaveform: [[0, 1]] });
+    await reprocess();
+    oldReject(new Error("音频处理已被新任务替换"));
+    await expect(cancelled).resolves.toBeUndefined();
+    cmd.mockRejectedValueOnce(new Error("磁盘写入失败"));
+    await expect(reprocess()).rejects.toThrow("磁盘写入失败");
+  });
   /// 后端已经挡住了重复启动，但按钮此前完全没有在途保护：连点会发出两次
   /// audioLabStart，靠后端兜底，而且两次返回的顺序还会让界面状态来回跳。
   it("请求在途时的重复点击被忽略，只发出一次启动", async () => {

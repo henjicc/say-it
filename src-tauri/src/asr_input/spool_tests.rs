@@ -10,6 +10,7 @@ fn wait_clean(handle: &AsrStreamHandle) {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         if handle.tx.budget.resident.load(Ordering::Acquire) == 0
+            && handle.tx.spool.retained_disk_bytes() == 0
             && handle
                 .tx
                 .spool
