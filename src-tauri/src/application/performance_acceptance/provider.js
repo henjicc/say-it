@@ -24,7 +24,8 @@ export default host => {
       }
       // 固定等待只用于采样运行态，不代表供应商识别耗时。
       await new Promise(resolve => setTimeout(resolve, 4000));
-      const durationMs = (count - 44) / 32;
+      const view = new DataView(new Uint8Array(header).buffer);
+      const durationMs = Math.round((count - 44) * 1000 / view.getUint32(28, true));
       const sentences = Array.from({ length: 2000 }, (_, index) => ({
         beginTime: Math.floor(index * durationMs / 2000),
         endTime: Math.floor((index + 1) * durationMs / 2000),
@@ -36,6 +37,7 @@ export default host => {
     realtimeAudio(bytes) {
       received += bytes.length;
       if (config.mode === 'failure') throw new Error('acceptance-provider-failure');
+      host.emit({ type: config.acceptanceScenario === 'subtitles' ? 'final' : 'partial', text: `实时验收:${received}` });
     },
     realtimeFinish() {
       if (config.mode === 'cancel') return new Promise(() => {});

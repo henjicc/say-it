@@ -294,6 +294,34 @@ pub(crate) fn start_backend_mic(
     }
 }
 
+fn prepare_backend_mic_input(
+    requested: &Option<String>,
+) -> Result<Option<(cpal::Device, cpal::SupportedStreamConfig, bool)>, String> {
+    #[cfg(feature = "performance-acceptance")]
+    if requested.as_deref() == Some("__sayit_acceptance__") {
+        // 隔离验收仅替代设备输入，下面的 worker、绑定、尾包与停止路径照常运行。
+        return Ok(None);
+    }
+    let host = cpal::default_host();
+    let (device, fallback) = match requested.as_deref() {
+        Some(name) => match find_input_device_by_name(&host, name) {
+            Some(device) => (device, false),
+            None => (
+                host.default_input_device().ok_or("未找到默认麦克风输入设备")?,
+                true,
+            ),
+        },
+        None => (
+            host.default_input_device().ok_or("未找到默认麦克风输入设备")?,
+            false,
+        ),
+    };
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
+    Ok(Some((device, config, fallback)))
+}
+
 pub(crate) fn start_backend_mic_inner(
     device_name: Option<String>,
     state: &RuntimeState,
@@ -344,30 +372,16 @@ pub(crate) fn start_backend_mic_inner(
         }
     }
 
-    let host = cpal::default_host();
-    let (device, fallback) = match requested.as_deref() {
-        Some(name) => match find_input_device_by_name(&host, name) {
-            Some(device) => (device, false),
-            None => {
-                let default = host
-                    .default_input_device()
-                    .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
-                (default, true)
-            }
-        },
-        None => {
-            let default = host
-                .default_input_device()
-                .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
-            (default, false)
-        }
+    let input = prepare_backend_mic_input(&requested)?;
+    let (sample_rate, channels, fallback) = match input.as_ref() {
+        Some((_, config, fallback)) => (
+            config.sample_rate().0,
+            config.channels().max(1) as usize,
+            *fallback,
+        ),
+        None => (48_000, 1, false),
     };
     let resolved_device_name = if fallback { None } else { requested.clone() };
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
-    let sample_rate = config.sample_rate().0;
-    let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
     let worker_for_stream = worker_tx.clone();
     let (startup_tx, startup_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -390,33 +404,31 @@ pub(crate) fn start_backend_mic_inner(
         guard.current_device = resolved_device_name.clone();
     }
     std::thread::spawn(move || {
-        let stream =
-            match build_backend_mic_stream(mic.clone(), worker_for_stream, &device, &config) {
-                Ok(stream) => stream,
-                Err(err) => {
-                    dlog!("[backend-mic] {err}");
-                    if let Ok(mut guard) = mic.lock() {
-                        guard.last_error = Some(err.clone());
-                        guard.worker = None;
-                        guard.sample_rate = 0;
-                        guard.channels = 0;
-                    }
-                    let _ = startup_tx.send(Err(err));
-                    return;
-                }
-            };
-        if let Err(err) = stream.play() {
-            let message = format!("启动麦克风输入流失败: {err}");
-            dlog!("[backend-mic] {message}");
-            if let Ok(mut guard) = mic.lock() {
-                guard.last_error = Some(message.clone());
-                guard.worker = None;
-                guard.sample_rate = 0;
-                guard.channels = 0;
+        let built = match input {
+            Some((device, config, _)) => {
+                build_backend_mic_stream(mic.clone(), worker_for_stream, &device, &config).and_then(|stream| {
+                    stream
+                        .play()
+                        .map_err(|error| format!("启动麦克风输入流失败: {error}"))?;
+                    Ok(Some(stream))
+                })
             }
-            let _ = startup_tx.send(Err(message));
-            return;
-        }
+            None => Ok(None),
+        };
+        let stream = match built {
+            Ok(stream) => stream,
+            Err(err) => {
+                dlog!("[backend-mic] {err}");
+                if let Ok(mut guard) = mic.lock() {
+                    guard.last_error = Some(err.clone());
+                    guard.worker = None;
+                    guard.sample_rate = 0;
+                    guard.channels = 0;
+                }
+                let _ = startup_tx.send(Err(err));
+                return;
+            }
+        };
         let _ = startup_tx.send(Ok(()));
         dlog!("[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}");
         let mut stop_reply: Option<std::sync::mpsc::Sender<()>> = None;

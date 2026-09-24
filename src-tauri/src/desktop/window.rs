@@ -266,6 +266,7 @@ pub(crate) fn destroy_main_window(app: &tauri::AppHandle) -> Result<(), String> 
                     }
                 });
             }
+            crate::application::idle_reclaim::request(app);
             Ok(())
         }
         Err(error) => {

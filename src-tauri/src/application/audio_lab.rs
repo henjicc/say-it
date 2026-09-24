@@ -68,6 +68,13 @@ pub(crate) struct AudioLabSnapshot {
 }
 
 impl AudioLabRuntime {
+    #[cfg(windows)]
+    pub(crate) fn is_idle_for_reclaim(&self) -> bool {
+        self.processing_gate.try_lock().is_ok()
+            && self.operation.try_lock().is_ok()
+            && self.state.lock().is_ok_and(|state| !state.recording)
+    }
+
     pub(crate) fn is_recording(&self) -> Result<bool, String> {
         self.state
             .lock()
@@ -428,14 +435,17 @@ pub(crate) async fn audio_lab_reprocess(
     if runtime.processing_revision.load(Ordering::Acquire) != revision {
         return Err("音频处理已被新任务替换".into());
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    let target = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let _gate = gate;
         app.state::<crate::state::RuntimeState>()
             .audio_lab_runtime
             .reprocess_at(params, revision)
     })
     .await
-    .map_err(|e| format!("音频处理任务失败：{e}"))?
+    .map_err(|e| format!("音频处理任务失败：{e}"))?;
+    super::idle_reclaim::request(&target);
+    result
 }
 
 #[tauri::command]

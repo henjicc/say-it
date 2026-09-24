@@ -103,6 +103,15 @@ impl CompareState {
 }
 
 impl CompareRuntime {
+    pub(crate) fn is_settled(&self) -> bool {
+        self.inner.lock().is_ok_and(|state| {
+            !matches!(
+                state.phase.as_str(),
+                "recording" | "playing" | "finalizing" | "starting"
+            )
+        })
+    }
+
     fn check_playback_epoch(&self, epoch: u64) -> Result<(), String> {
         if self.epoch.load(Ordering::Acquire) == epoch {
             Ok(())
@@ -1072,6 +1081,9 @@ fn publish(app: &tauri::AppHandle) {
                 .unwrap_or_else(|_| json!({})),
         },
     );
+    if state.compare_runtime.is_settled() {
+        super::idle_reclaim::request(app);
+    }
 }
 
 #[cfg(test)]
