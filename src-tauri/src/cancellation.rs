@@ -8,6 +8,10 @@ pub(crate) struct CancellationFlag {
     changed: Notify,
 }
 impl CancellationFlag {
+    pub(crate) fn cancel_on_drop(self: &std::sync::Arc<Self>) -> CancelOnDrop {
+        CancelOnDrop(Some(self.clone()))
+    }
+
     pub(crate) fn new(value: bool) -> Self {
         Self {
             value: AtomicBool::new(value),
@@ -36,6 +40,23 @@ impl CancellationFlag {
                 return;
             }
             changed.await;
+        }
+    }
+}
+
+/// 等待工作线程的 Future 被放弃时，也必须取消线程内部的网络与脚本执行。
+pub(crate) struct CancelOnDrop(Option<std::sync::Arc<CancellationFlag>>);
+
+impl CancelOnDrop {
+    pub(crate) fn disarm(mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::Release);
         }
     }
 }

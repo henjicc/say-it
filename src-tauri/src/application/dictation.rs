@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::AppHandle;
 
 const DOMAIN_EVENT: &str = "domain-event";
+mod processing;
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
@@ -422,6 +423,7 @@ type RawRecordingResult = Result<Option<crate::audio_wav::RecordedWav>, String>;
 
 #[derive(Default)]
 struct Session {
+    processing_cancellation: tokio_util::sync::CancellationToken,
     epoch: u64,
     phase: DictationPhase,
     mode: Option<DictationMode>,
@@ -482,6 +484,7 @@ impl Session {
     }
 
     fn mark_failed(&mut self, error: String, pending_fallback: Option<PendingFallback>) {
+        self.processing_cancellation.cancel();
         self.phase = DictationPhase::Failed;
         self.raw_done.take();
         self.error = Some(error);
@@ -1151,6 +1154,7 @@ async fn start_internal(
             .session
             .lock()
             .map_err(|_| "听写状态锁失败")?;
+        s.processing_cancellation.cancel();
         *s = Session {
             epoch,
             phase: if mode == DictationMode::Realtime && prefs.dictation_silence_disconnect_enabled
@@ -1254,6 +1258,7 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
                 return None;
             }
             s.phase = DictationPhase::Failed;
+            s.processing_cancellation.cancel();
             s.raw_done.take();
             s.mode = None;
             s.public_id = None;
@@ -1786,6 +1791,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             }),
         );
         let cancelled_epoch = s.epoch;
+        s.processing_cancellation.cancel();
         s.epoch = state
             .dictation_runtime
             .epochs
@@ -2069,6 +2075,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let operation = state.dictation_runtime.operation.clone();
     let begin_guard = operation.lock().await;
     let (
+        processing_cancellation,
         text,
         prefs,
         effective,
@@ -2109,6 +2116,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             "paste".to_string()
         };
         (
+            s.processing_cancellation.clone(),
             format!("{}{}", s.committed, s.segment).trim().to_string(),
             s.prefs.clone(),
             s.effective
@@ -2239,10 +2247,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         String::new()
     } else if let Some(handle) = active_app_context {
-        let captured = state
-            .active_app_context
-            .resolve_dictation_capture(handle)
-            .await;
+        let Some(captured) = processing::until_cancelled(
+            &processing_cancellation,
+            state.active_app_context.resolve_dictation_capture(handle),
+        )
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
         let current_session = state.dictation_runtime.session.lock().ok();
         if current_session.as_deref().is_some_and(|session| {
             session.epoch == epoch
@@ -2283,7 +2295,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
     // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
     let assistant_processed = if let Some(request) = assistant_request.as_ref() {
-        match crate::application::assistant::process(&app, &state, request, &text).await {
+        let Some(result) = processing::until_cancelled(
+            &processing_cancellation,
+            crate::application::assistant::process(&app, &state, request, &text),
+        )
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
+        match result {
             Ok(value) => Some(value),
             Err(error) => {
                 if !finalize_session_is_current(
@@ -2373,19 +2393,25 @@ async fn finalize(app: AppHandle, epoch: u64) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         }
-        let smart_result = crate::application::smart_text::process_smart_text(
-            &state,
-            &text,
-            &template.prompt,
-            &active_app_context,
-            app_identity
-                .as_ref()
-                .map(|identity| identity.app_name.as_str())
-                .unwrap_or_default(),
-            &prefs.smart_llm_provider_id,
-            &prefs.smart_llm_model,
+        let Some(smart_result) = processing::until_cancelled(
+            &processing_cancellation,
+            crate::application::smart_text::process_smart_text(
+                &state,
+                &text,
+                &template.prompt,
+                &active_app_context,
+                app_identity
+                    .as_ref()
+                    .map(|identity| identity.app_name.as_str())
+                    .unwrap_or_default(),
+                &prefs.smart_llm_provider_id,
+                &prefs.smart_llm_model,
+            ),
         )
-        .await;
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;

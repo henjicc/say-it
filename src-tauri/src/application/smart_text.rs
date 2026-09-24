@@ -317,6 +317,7 @@ async fn run_plugin_llm(
     let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
     let cancelled = Arc::new(CancellationFlag::new(false));
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
         let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
             spec,
@@ -382,6 +383,7 @@ where
     }
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
     let mut task =
@@ -604,6 +606,7 @@ async fn run_groq_sdk(
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
@@ -647,6 +650,7 @@ where
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
     let mut task =

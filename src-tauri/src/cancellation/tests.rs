@@ -3,6 +3,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
+fn disarmed_guard_does_not_turn_successful_completion_into_cancellation() {
+    let flag = Arc::new(CancellationFlag::default());
+    flag.cancel_on_drop().disarm();
+    assert!(!flag.load(Ordering::Acquire));
+    drop(flag.cancel_on_drop());
+    assert!(flag.load(Ordering::Acquire));
+}
+
+#[test]
 fn cancellation_before_subscription_and_racing_registration_is_persistent() {
     tauri::async_runtime::block_on(async {
         for _ in 0..128 {

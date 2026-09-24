@@ -1997,6 +1997,7 @@ where
     }
     let sdk = plugin_sdk_bindings(&spec, &profile, &request_id)?;
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
+    let cancel_on_drop = cancelled.cancel_on_drop();
     let mut task = spawn_js_worker("plugin-capability", move || {
         let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
             spec,
@@ -2017,6 +2018,7 @@ where
                 while let Ok(event) = event_rx.try_recv() {
                     on_event(&event);
                 }
+                cancel_on_drop.disarm();
                 return result.map_err(|error| format!("插件 capability 运行线程失败：{error}"))?;
             }
             Some(event) = event_rx.recv() => on_event(&event),
@@ -2061,6 +2063,7 @@ where
         }
     }
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
+    let cancel_on_drop = cancelled.cancel_on_drop();
     let mut task = spawn_js_worker("plugin-invoke", move || {
         let runtime = JsProviderRuntime::create_with_event_sender(
             spec,
@@ -2084,6 +2087,7 @@ where
                 while let Ok(event) = event_rx.try_recv() {
                     on_event(&event);
                 }
+                cancel_on_drop.disarm();
                 return result.map_err(|error| format!("插件运行线程失败：{error}"))?;
             }
             Some(event) = event_rx.recv() => on_event(&event),
@@ -3585,6 +3589,55 @@ mod tests {
             .get(namespace)
             .map(|entries| entries.len())
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn abandoning_invoke_cancels_worker_and_still_runs_disposal() {
+        let (root, mut spec, profile) = fixture(
+            "export default host => ({ async invoke() { host.emit({ready:true}); await new Promise(() => {}); } });
+             globalThis.__sayitDisposePluginModules = async () => {
+               globalThis.__sayitHost.storage.set('disposed', 'yes'); return 'null';
+             };", None,
+        );
+        spec.source_namespace = format!("drop-invoke-{}", uuid::Uuid::new_v4());
+        let namespace = spec.source_namespace.clone();
+        let data_dir = spec.data_dir.clone();
+        let flag = Arc::new(CancellationFlag::default());
+        let worker_flag = flag.clone();
+        tauri::async_runtime::block_on(async {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let mut started = Some(started);
+            let worker = tokio::spawn(async move {
+                invoke_cancellable(&spec, &profile, "test", json!({}), Duration::from_secs(60), Some(worker_flag), move |_| {
+                    if let Some(started) = started.take() { let _ = started.send(()); }
+                }).await
+            });
+            tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
+            assert_eq!(registered_owner_count(&namespace), 1);
+            worker.abort();
+            assert!(worker.await.unwrap_err().is_cancelled());
+        });
+        assert!(flag.load(Ordering::Acquire));
+        let (lock, wake) = &*PLUGIN_RUNTIME_OWNERS;
+        let (owners, timeout) = wake.wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(2), |owners| {
+            owners.get(&namespace).is_some_and(|entries| !entries.is_empty())
+        }).unwrap();
+        assert!(!timeout.timed_out());
+        assert!(!owners.contains_key(&namespace));
+        drop(owners);
+        let saved: Value = serde_json::from_slice(&std::fs::read(data_dir.join("storage.json")).unwrap()).unwrap();
+        assert_eq!(saved["disposed"], "yes");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_invoke_preserves_callers_uncancelled_flag() {
+        let (root, spec, profile) = fixture("export default () => ({ invoke() { return {text:'done'}; } });", None);
+        let flag = Arc::new(CancellationFlag::default());
+        let result = tauri::async_runtime::block_on(invoke_cancellable(&spec, &profile, "test", json!({}), Duration::from_secs(2), Some(flag.clone()), |_| {})).unwrap();
+        assert_eq!(result["text"], "done");
+        assert!(!flag.load(Ordering::Acquire));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// 卸载/停用必须能看见**正在初始化**的运行时。
