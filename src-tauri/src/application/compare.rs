@@ -1171,7 +1171,6 @@ fn handle_event(app: &tauri::AppHandle, event: Arc<BackendEvent>) {
             settle(&state);
             publish(app);
         }
-        _ => {}
     }
 }
 fn settle(state: &RuntimeState) {

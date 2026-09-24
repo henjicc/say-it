@@ -91,8 +91,7 @@ fn spawn(app: AppHandle, epoch: u64, task: Ready<Job>) {
         if task.cancellation.is_cancelled() {
             return;
         }
-        let hub = app.state::<RuntimeState>().backend_events.sender_clone();
-        let delta_hub = hub.clone();
+        let delta_app = app.clone();
         let delta_cancellation = task.cancellation.clone();
         let seq = task.seq;
         // 排队期间插件可能被停用/卸载；不能持有旧执行权限越过当前供应商检查。
@@ -111,13 +110,7 @@ fn spawn(app: AppHandle, epoch: u64, task: Ready<Job>) {
                         task.cancellation.clone(),
                         move |partial| {
                             if !delta_cancellation.is_cancelled() {
-                                delta_hub.publish(BackendEvent::SubtitleTranslation {
-                                    epoch,
-                                    segment_seq: seq,
-                                    text: partial.into(),
-                                    done: false,
-                                    error: None,
-                                });
+                                handle_translation(&delta_app, epoch, seq, partial, false, None);
                             }
                         },
                     )
@@ -132,12 +125,6 @@ fn spawn(app: AppHandle, epoch: u64, task: Ready<Job>) {
             Ok(text) => (text, None),
             Err(error) => (String::new(), Some(error)),
         };
-        hub.publish(BackendEvent::SubtitleTranslation {
-            epoch,
-            segment_seq: seq,
-            text,
-            done: true,
-            error,
-        });
+        handle_translation(&app, epoch, seq, &text, true, error.as_deref());
     });
 }

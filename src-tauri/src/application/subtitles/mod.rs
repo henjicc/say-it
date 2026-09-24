@@ -26,6 +26,8 @@ mod preview;
 mod retention;
 mod translation_queue;
 mod translation_work;
+#[cfg(test)]
+mod delivery_tests;
 pub(crate) use preview::{hide_subtitle_preview, show_subtitle_preview};
 
 const DOMAIN_EVENT: &str = "domain-event";
@@ -320,7 +322,7 @@ impl TranslationDocument {
         self.prune_completed();
     }
 
-    fn update(&mut self, seq: u64, text: String) -> bool {
+    fn update(&mut self, seq: u64, text: &str) -> bool {
         if self.completed.contains(&seq) {
             return false;
         }
@@ -399,6 +401,34 @@ struct Session {
 }
 
 impl Session {
+    fn record_translation(
+        &mut self,
+        epoch: u64,
+        seq: u64,
+        text: &str,
+        done: bool,
+        error: Option<&str>,
+    ) -> bool {
+        if self.epoch != epoch
+            || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
+            || !self.translation.values.contains_key(&seq)
+            || self.translation.completed.contains(&seq)
+        {
+            return false;
+        }
+        if let Some(error) = error {
+            self.translation_error = Some(format!("字幕翻译失败：{error}"));
+            if done {
+                self.translation.finish(seq);
+            }
+        } else {
+            self.translation_error = None;
+            self.apply_translation(epoch, seq, text, done);
+        }
+        self.cancel_obsolete_translations();
+        true
+    }
+
     fn cancel_obsolete_translations(&mut self) {
         let enabled = self.prefs.translation_enabled();
         if !enabled {
@@ -409,7 +439,7 @@ impl Session {
         self.translation_jobs.retain(|seq| enabled && self.translation.values.contains_key(&seq));
     }
 
-    fn apply_translation(&mut self, epoch: u64, seq: u64, text: String, done: bool) -> bool {
+    fn apply_translation(&mut self, epoch: u64, seq: u64, text: &str, done: bool) -> bool {
         if self.epoch != epoch
             || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
         {
@@ -428,6 +458,7 @@ pub(crate) struct SubtitleRuntime {
     preview: Mutex<Option<preview::Preview>>,
     operation: Arc<tokio::sync::Mutex<()>>,
     epochs: AtomicU64,
+    translation_changed: Arc<tokio::sync::Notify>,
 }
 
 impl Default for SubtitleRuntime {
@@ -437,7 +468,28 @@ impl Default for SubtitleRuntime {
             preview: Mutex::new(None),
             operation: Arc::new(tokio::sync::Mutex::new(())),
             epochs: AtomicU64::new(0),
+            translation_changed: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+}
+
+impl SubtitleRuntime {
+    fn record_translation(
+        &self,
+        epoch: u64,
+        seq: u64,
+        text: &str,
+        done: bool,
+        error: Option<&str>,
+    ) -> Result<bool, String> {
+        let mut session = self.session.lock().map_err(|_| "字幕状态锁失败")?;
+        if !session.record_translation(epoch, seq, text, done, error) {
+            return Ok(false);
+        }
+        drop(session);
+        // 状态先提交，通知只表示“有更新”；慢渲染合并通知，不丢失最终状态或累积载荷。
+        self.translation_changed.notify_one();
+        Ok(true)
     }
 }
 
@@ -456,14 +508,18 @@ pub(crate) struct SubtitleSnapshot {
 
 pub(crate) fn initialize(app: AppHandle) {
     let mut receiver = app.state::<RuntimeState>().backend_events.subscribe();
+    let translation_changed = app.state::<RuntimeState>().subtitle_runtime.translation_changed.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(event) => handle_backend_event(app.clone(), event).await,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    dlog!("[subtitles] 后端事件积压，跳过 {count} 条")
+            tokio::select! {
+                _ = translation_changed.notified() => render(&app),
+                event = receiver.recv() => match event {
+                    Ok(event) => handle_backend_event(app.clone(), event).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        dlog!("[subtitles] 后端事件积压，跳过 {count} 条")
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
@@ -946,15 +1002,6 @@ async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
             kind,
             payload,
         } => handle_asr(app, session_id, kind, payload).await,
-        BackendEvent::SubtitleTranslation {
-            epoch,
-            segment_seq,
-            text,
-            done,
-            error,
-        } => {
-            handle_translation(&app, *epoch, *segment_seq, text, *done, error.as_deref())
-        }
         BackendEvent::Transcription { .. } => {}
     }
 }
@@ -1039,29 +1086,9 @@ fn spawn_reconnect(app: AppHandle, epoch: u64, attempt: u32) {
 
 fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, done: bool, error: Option<&str>) {
     let state = app.state::<RuntimeState>();
-    let Ok(mut session) = state.subtitle_runtime.session.lock() else {
-        return;
-    };
-    if session.epoch != epoch
-        || matches!(session.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
-    {
-        return;
+    if let Err(error) = state.subtitle_runtime.record_translation(epoch, seq, text, done, error) {
+        crate::application::diagnostics::event("error", "subtitles.translationStateFailed", json!({"error":error}));
     }
-    if !session.translation.values.contains_key(&seq) || session.translation.completed.contains(&seq) {
-        return;
-    }
-    if let Some(error) = error {
-        session.translation_error = Some(format!("字幕翻译失败：{error}"));
-        if done {
-            session.translation.finish(seq);
-        }
-    } else {
-        session.translation_error = None;
-        session.apply_translation(epoch, seq, text.to_owned(), done);
-    }
-    session.cancel_obsolete_translations();
-    drop(session);
-    render(app);
 }
 
 fn reload_prefs_and_render(app: &AppHandle) -> Result<(), String> {
@@ -1582,7 +1609,7 @@ mod tests {
         // 第一句：说完立刻 final。
         doc.on_partial("第一句。".into(), "replace", now);
         for (seq, _) in translation.dispatch("第一句。", true) {
-            translation.update(seq, "One.".into());
+            translation.update(seq, "One.");
         }
         doc.commit("replace", now);
         translation.commit("replace", doc.replace_continuing);
@@ -1593,7 +1620,7 @@ mod tests {
         let finish = start + Duration::from_secs(4);
         doc.on_partial("第二句。".into(), "replace", finish);
         for (seq, _) in translation.dispatch("第二句。", true) {
-            translation.update(seq, "Two.".into());
+            translation.update(seq, "Two.");
         }
         doc.commit("replace", finish);
         translation.commit("replace", doc.replace_continuing);
@@ -1615,7 +1642,7 @@ mod tests {
 
         doc.on_partial("第一句。".into(), "replace", now);
         for (seq, _) in translation.dispatch("第一句。", true) {
-            translation.update(seq, "One.".into());
+            translation.update(seq, "One.");
         }
         doc.commit("replace", now);
         translation.commit("replace", doc.replace_continuing);
@@ -1623,7 +1650,7 @@ mod tests {
         let later = now + Duration::from_secs(5);
         doc.on_partial("第二句。".into(), "replace", later);
         for (seq, _) in translation.dispatch("第二句。", true) {
-            translation.update(seq, "Two.".into());
+            translation.update(seq, "Two.");
         }
         doc.commit("replace", later);
         translation.commit("replace", doc.replace_continuing);
@@ -1663,8 +1690,8 @@ mod tests {
         doc.current_group = vec![1, 2];
         doc.values.insert(1, String::new());
         doc.values.insert(2, String::new());
-        doc.update(2, "world".into());
-        doc.update(1, "hello ".into());
+        doc.update(2, "world");
+        doc.update(1, "hello ");
         assert_eq!(doc.display(&SubtitlePrefs::default()), "hello world");
     }
 
@@ -1676,8 +1703,8 @@ mod tests {
             ..Session::default()
         };
         session.translation.dispatch("当前会话", true);
-        assert!(!session.apply_translation(7, 1, "旧会话".into(), false));
-        assert!(session.apply_translation(8, 1, "当前会话".into(), false));
+        assert!(!session.apply_translation(7, 1, "旧会话", false));
+        assert!(session.apply_translation(8, 1, "当前会话", false));
         assert_eq!(session.translation.values.get(&1).unwrap(), "当前会话");
     }
 

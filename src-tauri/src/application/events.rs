@@ -14,13 +14,6 @@ pub(crate) enum BackendEvent {
         stage: String,
         payload: Value,
     },
-    SubtitleTranslation {
-        epoch: u64,
-        segment_seq: u64,
-        text: String,
-        done: bool,
-        error: Option<String>,
-    },
 }
 
 #[derive(Clone)]
@@ -45,9 +38,6 @@ impl BackendEventHub {
         let _ = self.sender.send(Arc::new(event));
     }
 
-    pub(crate) fn sender_clone(&self) -> Self {
-        self.clone()
-    }
 }
 
 #[cfg(test)]
@@ -111,12 +101,10 @@ mod tests {
         let hub = BackendEventHub::default();
         let mut fast = hub.subscribe();
         let slow = hub.subscribe();
-        hub.publish(BackendEvent::SubtitleTranslation {
-            epoch: 3,
-            segment_seq: 7,
-            text: "译文".into(),
-            done: true,
-            error: None,
+        hub.publish(BackendEvent::Asr {
+            session_id: "s".into(),
+            kind: "result".into(),
+            payload: serde_json::json!({"text":"译文", "final":true}),
         });
         let event = fast.try_recv().unwrap();
         let weak = Arc::downgrade(&event);
@@ -129,7 +117,7 @@ mod tests {
     #[test]
     fn lag_remains_explicit_and_overwritten_payload_is_released() {
         let hub = BackendEventHub::default();
-        let publisher = hub.sender_clone();
+        let publisher = hub.clone();
         let mut fast = hub.subscribe();
         let mut slow = hub.subscribe();
         let mut first = None;
