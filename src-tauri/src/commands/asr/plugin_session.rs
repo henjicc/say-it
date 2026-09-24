@@ -180,6 +180,13 @@ fn run_plugin_session(
                 }
             }
             SessionWake::Input(Some(AsrStreamInput::Finish)) => {
+                let tail = dsp.finish();
+                if !tail.is_empty() {
+                    if let Err(error) = runtime.send_capability_audio(tail) {
+                        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                        break;
+                    }
+                }
                 if let Err(error) = runtime.finish_capability_session(FINISH_TIMEOUT) {
                     emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
                     break;

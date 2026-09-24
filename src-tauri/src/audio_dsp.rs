@@ -399,6 +399,9 @@ pub struct StreamDsp {
     meter: EbuR128,
     gain: f32,
     in_rate: u32,
+    input_samples: u64,
+    output_samples: u64,
+    finished: bool,
     // 线性重采样到 48k 的连续状态（仅非 48k 时使用）。
     rs_step: f64,
     rs_t: f64,
@@ -449,6 +452,9 @@ impl StreamDsp {
             meter,
             gain: 1.0,
             in_rate,
+            input_samples: 0,
+            output_samples: 0,
+            finished: false,
             rs_step: in_rate as f64 / RATE_48K as f64,
             rs_t: 0.0,
             rs_prev: 0.0,
@@ -466,9 +472,10 @@ impl StreamDsp {
 
     /// 输入麦克风原始 f32，输出 16k PCM16；不足一帧留到下次调用，不补零。
     pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
-        if input.is_empty() {
+        if input.is_empty() || self.finished {
             return Vec::new();
         }
+        self.input_samples += input.len() as u64;
         // 只为本次返回的 PCM 预留空间；估计值不参与重采样或输出长度计算。
         let estimated48 = if self.in_rate == RATE_48K {
             input.len()
@@ -511,6 +518,37 @@ impl StreamDsp {
                 self.rs_in_idx += 1;
             }
         }
+        self.output_samples += (bytes.len() / 2) as u64;
+        bytes
+    }
+
+    /// 正常结束时输出重采样和不足一帧的尾部；补齐计算帧，但不延长音频时长。
+    /// 取消时不调用。重复结束不重复发送，结束后也不再接收音频。
+    pub fn finish(&mut self) -> Vec<u8> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let rounded_length = |rate: u32| {
+            (self.input_samples * u64::from(rate) + u64::from(self.in_rate / 2))
+                / u64::from(self.in_rate)
+        };
+        let remaining = rounded_length(RATE_16K).saturating_sub(self.output_samples) as usize;
+        let missing48 = rounded_length(RATE_48K)
+            .saturating_sub(self.output_samples * 3 + self.filled48 as u64);
+        let mut bytes = Vec::with_capacity(FRAME / 3 * 2);
+        // 最后一输入样本之后没有下一个插值端点，按离线重采样规则延展末值。
+        for _ in 0..missing48 {
+            self.push_resampled(self.rs_prev, &mut bytes);
+        }
+        if bytes.len() / 2 < remaining {
+            self.buf48[self.filled48..].fill(0.0);
+            self.filled48 = FRAME;
+            self.process_frame(&mut bytes);
+        }
+        self.filled48 = 0;
+        bytes.truncate(remaining * 2);
+        self.output_samples += (bytes.len() / 2) as u64;
         bytes
     }
 
