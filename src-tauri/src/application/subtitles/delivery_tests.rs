@@ -12,6 +12,34 @@ fn runtime() -> SubtitleRuntime {
     runtime
 }
 
+#[test]
+fn prepared_asr_is_only_attached_to_an_active_unbound_session() {
+    let mut session = Session {
+        epoch: 7,
+        ..Session::default()
+    };
+    for phase in [
+        SubtitlePhase::Idle,
+        SubtitlePhase::Stopping,
+        SubtitlePhase::Failed,
+    ] {
+        session.phase = phase;
+        assert!(!session.wants_asr(7));
+    }
+    for phase in [
+        SubtitlePhase::Running,
+        SubtitlePhase::WaitingForVoice,
+        SubtitlePhase::Reconnecting,
+    ] {
+        session.phase = phase;
+        assert!(session.wants_asr(7));
+        assert!(!session.wants_asr(6));
+        session.asr_session_id = Some("existing".into());
+        assert!(!session.wants_asr(7));
+        session.asr_session_id = None;
+    }
+}
+
 fn segment(runtime: &SubtitleRuntime) -> u64 {
     let mut session = runtime.session.lock().unwrap();
     let seq = session.translation.dispatch("一句", true)[0].0;

@@ -595,8 +595,3 @@ pub(crate) struct SessionStatus {
 pub(crate) use crate::asr_input::{
     AsrInputSender, AsrStreamHandle, AsrStreamInput, AsrStreamReceiver, RawAudioReceiver,
 };
-
-#[derive(Serialize)]
-pub(crate) struct AsrStreamStartResponse {
-    pub(crate) session_id: String,
-}

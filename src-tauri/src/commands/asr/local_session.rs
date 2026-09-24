@@ -14,7 +14,7 @@ pub(super) async fn start_local_asr_stream(
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     let session_id = Uuid::new_v4().to_string();
     let (handle, rx) = AsrStreamHandle::channel();
     state
@@ -25,18 +25,24 @@ pub(super) async fn start_local_asr_stream(
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        run_local_session(
-            app,
-            task_id,
-            streams,
-            rx,
-            StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
-            model,
-            spec,
-        );
-    });
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            tauri::async_runtime::spawn_blocking(move || {
+                run_local_session(
+                    app,
+                    task_id,
+                    streams,
+                    rx,
+                    StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
+                    model,
+                    spec,
+                );
+            });
+            Ok(())
+        },
+    ))
 }
 
 enum Session {

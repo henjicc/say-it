@@ -48,7 +48,7 @@ pub(super) async fn start_apple_speech_stream(
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     let mut capability = crate::providers::apple_speech::refresh_status();
     if !capability.identity_valid {
         return Err(if capability.message.trim().is_empty() {
@@ -90,15 +90,21 @@ pub(super) async fn start_apple_speech_stream(
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn(run_apple_session(
-        app,
-        task_id,
-        streams,
-        rx,
-        StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
-        model,
-    ));
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            tauri::async_runtime::spawn(run_apple_session(
+                app,
+                task_id,
+                streams,
+                rx,
+                StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
+                model,
+            ));
+            Ok(())
+        },
+    ))
 }
 
 async fn run_apple_session(
