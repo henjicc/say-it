@@ -371,7 +371,7 @@ pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {
     load_registry_from_with_trust(&plugins_dir(app)?, &trusted)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "performance-acceptance"))]
 pub fn load_registry_from(root: &Path) -> Result<PluginRegistry, String> {
     load_registry_from_with_trust(root, &HashMap::new())
 }

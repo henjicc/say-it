@@ -8,10 +8,13 @@ const events = readFileSync(join(directory, "events.jsonl"), "utf8").trim().spli
 if (report.failure || events.at(-1)?.stage !== "completed") throw new Error("验收未完成");
 const sum = (rows, key) => rows.reduce((total, row) => total + row[key], 0);
 const scenario = report.scenario ?? "windows";
+const recognitionRounds = report.recognitionRounds ?? 3;
 const expected = {
   windows: { open: 10, closed: 10 },
   "subtitle-preview": { "preview-active": 5, "preview-stopped": 5 },
   "audio-lab": { "audio-recorded": 3, "audio-processed": 3, "audio-replaced": 3 },
+  transcription: { "transcription-settled": recognitionRounds * 4, "transcription-idle": recognitionRounds },
+  comparison: { "comparison-settled": recognitionRounds * 4, "comparison-idle": recognitionRounds, "comparison-mixed-settled": 1 },
 }[scenario];
 if (!expected) throw new Error(`未知场景：${scenario}`);
 const rows = events.flatMap((event, index) => {
@@ -64,5 +67,5 @@ const phasePeaks = events.flatMap((event, index) => {
     cpuCoveredMs,
   }];
 });
-writeFileSync(join(directory, "summary.json"), JSON.stringify({ scenario, executableSha256: report.executableSha256, rows, phasePeaks }, null, 2) + "\n");
+writeFileSync(join(directory, "summary.json"), JSON.stringify({ scenario, optimizeIdleHeap: report.optimizeIdleHeap ?? false, executableSha256: report.executableSha256, rows, phasePeaks }, null, 2) + "\n");
 console.table(rows.map(row => ({ ...row, privateMiB: +row.privateMiB.toFixed(2), rootPrivateMiB: +row.rootPrivateMiB.toFixed(2) })));
