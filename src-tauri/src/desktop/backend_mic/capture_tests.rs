@@ -60,6 +60,14 @@ fn collect(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>) -> Vec
     result
 }
 
+fn collect_asr(rx: &mut AsrStreamReceiver) -> Vec<f32> {
+    let mut result = Vec::new();
+    while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
+        result.extend(samples);
+    }
+    result
+}
+
 #[test]
 fn chunking_matches_original_for_device_boundaries_and_large_packets() {
     let input: Vec<f32> = (0..480_017)
@@ -122,7 +130,8 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
     }
     assert_eq!(state.lock().unwrap().pending.len(), 240);
     push_backend_mic_samples(&state, vec![250.0; 17]);
-    let (tx, mut asr) = tokio::sync::mpsc::unbounded_channel();
+    let (handle, mut asr) = AsrStreamHandle::channel();
+    let tx = handle.tx;
     {
         let mut guard = state.lock().unwrap();
         guard.tx = Some(tx);
@@ -130,7 +139,7 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
     }
     let mut expected: Vec<f32> = (10..250).flat_map(|i| vec![i as f32; 4096]).collect();
     expected.extend([250.0; 17]);
-    assert_eq!(collect(&mut asr), expected);
+    assert_eq!(collect_asr(&mut asr), expected);
     assert_eq!(
         collect(&mut raw),
         vec![250.0; 17],
@@ -138,7 +147,7 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
     );
     push_backend_mic_samples(&state, vec![251.0; 4096]);
     assert_eq!(collect(&mut raw), vec![251.0; 4096]);
-    assert_eq!(collect(&mut asr), vec![251.0; 4096]);
+    assert_eq!(collect_asr(&mut asr), vec![251.0; 4096]);
     assert!(state.lock().unwrap().pending.is_empty());
     drop(asr);
     push_backend_mic_samples(&state, vec![252.0; 4096]);

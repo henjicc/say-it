@@ -760,7 +760,8 @@ mod tests {
     /// 上一段预滚之前，识别结果错乱。
     #[test]
     fn flush_replays_pending_chunks_before_the_partial_tail() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (handle, mut rx) = AsrStreamHandle::channel();
+        let tx = handle.tx;
         let mut state = BackendMicState {
             tx: Some(tx),
             // 时间顺序：早 → 晚
