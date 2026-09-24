@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicBool;
 use crate::performance_test_support::memory;
 use std::time::{Duration, Instant};
 

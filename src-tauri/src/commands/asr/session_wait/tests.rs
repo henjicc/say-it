@@ -160,26 +160,13 @@ fn host_notifications_do_not_drop_spilled_audio_or_finish_tail() {
 #[test]
 #[ignore = "独立 JS 会话等待测量；不加载模型或访问服务"]
 fn idle_session_profile() {
-    use windows::Win32::System::Threading::GetCurrentThread;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn QueryThreadCycleTime(
-            thread: windows::Win32::Foundation::HANDLE,
-            cycles: *mut u64,
-        ) -> i32;
-    }
+    use crate::performance_test_support::thread_cycles;
     let legacy = std::env::var("SAYIT_PERF_SESSION_POLL_LEGACY").as_deref() == Ok("1");
     let result = crate::providers::plugin_runtime::spawn_js_worker("wait-profile", move || {
         let (_handle, mut receiver) = AsrStreamHandle::channel();
         let host = Notify::new();
         let waiter = SessionWait::new();
-        let mut cycles_before = 0;
-        unsafe {
-            assert_ne!(
-                QueryThreadCycleTime(GetCurrentThread(), &mut cycles_before),
-                0
-            );
-        }
+        let cycles_before = thread_cycles();
         let started = Instant::now();
         let deadline = started + Duration::from_secs(2);
         let mut iterations = 0;
@@ -198,13 +185,7 @@ fn idle_session_profile() {
                 break;
             }
         }
-        let mut cycles_after = 0;
-        unsafe {
-            assert_ne!(
-                QueryThreadCycleTime(GetCurrentThread(), &mut cycles_after),
-                0
-            );
-        }
+        let cycles_after = thread_cycles();
         (
             iterations,
             waiter.polls.get(),

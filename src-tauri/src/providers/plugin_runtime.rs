@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationFlag;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
@@ -34,6 +35,8 @@ use super::sdk_runtime::{
 use super::ProviderProfile;
 
 mod sdk_upload;
+mod control;
+use control::Deadline;
 use sdk_upload::{MediaInput, UploadState};
 
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -127,7 +130,7 @@ where
 struct CredentialReadRequest {
     credentials: super::credential_store::CredentialStoreHandle,
     key: CredentialKey,
-    response: std::sync::mpsc::SyncSender<Result<Option<String>, String>>,
+    response: tokio::sync::oneshot::Sender<Result<Option<String>, String>>,
 }
 
 static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadRequest>> =
@@ -155,7 +158,7 @@ static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadR
     });
 
 struct RuntimeOwner {
-    cancelled: Weak<AtomicBool>,
+    cancelled: Weak<CancellationFlag>,
     wake: Weak<tokio::sync::Notify>,
 }
 type RuntimeOwnerMap = HashMap<String, HashMap<String, RuntimeOwner>>;
@@ -170,7 +173,7 @@ struct RuntimeOwnerRegistration {
 impl RuntimeOwnerRegistration {
     fn register(
         namespace: String,
-        cancelled: &Arc<AtomicBool>,
+        cancelled: &Arc<CancellationFlag>,
         wake: &Arc<tokio::sync::Notify>,
     ) -> Result<Self, String> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -381,9 +384,9 @@ struct HostState {
     timers: HashMap<String, Arc<AtomicBool>>,
     ws_events_tx: HostEventSender,
     ws_events_rx: std::sync::mpsc::Receiver<Value>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     event_tx: Option<mpsc::Sender<Value>>,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Deadline>,
     sdk: Option<SdkHostBindings>,
     spans: HashMap<String, Instant>,
     pending_request_bodies: HashMap<String, Vec<u8>>,
@@ -405,9 +408,9 @@ impl HostState {
         spec: PluginRuntimeSpec,
         inputs: HashMap<String, PathBuf>,
         events: Arc<Mutex<Vec<Value>>>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         event_tx: Option<mpsc::Sender<Value>>,
-        deadline: Arc<Mutex<Instant>>,
+        deadline: Arc<Deadline>,
         sdk: Option<SdkHostBindings>,
         host_wake: Arc<tokio::sync::Notify>,
     ) -> Self {
@@ -497,17 +500,20 @@ impl HostState {
                     .and_then(Value::as_u64)
                     .unwrap_or_default()
                     .min(30_000);
-                let started = Instant::now();
-                while started.elapsed() < Duration::from_millis(millis) {
-                    if self.cancelled.load(Ordering::Relaxed) {
-                        return Err("插件操作已取消".into());
-                    }
-                    if deadline_expired(&self.deadline) {
-                        return Err("插件操作超时".into());
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                if millis == 0 {
+                    return Ok(Value::Null);
                 }
-                Ok(Value::Null)
+                let cancelled = self.cancelled.clone();
+                let deadline = self.deadline.clone();
+                wait_for_host_io(async move {
+                    tokio::select! {
+                        biased;
+                        _ = wait_for_stop(cancelled.clone(), deadline) => {
+                            Err(if cancelled.load(Ordering::Relaxed) { "插件操作已取消" } else { "插件操作超时" }.into())
+                        },
+                        _ = tokio::time::sleep(Duration::from_millis(millis)) => Ok(Value::Null),
+                    }
+                })
             }
             "storage.get" => {
                 let key = storage_key(&payload)?;
@@ -1002,15 +1008,15 @@ impl HostState {
         if self.cancelled.load(Ordering::Relaxed) {
             return Err("SDK_RUNTIME_CANCELLED".into());
         }
-        let operation_deadline = *self
+        let operation_deadline = self
             .deadline
-            .lock()
+            .get()
             .map_err(|_| "SDK 凭据读取截止时间锁定失败")?;
         let credential_deadline = operation_deadline.min(Instant::now() + MAX_CREDENTIAL_READ_WAIT);
         if Instant::now() >= credential_deadline {
             return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
         }
-        let (response, result) = std::sync::mpsc::sync_channel(1);
+        let (response, result) = tokio::sync::oneshot::channel();
         CREDENTIAL_READ_WORKERS
             .try_send(CredentialReadRequest {
                 credentials: credentials.clone(),
@@ -1018,22 +1024,15 @@ impl HostState {
                 response,
             })
             .map_err(|_| "本地加密凭据读取队列繁忙，请稍后重试".to_string())?;
-        loop {
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err("SDK_RUNTIME_CANCELLED".into());
+        let cancelled = self.cancelled.clone();
+        wait_for_host_io(async move {
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => Err("SDK_RUNTIME_CANCELLED".into()),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(credential_deadline)) => Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into()),
+                result = result => result.map_err(|_| "本地加密凭据读取工作线程意外退出".to_string())?,
             }
-            let remaining = credential_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
-            }
-            match result.recv_timeout(remaining.min(Duration::from_millis(25))) {
-                Ok(value) => return value,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("本地加密凭据读取工作线程意外退出".into())
-                }
-            }
-        }
+        })
     }
 
     fn sdk_provider_id(&self) -> String {
@@ -1305,8 +1304,8 @@ pub struct JsProviderRuntime {
     host: Arc<Mutex<HostState>>,
     host_wake: Arc<tokio::sync::Notify>,
     events: Arc<Mutex<Vec<Value>>>,
-    deadline: Arc<Mutex<Instant>>,
-    cancelled: Arc<AtomicBool>,
+    deadline: Arc<Deadline>,
+    cancelled: Arc<CancellationFlag>,
     /// 正在执行析构收尾脚本。置位期间中断处理器忽略 `cancelled`，只认新的 deadline。
     disposing: Arc<AtomicBool>,
     _owner: RuntimeOwnerRegistration,
@@ -1348,7 +1347,7 @@ pub fn create_plugin_capability_runtime(
     profile: &ProviderProfile,
     request_id: &str,
     timeout: Duration,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     inputs: HashMap<String, PathBuf>,
 ) -> Result<JsProviderRuntime, String> {
     let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
@@ -1360,7 +1359,7 @@ pub fn create_plugin_llm_runtime(
     profile: &ProviderProfile,
     request_id: &str,
     timeout: Duration,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     event_tx: Option<mpsc::Sender<Value>>,
 ) -> Result<JsProviderRuntime, String> {
     let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
@@ -1381,7 +1380,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
     ) -> Result<Self, String> {
         Self::create_with_event_sender_and_sdk(
@@ -1393,7 +1392,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
@@ -1408,7 +1407,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         sdk: SdkHostBindings,
     ) -> Result<Self, String> {
@@ -1427,7 +1426,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         sdk: SdkHostBindings,
@@ -1447,7 +1446,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         sdk: Option<SdkHostBindings>,
@@ -1468,7 +1467,7 @@ impl JsProviderRuntime {
                 root: spec.root.clone(),
             },
         );
-        let deadline = Arc::new(Mutex::new(Instant::now() + timeout));
+        let deadline = Arc::new(Deadline::new(Instant::now() + timeout));
         let disposing = Arc::new(AtomicBool::new(false));
         let interrupt_deadline = deadline.clone();
         let interrupt_cancelled = cancelled.clone();
@@ -1479,11 +1478,7 @@ impl JsProviderRuntime {
             // 收尾代码（关连接、退登录、落盘）永远跑不到。收尾另有自己的 deadline。
             let cancelled_now = interrupt_cancelled.load(Ordering::Relaxed)
                 && !interrupt_disposing.load(Ordering::Relaxed);
-            cancelled_now
-                || interrupt_deadline
-                    .lock()
-                    .map(|value| Instant::now() >= *value)
-                    .unwrap_or(true)
+            cancelled_now || interrupt_deadline.expired()
         })));
         let context = Context::full(&runtime).map_err(js_error)?;
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1653,7 +1648,7 @@ impl JsProviderRuntime {
     }
 
     pub fn call(&self, method: &str, payload: &Value, timeout: Duration) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         if self.cancelled.load(Ordering::Relaxed) {
             return Err("插件操作已取消".into());
         }
@@ -1684,7 +1679,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1718,7 +1713,7 @@ impl JsProviderRuntime {
         streaming: bool,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1751,7 +1746,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1790,7 +1785,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1810,8 +1805,7 @@ impl JsProviderRuntime {
     }
 
     pub fn send_capability_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + Duration::from_secs(5);
+        self.deadline.set(Instant::now() + Duration::from_secs(5))?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1827,7 +1821,7 @@ impl JsProviderRuntime {
     }
 
     pub fn finish_capability_session(&self, timeout: Duration) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1857,8 +1851,7 @@ impl JsProviderRuntime {
     }
 
     pub fn call_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + Duration::from_secs(5);
+        self.deadline.set(Instant::now() + Duration::from_secs(5))?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx.globals().get("__sayitAudio").map_err(js_error)?;
             let audio = TypedArray::<u8>::new(ctx.clone(), bytes).map_err(js_error)?;
@@ -1948,13 +1941,13 @@ impl Drop for JsProviderRuntime {
             // 否则中断处理器会在 dispose 的第一条语句就把它打断，而错误又被整个吞掉，
             // 表现为插件的连接、登录态与待落盘数据全部泄漏且毫无线索。
             self.disposing.store(true, Ordering::Relaxed);
-            if let Ok(mut deadline) = self.deadline.lock() {
-                *deadline = Instant::now() + PLUGIN_DISPOSE_BUDGET;
+            if let Err(error) = self.deadline.set(Instant::now() + PLUGIN_DISPOSE_BUDGET) {
+                crate::development_debug_log("plugin-runtime", format_args!("dispose deadline: {error}"));
             }
             let host = self.host.clone();
             // 收尾期间用一个独立的取消位：promise 泵也检查 cancelled，沿用原来那个会让
             // 收尾在第一次轮询就返回「插件操作已取消」。中断处理器那边由 disposing 屏蔽。
-            let dispose_cancelled = AtomicBool::new(false);
+            let dispose_cancelled = Arc::new(CancellationFlag::new(false));
             let deadline = self.deadline.clone();
             let outcome = self.context.with(|ctx| -> Result<(), String> {
                 let dispose: Function = ctx
@@ -1985,7 +1978,7 @@ pub async fn execute_capability_cancellable<F>(
     module_id: &str,
     mut payload: Value,
     timeout: Duration,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<CancellationFlag>>,
     mut on_event: F,
 ) -> Result<Value, String>
 where
@@ -1995,7 +1988,7 @@ where
     let profile = profile.clone();
     let module_id = module_id.to_string();
     let request_id = uuid::Uuid::new_v4().to_string();
-    let cancelled = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancelled = cancel.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let (inputs, input_descriptor) = take_input_handle(&mut payload)?;
     if let Some(input) = input_descriptor {
         if let Some(object) = payload.as_object_mut() {
@@ -2051,7 +2044,7 @@ pub async fn invoke_cancellable<F>(
     operation: &str,
     mut payload: Value,
     timeout: Duration,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<CancellationFlag>>,
     mut on_event: F,
 ) -> Result<Value, String>
 where
@@ -2060,7 +2053,7 @@ where
     let spec = spec.clone();
     let profile = profile.clone();
     let operation = operation.to_string();
-    let cancelled = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancelled = cancel.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let (inputs, input_descriptor) = take_input_handle(&mut payload)?;
     if let Some(input) = input_descriptor {
         if let Some(object) = payload.as_object_mut() {
@@ -2165,14 +2158,11 @@ fn parse_allowed_url(spec: &PluginRuntimeSpec, raw: &str, schemes: &[&str]) -> R
     Ok(url)
 }
 
-fn deadline_expired(deadline: &Arc<Mutex<Instant>>) -> bool {
-    deadline
-        .lock()
-        .map(|deadline| Instant::now() >= *deadline)
-        .unwrap_or(true)
+fn deadline_expired(deadline: &Arc<Deadline>) -> bool {
+    deadline.expired()
 }
 
-fn stop_reason(cancelled: &Arc<AtomicBool>, deadline: &Arc<Mutex<Instant>>) -> String {
+fn stop_reason(cancelled: &Arc<CancellationFlag>, deadline: &Arc<Deadline>) -> String {
     if cancelled.load(Ordering::Relaxed) {
         "SDK_RUNTIME_CANCELLED".into()
     } else if deadline_expired(deadline) {
@@ -2182,9 +2172,11 @@ fn stop_reason(cancelled: &Arc<AtomicBool>, deadline: &Arc<Mutex<Instant>>) -> S
     }
 }
 
-async fn wait_for_stop(cancelled: Arc<AtomicBool>, deadline: Arc<Mutex<Instant>>) {
-    while !cancelled.load(Ordering::Relaxed) && !deadline_expired(&deadline) {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+async fn wait_for_stop(cancelled: Arc<CancellationFlag>, deadline: Arc<Deadline>) {
+    tokio::select! {
+        biased;
+        _ = cancelled.cancelled() => {},
+        _ = deadline.elapsed() => {},
     }
 }
 
@@ -2520,8 +2512,8 @@ fn pump_promise<'js, T: rquickjs::FromJs<'js>>(
     ctx: &Ctx<'js>,
     promise: Promise<'js>,
     host: &Arc<Mutex<HostState>>,
-    cancelled: &AtomicBool,
-    deadline: &Mutex<Instant>,
+    cancelled: &Arc<CancellationFlag>,
+    deadline: &Arc<Deadline>,
     notify_provider: bool,
 ) -> Result<T, String> {
     loop {
@@ -2556,15 +2548,27 @@ fn pump_promise<'js, T: rquickjs::FromJs<'js>>(
         if cancelled.load(Ordering::Relaxed) {
             return Err("插件操作已取消".into());
         }
-        if deadline
-            .lock()
-            .map(|deadline| Instant::now() >= *deadline)
-            .unwrap_or(true)
-        {
+        if deadline.expired() {
             return Err("插件操作超时".into());
         }
         if !progressed {
-            std::thread::sleep(Duration::from_millis(5));
+            let wake = host
+                .lock()
+                .map_err(|_| "宿主状态锁定失败")?
+                .ws_events_tx
+                .wake
+                .clone();
+            let cancelled = cancelled.clone();
+            let deadline = deadline.clone();
+            // 仅在真正等待外部事件时挂起；QuickJS 的可运行 jobs 已在上面排空。
+            // I/O Future 仍由 Tokio 执行，不把网络栈嵌回解释器调用栈。
+            wait_for_host_io(async move {
+                tokio::select! {
+                    _ = wake.notified() => {},
+                    _ = wait_for_stop(cancelled, deadline) => {},
+                }
+                Ok(())
+            })?;
         }
     }
 }
@@ -3050,7 +3054,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(20),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3091,7 +3095,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3117,7 +3121,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3149,7 +3153,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .expect("initialize 里 await setTimeout 不该失败");
@@ -3158,6 +3162,52 @@ mod tests {
             .unwrap();
         assert_eq!(result["ready"], true, "initialize 必须真的跑完");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_promise_and_host_sleep_observe_cancel_and_timeout_without_polling() {
+        for body in [
+            "await new Promise(() => {});",
+            "globalThis.__sayitHost.time.sleep(5000);",
+        ] {
+            for cancel in [false, true] {
+                let source = format!("export default () => ({{ async invoke() {{ {body} return {{ done: true }}; }} }});");
+                let (root, spec, profile) = fixture(&source, None);
+                let flag = Arc::new(CancellationFlag::default());
+                let runtime = JsProviderRuntime::create(
+                    spec,
+                    &profile,
+                    Duration::from_secs(1),
+                    flag.clone(),
+                    HashMap::new(),
+                )
+                .unwrap();
+                let worker = cancel.then(|| {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(20));
+                        flag.store(true, Ordering::Release);
+                    })
+                });
+                let started = Instant::now();
+                let error = runtime
+                    .call(
+                        "invoke",
+                        &Value::Null,
+                        Duration::from_millis(if cancel { 1000 } else { 30 }),
+                    )
+                    .unwrap_err();
+                assert!(started.elapsed() < Duration::from_millis(500), "{error}");
+                assert!(
+                    error.contains(if cancel { "取消" } else { "超时" }),
+                    "{error}"
+                );
+                if let Some(worker) = worker {
+                    worker.join().unwrap();
+                }
+                drop(runtime);
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -3170,7 +3220,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3203,7 +3253,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3252,7 +3302,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .expect("顶层 await setTimeout 不该失败");
@@ -3299,7 +3349,7 @@ mod tests {
                 spec.clone(),
                 &profile,
                 Duration::from_secs(5),
-                Arc::new(AtomicBool::new(false)),
+                Arc::new(CancellationFlag::new(false)),
                 HashMap::new(),
             )
             .unwrap()
@@ -3349,7 +3399,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(2),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         );
         assert!(result.is_err());
@@ -3366,7 +3416,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(2),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3446,7 +3496,7 @@ mod tests {
             &profile,
             "scripted",
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3504,7 +3554,7 @@ mod tests {
             None,
         );
         let data_dir = spec.data_dir.clone();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(CancellationFlag::new(false));
         let runtime = JsProviderRuntime::create(
             spec,
             &profile,
@@ -3557,7 +3607,7 @@ mod tests {
                 spec,
                 &profile,
                 Duration::from_secs(120),
-                Arc::new(AtomicBool::new(false)),
+                Arc::new(CancellationFlag::new(false)),
                 HashMap::new(),
             )
             .map(|_| ())
@@ -3592,7 +3642,7 @@ mod tests {
     #[test]
     fn namespace_drain_cancels_and_waits_for_runtime_owner_drop() {
         let namespace = format!("drain-{}", uuid::Uuid::new_v4());
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(CancellationFlag::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
         let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled, &wake).unwrap();
         let drain_namespace = namespace.clone();
@@ -3642,7 +3692,7 @@ mod tests {
             &profile,
             "llm-scripted",
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             None,
         )
         .unwrap();
@@ -3698,7 +3748,7 @@ mod tests {
             // Runtime initialization loads the real SDK bundle and is not the
             // behavior under test. Keep the short deadline on execute_llm.
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             None,
         )
         .unwrap();

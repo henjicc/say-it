@@ -1,6 +1,7 @@
 //! 文件解码与 VAD 同步衔接；只缓冲一个识别块，保留原有十秒喂入、每分钟收口的节奏。
 use super::{samples_to_ms, LocalModelSpec, LocalSegment, OfflineVadSession, SAMPLE_RATE};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use crate::cancellation::CancellationFlag;
 
 const CHUNK_SAMPLES: usize = SAMPLE_RATE as usize * 10;
 
@@ -57,7 +58,7 @@ impl FileVadSession {
 pub(crate) fn recognize_audio_file(
     spec: &LocalModelSpec,
     path: &str,
-    cancel: Option<&AtomicBool>,
+    cancel: Option<&CancellationFlag>,
 ) -> Result<(Vec<LocalSegment>, u64), String> {
     let check_cancel = || {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -97,7 +98,7 @@ mod tests {
             files: Vec::new(),
             params: serde_json::json!({}),
         };
-        let cancel = AtomicBool::new(true);
+        let cancel = CancellationFlag::new(true);
         assert_eq!(
             recognize_audio_file(&spec, "missing.wav", Some(&cancel)).unwrap_err(),
             "录音识别已取消"

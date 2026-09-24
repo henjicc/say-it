@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -225,7 +225,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
     ) -> Result<Self, String> {
         Self::create_with_event_sender(
@@ -244,7 +244,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
@@ -265,7 +265,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         recorder: Arc<dyn HostRuntimeRecorder>,
@@ -309,7 +309,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         recorder: Arc<dyn HostRuntimeRecorder>,
     ) -> Result<Self, String> {
@@ -448,7 +448,7 @@ pub async fn recognize_sdk_file(
     path: String,
     params: crate::providers::alibabacloud::TranscriptionParams,
     customization: crate::providers::RequestCustomization,
-    cancelled: Option<Arc<AtomicBool>>,
+    cancelled: Option<Arc<CancellationFlag>>,
 ) -> Result<crate::providers::alibabacloud::TranscriptionResult, String> {
     let model = params.model_id();
     let route = crate::providers::registry::builtin_sdk_asr_route(&model)
@@ -470,7 +470,7 @@ pub async fn recognize_sdk_file(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string);
     let input = sdk_file_asr_input(&params, &customization, vocabulary_id);
-    let cancel = cancelled.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel = cancelled.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let value = crate::providers::plugin_runtime::spawn_js_worker("builtin-file-asr", move || {
         let runtime = BuiltinSdkRuntime::create(
             &profile,
@@ -518,7 +518,7 @@ where
         "options": { "stream": true },
     });
     let (event_tx, mut event_rx) = mpsc::channel(128);
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
     let task_request_id = request_id.clone();
     let mut task =
@@ -712,7 +712,7 @@ mod tests {
             CredentialStoreHandle::default(),
             scope,
             "mismatched-provider",
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .err()

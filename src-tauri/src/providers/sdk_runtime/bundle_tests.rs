@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -108,7 +108,7 @@ fn create_runtime(
         spec,
         &profile,
         Duration::from_secs(5),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         bindings,
     )
@@ -120,7 +120,7 @@ fn create_runtime_with_cancelled(
     source: &str,
     provider_id: &str,
     scopes: &[&str],
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
 ) -> (PathBuf, JsProviderRuntime) {
     let (root, spec, profile, bindings) = fixture(source, provider_id, scopes);
     let runtime = JsProviderRuntime::create_with_sdk_bindings(
@@ -351,7 +351,7 @@ export default () => ({
   }
 });
 "#;
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let (root, runtime) =
         create_runtime_with_cancelled(source, "bailian", &["translation"], cancelled.clone());
     let cancel_worker = thread::spawn(move || {

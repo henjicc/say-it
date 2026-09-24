@@ -1,5 +1,6 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use crate::cancellation::CancellationFlag;
 
 use crate::application::subtitle_document::{to_srt, SubtitleCue};
 use crate::application::transcription::DEFAULT_TRANSCRIPTION_JOB_KIND;
@@ -12,7 +13,7 @@ use crate::state::*;
 use crate::text_align::{align_script, AlignOutput, AlignWord};
 
 const TRANSCRIPTION_EVENT: &str = "transcription-event";
-type CancelFlag = Arc<AtomicBool>;
+type CancelFlag = Arc<CancellationFlag>;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,7 +123,7 @@ pub(crate) async fn transcription_start_with_recording(
     let job_id = Uuid::new_v4().to_string();
     // 先登记用途，再放任何事件出去。
     state.transcription_runtime.register(&job_id, kind);
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(CancellationFlag::new(false));
     {
         let mut jobs = state
             .transcriptions

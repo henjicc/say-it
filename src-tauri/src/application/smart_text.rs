@@ -13,7 +13,8 @@ use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::Instant as StdInstant;
 use tauri::State;
@@ -315,7 +316,7 @@ async fn run_plugin_llm(
 ) -> Result<(String, String), String> {
     let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
         let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
             spec,
@@ -379,7 +380,7 @@ where
         )
         .await;
     }
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
@@ -602,7 +603,7 @@ async fn run_groq_sdk(
 ) -> Result<(String, String), String> {
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
@@ -644,7 +645,7 @@ where
 {
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();

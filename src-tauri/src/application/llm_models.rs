@@ -11,7 +11,7 @@ use genai::resolver::{AuthData, Endpoint, ProviderConfig};
 use genai::Client;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -158,7 +158,7 @@ async fn fetch_model_names(
                     credentials,
                     crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
                     request_id,
-                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(CancellationFlag::new(false)),
                     HashMap::new(),
                 )?;
                 runtime.discover_groq()
@@ -207,7 +207,7 @@ async fn fetch_model_names(
                     &profile,
                     &request_id,
                     MODEL_LIST_TIMEOUT,
-                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(CancellationFlag::new(false)),
                     None,
                 )?;
                 runtime.discover_llm(&capability.module_id, &request_id, MODEL_LIST_TIMEOUT)
