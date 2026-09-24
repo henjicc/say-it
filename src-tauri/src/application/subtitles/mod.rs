@@ -23,6 +23,7 @@ use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 mod preview;
+mod reconnect;
 mod retention;
 mod translation_queue;
 mod translation_work;
@@ -388,7 +389,7 @@ struct Session {
     translation_cancellation: CancellationToken,
     translation_jobs: translation_queue::Queue<translation_work::Job>,
     last_voice_at: Option<Instant>,
-    reconnect_attempts: u32,
+    reconnect: reconnect::Budget,
     opening: bool,
     obs_active: bool,
     /// 翻译失败（非致命）。与 `error` 分开：`error` 代表整个字幕会话失败并伴随
@@ -982,7 +983,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
     }
     session.asr_session_id = Some(response.session_id.clone());
     session.phase = SubtitlePhase::Running;
-    session.reconnect_attempts = 0;
+    session.reconnect.started(Instant::now());
     drop(session);
     response.start()?;
     publish_state(&app);
@@ -1038,6 +1039,7 @@ async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Valu
         match kind {
             "result" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    session.reconnect.received_text(text);
                     let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
                     let now = Instant::now();
                     let mode = session.prefs.mode.clone();
@@ -1060,9 +1062,9 @@ async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Valu
                 if session.audio_prefs.subtitle_silence_disconnect_enabled {
                     session.phase = SubtitlePhase::WaitingForVoice;
                 } else {
-                    session.reconnect_attempts += 1;
+                    let attempt = session.reconnect.disconnected(Instant::now());
                     session.phase = SubtitlePhase::Reconnecting;
-                    reconnect = Some((session.epoch, session.reconnect_attempts));
+                    reconnect = Some((session.epoch, attempt));
                 }
             }
             _ => {}
