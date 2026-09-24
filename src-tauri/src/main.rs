@@ -23,6 +23,8 @@ mod ocr;
 mod persistence;
 #[cfg(all(test, windows))]
 mod performance_test_support;
+#[cfg(all(test, windows))]
+mod runtime_performance_tests;
 mod prelude;
 mod providers;
 mod stack_diagnostics;
@@ -200,7 +202,15 @@ macro_rules! dlog {
 fn main() {
     // 保留 tokio 默认栈，只用自定义 runtime 为工作线程注册可符号化的栈溢出取证。
     // 深度不可控的 QuickJS 有自己的线程边界，不能再靠放大全局 worker 栈兜底。
-    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(windows)]
+    if std::env::var_os("TOKIO_WORKER_THREADS").is_none() {
+        // 音频处理与 QuickJS 有独立工作边界，异步线程不必随桌面逻辑核心数无限增加。
+        // Windows 发布版对照选择 8：取得主要闲置收益，并为并行 I/O 和短计算留出余量。
+        let workers = std::thread::available_parallelism().map_or(1, |count| count.get()).min(8);
+        runtime_builder.worker_threads(workers);
+    }
+    let async_runtime = runtime_builder
         .enable_all()
         .thread_name_fn(|| {
             static INDEX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

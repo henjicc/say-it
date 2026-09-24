@@ -40,3 +40,33 @@
 - 两段闲置样本不能证明长期无增长，也不能替代窗口销毁、真实业务负载或 macOS 验证。
 
 API 口径参考 [GetThreadDescription](https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreaddescription)、[QueryThreadCycleTime](https://learn.microsoft.com/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime) 和 [Windows 内存性能信息](https://learn.microsoft.com/windows/win32/memory/memory-performance-information)。
+
+## 后续：工作线程固定成本与上限选择
+
+在相同 Windows 机器上，用当前代码、独立标识 `com.henjicc.sayit.perfworkers20260924` 和测试设置构建发布程序。程序 SHA256 为 `A3F4B42B5A6EBC5BBE8F72835B918C25871A0670D34CCBE8CE552E0F33D3C26D`；只通过进程环境切换 Tokio 工作线程数，先预热一次，再测量各配置的 3 个新进程。默认与 4 线程交替采样，8 线程另测 3 次。没有清空系统文件缓存，不代表首次安装启动。
+
+所有样本均以 `--autostarted` 和测试设置的 `silent_start: true` 启动，均没有加载 WebView 模块。没有修改日常数据，也没有操作窗口。原始数据：`工作区/performance/tray-workers-{default,eight,four}-{1,2,3}.json`。
+
+| 新进程托盘闲置指标（3 次中位数） | 默认 24 线程 | 8 线程 | 4 线程 |
+| --- | ---: | ---: | ---: |
+| 主进程私有提交 | 8.262 MiB | 6.480 MiB | 6.047 MiB |
+| 主进程私有驻留 | 4.281 MiB | 3.633 MiB | 3.488 MiB |
+| 主进程线程总数 | 38 | 22 | 18 |
+
+另新增仅本地回环 TCP/JSON 的独立调度基准：8 路连接，每路 256 个约 48 KiB 的 JSON 文本请求，同时运行 4 ms 定时器探针；每次完整校验 2,048 个响应和 96 MiB 文本。每种配置在独立进程中交错测量 3 次，数据保存在 `工作区/performance/runtime-workers-{0,8,4}-{1,2,3}.json`，其中 0 使用逻辑处理器数以复现调整前的 Tokio 默认值。可用 `scripts/measure-audio-performance.mjs --scenario runtime-scheduling --runtime-workers <数量>` 复测。
+
+| 本地负载指标（3 次中位数） | 默认 24 线程 | 8 线程 | 4 线程 |
+| --- | ---: | ---: | ---: |
+| 请求 P95 | 0.7772 ms | 0.7063 ms | 0.6999 ms |
+| 请求 P99 | 0.8701 ms | 0.7813 ms | 0.7924 ms |
+| 定时器延迟 P95 | 1.9624 ms | 2.0222 ms | 1.5559 ms |
+| 定时器延迟 P99 | 1.9785 ms | 2.1167 ms | 1.5701 ms |
+| 测试进程私有提交峰值 | 8.152 MiB | 7.031 MiB | 6.297 MiB |
+
+据此将 **Windows 默认工作线程数限制为逻辑处理器数与 8 的较小值**，保留低核心机器原来的并行度。显式 `TOKIO_WORKER_THREADS` 继续由 Tokio 原有逻辑解析，不覆盖用户指定值；macOS 不改变。音频处理和 JavaScript 仍使用既有独立工作边界，线程栈大小不变。
+
+8 线程取得约 1.78 MiB（21.6%）托盘私有提交收益。选择 8 而非 4，是为未覆盖的突发短计算保留并行余量的工程取舍；本次数据并不证明 8 是所有负载的最优值。定时器指标存在毫秒级计时及调度波动，不能宣传小数位上的延迟差异为普遍提速。这里的 21.6% 也不能套用到保留 WebView 的整组进程。
+
+8 线程环境下 Rust 发布配置全量回归 687 项通过、27 项忽略。该基准不调用实际识别、翻译或音频设备，不替代真实复杂业务并发、完整桌面交互和长期运行验证。
+
+最终日常发布版在未设置线程环境变量时启动，线程采样确认 `sayit-tokio-1` 至 `sayit-tokio-8` 共 8 个线程，正常数据目录的启动日志初始化成功。程序 SHA256 为 `866005CCCFFC340C52CC9A86025F105267A0E5B8C21B746561A3DEEECD716DC7`，记录在 `工作区/performance/runtime-eight-delivery.json`。

@@ -15,6 +15,7 @@ const { values } = parseArgs({ options: {
   scenario: { type: "string", default: "audio-lab" },
   "packet-size": { type: "string", default: "4096" },
   "sample-rate": { type: "string", default: "48000" },
+  "runtime-workers": { type: "string", default: "0" },
 } });
 if (!values.executable || !values.output) {
   throw new Error("必须指定 --executable 测试程序和 --output 结果文件");
@@ -23,6 +24,10 @@ const seconds = Number(values.seconds);
 const runs = Number(values.runs);
 const packetSize = Number(values["packet-size"]);
 const sampleRate = Number(values["sample-rate"]);
+const runtimeWorkers = Number(values["runtime-workers"]);
+if (!Number.isInteger(runtimeWorkers) || runtimeWorkers < 0 || runtimeWorkers > 128) {
+  throw new Error("runtime-workers 必须是 0～128 的整数，0 使用逻辑处理器数");
+}
 if (!Number.isInteger(seconds) || seconds < 1 || seconds > 1800
     || !Number.isInteger(runs) || runs < 1 || runs > 20) {
   throw new Error("seconds 必须是 1～1800 的整数，runs 必须是 1～20 的整数");
@@ -33,6 +38,7 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "runtime-scheduling": "runtime_performance_tests::scheduling_profile",
   "subtitle-retention": "application::subtitles::retention::tests::long_session_profile",
   "subtitle-retention-legacy": "application::subtitles::retention::tests::long_session_profile",
   "event-fanout": "application::events::performance_tests::fanout_profile",
@@ -87,6 +93,7 @@ for (let run = 0; run < runs; run++) {
   ], {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
+      SAYIT_PERF_RUNTIME_WORKERS: String(runtimeWorkers),
       SAYIT_PERF_SUBTITLE_LEGACY: values.scenario === "subtitle-retention-legacy" ? "1" : "0",
       SAYIT_PERF_EVENT_LEGACY: ["event-fanout-legacy", "event-small-fanout-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_EVENT_SMALL: values.scenario.startsWith("event-small") ? "1" : "0",
