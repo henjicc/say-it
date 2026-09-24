@@ -19,28 +19,92 @@ pub(crate) fn push_backend_mic_samples(mic: &Arc<Mutex<BackendMicState>>, input:
         return;
     };
     guard.last_rms = rms_f32(&input);
+    guard
+        .raw_txs
+        .retain(|subscriber| !subscriber.tx.is_closed());
+    if !guard
+        .raw_txs
+        .iter()
+        .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled)
+    {
+        guard.pending.clear();
+    }
     if guard.tx.is_none() && guard.session_id.is_none() && guard.raw_txs.is_empty() {
         return;
     }
-    guard.buffer.extend_from_slice(&input);
-    while guard.buffer.len() >= BACKEND_MIC_CHUNK_FRAMES {
-        let chunk: Vec<f32> = guard.buffer.drain(..BACKEND_MIC_CHUNK_FRAMES).collect();
-        guard.chunk_count += 1;
-        guard
-            .raw_txs
-            .retain(|tx| tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok());
-        if let Some(tx) = guard.tx.as_ref() {
-            if tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok() {
-                continue;
-            }
-            guard.tx = None;
-            guard.session_id = None;
+    // 不把整个设备输入块先塞入 buffer 再反复 drain 搬移；只拼齐当前 4096 帧。
+    let mut remaining = input.as_slice();
+    while !remaining.is_empty() {
+        if guard.buffer.capacity() < BACKEND_MIC_CHUNK_FRAMES {
+            let additional = BACKEND_MIC_CHUNK_FRAMES - guard.buffer.len();
+            guard.buffer.reserve_exact(additional);
         }
-        guard.pending.push_back(chunk);
-        while guard.pending.len() > 240 {
-            guard.pending.pop_front();
+        let take = (BACKEND_MIC_CHUNK_FRAMES - guard.buffer.len()).min(remaining.len());
+        guard.buffer.extend_from_slice(&remaining[..take]);
+        remaining = &remaining[take..];
+        if guard.buffer.len() < BACKEND_MIC_CHUNK_FRAMES {
+            break;
+        }
+        let chunk = std::mem::take(&mut guard.buffer);
+        guard.chunk_count += 1;
+        let preroll = guard
+            .raw_txs
+            .iter()
+            .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled);
+        let keep_original = guard.tx.is_some() || preroll;
+        let (chunk, _) = fanout_raw(&mut guard.raw_txs, chunk, keep_original);
+        let Some(mut chunk) = chunk else {
+            continue;
+        };
+        if let Some(tx) = guard.tx.as_ref() {
+            match tx.send(AsrStreamInput::RawF32(chunk)) {
+                Ok(()) => continue,
+                Err(error) => {
+                    let AsrStreamInput::RawF32(samples) = error.0 else {
+                        unreachable!()
+                    };
+                    chunk = samples;
+                    guard.tx = None;
+                    guard.session_id = None;
+                }
+            }
+        }
+        // 只有会重新绑定直接 ASR 的监视消费者需要预录音；文件/调校/对比已收到所有样本。
+        if guard
+            .raw_txs
+            .iter()
+            .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled)
+        {
+            guard.pending.push_back(chunk);
+            while guard.pending.len() > 240 {
+                guard.pending.pop_front();
+            }
         }
     }
+}
+
+fn fanout_raw(
+    subscribers: &mut Vec<BackendMicRawSubscriber>,
+    samples: Vec<f32>,
+    keep_original: bool,
+) -> (Option<Vec<f32>>, bool) {
+    let mut samples = Some(samples);
+    let mut delivered = false;
+    let count = subscribers.len();
+    let mut index = 0;
+    subscribers.retain(|subscriber| {
+        index += 1;
+        // 无直接 ASR / 预录音时，将原分配交给最后的消费者，省去一份整块复制。
+        let packet = if !keep_original && index == count {
+            samples.take().unwrap()
+        } else {
+            samples.as_ref().unwrap().clone()
+        };
+        let sent = subscriber.tx.send(AsrStreamInput::RawF32(packet)).is_ok();
+        delivered |= sent;
+        sent
+    });
+    (samples, delivered)
 }
 
 /// 把攒着的音频送进 ASR 流。
@@ -63,13 +127,9 @@ pub(crate) fn flush_backend_mic_buffer(guard: &mut BackendMicState) -> Result<us
     if !guard.buffer.is_empty() {
         let chunk = std::mem::take(&mut guard.buffer);
         guard.chunk_count += 1;
-        let mut delivered = false;
-        guard.raw_txs.retain(|tx| {
-            let sent = tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok();
-            delivered |= sent;
-            sent
-        });
-        if let Some(tx) = guard.tx.as_ref() {
+        let keep_original = guard.tx.is_some();
+        let (chunk, mut delivered) = fanout_raw(&mut guard.raw_txs, chunk, keep_original);
+        if let (Some(tx), Some(chunk)) = (guard.tx.as_ref(), chunk) {
             tx.send(AsrStreamInput::RawF32(chunk))
                 .map_err(|_| "ASR stream channel closed".to_string())?;
             delivered = true;
@@ -386,12 +446,16 @@ pub(crate) fn start_backend_mic_inner(
                     })();
                     let _ = reply.send(result);
                 }
-                BackendMicCommand::AttachRaw { tx, reply } => {
+                BackendMicCommand::AttachRaw {
+                    tx,
+                    preroll,
+                    reply,
+                } => {
                     let result = (|| {
                         let mut guard = mic
                             .lock()
                             .map_err(|_| "Backend mic lock failed".to_string())?;
-                        guard.raw_txs.push(tx);
+                        guard.raw_txs.push(BackendMicRawSubscriber { tx, preroll });
                         Ok(BackendMicAttachResponse { flushed_chunks: 0 })
                     })();
                     let _ = reply.send(result);
@@ -481,6 +545,7 @@ pub(crate) fn start_backend_mic_inner(
 /// 应用服务直接消费原始 PCM，避免完整音频经过 WebView 事件往返。
 pub(crate) fn attach_backend_mic_raw_inner(
     state: &RuntimeState,
+    preroll: AsrPreroll,
 ) -> Result<
     (
         BackendMicAttachResponse,
@@ -499,6 +564,7 @@ pub(crate) fn attach_backend_mic_raw_inner(
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {
+            preroll,
             tx,
             reply: reply_tx,
         })
@@ -650,7 +716,10 @@ mod tests {
     fn flush_sends_partial_tail_to_raw_subscribers() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = BackendMicState {
-            raw_txs: vec![tx],
+            raw_txs: vec![BackendMicRawSubscriber {
+                tx,
+                preroll: AsrPreroll::Enabled,
+            }],
             buffer: vec![0.25, -0.5, 0.75],
             ..Default::default()
         };
@@ -669,7 +738,10 @@ mod tests {
     fn flush_does_not_replay_pending_chunks_to_raw_subscribers() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut state = BackendMicState {
-            raw_txs: vec![tx],
+            raw_txs: vec![BackendMicRawSubscriber {
+                tx,
+                preroll: AsrPreroll::Enabled,
+            }],
             pending: VecDeque::from([vec![0.25, -0.5]]),
             ..Default::default()
         };
@@ -730,3 +802,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod capture_tests;

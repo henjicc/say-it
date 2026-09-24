@@ -254,12 +254,16 @@ pub(crate) fn start_backend_system_audio_inner(
                     })();
                     let _ = reply.send(result);
                 }
-                BackendMicCommand::AttachRaw { tx, reply } => {
+                BackendMicCommand::AttachRaw {
+                    tx,
+                    preroll,
+                    reply,
+                } => {
                     let result = (|| {
                         let mut guard = system_audio
                             .lock()
                             .map_err(|_| "Backend system audio lock failed".to_string())?;
-                        guard.raw_txs.push(tx);
+                        guard.raw_txs.push(BackendMicRawSubscriber { tx, preroll });
                         Ok(BackendMicAttachResponse { flushed_chunks: 0 })
                     })();
                     let _ = reply.send(result);
@@ -408,6 +412,7 @@ pub(crate) fn attach_backend_system_audio_raw_inner(
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {
+            preroll: AsrPreroll::Enabled,
             tx,
             reply: reply_tx,
         })

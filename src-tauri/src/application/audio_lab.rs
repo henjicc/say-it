@@ -207,8 +207,10 @@ pub(crate) fn audio_lab_start(
         cleanup_start_failure(&state, false);
         return Err(error);
     }
-    let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(&state)
-    {
+    let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(
+        &state,
+        crate::state::AsrPreroll::Disabled,
+    ) {
         Ok(attached) => attached,
         Err(error) => {
             cleanup_start_failure(&state, true);

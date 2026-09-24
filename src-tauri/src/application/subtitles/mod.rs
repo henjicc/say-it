@@ -608,7 +608,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
         };
     }
     let raw_rx = match match source {
-        SourceKind::Mic => attach_backend_mic_raw_inner(&state),
+        SourceKind::Mic => attach_backend_mic_raw_inner(&state, crate::state::AsrPreroll::Enabled),
         SourceKind::System => attach_backend_system_audio_raw_inner(&state),
     } {
         Ok((_, receiver)) => receiver,

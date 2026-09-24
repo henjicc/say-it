@@ -33,6 +33,8 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "capture": "desktop::backend_mic::capture_tests::capture_memory_profile",
+  "capture-legacy": "desktop::backend_mic::capture_tests::capture_memory_profile",
   "audio-lab": "application::audio_lab::performance_tests::offline_audio_memory_profile",
   decode: "audio_prep::performance_tests::file_decode_memory_profile",
   "wav-export": "application::compare::performance_tests::wav_export_memory_profile",
@@ -57,6 +59,7 @@ for (let run = 0; run < runs; run++) {
   ], {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
+      SAYIT_PERF_CAPTURE_LEGACY: values.scenario === "capture-legacy" ? "1" : "0",
       SAYIT_PERF_SAMPLE_RATE: String(sampleRate), SAYIT_PERF_PACKET_SIZE: String(packetSize),
       SAYIT_PERF_PLAYBACK_LEGACY: values.scenario === "compare-playback-legacy" ? "1" : "0",
       SAYIT_PERF_CANCEL_LEGACY: values.scenario === "asr-cancel-legacy" ? "1" : "0",

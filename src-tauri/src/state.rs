@@ -232,6 +232,17 @@ pub(crate) struct MouseGestureRuntime {
     pub(crate) error: Mutex<Option<String>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AsrPreroll {
+    Enabled,
+    Disabled,
+}
+
+pub(crate) struct BackendMicRawSubscriber {
+    pub(crate) tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+    pub(crate) preroll: AsrPreroll,
+}
+
 #[derive(Default)]
 pub(crate) struct BackendMicState {
     pub(crate) worker: Option<std::sync::mpsc::Sender<BackendMicCommand>>,
@@ -239,7 +250,7 @@ pub(crate) struct BackendMicState {
     pub(crate) channels: usize,
     pub(crate) session_id: Option<String>,
     pub(crate) tx: Option<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
-    pub(crate) raw_txs: Vec<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
+    pub(crate) raw_txs: Vec<BackendMicRawSubscriber>,
     pub(crate) pending: VecDeque<Vec<f32>>,
     pub(crate) buffer: Vec<f32>,
     pub(crate) chunk_count: u64,
@@ -257,6 +268,7 @@ pub(crate) enum BackendMicCommand {
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
     AttachRaw {
+        preroll: AsrPreroll,
         tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
