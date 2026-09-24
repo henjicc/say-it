@@ -9,6 +9,11 @@ describe("说明提示", () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); });
   const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms));
   const focus = (element: HTMLElement) => act(() => element.focus());
+  const finishAnimation = (element: HTMLElement) => {
+    // jsdom 没有 AnimationEvent，React 会监听 WebKit 前缀事件。
+    const eventName = "AnimationEvent" in window ? "animationend" : "webkitAnimationEnd";
+    fireEvent(element, new Event(eventName, { bubbles: true }));
+  };
 
   it("默认不展示说明或帮助图标，聚焦满半秒后通过独立浮层显示", () => {
     const view = render(<HelpLabel content="帮助识别常用人名">热词表</HelpLabel>);
@@ -19,9 +24,34 @@ describe("说明提示", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     advance(1);
     const tip = screen.getByRole("tooltip");
+    expect(tip).toHaveAttribute("data-state", "open");
     expect(tip).toHaveTextContent("帮助识别常用人名");
     expect(view.container).not.toContainElement(tip);
     expect(screen.getByText("热词表")).toHaveAttribute("aria-describedby", tip.id);
+  });
+
+  it("关闭时保留浮层直到淡出结束，重新打开后不被旧动画卸载", () => {
+    render(<HelpLabel content="说明">选项</HelpLabel>);
+    const label = screen.getByText("选项");
+    focus(label);
+    advance(500);
+    const tip = screen.getByRole("tooltip");
+    fireEvent.keyDown(label, { key: "Escape" });
+    expect(tip).toHaveAttribute("data-state", "closed");
+    expect(tip).toHaveAttribute("aria-hidden", "true");
+    expect(tip).toBeInTheDocument();
+    expect(label).not.toHaveAttribute("aria-describedby");
+
+    act(() => label.blur());
+    focus(label);
+    advance(500);
+    finishAnimation(tip);
+    expect(screen.getByRole("tooltip")).toBe(tip);
+    expect(tip).toHaveAttribute("data-state", "open");
+
+    fireEvent.keyDown(label, { key: "Escape" });
+    finishAnimation(tip);
+    expect(tip).not.toBeInTheDocument();
   });
 
   it("字段获得焦点后关联说明，风险信息始终显示", () => {

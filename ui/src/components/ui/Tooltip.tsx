@@ -11,6 +11,7 @@ export function Tooltip({ content, children }: {
   const popup = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  const [rendered, setRendered] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const clearTimer = () => { clearTimeout(timer.current); };
   const close = () => { clearTimer(); setOpen(false); };
@@ -19,7 +20,7 @@ export function Tooltip({ content, children }: {
     setOpen(false);
     anchor.current = element;
     clearTimer();
-    timer.current = setTimeout(() => setOpen(true), 500);
+    timer.current = setTimeout(() => { setRendered(true); setOpen(true); }, 500);
   };
   const leave = () => {
     clearTimer();
@@ -92,7 +93,12 @@ export function Tooltip({ content, children }: {
       onBlur: (event) => { props.onBlur?.(event); if (!event.currentTarget.contains(event.relatedTarget)) close(); },
       onPointerDown: (event) => { props.onPointerDown?.(event); close(); },
     })}
-    {open && createPortal(<div ref={popup} id={id} role="tooltip" className="ui-tooltip" style={position}
+    {rendered && createPortal(<div ref={popup} id={id} role="tooltip" className="ui-tooltip" style={position}
+      data-state={open ? "open" : "closed"} aria-hidden={!open}
+      onAnimationEnd={(event) => {
+        // 退出动画结束后再卸载；重新打开时忽略旧动画的结束事件。
+        if (event.target === event.currentTarget && !open) setRendered(false);
+      }}
       onMouseEnter={clearTimer} onMouseLeave={leave}>{content}</div>, document.body)}
   </>;
 }
