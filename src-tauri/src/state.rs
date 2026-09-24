@@ -11,7 +11,7 @@ pub(crate) struct RuntimeState {
     pub(crate) plugin_registry: Mutex<crate::providers::plugin::PluginRegistry>,
     pub(crate) pending_plugin_imports: Mutex<VecDeque<String>>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<crate::cancellation::CancellationFlag>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
     pub(crate) assistant_shortcuts: Mutex<crate::application::assistant::AssistantShortcutSettings>,

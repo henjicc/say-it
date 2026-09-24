@@ -8,6 +8,7 @@ mod audio_prep;
 mod audio_storage;
 mod temporary_audio;
 mod audio_wav;
+mod cancellation;
 mod commands;
 mod desktop;
 #[cfg(windows)]

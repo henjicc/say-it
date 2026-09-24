@@ -1,5 +1,6 @@
 //! 有序音频输入、按字节等待的文件输入，以及慢实时消费者的无损暂存。
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::cancellation::CancellationFlag;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{mpsc, Notify};
 mod spool;
@@ -131,7 +132,6 @@ fn signal_failure(
     }
     *failure = Some(error);
     drop(failure);
-    cancellation.wake.notify_one();
     budget.space.notify_waiters();
     if let Some(output) = output.upgrade() {
         budget.packets.fetch_add(1, Ordering::AcqRel);
@@ -295,8 +295,7 @@ impl AsrInputSender {
 }
 #[derive(Default)]
 pub(crate) struct AsrCancellation {
-    flag: Arc<AtomicBool>,
-    wake: Notify,
+    flag: Arc<CancellationFlag>,
     failure: Mutex<Option<String>>,
 }
 impl AsrCancellation {
@@ -304,10 +303,7 @@ impl AsrCancellation {
         self.flag.load(Ordering::Acquire)
     }
     pub(crate) async fn cancelled(&self) {
-        let notified = self.wake.notified();
-        if !self.is_cancelled() {
-            notified.await;
-        }
+        self.flag.cancelled().await;
     }
     fn terminal(&self) -> AsrStreamInput {
         match self
@@ -354,7 +350,6 @@ impl AsrStreamHandle {
     }
     pub(crate) fn stop(&self) {
         self.cancellation.flag.store(true, Ordering::Release);
-        self.cancellation.wake.notify_one();
         self.tx.budget.space.notify_waiters();
         let _ = self.tx.send(AsrStreamInput::Stop);
     }
@@ -385,7 +380,7 @@ impl AsrStreamReceiver {
             .unwrap_or_else(|poison| poison.into_inner())
             .take()
     }
-    pub(crate) fn cancellation_flag(&self) -> Arc<AtomicBool> {
+    pub(crate) fn cancellation_flag(&self) -> Arc<CancellationFlag> {
         self.cancellation.flag.clone()
     }
     #[cfg(any(test, target_os = "macos"))]
@@ -420,7 +415,6 @@ impl AsrStreamReceiver {
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner()) = Some(error.clone());
                 self.cancellation.flag.store(true, Ordering::Release);
-                self.cancellation.wake.notify_one();
                 if let Some(spool) = self.spool.upgrade() {
                     spool.shutdown();
                 }

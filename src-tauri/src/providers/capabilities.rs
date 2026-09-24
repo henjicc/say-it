@@ -3,7 +3,7 @@ pub use alibabacloud::{HotwordEntry, TranscriptionParams, TranscriptionResult};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -110,7 +110,7 @@ impl FileRecognitionProvider {
         &self,
         path: &str,
         params: &TranscriptionParams,
-        cancel: Option<Arc<AtomicBool>>,
+        cancel: Option<Arc<CancellationFlag>>,
     ) -> Result<TranscriptionResult, String> {
         match self {
             Self::BuiltinSdk {
@@ -417,7 +417,7 @@ impl TranslationProvider {
             }
             Self::Plugin { spec, profile } => {
                 let module_id = spec.capability_id(model, "translation", false)?;
-                let cancelled = Arc::new(AtomicBool::new(false));
+                let cancelled = Arc::new(CancellationFlag::new(false));
                 let operation_cancelled = cancelled.clone();
                 let operation = plugin_runtime::execute_capability_cancellable(
                     spec,

@@ -20,11 +20,22 @@ pub(crate) struct MemoryCounters {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
+    fn GetCurrentThread() -> *mut c_void;
+    fn QueryThreadCycleTime(thread: *mut c_void, cycles: *mut u64) -> i32;
     fn K32GetProcessMemoryInfo(
         process: *mut c_void,
         counters: *mut MemoryCounters,
         size: u32,
     ) -> i32;
+}
+
+pub(crate) fn thread_cycles() -> u64 {
+    let mut cycles = 0;
+    assert_ne!(
+        unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) },
+        0
+    );
+    cycles
 }
 
 pub(crate) fn memory() -> MemoryCounters {

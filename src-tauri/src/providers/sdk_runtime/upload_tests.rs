@@ -76,7 +76,7 @@ export default () => ({ async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("audio".into(), file)]),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -132,7 +132,7 @@ export default () => ({ async invoke(request) {
         spec,
         &profile,
         Duration::from_secs(5),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("audio".into(), file)]),
         sdk_bindings,
     )
@@ -184,7 +184,7 @@ export default () => ({ async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("audio".into(), file.clone())]),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -239,7 +239,7 @@ export default () => ({ async invoke(request) {
             source,
             spec,
             &profile,
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::from([("audio".into(), file)]),
             Arc::new(Mutex::new(Vec::new())),
         );
@@ -347,7 +347,7 @@ export default () => ({ async invoke(request) {
         spec,
         &profile,
         Duration::from_secs(5),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("audio".into(), file)]),
         sdk_bindings,
     )
@@ -384,7 +384,7 @@ export default () => ({async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("audio".into(), file.clone())]),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -428,7 +428,7 @@ export default () => ({async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -480,7 +480,7 @@ export default () => ({async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -536,7 +536,7 @@ export default () => ({async invoke(request) {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );
