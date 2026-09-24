@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+mod compare;
+mod fixture;
 mod scenarios;
+mod transcription;
 
 const IDENTIFIER: &str = "com.henjicc.sayit.acceptance";
 
@@ -54,6 +57,17 @@ struct Recorder {
 
 impl Recorder {
     fn record(&mut self, stage: &str, cycle: usize, elapsed_ms: Option<f64>) -> Result<(), String> {
+        if stage.ends_with("-idle") && stage != "initial-idle"
+            && std::env::var("SAYIT_ACCEPTANCE_OPTIMIZE_HEAP").as_deref() == Ok("1")
+        {
+            let before = process_heap();
+            let started = Instant::now();
+            optimize_idle_heap()?;
+            return self.detail(stage, cycle, elapsed_ms, json!({
+                "heapBeforeOptimization":before,
+                "heapOptimizationMs":started.elapsed().as_secs_f64() * 1000.0
+            }));
+        }
         self.detail(stage, cycle, elapsed_ms, serde_json::Value::Null)
     }
 
@@ -67,6 +81,7 @@ impl Recorder {
         let line = json!({
             "stage": stage, "cycle": cycle, "elapsedMs": elapsed_ms,
             "detail": detail,
+            "processHeap": if stage.ends_with("idle") || stage == "completed" { process_heap() } else { serde_json::Value::Null },
             "sinceStartMs": self.started.elapsed().as_secs_f64() * 1000.0,
             "timestampMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| e.to_string())?.as_millis(),
@@ -76,6 +91,62 @@ impl Recorder {
             .and_then(|_| self.file.flush())
             .map_err(|e| e.to_string())
     }
+}
+
+// 只读默认进程堆的已分配/已提交量，辅助区分活对象与分配器保留；不修剪、不压缩堆。
+#[cfg(windows)]
+fn process_heap() -> serde_json::Value {
+    use windows::Win32::System::Memory::{GetProcessHeap, HeapSummary, HEAP_SUMMARY};
+    let mut summary = HEAP_SUMMARY {
+        cb: std::mem::size_of::<HEAP_SUMMARY>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        match GetProcessHeap() {
+            Ok(heap) if HeapSummary(heap, 0, &mut summary).as_bool() => json!({
+                "allocatedBytes":summary.cbAllocated,"committedBytes":summary.cbCommitted,"reservedBytes":summary.cbReserved
+            }),
+            _ => json!({"unavailable":true}),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn process_heap() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+// 仅验收构建的可选对照：释放 LFH 空闲提交页，既不操作工作集，也不改变活对象。
+// https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapsetinformation
+#[cfg(windows)]
+fn optimize_idle_heap() -> Result<(), String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
+    // HEAP_OPTIMIZE_RESOURCES_INFORMATION 的 ABI：两个 DWORD，Version=1、Flags=0。
+    #[repr(C)]
+    struct Information { version: u32, flags: u32 }
+    let information = Information { version: 1, flags: 0 };
+    unsafe {
+        HeapSetInformation(HANDLE::default(), HeapOptimizeResources,
+            Some((&information as *const Information).cast()), std::mem::size_of::<Information>())
+            .map_err(|error| format!("验收空闲堆优化失败：{error}"))
+    }
+}
+
+#[cfg(not(windows))]
+fn optimize_idle_heap() -> Result<(), String> {
+    Err("空闲堆对照仅支持 Windows".into())
+}
+
+fn recognition_rounds() -> Result<usize, String> {
+    let rounds = std::env::var("SAYIT_ACCEPTANCE_RECOGNITION_ROUNDS")
+        .unwrap_or_else(|_| "3".into())
+        .parse::<usize>()
+        .map_err(|e| e.to_string())?;
+    if !(1..=12).contains(&rounds) {
+        return Err("识别验收轮数须为 1～12".into());
+    }
+    Ok(rounds)
 }
 
 pub(crate) fn start(app: AppHandle) {
@@ -120,6 +191,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     wait_for_window(app, false).await?;
     recorder.record("initial-idle", 0, None)?;
     tokio::time::sleep(Duration::from_secs(10)).await;
+    recorder.record("scenario-preparing", 0, None)?;
     let cycles = match std::env::var("SAYIT_ACCEPTANCE_SCENARIO")
         .as_deref()
         .unwrap_or("windows")
@@ -135,6 +207,14 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         "audio-lab" => {
             scenarios::audio_lab(app, &mut recorder).await?;
             3
+        }
+        "transcription" => {
+            transcription::run(app, &mut recorder).await?;
+            recognition_rounds()?
+        }
+        "comparison" => {
+            compare::run(app, &mut recorder).await?;
+            recognition_rounds()?
         }
         other => return Err(format!("未知验收场景：{other}")),
     };
