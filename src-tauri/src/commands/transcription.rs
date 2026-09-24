@@ -102,6 +102,17 @@ pub(crate) async fn transcription_start_inner(
     params: Option<TranscriptionParams>,
     kind: &str,
 ) -> Result<TranscriptionStartResponse, String> {
+    transcription_start_with_recording(app, state, file_path, params, kind, None).await
+}
+
+pub(crate) async fn transcription_start_with_recording(
+    app: tauri::AppHandle,
+    state: &RuntimeState,
+    file_path: String,
+    params: Option<TranscriptionParams>,
+    kind: &str,
+    recording: Option<Arc<crate::audio_wav::RecordedWav>>,
+) -> Result<TranscriptionStartResponse, String> {
     if file_path.trim().is_empty() {
         return Err("请选择要识别的音视频文件".to_string());
     }
@@ -140,6 +151,8 @@ pub(crate) async fn transcription_start_inner(
         if let Err(message) = result {
             emit_transcription_event(&app, &task_job_id, "error", json!({ "message": message }));
         }
+        // 取消标记/完成事件不代表供应商已释放文件；实际工作退出后才归还录音所有权。
+        drop(recording);
         if let Ok(mut guard) = jobs.lock() {
             guard.remove(&task_job_id);
         }

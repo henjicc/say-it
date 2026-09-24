@@ -42,6 +42,8 @@ const testNames = {
   "compare-playback-legacy": "application::compare::performance_tests::uploaded_playback_memory_profile",
   "asr-cancel": "asr_input::performance_tests::cancel_backlog_profile",
   "asr-cancel-legacy": "asr_input::performance_tests::cancel_backlog_profile",
+  "compare-file-storage": "application::compare::performance_tests::file_recording_storage_profile",
+  "compare-file-storage-legacy": "application::compare::performance_tests::file_recording_storage_profile",
   "recording-storage": "audio_wav::recording::performance_tests::recording_storage_profile",
   "recording-storage-legacy": "audio_wav::recording::performance_tests::recording_storage_profile",
 };
@@ -58,7 +60,7 @@ for (let run = 0; run < runs; run++) {
       SAYIT_PERF_SAMPLE_RATE: String(sampleRate), SAYIT_PERF_PACKET_SIZE: String(packetSize),
       SAYIT_PERF_PLAYBACK_LEGACY: values.scenario === "compare-playback-legacy" ? "1" : "0",
       SAYIT_PERF_CANCEL_LEGACY: values.scenario === "asr-cancel-legacy" ? "1" : "0",
-      SAYIT_PERF_RECORDING_LEGACY: values.scenario === "recording-storage-legacy" ? "1" : "0",
+      SAYIT_PERF_RECORDING_LEGACY: ["recording-storage-legacy", "compare-file-storage-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_DENOISE: values.denoise ? "1" : "0" },
   });
   if (result.error) throw result.error;
