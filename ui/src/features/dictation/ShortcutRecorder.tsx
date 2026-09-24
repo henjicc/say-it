@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
-import { Tooltip } from "@/components/ui/Tooltip";
 import { ClearIcon } from "@/components/ui/icons";
 import { cn } from "@/lib/cn";
 import {
@@ -53,50 +52,46 @@ export function ShortcutRecorder({ value, onChange, onClear, disabled, ariaLabel
   };
 
   const label = shortcutLabel(value);
-  const hint = capturing
-    ? "按下新的快捷键，按 Esc 或点击右侧 × 取消，保留原快捷键。"
-    : `点击设置快捷键，已有快捷键可点击右侧 × 重新录制。${onClear ? "聚焦后按 Delete 或 Backspace 可清除。" : ""}`;
   return (
-    <Tooltip content={hint}>
-      <div
-        className="relative min-w-0"
-        onBlur={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget)) cancelRef.current?.();
-        }}
-        onKeyDown={(event) => {
-          if (disabled || capturing || !label || !onClear || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
-          if (event.key === "Delete" || event.key === "Backspace") {
-            event.preventDefault();
-            void onClear();
-          }
-        }}
-      >
-        <Button
-          disabled={disabled}
-          aria-label={`${ariaLabel}：${capturing ? "请按下按键，Esc 取消" : label || "点击设置"}`}
-          aria-pressed={capturing}
-          onClick={() => { if (!capturing) toggleCapture(); }}
-          className={cn(
-            "w-full justify-start text-left",
-            (label || capturing) && "pr-12",
-            capturing && "border-[var(--accent-ring)]",
-            !capturing && !label && "text-[var(--color-fg-subtle)]",
-          )}
-        >
-          <span className="truncate" aria-live="polite">
-            {capturing ? "请按下按键…" : label || "点击设置"}
-          </span>
-        </Button>
-        {(capturing || label) && (
-          <InputAffixButton
-            label={capturing ? `取消录制${ariaLabel}` : `重新录制${ariaLabel}`}
-            disabled={disabled}
-            onClick={toggleCapture}
-          >
-            <ClearIcon />
-          </InputAffixButton>
+    <div
+      className="relative min-w-0"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) cancelRef.current?.();
+      }}
+      onKeyDown={(event) => {
+        if (disabled || capturing || !label || !onClear || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+        if (event.key === "Delete" || event.key === "Backspace") {
+          event.preventDefault();
+          void onClear();
+        }
+      }}
+    >
+      <Button
+        disabled={disabled}
+        aria-label={`${ariaLabel}：${capturing ? "请按下按键，Esc 取消" : label || "点击设置"}`}
+        aria-pressed={capturing}
+        onClick={() => { if (!capturing) toggleCapture(); }}
+        className={cn(
+          "w-full justify-start text-left",
+          (label || capturing) && "pr-12",
+          capturing && "border-[var(--accent-ring)]",
+          !capturing && !label && "text-[var(--color-fg-subtle)]",
         )}
-      </div>
-    </Tooltip>
+      >
+        <span className="truncate" aria-live="polite">
+          {capturing ? "请按下按键…" : label || "点击设置"}
+        </span>
+      </Button>
+      {(capturing || label) && (
+        <InputAffixButton
+          label={capturing ? `取消录制${ariaLabel}` : `重新录制${ariaLabel}`}
+          title=""
+          disabled={disabled}
+          onClick={toggleCapture}
+        >
+          <ClearIcon />
+        </InputAffixButton>
+      )}
+    </div>
   );
 }

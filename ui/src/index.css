@@ -136,6 +136,21 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.ui-tooltip[data-state="open"] {
+  animation: tooltip-in var(--dur-fast) ease-out both;
+}
+.ui-tooltip[data-state="closed"] {
+  pointer-events: none;
+  animation: tooltip-out var(--dur-fast) ease-in both;
+}
+@keyframes tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tooltip-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 
 [data-settings-search-hit="true"] {
   border-radius: var(--radius-md);
@@ -449,6 +464,7 @@ input[type="radio"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ui-tooltip,
   [class*="modal-overlay-"],
   [class*="modal-panel-"] {
     animation-duration: 1ms !important;
