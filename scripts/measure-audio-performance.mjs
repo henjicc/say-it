@@ -33,6 +33,10 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "gesture-idle": "desktop::mouse_gesture::scheduling_tests::idle_monitor_profile",
+  "gesture-idle-legacy": "desktop::mouse_gesture::scheduling_tests::idle_monitor_profile",
+  "gesture-enabled-idle": "desktop::mouse_gesture::scheduling_tests::idle_monitor_profile",
+  "gesture-enabled-idle-legacy": "desktop::mouse_gesture::scheduling_tests::idle_monitor_profile",
   "host-network-wait": "providers::plugin_runtime::control::performance_tests::network_wait_profile",
   "host-network-wait-legacy": "providers::plugin_runtime::control::performance_tests::network_wait_profile",
   "host-network-cancel": "providers::plugin_runtime::control::performance_tests::network_wait_profile",
@@ -75,6 +79,8 @@ for (let run = 0; run < runs; run++) {
   ], {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
+      SAYIT_PERF_GESTURE_LEGACY: ["gesture-idle-legacy", "gesture-enabled-idle-legacy"].includes(values.scenario) ? "1" : "0",
+      SAYIT_PERF_GESTURE_ENABLED: values.scenario.startsWith("gesture-enabled") ? "1" : "0",
       SAYIT_PERF_HOST_WAIT_LEGACY: ["host-network-wait-legacy", "host-network-cancel-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_HOST_WAIT_CANCEL: values.scenario.startsWith("host-network-cancel") ? "1" : "0",
       SAYIT_PERF_SESSION_POLL_LEGACY: ["asr-idle-session-legacy", "asr-session-latency-legacy"].includes(values.scenario) ? "1" : "0",
