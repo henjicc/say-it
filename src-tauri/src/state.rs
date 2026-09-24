@@ -249,7 +249,7 @@ pub(crate) struct BackendMicState {
     pub(crate) sample_rate: u32,
     pub(crate) channels: usize,
     pub(crate) session_id: Option<String>,
-    pub(crate) tx: Option<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
+    pub(crate) tx: Option<AsrInputSender>,
     pub(crate) raw_txs: Vec<BackendMicRawSubscriber>,
     pub(crate) pending: VecDeque<Vec<f32>>,
     pub(crate) buffer: Vec<f32>,
@@ -264,7 +264,7 @@ pub(crate) struct BackendMicState {
 pub(crate) enum BackendMicCommand {
     Attach {
         session_id: String,
-        tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        tx: AsrInputSender,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
     AttachRaw {
@@ -592,7 +592,7 @@ pub(crate) struct SessionStatus {
     pub(crate) default_asr_provider: String,
 }
 
-pub(crate) use crate::asr_input::{AsrStreamHandle, AsrStreamInput, AsrStreamReceiver};
+pub(crate) use crate::asr_input::{AsrInputSender, AsrStreamHandle, AsrStreamInput, AsrStreamReceiver};
 
 #[derive(Serialize)]
 pub(crate) struct AsrStreamStartResponse {

@@ -1,5 +1,9 @@
 use super::*;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use crate::state::{AsrInputSender, AsrStreamHandle, AsrStreamReceiver};
+fn input_channel() -> (AsrInputSender, AsrStreamReceiver) {
+    let (handle, rx) = AsrStreamHandle::channel();
+    (handle.tx, rx)
+}
 
 fn recording() -> (CompareRuntime, u64) {
     let runtime = CompareRuntime::default();
@@ -8,7 +12,7 @@ fn recording() -> (CompareRuntime, u64) {
     (runtime, epoch)
 }
 
-fn collect(rx: &mut UnboundedReceiver<AsrStreamInput>) -> Vec<f32> {
+fn collect(rx: &mut AsrStreamReceiver) -> Vec<f32> {
     let mut output = Vec::new();
     while let Ok(packet) = rx.try_recv() {
         let AsrStreamInput::RawF32(samples) = packet else {
@@ -23,7 +27,7 @@ fn send_packet(
     runtime: &CompareRuntime,
     epoch: u64,
     samples: &[f32],
-    senders: &[(&str, &UnboundedSender<AsrStreamInput>)],
+    senders: &[(&str, &AsrInputSender)],
 ) {
     for id in runtime.record_packet(epoch, samples).unwrap() {
         let (_, tx) = senders.iter().find(|(key, _)| *key == id).unwrap();
@@ -35,8 +39,8 @@ fn send_packet(
 fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav() {
     for needs_file in [false, true] {
         let (runtime, epoch) = recording();
-        let (a_tx, mut a_rx) = unbounded_channel();
-        let (b_tx, mut b_rx) = unbounded_channel();
+        let (a_tx, mut a_rx) = input_channel();
+        let (b_tx, mut b_rx) = input_channel();
         let input: Vec<f32> = (0..12_397)
             .map(|i| (i as f32 / 12397.0 - 0.5) * 3.0)
             .collect();
@@ -85,7 +89,7 @@ fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav(
 fn concurrent_registration_cannot_reorder_backlog_and_live_audio() {
     for _ in 0..64 {
         let (runtime, epoch) = recording();
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = input_channel();
         runtime.record_packet(epoch, &[1.0, 2.0]).unwrap();
         let barrier = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {
@@ -112,7 +116,7 @@ fn stale_start_and_capture_do_not_touch_a_new_recording() {
     runtime.record_packet(epoch, &[0.25; 8193]).unwrap();
     runtime.complete_stream_registration(stale).unwrap();
     assert!(runtime.record_packet(stale, &[0.5]).is_none());
-    let (tx, mut rx) = unbounded_channel();
+    let (tx, mut rx) = input_channel();
     assert!(!runtime
         .register_realtime_stream(stale, "old".into(), 0, &tx)
         .unwrap());
@@ -127,13 +131,13 @@ fn stale_start_and_capture_do_not_touch_a_new_recording() {
 fn failed_stream_registration_keeps_audio_for_other_consumers() {
     let (runtime, epoch) = recording();
     runtime.record_packet(epoch, &[0.25; 8193]).unwrap();
-    let (tx, rx) = unbounded_channel();
+    let (tx, rx) = input_channel();
     drop(rx);
     assert!(runtime
         .register_realtime_stream(epoch, "failed".into(), 0, &tx)
         .is_err());
     assert!(runtime.inner.lock().unwrap().sessions.is_empty());
-    let (tx, mut rx) = unbounded_channel();
+    let (tx, mut rx) = input_channel();
     assert!(runtime
         .register_realtime_stream(epoch, "ok".into(), 1, &tx)
         .unwrap());
@@ -151,7 +155,7 @@ fn chunked_startup_replay_preserves_realtime_dsp_bytes() {
                 .collect();
             let (runtime, epoch) = recording();
             runtime.record_packet(epoch, &input).unwrap();
-            let (tx, mut rx) = unbounded_channel();
+            let (tx, mut rx) = input_channel();
             runtime
                 .register_realtime_stream(epoch, "a".into(), 0, &tx)
                 .unwrap();

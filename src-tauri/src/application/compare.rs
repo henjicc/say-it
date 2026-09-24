@@ -182,7 +182,7 @@ impl CompareRuntime {
         epoch: u64,
         session_id: String,
         index: usize,
-        tx: &tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        tx: &crate::state::AsrInputSender,
     ) -> Result<bool, String> {
         let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
         if self.epoch.load(Ordering::Acquire) != epoch
@@ -890,13 +890,17 @@ async fn start_upload(
                 return;
             };
             for id in sessions {
-                if let Some(handle) = runtime_state
+                let handle = runtime_state
                     .asr_streams
                     .lock()
                     .ok()
-                    .and_then(|streams| streams.get(&id).cloned())
-                {
-                    let _ = handle.tx.send(AsrStreamInput::RawF32(part.clone()));
+                    .and_then(|streams| streams.get(&id).cloned());
+                if let Some(handle) = handle {
+                    // 文件可等待：慢模型反压到有界解码器，等待时不持有会话表锁。
+                    let _ = handle
+                        .tx
+                        .send_paced(AsrStreamInput::RawF32(part.clone()))
+                        .await;
                 }
             }
             publish(&app);
