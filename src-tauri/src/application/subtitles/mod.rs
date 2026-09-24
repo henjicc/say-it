@@ -24,6 +24,8 @@ use tokio_util::sync::CancellationToken;
 
 mod preview;
 mod retention;
+mod translation_queue;
+mod translation_work;
 pub(crate) use preview::{hide_subtitle_preview, show_subtitle_preview};
 
 const DOMAIN_EVENT: &str = "domain-event";
@@ -382,6 +384,7 @@ struct Session {
     document: SubtitleDocument,
     translation: TranslationDocument,
     translation_cancellation: CancellationToken,
+    translation_jobs: translation_queue::Queue<translation_work::Job>,
     last_voice_at: Option<Instant>,
     reconnect_attempts: u32,
     opening: bool,
@@ -396,6 +399,16 @@ struct Session {
 }
 
 impl Session {
+    fn cancel_obsolete_translations(&mut self) {
+        let enabled = self.prefs.translation_enabled();
+        if !enabled {
+            // 这些请求已被取消，不会再发出 done；保留已有 partial，并释放空占位。
+            self.translation.completed.extend(self.translation.values.keys().copied());
+            self.translation.prune_completed();
+        }
+        self.translation_jobs.retain(|seq| enabled && self.translation.values.contains_key(&seq));
+    }
+
     fn apply_translation(&mut self, epoch: u64, seq: u64, text: String, done: bool) -> bool {
         if self.epoch != epoch
             || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
@@ -949,6 +962,7 @@ async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
 async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Value) {
     let mut translate = vec![];
     let mut reconnect = None;
+    let epoch;
     {
         let state = app.state::<RuntimeState>();
         let Ok(mut session) = state.subtitle_runtime.session.lock() else {
@@ -957,6 +971,7 @@ async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Valu
         if session.asr_session_id.as_deref() != Some(session_id) {
             return;
         }
+        epoch = session.epoch;
         match kind {
             "result" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
@@ -989,10 +1004,11 @@ async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Valu
             }
             _ => {}
         }
+        session.cancel_obsolete_translations();
     }
     render(&app);
     for (seq, text) in translate {
-        spawn_translation(app.clone(), seq, text);
+        translation_work::enqueue(app.clone(), epoch, seq, text);
     }
     if let Some((epoch, attempt)) = reconnect {
         spawn_reconnect(app, epoch, attempt);
@@ -1021,88 +1037,6 @@ fn spawn_reconnect(app: AppHandle, epoch: u64, attempt: u32) {
     });
 }
 
-fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
-    let epoch = app
-        .state::<RuntimeState>()
-        .subtitle_runtime
-        .session
-        .lock()
-        .map(|session| session.epoch)
-        .unwrap_or(0);
-    let prepared = (|| -> Result<_, String> {
-        let state = app.state::<RuntimeState>();
-        let session = state
-            .subtitle_runtime
-            .session
-            .lock()
-            .map_err(|_| "字幕状态锁失败")?;
-        let model = session.prefs.translation_model.clone();
-        let cancellation = session.translation_cancellation.clone();
-        let provider = crate::application::translation::resolve_provider(&state, &model)?;
-        Ok((
-            model,
-            session.prefs.translation_source_lang.clone(),
-            session.prefs.translation_target_lang.clone(),
-            cancellation,
-            provider,
-        ))
-    })();
-    let (model, source_lang, target_lang, cancellation, provider) = match prepared {
-        Ok(value) => value,
-        Err(error) => {
-            app.state::<RuntimeState>()
-                .backend_events
-                .publish(BackendEvent::SubtitleTranslation {
-                    epoch,
-                    segment_seq,
-                    text: String::new(),
-                    done: true,
-                    error: Some(error),
-                });
-            return;
-        }
-    };
-    tauri::async_runtime::spawn(async move {
-        let hub = app.state::<RuntimeState>().backend_events.sender_clone();
-        let delta_hub = hub.clone();
-        let result = provider
-            .translate_streaming(
-                &model,
-                &text,
-                &source_lang,
-                &target_lang,
-                cancellation,
-                move |partial| {
-                    delta_hub.publish(BackendEvent::SubtitleTranslation {
-                        epoch,
-                        segment_seq,
-                        text: partial.into(),
-                        done: false,
-                        error: None,
-                    });
-                },
-            )
-            .await;
-        let event = match result {
-            Ok(text) => BackendEvent::SubtitleTranslation {
-                epoch,
-                segment_seq,
-                text,
-                done: true,
-                error: None,
-            },
-            Err(error) => BackendEvent::SubtitleTranslation {
-                epoch,
-                segment_seq,
-                text: String::new(),
-                done: true,
-                error: Some(error),
-            },
-        };
-        hub.publish(event);
-    });
-}
-
 fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, done: bool, error: Option<&str>) {
     let state = app.state::<RuntimeState>();
     let Ok(mut session) = state.subtitle_runtime.session.lock() else {
@@ -1125,6 +1059,7 @@ fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, done: b
         session.translation_error = None;
         session.apply_translation(epoch, seq, text.to_owned(), done);
     }
+    session.cancel_obsolete_translations();
     drop(session);
     render(app);
 }
@@ -1142,6 +1077,7 @@ fn reload_prefs_and_render(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         session.prefs = prefs;
+        session.cancel_obsolete_translations();
     }
     sync_presentation(app)?;
     schedule_obs_layout(app.clone());
@@ -1743,5 +1679,21 @@ mod tests {
         assert!(!session.apply_translation(7, 1, "旧会话".into(), false));
         assert!(session.apply_translation(8, 1, "当前会话".into(), false));
         assert_eq!(session.translation.values.get(&1).unwrap(), "当前会话");
+    }
+
+    #[test]
+    fn disabling_translation_settles_cancelled_placeholders_across_repeated_toggles() {
+        let mut session = Session::default();
+        for _ in 0..1_000 {
+            session.prefs.translation_model = "test-model".into();
+            session.translation.dispatch("尚未返回的分句", true);
+            session.translation.commit("replace", true);
+            session.prefs.translation_model = "none".into();
+            session.cancel_obsolete_translations();
+            assert!(session.translation.values.is_empty());
+            assert!(session.translation.replace_groups.is_empty());
+            assert!(session.translation.completed.is_empty());
+        }
+        assert!(!session.translation_cancellation.is_cancelled());
     }
 }
