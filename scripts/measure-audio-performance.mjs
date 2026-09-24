@@ -38,6 +38,10 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "dictation-delivery": "application::dictation::delivery::tests::stalled_dictation_profile",
+  "dictation-delivery-legacy": "application::dictation::delivery::tests::stalled_dictation_profile",
+  "dictation-small-delivery": "application::dictation::delivery::tests::stalled_dictation_profile",
+  "dictation-small-delivery-legacy": "application::dictation::delivery::tests::stalled_dictation_profile",
   "comparison-delivery": "application::compare::delivery::tests::stalled_comparison_profile",
   "comparison-delivery-legacy": "application::compare::delivery::tests::stalled_comparison_profile",
   "subtitle-delivery": "application::subtitles::delivery_tests::stalled_renderer_profile",
@@ -98,6 +102,8 @@ for (let run = 0; run < runs; run++) {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
       SAYIT_PERF_RUNTIME_WORKERS: String(runtimeWorkers),
+      SAYIT_PERF_DICTATION_DELIVERY_LEGACY: ["dictation-delivery-legacy", "dictation-small-delivery-legacy"].includes(values.scenario) ? "1" : "0",
+      SAYIT_PERF_DICTATION_DELIVERY_SMALL: values.scenario.startsWith("dictation-small") ? "1" : "0",
       SAYIT_PERF_COMPARISON_DELIVERY_LEGACY: values.scenario === "comparison-delivery-legacy" ? "1" : "0",
       SAYIT_PERF_TRANSLATION_DELIVERY_LEGACY: values.scenario === "subtitle-delivery-legacy" ? "1" : "0",
       SAYIT_PERF_SUBTITLE_LEGACY: values.scenario === "subtitle-retention-legacy" ? "1" : "0",
