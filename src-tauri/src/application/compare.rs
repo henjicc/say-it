@@ -1,7 +1,7 @@
 //! 模型对比运行时。录音、PCM 扇出、上传文件节奏投喂和子任务收敛均在 Rust 中完成。
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,10 +13,11 @@ use crate::application::contract::{
 };
 use crate::application::events::BackendEvent;
 use crate::audio_dsp::DspParams;
+use crate::audio_wav::{Quantization, RecordedWav, WavRecording};
 use crate::commands::asr::{
     asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
 };
-use crate::commands::transcription::transcription_start_inner;
+use crate::commands::transcription::transcription_start_with_recording;
 use crate::desktop::backend_mic::{
     attach_backend_mic_raw_inner, pause_backend_mic_inner, release_backend_mic_inner,
     start_backend_mic_inner,
@@ -84,8 +85,7 @@ struct CompareState {
     models: HashMap<usize, String>,
     raw: Vec<f32>,
     retain_raw: bool,
-    sample_rate: u32,
-    recording_drain: Option<tokio::sync::oneshot::Receiver<()>>,
+    recording_drain: Option<tokio::sync::oneshot::Receiver<Result<Option<RecordedWav>, String>>>,
     // 实时流可能在写盘期间先结束，文件任务登记完之前不能提前回到 idle。
     preparing_file: bool,
     lease: Option<AudioLease>,
@@ -168,15 +168,13 @@ impl CompareRuntime {
         }
         Some(state.sessions.keys().cloned().collect())
     }
-    fn complete_stream_registration(&self, epoch: u64, keep_raw: bool) -> Result<(), String> {
+    fn complete_stream_registration(&self, epoch: u64) -> Result<(), String> {
         let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
         if self.epoch.load(Ordering::Acquire) != epoch {
             return Ok(());
         }
-        // 全部实时消费者已收到开头音频。只有文件模型还需要停止时导出的完整录音。
-        if !keep_raw {
-            state.release_recording_buffer();
-        }
+        // 全部实时消费者已收到开头音频；文件模型的录音由写盘任务独立保存。
+        state.release_recording_buffer();
         Ok(())
     }
     fn register_realtime_stream(
@@ -414,10 +412,14 @@ async fn start_all(
     // 拿到实际值再开实时流。此前这里硬编码 48k：44.1k 设备上送去识别的 PCM 会被按
     // 48k 解读，等于整段音频加速 8.8%，识别质量明显下降。与 `dictation.rs` 先
     // `start_backend_mic_inner` 记录 `sample_rate`、再 `open_asr` 的顺序保持一致。
+    let needs_file = request
+        .models
+        .iter()
+        .any(|model| resolve_model_info(state, model).is_some_and(|info| info.category == "file"));
     let realtime_sample_rate = if request.source_mode == "upload" {
         16_000
     } else {
-        start_recording(app.clone(), &state, request.device_name, epoch)?
+        start_recording(app.clone(), &state, request.device_name, epoch, needs_file)?
     };
     for (index, model) in request.models.iter().enumerate() {
         if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
@@ -454,7 +456,10 @@ async fn start_all(
                         .ok_or_else(|| "实时识别连接已关闭".to_string())
                         .and_then(|handle| {
                             state.compare_runtime.register_realtime_stream(
-                                epoch, session.session_id.clone(), index, &handle.tx,
+                                epoch,
+                                session.session_id.clone(),
+                                index,
+                                &handle.tx,
                             )
                         });
                     match registered {
@@ -467,7 +472,10 @@ async fn start_all(
                             let _ = stop_asr_stream_inner(&session.session_id, state);
                             if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
                                 state.compare_runtime.update_cell(
-                                    index, "error", None, Some(error),
+                                    index,
+                                    "error",
+                                    None,
+                                    Some(error),
                                 );
                             }
                         }
@@ -480,10 +488,7 @@ async fn start_all(
             }
         }
     }
-    let keep_raw = request.models.iter().any(|model| {
-        resolve_model_info(state, model).is_some_and(|info| info.category == "file")
-    });
-    state.compare_runtime.complete_stream_registration(epoch, keep_raw)?;
+    state.compare_runtime.complete_stream_registration(epoch)?;
     if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
         return Ok(());
     }
@@ -511,6 +516,7 @@ fn start_recording(
     state: &RuntimeState,
     device_name: Option<String>,
     epoch: u64,
+    needs_file: bool,
 ) -> Result<u32, String> {
     let lease = state.audio_session.acquire(AudioOwner::Comparison)?;
     // 这几步任何一步失败都必须归还租约：AudioLease 没有 Drop，泄漏意味着音频独占权
@@ -546,39 +552,67 @@ fn start_recording(
             return Err("模型对比已取消".into());
         }
         compare.phase = "recording".into();
-        compare.sample_rate = mic.sample_rate;
         compare.recording_drain = Some(drain_rx);
         compare.lease = Some(lease);
     }
-    tauri::async_runtime::spawn(async move {
-        while let Some(AsrStreamInput::RawF32(samples)) = receiver.recv().await {
-            let runtime = &app.state::<RuntimeState>().compare_runtime;
-            let Some(sessions) = runtime.record_packet(epoch, &samples) else {
-                break;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> Result<Option<RecordedWav>, String> {
+            let mut recording = if needs_file {
+                Some(
+                    WavRecording::new(mic.sample_rate, Quantization::Truncate)
+                        .map_err(|error| format!("创建临时录音失败：{error}"))?,
+                )
+            } else {
+                None
             };
-            for session in sessions {
-                if let Some(handle) = app
-                    .state::<RuntimeState>()
-                    .asr_streams
-                    .lock()
-                    .ok()
-                    .and_then(|streams| streams.get(&session).cloned())
-                {
-                    let _ = handle.tx.send(AsrStreamInput::RawF32(samples.clone()));
+            while let Some(AsrStreamInput::RawF32(samples)) = receiver.blocking_recv() {
+                if drain_tx.is_closed() {
+                    return Err("模型对比已取消".into());
+                }
+                let state = app.state::<RuntimeState>();
+                let Some(sessions) = state.compare_runtime.record_packet(epoch, &samples) else {
+                    return Err("模型对比已取消".into());
+                };
+                for session in sessions {
+                    if let Some(handle) = state
+                        .asr_streams
+                        .lock()
+                        .ok()
+                        .and_then(|streams| streams.get(&session).cloned())
+                    {
+                        let _ = handle.tx.send(AsrStreamInput::RawF32(samples.clone()));
+                    }
+                }
+                if let Some(recording) = recording.as_mut() {
+                    recording
+                        .append(&samples)
+                        .map_err(|error| format!("写入临时录音失败：{error}"))?;
                 }
             }
-        }
-        let _ = drain_tx.send(());
-        if app.state::<RuntimeState>().compare_runtime.epoch.load(Ordering::Acquire) != epoch {
-            return;
-        }
-        let capture_error = app
-            .state::<RuntimeState>()
-            .backend_mic
-            .lock()
-            .ok()
-            .and_then(|mut capture| capture.last_error.take());
-        if let Some(error) = capture_error {
+            let state = app.state::<RuntimeState>();
+            if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch || drain_tx.is_closed()
+            {
+                return Err("模型对比已取消".into());
+            }
+            if let Some(error) = state
+                .backend_mic
+                .lock()
+                .ok()
+                .and_then(|mut capture| capture.last_error.take())
+            {
+                return Err(error);
+            }
+            recording
+                .map(|recording| {
+                    recording
+                        .finish()
+                        .map_err(|error| format!("完成临时录音失败：{error}"))
+                })
+                .transpose()
+        })();
+        let error = result.as_ref().err().cloned();
+        let _ = drain_tx.send(result);
+        if let Some(error) = error {
             fail_recording_capture(&app, epoch, error);
         }
     });
@@ -635,25 +669,27 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
             .map_err(|_| "模型对比状态锁失败")?
             .recording_drain
             .take();
-        if let Some(recording_drain) = recording_drain {
-            tokio::time::timeout(std::time::Duration::from_secs(2), recording_drain)
-                .await
-                .map_err(|_| "模型对比尾部音频排空超时".to_string())?
-                .map_err(|_| "模型对比尾部音频任务提前结束".to_string())?;
-            crate::dlog!("[compare] 尾部音频扇出已排空，开始结束 ASR 会话");
-        }
-        let (raw, rate, sessions, file_indices, lease) = {
+        let recording = match drain_recording(recording_drain).await {
+            Ok(recording) => recording,
+            Err(error) => {
+                fail_recording_capture(&app, epoch, error.clone());
+                return Err(error);
+            }
+        };
+        let (sessions, file_indices, lease) = {
             let mut compare = state
                 .compare_runtime
                 .inner
                 .lock()
                 .map_err(|_| "模型对比状态锁失败")?;
-            if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
+            if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch
+                || compare.phase != "recording"
+            {
                 drop(compare);
                 return Ok(state.compare_runtime.snapshot());
             }
             compare.phase = "finalizing".into();
-            let raw = std::mem::take(&mut compare.raw);
+            compare.release_recording_buffer();
             let sessions = compare.sessions.keys().cloned().collect::<Vec<_>>();
             let file_indices = compare
                 .models
@@ -664,8 +700,9 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                         .map(|_| *index)
                 })
                 .collect::<Vec<_>>();
-            compare.preparing_file = !raw.is_empty() && !file_indices.is_empty();
-            (raw, compare.sample_rate, sessions, file_indices, compare.lease.take())
+            compare.preparing_file =
+                recording.as_ref().is_some_and(|file| file.samples > 0) && !file_indices.is_empty();
+            (sessions, file_indices, compare.lease.take())
         };
         // 麦克风和尾部音频已收尾，写盘/上传期间不再占用录音租约。
         if let Some(lease) = lease {
@@ -675,7 +712,21 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
             let _ = asr_stream_finish_inner(&session, &state);
         }
         if !file_indices.is_empty() {
-            if raw.is_empty() {
+            if let Some(recording) = recording.filter(|file| file.samples > 0) {
+                let path = recording.path().to_string_lossy().into_owned();
+                start_file_jobs(
+                    app.clone(),
+                    &state,
+                    path,
+                    file_indices,
+                    epoch,
+                    Some(Arc::new(recording)),
+                )
+                .await;
+                if !state.compare_runtime.finish_file_export(epoch) {
+                    return Ok(state.compare_runtime.snapshot());
+                }
+            } else {
                 for index in file_indices {
                     state.compare_runtime.update_cell(
                         index,
@@ -684,47 +735,22 @@ pub(crate) async fn compare_stop(app: tauri::AppHandle) -> Result<CompareSnapsho
                         Some("未录到音频".into()),
                     );
                 }
-            } else {
-                // 转移所有权，工作线程写完即释放原始 PCM，不带进后续上传等待。
-                let result = tauri::async_runtime::spawn_blocking(move || write_wav(&raw, rate))
-                    .await
-                    .map_err(|error| format!("录音文件任务失败：{error}"))
-                    .and_then(|result| result);
-                if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
-                    if let Ok(path) = result {
-                        if let Err(error) = std::fs::remove_file(path) {
-                            eprintln!("[compare] 清理已取消录音文件失败：{error}");
-                        }
-                    }
-                    return Ok(state.compare_runtime.snapshot());
-                }
-                match result {
-                    Ok(path) => {
-                        start_file_jobs(app.clone(), &state, path, file_indices, epoch).await;
-                        if !state.compare_runtime.finish_file_export(epoch) {
-                            return Ok(state.compare_runtime.snapshot());
-                        }
-                    }
-                    Err(error) => {
-                        if !state.compare_runtime.finish_file_export(epoch) {
-                            return Ok(state.compare_runtime.snapshot());
-                        }
-                        for index in file_indices {
-                            state.compare_runtime.update_cell(
-                                index, "error", None, Some(error.clone()),
-                            );
-                        }
-                        settle(&state);
-                        publish(&app);
-                        return Err(error);
-                    }
-                }
             }
         }
         settle(&state);
         publish(&app);
     }
     Ok(state.compare_runtime.snapshot())
+}
+
+async fn drain_recording(
+    receiver: Option<tokio::sync::oneshot::Receiver<Result<Option<RecordedWav>, String>>>,
+) -> Result<Option<RecordedWav>, String> {
+    let receiver = receiver.ok_or("模型对比尾部音频任务缺失")?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), receiver)
+        .await
+        .map_err(|_| "模型对比尾部音频排空超时".to_string())?
+        .map_err(|_| "模型对比尾部音频任务提前结束".to_string())?
 }
 
 #[tauri::command]
@@ -738,6 +764,7 @@ pub(crate) fn compare_cancel(app: tauri::AppHandle) -> Result<CompareSnapshot, S
             .lock()
             .map_err(|_| "模型对比状态锁失败")?;
         compare.phase = "idle".into();
+        compare.recording_drain = None;
         compare.release_recording_buffer();
         compare.preparing_file = false;
         (
@@ -802,7 +829,7 @@ async fn start_upload(
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    start_file_jobs(app.clone(), state, path.clone(), file_indices, epoch).await;
+    start_file_jobs(app.clone(), state, path.clone(), file_indices, epoch, None).await;
     if state.compare_runtime.epoch.load(Ordering::Acquire) != epoch {
         return Ok(());
     }
@@ -912,20 +939,16 @@ async fn start_file_jobs(
     path: String,
     indices: Vec<usize>,
     epoch: u64,
+    recording: Option<Arc<RecordedWav>>,
 ) {
     for index in indices {
-        let model = state
-            .compare_runtime
-            .inner
-            .lock()
-            .ok()
-            .and_then(|compare| {
-                if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
-                    compare.models.get(&index).cloned()
-                } else {
-                    None
-                }
-            });
+        let model = state.compare_runtime.inner.lock().ok().and_then(|compare| {
+            if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+                compare.models.get(&index).cloned()
+            } else {
+                None
+            }
+        });
         let Some(model) = model else {
             continue;
         };
@@ -940,7 +963,16 @@ async fn start_file_jobs(
             channel_id: None,
             special_word_filter: String::new(),
         };
-        match transcription_start_inner(app.clone(), state, path.clone(), Some(params), "compare").await {
+        match transcription_start_with_recording(
+            app.clone(),
+            state,
+            path.clone(),
+            Some(params),
+            "compare",
+            recording.clone(),
+        )
+        .await
+        {
             Ok(job) => {
                 let current = if let Ok(mut compare) = state.compare_runtime.inner.lock() {
                     if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
@@ -953,7 +985,11 @@ async fn start_file_jobs(
                     false
                 };
                 if !current {
-                    let _ = crate::commands::transcription::transcription_cancel_inner(&app, state, &job.job_id);
+                    let _ = crate::commands::transcription::transcription_cancel_inner(
+                        &app,
+                        state,
+                        &job.job_id,
+                    );
                     return;
                 }
             }
@@ -965,6 +1001,7 @@ async fn start_file_jobs(
     }
 }
 
+#[cfg(test)]
 fn write_wav(samples: &[f32], sample_rate: u32) -> Result<String, String> {
     let path = std::env::temp_dir().join(format!("say-it-compare-{}.wav", uuid::Uuid::new_v4()));
     if let Err(error) = crate::audio_wav::write_mono_pcm16(

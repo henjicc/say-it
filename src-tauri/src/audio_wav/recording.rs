@@ -59,8 +59,7 @@ impl RecordedWav {
     pub(crate) fn into_path(mut self) -> PathBuf {
         self.path.take().expect("录音路径")
     }
-    #[cfg(test)]
-    fn path(&self) -> &std::path::Path {
+    pub(crate) fn path(&self) -> &std::path::Path {
         self.path.as_deref().unwrap()
     }
 }
@@ -85,7 +84,7 @@ impl WavRecording {
     pub(crate) fn new(rate: u32, quantization: Quantization) -> io::Result<Self> {
         header(0, rate)?;
         let path =
-            std::env::temp_dir().join(format!("say-it-dictation-{}.wav", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("say-it-recording-{}.wav", uuid::Uuid::new_v4()));
         let output = OpenOptions::new()
             .write(true)
             .create_new(true)

@@ -93,7 +93,6 @@ fn realtime_recording_memory_profile() {
     {
         let mut state = runtime.inner.lock().unwrap();
         state.phase = "recording".into();
-        state.sample_rate = 48_000;
         for index in 0..3 {
             let id = format!("local-test-{index}");
             state.sessions.insert(id.clone(), index);
@@ -101,7 +100,7 @@ fn realtime_recording_memory_profile() {
             sinks.push((id, tx, rx, 0xcbf29ce484222325_u64, 0usize));
         }
     }
-    runtime.complete_stream_registration(epoch, false).unwrap();
+    runtime.complete_stream_registration(epoch).unwrap();
     let chunk: Vec<f32> = (0..4096).map(|i| (i as f32 / 4096.0 - 0.5) * 0.3).collect();
     let total = seconds * 48_000;
     let started = Instant::now();
@@ -195,6 +194,96 @@ fn wav_export_memory_profile() {
             "peakPrivateBytes": after.peak_pagefile_usage,
             "peakWorkingSetBytes": after.peak_working_set,
             "releasedPrivateBytes": released.private_usage,
+        })
+    );
+}
+
+#[test]
+#[ignore = "独立文件模型录音存储测量，不启动识别或麦克风"]
+fn file_recording_storage_profile() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessIoCounters, IO_COUNTERS};
+    let io = || {
+        let mut counters = IO_COUNTERS::default();
+        unsafe {
+            GetProcessIoCounters(GetCurrentProcess(), &mut counters).unwrap();
+        }
+        counters
+    };
+    let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")
+        .unwrap_or("300".into())
+        .parse::<usize>()
+        .unwrap();
+    assert!((1..=1800).contains(&seconds));
+    let legacy = std::env::var("SAYIT_PERF_RECORDING_LEGACY").as_deref() == Ok("1");
+    let input: Vec<f32> = (0..4096).map(|i| (i % 997) as f32 / 996.0 - 0.5).collect();
+    let runtime = CompareRuntime::default();
+    let epoch = runtime.reset(vec![]);
+    runtime.inner.lock().unwrap().phase = "recording".into();
+    if !legacy {
+        runtime.complete_stream_registration(epoch).unwrap();
+    }
+    let initial = memory();
+    let io_before = io();
+    let started = Instant::now();
+    let mut recording =
+        (!legacy).then(|| WavRecording::new(48_000, Quantization::Truncate).unwrap());
+    for offset in (0..seconds * 48_000).step_by(input.len()) {
+        let part = &input[..(seconds * 48_000 - offset).min(input.len())];
+        assert!(runtime.record_packet(epoch, part).unwrap().is_empty());
+        if let Some(writer) = recording.as_mut() {
+            writer.append(part).unwrap();
+        }
+    }
+    let retained = memory();
+    let stop_started = Instant::now();
+    let owned;
+    let path;
+    if legacy {
+        let raw = std::mem::take(&mut runtime.inner.lock().unwrap().raw);
+        path = std::path::PathBuf::from(write_wav(&raw, 48_000).unwrap());
+        owned = None;
+    } else {
+        let file = recording.unwrap().finish().unwrap();
+        assert_eq!(file.samples, seconds * 48_000);
+        path = file.path().to_owned();
+        owned = Some(file);
+        assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
+    }
+    let elapsed = started.elapsed();
+    let stop_elapsed = stop_started.elapsed();
+    let io_after = io();
+    let after = memory();
+    let mut reader = std::fs::File::open(&path).unwrap();
+    let bytes = reader.metadata().unwrap().len();
+    assert_eq!(bytes, 44 + seconds as u64 * 48_000 * 2);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hash = 0xcbf29ce484222325_u64;
+    loop {
+        let n = reader.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        for byte in &buffer[..n] {
+            hash = (hash ^ *byte as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    drop(reader);
+    drop(owned);
+    if legacy {
+        std::fs::remove_file(&path).unwrap();
+    }
+    assert!(!path.exists());
+    println!(
+        "PERF_RESULT {}",
+        serde_json::json!({
+            "scenario": "compare-file-recording-storage", "legacy": legacy, "seconds": seconds,
+            "elapsedMs": elapsed.as_secs_f64() * 1000.0, "stopMs": stop_elapsed.as_secs_f64() * 1000.0,
+            "outputHash": format!("{hash:016x}"), "outputBytes": bytes,
+            "readBytes": io_after.ReadTransferCount - io_before.ReadTransferCount,
+            "writeBytes": io_after.WriteTransferCount - io_before.WriteTransferCount,
+            "initialPrivateBytes": initial.private_usage, "recordingPrivateBytes": retained.private_usage,
+            "releasedPrivateBytes": after.private_usage, "peakPrivateBytes": after.peak_pagefile_usage,
+            "peakWorkingSetBytes": after.peak_working_set,
         })
     );
 }

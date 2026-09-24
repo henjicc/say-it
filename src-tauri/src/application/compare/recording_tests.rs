@@ -32,12 +32,19 @@ fn send_packet(
 }
 
 #[test]
-fn late_consumers_receive_every_sample_once_and_only_file_models_keep_recording() {
-    for keep_raw in [false, true] {
+fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav() {
+    for needs_file in [false, true] {
         let (runtime, epoch) = recording();
         let (a_tx, mut a_rx) = unbounded_channel();
         let (b_tx, mut b_rx) = unbounded_channel();
-        let input: Vec<f32> = (0..12_397).map(|i| i as f32).collect();
+        let input: Vec<f32> = (0..12_397)
+            .map(|i| (i as f32 / 12397.0 - 0.5) * 3.0)
+            .collect();
+        let mut recording =
+            needs_file.then(|| WavRecording::new(44_100, Quantization::Truncate).unwrap());
+        if let Some(writer) = recording.as_mut() {
+            writer.append(&input[..8333]).unwrap();
+        }
         assert!(runtime
             .record_packet(epoch, &input[..4111])
             .unwrap()
@@ -49,12 +56,8 @@ fn late_consumers_receive_every_sample_once_and_only_file_models_keep_recording(
         assert!(runtime
             .register_realtime_stream(epoch, "b".into(), 1, &b_tx)
             .unwrap());
-        runtime
-            .complete_stream_registration(epoch, keep_raw)
-            .unwrap();
-        if !keep_raw {
-            assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
-        }
+        runtime.complete_stream_registration(epoch).unwrap();
+        assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
         send_packet(
             &runtime,
             epoch,
@@ -64,10 +67,16 @@ fn late_consumers_receive_every_sample_once_and_only_file_models_keep_recording(
         assert_eq!(collect(&mut a_rx), input);
         assert_eq!(collect(&mut b_rx), input);
         let state = runtime.inner.lock().unwrap();
-        if keep_raw {
-            assert_eq!(state.raw, input);
-        } else {
-            assert_eq!(state.raw.capacity(), 0);
+        assert_eq!(state.raw.capacity(), 0);
+        if let Some(mut writer) = recording {
+            writer.append(&input[8333..]).unwrap();
+            let file = writer.finish().unwrap();
+            let expected = write_wav(&input, 44_100).unwrap();
+            assert_eq!(
+                std::fs::read(file.path()).unwrap(),
+                std::fs::read(&expected).unwrap()
+            );
+            std::fs::remove_file(expected).unwrap();
         }
     }
 }
@@ -101,7 +110,7 @@ fn stale_start_and_capture_do_not_touch_a_new_recording() {
     let epoch = runtime.reset(vec![]);
     runtime.inner.lock().unwrap().phase = "recording".into();
     runtime.record_packet(epoch, &[0.25; 8193]).unwrap();
-    runtime.complete_stream_registration(stale, false).unwrap();
+    runtime.complete_stream_registration(stale).unwrap();
     assert!(runtime.record_packet(stale, &[0.5]).is_none());
     let (tx, mut rx) = unbounded_channel();
     assert!(!runtime
@@ -129,7 +138,7 @@ fn failed_stream_registration_keeps_audio_for_other_consumers() {
         .register_realtime_stream(epoch, "ok".into(), 1, &tx)
         .unwrap());
     assert_eq!(collect(&mut rx), [0.25; 8193]);
-    runtime.complete_stream_registration(epoch, false).unwrap();
+    runtime.complete_stream_registration(epoch).unwrap();
     assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
 }
 
@@ -167,4 +176,74 @@ fn chunked_startup_replay_preserves_realtime_dsp_bytes() {
             assert_eq!(actual, reference, "rate={rate}, denoise={denoise}");
         }
     }
+}
+
+#[test]
+fn stop_waits_for_tail_and_preserves_file_until_last_consumer_exits() {
+    tauri::async_runtime::block_on(async {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let worker = tauri::async_runtime::spawn_blocking(move || {
+            let mut writer = WavRecording::new(48_000, Quantization::Truncate).unwrap();
+            writer.append(&[0.25; 4096]).unwrap();
+            writer.append(&[-0.75; 17]).unwrap();
+            assert!(tx.send(Ok(Some(writer.finish().unwrap()))).is_ok());
+        });
+        let file = Arc::new(drain_recording(Some(rx)).await.unwrap().unwrap());
+        worker.await.unwrap();
+        assert_eq!(file.samples, 4113);
+        let path = file.path().to_owned();
+        let first = file.clone();
+        let second = file.clone();
+        drop(first);
+        assert!(path.exists(), "首个任务提前完成不能删除其他任务的输入");
+        drop(file);
+        assert!(path.exists(), "取消登记方不能删除仍在处理的输入");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 44 + 4113 * 2);
+        assert_eq!(&bytes[bytes.len() - 2..], &(-24575i16).to_le_bytes());
+        drop(second);
+        assert!(!path.exists(), "最后的实际消费者退出后删除");
+    });
+}
+
+#[test]
+fn cancelled_drain_and_reset_drop_completed_recording_without_leaking() {
+    for cancel_before_send in [false, true] {
+        let (runtime, _) = recording();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        runtime.inner.lock().unwrap().recording_drain = Some(rx);
+        let file = WavRecording::new(48_000, Quantization::Truncate)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let path = file.path().to_owned();
+        if cancel_before_send {
+            runtime.abort("取消");
+            assert!(tx.is_closed());
+            drop(tx.send(Ok(Some(file))));
+        } else {
+            assert!(tx.send(Ok(Some(file))).is_ok());
+            runtime.reset(vec![]);
+        }
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn drain_failure_never_accepts_a_partial_recording() {
+    tauri::async_runtime::block_on(async {
+        assert!(drain_recording(None).await.is_err());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(tx);
+        assert!(drain_recording(Some(rx)).await.is_err());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        assert!(tx.send(Err("磁盘已满".into())).is_ok());
+        assert_eq!(drain_recording(Some(rx)).await.err().unwrap(), "磁盘已满");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        assert!(tx.send(Ok(None)).is_ok());
+        assert!(
+            drain_recording(Some(rx)).await.unwrap().is_none(),
+            "纯实时模式无需录音文件"
+        );
+    });
 }
