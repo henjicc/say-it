@@ -4,6 +4,8 @@ mod local_session;
 mod plugin_session;
 mod sdk_session;
 mod session_wait;
+mod startup;
+pub(crate) use startup::PreparedAsrStream;
 
 use crate::commands::common::*;
 use crate::prelude::*;
@@ -13,14 +15,14 @@ fn stream_dsp(params: Option<DspParams>, input_sample_rate: u32) -> StreamDsp {
     StreamDsp::new(params.unwrap_or_default(), input_sample_rate)
 }
 
-pub(crate) async fn start_asr_stream_inner(
+pub(crate) async fn prepare_asr_stream_inner(
     app: tauri::AppHandle,
     state: &RuntimeState,
     provider_id: Option<String>,
     model_override: Option<String>,
     sample_rate: Option<u32>,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<PreparedAsrStream, String> {
     let provider_id = match provider_id {
         Some(provider_id) if !provider_id.trim().is_empty() => {
             resolve_provider_id(&state, "asr", Some(provider_id))?

@@ -2,7 +2,7 @@ use crate::application::audio_session::{AudioLease, AudioOwner};
 use crate::application::contract::{next_revision, DomainEventEnvelope};
 use crate::application::events::BackendEvent;
 use crate::commands::asr::{
-    asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
+    asr_stream_finish_inner, prepare_asr_stream_inner, stop_asr_stream_inner,
 };
 use crate::commands::dictation::{
     inject_text_inner, inject_text_with_policy, write_clipboard_text_inner, ClipboardDisposition,
@@ -1521,7 +1521,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         )
     };
     let state = app.state::<RuntimeState>();
-    let response = start_asr_stream_inner(
+    let response = prepare_asr_stream_inner(
         app.clone(),
         &state,
         None,
@@ -1530,7 +1530,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(dsp),
     )
     .await?;
-    // 建流是一段耗时 await（云端握手 / 本地模型加载，常见数百毫秒到数秒），期间会话
+    // 准备连接的 await 可能包含浏览器会话刷新或平台资源准备，期间会话
     // 可能已经结束或被新会话取代，因此必须在把这条流挂回麦克风**之前**确认它仍然有效。
     //
     // 只比 epoch 不够：epoch 只在 `start_internal` 推进，`stop()` / `fail_internal()` 都不推进。
@@ -1565,8 +1565,9 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Ok(());
     }
-    s.asr_session_id = Some(response.session_id);
+    s.asr_session_id = Some(response.session_id.clone());
     drop(s);
+    response.start()?;
     publish_state(&app, None);
     Ok(())
 }

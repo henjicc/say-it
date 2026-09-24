@@ -18,7 +18,7 @@ pub(super) async fn start_sdk_stream(
     route: crate::providers::registry::BuiltinSdkAsrRoute,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     let session_id = Uuid::new_v4().to_string();
     let (handle, rx) = AsrStreamHandle::channel();
     state
@@ -31,26 +31,27 @@ pub(super) async fn start_sdk_stream(
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
     let customization = crate::application::customization::resolve_for_model(state, &model);
-    if let Err(error) =
-        crate::providers::plugin_runtime::spawn_js_worker("builtin-asr", move || {
-            run_sdk_session(
-                app,
-                task_id,
-                streams,
-                rx,
-                super::stream_dsp(params, input_sample_rate),
-                model,
-                route,
-                profile,
-                credentials,
-                customization,
-            );
-        })
-    {
-        cleanup_stream(&state.asr_streams, &session_id);
-        return Err(error);
-    }
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            crate::providers::plugin_runtime::spawn_js_worker("builtin-asr", move || {
+                run_sdk_session(
+                    app,
+                    task_id,
+                    streams,
+                    rx,
+                    super::stream_dsp(params, input_sample_rate),
+                    model,
+                    route,
+                    profile,
+                    credentials,
+                    customization,
+                );
+            })
+            .map(|_| ())
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

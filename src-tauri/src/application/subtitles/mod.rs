@@ -3,7 +3,7 @@ use crate::application::contract::{
     next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot,
 };
 use crate::application::events::BackendEvent;
-use crate::commands::asr::{start_asr_stream_inner, stop_asr_stream_inner};
+use crate::commands::asr::{prepare_asr_stream_inner, stop_asr_stream_inner};
 use crate::commands::obs::{sync_obs_overlay_layout, ObsOverlayLayoutRequest};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner,
@@ -401,6 +401,15 @@ struct Session {
 }
 
 impl Session {
+    fn wants_asr(&self, epoch: u64) -> bool {
+        self.epoch == epoch
+            && matches!(
+                self.phase,
+                SubtitlePhase::Running | SubtitlePhase::WaitingForVoice | SubtitlePhase::Reconnecting
+            )
+            && self.asr_session_id.is_none()
+    }
+
     fn record_translation(
         &mut self,
         epoch: u64,
@@ -926,7 +935,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
             .session
             .lock()
             .map_err(|_| "字幕状态锁失败")?;
-        if session.epoch != epoch || session.asr_session_id.is_some() {
+        if !session.wants_asr(epoch) {
             return Ok(());
         }
         (
@@ -936,7 +945,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
             session.source,
         )
     };
-    let response = start_asr_stream_inner(
+    let response = prepare_asr_stream_inner(
         app.clone(),
         &state,
         None,
@@ -945,6 +954,12 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(dsp),
     )
     .await?;
+    // 准备期间可能已经停止、失败或切换会话；过期连接不得覆盖正在使用的音频路由。
+    if !state.subtitle_runtime.session.lock()
+        .map_err(|_| "字幕状态锁失败")?.wants_asr(epoch)
+    {
+        return Ok(());
+    }
     let attached = match source {
         SourceKind::Mic => attach_backend_mic_to_asr_inner(&response.session_id, &state),
         SourceKind::System => {
@@ -960,15 +975,16 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         .session
         .lock()
         .map_err(|_| "字幕状态锁失败")?;
-    if session.epoch != epoch {
+    if !session.wants_asr(epoch) {
         drop(session);
         let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Ok(());
     }
-    session.asr_session_id = Some(response.session_id);
+    session.asr_session_id = Some(response.session_id.clone());
     session.phase = SubtitlePhase::Running;
     session.reconnect_attempts = 0;
     drop(session);
+    response.start()?;
     publish_state(&app);
     Ok(())
 }

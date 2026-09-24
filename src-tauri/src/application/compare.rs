@@ -16,7 +16,7 @@ use crate::audio_dsp::DspParams;
 use crate::audio_storage::AudioBuffer;
 use crate::audio_wav::{Quantization, RecordedWav, WavRecording};
 use crate::commands::asr::{
-    asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
+    asr_stream_finish_inner, prepare_asr_stream_inner, stop_asr_stream_inner,
 };
 use crate::commands::transcription::transcription_start_with_recording;
 use crate::desktop::backend_mic::{
@@ -468,7 +468,7 @@ async fn start_all(
             continue;
         };
         if info.category == "realtime" {
-            let opened = start_asr_stream_inner(
+            let opened = prepare_asr_stream_inner(
                 app.clone(),
                 &state,
                 None,
@@ -498,7 +498,15 @@ async fn start_all(
                     .map_err(|error| format!("模型启动音频回放任务失败：{error}"))
                     .and_then(|result| result);
                     match registered {
-                        Ok(true) => {}
+                        Ok(true) => {
+                            let session_id = session.session_id.clone();
+                            if let Err(error) = session.start() {
+                                if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
+                                    state.compare_runtime.update_cell(index, "error", None, Some(error));
+                                }
+                                state.compare_runtime.finish_stream(&session_id);
+                            }
+                        }
                         Ok(false) => {
                             let _ = stop_asr_stream_inner(&session.session_id, state);
                             return Ok(());

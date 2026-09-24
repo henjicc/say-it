@@ -21,7 +21,7 @@ pub(super) async fn start_plugin_asr_stream(
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     crate::application::plugin_management::refresh_browser_session_before_runtime(
         &app,
         state,
@@ -40,24 +40,26 @@ pub(super) async fn start_plugin_asr_stream(
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    if let Err(error) = plugin_runtime::spawn_js_worker("plugin-asr", move || {
-        run_plugin_session(
-            app,
-            task_id,
-            streams,
-            rx,
-            super::stream_dsp(params, input_sample_rate),
-            model,
-            plugin,
-            profile,
-            customization,
-        );
-    }) {
-        cleanup_stream(&state.asr_streams, &session_id);
-        return Err(error);
-    }
-
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            plugin_runtime::spawn_js_worker("plugin-asr", move || {
+                run_plugin_session(
+                    app,
+                    task_id,
+                    streams,
+                    rx,
+                    super::stream_dsp(params, input_sample_rate),
+                    model,
+                    plugin,
+                    profile,
+                    customization,
+                );
+            })
+            .map(|_| ())
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
