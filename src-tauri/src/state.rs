@@ -4,6 +4,8 @@ use std::sync::atomic::AtomicU64;
 
 #[derive(Default)]
 pub(crate) struct RuntimeState {
+    #[cfg(windows)]
+    pub(crate) idle_reclaim: crate::application::idle_reclaim::IdleReclaim,
     pub(crate) snapshot_revision: AtomicU64,
     pub(crate) app_settings: Mutex<crate::application::settings::AppSettings>,
     pub(crate) providers: Mutex<ProviderSettings>,

@@ -25,5 +25,8 @@ pub(crate) fn emit_asr_stream_event(
                 payload,
             },
         );
+        if kind == "ended" {
+            crate::application::idle_reclaim::request(app);
+        }
     }
 }

@@ -7,10 +7,16 @@ use tauri::{AppHandle, Manager};
 
 mod compare;
 mod fixture;
+mod live;
 mod scenarios;
 mod transcription;
 
 const IDENTIFIER: &str = "com.henjicc.sayit.acceptance";
+
+// 隔离构建的输出边界：不向当前软件输入测试文字，也不改用户剪贴板。
+pub(crate) fn capture_dictation_output(text: &str) {
+    live::capture_output(text);
+}
 
 /// 仅用于定位第三方输入法注入资源；不改变系统输入法设置，也不进入正式构建。
 #[cfg(windows)]
@@ -81,6 +87,7 @@ impl Recorder {
         let line = json!({
             "stage": stage, "cycle": cycle, "elapsedMs": elapsed_ms,
             "detail": detail,
+            "automaticHeapReclaim": super::idle_reclaim::acceptance_stats(),
             "processHeap": if stage.ends_with("idle") || stage == "completed" { process_heap() } else { serde_json::Value::Null },
             "sinceStartMs": self.started.elapsed().as_secs_f64() * 1000.0,
             "timestampMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
@@ -120,17 +127,7 @@ fn process_heap() -> serde_json::Value {
 // https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapsetinformation
 #[cfg(windows)]
 fn optimize_idle_heap() -> Result<(), String> {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
-    // HEAP_OPTIMIZE_RESOURCES_INFORMATION 的 ABI：两个 DWORD，Version=1、Flags=0。
-    #[repr(C)]
-    struct Information { version: u32, flags: u32 }
-    let information = Information { version: 1, flags: 0 };
-    unsafe {
-        HeapSetInformation(HANDLE::default(), HeapOptimizeResources,
-            Some((&information as *const Information).cast()), std::mem::size_of::<Information>())
-            .map_err(|error| format!("验收空闲堆优化失败：{error}"))
-    }
+    super::idle_reclaim::reclaim_heap()
 }
 
 #[cfg(not(windows))]
@@ -214,6 +211,14 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         }
         "comparison" => {
             compare::run(app, &mut recorder).await?;
+            recognition_rounds()?
+        }
+        "dictation" => {
+            live::dictation(app, &mut recorder).await?;
+            recognition_rounds()?
+        }
+        "subtitles" => {
+            live::subtitles(app, &mut recorder).await?;
             recognition_rounds()?
         }
         other => return Err(format!("未知验收场景：{other}")),

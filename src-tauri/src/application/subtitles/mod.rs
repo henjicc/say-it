@@ -1437,6 +1437,11 @@ fn publish_state(app: &AppHandle) {
         payload,
     };
     let _ = app.emit(DOMAIN_EVENT, event);
+    if domain_snapshot(&state).is_ok_and(|snapshot| {
+        matches!(snapshot.state, DomainRunState::Idle | DomainRunState::Failed)
+    }) {
+        super::idle_reclaim::request(app);
+    }
 }
 
 fn fail(app: &AppHandle, error: String) {

@@ -155,6 +155,7 @@ pub(crate) async fn transcription_start_with_recording(
         if let Err(error) = app.state::<RuntimeState>().transcription_runtime.finish(&task_job_id) {
             crate::application::diagnostics::event("error", "transcription.projectionCleanupFailed", json!({ "jobId": task_job_id, "error": error }));
         }
+        crate::application::idle_reclaim::request(&app);
     });
 
     Ok(TranscriptionStartResponse { job_id })

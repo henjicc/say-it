@@ -89,7 +89,7 @@ impl Fixture {
             .iter_mut()
             .find(|profile| profile.id == PROVIDER)
             .ok_or("验收供应商丢失")?
-            .config = json!({"mode":mode,"nonce":nonce});
+            .config = json!({"mode":mode,"nonce":nonce,"acceptanceScenario":std::env::var("SAYIT_ACCEPTANCE_SCENARIO").unwrap_or_default()});
         Ok(nonce)
     }
 

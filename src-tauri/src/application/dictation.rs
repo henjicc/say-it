@@ -976,7 +976,7 @@ async fn start_internal(
     let inline_follow_up = assistant_request
         .as_ref()
         .is_some_and(|request| request.follow_up);
-    let current_target = (!trigger.is_floating_orb())
+    let current_target = (!trigger.is_floating_orb() && !cfg!(feature = "performance-acceptance"))
         .then(crate::active_app_context::activation_target)
         .flatten();
     let activation_target = select_activation_target(trigger, activation_target, current_target);
@@ -2413,7 +2413,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
         }
     }
-    let injection_result = if processed.is_empty() {
+    #[cfg(feature = "performance-acceptance")]
+    let acceptance_delivery = {
+        super::performance_acceptance::capture_dictation_output(&processed);
+        true
+    };
+    #[cfg(not(feature = "performance-acceptance"))]
+    let acceptance_delivery = false;
+    let injection_result = if acceptance_delivery || processed.is_empty() {
         Ok(())
     } else if trigger.is_floating_orb() {
         match write_clipboard_text_inner(processed.clone()).await {
@@ -3226,6 +3233,9 @@ fn publish_state_with_text(
     let _ = app.emit(DOMAIN_EVENT, event);
     if show_in_indicator && !text.is_empty() {
         let _ = crate::desktop::set_indicator_text(app.clone(), text, Some(false));
+    }
+    if matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
+        super::idle_reclaim::request(app);
     }
 }
 
