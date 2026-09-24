@@ -121,14 +121,14 @@ pub(crate) async fn transcription_start_with_recording(
     let params = params.unwrap_or_default();
     let provider_result = resolve_file_recognition_provider(&state, &params.model);
     let job_id = Uuid::new_v4().to_string();
-    // 先登记用途，再放任何事件出去。
-    state.transcription_runtime.register(&job_id, kind);
     let cancel = Arc::new(CancellationFlag::new(false));
     {
         let mut jobs = state
             .transcriptions
             .lock()
             .map_err(|_| "录音识别任务表锁定失败".to_string())?;
+        // 先登记用途，再放任何事件出去；任务表锁定失败时不留下孤立登记。
+        state.transcription_runtime.register(&job_id, kind)?;
         jobs.insert(job_id.clone(), cancel.clone());
     }
 
@@ -156,6 +156,9 @@ pub(crate) async fn transcription_start_with_recording(
         drop(recording);
         if let Ok(mut guard) = jobs.lock() {
             guard.remove(&task_job_id);
+        }
+        if let Err(error) = app.state::<RuntimeState>().transcription_runtime.finish(&task_job_id) {
+            crate::application::diagnostics::event("error", "transcription.projectionCleanupFailed", json!({ "jobId": task_job_id, "error": error }));
         }
     });
 
@@ -279,20 +282,15 @@ fn resolve_file_recognition_provider(
 }
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {
-    let mut value = match payload {
-        Value::Object(map) => Value::Object(map),
-        other => json!({ "data": other }),
+    let state = app.state::<RuntimeState>();
+    let value = match state.transcription_runtime.apply_event(job_id, stage, payload) {
+        Ok(Some(value)) => value,
+        Ok(None) => return,
+        Err(error) => {
+            crate::application::diagnostics::event("error", "transcription.projectionFailed", json!({ "jobId": job_id, "error": error }));
+            return;
+        }
     };
-    let kind = app
-        .try_state::<RuntimeState>()
-        .map(|state| state.transcription_runtime.kind_of(job_id))
-        .unwrap_or_else(|| DEFAULT_TRANSCRIPTION_JOB_KIND.to_string());
-    if let Value::Object(map) = &mut value {
-        map.insert("jobId".to_string(), json!(job_id));
-        map.insert("stage".to_string(), json!(stage));
-        // 用途随事件一起下发：前端据此分发，不再依赖只存在于内存的归属信息。
-        map.insert("kind".to_string(), json!(kind));
-    }
     if debug_log_enabled() {
         let short = job_id.get(..8).unwrap_or(job_id);
         let mut summary = value.to_string();
@@ -302,9 +300,6 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
         dlog!("[transcription {short}] {summary}");
     }
     if let Some(state) = app.try_state::<RuntimeState>() {
-        state
-            .transcription_runtime
-            .apply_event(job_id, stage, value.clone());
         let revision = crate::application::contract::next_revision(&state.snapshot_revision);
         let _ = app.emit(
             "domain-event",
