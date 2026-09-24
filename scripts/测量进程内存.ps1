@@ -7,10 +7,47 @@ param(
     [ValidateRange(1, 60)]
     [int]$CpuSampleSeconds = 5,
     [string]$OutputPath = '',
-    [switch]$IncludeThreadActivity
+    [switch]$IncludeThreadActivity,
+    [switch]$IncludeGpuActivity
 )
 
 $ErrorActionPreference = 'Stop'
+if ($IncludeThreadActivity -and -not ('SayItThreadProbe' -as [type])) {
+    # 只申请查询权限；不暂停线程、改变优先级或操作窗口。
+    # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreaddescription
+    # https://learn.microsoft.com/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public sealed class SayItThreadSample {
+    public string Description;
+    public ulong? CpuCycles;
+    public long MonotonicTicks;
+}
+public static class SayItThreadProbe {
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll")] static extern int GetThreadDescription(IntPtr handle, out IntPtr text);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryThreadCycleTime(IntPtr handle, out ulong cycles);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    public static SayItThreadSample Read(uint id) {
+        var result = new SayItThreadSample();
+        var handle = OpenThread(0x0800, false, id);
+        if (handle == IntPtr.Zero) return result;
+        try {
+            IntPtr text;
+            int status = GetThreadDescription(handle, out text);
+            try { if (status >= 0) result.Description = Marshal.PtrToStringUni(text); }
+            finally { if (text != IntPtr.Zero) LocalFree(text); }
+            ulong cycles;
+            if (QueryThreadCycleTime(handle, out cycles)) result.CpuCycles = cycles;
+            result.MonotonicTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        } finally { CloseHandle(handle); }
+        return result;
+    }
+}
+'@
+}
 if ($Condition -eq 'tray-idle-60s') { Start-Sleep -Seconds 60 }
 if ($RootPid -eq 0) {
     $roots = @(Get-Process -Name 'SayIt' -ErrorAction SilentlyContinue | Sort-Object StartTime)
@@ -32,7 +69,8 @@ function Get-AppSample {
     while ($queue.Count -gt 0) {
         $id = $queue.Dequeue()
         if (-not $ids.Add($id)) { continue }
-        foreach ($child in $all | Where-Object { $_.CreatingProcessID -eq $id -and $_.ElapsedTime -ge $root.ElapsedTime }) {
+        $parent = $all | Where-Object IDProcess -eq $id | Select-Object -First 1
+        foreach ($child in $all | Where-Object { $_.CreatingProcessID -eq $id -and $_.ElapsedTime -ge $parent.ElapsedTime }) {
             $queue.Enqueue([int]$child.IDProcess)
         }
     }
@@ -41,15 +79,34 @@ function Get-AppSample {
         if ($ids.Contains([int]$item.IDProcess)) { $processes[[int]$item.IDProcess] = $item }
     }
     $threads = @{}
+    $threadMetadata = @{}
     if ($IncludeThreadActivity) {
         $filter = ($ids | ForEach-Object { "IDProcess=$_" }) -join ' OR '
         foreach ($item in Get-CimInstance Win32_PerfRawData_PerfProc_Thread -Filter $filter) {
-            $threads["$($item.IDProcess):$($item.IDThread):$($item.ElapsedTime)"] = $item
+            $key = "$($item.IDProcess):$($item.IDThread):$($item.ElapsedTime)"
+            $threads[$key] = $item
+            $threadMetadata[$key] = [SayItThreadProbe]::Read([uint32]$item.IDThread)
         }
     }
-    [pscustomobject]@{ Processes = $processes; Threads = $threads }
+    $gpu = $null
+    if ($IncludeGpuActivity) {
+        try {
+            $engines = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Where-Object {
+                $_.Name -match '^pid_(\d+)_' -and $ids.Contains([int]$Matches[1])
+            } | ForEach-Object { [pscustomobject]@{ instance = $_.Name; utilizationPercent = $_.UtilizationPercentage } })
+            $gpuMemory = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory | Where-Object {
+                $_.Name -match '^pid_(\d+)_' -and $ids.Contains([int]$Matches[1])
+            } | ForEach-Object { [pscustomobject]@{ instance = $_.Name; dedicatedBytes = $_.DedicatedUsage; sharedBytes = $_.SharedUsage; committedBytes = $_.TotalCommitted } })
+            $gpu = [pscustomobject]@{ available = $true; capturedAt = (Get-Date).ToString('o'); engines = $engines; memory = $gpuMemory }
+        } catch {
+            $gpu = [pscustomobject]@{ available = $false; error = $_.Exception.Message }
+        }
+    }
+    [pscustomobject]@{ Processes = $processes; Threads = $threads; ThreadMetadata = $threadMetadata; Gpu = $gpu }
 }
 
+$rootExecutable = (Get-Process -Id $RootPid).Path
+$rootExecutableHash = (Get-FileHash -LiteralPath $rootExecutable -Algorithm SHA256).Hash
 $before = Get-AppSample
 Start-Sleep -Seconds $CpuSampleSeconds
 $after = Get-AppSample
@@ -92,8 +149,25 @@ $contextSwitches = if ($IncludeThreadActivity) {
     }
     $sum
 } else { $null }
+$threadRows = @($after.Threads.Keys | Sort-Object | ForEach-Object {
+    $current = $after.Threads[$_]
+    $previous = $before.Threads[$_]
+    $metadata = $after.ThreadMetadata[$_]
+    $oldMetadata = $before.ThreadMetadata[$_]
+    $elapsedTicks = if ($null -ne $previous) { [double]$current.Timestamp_Sys100NS - [double]$previous.Timestamp_Sys100NS } else { 0 }
+    [pscustomobject]@{
+        pid = [int]$current.IDProcess; tid = [int]$current.IDThread; description = $metadata.Description
+        sampleSeconds = if ($elapsedTicks -gt 0) { $elapsedTicks / 1e7 } else { $null }
+        cpuMilliseconds = if ($elapsedTicks -gt 0) { ([double]$current.PercentProcessorTime - [double]$previous.PercentProcessorTime) / 1e4 } else { $null }
+        contextSwitches = if ($null -ne $previous) { [long]$current.ContextSwitchesPersec - [long]$previous.ContextSwitchesPersec } else { $null }
+        cpuCycles = if ($null -ne $metadata.CpuCycles -and $null -ne $oldMetadata.CpuCycles -and $metadata.CpuCycles -ge $oldMetadata.CpuCycles) { $metadata.CpuCycles - $oldMetadata.CpuCycles } else { $null }
+        cycleSampleSeconds = if ($null -ne $metadata.CpuCycles -and $null -ne $oldMetadata.CpuCycles) { ($metadata.MonotonicTicks - $oldMetadata.MonotonicTicks) / [System.Diagnostics.Stopwatch]::Frequency } else { $null }
+        state = [int]$current.ThreadState; waitReason = [int]$current.ThreadWaitReason
+    }
+})
 $result = [pscustomobject]@{
     capturedAt = (Get-Date).ToString('o'); condition = $Condition; rootPid = $RootPid
+    executable = $rootExecutable; executableSha256 = $rootExecutableHash
     processCount = $rows.Count
     totalWorkingSetBytes = ($rows | Measure-Object workingSetBytes -Sum).Sum
     totalPrivateWorkingSetBytes = ($rows | Measure-Object privateWorkingSetBytes -Sum).Sum
@@ -104,8 +178,11 @@ $result = [pscustomobject]@{
     exitedOrReplacedPids = $changedIds
     newPids = $newIds
     contextSwitchesOfSurvivingThreads = $contextSwitches
-    notes = @('工作集求和包含重复的可共享页面，不代表去重后的物理内存。', 'I/O 包括文件、网络和设备；线程切换不等于唤醒次数。', 'CPU/I/O 只比较两个采样点均存在的同一进程；瞬时峰值应另用连续跟踪测量。')
+    notes = @('工作集求和包含重复的可共享页面，不代表去重后的物理内存。', 'I/O 包括文件、网络和设备；线程切换不等于唤醒次数。', 'CPU/I/O 只比较两个采样点均存在的同一进程；瞬时峰值应另用连续跟踪测量。', '线程 CPU 周期不得转换为耗时；线程名称可变，查询失败为 null。GPU 是采样端点的引擎计数器，不是全区间峰值；不同引擎利用率不直接相加。')
     processes = $rows
+    threads = $threadRows
+    gpuBefore = $before.Gpu
+    gpuAfter = $after.Gpu
 }
 $rendered = if ($Format -eq 'csv') { $rows | ConvertTo-Csv -NoTypeInformation } else { $result | ConvertTo-Json -Depth 4 }
 if ($OutputPath) { $rendered | Set-Content -LiteralPath $OutputPath -Encoding utf8 } else { $rendered }
