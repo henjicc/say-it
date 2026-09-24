@@ -64,7 +64,7 @@ export function DictationShortcutsPanel() {
         </FormGrid>
       </SettingsSection>
 
-      <SettingsSection title="输入行为" description="主快捷键使用当前软件的处理规则。单击切换：按一次开始，再按一次结束；长按说话：按住开始，松手结束。按 Esc 可取消。点击“录入”设置按键，点击“×”清除。Caps Lock 短按仍可切换大小写。">
+      <SettingsSection title="输入行为" description="主快捷键使用当前软件的处理规则。单击切换：按一次开始，再按一次结束；长按说话：按住开始，松手结束。点击快捷键框设置按键，点击“×”重新录制，按 Esc 取消录制；聚焦后按 Delete 或 Backspace 清除。Caps Lock 短按仍可切换大小写。">
         <FormGrid>
           <Field label="主快捷键">
             <ShortcutRecorder
