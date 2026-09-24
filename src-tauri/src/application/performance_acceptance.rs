@@ -7,6 +7,22 @@ use tauri::{AppHandle, Manager};
 
 const IDENTIFIER: &str = "com.henjicc.sayit.acceptance";
 
+/// 仅用于定位第三方输入法注入资源；不改变系统输入法设置，也不进入正式构建。
+#[cfg(windows)]
+pub(crate) fn configure_process() {
+    if std::env::var("SAYIT_ACCEPTANCE_NO_IME").as_deref() == Ok("1") {
+        #[link(name = "imm32")]
+        extern "system" {
+            fn ImmDisableIME(thread_id: u32) -> i32;
+        }
+        assert_ne!(
+            unsafe { ImmDisableIME(u32::MAX) },
+            0,
+            "禁用验收进程 IME 失败"
+        );
+    }
+}
+
 pub(crate) fn validate(app: &AppHandle) -> Result<(), String> {
     if app.config().identifier != IDENTIFIER {
         return Err("验收构建必须使用独立 identifier，禁止访问正式应用数据".into());
@@ -82,6 +98,7 @@ async fn wait_for_window(app: &AppHandle, present: bool) -> Result<(), String> {
 }
 
 async fn run(app: &AppHandle) -> Result<(), String> {
+    let blank = std::env::var("SAYIT_ACCEPTANCE_BLANK").as_deref() == Ok("1");
     let mut recorder = Recorder {
         file: std::fs::File::create(output_path()?).map_err(|e| e.to_string())?,
         started: Instant::now(),
@@ -93,7 +110,25 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     for cycle in 1..=10 {
         recorder.record("opening", cycle, None)?;
         let started = Instant::now();
-        crate::desktop::ensure_main_window(app)?;
+        if blank {
+            let mut config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|c| c.label == "main")
+                .ok_or("缺少 main 窗口配置")?
+                .clone();
+            config.url =
+                tauri::WebviewUrl::External("about:blank".parse().map_err(|e| format!("{e}"))?);
+            tauri::WebviewWindowBuilder::from_config(app, &config)
+                .map_err(|e| e.to_string())?
+                .visible(true)
+                .build()
+                .map_err(|e| e.to_string())?;
+        } else {
+            crate::desktop::ensure_main_window(app)?;
+        }
         wait_for_window(app, true).await?;
         recorder.record(
             "open",

@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][string]$OutputDirectory,
+    [switch]$BlankWebview,
+    [switch]$DisableTestIme,
     [ValidateRange(30, 1800)][int]$TimeoutSeconds = 300
 )
 
@@ -18,6 +20,8 @@ $launch.CreateNoWindow = $true
 $launch.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
 $launch.ArgumentList.Add('--autostarted')
 $launch.Environment['SAYIT_ACCEPTANCE_EVENTS'] = $eventsPath
+$launch.Environment['SAYIT_ACCEPTANCE_BLANK'] = if ($BlankWebview) { '1' } else { '0' }
+$launch.Environment['SAYIT_ACCEPTANCE_NO_IME'] = if ($DisableTestIme) { '1' } else { '0' }
 $launch.Environment.Remove('TOKIO_WORKER_THREADS') | Out-Null
 $appProcess = [System.Diagnostics.Process]::Start($launch)
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -86,6 +90,8 @@ try {
     $report = [pscustomobject]@{
         executable = $resolved; executableSha256 = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash
         rootPid = $appProcess.Id; logicalProcessors = [Environment]::ProcessorCount
+        blankWebview = [bool]$BlankWebview
+        testImeDisabled = [bool]$DisableTestIme
         failure = $failure; samples = $samples; survivingProcessesAfterExit = $survivors
         notes = @('私有字节是提交量，工作集求和包含共享页面重复计数。', 'CPU 差分仅比较同一 PID 和启动时间；跨进程退出的区间不能视为完整 CPU 总量。', '500ms 间隔另加进程枚举时间，短瞬时峰值可能漏采。')
     }

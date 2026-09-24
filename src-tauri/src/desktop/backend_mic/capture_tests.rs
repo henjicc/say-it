@@ -1,5 +1,45 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+#[ignore = "真实设备生命周期诊断；显式允许后短时采集，不保存、不发送音频"]
+fn microphone_device_lifecycle_profile() {
+    assert_eq!(
+        std::env::var("SAYIT_ALLOW_MIC_LIFECYCLE").as_deref(),
+        Ok("1")
+    );
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let state = RuntimeState::default();
+    let mut rounds = Vec::new();
+    for cycle in 0..12 {
+        let started = std::time::Instant::now();
+        let response = start_backend_mic_inner(None, &state).unwrap();
+        let start_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(!response.reused);
+        // 没有识别接收者，采集回调只计算电平，既不缓存音频也不执行网络操作。
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let stopped = std::time::Instant::now();
+        release_backend_mic_inner(&state).unwrap();
+        let stop_ms = stopped.elapsed().as_secs_f64() * 1000.0;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mic = state.backend_mic.lock().unwrap();
+        assert!(mic.worker.is_none());
+        assert!(mic.raw_txs.is_empty() && mic.pending.is_empty());
+        drop(mic);
+        let mut handles = 0;
+        unsafe {
+            GetProcessHandleCount(GetCurrentProcess(), &mut handles).unwrap();
+        }
+        rounds.push(serde_json::json!({"cycle":cycle, "handles":handles,
+            "privateBytes":crate::performance_test_support::memory().private_usage,
+            "startMs":start_ms,"stopMs":stop_ms}));
+    }
+    println!(
+        "PERF_RESULT {}",
+        serde_json::json!({"scenario":"microphone-device-lifecycle","rounds":rounds})
+    );
+}
+
 // 冻结旧采集分包逻辑，仅用于输出对照与独立性能基线。
 pub(crate) fn legacy_push(mic: &Arc<Mutex<BackendMicState>>, input: Vec<f32>) {
     if input.is_empty() {
