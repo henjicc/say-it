@@ -145,19 +145,16 @@ fn actual_read_failure_ends_receiver_and_preserves_error_for_busy_session() {
         .tx
         .send(AsrStreamInput::RawF32(vec![0.25; 4096]))
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
-    while handle.tx.budget.resident.load(Ordering::Acquire) != 0 {
-        assert!(Instant::now() < until);
-        std::thread::yield_now();
-    }
-    let paths = handle.tx.spool.test_paths();
-    assert_eq!(paths.len(), 1);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&paths[0])
-        .unwrap()
-        .set_len(4)
-        .unwrap();
+    let mut queued = rx.inner.as_mut().unwrap().blocking_recv().unwrap();
+    let Some(Payload::Disk(ticket)) = queued.payload.take() else {
+        panic!("必须进入真实暂存")
+    };
+    let packet = ticket.blocking_recv().unwrap().unwrap();
+    packet.truncate_for_test(4);
+    let (reply, ticket) = tokio::sync::oneshot::channel();
+    assert!(reply.send(Ok(packet)).is_ok());
+    queued.payload = Some(Payload::Disk(ticket));
+    rx.pending = Some(queued);
     let Some(AsrStreamInput::Failed(error)) = rx.blocking_recv() else {
         panic!("读盘错误不能成为成功")
     };

@@ -34,14 +34,9 @@ fn cancellation_and_truncated_file_are_errors_not_partial_audio() {
     let mut writer = Writer::default();
     assert!(writer.write(&[0.25; 4096], || true).is_err());
     let packet = writer.write(&[0.25; 4096], || false).unwrap();
-    let path = packet.segment.path.clone();
+    let path = packet.segment.file.path().to_owned();
     drop(writer);
-    OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_len(4)
-        .unwrap();
+    packet.truncate_for_test(4);
     let mut reader = Reader::default();
     assert!(reader.read(packet).unwrap_err().contains("不完整"));
     drop(reader);
@@ -53,7 +48,7 @@ fn disk_budget_counts_files_retained_by_any_reader_or_ticket() {
     let mut writer = Writer::default();
     let budget = writer.disk_bytes.clone();
     let packet = writer.write(&[0.25; 4096], || false).unwrap();
-    let path = packet.segment.path.clone();
+    let path = packet.segment.file.path().to_owned();
     drop(writer);
     assert_eq!(budget.load(Ordering::Acquire), 4096 * 4);
     drop(packet);
@@ -67,8 +62,15 @@ fn disk_budget_counts_files_retained_by_any_reader_or_ticket() {
         .err()
         .unwrap()
         .contains("磁盘预算"));
-    let path = writer.output.as_ref().unwrap().segment.path.clone();
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    let path = writer
+        .output
+        .as_ref()
+        .unwrap()
+        .segment
+        .file
+        .path()
+        .to_owned();
+    assert_eq!(writer.output.as_ref().unwrap().segment.file.len(), 0);
     drop(writer);
     assert!(!path.exists());
 }

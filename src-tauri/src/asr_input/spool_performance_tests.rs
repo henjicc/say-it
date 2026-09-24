@@ -23,7 +23,14 @@ impl Drop for LegacyInput {
 #[test]
 #[ignore = "独立实时队列测量：合成音频、真实临时文件，不调用设备或识别服务"]
 fn live_queue_profile() {
-    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessIoCounters, IO_COUNTERS};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetProcessHandleCount, GetProcessIoCounters, IO_COUNTERS,
+    };
+    let handles = || {
+        let mut count = 0;
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count).unwrap() };
+        count
+    };
     let io = || {
         let mut counters = IO_COUNTERS::default();
         unsafe { GetProcessIoCounters(GetCurrentProcess(), &mut counters).unwrap() };
@@ -65,6 +72,7 @@ fn live_queue_profile() {
     // 桌面宿主本已有 Tokio；两边预先初始化相同运行时，避免将线程池启动算成读盘成本。
     tauri::async_runtime::block_on(async {});
     let initial = memory();
+    let initial_handles = handles();
     let io_before = io();
     let started = Instant::now();
     let mut send_time = Duration::ZERO;
@@ -106,6 +114,7 @@ fn live_queue_profile() {
     }
     let enqueued = started.elapsed();
     let retained = memory();
+    let retained_handles = handles();
     if !short {
         for _ in 0..packets {
             consume(receive());
@@ -125,6 +134,7 @@ fn live_queue_profile() {
         std::thread::sleep(Duration::from_millis(1));
     }
     let after = memory();
+    let released_handles = handles();
     let io_after = io();
     assert_eq!(count, seconds * 48_000);
     assert_eq!(handle.tx.budget.bytes.load(Ordering::Acquire), 0);
@@ -143,7 +153,8 @@ fn live_queue_profile() {
             "cleanupMs":cleanup_started.elapsed().as_secs_f64()*1000.0,
         "maxObservedResidentAudioBytes":max_resident,"createdSegments":paths.len(),
         "maxObservedDiskBytes":max_disk,
-            "initialPrivateBytes":initial.private_usage,"retainedPrivateBytes":retained.private_usage,
+        "initialPrivateBytes":initial.private_usage,"retainedPrivateBytes":retained.private_usage,
+        "initialHandles":initial_handles,"retainedHandles":retained_handles,"releasedHandles":released_handles,
             "releasedPrivateBytes":after.private_usage,"peakPrivateBytes":after.peak_pagefile_usage,
             "peakWorkingSetBytes":after.peak_working_set,"outputHash":format!("{hash:016x}"),
             "processReadBytes":io_after.ReadTransferCount-io_before.ReadTransferCount,
