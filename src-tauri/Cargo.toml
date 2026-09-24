@@ -114,6 +114,7 @@ ocr-rs = { version = "=2.3.2", default-features = false }
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 model-pack-builder = []
+performance-acceptance = []
 
 [dev-dependencies]
 ogg = "0.8.0"
