@@ -283,6 +283,9 @@ pub(crate) fn start_backend_system_audio_inner(
                 }
                 BackendMicCommand::CaptureError { message } => {
                     if let Ok(mut guard) = system_audio.lock() {
+                        for subscriber in &guard.raw_txs {
+                            subscriber.tx.fail(message.clone());
+                        }
                         guard.last_error = Some(message);
                     }
                     break;
@@ -394,13 +397,7 @@ pub(crate) fn attach_backend_system_audio_to_asr_inner(
 /// 字幕应用服务直接消费系统 loopback PCM，避免完整音频经过 WebView。
 pub(crate) fn attach_backend_system_audio_raw_inner(
     state: &RuntimeState,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     let worker = state
         .backend_system_audio
         .lock()
@@ -408,7 +405,7 @@ pub(crate) fn attach_backend_system_audio_raw_inner(
         .worker
         .clone()
         .ok_or_else(|| "系统音频采集未启动".to_string())?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = RawAudioReceiver::channel();
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {

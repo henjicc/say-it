@@ -84,7 +84,6 @@ impl Drop for ResidentCharge {
 enum Payload {
     Memory(AsrStreamInput),
     Disk(spool::Ticket),
-    #[cfg(any(test, target_os = "macos"))]
     Reading(tokio::sync::oneshot::Receiver<(spool::Reader, Result<Vec<f32>, String>)>),
 }
 struct QueuedInput {
@@ -106,7 +105,6 @@ impl QueuedInput {
         match self.payload.take().unwrap() {
             Payload::Memory(input) => input,
             Payload::Disk(_) => unreachable!("磁盘票据不能同步还原"),
-            #[cfg(any(test, target_os = "macos"))]
             Payload::Reading(_) => unreachable!("读盘票据不能同步还原"),
         }
     }
@@ -148,7 +146,10 @@ fn signal_failure(
     }
 }
 impl AsrInputSender {
-    fn fail(&self, error: String) {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.is_closed() || self.cancellation.is_cancelled()
+    }
+    pub(crate) fn fail(&self, error: String) {
         signal_failure(
             &self.cancellation,
             &self.budget,
@@ -179,7 +180,7 @@ impl AsrInputSender {
             })
             .is_err()
         {
-            self.fail("识别处理长期落后，音频排队数量已达上限，本次任务已停止".into());
+            self.fail("音频处理长期落后，音频排队数量已达上限，本次任务已停止".into());
             return Err(mpsc::error::SendError(input));
         }
         if self
@@ -192,7 +193,7 @@ impl AsrInputSender {
             .is_err()
         {
             self.budget.packets.fetch_sub(1, Ordering::AcqRel);
-            self.fail("识别处理长期落后，音频暂存已达上限，本次任务已停止".into());
+            self.fail("音频处理长期落后，音频暂存已达上限，本次任务已停止".into());
             return Err(mpsc::error::SendError(input));
         }
         let charge = QueueCharge {
@@ -454,7 +455,6 @@ impl AsrStreamReceiver {
                     None => return self.take_terminal(),
                 }
             }
-            #[cfg(any(test, target_os = "macos"))]
             Payload::Reading(ticket) => {
                 let cancellation = self.cancellation.clone();
                 let result = tauri::async_runtime::block_on(async {
@@ -502,7 +502,6 @@ impl AsrStreamReceiver {
                     self.read_result(Err("音频暂存任务提前结束".into()))
                 }
             },
-            #[cfg(any(test, target_os = "macos"))]
             Payload::Reading(mut ticket) => match ticket.try_recv() {
                 Ok((reader, result)) => {
                     self.reader = reader;
@@ -523,7 +522,6 @@ impl AsrStreamReceiver {
         };
         Ok(self.take_terminal().unwrap_or(input))
     }
-    #[cfg(any(test, target_os = "macos"))]
     pub(crate) async fn recv(&mut self) -> Option<AsrStreamInput> {
         loop {
             if let Some(terminal) = self.take_terminal() {
@@ -579,10 +577,37 @@ impl AsrStreamReceiver {
         }
     }
 }
+// 原始采集消费者也复用同一份容量/暂存实现；接口将失败与正常结束分开，避免尾部损坏被当作成功。
+pub(crate) struct RawAudioReceiver(AsrStreamReceiver);
+impl RawAudioReceiver {
+    pub(crate) fn channel() -> (AsrInputSender, Self) {
+        let (handle, receiver) = AsrStreamHandle::channel();
+        (handle.tx, Self(receiver))
+    }
+    fn samples(input: Option<AsrStreamInput>) -> Result<Option<Vec<f32>>, String> {
+        match input {
+            Some(AsrStreamInput::RawF32(samples)) => Ok(Some(samples)),
+            Some(AsrStreamInput::Failed(error)) => Err(error),
+            Some(AsrStreamInput::Finish | AsrStreamInput::Stop) | None => Ok(None),
+        }
+    }
+    pub(crate) fn blocking_recv(&mut self) -> Result<Option<Vec<f32>>, String> {
+        Self::samples(self.0.blocking_recv())
+    }
+    pub(crate) async fn recv(&mut self) -> Result<Option<Vec<f32>>, String> {
+        Self::samples(self.0.recv().await)
+    }
+    #[cfg(test)]
+    pub(crate) fn try_recv(&mut self) -> Result<AsrStreamInput, mpsc::error::TryRecvError> {
+        self.0.try_recv()
+    }
+}
 #[cfg(test)]
 mod paced_tests;
 #[cfg(all(test, windows))]
 mod performance_tests;
+#[cfg(test)]
+mod raw_tests;
 #[cfg(all(test, windows))]
 mod spool_performance_tests;
 #[cfg(test)]

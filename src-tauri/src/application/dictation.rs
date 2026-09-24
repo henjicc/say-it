@@ -15,7 +15,7 @@ use crate::desktop::{
 use crate::prelude::*;
 use crate::providers::alibabacloud::TranscriptionParams;
 use crate::state::{
-    AsrStreamInput, DictationShortcutProfile, RuntimeState, ShortcutProcessingMode,
+    DictationShortcutProfile, RawAudioReceiver, RuntimeState, ShortcutProcessingMode,
 };
 use fancy_regex::{Captures, RegexBuilder};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1283,7 +1283,7 @@ fn file_mode_recording_is_full(samples: usize, sample_rate: u32) -> bool {
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: RawAudioReceiver,
     done: tokio::sync::oneshot::Sender<RawRecordingResult>,
     mode: DictationMode,
     sample_rate: u32,
@@ -1310,12 +1310,17 @@ fn spawn_raw_consumer(
         // 文件直接按原有量化方式写盘；波形预览 DSP 不得改变识别输入。
         let mut waveform_dsp: Option<StreamDsp> = None;
         let mut stop_requested = false;
-        while let Some(input) = rx.blocking_recv() {
+        loop {
             if done.is_closed() {
                 return;
             }
-            let AsrStreamInput::RawF32(samples) = input else {
-                continue;
+            let samples = match rx.blocking_recv() {
+                Ok(Some(samples)) => samples,
+                Ok(None) => break,
+                Err(error) => {
+                    write_error = Some(error);
+                    break;
+                }
             };
             let mut limit_reached = false;
             let (need_open, need_close, waveform_config) = {

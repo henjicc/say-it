@@ -577,7 +577,7 @@ fn start_recording(
             } else {
                 None
             };
-            while let Some(AsrStreamInput::RawF32(samples)) = receiver.blocking_recv() {
+            while let Some(samples) = receiver.blocking_recv()? {
                 if drain_tx.is_closed() {
                     return Err("模型对比已取消".into());
                 }

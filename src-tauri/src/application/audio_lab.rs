@@ -18,11 +18,15 @@ mod performance_tests;
 #[derive(Default)]
 pub(crate) struct AudioLabRuntime {
     state: Mutex<AudioLabState>,
+    operation: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
 struct AudioLabState {
+    epoch: u64,
+    drain: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
     recording: bool,
+    stopping: bool,
     sample_rate: u32,
     raw: Vec<f32>,
     processed: Vec<f32>,
@@ -59,18 +63,21 @@ impl AudioLabRuntime {
             .map(|state| state.recording)
             .map_err(|_| "音频调校状态锁失败".into())
     }
-    pub(crate) fn begin(&self, sample_rate: u32) -> Result<(), String> {
+    pub(crate) fn begin(&self, sample_rate: u32) -> Result<u64, String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
         if state.recording {
             return Err("音频调校正在录音".into());
         }
+        let epoch = state.epoch.wrapping_add(1);
         *state = AudioLabState {
+            epoch,
             recording: true,
             sample_rate,
             ..Default::default()
         };
-        Ok(())
+        Ok(epoch)
     }
+    #[cfg(test)]
     pub(crate) fn append(&self, samples: &[f32]) {
         if let Ok(mut state) = self.state.lock() {
             if state.recording {
@@ -80,16 +87,79 @@ impl AudioLabRuntime {
     }
     fn abort(&self) {
         if let Ok(mut state) = self.state.lock() {
-            *state = AudioLabState::default();
+            let epoch = state.epoch.wrapping_add(1);
+            *state = AudioLabState {
+                epoch,
+                ..Default::default()
+            };
         }
     }
-    fn fail(&self, error: String) {
-        if let Ok(mut state) = self.state.lock() {
-            if state.recording {
-                state.recording = false;
-                state.error = Some(error);
-            }
+    fn append_for(&self, epoch: u64, samples: &[f32]) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        if state.epoch != epoch || !state.recording {
+            return Err("音频调校会话已结束".into());
         }
+        state.raw.extend_from_slice(samples);
+        Ok(())
+    }
+    fn fail_for(&self, epoch: u64, error: String) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.epoch != epoch || !state.recording {
+            return false;
+        }
+        state.recording = false;
+        state.error = Some(error);
+        state.drain.take();
+        true
+    }
+    fn register_drain(
+        &self,
+        epoch: u64,
+        drain: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        if state.epoch != epoch || !state.recording {
+            return Err("音频调校会话已结束".into());
+        }
+        state.drain = Some(drain);
+        Ok(())
+    }
+    fn request_stop(&self) -> Result<u64, String> {
+        let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        state.stopping = true;
+        Ok(state.epoch)
+    }
+    fn finish_input(&self, epoch: u64) -> Result<(), String> {
+        let state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+        if state.epoch != epoch {
+            return Err("音频调校会话已结束".into());
+        }
+        if !state.stopping {
+            return Err("音频采集已意外停止".into());
+        }
+        Ok(())
+    }
+    async fn drain_capture(&self) -> Result<(), String> {
+        let (epoch, drain) = {
+            let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
+            (state.epoch, state.drain.take())
+        };
+        let result = match drain {
+            Some(drain) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(10), drain).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err("音频调校消费线程提前退出".into()),
+                    Err(_) => Err("音频调校尾部处理超时，请重新录音".into()),
+                }
+            }
+            None => Err("音频调校消费线程未注册".into()),
+        };
+        if let Err(error) = &result {
+            self.fail_for(epoch, error.clone());
+        }
+        result
     }
     pub(crate) fn stop(&self) -> Result<(), String> {
         let mut state = self.state.lock().map_err(|_| "音频调校状态锁失败")?;
@@ -170,7 +240,7 @@ impl AudioLabRuntime {
 }
 
 #[tauri::command]
-pub(crate) fn audio_lab_start(
+pub(crate) async fn audio_lab_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::state::RuntimeState>,
     device_name: Option<String>,
@@ -182,6 +252,7 @@ pub(crate) fn audio_lab_start(
     // 「正在录音」报错——而失败清理里的 `abort()` 是 `*state = default()`，正在进行的
     // 录音被整个清空、麦克风被停、租约被释放。用户只是手抖点了两下，录了一半的音频
     // 就没了，且不可恢复。
+    let _operation = state.audio_lab_runtime.operation.lock().await;
     if state.audio_lab_runtime.is_recording()? {
         return Err("音频调校正在录音".into());
     }
@@ -203,10 +274,13 @@ pub(crate) fn audio_lab_start(
             return Err(error);
         }
     };
-    if let Err(error) = state.audio_lab_runtime.begin(started.sample_rate) {
-        cleanup_start_failure(&state, false);
-        return Err(error);
-    }
+    let epoch = match state.audio_lab_runtime.begin(started.sample_rate) {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            cleanup_start_failure(&state, false);
+            return Err(error);
+        }
+    };
     let (_, mut receiver) = match crate::desktop::backend_mic::attach_backend_mic_raw_inner(
         &state,
         crate::state::AsrPreroll::Disabled,
@@ -217,29 +291,42 @@ pub(crate) fn audio_lab_start(
             return Err(error);
         }
     };
+    let (done, drain) = tokio::sync::oneshot::channel();
+    if let Err(error) = state.audio_lab_runtime.register_drain(epoch, drain) {
+        cleanup_start_failure(&state, true);
+        return Err(error);
+    }
     tauri::async_runtime::spawn(async move {
-        while let Some(crate::state::AsrStreamInput::RawF32(samples)) = receiver.recv().await {
-            if let Some(runtime) = app.try_state::<crate::state::RuntimeState>() {
-                runtime.audio_lab_runtime.append(&samples);
-            }
-        }
-        let Some(state) = app.try_state::<crate::state::RuntimeState>() else {
-            return;
-        };
-        let capture_error = state
-            .backend_mic
-            .lock()
-            .ok()
-            .and_then(|mut capture| capture.last_error.take());
-        if let Some(error) = capture_error {
-            state.audio_lab_runtime.fail(error);
-            let _ = crate::desktop::backend_mic::release_backend_mic_inner(&state);
-            if let Ok(mut current) = state.audio_lab_lease.lock() {
-                if let Some(lease) = current.take() {
-                    let _ = state.audio_session.release(&lease);
+        let result = async {
+            while let Some(samples) = receiver.recv().await? {
+                if done.is_closed() {
+                    return Err("音频调校会话已结束".into());
                 }
+                let state = app
+                    .try_state::<crate::state::RuntimeState>()
+                    .ok_or("应用已退出")?;
+                state.audio_lab_runtime.append_for(epoch, &samples)?;
             }
-            publish(&app);
+            let state = app
+                .try_state::<crate::state::RuntimeState>()
+                .ok_or("应用已退出")?;
+            state.audio_lab_runtime.finish_input(epoch)
+        }
+        .await;
+        // stop 持有 operation 等待排空，因此必须先交付结果再尝试取得清理锁。
+        let _ = done.send(result.clone());
+        if let Err(error) = result {
+            let Some(state) = app.try_state::<crate::state::RuntimeState>() else {
+                return;
+            };
+            let _operation = state.audio_lab_runtime.operation.lock().await;
+            if state.audio_lab_runtime.fail_for(epoch, error) {
+                let _ = crate::desktop::backend_mic::release_backend_mic_inner(&state);
+                if let Err(error) = release_audio_lab_lease(&state) {
+                    eprintln!("[audio-lab] 释放音频会话失败：{error}");
+                }
+                publish(&app);
+            }
         }
     });
     state.audio_lab_runtime.snapshot()
@@ -252,19 +339,12 @@ fn cleanup_start_failure(state: &crate::state::RuntimeState, discard_session: bo
         state.audio_lab_runtime.abort();
     }
     let _ = crate::desktop::backend_mic::release_backend_mic_inner(state);
-    if let Ok(mut current) = state.audio_lab_lease.lock() {
-        if let Some(lease) = current.take() {
-            let _ = state.audio_session.release(&lease);
-        }
+    if let Err(error) = release_audio_lab_lease(state) {
+        eprintln!("[audio-lab] 释放音频会话失败：{error}");
     }
 }
 
-#[tauri::command]
-pub(crate) fn audio_lab_stop(
-    state: tauri::State<'_, crate::state::RuntimeState>,
-) -> Result<AudioLabSnapshot, String> {
-    crate::desktop::backend_mic::pause_backend_mic_inner(&state)?;
-    crate::desktop::backend_mic::release_backend_mic_inner(&state)?;
+fn release_audio_lab_lease(state: &crate::state::RuntimeState) -> Result<(), String> {
     if let Some(lease) = state
         .audio_lab_lease
         .lock()
@@ -272,6 +352,27 @@ pub(crate) fn audio_lab_stop(
         .take()
     {
         state.audio_session.release(&lease)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn audio_lab_stop(
+    state: tauri::State<'_, crate::state::RuntimeState>,
+) -> Result<AudioLabSnapshot, String> {
+    let _operation = state.audio_lab_runtime.operation.lock().await;
+    if !state.audio_lab_runtime.is_recording()? {
+        return state.audio_lab_runtime.snapshot();
+    }
+    // 先停止设备并关闭发送端，消费方排空尾包后才能把 recording 改为 false。
+    let epoch = state.audio_lab_runtime.request_stop()?;
+    let paused = crate::desktop::backend_mic::pause_backend_mic_inner(&state);
+    let released = crate::desktop::backend_mic::release_backend_mic_inner(&state);
+    let lease_released = release_audio_lab_lease(&state);
+    let drained = state.audio_lab_runtime.drain_capture().await;
+    if let Err(error) = paused.and(released).and(lease_released).and(drained) {
+        state.audio_lab_runtime.fail_for(epoch, error.clone());
+        return Err(error);
     }
     state.audio_lab_runtime.stop()?;
     state.audio_lab_runtime.snapshot()
@@ -356,6 +457,9 @@ fn summarize(samples: &[f32]) -> Vec<[f32; 2]> {
 }
 
 #[cfg(test)]
+mod capture_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -407,10 +511,10 @@ mod tests {
         // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
         let source = include_str!("audio_lab.rs").replace("\r\n", "\n");
         let body = &source[..source
-            .find("#[cfg(test)]")
+            .find("#[cfg(test)]\nmod tests")
             .expect("audio_lab.rs 必须有测试模块标记")];
         let start = body
-            .find("pub(crate) fn audio_lab_start")
+            .find("pub(crate) async fn audio_lab_start")
             .expect("audio_lab_start 必须仍然存在");
         let command = &body[start..];
         let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
@@ -437,10 +541,10 @@ mod tests {
     #[test]
     fn capture_failure_stops_recording_and_preserves_the_error() {
         let runtime = AudioLabRuntime::default();
-        runtime.begin(48_000).unwrap();
-        runtime.append(&[0.1, -0.1]);
+        let epoch = runtime.begin(48_000).unwrap();
+        runtime.append_for(epoch, &[0.1, -0.1]).unwrap();
 
-        runtime.fail("输入设备已断开".into());
+        runtime.fail_for(epoch, "输入设备已断开".into());
 
         let snapshot = runtime.snapshot().unwrap();
         assert!(!snapshot.recording);

@@ -476,6 +476,9 @@ pub(crate) fn start_backend_mic_inner(
                 }
                 BackendMicCommand::CaptureError { message } => {
                     if let Ok(mut guard) = mic.lock() {
+                        for subscriber in &guard.raw_txs {
+                            subscriber.tx.fail(message.clone());
+                        }
                         guard.last_error = Some(message);
                     }
                     break;
@@ -546,13 +549,7 @@ pub(crate) fn start_backend_mic_inner(
 pub(crate) fn attach_backend_mic_raw_inner(
     state: &RuntimeState,
     preroll: AsrPreroll,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     let worker = state
         .backend_mic
         .lock()
@@ -560,7 +557,7 @@ pub(crate) fn attach_backend_mic_raw_inner(
         .worker
         .clone()
         .ok_or_else(|| "后端麦克风未启动".to_string())?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = RawAudioReceiver::channel();
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {
@@ -714,7 +711,7 @@ mod tests {
 
     #[test]
     fn flush_sends_partial_tail_to_raw_subscribers() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = RawAudioReceiver::channel();
         let mut state = BackendMicState {
             raw_txs: vec![BackendMicRawSubscriber {
                 tx,
@@ -736,7 +733,7 @@ mod tests {
 
     #[test]
     fn flush_does_not_replay_pending_chunks_to_raw_subscribers() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = RawAudioReceiver::channel();
         let mut state = BackendMicState {
             raw_txs: vec![BackendMicRawSubscriber {
                 tx,

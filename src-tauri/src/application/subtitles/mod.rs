@@ -15,7 +15,7 @@ use crate::obs_overlay::{
     overlay_status, publish_overlay_snapshot, ObsOverlaySnapshot, ObsOverlayStyle,
 };
 use crate::prelude::*;
-use crate::state::{AsrStreamInput, RuntimeState};
+use crate::state::{RawAudioReceiver, RuntimeState};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -735,16 +735,17 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_raw_consumer(
-    app: AppHandle,
-    epoch: u64,
-    source: SourceKind,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-) {
+fn spawn_raw_consumer(app: AppHandle, epoch: u64, source: SourceKind, mut rx: RawAudioReceiver) {
     tauri::async_runtime::spawn(async move {
-        while let Some(input) = rx.recv().await {
-            let AsrStreamInput::RawF32(samples) = input else {
-                continue;
+        let mut queue_error = None;
+        loop {
+            let samples = match rx.recv().await {
+                Ok(Some(samples)) => samples,
+                Ok(None) => break,
+                Err(error) => {
+                    queue_error = Some(error);
+                    break;
+                }
             };
             let level = rms(&samples);
             let (open, close) = {
@@ -819,7 +820,9 @@ fn spawn_raw_consumer(
         if still_active {
             fail_and_cleanup(
                 app,
-                capture_error.unwrap_or_else(|| "音频采集已意外停止".into()),
+                queue_error
+                    .or(capture_error)
+                    .unwrap_or_else(|| "音频采集已意外停止".into()),
             )
             .await;
         }

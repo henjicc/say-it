@@ -239,7 +239,7 @@ pub(crate) enum AsrPreroll {
 }
 
 pub(crate) struct BackendMicRawSubscriber {
-    pub(crate) tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+    pub(crate) tx: AsrInputSender,
     pub(crate) preroll: AsrPreroll,
 }
 
@@ -269,7 +269,7 @@ pub(crate) enum BackendMicCommand {
     },
     AttachRaw {
         preroll: AsrPreroll,
-        tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        tx: AsrInputSender,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
     Pause {
@@ -592,7 +592,9 @@ pub(crate) struct SessionStatus {
     pub(crate) default_asr_provider: String,
 }
 
-pub(crate) use crate::asr_input::{AsrInputSender, AsrStreamHandle, AsrStreamInput, AsrStreamReceiver};
+pub(crate) use crate::asr_input::{
+    AsrInputSender, AsrStreamHandle, AsrStreamInput, AsrStreamReceiver, RawAudioReceiver,
+};
 
 #[derive(Serialize)]
 pub(crate) struct AsrStreamStartResponse {
