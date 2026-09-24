@@ -41,6 +41,32 @@ beforeEach(() => {
 });
 
 describe("主窗口重建后的任务恢复", () => {
+  it("按后端登记顺序恢复最新运行任务，不按随机 ID 排序", async () => {
+    serve([
+      { jobId: "z-old", kind: "transcribe", stage: "polling", active: true, payload: {} },
+      { jobId: "a-new", kind: "transcribe", stage: "polling", active: true, payload: {} },
+    ]);
+    await loadTranscriptionRuntime();
+    expect(useTranscriptionStore.getState().jobId).toBe("a-new");
+  });
+
+  it("仅有已结束任务时恢复最新结果，运行任务仍优先于已结束任务", async () => {
+    serve([
+      { jobId: "z-old", kind: "transcribe", stage: "completed", active: false, payload: {} },
+      { jobId: "a-new", kind: "transcribe", stage: "completed", active: false, payload: { result: { transcripts: [{ text: "最新结果", sentences: [] }] } } },
+    ]);
+    await loadTranscriptionRuntime();
+    expect(useTranscriptionStore.getState().jobId).toBe("a-new");
+    expect(useTranscriptionStore.getState().result?.transcripts[0]?.text).toBe("最新结果");
+    useTranscriptionStore.setState({ jobId: "" });
+    serve([
+      { jobId: "older-running", kind: "transcribe", stage: "polling", active: true, payload: {} },
+      { jobId: "newer-done", kind: "transcribe", stage: "completed", active: false, payload: {} },
+    ]);
+    await loadTranscriptionRuntime();
+    expect(useTranscriptionStore.getState().jobId).toBe("older-running");
+  });
+
   /// 归属信息以前只存在前端内存（store.alignJobId），`destroy_main_window` 之后就没了。
   /// 恢复时最近的一项无论属于谁都走普通转写分支，于是文稿对齐的进度/结果被整个投影到
   /// 「字幕转写」页上——用户在那页看到一条自己没发起过的识别任务。

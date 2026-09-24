@@ -148,7 +148,7 @@ export async function loadTranscriptionRuntime() {
   // 供窗口重建后查看结果。
   for (const kind of ["transcribe", "align"]) {
     const mine = jobs.filter((job) => (job.kind || "transcribe") === kind);
-    const current = mine.find((job) => job.active) || mine.at(-1);
+    const current = mine.filter((job) => job.active).at(-1) || mine.at(-1);
     if (current) {
       applyTranscriptionRuntime({ ...current.payload, jobId: current.jobId, kind, stage: current.stage });
     }
