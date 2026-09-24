@@ -16,13 +16,14 @@ use crate::obs_overlay::{
 };
 use crate::prelude::*;
 use crate::state::{RawAudioReceiver, RuntimeState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 mod preview;
+mod retention;
 pub(crate) use preview::{hide_subtitle_preview, show_subtitle_preview};
 
 const DOMAIN_EVENT: &str = "domain-event";
@@ -249,6 +250,7 @@ struct TranslationDocument {
     committed_groups: Vec<Vec<u64>>,
     replace_groups: Vec<Vec<u64>>,
     values: BTreeMap<u64, String>,
+    completed: BTreeSet<u64>,
 }
 
 impl TranslationDocument {
@@ -282,6 +284,7 @@ impl TranslationDocument {
             if !clause.is_empty() {
                 self.next_seq += 1;
                 self.current_group.push(self.next_seq);
+                self.values.insert(self.next_seq, String::new());
                 out.push((self.next_seq, clause.to_string()));
             }
         }
@@ -291,6 +294,7 @@ impl TranslationDocument {
             if !rest.is_empty() {
                 self.next_seq += 1;
                 self.current_group.push(self.next_seq);
+                self.values.insert(self.next_seq, String::new());
                 out.push((self.next_seq, rest.to_string()));
             }
         }
@@ -311,13 +315,26 @@ impl TranslationDocument {
             }
         }
         self.partial_offset = 0;
+        self.prune_completed();
     }
 
-    fn update(&mut self, seq: u64, text: String) {
-        self.values.insert(seq, text);
+    fn update(&mut self, seq: u64, text: String) -> bool {
+        if self.completed.contains(&seq) {
+            return false;
+        }
+        let Some(value) = self.values.get_mut(&seq) else { return false };
+        // 多保留一个字符，用来区分恰好填满与发生截断，保留原有 trim_start 语义。
+        let start = text.char_indices().rev().nth(MAX_TEXT_CHARS).map_or(0, |(i, _)| i);
+        *value = text[start..].to_string();
+        true
     }
 
     fn display(&self, prefs: &SubtitlePrefs) -> String {
+        self.render_tail(prefs)
+    }
+
+    #[cfg(test)]
+    fn display_legacy(&self, prefs: &SubtitlePrefs) -> String {
         let join = |group: &Vec<u64>| {
             group
                 .iter()
@@ -379,14 +396,17 @@ struct Session {
 }
 
 impl Session {
-    fn apply_translation(&mut self, epoch: u64, seq: u64, text: String) -> bool {
+    fn apply_translation(&mut self, epoch: u64, seq: u64, text: String, done: bool) -> bool {
         if self.epoch != epoch
             || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
         {
             return false;
         }
-        self.translation.update(seq, text);
-        true
+        let accepted = self.translation.update(seq, text);
+        if accepted && done {
+            self.translation.finish(seq);
+        }
+        accepted
     }
 }
 
@@ -920,8 +940,7 @@ async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
             done,
             error,
         } => {
-            let _completed = done;
-            handle_translation(&app, *epoch, *segment_seq, text, error.as_deref())
+            handle_translation(&app, *epoch, *segment_seq, text, *done, error.as_deref())
         }
         BackendEvent::Transcription { .. } => {}
     }
@@ -1084,7 +1103,7 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
     });
 }
 
-fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, error: Option<&str>) {
+fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, done: bool, error: Option<&str>) {
     let state = app.state::<RuntimeState>();
     let Ok(mut session) = state.subtitle_runtime.session.lock() else {
         return;
@@ -1094,11 +1113,17 @@ fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, error: 
     {
         return;
     }
+    if !session.translation.values.contains_key(&seq) || session.translation.completed.contains(&seq) {
+        return;
+    }
     if let Some(error) = error {
         session.translation_error = Some(format!("字幕翻译失败：{error}"));
+        if done {
+            session.translation.finish(seq);
+        }
     } else {
         session.translation_error = None;
-        session.apply_translation(epoch, seq, text.to_owned());
+        session.apply_translation(epoch, seq, text.to_owned(), done);
     }
     drop(session);
     render(app);
@@ -1700,6 +1725,8 @@ mod tests {
     fn translation_order_is_rebuilt_by_sequence_not_arrival() {
         let mut doc = TranslationDocument::default();
         doc.current_group = vec![1, 2];
+        doc.values.insert(1, String::new());
+        doc.values.insert(2, String::new());
         doc.update(2, "world".into());
         doc.update(1, "hello ".into());
         assert_eq!(doc.display(&SubtitlePrefs::default()), "hello world");
@@ -1712,8 +1739,9 @@ mod tests {
             phase: SubtitlePhase::Running,
             ..Session::default()
         };
-        assert!(!session.apply_translation(7, 1, "旧会话".into()));
-        assert!(session.apply_translation(8, 1, "当前会话".into()));
+        session.translation.dispatch("当前会话", true);
+        assert!(!session.apply_translation(7, 1, "旧会话".into(), false));
+        assert!(session.apply_translation(8, 1, "当前会话".into(), false));
         assert_eq!(session.translation.values.get(&1).unwrap(), "当前会话");
     }
 }
