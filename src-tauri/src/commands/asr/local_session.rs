@@ -151,6 +151,26 @@ fn run_local_session(
                 }
             }
             Some(AsrStreamInput::Finish) => {
+                let tail = pcm16_to_f32(&dsp.finish());
+                if !tail.is_empty() {
+                    let result = match &mut session {
+                        Session::Online(session) => Ok(session.accept(&tail)),
+                        Session::Offline(session) => session.accept(&tail).map(|segments| LocalAsrOutput {
+                            partial: None,
+                            finals: segments.into_iter().map(|item| item.text).collect(),
+                        }),
+                    };
+                    if rx.is_cancelled() {
+                        break;
+                    }
+                    match result {
+                        Ok(output) => emit_output(&app, &session_id, output),
+                        Err(error) => {
+                            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                            break;
+                        }
+                    }
+                }
                 let result = match session {
                     Session::Online(session) => Ok(session.finish()),
                     Session::Offline(session) => session.finish().map(|segments| LocalAsrOutput {

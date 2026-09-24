@@ -181,6 +181,19 @@ async fn run_apple_session(
                 }
                 Some(AsrStreamInput::Finish) => {
                     if let Some(mut channel) = writer.take() {
+                        let bytes = pcm16_as_f32_bytes(&dsp.finish());
+                        let sent = tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => { stopped = true; break; }
+                            result = channel.write_all(&bytes) => result,
+                        };
+                        if let Err(error) = sent {
+                            emit_asr_stream_event(&app, &session_id, "error", json!({
+                                "message": format!("发送音频尾部到 Apple 系统本地识别失败：{error}")
+                            }));
+                            terminal_event = true;
+                            break;
+                        }
                         let _ = channel.shutdown().await;
                     }
                 }
