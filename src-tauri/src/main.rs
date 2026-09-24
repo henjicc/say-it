@@ -273,6 +273,9 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
+            #[cfg(feature = "performance-acceptance")]
+            application::performance_acceptance::validate(app.handle())
+                .map_err(std::io::Error::other)?;
             // 必须在任何模块打开状态文件/历史数据库之前执行，否则 Windows 下删除会因文件
             // 被占用而失败；失败不阻断启动。标记已被无条件消费，不会重复清空，所以
             // 未删掉的条目只能靠下面的诊断事件告知用户手动清理——release 是
@@ -542,6 +545,8 @@ fn main() {
                     eprintln!("[window] 静默启动销毁主窗口失败: {error}");
                 }
             }
+            #[cfg(feature = "performance-acceptance")]
+            application::performance_acceptance::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
