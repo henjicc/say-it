@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+mod scenarios;
+
 const IDENTIFIER: &str = "com.henjicc.sayit.acceptance";
 
 /// 仅用于定位第三方输入法注入资源；不改变系统输入法设置，也不进入正式构建。
@@ -52,8 +54,19 @@ struct Recorder {
 
 impl Recorder {
     fn record(&mut self, stage: &str, cycle: usize, elapsed_ms: Option<f64>) -> Result<(), String> {
+        self.detail(stage, cycle, elapsed_ms, serde_json::Value::Null)
+    }
+
+    fn detail(
+        &mut self,
+        stage: &str,
+        cycle: usize,
+        elapsed_ms: Option<f64>,
+        detail: serde_json::Value,
+    ) -> Result<(), String> {
         let line = json!({
             "stage": stage, "cycle": cycle, "elapsedMs": elapsed_ms,
+            "detail": detail,
             "sinceStartMs": self.started.elapsed().as_secs_f64() * 1000.0,
             "timestampMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| e.to_string())?.as_millis(),
@@ -107,6 +120,30 @@ async fn run(app: &AppHandle) -> Result<(), String> {
     wait_for_window(app, false).await?;
     recorder.record("initial-idle", 0, None)?;
     tokio::time::sleep(Duration::from_secs(10)).await;
+    let cycles = match std::env::var("SAYIT_ACCEPTANCE_SCENARIO")
+        .as_deref()
+        .unwrap_or("windows")
+    {
+        "windows" => {
+            run_windows(app, &mut recorder, blank).await?;
+            10
+        }
+        "subtitle-preview" => {
+            scenarios::subtitles(app, &mut recorder).await?;
+            5
+        }
+        "audio-lab" => {
+            scenarios::audio_lab(app, &mut recorder).await?;
+            3
+        }
+        other => return Err(format!("未知验收场景：{other}")),
+    };
+    recorder.record("final-idle", cycles, None)?;
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    recorder.record("completed", cycles, None)
+}
+
+async fn run_windows(app: &AppHandle, recorder: &mut Recorder, blank: bool) -> Result<(), String> {
     for cycle in 1..=10 {
         recorder.record("opening", cycle, None)?;
         let started = Instant::now();
@@ -151,7 +188,5 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         )?;
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    recorder.record("final-idle", 10, None)?;
-    tokio::time::sleep(Duration::from_secs(20)).await;
-    recorder.record("completed", 10, None)
+    Ok(())
 }
