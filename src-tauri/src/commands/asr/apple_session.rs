@@ -110,6 +110,9 @@ async fn run_apple_session(
     model: String,
 ) {
     if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
         cleanup_stream(&streams, &session_id);
         emit_asr_stream_event(
             &app,
@@ -122,8 +125,15 @@ async fn run_apple_session(
     let transport = match open_transport(OUTPUT_RATE).await {
         Ok(transport) => transport,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -167,6 +177,13 @@ async fn run_apple_session(
                     if let Some(mut channel) = writer.take() {
                         let _ = channel.shutdown().await;
                     }
+                }
+                Some(AsrStreamInput::Failed(error)) => {
+                    let _ = rx.take_failure();
+                    emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                    terminal_event = true;
+                    stopped = true;
+                    break;
                 }
                 Some(AsrStreamInput::Stop) | None => {
                     stopped = true;
@@ -272,6 +289,9 @@ async fn run_apple_session(
             format!("Apple 系统本地识别意外结束（{exit_status:?}）")
         };
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": message }));
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(

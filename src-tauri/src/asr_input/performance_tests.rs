@@ -52,12 +52,21 @@ fn cancel_backlog_profile() {
     assert_eq!(processed, if legacy { seconds * 48_000 } else { 0 });
     drop(next);
     drop(dsp);
+    let cleanup_started = Instant::now();
+    // 队列关闭后后台写盘线程还要释放在途缓冲；停止识别与完整回收分别计时。
+    while handle.tx.budget.resident.load(Ordering::Acquire) != 0
+        || handle.tx.spool.test_paths().iter().any(|path| path.exists())
+    {
+        assert!(cleanup_started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     let released = memory();
     println!(
         "PERF_RESULT {}",
         serde_json::json!({
             "scenario": "asr-cancel-backlog", "seconds": seconds, "legacy": legacy,
             "elapsedMs": elapsed.as_secs_f64() * 1000.0, "processedAfterCancel": processed,
+            "cleanupAfterCancelMs": cleanup_started.elapsed().as_secs_f64() * 1000.0,
             "initialPrivateBytes": initial.private_usage, "queuedPrivateBytes": queued.private_usage,
             "firstReceivePrivateBytes": observed.private_usage, "releasedPrivateBytes": released.private_usage,
             "peakPrivateBytes": released.peak_pagefile_usage, "peakWorkingSetBytes": released.peak_working_set,

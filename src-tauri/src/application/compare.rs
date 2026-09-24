@@ -244,6 +244,18 @@ impl CompareRuntime {
         state.preparing_file = false;
         true
     }
+    fn finish_stream(&self, session_id: &str) {
+        if let Ok(mut state) = self.inner.lock() {
+            let Some(index) = state.sessions.remove(session_id) else {
+                return;
+            };
+            if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
+                if cell.status != "error" {
+                    cell.status = "done".into();
+                }
+            }
+        }
+    }
     fn update_cell(&self, index: usize, status: &str, text: Option<String>, error: Option<String>) {
         if let Ok(mut state) = self.inner.lock() {
             if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
@@ -1054,10 +1066,7 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                 let is_final = payload.get("final").and_then(Value::as_bool) == Some(true);
                 state.compare_runtime.update_streaming(index, text, is_final);
             } else if kind == "ended" {
-                if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                    compare.sessions.remove(&session_id);
-                }
-                state.compare_runtime.update_cell(index, "done", None, None);
+                state.compare_runtime.finish_stream(&session_id);
             } else if kind == "error" {
                 state.compare_runtime.update_cell(
                     index,
@@ -1178,6 +1187,33 @@ mod recording_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ended_event_preserves_stream_failure_and_cannot_touch_replacement_run() {
+        let runtime = CompareRuntime::default();
+        runtime.reset(vec![CompareCellSnapshot {
+            index: 0,
+            status: "streaming".into(),
+            ..Default::default()
+        }]);
+        runtime
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .insert("old".into(), 0);
+        runtime.update_cell(0, "error", None, Some("音频暂存写入失败".into()));
+        runtime.finish_stream("old");
+        assert_eq!(runtime.snapshot().cells[0].status, "error");
+        assert!(runtime.inner.lock().unwrap().sessions.is_empty());
+        runtime.reset(vec![CompareCellSnapshot {
+            index: 0,
+            status: "connecting".into(),
+            ..Default::default()
+        }]);
+        runtime.finish_stream("old");
+        assert_eq!(runtime.snapshot().cells[0].status, "connecting");
+    }
 
     #[test]
     fn finished_streams_do_not_end_comparison_during_file_export() {

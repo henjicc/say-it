@@ -54,6 +54,9 @@ fn run_local_session(
     spec: LocalModelSpec,
 ) {
     if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
         cleanup_stream(&streams, &session_id);
         emit_asr_stream_event(
             &app,
@@ -71,12 +74,22 @@ fn run_local_session(
     let mut session = match session {
         Ok(session) => session,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
     if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
         cleanup_stream(&streams, &session_id);
         emit_asr_stream_event(
             &app,
@@ -156,8 +169,16 @@ fn run_local_session(
                 }
                 break;
             }
+            Some(AsrStreamInput::Failed(error)) => {
+                let _ = rx.take_failure();
+                emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                break;
+            }
             Some(AsrStreamInput::Stop) | None => break,
         }
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(
