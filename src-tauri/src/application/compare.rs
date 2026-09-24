@@ -524,7 +524,7 @@ fn start_recording(
     let started = (|| -> Result<_, String> {
         state.audio_session.attach(&lease, "comparison")?;
         let mic = start_backend_mic_inner(device_name, state)?;
-        let (_, receiver) = attach_backend_mic_raw_inner(state)?;
+        let (_, receiver) = attach_backend_mic_raw_inner(state, crate::state::AsrPreroll::Disabled)?;
         Ok((mic, receiver))
     })();
     let (mic, mut receiver) = match started {

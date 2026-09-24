@@ -1178,7 +1178,12 @@ async fn start_internal(
             ..Session::default()
         };
     }
-    let (_, raw_rx) = match attach_backend_mic_raw_inner(&state) {
+    let preroll = if mode == DictationMode::Realtime {
+        crate::state::AsrPreroll::Enabled
+    } else {
+        crate::state::AsrPreroll::Disabled
+    };
+    let (_, raw_rx) = match attach_backend_mic_raw_inner(&state, preroll) {
         Ok(value) => value,
         Err(error) => {
             cleanup_failed_start(&state, epoch);
