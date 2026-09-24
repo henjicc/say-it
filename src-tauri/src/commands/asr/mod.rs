@@ -3,6 +3,7 @@ mod apple_session;
 mod local_session;
 mod plugin_session;
 mod sdk_session;
+mod session_wait;
 
 use crate::commands::common::*;
 use crate::prelude::*;

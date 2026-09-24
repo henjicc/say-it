@@ -477,6 +477,7 @@ impl AsrStreamReceiver {
         };
         self.take_terminal().or(Some(input))
     }
+    #[cfg(test)]
     pub(crate) fn try_recv(&mut self) -> Result<AsrStreamInput, mpsc::error::TryRecvError> {
         if let Some(terminal) = self.take_terminal() {
             return Ok(terminal);
