@@ -1,3 +1,5 @@
+mod startup;
+
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use crate::cancellation::CancellationFlag;
@@ -103,7 +105,7 @@ pub(crate) async fn transcription_start_inner(
     params: Option<TranscriptionParams>,
     kind: &str,
 ) -> Result<TranscriptionStartResponse, String> {
-    transcription_start_with_recording(app, state, file_path, params, kind, None).await
+    transcription_start_with_recording(app, state, file_path, params, kind, None, |_| Ok(())).await
 }
 
 pub(crate) async fn transcription_start_with_recording(
@@ -113,6 +115,7 @@ pub(crate) async fn transcription_start_with_recording(
     params: Option<TranscriptionParams>,
     kind: &str,
     recording: Option<Arc<crate::audio_wav::RecordedWav>>,
+    register_owner: impl FnOnce(&str) -> Result<(), String> + Send,
 ) -> Result<TranscriptionStartResponse, String> {
     if file_path.trim().is_empty() {
         return Err("请选择要识别的音视频文件".to_string());
@@ -122,15 +125,7 @@ pub(crate) async fn transcription_start_with_recording(
     let provider_result = resolve_file_recognition_provider(&state, &params.model);
     let job_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(CancellationFlag::new(false));
-    {
-        let mut jobs = state
-            .transcriptions
-            .lock()
-            .map_err(|_| "录音识别任务表锁定失败".to_string())?;
-        // 先登记用途，再放任何事件出去；任务表锁定失败时不留下孤立登记。
-        state.transcription_runtime.register(&job_id, kind)?;
-        jobs.insert(job_id.clone(), cancel.clone());
-    }
+    startup::register_job(state, &job_id, kind, cancel.clone(), register_owner)?;
 
     let jobs = state.transcriptions.clone();
     let task_job_id = job_id.clone();
@@ -283,11 +278,18 @@ fn resolve_file_recognition_provider(
 
 fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, payload: Value) {
     let state = app.state::<RuntimeState>();
-    let value = match state.transcription_runtime.apply_event(job_id, stage, payload) {
+    let value = match state
+        .transcription_runtime
+        .apply_event(job_id, stage, payload)
+    {
         Ok(Some(value)) => value,
         Ok(None) => return,
         Err(error) => {
-            crate::application::diagnostics::event("error", "transcription.projectionFailed", json!({ "jobId": job_id, "error": error }));
+            crate::application::diagnostics::event(
+                "error",
+                "transcription.projectionFailed",
+                json!({ "jobId": job_id, "error": error }),
+            );
             return;
         }
     };
@@ -311,13 +313,14 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
                 payload: value.clone(),
             },
         );
-        state
-            .backend_events
-            .publish(crate::application::events::BackendEvent::Transcription {
-                job_id: job_id.to_string(),
-                stage: stage.to_string(),
-                payload: value.clone(),
-            });
     }
-    let _ = app.emit(TRANSCRIPTION_EVENT, value);
+    let _ = app.emit(TRANSCRIPTION_EVENT, &value);
+    crate::application::events::publish_backend_event(
+        &state,
+        crate::application::events::BackendEvent::Transcription {
+            job_id: job_id.to_string(),
+            stage: stage.to_string(),
+            payload: value,
+        },
+    );
 }

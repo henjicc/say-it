@@ -1,6 +1,37 @@
 use serde_json::Value;
 use std::sync::Arc;
 
+pub(crate) fn publish_backend_event(state: &crate::state::RuntimeState, event: BackendEvent) {
+    let handled = match &event {
+        BackendEvent::Asr {
+            session_id,
+            kind,
+            payload,
+        } => state
+            .compare_runtime
+            .record_asr_event(session_id, kind, payload),
+        BackendEvent::Transcription {
+            job_id,
+            stage,
+            payload,
+        } => state
+            .compare_runtime
+            .record_file_event(job_id, stage, payload),
+    };
+    match handled {
+        Ok(true) => {}
+        Ok(false) => state.backend_events.publish(event),
+        Err(error) => {
+            crate::application::diagnostics::event(
+                "error",
+                "comparison.eventStateFailed",
+                serde_json::json!({"error":error}),
+            );
+            state.backend_events.publish(event);
+        }
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 pub(crate) enum BackendEvent {

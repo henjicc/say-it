@@ -17,12 +17,13 @@ pub(crate) fn emit_asr_stream_event(
         dlog!("[asr {short}] {kind} {summary}");
     }
     if let Some(state) = app.try_state::<RuntimeState>() {
-        state
-            .backend_events
-            .publish(crate::application::events::BackendEvent::Asr {
+        crate::application::events::publish_backend_event(
+            &state,
+            crate::application::events::BackendEvent::Asr {
                 session_id: session_id.to_string(),
                 kind: kind.to_string(),
                 payload,
-            });
+            },
+        );
     }
 }
