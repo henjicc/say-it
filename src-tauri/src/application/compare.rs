@@ -11,7 +11,6 @@ use crate::application::audio_session::{AudioLease, AudioOwner};
 use crate::application::contract::{
     next_revision, DomainEventEnvelope, DomainRunState, DomainSnapshot,
 };
-use crate::application::events::BackendEvent;
 use crate::audio_dsp::DspParams;
 use crate::audio_storage::AudioBuffer;
 use crate::audio_wav::{Quantization, RecordedWav, WavRecording};
@@ -27,6 +26,7 @@ use crate::providers::capabilities::TranscriptionParams;
 use crate::state::{AsrStreamInput, RuntimeState};
 
 mod playback;
+mod delivery;
 
 #[cfg(all(test, windows))]
 mod performance_tests;
@@ -72,6 +72,7 @@ pub(crate) struct PlaybackProgress {
 #[derive(Default)]
 pub(crate) struct CompareRuntime {
     inner: Mutex<CompareState>,
+    changed: Arc<tokio::sync::Notify>,
     epoch: AtomicU64,
     // 停止必须等启动登记完成，避免先搬走开头音频再接入迟到的实时模型。
     operation: tokio::sync::Mutex<()>,
@@ -250,7 +251,13 @@ impl CompareRuntime {
             } else {
                 state.phase.clone()
             },
-            cells: state.cells.clone(),
+            cells: state.cells.iter().map(|cell| CompareCellSnapshot {
+                index: cell.index,
+                status: cell.status.clone(),
+                text: cell.text.clone(),
+                error_message: cell.error_message.clone(),
+                committed: String::new(),
+            }).collect(),
             playback_progress: state.playback_progress.clone(),
             error: state.error.clone(),
         }
@@ -286,23 +293,6 @@ impl CompareRuntime {
                 }
                 if let Some(error) = error {
                     cell.error_message = error;
-                }
-            }
-        }
-    }
-    /// 实时识别 `result` 事件里的 `text` 是**当前这一句**，不是整段累计文本。
-    ///
-    /// 因此不能像 `update_cell` 那样整体替换：收到 `final` 必须把这一句落到
-    /// `committed` 上，否则下一句的第一个 partial 就会把上一句冲掉，多句录音
-    /// 最终只剩最后一句。语义与 `dictation.rs` 的 `commit_current_segment`
-    /// 和字幕侧的 `document.commit` 一致。
-    fn update_streaming(&self, index: usize, segment: &str, is_final: bool) {
-        if let Ok(mut state) = self.inner.lock() {
-            if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
-                cell.status = "streaming".into();
-                cell.text = format!("{}{segment}", cell.committed);
-                if is_final {
-                    cell.committed = cell.text.clone();
                 }
             }
         }
@@ -344,14 +334,11 @@ impl CompareRuntime {
 }
 
 pub(crate) fn initialize(app: tauri::AppHandle) {
-    let mut receiver = app.state::<RuntimeState>().backend_events.subscribe();
+    let changed = app.state::<RuntimeState>().compare_runtime.changed.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(event) => handle_event(&app, event),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+            changed.notified().await;
+            publish(&app);
         }
     });
 }
@@ -1017,29 +1004,11 @@ async fn start_file_jobs(
             Some(params),
             "compare",
             recording.clone(),
+            |job_id| state.compare_runtime.register_file_job(epoch, job_id, index),
         )
         .await
         {
-            Ok(job) => {
-                let current = if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                    if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch {
-                        compare.jobs.insert(job.job_id.clone(), index);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-                if !current {
-                    let _ = crate::commands::transcription::transcription_cancel_inner(
-                        &app,
-                        state,
-                        &job.job_id,
-                    );
-                    return;
-                }
-            }
+            Ok(_) => {}
             Err(error) if state.compare_runtime.epoch.load(Ordering::Acquire) == epoch => state
                 .compare_runtime
                 .update_cell(index, "error", None, Some(error)),
@@ -1072,112 +1041,6 @@ fn release_lease(state: &RuntimeState) {
     if let Ok(mut compare) = state.compare_runtime.inner.lock() {
         if let Some(lease) = compare.lease.take() {
             let _ = state.audio_session.release(&lease);
-        }
-    }
-}
-fn handle_event(app: &tauri::AppHandle, event: Arc<BackendEvent>) {
-    let state = app.state::<RuntimeState>();
-    match event.as_ref() {
-        BackendEvent::Asr {
-            session_id,
-            kind,
-            payload,
-        } => {
-            let index = state
-                .compare_runtime
-                .inner
-                .lock()
-                .ok()
-                .and_then(|compare| compare.sessions.get(session_id).copied());
-            let Some(index) = index else {
-                return;
-            };
-            if kind == "result" {
-                let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
-                let is_final = payload.get("final").and_then(Value::as_bool) == Some(true);
-                state.compare_runtime.update_streaming(index, text, is_final);
-            } else if kind == "ended" {
-                state.compare_runtime.finish_stream(&session_id);
-            } else if kind == "error" {
-                state.compare_runtime.update_cell(
-                    index,
-                    "error",
-                    None,
-                    Some(
-                        payload
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("识别失败")
-                            .into(),
-                    ),
-                );
-            }
-            settle(&state);
-            publish(app);
-        }
-        BackendEvent::Transcription {
-            job_id,
-            stage,
-            payload,
-        } => {
-            let index = state
-                .compare_runtime
-                .inner
-                .lock()
-                .ok()
-                .and_then(|compare| compare.jobs.get(job_id).copied());
-            let Some(index) = index else {
-                return;
-            };
-            match stage.as_str() {
-                "uploading" => state
-                    .compare_runtime
-                    .update_cell(index, "uploading", None, None),
-                "submitted" | "polling" => {
-                    state
-                        .compare_runtime
-                        .update_cell(index, "recognizing", None, None)
-                }
-                "completed" => {
-                    let text = payload
-                        .pointer("/result/transcripts")
-                        .and_then(Value::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(|item| item.get("text").and_then(Value::as_str))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_default();
-                    if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                        compare.jobs.remove(job_id);
-                    }
-                    state
-                        .compare_runtime
-                        .update_cell(index, "done", Some(text), None);
-                }
-                "error" => {
-                    if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                        compare.jobs.remove(job_id);
-                    }
-                    state.compare_runtime.update_cell(
-                        index,
-                        "error",
-                        None,
-                        Some(
-                            payload
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .unwrap_or("识别失败")
-                                .into(),
-                        ),
-                    );
-                }
-                _ => {}
-            }
-            settle(&state);
-            publish(app);
         }
     }
 }
@@ -1381,12 +1244,13 @@ mod tests {
             status: "queued".into(),
             ..Default::default()
         }]);
-        runtime.update_streaming(0, "第一句", false);
-        runtime.update_streaming(0, "第一句话。", true);
-        runtime.update_streaming(0, "第二句", false);
+        runtime.inner.lock().unwrap().sessions.insert("s".into(), 0);
+        runtime.record_asr_event("s", "result", &json!({"text": "第一句", "final":false})).unwrap();
+        runtime.record_asr_event("s", "result", &json!({"text": "第一句话。", "final":true})).unwrap();
+        runtime.record_asr_event("s", "result", &json!({"text": "第二句", "final":false})).unwrap();
         assert_eq!(runtime.snapshot().cells[0].text, "第一句话。第二句");
-        runtime.update_streaming(0, "第二句话。", true);
-        runtime.update_streaming(0, "第三句", false);
+        runtime.record_asr_event("s", "result", &json!({"text": "第二句话。", "final":true})).unwrap();
+        runtime.record_asr_event("s", "result", &json!({"text": "第三句", "final":false})).unwrap();
         assert_eq!(
             runtime.snapshot().cells[0].text,
             "第一句话。第二句话。第三句"

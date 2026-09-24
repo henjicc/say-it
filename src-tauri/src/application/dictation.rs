@@ -7,7 +7,7 @@ use crate::commands::asr::{
 use crate::commands::dictation::{
     inject_text_inner, inject_text_with_policy, write_clipboard_text_inner, ClipboardDisposition,
 };
-use crate::commands::transcription::{transcription_cancel_inner, transcription_start_inner};
+use crate::commands::transcription::{transcription_cancel_inner, transcription_start_with_recording};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner, pause_backend_mic_inner,
     prepare_dictation_indicator, release_backend_mic_inner, start_backend_mic_inner,
@@ -1731,16 +1731,27 @@ async fn start_file_job(
         special_word_filter: String::new(),
     };
     let state = app.state::<RuntimeState>();
-    let response =
-        transcription_start_inner(app.clone(), &state, path, Some(params), "dictation").await?;
-    let mut s = state
-        .dictation_runtime
-        .session
-        .lock()
-        .map_err(|_| "听写状态锁失败")?;
-    if s.epoch == epoch {
-        s.file_job_id = Some(response.job_id);
-    }
+    transcription_start_with_recording(
+        app.clone(),
+        &state,
+        path,
+        Some(params),
+        "dictation",
+        None,
+        |job_id| {
+            let mut session = state
+                .dictation_runtime
+                .session
+                .lock()
+                .map_err(|_| "听写状态锁失败")?;
+            if session.epoch != epoch {
+                return Err("听写会话已结束".into());
+            }
+            session.file_job_id = Some(job_id.into());
+            Ok(())
+        },
+    )
+    .await?;
     Ok(())
 }
 
