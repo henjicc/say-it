@@ -36,13 +36,8 @@ pub(crate) fn legacy_push(mic: &Arc<Mutex<BackendMicState>>, input: Vec<f32>) {
     }
 }
 
-fn capture(
-    preroll: AsrPreroll,
-) -> (
-    Arc<Mutex<BackendMicState>>,
-    tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+fn capture(preroll: AsrPreroll) -> (Arc<Mutex<BackendMicState>>, RawAudioReceiver) {
+    let (tx, rx) = RawAudioReceiver::channel();
     (
         Arc::new(Mutex::new(BackendMicState {
             raw_txs: vec![BackendMicRawSubscriber { tx, preroll }],
@@ -52,19 +47,24 @@ fn capture(
     )
 }
 
-fn collect(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>) -> Vec<f32> {
+fn collect(rx: &mut RawAudioReceiver, count: usize) -> Vec<f32> {
     let mut result = Vec::new();
-    while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
-        result.extend(samples);
+    while result.len() < count {
+        result.extend(rx.blocking_recv().unwrap().unwrap());
     }
+    assert_eq!(result.len(), count);
     result
 }
 
-fn collect_asr(rx: &mut AsrStreamReceiver) -> Vec<f32> {
+fn collect_asr(rx: &mut AsrStreamReceiver, count: usize) -> Vec<f32> {
     let mut result = Vec::new();
-    while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
+    while result.len() < count {
+        let Some(AsrStreamInput::RawF32(samples)) = rx.blocking_recv() else {
+            panic!("识别输入提前结束")
+        };
         result.extend(samples);
     }
+    assert_eq!(result.len(), count);
     result
 }
 
@@ -82,10 +82,14 @@ fn chunking_matches_original_for_device_boundaries_and_large_packets() {
                 push_backend_mic_samples(&new, part.to_vec());
                 assert!(new.lock().unwrap().buffer.capacity() <= BACKEND_MIC_CHUNK_FRAMES);
             }
-            flush_backend_mic_buffer(&mut old.lock().unwrap()).unwrap();
+            // 冻结的旧分包器会让尾包保留整段输入的容量；它原来使用无界通道。
+            // 此处直接拼接旧尾包作为样本基准，避免让新通道的单包预算改写旧算法语义。
+            let old_tail = std::mem::take(&mut old.lock().unwrap().buffer);
+            let mut old_samples = collect(&mut old_rx, input.len() - old_tail.len());
+            old_samples.extend(old_tail);
             flush_backend_mic_buffer(&mut new.lock().unwrap()).unwrap();
-            assert_eq!(collect(&mut old_rx), input);
-            assert_eq!(collect(&mut new_rx), input);
+            assert_eq!(old_samples, input);
+            assert_eq!(collect(&mut new_rx, input.len()), input);
         }
     }
 }
@@ -95,12 +99,12 @@ fn recording_consumers_need_no_duplicate_preroll_or_last_copy() {
     let (state, mut rx) = capture(AsrPreroll::Disabled);
     for i in 0..300 {
         push_backend_mic_samples(&state, vec![i as f32; 4096]);
-        assert_eq!(collect(&mut rx), vec![i as f32; 4096]);
+        assert_eq!(collect(&mut rx, 4096), vec![i as f32; 4096]);
         assert!(state.lock().unwrap().pending.is_empty());
     }
     // 扇出最后一份直接转移分配，其余消费者仍得到独立且相同的样本。
-    let (tx, mut first) = tokio::sync::mpsc::unbounded_channel();
-    let (tx2, mut last) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut first) = RawAudioReceiver::channel();
+    let (tx2, mut last) = RawAudioReceiver::channel();
     let samples = vec![0.25; 4096];
     let original = samples.as_ptr();
     let mut subscribers = vec![
@@ -118,7 +122,7 @@ fn recording_consumers_need_no_duplicate_preroll_or_last_copy() {
         panic!()
     };
     assert_eq!(received.as_ptr(), original);
-    assert_eq!(collect(&mut first), received);
+    assert_eq!(collect(&mut first, received.len()), received);
 }
 
 #[test]
@@ -126,7 +130,7 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
     let (state, mut raw) = capture(AsrPreroll::Enabled);
     for i in 0..250 {
         push_backend_mic_samples(&state, vec![i as f32; 4096]);
-        assert_eq!(collect(&mut raw), vec![i as f32; 4096]);
+        assert_eq!(collect(&mut raw, 4096), vec![i as f32; 4096]);
     }
     assert_eq!(state.lock().unwrap().pending.len(), 240);
     push_backend_mic_samples(&state, vec![250.0; 17]);
@@ -139,19 +143,19 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
     }
     let mut expected: Vec<f32> = (10..250).flat_map(|i| vec![i as f32; 4096]).collect();
     expected.extend([250.0; 17]);
-    assert_eq!(collect_asr(&mut asr), expected);
+    assert_eq!(collect_asr(&mut asr, expected.len()), expected);
     assert_eq!(
-        collect(&mut raw),
+        collect(&mut raw, 17),
         vec![250.0; 17],
         "预滚不能重复送给原始消费者"
     );
     push_backend_mic_samples(&state, vec![251.0; 4096]);
-    assert_eq!(collect(&mut raw), vec![251.0; 4096]);
-    assert_eq!(collect_asr(&mut asr), vec![251.0; 4096]);
+    assert_eq!(collect(&mut raw, 4096), vec![251.0; 4096]);
+    assert_eq!(collect_asr(&mut asr, 4096), vec![251.0; 4096]);
     assert!(state.lock().unwrap().pending.is_empty());
     drop(asr);
     push_backend_mic_samples(&state, vec![252.0; 4096]);
-    assert_eq!(collect(&mut raw), vec![252.0; 4096]);
+    assert_eq!(collect(&mut raw, 4096), vec![252.0; 4096]);
     assert_eq!(
         state.lock().unwrap().pending.front().unwrap(),
         &vec![252.0; 4096]
@@ -161,7 +165,7 @@ fn reconnect_replays_same_bounded_history_before_live_tail_once() {
 #[test]
 fn closed_monitor_does_not_keep_recording_subscribers_in_preroll_mode() {
     let (state, mut recording) = capture(AsrPreroll::Disabled);
-    let (tx, monitor) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, monitor) = RawAudioReceiver::channel();
     state.lock().unwrap().raw_txs.push(BackendMicRawSubscriber {
         tx,
         preroll: AsrPreroll::Enabled,
@@ -173,7 +177,24 @@ fn closed_monitor_does_not_keep_recording_subscribers_in_preroll_mode() {
     assert!(state.lock().unwrap().pending.is_empty());
     let mut expected = vec![0.1; 4096];
     expected.extend([0.2; 4096]);
-    assert_eq!(collect(&mut recording), expected);
+    assert_eq!(collect(&mut recording, expected.len()), expected);
+}
+
+#[test]
+fn failed_monitor_is_reported_and_does_not_interrupt_healthy_recording() {
+    let (state, mut recording) = capture(AsrPreroll::Disabled);
+    let (tx, mut monitor) = RawAudioReceiver::channel();
+    assert!(tx.send(AsrStreamInput::RawF32(vec![0.0; 20_000])).is_err());
+    state.lock().unwrap().raw_txs.push(BackendMicRawSubscriber {
+        tx,
+        preroll: AsrPreroll::Enabled,
+    });
+    push_backend_mic_samples(&state, vec![0.25; 4096]);
+    assert_eq!(collect(&mut recording, 4096), vec![0.25; 4096]);
+    assert!(monitor.blocking_recv().is_err());
+    let state = state.lock().unwrap();
+    assert_eq!(state.raw_txs.len(), 1);
+    assert!(state.pending.is_empty());
 }
 
 #[cfg(windows)]
@@ -198,8 +219,22 @@ fn capture_memory_profile() {
     let total = seconds * 48_000;
     let mut hash = 0xcbf29ce484222325_u64;
     let mut count = 0;
-    let mut consume = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>| {
-        while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
+    let mut consumed_packets = 0;
+    let mut consume = |rx: &mut RawAudioReceiver, packets: usize| {
+        loop {
+            // 保留旧基准每次投喂后读取直到 Empty 的节奏；有磁盘票据时等到本轮包数齐全。
+            let samples = match rx.try_recv() {
+                Ok(AsrStreamInput::RawF32(samples)) => samples,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    if consumed_packets < packets =>
+                {
+                    std::thread::yield_now();
+                    continue;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                _ => panic!("采集基准丢失音频或提前结束"),
+            };
+            consumed_packets += 1;
             count += samples.len();
             for sample in samples {
                 hash = (hash ^ sample.to_bits() as u64).wrapping_mul(0x100000001b3);
@@ -215,7 +250,7 @@ fn capture_memory_profile() {
         } else {
             push_backend_mic_samples(&state, input);
         }
-        consume(&mut rx);
+        consume(&mut rx, state.lock().unwrap().chunk_count as usize);
     }
     let before_flush = memory();
     let retained_samples = state
@@ -227,7 +262,7 @@ fn capture_memory_profile() {
         .sum::<usize>();
     let buffer_capacity = state.lock().unwrap().buffer.capacity();
     flush_backend_mic_buffer(&mut state.lock().unwrap()).unwrap();
-    consume(&mut rx);
+    consume(&mut rx, state.lock().unwrap().chunk_count as usize);
     let elapsed = started.elapsed();
     let after = memory();
     assert_eq!(count, total);

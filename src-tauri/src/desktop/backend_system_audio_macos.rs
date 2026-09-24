@@ -163,11 +163,7 @@ pub(crate) fn start_backend_system_audio_inner(
                         })();
                         let _ = reply.send(result);
                     }
-                    BackendMicCommand::AttachRaw {
-                        tx,
-                        preroll,
-                        reply,
-                    } => {
+                    BackendMicCommand::AttachRaw { tx, preroll, reply } => {
                         let result = system_audio
                             .lock()
                             .map_err(|_| "Backend system audio lock failed".to_string())
@@ -193,6 +189,9 @@ pub(crate) fn start_backend_system_audio_inner(
                     }
                     BackendMicCommand::CaptureError { message } => {
                         if let Ok(mut guard) = system_audio.lock() {
+                            for subscriber in &guard.raw_txs {
+                                subscriber.tx.fail(message.clone());
+                            }
                             guard.last_error = Some(message);
                         }
                         break;
@@ -269,15 +268,9 @@ pub(crate) fn attach_backend_system_audio_to_asr_inner(
 
 pub(crate) fn attach_backend_system_audio_raw_inner(
     state: &RuntimeState,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     let worker = system_audio_worker(state)?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = RawAudioReceiver::channel();
     let (reply, receiver) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {
