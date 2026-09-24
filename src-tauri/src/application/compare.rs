@@ -13,6 +13,7 @@ use crate::application::contract::{
 };
 use crate::application::events::BackendEvent;
 use crate::audio_dsp::DspParams;
+use crate::audio_storage::AudioBuffer;
 use crate::audio_wav::{Quantization, RecordedWav, WavRecording};
 use crate::commands::asr::{
     asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
@@ -83,7 +84,7 @@ struct CompareState {
     sessions: HashMap<String, usize>,
     jobs: HashMap<String, usize>,
     models: HashMap<usize, String>,
-    raw: Vec<f32>,
+    raw: AudioBuffer,
     retain_raw: bool,
     recording_drain: Option<tokio::sync::oneshot::Receiver<Result<Option<RecordedWav>, String>>>,
     // 实时流可能在写盘期间先结束，文件任务登记完之前不能提前回到 idle。
@@ -95,7 +96,7 @@ struct CompareState {
 
 impl CompareState {
     fn release_recording_buffer(&mut self) {
-        self.raw = Vec::new();
+        self.raw = AudioBuffer::default();
         self.retain_raw = false;
     }
 }
@@ -158,15 +159,18 @@ impl CompareRuntime {
         settle_comparison(&mut state);
         Some(sessions)
     }
-    fn record_packet(&self, epoch: u64, samples: &[f32]) -> Option<Vec<String>> {
-        let mut state = self.inner.lock().ok()?;
+    fn record_packet(&self, epoch: u64, samples: &[f32]) -> Result<Option<Vec<String>>, String> {
+        let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
         if self.epoch.load(Ordering::Acquire) != epoch || state.phase != "recording" {
-            return None;
+            return Ok(None);
         }
         if state.retain_raw {
-            state.raw.extend_from_slice(samples);
+            state
+                .raw
+                .append(samples)
+                .map_err(|error| format!("暂存模型启动音频失败：{error}"))?;
         }
-        Some(state.sessions.keys().cloned().collect())
+        Ok(Some(state.sessions.keys().cloned().collect()))
     }
     fn complete_stream_registration(&self, epoch: u64) -> Result<(), String> {
         let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
@@ -184,23 +188,40 @@ impl CompareRuntime {
         index: usize,
         tx: &crate::state::AsrInputSender,
     ) -> Result<bool, String> {
-        let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
-        if self.epoch.load(Ordering::Acquire) != epoch
-            || !matches!(state.phase.as_str(), "starting" | "recording")
-        {
-            return Ok(false);
+        let mut sent = 0;
+        let mut block = [0f32; 4096];
+        loop {
+            let backlog = {
+                let mut state = self.inner.lock().map_err(|_| "模型对比状态锁失败")?;
+                if self.epoch.load(Ordering::Acquire) != epoch
+                    || !matches!(state.phase.as_str(), "starting" | "recording")
+                {
+                    return Ok(false);
+                }
+                // 追上缓存后，在与 record_packet 相同的锁内接入实时扇出，避免重复或乱序。
+                if sent == state.raw.len() {
+                    state.sessions.insert(session_id, index);
+                    if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
+                        cell.status = "connecting".into();
+                    }
+                    return Ok(true);
+                }
+                state.raw.snapshot()
+            };
+            // 冻结的前缀可在锁外读盘；长积压回放不阻塞状态查询、取消或继续录音。
+            for start in (sent..backlog.len()).step_by(block.len()) {
+                if self.epoch.load(Ordering::Acquire) != epoch {
+                    return Ok(false);
+                }
+                let count = (backlog.len() - start).min(block.len());
+                backlog
+                    .read(start, &mut block[..count])
+                    .map_err(|error| format!("读取模型启动音频失败：{error}"))?;
+                tx.send(AsrStreamInput::RawF32(block[..count].to_vec()))
+                    .map_err(|_| "实时识别连接已关闭".to_string())?;
+            }
+            sent = backlog.len();
         }
-        // 先补发再公开新会话，并与 record_packet 使用同一把锁；否则下一包可能
-        // 抢在开头音频前入队。分块也避免把长启动积压一次送进 DSP 形成大分配。
-        for chunk in state.raw.chunks(4096) {
-            tx.send(AsrStreamInput::RawF32(chunk.to_vec()))
-                .map_err(|_| "实时识别连接已关闭".to_string())?;
-        }
-        state.sessions.insert(session_id, index);
-        if let Some(cell) = state.cells.iter_mut().find(|cell| cell.index == index) {
-            cell.status = "connecting".into();
-        }
-        Ok(true)
     }
     fn reset(&self, cells: Vec<CompareCellSnapshot>) -> u64 {
         let epoch = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
@@ -464,16 +485,18 @@ async fn start_all(
                         .map_err(|_| "ASR stream lock failed".to_string())?
                         .get(&session.session_id)
                         .cloned();
-                    let registered = handle
-                        .ok_or_else(|| "实时识别连接已关闭".to_string())
-                        .and_then(|handle| {
-                            state.compare_runtime.register_realtime_stream(
-                                epoch,
-                                session.session_id.clone(),
-                                index,
-                                &handle.tx,
-                            )
-                        });
+                    let registration_app = app.clone();
+                    let session_id = session.session_id.clone();
+                    let registered = tauri::async_runtime::spawn_blocking(move || {
+                        let handle = handle.ok_or_else(|| "实时识别连接已关闭".to_string())?;
+                        registration_app
+                            .state::<RuntimeState>()
+                            .compare_runtime
+                            .register_realtime_stream(epoch, session_id, index, &handle.tx)
+                    })
+                    .await
+                    .map_err(|error| format!("模型启动音频回放任务失败：{error}"))
+                    .and_then(|result| result);
                     match registered {
                         Ok(true) => {}
                         Ok(false) => {
@@ -582,7 +605,7 @@ fn start_recording(
                     return Err("模型对比已取消".into());
                 }
                 let state = app.state::<RuntimeState>();
-                let Some(sessions) = state.compare_runtime.record_packet(epoch, &samples) else {
+                let Some(sessions) = state.compare_runtime.record_packet(epoch, &samples)? else {
                     return Err("模型对比已取消".into());
                 };
                 for session in sessions {

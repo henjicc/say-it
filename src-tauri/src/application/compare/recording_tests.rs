@@ -29,7 +29,7 @@ fn send_packet(
     samples: &[f32],
     senders: &[(&str, &AsrInputSender)],
 ) {
-    for id in runtime.record_packet(epoch, samples).unwrap() {
+    for id in runtime.record_packet(epoch, samples).unwrap().unwrap() {
         let (_, tx) = senders.iter().find(|(key, _)| *key == id).unwrap();
         tx.send(AsrStreamInput::RawF32(samples.to_vec())).unwrap();
     }
@@ -52,6 +52,7 @@ fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav(
         assert!(runtime
             .record_packet(epoch, &input[..4111])
             .unwrap()
+            .unwrap()
             .is_empty());
         assert!(runtime
             .register_realtime_stream(epoch, "a".into(), 0, &a_tx)
@@ -61,7 +62,7 @@ fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav(
             .register_realtime_stream(epoch, "b".into(), 1, &b_tx)
             .unwrap());
         runtime.complete_stream_registration(epoch).unwrap();
-        assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
+        assert!(runtime.inner.lock().unwrap().raw.is_released());
         send_packet(
             &runtime,
             epoch,
@@ -71,7 +72,7 @@ fn late_consumers_receive_every_sample_once_and_file_models_store_identical_wav(
         assert_eq!(collect(&mut a_rx), input);
         assert_eq!(collect(&mut b_rx), input);
         let state = runtime.inner.lock().unwrap();
-        assert_eq!(state.raw.capacity(), 0);
+        assert!(state.raw.is_released());
         if let Some(mut writer) = recording {
             writer.append(&input[8333..]).unwrap();
             let file = writer.finish().unwrap();
@@ -115,16 +116,16 @@ fn stale_start_and_capture_do_not_touch_a_new_recording() {
     runtime.inner.lock().unwrap().phase = "recording".into();
     runtime.record_packet(epoch, &[0.25; 8193]).unwrap();
     runtime.complete_stream_registration(stale).unwrap();
-    assert!(runtime.record_packet(stale, &[0.5]).is_none());
+    assert!(runtime.record_packet(stale, &[0.5]).unwrap().is_none());
     let (tx, mut rx) = input_channel();
     assert!(!runtime
         .register_realtime_stream(stale, "old".into(), 0, &tx)
         .unwrap());
     assert!(rx.try_recv().is_err());
-    assert_eq!(runtime.inner.lock().unwrap().raw, [0.25; 8193]);
+    assert_eq!(runtime.inner.lock().unwrap().raw.to_vec(), [0.25; 8193]);
     runtime.abort("test capture failure");
-    assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
-    assert!(runtime.record_packet(epoch, &[0.5]).is_none());
+    assert!(runtime.inner.lock().unwrap().raw.is_released());
+    assert!(runtime.record_packet(epoch, &[0.5]).unwrap().is_none());
 }
 
 #[test]
@@ -143,7 +144,7 @@ fn failed_stream_registration_keeps_audio_for_other_consumers() {
         .unwrap());
     assert_eq!(collect(&mut rx), [0.25; 8193]);
     runtime.complete_stream_registration(epoch).unwrap();
-    assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
+    assert!(runtime.inner.lock().unwrap().raw.is_released());
 }
 
 #[test]
@@ -249,5 +250,80 @@ fn drain_failure_never_accepts_a_partial_recording() {
             drain_recording(Some(rx)).await.unwrap().is_none(),
             "纯实时模式无需录音文件"
         );
+    });
+}
+
+#[test]
+fn spilled_startup_replay_can_catch_up_while_capture_continues() {
+    for _ in 0..8 {
+        let (runtime, epoch) = recording();
+        let (tx, mut rx) = input_channel();
+        let initial = vec![0.25; 600_017];
+        runtime.record_packet(epoch, &initial).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let received = scope.spawn(move || {
+                let mut output = Vec::new();
+                while let Some(packet) = rx.blocking_recv() {
+                    match packet {
+                        AsrStreamInput::RawF32(samples) => output.extend(samples),
+                        AsrStreamInput::Finish => return output,
+                        _ => panic!("unexpected failure or stop"),
+                    }
+                }
+                panic!("missing finish")
+            });
+            let registration = scope.spawn(|| {
+                barrier.wait();
+                assert!(runtime
+                    .register_realtime_stream(epoch, "a".into(), 0, &tx)
+                    .unwrap());
+            });
+            barrier.wait();
+            for i in 0..256 {
+                send_packet(&runtime, epoch, &[i as f32; 4096], &[("a", &tx)]);
+            }
+            registration.join().unwrap();
+            runtime.complete_stream_registration(epoch).unwrap();
+            send_packet(&runtime, epoch, &[-0.75; 17], &[("a", &tx)]);
+            tx.send(AsrStreamInput::Finish).unwrap();
+            let output = received.join().unwrap();
+            assert_eq!(&output[..initial.len()], initial);
+            for (i, part) in output[initial.len()..output.len() - 17]
+                .chunks(4096)
+                .enumerate()
+            {
+                assert!(part.iter().all(|sample| *sample == i as f32));
+            }
+            assert_eq!(output.len(), initial.len() + 256 * 4096 + 17);
+            assert_eq!(&output[output.len() - 17..], &[-0.75; 17]);
+            assert!(runtime.inner.lock().unwrap().raw.is_released());
+        });
+    }
+}
+
+#[test]
+fn cancellation_during_spilled_replay_never_registers_the_old_stream() {
+    let (runtime, epoch) = recording();
+    runtime
+        .record_packet(epoch, &vec![0.25; 2_000_017])
+        .unwrap();
+    let (tx, mut rx) = input_channel();
+    std::thread::scope(|scope| {
+        let replay = scope.spawn(|| runtime.register_realtime_stream(epoch, "old".into(), 0, &tx));
+        assert!(matches!(
+            rx.blocking_recv(),
+            Some(AsrStreamInput::RawF32(_))
+        ));
+        runtime.epoch.fetch_add(1, Ordering::AcqRel);
+        runtime.abort("已取消");
+        // 无论是否已追上，取消后的登记集合必须为空；旧工作器不能再次接入。
+        let _ = replay.join().unwrap();
+        assert!(runtime.inner.lock().unwrap().sessions.is_empty());
+        assert!(runtime.inner.lock().unwrap().raw.is_released());
+        let next = runtime.reset(vec![]);
+        runtime.inner.lock().unwrap().phase = "recording".into();
+        runtime.record_packet(next, &[0.5]).unwrap();
+        assert_eq!(runtime.inner.lock().unwrap().raw.to_vec(), [0.5]);
     });
 }
