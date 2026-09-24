@@ -1844,8 +1844,8 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
-    match event {
+async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
+    match event.as_ref() {
         BackendEvent::Asr {
             session_id,
             kind,
@@ -1860,7 +1860,7 @@ async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
     }
 }
 
-async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payload: Value) {
+async fn handle_asr_event(app: AppHandle, session_id: &str, kind: &str, payload: &Value) {
     let mut finalize_epoch = None;
     let mut failure = None;
     {
@@ -1868,10 +1868,10 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
             return;
         };
-        if s.asr_session_id.as_deref() != Some(&session_id) {
+        if s.asr_session_id.as_deref() != Some(session_id) {
             return;
         }
-        match kind.as_str() {
+        match kind {
             "result" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
                     s.segment = text.into();
@@ -1948,13 +1948,13 @@ fn commit_current_segment(session: &mut Session) {
     }
 }
 
-async fn handle_file_event(app: AppHandle, job_id: String, stage: String, payload: Value) {
+async fn handle_file_event(app: AppHandle, job_id: &str, stage: &str, payload: &Value) {
     let epoch = {
         let state = app.state::<RuntimeState>();
         let Ok(s) = state.dictation_runtime.session.lock() else {
             return;
         };
-        if s.file_job_id.as_deref() != Some(&job_id) {
+        if s.file_job_id.as_deref() != Some(job_id) {
             return;
         }
         s.epoch
