@@ -5,6 +5,8 @@ mod application;
 mod asr_input;
 mod audio_dsp;
 mod audio_prep;
+mod audio_storage;
+mod temporary_audio;
 mod audio_wav;
 mod commands;
 mod desktop;

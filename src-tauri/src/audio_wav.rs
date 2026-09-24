@@ -1,5 +1,8 @@
 //! 固定内存的单声道 PCM16 WAV 写出器。量化方式由原有调用方契约决定。
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
+#[cfg(test)]
+use std::io::BufWriter;
+#[cfg(test)]
 use std::path::Path;
 
 const CHUNK_SAMPLES: usize = 8_192;
@@ -45,6 +48,7 @@ fn header(samples: usize, rate: u32) -> io::Result<[u8; 44]> {
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn write_samples(
     writer: &mut impl Write,
     samples: &[f32],
@@ -74,6 +78,7 @@ fn encode_samples(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn write_mono_pcm16(
     path: &Path,
     samples: &[f32],
@@ -86,6 +91,16 @@ pub(crate) fn write_mono_pcm16(
     let mut writer = BufWriter::with_capacity(64 * 1024, file);
     writer.write_all(&header)?;
     write_samples(&mut writer, samples, quantization)
+}
+
+pub(crate) fn write_audio_buffer(
+    output: &mut impl Write,
+    samples: &crate::audio_storage::AudioBuffer,
+    rate: u32,
+) -> io::Result<()> {
+    output.write_all(&header(samples.len(), rate)?)?;
+    samples.visit(|chunk| encode_samples(output, chunk, Quantization::Truncate))?;
+    output.flush()
 }
 
 #[cfg(test)]

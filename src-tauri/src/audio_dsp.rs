@@ -2,7 +2,7 @@
 //!
 //! 处理顺序固定为：降噪 → EQ → 响度归一化，EQ 造成的电平变化会被后续响度归一化一并拉回目标响度。
 //! 两条使用路径共用同一套参数 [`DspParams`]：
-//! - 离线：调校台录一段 → [`process_offline`] 返回处理后的 48k PCM 与前后 LUFS/峰值，供 A/B 试听。
+//! - 离线：调校台录一段 → [`offline::process_cancellable`] 返回分块存储的 48k PCM 与前后 LUFS/峰值，供 A/B 试听。
 //! - 实时：语音输入把麦克风原始音频喂给 [`StreamDsp::process`]，得到可直接送 ASR 的 16k PCM16。
 //!
 //! RNNoise 固定工作在 48kHz、480 样本/帧，且样本范围是 i16（±32768），而 ebur128 用 [-1,1]。
@@ -18,6 +18,8 @@ mod stream_reference;
 mod stream_tests;
 #[cfg(all(test, windows))]
 mod performance_tests;
+
+pub(crate) mod offline;
 
 const FRAME: usize = 480; // 48kHz 下 10ms
 const RATE_48K: u32 = 48_000;
@@ -253,11 +255,13 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// 简单线性重采样到 48kHz（仅在麦克风非 48k 时用；离线一次性版本）。
+#[cfg(test)]
 fn resample_to_48k(input: &[f32], in_rate: u32) -> Vec<f32> {
     resample_linear(input, in_rate, RATE_48K)
 }
 
-/// 简单线性重采样（离线一次性版本，非流式）。供录音识别等离线场景复用。
+/// 冻结的离线线性重采样参考，用于分块实现的等价回归。
+#[cfg(test)]
 pub(crate) fn resample_linear(input: &[f32], in_rate: u32, out_rate: u32) -> Vec<f32> {
     if in_rate == out_rate || input.is_empty() {
         return input.to_vec();
@@ -281,6 +285,7 @@ fn peak(samples: &[f32]) -> f32 {
 }
 
 /// 用 ebur128 测整段积分响度（LUFS）。样本不足或无声时返回 NEG_INFINITY。
+#[cfg(test)]
 fn integrated_lufs(samples: &[f32]) -> f32 {
     let mut m = match EbuR128::new(1, RATE_48K, Mode::I) {
         Ok(m) => m,
@@ -296,6 +301,7 @@ fn integrated_lufs(samples: &[f32]) -> f32 {
 }
 
 /// 就地处理 48k 信号；每帧先读入独立输入区，保留干/湿混合和尾帧补零语义。
+#[cfg(test)]
 fn denoise_all(s48: &mut [f32], strength: f32, vad_gate: f32) {
     let mut st = DenoiseState::new();
     let mut inf = [0f32; FRAME];
@@ -322,6 +328,7 @@ fn denoise_all(s48: &mut [f32], strength: f32, vad_gate: f32) {
 }
 
 /// Rust 内部的离线处理结果。音频所有权直接交给调校会话，不经过 IPC 编码。
+#[cfg(test)]
 pub struct OfflineResult {
     pub processed: Vec<f32>,
     pub sample_rate: u32,
@@ -340,6 +347,7 @@ fn nan_to_neg(x: f32) -> f32 {
 }
 
 /// 离线处理一整段录音：降噪 → 响度归一化到目标 LUFS → 峰值限幅。
+#[cfg(test)]
 pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> OfflineResult {
     let mut s48 = resample_to_48k(input, in_rate);
     let in_lufs = integrated_lufs(&s48);

@@ -30,8 +30,17 @@ export async function loadAudioLabRuntime() { applyAudioLabRuntime(await cmd<Sna
  * 并且两次请求的返回顺序还会让界面状态来回跳。
  */
 let toggling = false;
-export async function toggleRecord() { if (toggling) return; toggling = true; try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } finally { toggling = false; } }
-export async function reprocess() { const snapshot = await cmd<Snapshot>(CMD.audioLabReprocess, { params: useDictPrefs.getState().dspParams() }); apply(snapshot); }
+let processingRevision = 0;
+export async function toggleRecord() { if (toggling) return; toggling = true; try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { processingRevision += 1; const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } finally { toggling = false; } }
+export async function reprocess() {
+  const revision = ++processingRevision;
+  try {
+    const snapshot = await cmd<Snapshot>(CMD.audioLabReprocess, { params: useDictPrefs.getState().dspParams() });
+    if (revision === processingRevision) apply(snapshot);
+  } catch (error) {
+    if (revision === processingRevision) throw error;
+  }
+}
 export function paramChanged() { if (timer) clearTimeout(timer); timer = setTimeout(() => { void reprocess().catch((error) => useAudioStore.setState({ recInfo: `处理失败：${error}`, recTone: "err" })); }, 120); }
 async function play(processed: boolean) { try { const path = await cmd<string>(CMD.audioLabAudioPath, { processed }); if (!audio) audio = new Audio(); audio.src = convertFileSrc(path); await audio.play(); } catch (error) { useAudioStore.setState({ recInfo: `播放失败：${error}`, recTone: "err" }); } }
 export function playOriginal() { void play(false); }
