@@ -47,3 +47,32 @@ pub(crate) fn list_audio_devices() -> Result<AudioDeviceList, String> {
 
     Ok(AudioDeviceList { inputs, outputs })
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "本机音频设备枚举性能诊断，不启动采集或播放"]
+    fn device_enumeration_profile() {
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+        let mut rounds = Vec::new();
+        for cycle in 0..12 {
+            let started = std::time::Instant::now();
+            let devices = list_audio_devices().unwrap();
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut handles = 0;
+            unsafe {
+                GetProcessHandleCount(GetCurrentProcess(), &mut handles).unwrap();
+            }
+            rounds.push(serde_json::json!({"cycle":cycle,"handles":handles,
+                "privateBytes":crate::performance_test_support::memory().private_usage,
+                "elapsedMs":elapsed_ms,"inputs":devices.inputs.len(),"outputs":devices.outputs.len()}));
+        }
+        println!(
+            "PERF_RESULT {}",
+            serde_json::json!({"scenario":"device-enumeration","rounds":rounds})
+        );
+    }
+}

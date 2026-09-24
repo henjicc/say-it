@@ -200,6 +200,8 @@ macro_rules! dlog {
 }
 
 fn main() {
+    #[cfg(all(windows, feature = "performance-acceptance"))]
+    application::performance_acceptance::configure_process();
     // 保留 tokio 默认栈，只用自定义 runtime 为工作线程注册可符号化的栈溢出取证。
     // 深度不可控的 QuickJS 有自己的线程边界，不能再靠放大全局 worker 栈兜底。
     let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
@@ -525,7 +527,17 @@ fn main() {
                     .map_err(|_| std::io::Error::other("startup lock failed while reading"))?;
                 guard.silent_start
             };
-            let start_hidden = should_start_hidden(launched_via_autostart, silent_start);
+            #[cfg(feature = "performance-acceptance")]
+            {
+                // 窗口验收不进入首次使用向导：向导会自动验证真实麦克风，污染资源对照。
+                app.state::<RuntimeState>()
+                    .app_settings
+                    .lock()
+                    .map_err(|_| std::io::Error::other("验收配置锁失败"))?
+                    .onboarding_version = 1;
+            }
+            let start_hidden = cfg!(feature = "performance-acceptance")
+                || should_start_hidden(launched_via_autostart, silent_start);
 
             // macOS 的普通应用即使没有窗口仍会留在 Dock。静默自启的产品语义是只驻留
             // 状态栏，因此必须在事件循环启动前隐藏 Dock 图标；用户从状态栏重新打开时，
