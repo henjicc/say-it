@@ -1067,9 +1067,9 @@ fn release_lease(state: &RuntimeState) {
         }
     }
 }
-fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
+fn handle_event(app: &tauri::AppHandle, event: Arc<BackendEvent>) {
     let state = app.state::<RuntimeState>();
-    match event {
+    match event.as_ref() {
         BackendEvent::Asr {
             session_id,
             kind,
@@ -1080,7 +1080,7 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                 .inner
                 .lock()
                 .ok()
-                .and_then(|compare| compare.sessions.get(&session_id).copied());
+                .and_then(|compare| compare.sessions.get(session_id).copied());
             let Some(index) = index else {
                 return;
             };
@@ -1117,7 +1117,7 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                 .inner
                 .lock()
                 .ok()
-                .and_then(|compare| compare.jobs.get(&job_id).copied());
+                .and_then(|compare| compare.jobs.get(job_id).copied());
             let Some(index) = index else {
                 return;
             };
@@ -1143,7 +1143,7 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                         })
                         .unwrap_or_default();
                     if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                        compare.jobs.remove(&job_id);
+                        compare.jobs.remove(job_id);
                     }
                     state
                         .compare_runtime
@@ -1151,7 +1151,7 @@ fn handle_event(app: &tauri::AppHandle, event: BackendEvent) {
                 }
                 "error" => {
                     if let Ok(mut compare) = state.compare_runtime.inner.lock() {
-                        compare.jobs.remove(&job_id);
+                        compare.jobs.remove(job_id);
                     }
                     state.compare_runtime.update_cell(
                         index,

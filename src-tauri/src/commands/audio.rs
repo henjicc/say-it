@@ -22,7 +22,7 @@ pub(crate) fn emit_asr_stream_event(
             .publish(crate::application::events::BackendEvent::Asr {
                 session_id: session_id.to_string(),
                 kind: kind.to_string(),
-                payload: payload.clone(),
+                payload,
             });
     }
 }

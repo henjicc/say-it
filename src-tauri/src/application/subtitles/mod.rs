@@ -906,8 +906,8 @@ fn disconnect_for_silence(app: &AppHandle, epoch: u64) {
     publish_state(app);
 }
 
-async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
-    match event {
+async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
+    match event.as_ref() {
         BackendEvent::Asr {
             session_id,
             kind,
@@ -921,13 +921,13 @@ async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
             error,
         } => {
             let _completed = done;
-            handle_translation(&app, epoch, segment_seq, text, error)
+            handle_translation(&app, *epoch, *segment_seq, text, error.as_deref())
         }
         BackendEvent::Transcription { .. } => {}
     }
 }
 
-async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: Value) {
+async fn handle_asr(app: AppHandle, session_id: &str, kind: &str, payload: &Value) {
     let mut translate = vec![];
     let mut reconnect = None;
     {
@@ -935,10 +935,10 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
         let Ok(mut session) = state.subtitle_runtime.session.lock() else {
             return;
         };
-        if session.asr_session_id.as_deref() != Some(&session_id) {
+        if session.asr_session_id.as_deref() != Some(session_id) {
             return;
         }
-        match kind.as_str() {
+        match kind {
             "result" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
                     let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
@@ -1054,7 +1054,7 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
                 &target_lang,
                 cancellation,
                 move |partial| {
-                    let _ = delta_hub.send(BackendEvent::SubtitleTranslation {
+                    delta_hub.publish(BackendEvent::SubtitleTranslation {
                         epoch,
                         segment_seq,
                         text: partial.into(),
@@ -1080,11 +1080,11 @@ fn spawn_translation(app: AppHandle, segment_seq: u64, text: String) {
                 error: Some(error),
             },
         };
-        let _ = hub.send(event);
+        hub.publish(event);
     });
 }
 
-fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: String, error: Option<String>) {
+fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: &str, error: Option<&str>) {
     let state = app.state::<RuntimeState>();
     let Ok(mut session) = state.subtitle_runtime.session.lock() else {
         return;
@@ -1098,7 +1098,7 @@ fn handle_translation(app: &AppHandle, epoch: u64, seq: u64, text: String, error
         session.translation_error = Some(format!("字幕翻译失败：{error}"));
     } else {
         session.translation_error = None;
-        session.apply_translation(epoch, seq, text);
+        session.apply_translation(epoch, seq, text.to_owned());
     }
     drop(session);
     render(app);
