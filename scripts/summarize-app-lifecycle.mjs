@@ -7,8 +7,15 @@ const report = JSON.parse(readFileSync(join(directory, "processes.json"), "utf8"
 const events = readFileSync(join(directory, "events.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
 if (report.failure || events.at(-1)?.stage !== "completed") throw new Error("验收未完成");
 const sum = (rows, key) => rows.reduce((total, row) => total + row[key], 0);
+const scenario = report.scenario ?? "windows";
+const expected = {
+  windows: { open: 10, closed: 10 },
+  "subtitle-preview": { "preview-active": 5, "preview-stopped": 5 },
+  "audio-lab": { "audio-recorded": 3, "audio-processed": 3, "audio-replaced": 3 },
+}[scenario];
+if (!expected) throw new Error(`未知场景：${scenario}`);
 const rows = events.flatMap((event, index) => {
-  if (!["initial-idle", "open", "closed", "final-idle"].includes(event.stage)) return [];
+  if (!["initial-idle", "final-idle", ...Object.keys(expected)].includes(event.stage)) return [];
   const end = events[index + 1]?.timestampMs ?? Infinity;
   const samples = report.samples.filter(sample => sample.timestampMs >= event.timestampMs && sample.timestampMs < end);
   if (samples.length < 2) throw new Error(`${event.stage}/${event.cycle} 缺少采样点`);
@@ -31,8 +38,31 @@ const rows = events.flatMap((event, index) => {
     cpuSampleMs: last.timestampMs - previous.timestampMs,
   }];
 });
-if (rows.filter(row => row.stage === "open").length !== 10 || rows.filter(row => row.stage === "closed").length !== 10) {
-  throw new Error("未完成全部 10 轮窗口开关");
+for (const [stage, count] of Object.entries(expected)) {
+  if (rows.filter(row => row.stage === stage).length !== count) throw new Error(`${stage} 未完成全部 ${count} 轮`);
 }
-writeFileSync(join(directory, "summary.json"), JSON.stringify({ executableSha256: report.executableSha256, rows }, null, 2) + "\n");
+// 保留运行阶段的观测峰值；约一秒采样不能代替瞬时峰值或物理内存总量。
+const phasePeaks = events.flatMap((event, index) => {
+  const end = events[index + 1]?.timestampMs ?? Infinity;
+  const samples = report.samples.filter(sample => sample.timestampMs >= event.timestampMs && sample.timestampMs < end);
+  if (!samples.length) return [];
+  let cpuSeconds = 0;
+  let cpuCoveredMs = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const previous = samples[i - 1];
+    const current = samples[i];
+    const old = new Map(previous.processes.map(p => [`${p.pid}:${p.startTicks}`, p]));
+    if (current.processes.length !== old.size || current.processes.some(p => !old.has(`${p.pid}:${p.startTicks}`))) continue;
+    cpuSeconds += current.processes.reduce((total, p) => total + p.cpuSeconds - old.get(`${p.pid}:${p.startTicks}`).cpuSeconds, 0);
+    cpuCoveredMs += current.timestampMs - previous.timestampMs;
+  }
+  return [{
+    stage: event.stage, cycle: event.cycle, samples: samples.length,
+    maxPrivateMiB: Math.max(...samples.map(sample => sum(sample.processes, "privateBytes"))) / 1024 ** 2,
+    maxRootPrivateMiB: Math.max(...samples.map(sample => sample.processes.find(p => p.pid === report.rootPid)?.privateBytes ?? 0)) / 1024 ** 2,
+    meanCpuPercent: cpuCoveredMs ? cpuSeconds / (cpuCoveredMs / 1000) / report.logicalProcessors * 100 : null,
+    cpuCoveredMs,
+  }];
+});
+writeFileSync(join(directory, "summary.json"), JSON.stringify({ scenario, executableSha256: report.executableSha256, rows, phasePeaks }, null, 2) + "\n");
 console.table(rows.map(row => ({ ...row, privateMiB: +row.privateMiB.toFixed(2), rootPrivateMiB: +row.rootPrivateMiB.toFixed(2) })));

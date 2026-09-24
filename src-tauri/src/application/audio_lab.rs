@@ -17,6 +17,8 @@ const WAVE_POINTS: usize = 860;
 
 #[cfg(all(test, windows))]
 mod performance_tests;
+#[cfg(feature = "performance-acceptance")]
+mod acceptance;
 
 #[derive(Default)]
 pub(crate) struct AudioLabRuntime {
