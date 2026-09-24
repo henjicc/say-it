@@ -9,14 +9,32 @@ pub(crate) fn publish_backend_event(state: &crate::state::RuntimeState, event: B
             payload,
         } => state
             .compare_runtime
-            .record_asr_event(session_id, kind, payload),
+            .record_asr_event(session_id, kind, payload)
+            .and_then(|handled| {
+                if handled {
+                    Ok(true)
+                } else {
+                    state
+                        .dictation_runtime
+                        .record_asr_event(session_id, kind, payload)
+                }
+            }),
         BackendEvent::Transcription {
             job_id,
             stage,
             payload,
         } => state
             .compare_runtime
-            .record_file_event(job_id, stage, payload),
+            .record_file_event(job_id, stage, payload)
+            .and_then(|handled| {
+                if handled {
+                    Ok(true)
+                } else {
+                    state
+                        .dictation_runtime
+                        .record_file_event(job_id, stage, payload)
+                }
+            }),
     };
     match handled {
         Ok(true) => {}
@@ -24,7 +42,7 @@ pub(crate) fn publish_backend_event(state: &crate::state::RuntimeState, event: B
         Err(error) => {
             crate::application::diagnostics::event(
                 "error",
-                "comparison.eventStateFailed",
+                "backend.eventStateFailed",
                 serde_json::json!({"error":error}),
             );
             state.backend_events.publish(event);

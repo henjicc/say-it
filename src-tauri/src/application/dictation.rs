@@ -1,6 +1,5 @@
 use crate::application::audio_session::{AudioLease, AudioOwner};
 use crate::application::contract::{next_revision, DomainEventEnvelope};
-use crate::application::events::BackendEvent;
 use crate::commands::asr::{
     asr_stream_finish_inner, prepare_asr_stream_inner, stop_asr_stream_inner,
 };
@@ -23,6 +22,7 @@ use tauri::AppHandle;
 
 const DOMAIN_EVENT: &str = "domain-event";
 mod processing;
+mod delivery;
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
@@ -423,6 +423,7 @@ type RawRecordingResult = Result<Option<crate::audio_wav::RecordedWav>, String>;
 
 #[derive(Default)]
 struct Session {
+    delivery: delivery::DeliveryState,
     processing_cancellation: tokio_util::sync::CancellationToken,
     epoch: u64,
     phase: DictationPhase,
@@ -476,10 +477,11 @@ impl Session {
     }
 
     fn claim_injection(&mut self, epoch: u64) -> bool {
-        if !self.is_current(epoch) || self.injected_epoch == Some(epoch) {
+        if !self.is_current(epoch) || self.injected_epoch == Some(epoch) || self.delivery.failed() {
             return false;
         }
         self.injected_epoch = Some(epoch);
+        self.delivery.finish();
         true
     }
 
@@ -509,6 +511,7 @@ pub(crate) struct DictationRuntime {
     session: Arc<Mutex<Session>>,
     operation: Arc<tokio::sync::Mutex<()>>,
     epochs: AtomicU64,
+    changed: Arc<tokio::sync::Notify>,
 }
 impl Default for DictationRuntime {
     fn default() -> Self {
@@ -516,6 +519,7 @@ impl Default for DictationRuntime {
             session: Arc::new(Mutex::new(Session::default())),
             operation: Arc::new(tokio::sync::Mutex::new(())),
             epochs: AtomicU64::new(0),
+            changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -531,16 +535,11 @@ pub(crate) struct DictationSnapshot {
 }
 
 pub(crate) fn initialize(app: AppHandle) {
-    let mut receiver = app.state::<RuntimeState>().backend_events.subscribe();
+    let changed = app.state::<RuntimeState>().dictation_runtime.changed.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(event) => handle_backend_event(app.clone(), event).await,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    dlog!("[dictation] 后端事件积压，跳过 {count} 条")
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+            changed.notified().await;
+            delivery::flush(&app).await;
         }
     });
 }
@@ -1815,6 +1814,7 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             serde_json::json!({ "sessionId": cancelled_epoch }),
         );
         s.phase = DictationPhase::Idle;
+        s.delivery = delivery::DeliveryState::default();
         s.mode = None;
         s.public_id = None;
         s.committed.clear();
@@ -1862,73 +1862,8 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_backend_event(app: AppHandle, event: Arc<BackendEvent>) {
-    match event.as_ref() {
-        BackendEvent::Asr {
-            session_id,
-            kind,
-            payload,
-        } => handle_asr_event(app, session_id, kind, payload).await,
-        BackendEvent::Transcription {
-            job_id,
-            stage,
-            payload,
-        } => handle_file_event(app, job_id, stage, payload).await,
-    }
-}
-
-async fn handle_asr_event(app: AppHandle, session_id: &str, kind: &str, payload: &Value) {
-    let mut finalize_epoch = None;
-    let mut failure = None;
-    {
-        let state = app.state::<RuntimeState>();
-        let Ok(mut s) = state.dictation_runtime.session.lock() else {
-            return;
-        };
-        if s.asr_session_id.as_deref() != Some(session_id) {
-            return;
-        }
-        match kind {
-            "result" => {
-                if let Some(text) = payload.get("text").and_then(Value::as_str) {
-                    s.segment = text.into();
-                    if payload.get("final").and_then(Value::as_bool) == Some(true) {
-                        commit_current_segment(&mut s);
-                    }
-                }
-            }
-            "finish" | "finish_timeout" => finalize_epoch = Some(s.epoch),
-            "ended" | "closed" if s.phase == DictationPhase::Finishing => {
-                finalize_epoch = Some(s.epoch)
-            }
-            "ended" | "closed" => {
-                s.asr_session_id = None;
-                failure = Some((s.epoch, "实时语音识别连接意外中断".to_string()));
-            }
-            "error" => {
-                let message = payload
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| payload.to_string());
-                s.asr_session_id = None;
-                failure = Some((s.epoch, format!("实时语音识别失败：{message}")));
-            }
-            _ => {}
-        }
-    }
-    if let Some((epoch, error)) = failure {
-        let _ = fail(app, epoch, error).await;
-        return;
-    }
-    publish_state(
-        &app,
-        if kind == "error" {
-            Some(payload.to_string())
-        } else {
-            None
-        },
-    );
+fn publish_recognition_state(app: &AppHandle) {
+    publish_state(app, None);
     let follow_up_voice = app
         .state::<RuntimeState>()
         .dictation_runtime
@@ -1951,10 +1886,7 @@ async fn handle_asr_event(app: AppHandle, session_id: &str, kind: &str, payload:
                 })
         });
     if let Some((active, text)) = follow_up_voice {
-        crate::application::assistant::publish_follow_up_voice_input(&app, active, &text);
-    }
-    if let Some(epoch) = finalize_epoch {
-        finalize(app, epoch).await;
+        crate::application::assistant::publish_follow_up_voice_input(app, active, &text);
     }
 }
 
@@ -1962,52 +1894,6 @@ fn commit_current_segment(session: &mut Session) {
     if !session.segment.is_empty() {
         session.committed.push_str(&session.segment);
         session.segment.clear();
-    }
-}
-
-async fn handle_file_event(app: AppHandle, job_id: &str, stage: &str, payload: &Value) {
-    let epoch = {
-        let state = app.state::<RuntimeState>();
-        let Ok(s) = state.dictation_runtime.session.lock() else {
-            return;
-        };
-        if s.file_job_id.as_deref() != Some(job_id) {
-            return;
-        }
-        s.epoch
-    };
-    if stage == "completed" {
-        let text = payload
-            .get("result")
-            .and_then(|r| r.get("transcripts"))
-            .and_then(Value::as_array)
-            .map(|v| {
-                v.iter()
-                    .filter_map(|t| t.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        {
-            let state = app.state::<RuntimeState>();
-            if let Ok(mut s) = state.dictation_runtime.session.lock() {
-                if s.epoch == epoch {
-                    s.committed = text;
-                }
-            };
-        }
-        finalize(app, epoch).await;
-    } else if stage == "error" {
-        let _ = fail(
-            app,
-            epoch,
-            payload
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("文件识别失败")
-                .into(),
-        )
-        .await;
     }
 }
 
