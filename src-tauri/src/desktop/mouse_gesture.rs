@@ -80,6 +80,17 @@ struct GestureRecognizer {
 }
 
 impl GestureRecognizer {
+    fn next_tick(&self) -> Option<Instant> {
+        if self.samples.len() < 3 {
+            return None;
+        }
+        self.last_motion_at.map(|last| {
+            let dwell = last + STOP_DWELL;
+            self.cooldown_until
+                .map_or(dwell, |cooldown| dwell.max(cooldown))
+        })
+    }
+
     fn reset(&mut self) {
         self.samples.clear();
         self.last_motion_at = None;
@@ -292,7 +303,12 @@ impl RapidClickRecognizer {
     }
 }
 
-static EVENT_SENDER: OnceLock<Sender<PointerSample>> = OnceLock::new();
+enum MonitorEvent {
+    Pointer(PointerSample),
+    Changed,
+}
+
+static EVENT_SENDER: OnceLock<Sender<MonitorEvent>> = OnceLock::new();
 static MONITOR_STARTED: AtomicBool = AtomicBool::new(false);
 static BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 static MONITOR_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -301,6 +317,13 @@ static RESET_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn reset_detection() {
     RESET_GENERATION.fetch_add(1, Ordering::AcqRel);
+    notify_monitor_changed();
+}
+
+fn notify_monitor_changed() {
+    if let Some(sender) = EVENT_SENDER.get() {
+        let _ = sender.send(MonitorEvent::Changed);
+    }
 }
 
 fn apply_monitor_health(app: &tauri::AppHandle, health: Result<(), String>) {
@@ -350,7 +373,7 @@ fn send_pointer_sample(
         LAST_SAMPLE_US.store(now_us, Ordering::Relaxed);
     }
     if let Some(sender) = EVENT_SENDER.get() {
-        let _ = sender.send(PointerSample {
+        let _ = sender.send(MonitorEvent::Pointer(PointerSample {
             x,
             y,
             at: Instant::now(),
@@ -358,31 +381,75 @@ fn send_pointer_sample(
             left_pressed,
             left_released,
             native_click_count,
-        });
+        }));
     }
 }
 
-fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<PointerSample>) {
+fn wait_for_monitor_event(
+    receiver: &Receiver<MonitorEvent>,
+    deadline: Option<Instant>,
+) -> Result<Option<PointerSample>, ()> {
+    let event = match deadline {
+        Some(deadline) => {
+            match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(event) => event,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(()),
+            }
+        }
+        None => receiver.recv().map_err(|_| ())?,
+    };
+    Ok(match event {
+        MonitorEvent::Pointer(sample) => Some(sample),
+        MonitorEvent::Changed => None,
+    })
+}
+
+fn monitor_deadline(
+    enabled: bool,
+    recognizer: &GestureRecognizer,
+    health_check: Instant,
+) -> Option<Instant> {
+    enabled.then(|| {
+        recognizer
+            .next_tick()
+            .map_or(health_check, |dwell| dwell.min(health_check))
+    })
+}
+
+#[cfg(test)]
+mod scheduling_tests;
+
+fn run_recognizer(app: tauri::AppHandle, receiver: Receiver<MonitorEvent>) {
     let mut recognizer = GestureRecognizer::default();
     let mut rapid_clicks = RapidClickRecognizer::default();
     let mut reset_generation = RESET_GENERATION.load(Ordering::Acquire);
     let mut next_health_check = Instant::now() + MONITOR_HEALTH_INTERVAL;
+    let mut settings = app
+        .state::<RuntimeState>()
+        .mouse_gesture
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_default();
     loop {
+        let enabled = settings.enabled && MONITOR_STARTED.load(Ordering::Acquire);
+        // 关闭时只等配置通知；启用时等鼠标事件、实际停顿期限或监听健康检查。
+        let Ok(sample) = wait_for_monitor_event(
+            &receiver,
+            monitor_deadline(enabled, &recognizer, next_health_check),
+        ) else {
+            break;
+        };
         let requested_reset = RESET_GENERATION.load(Ordering::Acquire);
         if requested_reset != reset_generation {
             recognizer.reset_all();
             rapid_clicks.reset_all();
             reset_generation = requested_reset;
         }
-        let sample = match receiver.recv_timeout(Duration::from_millis(16)) {
-            Ok(sample) => {
-                recognizer.push(sample);
-                Some(sample)
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        let settings = app
+        if let Some(sample) = sample {
+            recognizer.push(sample);
+        }
+        settings = app
             .state::<RuntimeState>()
             .mouse_gesture
             .lock()
@@ -493,6 +560,7 @@ fn set_monitor_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), Stri
             {
                 *current = Some(error.clone());
             }
+            notify_monitor_changed();
             return Err(error);
         }
     } else if !enabled && MONITOR_STARTED.swap(false, Ordering::AcqRel) {
@@ -513,6 +581,7 @@ fn set_monitor_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), Stri
     {
         *error = None;
     }
+    notify_monitor_changed();
     Ok(())
 }
 
@@ -546,6 +615,7 @@ pub(crate) fn set_mouse_gesture_settings(
         }
         .normalized();
     }
+    notify_monitor_changed();
     if let Err(error) = crate::persistence::save_persisted_state(&app, &state) {
         if let Ok(mut settings) = state.mouse_gesture.lock() {
             *settings = previous.clone();
