@@ -72,6 +72,9 @@ fn run_plugin_session(
     customization: RequestCustomization,
 ) {
     if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
         cleanup_stream(&streams, &session_id);
         emit_asr_stream_event(
             &app,
@@ -85,8 +88,15 @@ fn run_plugin_session(
     let module_id = match plugin.capability_id(&model, "speech-recognition", true) {
         Ok(value) => value.to_string(),
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -100,8 +110,15 @@ fn run_plugin_session(
     ) {
         Ok(runtime) => runtime,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -117,8 +134,15 @@ fn run_plugin_session(
         &session_id,
         Duration::from_secs(30),
     ) {
+        let error = rx.take_failure().unwrap_or(error);
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
         cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR initialization failed" }),
+        );
         return;
     }
 
@@ -154,6 +178,11 @@ fn run_plugin_session(
                 }
                 finishing_at = Some(Instant::now());
             }
+            Ok(AsrStreamInput::Failed(error)) => {
+                let _ = rx.take_failure();
+                emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                break;
+            }
             Ok(AsrStreamInput::Stop) => {
                 let _ = runtime.close_capability_session();
                 break;
@@ -179,6 +208,9 @@ fn run_plugin_session(
             );
             break;
         }
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(
