@@ -154,7 +154,11 @@ static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadR
         sender
     });
 
-type RuntimeOwnerMap = HashMap<String, HashMap<String, Weak<AtomicBool>>>;
+struct RuntimeOwner {
+    cancelled: Weak<AtomicBool>,
+    wake: Weak<tokio::sync::Notify>,
+}
+type RuntimeOwnerMap = HashMap<String, HashMap<String, RuntimeOwner>>;
 static PLUGIN_RUNTIME_OWNERS: Lazy<(Mutex<RuntimeOwnerMap>, Condvar)> =
     Lazy::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
 
@@ -164,7 +168,11 @@ struct RuntimeOwnerRegistration {
 }
 
 impl RuntimeOwnerRegistration {
-    fn register(namespace: String, cancelled: &Arc<AtomicBool>) -> Result<Self, String> {
+    fn register(
+        namespace: String,
+        cancelled: &Arc<AtomicBool>,
+        wake: &Arc<tokio::sync::Notify>,
+    ) -> Result<Self, String> {
         let id = uuid::Uuid::new_v4().to_string();
         PLUGIN_RUNTIME_OWNERS
             .0
@@ -172,7 +180,13 @@ impl RuntimeOwnerRegistration {
             .map_err(|_| "插件运行时所有权锁定失败".to_string())?
             .entry(namespace.clone())
             .or_default()
-            .insert(id.clone(), Arc::downgrade(cancelled));
+            .insert(
+                id.clone(),
+                RuntimeOwner {
+                    cancelled: Arc::downgrade(cancelled),
+                    wake: Arc::downgrade(wake),
+                },
+            );
         Ok(Self { namespace, id })
     }
 }
@@ -205,11 +219,14 @@ pub fn drain_plugin_namespace(namespace: &str, timeout: Duration) -> Result<usiz
             .get_mut(namespace)
             .map(|entries| {
                 entries.retain(|_, value| {
-                    let Some(cancelled) = value.upgrade() else {
+                    let Some(cancelled) = value.cancelled.upgrade() else {
                         return false;
                     };
                     if !cancelled.swap(true, Ordering::Relaxed) {
                         cancelled_count += 1;
+                    }
+                    if let Some(wake) = value.wake.upgrade() {
+                        wake.notify_one();
                     }
                     true
                 });
@@ -341,6 +358,20 @@ struct HttpStreamState {
     total_bytes: usize,
 }
 
+#[derive(Clone)]
+struct HostEventSender {
+    sender: std::sync::mpsc::Sender<Value>,
+    wake: Arc<tokio::sync::Notify>,
+}
+impl HostEventSender {
+    fn send(&self, event: Value) -> Result<(), std::sync::mpsc::SendError<Value>> {
+        self.sender.send(event)?;
+        // 先入队再通知；Notify 保留一个许可，覆盖检查队列与进入等待之间的到达。
+        self.wake.notify_one();
+        Ok(())
+    }
+}
+
 struct HostState {
     spec: PluginRuntimeSpec,
     inputs: HashMap<String, PathBuf>,
@@ -348,7 +379,7 @@ struct HostState {
     ws_connections: HashMap<String, mpsc::UnboundedSender<WsCommand>>,
     http_streams: HashMap<String, HttpStreamState>,
     timers: HashMap<String, Arc<AtomicBool>>,
-    ws_events_tx: std::sync::mpsc::Sender<Value>,
+    ws_events_tx: HostEventSender,
     ws_events_rx: std::sync::mpsc::Receiver<Value>,
     cancelled: Arc<AtomicBool>,
     event_tx: Option<mpsc::Sender<Value>>,
@@ -378,6 +409,7 @@ impl HostState {
         event_tx: Option<mpsc::Sender<Value>>,
         deadline: Arc<Mutex<Instant>>,
         sdk: Option<SdkHostBindings>,
+        host_wake: Arc<tokio::sync::Notify>,
     ) -> Self {
         let (ws_events_tx, ws_events_rx) = std::sync::mpsc::channel();
         Self {
@@ -387,7 +419,10 @@ impl HostState {
             ws_connections: HashMap::new(),
             http_streams: HashMap::new(),
             timers: HashMap::new(),
-            ws_events_tx,
+            ws_events_tx: HostEventSender {
+                sender: ws_events_tx,
+                wake: host_wake,
+            },
             ws_events_rx,
             cancelled,
             event_tx,
@@ -602,6 +637,10 @@ impl HostState {
                 }
                 Err(_) => break,
             }
+        }
+        // 每轮最多分发 MAX_EVENTS；剩余事件不能因合并通知而滞留。
+        if events.len() == MAX_EVENTS {
+            self.ws_events_tx.wake.notify_one();
         }
         events
     }
@@ -1264,6 +1303,7 @@ pub struct JsProviderRuntime {
     _runtime: Runtime,
     context: Context,
     host: Arc<Mutex<HostState>>,
+    host_wake: Arc<tokio::sync::Notify>,
     events: Arc<Mutex<Vec<Value>>>,
     deadline: Arc<Mutex<Instant>>,
     cancelled: Arc<AtomicBool>,
@@ -1448,6 +1488,7 @@ impl JsProviderRuntime {
         let context = Context::full(&runtime).map_err(js_error)?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let load_ai_sdk = sdk.is_some();
+        let host_wake = Arc::new(tokio::sync::Notify::new());
         let host = Arc::new(Mutex::new(HostState::new(
             spec.clone(),
             inputs,
@@ -1456,6 +1497,7 @@ impl JsProviderRuntime {
             event_tx,
             deadline.clone(),
             sdk,
+            host_wake.clone(),
         )));
         let session = plugin_secrets::load_session(&spec)?;
         if let Err(reason) = validate_capture_for_runtime(
@@ -1478,7 +1520,11 @@ impl JsProviderRuntime {
         // 逃逸出来的 QuickJS 运行时会继续用已被删除的凭据跑云端识别，直到自己的
         // deadline（最长 10 分钟）。提前登记还有一个好处：初始化期间也能被取消——
         // 中断处理器与 promise 泵都会检查同一个 `cancelled`。
-        let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
+        let owner = RuntimeOwnerRegistration::register(
+            spec.source_namespace.clone(),
+            &cancelled,
+            &host_wake,
+        )?;
         context.with(|ctx| -> Result<(), String> {
             let host_call_state = host.clone();
             let host_call = Function::new(
@@ -1597,6 +1643,7 @@ impl JsProviderRuntime {
             _runtime: runtime,
             context,
             host,
+            host_wake,
             events,
             deadline,
             cancelled,
@@ -1842,6 +1889,10 @@ impl JsProviderRuntime {
             &self.deadline,
             true,
         )
+    }
+
+    pub(crate) fn host_events_ready(&self) -> &tokio::sync::Notify {
+        &self.host_wake
     }
 
     pub fn dispatch_host_events(&self) -> Result<(), String> {
@@ -3109,6 +3160,86 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn host_timer_notifies_an_idle_session_and_dispatches_its_callback() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ startTimer() { setTimeout(() => { this.ready = true; }, 20); }, status() { return this.ready === true; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        runtime
+            .call("startTimer", &Value::Null, Duration::from_secs(5))
+            .unwrap();
+        let wake = runtime.host_wake.clone();
+        wait_for_host_io(async move {
+            tokio::time::timeout(Duration::from_secs(2), wake.notified())
+                .await
+                .map_err(|_| "timer did not wake".to_string())
+        })
+        .unwrap();
+        runtime.dispatch_host_events().unwrap();
+        assert_eq!(
+            runtime
+                .call("status", &Value::Null, Duration::from_secs(5))
+                .unwrap(),
+            json!(true)
+        );
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_event_batch_limit_retains_a_wake_for_remaining_events() {
+        use futures_util::FutureExt;
+        let (root, spec, profile) = fixture("export default () => ({});", None);
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        let mut host = runtime.host.lock().unwrap();
+        for i in 0..MAX_EVENTS + 17 {
+            host.ws_events_tx
+                .send(json!({"type":"test", "index":i}))
+                .unwrap();
+        }
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_some());
+        let first = host.take_host_events();
+        assert_eq!(first.len(), MAX_EVENTS);
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_some());
+        let tail = host.take_host_events();
+        assert_eq!(tail.len(), 17);
+        for (i, event) in first.into_iter().chain(tail).enumerate() {
+            assert_eq!(event["index"], i);
+        }
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_none());
+        drop(host);
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// 模块顶层 await 同样会等在定时器上。
     #[test]
     fn top_level_await_on_a_host_timer_resolves() {
@@ -3462,15 +3593,18 @@ mod tests {
     fn namespace_drain_cancels_and_waits_for_runtime_owner_drop() {
         let namespace = format!("drain-{}", uuid::Uuid::new_v4());
         let cancelled = Arc::new(AtomicBool::new(false));
-        let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled).unwrap();
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled, &wake).unwrap();
         let drain_namespace = namespace.clone();
         let drain = std::thread::spawn(move || {
             drain_plugin_namespace(&drain_namespace, Duration::from_secs(2))
         });
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
+        wait_for_host_io(async move {
+            tokio::time::timeout(Duration::from_secs(1), wake.notified())
+                .await
+                .map_err(|_| "namespace cancellation did not wake".to_string())
+        })
+        .unwrap();
         assert!(cancelled.load(Ordering::Relaxed));
         drop(owner);
         assert_eq!(drain.join().unwrap().unwrap(), 1);

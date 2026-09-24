@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use super::session_wait::{SessionWait, SessionWake};
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
 use crate::providers::sdk_runtime::online::{BuiltinSdkRuntime, BuiltinSdkScope};
@@ -142,9 +143,14 @@ fn run_sdk_session(
     flush_events(&runtime, &app, &session_id);
 
     let mut finishing_at = None;
+    let waiter = SessionWait::new();
     loop {
-        match rx.try_recv() {
-            Ok(AsrStreamInput::RawF32(samples)) => {
+        match waiter.wait(
+            &mut rx,
+            runtime.host_events_ready(),
+            finishing_at.map(|started| started + FINISH_TIMEOUT),
+        ) {
+            SessionWake::Input(Some(AsrStreamInput::RawF32(samples))) => {
                 let bytes = dsp.process(&samples);
                 if !bytes.is_empty() {
                     if let Err(error) = runtime.realtime_audio(bytes) {
@@ -158,7 +164,7 @@ fn run_sdk_session(
                     }
                 }
             }
-            Ok(AsrStreamInput::Finish) => {
+            SessionWake::Input(Some(AsrStreamInput::Finish)) => {
                 if let Err(error) = runtime.realtime_finish() {
                     emit_asr_stream_event(
                         &app,
@@ -170,19 +176,17 @@ fn run_sdk_session(
                 }
                 finishing_at = Some(Instant::now());
             }
-            Ok(AsrStreamInput::Failed(error)) => {
+            SessionWake::Input(Some(AsrStreamInput::Failed(error))) => {
                 let _ = rx.take_failure();
                 emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
                 break;
             }
-            Ok(AsrStreamInput::Stop) => {
+            SessionWake::Input(Some(AsrStreamInput::Stop)) => {
                 let _ = runtime.realtime_stop();
                 break;
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            SessionWake::Input(None) => break,
+            SessionWake::HostEvents | SessionWake::Deadline => {}
         }
         if let Err(error) = runtime.dispatch_host_events() {
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));

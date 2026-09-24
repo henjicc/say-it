@@ -33,6 +33,10 @@ if (!Number.isInteger(packetSize) || packetSize < 1 || packetSize > 2_880_000
 }
 const executable = resolve(values.executable);
 const testNames = {
+  "asr-idle-session": "commands::asr::session_wait::tests::idle_session_profile",
+  "asr-idle-session-legacy": "commands::asr::session_wait::tests::idle_session_profile",
+  "asr-session-latency": "commands::asr::session_wait::tests::session_notification_latency_profile",
+  "asr-session-latency-legacy": "commands::asr::session_wait::tests::session_notification_latency_profile",
   "compare-startup": "application::compare::performance_tests::startup_storage_profile",
   "compare-startup-legacy": "application::compare::performance_tests::startup_storage_profile",
   "asr-spool": "asr_input::spool_performance_tests::live_queue_profile",
@@ -67,6 +71,7 @@ for (let run = 0; run < runs; run++) {
   ], {
     encoding: "utf8",
     env: { ...process.env, SAYIT_PERF_AUDIO_SECONDS: String(seconds),
+      SAYIT_PERF_SESSION_POLL_LEGACY: ["asr-idle-session-legacy", "asr-session-latency-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_STARTUP_LEGACY: values.scenario === "compare-startup-legacy" ? "1" : "0",
       SAYIT_PERF_SPOOL_LEGACY: ["asr-spool-legacy", "asr-short-legacy"].includes(values.scenario) ? "1" : "0",
       SAYIT_PERF_SPOOL_SHORT: values.scenario.startsWith("asr-short") ? "1" : "0",

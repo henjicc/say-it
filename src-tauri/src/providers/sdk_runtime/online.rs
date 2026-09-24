@@ -417,6 +417,10 @@ impl BuiltinSdkRuntime {
         self.runtime.dispatch_host_events()
     }
 
+    pub(crate) fn host_events_ready(&self) -> &tokio::sync::Notify {
+        self.runtime.host_events_ready()
+    }
+
     pub fn take_events(&self) -> Vec<Value> {
         self.runtime.take_events()
     }
