@@ -170,6 +170,11 @@ impl AudioBuffer {
         Ok(result)
     }
     #[cfg(test)]
+    pub(crate) fn is_released(&self) -> bool {
+        self.len == 0
+            && matches!(&self.storage, Storage::Memory(samples) if samples.capacity() == 0)
+    }
+    #[cfg(test)]
     pub(crate) fn to_vec(&self) -> Vec<f32> {
         let mut output = vec![0.0; self.len];
         self.read(0, &mut output).unwrap();

@@ -5,6 +5,98 @@ use std::io::Read;
 use std::time::Instant;
 
 #[test]
+#[ignore = "独立模型启动缓存测量；合成音频，不启动模型、设备或网络"]
+fn startup_storage_profile() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetProcessHandleCount, GetProcessIoCounters, IO_COUNTERS,
+    };
+    let counters = || {
+        let mut io = IO_COUNTERS::default();
+        let mut handles = 0;
+        unsafe {
+            GetProcessIoCounters(GetCurrentProcess(), &mut io).unwrap();
+            GetProcessHandleCount(GetCurrentProcess(), &mut handles).unwrap();
+        }
+        (io, handles)
+    };
+    let seconds = std::env::var("SAYIT_PERF_AUDIO_SECONDS")
+        .unwrap_or("300".into())
+        .parse::<usize>()
+        .unwrap();
+    assert!((1..=1800).contains(&seconds));
+    let legacy = std::env::var("SAYIT_PERF_STARTUP_LEGACY").as_deref() == Ok("1");
+    let runtime = CompareRuntime::default();
+    let epoch = runtime.reset(vec![]);
+    runtime.inner.lock().unwrap().phase = "recording".into();
+    let input: Vec<f32> = (0..4096).map(|i| (i % 997) as f32 / 996.0 - 0.5).collect();
+    let total = seconds * 48_000;
+    let initial = memory();
+    let (io_before, handles_before) = counters();
+    let started = Instant::now();
+    let mut old_raw = Vec::new();
+    for offset in (0..total).step_by(input.len()) {
+        let part = &input[..(total - offset).min(input.len())];
+        if legacy {
+            // 冻结旧版的 Vec 追加；不要让新存储实现渗入对照组。
+            old_raw.extend_from_slice(part);
+        } else {
+            assert!(runtime
+                .record_packet(epoch, part)
+                .unwrap()
+                .unwrap()
+                .is_empty());
+        }
+    }
+    let recorded = started.elapsed();
+    let retained = memory();
+    let (_, handles_retained) = counters();
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut count = 0;
+    let mut consume = |part: &[f32]| {
+        count += part.len();
+        for sample in part {
+            hash = (hash ^ sample.to_bits() as u64).wrapping_mul(0x100000001b3);
+        }
+    };
+    let replay_started = Instant::now();
+    if legacy {
+        for part in old_raw.chunks(4096) {
+            consume(part);
+        }
+    } else {
+        let raw = runtime.inner.lock().unwrap().raw.snapshot();
+        let mut block = [0f32; 4096];
+        for start in (0..raw.len()).step_by(block.len()) {
+            let count = (raw.len() - start).min(block.len());
+            raw.read(start, &mut block[..count]).unwrap();
+            consume(&block[..count]);
+        }
+    }
+    let replay = replay_started.elapsed();
+    assert_eq!(count, total);
+    runtime.complete_stream_registration(epoch).unwrap();
+    drop(old_raw);
+    let elapsed = started.elapsed();
+    let (io_after, handles_after) = counters();
+    let released = memory();
+    assert_eq!(handles_before, handles_after);
+    println!(
+        "PERF_RESULT {}",
+        serde_json::json!({
+            "scenario":"compare-startup-storage", "legacy":legacy, "seconds":seconds,
+            "elapsedMs":elapsed.as_secs_f64()*1000.0, "recordMs":recorded.as_secs_f64()*1000.0,
+            "readAndHashMs":replay.as_secs_f64()*1000.0, "samples":count,
+            "outputHash":format!("{hash:016x}"), "initialPrivateBytes":initial.private_usage,
+            "retainedPrivateBytes":retained.private_usage, "releasedPrivateBytes":released.private_usage,
+            "peakPrivateBytes":released.peak_pagefile_usage, "peakWorkingSetBytes":released.peak_working_set,
+            "readBytes":io_after.ReadTransferCount-io_before.ReadTransferCount,
+            "writeBytes":io_after.WriteTransferCount-io_before.WriteTransferCount,
+            "handlesBefore":handles_before,"handlesRetained":handles_retained,"handlesAfter":handles_after,
+        })
+    );
+}
+
+#[test]
 #[ignore = "独立性能采样：本地合成文件，不调用识别服务"]
 fn uploaded_playback_memory_profile() {
     use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessIoCounters, IO_COUNTERS};
@@ -106,7 +198,7 @@ fn realtime_recording_memory_profile() {
     let started = Instant::now();
     for offset in (0..total).step_by(chunk.len()) {
         let part = &chunk[..(total - offset).min(chunk.len())];
-        let sessions = runtime.record_packet(epoch, part).unwrap();
+        let sessions = runtime.record_packet(epoch, part).unwrap().unwrap();
         for id in sessions {
             let (_, tx, rx, hash, count) = sinks.iter_mut().find(|(key, ..)| *key == id).unwrap();
             tx.send(AsrStreamInput::RawF32(part.to_vec())).unwrap();
@@ -225,11 +317,20 @@ fn file_recording_storage_profile() {
     let initial = memory();
     let io_before = io();
     let started = Instant::now();
+    let mut legacy_raw = Vec::new();
     let mut recording =
         (!legacy).then(|| WavRecording::new(48_000, Quantization::Truncate).unwrap());
     for offset in (0..seconds * 48_000).step_by(input.len()) {
         let part = &input[..(seconds * 48_000 - offset).min(input.len())];
-        assert!(runtime.record_packet(epoch, part).unwrap().is_empty());
+        if legacy {
+            legacy_raw.extend_from_slice(part);
+        } else {
+            assert!(runtime
+                .record_packet(epoch, part)
+                .unwrap()
+                .unwrap()
+                .is_empty());
+        }
         if let Some(writer) = recording.as_mut() {
             writer.append(part).unwrap();
         }
@@ -239,15 +340,15 @@ fn file_recording_storage_profile() {
     let owned;
     let path;
     if legacy {
-        let raw = std::mem::take(&mut runtime.inner.lock().unwrap().raw);
-        path = std::path::PathBuf::from(write_wav(&raw, 48_000).unwrap());
+        path = std::path::PathBuf::from(write_wav(&legacy_raw, 48_000).unwrap());
+        drop(legacy_raw);
         owned = None;
     } else {
         let file = recording.unwrap().finish().unwrap();
         assert_eq!(file.samples, seconds * 48_000);
         path = file.path().to_owned();
         owned = Some(file);
-        assert_eq!(runtime.inner.lock().unwrap().raw.capacity(), 0);
+        assert!(runtime.inner.lock().unwrap().raw.is_released());
     }
     let elapsed = started.elapsed();
     let stop_elapsed = stop_started.elapsed();
