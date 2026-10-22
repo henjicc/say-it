@@ -44,6 +44,23 @@ jobs:
           brew install opus
           npm install
 
+      - name: seed sherpa framework libraries
+        run: |
+          set -euo pipefail
+          version="$(grep -A1 '^name = "sherpa-onnx"$' src-tauri/Cargo.lock | grep '^version' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')"
+          test -n "$version"
+          case "$(uname -m)" in
+            arm64) sarch=arm64 ;;
+            x86_64) sarch=x64 ;;
+            *) echo "unexpected arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          echo "seeding sherpa-onnx $version ($sarch) framework libraries"
+          curl -fL -o /tmp/sherpa.tar.bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/sherpa-onnx-v${version}-osx-${sarch}-shared.tar.bz2"
+          mkdir -p /tmp/sherpa-x src-tauri/target/release
+          tar -xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa-x
+          cp /tmp/sherpa-x/*/lib/libsherpa-onnx-c-api.dylib /tmp/sherpa-x/*/lib/libonnxruntime.dylib src-tauri/target/release/
+          ls -la src-tauri/target/release/*.dylib
+
       - name: build binary without bundling
         run: |
           npm run context-probe:build
