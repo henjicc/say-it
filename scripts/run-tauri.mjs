@@ -8,7 +8,7 @@ if (!command) throw new Error("缺少 Tauri 子命令");
 
 const env = { ...process.env };
 if (process.platform === "darwin" && !env.MACOSX_DEPLOYMENT_TARGET) {
-  env.MACOSX_DEPLOYMENT_TARGET = "15.5";
+  env.MACOSX_DEPLOYMENT_TARGET = "15.0";
 }
 if (
   process.platform === "darwin" &&
