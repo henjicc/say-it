@@ -64,8 +64,64 @@ jobs:
           done < <(find src-tauri/target -name 'libonnxruntime*.dylib' -type f)
           test "$found" -eq 1
 
-      - name: build macOS disk image
-        run: node scripts/run-tauri.mjs build --bundles app dmg
+      - name: build macOS app bundle
+        run: node scripts/run-tauri.mjs build --bundles app
+
+      - name: unify code signatures inside the app bundle
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          echo "app: $app_path"
+          for lib in "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib" "$app_path/Contents/Frameworks/libonnxruntime.dylib"; do
+            test -f "$lib"
+            codesign --force --sign - "$lib"
+          done
+          codesign --force --sign - --identifier com.henjicc.sayit "$app_path/Contents/MacOS/sayit-apple-speech"
+          codesign --force --sign - "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          # Every Mach-O in the bundle must carry the same Team ID as the
+          # main executable (all ad-hoc: "not set"), otherwise dyld library
+          # validation aborts the launch on Apple Silicon.
+          main_team="$(codesign -dv "$app_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          echo "main TeamIdentifier: ${main_team:-<none>}"
+          while IFS= read -r binary; do
+            team="$(codesign -dv "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p' || true)"
+            echo "$binary -> TeamIdentifier=${team:-<none>}"
+            if [ "$team" != "$main_team" ]; then
+              echo "Team ID mismatch: $binary" >&2
+              exit 1
+            fi
+          done < <(find "$app_path/Contents" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1)
+          # Smoke test: the main binary must get past dyld (no missing
+          # library / signature rejection). The app is a tray app and will
+          # not exit on its own, so a timeout kill is expected.
+          set +e
+          timeout 10 "$app_path/Contents/MacOS/SayIt" > smoke.log 2>&1
+          smoke_status=$?
+          set -e
+          cat smoke.log
+          if grep -qE 'Library not loaded|not valid for use in process|code signature' smoke.log; then
+            echo "dyld rejected the app at launch" >&2
+            exit 1
+          fi
+          echo "smoke test done (exit $smoke_status; 124 = still running at timeout, good)"
+
+      - name: create DMG from the fixed app bundle
+        env:
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          version="$(node -p "require('./package.json').version")"
+          bundle_dir="src-tauri/target/release/bundle/dmg"
+          mkdir -p "$bundle_dir"
+          staging="$(mktemp -d)"
+          cp -R "$app_path" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "说吧！" -srcfolder "$staging" -ov -format UDZO "$bundle_dir/SayIt_${version}_macos15_${ASSET_ARCH}.dmg"
+          rm -rf "$staging"
 
       - name: validate macOS bundle
         env:
@@ -87,18 +143,6 @@ jobs:
           plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract NSSpeechRecognitionUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
           plutil -extract NSScreenCaptureUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
-
-      - name: normalize macOS asset name
-        env:
-          ASSET_ARCH: ${{ matrix.asset_arch }}
-        run: |
-          set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
-          bundle_dir="src-tauri/target/release/bundle/dmg"
-          shopt -s nullglob
-          images=("$bundle_dir"/*.dmg)
-          test "${#images[@]}" -eq 1
-          mv "${images[0]}" "$bundle_dir/SayIt_${version}_macos15_${ASSET_ARCH}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
