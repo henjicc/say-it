@@ -119,18 +119,34 @@ jobs:
             fi
           done < <(find "$app_path/Contents" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1)
           # Smoke test: the main binary must get past dyld (no missing
-          # library / signature rejection). The app is a tray app and will
-          # not exit on its own, so a timeout kill is expected.
+          # library / signature rejection) and stay alive. The app is a
+          # tray app and does not exit on its own. (Stock macOS has no
+          # coreutils `timeout`, so poll the process manually.)
           set +e
-          timeout 10 "$app_path/Contents/MacOS/SayIt" > smoke.log 2>&1
-          smoke_status=$?
+          "$app_path/Contents/MacOS/SayIt" > smoke.log 2>&1 &
+          smoke_pid=$!
+          sleep 10
+          if kill -0 "$smoke_pid" 2>/dev/null; then
+            echo "smoke: app still running after 10s (good)"
+            kill "$smoke_pid" 2>/dev/null
+            wait "$smoke_pid" 2>/dev/null
+            smoke_status=124
+          else
+            wait "$smoke_pid"
+            smoke_status=$?
+            echo "smoke: app exited on its own with status $smoke_status"
+          fi
           set -e
           cat smoke.log
           if grep -qE 'Library not loaded|not valid for use in process|code signature' smoke.log; then
             echo "dyld rejected the app at launch" >&2
             exit 1
           fi
-          echo "smoke test done (exit $smoke_status; 124 = still running at timeout, good)"
+          if [ "$smoke_status" != "124" ] && [ "$smoke_status" != "0" ]; then
+            echo "app crashed during smoke test (status $smoke_status)" >&2
+            exit 1
+          fi
+          echo "smoke test passed (status $smoke_status)"
 
       - name: create DMG from the fixed app bundle
         env:
