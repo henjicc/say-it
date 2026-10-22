@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 mod apple_session;
+mod gemini_session;
 mod local_session;
 mod plugin_session;
 mod sdk_session;
@@ -19,6 +20,7 @@ pub(crate) async fn start_asr_stream_inner(
     model_override: Option<String>,
     sample_rate: Option<u32>,
     params: Option<DspParams>,
+    live_target_lang: Option<String>,
 ) -> Result<AsrStreamStartResponse, String> {
     let provider_id = match provider_id {
         Some(provider_id) if !provider_id.trim().is_empty() => {
@@ -76,6 +78,32 @@ pub(crate) async fn start_asr_stream_inner(
             params,
         )
         .await;
+    }
+    if let Some(info) = model_override
+        .as_deref()
+        .and_then(crate::providers::registry::model_info)
+    {
+        if info.protocol == crate::providers::gemini_live::PROTOCOL {
+            if info.provider_id != profile.id {
+                return Err(format!(
+                    "模型 {} 属于供应商 {}，不能由 {} 执行",
+                    info.id, info.provider_id, profile.id
+                ));
+            }
+            let model = model_override
+                .filter(|model| !model.trim().is_empty())
+                .ok_or_else(|| "Gemini Live 实时翻译必须指定模型".to_string())?;
+            return gemini_session::start_gemini_stream(
+                app,
+                state,
+                profile,
+                model,
+                sample_rate.unwrap_or(48_000),
+                params,
+                live_target_lang,
+            )
+            .await;
+        }
     }
     if let Some(route) = model_override
         .as_deref()

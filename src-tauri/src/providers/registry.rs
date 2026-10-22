@@ -259,8 +259,18 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 9 个百炼、5 个 P0 云端模型，加上 Apple 本地实时模型。
-        assert_eq!(REGISTRY.len(), 15, "当前应有 15 个模型");
+        // 9 个百炼、5 个 P0 云端模型，加上 Apple 本地实时模型与 Gemini Live 实时翻译模型。
+        assert_eq!(REGISTRY.len(), 16, "当前应有 16 个模型");
+    }
+
+    #[test]
+    fn gemini_live_translate_is_a_native_realtime_route() {
+        let model = model_info("gemini-3.5-live-translate-preview").unwrap();
+        assert_eq!(model.provider_id, "google-gemini");
+        assert_eq!(model.protocol, "gemini-live-translate");
+        assert_eq!(model.category, "realtime");
+        // 原生连接器执行，不经内置 SDK 路由。
+        assert!(builtin_sdk_asr_route("gemini-3.5-live-translate-preview").is_none());
     }
 
     #[test]

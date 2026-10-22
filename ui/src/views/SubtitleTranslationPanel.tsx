@@ -19,6 +19,9 @@ export function SubtitleTranslationPanel() {
   const { prefs, patch } = useSubtitleStore();
   const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  // Gemini Live Translate 在识别连接内直接返回译文：无需另选翻译模型，
+  // 但目标语言仍在本面板选择，需要把语种区展示出来。
+  const liveTranslateAsr = prefs.asrModel === "gemini-3.5-live-translate-preview";
   const pluginOptions = optionsForScene("subtitleTranslation");
 
   return (
@@ -49,7 +52,13 @@ export function SubtitleTranslationPanel() {
         </FormGrid>
       </SettingsSection>
 
-      {enabled && (
+      {liveTranslateAsr && !enabled && (
+        <p className="text-xs text-[var(--color-fg-subtle)]">
+          当前识别模型 Gemini 3.5 Live Translate 自带实时翻译，译文会按下方目标语言直接返回，无需另选翻译模型。
+        </p>
+      )}
+
+      {(enabled || liveTranslateAsr) && (
         <SettingsSection title="语种与显示">
           <FormGrid>
             <Field layout="row" label="源语言">

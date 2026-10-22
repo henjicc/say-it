@@ -335,6 +335,9 @@ struct Session {
     document: SubtitleDocument,
     translation: TranslationDocument,
     translation_cancellation: CancellationToken,
+    /// 自带实时翻译的识别模型（如 Gemini Live Translate）刚定稿一轮的译文分段序号：
+    /// 连接器随后发来的 translation 事件按这组序号回填，不再走文本翻译供应商。
+    live_translation_seqs: Vec<u64>,
     last_voice_at: Option<Instant>,
     reconnect_attempts: u32,
     opening: bool,
@@ -344,6 +347,14 @@ struct Session {
 }
 
 impl Session {
+    /// 当前识别模型是否自带实时翻译（译文随识别连接器返回，如 Gemini Live
+    /// Translate）。这类模型不需要、也不应再选文本翻译模型。
+    fn live_translate_asr(&self) -> bool {
+        crate::providers::registry::model_info(&self.prefs.asr_model)
+            .map(|info| info.protocol == crate::providers::gemini_live::PROTOCOL)
+            .unwrap_or(false)
+    }
+
     fn apply_translation(&mut self, epoch: u64, seq: u64, text: String) -> bool {
         if self.epoch != epoch
             || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
@@ -743,7 +754,7 @@ fn spawn_raw_consumer(
 
 async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let (model, rate, dsp, source) = {
+    let (model, rate, dsp, source, target_lang) = {
         let session = state
             .subtitle_runtime
             .session
@@ -757,6 +768,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
             session.sample_rate,
             session.audio_prefs.dsp.clone(),
             session.source,
+            session.prefs.translation_target_lang.clone(),
         )
     };
     let response = start_asr_stream_inner(
@@ -766,6 +778,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(model),
         Some(rate),
         Some(dsp),
+        Some(target_lang),
     )
     .await?;
     let attached = match source {
@@ -861,12 +874,43 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
                             .replace_line_at
                             .is_some_and(|at| now.duration_since(at) <= REPLACE_CONTINUE_GAP);
                     session.document.on_partial(text.to_string(), &mode, now);
-                    if session.prefs.translation_enabled() {
-                        translate = session.translation.dispatch(text, final_result);
+                    // 自带翻译的模型也要走 dispatch 铸造分段序号，但译文由连接器
+                    // 随后以 translation 事件回填，不派发给文本翻译供应商。
+                    if session.prefs.translation_enabled() || session.live_translate_asr() {
+                        let pairs = session.translation.dispatch(text, final_result);
+                        if !session.live_translate_asr() {
+                            translate = pairs;
+                        }
                     }
                     if final_result {
                         session.document.commit(&mode, now);
                         session.translation.commit(&mode, continuing);
+                        if session.live_translate_asr() {
+                            session.live_translation_seqs = session
+                                .translation
+                                .committed_groups
+                                .last()
+                                .cloned()
+                                .unwrap_or_default();
+                        }
+                    }
+                }
+            }
+            "translation" => {
+                // 仅自带翻译的识别模型会发这个事件：整轮译文挂到刚定稿分段的
+                // 第一个序号上，其余序号清空，避免与原文分段拼接时重复。
+                if session.live_translate_asr() {
+                    let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
+                    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                        if final_result && !text.trim().is_empty() {
+                            let seqs = std::mem::take(&mut session.live_translation_seqs);
+                            if let Some((first, rest)) = seqs.split_first() {
+                                session.translation.update(*first, text.to_string());
+                                for seq in rest {
+                                    session.translation.update(*seq, String::new());
+                                }
+                            }
+                        }
                     }
                 }
             }

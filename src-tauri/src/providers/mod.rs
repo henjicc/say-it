@@ -7,6 +7,7 @@ pub mod browser_session_capture;
 pub mod capabilities;
 pub mod credential_store;
 pub(crate) mod credential_vault;
+pub mod gemini_live;
 pub mod local_asr;
 pub mod model_download;
 pub mod plugin;
@@ -46,6 +47,7 @@ impl RequestCustomization {
 pub const BAILIAN_PROVIDER_ID: &str = "bailian";
 pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
 pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
+pub const GOOGLE_GEMINI_PROVIDER_ID: &str = gemini_live::PROVIDER_ID;
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const GROQ_DEFAULT_LLM_MODEL_ID: &str = "qwen/qwen3.8-27b";
 const PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID: &str = "openai/gpt-oss-20b";
@@ -459,6 +461,22 @@ pub fn system_ocr_profile() -> ProviderProfile {
     }
 }
 
+pub fn google_gemini_profile() -> ProviderProfile {
+    ProviderProfile {
+        id: GOOGLE_GEMINI_PROVIDER_ID.to_string(),
+        kind: gemini_live::PROVIDER_KIND.to_string(),
+        display_name: "Google Gemini".to_string(),
+        auth_kind: "api-key".to_string(),
+        // Gemini Live Translate 是宿主原生实时连接器：识别与翻译在同一条
+        // WebSocket 会话内完成，不经 SDK/插件执行面，也不注册为文本翻译供应商。
+        capabilities: vec!["asr".to_string()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
 pub fn apple_speech_profile() -> ProviderProfile {
     ProviderProfile {
         id: apple_speech::PROVIDER_ID.to_string(),
@@ -489,6 +507,7 @@ pub fn builtin_profiles() -> Vec<ProviderProfile> {
         bailian_profile(),
         volcengine_profile(),
         siliconflow_profile(),
+        google_gemini_profile(),
         groq_llm_profile(),
         system_ocr_profile(),
         apple_speech_profile(),
