@@ -44,8 +44,28 @@ jobs:
           brew install opus
           npm install
 
+      - name: build binary without bundling
+        run: |
+          npm run context-probe:build
+          npm run macos-speech:build
+          node scripts/run-tauri.mjs build --no-bundle
+
+      - name: retarget bundled ONNX Runtime to macOS 15.0
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r lib; do
+            found=1
+            echo "retarget: $lib"
+            vtool -show-build "$lib" | grep -E 'platform|minos' || true
+            vtool -set-build-version macos 15.0 15.0 -output "$lib.retargeted" "$lib"
+            mv "$lib.retargeted" "$lib"
+            vtool -show-build "$lib" | grep -E 'platform|minos' || true
+          done < <(find src-tauri/target -name 'libonnxruntime*.dylib' -type f)
+          test "$found" -eq 1
+
       - name: build macOS disk image
-        run: npm run tauri:build -- --bundles app dmg
+        run: node scripts/run-tauri.mjs build --bundles app dmg
 
       - name: validate macOS bundle
         env:
