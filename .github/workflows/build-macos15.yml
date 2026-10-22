@@ -58,8 +58,16 @@ jobs:
           curl -fL -o /tmp/sherpa.tar.bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/sherpa-onnx-v${version}-osx-${sarch}-shared.tar.bz2"
           mkdir -p /tmp/sherpa-x src-tauri/target/release
           tar -xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa-x
-          cp /tmp/sherpa-x/*/lib/libsherpa-onnx-c-api.dylib /tmp/sherpa-x/*/lib/libonnxruntime.dylib src-tauri/target/release/
-          ls -la src-tauri/target/release/*.dylib
+          # The sys crate's build script extracts the prebuilt package to
+          # target/sherpa-onnx-prebuilt/<name>-shared-lib and points the
+          # linker there; a restored rust-cache may keep the build-script
+          # fingerprint while dropping that directory, so seed it (and the
+          # bundle-check copies in target/release) explicitly.
+          prebuilt="src-tauri/target/sherpa-onnx-prebuilt/sherpa-onnx-v${version}-osx-${sarch}-shared-lib"
+          mkdir -p "$prebuilt/lib"
+          cp /tmp/sherpa-x/*/lib/*.dylib "$prebuilt/lib/"
+          cp "$prebuilt/lib/libsherpa-onnx-c-api.dylib" "$prebuilt/lib/libonnxruntime.dylib" src-tauri/target/release/
+          ls -la "$prebuilt/lib" src-tauri/target/release/*.dylib
 
       - name: build binary without bundling
         run: |
