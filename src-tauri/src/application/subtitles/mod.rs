@@ -131,8 +131,12 @@ impl SubtitlePrefs {
         )
     }
 
+    /// 是否会展示译文：选了文本翻译模型，或识别模型自带实时翻译
+    /// （如 Gemini Live Translate）。后者即使翻译模型为“无”也要展示，
+    /// 否则悬浮窗的译文行、双语高度与 OBS 布局都会把译文藏起来。
     fn translation_enabled(&self) -> bool {
-        !self.translation_model.trim().is_empty() && self.translation_model != "none"
+        (!self.translation_model.trim().is_empty() && self.translation_model != "none")
+            || prefs_live_translate_asr(self)
     }
 }
 
@@ -880,7 +884,7 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
                     session.document.on_partial(text.to_string(), &mode, now);
                     // 自带翻译的模型也要走 dispatch 铸造分段序号，但译文由连接器
                     // 随后以 translation 事件回填，不派发给文本翻译供应商。
-                    if session.prefs.translation_enabled() || session.live_translate_asr() {
+                    if session.prefs.translation_enabled() {
                         let pairs = session.translation.dispatch(text, final_result);
                         if !session.live_translate_asr() {
                             translate = pairs;
@@ -1153,7 +1157,7 @@ fn render(app: &AppHandle) {
     );
     // 自带翻译的模型即使翻译模型选“无”也要展示译文行，否则按上一版
     // 指引（翻译模型保持无）使用时，连接器回填的译文永远到不了悬浮窗。
-    let show_translation = prefs.translation_enabled() || prefs_live_translate_asr(&prefs);
+    let show_translation = prefs.translation_enabled();
     let (main, secondary) = if !show_translation {
         (original.clone(), String::new())
     } else if prefs.translation_layout == "translationOnly" {
