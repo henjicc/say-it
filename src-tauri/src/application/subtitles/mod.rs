@@ -346,13 +346,17 @@ struct Session {
     error: Option<String>,
 }
 
+/// 识别模型是否自带实时翻译（译文随识别连接器返回，如 Gemini Live
+/// Translate）。这类模型不需要、也不应再选文本翻译模型。
+fn prefs_live_translate_asr(prefs: &SubtitlePrefs) -> bool {
+    crate::providers::registry::model_info(&prefs.asr_model)
+        .map(|info| info.protocol == crate::providers::gemini_live::PROTOCOL)
+        .unwrap_or(false)
+}
+
 impl Session {
-    /// 当前识别模型是否自带实时翻译（译文随识别连接器返回，如 Gemini Live
-    /// Translate）。这类模型不需要、也不应再选文本翻译模型。
     fn live_translate_asr(&self) -> bool {
-        crate::providers::registry::model_info(&self.prefs.asr_model)
-            .map(|info| info.protocol == crate::providers::gemini_live::PROTOCOL)
-            .unwrap_or(false)
+        prefs_live_translate_asr(&self.prefs)
     }
 
     fn apply_translation(&mut self, epoch: u64, seq: u64, text: String) -> bool {
@@ -1147,7 +1151,10 @@ fn render(app: &AppHandle) {
             style,
         },
     );
-    let (main, secondary) = if !prefs.translation_enabled() {
+    // 自带翻译的模型即使翻译模型选“无”也要展示译文行，否则按上一版
+    // 指引（翻译模型保持无）使用时，连接器回填的译文永远到不了悬浮窗。
+    let show_translation = prefs.translation_enabled() || prefs_live_translate_asr(&prefs);
+    let (main, secondary) = if !show_translation {
         (original.clone(), String::new())
     } else if prefs.translation_layout == "translationOnly" {
         (translation.clone(), String::new())

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { StatusBar } from "@/components/ui/StatusBar";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import {
@@ -32,6 +33,8 @@ export function RealtimeSubtitlesPanel() {
   const running = useSubtitleStore((s) => s.running);
   const prefs = useSubtitleStore((s) => s.prefs);
   const patch = useSubtitleStore((s) => s.patch);
+  const statusText = useSubtitleStore((s) => s.statusText);
+  const statusTone = useSubtitleStore((s) => s.statusTone);
 
   // 开关状态放在这一层（而不是某个 tab 内部），这样切通用设置/字幕样式/字幕翻译
   // 之间的任意 tab 时预览都不会中断，方便边看效果边调整各处设置；
@@ -88,6 +91,14 @@ export function RealtimeSubtitlesPanel() {
           </>
         }
       />
+
+      {statusText && (
+        <StatusBar
+          variant="inline"
+          tone={statusTone === "err" ? "err" : statusTone === "ok" ? "ok" : "idle"}
+          message={statusText}
+        />
+      )}
 
       <Tabs<SubtitleTabKey> tabs={TABS} active={tab} onChange={setTab} />
 
