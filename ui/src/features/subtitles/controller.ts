@@ -1,6 +1,7 @@
 import { CMD, EVT, cmd, cmdSilent, emitEvent } from "@/lib/tauri";
 import { useSubtitleStore, type SubtitlePrefs } from "@/store/useSubtitleStore";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
+import { isLiveTranslateAsrModel } from "@/features/asr/modelRegistry";
 import {
   configureSubtitleHotkeys,
   startSubtitleShortcutCapture,
@@ -136,8 +137,13 @@ function previewDisplay(prefs: SubtitlePrefs, current = "") {
   return [...previewCommitted, current].filter(Boolean).slice(-prefs.lineCount).join("\n");
 }
 
+/** 是否会展示译文：选了文本翻译模型，或识别模型自带实时翻译。与后端 `SubtitlePrefs::translation_enabled` 保持一致。 */
+export function subtitleTranslationEnabled(prefs: Pick<SubtitlePrefs, "translationModel" | "asrModel">) {
+  return prefs.translationModel !== TRANSLATION_MODEL_NONE || isLiveTranslateAsrModel(prefs.asrModel);
+}
+
 function pushPreviewChannels(prefs: SubtitlePrefs) {
-  if (prefs.translationModel === TRANSLATION_MODEL_NONE) {
+  if (!subtitleTranslationEnabled(prefs)) {
     cmdSilent(CMD.setIndicatorText, { text: previewOriginal });
     cmdSilent(CMD.setIndicatorTranslation, { text: "" });
   } else if (prefs.translationLayout === "translationOnly") {
@@ -161,7 +167,7 @@ function playPreviewSentence(generation: number) {
     previewCommitted.push(source);
     previewCommitted = previewCommitted.slice(-12);
     previewOriginal = previewDisplay(prefs);
-    if (prefs.translationModel !== TRANSLATION_MODEL_NONE) {
+    if (subtitleTranslationEnabled(prefs)) {
       let translationPos = 0;
       const typeTranslation = () => {
         translationPos += 1;
@@ -192,7 +198,7 @@ async function syncPreviewIndicator(prefs: SubtitlePrefs) {
   const offsetY = Math.round((monitorHeight * prefs.offsetYPercent) / 100);
   const lines = prefs.mode === "replace" ? 1 : prefs.lineCount;
   const lineHeight = Math.round(fontSize * 1.38);
-  const translationEnabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  const translationEnabled = subtitleTranslationEnabled(prefs);
   const height = lineHeight * lines + 28 + (translationEnabled && prefs.translationLayout === "bilingual" ? lineHeight * lines + 30 : 0);
   await cmdSilent(CMD.setIndicatorLayout, { width, height, anchor: prefs.anchor, offsetY });
   await emitEvent(EVT.indicatorConfig, {

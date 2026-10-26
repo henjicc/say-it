@@ -188,32 +188,88 @@ pub fn decode_message(value: &Value) -> Vec<GeminiEvent> {
     events
 }
 
-/// 一轮对话的双路转写累积：服务端给的是增量片段，宿主事件需要累计文本。
-#[derive(Default)]
+/// 单路转写的累积缓冲。Gemini 既可能发增量片段，也可能发整段累计快照
+/// （严格扩展当前缓冲的报文），两种形状在同一会话里都出现过，必须按内容
+/// 判别而不是假定其一；否则快照会被当片段重复拼接，译文/原文整段重复。
+#[derive(Default, Debug)]
+struct TranscriptLane {
+    text: String,
+    /// 本地已取走的累计前缀：本地检查点不会结束供应商的累计流，后续快照
+    /// 仍带着这段前缀，需要剥掉才能得到本轮新增文本。
+    checkpoint_prefix: String,
+    cumulative_snapshots: bool,
+}
+
+impl TranscriptLane {
+    /// 合并一条报文；返回缓冲是否发生变化。
+    fn merge(&mut self, chunk: &str) -> bool {
+        let continuation = (!self.checkpoint_prefix.is_empty())
+            .then(|| chunk.strip_prefix(self.checkpoint_prefix.as_str()))
+            .flatten();
+        let chunk = continuation.unwrap_or(chunk);
+        if chunk.is_empty() {
+            return false;
+        }
+        if !self.text.is_empty() && chunk.len() > self.text.len() && chunk.starts_with(&self.text) {
+            if continuation.is_none() {
+                self.checkpoint_prefix.clear();
+            }
+            self.text.clear();
+            self.text.push_str(chunk);
+            self.cumulative_snapshots = true;
+        } else if self.cumulative_snapshots && chunk == self.text {
+            return false;
+        } else {
+            self.text.push_str(chunk);
+        }
+        true
+    }
+
+    fn take(&mut self) -> String {
+        let text = std::mem::take(&mut self.text);
+        self.checkpoint_prefix.push_str(&text);
+        text
+    }
+}
+
+/// 一轮对话的双路转写累积：宿主事件需要的是本轮累计文本。
+#[derive(Default, Debug)]
 pub struct TurnTranscripts {
-    pub source: String,
-    pub translation: String,
+    source: TranscriptLane,
+    translation: TranscriptLane,
 }
 
 impl TurnTranscripts {
-    pub fn push_source(&mut self, delta: &str) {
-        self.source.push_str(delta);
+    /// 返回原文缓冲是否发生变化。
+    pub fn push_source(&mut self, delta: &str) -> bool {
+        self.source.merge(delta)
     }
 
-    pub fn push_translation(&mut self, delta: &str) {
-        self.translation.push_str(delta);
+    /// 返回译文缓冲是否发生变化。
+    pub fn push_translation(&mut self, delta: &str) -> bool {
+        self.translation.merge(delta)
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source.text
+    }
+
+    pub fn translation(&self) -> &str {
+        &self.translation.text
     }
 
     pub fn is_empty(&self) -> bool {
-        self.source.is_empty() && self.translation.is_empty()
+        self.source.text.is_empty() && self.translation.text.is_empty()
+    }
+
+    /// 两路都已有实质内容（不只是空白），可以作为一对定稿。
+    pub fn is_paired(&self) -> bool {
+        !self.source.text.trim().is_empty() && !self.translation.text.trim().is_empty()
     }
 
     /// 取走本轮累计文本并复位。返回 (原文, 译文)。
     pub fn take(&mut self) -> (String, String) {
-        (
-            std::mem::take(&mut self.source),
-            std::mem::take(&mut self.translation),
-        )
+        (self.source.take(), self.translation.take())
     }
 }
 
@@ -313,11 +369,46 @@ mod tests {
     #[test]
     fn turn_transcripts_accumulate_and_take() {
         let mut turn = TurnTranscripts::default();
-        turn.push_source("你");
-        turn.push_source("好");
-        turn.push_translation("Hel");
-        turn.push_translation("lo");
+        assert!(turn.push_source("你"));
+        assert!(turn.push_source("好"));
+        assert!(turn.push_translation("Hel"));
+        assert!(turn.push_translation("lo"));
+        assert!(turn.is_paired());
         assert_eq!(turn.take(), ("你好".to_string(), "Hello".to_string()));
         assert!(turn.is_empty());
+    }
+
+    #[test]
+    fn cumulative_snapshots_replace_instead_of_append() {
+        let mut turn = TurnTranscripts::default();
+        assert!(turn.push_source("こんにちは"));
+        assert!(turn.push_source("こんにちは、世界"));
+        assert_eq!(turn.source(), "こんにちは、世界");
+        // 与当前缓冲完全相同的快照是重发，不视为变化。
+        assert!(!turn.push_source("こんにちは、世界"));
+        // 快照模式下的新片段仍按原样追加，不按尾部匹配去重。
+        assert!(turn.push_source("。"));
+        assert_eq!(turn.source(), "こんにちは、世界。");
+    }
+
+    #[test]
+    fn checkpoint_strips_already_taken_prefix_from_later_snapshots() {
+        let mut turn = TurnTranscripts::default();
+        turn.push_translation("你好");
+        turn.push_translation("你好，世界");
+        assert_eq!(turn.take().1, "你好，世界");
+        assert!(turn.push_translation("你好，世界。再见"));
+        assert_eq!(turn.translation(), "。再见");
+        assert!(turn.push_translation("你好，世界。再见了"));
+        assert_eq!(turn.translation(), "。再见了");
+    }
+
+    #[test]
+    fn whitespace_only_lanes_are_not_paired() {
+        let mut turn = TurnTranscripts::default();
+        turn.push_source("原文");
+        turn.push_translation(" ");
+        assert!(!turn.is_paired());
+        assert!(!turn.is_empty());
     }
 }
