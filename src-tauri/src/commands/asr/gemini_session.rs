@@ -13,6 +13,127 @@ use crate::state::*;
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(20);
 const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
+/// `turnComplete` 之后转写尾巴仍可能继续到达，边界只能是临时的，等转写安静
+/// 这么久再定稿。
+const TURN_TAIL_QUIET: Duration = Duration::from_millis(500);
+/// Gemini 的连续翻译模型可以整段不发 `turnComplete`：原文与译文都已有内容且
+/// 安静这么久，就按本地检查点把这一对定稿，否则译文永远停留在草稿里。
+const PAIRED_QUIET: Duration = Duration::from_millis(2_000);
+/// 只有一路有内容（通常译文尚未开始）时再多等一会儿，避免把一句原文和它
+/// 随后才到的译文拆到两轮；超过后仍按单路定稿，字幕不能无限悬挂。
+const UNPAIRED_QUIET: Duration = Duration::from_millis(5_000);
+const LOOP_TICK: Duration = Duration::from_millis(100);
+
+/// 把 Gemini 两路转写编排成字幕层需要的事件序列：
+/// - 原文/译文每次变化都以 `final: false` 发出累计草稿；
+/// - 定稿时先发原文 `result(final)`，紧接着发译文 `translation(final)`，
+///   字幕层按这个顺序把译文挂到刚定稿的原文分段上，顺序不可颠倒。
+#[derive(Default)]
+struct TurnAssembler {
+    turn: TurnTranscripts,
+    last_delta_at: Option<Instant>,
+    /// 本轮收到过 `turnComplete`/`interrupted` 显式边界，尾巴安静后即定稿。
+    explicit_boundary: bool,
+    /// 自上次复位以来是否出现过服务端边界；收尾阶段用它判断服务端已交付完毕。
+    boundary_seen: bool,
+}
+
+impl TurnAssembler {
+    fn on_source(&mut self, app: &tauri::AppHandle, session_id: &str, delta: &str, now: Instant) {
+        if !self.turn.push_source(delta) {
+            return;
+        }
+        self.last_delta_at = Some(now);
+        emit_asr_stream_event(
+            app,
+            session_id,
+            "result",
+            json!({ "text": self.turn.source(), "final": false }),
+        );
+    }
+
+    fn on_translation(
+        &mut self,
+        app: &tauri::AppHandle,
+        session_id: &str,
+        delta: &str,
+        now: Instant,
+    ) {
+        if !self.turn.push_translation(delta) {
+            return;
+        }
+        self.last_delta_at = Some(now);
+        emit_asr_stream_event(
+            app,
+            session_id,
+            "translation",
+            json!({ "text": self.turn.translation(), "final": false }),
+        );
+    }
+
+    fn on_boundary(&mut self, now: Instant) {
+        self.boundary_seen = true;
+        if self.turn.is_empty() {
+            return;
+        }
+        self.explicit_boundary = true;
+        self.last_delta_at = Some(now);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.turn.is_empty()
+    }
+
+    fn quiet_for(&self, now: Instant) -> Option<Duration> {
+        self.last_delta_at
+            .map(|at| now.saturating_duration_since(at))
+    }
+
+    /// 周期检查是否到达定稿时机。
+    fn poll(&mut self, app: &tauri::AppHandle, session_id: &str, now: Instant) {
+        if self.turn.is_empty() {
+            return;
+        }
+        let Some(quiet) = self.quiet_for(now) else {
+            return;
+        };
+        let due = if self.explicit_boundary {
+            quiet >= TURN_TAIL_QUIET
+        } else if self.turn.is_paired() {
+            quiet >= PAIRED_QUIET
+        } else {
+            quiet >= UNPAIRED_QUIET
+        };
+        if due {
+            self.finalize(app, session_id);
+        }
+    }
+
+    fn finalize(&mut self, app: &tauri::AppHandle, session_id: &str) {
+        self.explicit_boundary = false;
+        self.last_delta_at = None;
+        if self.turn.is_empty() {
+            return;
+        }
+        let (source, translation) = self.turn.take();
+        if !source.trim().is_empty() {
+            emit_asr_stream_event(
+                app,
+                session_id,
+                "result",
+                json!({ "text": source, "final": true }),
+            );
+        }
+        if !translation.trim().is_empty() {
+            emit_asr_stream_event(
+                app,
+                session_id,
+                "translation",
+                json!({ "text": translation, "final": true }),
+            );
+        }
+    }
+}
 
 pub(super) async fn start_gemini_stream(
     app: tauri::AppHandle,
@@ -58,10 +179,9 @@ pub(super) async fn start_gemini_stream(
     Ok(AsrStreamStartResponse { session_id })
 }
 
-/// 事件处理后的流向：继续、正常收尾、或以某个终局事件结束会话。
+/// 事件处理后的流向：继续，或以某个终局事件结束会话。
 enum Step {
     Continue,
-    End,
     Terminal(&'static str, Value),
 }
 
@@ -155,16 +275,25 @@ async fn run_gemini_session(
     );
 
     let mut frame_buf: Vec<u8> = Vec::new();
-    let mut turn = TurnTranscripts::default();
-    let mut last_source_emitted = String::new();
+    let mut turn = TurnAssembler::default();
+    // 收到 Finish 的时刻；之后最多再等 FINISH_TIMEOUT 收尾。
     let mut finishing_at: Option<Instant> = None;
     // 终局事件（error/closed）在清理后统一发出；为空表示正常结束（ended）。
     let mut terminal: Option<(&'static str, Value)> = None;
 
     'session: loop {
-        if finishing_at.is_some_and(|deadline| Instant::now() >= deadline) {
-            finalize_turn(&app, &session_id, &mut turn, &mut last_source_emitted);
-            break 'session;
+        let now = Instant::now();
+        turn.poll(&app, &session_id, now);
+        if let Some(finish_at) = finishing_at {
+            // 连续模型在 audioStreamEnd 之后也可能不发 turnComplete：已无待定稿
+            // 内容，且（收到过服务端边界，或安静够久）就正常收尾，否则到预算上限
+            // 强制定稿。
+            let drained = turn.is_empty()
+                && (turn.boundary_seen || now.saturating_duration_since(finish_at) >= PAIRED_QUIET);
+            if drained || now >= finish_at + FINISH_TIMEOUT {
+                turn.finalize(&app, &session_id);
+                break 'session;
+            }
         }
         tokio::select! {
             input = rx.recv() => match input {
@@ -206,7 +335,8 @@ async fn run_gemini_session(
                                 gemini_live::audio_stream_end_message().to_string().into(),
                             ))
                             .await;
-                        finishing_at = Some(Instant::now() + FINISH_TIMEOUT);
+                        finishing_at = Some(Instant::now());
+                        turn.boundary_seen = false;
                     }
                 }
                 Some(AsrStreamInput::Stop) | None => break 'session,
@@ -218,12 +348,9 @@ async fn run_gemini_session(
                         &session_id,
                         decode_text(&text.to_string()),
                         &mut turn,
-                        &mut last_source_emitted,
-                        finishing_at.is_some(),
                         &redact,
                     ) {
                         Step::Continue => {}
-                        Step::End => break 'session,
                         Step::Terminal(kind, payload) => {
                             terminal = Some((kind, payload));
                             break 'session;
@@ -237,12 +364,9 @@ async fn run_gemini_session(
                             &session_id,
                             decode_text(&text),
                             &mut turn,
-                            &mut last_source_emitted,
-                            finishing_at.is_some(),
                             &redact,
                         ) {
                             Step::Continue => {}
-                            Step::End => break 'session,
                             Step::Terminal(kind, payload) => {
                                 terminal = Some((kind, payload));
                                 break 'session;
@@ -268,7 +392,7 @@ async fn run_gemini_session(
                     break 'session;
                 }
             },
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            _ = tokio::time::sleep(LOOP_TICK) => {}
         }
     }
 
@@ -289,38 +413,22 @@ fn handle_events(
     app: &tauri::AppHandle,
     session_id: &str,
     events: Vec<GeminiEvent>,
-    turn: &mut TurnTranscripts,
-    last_source_emitted: &mut String,
-    finishing: bool,
+    turn: &mut TurnAssembler,
     redact: &impl Fn(String) -> String,
 ) -> Step {
+    let now = Instant::now();
     for event in events {
         match event {
-            GeminiEvent::SourceTranscript { text } => {
-                turn.push_source(&text);
-                if turn.source != *last_source_emitted && !turn.source.is_empty() {
-                    *last_source_emitted = turn.source.clone();
-                    emit_asr_stream_event(
-                        app,
-                        session_id,
-                        "result",
-                        json!({ "text": turn.source, "final": false }),
-                    );
-                }
-            }
+            GeminiEvent::SourceTranscript { text } => turn.on_source(app, session_id, &text, now),
             GeminiEvent::TranslationTranscript { text } => {
-                turn.push_translation(&text);
+                turn.on_translation(app, session_id, &text, now)
             }
-            GeminiEvent::GenerationComplete
-            | GeminiEvent::TurnComplete
-            | GeminiEvent::Interrupted => {
-                finalize_turn(app, session_id, turn, last_source_emitted);
-                if finishing {
-                    return Step::End;
-                }
-            }
+            // generationComplete 只表示模型本次生成结束，译文转写可能还在路上，
+            // 不是边界；turnComplete/interrupted 也只是临时边界，等尾巴安静再定稿。
+            GeminiEvent::GenerationComplete => {}
+            GeminiEvent::TurnComplete | GeminiEvent::Interrupted => turn.on_boundary(now),
             GeminiEvent::GoAway => {
-                finalize_turn(app, session_id, turn, last_source_emitted);
+                turn.finalize(app, session_id);
                 return Step::Terminal(
                     "closed",
                     json!({ "message": "Gemini Live 会话被服务端结束（goAway）" }),
@@ -338,37 +446,6 @@ fn handle_events(
         }
     }
     Step::Continue
-}
-
-/// 提交一轮：先发原文定稿，再发译文定稿——字幕编排按这个顺序把译文挂到
-/// 刚定稿的原文分段上，顺序不可颠倒。
-fn finalize_turn(
-    app: &tauri::AppHandle,
-    session_id: &str,
-    turn: &mut TurnTranscripts,
-    last_source_emitted: &mut String,
-) {
-    if turn.is_empty() {
-        return;
-    }
-    let (source, translation) = turn.take();
-    if !source.is_empty() {
-        emit_asr_stream_event(
-            app,
-            session_id,
-            "result",
-            json!({ "text": source, "final": true }),
-        );
-    }
-    if !translation.is_empty() {
-        emit_asr_stream_event(
-            app,
-            session_id,
-            "translation",
-            json!({ "text": translation, "final": true }),
-        );
-    }
-    last_source_emitted.clear();
 }
 
 fn decode_text(text: &str) -> Vec<GeminiEvent> {

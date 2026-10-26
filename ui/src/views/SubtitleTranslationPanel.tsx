@@ -8,7 +8,7 @@ import {
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
 import { TRANSLATION_MODEL_NONE, TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
-import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { isLiveTranslateAsrModel, optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
   TRANSLATION_TARGET_LANGUAGE_OPTIONS,
@@ -21,7 +21,7 @@ export function SubtitleTranslationPanel() {
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
   // Gemini Live Translate 在识别连接内直接返回译文：无需另选翻译模型，
   // 但目标语言仍在本面板选择，需要把语种区展示出来。
-  const liveTranslateAsr = prefs.asrModel === "gemini-3.5-live-translate-preview";
+  const liveTranslateAsr = isLiveTranslateAsrModel(prefs.asrModel);
   const pluginOptions = optionsForScene("subtitleTranslation");
 
   return (

@@ -135,6 +135,8 @@ export function timestampCapableLabels(scene: string): string[] {
     .models.filter((item) => item.scenes.includes(scene) && item.supportsAlignmentTimestamps)
     .map((item) => item.label);
 }
+/** 识别模型自带实时翻译（译文随识别连接返回，如 Gemini Live Translate）。 */
+export const isLiveTranslateAsrModel = (id: string) => modelInfo(id)?.protocol === "gemini-live-translate";
 export const isQwenRealtimeModel = (id: string) => modelInfo(id)?.isQwenRealtime ?? false;
 export const isQwenFileModel = (id: string) => modelInfo(id)?.isQwenFile ?? false;
 export const isQwenShortAudioFileModel = (id: string) => modelInfo(id)?.isQwenShortAudioFile ?? false;

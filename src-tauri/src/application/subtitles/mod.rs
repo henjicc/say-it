@@ -239,9 +239,28 @@ struct TranslationDocument {
     committed_groups: Vec<Vec<u64>>,
     replace_groups: Vec<Vec<u64>>,
     values: BTreeMap<u64, String>,
+    /// 自带翻译的识别模型（如 Gemini Live Translate）尚未定稿的累计译文草稿，
+    /// 与当前未定稿原文并排展示；译文定稿挂到分段序号后清空。
+    draft: String,
 }
 
 impl TranslationDocument {
+    /// 当前未定稿分组的展示文本：文本翻译供应商按序号回填，自带翻译的模型
+    /// 则只有草稿。
+    fn current_text(&self) -> String {
+        let joined = self
+            .current_group
+            .iter()
+            .filter_map(|seq| self.values.get(seq))
+            .cloned()
+            .collect::<String>();
+        if joined.is_empty() {
+            self.draft.clone()
+        } else {
+            joined
+        }
+    }
+
     fn dispatch(&mut self, text: &str, final_result: bool) -> Vec<(u64, String)> {
         let mut out = vec![];
         if self.partial_offset > text.len() {
@@ -299,19 +318,20 @@ impl TranslationDocument {
                 .cloned()
                 .collect::<String>()
         };
+        let current = self.current_text();
         let text = if prefs.mode == "replace" {
             self.replace_groups
                 .iter()
-                .chain(std::iter::once(&self.current_group))
                 .map(join)
+                .chain(std::iter::once(current))
                 .filter(|v| !v.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ")
         } else {
             self.committed_groups
                 .iter()
-                .chain(std::iter::once(&self.current_group))
                 .map(join)
+                .chain(std::iter::once(current))
                 .filter(|v| !v.is_empty())
                 .rev()
                 .take(prefs.line_count.max(1) as usize)
@@ -339,9 +359,11 @@ struct Session {
     document: SubtitleDocument,
     translation: TranslationDocument,
     translation_cancellation: CancellationToken,
-    /// 自带实时翻译的识别模型（如 Gemini Live Translate）刚定稿一轮的译文分段序号：
-    /// 连接器随后发来的 translation 事件按这组序号回填，不再走文本翻译供应商。
+    /// 自带实时翻译的识别模型（如 Gemini Live Translate）最近一轮定稿原文的分段序号：
+    /// 连接器发来的 translation 定稿按这组序号回填，不再走文本翻译供应商。
     live_translation_seqs: Vec<u64>,
+    /// 上述分组是否已回填过译文；译文尾巴晚于下一轮边界到达时追加而不是覆盖。
+    live_translation_filled: bool,
     last_voice_at: Option<Instant>,
     reconnect_attempts: u32,
     opening: bool,
@@ -361,6 +383,38 @@ fn prefs_live_translate_asr(prefs: &SubtitlePrefs) -> bool {
 impl Session {
     fn live_translate_asr(&self) -> bool {
         prefs_live_translate_asr(&self.prefs)
+    }
+
+    /// 自带翻译的识别模型发来的 translation 事件：草稿直接展示；定稿挂到最近
+    /// 一轮定稿原文的第一个分段序号上（其余序号清空，避免与原文分段拼接时
+    /// 重复）。该分组已有译文时视为迟到的尾巴，追加而不是覆盖；还没有任何
+    /// 定稿原文可挂靠时保留为草稿，等下一轮原文定稿后由后续译文定稿替换。
+    fn apply_live_translation(&mut self, text: &str, final_result: bool) {
+        if !final_result {
+            self.translation.draft = text.to_string();
+            return;
+        }
+        if text.trim().is_empty() {
+            return;
+        }
+        self.translation.draft.clear();
+        let Some((first, rest)) = self.live_translation_seqs.split_first() else {
+            self.translation.draft = text.to_string();
+            return;
+        };
+        let merged = if self.live_translation_filled {
+            match self.translation.values.get(first) {
+                Some(existing) if !existing.is_empty() => format!("{existing} {text}"),
+                _ => text.to_string(),
+            }
+        } else {
+            text.to_string()
+        };
+        self.translation.update(*first, merged);
+        for seq in rest {
+            self.translation.update(*seq, String::new());
+        }
+        self.live_translation_filled = true;
     }
 
     fn apply_translation(&mut self, epoch: u64, seq: u64, text: String) -> bool {
@@ -894,31 +948,26 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
                         session.document.commit(&mode, now);
                         session.translation.commit(&mode, continuing);
                         if session.live_translate_asr() {
-                            session.live_translation_seqs = session
+                            let group = session
                                 .translation
                                 .committed_groups
                                 .last()
                                 .cloned()
                                 .unwrap_or_default();
+                            if !group.is_empty() {
+                                session.live_translation_seqs = group;
+                                session.live_translation_filled = false;
+                            }
                         }
                     }
                 }
             }
             "translation" => {
-                // 仅自带翻译的识别模型会发这个事件：整轮译文挂到刚定稿分段的
-                // 第一个序号上，其余序号清空，避免与原文分段拼接时重复。
+                // 仅自带翻译的识别模型会发这个事件。
                 if session.live_translate_asr() {
                     let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
                     if let Some(text) = payload.get("text").and_then(Value::as_str) {
-                        if final_result && !text.trim().is_empty() {
-                            let seqs = std::mem::take(&mut session.live_translation_seqs);
-                            if let Some((first, rest)) = seqs.split_first() {
-                                session.translation.update(*first, text.to_string());
-                                for seq in rest {
-                                    session.translation.update(*seq, String::new());
-                                }
-                            }
-                        }
+                        session.apply_live_translation(text, final_result);
                     }
                 }
             }
@@ -1535,6 +1584,66 @@ mod tests {
         doc.update(2, "world".into());
         doc.update(1, "hello ".into());
         assert_eq!(doc.display(&SubtitlePrefs::default()), "hello world");
+    }
+
+    fn live_session_with_committed_group(group: Vec<u64>) -> Session {
+        let mut session = Session {
+            epoch: 1,
+            phase: SubtitlePhase::Running,
+            ..Session::default()
+        };
+        session.translation.committed_groups.push(group.clone());
+        session.translation.replace_groups.push(group.clone());
+        session.live_translation_seqs = group;
+        session
+    }
+
+    #[test]
+    fn live_translation_draft_shows_before_any_commit() {
+        let mut session = Session::default();
+        session.apply_live_translation("你好", false);
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好"
+        );
+        session.apply_live_translation("你好，世界", false);
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好，世界"
+        );
+    }
+
+    #[test]
+    fn live_translation_final_fills_latest_group_and_clears_draft() {
+        let mut session = live_session_with_committed_group(vec![1, 2]);
+        session.apply_live_translation("草稿", false);
+        session.apply_live_translation("你好，世界", true);
+        assert!(session.translation.draft.is_empty());
+        assert_eq!(session.translation.values.get(&1).unwrap(), "你好，世界");
+        assert_eq!(session.translation.values.get(&2).unwrap(), "");
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好，世界"
+        );
+    }
+
+    #[test]
+    fn late_live_translation_tail_appends_to_filled_group() {
+        let mut session = live_session_with_committed_group(vec![3]);
+        session.apply_live_translation("前半句", true);
+        session.apply_live_translation("后半句", true);
+        assert_eq!(session.translation.values.get(&3).unwrap(), "前半句 后半句");
+    }
+
+    #[test]
+    fn live_translation_final_without_source_group_stays_as_draft() {
+        let mut session = Session::default();
+        session.apply_live_translation("无处挂靠", true);
+        assert_eq!(session.translation.draft, "无处挂靠");
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "无处挂靠"
+        );
     }
 
     #[test]
