@@ -141,7 +141,9 @@ pub(super) async fn start_gemini_stream(
     profile: ProviderProfile,
     model: String,
     input_sample_rate: u32,
-    params: Option<DspParams>,
+    // Gemini 自身对噪声鲁棒，用户的降噪/响度参数在这里不生效：RNNoise 会削薄人声、
+    // 把 BGM 当噪声抹掉，自适应增益会把底噪顶上来，二者都会拉低识别与翻译准确率。
+    _params: Option<DspParams>,
     target_lang: Option<String>,
 ) -> Result<AsrStreamStartResponse, String> {
     let api_key = profile
@@ -171,7 +173,7 @@ pub(super) async fn start_gemini_stream(
         session_id.clone(),
         streams,
         rx,
-        super::stream_dsp(params, input_sample_rate),
+        StreamDsp::passthrough(input_sample_rate),
         model,
         api_key,
         target_code,
