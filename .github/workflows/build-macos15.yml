@@ -15,9 +15,9 @@ jobs:
           - runner: macos-15
             asset_arch: arm64
             expected_arch: arm64
-          - runner: macos-15-intel
-            asset_arch: x64
-            expected_arch: x86_64
+          #- runner: macos-15-intel
+          #  asset_arch: x64
+          #  expected_arch: x86_64
     runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "15.0"
