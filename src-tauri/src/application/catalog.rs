@@ -119,10 +119,12 @@ mod tests {
             provider_settings_response(normalize_settings(ProviderSettings::default()), None),
             &PluginRegistry::default(),
         );
+        // 与 shared/asr-models.json 的内置模型数一致（见 registry.rs 的 test_model_count），
+        // Apple Speech 仅在 macOS 运行时可用，其它平台少 1 个。
         let expected = if crate::providers::apple_speech::runtime_available() {
-            15
+            16
         } else {
-            14
+            15
         };
         assert_eq!(catalog.models.len(), expected);
         assert!(catalog
