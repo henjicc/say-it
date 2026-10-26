@@ -4,6 +4,11 @@
 //! 两条使用路径共用同一套参数 [`DspParams`]：
 //! - 离线：调校台录一段 → [`process_offline`] 返回处理后的 48k PCM 与前后 LUFS/峰值，供 A/B 试听。
 //! - 实时：语音输入把麦克风原始音频喂给 [`StreamDsp::process`]，得到可直接送 ASR 的 16k PCM16。
+//! - 直通：云端大模型（Gemini Live 等）用 [`StreamDsp::passthrough`]，跳过降噪 / EQ / 增益，
+//!   只做重采样与抗混叠抽取——这类模型自身对噪声鲁棒，前置处理反而损害识别。
+//!
+//! 48k→16k 抽取统一走带低通的 [`Decimator3`]，不是简单三点平均：后者没有抗混叠，
+//! 8kHz 以上内容会折叠回语音频段。
 //!
 //! RNNoise 固定工作在 48kHz、480 样本/帧，且样本范围是 i16（±32768），而 ebur128 用 [-1,1]。
 //! 本模块内部统一以 [-1,1] f32 表示，在喂给 RNNoise 前后做缩放。
@@ -250,7 +255,7 @@ fn resample_to_48k(input: &[f32], in_rate: u32) -> Vec<f32> {
     resample_linear(input, in_rate, RATE_48K)
 }
 
-/// 简单线性重采样（离线一次性版本，非流式）。供录音识别等离线场景复用。
+/// 简单线性重采���（离线一次性版本，非流式）。供录音识别等离线场景复用。
 pub(crate) fn resample_linear(input: &[f32], in_rate: u32, out_rate: u32) -> Vec<f32> {
     if in_rate == out_rate || input.is_empty() {
         return input.to_vec();
@@ -391,6 +396,75 @@ pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> Offli
     }
 }
 
+/// 48k→16k 抽取滤波器的 FIR 抽头数与截止频率。Blackman 窗过渡带约 5.5/N，
+/// 95 抽头下约 2.8kHz：6.6kHz 以下语音原样通过，8kHz（16k 的奈奎斯特）起
+/// 进入阻带（约 -74dB），避免 8kHz 以上内容折叠回语音频段形成混叠噪声。
+const DECIM_TAPS: usize = 95;
+const DECIM_CUTOFF_HZ: f32 = 6_600.0;
+
+/// 48k→16k 三抽一，带 Blackman 窗 sinc 低通抗混叠。只在抽取点计算卷积，
+/// 每个输出样本 DECIM_TAPS 次乘加，16k 下每秒约 150 万次，开销可忽略。
+struct Decimator3 {
+    coeffs: Vec<f32>,
+    history: Vec<f32>,
+    write_idx: usize,
+    phase: u32,
+}
+
+impl Decimator3 {
+    fn new() -> Self {
+        let n = DECIM_TAPS;
+        let fc = DECIM_CUTOFF_HZ / RATE_48K as f32;
+        let mid = (n - 1) as f32 / 2.0;
+        let mut coeffs: Vec<f32> = (0..n)
+            .map(|i| {
+                let x = i as f32 - mid;
+                let sinc = if x == 0.0 {
+                    2.0 * fc
+                } else {
+                    (2.0 * std::f32::consts::PI * fc * x).sin() / (std::f32::consts::PI * x)
+                };
+                let w = 0.42 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos()
+                    + 0.08 * (4.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos();
+                sinc * w
+            })
+            .collect();
+        let sum: f32 = coeffs.iter().sum();
+        for c in &mut coeffs {
+            *c /= sum;
+        }
+        Self {
+            coeffs,
+            history: vec![0.0; n],
+            write_idx: 0,
+            phase: 0,
+        }
+    }
+
+    /// 喂入一个 48k 样本；每第三个样本产出一个 16k 样本。
+    fn push(&mut self, x: f32) -> Option<f32> {
+        self.history[self.write_idx] = x;
+        self.write_idx = (self.write_idx + 1) % self.history.len();
+        self.phase += 1;
+        if self.phase < 3 {
+            return None;
+        }
+        self.phase = 0;
+        let n = self.history.len();
+        let mut acc = 0.0f32;
+        // write_idx 现在指向最旧的样本；系数对称，正反遍历结果一致。
+        let mut idx = self.write_idx;
+        for &c in &self.coeffs {
+            acc += c * self.history[idx];
+            idx += 1;
+            if idx == n {
+                idx = 0;
+            }
+        }
+        Some(acc)
+    }
+}
+
 /// 实时流式处理器：把麦克风原始音频转成可直接送 ASR 的 16k PCM16。
 /// 内部维持降噪状态、动量响度计与平滑增益，跨多次 `process` 连续。
 pub struct StreamDsp {
@@ -407,10 +481,10 @@ pub struct StreamDsp {
     rs_init: bool,
     rs_in_idx: u64,
     buf48: Vec<f32>,
-    // 48k→16k 三抽一盒式平均状态。
-    dec_acc: f32,
-    dec_cnt: u32,
+    decimator: Decimator3,
     peak_lin: f32,
+    /// 直通模式：跳过降噪 / EQ / 自适应增益，只做重采样与抗混叠抽取。
+    passthrough: bool,
 }
 
 impl StreamDsp {
@@ -432,10 +506,19 @@ impl StreamDsp {
             rs_init: false,
             rs_in_idx: 0,
             buf48: Vec::new(),
-            dec_acc: 0.0,
-            dec_cnt: 0,
+            decimator: Decimator3::new(),
             peak_lin,
+            passthrough: false,
         }
+    }
+
+    /// 云端大模型（如 Gemini Live）专用直通链路：这类模型自身对噪声鲁棒，
+    /// RNNoise 的频谱空洞、吞字和把 BGM 当噪声抹掉反而会损害识别；自适应
+    /// 增益把底噪顶到 -20 LUFS 同样有害。只保留重采样与抗混叠抽取，电平原样送出。
+    pub fn passthrough(in_rate: u32) -> Self {
+        let mut dsp = Self::new(DspParams::default(), in_rate);
+        dsp.passthrough = true;
+        dsp
     }
 
     fn resample_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
@@ -467,9 +550,18 @@ impl StreamDsp {
     pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
         let mut resampled = Vec::new();
         self.resample_into(input, &mut resampled);
-        self.buf48.append(&mut resampled);
 
         let mut out16: Vec<f32> = Vec::new();
+        if self.passthrough {
+            for &s in &resampled {
+                if let Some(y) = self.decimator.push(s) {
+                    out16.push(y);
+                }
+            }
+            return pcm16_bytes(&out16);
+        }
+
+        self.buf48.append(&mut resampled);
         let mut inf = [0f32; FRAME];
         let mut outf = [0f32; FRAME];
         let mut wet = [0f32; FRAME];
@@ -536,25 +628,94 @@ impl StreamDsp {
                 } else if s < -self.peak_lin {
                     s = -self.peak_lin;
                 }
-                self.dec_acc += s;
-                self.dec_cnt += 1;
-                if self.dec_cnt == 3 {
-                    out16.push(self.dec_acc / 3.0);
-                    self.dec_acc = 0.0;
-                    self.dec_cnt = 0;
+                if let Some(y) = self.decimator.push(s) {
+                    out16.push(y);
                 }
             }
 
             self.buf48.drain(0..FRAME);
         }
 
-        let mut bytes = Vec::with_capacity(out16.len() * 2);
-        for &s in &out16 {
-            let c = s.clamp(-1.0, 1.0);
-            let v = (if c < 0.0 { c * 32768.0 } else { c * 32767.0 }) as i16;
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        bytes
+        pcm16_bytes(&out16)
+    }
+}
+
+fn pcm16_bytes(samples: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for &s in samples {
+        let c = s.clamp(-1.0, 1.0);
+        let v = (if c < 0.0 { c * 32768.0 } else { c * 32767.0 }) as i16;
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tone_48k(freq: f32, amp: f32, samples: usize) -> Vec<f32> {
+        (0..samples)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / RATE_48K as f32).sin())
+            .collect()
+    }
+
+    fn decimate(input: &[f32]) -> Vec<f32> {
+        let mut d = Decimator3::new();
+        input.iter().filter_map(|&x| d.push(x)).collect()
+    }
+
+    fn rms_tail(v: &[f32]) -> f32 {
+        let tail = &v[v.len() / 2..];
+        rms(tail)
+    }
+
+    #[test]
+    fn decimator_outputs_one_per_three_inputs() {
+        assert_eq!(decimate(&vec![0.0; 4_800]).len(), 1_600);
+    }
+
+    #[test]
+    fn decimator_passes_speech_band_near_unity() {
+        let out = decimate(&tone_48k(1_000.0, 0.5, 48_000));
+        let gain_db = lin_to_db(rms_tail(&out) / (0.5 / 2f32.sqrt()));
+        assert!(gain_db.abs() < 0.5, "1kHz gain {gain_db} dB");
+    }
+
+    #[test]
+    fn decimator_rejects_aliasing_band() {
+        // 12kHz 在 16k 下会折叠到 4kHz 语音频段，盒式平均只能衰减约 -10dB。
+        let out = decimate(&tone_48k(12_000.0, 0.5, 48_000));
+        let gain_db = lin_to_db(rms_tail(&out) / (0.5 / 2f32.sqrt()));
+        assert!(gain_db < -60.0, "12kHz gain {gain_db} dB");
+    }
+
+    #[test]
+    fn passthrough_keeps_level_instead_of_normalizing() {
+        let mut dsp = StreamDsp::passthrough(RATE_48K);
+        let input = tone_48k(1_000.0, 0.01, 96_000);
+        let bytes = dsp.process(&input);
+        let out: Vec<f32> = bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+            .collect();
+        let gain_db = lin_to_db(rms_tail(&out) / (0.01 / 2f32.sqrt()));
+        assert!(gain_db.abs() < 0.5, "passthrough gain {gain_db} dB");
+    }
+
+    #[test]
+    fn normalizing_path_still_lifts_quiet_input() {
+        let mut dsp = StreamDsp::new(DspParams::default(), RATE_48K);
+        let input = tone_48k(1_000.0, 0.01, 96_000);
+        let bytes = dsp.process(&input);
+        let out: Vec<f32> = bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+            .collect();
+        assert!(
+            rms_tail(&out) > 0.01,
+            "adaptive gain should raise -40dBFS input"
+        );
     }
 }
 
