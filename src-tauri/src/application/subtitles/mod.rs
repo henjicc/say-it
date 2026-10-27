@@ -723,6 +723,23 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 静默断连判定：自带翻译的模型不断线。静默时断开会话会丢失整段对话
+/// 上下文，而日语省略主语多、脱离上下文翻不准；不断线的代价只是会话
+/// 保持期间的连接占用，准确度优先于这点节省。
+fn should_disconnect_for_silence(
+    live_translate_asr: bool,
+    has_session: bool,
+    last_voice_at: Option<Instant>,
+    disconnect_ms: u64,
+    now: Instant,
+) -> bool {
+    !live_translate_asr
+        && has_session
+        && last_voice_at.is_some_and(|at| {
+            now.saturating_duration_since(at) >= Duration::from_millis(disconnect_ms)
+        })
+}
+
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
@@ -758,13 +775,13 @@ fn spawn_raw_consumer(
                     }
                     (open, false)
                 } else {
-                    let close = session.asr_session_id.is_some()
-                        && session.last_voice_at.is_some_and(|at| {
-                            at.elapsed()
-                                >= Duration::from_millis(
-                                    session.audio_prefs.subtitle_silence_disconnect_ms,
-                                )
-                        });
+                    let close = should_disconnect_for_silence(
+                        session.live_translate_asr(),
+                        session.asr_session_id.is_some(),
+                        session.last_voice_at,
+                        session.audio_prefs.subtitle_silence_disconnect_ms,
+                        Instant::now(),
+                    );
                     (false, close)
                 }
             };
@@ -1656,5 +1673,46 @@ mod tests {
         assert!(!session.apply_translation(7, 1, "旧会话".into()));
         assert!(session.apply_translation(8, 1, "当前会话".into()));
         assert_eq!(session.translation.values.get(&1).unwrap(), "当前会话");
+    }
+
+    #[test]
+    fn live_translate_model_never_disconnects_for_silence() {
+        let now = Instant::now();
+        assert!(!should_disconnect_for_silence(
+            true,
+            true,
+            Some(now - Duration::from_secs(60)),
+            5_000,
+            now,
+        ));
+    }
+
+    #[test]
+    fn ordinary_model_disconnects_only_after_silence_timeout() {
+        let now = Instant::now();
+        assert!(should_disconnect_for_silence(
+            false,
+            true,
+            Some(now - Duration::from_millis(5_001)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false,
+            true,
+            Some(now - Duration::from_millis(4_999)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false,
+            false,
+            Some(now - Duration::from_secs(60)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false, true, None, 5_000, now,
+        ));
     }
 }
