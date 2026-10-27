@@ -1403,6 +1403,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(model),
         Some(rate),
         Some(dsp),
+        None,
     )
     .await?;
     if let Err(error) = attach_backend_mic_to_asr_inner(&response.session_id, &state) {

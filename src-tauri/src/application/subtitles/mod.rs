@@ -131,8 +131,12 @@ impl SubtitlePrefs {
         )
     }
 
+    /// 是否会展示译文：选了文本翻译模型，或识别模型自带实时翻译
+    /// （如 Gemini Live Translate）。后者即使翻译模型为“无”也要展示，
+    /// 否则悬浮窗的译文行、双语高度与 OBS 布局都会把译文藏起来。
     fn translation_enabled(&self) -> bool {
-        !self.translation_model.trim().is_empty() && self.translation_model != "none"
+        (!self.translation_model.trim().is_empty() && self.translation_model != "none")
+            || prefs_live_translate_asr(self)
     }
 }
 
@@ -235,9 +239,28 @@ struct TranslationDocument {
     committed_groups: Vec<Vec<u64>>,
     replace_groups: Vec<Vec<u64>>,
     values: BTreeMap<u64, String>,
+    /// 自带翻译的识别模型（如 Gemini Live Translate）尚未定稿的累计译文草稿，
+    /// 与当前未定稿原文并排展示；译文定稿挂到分段序号后清空。
+    draft: String,
 }
 
 impl TranslationDocument {
+    /// 当前未定稿分组的展示文本：文本翻译供应商按序号回填，自带翻译的模型
+    /// 则只有草稿。
+    fn current_text(&self) -> String {
+        let joined = self
+            .current_group
+            .iter()
+            .filter_map(|seq| self.values.get(seq))
+            .cloned()
+            .collect::<String>();
+        if joined.is_empty() {
+            self.draft.clone()
+        } else {
+            joined
+        }
+    }
+
     fn dispatch(&mut self, text: &str, final_result: bool) -> Vec<(u64, String)> {
         let mut out = vec![];
         if self.partial_offset > text.len() {
@@ -295,19 +318,20 @@ impl TranslationDocument {
                 .cloned()
                 .collect::<String>()
         };
+        let current = self.current_text();
         let text = if prefs.mode == "replace" {
             self.replace_groups
                 .iter()
-                .chain(std::iter::once(&self.current_group))
                 .map(join)
+                .chain(std::iter::once(current))
                 .filter(|v| !v.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ")
         } else {
             self.committed_groups
                 .iter()
-                .chain(std::iter::once(&self.current_group))
                 .map(join)
+                .chain(std::iter::once(current))
                 .filter(|v| !v.is_empty())
                 .rev()
                 .take(prefs.line_count.max(1) as usize)
@@ -335,6 +359,11 @@ struct Session {
     document: SubtitleDocument,
     translation: TranslationDocument,
     translation_cancellation: CancellationToken,
+    /// 自带实时翻译的识别模型（如 Gemini Live Translate）最近一轮定稿原文的分段序号：
+    /// 连接器发来的 translation 定稿按这组序号回填，不再走文本翻译供应商。
+    live_translation_seqs: Vec<u64>,
+    /// 上述分组是否已回填过译文；译文尾巴晚于下一轮边界到达时追加而不是覆盖。
+    live_translation_filled: bool,
     last_voice_at: Option<Instant>,
     reconnect_attempts: u32,
     opening: bool,
@@ -343,7 +372,51 @@ struct Session {
     error: Option<String>,
 }
 
+/// 识别模型是否自带实时翻译（译文随识别连接器返回，如 Gemini Live
+/// Translate）。这类模型不需要、也不应再选文本翻译模型。
+fn prefs_live_translate_asr(prefs: &SubtitlePrefs) -> bool {
+    crate::providers::registry::model_info(&prefs.asr_model)
+        .map(|info| info.protocol == crate::providers::gemini_live::PROTOCOL)
+        .unwrap_or(false)
+}
+
 impl Session {
+    fn live_translate_asr(&self) -> bool {
+        prefs_live_translate_asr(&self.prefs)
+    }
+
+    /// 自带翻译的识别模型发来的 translation 事件：草稿直接展示；定稿挂到最近
+    /// 一轮定稿原文的第一个分段序号上（其余序号清空，避免与原文分段拼接时
+    /// 重复）。该分组已有译文时视为迟到的尾巴，追加而不是覆盖；还没有任何
+    /// 定稿原文可挂靠时保留为草稿，等下一轮原文定稿后由后续译文定稿替换。
+    fn apply_live_translation(&mut self, text: &str, final_result: bool) {
+        if !final_result {
+            self.translation.draft = text.to_string();
+            return;
+        }
+        if text.trim().is_empty() {
+            return;
+        }
+        self.translation.draft.clear();
+        let Some((first, rest)) = self.live_translation_seqs.split_first() else {
+            self.translation.draft = text.to_string();
+            return;
+        };
+        let merged = if self.live_translation_filled {
+            match self.translation.values.get(first) {
+                Some(existing) if !existing.is_empty() => format!("{existing} {text}"),
+                _ => text.to_string(),
+            }
+        } else {
+            text.to_string()
+        };
+        self.translation.update(*first, merged);
+        for seq in rest {
+            self.translation.update(*seq, String::new());
+        }
+        self.live_translation_filled = true;
+    }
+
     fn apply_translation(&mut self, epoch: u64, seq: u64, text: String) -> bool {
         if self.epoch != epoch
             || matches!(self.phase, SubtitlePhase::Idle | SubtitlePhase::Stopping)
@@ -650,6 +723,23 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 静默断连判定：自带翻译的模型不断线。静默时断开会话会丢失整段对话
+/// 上下文，而日语省略主语多、脱离上下文翻不准；不断线的代价只是会话
+/// 保持期间的连接占用，准确度优先于这点节省。
+fn should_disconnect_for_silence(
+    live_translate_asr: bool,
+    has_session: bool,
+    last_voice_at: Option<Instant>,
+    disconnect_ms: u64,
+    now: Instant,
+) -> bool {
+    !live_translate_asr
+        && has_session
+        && last_voice_at.is_some_and(|at| {
+            now.saturating_duration_since(at) >= Duration::from_millis(disconnect_ms)
+        })
+}
+
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
@@ -685,13 +775,13 @@ fn spawn_raw_consumer(
                     }
                     (open, false)
                 } else {
-                    let close = session.asr_session_id.is_some()
-                        && session.last_voice_at.is_some_and(|at| {
-                            at.elapsed()
-                                >= Duration::from_millis(
-                                    session.audio_prefs.subtitle_silence_disconnect_ms,
-                                )
-                        });
+                    let close = should_disconnect_for_silence(
+                        session.live_translate_asr(),
+                        session.asr_session_id.is_some(),
+                        session.last_voice_at,
+                        session.audio_prefs.subtitle_silence_disconnect_ms,
+                        Instant::now(),
+                    );
                     (false, close)
                 }
             };
@@ -743,7 +833,7 @@ fn spawn_raw_consumer(
 
 async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
-    let (model, rate, dsp, source) = {
+    let (model, rate, dsp, source, target_lang) = {
         let session = state
             .subtitle_runtime
             .session
@@ -757,6 +847,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
             session.sample_rate,
             session.audio_prefs.dsp.clone(),
             session.source,
+            session.prefs.translation_target_lang.clone(),
         )
     };
     let response = start_asr_stream_inner(
@@ -766,6 +857,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(model),
         Some(rate),
         Some(dsp),
+        Some(target_lang),
     )
     .await?;
     let attached = match source {
@@ -861,12 +953,38 @@ async fn handle_asr(app: AppHandle, session_id: String, kind: String, payload: V
                             .replace_line_at
                             .is_some_and(|at| now.duration_since(at) <= REPLACE_CONTINUE_GAP);
                     session.document.on_partial(text.to_string(), &mode, now);
+                    // 自带翻译的模型也要走 dispatch 铸造分段序号，但译文由连接器
+                    // 随后以 translation 事件回填，不派发给文本翻译供应商。
                     if session.prefs.translation_enabled() {
-                        translate = session.translation.dispatch(text, final_result);
+                        let pairs = session.translation.dispatch(text, final_result);
+                        if !session.live_translate_asr() {
+                            translate = pairs;
+                        }
                     }
                     if final_result {
                         session.document.commit(&mode, now);
                         session.translation.commit(&mode, continuing);
+                        if session.live_translate_asr() {
+                            let group = session
+                                .translation
+                                .committed_groups
+                                .last()
+                                .cloned()
+                                .unwrap_or_default();
+                            if !group.is_empty() {
+                                session.live_translation_seqs = group;
+                                session.live_translation_filled = false;
+                            }
+                        }
+                    }
+                }
+            }
+            "translation" => {
+                // 仅自带翻译的识别模型会发这个事件。
+                if session.live_translate_asr() {
+                    let final_result = payload.get("final").and_then(Value::as_bool) == Some(true);
+                    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                        session.apply_live_translation(text, final_result);
                     }
                 }
             }
@@ -1103,7 +1221,10 @@ fn render(app: &AppHandle) {
             style,
         },
     );
-    let (main, secondary) = if !prefs.translation_enabled() {
+    // 自带翻译的模型即使翻译模型选“无”也要展示译文行，否则按上一版
+    // 指引（翻译模型保持无）使用时，连接器回填的译文永远到不了悬浮窗。
+    let show_translation = prefs.translation_enabled();
+    let (main, secondary) = if !show_translation {
         (original.clone(), String::new())
     } else if prefs.translation_layout == "translationOnly" {
         (translation.clone(), String::new())
@@ -1482,6 +1603,66 @@ mod tests {
         assert_eq!(doc.display(&SubtitlePrefs::default()), "hello world");
     }
 
+    fn live_session_with_committed_group(group: Vec<u64>) -> Session {
+        let mut session = Session {
+            epoch: 1,
+            phase: SubtitlePhase::Running,
+            ..Session::default()
+        };
+        session.translation.committed_groups.push(group.clone());
+        session.translation.replace_groups.push(group.clone());
+        session.live_translation_seqs = group;
+        session
+    }
+
+    #[test]
+    fn live_translation_draft_shows_before_any_commit() {
+        let mut session = Session::default();
+        session.apply_live_translation("你好", false);
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好"
+        );
+        session.apply_live_translation("你好，世界", false);
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好，世界"
+        );
+    }
+
+    #[test]
+    fn live_translation_final_fills_latest_group_and_clears_draft() {
+        let mut session = live_session_with_committed_group(vec![1, 2]);
+        session.apply_live_translation("草稿", false);
+        session.apply_live_translation("你好，世界", true);
+        assert!(session.translation.draft.is_empty());
+        assert_eq!(session.translation.values.get(&1).unwrap(), "你好，世界");
+        assert_eq!(session.translation.values.get(&2).unwrap(), "");
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "你好，世界"
+        );
+    }
+
+    #[test]
+    fn late_live_translation_tail_appends_to_filled_group() {
+        let mut session = live_session_with_committed_group(vec![3]);
+        session.apply_live_translation("前半句", true);
+        session.apply_live_translation("后半句", true);
+        assert_eq!(session.translation.values.get(&3).unwrap(), "前半句 后半句");
+    }
+
+    #[test]
+    fn live_translation_final_without_source_group_stays_as_draft() {
+        let mut session = Session::default();
+        session.apply_live_translation("无处挂靠", true);
+        assert_eq!(session.translation.draft, "无处挂靠");
+        assert_eq!(
+            session.translation.display(&SubtitlePrefs::default()),
+            "无处挂靠"
+        );
+    }
+
     #[test]
     fn late_translation_epoch_is_rejected_by_session_guard() {
         let mut session = Session {
@@ -1492,5 +1673,46 @@ mod tests {
         assert!(!session.apply_translation(7, 1, "旧会话".into()));
         assert!(session.apply_translation(8, 1, "当前会话".into()));
         assert_eq!(session.translation.values.get(&1).unwrap(), "当前会话");
+    }
+
+    #[test]
+    fn live_translate_model_never_disconnects_for_silence() {
+        let now = Instant::now();
+        assert!(!should_disconnect_for_silence(
+            true,
+            true,
+            Some(now - Duration::from_secs(60)),
+            5_000,
+            now,
+        ));
+    }
+
+    #[test]
+    fn ordinary_model_disconnects_only_after_silence_timeout() {
+        let now = Instant::now();
+        assert!(should_disconnect_for_silence(
+            false,
+            true,
+            Some(now - Duration::from_millis(5_001)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false,
+            true,
+            Some(now - Duration::from_millis(4_999)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false,
+            false,
+            Some(now - Duration::from_secs(60)),
+            5_000,
+            now,
+        ));
+        assert!(!should_disconnect_for_silence(
+            false, true, None, 5_000, now,
+        ));
     }
 }

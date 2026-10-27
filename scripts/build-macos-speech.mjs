@@ -17,8 +17,8 @@ const targetTriple = process.arch === "arm64"
   ? "aarch64-apple-darwin"
   : "x86_64-apple-darwin";
 const swiftTarget = process.arch === "arm64"
-  ? "arm64-apple-macosx15.5"
-  : "x86_64-apple-macosx15.5";
+  ? "arm64-apple-macosx15.0"
+  : "x86_64-apple-macosx15.0";
 const output = resolve(root, `src-tauri/binaries/sayit-apple-speech-${targetTriple}`);
 const developmentBundle = resolve(root, "src-tauri/binaries/SayItAppleSpeech.app");
 const developmentExecutable = resolve(developmentBundle, "Contents/MacOS/sayit-apple-speech");

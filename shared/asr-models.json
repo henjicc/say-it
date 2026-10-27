@@ -13,6 +13,19 @@
     "isDefaultFile": false
   },
   {
+    "id": "gemini-3.5-live-translate-preview",
+    "label": "Gemini 3.5 Live Translate（实时翻译）",
+    "providerId": "google-gemini",
+    "category": "realtime",
+    "protocol": "gemini-live-translate",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "emitsPartialResults": true,
+    "scenes": ["dictationRealtime", "subtitles"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
     "id": "seedasr-2.0-realtime",
     "label": "火山引擎 SeedASR 2.0",
     "providerId": "volcengine",

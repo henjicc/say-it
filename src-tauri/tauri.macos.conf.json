@@ -22,7 +22,7 @@
     "externalBin": ["binaries/sayit-apple-speech"],
     "icon": ["icons/icon.icns"],
     "macOS": {
-      "minimumSystemVersion": "15.5",
+      "minimumSystemVersion": "15.0",
       "infoPlist": "Info.plist",
       "frameworks": [
         "target/release/libsherpa-onnx-c-api.dylib",

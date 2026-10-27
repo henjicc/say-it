@@ -227,6 +227,7 @@ pub(crate) async fn compare_start(
                 Some(model.clone()),
                 Some(realtime_sample_rate),
                 request.params.clone(),
+                None,
             )
             .await;
             match opened {

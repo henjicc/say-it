@@ -1,0 +1,192 @@
+name: Build macOS 15
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            asset_arch: arm64
+            expected_arch: arm64
+          #- runner: macos-15-intel
+          #  asset_arch: x64
+          #  expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: ${{ matrix.expected_arch }}
+
+      - name: install native and frontend dependencies
+        run: |
+          brew install opus
+          npm install
+
+      - name: seed sherpa framework libraries
+        run: |
+          set -euo pipefail
+          version="$(grep -A1 '^name = "sherpa-onnx"$' src-tauri/Cargo.lock | grep '^version' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')"
+          test -n "$version"
+          case "$(uname -m)" in
+            arm64) sarch=arm64 ;;
+            x86_64) sarch=x64 ;;
+            *) echo "unexpected arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          echo "seeding sherpa-onnx $version ($sarch) framework libraries"
+          curl -fL -o /tmp/sherpa.tar.bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/sherpa-onnx-v${version}-osx-${sarch}-shared.tar.bz2"
+          mkdir -p /tmp/sherpa-x src-tauri/target/release
+          tar -xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa-x
+          # The sys crate's build script extracts the prebuilt package to
+          # target/sherpa-onnx-prebuilt/<name>-shared-lib and points the
+          # linker there; a restored rust-cache may keep the build-script
+          # fingerprint while dropping that directory, so seed it (and the
+          # bundle-check copies in target/release) explicitly.
+          prebuilt="src-tauri/target/sherpa-onnx-prebuilt/sherpa-onnx-v${version}-osx-${sarch}-shared-lib"
+          mkdir -p "$prebuilt/lib"
+          cp /tmp/sherpa-x/*/lib/*.dylib "$prebuilt/lib/"
+          cp "$prebuilt/lib/libsherpa-onnx-c-api.dylib" "$prebuilt/lib/libonnxruntime.dylib" src-tauri/target/release/
+          ls -la "$prebuilt/lib" src-tauri/target/release/*.dylib
+
+      - name: build binary without bundling
+        run: |
+          npm run context-probe:build
+          npm run macos-speech:build
+          node scripts/run-tauri.mjs build --no-bundle
+
+      - name: retarget bundled ONNX Runtime to macOS 15.0
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r lib; do
+            found=1
+            echo "retarget: $lib"
+            vtool -show-build "$lib" | grep -E 'platform|minos' || true
+            vtool -set-build-version macos 15.0 15.0 -output "$lib.retargeted" "$lib"
+            mv "$lib.retargeted" "$lib"
+            vtool -show-build "$lib" | grep -E 'platform|minos' || true
+          done < <(find src-tauri/target -name 'libonnxruntime*.dylib' -type f)
+          test "$found" -eq 1
+
+      - name: build macOS app bundle
+        run: node scripts/run-tauri.mjs build --bundles app
+
+      - name: unify code signatures inside the app bundle
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          echo "app: $app_path"
+          for lib in "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib" "$app_path/Contents/Frameworks/libonnxruntime.dylib"; do
+            test -f "$lib"
+            codesign --force --sign - "$lib"
+          done
+          codesign --force --sign - --identifier com.henjicc.sayit "$app_path/Contents/MacOS/sayit-apple-speech"
+          codesign --force --sign - "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          # Every Mach-O in the bundle must carry the same Team ID as the
+          # main executable (all ad-hoc: "not set"), otherwise dyld library
+          # validation aborts the launch on Apple Silicon.
+          main_team="$(codesign -dv "$app_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          echo "main TeamIdentifier: ${main_team:-<none>}"
+          while IFS= read -r binary; do
+            team="$(codesign -dv "$binary" 2>&1 | sed -n 's/^TeamIdentifier=//p' || true)"
+            echo "$binary -> TeamIdentifier=${team:-<none>}"
+            if [ "$team" != "$main_team" ]; then
+              echo "Team ID mismatch: $binary" >&2
+              exit 1
+            fi
+          done < <(find "$app_path/Contents" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1)
+          # Smoke test: the main binary must get past dyld (no missing
+          # library / signature rejection) and stay alive. The app is a
+          # tray app and does not exit on its own. (Stock macOS has no
+          # coreutils `timeout`, so poll the process manually.)
+          set +e
+          "$app_path/Contents/MacOS/SayIt" > smoke.log 2>&1 &
+          smoke_pid=$!
+          sleep 10
+          if kill -0 "$smoke_pid" 2>/dev/null; then
+            echo "smoke: app still running after 10s (good)"
+            kill "$smoke_pid" 2>/dev/null
+            wait "$smoke_pid" 2>/dev/null
+            smoke_status=124
+          else
+            wait "$smoke_pid"
+            smoke_status=$?
+            echo "smoke: app exited on its own with status $smoke_status"
+          fi
+          set -e
+          cat smoke.log
+          if grep -qE 'Library not loaded|not valid for use in process|code signature' smoke.log; then
+            echo "dyld rejected the app at launch" >&2
+            exit 1
+          fi
+          if [ "$smoke_status" != "124" ] && [ "$smoke_status" != "0" ]; then
+            echo "app crashed during smoke test (status $smoke_status)" >&2
+            exit 1
+          fi
+          echo "smoke test passed (status $smoke_status)"
+
+      - name: create DMG from the fixed app bundle
+        env:
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          version="$(node -p "require('./package.json').version")"
+          bundle_dir="src-tauri/target/release/bundle/dmg"
+          mkdir -p "$bundle_dir"
+          staging="$(mktemp -d)"
+          cp -R "$app_path" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "说吧！" -srcfolder "$staging" -ov -format UDZO "$bundle_dir/SayIt_${version}_macos15_${ASSET_ARCH}.dmg"
+          rm -rf "$staging"
+
+      - name: validate macOS bundle
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -euo pipefail
+          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          binary="$app_path/Contents/MacOS/SayIt"
+          test "$(lipo -archs "$binary")" = "$EXPECTED_ARCH"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          otool -L "$binary" | grep -q '@rpath/libsherpa-onnx-c-api.dylib'
+          otool -L "$binary" | grep -q '@rpath/libonnxruntime.dylib'
+          test -f "$app_path/Contents/Frameworks/libsherpa-onnx-c-api.dylib"
+          test -f "$app_path/Contents/Frameworks/libonnxruntime.dylib"
+          test -x "$app_path/Contents/MacOS/sayit-apple-speech"
+          test "$(plutil -extract LSMinimumSystemVersion raw -o - "$app_path/Contents/Info.plist")" = "15.0"
+          EXPECTED_ARCH="$EXPECTED_ARCH" node scripts/validate-macos-bundle.mjs "$app_path"
+          plutil -extract NSMicrophoneUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+          plutil -extract NSSpeechRecognitionUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+          plutil -extract NSScreenCaptureUsageDescription raw -o - "$app_path/Contents/Info.plist" >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sayit-macos15-${{ matrix.asset_arch }}
+          path: src-tauri/target/release/bundle/dmg/SayIt_*_macos15_${{ matrix.asset_arch }}.dmg
+          if-no-files-found: error
