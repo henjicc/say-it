@@ -15,7 +15,7 @@ use sayit_overlay_core::{
     geom::PxRect,
     look::Look,
     present::{CommitQueue, MainOp},
-    screen::{self, QRect},
+    screen::{self, QRect, ScreenInfo},
 };
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -29,6 +29,7 @@ pub(crate) struct Frame {
     pub dpi: u32,
     pub alpha: f32,
     pub look: Look,
+    pub screen: Option<ScreenInfo>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -195,17 +196,18 @@ pub(crate) fn apply_immediate(id: WindowId, op: MainOp<Frame>) {
 }
 
 impl MainHost {
-    fn set_bounds(&self, bounds: PxRect) {
+    fn set_bounds(&self, bounds: PxRect, screen_hint: Option<u32>) {
         if bounds.width <= 0 || bounds.height <= 0 {
             return;
         }
         let snapshot = screens::snapshot();
         let mirror = self.slot.snapshot();
-        let hint = self
-            .panel
-            .screen()
-            .map(|s| screens::screen_id(&s))
-            .or(mirror.screen);
+        let hint = screen_hint.or_else(|| {
+            self.panel
+                .screen()
+                .map(|s| screens::screen_id(&s))
+                .or(mirror.screen)
+        });
         let (quartz, id) = screen::rect_px_to_pts(&snapshot.list, bounds, hint);
         let Some(frame) =
             screens::ns_rect(screen::quartz_to_cocoa(snapshot.primary_height, quartz))
@@ -242,6 +244,20 @@ impl MainHost {
                     CATransaction::commit();
                     return;
                 }
+                if self.slot.id == WindowId::Indicator && !self.panel.isVisible() {
+                    // 全局快捷键可能先于激活/屏幕通知；显示前只在主线程复核，不等待渲染线程。
+                    screens::refresh(mtm);
+                    let snapshot = screens::snapshot();
+                    let fallback = self.panel.screen().map(|s| screens::screen_id(&s));
+                    if snapshot.indicator_screen(fallback).copied() != frame.screen {
+                        crate::render::run_on_host(
+                            self.slot.id,
+                            Box::new(|host, cx| host.redraw(cx)),
+                        );
+                        CATransaction::commit();
+                        return;
+                    }
+                }
                 {
                     let mut mirror = self.slot.mirror.lock().expect("overlay mirror poisoned");
                     mirror.bounds = frame.layout;
@@ -252,7 +268,7 @@ impl MainHost {
                         || frame.offset != (0, 0))
                         .then_some((frame.bounds.width, frame.bounds.height));
                 }
-                self.set_bounds(frame.bounds);
+                self.set_bounds(frame.bounds, frame.screen.map(|s| s.id));
                 if let Some(layer) = self.view.layer() {
                     // SAFETY: CGImage 的 CALayer contents ABI 接受 CoreFoundation 对象，图像保留到 setContents 返回，layer 会 retain。
                     let image = unsafe {
@@ -297,7 +313,9 @@ impl MainHost {
                     self.panel.orderFrontRegardless();
                 }
             }
-            MainOp::SetInteractive(value) => self.panel.setIgnoresMouseEvents(!value),
+            MainOp::SetInteractive(value) => self
+                .panel
+                .setIgnoresMouseEvents(self.slot.id == WindowId::Indicator || !value),
             MainOp::SetBounds(bounds) => {
                 let mirror = self.slot.snapshot();
                 if let (Some(x), Some(y)) = (
@@ -306,7 +324,7 @@ impl MainHost {
                 ) {
                     let (width, height) =
                         mirror.content_size.unwrap_or((bounds.width, bounds.height));
-                    self.set_bounds(PxRect::new(x, y, width, height));
+                    self.set_bounds(PxRect::new(x, y, width, height), None);
                     self.slot
                         .mirror
                         .lock()
@@ -323,7 +341,7 @@ impl MainHost {
                     let (width, height) = mirror
                         .content_size
                         .unwrap_or((mirror.bounds.width, mirror.bounds.height));
-                    self.set_bounds(PxRect::new(x_frame, y_frame, width, height));
+                    self.set_bounds(PxRect::new(x_frame, y_frame, width, height), None);
                     let mut mirror = self.slot.mirror.lock().expect("overlay mirror poisoned");
                     mirror.bounds.x = x;
                     mirror.bounds.y = y;

@@ -24,6 +24,14 @@ pub(crate) struct Screens {
 }
 
 impl Screens {
+    pub fn indicator_screen(&self, fallback: Option<u32>) -> Option<&ScreenInfo> {
+        self.list
+            .iter()
+            .find(|s| Some(s.id) == self.main)
+            .or_else(|| self.list.iter().find(|s| Some(s.id) == fallback))
+            .or_else(|| self.list.first())
+    }
+
     pub fn area(&self) -> PxRect {
         self.list
             .iter()
@@ -32,6 +40,25 @@ impl Screens {
             .map(|s| screen::rect_pts_to_px(&self.list, s.visible, Some(s.id)))
             .unwrap_or_default()
     }
+}
+
+/// 输入是模型相对 visibleFrame 排好的帧（含入退场位移），只修正底部 Dock 锚点。
+pub(crate) fn indicator_placement(screen: &ScreenInfo, requested: PxRect) -> PxRect {
+    let visible = screen::rect_pts_to_px(&[*screen], screen.visible, Some(screen.id));
+    let full = screen::screen_px_rect(screen);
+    let full_bottom = screen.frame.y + screen.frame.height;
+    let visible_bottom = screen.visible.y + screen.visible.height;
+    let bottom = if full_bottom - visible_bottom > 0.5 {
+        visible.bottom()
+    } else {
+        full.bottom()
+    };
+    PxRect::new(
+        full.x + (full.width - requested.width) / 2,
+        requested.y + bottom - visible.bottom(),
+        requested.width,
+        requested.height,
+    )
 }
 
 fn store() -> &'static RwLock<Arc<Screens>> {
@@ -164,6 +191,136 @@ pub(crate) fn observe(mtm: MainThreadMarker) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screen(id: u32, x: f64, y: f64, scale: f64, visible: QRect) -> ScreenInfo {
+        ScreenInfo {
+            id,
+            frame: QRect {
+                x,
+                y,
+                width: 1512.0,
+                height: 982.0,
+            },
+            visible,
+            scale,
+        }
+    }
+
+    #[test]
+    fn indicator_bottom_anchor_handles_bottom_left_right_and_hidden_dock() {
+        for scale in [1.0, 2.0] {
+            for (visible, expected_y) in [
+                (
+                    QRect {
+                        x: 0.0,
+                        y: 25.0,
+                        width: 1512.0,
+                        height: 890.0,
+                    },
+                    739,
+                ),
+                (
+                    QRect {
+                        x: 70.0,
+                        y: 25.0,
+                        width: 1442.0,
+                        height: 957.0,
+                    },
+                    806,
+                ),
+                (
+                    QRect {
+                        x: 0.0,
+                        y: 25.0,
+                        width: 1442.0,
+                        height: 957.0,
+                    },
+                    806,
+                ),
+                (
+                    QRect {
+                        x: 0.0,
+                        y: 25.0,
+                        width: 1512.0,
+                        height: 957.0,
+                    },
+                    806,
+                ),
+            ] {
+                let screen = screen(1, 0.0, 0.0, scale, visible);
+                let area = screen::rect_pts_to_px(&[screen], visible, Some(1));
+                let width = (460.0 * scale) as i32;
+                let height = (188.0 * scale) as i32;
+                let requested = PxRect::new(
+                    area.x + (area.width - width) / 2,
+                    area.bottom() - height + (12.0 * scale) as i32,
+                    width,
+                    height,
+                );
+                assert_eq!(
+                    indicator_placement(&screen, requested),
+                    PxRect::new(
+                        (526.0 * scale) as i32,
+                        (expected_y as f64 * scale) as i32,
+                        width,
+                        height
+                    )
+                );
+                let sliding = PxRect {
+                    y: requested.y + (10.0 * scale) as i32,
+                    ..requested
+                };
+                assert_eq!(
+                    indicator_placement(&screen, sliding).y,
+                    ((expected_y + 10) as f64 * scale) as i32
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indicator_follows_main_screen_with_window_and_primary_fallbacks() {
+        let primary = screen(
+            1,
+            0.0,
+            0.0,
+            2.0,
+            QRect {
+                x: 0.0,
+                y: 25.0,
+                width: 1512.0,
+                height: 890.0,
+            },
+        );
+        for (x, y) in [(1512.0, 0.0), (-1512.0, 0.0), (0.0, -982.0)] {
+            let external = screen(
+                2,
+                x,
+                y,
+                1.0,
+                QRect {
+                    x,
+                    y: y + 25.0,
+                    width: 1512.0,
+                    height: 957.0,
+                },
+            );
+            let mut screens = Screens {
+                list: vec![primary, external],
+                main: Some(2),
+                primary_height: 982.0,
+            };
+            assert_eq!(screens.indicator_screen(Some(1)), Some(&external));
+            let requested = PxRect::new(x as i32 + 526, y as i32 + 806, 460, 188);
+            assert_eq!(indicator_placement(&external, requested), requested);
+            screens.main = None;
+            assert_eq!(screens.indicator_screen(Some(2)), Some(&external));
+            assert_eq!(screens.indicator_screen(Some(99)), Some(&primary));
+            screens.list.clear();
+            assert!(screens.indicator_screen(Some(2)).is_none());
+        }
+    }
+
     #[test]
     fn appkit_geometry_rejects_nan_and_clamps_sizes() {
         assert!(ns_rect(QRect {
