@@ -8,6 +8,8 @@
 //! 共用字幕模型见 overlay-core，Windows 宿主与 D2D 后端见 native_win；
 //! 与原生胶囊之间的「当前谁拥有指示窗通道」路由见 indicator.rs。
 
+#[cfg(windows)]
+use super::native_win::subtitle as imp;
 #[cfg(any(windows, target_os = "macos"))]
 use sayit_overlay_core::subtitle::SubtitleConfig;
 use std::sync::OnceLock;
@@ -103,11 +105,7 @@ pub(crate) fn native_subtitle_reference_size() -> Option<(f64, f64)> {
 }
 
 #[cfg(windows)]
-#[path = "native_win/subtitle.rs"]
-mod imp;
-
-#[cfg(windows)]
-fn run_subtitle_action(action: sayit_overlay_core::subtitle::SubtitleAction) {
+pub(super) fn run_subtitle_action(action: sayit_overlay_core::subtitle::SubtitleAction) {
     match action {
         sayit_overlay_core::subtitle::SubtitleAction::Close => {
             if let Some(app) = imp::APP.get() {
