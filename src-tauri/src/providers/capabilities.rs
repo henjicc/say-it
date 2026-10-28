@@ -213,11 +213,10 @@ const PLUGIN_OCR_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub enum OcrProvider {
-    /// 平台系统 OCR：Windows 使用 WinRT，macOS 使用 Vision。
+    /// macOS Vision；Windows 使用内置 PP-OCR。
+    #[cfg(target_os = "macos")]
     System,
-    PpOcr {
-        spec: LocalModelSpec,
-    },
+    PpOcr,
     Plugin {
         spec: PluginRuntimeSpec,
         profile: ProviderProfile,
@@ -228,6 +227,17 @@ pub enum OcrProvider {
     },
 }
 impl OcrProvider {
+    pub fn default_local() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::System
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::PpOcr
+        }
+    }
+
     /// 通用 OCR 接口：输入 PNG 字节与用途标识（如 "activeAppContext"），
     /// 输出按 0~1 归一化坐标的文本块列表；排序、去重等收尾由消费方决定。
     pub async fn recognize(
@@ -236,6 +246,7 @@ impl OcrProvider {
         purpose: &str,
     ) -> Result<Vec<OcrTextBlock>, String> {
         match self {
+            #[cfg(target_os = "macos")]
             Self::System => {
                 let png = image_png.to_vec();
                 tokio::task::spawn_blocking(move || system_ocr_recognize(&png))
@@ -258,10 +269,9 @@ impl OcrProvider {
                 .await?;
                 parse_plugin_ocr_blocks(&value)
             }
-            Self::PpOcr { spec } => {
+            Self::PpOcr => {
                 let png = image_png.to_vec();
-                let spec = spec.clone();
-                tokio::task::spawn_blocking(move || crate::ocr::ppocr::recognize_png(&spec, &png))
+                tokio::task::spawn_blocking(move || crate::ocr::ppocr::recognize_png(&png))
                     .await
                     .map_err(|error| format!("PP-OCR 工作线程失败：{error}"))?
             }
@@ -271,30 +281,18 @@ impl OcrProvider {
 
     pub fn description(&self) -> String {
         match self {
+            #[cfg(target_os = "macos")]
             Self::System => super::system_ocr_display_name().into(),
-            Self::PpOcr { spec } => format!("PP-OCR 模型 {}", spec.plugin_id),
+            Self::PpOcr => "内置 PP-OCRv6 Tiny".into(),
             Self::Plugin { profile, .. } => profile.display_name.clone(),
             Self::Unavailable { selection, .. } => format!("不可用 OCR 模型 {selection}"),
         }
     }
 }
 
+#[cfg(target_os = "macos")]
 fn system_ocr_recognize(png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
-    #[cfg(windows)]
-    {
-        let image =
-            image::load_from_memory(png).map_err(|error| format!("解码 OCR 图像失败：{error}"))?;
-        crate::ocr::windows::recognize(&image)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        crate::ocr::macos::recognize_png(png)
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = png;
-        Err("当前平台没有可用的系统 OCR".into())
-    }
+    crate::ocr::macos::recognize_png(png)
 }
 
 /// v5 插件 `recognizeImage` 返回约定：`{ blocks: [{ text, region: { x, y, width, height }, confidence? }] }`，

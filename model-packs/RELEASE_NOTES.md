@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | SenseVoice Small INT8 | 本地语音识别（整句听写、录音转写，多语种） | 227 MB | [下载](https://github.com/henjicc/say-it/releases/download/models-v1/official.sherpa-sensevoice-small-1.0.0-embedded.sayit) |
 | Paraformer Online INT8 | 本地语音识别（实时流式，中英双语） | 226 MB | [下载](https://github.com/henjicc/say-it/releases/download/models-v1/official.sherpa-paraformer-online-1.0.0-embedded.sayit) |
-| PP-OCRv6 Tiny | 本地 OCR（屏幕取词、上下文识别） | 3 MB | [下载](https://github.com/henjicc/say-it/releases/download/models-v1/official.ppocr-v6-tiny-1.0.0-embedded.sayit) |
+| PP-OCRv6 Tiny | 本地 OCR（屏幕取词、上下文识别） | 3 MB | 已随应用内置，无需安装模型包 |
 
 **安装方式**：下载后双击 `.sayit` 文件，或在「设置 → 插件管理 → 安装 .sayit 包」中选择。首次安装会提示确认签名密钥（`henjicc-sayit-publisher-v1`），确认后即可在模型下拉中启用。
 

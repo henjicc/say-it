@@ -202,7 +202,7 @@ impl ContextCaptureService {
     pub(crate) fn begin_selection_capture(&self, target: ActivationTarget) -> ContextCaptureHandle {
         let mut options = CaptureOptions::for_method(
             ActiveAppContextExtractionMethod::NativeText,
-            crate::providers::capabilities::OcrProvider::System,
+            crate::providers::capabilities::OcrProvider::default_local(),
         );
         options.selection_only = true;
         self.begin_capture_inner(target, Vec::new(), options)
@@ -942,7 +942,7 @@ mod tests {
                     capture_method: ActiveAppContextExtractionMethod::Ocr,
                     ..Default::default()
                 },
-                crate::providers::capabilities::OcrProvider::System,
+                crate::providers::capabilities::OcrProvider::default_local(),
                 model::DEFAULT_MAX_CHARS,
             ))
             .is_ok());

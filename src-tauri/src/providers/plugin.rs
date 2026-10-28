@@ -418,6 +418,11 @@ fn load_registry_from_with_trust(
         match load_manifest(&plugin_root, &manifest_path, trusted) {
             Ok(plugin) => {
                 let manifest = &plugin.manifest;
+                // 旧包只进入管理清单，不占用内置供应商与模型的 ID。
+                if is_superseded_ppocr(manifest) && ids.insert(manifest.id.clone()) {
+                    registry.plugins.push(plugin);
+                    continue;
+                }
                 let duplicate = ids.contains(&manifest.id)
                     || provider_ids.contains(&manifest.provider.id)
                     || manifest
@@ -474,6 +479,16 @@ fn load_registry_from_with_trust(
     Ok(registry)
 }
 
+pub(crate) fn is_superseded_ppocr(manifest: &PluginManifest) -> bool {
+    manifest.id == super::LEGACY_PPOCR_PACK_ID
+        && manifest.provider.id == super::PPOCR_PROVIDER_ID
+        && manifest.runtime.kind == "model-pack"
+        && manifest
+            .model_pack
+            .as_ref()
+            .is_some_and(|pack| pack.engine == "ppocr-mnn")
+}
+
 fn load_manifest(
     plugin_root: &Path,
     manifest_path: &Path,
@@ -484,7 +499,10 @@ fn load_manifest(
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
     validate_manifest(plugin_root, &manifest)?;
     let models = project_manifest_models(&manifest)?;
-    let trust = if manifest.runtime.kind == "model-pack" {
+    let trust = if is_superseded_ppocr(&manifest) {
+        // 文件只保留供用户卸载，不参与推理；缺失的旧权重也不影响显示替代状态。
+        super::plugin_package::installed_trust(&manifest, trusted)?
+    } else if manifest.runtime.kind == "model-pack" {
         super::plugin_package::verify_installed_model_pack(plugin_root, &manifest, trusted)?
     } else {
         super::plugin_package::verify_installation(plugin_root, &manifest, trusted)?
@@ -845,8 +863,9 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         .ok_or("模型包缺少 modelPack 配置")?;
     if !matches!(
         pack.engine.as_str(),
-        "sherpa-onnx-online" | "sherpa-onnx-offline" | "ppocr-mnn"
-    ) {
+        "sherpa-onnx-online" | "sherpa-onnx-offline"
+    ) && !is_superseded_ppocr(manifest)
+    {
         return Err(format!(
             "当前版本不支持模型引擎：{}；请升级软件",
             pack.engine
@@ -880,14 +899,16 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         if file.sha256.len() != 64 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(format!("模型文件 SHA256 非法：{}", file.path));
         }
-        let embedded = root.join(&relative);
-        let installed = models_dir_from_plugin_root(root)
-            .join(&manifest.id)
-            .join(&relative);
-        let installed_ready = installed.is_file()
-            && super::model_download::verify_model_file(&installed, file).is_ok();
-        if !embedded.is_file() && !installed_ready && file.download.is_none() {
-            return Err(format!("模型文件既未内嵌也未提供下载地址：{}", file.path));
+        if !is_superseded_ppocr(manifest) {
+            let embedded = root.join(&relative);
+            let installed = models_dir_from_plugin_root(root)
+                .join(&manifest.id)
+                .join(&relative);
+            let installed_ready = installed.is_file()
+                && super::model_download::verify_model_file(&installed, file).is_ok();
+            if !embedded.is_file() && !installed_ready && file.download.is_none() {
+                return Err(format!("模型文件既未内嵌也未提供下载地址：{}", file.path));
+            }
         }
         if let Some(download) = &file.download {
             let url = url::Url::parse(&download.url)
@@ -1182,17 +1203,29 @@ impl PluginRegistry {
                     trust: plugin.trust.clone(),
                     actions: plugin.manifest.provider.actions.clone(),
                     has_browser_session: plugin.manifest.browser_session.is_some(),
-                    enabled: settings
-                        .and_then(|settings| {
-                            settings
-                                .profiles
-                                .iter()
-                                .find(|profile| profile.id == plugin.manifest.provider.id)
-                        })
-                        .map(|profile| profile.enabled)
-                        .unwrap_or(true),
+                    enabled: !is_superseded_ppocr(&plugin.manifest)
+                        && settings
+                            .and_then(|settings| {
+                                settings
+                                    .profiles
+                                    .iter()
+                                    .find(|profile| profile.id == plugin.manifest.provider.id)
+                            })
+                            .map(|profile| profile.enabled)
+                            .unwrap_or(true),
                     runtime_kind: plugin.manifest.runtime.kind.clone(),
                     model_pack: plugin.manifest.model_pack.as_ref().map(|pack| {
+                        if is_superseded_ppocr(&plugin.manifest) {
+                            return ModelPackSummary {
+                                engine: pack.engine.clone(),
+                                state: "superseded".into(),
+                                total_bytes: pack.files.iter().map(|file| file.size_bytes).sum(),
+                                ready_bytes: 0,
+                                downloadable: false,
+                                keep_loaded: false,
+                                residency: None,
+                            };
+                        }
                         let model_dir =
                             models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id);
                         let status = super::model_download::inspect_pack(&model_dir, pack);
@@ -1230,7 +1263,10 @@ impl PluginRegistry {
     }
 
     pub fn models(&self) -> impl Iterator<Item = &ModelInfo> {
-        self.plugins.iter().flat_map(|plugin| plugin.models.iter())
+        self.plugins
+            .iter()
+            .filter(|plugin| !is_superseded_ppocr(&plugin.manifest))
+            .flat_map(|plugin| plugin.models.iter())
     }
 
     pub fn model(&self, id: &str) -> Option<&ModelInfo> {
@@ -1334,7 +1370,8 @@ impl PluginRegistry {
 
     pub fn local_model_for_model(&self, model_id: &str) -> Option<LocalModelSpec> {
         let plugin = self.plugins.iter().find(|plugin| {
-            plugin.manifest.runtime.kind == "model-pack"
+            !is_superseded_ppocr(&plugin.manifest)
+                && plugin.manifest.runtime.kind == "model-pack"
                 && plugin
                     .models
                     .iter()
@@ -1354,28 +1391,9 @@ impl PluginRegistry {
 
     pub fn model_pack_for_plugin(&self, plugin_id: &str) -> Option<LocalModelSpec> {
         let plugin = self.plugins.iter().find(|plugin| {
-            plugin.manifest.id == plugin_id && plugin.manifest.runtime.kind == "model-pack"
-        })?;
-        let pack = plugin.manifest.model_pack.as_ref()?;
-        Some(LocalModelSpec {
-            manifest_version: plugin.manifest.version.clone(),
-            plugin_id: plugin.manifest.id.clone(),
-            provider_id: plugin.manifest.provider.id.clone(),
-            engine: pack.engine.clone(),
-            model_dir: models_dir_from_plugin_root(&plugin.root).join(&plugin.manifest.id),
-            files: pack.files.clone(),
-            params: pack.params.clone(),
-        })
-    }
-
-    pub fn local_model_for_engine(&self, engine: &str) -> Option<LocalModelSpec> {
-        let plugin = self.plugins.iter().find(|plugin| {
-            plugin.manifest.runtime.kind == "model-pack"
-                && plugin
-                    .manifest
-                    .model_pack
-                    .as_ref()
-                    .is_some_and(|pack| pack.engine == engine)
+            plugin.manifest.id == plugin_id
+                && plugin.manifest.runtime.kind == "model-pack"
+                && !is_superseded_ppocr(&plugin.manifest)
         })?;
         let pack = plugin.manifest.model_pack.as_ref()?;
         Some(LocalModelSpec {
@@ -1416,6 +1434,7 @@ impl PluginRegistry {
         let installed: HashMap<_, _> = self
             .plugins
             .iter()
+            .filter(|plugin| !is_superseded_ppocr(&plugin.manifest))
             .map(|plugin| (plugin.manifest.provider.id.clone(), plugin))
             .collect();
         for profile in &mut settings.profiles {
@@ -1931,6 +1950,77 @@ mod tests {
                 "params": { "encoder": "model.bin", "decoder": "model.bin", "tokens": "model.bin" }
             }
         })
+    }
+
+    #[test]
+    fn legacy_ppocr_is_listed_as_superseded_without_registering_or_changing_files() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-legacy-ppocr-{}", uuid::Uuid::new_v4()));
+        let plugin_dir = root
+            .join("plugins")
+            .join(super::super::LEGACY_PPOCR_PACK_ID);
+        let model_dir = root.join("models").join(super::super::LEGACY_PPOCR_PACK_ID);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model.bin"), b"keep old bytes").unwrap();
+        let mut value = model_pack_manifest();
+        value["id"] = serde_json::json!(super::super::LEGACY_PPOCR_PACK_ID);
+        value["provider"]["id"] = serde_json::json!(super::super::PPOCR_PROVIDER_ID);
+        value["provider"]["capabilities"] = serde_json::json!(["ocr"]);
+        value["source"]["namespace"] = value["id"].clone();
+        value["models"][0]["id"] = serde_json::json!(super::super::PPOCR_MODEL_ID);
+        value["models"][0]["providerId"] = value["provider"]["id"].clone();
+        value["models"][0]["category"] = serde_json::json!("ocr");
+        value["models"][0]["protocol"] = serde_json::json!("local-ppocr-mnn");
+        value["models"][0]["scenes"] = serde_json::json!(["activeAppContext"]);
+        value["modelPack"]["engine"] = serde_json::json!("ppocr-mnn");
+        value["modelPack"]["params"] = serde_json::json!({"detModel":"model.bin","recModel":"model.bin","charset":"model.bin"});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        std::fs::write(plugin_dir.join("manifest.json"), &bytes).unwrap();
+        let registry = load_registry_from(&root.join("plugins")).unwrap();
+        assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+        assert_eq!(registry.models().count(), 0);
+        assert!(registry
+            .local_model_for_model(super::super::PPOCR_MODEL_ID)
+            .is_none());
+        assert!(registry
+            .model_pack_for_plugin(super::super::LEGACY_PPOCR_PACK_ID)
+            .is_none());
+        let mut settings = ProviderSettings::default();
+        let mut old = super::super::ppocr_profile();
+        old.kind = format!("model-pack:{}", super::super::LEGACY_PPOCR_PACK_ID);
+        settings.profiles.retain(|p| p.id != old.id);
+        settings.profiles.push(old);
+        registry.merge_provider_profiles(&mut settings);
+        let builtin = settings
+            .profiles
+            .iter()
+            .filter(|p| p.id == super::super::PPOCR_PROVIDER_ID)
+            .collect::<Vec<_>>();
+        assert_eq!(builtin.len(), 1);
+        assert_eq!(builtin[0].kind, "builtin-ppocr");
+        assert!(builtin[0].enabled);
+        let snapshot = registry.snapshot_with_provider_settings(Some(&settings));
+        assert_eq!(
+            snapshot.plugins[0].model_pack.as_ref().unwrap().state,
+            "superseded"
+        );
+        assert!(!snapshot.plugins[0].enabled);
+        assert_eq!(
+            std::fs::read(plugin_dir.join("manifest.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(model_dir.join("model.bin")).unwrap(),
+            b"keep old bytes"
+        );
+        let manifest: PluginManifest = serde_json::from_value(value).unwrap();
+        assert!(
+            super::super::plugin_package::ensure_model_pack_installable(&manifest)
+                .unwrap_err()
+                .contains("已随应用内置")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { loadModelCatalog } from "@/features/asr/modelRegistry";
 import { hydrateModelOptions } from "@/features/asr/modelOptions";
-import { CMD, cmd, type ModelResidencyStatus } from "@/lib/tauri";
+import { CMD, cmd, type ModelPackState, type ModelResidencyStatus } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 
 export interface PluginSummary {
@@ -17,7 +17,7 @@ export interface PluginSummary {
   runtimeKind: "javascript" | "model-pack";
   modelPack?: {
     engine: string;
-    state: "pending" | "partial" | "corrupt" | "downloading" | "ready";
+    state: ModelPackState;
     totalBytes: number;
     readyBytes: number;
     downloadable: boolean;

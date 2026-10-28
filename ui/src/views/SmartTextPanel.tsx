@@ -11,7 +11,7 @@ import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { CMD, cmd } from "@/lib/tauri";
-import { isMacOS, systemOcrLabel } from "@/lib/platform";
+import { isMacOS, defaultOcrOption } from "@/lib/platform";
 import {
   ocrOptionsForScene,
   useModelCatalogRevision,
@@ -516,7 +516,7 @@ export function SmartTextPanel() {
             onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
           >
             <option value="nativeText">文本提取（低内存）</option>
-            <option value="ocr">{isMacOS ? "窗口 OCR（macOS Vision）" : "窗口 OCR（高覆盖率）"}</option>
+            <option value="ocr">窗口 OCR</option>
           </Select>
         </Field>
 
@@ -527,8 +527,8 @@ export function SmartTextPanel() {
               hint={selectedOcrModel?.remote
                 ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
                 : selectedOcrModel?.value === "local-ppocr-v6-tiny"
-                  ? "使用已安装的 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
-                  : `使用${systemOcrLabel}，不会向第三方发送截图。`}
+                  ? "使用内置 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
+                  : `使用${defaultOcrOption.label}，不会向第三方发送截图。`}
             >
               <Select
                 value={prefs.activeAppContextOcrModel}

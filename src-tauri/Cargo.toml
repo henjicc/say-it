@@ -104,16 +104,11 @@ windows = { version = "0.58", features = [
     "Win32_System_Ole",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
-    "Win32_System_WinRT",
     "Win32_UI_Accessibility",
     "Win32_UI_Input",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Storage_FileSystem",
-    "Media_Ocr",
-    "Graphics_Imaging",
-    "Storage_Streams",
-    "Foundation_Collections",
     "Foundation_Numerics",
 ] }
 winreg = "0.52"
@@ -137,3 +132,24 @@ ogg = "0.8.0"
 [profile.dev]
 debug = 1
 split-debuginfo = "packed"
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+
+[profile.dev.package.ebur128]
+opt-level = 3
+
+[profile.dev.package.ocr-rs]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
