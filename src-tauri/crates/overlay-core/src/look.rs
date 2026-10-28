@@ -28,6 +28,53 @@ impl Theme {
         accent: [40, 110, 200],
         custom_background: None,
     };
+
+    pub fn parse_hex_rgb(value: Option<&str>) -> Option<Rgb8> {
+        let value = value?.trim();
+        let value = value.strip_prefix('#').unwrap_or(value);
+        if value.len() != 6 {
+            return None;
+        }
+        Some([
+            u8::from_str_radix(&value[0..2], 16).ok()?,
+            u8::from_str_radix(&value[2..4], 16).ok()?,
+            u8::from_str_radix(&value[4..6], 16).ok()?,
+        ])
+    }
+
+    pub fn mix_rgb(from: Rgb8, to: Rgb8, amount: f32) -> Rgb8 {
+        let mix =
+            |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
+        [
+            mix(from[0], to[0]),
+            mix(from[1], to[1]),
+            mix(from[2], to[2]),
+        ]
+    }
+
+    pub fn background_rgb(&self) -> Rgb8 {
+        if let Some(background) = self.custom_background {
+            return background;
+        }
+        let target = if self.tone == Tone::Light {
+            [244, 247, 251]
+        } else {
+            [7, 10, 16]
+        };
+        Self::mix_rgb(self.accent, target, 0.98)
+    }
+
+    pub fn glass_tint_rgb(&self) -> Rgb8 {
+        let light = self.tone == Tone::Light;
+        let base = if self.custom_background.is_some() {
+            self.background_rgb()
+        } else if light {
+            [248, 250, 252]
+        } else {
+            [5, 7, 11]
+        };
+        Self::mix_rgb(self.accent, base, if light { 0.98 } else { 0.97 })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +122,76 @@ impl Look {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_tint_follows_accent_or_explicit_background() {
+        let theme = Theme {
+            accent: [255, 64, 19],
+            ..Theme::DEFAULT
+        };
+        assert_eq!(theme.background_rgb(), [12, 11, 16]);
+        assert_eq!(theme.glass_tint_rgb(), [13, 9, 11]);
+        assert_eq!(
+            Theme {
+                custom_background: Some([34, 26, 24]),
+                ..Theme::DEFAULT
+            }
+            .background_rgb(),
+            [34, 26, 24]
+        );
+    }
+
+    #[test]
+    fn hex_rgb_keeps_the_existing_theme_format() {
+        for value in ["#FF4013", "ff4013", "  #Ff4013  "] {
+            assert_eq!(Theme::parse_hex_rgb(Some(value)), Some([255, 64, 19]));
+        }
+        assert_eq!(Theme::parse_hex_rgb(None), None);
+        for value in ["", "#fff", "#11223344", "gg0000", "##112233"] {
+            assert_eq!(Theme::parse_hex_rgb(Some(value)), None);
+        }
+    }
+
+    #[test]
+    fn theme_colors_match_legacy_acrylic_for_every_channel_pair() {
+        // Acrylic 原公式按 f32 计算再 round；覆盖每种强调色/自定义背景通道组合。
+        let legacy_mix = |from: u8, to: u8, amount: f32| {
+            (from as f32 + (to as f32 - from as f32) * amount).round() as u8
+        };
+        for tone in [Tone::Dark, Tone::Light] {
+            for accent in 0..=255u8 {
+                let light = tone == Tone::Light;
+                let target = if light { [244, 247, 251] } else { [7, 10, 16] };
+                let base = if light { [248, 250, 252] } else { [5, 7, 11] };
+                let amount = if light { 0.98 } else { 0.97 };
+                let theme = Theme {
+                    tone,
+                    accent: [accent; 3],
+                    custom_background: None,
+                };
+                assert_eq!(
+                    theme.background_rgb(),
+                    target.map(|to| legacy_mix(accent, to, 0.98))
+                );
+                assert_eq!(
+                    theme.glass_tint_rgb(),
+                    base.map(|to| legacy_mix(accent, to, amount))
+                );
+                for background in 0..=255u8 {
+                    let theme = Theme {
+                        custom_background: Some([background; 3]),
+                        ..theme
+                    };
+                    assert_eq!(theme.background_rgb(), [background; 3]);
+                    assert_eq!(
+                        theme.glass_tint_rgb(),
+                        [legacy_mix(accent, background, amount); 3]
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn profiles_keep_their_brush_alpha_contract() {
         assert_eq!(
