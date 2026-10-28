@@ -11,6 +11,7 @@ pub(crate) mod d2d;
 pub(crate) mod host;
 pub(crate) mod indicator;
 pub(crate) mod orb;
+pub(crate) mod subtitle;
 mod surface;
 pub(crate) use surface::LayeredSurface;
 #[cfg(test)]

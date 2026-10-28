@@ -1,3 +1,8 @@
+mod model;
+mod pointer;
+pub use model::{Command, Subtitle};
+pub use pointer::{SubtitleButton, SubtitleHit, SubtitleInput, SubtitlePointer};
+
 /// 字幕配置，与 sync_presentation 发出的 dictation-indicator-config.subtitle 同构。
 /// 字段兜底值与 IndicatorApp.tsx 的默认值一致。
 #[derive(Clone, Debug, serde::Deserialize)]
