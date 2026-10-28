@@ -21,7 +21,7 @@ node scripts/measure-audio-performance.mjs --executable <测试程序.exe> --out
 ```
 
 测试程序路径以 Cargo 输出为准。Windows 中文目录构建的 NASM 问题见
-[既有记录](本机release构建NASM不支持中文路径.md)。每次采样启动独立进程，使用
+[既有记录](本机Rust构建NASM不支持中文路径.md)。每次采样启动独立进程，使用
 `PROCESS_MEMORY_COUNTERS_EX` 读取私有提交峰值，避免同一进程之前的任务污染峰值。
 结果包含二进制 SHA-256、输入时长、降噪开关、输出校验值、统计和回收后内存。
 
