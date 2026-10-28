@@ -43,7 +43,7 @@ impl WinWindow for Window {
     }
 }
 pub(crate) fn post(command: Command) {
-    // 与旧路径相同，首次配置/布局/显示后才接受文本与隐藏命令。
+    // 首次配置、布局或显示后才接受文本与隐藏命令。
     host::post::<Window>(command);
     STARTED.store(true, Ordering::Relaxed);
 }

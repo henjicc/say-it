@@ -43,7 +43,7 @@ impl LayeredSurface {
         }
     }
 
-    /// 隐藏窗口，下次 render 上屏后需要重新 ShowWindow 一次。
+    /// 隐藏窗口，下次上屏时需要重新 ShowWindow 一次。
     pub(crate) fn mark_hidden(&mut self) {
         self.shown = false;
         #[cfg(test)]
@@ -101,29 +101,9 @@ impl LayeredSurface {
         }
     }
 
-    /// 绘制一帧并上屏。坐标与尺寸为物理像素；D2D 内按 dpi 折算成 DIP 绘制。
-    /// `constant_alpha` 乘到整窗不透明度上（对应外观设置的整体透明度）。
-    pub(crate) fn render(
-        &mut self,
-        d2d: &ID2D1Factory,
-        dpi: u32,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        constant_alpha: u8,
-        log_tag: &str,
-        draw: impl FnOnce(&ID2D1DCRenderTarget, &ID2D1SolidColorBrush),
-    ) {
-        if let Some(presentation) =
-            self.draw_frame(d2d, dpi, x, y, width, height, constant_alpha, log_tag, draw)
-        {
-            presentation.present(log_tag);
-        }
-    }
-
     /// 仅绘制到 DIB，返回独立持有缓冲的上屏请求；调用方释放状态借用后执行 present。
     /// 离屏测试在此记录参数，不产生上屏请求。
+    /// 坐标与尺寸为物理像素；D2D 内按 dpi 折算成 DIP，constant_alpha 乘到整窗不透明度上。
     pub(crate) fn draw_frame(
         &mut self,
         d2d: &ID2D1Factory,
@@ -150,8 +130,8 @@ impl LayeredSurface {
         if !self.ensure_target(d2d, dpi, log_tag) {
             return None;
         }
-        // COM 对象克隆只是 AddRef、HDC 是 Copy，换成局部值后不再借用 self，
-        // EndDraw 失败时才能就地丢弃渲染目标。
+        // COM 克隆只增加引用计数、HDC 可复制；局部值不借用 self，
+        // 允许 EndDraw 失败时就地丢弃渲染目标。
         let (dib_dc, dib_width, dib_height, target, brush) = {
             let (Some(dib), Some(target), Some(brush)) = (&self.dib, &self.target, &self.brush)
             else {

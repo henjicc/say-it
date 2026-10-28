@@ -1,6 +1,6 @@
 //! Windows 原生分层窗口的共享基础设施。
 //!
-//! 听写指示器（native_indicator）与悬浮球（native_orb）共用同一套
+//! 听写指示器、悬浮球与实时字幕条共用同一套
 //! 「独立 UI 线程 + 命令队列 + UpdateLayeredWindow + Direct2D/DirectWrite」
 //! 骨架；本模块只承载与业务无关的部分，窗口样式、绘制内容与鼠标交互
 //! 由各自的窗口模块实现。
@@ -39,7 +39,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_FONT_WEIGHT_REGULAR, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -411,23 +411,6 @@ pub(crate) fn create_dwrite_factory() -> Result<IDWriteFactory, String> {
         .map_err(|error| format!("创建 DirectWrite 工厂失败：{error}"))
 }
 
-pub(crate) fn create_text_format(
-    dwrite: &IDWriteFactory,
-    family: &str,
-    size: f32,
-    centered: bool,
-    vertical_center: bool,
-) -> Result<IDWriteTextFormat, String> {
-    create_text_format_weight(
-        dwrite,
-        family,
-        size,
-        DWRITE_FONT_WEIGHT_REGULAR,
-        centered,
-        vertical_center,
-    )
-}
-
 /// 带字重的文字格式（字幕正文字重 600）。
 pub(crate) fn create_text_format_weight(
     dwrite: &IDWriteFactory,
@@ -486,7 +469,7 @@ pub(crate) mod test_seams {
         pub(crate) width: i32,
         pub(crate) height: i32,
         pub(crate) alpha: u8,
-        /// 出这一帧的渲染尝试序号（渲染面上第几次 render，从 1 开始）。
+        /// 出这一帧的渲染尝试序号（从 1 开始）。
         pub(crate) frame: u64,
     }
 
