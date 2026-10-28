@@ -128,6 +128,8 @@ fn default_llm_temperature() -> Option<f64> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProfile {
+    #[serde(default)]
+    pub keep_loaded: bool,
     pub id: String,
     pub kind: String,
     pub display_name: String,
@@ -189,6 +191,7 @@ pub struct ProviderStatus {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderListItem {
+    pub keep_loaded: bool,
     pub id: String,
     pub kind: String,
     pub display_name: String,
@@ -359,6 +362,7 @@ pub struct SetDefaultProviderRequest {
 
 pub fn bailian_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: BAILIAN_PROVIDER_ID.to_string(),
         kind: "sdk:bailian".to_string(),
         display_name: "阿里云百炼".to_string(),
@@ -386,6 +390,7 @@ pub fn bailian_profile() -> ProviderProfile {
 
 pub fn volcengine_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: VOLCENGINE_PROVIDER_ID.to_string(),
         kind: "sdk:volcengine".to_string(),
         display_name: "火山引擎".to_string(),
@@ -400,6 +405,7 @@ pub fn volcengine_profile() -> ProviderProfile {
 
 pub fn siliconflow_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: SILICONFLOW_PROVIDER_ID.to_string(),
         kind: "sdk:siliconflow".to_string(),
         display_name: "硅基流动".to_string(),
@@ -414,6 +420,7 @@ pub fn siliconflow_profile() -> ProviderProfile {
 
 pub fn groq_llm_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: GROQ_LLM_PROVIDER_ID.to_string(),
         kind: "llm:groq".to_string(),
         display_name: "Groq".to_string(),
@@ -449,6 +456,7 @@ fn system_ocr_kind() -> &'static str {
 /// 内置系统 OCR：Windows 使用 WinRT，macOS 使用 Vision，无用户配置项。
 pub fn system_ocr_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: SYSTEM_OCR_PROVIDER_ID.to_string(),
         kind: system_ocr_kind().to_string(),
         display_name: system_ocr_display_name().to_string(),
@@ -463,6 +471,7 @@ pub fn system_ocr_profile() -> ProviderProfile {
 
 pub fn apple_speech_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: apple_speech::PROVIDER_ID.to_string(),
         kind: apple_speech::PROVIDER_KIND.to_string(),
         display_name: "Apple 系统本地识别".to_string(),
@@ -779,6 +788,7 @@ mod tests {
     #[test]
     fn malicious_manifest_cannot_downgrade_secret_fields_exposed_to_webview() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "malicious".into(),
             kind: "plugin:malicious".into(),
             display_name: "Malicious".into(),
@@ -823,6 +833,7 @@ mod tests {
         assert!(has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"));
 
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "plugin-ocr".to_string(),
             kind: "plugin:plugin-ocr".to_string(),
             display_name: "插件 OCR".to_string(),
@@ -1007,6 +1018,7 @@ mod tests {
     fn normalize_settings_keeps_unknown_profiles() {
         let mut settings = ProviderSettings::default();
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "future-llm".to_string(),
             kind: "future-llm-kind".to_string(),
             display_name: "未来供应商".to_string(),
@@ -1058,6 +1070,7 @@ mod tests {
     fn disabling_provider_excludes_it_and_restores_a_valid_default() {
         let mut settings = ProviderSettings::default();
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "plugin-provider".to_string(),
             kind: "plugin:plugin-provider".to_string(),
             display_name: "插件供应商".to_string(),

@@ -73,6 +73,7 @@ fn fixture(
         trust: "unsigned".into(),
     };
     let profile = ProviderProfile {
+        keep_loaded: false,
         id: provider_id.into(),
         kind: format!("sdk:{provider_id}"),
         display_name: format!("SDK {provider_id}"),

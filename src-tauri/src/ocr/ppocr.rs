@@ -146,6 +146,7 @@ pub(crate) fn bundled_test_model_spec() -> LocalModelSpec {
         }
     };
     LocalModelSpec {
+        manifest_version: "1.0.0".into(),
         plugin_id: "test.ppocr".into(),
         provider_id: "local-ppocr".into(),
         engine: "ppocr-mnn".into(),

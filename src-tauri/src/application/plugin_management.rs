@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::common::read_provider_settings;
 use crate::providers::browser_session_capture::{requires_capture, validate_capture_for_sync};
 use crate::providers::find_profile;
+use crate::providers::local_asr::cache as local_asr_cache;
 use crate::providers::plugin::{
     load_registry, PluginBrowserSessionManifest, PluginRegistrySnapshot, PluginRuntimeSpec,
 };
@@ -116,7 +117,17 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败".to_string())? = registry;
+    sync_resident_models(app, &state)?;
     Ok(())
+}
+
+fn sync_resident_models(app: &tauri::AppHandle, state: &RuntimeState) -> Result<(), String> {
+    let registry = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败")?;
+    let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+    local_asr_cache::reconcile(registry.resident_model_specs(&providers), app)
 }
 
 #[tauri::command]
@@ -140,7 +151,15 @@ pub(crate) fn reload_provider_plugins(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
-    let registry = load_registry(&app)?;
+    let suspension = local_asr_cache::suspend_all()?;
+    let registry = match load_registry(&app) {
+        Ok(registry) => registry,
+        Err(error) => {
+            drop(suspension);
+            sync_resident_models(&app, &state)?;
+            return Err(error);
+        }
+    };
     {
         let mut providers = state
             .providers
@@ -157,6 +176,8 @@ pub(crate) fn reload_provider_plugins(
         .lock()
         .map_err(|_| "供应商配置锁失败".to_string())?
         .clone();
+    drop(suspension);
+    sync_resident_models(&app, &state)?;
     let snapshot = state
         .plugin_registry
         .lock()
@@ -175,8 +196,9 @@ pub(crate) async fn install_provider_plugin(
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    let suspension = local_asr_cache::suspend_all()?;
     let install_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         plugin_package::install_from_path(
             &install_app,
             Path::new(&source_path),
@@ -186,7 +208,12 @@ pub(crate) async fn install_provider_plugin(
         )
     })
     .await
-    .map_err(|error| format!("插件安装任务失败：{error}"))??;
+    .map_err(|error| format!("插件安装任务失败：{error}"));
+    drop(suspension);
+    if let Err(error) = result.and_then(|result| result) {
+        sync_resident_models(&app, &state)?;
+        return Err(error);
+    }
     reload_provider_plugins(app, state)
 }
 
@@ -219,7 +246,11 @@ pub(crate) async fn download_provider_model_pack(
         files: spec.files,
         params: spec.params,
     };
-    model_download::download_pack(&app, &plugin_id, &spec.model_dir, &pack).await?;
+    let suspension = local_asr_cache::suspend(&plugin_id)?;
+    let result = model_download::download_pack(&app, &plugin_id, &spec.model_dir, &pack).await;
+    drop(suspension);
+    sync_resident_models(&app, &state)?;
+    result?;
     list_provider_plugins(state)
 }
 
@@ -263,6 +294,7 @@ pub(crate) fn set_provider_plugin_enabled(
         *providers = crate::providers::normalize_settings(providers.clone());
         providers.clone()
     };
+    sync_resident_models(&app, &state)?;
     let snapshot = state
         .plugin_registry
         .lock()
@@ -270,6 +302,44 @@ pub(crate) fn set_provider_plugin_enabled(
         .snapshot_with_provider_settings(Some(&providers));
     save_persisted_state(&app, &state)?;
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_model_keep_loaded(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    keep_loaded: bool,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<PluginRegistrySnapshot, String> {
+    let previous = {
+        let registry = state
+            .plugin_registry
+            .lock()
+            .map_err(|_| "插件注册表锁失败")?;
+        let mut providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+        let previous = providers.clone();
+        registry.set_keep_loaded(&mut providers, &plugin_id, keep_loaded)?;
+        previous
+    };
+    if let Err(error) = save_persisted_state(&app, &state) {
+        let mut providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+        let kind = format!("model-pack:{plugin_id}");
+        if let (Some(saved), Some(current)) = (
+            previous
+                .profiles
+                .iter()
+                .find(|profile| profile.kind == kind),
+            providers
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.kind == kind),
+        ) {
+            current.keep_loaded = saved.keep_loaded;
+        }
+        return Err(error);
+    }
+    sync_resident_models(&app, &state)?;
+    list_provider_plugins(state)
 }
 
 #[tauri::command]
@@ -297,12 +367,20 @@ pub(crate) fn uninstall_provider_plugin(
             window.close().map_err(|error| error.to_string())?;
         }
     }
-    plugin_package::uninstall(&app, &plugin_id)?;
+    let suspension = local_asr_cache::suspend(&plugin_id)?;
+    if let Err(error) = plugin_package::uninstall(&app, &plugin_id) {
+        drop(suspension);
+        sync_resident_models(&app, &state)?;
+        return Err(error);
+    }
     {
         let mut providers = state
             .providers
             .lock()
             .map_err(|_| "供应商配置锁失败".to_string())?;
+        providers
+            .profiles
+            .retain(|profile| profile.kind != format!("model-pack:{plugin_id}"));
         if let Some(profile) = providers.profiles.iter_mut().find(|profile| {
             profile.id == provider_id
                 && (profile.kind.starts_with("plugin:") || profile.kind.starts_with("model-pack:"))
@@ -313,6 +391,7 @@ pub(crate) fn uninstall_provider_plugin(
         }
         *providers = crate::providers::normalize_settings(providers.clone());
     }
+    drop(suspension);
     reload_provider_plugins(app, state)
 }
 
