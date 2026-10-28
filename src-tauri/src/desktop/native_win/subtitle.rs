@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(crate) use sayit_overlay_core::subtitle::Command;
-pub(super) static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+pub(crate) static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
 pub(crate) struct Window;
 impl WinWindow for Window {
@@ -39,15 +39,15 @@ impl WinWindow for Window {
         let _ = model;
     }
     fn dispatch(action: <Self::Model as OverlayModel<DWriteText>>::Action) {
-        super::run_subtitle_action(action);
+        crate::desktop::native_subtitle::run_subtitle_action(action);
     }
 }
-pub(super) fn post(command: Command) {
+pub(crate) fn post(command: Command) {
     // 与旧路径相同，首次配置/布局/显示后才接受文本与隐藏命令。
     host::post::<Window>(command);
     STARTED.store(true, Ordering::Relaxed);
 }
-pub(super) fn post_if_started(command: Command) {
+pub(crate) fn post_if_started(command: Command) {
     if STARTED.load(Ordering::Relaxed) {
         host::post::<Window>(command);
     }
