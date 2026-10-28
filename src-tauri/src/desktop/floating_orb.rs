@@ -4,6 +4,9 @@ use crate::state::{
     FloatingOrbSettings, MouseGestureMode, RuntimeState,
 };
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
+use sayit_overlay_core::look::Look;
+#[cfg(any(windows, target_os = "macos", test))]
+use sayit_overlay_core::look::{Theme, Tone};
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,56 +47,22 @@ fn normalized_orb_opacity(opacity: u8) -> u8 {
     opacity.clamp(ORB_OPACITY_MIN, ORB_OPACITY_MAX)
 }
 
-#[cfg(any(windows, test))]
-fn parse_hex_rgb(value: Option<&str>) -> Option<(u8, u8, u8)> {
-    let value = value?.trim();
-    let value = value.strip_prefix('#').unwrap_or(value);
-    if value.len() != 6 {
-        return None;
+#[cfg(any(windows, target_os = "macos", test))]
+fn theme_from_json(value: &serde_json::Value) -> Theme {
+    Theme {
+        tone: if value.get("tone").and_then(Value::as_str) == Some("light") {
+            Tone::Light
+        } else {
+            Tone::Dark
+        },
+        accent: Theme::parse_hex_rgb(value.get("accent").and_then(Value::as_str))
+            .unwrap_or(Theme::DEFAULT.accent),
+        custom_background: (value.get("backgroundMode").and_then(Value::as_str) == Some("custom"))
+            .then(|| {
+                Theme::parse_hex_rgb(value.get("background").and_then(Value::as_str))
+                    .unwrap_or([15, 15, 15])
+            }),
     }
-    Some((
-        u8::from_str_radix(&value[0..2], 16).ok()?,
-        u8::from_str_radix(&value[2..4], 16).ok()?,
-        u8::from_str_radix(&value[4..6], 16).ok()?,
-    ))
-}
-
-#[cfg(any(windows, test))]
-fn mix_rgb(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
-    let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
-    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
-}
-
-#[cfg(any(windows, test))]
-fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
-    let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
-    if custom {
-        return parse_hex_rgb(value.get("background").and_then(Value::as_str))
-            .unwrap_or((15, 15, 15));
-    }
-    let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
-    let target = if value.get("tone").and_then(Value::as_str) == Some("light") {
-        (244, 247, 251)
-    } else {
-        (7, 10, 16)
-    };
-    mix_rgb(accent, target, 0.98)
-}
-
-#[cfg(any(windows, test))]
-fn theme_glass_tint_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
-    let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
-    let light = value.get("tone").and_then(Value::as_str) == Some("light");
-    let base = if value.get("backgroundMode").and_then(Value::as_str) == Some("custom") {
-        theme_background_rgb(value)
-    } else if light {
-        (248, 250, 252)
-    } else {
-        (5, 7, 11)
-    };
-    mix_rgb(accent, base, if light { 0.98 } else { 0.97 })
 }
 
 #[cfg(windows)]
@@ -101,8 +70,9 @@ fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
     app.state::<RuntimeState>()
         .app_settings
         .lock()
-        .map(|settings| theme_glass_tint_rgb(&settings.theme))
-        .unwrap_or((15, 15, 15))
+        .map(|settings| theme_from_json(&settings.theme).glass_tint_rgb())
+        .unwrap_or([15, 15, 15])
+        .into()
 }
 
 /// 参考边长：显示器逻辑分辨率（物理分辨率 / 缩放比例）中较短的一边。
@@ -183,6 +153,42 @@ fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
             settings
         })
         .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn css_native_look(theme: Theme, settings: &FloatingOrbSettings) -> Look {
+    use sayit_overlay_core::look::{Glass, GlassMaterial, Profile};
+    Look {
+        profile: Profile::Css,
+        theme,
+        glass: settings.glass_enabled.then(|| Glass {
+            material: match settings.glass_material {
+                FloatingOrbGlassMaterial::UnderWindow => GlassMaterial::UnderWindow,
+                FloatingOrbGlassMaterial::Content => GlassMaterial::Content,
+                FloatingOrbGlassMaterial::Sidebar => GlassMaterial::Sidebar,
+            },
+            tint_percent: settings.glass_tint,
+            border_percent: settings.glass_border,
+        }),
+    }
+}
+
+pub(crate) fn native_look(app: &tauri::AppHandle) -> Look {
+    #[cfg(target_os = "macos")]
+    {
+        let theme = app
+            .state::<RuntimeState>()
+            .app_settings
+            .lock()
+            .map(|settings| theme_from_json(&settings.theme))
+            .unwrap_or(Theme::DEFAULT);
+        css_native_look(theme, &current_settings(app))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Look::WINDOWS_LEGACY
+    }
 }
 
 fn apply_native_glass(
@@ -270,6 +276,7 @@ pub(crate) fn sync_system_glass_window(window: &tauri::WebviewWindow) {
 }
 
 pub(crate) fn sync_system_glass_windows(app: &tauri::AppHandle) {
+    crate::desktop::native_common::native_overlay_set_look(native_look(app));
     for label in [
         "main",
         FLOATING_ORB_LABEL,
@@ -720,8 +727,8 @@ fn resolved_idle_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosit
     )
 }
 
-/// 原生悬浮球（Windows 原生分层窗口，没有 WebviewWindow）的归位/初始矩形，
-/// 物理像素。沿用 saved→monitor→clamp 的同一套数学。
+/// 原生悬浮球（没有 WebviewWindow）的归位/初始矩形，单位为 DesktopPx。
+/// 沿用 saved→monitor→clamp 的同一套数学。
 fn native_idle_rect(app: &tauri::AppHandle, settings: &FloatingOrbSettings) -> (i32, i32, i32) {
     let monitors = app.available_monitors().unwrap_or_default();
     let rects: Vec<MonitorRect> = monitors.iter().map(MonitorRect::from_monitor).collect();
@@ -750,13 +757,13 @@ fn native_idle_rect(app: &tauri::AppHandle, settings: &FloatingOrbSettings) -> (
     (position.x, position.y, size.width as i32)
 }
 
-/// 悬浮球窗口后端开关：Windows 且未设置 SAYIT_NATIVE_ORB=0 时使用原生窗口，
-/// macOS 与其它情况保持原有 WebView 路径不变。
+/// 悬浮球窗口后端开关：SAYIT_NATIVE_ORB=0 回退 WebView，其它已设置值启用
+/// 原生窗口；未设置时取平台默认（Windows 开启，macOS 开发期关闭）。
 fn use_native_orb() -> bool {
     crate::desktop::native_orb::native_orb_enabled()
 }
 
-/// 悬浮球的窗口后端：Windows 原生分层窗口或 Tauri WebView。
+/// 悬浮球的窗口后端：原生窗口或 Tauri WebView。
 /// 业务代码只面对 OrbUi；原生侧没有 WebviewWindow，窗口操作经命令队列
 /// 投递到原生 UI 线程（见 native_orb.rs）。
 #[derive(Clone)]
@@ -903,6 +910,7 @@ impl OrbUi {
 fn ensure_native_orb(app: &tauri::AppHandle) -> Result<(), String> {
     use crate::desktop::native_orb as orb;
     orb::native_orb_attach(app);
+    crate::desktop::native_common::native_overlay_set_look(native_look(app));
     if !orb::native_orb_started() {
         let settings = current_settings(app);
         let (x, y, size) = native_idle_rect(app, &settings);
@@ -930,7 +938,7 @@ fn resize_native_orb(app: &tauri::AppHandle, size_percent: u16) -> Result<(), St
     let monitor = monitor_at_point(&monitors, x + size / 2, y + size / 2);
     let extent = orb_window_extent(size_percent, monitor);
     let scale = monitor.map_or(1.0, |monitor| monitor.scale_factor());
-    // windows_orb_extent 保证 extent * scale 是整数。
+    // Windows 的 windows_orb_extent 保证 extent * scale 是整数；macOS 依赖 round() 取整。
     let new_size = (extent * scale).round().max(1.0) as i32;
     if new_size == size {
         return Ok(());
@@ -955,7 +963,6 @@ fn resize_native_orb(app: &tauri::AppHandle, size_percent: u16) -> Result<(), St
 
 /// 原生悬浮球开始拖拽（原生窗口过程调用）：抑制主窗口重开并标记
 /// 「这次位置变化是用户亲手拖出来的」。
-#[cfg(windows)]
 pub(crate) fn native_orb_drag_started(app: &tauri::AppHandle) {
     mark_floating_orb_interaction(app);
     app.state::<RuntimeState>()
@@ -967,7 +974,6 @@ pub(crate) fn native_orb_drag_started(app: &tauri::AppHandle) {
 /// 原生悬浮球拖拽结束（系统移动循环返回后）：按调度持久化最终位置。
 /// WebView 路径靠 Tauri 窗口 Moved 事件触发同一个调度，原生窗口没有
 /// 这个事件，拖拽结束时主动调。
-#[cfg(windows)]
 pub(crate) fn native_orb_drag_finished(app: &tauri::AppHandle) {
     schedule_remember_floating_orb_position(app.clone());
 }
@@ -1110,9 +1116,10 @@ fn apply_floating_orb_config(app: &tauri::AppHandle, ui: &OrbUi) -> Result<(), S
     let settings = current_settings(app);
     ui.resize_to_percent(app, settings.size_percent)?;
     match ui {
-        // 原生原型期忽略毛玻璃，整体透明度经 UpdateLayeredWindow 的
-        // SourceConstantAlpha 应用。
-        OrbUi::Native => crate::desktop::native_orb::native_orb_set_opacity(settings.opacity),
+        OrbUi::Native => {
+            crate::desktop::native_common::native_overlay_set_look(native_look(app));
+            crate::desktop::native_orb::native_orb_set_opacity(settings.opacity);
+        }
         OrbUi::Webview(window) => apply_native_glass(
             window,
             settings.glass_enabled,
@@ -1333,6 +1340,8 @@ pub(crate) fn set_floating_orb_appearance(
     }
     if native_glass_appearance_changed(&previous, &current) {
         sync_system_glass_windows(&app);
+    } else {
+        crate::desktop::native_common::native_overlay_set_look(native_look(&app));
     }
     emit_config(&app, &current);
     crate::application::contract::next_revision(&state.snapshot_revision);
@@ -2538,30 +2547,144 @@ mod tests {
     }
 
     #[test]
-    fn background_tint_follows_accent_or_explicit_background() {
+    fn theme_json_preserves_defaults_and_custom_background_fallback() {
+        assert_eq!(theme_from_json(&serde_json::json!({})), Theme::DEFAULT);
         assert_eq!(
-            theme_background_rgb(&serde_json::json!({
-                "tone": "dark",
-                "accent": "#FF4013",
-                "backgroundMode": "followAccent"
+            theme_from_json(&serde_json::json!({
+                "tone": "light", "accent": " #FF4013 ",
+                "backgroundMode": "custom", "background": "221a18"
             })),
-            (12, 11, 16)
+            Theme {
+                tone: Tone::Light,
+                accent: [255, 64, 19],
+                custom_background: Some([34, 26, 24]),
+            }
         );
         assert_eq!(
-            theme_background_rgb(&serde_json::json!({
-                "backgroundMode": "custom",
-                "background": "#221A18"
+            theme_from_json(&serde_json::json!({
+                "tone": "unknown", "accent": false,
+                "backgroundMode": "custom", "background": "bad"
             })),
-            (34, 26, 24)
+            Theme {
+                custom_background: Some([15, 15, 15]),
+                ..Theme::DEFAULT
+            }
         );
-        assert_eq!(
-            theme_glass_tint_rgb(&serde_json::json!({
-                "tone": "dark",
-                "accent": "#FF4013",
-                "backgroundMode": "followAccent"
-            })),
-            (13, 9, 11)
-        );
+    }
+
+    // 冻结 Windows Acrylic 的迁移前实现，独立对照 JSON 解析、默认值与浮点运算顺序。
+    fn legacy_theme_colors(value: &Value) -> ([u8; 3], [u8; 3]) {
+        fn parse(value: Option<&str>) -> Option<(u8, u8, u8)> {
+            let value = value?.trim();
+            let value = value.strip_prefix('#').unwrap_or(value);
+            if value.len() != 6 {
+                return None;
+            }
+            Some((
+                u8::from_str_radix(&value[0..2], 16).ok()?,
+                u8::from_str_radix(&value[2..4], 16).ok()?,
+                u8::from_str_radix(&value[4..6], 16).ok()?,
+            ))
+        }
+        fn mix(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
+            let mix =
+                |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
+            (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+        }
+        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
+        let light = value.get("tone").and_then(Value::as_str) == Some("light");
+        let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
+        let background = if custom {
+            parse(value.get("background").and_then(Value::as_str)).unwrap_or((15, 15, 15))
+        } else {
+            mix(
+                accent,
+                if light { (244, 247, 251) } else { (7, 10, 16) },
+                0.98,
+            )
+        };
+        let base = if custom {
+            background
+        } else if light {
+            (248, 250, 252)
+        } else {
+            (5, 7, 11)
+        };
+        let tint = mix(accent, base, if light { 0.98 } else { 0.97 });
+        (background.into(), tint.into())
+    }
+
+    #[test]
+    fn core_theme_matches_legacy_acrylic_for_json_variants() {
+        for tone in [Value::Null, json!("dark"), json!("light"), json!("unknown")] {
+            for accent in [
+                Value::Null,
+                json!(false),
+                json!("invalid"),
+                json!("#FF4013"),
+                json!(" #aBcDeF "),
+                json!("000000"),
+                json!("#FFFFFF"),
+            ] {
+                for mode in [Value::Null, json!("followAccent"), json!("custom")] {
+                    for background in [
+                        Value::Null,
+                        json!(42),
+                        json!("bad"),
+                        json!("#221A18"),
+                        json!("#000000"),
+                        json!("ffffff"),
+                    ] {
+                        let value = json!({
+                            "tone": tone, "accent": accent,
+                            "backgroundMode": mode, "background": background
+                        });
+                        let theme = theme_from_json(&value);
+                        assert_eq!(
+                            (theme.background_rgb(), theme.glass_tint_rgb()),
+                            legacy_theme_colors(&value),
+                            "{value}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn css_native_look_projects_theme_and_all_glass_materials() {
+        use sayit_overlay_core::look::{Glass, GlassMaterial, Profile};
+        let theme = theme_from_json(&json!({"tone": "light", "accent": "#FF4013"}));
+        for (material, expected) in [
+            (
+                FloatingOrbGlassMaterial::UnderWindow,
+                GlassMaterial::UnderWindow,
+            ),
+            (FloatingOrbGlassMaterial::Content, GlassMaterial::Content),
+            (FloatingOrbGlassMaterial::Sidebar, GlassMaterial::Sidebar),
+        ] {
+            let mut settings = FloatingOrbSettings {
+                glass_enabled: true,
+                glass_material: material,
+                glass_tint: 17,
+                glass_border: 23,
+                ..FloatingOrbSettings::default()
+            };
+            assert_eq!(
+                css_native_look(theme, &settings),
+                Look {
+                    profile: Profile::Css,
+                    theme,
+                    glass: Some(Glass {
+                        material: expected,
+                        tint_percent: 17,
+                        border_percent: 23
+                    }),
+                }
+            );
+            settings.glass_enabled = false;
+            assert_eq!(css_native_look(theme, &settings).glass, None);
+        }
     }
 
     #[test]
