@@ -41,11 +41,17 @@ pub(crate) struct RenderCx {
     pub screens: Arc<screens::Screens>,
 }
 impl RenderCx {
-    fn model(&self, dpi: u32) -> Cx<'_, CtText> {
+    fn model(&self, id: WindowId, dpi: u32, fallback: Option<u32>) -> Cx<'_, CtText> {
+        let screen = (id == WindowId::Indicator)
+            .then(|| self.screens.indicator_screen(fallback))
+            .flatten();
         Cx {
             now: self.now,
-            dpi,
-            area: self.screens.area(),
+            dpi: screen.map_or(dpi, |s| sayit_overlay_core::screen::dpi_for_scale(s.scale)),
+            area: screen.map_or_else(
+                || self.screens.area(),
+                |s| sayit_overlay_core::screen::rect_pts_to_px(&[*s], s.visible, Some(s.id)),
+            ),
             text: &self.text,
         }
     }
@@ -237,7 +243,10 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
     }
 
     pub fn apply(&mut self, command: M::Command, cx: &RenderCx) {
-        let ops = self.model.apply(command, &cx.model(self.dpi));
+        let ops = self.model.apply(
+            command,
+            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+        );
         self.execute(ops, cx);
     }
     /// AppKit 与 PointerModel 在主线程创建，模型与命中快照先在渲染线程创建。
@@ -248,7 +257,10 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
         );
     }
     pub fn input(&mut self, input: <M::Pointer as PointerModel>::Input, cx: &RenderCx) {
-        let ops = self.model.input(input, &cx.model(self.dpi));
+        let ops = self.model.input(
+            input,
+            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+        );
         self.execute(ops, cx);
     }
     fn execute(&mut self, ops: Ops<M::Action>, cx: &RenderCx) {
@@ -271,9 +283,20 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
         self.clock.sync(self.model.wants_frames(cx.now));
     }
     fn redraw(&mut self, cx: &RenderCx) {
-        let Some(spec) = self.model.prepare_frame(&cx.model(self.dpi)) else {
+        let fallback = self.slot.snapshot().screen;
+        let Some(mut spec) = self
+            .model
+            .prepare_frame(&cx.model(self.slot.id, self.dpi, fallback))
+        else {
             return;
         };
+        let screen = (self.slot.id == WindowId::Indicator)
+            .then(|| cx.screens.indicator_screen(fallback).copied())
+            .flatten();
+        if self.slot.id == WindowId::Indicator {
+            let Some(screen) = screen else { return };
+            spec.bounds = screens::indicator_placement(&screen, spec.bounds);
+        }
         let Some((crop, bounds)) =
             content_frame(spec.bounds, self.model.content_bounds(), spec.dpi)
         else {
@@ -309,6 +332,7 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
                 0.0
             },
             look: cx.look,
+            screen,
         }));
     }
 }
@@ -356,7 +380,10 @@ impl<M: OverlayModel<CtText> + 'static> AnyHost for Host<M> {
     }
     fn frame(&mut self, cx: &RenderCx) {
         let dt = self.clock.delta(cx.now);
-        let ops = self.model.on_frame(dt, &cx.model(self.dpi));
+        let ops = self.model.on_frame(
+            dt,
+            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+        );
         self.execute(ops, cx);
     }
     fn redraw(&mut self, cx: &RenderCx) {
@@ -370,7 +397,10 @@ impl<M: OverlayModel<CtText> + 'static> AnyHost for Host<M> {
         if let WindowEvent::DpiChanged { dpi, .. } = event {
             self.dpi = dpi.clamp(24, 768);
         }
-        let ops = self.model.window_event(event, &cx.model(self.dpi));
+        let ops = self.model.window_event(
+            event,
+            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+        );
         self.execute(ops, cx);
     }
 }
@@ -446,7 +476,7 @@ mod tests {
         let _guard = crate::cg::cg_test_lock();
         let trace = Rc::new(RefCell::new(Vec::new()));
         let mut host = Host::new(
-            WindowId::Indicator,
+            WindowId::Orb,
             TestModel {
                 hit: 0,
                 trace: trace.clone(),
