@@ -1242,21 +1242,26 @@ fn sync_presentation_with_prefs(
     let native_subtitle = crate::desktop::native_subtitle::native_subtitle_enabled();
     if native_subtitle {
         crate::desktop::native_subtitle::native_subtitle_attach(app);
+        crate::desktop::native_common::native_overlay_set_look(
+            crate::desktop::floating_orb::native_look(app),
+        );
     }
-    // 原生字幕窗固定在主显示器上，直接按主显示器尺寸换算；WebView 模式
-    // 沿用指示窗当前所在显示器的测量。
+    // 原生后端报告百分比布局参考尺寸；未提供时沿用主显示器测量。
+    // WebView 模式沿用指示窗当前所在显示器的测量。
     let (monitor_width, monitor_height) = if native_subtitle {
-        app.primary_monitor()
-            .ok()
-            .flatten()
-            .map(|m| {
-                let scale = m.scale_factor().max(0.1);
-                (
-                    m.size().width as f64 / scale,
-                    m.size().height as f64 / scale,
-                )
-            })
-            .unwrap_or((1920.0, 1080.0))
+        crate::desktop::native_subtitle::native_subtitle_reference_size().unwrap_or_else(|| {
+            app.primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| {
+                    let scale = m.scale_factor().max(0.1);
+                    (
+                        m.size().width as f64 / scale,
+                        m.size().height as f64 / scale,
+                    )
+                })
+                .unwrap_or((1920.0, 1080.0))
+        })
     } else {
         let window = crate::desktop::ensure_indicator_window(app)?;
         let scale = window.scale_factor().unwrap_or(1.0);
