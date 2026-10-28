@@ -673,10 +673,11 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
         ops.push(WindowOp::Redraw);
         ops
     }
-    fn wants_frames(&self, now: Instant) -> bool {
+    fn wants_frames(&self, _: Instant) -> bool {
         (self.visible && (self.phase.is_spinner() || self.phase == OrbPhase::Recording))
             || self.transition.is_animating()
-            || self.style_blending(now)
+            // 到期也要保留结束帧，由 on_frame 清理过渡并重绘最终颜色。
+            || self.style_blend_start.is_some()
     }
     fn prepare_frame(&mut self, cx: &Cx<'_, T>) -> Option<FrameSpec> {
         if !self.visible {
@@ -1434,5 +1435,68 @@ mod model_tests {
         assert!(matches!(canvas.calls[2], Draw::FillRounded(_, _, _)));
         assert!(matches!(canvas.calls[3], Draw::StrokeRounded(_, _, _, _)));
         assert!(matches!(canvas.calls[4], Draw::StrokeRounded(_, _, _, _)));
+    }
+
+    #[test]
+    fn expired_hover_transition_keeps_frames_until_final_color_is_drawn() {
+        let now = Instant::now();
+        let mut model = Orb::new(96, &Look::WINDOWS_LEGACY);
+        settle(&mut model, now);
+        let start = now + Duration::from_secs(1);
+        let mut pointer = OrbPointer::default();
+        let steps = pointer.event(
+            PointerEvent::Move {
+                client: (32, 32),
+                screen: (32, 32),
+            },
+            &<Orb as OverlayModel<FakeText>>::hit(&model),
+        );
+        for step in steps {
+            if let PointerStep::Model(input) = step {
+                model.input(input, &cx(start, 96));
+            }
+        }
+        model.prepare_frame(&cx(start, 96));
+        let mut clock = FrameClock::new();
+        assert_eq!(
+            clock.sync(<Orb as OverlayModel<FakeText>>::wants_frames(&model, start)),
+            Some(true)
+        );
+        let middle = start + Duration::from_millis(75);
+        model.on_frame(0.075, &cx(middle, 96));
+        model.prepare_frame(&cx(middle, 96));
+        let mut canvas = RecordingCanvas::new(96);
+        model.draw(&mut canvas, middle);
+        assert!(
+            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color!=model.color8(BG_HOVER,1.0))
+        );
+        let end = start + Duration::from_millis(151);
+        // 已悬停的 Move 没有模型输入，宿主仍会查询 wants_frames 来同步定时器。
+        assert!(pointer
+            .event(
+                PointerEvent::Move {
+                    client: (33, 32),
+                    screen: (33, 32)
+                },
+                &<Orb as OverlayModel<FakeText>>::hit(&model)
+            )
+            .is_empty());
+        assert_eq!(
+            clock.sync(<Orb as OverlayModel<FakeText>>::wants_frames(&model, end)),
+            None
+        );
+        assert!(clock.is_active());
+        assert_eq!(model.on_frame(0.076, &cx(end, 96)), vec![WindowOp::Redraw]);
+        model.prepare_frame(&cx(end, 96));
+        canvas.calls.clear();
+        model.draw(&mut canvas, end);
+        assert!(
+            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==model.color8(BG_HOVER,1.0))
+        );
+        assert_eq!(model.style_blend_start, None);
+        assert_eq!(
+            clock.sync(<Orb as OverlayModel<FakeText>>::wants_frames(&model, end)),
+            Some(false)
+        );
     }
 }
