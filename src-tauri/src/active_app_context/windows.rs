@@ -796,7 +796,7 @@ mod tests {
                 app_name: "password-manager".into(),
                 ..Default::default()
             },
-            crate::providers::capabilities::OcrProvider::System,
+            crate::providers::capabilities::OcrProvider::default_local(),
             3_000,
         );
         let cancelled = Arc::new(AtomicBool::new(false));

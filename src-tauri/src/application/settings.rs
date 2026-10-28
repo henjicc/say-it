@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +110,56 @@ impl Default for AppSettings {
     }
 }
 
+// 设置 v8：Windows 系统 OCR 选择指向内置 PP-OCR；macOS 的 Vision 默认值保持不变。
+fn migrate_ocr_selection(prefs: &mut Value) {
+    let Some(prefs) = prefs.as_object_mut() else {
+        return;
+    };
+    if prefs.is_empty() {
+        return;
+    }
+    let selected = prefs
+        .get("activeAppContextOcrModel")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let legacy_ppocr = prefs
+        .get("activeAppContextOcrEngine")
+        .and_then(Value::as_str)
+        == Some("ppocr");
+    let model = if selected.is_empty() {
+        Some(if legacy_ppocr {
+            crate::providers::PPOCR_MODEL_ID
+        } else {
+            crate::providers::default_ocr_model_id()
+        })
+    } else if cfg!(windows) && matches!(selected, "system-ocr" | "system" | "builtin-windows-ocr") {
+        Some(crate::providers::PPOCR_MODEL_ID)
+    } else if selected == "ppocr" || selected == crate::providers::PPOCR_PROVIDER_ID {
+        Some(crate::providers::PPOCR_MODEL_ID)
+    } else {
+        None
+    };
+    if let Some(model) = model {
+        prefs.insert(
+            "activeAppContextOcrModel".into(),
+            Value::String(model.into()),
+        );
+    }
+    #[cfg(windows)]
+    if prefs
+        .get("activeAppContextOcrModel")
+        .and_then(Value::as_str)
+        == Some(crate::providers::PPOCR_MODEL_ID)
+    {
+        prefs.insert(
+            "activeAppContextOcrEngine".into(),
+            Value::String("ppocr".into()),
+        );
+    }
+}
+
 pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
+    migrate_ocr_selection(&mut settings.dictation_prefs);
     if let Some(history) = settings.history_prefs.as_object_mut() {
         let legacy_learning = history
             .get("finalDraftLearningEnabled")
@@ -228,6 +277,7 @@ pub(crate) fn import_legacy_settings(
             current.custom_cue_end = Some(store_cue(&app, "end", &data)?);
         }
     }
+    migrate_ocr_selection(&mut current.dictation_prefs);
     current.schema_version = SETTINGS_SCHEMA_VERSION;
     current.legacy_imported = true;
     save_settings_then_commit(&app, &state, current.clone())?;
@@ -316,23 +366,12 @@ pub(crate) fn update_app_settings(
     {
         return Err("详细日志开关必须是布尔值".into());
     }
-    let mut next = state
+    let current = state
         .app_settings
         .lock()
         .map_err(|_| "应用配置锁失败")?
         .clone();
-    next.schema_version = SETTINGS_SCHEMA_VERSION;
-    match domain.as_str() {
-        "dictation" => next.dictation_prefs = value,
-        "subtitles" => next.subtitle_prefs = value,
-        "comparison" => next.compare_prefs = value,
-        "customization" => next.customization_prefs = value,
-        "assistant" => next.assistant_prefs = value,
-        "history" => next.history_prefs = value,
-        "diagnostics" => next.diagnostics_prefs = value,
-        "theme" => next.theme = value,
-        _ => return Err(format!("未知配置领域：{domain}")),
-    }
+    let next = settings_with_domain_value(current, &domain, value)?;
     // 模板目录和快捷键方案分属两份持久化设置。后端在同一保存路径清理孤立引用，
     // 即使调用方不是当前前端，也不会留下启动后才报错的快捷键方案。
     let previous_dictation = if domain == "dictation" {
@@ -375,6 +414,29 @@ pub(crate) fn update_app_settings(
         crate::desktop::floating_orb::sync_floating_orb_theme(&app, &next.theme);
         let _ = app.emit("app-theme-changed", next.theme.clone());
     }
+    Ok(next)
+}
+
+fn settings_with_domain_value(
+    mut next: AppSettings,
+    domain: &str,
+    value: Value,
+) -> Result<AppSettings, String> {
+    match domain {
+        "dictation" => {
+            next.dictation_prefs = value;
+            migrate_ocr_selection(&mut next.dictation_prefs);
+        }
+        "subtitles" => next.subtitle_prefs = value,
+        "comparison" => next.compare_prefs = value,
+        "customization" => next.customization_prefs = value,
+        "assistant" => next.assistant_prefs = value,
+        "history" => next.history_prefs = value,
+        "diagnostics" => next.diagnostics_prefs = value,
+        "theme" => next.theme = value,
+        _ => return Err(format!("未知配置领域：{domain}")),
+    }
+    next.schema_version = SETTINGS_SCHEMA_VERSION;
     Ok(next)
 }
 
@@ -471,6 +533,95 @@ fn save_settings_then_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn dictation_update_migrates_submitted_system_ocr_before_persistence() {
+        let current = AppSettings::default();
+        let next = settings_with_domain_value(
+            current,
+            "dictation",
+            serde_json::json!({
+                "activeAppContextOcrModel": "system-ocr",
+                "activeAppContextOcrEngine": "system",
+                "smartProcessingEnabled": false
+            }),
+        )
+        .unwrap();
+        let saved = serde_json::to_value(&next).unwrap();
+        assert_eq!(saved["schemaVersion"], SETTINGS_SCHEMA_VERSION);
+        assert_eq!(
+            saved["dictationPrefs"]["activeAppContextOcrModel"],
+            crate::providers::PPOCR_MODEL_ID
+        );
+        assert_eq!(saved["dictationPrefs"]["activeAppContextOcrEngine"], "ppocr");
+        assert_eq!(saved["dictationPrefs"]["smartProcessingEnabled"], false);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dictation_update_preserves_submitted_vision_selection() {
+        let prefs = serde_json::json!({
+            "activeAppContextOcrModel": "system-ocr",
+            "activeAppContextOcrEngine": "system"
+        });
+        let next = settings_with_domain_value(AppSettings::default(), "dictation", prefs.clone())
+            .unwrap();
+        assert_eq!(next.dictation_prefs, prefs);
+    }
+
+    #[test]
+    fn unrelated_domain_update_leaves_dictation_preferences_untouched() {
+        let mut current = AppSettings::default();
+        current.dictation_prefs = serde_json::json!({"activeAppContextOcrModel":"system-ocr"});
+        let expected = current.dictation_prefs.clone();
+        let next = settings_with_domain_value(
+            current,
+            "comparison",
+            serde_json::json!({"enabled":true}),
+        )
+        .unwrap();
+        assert_eq!(next.dictation_prefs, expected);
+        assert_eq!(next.compare_prefs["enabled"], true);
+    }
+
+    #[test]
+    fn ocr_selection_migration_preserves_remote_and_platform_default() {
+        let mut empty = serde_json::json!({});
+        migrate_ocr_selection(&mut empty);
+        assert_eq!(empty, serde_json::json!({}));
+        for old in ["system-ocr", "system", "builtin-windows-ocr", ""] {
+            let mut prefs = serde_json::json!({"activeAppContextOcrModel": old, "activeAppContextOcrEngine": "system"});
+            migrate_ocr_selection(&mut prefs);
+            if cfg!(windows) {
+                assert_eq!(
+                    prefs["activeAppContextOcrModel"],
+                    crate::providers::PPOCR_MODEL_ID
+                );
+                assert_eq!(prefs["activeAppContextOcrEngine"], "ppocr");
+            } else if old == "system-ocr" || old.is_empty() {
+                assert_eq!(
+                    prefs["activeAppContextOcrModel"],
+                    crate::providers::default_ocr_model_id()
+                );
+            }
+            let once = prefs.clone();
+            migrate_ocr_selection(&mut prefs);
+            assert_eq!(prefs, once);
+        }
+        for model in [crate::providers::PPOCR_MODEL_ID, "remote-ocr-model"] {
+            let mut prefs = serde_json::json!({"activeAppContextOcrModel": model});
+            migrate_ocr_selection(&mut prefs);
+            assert_eq!(prefs["activeAppContextOcrModel"], model);
+        }
+        let mut legacy = serde_json::json!({"activeAppContextOcrEngine":"ppocr"});
+        migrate_ocr_selection(&mut legacy);
+        assert_eq!(
+            legacy["activeAppContextOcrModel"],
+            crate::providers::PPOCR_MODEL_ID
+        );
+    }
+
     #[test]
     fn old_json_gets_safe_defaults() {
         let v: AppSettings = serde_json::from_str("{}").unwrap();

@@ -191,6 +191,15 @@ fn canonical_json_value(value: Value) -> Value {
     }
 }
 
+pub(crate) fn ensure_model_pack_installable(manifest: &PluginManifest) -> Result<(), String> {
+    if super::plugin::is_superseded_ppocr(manifest) {
+        return Err(
+            "PP-OCRv6 Tiny 已随应用内置，无需安装此模型包；已安装的旧包可在插件管理卸载。".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn install_from_directory(
     app: &tauri::AppHandle,
     source: &Path,
@@ -204,6 +213,7 @@ pub fn install_from_directory(
         return Err("插件安装源必须是目录".into());
     }
     let manifest = validate_plugin_dir(&source)?;
+    ensure_model_pack_installable(&manifest)?;
     ensure_no_native_files(&source)?;
     let mut trusted = load_trusted_keys(app)?;
     let trust = verify_installation(&source, &manifest, &trusted)?;
@@ -344,6 +354,7 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
         verify_expected_archive_hash(&source, &archive_sha256)?;
         let declaration = read_package_declaration(&extracted)?;
         let manifest = validate_plugin_dir(&extracted)?;
+        ensure_model_pack_installable(&manifest)?;
         validate_declared_package_kind(&declaration, &manifest)?;
         let trust = verify_installation(&extracted, &manifest, &load_trusted_keys(app)?)?;
         let mut capabilities = manifest.provider.capabilities.clone();

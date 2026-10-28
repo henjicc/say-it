@@ -3502,30 +3502,18 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
     let selected = selected_model.trim();
     if selected.is_empty() {
         return match legacy_engine {
-            crate::active_app_context::OcrEngineKind::System => OcrProvider::System,
-            crate::active_app_context::OcrEngineKind::PpOcr => {
-                let spec = state
-                    .plugin_registry
-                    .lock()
-                    .ok()
-                    .and_then(|registry| registry.local_model_for_engine("ppocr-mnn"));
-                let spec = spec.filter(|spec| {
-                    state.providers.lock().is_ok_and(|settings| {
-                        settings
-                            .profiles
-                            .iter()
-                            .any(|profile| profile.id == spec.provider_id && profile.enabled)
-                    })
-                });
-                spec.map(|spec| OcrProvider::PpOcr { spec }).unwrap_or_else(|| OcrProvider::Unavailable {
-                    selection: "ppocr".into(),
-                    reason: "旧版 PP-OCR 设置已迁移，但本地模型包尚未安装；请在插件管理安装 PP-OCRv6 Tiny 后重新选择。".into(),
-                })
-            }
+            crate::active_app_context::OcrEngineKind::System => OcrProvider::default_local(),
+            crate::active_app_context::OcrEngineKind::PpOcr => OcrProvider::PpOcr,
         };
     }
-    if selected == crate::providers::SYSTEM_OCR_PROVIDER_ID || selected == "system" {
-        return OcrProvider::System;
+    if matches!(selected, "system-ocr" | "system" | "builtin-windows-ocr") {
+        return OcrProvider::default_local();
+    }
+    if selected == crate::providers::PPOCR_MODEL_ID
+        || selected == crate::providers::PPOCR_PROVIDER_ID
+        || selected == "ppocr"
+    {
+        return OcrProvider::PpOcr;
     }
 
     let settings = match crate::commands::common::read_provider_settings(state) {
@@ -3546,18 +3534,13 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
             }
         }
     };
-    let local = registry.local_model_for_model(selected);
-    let provider_id = local
-        .as_ref()
-        .map(|spec| spec.provider_id.clone())
-        .or_else(|| registry.provider_id_for_model(selected))
-        .or_else(|| {
-            settings
-                .profiles
-                .iter()
-                .find(|profile| profile.id == selected)
-                .map(|profile| profile.id.clone())
-        });
+    let provider_id = registry.provider_id_for_model(selected).or_else(|| {
+        settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == selected)
+            .map(|profile| profile.id.clone())
+    });
     let Some(provider_id) = provider_id else {
         return OcrProvider::Unavailable {
             selection: selected.into(),
@@ -3577,16 +3560,6 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
             reason: format!("OCR 模型 {selected} 的供应商未启用或已卸载。"),
         };
     };
-    if let Some(spec) = local {
-        return if spec.engine == "ppocr-mnn" {
-            OcrProvider::PpOcr { spec }
-        } else {
-            OcrProvider::Unavailable {
-                selection: selected.into(),
-                reason: format!("模型引擎 {} 不支持场景感知 OCR。", spec.engine),
-            }
-        };
-    }
     let runtime = match registry.runtime_for_provider(&provider_id) {
         Ok(Some(runtime)) => runtime.bind_credentials(state.credentials.clone()),
         Ok(None) => {
@@ -4791,26 +4764,46 @@ mod tests {
     }
 
     #[test]
-    fn legacy_ppocr_without_model_pack_is_unavailable_but_system_ocr_remains_available() {
+    fn legacy_ppocr_and_builtin_model_work_without_model_pack() {
         let state = RuntimeState::default();
-        assert!(matches!(
-            resolve_active_app_context_ocr_provider(
+        for selected in [
+            "",
+            crate::providers::PPOCR_MODEL_ID,
+            crate::providers::PPOCR_PROVIDER_ID,
+        ] {
+            assert!(matches!(
+                resolve_active_app_context_ocr_provider(
+                    &state,
+                    selected,
+                    crate::active_app_context::OcrEngineKind::PpOcr,
+                    &[],
+                ),
+                crate::providers::capabilities::OcrProvider::PpOcr
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_system_selection_uses_platform_default() {
+        let state = RuntimeState::default();
+        for selected in ["", "system-ocr", "system", "builtin-windows-ocr"] {
+            let provider = resolve_active_app_context_ocr_provider(
                 &state,
-                "",
-                crate::active_app_context::OcrEngineKind::PpOcr,
+                selected,
+                crate::active_app_context::OcrEngineKind::System,
                 &[],
-            ),
-            crate::providers::capabilities::OcrProvider::Unavailable { .. }
-        ));
-        assert!(matches!(
-            resolve_active_app_context_ocr_provider(
-                &state,
-                crate::providers::SYSTEM_OCR_PROVIDER_ID,
-                crate::active_app_context::OcrEngineKind::PpOcr,
-                &[],
-            ),
-            crate::providers::capabilities::OcrProvider::System
-        ));
+            );
+            #[cfg(windows)]
+            assert!(matches!(
+                provider,
+                crate::providers::capabilities::OcrProvider::PpOcr
+            ));
+            #[cfg(target_os = "macos")]
+            assert!(matches!(
+                provider,
+                crate::providers::capabilities::OcrProvider::System
+            ));
+        }
     }
 
     #[test]

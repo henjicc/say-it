@@ -29,6 +29,7 @@ const PERMISSION_LABEL: Record<string, string> = {
 };
 
 const MODEL_STATE_LABEL: Record<string, string> = {
+  superseded: "已内置，可卸载",
   pending: "等待下载",
   partial: "下载未完成",
   corrupt: "模型校验失败",
@@ -196,7 +197,7 @@ export function PluginManagerPanel() {
                   </p>
                   {plugin.modelPack && (
                     <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                      {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state} · {formatBytes(plugin.modelPack.readyBytes)} / {formatBytes(plugin.modelPack.totalBytes)}
+                      {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state}{plugin.modelPack.state !== "superseded" && ` · ${formatBytes(plugin.modelPack.readyBytes)} / ${formatBytes(plugin.modelPack.totalBytes)}`}
                     </p>
                   )}
                 </div>
@@ -207,13 +208,17 @@ export function PluginManagerPanel() {
                       {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}
                     </Button>
                   )}
-                  <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
-                  <Switch
-                    checked={plugin.enabled}
-                    disabled={busy}
-                    label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
-                    onChange={(enabled) => void setEnabled(plugin, enabled)}
-                  />
+                  {plugin.modelPack?.state !== "superseded" && (
+                    <>
+                      <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
+                      <Switch
+                        checked={plugin.enabled}
+                        disabled={busy}
+                        label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
+                        onChange={(enabled) => void setEnabled(plugin, enabled)}
+                      />
+                    </>
+                  )}
                   <IconButton
                     size="sm"
                     variant="dangerHover"

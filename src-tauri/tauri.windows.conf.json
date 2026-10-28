@@ -20,6 +20,7 @@
     "externalBin": ["binaries/context-probe"],
     "resources": {
       "resources/licenses": "resources/licenses",
+      "resources/ocr": "resources/ocr",
       "target/runtime-libs/*.dll": "target/release"
     },
     "icon": [

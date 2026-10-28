@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import builtinModels from "../../../../shared/asr-models.json";
-import { loadModelCatalog, optionsForScene } from "./modelRegistry";
+import { loadModelCatalog, optionsForScene, ocrOptionsForScene } from "./modelRegistry";
 
 vi.mock("@/lib/tauri", () => ({
   CMD: { getModelCatalog: "get_model_catalog" },
@@ -39,6 +39,7 @@ vi.mock("@/lib/tauri", () => ({
     ],
     providers: {
       profiles: [
+        { id: "local-ppocr", kind: "builtin-ppocr", displayName: "内置 PP-OCRv6 Tiny", capabilities: ["ocr"], enabled: true },
         { id: "apple-speech", kind: "builtin", displayName: "Apple", capabilities: ["asr"], enabled: true },
         { id: "volcengine", kind: "sdk", displayName: "火山引擎", capabilities: ["asr"], enabled: true },
         { id: "bailian", kind: "sdk", displayName: "阿里云百炼", capabilities: ["asr"], enabled: true },
@@ -53,6 +54,14 @@ vi.mock("@/lib/tauri", () => ({
 describe("ASR model labels", () => {
   beforeAll(async () => {
     await loadModelCatalog();
+  });
+
+  it("内置 PP-OCR 只生成一个本地 OCR 模型选项", () => {
+    const options = ocrOptionsForScene("activeAppContext");
+    expect(options).toEqual([{
+      value: "local-ppocr-v6-tiny", label: "PP-OCRv6 Tiny（内置）",
+      providerId: "local-ppocr", remote: false,
+    }]);
   });
 
   it("marks every ASR option as realtime or non-realtime", () => {
