@@ -22,96 +22,6 @@ pub(crate) fn native_orb_enabled() -> bool {
     })
 }
 
-/// 拖拽阈值（CSS 像素），与 interaction.ts 的 ORB_DRAG_THRESHOLD 一致。
-#[cfg(any(windows, test))]
-pub(crate) const ORB_DRAG_THRESHOLD: f64 = 5.0;
-
-/// 移植自 interaction.ts 的 shouldStartOrbDrag。
-#[cfg(any(windows, test))]
-pub(crate) fn should_start_orb_drag(delta_x: f64, delta_y: f64) -> bool {
-    delta_x.hypot(delta_y) >= ORB_DRAG_THRESHOLD
-}
-
-/// 左键动作，与 interaction.ts 的 OrbClickAction 一致。
-#[cfg(any(windows, test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OrbClickAction {
-    Activate,
-    Stop,
-    Submit,
-    ShowError,
-}
-
-/// 移植自 interaction.ts 的 floatingOrbClickAction。
-#[cfg(any(windows, test))]
-pub(crate) fn orb_click_action(phase: &str, can_submit: bool) -> Option<OrbClickAction> {
-    match phase {
-        "idle" | "armed" => Some(OrbClickAction::Activate),
-        "recording" => Some(OrbClickAction::Stop),
-        "success" if can_submit => Some(OrbClickAction::Submit),
-        "error" => Some(OrbClickAction::ShowError),
-        _ => None,
-    }
-}
-
-/// 右键动作，与 interaction.ts 的 OrbContextAction 一致。
-#[cfg(any(windows, test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OrbContextAction {
-    Cancel,
-    DismissSubmit,
-    DismissError,
-    Menu,
-}
-
-/// 移植自 interaction.ts 的 floatingOrbContextAction。
-#[cfg(any(windows, test))]
-pub(crate) fn orb_context_action(
-    phase: &str,
-    can_submit: bool,
-    transient: bool,
-) -> Option<OrbContextAction> {
-    if phase == "error" {
-        return Some(OrbContextAction::DismissError);
-    }
-    if phase == "recording" {
-        return Some(OrbContextAction::Cancel);
-    }
-    if phase == "success" && can_submit {
-        return Some(OrbContextAction::DismissSubmit);
-    }
-    if phase == "idle" && !transient {
-        return Some(OrbContextAction::Menu);
-    }
-    None
-}
-
-/// 波形柱数量，与 floating-orb/waveform.ts 的 WAVE_BAR_COUNT 一致。
-#[cfg(any(windows, test))]
-pub(crate) const ORB_WAVE_BAR_COUNT: usize = 5;
-
-/// 每根波形柱的基础高度占比，与 floating-orb.css 的 --bar-height 对应
-/// （第 3 根使用默认的 74%）。
-#[cfg(any(windows, test))]
-const ORB_WAVE_BAR_HEIGHTS: [f32; ORB_WAVE_BAR_COUNT] = [0.47, 0.64, 0.74, 0.64, 0.47];
-
-/// 波形柱最小缩放，与 OrbWaveform 的 `max(0.18, level)` 一致。
-#[cfg(any(windows, test))]
-const ORB_WAVE_BAR_MIN_SCALE: f32 = 0.18;
-
-/// 与 floating-orb.tsx 的波形投影一致：peaks 逐个过 floatingOrbWaveScale 后取
-/// 最后 WAVE_BAR_COUNT 个，不足的位置用整体 level（同样过曲线）补齐。
-#[cfg(any(windows, test))]
-pub(crate) fn orb_wave_levels(level: f32, peaks: &[f32]) -> [f32; ORB_WAVE_BAR_COUNT] {
-    use super::native_indicator::wave_scale;
-    let mut levels_out = [wave_scale(level); ORB_WAVE_BAR_COUNT];
-    let take = peaks.len().min(ORB_WAVE_BAR_COUNT);
-    for (index, value) in peaks[peaks.len() - take..].iter().enumerate() {
-        levels_out[index] = wave_scale(*value);
-    }
-    levels_out
-}
-
 pub(crate) fn native_orb_attach(app: &tauri::AppHandle) {
     #[cfg(windows)]
     {
@@ -256,27 +166,28 @@ pub(crate) fn native_orb_cursor_over() -> bool {
 
 #[cfg(windows)]
 mod imp {
-    use super::{
+    use super::super::native_overlay::{
+        create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
+        svg_path_geometry, system_dpi, window_dpi, LayeredSurface, OverlayThread,
+    };
+    use sayit_overlay_core::anim::Transition;
+    use sayit_overlay_core::orb::{
         orb_click_action, orb_context_action, orb_wave_levels, should_start_orb_drag,
         OrbClickAction, OrbContextAction, ORB_WAVE_BAR_COUNT, ORB_WAVE_BAR_HEIGHTS,
         ORB_WAVE_BAR_MIN_SCALE,
-    };
-    use super::super::native_overlay::{
-        create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
-        svg_path_geometry, system_dpi, window_dpi, LayeredSurface, OverlayThread, Transition,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
     use windows::core::w;
     use windows::Foundation::Numerics::Matrix3x2;
-    use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
     use windows::Win32::Foundation::{
         GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
     use windows::Win32::Graphics::Direct2D::Common::{
         D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN, D2D_POINT_2F, D2D_SIZE_F,
     };
+    use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
     use windows::Win32::Graphics::Direct2D::{
         ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush, D2D1_ARC_SEGMENT,
         D2D1_ARC_SIZE_SMALL, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
@@ -287,17 +198,16 @@ mod imp {
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+        ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, KillTimer,
         LoadCursorW, RegisterClassW, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
         ShowWindow, GWLP_USERDATA, GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, IDC_ARROW,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, WM_CAPTURECHANGED, WM_DESTROY,
-        WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCLBUTTONDOWN,
-        WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+        WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_MOVE, WM_NCLBUTTONDOWN, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     // WM_MOUSELEAVE 在 windows crate 里属于 Win32_UI_Controls 特性，为这一个常量
@@ -410,14 +320,25 @@ mod imp {
         fn is_spinner(self) -> bool {
             matches!(
                 self,
-                Self::Positioning | Self::Processing | Self::SmartProcessing | Self::Submitting | Self::Busy
+                Self::Positioning
+                    | Self::Processing
+                    | Self::SmartProcessing
+                    | Self::Submitting
+                    | Self::Busy
             )
         }
     }
 
     pub(crate) enum Command {
-        SetRect { x: i32, y: i32, size: i32 },
-        MoveTo { x: i32, y: i32 },
+        SetRect {
+            x: i32,
+            y: i32,
+            size: i32,
+        },
+        MoveTo {
+            x: i32,
+            y: i32,
+        },
         SetOpacity(f32),
         Show,
         Hide,
@@ -427,7 +348,10 @@ mod imp {
             transient: bool,
             can_submit: bool,
         },
-        SetWaveform { level: f32, peaks: Vec<f32> },
+        SetWaveform {
+            level: f32,
+            peaks: Vec<f32>,
+        },
     }
 
     pub(super) static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -625,15 +549,8 @@ mod imp {
                     self.y = y;
                     self.view.size_px = size;
                     unsafe {
-                        let _ = SetWindowPos(
-                            self.hwnd,
-                            HWND_TOPMOST,
-                            x,
-                            y,
-                            size,
-                            size,
-                            SWP_NOACTIVATE,
-                        );
+                        let _ =
+                            SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, size, size, SWP_NOACTIVATE);
                     }
                     if resized {
                         self.surface.discard_dib();
@@ -753,9 +670,19 @@ mod imp {
                 ..
             } = self;
             let size = view.size_px;
-            surface.render(d2d, view.dpi, *x, *y, size, size, alpha, LOG_TAG, |target, brush| {
-                view.draw(d2d, target, brush);
-            });
+            surface.render(
+                d2d,
+                view.dpi,
+                *x,
+                *y,
+                size,
+                size,
+                alpha,
+                LOG_TAG,
+                |target, brush| {
+                    view.draw(d2d, target, brush);
+                },
+            );
         }
 
         /// DPI 变化：保持逻辑尺寸不变，按新 DPI 重新换算物理边长。
@@ -1223,7 +1150,9 @@ mod imp {
 
     fn run_click_action(hwnd: HWND, action: OrbClickAction) {
         use crate::desktop::floating_orb as orb;
-        let Some(app) = APP.get().cloned() else { return };
+        let Some(app) = APP.get().cloned() else {
+            return;
+        };
         match action {
             OrbClickAction::Activate => {
                 // 点击被接受的当帧就让球进入穿透态：activate 流程里用于恢复焦点的
@@ -1260,7 +1189,9 @@ mod imp {
 
     fn run_context_action(action: OrbContextAction) {
         use crate::desktop::floating_orb as orb;
-        let Some(app) = APP.get().cloned() else { return };
+        let Some(app) = APP.get().cloned() else {
+            return;
+        };
         match action {
             OrbContextAction::DismissError => {
                 tauri::async_runtime::spawn(async move {
@@ -1312,8 +1243,9 @@ mod imp {
                         .map(|last| now.saturating_duration_since(last).as_secs_f32())
                         .unwrap_or(TIMER_MS as f32 / 1000.0);
                     state.view.tick_animations(dt);
-                    state.view.spinner_angle = (state.view.spinner_angle + SPINNER_STEP_DEG) % 360.0;
-                    let (_, finished) = state.transition.tick();
+                    state.view.spinner_angle =
+                        (state.view.spinner_angle + SPINNER_STEP_DEG) % 360.0;
+                    let (_, finished) = state.transition.tick(overlay_now());
                     if finished && state.transition.is_fully_hidden() {
                         // 退场动画播完才真正隐藏。
                         state.visible = false;
@@ -1346,10 +1278,7 @@ mod imp {
                         return false;
                     };
                     // 与 WebView 一致：只有 idle 且非瞬时态允许拖拽。
-                    if state.dragged
-                        || state.view.phase != OrbPhase::Idle
-                        || state.view.transient
-                    {
+                    if state.dragged || state.view.phase != OrbPhase::Idle || state.view.transient {
                         return false;
                     }
                     // 阈值按 CSS 像素判断（与 WebView 的 screenX 一致）。
@@ -1369,7 +1298,12 @@ mod imp {
                     // SendMessage 会阻塞到拖拽结束（期间窗口过程被重入，
                     // 因此上面不能持有 WindowState 借用）。
                     let _ = ReleaseCapture();
-                    SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                    SendMessageW(
+                        hwnd,
+                        WM_NCLBUTTONDOWN,
+                        WPARAM(HTCAPTION as usize),
+                        LPARAM(0),
+                    );
                     let mut rect = RECT::default();
                     if GetWindowRect(hwnd, &mut rect).is_ok() {
                         let size = rect.right - rect.left;
@@ -1607,77 +1541,3 @@ mod imp {
 
 #[cfg(all(test, windows))]
 pub(crate) use imp::snapshot_driver;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn click_action_matches_interaction_ts() {
-        assert_eq!(orb_click_action("idle", false), Some(OrbClickAction::Activate));
-        assert_eq!(orb_click_action("armed", false), Some(OrbClickAction::Activate));
-        assert_eq!(orb_click_action("recording", false), Some(OrbClickAction::Stop));
-        assert_eq!(orb_click_action("success", true), Some(OrbClickAction::Submit));
-        assert_eq!(orb_click_action("success", false), None);
-        assert_eq!(orb_click_action("error", false), Some(OrbClickAction::ShowError));
-        for phase in [
-            "processing",
-            "smartProcessing",
-            "submitting",
-            "moving",
-            "positioning",
-            "busy",
-            "fallback",
-            "cancelled",
-            "submitted",
-        ] {
-            assert_eq!(orb_click_action(phase, true), None, "{phase}");
-        }
-    }
-
-    #[test]
-    fn context_action_matches_interaction_ts() {
-        assert_eq!(
-            orb_context_action("error", false, false),
-            Some(OrbContextAction::DismissError)
-        );
-        assert_eq!(
-            orb_context_action("recording", false, false),
-            Some(OrbContextAction::Cancel)
-        );
-        assert_eq!(
-            orb_context_action("success", true, false),
-            Some(OrbContextAction::DismissSubmit)
-        );
-        assert_eq!(orb_context_action("success", false, false), None);
-        assert_eq!(
-            orb_context_action("idle", false, false),
-            Some(OrbContextAction::Menu)
-        );
-        // 瞬时球（鼠标手势）的 idle 不打开菜单。
-        assert_eq!(orb_context_action("idle", false, true), None);
-        assert_eq!(orb_context_action("processing", false, false), None);
-    }
-
-    #[test]
-    fn drag_threshold_uses_pointer_distance() {
-        assert!(!should_start_orb_drag(3.0, 3.0));
-        assert!(should_start_orb_drag(3.0, 4.0));
-        assert!(should_start_orb_drag(5.0, 0.0));
-        assert!(!should_start_orb_drag(4.9, 0.0));
-    }
-
-    #[test]
-    fn wave_levels_take_the_last_peaks_and_fill_with_level() {
-        use super::super::native_indicator::wave_scale;
-        assert_eq!(orb_wave_levels(0.25, &[]), [0.9; ORB_WAVE_BAR_COUNT]);
-        let levels = orb_wave_levels(0.0, &[1.0, 0.0]);
-        assert_eq!(levels[0], 1.0);
-        assert_eq!(levels[1], 0.0);
-        assert_eq!(levels[2], 0.0);
-        // 6 个峰值取最后 5 个，并逐个过响度曲线。
-        let levels = orb_wave_levels(0.0, &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]);
-        assert_eq!(levels[0], wave_scale(0.2));
-        assert_eq!(levels[4], 1.0);
-    }
-}
