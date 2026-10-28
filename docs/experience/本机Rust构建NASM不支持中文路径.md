@@ -25,11 +25,12 @@ nasm -f win64 <asm> -o /tmp/x.obj                                          # 路
 
 ## 解决
 
-- 推荐：让构建找不到这份 NASM（从 PATH 移除 `C:\Strawberry\c\bin`，或给其中的 `nasm.exe` 改名），
-  `aws-lc-sys` 会改用预编译对象，不再依赖本机 NASM。改完后重开终端和编辑器使 PATH 生效。
-- 临时：`CARGO_TARGET_DIR` 指到纯 ASCII 路径只适合跑测试或单独 `cargo build`。
-  `tauri.windows.conf.json` 的打包资源写死了 `target/release/*.dll`，换了 target 目录后
-  打包会找不到这些 DLL，或误用 `src-tauri/target/release` 里的旧文件。
+- 让构建找不到这份 NASM（从 PATH 移除 `C:\Strawberry\c\bin`，或给其中的 `nasm.exe` 改名），
+  `aws-lc-sys` 会改用预编译对象，不再依赖本机 NASM。本机已于 2026-10-28 把它改名为
+  `nasm.exe.bak`，之后在中文路径下的 debug 构建与测试均正常。
+- 不要用 `CARGO_TARGET_DIR` 指到仓库外的纯 ASCII 路径来绕开：会在其他盘（曾经是 C 盘）
+  另留一整份构建产物；`tauri.windows.conf.json` 的打包资源写死了 `target/release/*.dll`，
+  换了 target 目录后打包会找不到这些 DLL，或误用 `src-tauri/target/release` 里的旧文件。
 - `AWS_LC_SYS_NO_ASM=1` **只对 debug 构建有效**，release 下构建脚本会直接
   panic（"AWS_LC_SYS_NO_ASM only allowed for debug builds"）。
 - 正式 release 由 GitHub Actions 构建（英文路径），不受影响。
