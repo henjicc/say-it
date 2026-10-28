@@ -17,8 +17,8 @@ mod indicator;
 mod orb;
 mod subtitle;
 
-use super::native_overlay::create_dwrite_factory;
-use super::native_overlay::test_seams::{self, Capture, OffscreenGuard};
+use super::create_dwrite_factory;
+use super::test_seams::{self, Capture, OffscreenGuard};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -369,11 +369,6 @@ impl Session<'_> {
                 self.send(WM_TIMER, self.driver.frame_timer, 0);
             }
         }
-    }
-
-    /// 在当前时刻触发一次指定的一次性定时器（如胶囊通知到期）。
-    pub(super) fn fire_timer(&mut self, id: usize) {
-        self.send(WM_TIMER, id, 0);
     }
 
     /// 指针移到布局坐标（DIP）处，按窗口 DPI 换成客户区物理像素。
