@@ -13,6 +13,8 @@ const manifestPath = "src-tauri/Cargo.toml";
 const targetRoot = path.resolve("src-tauri/target");
 const toolchainStampPath = path.join(targetRoot, ".sayit-rustc-version");
 const sherpaCacheDir = path.join(targetRoot, "sherpa-onnx-prebuilt");
+// npm run check:mac-overlay 的交叉检查产物：只在工具链变更时失效，体积小，不计入 debug 预算。
+const macCheckDir = path.join(targetRoot, "mac-check");
 
 function isMissing(error) {
   return error?.code === "ENOENT";
@@ -56,9 +58,14 @@ export function shouldCheckDebug({ previousToolchain, currentToolchain, lastChec
   return previousToolchain !== currentToolchain || nowMs - lastCheckedMs >= SIZE_CHECK_INTERVAL_MS;
 }
 
+/** 有上次记录且与当前不同才算变更；首次运行没有记录，不视为变更。 */
+export function toolchainChanged(previousToolchain, currentToolchain) {
+  return Boolean(previousToolchain) && previousToolchain !== currentToolchain;
+}
+
 /** 返回需要清理 debug 产物的原因；不需要清理时返回 null。 */
 export function debugCleanupReason({ previousToolchain, currentToolchain, debugBytes, budgetBytes = DEBUG_BUDGET_BYTES }) {
-  if (previousToolchain && previousToolchain !== currentToolchain) {
+  if (toolchainChanged(previousToolchain, currentToolchain)) {
     return "Rust 工具链已变更，旧产物全部失效";
   }
   if (debugBytes > budgetBytes) {
@@ -138,6 +145,10 @@ export function guardDebugCache() {
     debugBytes: directorySize(path.join(targetRoot, "debug")),
   });
   if (reason) cargoClean(["--profile", "dev"], reason);
+  if (toolchainChanged(previousToolchain, currentToolchain) && existsSync(macCheckDir)) {
+    process.stderr.write("[rust-cache] Rust 工具链已变更，删除 Mac 交叉检查产物 mac-check\n");
+    rmSync(macCheckDir, { recursive: true, force: true });
+  }
   pruneSherpaCache();
   // 记录文件的修改时间即本次检查时间。
   writeFileSync(toolchainStampPath, `${currentToolchain}\n`);
