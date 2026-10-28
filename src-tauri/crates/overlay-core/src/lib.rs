@@ -1,5 +1,15 @@
-//! 原生悬浮窗（听写胶囊、悬浮球、实时字幕条）的平台无关层：状态机、动画、布局、
-//! 绘制指令与跨平台契约。
-//!
-//! 本 crate 不得依赖 `windows`、`objc2*`、`tauri` 或主 crate `say-it`，
-//! 平台后端只通过这里定义的接口驱动模型。
+//! 原生悬浮窗共用层：画什么、何时画、如何响应输入。不依赖任何平台 API。
+pub mod anim;
+pub mod blur;
+pub mod canvas;
+pub mod geom;
+pub mod indicator;
+pub mod look;
+pub mod orb;
+pub mod present;
+pub mod screen;
+pub mod subtitle;
+pub mod svg;
+#[cfg(test)]
+mod testing;
+pub mod window;
