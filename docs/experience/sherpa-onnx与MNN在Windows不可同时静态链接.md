@@ -14,7 +14,7 @@ Windows/MSVC 下，应用已经通过 `ocr-rs` 的 `mnn-static` 特性静态链�
 
 1. sherpa-onnx 使用 `default-features = false, features = ["shared"]`，隔离 ONNX Runtime 与现有 MNN 静态库；不要同时把两套原生推理运行时静态链接进主程序。
 2. `sherpa-onnx-sys` 的 Windows 共享构建会把 DLL 复制到 `target/<profile>`，但 Cargo 测试程序位于 `target/<profile>/deps`。项目 `build.rs` 需要同步复制 4 个 DLL 到 `deps`，否则 Windows 会弹出不可见的缺 DLL 对话框，自动化表现为测试永久挂起。
-3. Tauri NSIS 不会自动把动态依赖放到安装目录根部。把 `target/release` 下 4 个 DLL 加入 Windows bundle resources，再由 `NSIS_HOOK_POSTINSTALL` 复制到 `$INSTDIR`；卸载钩子同步删除。
+3. Tauri NSIS 不会自动把动态依赖放到安装目录根部。`build.rs` 把 4 个 DLL 同步到 `target/runtime-libs/`，Windows bundle resources 从那里安装到 `target\release\`，再由 `NSIS_HOOK_POSTINSTALL` 复制到 `$INSTDIR`；卸载钩子同步删除。资源不能直接引用 `target/release`，原因见 `Tauri打包资源引用target-release导致dev构建依赖先打包.md`。
 4. 验证不能只看 `cargo check`：至少运行 PP-OCR 原生夹具、sherpa 真实模型识别、完整 `cargo test` 和一次 NSIS 构建，并检查最终安装包确实包含 4 个 DLL 资源。
 
 涉及 DLL：`onnxruntime.dll`、`onnxruntime_providers_shared.dll`、`sherpa-onnx-c-api.dll`、`sherpa-onnx-cxx-api.dll`。
