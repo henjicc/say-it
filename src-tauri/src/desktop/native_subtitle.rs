@@ -8,6 +8,8 @@
 //! 分层窗口/D2D 渲染目标/DIB/命令队列/UI 线程等基础设施见 native_overlay.rs；
 //! 与原生胶囊之间的「当前谁拥有指示窗通道」路由见 indicator.rs。
 
+#[cfg(windows)]
+use sayit_overlay_core::subtitle::SubtitleConfig;
 use std::sync::OnceLock;
 
 /// Windows 上默认启用原生字幕条；`SAYIT_NATIVE_SUBTITLE=0` 回退 WebView。
@@ -19,258 +21,6 @@ pub(crate) fn native_subtitle_enabled() -> bool {
                 .map(|value| value != "0")
                 .unwrap_or(true)
     })
-}
-
-/// 字幕配置，与 sync_presentation 发出的 dictation-indicator-config.subtitle 同构。
-/// 字段兜底值与 IndicatorApp.tsx 的默认值一致。
-#[cfg(any(windows, test))]
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub(crate) struct SubtitleConfig {
-    pub display_mode: String,
-    pub font_family: String,
-    pub font_size: f64,
-    pub line_count: u32,
-    pub text_color: String,
-    pub background_color: String,
-    pub rounded: f64,
-    pub width: f64,
-    pub window_width: f64,
-    pub window_height: f64,
-    pub anchor: String,
-    pub offset_y: f64,
-    pub motion_enabled: bool,
-    pub motion_duration_ms: u32,
-    pub motion_easing: String,
-    pub fade_enabled: bool,
-    pub fade_duration_ms: u32,
-    pub fade_easing: String,
-    pub translation_enabled: bool,
-    pub translation_layout: String,
-    pub translation_order: String,
-}
-
-#[cfg(any(windows, test))]
-impl Default for SubtitleConfig {
-    fn default() -> Self {
-        Self {
-            display_mode: "scroll".into(),
-            font_family: "Microsoft YaHei".into(),
-            font_size: 28.0,
-            line_count: 2,
-            text_color: "#fff".into(),
-            background_color: "rgba(5, 7, 10, 0.72)".into(),
-            rounded: 18.0,
-            width: 880.0,
-            window_width: 880.0,
-            window_height: 134.0,
-            anchor: "bottom".into(),
-            offset_y: 36.0,
-            motion_enabled: true,
-            motion_duration_ms: 120,
-            motion_easing: "ease-out".into(),
-            fade_enabled: true,
-            fade_duration_ms: 180,
-            fade_easing: "ease-out".into(),
-            translation_enabled: false,
-            translation_layout: "bilingual".into(),
-            translation_order: "translationFirst".into(),
-        }
-    }
-}
-
-/// CSS 只给 ≤10 字符的短追加挂 .fresh 淡入；长追加直接显示。
-#[cfg(any(windows, test))]
-pub(crate) const FRESH_FADE_MAX_CHARS: usize = 10;
-
-/// 渲染文本上限，与 IndicatorApp.tsx 的 MAX_RENDER_CHARS 一致。
-#[cfg(any(windows, test))]
-pub(crate) const MAX_RENDER_CHARS: usize = 20000;
-
-/// useTextTrack 的末端重叠搜索范围（OVERLAP_SEARCH_MAX）。
-#[cfg(any(windows, test))]
-const OVERLAP_SEARCH_MAX: usize = 200;
-
-/// 解析 #rgb / #rrggbb / rgb(r,g,b) / rgba(r,g,b,a)（a 为 0..1 浮点）。
-#[cfg(any(windows, test))]
-pub(crate) fn parse_css_color(value: &str) -> Option<(u8, u8, u8, f32)> {
-    let value = value.trim();
-    if let Some(hex) = value.strip_prefix('#') {
-        let (r, g, b) = match hex.len() {
-            3 => (
-                u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?,
-                u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?,
-                u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?,
-            ),
-            6 => (
-                u8::from_str_radix(&hex[0..2], 16).ok()?,
-                u8::from_str_radix(&hex[2..4], 16).ok()?,
-                u8::from_str_radix(&hex[4..6], 16).ok()?,
-            ),
-            _ => return None,
-        };
-        return Some((r, g, b, 1.0));
-    }
-    let (rgba_mode, inner) = if let Some(inner) = value
-        .strip_prefix("rgba(")
-        .and_then(|v| v.strip_suffix(')'))
-    {
-        (true, inner)
-    } else if let Some(inner) = value.strip_prefix("rgb(").and_then(|v| v.strip_suffix(')')) {
-        (false, inner)
-    } else {
-        return None;
-    };
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    if parts.len() < 3 || (rgba_mode && parts.len() < 4) {
-        return None;
-    }
-    let channel = |index: usize| parts.get(index)?.trim().parse::<f64>().ok();
-    let alpha = if rgba_mode {
-        channel(3)? as f32
-    } else {
-        1.0
-    };
-    Some((
-        channel(0)?.round().clamp(0.0, 255.0) as u8,
-        channel(1)?.round().clamp(0.0, 255.0) as u8,
-        channel(2)?.round().clamp(0.0, 255.0) as u8,
-        alpha.clamp(0.0, 1.0),
-    ))
-}
-
-/// useTextTrack 的 stable 前缀 + 末端重叠搜索。JS 按 UTF-16 码元切片；
-/// 这里按 char 遍历，BMP 文本完全一致，astral 字符不会落到半个码元上。
-/// 返回值是 next 中「稳定前缀」的字符数。
-#[cfg(any(windows, test))]
-pub(crate) fn overlap_chars(prev: &str, next: &str) -> usize {
-    let prev: Vec<char> = prev.chars().collect();
-    let next: Vec<char> = next.chars().collect();
-    let min = prev.len().min(next.len());
-    let mut prefix = 0;
-    while prefix < min && prev[prefix] == next[prefix] {
-        prefix += 1;
-    }
-    let mut overlap = prefix;
-    let floor = prefix.max(min.saturating_sub(OVERLAP_SEARCH_MAX));
-    let mut k = min;
-    while k > floor {
-        // prev.endsWith(next[..k])
-        if prev[prev.len() - k..] == next[..k] {
-            overlap = k;
-            break;
-        }
-        k -= 1;
-    }
-    overlap
-}
-
-/// nextText.slice(-MAX_RENDER_CHARS).replace(/^\s+/, "") 的 char 安全版本。
-#[cfg(any(windows, test))]
-pub(crate) fn trim_render_text(text: &str) -> String {
-    let count = text.chars().count();
-    if count <= MAX_RENDER_CHARS {
-        return text.to_string();
-    }
-    text.chars()
-        .skip(count - MAX_RENDER_CHARS)
-        .collect::<String>()
-        .trim_start()
-        .to_string()
-}
-
-/// 滚动累积模式：内容底对齐，超高部分整体上移（translateY(-overflow)）。
-#[cfg(any(windows, test))]
-pub(crate) fn scroll_offset_y(content_height: f32, flow_height: f32) -> f32 {
-    (content_height - flow_height).max(0.0)
-}
-
-/// 单句替换模式：内容不宽于框时居中，超宽时贴右显示最新内容（translateX 左移）。
-#[cfg(any(windows, test))]
-pub(crate) fn replace_offset_x(content_width: f32, flow_width: f32) -> f32 {
-    let overflow = content_width - flow_width;
-    if overflow > 0.0 {
-        -overflow
-    } else {
-        (flow_width - content_width) / 2.0
-    }
-}
-
-/// CSS ease-* 的三次贝塞尔曲线；按时间 x 反解曲线参数后再取 y。
-#[cfg(any(windows, test))]
-pub(crate) fn ease_value(name: &str, t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if name == "linear" || t == 0.0 || t == 1.0 {
-        return t;
-    }
-    let (x1, x2) = match name {
-        "ease-in" => (0.42, 1.0),
-        "ease-in-out" => (0.42, 0.58),
-        _ => (0.0, 0.58),
-    };
-    let (mut low, mut high) = (0.0, 1.0);
-    for _ in 0..20 {
-        let u = (low + high) * 0.5;
-        let x = 3.0 * (1.0 - u) * (1.0 - u) * u * x1 + 3.0 * (1.0 - u) * u * u * x2 + u * u * u;
-        if x < t {
-            low = u;
-        } else {
-            high = u;
-        }
-    }
-    let u = (low + high) * 0.5;
-    3.0 * (1.0 - u) * u * u + u * u * u
-}
-
-/// 行高，与 IndicatorApp 的 Math.round(fontSize * 1.38) 一致。
-#[cfg(any(windows, test))]
-pub(crate) fn line_height(font_size: f64) -> f32 {
-    (font_size * 1.38).round() as f32
-}
-
-/// 内容块高度：原文 lineHeight*lines+28、译文 +20（indicator.css 的 padding 差）。
-#[cfg(any(windows, test))]
-pub(crate) fn block_height(line_height: f32, lines: u32, translation: bool) -> f32 {
-    line_height * lines.max(1) as f32 + if translation { 20.0 } else { 28.0 }
-}
-
-/// 底部对齐堆叠（#wrap justify-end，gap 10）：输入自上而下各块高度，
-/// 返回各块顶部 y。
-#[cfg(any(windows, test))]
-pub(crate) fn stack_from_bottom(window_height: f32, heights: &[f32], gap: f32) -> Vec<f32> {
-    let total: f32 =
-        heights.iter().sum::<f32>() + gap * heights.len().saturating_sub(1) as f32;
-    let mut y = window_height - total;
-    heights
-        .iter()
-        .map(|height| {
-            let top = y;
-            y += height + gap;
-            top
-        })
-        .collect()
-}
-
-/// 窗口定位，与 indicator.rs fallback_indicator_position 同一数学：
-/// 水平居中，anchor 决定垂直位置，margin 为 offsetY（物理像素）。
-#[cfg(any(windows, test))]
-pub(crate) fn window_position(
-    area_x: i32,
-    area_y: i32,
-    area_w: i32,
-    area_h: i32,
-    win_w: i32,
-    win_h: i32,
-    anchor: &str,
-    margin: i32,
-) -> (i32, i32) {
-    let x = area_x + (area_w - win_w) / 2;
-    let y = match anchor {
-        "top" => area_y + margin,
-        "center" => area_y + (area_h - win_h) / 2 + margin,
-        _ => area_y + area_h - win_h - margin,
-    };
-    (x, y)
 }
 
 pub(crate) fn native_subtitle_attach(app: &tauri::AppHandle) {
@@ -334,14 +84,15 @@ mod imp {
     use super::super::native_overlay::{
         create_d2d_factory, create_dc_render_target, create_dwrite_factory,
         create_text_format_weight, overlay_now, rect_f, svg_path_geometry_stroke, system_dpi,
-        window_dpi, Dib, LayeredSurface, OverlayThread, Transition,
+        window_dpi, Dib, LayeredSurface, OverlayThread,
     };
-    use super::{
+    use sayit_overlay_core::anim::Transition;
+    use sayit_overlay_core::orb::should_start_orb_drag;
+    use sayit_overlay_core::subtitle::{
         block_height, ease_value, line_height, overlap_chars, parse_css_color, replace_offset_x,
         scroll_offset_y, stack_from_bottom, trim_render_text, window_position, SubtitleConfig,
         FRESH_FADE_MAX_CHARS,
     };
-    use crate::desktop::native_orb::should_start_orb_drag;
     use std::sync::OnceLock;
     use std::time::Instant;
     use windows::core::w;
@@ -349,27 +100,29 @@ mod imp {
     use windows::Win32::Foundation::{
         GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
-    use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_U};
+    use windows::Win32::Graphics::Direct2D::Common::{
+        D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
+        D2D_SIZE_U,
+    };
     use windows::Win32::Graphics::Direct2D::{
-        ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush,
-        ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_CAP_STYLE_ROUND,
-        D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_LINE_JOIN_ROUND,
-        D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, ID2D1Bitmap,
-        D2D1_BITMAP_PROPERTIES, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        ID2D1Bitmap, ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush,
+        ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        D2D1_BITMAP_PROPERTIES, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
+        D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+        D2D1_STROKE_STYLE_PROPERTIES,
     };
     use windows::Win32::Graphics::DirectWrite::{
         IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-        DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT_LEADING,
-        DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-        DWRITE_WORD_WRAPPING_NO_WRAP,
+        DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
+        DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
     };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
     };
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+        ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, KillTimer, LoadCursorW,
@@ -507,7 +260,9 @@ mod imp {
         }
 
         fn animating(&self) -> bool {
-            self.fresh_started.is_some() || self.swap_started.is_some() || self.offset_anim.is_some()
+            self.fresh_started.is_some()
+                || self.swap_started.is_some()
+                || self.offset_anim.is_some()
         }
     }
 
@@ -648,15 +403,7 @@ mod imp {
             self.x = x;
             self.y = y;
             unsafe {
-                let _ = SetWindowPos(
-                    self.hwnd,
-                    HWND_TOPMOST,
-                    x,
-                    y,
-                    width,
-                    height,
-                    SWP_NOACTIVATE,
-                );
+                let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
             }
             self.render();
         }
@@ -749,7 +496,7 @@ mod imp {
                 .map(|last| now.saturating_duration_since(last).as_secs_f32())
                 .unwrap_or(FRAME_MS as f32 / 1000.0);
             self.view.tick(dt);
-            let (_, finished) = self.transition.tick();
+            let (_, finished) = self.transition.tick(overlay_now());
             if finished && self.transition.is_fully_hidden() {
                 self.finish_hide();
             }
@@ -835,8 +582,8 @@ mod imp {
                 return None;
             }
             let block = self.original_block_rect();
-            let total = CONTROL_BUTTON * CONTROL_COUNT as f32
-                + CONTROL_GAP * (CONTROL_COUNT - 1) as f32;
+            let total =
+                CONTROL_BUTTON * CONTROL_COUNT as f32 + CONTROL_GAP * (CONTROL_COUNT - 1) as f32;
             let left = block.right - CONTROL_RIGHT - total;
             let top = block.top + CONTROL_TOP;
             let mut rects = [rect_f(0.0, 0.0, 0.0, 0.0); CONTROL_COUNT];
@@ -897,8 +644,7 @@ mod imp {
         /// 为两条轨道建好文本布局（文本/字体变化后 layout 置空，渲染前重建）。
         fn prepare_layouts(&mut self) {
             for index in 0..2 {
-                if self.tracks[index].layout.is_some() || self.tracks[index].displayed.is_empty()
-                {
+                if self.tracks[index].layout.is_some() || self.tracks[index].displayed.is_empty() {
                     continue;
                 }
                 let Some(format) = self.ensure_format() else {
@@ -946,7 +692,7 @@ mod imp {
                         && fresh_len <= FRESH_FADE_MAX_CHARS
                         && self.config.fade_enabled
                         && self.config.fade_duration_ms > 0)
-                    .then(overlay_now);
+                        .then(overlay_now);
                     track.swap_started = None;
                 }
                 track.displayed = next;
@@ -988,10 +734,7 @@ mod imp {
                 scroll_offset_y(content_h, self.flow_height())
             };
             let track = &mut self.tracks[index];
-            if first_paint
-                || !self.config.motion_enabled
-                || self.config.motion_duration_ms == 0
-            {
+            if first_paint || !self.config.motion_enabled || self.config.motion_duration_ms == 0 {
                 track.offset = target;
                 track.offset_from = target;
                 track.offset_target = target;
@@ -1241,11 +984,7 @@ mod imp {
                 let active = index == 0 && self.locked;
                 // 基础态 color rgba(255,255,255,0.78) + opacity 0.82；
                 // hover/激活态纯白不透明。
-                let alpha = if hovered || active {
-                    1.0
-                } else {
-                    0.78 * 0.82
-                } * self.controls_alpha;
+                let alpha = if hovered || active { 1.0 } else { 0.78 * 0.82 } * self.controls_alpha;
                 let center_x = (rect.left + rect.right) / 2.0;
                 let center_y = (rect.top + rect.bottom) / 2.0;
                 self.draw_icon(target, brush, index, center_x, center_y, alpha);
@@ -1371,9 +1110,13 @@ mod imp {
             );
             scratch.EndDraw(None, None)?;
             // BGRA 与 RGBA 的通道顺序不影响逐通道卷积；保留预乘 alpha 避免黑边。
-            let pixels = image::RgbaImage::from_raw(width, height, dib.pixels().to_vec())
-                .expect("DIB byte length matches its dimensions");
-            let blurred = image::imageops::fast_blur(&pixels, sigma * scale);
+            let blurred = sayit_overlay_core::blur::fast_blur_premultiplied(
+                dib.pixels().to_vec(),
+                width,
+                height,
+                sigma * scale,
+            )
+            .expect("DIB byte length matches its dimensions");
             let bitmap = target.CreateBitmap(
                 D2D_SIZE_U { width, height },
                 Some(blurred.as_ptr().cast()),
@@ -1415,7 +1158,11 @@ mod imp {
                 format,
                 // 替换模式强制单行不换行，宽度不受限，量出自然宽度做左右平移。
                 if replace { 1e6 } else { flow_width },
-                if replace { line_height * 4.0 } else { flow_height * 100.0 },
+                if replace {
+                    line_height * 4.0
+                } else {
+                    flow_height * 100.0
+                },
             )
         }
         .ok()?;
@@ -1424,14 +1171,18 @@ mod imp {
                 layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP).ok()?;
                 // 单行的居中/贴右由 replace_offset_x 完成；若继承格式的居中对齐，
                 // 字形会落在百万 DIP 布局框中部，整体平移后仍在可视区之外。
-                layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok()?;
+                layout
+                    .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)
+                    .ok()?;
             }
             // 贴近 CSS line-height 的行框效果。
-            layout.SetLineSpacing(
-                DWRITE_LINE_SPACING_METHOD_UNIFORM,
-                line_height,
-                line_height * BASELINE_RATIO,
-            ).ok()?;
+            layout
+                .SetLineSpacing(
+                    DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                    line_height,
+                    line_height * BASELINE_RATIO,
+                )
+                .ok()?;
         }
         Some(layout)
     }
@@ -1505,7 +1256,8 @@ mod imp {
                         PAD_TOP_TRANSLATION
                     };
                     let mut bright = 0;
-                    for y in (rect.top + pad) as i32..(rect.top + pad + state.view.flow_height()) as i32
+                    for y in
+                        (rect.top + pad) as i32..(rect.top + pad + state.view.flow_height()) as i32
                     {
                         for x in (rect.left + PAD_X) as i32..(rect.right - PAD_X) as i32 {
                             let i = ((y * width + x) * 4) as usize;
@@ -1871,7 +1623,11 @@ mod imp {
                         state.view.animate_controls(target);
                         dirty = true;
                     }
-                    let button = if over_block { state.view.button_at(point) } else { None };
+                    let button = if over_block {
+                        state.view.button_at(point)
+                    } else {
+                        None
+                    };
                     if button != state.view.hover_button {
                         state.view.hover_button = button;
                         dirty = true;
@@ -1902,7 +1658,12 @@ mod imp {
                     // 经典做法：转成标题栏按下，让系统接管移动；SendMessage 会阻塞到
                     // 拖拽结束（期间窗口过程被重入，上面不能持有 WindowState 借用）。
                     let _ = ReleaseCapture();
-                    SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                    SendMessageW(
+                        hwnd,
+                        WM_NCLBUTTONDOWN,
+                        WPARAM(HTCAPTION as usize),
+                        LPARAM(0),
+                    );
                     // 拖拽不持久化：位置留在窗口状态里，重置按钮随时可回到配置位。
                     with_state(hwnd, |state| {
                         state.press = None;
@@ -1928,8 +1689,7 @@ mod imp {
                     let on_button = state.view.button_at(point);
                     // 拖拽只从原文块发起（WebView 里 handleSubtitlePointerDown 只挂在
                     // #text 上），控制条按钮区域除外；锁定后禁止拖拽。
-                    let draggable =
-                        over_block && on_button.is_none() && !state.view.locked;
+                    let draggable = over_block && on_button.is_none() && !state.view.locked;
                     state.press = Some(PressState {
                         screen: (cursor.x, cursor.y),
                         on_button,
@@ -2223,111 +1983,3 @@ mod imp {
 
 #[cfg(all(test, windows))]
 pub(crate) use imp::snapshot_driver;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn css_color_parses_hex_and_rgba() {
-        assert_eq!(parse_css_color("#fff"), Some((255, 255, 255, 1.0)));
-        assert_eq!(parse_css_color("#286ec8"), Some((40, 110, 200, 1.0)));
-        assert_eq!(
-            parse_css_color("rgba(5, 7, 10, 0.72)"),
-            Some((5, 7, 10, 0.72))
-        );
-        assert_eq!(parse_css_color("rgb(1, 2, 3)"), Some((1, 2, 3, 1.0)));
-        assert_eq!(parse_css_color("  #FF4013  "), Some((255, 64, 19, 1.0)));
-        assert_eq!(parse_css_color("not-a-color"), None);
-        assert_eq!(parse_css_color("#12345"), None);
-    }
-
-    #[test]
-    fn overlap_finds_stable_prefix() {
-        assert_eq!(overlap_chars("你好", "你好世"), 2);
-        assert_eq!(overlap_chars("", "你好"), 0);
-        // 修订：前缀停在第一个不同字符，末端重叠搜索救不回就按前缀算。
-        assert_eq!(overlap_chars("你好世界", "你好中国"), 2);
-        // 替换模式的整句衔接：新句开头是旧句结尾时按末端重叠。
-        assert_eq!(overlap_chars("abcdef", "cdefgh"), 4);
-    }
-
-    #[test]
-    fn trim_limits_render_text_from_the_tail() {
-        let short = "短文本";
-        assert_eq!(trim_render_text(short), short);
-        let long = "字".repeat(MAX_RENDER_CHARS + 10);
-        let trimmed = trim_render_text(&long);
-        assert_eq!(trimmed.chars().count(), MAX_RENDER_CHARS);
-        let padded = format!("{}\n   ", "字".repeat(MAX_RENDER_CHARS));
-        assert!(!trim_render_text(&padded).starts_with(char::is_whitespace));
-    }
-
-    #[test]
-    fn scroll_and_replace_offsets_match_the_webview_math() {
-        assert_eq!(scroll_offset_y(100.0, 78.0), 22.0);
-        assert_eq!(scroll_offset_y(50.0, 78.0), 0.0);
-        // 未超宽居中，超宽贴右。
-        assert_eq!(replace_offset_x(100.0, 400.0), 150.0);
-        assert_eq!(replace_offset_x(500.0, 400.0), -100.0);
-    }
-
-    #[test]
-    fn block_layout_matches_indicator_css() {
-        assert_eq!(line_height(28.0), 39.0);
-        assert_eq!(block_height(39.0, 2, false), 106.0);
-        assert_eq!(block_height(39.0, 2, true), 98.0);
-        // 底部对齐堆叠：块间 gap 10，整体贴窗口底。
-        let tops = stack_from_bottom(214.0, &[106.0, 98.0], 10.0);
-        assert_eq!(tops, vec![0.0, 116.0]);
-        let single = stack_from_bottom(134.0, &[106.0], 10.0);
-        assert_eq!(single, vec![28.0]);
-    }
-
-    #[test]
-    fn window_position_matches_fallback_indicator_position() {
-        // 与 indicator.rs 的单测数值一致。
-        assert_eq!(window_position(-1920, 0, 1920, 1080, 460, 188, "bottom", 36), (-1190, 856));
-        assert_eq!(window_position(200, -900, 1600, 900, 400, 180, "top", 24), (800, -876));
-        assert_eq!(window_position(200, -900, 1600, 900, 400, 180, "center", 24), (800, -516));
-    }
-
-    #[test]
-    fn easing_covers_the_css_keyword_set() {
-        assert_eq!(ease_value("linear", 0.5), 0.5);
-        assert_eq!(ease_value("ease-in", 0.0), 0.0);
-        assert_eq!(ease_value("ease-out", 1.0), 1.0);
-        assert!((ease_value("ease-in-out", 0.5) - 0.5).abs() < 0.00001);
-        assert!((ease_value("ease-out", 0.5) - 0.684643).abs() < 0.00001);
-        assert!((ease_value("ease-in", 0.5) - 0.315357).abs() < 0.00001);
-        assert_eq!(ease_value("unknown-keyword", 1.0), 1.0);
-        assert!(ease_value("ease-out", 0.5) > 0.5);
-    }
-
-    #[test]
-    fn config_deserializes_the_sync_presentation_payload() {
-        let value = serde_json::json!({
-            "displayMode": "replace", "fontFamily": "MiSans", "fontSize": 32.0,
-            "lineCount": 1, "textColor": "#ffffff",
-            "backgroundColor": "rgba(5, 7, 10, 0.72)",
-            "rounded": 18, "width": 880.0, "windowWidth": 880.0, "windowHeight": 67.0,
-            "anchor": "bottom", "offsetY": 64.0,
-            "motionEnabled": false, "motionDurationMs": 120, "motionEasing": "ease-out",
-            "fadeEnabled": true, "fadeDurationMs": 180, "fadeEasing": "linear",
-            "translationEnabled": true, "translationLayout": "bilingual",
-            "translationOrder": "translationFirst"
-        });
-        let config: SubtitleConfig = serde_json::from_value(value).unwrap();
-        assert_eq!(config.display_mode, "replace");
-        assert_eq!(config.font_size, 32.0);
-        assert_eq!(config.line_count, 1);
-        assert!(!config.motion_enabled);
-        assert_eq!(config.translation_order, "translationFirst");
-        // 缺字段时用与 IndicatorApp 一致的默认值。
-        let sparse: SubtitleConfig = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(sparse.font_size, 28.0);
-        assert_eq!(sparse.line_count, 2);
-        assert!(sparse.motion_enabled);
-        assert!(sparse.fade_enabled);
-    }
-}
