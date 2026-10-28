@@ -134,22 +134,32 @@ impl TextEngine for CtText {
                     length: total,
                 });
             } else {
+                let units: Vec<_> = text.encode_utf16().collect();
                 let mut start = 0;
                 while start < total {
                     let suggested = setter.suggest_line_break(start, max_width as f64);
                     // 极窄布局也必须按一个完整 Unicode 标量前进，不能切断代理对。
-                    let count = if suggested > 0 {
+                    let mut count = if suggested > 0 {
                         suggested.min(total - start)
+                    } else if (0xD800..=0xDBFF).contains(&units[start as usize]) {
+                        2
                     } else {
-                        text.chars()
-                            .scan(0isize, |index, ch| {
-                                let at = *index;
-                                *index += ch.len_utf16() as isize;
-                                Some((at, ch.len_utf16() as isize))
-                            })
-                            .find(|(at, _)| *at == start)?
-                            .1
+                        1
                     };
+                    // 强制放入超宽字形时，将紧随其后的硬换行归入同一行；CRLF 是一个换行。
+                    // 若本行已以换行结束，下一换行必须保留为空行。
+                    let end = (start + count) as usize;
+                    let previous = units[end - 1];
+                    let tail = &units[end..];
+                    if previous == 0x0D && tail.first() == Some(&0x0A) {
+                        count += 1;
+                    } else if previous != 0x0D && previous != 0x0A {
+                        count += match tail {
+                            [0x0D, 0x0A, ..] => 2,
+                            [0x0D | 0x0A, ..] => 1,
+                            _ => 0,
+                        };
+                    }
                     ranges.push(CFRange {
                         location: start,
                         length: count,
@@ -381,6 +391,27 @@ mod tests {
         style.wrap = true;
         assert_eq!(
             text.layout("😀\n", &style, 1.0, 100.0)
+                .unwrap()
+                .metrics
+                .line_count,
+            2
+        );
+        assert_eq!(
+            text.layout("😀\r\n", &style, 1.0, 100.0)
+                .unwrap()
+                .metrics
+                .line_count,
+            2
+        );
+        assert_eq!(
+            text.layout("😀\n\n", &style, 1.0, 100.0)
+                .unwrap()
+                .metrics
+                .line_count,
+            3
+        );
+        assert_eq!(
+            text.layout("\n", &style, 1.0, 100.0)
                 .unwrap()
                 .metrics
                 .line_count,
