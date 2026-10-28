@@ -72,6 +72,17 @@ struct Mailbox {
     tx: Sender<Message>,
     rx: Mutex<Option<Receiver<Message>>>,
 }
+impl Mailbox {
+    fn update_look(&self, look: Look) {
+        // 启动前由 LOOK 保存最新值；默认关闭的 Mac 窗口不能积压外观消息。
+        let running = self.rx.lock().expect("overlay mailbox poisoned").is_none();
+        if running {
+            self.tx
+                .send(Message::Look(look))
+                .expect("overlay render thread stopped");
+        }
+    }
+}
 fn mailbox() -> &'static Mailbox {
     static MAILBOX: OnceLock<Mailbox> = OnceLock::new();
     MAILBOX.get_or_init(|| {
@@ -96,7 +107,7 @@ pub(crate) fn install_host(id: WindowId, factory: Factory) {
     send(Message::Install(id, factory));
 }
 pub(crate) fn set_look(look: Look) {
-    send(Message::Look(look));
+    mailbox().update_look(look);
 }
 pub(crate) fn area_changed() {
     send(Message::AreaChanged);
@@ -513,6 +524,24 @@ mod tests {
             wait_duration([now - Duration::from_millis(1)].into_iter(), now),
             Some(Duration::ZERO)
         );
+    }
+
+    #[test]
+    fn look_updates_do_not_accumulate_before_start() {
+        let (tx, rx) = mpsc::channel();
+        let mailbox = Mailbox {
+            tx,
+            rx: Mutex::new(Some(rx)),
+        };
+        mailbox.update_look(Look::MACOS_DEFAULT);
+        mailbox.update_look(Look::MACOS_DEFAULT);
+        let rx = mailbox.rx.lock().unwrap().take().unwrap();
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        mailbox.update_look(Look::MACOS_DEFAULT);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Message::Look(Look::MACOS_DEFAULT))
+        ));
     }
 
     #[test]
