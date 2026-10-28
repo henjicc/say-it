@@ -72,19 +72,7 @@ const OVERLAP_SEARCH_MAX: usize = 200;
 pub fn parse_css_color(value: &str) -> Option<(u8, u8, u8, f32)> {
     let value = value.trim();
     if let Some(hex) = value.strip_prefix('#') {
-        let (r, g, b) = match hex.len() {
-            3 => (
-                u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?,
-                u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?,
-                u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?,
-            ),
-            6 => (
-                u8::from_str_radix(&hex[0..2], 16).ok()?,
-                u8::from_str_radix(&hex[2..4], 16).ok()?,
-                u8::from_str_radix(&hex[4..6], 16).ok()?,
-            ),
-            _ => return None,
-        };
+        let [r, g, b] = crate::look::parse_hex_rgb(hex)?;
         return Some((r, g, b, 1.0));
     }
     let (rgba_mode, inner) = if let Some(inner) = value
@@ -257,6 +245,22 @@ mod tests {
         assert_eq!(parse_css_color("  #FF4013  "), Some((255, 64, 19, 1.0)));
         assert_eq!(parse_css_color("not-a-color"), None);
         assert_eq!(parse_css_color("#12345"), None);
+    }
+
+    #[test]
+    fn css_hex_color_rejects_non_ascii_and_non_hex_input() {
+        for value in [
+            "#中abc",
+            "#中",
+            "#中中",
+            "#ａｂｃ",
+            "",
+            "#",
+            "#+12",
+            "#+11223",
+        ] {
+            assert_eq!(parse_css_color(value), None, "{value:?}");
+        }
     }
 
     #[test]
