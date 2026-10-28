@@ -2,7 +2,7 @@
 
 use super::{Driver, Session, Snapshots};
 use crate::desktop::native_subtitle::snapshot_driver::{self as driver, Command, Pointer};
-use crate::desktop::native_subtitle::SubtitleConfig;
+use sayit_overlay_core::subtitle::SubtitleConfig;
 
 const DRIVER: Driver = Driver {
     create_window: driver::create_window,
