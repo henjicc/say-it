@@ -83,8 +83,8 @@
   - 用户数据删除与移动：历史清理（`application/history.rs`）、重置数据、数据目录迁移、插件卸载、剪贴板备份与恢复（`windows_native.rs`）；
   - 安全与权限：`providers/credential_vault.rs`、`SecretInput`、插件签名/信任库与 `.sayit` 解包（`providers/plugin_package.rs`）、插件运行时（`providers/plugin_runtime.rs`）、`src-tauri/capabilities/`；
   - 网络与费用：`src-tauri/src/providers/` 下的供应商请求、重试与重连、热词云端同步、模型下载；
-  - 契约：`ui/src/lib/tauri.ts` 的命令与事件、领域快照与 `domain-event`、插件 API v5、`components/ui` 基础组件；
-  - 发布：`.github/workflows/`、版本号、签名脚本。
+  - 契约：`ui/src/lib/tauri.ts` 的命令与事件、领域快照与 `domain-event`、插件 API v5、`components/ui` 基础组件、原生悬浮窗共用层（`src-tauri/crates/overlay-*`、`desktop/native_{common,indicator,orb,subtitle}.rs`、`desktop/native_win/`、`desktop/native_mac/`）；
+  - 发布：`.github/workflows/`、版本号、签名脚本、`src-tauri/Cargo.toml` 的 workspace 结构。
 - 不审：只改文档、文案、局部样式或单个叶子函数。
 - 只交给审查者三样东西：本次 diff、一句话任务目标、相关规则文件（本文件；UI 加 `DESIGN.md`，供应商加 `docs/rules/新增供应商与模型操作手册.md`）。不交写代码时的推理和结论。
 - 审什么：正确性；修的是根因还是症状；共享实现的其他调用方有没有同源问题；是否违反项目规则。lint、格式检查能拦住的不报。
@@ -132,7 +132,7 @@
 
 ## Git 约定
 
-- 默认完整流程为：开始前执行 `git pull --rebase` → 修改并验证 → 提交 → 再次执行 `git pull --rebase` → 推送 → 确认本地与上游一致。除非用户明确要求暂不提交、暂不推送或禁止同步，否则无需逐次确认。
+- 默认完整流程为：开始前执行 `git pull --rebase` → 修改并验证 → 提交 → 再次执行 `git pull --rebase` → 推送 → 确认本地与上游一致。本地含合并提交（例如把任务分支 `--no-ff` 合入功能分支）时，同步一律用 `git pull --rebase=merges`，禁止普通 `--rebase` 把合并线性化；已推送的任务分支同步上游用 `git merge`，不变基。除非用户明确要求暂不提交、暂不推送或禁止同步，否则无需逐次确认。
 - 每个提交最终都必须推送成功，并确认当前分支相对上游没有 `ahead` 或 `behind`；不得把“已在本地提交”视为任务完成。
 - 默认禁止任何形式的强制推送，包括 `--force`、`--force-with-lease` 及等效操作；只有用户针对明确分支和风险作出显式授权时才可例外。
 - 提交应积极但有边界：完成一个独立修改、修复一个问题、实现一个可验证功能、完成一个阶段，或判断当前状态值得保留时，应及时提交，不要长期积累大量未提交改动。
@@ -178,8 +178,14 @@
 - 安装命令：`npm install`。
 - 开发命令：前端独立开发用 `npm run ui:dev`；完整桌面应用开发用 `npm run tauri:dev`。
 - 格式化/静态检查命令：类型检查用 `npm run typecheck`；未配置 lint/format 脚本，Rust 侧按需 `cargo check`。
-- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。
-- Rust 构建产物只放在 `src-tauri/target`，不得为绕开问题另建仓库外（尤其 C 盘）的 target 或缓存目录。`tauri:dev`、`test:rust` 在 Rust 工具链变更或 debug 超过 20 GiB（每天检查一次）时自动清理 dev profile，并回收旧版本 sherpa 预编译库；`tauri:build` 打包前清空 release，本地只保留最新一次。直接运行 `cargo` 不经过这道回收，实现见 `scripts/rust-cache-guard.mjs`。
+- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。子 crate 快测：`cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core`；Mac 后端本机类型检查：`npm run check:mac-overlay`。
+- Rust 构建产物只放在 `src-tauri/target`，不得为绕开问题另建仓库外（尤其 C 盘）的 target 或缓存目录。`tauri:dev`、`test:rust` 在 Rust 工具链变更或 debug 超过 20 GiB（每天检查一次）时自动清理 dev profile（工具链变更时一并删除 `target/mac-check`），并回收旧版本 sherpa 预编译库；`tauri:build` 打包前清空 release，本地只保留最新一次。直接运行 `cargo` 不经过这道回收，实现见 `scripts/rust-cache-guard.mjs`。
+- `src-tauri` 是 Cargo workspace：根包 `say-it`，成员 `crates/overlay-core`（`sayit-overlay-core`）与 `crates/overlay-macos`（`sayit-overlay-macos`），`default-members` 含全部成员，所以无参数的 `npm run test:rust` 会顺带测试两个子 crate；`npm run test:rust -- --bin say-it <过滤>` 仍只跑主包。
+- 原生悬浮窗（听写胶囊、悬浮球、实时字幕条）的状态机、动画、布局与"画什么"只在 `sayit-overlay-core` 实现一份；它不得依赖 `windows`、`objc2*`、`tauri` 或主 crate。改动后先跑 `cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core`。Windows 后端在 `src/desktop/native_win/`，Mac 桥在 `src/desktop/native_mac/`，开关与外观分发在 `src/desktop/native_common.rs`。
+- `sayit-overlay-macos` 只依赖 core 与 objc2 系 crate：版本与 `Cargo.lock` 一致并用 `=` 钉住，`default-features = false` 显式列 feature，禁止开启 `objc2` 的 `exception`/`catch-all`。所有 CoreGraphics/CoreText 绘制只在它的单一渲染线程执行；渲染线程禁止同步等待主线程（不得 `dispatch_sync`、不得调用 `SayItRunOnMainThread` 系列）。改动后先在本机跑 `npm run check:mac-overlay`（需 `rustup target add aarch64-apple-darwin`），再推送看 CI `verify (macos-15)`；Mac 运行时、视觉与交互只能由用户真机验证。
+- 原生悬浮窗的 Windows 像素以本机快照基准为准，逐字节一致：改动 `native_win/`、core 模型或任一 Canvas 实现后运行 `SAYIT_OVERLAY_SNAPSHOTS=verify npm run test:rust -- --bin say-it native_snapshot`。基准存于 `测试/native-overlay-snapshots/`（不入库、依赖本机字体与系统版本）；worktree 中用 `SAYIT_OVERLAY_SNAPSHOT_DIR` 指向主检出的该目录。有意的视觉变更单独提交，经用户确认后才在主检出用 `SAYIT_OVERLAY_SNAPSHOTS=record` 重录；修正原有视觉缺陷（如双重预乘）也属于有意变更。
+- 原生悬浮窗环境开关 `SAYIT_NATIVE_INDICATOR/ORB/SUBTITLE`：`0` 关闭（回退 WebView），其它已设置值开启，未设置取平台默认。
+- 并行 Git worktree（`.claude/worktrees/*`）中运行 Rust 构建或测试时，必须先设 `CARGO_TARGET_DIR=D:\VibeCode\说吧\src-tauri\target`（主检出 target 的绝对路径），与主检出共用一份产物，不得在 worktree 内生成完整 target；worktree 内 build.rs 生成的 `src-tauri/target/runtime-libs/` 属预期。共用时构建按 Cargo 锁串行，切换 worktree 会重编 `say-it` 本体；build script 输出跨 worktree 共享，修改 `build.rs`、`tauri*.conf.json`、`capabilities/`、`sdk-runtime/`、`macos/*.m` 的任务合并后须在主检出重跑测试。worktree 首次构建前先 `npm run ui:build`（不与 cargo 并行）；`tauri:dev` 只在主检出运行。`npm run check:mac-overlay` 的产物固定在 `<target>/mac-check`。
 - 打包配置（resources、frameworks）不得引用某个 profile 的输出目录：tauri-build 在每个 profile 都会复制它们。sherpa 运行库由 `build.rs` 同步到 `target/runtime-libs/`，配置只引用那里。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
