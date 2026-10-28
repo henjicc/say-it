@@ -15,9 +15,7 @@ use sayit_overlay_core::orb::{OrbAction, OrbClickAction, OrbContextAction};
 use std::sync::OnceLock;
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[cfg(windows)]
-static VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[cfg(windows)]
-static LAST_RECT: std::sync::Mutex<Option<(i32, i32, i32)>> = std::sync::Mutex::new(None);
+pub(super) static MIRRORS: OrbMirrors = OrbMirrors::new();
 
 /// Windows 上默认启用原生悬浮球；`SAYIT_NATIVE_ORB=0` 回退 WebView。
 pub(crate) fn native_orb_enabled() -> bool {
@@ -53,7 +51,7 @@ pub(crate) fn native_orb_started() -> bool {
 pub(crate) fn native_orb_configure(x: i32, y: i32, size: i32, opacity_percent: u8) {
     #[cfg(windows)]
     {
-        set_last_rect(x, y, size);
+        MIRRORS.set_rect(x, y, size);
         imp::post(imp::Command::SetRect { x, y, size });
         imp::post(imp::Command::SetOpacity(f32::from(opacity_percent) / 100.0));
     }
@@ -66,7 +64,7 @@ pub(crate) fn native_orb_configure(x: i32, y: i32, size: i32, opacity_percent: u
 pub(crate) fn native_orb_set_rect(x: i32, y: i32, size: i32) {
     #[cfg(windows)]
     {
-        set_last_rect(x, y, size);
+        MIRRORS.set_rect(x, y, size);
         imp::post_if_started(imp::Command::SetRect { x, y, size });
     }
     #[cfg(target_os = "macos")]
@@ -78,7 +76,7 @@ pub(crate) fn native_orb_set_rect(x: i32, y: i32, size: i32) {
 pub(crate) fn native_orb_move_to(x: i32, y: i32) {
     #[cfg(windows)]
     {
-        move_last_rect(x, y);
+        MIRRORS.move_to(x, y);
         imp::post_if_started(imp::Command::MoveTo { x, y });
     }
     #[cfg(target_os = "macos")]
@@ -99,7 +97,7 @@ pub(crate) fn native_orb_set_opacity(percent: u8) {
 pub(crate) fn native_orb_show() {
     #[cfg(windows)]
     {
-        VISIBLE.store(true, std::sync::atomic::Ordering::Release);
+        MIRRORS.set_visible(true);
         imp::post_if_started(imp::Command::Show);
     }
     #[cfg(target_os = "macos")]
@@ -109,7 +107,7 @@ pub(crate) fn native_orb_show() {
 pub(crate) fn native_orb_hide() {
     #[cfg(windows)]
     {
-        VISIBLE.store(false, std::sync::atomic::Ordering::Release);
+        MIRRORS.set_visible(false);
         imp::post_if_started(imp::Command::Hide);
     }
     #[cfg(target_os = "macos")]
@@ -156,7 +154,7 @@ pub(crate) fn native_orb_set_waveform(level: f32, peaks: Vec<f32>) {
 pub(crate) fn native_orb_rect() -> Option<(i32, i32, i32)> {
     #[cfg(windows)]
     {
-        last_rect()
+        MIRRORS.rect()
     }
     #[cfg(target_os = "macos")]
     {
@@ -171,7 +169,7 @@ pub(crate) fn native_orb_rect() -> Option<(i32, i32, i32)> {
 pub(crate) fn native_orb_is_visible() -> bool {
     #[cfg(windows)]
     {
-        VISIBLE.load(std::sync::atomic::Ordering::Acquire)
+        MIRRORS.is_visible()
     }
     #[cfg(target_os = "macos")]
     {
@@ -200,26 +198,40 @@ pub(crate) fn native_orb_cursor_over() -> bool {
     }
 }
 
+/// 请求可见性只由投递侧写入；矩形还接收窗口移动、DPI 和拖拽结束的回报。
+/// 普通帧和指针消息不得把尚未消费的请求覆盖为旧模型状态。
 #[cfg(windows)]
-fn set_last_rect(x: i32, y: i32, size: i32) {
-    *LAST_RECT.lock().expect("orb rect mirror poisoned") = Some((x, y, size));
+pub(super) struct OrbMirrors {
+    visible: std::sync::atomic::AtomicBool,
+    rect: std::sync::Mutex<Option<(i32, i32, i32)>>,
 }
 #[cfg(windows)]
-fn move_last_rect(x: i32, y: i32) {
-    if let Some(rect) = LAST_RECT.lock().expect("orb rect mirror poisoned").as_mut() {
-        rect.0 = x;
-        rect.1 = y;
+impl OrbMirrors {
+    pub(super) const fn new() -> Self {
+        Self {
+            visible: std::sync::atomic::AtomicBool::new(false),
+            rect: std::sync::Mutex::new(None),
+        }
     }
-}
-#[cfg(windows)]
-fn last_rect() -> Option<(i32, i32, i32)> {
-    *LAST_RECT.lock().expect("orb rect mirror poisoned")
-}
-#[cfg(windows)]
-pub(super) fn update_mirrors(model: &sayit_overlay_core::orb::Orb) {
-    let rect = model.rect();
-    set_last_rect(rect.x, rect.y, rect.width);
-    VISIBLE.store(model.is_visible(), std::sync::atomic::Ordering::Release);
+    pub(super) fn set_visible(&self, visible: bool) {
+        self.visible
+            .store(visible, std::sync::atomic::Ordering::Release);
+    }
+    pub(super) fn is_visible(&self) -> bool {
+        self.visible.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(super) fn set_rect(&self, x: i32, y: i32, size: i32) {
+        *self.rect.lock().expect("orb rect mirror poisoned") = Some((x, y, size));
+    }
+    pub(super) fn move_to(&self, x: i32, y: i32) {
+        if let Some(rect) = self.rect.lock().expect("orb rect mirror poisoned").as_mut() {
+            rect.0 = x;
+            rect.1 = y;
+        }
+    }
+    pub(super) fn rect(&self) -> Option<(i32, i32, i32)> {
+        *self.rect.lock().expect("orb rect mirror poisoned")
+    }
 }
 
 pub(crate) fn run_orb_action(action: OrbAction) {
