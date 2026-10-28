@@ -150,7 +150,11 @@ fn host_notifications_do_not_drop_spilled_audio_or_finish_tail() {
             }
             SessionWake::Input(Some(AsrStreamInput::Finish)) => break,
             SessionWake::HostEvents => std::thread::yield_now(),
-            _ => panic!("lost packet or timeout"),
+            SessionWake::Deadline => panic!("timed out after {index} packets"),
+            SessionWake::Input(Some(AsrStreamInput::Failed(error))) => {
+                panic!("failed after {index} packets: {error}")
+            }
+            _ => panic!("lost packet after {index} packets"),
         }
     }
     assert_eq!(index, 1025);
