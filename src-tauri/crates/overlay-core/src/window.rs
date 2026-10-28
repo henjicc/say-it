@@ -107,27 +107,27 @@ pub struct Cx<'a, T> {
 /// 帧定时器：语义与三处 sync_timer + last_frame 相同。由宿主持有。
 #[derive(Debug, Default)]
 pub struct FrameClock {
-    active: bool,
+    next: Option<Instant>,
     last: Option<Instant>,
 }
 impl FrameClock {
     pub const fn new() -> Self {
         Self {
-            active: false,
+            next: None,
             last: None,
         }
     }
     pub fn is_active(&self) -> bool {
-        self.active
+        self.next.is_some()
     }
     /// Some(true) = 需要启动（同时清帧间隔基准），Some(false) = 停止，None = 不变。
     pub fn sync(&mut self, want: bool) -> Option<bool> {
-        if want && !self.active {
+        if want && !self.is_active() {
             self.last = None;
-            self.active = true;
+            self.next = Some(Instant::now() + FRAME_INTERVAL);
             Some(true)
-        } else if !want && self.active {
-            self.active = false;
+        } else if !want && self.is_active() {
+            self.next = None;
             Some(false)
         } else {
             None
@@ -135,6 +135,9 @@ impl FrameClock {
     }
     /// 距上一帧的秒数；本轮第一帧返回 FIRST_FRAME_DT。
     pub fn delta(&mut self, now: Instant) -> f32 {
+        if self.is_active() {
+            self.next = Some(now + FRAME_INTERVAL);
+        }
         self.last
             .replace(now)
             .map(|last| now.saturating_duration_since(last).as_secs_f32())
@@ -142,8 +145,7 @@ impl FrameClock {
     }
     /// 下一帧截止时间（Mac 渲染线程 recv_timeout 用）；未激活为 None。
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.active
-            .then(|| self.last.unwrap_or_else(Instant::now) + FRAME_INTERVAL)
+        self.next
     }
 }
 
@@ -222,7 +224,10 @@ mod tests {
         assert_eq!(clock.sync(false), None);
         assert_eq!(clock.sync(true), Some(true));
         assert!(clock.is_active());
-        assert!(clock.next_deadline().is_some());
+        let first_deadline = clock.next_deadline();
+        assert!(first_deadline.is_some());
+        assert_eq!(clock.sync(true), None);
+        assert_eq!(clock.next_deadline(), first_deadline);
         let now = Instant::now();
         assert_eq!(clock.delta(now), FIRST_FRAME_DT);
         assert_eq!(clock.next_deadline(), Some(now + FRAME_INTERVAL));
