@@ -2,6 +2,28 @@ use crate::geom::Color;
 
 pub type Rgb8 = [u8; 3];
 
+/// 解析 3 或 6 个 ASCII 十六进制数字（不含 # 或空白），无效输入返回 None。
+pub fn parse_hex_rgb(hex: &str) -> Option<Rgb8> {
+    let stride = match hex.len() {
+        3 => 1,
+        6 => 2,
+        _ => return None,
+    };
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    let mut rgb = [0; 3];
+    for (channel, digits) in rgb.iter_mut().zip(hex.as_bytes().chunks_exact(stride)) {
+        let high = digit(digits[0])?;
+        let low = if stride == 1 { high } else { digit(digits[1])? };
+        *channel = high * 16 + low;
+    }
+    Some(rgb)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
     /// Windows 现行像素：胶囊/悬浮球颜色 rgb×a、悬浮球 ✓/⚠ 用 Segoe MDL2、悬浮球固定暗色令牌、无玻璃。
@@ -35,11 +57,7 @@ impl Theme {
         if value.len() != 6 {
             return None;
         }
-        Some([
-            u8::from_str_radix(&value[0..2], 16).ok()?,
-            u8::from_str_radix(&value[2..4], 16).ok()?,
-            u8::from_str_radix(&value[4..6], 16).ok()?,
-        ])
+        parse_hex_rgb(value)
     }
 
     pub fn mix_rgb(from: Rgb8, to: Rgb8, amount: f32) -> Rgb8 {
@@ -149,6 +167,61 @@ mod tests {
         assert_eq!(Theme::parse_hex_rgb(None), None);
         for value in ["", "#fff", "#11223344", "gg0000", "##112233"] {
             assert_eq!(Theme::parse_hex_rgb(Some(value)), None);
+        }
+    }
+
+    #[test]
+    fn theme_hex_rgb_rejects_non_ascii_and_non_hex_input() {
+        for value in ["#中abc", "#中", "#中中", "#ａｂｃ", "", "#", "#+11223"] {
+            assert_eq!(Theme::parse_hex_rgb(Some(value)), None, "{value:?}");
+            assert_eq!(
+                parse_hex_rgb(value.strip_prefix('#').unwrap_or(value)),
+                None,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hex_rgb_matches_legacy_six_digit_channels() {
+        for channel in 0..=255u8 {
+            for rgb in [[channel, 0, 255], [255, channel, 0], [0, 255, channel]] {
+                let hex = format!("{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                let expected = Some([
+                    u8::from_str_radix(&hex[0..2], 16).unwrap(),
+                    u8::from_str_radix(&hex[2..4], 16).unwrap(),
+                    u8::from_str_radix(&hex[4..6], 16).unwrap(),
+                ]);
+                for value in [hex.clone(), hex.to_uppercase()] {
+                    assert_eq!(parse_hex_rgb(&value), expected, "{value}");
+                    assert_eq!(Theme::parse_hex_rgb(Some(&value)), expected, "{value}");
+                    assert_eq!(
+                        crate::subtitle::parse_css_color(&format!("#{value}")),
+                        expected.map(|[r, g, b]| (r, g, b, 1.0)),
+                        "{value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hex_rgb_matches_all_legacy_shorthand_colors() {
+        for value in 0..=0xfffu16 {
+            let hex = format!("{value:03x}");
+            let expected = Some([
+                u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap(),
+                u8::from_str_radix(&hex[1..2].repeat(2), 16).unwrap(),
+                u8::from_str_radix(&hex[2..3].repeat(2), 16).unwrap(),
+            ]);
+            for hex in [hex.clone(), hex.to_uppercase()] {
+                assert_eq!(parse_hex_rgb(&hex), expected, "{hex}");
+                assert_eq!(
+                    crate::subtitle::parse_css_color(&format!("#{hex}")),
+                    expected.map(|[r, g, b]| (r, g, b, 1.0)),
+                    "{hex}"
+                );
+            }
         }
     }
 
