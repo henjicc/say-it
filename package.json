@@ -15,6 +15,7 @@
     "test:rust": "node scripts/rust-cache-guard.mjs && node scripts/run-rust-tests.mjs",
     "test:scripts": "node --test scripts/release-notes.test.mjs scripts/verify-release-version.test.mjs scripts/rust-cache-guard.test.mjs",
     "test:ai:live": "node scripts/run-ai-live.mjs",
+    "check:mac-overlay": "node scripts/check-mac-overlay.mjs",
     "check": "npm run typecheck && npm run test:ui && npm run test:scripts && npm run ui:build && npm run test:rust",
     "context-probe:build": "node scripts/build-context-probe.mjs",
     "context-probe:test": "ctest --test-dir src-tauri/target/context-probe-build -C Release --output-on-failure",
