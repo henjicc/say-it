@@ -17,8 +17,8 @@ mod indicator;
 mod orb;
 mod subtitle;
 
-use super::native_overlay::create_dwrite_factory;
-use super::native_overlay::test_seams::{self, Capture, OffscreenGuard};
+use super::create_dwrite_factory;
+use super::test_seams::{self, Capture, OffscreenGuard};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

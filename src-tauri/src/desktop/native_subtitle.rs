@@ -104,7 +104,7 @@ pub(crate) fn native_subtitle_reference_size() -> Option<(f64, f64)> {
 
 #[cfg(windows)]
 mod imp {
-    use super::super::native_overlay::{
+    use super::super::native_win::{
         create_d2d_factory, create_dc_render_target, create_dwrite_factory,
         create_text_format_weight, overlay_now, rect_f, svg_path_geometry_stroke, system_dpi,
         window_dpi, Dib, LayeredSurface, OverlayThread,
@@ -1221,7 +1221,7 @@ mod imp {
     #[cfg(test)]
     mod layout_tests {
         use super::*;
-        use crate::desktop::native_overlay::test_seams::OffscreenGuard;
+        use crate::desktop::native_win::test_seams::OffscreenGuard;
         use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
 
         // 真正读取软件 D2D 输出，防止“布局创建成功”掩盖画布里没有文字的回归。
@@ -1962,7 +1962,7 @@ mod imp {
     #[cfg(test)]
     pub(crate) mod snapshot_driver {
         use super::{with_state, FRAME_TIMER_ID};
-        use crate::desktop::native_overlay::test_seams::Capture;
+        use crate::desktop::native_win::test_seams::Capture;
         use windows::Win32::Foundation::HWND;
 
         pub(crate) use super::Command;
