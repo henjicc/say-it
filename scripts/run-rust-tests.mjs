@@ -50,14 +50,12 @@ function repairIncompleteSherpaCache() {
 repairIncompleteSherpaCache();
 
 // Cargo tests compile the Tauri build script, but do not create installer
-// assets. Clear bundle-only paths so a clean checkout can run tests before
-// native sidecars and release libraries have been staged.
+// assets. Clear sidecars so a clean checkout can run tests before they are
+// built; runtime libraries are staged by build.rs for every profile.
 const testConfig = {
   bundle: {
     active: false,
     externalBin: [],
-    resources: [],
-    macOS: { frameworks: [] },
   },
 };
 

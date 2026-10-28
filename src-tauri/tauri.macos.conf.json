@@ -26,8 +26,8 @@
       "minimumSystemVersion": "15.5",
       "infoPlist": "Info.plist",
       "frameworks": [
-        "target/release/libsherpa-onnx-c-api.dylib",
-        "target/release/libonnxruntime.dylib"
+        "target/runtime-libs/libsherpa-onnx-c-api.dylib",
+        "target/runtime-libs/libonnxruntime.dylib"
       ]
     }
   }

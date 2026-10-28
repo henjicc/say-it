@@ -35,15 +35,12 @@ CI 和设置了 `CARGO_TARGET_DIR` 时跳过：
   `cargo clean --profile dev`，代价是下一次 debug 构建从头编译。逐个统计文件在 Windows 上
   较慢，体积每天最多量一次；工具链每次都检查。同一次检查还会删除与 `Cargo.lock` 中
   `sherpa-onnx-sys` 版本不同的 `target/sherpa-onnx-prebuilt` 条目。
-- 本地 release 只保留最新一次构建与安装包：`npm run tauri:build` 先把旧 release 改名为
-  `target/release.previous-<打包进程 PID>`，打包成功后改名为 `release.trash-<PID>` 再删除，
-  失败则原样恢复。打包被中断时，下一次 `tauri:dev`、`test:rust` 或打包启动会自动恢复；
-  那次打包仍在运行时不动它的目录，并拒绝同时再打包。`--debug`、`--target`、`--help` 不触发这一步。
-- 代价：打包期间新旧两份 release 并存，磁盘峰值约为 release 的两倍；每次本地打包和
-  失败后的重试都从零编译 release。
+- 本地 release 只保留最新一次构建与安装包：`npm run tauri:build` 打包前执行
+  `cargo clean --release`，每次本地打包（含失败后的重试）都从零编译 release，本机约 5 分钟。
+  `--debug`、`--target`、`--help` 不触发这一步。不要同时跑两次本地打包，后一次的清理会删掉
+  前一次正在用的产物。dev 与测试构建不依赖 `target/release`
+  （见 `Tauri打包资源引用target-release导致dev构建依赖先打包.md`），清空它是安全的。
 
-旧 release 不能直接清空：dev 构建（tauri-build）会复制 `tauri.windows.conf.json` 引用的
-`target/release/*.dll` 和 `tauri.macos.conf.json` 引用的 frameworks，缺失就无法编译。
 macOS 的 `target/swift-module-cache` 不在回收范围内。直接运行 `cargo` 不经过这道检查；
 不要手工选择性删除 `deps/` 或 `incremental/`，以免留下不一致缓存。
 
