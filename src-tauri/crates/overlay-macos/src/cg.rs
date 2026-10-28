@@ -228,7 +228,7 @@ impl CgCanvas {
                 a: 1.0,
                 b: 0.0,
                 c: 0.0,
-                d: -1.0,
+                d: 1.0,
                 tx: 0.0,
                 ty: 0.0,
             },
@@ -242,7 +242,7 @@ impl CgCanvas {
             width: width_px,
             height: height_px,
             scale,
-            text: CtText,
+            text: CtText::default(),
         })
     }
 

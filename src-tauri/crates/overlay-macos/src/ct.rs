@@ -1,10 +1,12 @@
 //! 渲染线程内使用的 CoreText 排版；所有字符串范围均为 UTF-16。
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ptr::null;
 use std::rc::Rc;
 
 use objc2_core_foundation::{
     CFAttributedString, CFBoolean, CFDictionary, CFMutableAttributedString, CFNumber, CFRange,
-    CFRetained, CFString, CFType,
+    CFRetained, CFString, CFType, CGAffineTransform,
 };
 use objc2_core_graphics::{CGColor, CGContext};
 use objc2_core_text::{
@@ -19,7 +21,31 @@ use sayit_overlay_core::canvas::{
 use sayit_overlay_core::geom::{Color, Point};
 
 #[derive(Default)]
-pub struct CtText;
+pub struct CtText {
+    // None 为系统界面字体，Some 为请求的族名；回退后的字体仍以请求键缓存。
+    fonts: RefCell<HashMap<(Option<String>, u32, u16), CFRetained<CTFont>>>,
+    #[cfg(test)]
+    font_resolutions: std::cell::Cell<usize>,
+}
+
+impl CtText {
+    fn font(&self, style: &TextStyle<'_>) -> Option<CFRetained<CTFont>> {
+        let family = match style.family {
+            FontFamily::SystemUi => None,
+            FontFamily::Named(name) => Some(name.to_owned()),
+            FontFamily::SymbolGlyphs => return None,
+        };
+        let key = (family, style.size.to_bits(), style.weight);
+        if let Some(font) = self.fonts.borrow().get(&key) {
+            return Some(font.clone());
+        }
+        #[cfg(test)]
+        self.font_resolutions.set(self.font_resolutions.get() + 1);
+        let font = resolve_font(style)?;
+        self.fonts.borrow_mut().insert(key, font.clone());
+        Some(font)
+    }
+}
 
 struct Line {
     native: CFRetained<CTLine>,
@@ -34,7 +60,7 @@ pub struct CtLayout {
     metrics: TextMetrics,
 }
 
-fn font(style: &TextStyle<'_>) -> Option<CFRetained<CTFont>> {
+fn resolve_font(style: &TextStyle<'_>) -> Option<CFRetained<CTFont>> {
     let weight = CFNumber::new_f64(match style.weight {
         0..=499 => 0.0,
         500..=649 => 0.3,
@@ -121,7 +147,7 @@ impl TextEngine for CtText {
         {
             return None;
         }
-        let font = font(style)?;
+        let font = self.font(style)?;
         let attributed = attributed(text, &font)?;
         // SAFETY: CoreText 句柄留在本线程，范围不超过属性串的 UTF-16 长度。
         unsafe {
@@ -287,12 +313,28 @@ impl CtLayout {
                 CTTypesetter::with_attributed_string(&attr)
             });
             for line in &self.lines {
+                CGContext::save_g_state(Some(ctx));
+                // CoreText 的字形位置（含组合附加符号）使用 y 向上的文字空间。
+                // 以基线为原点翻转 CTM，文字矩阵保持单位阵。
+                CGContext::translate_ctm(
+                    Some(ctx),
+                    origin.x as f64 + line.x,
+                    origin.y as f64 + line.baseline,
+                );
+                CGContext::scale_ctm(Some(ctx), 1.0, -1.0);
                 let position = || {
-                    CGContext::set_text_position(
+                    CGContext::set_text_matrix(
                         Some(ctx),
-                        origin.x as f64 + line.x,
-                        origin.y as f64 + line.baseline,
-                    )
+                        CGAffineTransform {
+                            a: 1.0,
+                            b: 0.0,
+                            c: 0.0,
+                            d: 1.0,
+                            tx: 0.0,
+                            ty: 0.0,
+                        },
+                    );
+                    CGContext::set_text_position(Some(ctx), 0.0, 0.0);
                 };
                 if let (Some(setter), Some((tint_color, range))) = (&tinted, tint) {
                     let native = setter.line(line.range);
@@ -317,6 +359,7 @@ impl CtLayout {
                     position();
                     line.native.draw(ctx);
                 }
+                CGContext::restore_g_state(Some(ctx));
             }
         }
         CGContext::restore_g_state(Some(ctx));
@@ -326,7 +369,8 @@ impl CtLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sayit_overlay_core::canvas::UniformLineSpacing;
+    use sayit_overlay_core::canvas::{Canvas, UniformLineSpacing};
+    use sayit_overlay_core::geom::Rect;
 
     pub(crate) fn style() -> TextStyle<'static> {
         TextStyle {
@@ -344,17 +388,114 @@ mod tests {
     }
 
     #[test]
+    fn font_cache_reuses_requested_key_including_fallback() {
+        let _guard = crate::cg::cg_test_lock();
+        let text = CtText::default();
+        let mut style = style();
+        for family in ["PingFang SC", "SayIt Missing Font"] {
+            style.family = FontFamily::Named(family);
+            let before = text.font_resolutions.get();
+            text.layout("第一段", &style, 200.0, 100.0).unwrap();
+            assert_eq!(text.font_resolutions.get(), before + 1);
+            text.layout("不同文本与宽度", &style, 400.0, 100.0).unwrap();
+            let font = text.font(&style).unwrap();
+            assert_eq!(text.font_resolutions.get(), before + 1);
+            assert_eq!(unsafe { font.family_name() }.to_string(), "PingFang SC");
+        }
+        style.size += 0.5;
+        text.layout("字号", &style, 200.0, 100.0).unwrap();
+        assert_eq!(text.font_resolutions.get(), 3);
+        style.weight = 600;
+        text.layout("字重", &style, 200.0, 100.0).unwrap();
+        assert_eq!(text.font_resolutions.get(), 4);
+        style.family = FontFamily::SystemUi;
+        text.layout("系统字体", &style, 200.0, 100.0).unwrap();
+        text.layout("再次排版", &style, 200.0, 100.0).unwrap();
+        assert_eq!(text.font_resolutions.get(), 5);
+    }
+
+    #[test]
+    fn combining_marks_stay_above_base_glyph_in_line_and_tinted_runs() {
+        let _guard = crate::cg::cg_test_lock();
+        let text = CtText::default();
+        let style = TextStyle {
+            family: FontFamily::Named("Arial"),
+            size: 60.0,
+            weight: 400,
+            align: TextAlign::Leading,
+            paragraph: ParagraphAlign::Near,
+            wrap: false,
+            line_spacing: Some(UniformLineSpacing {
+                height: 100.0,
+                baseline: 80.0,
+            }),
+        };
+        for scale in [1, 2] {
+            for tint in [false, true] {
+                let render = |value: &str| {
+                    let mut canvas =
+                        crate::cg::CgCanvas::new(192 * scale, 128 * scale, scale as f64).unwrap();
+                    let layout = text.layout(value, &style, 192.0, 128.0).unwrap();
+                    let color = Color::new(1.0, 0.0, 0.0, 1.0);
+                    canvas.draw_text(
+                        &layout,
+                        Point::new(32.0, 8.0),
+                        color,
+                        tint.then_some(TextTint {
+                            utf16_start: 0,
+                            utf16_len: value.encode_utf16().count() as u32,
+                            color,
+                        }),
+                    );
+                    let pixels = canvas.pixels();
+                    let rows: Vec<u64> = pixels
+                        .chunks_exact(192 * scale as usize * 4)
+                        .map(|row| row.chunks_exact(4).map(|p| u64::from(p[3])).sum())
+                        .collect();
+                    let top = rows.iter().position(|mass| *mass > 32).unwrap();
+                    let bottom = rows.iter().rposition(|mass| *mass > 32).unwrap() + 1;
+                    // 文字绘制结束后，后续图形仍使用画布的左上原点和 DIP 坐标。
+                    canvas.fill_rounded_rect(Rect::new(2.0, 2.0, 6.0, 6.0), 0.0, color);
+                    let after = canvas.pixels();
+                    let index = ((3 * scale * 192 * scale + 3 * scale) * 4) as usize;
+                    assert_eq!(&after[index..index + 4], [0, 0, 255, 255]);
+                    (top, bottom, rows)
+                };
+                for (base, accented) in [("x", "x\u{301}"), ("a", "a\u{30c}")] {
+                    let (base_top, base_bottom, _) = render(base);
+                    let (top, bottom, rows) = render(accented);
+                    let tolerance = 2 * scale as usize;
+                    assert!(
+                        top + tolerance < base_top,
+                        "accent must be above base: {accented:?}, scale={scale}, tint={tint}"
+                    );
+                    assert!(
+                        bottom <= base_bottom + tolerance,
+                        "accent must not fall below base: {accented:?}, scale={scale}, tint={tint}"
+                    );
+                    assert!(rows[..base_top].iter().sum::<u64>() > 255 * u64::from(scale * scale));
+                }
+                let decomposed = render("a\u{30c}");
+                let precomposed = render("ǎ");
+                let tolerance = 2 * scale as usize;
+                assert!(decomposed.0.abs_diff(precomposed.0) <= tolerance);
+                assert!(decomposed.1.abs_diff(precomposed.1) <= tolerance);
+            }
+        }
+    }
+
+    #[test]
     fn font_resolution_and_uniform_layout() {
         let _guard = crate::cg::cg_test_lock();
         let mut style = style();
         for family in ["PingFang SC", "Microsoft YaHei", "SayIt Missing Font"] {
             style.family = FontFamily::Named(family);
             assert_eq!(
-                unsafe { font(&style).unwrap().family_name() }.to_string(),
+                unsafe { resolve_font(&style).unwrap().family_name() }.to_string(),
                 "PingFang SC"
             );
         }
-        let text = CtText;
+        let text = CtText::default();
         let layout = text
             .layout("一行\n二行\n三行", &style, 500.0, 200.0)
             .unwrap();
@@ -377,7 +518,7 @@ mod tests {
     #[test]
     fn metrics_alignment_whitespace_and_empty_lines() {
         let _guard = crate::cg::cg_test_lock();
-        let text = CtText;
+        let text = CtText::default();
         let mut style = style();
         style.wrap = false;
         let a = text.layout("中文", &style, 200.0, 100.0).unwrap();
