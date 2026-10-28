@@ -31,6 +31,16 @@ describe("SettingsProviderPanel", () => {
       profiles.find((profile) => profile.id === providerId));
   });
 
+  it("在 OCR 分区展示内置供应商，无需安装或配置", () => {
+    profiles = [{
+      id: "local-ppocr", kind: "builtin-ppocr", displayName: "内置 PP-OCRv6 Tiny",
+      authKind: "none", capabilities: ["ocr"], enabled: true, config: {},
+    }];
+    render(<SettingsProviderPanel />);
+    expect(screen.getByText("内置 PP-OCRv6 Tiny")).toBeInTheDocument();
+    expect(screen.getByText("已内置 · 无需配置")).toBeInTheDocument();
+  });
+
   it("shows only preset ASR credentials and never renders a save button", () => {
     profiles = [
       {

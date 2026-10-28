@@ -275,6 +275,8 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
+            #[cfg(any(windows, target_os = "macos"))]
+            crate::ocr::ppocr::configure_resources(app.handle())?;
             #[cfg(feature = "performance-acceptance")]
             application::performance_acceptance::validate(app.handle())
                 .map_err(std::io::Error::other)?;

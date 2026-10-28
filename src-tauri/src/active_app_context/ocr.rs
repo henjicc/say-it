@@ -17,7 +17,6 @@ use image::{ColorType, DynamicImage, ImageEncoder};
 use super::model::NormalizedRegion;
 use super::model::OcrTextBlock;
 use crate::ocr::ppocr::{build_engine, recognize_full_window, EngineState};
-use crate::ocr::windows as windows_ocr;
 use crate::providers::capabilities::OcrProvider;
 
 const OCR_TEXT_LIMIT: usize = 2_000;
@@ -63,7 +62,7 @@ fn skip_reason(cancelled: &AtomicBool, deadline: Instant) -> Option<&'static str
     }
 }
 
-/// 排序、去重、截断——两套引擎共用的收尾步骤，保证输出契约一致。
+/// 排序、去重、截断——本地与插件 OCR 共用的收尾步骤，保证输出契约一致。
 fn finalize_blocks(mut blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
     sort_blocks_by_reading_order(&mut blocks);
     let mut seen = HashSet::new();
@@ -164,20 +163,7 @@ fn run_full_window_inner(
     ))
 }
 
-/// 系统 OCR 没有可复用的常驻模型，每次调用直接查询系统组件，无需初始化耗时统计。
-fn run_windows_ocr_inner(image: &DynamicImage) -> Result<OcrPipelineOutput, String> {
-    let started = Instant::now();
-    let blocks = finalize_blocks(windows_ocr::recognize(image)?);
-    Ok(pipeline_output(
-        blocks,
-        started.elapsed().as_millis() as u64,
-        0,
-        None,
-        None,
-    ))
-}
-
-fn run_windows_fallback_if_active(
+fn run_builtin_if_active(
     image: &DynamicImage,
     cancelled: &AtomicBool,
     deadline: Instant,
@@ -185,7 +171,11 @@ fn run_windows_fallback_if_active(
     if let Some(reason) = skip_reason(cancelled, deadline) {
         return Err(reason.into());
     }
-    run_windows_ocr_inner(image)
+    let engine = build_engine()?;
+    if let Some(reason) = skip_reason(cancelled, deadline) {
+        return Err(reason.into());
+    }
+    run_full_window_inner(&engine, image)
 }
 
 fn png_bytes(image: &DynamicImage) -> Result<Vec<u8>, String> {
@@ -265,20 +255,8 @@ fn worker() -> &'static Sender<OcrCommand> {
                     // PP-OCR 引擎按任务构建、任务结束即随作用域释放：实测冷启动仅数毫秒，
                     // 而常驻会保留约 130 MiB 的 MNN 会话工作区，得不偿失。
                     let result = catch_unwind(AssertUnwindSafe(|| match &task.provider {
-                        OcrProvider::PpOcr { spec } => {
-                            let engine = build_engine(spec)?;
-                            if let Some(reason) =
-                                skip_reason(task.cancelled.as_ref(), task.deadline)
-                            {
-                                Err(reason.into())
-                            } else {
-                                run_full_window_inner(&engine, &task.image)
-                            }
-                        }
-                        OcrProvider::System => run_windows_fallback_if_active(
-                            &task.image,
-                            task.cancelled.as_ref(),
-                            task.deadline,
+                        OcrProvider::PpOcr => run_builtin_if_active(
+                            &task.image, task.cancelled.as_ref(), task.deadline,
                         ),
                         OcrProvider::Plugin { .. } => {
                             match run_plugin_ocr_inner(
@@ -291,20 +269,20 @@ fn worker() -> &'static Sender<OcrCommand> {
                                 Err(error) => {
                                     crate::development_debug_log(
                                         "active-app-ocr",
-                                        format_args!("插件 OCR 失败，降级到系统 OCR：{error}"),
+                                        format_args!("插件 OCR 失败，降级到内置 PP-OCR：{error}"),
                                     );
-                                    let mut output = run_windows_fallback_if_active(
+                                    let mut output = run_builtin_if_active(
                                         &task.image,
                                         task.cancelled.as_ref(),
                                         task.deadline,
                                     )
                                     .map_err(|fallback_error| {
                                             format!(
-                                                "插件 OCR 失败：{error}；Windows 系统 OCR 降级也失败：{fallback_error}"
+                                                "插件 OCR 失败：{error}；内置 PP-OCR 降级也失败：{fallback_error}"
                                             )
                                         })?;
                                     output.diagnostic = Some(format!(
-                                        "插件 OCR 失败，已降级到 Windows 系统 OCR：{error}"
+                                        "插件 OCR 失败，已降级到内置 PP-OCR：{error}"
                                     ));
                                     Ok(output)
                                 }
@@ -446,10 +424,6 @@ mod tests {
     use super::*;
     use ocr_rs::MemoryMode;
 
-    fn bundled_model_spec() -> crate::providers::plugin::LocalModelSpec {
-        crate::ocr::ppocr::bundled_test_model_spec()
-    }
-
     fn block(left: f32, top: f32, text: &str) -> OcrTextBlock {
         OcrTextBlock {
             text: text.into(),
@@ -517,7 +491,7 @@ mod tests {
 
         let image = DynamicImage::new_rgba8(1, 1);
         assert_eq!(
-            run_windows_fallback_if_active(
+            run_builtin_if_active(
                 &image,
                 &cancelled,
                 Instant::now() + std::time::Duration::from_secs(1),
@@ -526,7 +500,7 @@ mod tests {
             "OCR 任务已取消"
         );
         assert_eq!(
-            run_windows_fallback_if_active(
+            run_builtin_if_active(
                 &image,
                 &active,
                 Instant::now() - std::time::Duration::from_millis(1),
@@ -550,7 +524,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut profile = crate::providers::system_ocr_profile();
+        let mut profile = crate::providers::ppocr_profile();
         profile.id = "test-plugin-ocr".into();
         profile.kind = "plugin:test-plugin-ocr".into();
         profile.display_name = "Test Plugin OCR".into();
@@ -593,7 +567,7 @@ mod tests {
                 .join("ocr-window.png"),
         )
         .expect("fixture should load");
-        let engine = build_engine(&bundled_model_spec()).expect("model pack should initialize");
+        let engine = build_engine().expect("builtin model should initialize");
         assert_eq!(engine.engine.config().memory_mode, MemoryMode::Collect);
         assert_eq!(
             engine.engine.config().det_options.max_side_len,
@@ -627,7 +601,7 @@ mod tests {
 
     #[test]
     fn collect_mode_discards_stale_detector_workspace_after_a_smaller_window() {
-        let engine = build_engine(&bundled_model_spec()).expect("model pack should initialize");
+        let engine = build_engine().expect("builtin model should initialize");
         let large = DynamicImage::new_rgb8(1_600, 1_600);
         recognize_full_window(&engine.engine, &large).expect("large window OCR should succeed");
         let (large_det_memory_mb, _) = engine

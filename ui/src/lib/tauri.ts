@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 
+export type ModelPackState = "pending" | "partial" | "corrupt" | "downloading" | "ready" | "superseded";
+
 export const CMD = {
   getAppSnapshot: "get_app_snapshot",
   mainWindowReady: "main_window_ready",

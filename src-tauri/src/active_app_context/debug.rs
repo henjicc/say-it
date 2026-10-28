@@ -123,7 +123,12 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
         let overrides = debug_capture_overrides();
         let ocr_model = overrides.ocr_model.unwrap_or(ocr_model);
         let displayed_model = if ocr_model.trim().is_empty() {
-            legacy_engine.as_str().to_string()
+            if legacy_engine == crate::active_app_context::OcrEngineKind::PpOcr {
+                crate::providers::PPOCR_MODEL_ID
+            } else {
+                crate::providers::default_ocr_model_id()
+            }
+            .to_string()
         } else {
             ocr_model.clone()
         };

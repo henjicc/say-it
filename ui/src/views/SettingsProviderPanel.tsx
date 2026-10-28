@@ -459,9 +459,12 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     (provider) => provider.enabled && provider.capabilities.includes(capability),
   );
 
-  // 无配置项的供应商（系统内置 OCR、无配置字段的插件、本地模型包）不占据分区位置；
+  // 无配置项的插件与本地模型包不占据分区位置；内置 OCR 显示可用状态；
   // 多能力供应商仍在非主分区保留一行指引，避免用户以为该能力没有供应商。
   const renderEntry = (provider: ProviderProfile) => {
+    if (capability === "ocr" && provider.kind.startsWith("builtin-")) {
+      return <ProviderSummaryRow key={provider.id} title={provider.displayName} subtitle="已内置 · 无需配置" />;
+    }
     const primary = primaryCapabilityOf(provider);
     if (primary !== capability) {
       return (
