@@ -19,6 +19,14 @@ use crate::ct::{set_fill, CtText};
 #[cfg(test)]
 pub(crate) static CG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(crate) fn cg_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    // 绘图上下文归每个测试所有；先前测试失败后仍需串行执行其余测试并报告各自的结果。
+    CG_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 thread_local! {
     // 图标键和路径来自编译期常量；CGPath 不可变，缓存归渲染线程所有。
     static ICONS: RefCell<HashMap<(&'static str, bool), CFRetained<CGPath>>> = RefCell::new(HashMap::new());
@@ -338,9 +346,15 @@ impl Canvas for CgCanvas {
             return;
         };
         let ctx = Some(&*self.ctx);
-        let device = CGContext::convert_rect_to_device_space(ctx, value);
+        let first = CGContext::convert_point_to_device_space(ctx, value.origin);
+        let last = CGContext::convert_point_to_device_space(
+            ctx,
+            CGPoint::new(
+                value.origin.x + value.size.width,
+                value.origin.y + value.size.height,
+            ),
+        );
         // 翻转后的半开区间是 (min,max]；边界恰好落在像素中心时也须保留原来的包含关系。
-        let ctm = CGContext::ctm(ctx);
         let edge = |value: f64, forward: bool| {
             if forward {
                 (value - 0.5).ceil()
@@ -348,15 +362,17 @@ impl Canvas for CgCanvas {
                 (value - 0.5).floor() + 1.0
             }
         };
-        let x = edge(device.origin.x, ctm.a > 0.0);
-        let y = edge(device.origin.y, ctm.d > 0.0);
-        let right = edge(device.origin.x + device.size.width, ctm.a > 0.0);
-        let bottom = edge(device.origin.y + device.size.height, ctm.d > 0.0);
-        let device = CGRect::new(
-            CGPoint::new(x, y),
-            CGSize::new((right - x).max(0.0), (bottom - y).max(0.0)),
+        let x = edge(first.x.min(last.x), first.x < last.x);
+        let y = edge(first.y.min(last.y), first.y < last.y);
+        let right = edge(first.x.max(last.x), first.x < last.x);
+        let bottom = edge(first.y.max(last.y), first.y < last.y);
+        // CGRect 的坐标换算可能保留负尺寸，必须从两个端点重建正向矩形。
+        let first = CGContext::convert_point_to_user_space(ctx, CGPoint::new(x, y));
+        let last = CGContext::convert_point_to_user_space(ctx, CGPoint::new(right, bottom));
+        let user = CGRect::new(
+            CGPoint::new(first.x.min(last.x), first.y.min(last.y)),
+            CGSize::new((last.x - first.x).abs(), (last.y - first.y).abs()),
         );
-        let user = CGContext::convert_rect_to_user_space(ctx, device);
         CGContext::clip_to_rect(ctx, user);
     }
     fn concat_transform(&mut self, value: Transform) {
@@ -529,7 +545,7 @@ mod tests {
 
     #[test]
     fn bitmap_format_orientation_and_premultiplication() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         let mut canvas = CgCanvas::new(40, 40, 2.0).unwrap();
         canvas.fill_rounded_rect(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0, RED);
         canvas.fill_rounded_rect(
@@ -550,7 +566,7 @@ mod tests {
 
     #[test]
     fn primitives_clip_transform_and_antialiasing() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         let mut canvas = CgCanvas::new(64, 64, 1.0).unwrap();
         canvas.save();
         canvas.concat_transform(Transform {
@@ -597,7 +613,7 @@ mod tests {
 
     #[test]
     fn svg_fill_closes_and_stroke_keeps_subpaths_open() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         let icon = SvgIcon {
             key: "cg-test-triangle",
             d: "M4 4L24 4L24 24Z",
@@ -627,7 +643,7 @@ mod tests {
 
     #[test]
     fn clip_pixel_centers_survive_axis_flips_and_nested_restore() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         for flipped in [false, true] {
             let mut canvas = CgCanvas::new(16, 16, 1.0).unwrap();
             canvas.save();
@@ -663,7 +679,7 @@ mod tests {
 
     #[test]
     fn utf16_tint_changes_only_requested_run_alpha() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         let mut canvas = CgCanvas::new(180, 60, 1.0).unwrap();
         let layout = canvas
             .text()
@@ -719,7 +735,7 @@ mod tests {
 
     #[test]
     fn blurred_text_preserves_alpha_mass_and_orientation() {
-        let _guard = CG_TEST_LOCK.lock().unwrap();
+        let _guard = cg_test_lock();
         let mut sharp = CgCanvas::new(200, 100, 1.0).unwrap();
         let mut blurred = CgCanvas::new(200, 100, 1.0).unwrap();
         let layout = sharp.text().layout("字幕", &style(), 100.0, 50.0).unwrap();
