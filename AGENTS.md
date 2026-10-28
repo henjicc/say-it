@@ -178,7 +178,8 @@
 - 安装命令：`npm install`。
 - 开发命令：前端独立开发用 `npm run ui:dev`；完整桌面应用开发用 `npm run tauri:dev`。
 - 格式化/静态检查命令：类型检查用 `npm run typecheck`；未配置 lint/format 脚本，Rust 侧按需 `cargo check`。
-- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。本机 PATH 上的 NASM 不支持中文路径，会让 `aws-lc-sys` 构建失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。
+- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。
+- Rust 构建产物只放在 `src-tauri/target`，不得为绕开问题另建仓库外（尤其 C 盘）的 target 或缓存目录。`tauri:dev`、`test:rust` 在 Rust 工具链变更或 debug 超过 20 GiB（每天检查一次）时自动清理 dev profile，并回收旧版本 sherpa 预编译库；本地只保留最新一次 release，`tauri:build` 成功后才删除上一次的。直接运行 `cargo` 不经过这道回收，实现见 `scripts/rust-cache-guard.mjs`。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
 - UI 设计系统：视觉走「深蓝黑桌面风格」，产品与视觉原则见根目录 `PRODUCT.md`、`DESIGN.md`；令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。

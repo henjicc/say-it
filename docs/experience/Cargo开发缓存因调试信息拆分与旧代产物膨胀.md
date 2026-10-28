@@ -27,15 +27,25 @@ split-debuginfo = "packed"
 这样仍保留开发态栈回溯和基本调试能力，同时避免为每个编译单元散落并重复链接对象文件。
 不再继续压缩依赖的调试信息或关闭增量编译：节省有限，却会牺牲调试和增量重编速度。
 
-升级 Rust 工具链或大批量更新依赖后，旧产物全部失效，用 Cargo 清理 dev profile 后重新构建：
+旧代产物由 `scripts/rust-cache-guard.mjs` 自动回收，只管理默认的 `src-tauri/target`，
+CI 和设置了 `CARGO_TARGET_DIR` 时跳过：
 
-```bash
-cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
-```
+- `npm run tauri:dev` 与 `npm run test:rust` 启动前检查：`rustc -vV` 与上次记录
+  （`target/.sayit-rustc-version`）不同，或 `target/debug` 超过 20 GiB，就执行
+  `cargo clean --profile dev`，代价是下一次 debug 构建从头编译。逐个统计文件在 Windows 上
+  较慢，体积每天最多量一次；工具链每次都检查。同一次检查还会删除与 `Cargo.lock` 中
+  `sherpa-onnx-sys` 版本不同的 `target/sherpa-onnx-prebuilt` 条目。
+- 本地 release 只保留最新一次构建与安装包：`npm run tauri:build` 先把旧 release 改名为
+  `target/release.previous-<打包进程 PID>`，打包成功后改名为 `release.trash-<PID>` 再删除，
+  失败则原样恢复。打包被中断时，下一次 `tauri:dev`、`test:rust` 或打包启动会自动恢复；
+  那次打包仍在运行时不动它的目录，并拒绝同时再打包。`--debug`、`--target`、`--help` 不触发这一步。
+- 代价：打包期间新旧两份 release 并存，磁盘峰值约为 release 的两倍；每次本地打包和
+  失败后的重试都从零编译 release。
 
-不要清理 release profile：`tauri.windows.conf.json` 的打包资源引用
-`target/release/*.dll`，清掉后需要先完成一次 release 构建才能重新打包。
-也不要手工选择性删除 `deps/` 或 `incremental/`，以免留下不一致缓存。
+旧 release 不能直接清空：dev 构建（tauri-build）会复制 `tauri.windows.conf.json` 引用的
+`target/release/*.dll` 和 `tauri.macos.conf.json` 引用的 frameworks，缺失就无法编译。
+macOS 的 `target/swift-module-cache` 不在回收范围内。直接运行 `cargo` 不经过这道检查；
+不要手工选择性删除 `deps/` 或 `incremental/`，以免留下不一致缓存。
 
 ## 验证
 
