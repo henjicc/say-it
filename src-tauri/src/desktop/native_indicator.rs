@@ -14,62 +14,14 @@ use std::sync::OnceLock;
 /// Windows 上默认启用原生听写指示器；`SAYIT_NATIVE_INDICATOR=0` 回退 WebView。
 pub(crate) fn native_dictation_indicator_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(windows)
-            && std::env::var("SAYIT_NATIVE_INDICATOR")
-                .map(|value| value != "0")
-                .unwrap_or(true)
-    })
-}
-
-/// 波形柱数量，与 IndicatorApp.tsx 的 INDICATOR_WAVE_BAR_COUNT 一致。
-#[cfg(any(windows, test))]
-pub(crate) const WAVE_BAR_COUNT: usize = 9;
-
-/// 每根波形柱的基础高度占比，与 indicator.css 的 --bar-height 逐个对应。
-#[cfg(any(windows, test))]
-const WAVE_BAR_HEIGHTS: [f32; WAVE_BAR_COUNT] =
-    [0.46, 0.58, 0.70, 0.82, 0.94, 0.82, 0.70, 0.58, 0.46];
-
-/// 波形柱最小缩放，与 OrbWaveform 的 `max(0.18, level)` 一致。
-#[cfg(any(windows, test))]
-const WAVE_BAR_MIN_SCALE: f32 = 0.18;
-
-/// 感知响度曲线，移植自 ui/src/floating-orb/interaction.ts 的 floatingOrbWaveScale。
-#[cfg(any(windows, test))]
-pub(crate) fn wave_scale(value: f32) -> f32 {
-    // JS 侧 `Number(value) || 0` 会把 NaN 归 0。
-    let normalized = if value.is_nan() {
-        0.0
-    } else {
-        value.clamp(0.0, 1.0)
-    };
-    (normalized.sqrt() * 1.8).min(1.0)
-}
-
-/// 把任意数量的峰值重采样到 9 根柱，移植自 IndicatorApp.tsx 的 resampleWaveLevels。
-#[cfg(any(windows, test))]
-fn resample_wave_levels(levels: &[f32], fallback: f32) -> [f32; WAVE_BAR_COUNT] {
-    if levels.is_empty() {
-        return [fallback; WAVE_BAR_COUNT];
-    }
-    if levels.len() == 1 {
-        return [levels[0]; WAVE_BAR_COUNT];
-    }
-    let mut out = [0.0; WAVE_BAR_COUNT];
-    for (index, slot) in out.iter_mut().enumerate() {
-        let position = index as f32 * (levels.len() - 1) as f32 / (WAVE_BAR_COUNT - 1) as f32;
-        let lower = position.floor() as usize;
-        let upper = (levels.len() - 1).min(position.ceil() as usize);
-        let progress = position - lower as f32;
-        *slot = levels[lower] + (levels[upper] - levels[lower]) * progress;
-    }
-    out
+    *ENABLED.get_or_init(|| super::native_common::native_window_enabled("SAYIT_NATIVE_INDICATOR"))
 }
 
 pub(crate) fn native_indicator_prepare() {
     #[cfg(windows)]
     imp::post(imp::Command::Prepare);
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::prepare();
 }
 
 /// 仅接受 recording/processing/smartProcessing/fallback；其余状态不在原生接管范围。
@@ -78,34 +30,44 @@ pub(crate) fn native_indicator_set_state(state: &str) {
     if let Some(state) = imp::NativeState::from_str(state) {
         imp::post(imp::Command::SetState(state));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::set_state(state);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = state;
 }
 
 pub(crate) fn native_indicator_set_text(text: String, fade: bool) {
     #[cfg(windows)]
     imp::post(imp::Command::SetText { text, fade });
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::set_text(text, fade);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (text, fade);
 }
 
 pub(crate) fn native_indicator_set_waveform(level: f32, peaks: Vec<f32>) {
     #[cfg(windows)]
     imp::post(imp::Command::SetWaveform { level, peaks });
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::set_waveform(level, peaks);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (level, peaks);
 }
 
 pub(crate) fn native_indicator_hide() {
     #[cfg(windows)]
     imp::post(imp::Command::Hide);
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::hide();
 }
 
 /// 原生错误/结果通知：显示自定义短文案的面板，几秒后自动消失。
 pub(crate) fn native_indicator_notice(text: String) {
     #[cfg(windows)]
     imp::post(imp::Command::ShowNotice(text));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::indicator::notice(text);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = text;
 }
 
@@ -113,9 +75,10 @@ pub(crate) fn native_indicator_notice(text: String) {
 mod imp {
     use super::super::native_overlay::{
         create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
-        system_dpi, window_dpi, LayeredSurface, OverlayThread, Transition,
+        system_dpi, window_dpi, LayeredSurface, OverlayThread,
     };
-    use super::{
+    use sayit_overlay_core::anim::Transition;
+    use sayit_overlay_core::indicator::{
         resample_wave_levels, wave_scale, WAVE_BAR_COUNT, WAVE_BAR_HEIGHTS, WAVE_BAR_MIN_SCALE,
     };
     use std::sync::OnceLock;
@@ -126,8 +89,8 @@ mod imp {
     };
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
-        ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
-        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
+        ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_ALIASED,
+        D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
     };
     use windows::Win32::Graphics::DirectWrite::{
         IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS,
@@ -197,12 +160,17 @@ mod imp {
 
     const LOG_TAG: &str = "native-indicator";
 
-
     pub(crate) enum Command {
         Prepare,
         SetState(NativeState),
-        SetText { text: String, fade: bool },
-        SetWaveform { level: f32, peaks: Vec<f32> },
+        SetText {
+            text: String,
+            fade: bool,
+        },
+        SetWaveform {
+            level: f32,
+            peaks: Vec<f32>,
+        },
         /// 原生错误/结果通知：自定义文案，自动消失。
         ShowNotice(String),
         Hide,
@@ -462,10 +430,7 @@ mod imp {
             let slide = ((1.0 - visual) * TRANSITION_SLIDE_PX * scale).round() as i32;
             let alpha = (visual * 255.0).round() as u8;
             let Self {
-                view,
-                d2d,
-                surface,
-                ..
+                view, d2d, surface, ..
             } = self;
             surface.render(
                 d2d,
@@ -894,51 +859,51 @@ mod imp {
                         brush,
                     );
                 } else {
-                // 简化图标：圆环 + 对勾，代替 ClipboardCheck。
-                target.DrawEllipse(
-                    &D2D1_ELLIPSE {
-                        point: D2D_POINT_2F {
-                            x: icon_cx,
-                            y: icon_cy,
+                    // 简化图标：圆环 + 对勾，代替 ClipboardCheck。
+                    target.DrawEllipse(
+                        &D2D1_ELLIPSE {
+                            point: D2D_POINT_2F {
+                                x: icon_cx,
+                                y: icon_cy,
+                            },
+                            radiusX: FALLBACK_ICON / 2.0 - 1.0,
+                            radiusY: FALLBACK_ICON / 2.0 - 1.0,
                         },
-                        radiusX: FALLBACK_ICON / 2.0 - 1.0,
-                        radiusY: FALLBACK_ICON / 2.0 - 1.0,
-                    },
-                    brush,
-                    1.8,
-                    None,
-                );
-                let check = [
-                    (icon_cx - 3.5, icon_cy + 0.5),
-                    (icon_cx - 0.8, icon_cy + 3.2),
-                    (icon_cx + 4.0, icon_cy - 3.0),
-                ];
-                target.DrawLine(
-                    D2D_POINT_2F {
-                        x: check[0].0,
-                        y: check[0].1,
-                    },
-                    D2D_POINT_2F {
-                        x: check[1].0,
-                        y: check[1].1,
-                    },
-                    brush,
-                    2.0,
-                    None,
-                );
-                target.DrawLine(
-                    D2D_POINT_2F {
-                        x: check[1].0,
-                        y: check[1].1,
-                    },
-                    D2D_POINT_2F {
-                        x: check[2].0,
-                        y: check[2].1,
-                    },
-                    brush,
-                    2.0,
-                    None,
-                );
+                        brush,
+                        1.8,
+                        None,
+                    );
+                    let check = [
+                        (icon_cx - 3.5, icon_cy + 0.5),
+                        (icon_cx - 0.8, icon_cy + 3.2),
+                        (icon_cx + 4.0, icon_cy - 3.0),
+                    ];
+                    target.DrawLine(
+                        D2D_POINT_2F {
+                            x: check[0].0,
+                            y: check[0].1,
+                        },
+                        D2D_POINT_2F {
+                            x: check[1].0,
+                            y: check[1].1,
+                        },
+                        brush,
+                        2.0,
+                        None,
+                    );
+                    target.DrawLine(
+                        D2D_POINT_2F {
+                            x: check[1].0,
+                            y: check[1].1,
+                        },
+                        D2D_POINT_2F {
+                            x: check[2].0,
+                            y: check[2].1,
+                        },
+                        brush,
+                        2.0,
+                        None,
+                    );
                 }
                 brush.SetColor(&rgba(234.0 / 255.0, 242.0 / 255.0, 1.0, 1.0));
                 target.DrawText(
@@ -1028,7 +993,7 @@ mod imp {
                         .map(|last| now.saturating_duration_since(last).as_secs_f32())
                         .unwrap_or(FRAME_MS as f32 / 1000.0);
                     state.view.tick_animations(dt);
-                    let (_, finished) = state.transition.tick();
+                    let (_, finished) = state.transition.tick(overlay_now());
                     if finished && state.transition.is_fully_hidden() {
                         // 退场动画播完才清理内容并真正隐藏。
                         state.view.state = None;
@@ -1204,46 +1169,3 @@ mod imp {
 
 #[cfg(all(test, windows))]
 pub(crate) use imp::snapshot_driver;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wave_scale_matches_the_perceptual_loudness_curve() {
-        assert_eq!(wave_scale(f32::NAN), 0.0);
-        assert_eq!(wave_scale(-1.0), 0.0);
-        assert_eq!(wave_scale(0.0), 0.0);
-        assert_eq!(wave_scale(1.0), 1.0);
-        assert_eq!(wave_scale(2.0), 1.0);
-        assert!((wave_scale(0.25) - 0.9).abs() < 1e-6);
-    }
-
-    #[test]
-    fn resample_fills_fallback_when_no_levels() {
-        assert_eq!(resample_wave_levels(&[], 0.5), [0.5; WAVE_BAR_COUNT]);
-        assert_eq!(resample_wave_levels(&[0.3], 0.0), [0.3; WAVE_BAR_COUNT]);
-    }
-
-    #[test]
-    fn resample_interpolates_like_the_webview() {
-        let levels = [0.0, 1.0];
-        let bars = resample_wave_levels(&levels, 0.0);
-        assert_eq!(bars[0], 0.0);
-        assert_eq!(bars[WAVE_BAR_COUNT - 1], 1.0);
-        assert!((bars[4] - 0.5).abs() < 1e-6);
-
-        let six = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
-        let bars = resample_wave_levels(&six, 0.0);
-        // 6 → 9：position = index * 5 / 8，索引 4 落在 2.5 处。
-        assert!((bars[4] - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn wave_bar_height_table_matches_css() {
-        assert_eq!(WAVE_BAR_HEIGHTS.len(), WAVE_BAR_COUNT);
-        assert_eq!(WAVE_BAR_HEIGHTS[0], 0.46);
-        assert_eq!(WAVE_BAR_HEIGHTS[4], 0.94);
-        assert!(WAVE_BAR_MIN_SCALE > 0.0);
-    }
-}
