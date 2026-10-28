@@ -1,3 +1,10 @@
+# target 与 Cargo.lock 仍在 src-tauri 下由全部成员共用；default-members 让无参数的
+# cargo test 同时覆盖子 crate，`--bin say-it` 等选择器只作用于根包。
+[workspace]
+members = ["crates/*"]
+default-members = [".", "crates/*"]
+resolver = "2"
+
 [package]
 name = "say-it"
 version = "0.4.0"
@@ -73,6 +80,7 @@ rand = "0.9"
 zeroize = "1"
 tauri-plugin-global-shortcut = "2"
 window-vibrancy = "0.6"
+sayit-overlay-core = { path = "crates/overlay-core" }
 
 [target.'cfg(windows)'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -111,6 +119,7 @@ winreg = "0.52"
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 ocr-rs = { version = "=2.3.2", default-features = false }
+sayit-overlay-macos = { path = "crates/overlay-macos" }
 
 [features]
 default = ["custom-protocol"]
