@@ -1,0 +1,60 @@
+{
+  "profiles": [
+    {
+      "id": "bailian", "kind": "sdk:bailian", "displayName": "阿里云百炼",
+      "authKind": "api-key", "capabilities": ["asr", "llm", "translation"], "enabled": true,
+      "config": {"languageHints": ["zh"], "vocabularyIds": {"fun-asr-realtime": "fixture-vocabulary"}, "semanticPunctuationEnabled": true}
+    },
+    {
+      "id": "volcengine", "kind": "sdk:volcengine", "displayName": "火山引擎",
+      "authKind": "api-key", "capabilities": ["asr", "llm"], "enabled": true,
+      "config": {"language": "zh"}
+    },
+    {
+      "id": "siliconflow", "kind": "sdk:siliconflow", "displayName": "硅基流动",
+      "authKind": "api-key", "capabilities": ["asr", "llm"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "llm-groq", "kind": "llm:groq", "displayName": "Groq",
+      "authKind": "api-key", "capabilities": ["llm"], "enabled": true,
+      "config": {"model": "fixture-model", "models": []}
+    },
+    {
+      "id": "apple-speech", "kind": "builtin-macos-speech", "displayName": "Apple 系统本地识别",
+      "authKind": "none", "capabilities": ["asr"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "bailian", "kind": "sdk:bailian", "displayName": "阿里云百炼",
+      "authKind": "api-key", "capabilities": ["asr", "llm", "translation"], "enabled": true,
+      "config": {"languageHints": ["en"], "semanticPunctuationEnabled": false, "staleOnly": true}
+    },
+    {
+      "id": "bailian", "kind": "sdk:bailian", "displayName": "阿里云百炼",
+      "authKind": "api-key", "capabilities": ["asr", "llm", "translation"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "bailian", "kind": "sdk:bailian", "displayName": "阿里云百炼",
+      "authKind": "api-key", "capabilities": ["asr", "llm", "translation"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "bailian", "kind": "sdk:bailian", "displayName": "阿里云百炼",
+      "authKind": "api-key", "capabilities": ["asr", "llm", "translation"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "local-ppocr", "kind": "builtin-ppocr", "displayName": "内置 PP-OCRv6 Tiny",
+      "authKind": "none", "capabilities": ["ocr"], "enabled": true,
+      "config": {}
+    },
+    {
+      "id": "local-funasr-nano", "kind": "model-pack:official.sherpa-funasr-nano-ctc", "displayName": "本地 Fun-ASR",
+      "authKind": "none", "capabilities": ["asr"], "enabled": true, "keepLoaded": true,
+      "config": {"sampleRate": 16000}
+    }
+  ],
+  "defaults": {"asr": "bailian", "llm": "llm-groq", "translation": "bailian", "ocr": "local-ppocr"}
+}

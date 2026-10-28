@@ -2072,6 +2072,49 @@ mod tests {
     }
 
     #[test]
+    fn provider_id_duplicates_registry_merge_keeps_first_model_pack_settings() {
+        let registry = resident_registry(&std::env::temp_dir());
+        let provider = &registry.plugins[0].manifest.provider;
+        let mut settings: ProviderSettings =
+            serde_json::from_str(include_str!("fixtures/duplicate-profiles.json")).unwrap();
+        let profile = settings.profiles.last_mut().unwrap();
+        profile.id = provider.id.clone();
+        profile.kind = format!("model-pack:{}", registry.plugins[0].manifest.id);
+        profile.config = serde_json::json!({"sampleRate": 16000});
+        let mut duplicate = profile.clone();
+        duplicate.keep_loaded = false;
+        duplicate.config = serde_json::json!({"sampleRate": 8000});
+        settings.profiles.push(duplicate);
+        settings.defaults.asr = provider.id.clone();
+        let expected_profile_count = super::super::builtin_profiles().len() + 1;
+        let mut expected = None;
+        for _ in 0..3 {
+            registry.merge_provider_profiles(&mut settings);
+            assert_eq!(settings.profiles.len(), expected_profile_count);
+            assert_eq!(
+                settings
+                    .profiles
+                    .iter()
+                    .map(|p| &p.id)
+                    .collect::<HashSet<_>>()
+                    .len(),
+                expected_profile_count
+            );
+            let profile = super::super::find_profile(&settings, &provider.id).unwrap();
+            assert!(profile.keep_loaded);
+            assert!(profile.enabled);
+            assert_eq!(profile.config["sampleRate"], 16000);
+            assert_eq!(settings.defaults.asr, provider.id);
+            let snapshot = serde_json::to_value(&settings).unwrap();
+            if let Some(expected) = &expected {
+                assert_eq!(&snapshot, expected);
+            } else {
+                expected = Some(snapshot);
+            }
+        }
+    }
+
+    #[test]
     fn keep_loaded_survives_normalization_sync_and_roundtrip() {
         let root = std::env::temp_dir().join(format!("sayit-resident-{}", uuid::Uuid::new_v4()));
         let registry = resident_registry(&root);

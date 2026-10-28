@@ -647,7 +647,17 @@ fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
     );
 }
 
+/// id 是 profile 的唯一标识。保留首项的完整配置与顺序，与 find_profile 和配置更新一致；
+/// 不把后续副本的字段补回首项，避免恢复已被用户清空的旧设置。凭据由独立凭据库管理。
+pub(crate) fn deduplicate_profiles(settings: &mut ProviderSettings) {
+    let mut seen = std::collections::HashSet::new();
+    settings
+        .profiles
+        .retain(|profile| seen.insert(profile.id.clone()));
+}
+
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
+    deduplicate_profiles(&mut settings);
     #[cfg(windows)]
     {
         settings.profiles.retain(|profile| {
@@ -779,6 +789,89 @@ mod tests {
         ],
         "defaults": {"asr": "funasr"}
     }"#;
+
+    #[test]
+    fn provider_id_duplicates_keep_first_profile_config_and_valid_defaults() {
+        let settings: ProviderSettings =
+            serde_json::from_str(include_str!("fixtures/duplicate-profiles.json")).unwrap();
+        assert_eq!(settings.profiles.len(), 11);
+        let expected_defaults = serde_json::to_value(&settings.defaults).unwrap();
+        let expected_local = serde_json::to_value(settings.profiles.last().unwrap()).unwrap();
+        let normalized = normalize_settings(settings);
+        let ids = normalized
+            .profiles
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "bailian",
+                "volcengine",
+                "siliconflow",
+                "llm-groq",
+                "apple-speech",
+                "local-ppocr",
+                "local-funasr-nano",
+                #[cfg(target_os = "macos")]
+                "system-ocr"
+            ]
+        );
+        let first = find_profile(&normalized, BAILIAN_PROVIDER_ID).unwrap();
+        assert_eq!(first.config["languageHints"], json!(["zh"]));
+        assert_eq!(
+            first.config["vocabularyIds"]["fun-asr-realtime"],
+            "fixture-vocabulary"
+        );
+        assert_eq!(first.config["semanticPunctuationEnabled"], true);
+        assert!(first.config.get("staleOnly").is_none());
+        assert_eq!(
+            serde_json::to_value(&normalized.defaults).unwrap(),
+            expected_defaults
+        );
+        assert_eq!(
+            serde_json::to_value(find_profile(&normalized, "local-funasr-nano").unwrap()).unwrap(),
+            expected_local
+        );
+        let snapshot = serde_json::to_value(&normalized).unwrap();
+        assert_eq!(
+            serde_json::to_value(normalize_settings(normalized)).unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn provider_id_duplicates_preserve_unknown_profile_and_repair_invalid_defaults() {
+        let mut settings = ProviderSettings::default();
+        let mut first = bailian_profile();
+        first.id = "custom-local".into();
+        first.kind = "model-pack:custom-local".into();
+        first.capabilities = vec!["asr".into()];
+        first.keep_loaded = true;
+        first.enabled = false;
+        first.config = json!({"sampleRate": 16000});
+        let mut duplicate = first.clone();
+        duplicate.keep_loaded = false;
+        duplicate.enabled = true;
+        duplicate.config = json!({"sampleRate": 8000});
+        let expected = serde_json::to_value(&first).unwrap();
+        settings.profiles.extend([first, duplicate]);
+        settings.defaults.asr = "custom-local".into();
+        let normalized = normalize_settings(settings);
+        assert_eq!(
+            normalized
+                .profiles
+                .iter()
+                .filter(|p| p.id == "custom-local")
+                .count(),
+            1
+        );
+        assert_eq!(
+            serde_json::to_value(find_profile(&normalized, "custom-local").unwrap()).unwrap(),
+            expected
+        );
+        assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
+    }
 
     #[test]
     fn builtin_ocr_profiles_match_current_platform() {
