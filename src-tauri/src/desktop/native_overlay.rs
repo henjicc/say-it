@@ -38,6 +38,8 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BLENDFUNCTION, HBITMAP, HDC, HGDIOBJ, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB,
     DIB_RGB_COLORS,
 };
+#[cfg(test)]
+use windows::Win32::Graphics::Gdi::GdiFlush;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -106,7 +108,7 @@ impl Transition {
 
     /// 推进一帧，返回（缓动后的视觉进度，本次是否刚好到达终点）。
     pub(crate) fn tick(&mut self) -> (f32, bool) {
-        let now = Instant::now();
+        let now = overlay_now();
         let dt = self
             .last_tick
             .replace(now)
@@ -172,8 +174,31 @@ pub(crate) const fn rect_f(left: f32, top: f32, right: f32, bottom: f32) -> D2D_
     }
 }
 
+/// 悬浮窗动画计时的唯一时钟入口：生产恒为 `Instant::now()`；测试线程可用
+/// `test_seams::set_now` 固定当前时刻，让动画只随注入的帧时刻推进。
+pub(crate) fn overlay_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = test_seams::now() {
+        return now;
+    }
+    Instant::now()
+}
+
+/// 建窗时使用的系统 DPI；测试线程的 DPI 覆盖同样作用于此，保证首次布局与渲染一致。
+pub(crate) fn system_dpi() -> u32 {
+    #[cfg(test)]
+    if let Some(dpi) = test_seams::dpi() {
+        return dpi;
+    }
+    unsafe { GetDpiForSystem() }
+}
+
 /// 窗口当前 DPI，失败时退回系统 DPI。
 pub(crate) fn window_dpi(hwnd: HWND) -> u32 {
+    #[cfg(test)]
+    if let Some(dpi) = test_seams::dpi() {
+        return dpi;
+    }
     unsafe {
         let dpi = GetDpiForWindow(hwnd);
         if dpi == 0 {
@@ -360,6 +385,12 @@ pub(crate) struct LayeredSurface {
     /// UpdateLayeredWindow 不会把从未显示过的窗口摆上屏幕；
     /// 首次渲染后必须显式 ShowWindow 一次。
     shown: bool,
+    /// 离屏模式下最近一次本应上屏的参数；隐藏后清空，表示窗口不可见。
+    #[cfg(test)]
+    presented: Option<test_seams::Presented>,
+    /// 累计渲染尝试次数（含失败）；与 `presented.frame` 不等说明最近一次渲染没有出帧。
+    #[cfg(test)]
+    frames: u64,
 }
 
 impl LayeredSurface {
@@ -370,12 +401,36 @@ impl LayeredSurface {
             target: None,
             brush: None,
             shown: false,
+            #[cfg(test)]
+            presented: None,
+            #[cfg(test)]
+            frames: 0,
         }
     }
 
     /// 隐藏窗口，下次 render 上屏后需要重新 ShowWindow 一次。
     pub(crate) fn mark_hidden(&mut self) {
         self.shown = false;
+        #[cfg(test)]
+        {
+            self.presented = None;
+        }
+    }
+
+    /// 离屏模式下最近一帧的上屏参数与 DIB 像素副本；窗口隐藏或尚未上屏时为 None。
+    #[cfg(test)]
+    pub(crate) fn capture(&self) -> Option<test_seams::Capture> {
+        let presented = self.presented?;
+        let dib = self.dib.as_ref()?;
+        // 读 DIB 前把 GDI 批处理刷到位图，保证拿到的是完整的最近一帧。
+        unsafe {
+            let _ = GdiFlush();
+        }
+        Some(test_seams::Capture {
+            presented,
+            rendered: self.frames,
+            pixels: dib.pixels().to_vec(),
+        })
     }
 
     /// DPI 变化后物理尺寸改变，强制重建 DIB。
@@ -424,6 +479,10 @@ impl LayeredSurface {
         log_tag: &str,
         draw: impl FnOnce(&ID2D1DCRenderTarget, &ID2D1SolidColorBrush),
     ) {
+        #[cfg(test)]
+        {
+            self.frames += 1;
+        }
         if self
             .dib
             .as_ref()
@@ -469,6 +528,18 @@ impl LayeredSurface {
                     eprintln!("[{log_tag}] 结束绘制失败：{error}");
                     return;
                 }
+            }
+            #[cfg(test)]
+            if test_seams::offscreen() {
+                self.presented = Some(test_seams::Presented {
+                    x,
+                    y,
+                    width,
+                    height,
+                    alpha: constant_alpha,
+                    frame: self.frames,
+                });
+                return;
             }
             let destination = POINT { x, y };
             let size = SIZE {
@@ -877,6 +948,78 @@ pub(crate) fn create_text_format_weight(
         });
         let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
         Ok(format)
+    }
+}
+
+/// 只服务测试的接缝：时钟、DPI 与离屏上屏开关。全部是线程局部的——窗口属于
+/// 创建它的测试线程，并行测试互不干扰；未设置时一律走生产路径。
+#[cfg(test)]
+pub(crate) mod test_seams {
+    use std::cell::Cell;
+    use std::time::Instant;
+
+    thread_local! {
+        static NOW: Cell<Option<Instant>> = const { Cell::new(None) };
+        static DPI: Cell<Option<u32>> = const { Cell::new(None) };
+        static OFFSCREEN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// 离屏模式下一帧本应交给 UpdateLayeredWindow 的参数（物理像素）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct Presented {
+        pub(crate) x: i32,
+        pub(crate) y: i32,
+        pub(crate) width: i32,
+        pub(crate) height: i32,
+        pub(crate) alpha: u8,
+        /// 出这一帧的渲染尝试序号（渲染面上第几次 render，从 1 开始）。
+        pub(crate) frame: u64,
+    }
+
+    /// 截取结果：上屏参数 + 顶向下、预乘 alpha 的 BGRA 像素。
+    pub(crate) struct Capture {
+        pub(crate) presented: Presented,
+        /// 截取时渲染面累计的渲染尝试次数；大于 `presented.frame` 表示之后的渲染失败了，
+        /// 像素是旧帧。
+        pub(crate) rendered: u64,
+        pub(crate) pixels: Vec<u8>,
+    }
+
+    pub(crate) fn now() -> Option<Instant> {
+        NOW.with(Cell::get)
+    }
+
+    pub(crate) fn set_now(now: Instant) {
+        NOW.with(|cell| cell.set(Some(now)));
+    }
+
+    pub(crate) fn dpi() -> Option<u32> {
+        DPI.with(Cell::get)
+    }
+
+    pub(crate) fn offscreen() -> bool {
+        OFFSCREEN.with(Cell::get)
+    }
+
+    /// 当前线程进入离屏模式并固定 DPI；时钟保持真实时间，直到调用 `set_now`。
+    /// 必须在建窗之前创建，离开作用域时恢复全部接缝。
+    pub(crate) struct OffscreenGuard(());
+
+    impl OffscreenGuard {
+        pub(crate) fn new(dpi: u32) -> Self {
+            NOW.with(|cell| cell.set(None));
+            DPI.with(|cell| cell.set(Some(dpi)));
+            OFFSCREEN.with(|cell| cell.set(true));
+            Self(())
+        }
+    }
+
+    impl Drop for OffscreenGuard {
+        fn drop(&mut self) {
+            NOW.with(|cell| cell.set(None));
+            DPI.with(|cell| cell.set(None));
+            OFFSCREEN.with(|cell| cell.set(false));
+        }
     }
 }
 
