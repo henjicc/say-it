@@ -17,12 +17,18 @@
     __sayitHostStoreRequestBody?: (body: Uint8Array) => string
   }).__sayitHostStoreRequestBody
   if (typeof rawStoreRequestBody !== 'function') throw new Error('SDK RuntimeContext 缺少二进制请求体 Host API')
+  const rawReadMediaChunk = (globalThis as typeof globalThis & {
+    __sayitHostReadMediaChunk?: (payload: string) => Uint8Array
+  }).__sayitHostReadMediaChunk
+  if (typeof rawReadMediaChunk !== 'function') throw new Error('SDK RuntimeContext 缺少二进制媒体读取 Host API')
 
   const call = <T>(operation: string, payload: unknown = {}): T => {
     const result = JSON.parse(rawCall(operation, JSON.stringify(payload))) as HostResult
     if (!result.ok) throw new Error(result.error || `宿主调用失败：${operation}`)
     return result.value as T
   }
+  const readMediaChunk = (ref: string, offset: number, length: number): Uint8Array =>
+    rawReadMediaChunk(JSON.stringify({ ref, offset, length }))
   const byteView = (value: ArrayBuffer | ArrayBufferView): Uint8Array =>
     value instanceof ArrayBuffer
       ? new Uint8Array(value)
@@ -55,7 +61,6 @@
   }
   interface StreamReadResult { done: boolean; bytes?: number[] }
   interface MediaDescription { size: number; mimeType: string; filename: string }
-  interface MediaChunk { bytes: number[] }
   const MEDIA_CHUNK_BYTES = 64 * 1024
 
   const activeStreams = new Set<string>()
@@ -290,8 +295,7 @@
     },
     media: {
       describe: async (ref: string) => call<MediaDescription>('media.describe', { ref }),
-      readChunk: async (ref: string, offset: number, length: number) =>
-        new Uint8Array(call<MediaChunk>('media.readChunk', { ref, offset, length }).bytes),
+      readChunk: async (ref: string, offset: number, length: number) => readMediaChunk(ref, offset, length),
       read: async (ref: string) => {
         const description = call<MediaDescription>('media.describe', { ref })
         if (!Number.isSafeInteger(description.size) || description.size < 0) {
@@ -304,16 +308,12 @@
         const bytes = new Uint8Array(description.size)
         for (let offset = 0; offset < bytes.byteLength;) {
           const length = Math.min(MEDIA_CHUNK_BYTES, bytes.byteLength - offset)
-          const chunk = call<MediaChunk>('media.readChunk', {
-            ref,
-            offset,
-            length,
-          }).bytes
-          if (chunk.length === 0 || chunk.length > length) {
+          const chunk = readMediaChunk(ref, offset, length)
+          if (chunk.byteLength === 0 || chunk.byteLength > length) {
             throw new Error('宿主媒体分块长度不符合声明')
           }
           bytes.set(chunk, offset)
-          offset += chunk.length
+          offset += chunk.byteLength
         }
         return { ...description, bytes }
       },

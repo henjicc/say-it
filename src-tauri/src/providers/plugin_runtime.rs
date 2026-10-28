@@ -14,8 +14,8 @@ use once_cell::sync::Lazy;
 use rand::RngCore;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    CaughtError, Context, Ctx, Error as JsError, Function, Module, Object, Promise, Runtime,
-    TypedArray,
+    CaughtError, Context, Ctx, Error as JsError, Exception, Function, Module, Object, Promise,
+    Runtime, TypedArray,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -403,6 +403,20 @@ fn sdk_encode_utf8<'js>(ctx: Ctx<'js>, text: String) -> Result<TypedArray<'js, u
     TypedArray::new(ctx, text.into_bytes())
 }
 
+fn sdk_media_chunk_reader<'js>(
+    host: Arc<Mutex<HostState>>,
+) -> impl Fn(Ctx<'js>, String) -> Result<TypedArray<'js, u8>, JsError> {
+    move |ctx, payload| {
+        let parsed = serde_json::from_str(&payload).unwrap_or(Value::Null);
+        let bytes = host
+            .lock()
+            .map_err(|_| "宿主状态锁定失败".to_string())
+            .and_then(|mut state| state.media_read_chunk(parsed))
+            .map_err(|message| Exception::throw_message(&ctx, &message))?;
+        TypedArray::new(ctx, bytes)
+    }
+}
+
 impl HostState {
     fn new(
         spec: PluginRuntimeSpec,
@@ -552,7 +566,6 @@ impl HostState {
             "websocket.close" => self.websocket_close(payload),
             "media.read" => self.media_read(payload),
             "media.describe" => self.media_describe(payload),
-            "media.readChunk" => self.media_read_chunk(payload),
             "media.releaseAll" => {
                 self.media_inputs.clear();
                 Ok(Value::Null)
@@ -908,7 +921,7 @@ impl HostState {
         input.describe()
     }
 
-    fn media_read_chunk(&mut self, payload: Value) -> Result<Value, String> {
+    fn media_read_chunk(&mut self, payload: Value) -> Result<Vec<u8>, String> {
         if self.sdk.is_none() {
             return Err("当前运行上下文未注入 SDK 媒体作用域".into());
         }
@@ -926,8 +939,7 @@ impl HostState {
         }
         let reference = payload.get("ref").and_then(Value::as_str)
             .ok_or("媒体读取缺少 ref")?;
-        let bytes = self.sdk_media_input(reference)?.read_chunk(offset, requested)?;
-        Ok(json!({"bytes":bytes}))
+        self.sdk_media_input(reference)?.read_chunk(offset, requested)
     }
 
     fn media_description(
@@ -1573,6 +1585,13 @@ impl JsProviderRuntime {
             .map_err(js_error)?;
             ctx.globals()
                 .set("__sayitHostStoreRequestBody", store_request_body)
+                .map_err(js_error)?;
+            // 媒体分块直接以 Uint8Array 返回：经 JSON 数字数组中转时每字节都要建值、序列化再解析，
+            // 10 MiB 整文件读取在调试构建里要数秒，足以耗尽插件调用的截止时间。
+            let read_media_chunk = Function::new(ctx.clone(), sdk_media_chunk_reader(host.clone()))
+                .map_err(js_error)?;
+            ctx.globals()
+                .set("__sayitHostReadMediaChunk", read_media_chunk)
                 .map_err(js_error)?;
             ctx.eval::<(), _>(QUICKJS_RUNTIME_BOOTSTRAP)
                 .map_err(js_error)?;
