@@ -14,12 +14,7 @@ use std::sync::OnceLock;
 /// Windows 上默认启用原生悬浮球；`SAYIT_NATIVE_ORB=0` 回退 WebView。
 pub(crate) fn native_orb_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(windows)
-            && std::env::var("SAYIT_NATIVE_ORB")
-                .map(|value| value != "0")
-                .unwrap_or(true)
-    })
+    *ENABLED.get_or_init(|| super::native_common::native_window_enabled("SAYIT_NATIVE_ORB"))
 }
 
 pub(crate) fn native_orb_attach(app: &tauri::AppHandle) {
@@ -27,7 +22,9 @@ pub(crate) fn native_orb_attach(app: &tauri::AppHandle) {
     {
         let _ = imp::APP.set(app.clone());
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::attach(app);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = app;
 }
 
@@ -37,7 +34,11 @@ pub(crate) fn native_orb_started() -> bool {
     {
         imp::UI.get().is_some_and(Option::is_some)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        super::native_mac::orb::started()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
@@ -51,7 +52,9 @@ pub(crate) fn native_orb_configure(x: i32, y: i32, size: i32, opacity_percent: u
         imp::post(imp::Command::SetRect { x, y, size });
         imp::post(imp::Command::SetOpacity(f32::from(opacity_percent) / 100.0));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::configure(x, y, size, opacity_percent);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (x, y, size, opacity_percent);
 }
 
@@ -61,7 +64,9 @@ pub(crate) fn native_orb_set_rect(x: i32, y: i32, size: i32) {
         imp::set_last_rect(x, y, size);
         imp::post_if_started(imp::Command::SetRect { x, y, size });
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::set_rect(x, y, size);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (x, y, size);
 }
 
@@ -71,14 +76,18 @@ pub(crate) fn native_orb_move_to(x: i32, y: i32) {
         imp::move_last_rect(x, y);
         imp::post_if_started(imp::Command::MoveTo { x, y });
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::move_to(x, y);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (x, y);
 }
 
 pub(crate) fn native_orb_set_opacity(percent: u8) {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::SetOpacity(f32::from(percent) / 100.0));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::set_opacity(percent);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = percent;
 }
 
@@ -88,6 +97,8 @@ pub(crate) fn native_orb_show() {
         imp::VISIBLE.store(true, std::sync::atomic::Ordering::Release);
         imp::post_if_started(imp::Command::Show);
     }
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::show();
 }
 
 pub(crate) fn native_orb_hide() {
@@ -96,13 +107,17 @@ pub(crate) fn native_orb_hide() {
         imp::VISIBLE.store(false, std::sync::atomic::Ordering::Release);
         imp::post_if_started(imp::Command::Hide);
     }
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::hide();
 }
 
 /// 等价于 WebView 的 `set_ignore_cursor_events(!interactive)`。
 pub(crate) fn native_orb_set_interactive(interactive: bool) {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::SetInteractive(interactive));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::set_interactive(interactive);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = interactive;
 }
 
@@ -116,14 +131,18 @@ pub(crate) fn native_orb_set_state(phase: &str, transient: bool, can_submit: boo
             can_submit,
         });
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::set_state(phase, transient, can_submit);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (phase, transient, can_submit);
 }
 
 pub(crate) fn native_orb_set_waveform(level: f32, peaks: Vec<f32>) {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::SetWaveform { level, peaks });
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::orb::set_waveform(level, peaks);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (level, peaks);
 }
 
@@ -134,7 +153,11 @@ pub(crate) fn native_orb_rect() -> Option<(i32, i32, i32)> {
     {
         imp::last_rect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        super::native_mac::orb::rect()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         None
     }
@@ -145,7 +168,11 @@ pub(crate) fn native_orb_is_visible() -> bool {
     {
         imp::VISIBLE.load(std::sync::atomic::Ordering::Acquire)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        super::native_mac::orb::is_visible()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
@@ -158,7 +185,11 @@ pub(crate) fn native_orb_cursor_over() -> bool {
     {
         imp::cursor_over()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        super::native_mac::orb::cursor_over()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }

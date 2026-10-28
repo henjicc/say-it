@@ -8,19 +8,14 @@
 //! 分层窗口/D2D 渲染目标/DIB/命令队列/UI 线程等基础设施见 native_overlay.rs；
 //! 与原生胶囊之间的「当前谁拥有指示窗通道」路由见 indicator.rs。
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use sayit_overlay_core::subtitle::SubtitleConfig;
 use std::sync::OnceLock;
 
 /// Windows 上默认启用原生字幕条；`SAYIT_NATIVE_SUBTITLE=0` 回退 WebView。
 pub(crate) fn native_subtitle_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(windows)
-            && std::env::var("SAYIT_NATIVE_SUBTITLE")
-                .map(|value| value != "0")
-                .unwrap_or(true)
-    })
+    *ENABLED.get_or_init(|| super::native_common::native_window_enabled("SAYIT_NATIVE_SUBTITLE"))
 }
 
 pub(crate) fn native_subtitle_attach(app: &tauri::AppHandle) {
@@ -28,7 +23,9 @@ pub(crate) fn native_subtitle_attach(app: &tauri::AppHandle) {
     {
         let _ = imp::APP.set(app.clone());
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::attach(app);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = app;
 }
 
@@ -38,7 +35,11 @@ pub(crate) fn native_subtitle_set_config(config: serde_json::Value) {
     if let Ok(config) = serde_json::from_value::<SubtitleConfig>(config) {
         imp::post(imp::Command::SetConfig(Box::new(config)));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    if let Ok(config) = serde_json::from_value::<SubtitleConfig>(config) {
+        super::native_mac::subtitle::set_config(config);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = config;
 }
 
@@ -51,32 +52,54 @@ pub(crate) fn native_subtitle_set_layout(width: f64, height: f64, anchor: &str, 
         anchor: anchor.to_string(),
         offset_y: offset_y as f32,
     });
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::set_layout(width, height, anchor, offset_y);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (width, height, anchor, offset_y);
 }
 
 pub(crate) fn native_subtitle_show() {
     #[cfg(windows)]
     imp::post(imp::Command::Show);
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::show();
 }
 
 pub(crate) fn native_subtitle_hide() {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::Hide);
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::hide();
 }
 
 pub(crate) fn native_subtitle_set_text(text: String, fade: bool) {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::SetText { text, fade });
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::set_text(text, fade);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (text, fade);
 }
 
 pub(crate) fn native_subtitle_set_translation(text: String) {
     #[cfg(windows)]
     imp::post_if_started(imp::Command::SetTranslation(text));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    super::native_mac::subtitle::set_translation(text);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = text;
+}
+
+/// 字幕百分比字号、宽度与偏移的逻辑参考区；None 表示沿用主显示器测量。
+pub(crate) fn native_subtitle_reference_size() -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    {
+        super::native_mac::subtitle::reference_size()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 #[cfg(windows)]
