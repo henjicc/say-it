@@ -16,6 +16,8 @@ pub(crate) mod native_indicator;
 pub(crate) mod native_orb;
 #[cfg(windows)]
 pub(crate) mod native_overlay;
+#[cfg(all(test, windows))]
+mod native_snapshot;
 pub(crate) mod native_subtitle;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
