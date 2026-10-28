@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn font_resolution_and_uniform_layout() {
-        let _guard = crate::cg::CG_TEST_LOCK.lock().unwrap();
+        let _guard = crate::cg::cg_test_lock();
         let mut style = style();
         for family in ["PingFang SC", "Microsoft YaHei", "SayIt Missing Font"] {
             style.family = FontFamily::Named(family);
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn metrics_alignment_whitespace_and_empty_lines() {
-        let _guard = crate::cg::CG_TEST_LOCK.lock().unwrap();
+        let _guard = crate::cg::cg_test_lock();
         let text = CtText;
         let mut style = style();
         style.wrap = false;
