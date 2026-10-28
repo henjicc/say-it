@@ -1,5 +1,10 @@
 use std::time::Instant;
 
+/// 单位区间的三次 ease-out，沿用原生窗口的浮点运算顺序。
+pub fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
+
 /// 出场/退场过渡的时长。入场与 indicator.css 的 wrapIn（0.24s ease-out）一致。
 pub const TRANSITION_ENTER_MS: u64 = 240;
 pub const TRANSITION_EXIT_MS: u64 = 140;

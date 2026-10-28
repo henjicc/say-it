@@ -1,7 +1,9 @@
 //! 听写胶囊的快照场景。
 
 use super::{Driver, Session, Snapshots};
-use crate::desktop::native_indicator::snapshot_driver::{self as driver, Command, NativeState};
+use crate::desktop::native_win::indicator::snapshot_driver::{
+    self as driver, Command, NativeState,
+};
 
 const DRIVER: Driver = Driver {
     create_window: driver::create_window,
@@ -88,7 +90,9 @@ fn states(snaps: &mut Snapshots, dpi: u32) {
         send(&s, Command::ShowNotice(NOTICE_LONG.into()));
         s.advance(SETTLE_MS);
         s.shot("notice-two-lines");
-        s.fire_timer(driver::NOTICE_TIMER);
+        // 基准的通知定时器在触发后第 16ms 推进退场首帧（dt=0）；
+        // 截止时间模式在到期帧推进，采样保持相同的 54ms 退场进度。
+        s.advance(3500 - SETTLE_MS - 16);
         s.advance(70);
         s.shot("notice-expired-exit-70ms");
     }
