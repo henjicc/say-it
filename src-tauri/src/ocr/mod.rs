@@ -1,4 +1,4 @@
-//! OCR 共享数据结构与内置系统 OCR 引擎。
+//! OCR 共享数据结构与内置 OCR 引擎。
 //!
 //! 上提到顶层模块的原因：`providers`（OCR 能力工厂）与 `active_app_context`
 //! （场景感知截图流水线）都需要这些类型，而 `providers` 不应反向依赖上层
@@ -10,8 +10,6 @@ use serde::Serialize;
 pub(crate) mod macos;
 #[cfg(any(windows, target_os = "macos"))]
 pub(crate) mod ppocr;
-#[cfg(windows)]
-pub(crate) mod windows;
 
 /// 折叠所有空白为单个空格。OCR 行文本与窗口正文抽取共用这一套规则，
 /// 保证同一段文字在不同来源下可以按内容去重。

@@ -108,3 +108,21 @@ describe("插件常驻内存", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("常驻加载失败：文件 SHA256 不匹配");
   });
 });
+
+describe("被内置取代的模型包", () => {
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  afterEach(cleanup);
+
+  it("只提供卸载，不显示启用开关或下载操作", async () => {
+    cmd.mockResolvedValue(snapshot(plugin({
+      id: "official.ppocr-v6-tiny", name: "PP-OCRv6 Tiny 本地模型", version: "1.0.0", providerId: "local-ppocr",
+      models: ["local-ppocr-v6-tiny"], trust: "unsigned", enabled: false,
+      modelPack: { engine: "ppocr-mnn", state: "superseded", totalBytes: 3180668, readyBytes: 0, downloadable: false, keepLoaded: false },
+    })));
+    render(<PluginManagerPanel />);
+    expect(await screen.findByText("已内置，可卸载")).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "下载模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "卸载PP-OCRv6 Tiny 本地模型" })).toBeInTheDocument();
+  });
+});

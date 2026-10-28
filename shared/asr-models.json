@@ -253,5 +253,17 @@
     "scenes": ["dictationFile", "transcription"],
     "isDefaultRealtime": false,
     "isDefaultFile": false
+  },
+  {
+    "id": "local-ppocr-v6-tiny",
+    "label": "PP-OCRv6 Tiny（内置）",
+    "providerId": "local-ppocr",
+    "category": "ocr",
+    "protocol": "local-ppocr-mnn",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "scenes": ["activeAppContext"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
   }
 ]

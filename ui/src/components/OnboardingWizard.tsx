@@ -357,7 +357,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
 
           {step === 2 && <>
             <div>
-              <h2 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content="离线使用需要另行下载安装 .sayit 模型包，也可以稍后安装。">需要离线使用？</HelpLabel></h2>
+              <h2 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content="离线语音识别需要另行下载安装 .sayit 模型包，也可以稍后安装。窗口 OCR 已内置，无需下载。">需要离线使用？</HelpLabel></h2>
             </div>
             <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)]">
               {[

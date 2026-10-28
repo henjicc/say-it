@@ -6,7 +6,7 @@ import {
   isSupportedDictationModel,
 } from "@/features/asr/modelOptions";
 import { ocrOptionsForScene } from "@/features/asr/modelRegistry";
-import { isMacOS, systemOcrLabel } from "@/lib/platform";
+import { isMacOS, defaultOcrOption, defaultOcrModelId } from "@/lib/platform";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -71,7 +71,7 @@ function availableOcrOptions() {
   try {
     return ocrOptionsForScene("activeAppContext");
   } catch {
-    return [{ value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false }];
+    return [defaultOcrOption];
   }
 }
 
@@ -551,7 +551,7 @@ function defaults(): DictPrefs {
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
     activeAppContextExtractionMethod: normalizeExtractionMethod(undefined),
     activeAppContextOcrEngine: "system",
-    activeAppContextOcrModel: "system-ocr",
+    activeAppContextOcrModel: defaultOcrModelId,
     activeAppContextOcrApprovedProviders: [],
     activeAppContextOcrFollowSmartProcessingMinChars: true,
     activeAppContextBlockedApps: [],
@@ -638,8 +638,8 @@ function readStored(): DictPrefs {
     || !ocrOptions.some((option) => option.value === base.activeAppContextOcrModel)
   ) {
     base.activeAppContextOcrModel = base.activeAppContextOcrEngine === "ppocr"
-      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
-      : "system-ocr";
+      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || defaultOcrModelId
+      : defaultOcrModelId;
   }
   base.activeAppContextOcrApprovedProviders = Array.from(new Set(
     (Array.isArray(base.activeAppContextOcrApprovedProviders)
@@ -769,8 +769,8 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     || !ocrOptions.some((option) => option.value === next.activeAppContextOcrModel)
   ) {
     next.activeAppContextOcrModel = next.activeAppContextOcrEngine === "ppocr"
-      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
-      : "system-ocr";
+      ? ocrOptions.find((option) => option.value === "local-ppocr-v6-tiny")?.value || defaultOcrModelId
+      : defaultOcrModelId;
   }
   next.activeAppContextOcrApprovedProviders = Array.from(new Set(
     (Array.isArray(next.activeAppContextOcrApprovedProviders)

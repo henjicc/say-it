@@ -1,11 +1,76 @@
 use image::DynamicImage;
 use ocr_rs::{DetOptions, MemoryMode, OcrEngine, OcrEngineConfig};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::{normalize_text, NormalizedRegion, OcrTextBlock};
-use crate::providers::plugin::{LocalModelSpec, ModelPackManifest};
+static MODEL_ROOT: OnceLock<PathBuf> = OnceLock::new();
+const MODEL_FILES: &[(&str, u64, &str)] = &[
+    (
+        "PP-OCRv6_tiny_det.mnn",
+        901_896,
+        "7fab7b858f136bc93a760bdca66aaf25f0ff10accabb31e6ef853a897fb9cfec",
+    ),
+    (
+        "PP-OCRv6_tiny_rec.mnn",
+        2_251_616,
+        "0a43c3c979a98b905f5e84913209998f510189419b5a5d4152bbb01ce8d17a93",
+    ),
+    (
+        "ppocr_keys_v6_tiny.txt",
+        27_156,
+        "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
+    ),
+];
+
+pub(crate) fn configure_resources(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let root = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("定位内置 PP-OCR 资源失败：{error}"))?
+        .join("resources/ocr");
+    MODEL_ROOT
+        .set(root)
+        .map_err(|_| "内置 PP-OCR 资源目录已配置".to_string())
+}
+
+fn model_root() -> Result<PathBuf, String> {
+    select_model_root(MODEL_ROOT.get().map(PathBuf::as_path), cfg!(test))
+}
+
+fn select_model_root(configured: Option<&Path>, test_fallback: bool) -> Result<PathBuf, String> {
+    if let Some(root) = configured {
+        return Ok(root.to_path_buf());
+    }
+    // cargo test 不运行 Tauri setup，只允许测试回落到仓库资源。
+    if test_fallback {
+        return Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/ocr"));
+    }
+    Err("内置 PP-OCR 资源目录尚未初始化".into())
+}
+
+fn verify_models(root: &Path) -> Result<(), String> {
+    for &(name, size, sha256) in MODEL_FILES {
+        let path = root.join(name);
+        let bytes = std::fs::read(&path).map_err(|error| {
+            format!(
+                "内置 PP-OCR 文件缺失或无法读取：{}：{error}；请重新安装应用",
+                path.display()
+            )
+        })?;
+        if bytes.len() as u64 != size || format!("{:x}", Sha256::digest(&bytes)) != sha256 {
+            return Err(format!(
+                "内置 PP-OCR 文件完整性校验失败：{}；请重新安装应用",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
 pub(crate) const DET_MAX_SIDE_LEN: u32 = 960;
 const MAX_BLOCKS: usize = 120;
@@ -17,43 +82,16 @@ pub(crate) struct EngineState {
     pub(crate) init_ms: u64,
 }
 
-fn model_param_path(spec: &LocalModelSpec, key: &str) -> Result<PathBuf, String> {
-    let relative = spec
-        .params
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("PP-OCR 模型包参数缺少 {key}"))?;
-    let file = spec
-        .files
-        .iter()
-        .find(|file| file.path == relative)
-        .ok_or_else(|| format!("PP-OCR 模型包参数 {key} 指向未声明文件：{relative}"))?;
-    let path = spec
-        .model_dir
-        .join(crate::providers::plugin::safe_model_file_path(relative)?);
-    crate::providers::model_download::verify_model_file(&path, file)?;
-    Ok(path)
+pub(crate) fn build_engine() -> Result<EngineState, String> {
+    build_engine_at(&model_root()?)
 }
 
-pub(crate) fn build_engine(spec: &LocalModelSpec) -> Result<EngineState, String> {
-    if spec.engine != "ppocr-mnn" {
-        return Err(format!("模型引擎 {} 不能用于 PP-OCR", spec.engine));
-    }
-    crate::providers::model_download::verify_pack(
-        &spec.model_dir,
-        &ModelPackManifest {
-            engine: spec.engine.clone(),
-            files: spec.files.clone(),
-            params: spec.params.clone(),
-        },
-    )
-    .map_err(|error| format!("PP-OCR 模型尚未就绪，请先在插件管理安装模型包：{error}"))?;
-
+fn build_engine_at(root: &Path) -> Result<EngineState, String> {
     let started = Instant::now();
-    crate::development_debug_log("ppocr", "PP-OCR 模型加载：校验并加载本地模型");
-    let det = model_param_path(spec, "detModel")?;
-    let rec = model_param_path(spec, "recModel")?;
-    let charset = model_param_path(spec, "charset")?;
+    verify_models(root)?;
+    let det = root.join(MODEL_FILES[0].0);
+    let rec = root.join(MODEL_FILES[1].0);
+    let charset = root.join(MODEL_FILES[2].0);
     let config = OcrEngineConfig::new()
         .with_threads(3)
         .with_memory_mode(MemoryMode::Collect)
@@ -125,73 +163,77 @@ fn finalize_blocks(mut blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
     blocks
 }
 
-pub(crate) fn recognize_png(
-    spec: &LocalModelSpec,
-    image_png: &[u8],
-) -> Result<Vec<OcrTextBlock>, String> {
+pub(crate) fn recognize_png(image_png: &[u8]) -> Result<Vec<OcrTextBlock>, String> {
     let image = image::load_from_memory(image_png)
         .map_err(|error| format!("解码 PP-OCR 图像失败：{error}"))?;
-    let engine = build_engine(spec)?;
+    let engine = build_engine()?;
     recognize_full_window(&engine.engine, &image).map(finalize_blocks)
 }
 
 #[cfg(test)]
-pub(crate) fn bundled_test_model_spec() -> LocalModelSpec {
-    let file = |path: &str, sha256: &str, size_bytes: u64| {
-        crate::providers::plugin::ModelPackFileManifest {
-            path: path.into(),
-            sha256: sha256.into(),
-            size_bytes,
-            download: None,
-        }
-    };
-    LocalModelSpec {
-        manifest_version: "1.0.0".into(),
-        plugin_id: "test.ppocr".into(),
-        provider_id: "local-ppocr".into(),
-        engine: "ppocr-mnn".into(),
-        model_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("ocr"),
-        files: vec![
-            file(
-                "PP-OCRv6_tiny_det.mnn",
-                "7fab7b858f136bc93a760bdca66aaf25f0ff10accabb31e6ef853a897fb9cfec",
-                901_896,
-            ),
-            file(
-                "PP-OCRv6_tiny_rec.mnn",
-                "0a43c3c979a98b905f5e84913209998f510189419b5a5d4152bbb01ce8d17a93",
-                2_251_616,
-            ),
-            file(
-                "ppocr_keys_v6_tiny.txt",
-                "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
-                27_156,
-            ),
-        ],
-        params: serde_json::json!({
-            "detModel": "PP-OCRv6_tiny_det.mnn",
-            "recModel": "PP-OCRv6_tiny_rec.mnn",
-            "charset": "ppocr_keys_v6_tiny.txt"
-        }),
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
     #[test]
-    fn macos_mnn_recognizes_packaged_fixture() {
-        let blocks = recognize_png(
-            &bundled_test_model_spec(),
-            include_bytes!("../../tests/fixtures/ocr-window.png"),
-        )
-        .expect("macOS PP-OCR should recognize fixture");
+    fn configured_resources_take_priority_even_without_source_or_files() {
+        let root = std::env::temp_dir()
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("resources/ocr");
+        assert!(!root.exists());
+        for test_fallback in [false, true] {
+            assert_eq!(
+                select_model_root(Some(&root), test_fallback).unwrap(),
+                root
+            );
+        }
+    }
+
+    #[test]
+    fn only_tests_can_resolve_resources_without_tauri_setup() {
+        assert!(select_model_root(None, false)
+            .unwrap_err()
+            .contains("尚未初始化"));
+        assert_eq!(
+            select_model_root(None, true).unwrap(),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/ocr")
+        );
+    }
+
+    #[test]
+    fn builtin_resources_match_compiled_checksums_and_recognize_fixture() {
+        let root = model_root().unwrap();
+        verify_models(&root).unwrap();
+        let blocks = recognize_png(include_bytes!("../../tests/fixtures/ocr-window.png")).unwrap();
         assert!(blocks.iter().any(|block| {
             let text = block.text.to_lowercase();
             text.contains("ocr") || text.contains("tauri") || text.contains("测试")
         }));
+    }
+
+    #[test]
+    fn builtin_resources_reject_missing_and_tampered_files() {
+        let root = std::env::temp_dir().join(format!("sayit-builtin-ocr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(build_engine_at(&root).err().unwrap().contains("文件缺失"));
+        let source = model_root().unwrap();
+        for &(name, _, _) in MODEL_FILES {
+            std::fs::copy(source.join(name), root.join(name)).unwrap();
+        }
+        verify_models(&root).unwrap();
+        let path = root.join(MODEL_FILES[0].0);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(build_engine_at(&root)
+            .err()
+            .unwrap()
+            .contains("完整性校验失败"));
+        bytes.pop();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(build_engine_at(&root)
+            .err()
+            .unwrap()
+            .contains("完整性校验失败"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -52,6 +52,25 @@ const PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID: &str = "openai/gpt-oss-20b";
 /// 旧默认模型的一次性迁移标记，写在 Groq 供应商配置里。
 const GROQ_DEFAULT_MODEL_MIGRATED_KEY: &str = "groqDefaultModelMigrated";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
+pub const PPOCR_PROVIDER_ID: &str = "local-ppocr";
+pub const PPOCR_MODEL_ID: &str = "local-ppocr-v6-tiny";
+pub const LEGACY_PPOCR_PACK_ID: &str = "official.ppocr-v6-tiny";
+
+pub const fn default_ocr_provider_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        SYSTEM_OCR_PROVIDER_ID
+    } else {
+        PPOCR_PROVIDER_ID
+    }
+}
+
+pub const fn default_ocr_model_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        SYSTEM_OCR_PROVIDER_ID
+    } else {
+        PPOCR_MODEL_ID
+    }
+}
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -153,7 +172,7 @@ pub struct ProviderDefaults {
     pub llm: String,
     #[serde(default)]
     pub translation: String,
-    /// OCR 能力默认供应商；空串表示未设置，normalize 后落到内置系统 OCR。旧 JSON 靠 `#[serde(default)]` 兼容。
+    /// OCR 能力默认供应商；空串表示未设置，normalize 后落到当前平台默认 OCR。旧 JSON 靠 `#[serde(default)]` 兼容。
     #[serde(default)]
     pub ocr: String,
 }
@@ -173,7 +192,7 @@ impl Default for ProviderSettings {
                 asr: BAILIAN_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
                 translation: BAILIAN_PROVIDER_ID.to_string(),
-                ocr: SYSTEM_OCR_PROVIDER_ID.to_string(),
+                ocr: default_ocr_provider_id().to_string(),
             },
         }
     }
@@ -437,31 +456,35 @@ pub fn groq_llm_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn system_ocr_display_name() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macOS 系统 OCR"
-    } else {
-        "Windows 系统 OCR"
-    }
+    "macOS 系统 OCR"
 }
 
-fn system_ocr_kind() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "builtin-macos-vision-ocr"
-    } else {
-        "builtin-windows-ocr"
-    }
-}
-
-/// 内置系统 OCR：Windows 使用 WinRT，macOS 使用 Vision，无用户配置项。
+#[cfg(target_os = "macos")]
 pub fn system_ocr_profile() -> ProviderProfile {
     ProviderProfile {
         keep_loaded: false,
-        id: SYSTEM_OCR_PROVIDER_ID.to_string(),
-        kind: system_ocr_kind().to_string(),
-        display_name: system_ocr_display_name().to_string(),
-        auth_kind: "none".to_string(),
-        capabilities: vec!["ocr".to_string()],
+        id: SYSTEM_OCR_PROVIDER_ID.into(),
+        kind: "builtin-macos-vision-ocr".into(),
+        display_name: system_ocr_display_name().into(),
+        auth_kind: "none".into(),
+        capabilities: vec!["ocr".into()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
+pub fn ppocr_profile() -> ProviderProfile {
+    ProviderProfile {
+        keep_loaded: false,
+        id: PPOCR_PROVIDER_ID.into(),
+        kind: "builtin-ppocr".into(),
+        display_name: "内置 PP-OCRv6 Tiny".into(),
+        auth_kind: "none".into(),
+        capabilities: vec!["ocr".into()],
         enabled: true,
         config: json!({}),
         config_fields: vec![],
@@ -501,7 +524,9 @@ pub fn builtin_profiles() -> Vec<ProviderProfile> {
         volcengine_profile(),
         siliconflow_profile(),
         groq_llm_profile(),
+        #[cfg(target_os = "macos")]
         system_ocr_profile(),
+        ppocr_profile(),
         apple_speech_profile(),
     ]
 }
@@ -623,6 +648,18 @@ fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
 }
 
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
+    #[cfg(windows)]
+    {
+        settings.profiles.retain(|profile| {
+            profile.id != SYSTEM_OCR_PROVIDER_ID && profile.kind != "builtin-windows-ocr"
+        });
+        if matches!(
+            settings.defaults.ocr.as_str(),
+            "system-ocr" | "system" | "builtin-windows-ocr"
+        ) {
+            settings.defaults.ocr = PPOCR_PROVIDER_ID.into();
+        }
+    }
     let migrate_legacy_llm_default =
         settings.defaults.llm.is_empty() || settings.defaults.llm == BAILIAN_PROVIDER_ID;
     for builtin in builtin_profiles() {
@@ -668,6 +705,9 @@ fn valid_or_fallback(settings: &ProviderSettings, provider_id: &str, capability:
 }
 
 fn fallback_provider_for(settings: &ProviderSettings, capability: &str) -> String {
+    if capability == "ocr" && has_capability(settings, default_ocr_provider_id(), capability) {
+        return default_ocr_provider_id().into();
+    }
     if capability == "llm" && has_capability(settings, GROQ_LLM_PROVIDER_ID, capability) {
         return GROQ_LLM_PROVIDER_ID.to_string();
     }
@@ -741,15 +781,35 @@ mod tests {
     }"#;
 
     #[test]
-    fn system_ocr_profile_matches_current_platform() {
-        let profile = system_ocr_profile();
-        if cfg!(target_os = "macos") {
-            assert_eq!(profile.display_name, "macOS 系统 OCR");
-            assert_eq!(profile.kind, "builtin-macos-vision-ocr");
-        } else {
-            assert_eq!(profile.display_name, "Windows 系统 OCR");
-            assert_eq!(profile.kind, "builtin-windows-ocr");
-        }
+    fn builtin_ocr_profiles_match_current_platform() {
+        let settings = normalize_settings(ProviderSettings::default());
+        assert!(has_capability(&settings, PPOCR_PROVIDER_ID, "ocr"));
+        assert_eq!(
+            has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(settings.defaults.ocr, default_ocr_provider_id());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_legacy_system_provider_migrates_to_builtin_ppocr() {
+        let mut settings = ProviderSettings::default();
+        let mut old = ppocr_profile();
+        old.id = SYSTEM_OCR_PROVIDER_ID.into();
+        old.kind = "builtin-windows-ocr".into();
+        settings.profiles.push(old);
+        settings.defaults.ocr = SYSTEM_OCR_PROVIDER_ID.into();
+        let normalized = normalize_settings(settings);
+        assert_eq!(normalized.defaults.ocr, PPOCR_PROVIDER_ID);
+        assert!(!normalized
+            .profiles
+            .iter()
+            .any(|profile| profile.id == SYSTEM_OCR_PROVIDER_ID));
+        assert_eq!(
+            normalize_settings(normalized).defaults.ocr,
+            PPOCR_PROVIDER_ID
+        );
     }
 
     #[test]
@@ -781,8 +841,8 @@ mod tests {
         assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
-        // 旧 JSON 没有 ocr 默认值：normalize 后自动落到内置系统 OCR。
-        assert_eq!(normalized.defaults.ocr, SYSTEM_OCR_PROVIDER_ID);
+        // 旧 JSON 没有 ocr 默认值：normalize 后自动落到当前平台默认 OCR。
+        assert_eq!(normalized.defaults.ocr, default_ocr_provider_id());
     }
 
     #[test]
@@ -828,9 +888,9 @@ mod tests {
         let mut settings = normalize_settings(ProviderSettings::default());
         assert_eq!(
             default_provider_id(&settings, "ocr"),
-            SYSTEM_OCR_PROVIDER_ID
+            default_ocr_provider_id()
         );
-        assert!(has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"));
+        assert!(has_capability(&settings, default_ocr_provider_id(), "ocr"));
 
         settings.profiles.push(ProviderProfile {
             keep_loaded: false,

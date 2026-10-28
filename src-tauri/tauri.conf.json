@@ -34,7 +34,8 @@
       }
     ],
     "resources": [
-      "resources/licenses/*"
+      "resources/licenses/*",
+      "resources/ocr/*"
     ]
   }
 }
