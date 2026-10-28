@@ -112,8 +112,8 @@ pub(crate) fn native_indicator_notice(text: String) {
 #[cfg(windows)]
 mod imp {
     use super::super::native_overlay::{
-        create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba, window_dpi,
-        LayeredSurface, OverlayThread, Transition,
+        create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
+        system_dpi, window_dpi, LayeredSurface, OverlayThread, Transition,
     };
     use super::{
         resample_wave_levels, wave_scale, WAVE_BAR_COUNT, WAVE_BAR_HEIGHTS, WAVE_BAR_MIN_SCALE,
@@ -121,7 +121,9 @@ mod imp {
     use std::sync::OnceLock;
     use std::time::Instant;
     use windows::core::w;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    };
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
     use windows::Win32::Graphics::Direct2D::{
         ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
@@ -135,7 +137,6 @@ mod imp {
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, KillTimer, RegisterClassW, SetTimer,
         SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_USERDATA, HWND_TOPMOST, SWP_NOACTIVATE,
@@ -197,7 +198,7 @@ mod imp {
     const LOG_TAG: &str = "native-indicator";
 
 
-    pub(super) enum Command {
+    pub(crate) enum Command {
         Prepare,
         SetState(NativeState),
         SetText { text: String, fade: bool },
@@ -208,7 +209,7 @@ mod imp {
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(super) enum NativeState {
+    pub(crate) enum NativeState {
         Recording,
         Processing,
         SmartProcessing,
@@ -323,7 +324,7 @@ mod imp {
                     if target_color != self.view.dot_color_target {
                         self.view.dot_color_from = self.view.dot_color_now();
                         self.view.dot_color_target = target_color;
-                        self.view.dot_blend_start = Some(Instant::now());
+                        self.view.dot_blend_start = Some(overlay_now());
                     }
                     self.view.state = Some(state);
                     // fallback 面板替代文本区与胶囊，与 WebView 行为一致。
@@ -367,9 +368,8 @@ mod imp {
                         text.chars().count().saturating_sub(fresh_from)
                     };
                     self.view.fresh_from = fresh_from;
-                    self.view.fresh_started = (fresh_len > 0
-                        && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS)
-                    .then(Instant::now);
+                    self.view.fresh_started =
+                        (fresh_len > 0 && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS).then(overlay_now);
                     self.view.text = text;
                     self.sync_timer();
                     if self.view.state.is_some() {
@@ -494,16 +494,14 @@ mod imp {
             for (display, target) in self.wave_display.iter_mut().zip(target) {
                 *display += (target - *display) * k;
             }
-            if self
-                .fresh_started
-                .is_some_and(|start| start.elapsed().as_secs_f32() >= TEXT_FRESH_FADE_S)
-            {
+            if self.fresh_started.is_some_and(|start| {
+                overlay_now().saturating_duration_since(start).as_secs_f32() >= TEXT_FRESH_FADE_S
+            }) {
                 self.fresh_started = None;
             }
-            if self
-                .dot_blend_start
-                .is_some_and(|start| start.elapsed().as_secs_f32() >= DOT_BLEND_S)
-            {
+            if self.dot_blend_start.is_some_and(|start| {
+                overlay_now().saturating_duration_since(start).as_secs_f32() >= DOT_BLEND_S
+            }) {
                 self.dot_blend_start = None;
             }
         }
@@ -513,7 +511,8 @@ mod imp {
             let Some(start) = self.dot_blend_start else {
                 return self.dot_color_target;
             };
-            let t = (start.elapsed().as_secs_f32() / DOT_BLEND_S).clamp(0.0, 1.0);
+            let elapsed = overlay_now().saturating_duration_since(start).as_secs_f32();
+            let t = (elapsed / DOT_BLEND_S).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3);
             let from = self.dot_color_from;
             let to = self.dot_color_target;
@@ -544,7 +543,8 @@ mod imp {
         fn fresh_alpha(&self) -> f32 {
             self.fresh_started
                 .map(|start| {
-                    let t = (start.elapsed().as_secs_f32() / TEXT_FRESH_FADE_S).min(1.0);
+                    let elapsed = overlay_now().saturating_duration_since(start).as_secs_f32();
+                    let t = (elapsed / TEXT_FRESH_FADE_S).min(1.0);
                     1.0 - (1.0 - t).powi(3)
                 })
                 .unwrap_or(1.0)
@@ -1021,7 +1021,7 @@ mod imp {
                     return LRESULT(0);
                 }
                 with_state(hwnd, |state| {
-                    let now = Instant::now();
+                    let now = overlay_now();
                     let dt = state
                         .last_frame
                         .replace(now)
@@ -1082,7 +1082,8 @@ mod imp {
                 lpszClassName: class_name,
                 ..Default::default()
             };
-            if RegisterClassW(&class) == 0 {
+            // 同一进程内第二次建窗（测试会反复建窗）时类已存在，沿用即可。
+            if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 eprintln!("[native-indicator] 注册窗口类失败");
                 return None;
             }
@@ -1108,7 +1109,7 @@ mod imp {
                 (Ok(body), Ok(label), Ok(fallback)) => (body, label, fallback),
                 _ => return None,
             };
-            let dpi = GetDpiForSystem();
+            let dpi = system_dpi();
             let (x, y, width, height) = placement(dpi);
             let hwnd = match CreateWindowExW(
                 WS_EX_LAYERED
@@ -1166,7 +1167,43 @@ mod imp {
             Some(hwnd)
         }
     }
+
+    /// 像素快照的驱动入口：建窗、投命令、读帧定时器与截取，场景在 `native_snapshot`。
+    #[cfg(test)]
+    pub(crate) mod snapshot_driver {
+        use super::{with_state, NOTICE_TIMER_ID, WAVE_TIMER_ID};
+        use crate::desktop::native_overlay::test_seams::Capture;
+        use windows::Win32::Foundation::HWND;
+
+        pub(crate) use super::{Command, NativeState};
+
+        pub(crate) const FRAME_TIMER: usize = WAVE_TIMER_ID;
+        pub(crate) const NOTICE_TIMER: usize = NOTICE_TIMER_ID;
+
+        pub(crate) fn create_window() -> HWND {
+            super::create_window().expect("创建原生听写指示器窗口失败")
+        }
+
+        pub(crate) fn apply(hwnd: HWND, command: Command) {
+            with_state(hwnd, |state| state.apply(command));
+        }
+
+        pub(crate) fn frame_timer_active(hwnd: HWND) -> bool {
+            let mut active = false;
+            with_state(hwnd, |state| active = state.timer_active);
+            active
+        }
+
+        pub(crate) fn capture(hwnd: HWND) -> Option<Capture> {
+            let mut capture = None;
+            with_state(hwnd, |state| capture = state.surface.capture());
+            capture
+        }
+    }
 }
+
+#[cfg(all(test, windows))]
+pub(crate) use imp::snapshot_driver;
 
 #[cfg(test)]
 mod tests {

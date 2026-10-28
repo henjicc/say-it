@@ -262,8 +262,8 @@ mod imp {
         ORB_WAVE_BAR_MIN_SCALE,
     };
     use super::super::native_overlay::{
-        create_d2d_factory, create_dwrite_factory, create_text_format, rect_f, rgba,
-        svg_path_geometry, window_dpi, LayeredSurface, OverlayThread, Transition,
+        create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
+        svg_path_geometry, system_dpi, window_dpi, LayeredSurface, OverlayThread, Transition,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
@@ -271,7 +271,9 @@ mod imp {
     use windows::core::w;
     use windows::Foundation::Numerics::Matrix3x2;
     use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    };
     use windows::Win32::Graphics::Direct2D::Common::{
         D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN, D2D_POINT_2F, D2D_SIZE_F,
     };
@@ -284,7 +286,6 @@ mod imp {
         IDWriteFactory, IDWriteTextFormat, DWRITE_MEASURING_MODE_NATURAL,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
     };
@@ -348,7 +349,7 @@ mod imp {
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(super) enum OrbPhase {
+    pub(crate) enum OrbPhase {
         Idle,
         Armed,
         Moving,
@@ -414,7 +415,7 @@ mod imp {
         }
     }
 
-    pub(super) enum Command {
+    pub(crate) enum Command {
         SetRect { x: i32, y: i32, size: i32 },
         MoveTo { x: i32, y: i32 },
         SetOpacity(f32),
@@ -793,7 +794,7 @@ mod imp {
             if desired != self.style_target {
                 self.style_from = self.blended_style();
                 self.style_target = desired;
-                self.style_blend_start = Some(Instant::now());
+                self.style_blend_start = Some(overlay_now());
             }
             self.blended_style()
         }
@@ -802,14 +803,16 @@ mod imp {
             let Some(start) = self.style_blend_start else {
                 return self.style_target;
             };
-            let t = (start.elapsed().as_secs_f32() / STYLE_BLEND_S).clamp(0.0, 1.0);
+            let elapsed = overlay_now().saturating_duration_since(start).as_secs_f32();
+            let t = (elapsed / STYLE_BLEND_S).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3);
             self.style_from.lerp(self.style_target, eased)
         }
 
         fn style_blending(&self) -> bool {
-            self.style_blend_start
-                .is_some_and(|start| start.elapsed().as_secs_f32() < STYLE_BLEND_S)
+            self.style_blend_start.is_some_and(|start| {
+                overlay_now().saturating_duration_since(start).as_secs_f32() < STYLE_BLEND_S
+            })
         }
 
         /// 每帧推进：波形柱平滑 + 颜色过渡收尾。
@@ -1302,7 +1305,7 @@ mod imp {
         match message {
             WM_TIMER => {
                 with_state(hwnd, |state| {
-                    let now = Instant::now();
+                    let now = overlay_now();
                     let dt = state
                         .last_frame
                         .replace(now)
@@ -1491,7 +1494,8 @@ mod imp {
                 lpszClassName: class_name,
                 ..Default::default()
             };
-            if RegisterClassW(&class) == 0 {
+            // 同一进程内第二次建窗（测试会反复建窗）时类已存在，沿用即可。
+            if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 eprintln!("[native-orb] 注册窗口类失败");
                 return None;
             }
@@ -1509,7 +1513,7 @@ mod imp {
                     return None;
                 }
             };
-            let dpi = GetDpiForSystem();
+            let dpi = system_dpi();
             // 不加 WS_EX_TRANSPARENT：悬浮球要接收点击；点击穿透按相位动态切换。
             let hwnd = match CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -1567,7 +1571,42 @@ mod imp {
             Some(hwnd)
         }
     }
+
+    /// 像素快照的驱动入口：建窗、投命令、读帧定时器与截取，场景在 `native_snapshot`。
+    #[cfg(test)]
+    pub(crate) mod snapshot_driver {
+        use super::{with_state, TIMER_ID};
+        use crate::desktop::native_overlay::test_seams::Capture;
+        use windows::Win32::Foundation::HWND;
+
+        pub(crate) use super::{Command, OrbPhase};
+
+        pub(crate) const FRAME_TIMER: usize = TIMER_ID;
+
+        pub(crate) fn create_window() -> HWND {
+            super::create_window().expect("创建原生悬浮球窗口失败")
+        }
+
+        pub(crate) fn apply(hwnd: HWND, command: Command) {
+            with_state(hwnd, |state| state.apply(command));
+        }
+
+        pub(crate) fn frame_timer_active(hwnd: HWND) -> bool {
+            with_state(hwnd, |state| state.timer_active).unwrap_or(false)
+        }
+
+        pub(crate) fn hovering(hwnd: HWND) -> bool {
+            with_state(hwnd, |state| state.view.hovering).unwrap_or(false)
+        }
+
+        pub(crate) fn capture(hwnd: HWND) -> Option<Capture> {
+            with_state(hwnd, |state| state.surface.capture()).flatten()
+        }
+    }
 }
+
+#[cfg(all(test, windows))]
+pub(crate) use imp::snapshot_driver;
 
 #[cfg(test)]
 mod tests {
