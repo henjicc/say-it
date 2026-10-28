@@ -164,6 +164,9 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
         // 原生指示器接管听写展示；残留的错误态 WebView 窗口要一并收掉，
         // 否则上一轮的错误面板会盖在新一轮原生指示器旁边。
         hide_webview_indicator_if_present(app);
+        crate::desktop::native_common::native_overlay_set_look(
+            crate::desktop::floating_orb::native_look(app),
+        );
         crate::desktop::native_indicator_prepare();
         return Ok(());
     }
@@ -409,12 +412,15 @@ pub(crate) fn show_dictation_indicator_notice(
 ) -> Result<(), String> {
     if crate::desktop::native_dictation_indicator_enabled() {
         hide_webview_indicator_if_present(app);
+        crate::desktop::native_common::native_overlay_set_look(
+            crate::desktop::floating_orb::native_look(app),
+        );
         crate::desktop::native_indicator_prepare();
         crate::desktop::native_indicator_notice(message);
         hotkey::set_dictation_active(false);
         return Ok(());
     }
-    // macOS 等仍走 WebView 错误面板。
+    // 原生指示器关闭时走 WebView 错误面板。
     show_dictation_indicator_error(app, message, false)
 }
 
@@ -442,6 +448,9 @@ pub(crate) fn show_dictation_indicator_clipboard_fallback(
 ) -> Result<(), String> {
     if crate::desktop::native_dictation_indicator_enabled() {
         hide_webview_indicator_if_present(app);
+        crate::desktop::native_common::native_overlay_set_look(
+            crate::desktop::floating_orb::native_look(app),
+        );
         crate::desktop::native_indicator_prepare();
         crate::desktop::native_indicator_set_state("fallback");
         hotkey::set_dictation_active(false);
