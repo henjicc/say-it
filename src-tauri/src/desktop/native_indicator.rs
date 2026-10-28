@@ -73,7 +73,7 @@ pub(crate) fn native_indicator_notice(text: String) {
 
 #[cfg(windows)]
 mod imp {
-    use super::super::native_overlay::{
+    use super::super::native_win::{
         create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
         system_dpi, window_dpi, LayeredSurface, OverlayThread,
     };
@@ -1137,7 +1137,7 @@ mod imp {
     #[cfg(test)]
     pub(crate) mod snapshot_driver {
         use super::{with_state, NOTICE_TIMER_ID, WAVE_TIMER_ID};
-        use crate::desktop::native_overlay::test_seams::Capture;
+        use crate::desktop::native_win::test_seams::Capture;
         use windows::Win32::Foundation::HWND;
 
         pub(crate) use super::{Command, NativeState};

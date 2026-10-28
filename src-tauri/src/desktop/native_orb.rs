@@ -197,7 +197,7 @@ pub(crate) fn native_orb_cursor_over() -> bool {
 
 #[cfg(windows)]
 mod imp {
-    use super::super::native_overlay::{
+    use super::super::native_win::{
         create_d2d_factory, create_dwrite_factory, create_text_format, overlay_now, rect_f, rgba,
         svg_path_geometry, system_dpi, window_dpi, LayeredSurface, OverlayThread,
     };
@@ -1541,7 +1541,7 @@ mod imp {
     #[cfg(test)]
     pub(crate) mod snapshot_driver {
         use super::{with_state, TIMER_ID};
-        use crate::desktop::native_overlay::test_seams::Capture;
+        use crate::desktop::native_win::test_seams::Capture;
         use windows::Win32::Foundation::HWND;
 
         pub(crate) use super::{Command, OrbPhase};
