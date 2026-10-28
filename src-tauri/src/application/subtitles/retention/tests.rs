@@ -147,6 +147,7 @@ fn clipping_preserves_whitespace_and_character_boundaries() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "独立字幕长会话测量；不调用设备或服务"]
 fn long_session_profile() {
