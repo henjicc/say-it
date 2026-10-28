@@ -1,0 +1,101 @@
+{
+  "manifest": {
+    "apiVersion": 5,
+    "id": "official.sherpa-funasr-nano-ctc",
+    "name": "Fun-ASR-Nano CTC INT8",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-funasr-nano",
+      "displayName": "本地 Fun-ASR",
+      "authKind": "none",
+      "capabilities": ["asr"],
+      "config": {}
+    },
+    "source": { "namespace": "official.sherpa-funasr-nano-ctc" },
+    "capabilities": [],
+    "models": [
+      {
+        "id": "local-funasr-nano-sentence-int8",
+        "label": "Fun-ASR-Nano CTC 整句 INT8（无标点）",
+        "providerId": "local-funasr-nano",
+        "category": "realtime",
+        "protocol": "local-sherpa-offline",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": false,
+        "emitsPartialResults": false,
+        "scenes": ["dictationRealtime", "subtitles"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      },
+      {
+        "id": "local-funasr-nano-file-int8",
+        "label": "Fun-ASR-Nano CTC 文件识别 INT8（无标点）",
+        "providerId": "local-funasr-nano",
+        "category": "file",
+        "protocol": "local-sherpa-offline",
+        "supportsVocabulary": false,
+        "supportsAlignmentTimestamps": true,
+        "emitsPartialResults": false,
+        "scenes": ["dictationFile", "transcription"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      }
+    ],
+    "runtime": { "kind": "model-pack" },
+    "modelPack": {
+      "engine": "sherpa-onnx-offline",
+      "files": [
+        {
+          "path": "model.int8.onnx",
+          "sha256": "9dc6e72aa8bc6f5966cf2857a0ce3a425b1d72e91500e147d66329f407c017a1",
+          "sizeBytes": 263531902,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17/resolve/ebb95fbda2a034d9a8f3b2d2cba32c104b60bed3/model.int8.onnx" }
+        },
+        {
+          "path": "tokens.txt",
+          "sha256": "2db4bb25d046e8849e336c9465e248e1694914d996c58c71bdeca18cfb722992",
+          "sizeBytes": 939815,
+          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17/resolve/ebb95fbda2a034d9a8f3b2d2cba32c104b60bed3/tokens.txt" }
+        },
+        {
+          "path": "silero_vad.onnx",
+          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+          "sizeBytes": 643854,
+          "download": { "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" }
+        },
+        {
+          "path": "LICENSE-Fun-ASR.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "sizeBytes": 11357,
+          "download": { "url": "https://raw.githubusercontent.com/FunAudioLLM/Fun-ASR/c0a20e2bb698bbad11d143bdccd6c0760e9d6e5b/LICENSE" }
+        },
+        {
+          "path": "LICENSE-silero-vad.txt",
+          "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+          "sizeBytes": 1075,
+          "download": { "url": "https://raw.githubusercontent.com/snakers4/silero-vad/066409f3d9db45a30d21dfcbf9147826ffdd7052/LICENSE" }
+        }
+      ],
+      "params": {
+        "model": "model.int8.onnx",
+        "tokens": "tokens.txt",
+        "vadModel": "silero_vad.onnx",
+        "language": "auto",
+        "useItn": true,
+        "numThreads": 4,
+        "vadThreshold": 0.5,
+        "vadMinSilenceDuration": 0.6,
+        "vadMinSpeechDuration": 0.25,
+        "vadWindowSize": 512,
+        "vadMaxSpeechDuration": 30.0
+      }
+    }
+  },
+  "sources": {
+    "model.int8.onnx": "files/funasr-nano-ctc/model.int8.onnx",
+    "tokens.txt": "files/funasr-nano-ctc/tokens.txt",
+    "silero_vad.onnx": "files/funasr-nano-ctc/silero_vad.onnx",
+    "LICENSE-Fun-ASR.txt": "files/funasr-nano-ctc/LICENSE-Fun-ASR.txt",
+    "LICENSE-silero-vad.txt": "files/funasr-nano-ctc/LICENSE-silero-vad.txt"
+  }
+}
