@@ -2820,6 +2820,7 @@ mod tests {
             trust: "unsigned".into(),
         };
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test-provider".into(),
             kind: "plugin:test".into(),
             display_name: "Test".into(),

@@ -1,7 +1,7 @@
 //! 文件解码与 VAD 同步衔接；只缓冲一个识别块，保留原有十秒喂入、每分钟收口的节奏。
 use super::{samples_to_ms, LocalModelSpec, LocalSegment, OfflineVadSession, SAMPLE_RATE};
-use std::sync::atomic::Ordering;
 use crate::cancellation::CancellationFlag;
+use std::sync::atomic::Ordering;
 
 const CHUNK_SAMPLES: usize = SAMPLE_RATE as usize * 10;
 
@@ -15,41 +15,46 @@ struct FileVadSession {
 impl FileVadSession {
     fn create(spec: &LocalModelSpec) -> Result<Self, String> {
         Ok(Self {
-            session: OfflineVadSession::create(spec)?,
+            session: OfflineVadSession::create_temporary(spec)?,
             pending: Vec::with_capacity(CHUNK_SAMPLES),
             chunks: 0,
             results: Vec::new(),
         })
     }
 
-    fn accept(&mut self, mut samples: &[f32]) -> Result<(), String> {
+    fn accept(
+        &mut self,
+        mut samples: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<(), String> {
         while !samples.is_empty() {
             let count = samples.len().min(CHUNK_SAMPLES - self.pending.len());
             self.pending.extend_from_slice(&samples[..count]);
             samples = &samples[count..];
             if self.pending.len() == CHUNK_SAMPLES {
-                self.consume_pending()?;
+                self.consume_pending(cancel)?;
             }
         }
         Ok(())
     }
 
-    fn consume_pending(&mut self) -> Result<(), String> {
-        self.results.extend(self.session.accept(&self.pending)?);
+    fn consume_pending(&mut self, cancel: Option<&CancellationFlag>) -> Result<(), String> {
+        self.results
+            .extend(self.session.accept(&self.pending, cancel)?);
         self.pending.clear();
         self.chunks += 1;
         // 包大小与解码器有关，不能把包边界直接变成 VAD 的语音/重置边界。
         if self.chunks % 6 == 0 {
-            self.results.extend(self.session.flush_and_reset()?);
+            self.results.extend(self.session.flush_and_reset(cancel)?);
         }
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Vec<LocalSegment>, String> {
+    fn finish(mut self, cancel: Option<&CancellationFlag>) -> Result<Vec<LocalSegment>, String> {
         if !self.pending.is_empty() {
-            self.consume_pending()?;
+            self.consume_pending(cancel)?;
         }
-        self.results.extend(self.session.finish()?);
+        self.results.extend(self.session.finish(cancel)?);
         Ok(self.results)
     }
 }
@@ -73,11 +78,11 @@ pub(crate) fn recognize_audio_file(
             session = Some(FileVadSession::create(spec)?);
             check_cancel()?;
         }
-        session.as_mut().unwrap().accept(chunk)
+        session.as_mut().unwrap().accept(chunk, cancel)
     })?;
     check_cancel()?;
     let segments = match session {
-        Some(session) => session.finish()?,
+        Some(session) => session.finish(cancel)?,
         None => Vec::new(),
     };
     check_cancel()?;
@@ -91,6 +96,7 @@ mod tests {
     #[test]
     fn cancellation_precedes_file_io_and_model_loading() {
         let spec = LocalModelSpec {
+            manifest_version: "1.0.0".into(),
             plugin_id: "test".into(),
             provider_id: "test".into(),
             engine: "sherpa-onnx-offline".into(),

@@ -1207,6 +1207,7 @@ mod tests {
     #[test]
     fn legacy_model_uses_existing_temperature_default() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: "llm:groq".into(),
             display_name: "Test".into(),
@@ -1225,6 +1226,7 @@ mod tests {
     #[test]
     fn model_options_apply_reasoning_temperature_and_max_tokens() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: "llm:groq".into(),
             display_name: "Test".into(),
@@ -1296,6 +1298,7 @@ mod tests {
 
     fn llm_profile(kind: &str, reasoning_effort: &str) -> ProviderProfile {
         ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: kind.into(),
             display_name: "Test".into(),

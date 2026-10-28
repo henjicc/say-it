@@ -72,9 +72,10 @@ fn run_local_session(
         );
         return;
     }
+    let cancel = rx.cancellation_flag();
     let session = match spec.engine.as_str() {
-        "sherpa-onnx-online" => OnlineSession::create(&spec).map(Session::Online),
-        "sherpa-onnx-offline" => OfflineVadSession::create(&spec).map(Session::Offline),
+        "sherpa-onnx-online" => OnlineSession::create_realtime(&spec, Some(&cancel)).map(Session::Online),
+        "sherpa-onnx-offline" => OfflineVadSession::create_realtime(&spec).map(Session::Offline),
         engine => Err(format!("模型引擎 {engine} 不支持本地 ASR 会话")),
     };
     let mut session = match session {
@@ -126,9 +127,9 @@ fn run_local_session(
                 }
                 let samples = pcm16_to_f32(&pcm);
                 let result = match &mut session {
-                    Session::Online(session) => Ok(session.accept(&samples)),
+                    Session::Online(session) => session.accept(&samples, Some(&cancel)),
                     Session::Offline(session) => {
-                        session.accept(&samples).map(|segments| LocalAsrOutput {
+                        session.accept(&samples, Some(&cancel)).map(|segments| LocalAsrOutput {
                             partial: None,
                             finals: segments.into_iter().map(|item| item.text).collect(),
                         })
@@ -154,8 +155,8 @@ fn run_local_session(
                 let tail = pcm16_to_f32(&dsp.finish());
                 if !tail.is_empty() {
                     let result = match &mut session {
-                        Session::Online(session) => Ok(session.accept(&tail)),
-                        Session::Offline(session) => session.accept(&tail).map(|segments| LocalAsrOutput {
+                        Session::Online(session) => session.accept(&tail, Some(&cancel)),
+                        Session::Offline(session) => session.accept(&tail, Some(&cancel)).map(|segments| LocalAsrOutput {
                             partial: None,
                             finals: segments.into_iter().map(|item| item.text).collect(),
                         }),
@@ -172,8 +173,8 @@ fn run_local_session(
                     }
                 }
                 let result = match session {
-                    Session::Online(session) => Ok(session.finish()),
-                    Session::Offline(session) => session.finish().map(|segments| LocalAsrOutput {
+                    Session::Online(session) => session.finish(Some(&cancel)),
+                    Session::Offline(session) => session.finish(Some(&cancel)).map(|segments| LocalAsrOutput {
                         partial: None,
                         finals: segments.into_iter().map(|item| item.text).collect(),
                     }),

@@ -1,6 +1,6 @@
 import { loadModelCatalog } from "@/features/asr/modelRegistry";
 import { hydrateModelOptions } from "@/features/asr/modelOptions";
-import { CMD, cmd } from "@/lib/tauri";
+import { CMD, cmd, type ModelResidencyStatus } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 
 export interface PluginSummary {
@@ -21,6 +21,8 @@ export interface PluginSummary {
     totalBytes: number;
     readyBytes: number;
     downloadable: boolean;
+    keepLoaded: boolean;
+    residency?: ModelResidencyStatus;
   };
 }
 

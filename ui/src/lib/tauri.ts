@@ -11,6 +11,7 @@ export const CMD = {
   installProviderPlugin: "install_provider_plugin",
   takePendingProviderPluginImports: "take_pending_provider_plugin_imports",
   downloadProviderModelPack: "download_provider_model_pack",
+  setProviderModelKeepLoaded: "set_provider_model_keep_loaded",
   setProviderPluginEnabled: "set_provider_plugin_enabled",
   uninstallProviderPlugin: "uninstall_provider_plugin",
   runProviderPluginAction: "run_provider_plugin_action",
@@ -412,4 +413,9 @@ export function on<T = unknown>(
 
 export function emitEvent(event: string, payload?: unknown): Promise<void> {
   return emit(event, payload);
+}
+
+export interface ModelResidencyStatus {
+  state: "unloaded" | "loading" | "loaded" | "failed";
+  error?: string;
 }
