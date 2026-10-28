@@ -35,10 +35,13 @@ static LOOK: std::sync::Mutex<core::look::Look> =
     std::sync::Mutex::new(core::look::Look::MACOS_DEFAULT);
 
 pub fn start(sink: EventSink) {
-    START.call_once(move || {
-        assert!(SINK.set(sink).is_ok(), "overlay sink starts once");
-        render::start();
-    });
+    SINK.get_or_init(|| sink);
+    start_passive();
+}
+
+/// 无应用动作的胶囊可独立启动；交互窗口随后通过 start 绑定事件出口。
+pub fn start_passive() {
+    START.call_once(render::start);
 }
 
 pub fn started() -> bool {

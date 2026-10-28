@@ -3,8 +3,8 @@ use crate::anim::{ease_out_cubic, Transition};
 use crate::canvas::{
     Canvas, FontFamily, ParagraphAlign, TextAlign, TextEngine, TextStyle, TextTint,
 };
-use crate::geom::{Color, Point, PxRect, Rect, Stroke};
-use crate::look::Look;
+use crate::geom::{Color, Point, PxRect, Rect, Shape, Stroke};
+use crate::look::{Look, Profile};
 use crate::window::{Cx, FrameSpec, NoPointer, Ops, OverlayModel, WindowEvent, WindowOp};
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
@@ -381,6 +381,49 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         self.draw_content(canvas, now);
     }
     fn hit(&self) {}
+    fn glass(&self) -> Vec<Shape> {
+        if self.look.profile != Profile::Css || self.look.glass.is_none() {
+            return Vec::new();
+        }
+        let Some(state) = self.state else {
+            return Vec::new();
+        };
+        let bottom = LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM;
+        if matches!(state, IndicatorState::Fallback | IndicatorState::Notice) {
+            return vec![Shape::RoundedRect {
+                rect: Rect::new(
+                    (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
+                    bottom - FALLBACK_H,
+                    (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
+                    bottom,
+                ),
+                radius: TEXT_RADIUS,
+            }];
+        }
+        let pill = Rect::new(
+            (LOGICAL_WIDTH - PILL_W) / 2.0,
+            bottom - PILL_H,
+            (LOGICAL_WIDTH + PILL_W) / 2.0,
+            bottom,
+        );
+        let mut shapes = vec![Shape::RoundedRect {
+            rect: pill,
+            radius: PILL_RADIUS,
+        }];
+        if !self.text.is_empty() {
+            let bottom = pill.top - STACK_GAP;
+            shapes.push(Shape::RoundedRect {
+                rect: Rect::new(
+                    (LOGICAL_WIDTH - TEXT_W) / 2.0,
+                    bottom - TEXT_H,
+                    (LOGICAL_WIDTH + TEXT_W) / 2.0,
+                    bottom,
+                ),
+                radius: TEXT_RADIUS,
+            });
+        }
+        shapes
+    }
 }
 
 impl Indicator {
@@ -880,6 +923,88 @@ mod tests {
         assert!(matches!(canvas.calls[1], Draw::StrokeRounded(_, _, _, _)));
         assert!(matches!(canvas.calls[2], Draw::FillCircle(_, _, _)));
         assert!(matches!(canvas.calls[3], Draw::Text(_, _, _, None)));
+    }
+
+    #[test]
+    fn css_uses_straight_alpha_and_glass_matches_only_visible_panels() {
+        use crate::look::{Glass, GlassMaterial};
+        let look = Look {
+            glass: Some(Glass {
+                material: GlassMaterial::UnderWindow,
+                tint_percent: 20,
+                border_percent: 30,
+            }),
+            ..Look::MACOS_DEFAULT
+        };
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&look);
+        let shapes = |model: &Indicator| <Indicator as OverlayModel<FakeText>>::glass(model);
+        assert!(shapes(&model).is_empty());
+        for state in [
+            IndicatorState::Recording,
+            IndicatorState::Processing,
+            IndicatorState::SmartProcessing,
+            IndicatorState::Fallback,
+            IndicatorState::Notice,
+        ] {
+            model.apply(Command::SetState(state), &cx(now, &text));
+            for value in ["", "这是一段测试文本"] {
+                model.apply(
+                    Command::SetText {
+                        text: value.into(),
+                        fade: false,
+                    },
+                    &cx(now, &text),
+                );
+                let mut canvas = RecordingCanvas::new(144);
+                model.draw(&mut canvas, now);
+                let panels: Vec<_> = canvas
+                    .calls
+                    .iter()
+                    .filter_map(|call| match call {
+                        Draw::FillRounded(rect, radius, _)
+                            if *radius == PILL_RADIUS || *radius == TEXT_RADIUS =>
+                        {
+                            Some(Shape::RoundedRect {
+                                rect: *rect,
+                                radius: *radius,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let mut glass = shapes(&model);
+                // 绘制按文本框→胶囊，遮罩的并集与顺序无关。
+                glass.reverse();
+                assert_eq!(glass, panels);
+            }
+        }
+        model.apply(
+            Command::SetState(IndicatorState::Processing),
+            &cx(now, &text),
+        );
+        model.apply(
+            Command::SetText {
+                text: String::new(),
+                fade: false,
+            },
+            &cx(now, &text),
+        );
+        let mut canvas = RecordingCanvas::new(144);
+        model.draw(&mut canvas, now);
+        assert!(matches!(canvas.calls[0], Draw::FillRounded(_, _, color)
+            if color == Color::new(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94)));
+        <Indicator as OverlayModel<FakeText>>::set_look(&mut model, &Look::MACOS_DEFAULT);
+        assert!(shapes(&model).is_empty());
+        <Indicator as OverlayModel<FakeText>>::set_look(
+            &mut model,
+            &Look {
+                glass: look.glass,
+                ..Look::WINDOWS_LEGACY
+            },
+        );
+        assert!(shapes(&model).is_empty());
     }
 
     #[test]
