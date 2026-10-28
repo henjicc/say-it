@@ -332,8 +332,9 @@ pub(crate) fn native_subtitle_set_translation(text: String) {
 #[cfg(windows)]
 mod imp {
     use super::super::native_overlay::{
-        create_d2d_factory, create_dc_render_target, create_dwrite_factory, create_text_format_weight, rect_f,
-        svg_path_geometry_stroke, window_dpi, Dib, LayeredSurface, OverlayThread, Transition,
+        create_d2d_factory, create_dc_render_target, create_dwrite_factory,
+        create_text_format_weight, overlay_now, rect_f, svg_path_geometry_stroke, system_dpi,
+        window_dpi, Dib, LayeredSurface, OverlayThread, Transition,
     };
     use super::{
         block_height, ease_value, line_height, overlap_chars, parse_css_color, replace_offset_x,
@@ -345,7 +346,9 @@ mod imp {
     use std::time::Instant;
     use windows::core::w;
     use windows::Foundation::Numerics::Matrix3x2;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    };
     use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_U};
     use windows::Win32::Graphics::Direct2D::{
         ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, ID2D1SolidColorBrush,
@@ -365,7 +368,6 @@ mod imp {
     };
     use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         ReleaseCapture, SetCapture, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
     };
@@ -419,7 +421,7 @@ mod imp {
     const ICON_ROTATE: &str = "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5";
     const ICON_CLOSE: &str = "M18 6L6 18M6 6L18 18";
 
-    pub(super) enum Command {
+    pub(crate) enum Command {
         SetConfig(Box<SubtitleConfig>),
         SetLayout {
             width: f32,
@@ -740,7 +742,7 @@ mod imp {
         }
 
         fn tick(&mut self) {
-            let now = Instant::now();
+            let now = overlay_now();
             let dt = self
                 .last_frame
                 .replace(now)
@@ -859,7 +861,7 @@ mod imp {
             if (self.controls_alpha - target).abs() < 0.001 && self.controls_anim.is_none() {
                 return;
             }
-            self.controls_anim = Some((Instant::now(), self.controls_alpha, target));
+            self.controls_anim = Some((overlay_now(), self.controls_alpha, target));
         }
 
         fn ensure_format(&mut self) -> Option<IDWriteTextFormat> {
@@ -935,7 +937,7 @@ mod imp {
                     // swapText：整段换新，不做前缀 diff，播 swapIn。
                     track.fresh_from = usize::MAX;
                     track.fresh_started = None;
-                    track.swap_started = Some(Instant::now());
+                    track.swap_started = Some(overlay_now());
                 } else {
                     let overlap = overlap_chars(&track.displayed, &next);
                     let fresh_len = next.chars().count().saturating_sub(overlap);
@@ -944,7 +946,7 @@ mod imp {
                         && fresh_len <= FRESH_FADE_MAX_CHARS
                         && self.config.fade_enabled
                         && self.config.fade_duration_ms > 0)
-                    .then(Instant::now);
+                    .then(overlay_now);
                     track.swap_started = None;
                 }
                 track.displayed = next;
@@ -997,7 +999,7 @@ mod imp {
             } else if (target - track.offset_target).abs() > 0.5 {
                 track.offset_from = track.offset;
                 track.offset_target = target;
-                track.offset_anim = Some(Instant::now());
+                track.offset_anim = Some(overlay_now());
             }
         }
 
@@ -1006,22 +1008,21 @@ mod imp {
                 let fade_ms = self.config.fade_duration_ms.max(1) as f32;
                 let motion_ms = self.config.motion_duration_ms.max(1) as f32;
                 let track = &mut self.tracks[index];
-                if track
-                    .fresh_started
-                    .is_some_and(|start| start.elapsed().as_secs_f32() * 1000.0 >= fade_ms)
-                {
+                if track.fresh_started.is_some_and(|start| {
+                    overlay_now().saturating_duration_since(start).as_secs_f32() * 1000.0 >= fade_ms
+                }) {
                     track.fresh_started = None;
                     // 淡入完成后重建布局，摘掉新增区间的画刷效果。
                     track.layout = None;
                 }
-                if track
-                    .swap_started
-                    .is_some_and(|start| start.elapsed().as_secs_f32() >= SWAP_IN_S)
-                {
+                if track.swap_started.is_some_and(|start| {
+                    overlay_now().saturating_duration_since(start).as_secs_f32() >= SWAP_IN_S
+                }) {
                     track.swap_started = None;
                 }
                 if let Some(start) = track.offset_anim {
-                    let t = (start.elapsed().as_secs_f32() * 1000.0 / motion_ms).min(1.0);
+                    let elapsed = overlay_now().saturating_duration_since(start).as_secs_f32();
+                    let t = (elapsed * 1000.0 / motion_ms).min(1.0);
                     let eased = ease_value(&self.config.motion_easing, t);
                     track.offset =
                         track.offset_from + (track.offset_target - track.offset_from) * eased;
@@ -1032,7 +1033,8 @@ mod imp {
                 }
             }
             if let Some((start, from, to)) = self.controls_anim {
-                let t = (start.elapsed().as_secs_f32() / CONTROLS_FADE_S).min(1.0);
+                let elapsed = overlay_now().saturating_duration_since(start).as_secs_f32();
+                let t = (elapsed / CONTROLS_FADE_S).min(1.0);
                 self.controls_alpha = from + (to - from) * ease_value("ease-out", t);
                 if t >= 1.0 {
                     self.controls_alpha = to;
@@ -1124,7 +1126,8 @@ mod imp {
                 .map(|start| {
                     ease_value(
                         "ease-out",
-                        (start.elapsed().as_secs_f32() / SWAP_IN_S).min(1.0),
+                        (overlay_now().saturating_duration_since(start).as_secs_f32() / SWAP_IN_S)
+                            .min(1.0),
                     )
                 })
                 .unwrap_or(1.0);
@@ -1133,7 +1136,8 @@ mod imp {
             if let Some(start) = track.fresh_started {
                 let fade = ease_value(
                     &self.config.fade_easing,
-                    (start.elapsed().as_secs_f32() * 1000.0 / self.config.fade_duration_ms.max(1) as f32)
+                    (overlay_now().saturating_duration_since(start).as_secs_f32() * 1000.0
+                        / self.config.fade_duration_ms.max(1) as f32)
                         .min(1.0),
                 );
                 let total_chars = track.displayed.chars().count();
@@ -1443,31 +1447,36 @@ mod imp {
     #[cfg(test)]
     mod layout_tests {
         use super::*;
+        use crate::desktop::native_overlay::test_seams::OffscreenGuard;
         use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
 
         // 真正读取软件 D2D 输出，防止“布局创建成功”掩盖画布里没有文字的回归。
+        // 像素取自离屏接缝截下的真实渲染帧（96 DPI，DIB 与布局同尺寸）。
         fn assert_visible_text_pixels(state: &mut WindowState, name: &str) {
-            state.view.prepare_layouts();
-            let width = state.view.layout_w as i32;
-            let height = state.view.layout_h as i32;
-            let dib = Dib::create(width, height).unwrap();
+            state.render();
+            let capture = state.surface.capture().expect("离屏渲染应产出一帧");
+            let (width, height) = (capture.presented.width, capture.presented.height);
+            assert_eq!(
+                (width, height),
+                (state.view.layout_w as i32, state.view.layout_h as i32),
+                "{name}: 96 DPI 下 DIB 应与布局同尺寸"
+            );
             unsafe {
-                let target = create_dc_render_target(&state.d2d, 96.0).unwrap();
-                target
-                    .BindDC(
-                        dib.dc(),
-                        &RECT {
-                            left: 0,
-                            top: 0,
-                            right: width,
-                            bottom: height,
-                        },
-                    )
-                    .unwrap();
-                let brush = target
-                    .CreateSolidColorBrush(&brush_color(1.0, 1.0, 1.0, 1.0), None)
-                    .unwrap();
                 if state.view.tracks[0].swap_started.is_some() {
+                    // 渲染路径里模糊失败只记日志并回退清晰文字，这里单独确认模糊可用。
+                    let dib = Dib::create(width, height).unwrap();
+                    let target = create_dc_render_target(&state.d2d, 96.0).unwrap();
+                    target
+                        .BindDC(
+                            dib.dc(),
+                            &RECT {
+                                left: 0,
+                                top: 0,
+                                right: width,
+                                bottom: height,
+                            },
+                        )
+                        .unwrap();
                     blurred_text_bitmap(
                         &target,
                         state.view.tracks[0].layout.as_ref().unwrap(),
@@ -1478,11 +1487,7 @@ mod imp {
                     )
                     .unwrap();
                 }
-                target.BeginDraw();
-                target.Clear(Some(&brush_color(0.0, 0.0, 0.0, 0.0)));
-                state.view.draw(&target, &brush);
-                target.EndDraw(None, None).unwrap();
-                let pixels = dib.pixels();
+                let pixels = &capture.pixels;
                 for (index, rect) in state.view.blocks() {
                     let pad = if index == 0 {
                         PAD_TOP_MAIN
@@ -1504,22 +1509,6 @@ mod imp {
                         "{name}: track {index} has only {bright} text pixels"
                     );
                 }
-                if let Some(dir) = std::env::var_os("SAYIT_SUBTITLE_TEST_SNAPSHOTS") {
-                    let mut image = pixels.to_vec();
-                    for pixel in image.chunks_exact_mut(4) {
-                        pixel.swap(0, 2);
-                    }
-                    let dir = std::path::PathBuf::from(dir);
-                    std::fs::create_dir_all(&dir).unwrap();
-                    image::save_buffer(
-                        dir.join(format!("{name}.png")),
-                        &image,
-                        width as u32,
-                        height as u32,
-                        image::ColorType::Rgba8,
-                    )
-                    .unwrap();
-                }
             }
         }
 
@@ -1533,8 +1522,11 @@ mod imp {
                     }
                 }
             }
+            let _seams = OffscreenGuard::new(96);
             let window = TestWindow(create_window().unwrap());
             with_state(window.0, |state| {
+                // 只有可见窗口才会渲染出帧供截取；离屏模式下不会真的上屏。
+                state.apply(Command::Show);
                 let mut config = SubtitleConfig {
                     display_mode: "replace".into(),
                     width: 444.0,
@@ -2064,7 +2056,8 @@ mod imp {
                 hCursor: cursor_arrow,
                 ..Default::default()
             };
-            if RegisterClassW(&class) == 0 {
+            // 同一进程内第二次建窗（测试会反复建窗）时类已存在，沿用即可。
+            if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 eprintln!("[native-subtitle] 注册窗口类失败");
                 return None;
             }
@@ -2104,7 +2097,7 @@ mod imp {
                 stroke_style,
             };
             let config = SubtitleConfig::default();
-            let dpi = GetDpiForSystem();
+            let dpi = system_dpi();
             let (x, y, width, height) = configured_placement(
                 dpi,
                 config.window_width as f32,
@@ -2171,7 +2164,38 @@ mod imp {
             Some(hwnd)
         }
     }
+
+    /// 像素快照的驱动入口：建窗、投命令、读帧定时器与截取，场景在 `native_snapshot`。
+    #[cfg(test)]
+    pub(crate) mod snapshot_driver {
+        use super::{with_state, FRAME_TIMER_ID};
+        use crate::desktop::native_overlay::test_seams::Capture;
+        use windows::Win32::Foundation::HWND;
+
+        pub(crate) use super::Command;
+
+        pub(crate) const FRAME_TIMER: usize = FRAME_TIMER_ID;
+
+        pub(crate) fn create_window() -> HWND {
+            super::create_window().expect("创建原生字幕窗口失败")
+        }
+
+        pub(crate) fn apply(hwnd: HWND, command: Command) {
+            with_state(hwnd, |state| state.apply(command));
+        }
+
+        pub(crate) fn frame_timer_active(hwnd: HWND) -> bool {
+            with_state(hwnd, |state| state.timer_active).unwrap_or(false)
+        }
+
+        pub(crate) fn capture(hwnd: HWND) -> Option<Capture> {
+            with_state(hwnd, |state| state.surface.capture()).flatten()
+        }
+    }
 }
+
+#[cfg(all(test, windows))]
+pub(crate) use imp::snapshot_driver;
 
 #[cfg(test)]
 mod tests {
