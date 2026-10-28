@@ -167,6 +167,22 @@ pub(crate) fn with_view(id: WindowId, f: impl FnOnce(&OverlayView)) {
     }
 }
 
+/// 系统辅助显示选项变化也要唤醒静止宿主；隐藏窗口留到下一次 Present 读取选项。
+pub(crate) fn refresh_accessibility() {
+    let shown = HOSTS.with(|hosts| {
+        hosts
+            .borrow()
+            .iter()
+            .flatten()
+            .filter(|host| host.slot.snapshot().visible)
+            .map(|host| host.slot.id)
+            .collect::<Vec<_>>()
+    });
+    for id in shown {
+        crate::render::run_on_host(id, Box::new(|host, cx| host.look(cx)));
+    }
+}
+
 pub(crate) fn apply_immediate(id: WindowId, op: MainOp<Frame>) {
     assert!(
         MainThreadMarker::new().is_some(),
