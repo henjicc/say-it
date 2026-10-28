@@ -220,9 +220,161 @@ pub fn parse_svg_path(d: &str) -> Result<Vec<SvgSeg>, String> {
     Ok(segments)
 }
 
+/// SVG 端点式椭圆弧转为每段不超过 90° 的三次贝塞尔（W3C SVG B.2）。
+/// 零半径返回直线，重合端点返回空；不足的半径按 Λ 放大。
+pub fn arc_to_cubics(from: (f32, f32), arc: &SvgSeg) -> Vec<[(f32, f32); 3]> {
+    let SvgSeg::Arc {
+        x,
+        y,
+        rx,
+        ry,
+        rotation,
+        large,
+        sweep,
+    } = *arc
+    else {
+        return Vec::new();
+    };
+    if ![from.0, from.1, x, y, rx, ry, rotation]
+        .iter()
+        .all(|v| v.is_finite())
+        || from == (x, y)
+    {
+        return Vec::new();
+    }
+    if rx == 0.0 || ry == 0.0 {
+        return vec![[from, (x, y), (x, y)]];
+    }
+    // 中间计算用 f64，避免半径修正与中心求解的消减误差。
+    let (mut rx, mut ry) = (f64::from(rx).abs(), f64::from(ry).abs());
+    let (sin, cos) = f64::from(rotation).to_radians().sin_cos();
+    let (dx, dy) = (
+        (f64::from(from.0) - f64::from(x)) / 2.0,
+        (f64::from(from.1) - f64::from(y)) / 2.0,
+    );
+    let (xp, yp) = (cos * dx + sin * dy, -sin * dx + cos * dy);
+    let lambda = (xp / rx).powi(2) + (yp / ry).powi(2);
+    if lambda > 1.0 {
+        rx *= lambda.sqrt();
+        ry *= lambda.sqrt();
+    }
+    let denominator = rx * rx * yp * yp + ry * ry * xp * xp;
+    let factor = ((rx * rx * ry * ry - denominator).max(0.0) / denominator).sqrt()
+        * if large == sweep { -1.0 } else { 1.0 };
+    let (cxp, cyp) = (factor * rx * yp / ry, -factor * ry * xp / rx);
+    let (cx, cy) = (
+        cos * cxp - sin * cyp + (f64::from(from.0) + f64::from(x)) / 2.0,
+        sin * cxp + cos * cyp + (f64::from(from.1) + f64::from(y)) / 2.0,
+    );
+    let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
+    let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
+    let start = uy.atan2(ux);
+    let mut delta = (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+    if sweep && delta < 0.0 {
+        delta += std::f64::consts::TAU;
+    }
+    if !sweep && delta > 0.0 {
+        delta -= std::f64::consts::TAU;
+    }
+    let count = (delta.abs() / std::f64::consts::FRAC_PI_2).ceil() as usize;
+    let step = delta / count as f64;
+    let map = |u, v| {
+        (
+            (cx + rx * cos * u - ry * sin * v) as f32,
+            (cy + rx * sin * u + ry * cos * v) as f32,
+        )
+    };
+    let mut result = Vec::with_capacity(count);
+    for i in 0..count {
+        let a = start + i as f64 * step;
+        let b = a + step;
+        let k = 4.0 / 3.0 * (step / 4.0).tan();
+        result.push([
+            map(a.cos() - k * a.sin(), a.sin() + k * a.cos()),
+            map(b.cos() + k * b.sin(), b.sin() - k * b.cos()),
+            map(b.cos(), b.sin()),
+        ]);
+    }
+    if let Some(last) = result.last_mut() {
+        last[2] = (x, y);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arc(end: (f32, f32), radius: (f32, f32), large: bool, sweep: bool) -> SvgSeg {
+        SvgSeg::Arc {
+            x: end.0,
+            y: end.1,
+            rx: radius.0,
+            ry: radius.1,
+            rotation: 0.0,
+            large,
+            sweep,
+        }
+    }
+
+    #[test]
+    fn arc_flags_select_short_long_and_direction() {
+        for large in [false, true] {
+            for sweep in [false, true] {
+                let curves =
+                    arc_to_cubics((10.0, 0.0), &arc((0.0, 10.0), (10.0, 10.0), large, sweep));
+                assert_eq!(curves.len(), if large { 3 } else { 1 });
+                assert_eq!(curves.last().unwrap()[2], (0.0, 10.0));
+                let control = curves[0][0];
+                match (large, sweep) {
+                    (false, true) => assert!(control.1 > 0.0),
+                    (false, false) => assert!(control.0 < 10.0),
+                    (true, true) => assert!(control.0 > 10.0),
+                    (true, false) => assert!(control.1 < 0.0),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arc_handles_degenerate_and_corrected_radii() {
+        assert!(arc_to_cubics((0.0, 0.0), &arc((0.0, 0.0), (2.0, 3.0), false, true)).is_empty());
+        assert_eq!(
+            arc_to_cubics((0.0, 0.0), &arc((8.0, 0.0), (0.0, 3.0), false, true)),
+            vec![[(0.0, 0.0), (8.0, 0.0), (8.0, 0.0)]]
+        );
+        let curves = arc_to_cubics((0.0, 0.0), &arc((10.0, 0.0), (1.0, 1.0), false, true));
+        assert_eq!(curves.len(), 2);
+        assert!((curves[0][2].0 - 5.0).abs() < 1e-5);
+        assert!((curves[0][2].1 + 5.0).abs() < 1e-5);
+        assert_eq!(
+            curves,
+            arc_to_cubics((0.0, 0.0), &arc((10.0, 0.0), (-1.0, -1.0), false, true))
+        );
+    }
+
+    #[test]
+    fn arc_spinner_100_degrees_and_rotated_ellipse() {
+        let angle = 100.0f32.to_radians();
+        let end = (8.0 * angle.cos(), 8.0 * angle.sin());
+        let curves = arc_to_cubics((8.0, 0.0), &arc(end, (8.0, 8.0), false, true));
+        assert_eq!(curves.len(), 2);
+        assert!((curves[0][2].0 - 8.0 * (angle / 2.0).cos()).abs() < 1e-5);
+        assert_eq!(curves.last().unwrap()[2], end);
+        let rotated = SvgSeg::Arc {
+            x: 0.0,
+            y: 10.0,
+            rx: 10.0,
+            ry: 5.0,
+            rotation: 90.0,
+            large: false,
+            sweep: true,
+        };
+        let curves = arc_to_cubics((5.0, 0.0), &rotated);
+        assert!(curves.len() <= 2);
+        assert!(curves[0][0].1 > 0.0);
+        assert_eq!(curves.last().unwrap()[2], (0.0, 10.0));
+    }
     const MIC: &str = "M12 15c1.66 0 2.99-1.34 2.99-3L15 6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3m6.08-3c-.42 0-.77.3-.83.71c-.37 2.61-2.72 4.39-5.25 4.39s-4.88-1.77-5.25-4.39a.84.84 0 0 0-.83-.71c-.52 0-.92.46-.85.97c.46 2.97 2.96 5.3 5.93 5.75V21c0 .55.45 1 1 1s1-.45 1-1v-2.28c2.96-.43 5.47-2.78 5.93-5.75a.857.857 0 0 0-.85-.97";
 
     #[test]
