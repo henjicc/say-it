@@ -136,9 +136,15 @@ fn host_notifications_do_not_drop_spilled_audio_or_finish_tail() {
     let host = Notify::new();
     let waiter = SessionWait::new();
     let mut index = 0;
+    let mut interrupted = 0;
+    let mut notify = true;
     let end = Some(Instant::now() + Duration::from_secs(5));
     loop {
-        host.notify_one();
+        // 每个包至多打断一次，打断后让等待者真正休眠到落盘读写完成。
+        // 每轮都通知会变成忙等，macOS 的 yield 不保证把 CPU 让给暂存读写线程。
+        if notify {
+            host.notify_one();
+        }
         match waiter.wait(&mut receiver, &host, end) {
             SessionWake::Input(Some(AsrStreamInput::RawF32(samples))) => {
                 if index < 1024 {
@@ -147,9 +153,13 @@ fn host_notifications_do_not_drop_spilled_audio_or_finish_tail() {
                     assert_eq!(samples, [-0.75; 17]);
                 }
                 index += 1;
+                notify = true;
             }
             SessionWake::Input(Some(AsrStreamInput::Finish)) => break,
-            SessionWake::HostEvents => std::thread::yield_now(),
+            SessionWake::HostEvents => {
+                interrupted += 1;
+                notify = false;
+            }
             SessionWake::Deadline => panic!("timed out after {index} packets"),
             SessionWake::Input(Some(AsrStreamInput::Failed(error))) => {
                 panic!("failed after {index} packets: {error}")
@@ -158,6 +168,7 @@ fn host_notifications_do_not_drop_spilled_audio_or_finish_tail() {
         }
     }
     assert_eq!(index, 1025);
+    assert!(interrupted > 0, "host notifications never interrupted a pending read");
 }
 
 #[cfg(windows)]
