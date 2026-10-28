@@ -13,7 +13,8 @@ const manifestPath = "src-tauri/Cargo.toml";
 const targetRoot = path.resolve("src-tauri/target");
 const toolchainStampPath = path.join(targetRoot, ".sayit-rustc-version");
 const sherpaCacheDir = path.join(targetRoot, "sherpa-onnx-prebuilt");
-// npm run check:mac-overlay 的交叉检查产物：只在工具链变更时失效，体积小，不计入 debug 预算。
+// npm run check:mac-overlay 的交叉检查产物。依赖或 feature 变化同样会在其中留下旧产物，
+// 但整体只有几十 MB（约 33 MB 量级），因此不计入 debug 预算，只在工具链变更时整体删除。
 const macCheckDir = path.join(targetRoot, "mac-check");
 
 function isMissing(error) {
