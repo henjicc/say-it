@@ -7,6 +7,7 @@ use dispatch2::DispatchQueue;
 use objc2::{msg_send, rc::Retained, runtime::ProtocolObject, MainThreadMarker};
 use objc2_app_kit::{
     NSApplicationDidChangeScreenParametersNotification, NSScreen, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
     NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_foundation::{
@@ -125,6 +126,9 @@ pub(crate) fn observe(mtm: MainThreadMarker) {
             crate::render::area_changed();
         });
     });
+    let accessibility = RcBlock::new(|_: std::ptr::NonNull<NSNotification>| {
+        DispatchQueue::main().exec_async(crate::commit::refresh_accessibility);
+    });
     // SAFETY: 通知块只异步投递主队列，不跨线程访问 AppKit，token 由主线程保留。
     unsafe {
         let app = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
@@ -141,7 +145,19 @@ pub(crate) fn observe(mtm: MainThreadMarker) {
                 None,
                 &callback,
             );
-        OBSERVERS.with(|tokens| tokens.borrow_mut().extend([app, workspace]));
+        let display_options = NSWorkspace::sharedWorkspace()
+            .notificationCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                None,
+                None,
+                &accessibility,
+            );
+        OBSERVERS.with(|tokens| {
+            tokens
+                .borrow_mut()
+                .extend([app, workspace, display_options])
+        });
     }
 }
 
