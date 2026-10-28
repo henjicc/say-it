@@ -1,0 +1,21 @@
+[package]
+name = "sayit-overlay-macos"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sayit-overlay-core = { path = "../overlay-core" }
+
+# 版本与 Cargo.lock 一致并用 `=` 钉住；关闭默认特性，只列实际用到的 feature。
+# 禁止开启 objc2 的 "exception"/"catch-all"：它们用 cc 编译 C，Windows 本机无法再交叉检查本 crate。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSThread", "NSObject", "NSArray", "NSEnumerator"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFString", "CFAttributedString", "CFDictionary", "CFCGTypes", "CFArray", "CFNumber"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGPath", "CGColor", "CGEvent", "CGEventTypes", "CGDirectDisplay"] }
+objc2-core-text = { version = "=0.3.2", default-features = false, features = ["std", "CTFont", "CTFontDescriptor", "CTLine", "CTTypesetter", "CTFramesetter", "CTStringAttributes", "objc2-core-graphics"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSResponder", "NSWindow", "NSPanel", "NSView", "NSGraphics", "NSColor", "NSScreen", "NSEvent", "NSTrackingArea", "NSVisualEffectView", "NSImage", "NSApplication", "NSRunningApplication", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core"] }
