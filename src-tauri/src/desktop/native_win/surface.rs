@@ -1,6 +1,7 @@
 #[cfg(test)]
 use super::test_seams;
 use super::{create_dc_render_target, rgba, Dib, RECREATE_TARGET};
+use std::rc::Rc;
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::{ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush};
 #[cfg(test)]
@@ -13,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 分层窗口的 D2D 渲染面：管理 DIB、DC 渲染目标与 UpdateLayeredWindow 上屏。
 pub(crate) struct LayeredSurface {
     hwnd: HWND,
-    dib: Option<Dib>,
+    dib: Option<Rc<Dib>>,
     target: Option<ID2D1DCRenderTarget>,
     brush: Option<ID2D1SolidColorBrush>,
     /// UpdateLayeredWindow 不会把从未显示过的窗口摆上屏幕；
@@ -114,6 +115,27 @@ impl LayeredSurface {
         log_tag: &str,
         draw: impl FnOnce(&ID2D1DCRenderTarget, &ID2D1SolidColorBrush),
     ) {
+        if let Some(presentation) =
+            self.draw_frame(d2d, dpi, x, y, width, height, constant_alpha, log_tag, draw)
+        {
+            presentation.present(log_tag);
+        }
+    }
+
+    /// 仅绘制到 DIB，返回独立持有缓冲的上屏请求；调用方释放状态借用后执行 present。
+    /// 离屏测试在此记录参数，不产生上屏请求。
+    pub(crate) fn draw_frame(
+        &mut self,
+        d2d: &ID2D1Factory,
+        dpi: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        constant_alpha: u8,
+        log_tag: &str,
+        draw: impl FnOnce(&ID2D1DCRenderTarget, &ID2D1SolidColorBrush),
+    ) -> Option<Presentation> {
         #[cfg(test)]
         {
             self.frames += 1;
@@ -123,17 +145,17 @@ impl LayeredSurface {
             .as_ref()
             .map_or(true, |dib| dib.width != width || dib.height != height)
         {
-            self.dib = Dib::create(width, height);
+            self.dib = Dib::create(width, height).map(Rc::new);
         }
         if !self.ensure_target(d2d, dpi, log_tag) {
-            return;
+            return None;
         }
         // COM 对象克隆只是 AddRef、HDC 是 Copy，换成局部值后不再借用 self，
         // EndDraw 失败时才能就地丢弃渲染目标。
         let (dib_dc, dib_width, dib_height, target, brush) = {
             let (Some(dib), Some(target), Some(brush)) = (&self.dib, &self.target, &self.brush)
             else {
-                return;
+                return None;
             };
             (
                 dib.dc(),
@@ -153,7 +175,7 @@ impl LayeredSurface {
             target.SetDpi(dpi as f32, dpi as f32);
             if let Err(error) = target.BindDC(dib_dc, &rect) {
                 eprintln!("[{log_tag}] 绑定绘制 DC 失败：{error}");
-                return;
+                return None;
             }
             target.BeginDraw();
             target.Clear(Some(&rgba(0.0, 0.0, 0.0, 0.0)));
@@ -163,11 +185,11 @@ impl LayeredSurface {
                 Err(error) if error.code() == RECREATE_TARGET => {
                     self.target = None;
                     self.brush = None;
-                    return;
+                    return None;
                 }
                 Err(error) => {
                     eprintln!("[{log_tag}] 结束绘制失败：{error}");
-                    return;
+                    return None;
                 }
             }
             #[cfg(test)]
@@ -180,8 +202,50 @@ impl LayeredSurface {
                     alpha: constant_alpha,
                     frame: self.frames,
                 });
-                return;
+                return None;
             }
+            let show = !self.shown;
+            self.shown = true;
+            Some(Presentation {
+                hwnd: self.hwnd,
+                dib: self.dib.as_ref()?.clone(),
+                x,
+                y,
+                width,
+                height,
+                constant_alpha,
+                show,
+            })
+        }
+    }
+}
+
+/// 持有当帧 DIB，允许 ShowWindow / ULW 重入后重建下一帧缓冲而不悬空。
+/// 此值不借用窗口状态；只能在状态借用结束后上屏。
+pub(crate) struct Presentation {
+    hwnd: HWND,
+    dib: Rc<Dib>,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    constant_alpha: u8,
+    show: bool,
+}
+impl Presentation {
+    pub(crate) fn present(self, log_tag: &str) {
+        let Self {
+            hwnd,
+            dib,
+            x,
+            y,
+            width,
+            height,
+            constant_alpha,
+            show,
+        } = self;
+        let dib_dc = dib.dc();
+        unsafe {
             let destination = POINT { x, y };
             let size = SIZE {
                 cx: width,
@@ -197,12 +261,11 @@ impl LayeredSurface {
             // 先 ShowWindow 再提交内容：对 SW_HIDE 过的窗口调用 UpdateLayeredWindow
             // 可能直接失败，若把 ShowWindow 放在 ULW 之后会永远卡在「窗口仍隐藏、
             // shown 标志未置位、每次渲染都失败」的死循环里。
-            if !self.shown {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                self.shown = true;
+            if show {
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             }
             if let Err(error) = UpdateLayeredWindow(
-                self.hwnd,
+                hwnd,
                 None,
                 Some(&destination),
                 Some(&size),

@@ -371,11 +371,6 @@ impl Session<'_> {
         }
     }
 
-    /// 在当前时刻触发一次指定的一次性定时器（如胶囊通知到期）。
-    pub(super) fn fire_timer(&mut self, id: usize) {
-        self.send(WM_TIMER, id, 0);
-    }
-
     /// 指针移到布局坐标（DIP）处，按窗口 DPI 换成客户区物理像素。
     ///
     /// 悬停态能保持住的前提：窗口过程收到 WM_MOUSEMOVE 后调用
