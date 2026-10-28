@@ -19,3 +19,7 @@ cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core
 确认日志的 `Compiling` 指向当前 worktree，并核对本次新增的具体测试名。刷新后本次重新执行 54 项，5 项胶囊模型测试均出现且通过。修改时间刷新不改变文件内容，不产生 Git 差异。
 
 测试数只是线索，不能代替测试名核对；其他工作树可能恰好有相同数量的测试。并行编译同包时需要在可控构建时段确认结果，不能通过清空共享 target、关闭检查或另建完整 target 绕过项目约束。
+
+## 本地依赖产物也需要核对
+
+共享缓存还可能复用其他 worktree 的 path dependency。典型错误是 `image::DynamicImage` 与同版本 `image::images::dynimage::DynamicImage` 类型不兼容，编译诊断里的 `ocr-rs/src/engine.rs` 却指向另一 worktree。先核对诊断路径与依赖版本，确认是产物来源冲突后，只刷新当前 worktree 对应本地依赖源文件的修改时间，促使 Cargo 重建该依赖；不改文件内容、不清理共享 debug 目录，也不修改无关业务接口。重新运行时确认 `Compiling ocr-rs` 与 `Compiling say-it` 都指向当前 worktree。

@@ -346,6 +346,7 @@ mod tests {
 
     fn custom_profile(api_key: &str, endpoint: &str) -> ProviderProfile {
         ProviderProfile {
+            keep_loaded: false,
             id: "custom".into(),
             kind: "llm:custom".into(),
             display_name: "Custom".into(),

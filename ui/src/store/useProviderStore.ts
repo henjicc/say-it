@@ -15,6 +15,7 @@ export interface ProviderProfile {
   authKind: string;
   capabilities: ProviderCapability[];
   enabled: boolean;
+  keepLoaded?: boolean;
   isDefaultAsr?: boolean;
   effectiveCapabilities?: ProviderCapability[];
   configFields?: { key: string; label: string; fieldType: string; secret: boolean }[];

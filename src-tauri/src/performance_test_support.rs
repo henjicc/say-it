@@ -7,7 +7,7 @@ pub(crate) struct MemoryCounters {
     size: u32,
     page_fault_count: u32,
     pub peak_working_set: usize,
-    working_set: usize,
+    pub working_set: usize,
     peak_paged_pool: usize,
     paged_pool: usize,
     peak_nonpaged_pool: usize,

@@ -615,6 +615,7 @@ mod tests {
     use serde_json::json;
     fn fake() -> ProviderProfile {
         ProviderProfile {
+            keep_loaded: false,
             id: "fake".into(),
             kind: "fake-kind".into(),
             display_name: "Fake".into(),
