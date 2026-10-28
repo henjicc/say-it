@@ -5991,6 +5991,7 @@ version = "0.0.0"
 dependencies = [
  "image",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
