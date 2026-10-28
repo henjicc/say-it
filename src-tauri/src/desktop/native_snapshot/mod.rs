@@ -20,6 +20,7 @@ mod subtitle;
 use super::native_overlay::create_dwrite_factory;
 use super::native_overlay::test_seams::{self, Capture, OffscreenGuard};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
@@ -152,11 +153,19 @@ impl Snapshots {
             hwnd,
             t0,
             elapsed: Duration::ZERO,
+            last_frame: 0,
             _seams: seams,
         }
     }
 
-    fn check(&mut self, case: String, capture: Option<Capture>, transparent: bool) {
+    /// `last_frame` 是本会话上一次截取到的帧序号：每次截取都必须是它之后新渲染出的帧。
+    fn check(
+        &mut self,
+        case: String,
+        capture: Option<Capture>,
+        transparent: bool,
+        last_frame: u64,
+    ) {
         assert!(self.seen.insert(case.clone()), "快照 case 重名：{case}");
         let Some(capture) = capture else {
             self.failures
@@ -165,6 +174,19 @@ impl Snapshots {
         };
         let presented = capture.presented;
         let label = format!("{case}（第 {} 帧）", presented.frame);
+        if presented.frame != capture.rendered {
+            self.failures.push(format!(
+                "{label}：最近一次渲染（第 {} 帧）没有出帧，截到的是旧帧",
+                capture.rendered
+            ));
+            return;
+        }
+        if presented.frame <= last_frame {
+            self.failures.push(format!(
+                "{label}：上次截取（第 {last_frame} 帧）之后没有新渲染，截到的是同一帧"
+            ));
+            return;
+        }
         let (width, height) = (presented.width as u32, presented.height as u32);
         if capture.pixels.len() != width as usize * height as usize * 4 {
             self.failures.push(format!(
@@ -184,6 +206,10 @@ impl Snapshots {
         } else if !transparent && opaque == 0 {
             self.failures
                 .push(format!("{label}：应有内容，实际整窗透明"));
+        } else if !transparent && presented.alpha == 0 {
+            // 像素有内容但整窗常量 alpha 为 0，屏幕上同样看不见。
+            self.failures
+                .push(format!("{label}：应有内容，实际整窗不透明度为 0"));
         }
         let line = format!(
             "{case} {} {} {width} {height} {}",
@@ -259,6 +285,20 @@ impl Snapshots {
 
     /// 写出清单或汇总比对结果；任何失败都在这里统一报告。
     pub(super) fn finish(mut self) {
+        // 直接写 stderr 绕过 libtest 的输出捕获，成功时也能看到本窗口实际跑了多少用例。
+        let _ = writeln!(
+            std::io::stderr(),
+            "[native-snapshot] {}：{:?} 模式比对 {} 个用例",
+            self.window,
+            self.mode,
+            self.seen.len()
+        );
+        assert!(
+            self.mode == Mode::Smoke || !self.seen.is_empty(),
+            "{} 快照在 {:?} 模式下没有比对任何用例",
+            self.window,
+            self.mode
+        );
         match self.mode {
             Mode::Smoke => {}
             Mode::Record => {
@@ -305,6 +345,7 @@ pub(super) struct Session<'a> {
     hwnd: HWND,
     t0: Instant,
     elapsed: Duration,
+    last_frame: u64,
     // 字段按声明顺序析构：Drop 里先销毁窗口，最后才恢复接缝。
     _seams: OffscreenGuard,
 }
@@ -336,6 +377,12 @@ impl Session<'_> {
     }
 
     /// 指针移到布局坐标（DIP）处，按窗口 DPI 换成客户区物理像素。
+    ///
+    /// 悬停态能保持住的前提：窗口过程收到 WM_MOUSEMOVE 后调用
+    /// `TrackMouseEvent(TME_LEAVE)`，真实指针不在这个隐藏窗口上，系统会立刻往线程
+    /// 队列里投一条 WM_MOUSELEAVE；本驱动只用 SendMessageW 直接调窗口过程、从不泵
+    /// 消息，这条离开消息永远不会被派发。将来若在驱动里加消息泵，悬停会被立即清掉——
+    /// 场景在截取前都断言了悬停/按钮状态，届时会直接失败而不是录下非悬停态。
     pub(super) fn mouse_move(&mut self, point: (f32, f32)) {
         let lparam = self.client_lparam(point);
         self.send(WM_MOUSEMOVE, 0, lparam);
@@ -359,8 +406,11 @@ impl Session<'_> {
 
     fn check(&mut self, case: &str, transparent: bool) {
         let capture = (self.driver.capture)(self.hwnd);
+        let frame = capture.as_ref().map(|capture| capture.presented.frame);
         let case = format!("{case}@{}", self.dpi);
-        self.snaps.check(case, capture, transparent);
+        self.snaps
+            .check(case, capture, transparent, self.last_frame);
+        self.last_frame = frame.unwrap_or(self.last_frame);
     }
 
     fn client_lparam(&self, (x, y): (f32, f32)) -> isize {

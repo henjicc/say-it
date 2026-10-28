@@ -65,9 +65,9 @@ fn interactions(snaps: &mut Snapshots, dpi: u32, size: i32) {
         let mut s = shown(snaps, dpi, size, OrbPhase::Idle, false);
         hover(&mut s, size);
         s.advance(75);
-        s.shot("idle-hover-75ms");
+        hovered_shot(&mut s, "idle-hover-75ms");
         s.advance(125);
-        s.shot("idle-hover-200ms");
+        hovered_shot(&mut s, "idle-hover-200ms");
     }
     {
         let mut s = configured(snaps, dpi, size, 1.0);
@@ -92,14 +92,14 @@ fn interactions(snaps: &mut Snapshots, dpi: u32, size: i32) {
         // 悬停时波形区域从 54% 放大到 59.4%。
         hover(&mut s, size);
         s.advance(200);
-        s.shot("recording-hover");
+        hovered_shot(&mut s, "recording-hover");
     }
     {
         // 悬停时对勾与角标换成整幅回车箭头。
         let mut s = shown(snaps, dpi, size, OrbPhase::Success, true);
         hover(&mut s, size);
         s.advance(200);
-        s.shot("success-submit-hover");
+        hovered_shot(&mut s, "success-submit-hover");
     }
     {
         let mut s = configured(snaps, dpi, size, 0.6);
@@ -155,6 +155,13 @@ fn shown(
 fn hover(s: &mut Session, size: i32) {
     let logical = size as f32 * 96.0 / s.dpi() as f32;
     s.mouse_move((logical / 2.0, logical / 2.0));
+    assert!(driver::hovering(s.hwnd()), "指针移入后悬浮球应处于悬停态");
+}
+
+/// 悬停态只在 WM_MOUSELEAVE 未被派发时成立（见 `Session::mouse_move`），截取前再确认一次。
+fn hovered_shot(s: &mut Session, case: &str) {
+    assert!(driver::hovering(s.hwnd()), "{case}：截取前悬停态已丢失");
+    s.shot(case);
 }
 
 fn set_phase(s: &Session, phase: OrbPhase, can_submit: bool) {
