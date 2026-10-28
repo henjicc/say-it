@@ -7,6 +7,9 @@
 
 #![cfg(windows)]
 
+pub(crate) mod d2d;
+pub(crate) mod host;
+pub(crate) mod indicator;
 mod surface;
 pub(crate) use surface::LayeredSurface;
 #[cfg(test)]
@@ -25,8 +28,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry,
-    D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1PathGeometry, D2D1_ARC_SEGMENT,
+    D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_FACTORY_TYPE_SINGLE_THREADED,
     D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
     D2D1_RENDER_TARGET_USAGE_NONE, D2D1_SWEEP_DIRECTION_CLOCKWISE,
     D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
@@ -300,6 +303,14 @@ fn build_svg_path_geometry(
     filled: bool,
 ) -> Result<ID2D1PathGeometry, String> {
     let segments = parse_svg_path(d)?;
+    path_geometry(d2d, &segments, filled)
+}
+
+pub(crate) fn path_geometry(
+    d2d: &ID2D1Factory,
+    segments: &[SvgSeg],
+    filled: bool,
+) -> Result<ID2D1PathGeometry, String> {
     let geometry = unsafe { d2d.CreatePathGeometry() }
         .map_err(|error| format!("创建路径几何体失败：{error}"))?;
     let sink =
@@ -307,7 +318,7 @@ fn build_svg_path_geometry(
     unsafe {
         sink.SetFillMode(D2D1_FILL_MODE_WINDING);
         let mut figure_open = false;
-        for segment in segments {
+        for &segment in segments {
             match segment {
                 SvgSeg::Move(x, y) => {
                     if figure_open {
