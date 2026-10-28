@@ -2549,6 +2549,18 @@ mod tests {
     #[test]
     fn theme_json_preserves_defaults_and_custom_background_fallback() {
         assert_eq!(theme_from_json(&serde_json::json!({})), Theme::DEFAULT);
+        for value in ["#中abc", "#中", "#中中", "#ａｂｃ", "", "#"] {
+            assert_eq!(
+                theme_from_json(&json!({
+                    "accent": value, "backgroundMode": "custom", "background": value
+                })),
+                Theme {
+                    custom_background: Some([15, 15, 15]),
+                    ..Theme::DEFAULT
+                },
+                "{value:?}"
+            );
+        }
         assert_eq!(
             theme_from_json(&serde_json::json!({
                 "tone": "light", "accent": " #FF4013 ",
