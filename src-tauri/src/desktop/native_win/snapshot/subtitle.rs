@@ -250,3 +250,120 @@ fn set_text(s: &Session, text: &str, fade: bool) {
 fn send(s: &Session, command: Command) {
     driver::apply(s.hwnd(), command);
 }
+/// 复用真实窗口过程与离屏接缝，确认配置/窗口宽度变化后两条轨道仍实际出字。
+#[test]
+fn subtitle_layout_commands_render_both_tracks_without_mouse_input() {
+    let mut snaps = Snapshots::new("subtitle");
+    let mut last_frame = 0;
+    let mut prefs = SubtitleConfig {
+        display_mode: "replace".into(),
+        width: 444.0,
+        window_width: 444.0,
+        window_height: 136.0,
+        line_count: 1,
+        font_size: 28.0,
+        translation_enabled: true,
+        motion_enabled: false,
+        fade_enabled: false,
+        ..SubtitleConfig::default()
+    };
+    let mut s = opened(&mut snaps, 96, prefs.clone(), "原生字幕 Hello");
+    send(&s, Command::SetTranslation("Bilingual translation".into()));
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    set_text(&s, &"连续追加长句显示最新内容".repeat(12), false);
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    prefs.display_mode = "scroll".into();
+    prefs.line_count = 2;
+    prefs.translation_order = "sourceFirst".into();
+    prefs.window_height = 214.0;
+    send(
+        &s,
+        Command::SetLayout {
+            width: 444.0,
+            height: 214.0,
+            anchor: "center".into(),
+            offset_y: 0.0,
+        },
+    );
+    send(&s, Command::SetConfig(Box::new(prefs.clone())));
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    prefs.width = 260.0;
+    send(&s, Command::SetConfig(Box::new(prefs.clone())));
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    prefs.line_count = 1;
+    send(&s, Command::SetConfig(Box::new(prefs.clone())));
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    prefs.window_width = 200.0;
+    send(
+        &s,
+        Command::SetLayout {
+            width: 200.0,
+            height: 214.0,
+            anchor: "center".into(),
+            offset_y: 0.0,
+        },
+    );
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    send(&s, Command::SetTranslation(String::new()));
+    prefs.translation_enabled = false;
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    prefs.fade_enabled = true;
+    send(&s, Command::SetConfig(Box::new(prefs.clone())));
+    set_text(&s, "新字幕", false);
+    s.advance(1000);
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    set_text(&s, "整段换新", true);
+    s.advance(240);
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+    s.advance(1000);
+    assert_text_pixels(&s, &prefs, &mut last_frame);
+}
+fn assert_text_pixels(s: &Session<'_>, config: &SubtitleConfig, last_frame: &mut u64) {
+    use sayit_overlay_core::subtitle::{block_height, line_height, stack_from_bottom};
+    let capture = driver::capture(s.hwnd()).expect("字幕应出帧");
+    assert!(
+        capture.rendered > *last_frame && capture.presented.frame == capture.rendered,
+        "本次命令必须渲染新帧"
+    );
+    *last_frame = capture.rendered;
+    let width = capture.presented.width;
+    let height = capture.presented.height;
+    assert_eq!(
+        (width, height),
+        (config.window_width as i32, config.window_height as i32)
+    );
+    let line_h = line_height(config.font_size);
+    let original = (false, block_height(line_h, config.line_count, false));
+    let translation = (true, block_height(line_h, config.line_count, true));
+    let order = if !config.translation_enabled {
+        vec![original]
+    } else if config.translation_order == "translationFirst" {
+        vec![translation, original]
+    } else {
+        vec![original, translation]
+    };
+    let heights: Vec<_> = order.iter().map(|(_, height)| *height).collect();
+    let tops = stack_from_bottom(config.window_height as f32, &heights, 10.0);
+    let block_width = (config.width as f32).min(config.window_width as f32);
+    let left = (config.window_width as f32 - block_width) / 2.0;
+    for ((translation, _), top) in order.into_iter().zip(tops) {
+        let top = top + if translation { 10.0 } else { 14.0 };
+        let mut bright = 0;
+        for y in (top as i32).max(0)..((top + line_h * config.line_count as f32) as i32).min(height)
+        {
+            for x in (left + 22.0) as i32..(left + block_width - 22.0) as i32 {
+                let offset = ((y * width + x) * 4) as usize;
+                if capture.pixels[offset..offset + 3]
+                    .iter()
+                    .all(|channel| *channel > 150)
+                {
+                    bright += 1;
+                }
+            }
+        }
+        assert!(
+            bright > 30,
+            "轨道 translation={translation} 只有 {bright} 个文字像素"
+        );
+    }
+}
