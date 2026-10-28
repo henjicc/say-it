@@ -38,6 +38,8 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BLENDFUNCTION, HBITMAP, HDC, HGDIOBJ, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB,
     DIB_RGB_COLORS,
 };
+#[cfg(test)]
+use windows::Win32::Graphics::Gdi::GdiFlush;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -386,6 +388,7 @@ pub(crate) struct LayeredSurface {
     /// 离屏模式下最近一次本应上屏的参数；隐藏后清空，表示窗口不可见。
     #[cfg(test)]
     presented: Option<test_seams::Presented>,
+    /// 累计渲染尝试次数（含失败）；与 `presented.frame` 不等说明最近一次渲染没有出帧。
     #[cfg(test)]
     frames: u64,
 }
@@ -419,8 +422,13 @@ impl LayeredSurface {
     pub(crate) fn capture(&self) -> Option<test_seams::Capture> {
         let presented = self.presented?;
         let dib = self.dib.as_ref()?;
+        // 读 DIB 前把 GDI 批处理刷到位图，保证拿到的是完整的最近一帧。
+        unsafe {
+            let _ = GdiFlush();
+        }
         Some(test_seams::Capture {
             presented,
+            rendered: self.frames,
             pixels: dib.pixels().to_vec(),
         })
     }
@@ -471,6 +479,10 @@ impl LayeredSurface {
         log_tag: &str,
         draw: impl FnOnce(&ID2D1DCRenderTarget, &ID2D1SolidColorBrush),
     ) {
+        #[cfg(test)]
+        {
+            self.frames += 1;
+        }
         if self
             .dib
             .as_ref()
@@ -519,7 +531,6 @@ impl LayeredSurface {
             }
             #[cfg(test)]
             if test_seams::offscreen() {
-                self.frames += 1;
                 self.presented = Some(test_seams::Presented {
                     x,
                     y,
@@ -961,13 +972,16 @@ pub(crate) mod test_seams {
         pub(crate) width: i32,
         pub(crate) height: i32,
         pub(crate) alpha: u8,
-        /// 该渲染面累计上屏次数，从 1 开始。
+        /// 出这一帧的渲染尝试序号（渲染面上第几次 render，从 1 开始）。
         pub(crate) frame: u64,
     }
 
     /// 截取结果：上屏参数 + 顶向下、预乘 alpha 的 BGRA 像素。
     pub(crate) struct Capture {
         pub(crate) presented: Presented,
+        /// 截取时渲染面累计的渲染尝试次数；大于 `presented.frame` 表示之后的渲染失败了，
+        /// 像素是旧帧。
+        pub(crate) rendered: u64,
         pub(crate) pixels: Vec<u8>,
     }
 

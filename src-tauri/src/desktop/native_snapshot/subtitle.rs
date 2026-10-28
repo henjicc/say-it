@@ -1,7 +1,7 @@
 //! 实时字幕条的快照场景。
 
 use super::{Driver, Session, Snapshots};
-use crate::desktop::native_subtitle::snapshot_driver::{self as driver, Command};
+use crate::desktop::native_subtitle::snapshot_driver::{self as driver, Command, Pointer};
 use crate::desktop::native_subtitle::SubtitleConfig;
 
 const DRIVER: Driver = Driver {
@@ -30,6 +30,12 @@ const LATIN_TEXT: &str =
 const BLOCK_POINT: (f32, f32) = (440.0, 90.0);
 /// 控制条三个按钮的中心：right 8、gap 8、22px 按钮、top 5。
 const BUTTON_CENTERS: [(f32, f32); 3] = [(801.0, 44.0), (831.0, 44.0), (861.0, 44.0)];
+/// 指针停在 `BLOCK_POINT` 时应有的状态。
+const OVER_BLOCK: Pointer = Pointer {
+    hovering_block: true,
+    hover_button: None,
+    locked: false,
+};
 
 #[test]
 fn native_snapshot_subtitle() {
@@ -136,12 +142,16 @@ fn controls(snaps: &mut Snapshots, dpi: u32) {
         let mut s = opened(snaps, dpi, SubtitleConfig::default(), SHORT_TEXT);
         s.mouse_move(BLOCK_POINT);
         s.advance(60);
-        s.shot("controls-fade-60ms");
+        pointer_shot(&mut s, "controls-fade-60ms", OVER_BLOCK);
         s.advance(60);
-        s.shot("controls-fade-120ms");
+        pointer_shot(&mut s, "controls-fade-120ms", OVER_BLOCK);
         for (index, center) in BUTTON_CENTERS.into_iter().enumerate() {
             s.mouse_move(center);
-            s.shot(&format!("hover-button-{index}"));
+            let expected = Pointer {
+                hover_button: Some(index),
+                ..OVER_BLOCK
+            };
+            pointer_shot(&mut s, &format!("hover-button-{index}"), expected);
         }
     }
     {
@@ -149,9 +159,17 @@ fn controls(snaps: &mut Snapshots, dpi: u32) {
         s.mouse_move(BLOCK_POINT);
         s.advance(SETTLE_MS);
         s.click(BUTTON_CENTERS[0]);
+        assert!(
+            driver::pointer(s.hwnd()).locked,
+            "点击锁定按钮后应进入锁定态"
+        );
         // 移开按钮，看锁定态本身的高亮。
         s.mouse_move(BLOCK_POINT);
-        s.shot("locked");
+        let expected = Pointer {
+            locked: true,
+            ..OVER_BLOCK
+        };
+        pointer_shot(&mut s, "locked", expected);
     }
 }
 
@@ -206,6 +224,17 @@ fn opened<'a>(
     set_text(&s, text, false);
     s.advance(SETTLE_MS);
     s
+}
+
+/// 坐标是按布局常量写死的，截取前确认确实命中了预期的块/按钮；悬停态还依赖
+/// WM_MOUSELEAVE 不被派发（见 `Session::mouse_move`），失准或丢失时直接失败。
+fn pointer_shot(s: &mut Session, case: &str, expected: Pointer) {
+    assert_eq!(
+        driver::pointer(s.hwnd()),
+        expected,
+        "{case}：指针状态与场景预期不符"
+    );
+    s.shot(case);
 }
 
 fn set_text(s: &Session, text: &str, fade: bool) {

@@ -1453,8 +1453,18 @@ mod imp {
         // 真正读取软件 D2D 输出，防止“布局创建成功”掩盖画布里没有文字的回归。
         // 像素取自离屏接缝截下的真实渲染帧（96 DPI，DIB 与布局同尺寸）。
         fn assert_visible_text_pixels(state: &mut WindowState, name: &str) {
+            let before = state
+                .surface
+                .capture()
+                .map_or(0, |capture| capture.rendered);
             state.render();
             let capture = state.surface.capture().expect("离屏渲染应产出一帧");
+            assert!(
+                capture.rendered > before && capture.presented.frame == capture.rendered,
+                "{name}: 本次渲染没有出新帧（尝试 {}，出帧 {}）",
+                capture.rendered,
+                capture.presented.frame
+            );
             let (width, height) = (capture.presented.width, capture.presented.height);
             assert_eq!(
                 (width, height),
@@ -2186,6 +2196,23 @@ mod imp {
 
         pub(crate) fn frame_timer_active(hwnd: HWND) -> bool {
             with_state(hwnd, |state| state.timer_active).unwrap_or(false)
+        }
+
+        /// 指针相关状态，供场景在截取前确认坐标确实命中了原文块或按钮。
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) struct Pointer {
+            pub(crate) hovering_block: bool,
+            pub(crate) hover_button: Option<usize>,
+            pub(crate) locked: bool,
+        }
+
+        pub(crate) fn pointer(hwnd: HWND) -> Pointer {
+            with_state(hwnd, |state| Pointer {
+                hovering_block: state.view.hovering_block,
+                hover_button: state.view.hover_button,
+                locked: state.view.locked,
+            })
+            .expect("字幕窗口状态不存在")
         }
 
         pub(crate) fn capture(hwnd: HWND) -> Option<Capture> {

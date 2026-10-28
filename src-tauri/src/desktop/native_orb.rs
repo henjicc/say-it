@@ -1595,6 +1595,10 @@ mod imp {
             with_state(hwnd, |state| state.timer_active).unwrap_or(false)
         }
 
+        pub(crate) fn hovering(hwnd: HWND) -> bool {
+            with_state(hwnd, |state| state.view.hovering).unwrap_or(false)
+        }
+
         pub(crate) fn capture(hwnd: HWND) -> Option<Capture> {
             with_state(hwnd, |state| state.surface.capture()).flatten()
         }
