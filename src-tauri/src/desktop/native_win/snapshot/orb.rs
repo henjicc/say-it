@@ -1,7 +1,7 @@
 //! 悬浮球的快照场景。
 
 use super::{Driver, Session, Snapshots};
-use crate::desktop::native_orb::snapshot_driver::{self as driver, Command, OrbPhase};
+use crate::desktop::native_win::orb::snapshot_driver::{self as driver, Command, OrbPhase};
 
 const DRIVER: Driver = Driver {
     create_window: driver::create_window,
