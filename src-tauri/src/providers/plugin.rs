@@ -274,6 +274,7 @@ pub struct PluginSummary {
 
 #[derive(Clone, Debug)]
 pub struct LocalModelSpec {
+    pub manifest_version: String,
     pub plugin_id: String,
     pub provider_id: String,
     pub engine: String,
@@ -290,6 +291,9 @@ pub struct ModelPackSummary {
     pub total_bytes: u64,
     pub ready_bytes: u64,
     pub downloadable: bool,
+    pub keep_loaded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residency: Option<super::local_asr::cache::ResidencyStatus>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1103,6 +1107,62 @@ fn merge_missing_config(target: &mut Value, defaults: &Value) {
 }
 
 impl PluginRegistry {
+    pub fn resident_model_specs(&self, settings: &ProviderSettings) -> Vec<LocalModelSpec> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| {
+                let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
+                let enabled = settings.profiles.iter().any(|profile| {
+                    profile.id == spec.provider_id
+                        && profile.kind == format!("model-pack:{}", spec.plugin_id)
+                        && profile.enabled
+                        && profile.keep_loaded
+                });
+                let pack = plugin.manifest.model_pack.as_ref()?;
+                (enabled
+                    && super::local_asr::cache::supports_residency(&spec.engine)
+                    && super::model_download::inspect_pack(&spec.model_dir, pack).state == "ready")
+                    .then_some(spec)
+            })
+            .collect()
+    }
+
+    pub fn set_keep_loaded(
+        &self,
+        settings: &mut ProviderSettings,
+        plugin_id: &str,
+        keep_loaded: bool,
+    ) -> Result<(), String> {
+        let spec = self
+            .model_pack_for_plugin(plugin_id)
+            .ok_or_else(|| format!("插件 {plugin_id} 不是本地语音模型包"))?;
+        if !super::local_asr::cache::supports_residency(&spec.engine) {
+            return Err(format!("模型引擎 {} 不支持常驻内存", spec.engine));
+        }
+        let profile = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| {
+                profile.id == spec.provider_id && profile.kind == format!("model-pack:{plugin_id}")
+            })
+            .ok_or_else(|| format!("模型包 {plugin_id} 的供应商配置不存在"))?;
+        if keep_loaded {
+            if !profile.enabled {
+                return Err("请先启用模型包".into());
+            }
+            let pack = ModelPackManifest {
+                engine: spec.engine,
+                files: spec.files,
+                params: spec.params,
+            };
+            if super::model_download::inspect_pack(&spec.model_dir, &pack).state != "ready" {
+                return Err("模型尚未就绪，请先下载或重新安装".into());
+            }
+        }
+        profile.keep_loaded = keep_loaded;
+        Ok(())
+    }
+
     pub fn snapshot_with_provider_settings(
         &self,
         settings: Option<&super::ProviderSettings>,
@@ -1142,6 +1202,25 @@ impl PluginRegistry {
                             total_bytes: status.total_bytes,
                             ready_bytes: status.ready_bytes,
                             downloadable: pack.files.iter().any(|file| file.download.is_some()),
+                            keep_loaded: settings
+                                .and_then(|settings| {
+                                    settings.profiles.iter().find(|profile| {
+                                        profile.kind == format!("model-pack:{}", plugin.manifest.id)
+                                    })
+                                })
+                                .is_some_and(|profile| profile.keep_loaded),
+                            residency: super::local_asr::cache::supports_residency(&pack.engine)
+                                .then(|| {
+                                    let spec = self
+                                        .model_pack_for_plugin(&plugin.manifest.id)
+                                        .expect("模型包摘要必有模型规格");
+                                    super::local_asr::cache::status(&spec).unwrap_or_else(|error| {
+                                        super::local_asr::cache::ResidencyStatus {
+                                            state: "failed".into(),
+                                            error: Some(error),
+                                        }
+                                    })
+                                }),
                         }
                     }),
                 })
@@ -1216,6 +1295,7 @@ impl PluginRegistry {
             .as_deref()
             .ok_or("JavaScript 插件缺少 entrypoint")?;
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: plugin.manifest.provider.id.clone(),
             kind: format!("plugin:{}", plugin.manifest.id),
             display_name: plugin.manifest.provider.display_name.clone(),
@@ -1262,6 +1342,7 @@ impl PluginRegistry {
         })?;
         let pack = plugin.manifest.model_pack.as_ref()?;
         Some(LocalModelSpec {
+            manifest_version: plugin.manifest.version.clone(),
             plugin_id: plugin.manifest.id.clone(),
             provider_id: plugin.manifest.provider.id.clone(),
             engine: pack.engine.clone(),
@@ -1277,6 +1358,7 @@ impl PluginRegistry {
         })?;
         let pack = plugin.manifest.model_pack.as_ref()?;
         Some(LocalModelSpec {
+            manifest_version: plugin.manifest.version.clone(),
             plugin_id: plugin.manifest.id.clone(),
             provider_id: plugin.manifest.provider.id.clone(),
             engine: pack.engine.clone(),
@@ -1297,6 +1379,7 @@ impl PluginRegistry {
         })?;
         let pack = plugin.manifest.model_pack.as_ref()?;
         Some(LocalModelSpec {
+            manifest_version: plugin.manifest.version.clone(),
             plugin_id: plugin.manifest.id.clone(),
             provider_id: plugin.manifest.provider.id.clone(),
             engine: pack.engine.clone(),
@@ -1355,6 +1438,11 @@ impl PluginRegistry {
                 .find(|profile| profile.id == provider_id)
             {
                 Some(profile) => {
+                    profile.keep_loaded = profile.keep_loaded
+                        && profile.kind == profile_kind
+                        && plugin.manifest.model_pack.as_ref().is_some_and(|pack| {
+                            super::local_asr::cache::supports_residency(&pack.engine)
+                        });
                     profile.kind = profile_kind.clone();
                     profile.display_name = provider.display_name.clone();
                     profile.auth_kind = provider.auth_kind.clone();
@@ -1364,6 +1452,7 @@ impl PluginRegistry {
                     merge_missing_config(&mut profile.config, &provider.config);
                 }
                 None => settings.profiles.push(ProviderProfile {
+                    keep_loaded: false,
                     id: provider.id.clone(),
                     kind: profile_kind,
                     display_name: provider.display_name.clone(),
@@ -1559,7 +1648,8 @@ mod tests {
     /// 多少次跑的都还是旧版本。
     #[test]
     fn replace_leftover_does_not_shadow_the_real_plugin() {
-        let root = std::env::temp_dir().join(format!("sayit-staging-shadow-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("sayit-staging-shadow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         write_plugin_fixture(&root.join(".replace-demo-9c9c"), "demo", "1.0.0");
@@ -1876,6 +1966,170 @@ mod tests {
         .unwrap();
         let error = validate_plugin_dir(&root).unwrap_err();
         assert!(error.contains("模型包能力只允许 asr 或 ocr"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    fn resident_registry(root: &Path) -> PluginRegistry {
+        let manifest: PluginManifest = serde_json::from_value(model_pack_manifest()).unwrap();
+        PluginRegistry {
+            plugins: vec![InstalledPlugin {
+                root: root.join("plugins").join(&manifest.id),
+                manifest,
+                models: vec![],
+                trust: "unsigned".into(),
+            }],
+            errors: vec![],
+        }
+    }
+
+    #[test]
+    fn keep_loaded_survives_normalization_sync_and_roundtrip() {
+        let root = std::env::temp_dir().join(format!("sayit-resident-{}", uuid::Uuid::new_v4()));
+        let registry = resident_registry(&root);
+        let id = &registry.plugins[0].manifest.id;
+        let spec = registry.model_pack_for_plugin(id).unwrap();
+        std::fs::create_dir_all(&spec.model_dir).unwrap();
+        std::fs::write(spec.model_dir.join("model.bin"), b"x").unwrap();
+        let mut settings = ProviderSettings::default();
+        registry.merge_provider_profiles(&mut settings);
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == spec.provider_id)
+            .unwrap();
+        assert!(!profile.keep_loaded);
+        let mut legacy = serde_json::to_value(profile).unwrap();
+        legacy.as_object_mut().unwrap().remove("keepLoaded");
+        assert!(
+            !serde_json::from_value::<ProviderProfile>(legacy)
+                .unwrap()
+                .keep_loaded
+        );
+        registry.set_keep_loaded(&mut settings, id, true).unwrap();
+        settings = super::super::normalize_settings(settings);
+        settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        registry.merge_provider_profiles(&mut settings);
+        assert_eq!(registry.resident_model_specs(&settings).len(), 1);
+        let snapshot = registry.snapshot_with_provider_settings(Some(&settings));
+        assert!(snapshot.plugins[0].model_pack.as_ref().unwrap().keep_loaded);
+        registry.set_keep_loaded(&mut settings, id, false).unwrap();
+        assert!(registry.resident_model_specs(&settings).is_empty());
+        registry.set_keep_loaded(&mut settings, id, true).unwrap();
+        settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == spec.provider_id)
+            .unwrap()
+            .enabled = false;
+        assert!(registry.resident_model_specs(&settings).is_empty());
+        assert!(registry
+            .set_keep_loaded(&mut settings, id, true)
+            .unwrap_err()
+            .contains("启用"));
+        PluginRegistry::default().merge_provider_profiles(&mut settings);
+        let retained = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == spec.provider_id)
+            .unwrap();
+        assert!(retained.keep_loaded);
+        assert!(!retained.enabled);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn model_pack_settings_survive_missing_registry_and_recovery() {
+        let registry = resident_registry(&std::env::temp_dir());
+        let provider_id = &registry.plugins[0].manifest.provider.id;
+        for enabled in [false, true] {
+            let mut settings = ProviderSettings::default();
+            registry.merge_provider_profiles(&mut settings);
+            let profile = settings
+                .profiles
+                .iter_mut()
+                .find(|profile| &profile.id == provider_id)
+                .unwrap();
+            profile.keep_loaded = true;
+            profile.enabled = enabled;
+            let kind = profile.kind.clone();
+            PluginRegistry::default().merge_provider_profiles(&mut settings);
+            // 模拟扫描后的持久化与再次加载，缺失的包只能被停用，不能丢失设置。
+            settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+            let profile = settings
+                .profiles
+                .iter()
+                .find(|profile| &profile.id == provider_id)
+                .unwrap();
+            assert_eq!(profile.kind, kind);
+            assert!(profile.keep_loaded);
+            assert!(!profile.enabled);
+            registry.merge_provider_profiles(&mut settings);
+            let profile = settings
+                .profiles
+                .iter()
+                .find(|profile| &profile.id == provider_id)
+                .unwrap();
+            assert!(profile.keep_loaded);
+            assert!(!profile.enabled, "恢复扫描不能自动重新启用模型包");
+        }
+    }
+
+    #[test]
+    fn keep_loaded_rejects_missing_non_asr_and_not_ready_targets() {
+        let root =
+            std::env::temp_dir().join(format!("sayit-resident-invalid-{}", uuid::Uuid::new_v4()));
+        let mut registry = resident_registry(&root);
+        let id = registry.plugins[0].manifest.id.clone();
+        let mut settings = ProviderSettings::default();
+        registry.merge_provider_profiles(&mut settings);
+        assert!(registry
+            .set_keep_loaded(&mut settings, "missing", true)
+            .is_err());
+        assert!(registry
+            .set_keep_loaded(&mut settings, "bailian", true)
+            .is_err());
+        assert!(registry
+            .set_keep_loaded(&mut settings, &id, true)
+            .unwrap_err()
+            .contains("就绪"));
+        registry.plugins[0]
+            .manifest
+            .model_pack
+            .as_mut()
+            .unwrap()
+            .engine = "ppocr-mnn".into();
+        assert!(registry
+            .set_keep_loaded(&mut settings, &id, true)
+            .unwrap_err()
+            .contains("不支持"));
+        registry.plugins[0].manifest.runtime.kind = "javascript".into();
+        assert!(registry.set_keep_loaded(&mut settings, &id, true).is_err());
+    }
+
+    #[test]
+    fn funasr_descriptor_matches_existing_host_model_pack_contract() {
+        let value: Value = serde_json::from_str(include_str!(
+            "../../../model-packs/funasr-nano-ctc-int8.json"
+        ))
+        .unwrap();
+        let manifest: PluginManifest = serde_json::from_value(value["manifest"].clone()).unwrap();
+        assert_eq!(manifest.id, "official.sherpa-funasr-nano-ctc");
+        assert_eq!(manifest.models.len(), 2);
+        let pack = manifest.model_pack.as_ref().unwrap();
+        assert_eq!(pack.params["numThreads"], 4);
+        assert_eq!(pack.engine, "sherpa-onnx-offline");
+        assert!(pack
+            .files
+            .iter()
+            .any(|file| file.path == "LICENSE-Fun-ASR.txt"));
+        let root =
+            std::env::temp_dir().join(format!("sayit-funasr-descriptor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        validate_plugin_dir(&root).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -41,6 +41,7 @@ fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
         trust: "unsigned".into(),
     };
     let profile = ProviderProfile {
+        keep_loaded: false,
         id: "bailian".into(),
         kind: "plugin:test".into(),
         display_name: "Test".into(),

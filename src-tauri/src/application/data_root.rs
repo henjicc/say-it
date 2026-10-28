@@ -388,6 +388,8 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
         }
     }
 
+    crate::providers::local_asr::cache::disable_until_restart()?;
+
     // 旧数据删除失败不回滚迁移（指针已切换），仅提示手动清理。
     if let Err(warning) = remove_migratable_entries(&current) {
         eprintln!("[data-root] 旧数据清理未完全成功：{warning}");

@@ -273,6 +273,7 @@ pub(crate) fn add_llm_provider(
             vec![crate::providers::LlmModelConfig::manual(model)]
         };
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: id.clone(),
             kind: format!("llm:{adapter}"),
             display_name: display_name.to_string(),

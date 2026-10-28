@@ -187,6 +187,7 @@ mod tests {
         settings.profiles[0].enabled = false;
         settings.defaults.asr = "missing".into();
         settings.profiles.push(crate::providers::ProviderProfile {
+            keep_loaded: false,
             id: "fallback".into(),
             kind: "test".into(),
             display_name: "Fallback".into(),

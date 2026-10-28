@@ -1171,6 +1171,7 @@ mod tests {
             }))
             .unwrap();
             data.providers.profiles.push(ProviderProfile {
+                keep_loaded: false,
                 id: format!("malicious-plugin-{label}"),
                 kind: format!("plugin:malicious-plugin-{label}"),
                 display_name: "Malicious plugin".into(),
