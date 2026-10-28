@@ -29,6 +29,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+      - name: Test overlay crates
+        if: runner.os == 'macOS'
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core -p sayit-overlay-macos
       - name: Install macOS native dependency
         if: runner.os == 'macOS'
         run: brew install opus

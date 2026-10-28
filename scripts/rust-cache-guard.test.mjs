@@ -12,6 +12,7 @@ import {
   replacesLocalRelease,
   shouldCheckDebug,
   staleSherpaEntries,
+  toolchainChanged,
 } from "./rust-cache-guard.mjs";
 
 const toolchain = "rustc 1.99.0 (b940084d7 2026-09-28)";
@@ -27,6 +28,12 @@ test("首次运行没有工具链记录且未超预算时不清理", () => {
 test("工具链变更后清理，即使体积很小", () => {
   const reason = debugCleanupReason({ previousToolchain: oldToolchain, currentToolchain: toolchain, debugBytes: 0 });
   assert.match(reason, /工具链已变更/);
+});
+
+test("只有存在上次记录且与当前不同才算工具链变更（决定是否删除 mac-check）", () => {
+  assert.equal(toolchainChanged(oldToolchain, toolchain), true);
+  assert.equal(toolchainChanged(toolchain, toolchain), false);
+  assert.equal(toolchainChanged(null, toolchain), false);
 });
 
 test("体积超过预算时清理，等于预算时不清理", () => {
