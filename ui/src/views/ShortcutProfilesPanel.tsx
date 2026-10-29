@@ -1,12 +1,12 @@
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select } from "@/components/ui/Input";
+import { Tabs } from "@/components/ui/Tabs";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import {
@@ -25,6 +25,9 @@ import {
 } from "@/store/useDictPrefs";
 import { useDictationStore } from "@/store/useDictationStore";
 import { useUiStore } from "@/store/useUiStore";
+
+/** 展开的方案详情与列表行的名称对齐（让过复选框）。 */
+const DETAIL_INDENT = "pl-[42px]";
 
 type SmartTriggerMode = "inherit" | "always" | "minimum";
 
@@ -136,12 +139,13 @@ export function ShortcutProfilesPanel() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <SectionHeader title="快捷键方案" description="为不同用途设置专用快捷键。一次录音开始后会一直使用当时的方案。同一个按键可以分别设置单击和长按；相同的按键与触发方式不能重复。" />
-
-      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
+    <InspectorBody>
+      <Group
+        title="快捷键方案"
+        description="为不同用途设置专用快捷键。一次录音开始后会一直使用当时的方案。同一个按键可以分别设置单击和长按；相同的按键与触发方式不能重复。"
+      >
         {profiles.length === 0 && (
-          <p className="px-3 py-3 text-xs text-[var(--color-fg-faint)]">
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">
             暂无快捷键方案。主快捷键仍会按当前软件的场景规则处理。
           </p>
         )}
@@ -152,12 +156,8 @@ export function ShortcutProfilesPanel() {
             || profile.processingMode === "smartAndLocal";
           const mode = triggerMode(profile.smartProcessingMinChars);
           return (
-            <div
-              key={profile.id}
-              id={`shortcut-profile-${profile.id}`}
-              className="border-b border-[var(--color-line)] last:border-b-0"
-            >
-              <div className="flex items-center gap-2.5 px-3 py-2.5">
+            <div key={profile.id} id={`shortcut-profile-${profile.id}`}>
+              <div className="flex min-h-[var(--row-h)] items-center gap-2.5 px-3.5 py-2">
                 <Checkbox
                   checked={profile.enabled}
                   disabled={!profile.keyCode}
@@ -170,16 +170,14 @@ export function ShortcutProfilesPanel() {
                   aria-expanded={open}
                   onClick={() => setEditingId(open ? null : profile.id)}
                 >
-                  <span className="flex items-center gap-2 text-sm text-[var(--color-fg)]">
-                    <span className="truncate">{profile.name}</span>
-                  </span>
+                  <span className="block truncate text-[13px] text-[var(--color-fg)]">{profile.name}</span>
                   <span className="block truncate text-[11px] text-[var(--color-fg-faint)]">
                     {shortcutLabel(profile) || "未设置"} · {shortcutTriggerLabel(profile.triggerMode)} · {processingSummary(profile)}
                   </span>
                 </button>
                 <IconButton
                   size="sm"
-                  className="h-7 w-7 shrink-0"
+                  className="shrink-0"
                   label={open ? "收起" : "展开"}
                   onClick={() => setEditingId(open ? null : profile.id)}
                 >
@@ -188,7 +186,7 @@ export function ShortcutProfilesPanel() {
                 <IconButton
                   size="sm"
                   variant="dangerHover"
-                  className="h-7 w-7 shrink-0"
+                  className="shrink-0"
                   label="删除快捷键方案"
                   onClick={() => void remove(profile)}
                 >
@@ -197,31 +195,34 @@ export function ShortcutProfilesPanel() {
               </div>
 
               {open && (
-                <div className="border-t border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-4">
-                  <FormGrid>
-                    <Field label="方案名称">
-                      <Input
-                        value={draftNames[profile.id] ?? profile.name}
-                        maxLength={80}
-                        onChange={(event) => setDraftNames((current) => ({
-                          ...current,
-                          [profile.id]: event.target.value,
-                        }))}
-                        onBlur={() => {
-                          const name = (draftNames[profile.id] ?? profile.name).trim();
-                          setDraftNames((current) => {
-                            const next = { ...current };
-                            delete next[profile.id];
-                            return next;
-                          });
-                          if (name && name !== profile.name) update(profile.id, { name });
-                        }}
-                      />
-                    </Field>
-                    <Field
-                      label="快捷键"
-                      hint={!profile.keyCode ? "尚未设置快捷键，录入后会自动启用。" : undefined}
-                    >
+                <div className="border-t border-[var(--color-line)] [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
+                  <Row className={DETAIL_INDENT} label="方案名称">
+                    <Input
+                      className={ROW_CONTROL_W}
+                      aria-label="方案名称"
+                      value={draftNames[profile.id] ?? profile.name}
+                      maxLength={80}
+                      onChange={(event) => setDraftNames((current) => ({
+                        ...current,
+                        [profile.id]: event.target.value,
+                      }))}
+                      onBlur={() => {
+                        const name = (draftNames[profile.id] ?? profile.name).trim();
+                        setDraftNames((current) => {
+                          const next = { ...current };
+                          delete next[profile.id];
+                          return next;
+                        });
+                        if (name && name !== profile.name) update(profile.id, { name });
+                      }}
+                    />
+                  </Row>
+                  <Row
+                    className={DETAIL_INDENT}
+                    label="快捷键"
+                    hint={!profile.keyCode ? "尚未设置快捷键，录入后会自动启用。" : undefined}
+                  >
+                    <div className={ROW_CONTROL_W}>
                       <ShortcutRecorder
                         value={profile}
                         onChange={(shortcut) => update(profile.id, { ...shortcut, enabled: true })}
@@ -234,122 +235,129 @@ export function ShortcutProfilesPanel() {
                           enabled: false,
                         })}
                       />
-                    </Field>
-                    <Field label="触发方式">
-                      <Select
-                        value={profile.triggerMode}
-                        onChange={(event) => update(profile.id, {
-                          triggerMode: event.target.value as ShortcutTriggerMode,
-                        })}
-                      >
-                        {SHORTCUT_TRIGGER_MODES.map((item) => (
-                          <option key={item.value} value={item.value}>{item.label}</option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <Field label="处理方式">
-                      <Select
-                        value={profile.processingMode}
-                        onChange={(event) => {
-                          const processingMode = event.target.value as ShortcutProcessingMode;
-                          update(profile.id, {
-                            processingMode,
-                            smartProcessingMinChars:
-                              (processingMode === "smartOnly" || processingMode === "smartAndLocal")
-                              && profile.smartProcessingMinChars === null
-                                ? 0
-                                : profile.smartProcessingMinChars,
-                          });
-                        }}
-                      >
-                        {PROCESSING_MODES.map((item) => (
-                          <option key={item.value} value={item.value}>{item.label}</option>
-                        ))}
-                      </Select>
-                    </Field>
+                    </div>
+                  </Row>
+                  <Row className={DETAIL_INDENT} label="触发方式">
+                    <Tabs
+                      variant="view"
+                      ariaLabel="触发方式"
+                      tabs={SHORTCUT_TRIGGER_MODES.map((item) => ({ key: item.value, label: item.label }))}
+                      active={profile.triggerMode}
+                      onChange={(value) => update(profile.id, { triggerMode: value })}
+                    />
+                  </Row>
+                  <Row className={DETAIL_INDENT} label="处理方式">
+                    <Select
+                      className={ROW_CONTROL_W}
+                      aria-label="处理方式"
+                      value={profile.processingMode}
+                      onChange={(event) => {
+                        const processingMode = event.target.value as ShortcutProcessingMode;
+                        update(profile.id, {
+                          processingMode,
+                          smartProcessingMinChars:
+                            (processingMode === "smartOnly" || processingMode === "smartAndLocal")
+                            && profile.smartProcessingMinChars === null
+                              ? 0
+                              : profile.smartProcessingMinChars,
+                        });
+                      }}
+                    >
+                      {PROCESSING_MODES.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </Select>
+                  </Row>
 
-                    {smartRelevant && (
-                      <>
-                        <Field
-                          label="智能处理时机"
-                          hint={profile.processingMode === "followScene"
-                            ? "仅在当前场景最终启用智能处理时生效。"
-                            : undefined}
+                  {smartRelevant && (
+                    <>
+                      <Row
+                        className={DETAIL_INDENT}
+                        label="智能处理时机"
+                        hint={profile.processingMode === "followScene"
+                          ? "仅在当前场景最终启用智能处理时生效。"
+                          : undefined}
+                      >
+                        <Select
+                          className={ROW_CONTROL_W}
+                          aria-label="智能处理时机"
+                          value={mode}
+                          onChange={(event) => {
+                            const nextMode = event.target.value as SmartTriggerMode;
+                            update(profile.id, {
+                              smartProcessingMinChars: nextMode === "inherit"
+                                ? null
+                                : nextMode === "always"
+                                  ? 0
+                                  : profile.smartProcessingMinChars
+                                    || prefs.smartProcessingMinChars
+                                    || DEFAULT_SMART_PROCESSING_MIN_CHARS,
+                            });
+                          }}
                         >
-                          <Select
-                            value={mode}
-                            onChange={(event) => {
-                              const nextMode = event.target.value as SmartTriggerMode;
-                              update(profile.id, {
-                                smartProcessingMinChars: nextMode === "inherit"
-                                  ? null
-                                  : nextMode === "always"
-                                    ? 0
-                                    : profile.smartProcessingMinChars
-                                      || prefs.smartProcessingMinChars
-                                      || DEFAULT_SMART_PROCESSING_MIN_CHARS,
-                              });
-                            }}
-                          >
-                            <option value="inherit">跟随场景</option>
-                            <option value="always">每次听写</option>
-                            <option value="minimum">达到指定长度</option>
-                          </Select>
-                        </Field>
-                        {mode === "minimum" && (
-                          <Field label="最少文本长度">
-                            <NumberInput
-                              min={1}
-                              max={MAX_SMART_PROCESSING_MIN_CHARS}
-                              step={10}
-                              value={profile.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS}
-                              onValueChange={(value) => update(profile.id, { smartProcessingMinChars: value })}
-                            />
-                          </Field>
-                        )}
-                        <Field label="智能处理模板">
-                          <Select
-                            value={profile.smartTemplateId ?? ""}
-                            onChange={(event) => update(profile.id, { smartTemplateId: event.target.value || null })}
-                          >
-                            <option value="">跟随场景</option>
-                            {prefs.smartTemplates.map((template) => (
-                              <option key={template.id} value={template.id}>{template.name}</option>
-                            ))}
-                          </Select>
-                        </Field>
-                      </>
-                    )}
+                          <option value="inherit">跟随场景</option>
+                          <option value="always">每次听写</option>
+                          <option value="minimum">达到指定长度</option>
+                        </Select>
+                      </Row>
+                      {mode === "minimum" && (
+                        <Row className={DETAIL_INDENT} label="最少文本长度">
+                          <NumberInput
+                            className="w-32"
+                            aria-label="最少文本长度"
+                            min={1}
+                            max={MAX_SMART_PROCESSING_MIN_CHARS}
+                            step={10}
+                            value={profile.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS}
+                            onValueChange={(value) => update(profile.id, { smartProcessingMinChars: value })}
+                          />
+                        </Row>
+                      )}
+                      <Row className={DETAIL_INDENT} label="智能处理模板">
+                        <Select
+                          className={ROW_CONTROL_W}
+                          aria-label="智能处理模板"
+                          value={profile.smartTemplateId ?? ""}
+                          onChange={(event) => update(profile.id, { smartTemplateId: event.target.value || null })}
+                        >
+                          <option value="">跟随场景</option>
+                          {prefs.smartTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>{template.name}</option>
+                          ))}
+                        </Select>
+                      </Row>
+                    </>
+                  )}
 
-                    <Field label="文字输入方式">
-                      <Select
-                        value={profile.injectMethod ?? ""}
-                        onChange={(event) => update(profile.id, {
-                          injectMethod: event.target.value === "paste" || event.target.value === "type"
-                            ? event.target.value
-                            : null,
-                        })}
-                      >
-                        <option value="">继承全局</option>
-                        <option value="paste">剪贴板粘贴</option>
-                        <option value="type">模拟逐字输入</option>
-                      </Select>
-                    </Field>
-                  </FormGrid>
+                  <Row className={DETAIL_INDENT} label="文字输入方式">
+                    <Select
+                      className={ROW_CONTROL_W}
+                      aria-label="文字输入方式"
+                      value={profile.injectMethod ?? ""}
+                      onChange={(event) => update(profile.id, {
+                        injectMethod: event.target.value === "paste" || event.target.value === "type"
+                          ? event.target.value
+                          : null,
+                      })}
+                    >
+                      <option value="">继承全局</option>
+                      <option value="paste">剪贴板粘贴</option>
+                      <option value="type">模拟逐字输入</option>
+                    </Select>
+                  </Row>
                 </div>
               )}
             </div>
           );
         })}
-      </div>
-
-      <div>
-        <Button size="sm" disabled={profiles.length >= MAX_DICTATION_SHORTCUT_PROFILES} onClick={add}>
-          <Plus className="h-3.5 w-3.5" aria-hidden />
-          添加快捷键方案
-        </Button>
-      </div>
+        <div className="flex items-center px-3.5 py-2.5">
+          <Button size="sm" disabled={profiles.length >= MAX_DICTATION_SHORTCUT_PROFILES} onClick={add}>
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            添加快捷键方案
+          </Button>
+        </div>
+      </Group>
       {dialog}
-    </div>
+    </InspectorBody>
   );
 }

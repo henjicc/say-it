@@ -1,9 +1,9 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
-import { Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { Group, Row } from "@/components/ui/Group";
 import { NumberInput, Textarea } from "@/components/ui/Input";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
@@ -143,12 +143,25 @@ export function SettingsHistoryPanel() {
   }
 
   return (
-    <SettingsSection title="本地历史" description="历史记录只保存在本机，不保存音频，也不会记录密码输入框中的内容。">
-      <FormGrid>
-        <Field label="保存历史" controlId="history-enabled" hint="关闭后新任务不再写入，已有记录不会自动删除。">
+    <InspectorBody>
+      <Group title="本地历史" description="历史记录只保存在本机，不保存音频，也不会记录密码输入框中的内容。">
+        <Row label="保存历史" controlId="history-enabled" hint="关闭后新任务不再写入，已有记录不会自动删除。">
           <Switch id="history-enabled" checked={prefs.enabled} onChange={(enabled) => void save({ ...prefs, enabled })} label="保存历史" />
-        </Field>
-        <Field label="记录发送前修改" controlId="history-final-draft-observation" hint="仅限本次听写对应输入框，最长观察 120 秒；不会常驻采集键盘或其他文本。">
+        </Row>
+        <Row label="保留天数" hint="范围 1～3650 天，过期记录会自动清理。">
+          <NumberInput className="w-32" value={prefs.retentionDays} min={1} max={3650} onValueChange={(retentionDays) => void save({ ...prefs, retentionDays })} aria-label="历史保留天数" />
+        </Row>
+        <div className="flex flex-col gap-2 p-3.5">
+          <span className="text-[13px] text-[var(--color-fg)]"><HelpLabel content="每行一个进程名或应用名，不区分大小写。">排除应用</HelpLabel></span>
+          <Textarea value={excludedText} onChange={(event) => setExcludedText(event.target.value)} onBlur={() => {
+            const excludedApps = excludedText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+            void save({ ...prefs, excludedApps });
+          }} placeholder="例如：1Password.exe" aria-label="历史排除应用" />
+        </div>
+      </Group>
+
+      <Group title="个性化学习">
+        <Row label="记录发送前修改" controlId="history-final-draft-observation" hint="仅限本次听写对应输入框，最长观察 120 秒；不会常驻采集键盘或其他文本。">
           <Switch
             id="history-final-draft-observation"
             checked={prefs.finalDraftObservationEnabled}
@@ -161,8 +174,8 @@ export function SettingsHistoryPanel() {
             })}
             label="记录发送前修改"
           />
-        </Field>
-        <Field label="个性化纠错" controlId="history-correction-learning" hint="同一处纠正重复两次或经你确认后，才会用于以后的自动纠错。">
+        </Row>
+        <Row label="个性化纠错" controlId="history-correction-learning" hint="同一处纠正重复两次或经你确认后，才会用于以后的自动纠错。">
           <Switch
             id="history-correction-learning"
             checked={prefs.correctionLearningEnabled}
@@ -174,8 +187,8 @@ export function SettingsHistoryPanel() {
             })}
             label="个性化纠错"
           />
-        </Field>
-        <Field label="云端参考学习记录" controlId="history-cloud-learning" hint="开启后，会向云端模型提供最多三条已去除敏感信息的纠错片段，帮助它理解你的习惯。默认关闭。">
+        </Row>
+        <Row label="云端参考学习记录" controlId="history-cloud-learning" hint="开启后，会向云端模型提供最多三条已去除敏感信息的纠错片段，帮助它理解你的习惯。默认关闭。">
           <Switch
             id="history-cloud-learning"
             checked={prefs.cloudLearningContextEnabled}
@@ -183,31 +196,25 @@ export function SettingsHistoryPanel() {
             onChange={(enabled) => void setCloudLearningContext(enabled)}
             label="云端参考学习记录"
           />
-        </Field>
-        <Field label="保留天数" hint="范围 1～3650 天，过期记录会自动清理。">
-          <NumberInput value={prefs.retentionDays} min={1} max={3650} onValueChange={(retentionDays) => void save({ ...prefs, retentionDays })} aria-label="历史保留天数" />
-        </Field>
-        <Field label="学习记忆保留天数" hint="已学会的纠错习惯单独保存，可保留 1～3650 天。">
-          <NumberInput value={prefs.learningMemoryRetentionDays} min={1} max={3650} onValueChange={(learningMemoryRetentionDays) => void save({ ...prefs, learningMemoryRetentionDays })} aria-label="学习记忆保留天数" />
-        </Field>
-        <Field label="排除应用" hint="每行一个进程名或应用名，不区分大小写。">
-          <Textarea value={excludedText} onChange={(event) => setExcludedText(event.target.value)} onBlur={() => {
-            const excludedApps = excludedText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-            void save({ ...prefs, excludedApps });
-          }} placeholder="例如：1Password.exe" aria-label="历史排除应用" />
-        </Field>
-        <Field label="清理数据" message="立即删除全部历史及其纠错样本，此操作不可撤销。">
-          <Button variant="dangerHover" onClick={() => void clear()}>清空全部历史</Button>
-        </Field>
-        <Field label="使用统计" hint="统计只包含次数、字数和时长；清空历史不会清除这些统计。">
-          <Button variant="dangerHover" onClick={() => void clearUsage()}>清空使用统计</Button>
-        </Field>
-        <Field label="学习记忆" hint="清除纠错规则和表达偏好，但保留历史正文。">
-          <Button variant="dangerHover" onClick={() => void clearLearning()}>清空学习记忆</Button>
-        </Field>
-      </FormGrid>
+        </Row>
+        <Row label="学习记忆保留天数" hint="已学会的纠错习惯单独保存，可保留 1～3650 天。">
+          <NumberInput className="w-32" value={prefs.learningMemoryRetentionDays} min={1} max={3650} onValueChange={(learningMemoryRetentionDays) => void save({ ...prefs, learningMemoryRetentionDays })} aria-label="学习记忆保留天数" />
+        </Row>
+      </Group>
+
+      <Group title="清理数据">
+        <Row label="全部历史" message="立即删除全部历史及其纠错样本，此操作不可撤销。">
+          <Button size="sm" variant="danger" onClick={() => void clear()}>清空全部历史</Button>
+        </Row>
+        <Row label="使用统计" hint="统计只包含次数、字数和时长；清空历史不会清除这些统计。">
+          <Button size="sm" variant="danger" onClick={() => void clearUsage()}>清空使用统计</Button>
+        </Row>
+        <Row label="学习记忆" hint="清除纠错规则和表达偏好，但保留历史正文。">
+          <Button size="sm" variant="danger" onClick={() => void clearLearning()}>清空学习记忆</Button>
+        </Row>
+      </Group>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       {dialog}
-    </SettingsSection>
+    </InspectorBody>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Row } from "@/components/ui/Group";
+import { Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
@@ -13,7 +13,6 @@ import { isMacOS, isWindows } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 
-const CONTROL_W = "w-64";
 const systemAudioSupported = isWindows || isMacOS;
 const systemAudioSupportsDeviceSelection = isWindows;
 
@@ -52,7 +51,7 @@ export function SubtitleSourceRow() {
   return (
     <Row label="声音来源">
       <Select
-        className={CONTROL_W}
+        className={ROW_CONTROL_W}
         aria-label="声音来源"
         searchable={inputs.length + outputs.length > 5}
         searchPlaceholder="搜索设备…"
@@ -82,7 +81,7 @@ export function SubtitleAsrRow() {
   const { prefs, running, patch } = useSubtitleStore();
   return (
     <Row label="识别模型" controlId="subtitle-asr-model">
-      <div className={CONTROL_W}>
+      <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="subtitle-asr-model"
           value={prefs.asrModel}

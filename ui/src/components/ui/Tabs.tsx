@@ -61,6 +61,8 @@ export function Tabs<K extends string>({
   const tabsId = id ?? `tabs-${generatedId}`;
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const styles = VARIANT_STYLES[variant];
+  // view 变体是表单里的分段选择，没有对应的面板，读屏按单选组播报。
+  const choice = variant === "view";
 
   if (tabs.length <= 1) return null;
 
@@ -85,7 +87,7 @@ export function Tabs<K extends string>({
   return (
     <div
       id={tabsId}
-      role="tablist"
+      role={choice ? "radiogroup" : "tablist"}
       aria-label={ariaLabel}
       className={cn(styles.list, className)}
     >
@@ -97,9 +99,10 @@ export function Tabs<K extends string>({
             key={tab.key}
             id={`${tabsId}-${tab.key}-tab`}
             type="button"
-            role="tab"
-            aria-selected={isActive}
-            aria-controls={id ? `${tabsId}-${tab.key}-panel` : undefined}
+            role={choice ? "radio" : "tab"}
+            aria-selected={choice ? undefined : isActive}
+            aria-checked={choice ? isActive : undefined}
+            aria-controls={!choice && id ? `${tabsId}-${tab.key}-panel` : undefined}
             tabIndex={isActive ? 0 : -1}
             onClick={() => onChange(tab.key)}
             onKeyDown={(event) => handleKeyDown(event, index)}

@@ -2,7 +2,8 @@ import { useMemo } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Tabs } from "@/components/ui/Tabs";
-import { SettingsSection } from "@/components/ui/SettingsSection";
+import { Group } from "@/components/ui/Group";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { SubtitleEditor } from "@/components/transcription/SubtitleEditor";
 import { copyText } from "@/lib/clipboard";
 import { CMD, cmd } from "@/lib/tauri";
@@ -92,70 +93,72 @@ export function TranscriptAlignPanel() {
 
   return (
     <>
-      <SettingsSection title="音视频文件">
-        <FileCard
-          file={alignFile}
-          dragActive={dragActive}
-          disabled={pickState === "loading" || running}
-          pickState={pickState}
-          message={message}
-          onPick={pickFile}
-          statusTone={statusTone}
-          statusText={cardStatusText}
-          errorMessage={alignErrorMessage}
-          description="使用“通用设置”中的识别设置。同一文件再次对齐时会沿用上次的识别结果，不会重复识别。"
-          actions={
-            <>
-              <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
-                重新选择
+      <FileCard
+        file={alignFile}
+        dragActive={dragActive}
+        disabled={pickState === "loading" || running}
+        pickState={pickState}
+        message={message}
+        onPick={pickFile}
+        statusTone={statusTone}
+        statusText={cardStatusText}
+        errorMessage={alignErrorMessage}
+        description="使用“识别”中的设置。同一文件再次对齐时会沿用上次的识别结果，不会重复识别。"
+        actions={
+          <>
+            <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
+              重新选择
+            </Button>
+            {!hasApiKey && (
+              <Button size="sm" onClick={openProviderSettings}>
+                去设置 API Key
               </Button>
-              {!hasApiKey && (
-                <Button size="sm" onClick={openProviderSettings}>
-                  去设置 API Key
-                </Button>
-              )}
-              {cancellable ? (
-                <Button size="sm" variant="danger" onClick={cancelAlignment}>
-                  取消
-                </Button>
-              ) : (
-                <Button size="sm" variant="primary" onClick={startAlignment} disabled={!alignFile || lineCount === 0 || running}>
-                  开始对齐
-                </Button>
-              )}
-            </>
-          }
-        />
-      </SettingsSection>
+            )}
+            {cancellable ? (
+              <Button size="sm" variant="danger" onClick={cancelAlignment}>
+                取消
+              </Button>
+            ) : (
+              <Button size="sm" variant="primary" onClick={startAlignment} disabled={!alignFile || lineCount === 0 || running}>
+                开始对齐
+              </Button>
+            )}
+          </>
+        }
+      />
 
-      <SettingsSection
+      <Group
         title="文稿"
         right={<span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{lineCount} 行有效文稿</span>}
       >
         <textarea
+          aria-label="文稿"
           value={scriptText}
           onChange={(event) => setScriptText(event.target.value)}
           disabled={running}
           placeholder={"把文稿粘贴到这里，一行一句，字幕文本将完全按照文稿输出。\n空行会被自动忽略。"}
-          className="min-h-44 w-full resize-y rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none focus:border-[var(--accent-ring)] disabled:opacity-60"
+          className="block min-h-44 w-full resize-y rounded-[var(--radius-lg)] bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:opacity-60"
         />
-      </SettingsSection>
+      </Group>
 
       {alignEditorCues && (
-        <SettingsSection
-          title="对齐结果"
-          right={
-            <Tabs<AlignResultView>
-              tabs={[
-                { key: "script", label: "完全按文稿" },
-                { key: "optimized", label: `识别修正${stats && stats.replaced > 0 ? `（${stats.replaced} 处）` : ""}` },
-              ]}
-              active={alignResultView}
-              onChange={(value) => setRuntime({ alignResultView: value })}
-            />
-          }
-        >
-          <p className="text-sm leading-relaxed text-[var(--color-fg-muted)]">
+        <section className="flex flex-col gap-2">
+          <SectionHeader
+            title="对齐结果"
+            right={
+              <Tabs<AlignResultView>
+                variant="view"
+                ariaLabel="对齐结果视图"
+                tabs={[
+                  { key: "script", label: "完全按文稿" },
+                  { key: "optimized", label: `识别修正${stats && stats.replaced > 0 ? `（${stats.replaced} 处）` : ""}` },
+                ]}
+                active={alignResultView}
+                onChange={(value) => setRuntime({ alignResultView: value })}
+              />
+            }
+          />
+          <p className="px-0.5 text-xs leading-relaxed text-[var(--color-fg-muted)]">
             {alignResultView === "script" ? (
               <>
                 共 {alignedLines?.length ?? 0} 行，平均匹配率 {stats ? Math.round(stats.avg * 100) : 0}%
@@ -191,8 +194,8 @@ export function TranscriptAlignPanel() {
             }
           />
 
-          {alignSaveMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{alignSaveMessage}</p>}
-        </SettingsSection>
+          {alignSaveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{alignSaveMessage}</p>}
+        </section>
       )}
     </>
   );

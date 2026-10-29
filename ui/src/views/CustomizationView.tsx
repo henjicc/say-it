@@ -2,11 +2,11 @@ import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Field } from "@/components/ui/Field";
+import { Group, Row } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { SettingsSection } from "@/components/ui/SettingsSection";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   DEFAULT_HOTWORD_WEIGHT,
@@ -90,92 +90,68 @@ export function HotwordsTab() {
   };
 
   return (
-    <div className="flex flex-col gap-8">
-      <SettingsSection
+    <InspectorBody>
+      <Group
         title="热词表"
         right={<SyncStatus state={syncState} message={syncMessage} />}
         description="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">
-        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-          {prefs.hotwords.length === 0 ? (
-            <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
-          ) : (
-            <div className="max-h-[22rem] overflow-y-auto">
-              {prefs.hotwords.map((hotword, index) => (
-                <div
-                  key={index}
-                  className="flex items-center gap-2 border-b border-[var(--color-line)] px-3 py-2 last:border-b-0"
-                >
-                  <Input
-                    value={hotword.text}
-                    placeholder="热词，例如 说吧"
-                    spellCheck={false}
-                    aria-label={`第 ${index + 1} 个热词`}
-                    onChange={(event) => updateHotword(index, { text: event.target.value })}
-                    size="sm" className="flex-1"
-                  />
-                  <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
-                    <HelpLabel content="数值越高，发音相近时越优先识别成这个词。部分识别服务不支持此设置。">权重</HelpLabel>
-                    <NumberInput
-                      value={hotword.weight}
-                      min={MIN_HOTWORD_WEIGHT}
-                      max={MAX_HOTWORD_WEIGHT}
-                      aria-label={`第 ${index + 1} 个热词的权重`}
-                      onValueChange={(weight) => updateHotword(index, { weight })}
-                      className="w-16"
-                      size="sm"
-                    />
-                  </label>
-                  <IconButton
+        {prefs.hotwords.length === 0 ? (
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
+        ) : (
+          <div className="max-h-[22rem] overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
+            {prefs.hotwords.map((hotword, index) => (
+              <div key={index} className="flex items-center gap-2 px-3.5 py-2">
+                <Input
+                  value={hotword.text}
+                  placeholder="热词，例如 说吧"
+                  spellCheck={false}
+                  aria-label={`第 ${index + 1} 个热词`}
+                  onChange={(event) => updateHotword(index, { text: event.target.value })}
+                  size="sm" className="flex-1"
+                />
+                <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
+                  <HelpLabel content="数值越高，发音相近时越优先识别成这个词。部分识别服务不支持此设置。">权重</HelpLabel>
+                  <NumberInput
+                    value={hotword.weight}
+                    min={MIN_HOTWORD_WEIGHT}
+                    max={MAX_HOTWORD_WEIGHT}
+                    aria-label={`第 ${index + 1} 个热词的权重`}
+                    onValueChange={(weight) => updateHotword(index, { weight })}
+                    className="w-16"
                     size="sm"
-                    variant="dangerHover"
-                    className="h-7 w-7 shrink-0"
-                    label={`删除热词 ${hotword.text || index + 1}`}
-                    onClick={() => removeHotword(index)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                  </IconButton>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
+                  />
+                </label>
+                <IconButton
+                  size="sm"
+                  variant="dangerHover"
+                  className="h-7 w-7 shrink-0"
+                  label={`删除热词 ${hotword.text || index + 1}`}
+                  onClick={() => removeHotword(index)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                </IconButton>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
+          <span className="text-xs text-[var(--color-fg-faint)]">
+            {prefs.hotwords.length} / {MAX_HOTWORDS}
+          </span>
           <Button size="sm" disabled={prefs.hotwords.length >= MAX_HOTWORDS} onClick={addHotword}>
             <Plus className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
             添加热词
           </Button>
-          <span className="text-xs text-[var(--color-fg-faint)]">
-            {prefs.hotwords.length} / {MAX_HOTWORDS}
-          </span>
         </div>
-      </SettingsSection>
+      </Group>
 
-      <SettingsSection title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
+      <Group title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
         {targets.length === 0 ? (
-          <p className="text-xs text-[var(--color-fg-faint)]">当前没有已启用且支持热词的供应商。</p>
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">当前没有已启用且支持热词的供应商。</p>
         ) : (
-          <Field
-            label="云端词表"
-            message="获取会用云端词表替换当前热词列表，上下文模板不受影响。"
-            actions={
-              <>
-                <Button
-                  disabled={busy || !pullProviderId}
-                  onClick={() => void run("获取热词", () => pullFromProvider(pullProviderId))}
-                >
-                  获取
-                </Button>
-                <Button
-                  variant="dangerHover"
-                  disabled={busy}
-                  onClick={() => setClearConfirmOpen(true)}
-                >
-                  清除
-                </Button>
-              </>
-            }
-          >
+          <Row label="云端词表" message="获取会用云端词表替换当前热词列表，上下文模板不受影响。">
             <Select
+              className="w-40"
               value={pullProviderId}
               aria-label="云端词表所属的供应商"
               onChange={(event) => setPullProviderId(event.target.value)}
@@ -186,22 +162,41 @@ export function HotwordsTab() {
                 </option>
               ))}
             </Select>
-          </Field>
+            <Button
+              size="sm"
+              disabled={busy || !pullProviderId}
+              onClick={() => void run("获取热词", () => pullFromProvider(pullProviderId))}
+            >
+              获取
+            </Button>
+            <Button
+              size="sm"
+              variant="dangerHover"
+              disabled={busy}
+              onClick={() => setClearConfirmOpen(true)}
+            >
+              清除
+            </Button>
+          </Row>
         )}
-        {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
-        {syncResults.length > 0 && (
-          <ul className="flex flex-col gap-1 text-xs">
-            {syncResults.map((result) => (
-              <li
-                key={result.providerId}
-                className={result.ok ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-err)]"}
-              >
-                {result.displayName}：{result.message}
-              </li>
-            ))}
-          </ul>
+        {(message || syncResults.length > 0) && (
+          <div className="flex flex-col gap-1 px-3.5 py-3 text-xs">
+            {message && <p className="text-[var(--color-fg-subtle)]" role="status">{message}</p>}
+            {syncResults.length > 0 && (
+              <ul className="flex flex-col gap-1">
+                {syncResults.map((result) => (
+                  <li
+                    key={result.providerId}
+                    className={result.ok ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-err)]"}
+                  >
+                    {result.displayName}：{result.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
-      </SettingsSection>
+      </Group>
 
       <Modal
         open={clearConfirmOpen}
@@ -232,7 +227,7 @@ export function HotwordsTab() {
           </div>
         </div>
       </Modal>
-    </div>
+    </InspectorBody>
   );
 }
 
@@ -266,33 +261,33 @@ export function ContextTab() {
   };
 
   return (
-    <div className="flex flex-col gap-8">
-      <SettingsSection title="上下文模板" description="在这里写下录音中可能出现的人名、术语和背景信息，帮助支持此功能的模型识别。留空则不使用；点击“插入热词”可带上热词表。">
-        <Field
-          label="模板"
-          hint="请写出录音中会出现的具体人名或术语，只有笼统描述无法帮助纠正这些词。"
-        >
+    <InspectorBody>
+      <Group
+        title="模板"
+        description="在这里写下录音中可能出现的人名、术语和背景信息，帮助支持此功能的模型识别。请写出具体人名或术语，只有笼统描述无法帮助纠正这些词。留空则不使用；点击“插入热词”可带上热词表。"
+        right={<Button size="sm" onClick={insertHotwordsVariable}>插入热词</Button>}
+      >
+        <div className="p-3.5">
           <Textarea
             rows={8}
             spellCheck={false}
+            aria-label="上下文模板"
             placeholder={`例如：\n本次录音涉及以下术语：${HOTWORDS_PLACEHOLDER}。内容为一场关于语音识别的技术分享。`}
             value={prefs.contextTemplate}
             onChange={(event) => void patch({ contextTemplate: event.target.value })}
           />
-        </Field>
-        <div>
-          <Button size="sm" onClick={insertHotwordsVariable}>
-            插入热词
-          </Button>
         </div>
-      </SettingsSection>
+      </Group>
 
-      <SettingsSection title="发送内容预览" description={`这里是识别时会使用的背景文字，最多保留 ${MAX_CONTEXT_CHARS} 个字符。`}>
-        <span className="text-xs text-[var(--color-fg-subtle)]">{preview.length} / {MAX_CONTEXT_CHARS} 字符</span>
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2.5 text-xs text-[var(--color-fg-muted)]">
+      <Group
+        title="发送内容预览"
+        description={`这里是识别时会使用的背景文字，最多保留 ${MAX_CONTEXT_CHARS} 个字符。`}
+        right={<span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{preview.length} / {MAX_CONTEXT_CHARS} 字符</span>}
+      >
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-3.5 py-3 text-xs text-[var(--color-fg-muted)]">
           {preview || "（未填写，识别时不使用背景文字）"}
         </pre>
-      </SettingsSection>
-    </div>
+      </Group>
+    </InspectorBody>
   );
 }

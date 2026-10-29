@@ -1,9 +1,9 @@
-import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
+import { Group, Row } from "@/components/ui/Group";
 import { Switch } from "@/components/ui/Switch";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 
 import {
@@ -17,30 +17,6 @@ import {
 interface StartupStatus {
   autostart?: boolean;
   silentStart?: boolean;
-}
-
-/** 设置开关行：标题 + 说明 + 右侧开关，统一高密度设置面板的行布局。 */
-function ToggleRow({
-  title,
-  description,
-  checked,
-  onChange,
-  disabled,
-}: {
-  title: string;
-  description: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></p>
-      </div>
-      <Switch checked={checked} onChange={onChange} disabled={disabled} label={title} />
-    </div>
-  );
 }
 
 function DataRootSection() {
@@ -101,67 +77,61 @@ function DataRootSection() {
       : null;
 
   return (
-    <SettingsSection title="数据目录">
-      <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="设置、插件和模型保存在这个文件夹。更改位置会搬移全部数据，完成后重启生效。">存储位置</HelpLabel></p>
-          <p className="mt-1.5 break-all font-mono text-xs text-[var(--color-fg-subtle)]">
-            {status ? status.configuredRoot : "读取中…"}
-          </p>
-          {status?.restartRequired && (
-            <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-warn)]">
-              上一次更改尚未生效，重启后才会切换到该目录；在此之前无法再次更改位置。
+    <Group title="数据目录">
+      <Row
+        label="存储位置"
+        hint="设置、插件和模型保存在这个文件夹。更改位置会搬移全部数据，完成后重启生效。"
+        message={
+          <>
+            <span className="block break-all font-mono">{status ? status.configuredRoot : "读取中…"}</span>
+            {status?.restartRequired && (
+              <span className="mt-1.5 block leading-relaxed text-[var(--color-warn)]">
+                上一次更改尚未生效，重启后才会切换到该目录；在此之前无法再次更改位置。
+              </span>
+            )}
+          </>
+        }
+      >
+        {/* 上一次迁移尚未重启生效时禁止再迁：此时进程仍在旧根目录，而旧目录的数据
+            已经被搬空，再迁一次会把指针指向一个空目录，重启后数据"消失"。
+            后端 migrate_blocking 也有同样的校验，这里只是提前把入口关掉。 */}
+        <Button size="sm" disabled={migrating || !status || status.restartRequired} onClick={() => void pickAndMigrate()}>
+          {migrating ? "迁移中…" : "更改位置"}
+        </Button>
+        {status?.isCustom && (
+          <Button size="sm" disabled={migrating || status.restartRequired} onClick={() => void migrateTo(status.defaultRoot)}>
+            恢复默认位置
+          </Button>
+        )}
+        {status?.restartRequired && (
+          <Button variant="primary" size="sm" disabled={migrating} onClick={() => void cmd(CMD.restartApp)}>
+            立即重启
+          </Button>
+        )}
+      </Row>
+      {(migrating || message) && (
+        <div className="flex flex-col gap-2 px-3.5 py-3">
+          {migrating && (
+            <div className="flex items-center gap-3">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
+                <div
+                  className="h-full rounded-full bg-[var(--color-accent)] transition-[width] duration-150"
+                  style={{ width: `${percent ?? 0}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-subtle)]">
+                {progress ? `${progress.copiedFiles}/${progress.totalFiles} 个文件` : "准备中…"}
+              </span>
+            </div>
+          )}
+          {message && (
+            <p role="status" className={`text-xs ${messageTone === "error" ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+              {message}
             </p>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* 上一次迁移尚未重启生效时禁止再迁：此时进程仍在旧根目录，而旧目录的数据
-              已经被搬空，再迁一次会把指针指向一个空目录，重启后数据"消失"。
-              后端 migrate_blocking 也有同样的校验，这里只是提前把入口关掉。 */}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={migrating || !status || status.restartRequired}
-            onClick={() => void pickAndMigrate()}
-          >
-            {migrating ? "迁移中…" : "更改位置"}
-          </Button>
-          {status?.isCustom && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={migrating || status.restartRequired}
-              onClick={() => void migrateTo(status.defaultRoot)}
-            >
-              恢复默认位置
-            </Button>
-          )}
-          {status?.restartRequired && (
-            <Button variant="primary" size="sm" disabled={migrating} onClick={() => void cmd(CMD.restartApp)}>
-              立即重启
-            </Button>
-          )}
-        </div>
-        {migrating && (
-          <div className="flex items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
-              <div
-                className="h-full rounded-full bg-[var(--color-accent)] transition-[width] duration-150"
-                style={{ width: `${percent ?? 0}%` }}
-              />
-            </div>
-            <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-subtle)]">
-              {progress ? `${progress.copiedFiles}/${progress.totalFiles} 个文件` : "准备中…"}
-            </span>
-          </div>
-        )}
-        {message && (
-          <p className={`text-xs ${messageTone === "error" ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-            {message}
-          </p>
-        )}
-      </div>
-    </SettingsSection>
+      )}
+    </Group>
   );
 }
 
@@ -196,34 +166,40 @@ export function useStartupSettings() {
 export function SettingsStartupPanel() {
   const { startup, startupMsg, saveStartup } = useStartupSettings();
   return (
-    <div className="flex flex-col gap-7">
-    <SettingsSection title="启动设置">
-      <ToggleRow
-        title="开机自启"
-        description="登录系统后自动运行本程序。"
-        checked={!!startup.autostart}
-        onChange={(v) =>
-          saveStartup(
-            { autostart: v, silentStart: startup.silentStart },
-            v ? "已开启开机自启。" : "已关闭开机自启。",
-          )
-        }
-      />
-      <ToggleRow
-        title="静默启动"
-        description="仅开机自启时生效：启动后不弹出窗口，直接驻留托盘。"
-        checked={!!startup.silentStart}
-        disabled={!startup.autostart}
-        onChange={(v) =>
-          saveStartup(
-            { autostart: startup.autostart, silentStart: v },
-            v ? "已开启静默启动（仅开机自启时生效）。" : "已关闭静默启动。",
-          )
-        }
-      />
-      {startupMsg && <p className="text-xs text-[var(--color-fg-subtle)]">{startupMsg}</p>}
-    </SettingsSection>
-    <DataRootSection />
-    </div>
+    <InspectorBody>
+      <Group title="启动设置">
+        <Row label="开机自启" hint="登录系统后自动运行本程序。">
+          <Switch
+            checked={!!startup.autostart}
+            label="开机自启"
+            onChange={(v) =>
+              saveStartup(
+                { autostart: v, silentStart: startup.silentStart },
+                v ? "已开启开机自启。" : "已关闭开机自启。",
+              )
+            }
+          />
+        </Row>
+        <Row
+          label="静默启动"
+          hint="仅开机自启时生效：启动后不弹出窗口，直接驻留托盘。"
+          disabled={!startup.autostart}
+        >
+          <Switch
+            checked={!!startup.silentStart}
+            disabled={!startup.autostart}
+            label="静默启动"
+            onChange={(v) =>
+              saveStartup(
+                { autostart: startup.autostart, silentStart: v },
+                v ? "已开启静默启动（仅开机自启时生效）。" : "已关闭静默启动。",
+              )
+            }
+          />
+        </Row>
+        {startupMsg && <p role="status" className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">{startupMsg}</p>}
+      </Group>
+      <DataRootSection />
+    </InspectorBody>
   );
 }

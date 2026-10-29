@@ -1,6 +1,10 @@
 import { cn } from "@/lib/cn";
+import { RangeInput } from "./RangeInput";
 import { SectionHeader } from "./SectionHeader";
 import { HelpLabel } from "./Tooltip";
+
+/** Row 右侧下拉框、录制框等主要控件的统一宽度。 */
+export const ROW_CONTROL_W = "w-64";
 
 /**
  * 设置分组：可选的小号标题 + 一块抬起的分组面，组内各行之间自动加分隔线。
@@ -42,7 +46,7 @@ export function Row({
   label: React.ReactNode;
   hint?: React.ReactNode;
   controlId?: string;
-  /** 必须立即可见的错误或状态，显示在本行下方。 */
+  /** 必须立即可见的错误或状态，显示在本行下方；读屏语义（status/alert）由调用方在内容上声明。 */
   message?: React.ReactNode;
   disabled?: boolean;
   className?: string;
@@ -59,7 +63,39 @@ export function Row({
         )}
         {children && <div className="flex min-w-0 flex-none items-center justify-end gap-2">{children}</div>}
       </div>
-      {message && <p className="pb-3 text-xs text-[var(--color-fg-subtle)]" role="status">{message}</p>}
+      {message && <div className="pb-3 text-xs text-[var(--color-fg-subtle)]">{message}</div>}
     </div>
+  );
+}
+
+/** 滑块行：左侧名称，右侧滑轨与当前数值。 */
+export function SliderRow({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step,
+  format,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  hint?: React.ReactNode;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Row label={label} hint={hint} disabled={disabled}>
+      <div className={cn(ROW_CONTROL_W, "flex items-center gap-3")}>
+        <RangeInput className="flex-1" ariaLabel={label} min={min} max={max} step={step} value={value} disabled={disabled} onChange={onChange} />
+        <span className="w-14 text-right text-xs tabular-nums text-[var(--color-fg-muted)]">{format(value)}</span>
+      </div>
+    </Row>
   );
 }

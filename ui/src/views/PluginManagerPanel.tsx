@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Download, Trash2 } from "lucide-react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
+import { Group } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Switch } from "@/components/ui/Switch";
 import {
@@ -184,28 +185,27 @@ export function PluginManagerPanel() {
   };
 
   return (
-    <SettingsSection title="插件管理" description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
-          <Button size="sm" disabled={scanning} onClick={() => void reload()}>
-            {scanning ? "扫描中…" : "重新扫描"}
-          </Button>
-        </div>
-      </div>
-
-      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
-        {snapshot?.plugins.map((plugin, index) => {
+    <InspectorBody>
+      <Group
+        title="插件管理"
+        description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。"
+        right={
+          <>
+            <Button size="sm" disabled={scanning} onClick={() => void reload()}>
+              {scanning ? "扫描中…" : "重新扫描"}
+            </Button>
+            <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
+          </>
+        }
+      >
+        {snapshot?.plugins.map((plugin) => {
           const busy = busyPluginId === plugin.id;
           return (
-            <div
-              key={plugin.id}
-              className={index ? "border-t border-[var(--color-line)] px-4 py-3" : "px-4 py-3"}
-            >
+            <div key={plugin.id} className="px-3.5 py-3">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <p className="text-sm font-medium text-[var(--color-fg)]">{plugin.name}</p>
+                    <p className="text-[13px] font-medium text-[var(--color-fg)]">{plugin.name}</p>
                     <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.runtimeKind === "model-pack" ? "模型包" : "连接器"}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{TRUST_LABEL[plugin.trust]}</span>
@@ -222,7 +222,7 @@ export function PluginManagerPanel() {
                 <div className="flex items-center gap-2">
                   {plugin.modelPack?.downloadable && plugin.modelPack.state !== "ready" && (
                     <Button size="sm" disabled={busy} onClick={() => void downloadModel(plugin)}>
-                      <Download className="h-4 w-4" aria-hidden />
+                      <Download className="h-3.5 w-3.5" aria-hidden />
                       {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}
                     </Button>
                   )}
@@ -257,7 +257,7 @@ export function PluginManagerPanel() {
                     label={`卸载${plugin.name}`}
                     onClick={() => setPendingUninstall(plugin)}
                   >
-                    <Trash2 className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                   </IconButton>
                 </div>
               </div>
@@ -273,15 +273,17 @@ export function PluginManagerPanel() {
             </div>
           );
         })}
-        {snapshot && snapshot.plugins.length === 0 && (
-          <p className="px-4 py-7 text-center text-sm text-[var(--color-fg-subtle)]">尚未安装插件。可点击上方按钮，或将 .sayit 文件拖入应用安装。</p>
+        {(!snapshot || snapshot.plugins.length === 0) && (
+          <p className="px-3.5 py-7 text-center text-[13px] text-[var(--color-fg-subtle)]">
+            {snapshot ? "尚未安装插件。可点击上方按钮，或将 .sayit 文件拖入应用安装。" : message ? "插件列表读取失败" : "正在读取插件…"}
+          </p>
         )}
-      </div>
+      </Group>
 
       {snapshot?.errors.map((error) => (
         <p key={error.path} className="text-xs text-[var(--color-err)]">{error.path}：{error.message}</p>
       ))}
-      {message && <p className="text-sm text-[var(--color-fg-subtle)]">{message}</p>}
+      {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       <Modal
         open={Boolean(pendingUninstall)}
         onClose={() => !busyPluginId && setPendingUninstall(undefined)}
@@ -303,6 +305,6 @@ export function PluginManagerPanel() {
           </div>
         </div>
       </Modal>
-    </SettingsSection>
+    </InspectorBody>
   );
 }

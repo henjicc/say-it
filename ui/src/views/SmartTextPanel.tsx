@@ -1,15 +1,13 @@
-import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
 import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { CMD, cmd } from "@/lib/tauri";
 import { isMacOS, defaultOcrOption } from "@/lib/platform";
 import {
@@ -288,12 +286,18 @@ export function SmartTextPanel() {
     }
   };
 
+  const insertPlaceholder = (placeholder: string) => {
+    const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${placeholder}`;
+    setDraftPrompt(nextPrompt);
+    void saveTemplateDraft({ prompt: nextPrompt });
+  };
+
   return (
-    <div className="flex flex-col gap-6">
+    <InspectorBody>
       <Tabs<SmartTextTabKey>
         id="smart-text-tabs"
         ariaLabel="智能处理工作区"
-        variant="subpage"
+        variant="view"
         tabs={TABS}
         active={tab}
         onChange={setTab}
@@ -304,62 +308,96 @@ export function SmartTextPanel() {
         role="tabpanel"
         aria-labelledby={`smart-text-tabs-${tab}-tab`}
       >
+      <InspectorBody>
       {tab === "template" && (
-      <SettingsSection
-        title="处理模板"
-        description="语音识别结束后，先用智能模型润色文字，再应用本地替换规则，最后输入到光标位置。">
-        <FormGrid>
-          <Field label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
-            <ModelPicker
-              id="smart-text-llm-model"
-              value={selectedLlm}
-              options={llmOptions}
-              panelLabel="选择智能模型"
-              onChange={(value) => {
-                if (value === "default") {
-                  void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
-                  return;
-                }
-                try {
-                  const [providerId, model] = JSON.parse(value) as [string, string];
-                  void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
-                } catch { /* 选项值由页面生成 */ }
-              }}
-            />
-          </Field>
-          <Field label="处理时机">
-            <Select
-              value={prefs.smartProcessingMinChars === 0 ? "always" : "minimum"}
-              onChange={(event) => void patch({
-                smartProcessingMinChars: event.target.value === "always"
-                  ? 0
-                  : prefs.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS,
-              })}
+        <>
+          <Group>
+            <Row label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
+              <div className={ROW_CONTROL_W}>
+                <ModelPicker
+                  id="smart-text-llm-model"
+                  value={selectedLlm}
+                  options={llmOptions}
+                  panelLabel="选择智能模型"
+                  onChange={(value) => {
+                    if (value === "default") {
+                      void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
+                      return;
+                    }
+                    try {
+                      const [providerId, model] = JSON.parse(value) as [string, string];
+                      void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
+                    } catch { /* 选项值由页面生成 */ }
+                  }}
+                />
+              </div>
+            </Row>
+            <Row label="处理时机">
+              <Select
+                className={ROW_CONTROL_W}
+                aria-label="处理时机"
+                value={prefs.smartProcessingMinChars === 0 ? "always" : "minimum"}
+                onChange={(event) => void patch({
+                  smartProcessingMinChars: event.target.value === "always"
+                    ? 0
+                    : prefs.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS,
+                })}
+              >
+                <option value="always">每次听写</option>
+                <option value="minimum">达到指定长度</option>
+              </Select>
+            </Row>
+            {prefs.smartProcessingMinChars > 0 && (
+              <Row
+                label="最少文本长度"
+                hint={`少于 ${prefs.smartProcessingMinChars} 个字符时跳过智能处理，仍会执行本地处理。`}
+              >
+                <NumberInput
+                  className="w-32"
+                  aria-label="最少文本长度"
+                  min={1}
+                  max={MAX_SMART_PROCESSING_MIN_CHARS}
+                  step={10}
+                  value={prefs.smartProcessingMinChars}
+                  onValueChange={(value) => void patch({ smartProcessingMinChars: value })}
+                />
+              </Row>
+            )}
+            <Row
+              label="当前模板"
+              controlId="smart-text-template"
+              message={(recentDeletion || templateNotice) && (
+                <span className="flex flex-col gap-2">
+                  {recentDeletion && (
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <span>已删除“{recentDeletion.template.name}”，可随时从恢复列表找回。</span>
+                      <Button
+                        size="sm"
+                        title={templates.length >= MAX_SMART_TEXT_TEMPLATES ? "模板已达到数量上限" : undefined}
+                        disabled={templateActionBusy || templates.length >= MAX_SMART_TEXT_TEMPLATES}
+                        onClick={() => void restoreDeletedTemplate(recentDeletion)}
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                        撤销删除
+                      </Button>
+                    </span>
+                  )}
+                  {templateNotice && (
+                    <span className={templateNotice.tone === "err" ? "text-[var(--color-err)]" : "text-[var(--color-ok)]"}>
+                      {templateNotice.text}
+                    </span>
+                  )}
+                </span>
+              )}
             >
-              <option value="always">每次听写</option>
-              <option value="minimum">达到指定长度</option>
-            </Select>
-          </Field>
-          {prefs.smartProcessingMinChars > 0 && (
-            <Field
-              label="最少文本长度"
-              hint={`少于 ${prefs.smartProcessingMinChars} 个字符时跳过智能处理，仍会执行本地处理。`}
-            >
-              <NumberInput
-                min={1}
-                max={MAX_SMART_PROCESSING_MIN_CHARS}
-                step={10}
-                value={prefs.smartProcessingMinChars}
-                onValueChange={(value) => void patch({ smartProcessingMinChars: value })}
-              />
-            </Field>
-          )}
-        </FormGrid>
-        <Field
-          label="当前模板"
-          controlId="smart-text-template"
-          actions={
-            <>
+              <Select
+                id="smart-text-template"
+                className="w-40"
+                value={active?.id ?? ""}
+                onChange={(event) => void patch({ smartTemplateId: event.target.value })}
+              >
+                {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </Select>
               <IconButton
                 label="新建模板"
                 title={
@@ -387,167 +425,93 @@ export function SmartTextPanel() {
               >
                 <ListChecks className="h-4 w-4" strokeWidth={1.8} aria-hidden />
               </IconButton>
-            </>
-          }
-        >
-            <Select
-              id="smart-text-template"
-              value={active?.id ?? ""}
-              onChange={(event) => void patch({ smartTemplateId: event.target.value })}
-            >
-              {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-            </Select>
-        </Field>
+            </Row>
+          </Group>
 
-        {recentDeletion && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-[var(--color-fg-subtle)]"
-          >
-            <span>已删除“{recentDeletion.template.name}”，可随时从恢复列表找回。</span>
-            <Button
-              size="sm"
-              className="h-7 px-2.5"
-              title={templates.length >= MAX_SMART_TEXT_TEMPLATES ? "模板已达到数量上限" : undefined}
-              disabled={templateActionBusy || templates.length >= MAX_SMART_TEXT_TEMPLATES}
-              onClick={() => void restoreDeletedTemplate(recentDeletion)}
+          {active && (
+            <Group
+              title="提示词"
+              description={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
             >
-              <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-              撤销删除
-            </Button>
-          </div>
-        )}
-
-        {templateNotice && (
-          <p
-            role="status"
-            aria-live="polite"
-            className={`text-xs ${
-              templateNotice.tone === "err"
-                ? "text-[var(--color-err)]"
-                : "text-[var(--color-ok)]"
-            }`}
-          >
-            {templateNotice.text}
-          </p>
-        )}
-
-        {active && (
-          <div className="mt-1 flex flex-col gap-4">
-            <Field
-              label="提示词"
-              hint={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
-            >
-              <Textarea
-                rows={7}
-                value={draftPrompt}
-                spellCheck={false}
-                onChange={(event) => setDraftPrompt(event.target.value)}
-                onBlur={() => void saveTemplateDraft()}
-              />
-            </Field>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                onClick={() => {
-                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${SMART_TEXT_PLACEHOLDER}`;
-                  setDraftPrompt(nextPrompt);
-                  void saveTemplateDraft({ prompt: nextPrompt });
-                }}
-              >
-                插入识别文本
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${ACTIVE_APP_CONTEXT_PLACEHOLDER}`;
-                  setDraftPrompt(nextPrompt);
-                  void saveTemplateDraft({ prompt: nextPrompt });
-                }}
-              >
-                插入软件上下文
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${GLOBAL_CONTEXT_PLACEHOLDER}`;
-                  setDraftPrompt(nextPrompt);
-                  void saveTemplateDraft({ prompt: nextPrompt });
-                }}
-              >
-                插入全局上下文
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${HOTWORDS_PLACEHOLDER}`;
-                  setDraftPrompt(nextPrompt);
-                  void saveTemplateDraft({ prompt: nextPrompt });
-                }}
-              >
-                插入全局热词
-              </Button>
-            </div>
-          </div>
-        )}
-      </SettingsSection>
+              <div className="p-3.5">
+                <Textarea
+                  rows={7}
+                  aria-label="提示词"
+                  value={draftPrompt}
+                  spellCheck={false}
+                  onChange={(event) => setDraftPrompt(event.target.value)}
+                  onBlur={() => void saveTemplateDraft()}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2 px-3.5 py-3">
+                <Button size="sm" onClick={() => insertPlaceholder(SMART_TEXT_PLACEHOLDER)}>插入识别文本</Button>
+                <Button size="sm" onClick={() => insertPlaceholder(ACTIVE_APP_CONTEXT_PLACEHOLDER)}>插入软件上下文</Button>
+                <Button size="sm" onClick={() => insertPlaceholder(GLOBAL_CONTEXT_PLACEHOLDER)}>插入全局上下文</Button>
+                <Button size="sm" onClick={() => insertPlaceholder(HOTWORDS_PLACEHOLDER)}>插入全局热词</Button>
+              </div>
+            </Group>
+          )}
+        </>
       )}
 
       {tab === "context" && (
-      <SettingsSection title="当前软件上下文">
-        <Field
-          label="提取方式"
-          hint={prefs.activeAppContextExtractionMethod === "ocr"
-            ? isMacOS
-              ? "识别当前窗口截图中的文字，需要允许辅助功能和屏幕录制。"
-              : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
-            : isMacOS
-              ? "读取当前输入框和选中的文字，需要辅助功能权限，无需屏幕录制权限。"
-              : "直接读取软件提供的文字，不识别截图，占用内存更少。"}
-        >
-          <Select
-            value={prefs.activeAppContextExtractionMethod}
-            onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
-          >
-            <option value="nativeText">文本提取（低内存）</option>
-            <option value="ocr">窗口 OCR</option>
-          </Select>
-        </Field>
-
-        {prefs.activeAppContextExtractionMethod === "ocr" && (
-          <>
-            <Field
-              label="OCR 模型"
-              hint={selectedOcrModel?.remote
-                ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
-                : selectedOcrModel?.value === "local-ppocr-v6-tiny"
-                  ? "使用内置 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
-                  : `使用${defaultOcrOption.label}，不会向第三方发送截图。`}
+        <>
+          <Group>
+            <Row
+              label="提取方式"
+              hint={prefs.activeAppContextExtractionMethod === "ocr"
+                ? isMacOS
+                  ? "识别当前窗口截图中的文字，需要允许辅助功能和屏幕录制。"
+                  : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
+                : isMacOS
+                  ? "读取当前输入框和选中的文字，需要辅助功能权限，无需屏幕录制权限。"
+                  : "直接读取软件提供的文字，不识别截图，占用内存更少。"}
             >
               <Select
-                value={prefs.activeAppContextOcrModel}
-                onChange={(event) => {
-                  const model = ocrModels.find((option) => option.value === event.target.value);
-                  if (model) void selectOcrModel(model);
-                }}
+                className={ROW_CONTROL_W}
+                aria-label="提取方式"
+                value={prefs.activeAppContextExtractionMethod}
+                onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
               >
-                {!selectedOcrModel && (
-                  <option value={prefs.activeAppContextOcrModel} disabled>当前模型不可用，请重新选择</option>
-                )}
-                {ocrModels.map((model) => (
-                  <option key={model.value} value={model.value}>{model.label}</option>
-                ))}
+                <option value="nativeText">文本提取（低内存）</option>
+                <option value="ocr">窗口 OCR</option>
               </Select>
-            </Field>
-            {!isMacOS && <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-4">
-                <label
-                  htmlFor="active-app-context-ocr-follow-smart-min-chars"
-                  className="text-xs font-medium text-[var(--color-fg-muted)]"
+            </Row>
+
+            {prefs.activeAppContextExtractionMethod === "ocr" && (
+              <Row
+                label="OCR 模型"
+                hint={selectedOcrModel?.remote
+                  ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
+                  : selectedOcrModel?.value === "local-ppocr-v6-tiny"
+                    ? "使用内置 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
+                    : `使用${defaultOcrOption.label}，不会向第三方发送截图。`}
+                message={ocrMessage && <span role="alert" className="text-[var(--color-err)]">{ocrMessage}</span>}
+              >
+                <Select
+                  className={ROW_CONTROL_W}
+                  aria-label="OCR 模型"
+                  value={prefs.activeAppContextOcrModel}
+                  onChange={(event) => {
+                    const model = ocrModels.find((option) => option.value === event.target.value);
+                    if (model) void selectOcrModel(model);
+                  }}
                 >
-                  <HelpLabel content="只在文字达到智能处理的最少长度时读取屏幕；最少长度为 0 时，每次听写都会读取。">OCR 跟随处理时机</HelpLabel>
-                </label>
+                  {!selectedOcrModel && (
+                    <option value={prefs.activeAppContextOcrModel} disabled>当前模型不可用，请重新选择</option>
+                  )}
+                  {ocrModels.map((model) => (
+                    <option key={model.value} value={model.value}>{model.label}</option>
+                  ))}
+                </Select>
+              </Row>
+            )}
+            {prefs.activeAppContextExtractionMethod === "ocr" && !isMacOS && (
+              <Row
+                label="OCR 跟随处理时机"
+                controlId="active-app-context-ocr-follow-smart-min-chars"
+                hint="只在文字达到智能处理的最少长度时读取屏幕；最少长度为 0 时，每次听写都会读取。"
+              >
                 <Switch
                   id="active-app-context-ocr-follow-smart-min-chars"
                   label="OCR 跟随处理时机"
@@ -556,66 +520,66 @@ export function SmartTextPanel() {
                     activeAppContextOcrFollowSmartProcessingMinChars: value,
                   })}
                 />
-              </div>
-            </div>}
-            {ocrMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{ocrMessage}</p>}
-          </>
-        )}
+              </Row>
+            )}
+          </Group>
 
-        <RunningAppPicker
-          value=""
-          label="应用黑名单"
-          hint={isMacOS
-            ? "按 macOS 应用进程名匹配；可从运行中的软件或本地 .app 应用包选择。黑名单应用不会读取或发送上下文。"
-            : "按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"}
-          placeholder="选择要加入黑名单的软件"
-          onSelect={(selection) => addBlockedApp(selection.processName)}
-        />
-        {prefs.activeAppContextBlockedApps.length > 0 && (
-          <div className="flex flex-col gap-2">
+          <Group>
+            <div className="p-3.5">
+              <RunningAppPicker
+                value=""
+                label="应用黑名单"
+                hint={isMacOS
+                  ? "按 macOS 应用进程名匹配；可从运行中的软件或本地 .app 应用包选择。黑名单应用不会读取或发送上下文。"
+                  : "按 Windows 进程文件名匹配，例如 password-manager.exe。黑名单应用不会读取或发送上下文。"}
+                placeholder="选择要加入黑名单的软件"
+                onSelect={(selection) => addBlockedApp(selection.processName)}
+              />
+            </div>
             {prefs.activeAppContextBlockedApps.map((appName) => (
-              <div key={appName} className="flex min-h-[var(--control-h-sm)] items-center justify-between gap-3 rounded-[var(--radius-control)] border border-[var(--color-line)] px-3 text-sm text-[var(--color-fg-subtle)]">
-                <span className="truncate">{appName}</span>
+              <Row key={appName} label={<span className="block truncate text-[var(--color-fg-muted)]">{appName}</span>}>
                 <IconButton
                   size="sm"
                   variant="dangerHover"
-                  className="h-7 w-7 shrink-0"
                   label={`移除 ${appName}`}
                   onClick={() => void removeBlockedApp(appName)}
                 >
                   <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                 </IconButton>
-              </div>
+              </Row>
             ))}
-          </div>
-        )}
-        {contextMessage && <p role="alert" className="text-xs text-[var(--color-err)]">{contextMessage}</p>}
-      </SettingsSection>
+            {contextMessage && <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{contextMessage}</p>}
+          </Group>
+        </>
       )}
 
       {tab === "preview" && (
-      <SettingsSection title="试运行">
-        <FormGrid className="gap-y-3">
-          <Field label="试运行 · 输入">
-            <Textarea rows={4} value={previewInput} onChange={(event) => setPreviewInput(event.target.value)} />
-          </Field>
-          {draftUsesActiveAppContext && (
-            <Field label="模拟当前软件上下文">
-              <Textarea rows={4} value={previewContext} onChange={(event) => setPreviewContext(event.target.value)} />
-            </Field>
-          )}
-          <Field label="试运行 · 输出">
-            <Textarea rows={4} readOnly value={previewOutput} className="bg-[var(--color-bg)]" />
-          </Field>
-        </FormGrid>
-        <div className="flex items-center gap-3">
-          <Button size="sm" variant="primary" disabled={previewing || !active} onClick={preview}>
-            {previewing ? "处理中..." : "试运行"}
-          </Button>
-          {message && <p className="text-xs text-[var(--color-err)]">{message}</p>}
-        </div>
-      </SettingsSection>
+        <>
+          <Group>
+            <div className="flex flex-col gap-2 p-3.5">
+              <label htmlFor="smart-text-preview-input" className="text-xs text-[var(--color-fg-subtle)]">输入</label>
+              <Textarea id="smart-text-preview-input" rows={4} value={previewInput} onChange={(event) => setPreviewInput(event.target.value)} />
+            </div>
+            {draftUsesActiveAppContext && (
+              <div className="flex flex-col gap-2 p-3.5">
+                <label htmlFor="smart-text-preview-context" className="text-xs text-[var(--color-fg-subtle)]">模拟当前软件上下文</label>
+                <Textarea id="smart-text-preview-context" rows={4} value={previewContext} onChange={(event) => setPreviewContext(event.target.value)} />
+              </div>
+            )}
+            <div className="flex flex-col gap-2 p-3.5">
+              <label htmlFor="smart-text-preview-output" className="text-xs text-[var(--color-fg-subtle)]">输出</label>
+              <Textarea id="smart-text-preview-output" rows={4} readOnly value={previewOutput} className="bg-[var(--color-bg)]" />
+            </div>
+          </Group>
+          <div className="flex items-center gap-3">
+            <Button variant="primary" disabled={previewing || !active} onClick={preview}>
+              {previewing ? "处理中..." : "试运行"}
+            </Button>
+            {message && <p role="alert" className="text-xs text-[var(--color-err)]">{message}</p>}
+          </div>
+        </>
       )}
+      </InspectorBody>
       </div>
 
       <Modal
@@ -674,6 +638,6 @@ export function SmartTextPanel() {
         onClose={() => setManagerOpen(false)}
         onNotice={setTemplateNotice}
       />
-    </div>
+    </InspectorBody>
   );
 }
