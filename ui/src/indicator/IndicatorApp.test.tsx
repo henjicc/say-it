@@ -84,13 +84,15 @@ describe("dictation indicator presentation", () => {
 
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "processing" }));
     expect(view.container.querySelector("#pill")).toHaveClass("processing");
-    expect(view.container.querySelector("#pill .dot")).toBeInTheDocument();
-    expect(screen.getByText("识别中…")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "识别中…" })).toBeInTheDocument();
+    expect(screen.getByText("识别")).toHaveClass("active");
     expect(view.container.querySelector("#pill .orb-waveform")).not.toBeInTheDocument();
 
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "smartProcessing" }));
     expect(view.container.querySelector("#pill")).toHaveClass("processing");
-    expect(screen.getByText("处理中…")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "处理中…" })).toBeInTheDocument();
+    expect(screen.getByText("识别")).toHaveClass("done");
+    expect(screen.getByText("处理")).toHaveClass("active");
     expect(view.container.querySelector("#pill .orb-waveform")).not.toBeInTheDocument();
   });
 

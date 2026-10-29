@@ -72,10 +72,8 @@ fn states(snaps: &mut Snapshots, dpi: u32) {
     {
         let mut s = settled(snaps, dpi, NativeState::Recording);
         send(&s, Command::SetState(NativeState::Processing));
-        s.advance(75);
-        s.shot("processing-dot-75ms");
-        s.advance(325);
-        s.shot("processing-dot-400ms");
+        s.advance(SETTLE_MS);
+        s.shot("processing-stages");
     }
     {
         let mut s = settled(snaps, dpi, NativeState::SmartProcessing);
