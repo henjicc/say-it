@@ -14,9 +14,9 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <header className={cn("flex items-start justify-between gap-6", className)}>
+    <header className={cn("flex min-h-8 items-center justify-between gap-6", className)}>
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></h1>
+        <h1 className="text-lg font-semibold text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></h1>
       </div>
       {actions && <div className="flex flex-none items-center gap-2">{actions}</div>}
     </header>

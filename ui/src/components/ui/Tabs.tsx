@@ -29,10 +29,10 @@ const VARIANT_STYLES: Record<TabsVariant, {
   inactive: string;
 }> = {
   page: {
-    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-1",
-    button: "h-[var(--control-h-sm)] rounded-[var(--radius-md)] px-4 text-sm",
-    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
-    inactive: "text-[var(--color-fg-subtle)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg-muted)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface)] p-0.5",
+    button: "h-full rounded-[var(--radius-sm)] px-3 text-[13px]",
+    active: "bg-[var(--color-surface-strong)] text-[var(--color-fg)]",
+    inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
   subpage: {
     list: "flex h-[var(--control-h)] w-full items-end gap-5 border-b border-[var(--color-line)]",
@@ -41,10 +41,10 @@ const VARIANT_STYLES: Record<TabsVariant, {
     inactive: "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]",
   },
   view: {
-    list: "inline-flex h-[var(--control-h-sm)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-0.5",
-    button: "h-full rounded-[var(--radius-sm)] px-3 text-xs",
-    active: "bg-[var(--accent-soft)] text-[var(--color-accent-light)]",
-    inactive: "text-[var(--color-fg-subtle)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg-muted)]",
+    list: "inline-flex h-[var(--control-h-sm)] w-fit items-center gap-0.5 rounded-[var(--radius-sm)] bg-[var(--color-surface)] p-0.5",
+    button: "h-full rounded-[4px] px-2.5 text-xs",
+    active: "bg-[var(--color-surface-strong)] text-[var(--color-fg)]",
+    inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
 };
 

@@ -3,8 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { CheckField, Field } from "@/components/ui/Field";
 import { Input, Select } from "@/components/ui/Input";
-import { Tabs, type TabItem } from "@/components/ui/Tabs";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { Tabs } from "@/components/ui/Tabs";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SubtitleEditor } from "@/components/transcription/SubtitleEditor";
@@ -35,18 +34,13 @@ import {
   type TranscriptionTab,
 } from "@/store/useTranscriptionStore";
 
-const TABS: TabItem<TranscriptionTab>[] = [
-  { key: "transcribe", label: "字幕转写" },
-  { key: "align", label: "文稿对齐" },
-  { key: "settings", label: "通用设置" },
-];
-
 const LANGUAGE_OPTIONS = [
   { value: "zh", label: "中文" },
   { value: "en", label: "英文" },
   { value: "ja", label: "日语" },
 ];
 
+/** 转写内容区；当前显示哪一部分由转写 store 的 tab 决定。 */
 export function TranscriptionView() {
   useModelCatalogRevision();
   const {
@@ -60,7 +54,6 @@ export function TranscriptionView() {
     editorCues,
     resultView,
     saveMessage,
-    setTab,
     setSelectedFile,
     setParams,
     replaceParams,
@@ -134,13 +127,6 @@ export function TranscriptionView() {
 
   return (
     <div className="flex flex-col gap-7">
-      <PageHeader
-        title="字幕转写"
-        description="处理本地音视频文件，生成转写文本或用于文稿对齐的时间轴。"
-      />
-
-      <Tabs<TranscriptionTab> tabs={TABS} active={tab} onChange={setTab} />
-
       {tab === "transcribe" ? (
         <>
           <SettingsSection title="音视频文件">

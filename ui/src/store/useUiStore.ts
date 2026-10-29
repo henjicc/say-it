@@ -1,14 +1,23 @@
 import { create } from "zustand";
 
-export type ViewKey = "home" | "dictation" | "assistant" | "subtitles" | "transcription" | "customization" | "history" | "settings";
-export type CustomizationTabKey = "hotwords" | "context";
-export type SettingsTabKey = "model" | "plugins" | "audio" | "general" | "keys" | "compare" | "advanced";
-export type DictationTabKey = "basic" | "local" | "apps" | "debug";
+export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "models" | "lexicon" | "history" | "settings";
+/** 窗口宽度决定的界面形态：窄窗口为简单模式，宽窗口为专业模式。 */
+export type LayoutMode = "simple" | "pro";
+export type DictationNodeKey = "trigger" | "audio" | "asr" | "smart" | "rules" | "output" | "apps" | "shortcuts";
+export type SubtitleNodeKey = "trigger" | "audio" | "asr" | "translation" | "style" | "output";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
-export type AssistantTabKey = "smart" | AssistantActionKey;
-export type SceneRulesTabKey = "apps" | "shortcuts";
+export type ModelsSectionKey = "asr" | "llm" | "plugins" | "compare";
+export type LexiconSectionKey = "hotwords" | "context";
+export type SettingsSectionKey = "general" | "sound" | "processing" | "keys" | "history" | "diagnostics";
 export type SmartTextTabKey = "template" | "context" | "preview";
-export type SubtitleTabKey = "general" | "style" | "translation" | "obs";
+
+/** 设置搜索命中：跳到对应页面分区后，按 targetText 定位并短暂高亮。 */
+export interface SearchHit {
+  id: string;
+  view: "models" | "settings";
+  section: ModelsSectionKey | SettingsSectionKey;
+  targetText: string;
+}
 
 export interface SessionStatus {
   default_asr_provider?: string;
@@ -19,27 +28,32 @@ export interface SessionStatus {
 interface UiState {
   view: ViewKey;
   setView: (view: ViewKey) => void;
-  settingsTab: SettingsTabKey;
-  setSettingsTab: (tab: SettingsTabKey) => void;
-  dictationTab: DictationTabKey;
-  setDictationTab: (tab: DictationTabKey) => void;
-  sceneRulesTab: SceneRulesTabKey;
-  setSceneRulesTab: (tab: SceneRulesTabKey) => void;
+  layoutMode: LayoutMode;
+  setLayoutMode: (mode: LayoutMode) => void;
+  dictationNode: DictationNodeKey;
+  setDictationNode: (node: DictationNodeKey) => void;
+  subtitleNode: SubtitleNodeKey;
+  setSubtitleNode: (node: SubtitleNodeKey) => void;
+  assistantAction: AssistantActionKey;
+  setAssistantAction: (action: AssistantActionKey) => void;
+  modelsSection: ModelsSectionKey;
+  setModelsSection: (section: ModelsSectionKey) => void;
+  lexiconSection: LexiconSectionKey;
+  setLexiconSection: (section: LexiconSectionKey) => void;
+  settingsSection: SettingsSectionKey;
+  setSettingsSection: (section: SettingsSectionKey) => void;
+  openModels: (section?: ModelsSectionKey) => void;
+  searchHit: SearchHit | null;
+  goToSearchHit: (hit: SearchHit) => void;
+  clearSearchHit: (id: string) => void;
+  openSettings: (section?: SettingsSectionKey) => void;
   smartTextTab: SmartTextTabKey;
   setSmartTextTab: (tab: SmartTextTabKey) => void;
-  subtitleTab: SubtitleTabKey;
-  setSubtitleTab: (tab: SubtitleTabKey) => void;
   focusedShortcutProfileId: string | null;
   consumeFocusedShortcutProfile: () => void;
   openDictationShortcutSettings: (profileId?: string) => void;
-  focusedAssistantAction: AssistantActionKey | null;
-  assistantTab: AssistantTabKey;
-  setAssistantTab: (tab: AssistantTabKey) => void;
-  consumeFocusedAssistantAction: () => void;
   openAssistantSettings: (action?: AssistantActionKey) => void;
   openSubtitleShortcutSettings: () => void;
-  customizationTab: CustomizationTabKey;
-  setCustomizationTab: (tab: CustomizationTabKey) => void;
   aboutOpen: boolean;
   openAbout: () => void;
   closeAbout: () => void;
@@ -48,49 +62,48 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  view: "home",
+  view: "dictation",
   setView: (view) => set({ view }),
-  settingsTab: "model",
-  setSettingsTab: (settingsTab) => set({ settingsTab }),
-  dictationTab: "basic",
-  setDictationTab: (dictationTab) => set({ dictationTab }),
-  sceneRulesTab: "apps",
-  setSceneRulesTab: (sceneRulesTab) => set({ sceneRulesTab }),
+  layoutMode: "pro",
+  setLayoutMode: (layoutMode) => set({ layoutMode }),
+  dictationNode: "trigger",
+  setDictationNode: (dictationNode) => set({ dictationNode }),
+  subtitleNode: "asr",
+  setSubtitleNode: (subtitleNode) => set({ subtitleNode }),
+  assistantAction: "translateSpeech",
+  setAssistantAction: (assistantAction) => set({ assistantAction }),
+  modelsSection: "asr",
+  setModelsSection: (modelsSection) => set({ modelsSection }),
+  lexiconSection: "hotwords",
+  setLexiconSection: (lexiconSection) => set({ lexiconSection }),
+  settingsSection: "general",
+  setSettingsSection: (settingsSection) => set({ settingsSection }),
+  openModels: (section) => set((state) => ({ view: "models", modelsSection: section ?? state.modelsSection })),
+  openSettings: (section) => set((state) => ({ view: "settings", settingsSection: section ?? state.settingsSection })),
+  searchHit: null,
+  goToSearchHit: (hit) => set(hit.view === "models"
+    ? { view: "models", modelsSection: hit.section as ModelsSectionKey, searchHit: hit }
+    : { view: "settings", settingsSection: hit.section as SettingsSectionKey, searchHit: hit }),
+  clearSearchHit: (id) => set((state) => (state.searchHit?.id === id ? { searchHit: null } : {})),
   smartTextTab: "template",
   setSmartTextTab: (smartTextTab) => set({ smartTextTab }),
-  subtitleTab: "general",
-  setSubtitleTab: (subtitleTab) => set({ subtitleTab }),
   focusedShortcutProfileId: null,
   consumeFocusedShortcutProfile: () => set({ focusedShortcutProfileId: null }),
-  openDictationShortcutSettings: (profileId) => set(profileId
-    ? {
-      view: "dictation",
-      dictationTab: "apps",
-      sceneRulesTab: "shortcuts",
-      focusedShortcutProfileId: profileId,
-    }
-    : {
-      view: "dictation",
-      dictationTab: "basic",
-      focusedShortcutProfileId: null,
-    }),
-  focusedAssistantAction: null,
-  assistantTab: "smart",
-  setAssistantTab: (assistantTab) => set({ assistantTab }),
-  consumeFocusedAssistantAction: () => set({ focusedAssistantAction: null }),
-  openAssistantSettings: (action) => set({
-    view: "assistant",
-    assistantTab: action ?? "smart",
-    focusedAssistantAction: action ?? null,
-    focusedShortcutProfileId: null,
+  openDictationShortcutSettings: (profileId) => set({
+    view: "dictation",
+    dictationNode: profileId ? "shortcuts" : "trigger",
+    focusedShortcutProfileId: profileId ?? null,
   }),
+  openAssistantSettings: (action) => set((state) => ({
+    view: "assistant",
+    assistantAction: action ?? state.assistantAction,
+    focusedShortcutProfileId: null,
+  })),
   openSubtitleShortcutSettings: () => set({
     view: "subtitles",
-    subtitleTab: "general",
+    subtitleNode: "trigger",
     focusedShortcutProfileId: null,
   }),
-  customizationTab: "hotwords",
-  setCustomizationTab: (customizationTab) => set({ customizationTab }),
   aboutOpen: false,
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),

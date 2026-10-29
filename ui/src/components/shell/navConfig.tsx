@@ -1,5 +1,5 @@
 import type { ViewKey } from "@/store/useUiStore";
-import { BookMarked, Captions, ClosedCaption, History, Home, Info, Mic, Settings, Sparkles } from "lucide-react";
+import { BookMarked, Box, Captions, FileAudio, History, Mic, SlidersHorizontal, Sparkles } from "lucide-react";
 
 export interface NavItem {
   view: ViewKey;
@@ -7,66 +7,31 @@ export interface NavItem {
   icon: React.ReactNode;
 }
 
-export interface SecondaryNavItem {
-  id: "about";
-  label: string;
-  icon: React.ReactNode;
-}
+const iconProps = { className: "h-full w-full", strokeWidth: 1.6, "aria-hidden": true };
 
-const iconClassName = "h-full w-full";
-const iconProps = { className: iconClassName, strokeWidth: 1.8, "aria-hidden": true };
-
-export const MAIN_NAV_ITEMS: NavItem[] = [
-  {
-    view: "home",
-    label: "首页",
-    icon: <Home {...iconProps} />,
-  },
-  {
-    view: "dictation",
-    label: "语音输入",
-    icon: <Mic {...iconProps} />,
-  },
-  {
-    view: "assistant",
-    label: "智能助手",
-    icon: <Sparkles {...iconProps} />,
-  },
-  {
-    view: "subtitles",
-    label: "实时字幕",
-    icon: <ClosedCaption {...iconProps} />,
-  },
-  {
-    view: "transcription",
-    label: "字幕转写",
-    icon: <Captions {...iconProps} />,
-  },
-  {
-    view: "customization",
-    label: "热词上下文",
-    icon: <BookMarked {...iconProps} />,
-  },
-  {
-    view: "history",
-    label: "历史",
-    icon: <History {...iconProps} />,
-  },
-  {
-    view: "settings",
-    label: "设置",
-    icon: <Settings {...iconProps} />,
-  },
+/** 专业模式侧栏：按「功能 | 资源 | 记录」分组，设置单独放在底部。 */
+export const PRO_NAV_GROUPS: NavItem[][] = [
+  [
+    { view: "dictation", label: "听写", icon: <Mic {...iconProps} /> },
+    { view: "assistant", label: "助手", icon: <Sparkles {...iconProps} /> },
+    { view: "subtitles", label: "字幕", icon: <Captions {...iconProps} /> },
+    { view: "transcription", label: "转写", icon: <FileAudio {...iconProps} /> },
+  ],
+  [
+    { view: "models", label: "模型", icon: <Box {...iconProps} /> },
+    { view: "lexicon", label: "词库", icon: <BookMarked {...iconProps} /> },
+    { view: "history", label: "历史", icon: <History {...iconProps} /> },
+  ],
 ];
 
-export const SECONDARY_NAV_ITEMS: SecondaryNavItem[] = [
-  {
-    id: "about",
-    label: "关于",
-    icon: <Info {...iconProps} />,
-  },
+export const SETTINGS_NAV: NavItem = { view: "settings", label: "设置", icon: <SlidersHorizontal {...iconProps} /> };
+
+/** 简单模式标题栏里的功能切换。 */
+export const SIMPLE_NAV: NavItem[] = [
+  { view: "dictation", label: "听写", icon: null },
+  { view: "subtitles", label: "字幕", icon: null },
+  { view: "transcription", label: "转写", icon: null },
+  { view: "history", label: "历史", icon: null },
 ];
 
-export const VIEW_TITLES: Record<ViewKey, string> = Object.fromEntries(
-  MAIN_NAV_ITEMS.map((i) => [i.view, i.label]),
-) as Record<ViewKey, string>;
+export const SIMPLE_VIEWS: ReadonlySet<ViewKey> = new Set([...SIMPLE_NAV.map((item) => item.view), "settings"]);

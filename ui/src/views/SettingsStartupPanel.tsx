@@ -165,7 +165,8 @@ function DataRootSection() {
   );
 }
 
-export function SettingsStartupPanel() {
+/** 读取并保存开机自启与静默启动；设置页与简单模式共用。 */
+export function useStartupSettings() {
   const [startup, setStartup] = useState<StartupStatus>({});
   const [startupMsg, setStartupMsg] = useState("");
 
@@ -189,6 +190,11 @@ export function SettingsStartupPanel() {
     }
   };
 
+  return { startup, startupMsg, saveStartup };
+}
+
+export function SettingsStartupPanel() {
+  const { startup, startupMsg, saveStartup } = useStartupSettings();
   return (
     <div className="flex flex-col gap-7">
     <SettingsSection title="启动设置">

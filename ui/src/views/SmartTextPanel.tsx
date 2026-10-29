@@ -307,11 +307,6 @@ export function SmartTextPanel() {
       {tab === "template" && (
       <SettingsSection
         title="处理模板"
-        right={<Switch
-          checked={prefs.smartProcessingEnabled}
-          onChange={(value) => void patch({ smartProcessingEnabled: value })}
-          label="启用智能处理"
-        />}
         description="语音识别结束后，先用智能模型润色文字，再应用本地替换规则，最后输入到光标位置。">
         <FormGrid>
           <Field label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>

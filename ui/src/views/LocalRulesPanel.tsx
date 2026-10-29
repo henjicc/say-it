@@ -1,5 +1,4 @@
 import { Tooltip } from "@/components/ui/Tooltip";
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -9,7 +8,6 @@ import { CheckField, Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { useDictPrefs, type DictPrefs } from "@/store/useDictPrefs";
 import { validateRule, type LocalRule } from "@/features/dictation/localRulesEngine";
@@ -140,15 +138,6 @@ export function LocalRulesPanel() {
 
   return (
     <div className="flex flex-col gap-8">
-      <SectionHeader
-        title="本地处理"
-        right={<Switch
-          checked={prefs.localRulesEnabled}
-          onChange={(v) => save("保存设置", () => ({ localRulesEnabled: v }))}
-          label="启用本地快速处理"
-        />}
-        description="按列表顺序查找并替换文字。点击规则名称可编辑；替换内容留空时，会删除匹配到的文字。" />
-
       <div
         className={cn(
           "flex flex-col gap-8 transition-opacity",

@@ -103,8 +103,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
   const providers = useProviderStore((state) => state.profiles);
   const loadProviders = useProviderStore((state) => state.load);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+  const openModels = useUiStore((state) => state.openModels);
 
   const checks = useMemo(
     () => Object.fromEntries((status?.checks ?? []).map((item) => [item.id, item])) as Partial<Record<SetupCheckResult["id"], SetupCheckResult>>,
@@ -216,7 +215,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     }
   }
 
-  async function finish(settingsTab?: "model" | "plugins") {
+  async function finish(modelsSection?: "asr" | "plugins") {
     if (closing.current) return;
     closing.current = true;
     setRunning("finish");
@@ -225,10 +224,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     try {
       // 所有主动退出都表示用户已看过引导；必须落盘后再关闭，避免重启后反复弹出。
       await cmd(CMD.completeOnboarding);
-      if (settingsTab) {
-        setView("settings");
-        setSettingsTab(settingsTab);
-      }
+      if (modelsSection) openModels(modelsSection);
       onClose();
     } catch (error) {
       setMessage(`保存引导状态失败：${String(error)}`);
@@ -349,7 +345,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {selectedProvider.kind === "sdk:bailian" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
-                  <Button size="sm" onClick={() => void finish("model")}>打开完整设置</Button>
+                  <Button size="sm" onClick={() => void finish("asr")}>打开完整设置</Button>
                 </div>
               </div>
             )}

@@ -3,6 +3,7 @@ import { Brain, Check, Clipboard, Globe2, Pencil, RefreshCw, Search, Trash2, X }
 import { Button } from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { UsageSummaryLine } from "@/views/history/UsageSummaryLine";
 import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage, type LearningOverview, type LearningRule } from "@/lib/tauri";
@@ -63,8 +64,7 @@ export function HistoryView() {
   });
   const [rules, setRules] = useState<LearningRule[]>([]);
   const loadVersion = useRef(0);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+  const openSettings = useUiStore((state) => state.openSettings);
   const hotwords = useCustomizationStore((state) => state.prefs.hotwords);
   const patchCustomization = useCustomizationStore((state) => state.patch);
 
@@ -243,8 +243,7 @@ export function HistoryView() {
   }
 
   function openLearningSettings() {
-    setSettingsTab("general");
-    setView("settings");
+    openSettings("history");
   }
 
   async function remove(id: string) {
@@ -282,6 +281,7 @@ export function HistoryView() {
         description="默认保留最近 30 天的本地听写与智能助手结果，不保存音频。"
         actions={<Button size="sm" onClick={openLearningSettings}>学习设置</Button>}
       />
+      <UsageSummaryLine />
       {page.recoveryNotice && (
         <p role="alert" className="rounded-[var(--radius-lg)] border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-4 py-3 text-sm text-[var(--color-fg)]">
           {page.recoveryNotice}

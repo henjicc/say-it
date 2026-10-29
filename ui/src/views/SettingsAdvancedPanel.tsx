@@ -478,13 +478,12 @@ function AudioLabSections() {
   );
 }
 
-export function SettingsAdvancedPanel() {
+/** 音频处理：静音断流、响度降噪、均衡与试听。 */
+export function AudioProcessingPanel() {
   return (
     <div className="flex flex-col gap-8">
       <SilenceDisconnectSection />
       <AudioLabSections />
-      <DiagnosticSection />
-      <DataResetSection />
     </div>
   );
 }

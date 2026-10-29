@@ -6,9 +6,7 @@ import { Field } from "@/components/ui/Field";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   DEFAULT_HOTWORD_WEIGHT,
@@ -24,14 +22,8 @@ import {
   type Hotword,
   type SyncState,
 } from "@/store/useCustomizationStore";
-import { useUiStore, type CustomizationTabKey } from "@/store/useUiStore";
 
-const TABS: TabItem<CustomizationTabKey>[] = [
-  { key: "hotwords", label: "热词" },
-  { key: "context", label: "上下文" },
-];
-
-function HotwordsTab() {
+export function HotwordsTab() {
   const prefs = useCustomizationStore((state) => state.prefs);
   const patch = useCustomizationStore((state) => state.patch);
   const syncState = useCustomizationStore((state) => state.syncState);
@@ -261,7 +253,7 @@ function SyncStatus({ state, message }: { state: SyncState; message: string }) {
   );
 }
 
-function ContextTab() {
+export function ContextTab() {
   const prefs = useCustomizationStore((state) => state.prefs);
   const patch = useCustomizationStore((state) => state.patch);
   const preview = renderContextPreview(prefs);
@@ -301,36 +293,6 @@ function ContextTab() {
           {preview || "（未填写，识别时不使用背景文字）"}
         </pre>
       </SettingsSection>
-    </div>
-  );
-}
-
-export function CustomizationView() {
-  const tab = useUiStore((state) => state.customizationTab);
-  const setTab = useUiStore((state) => state.setCustomizationTab);
-
-  return (
-    <div className="flex flex-col gap-7">
-      <PageHeader
-        title="热词与上下文"
-        description="添加常用词和录音背景，帮助支持此功能的模型更准确地识别。"
-      />
-
-      <Tabs<CustomizationTabKey>
-        id="customization-tabs"
-        ariaLabel="热词与上下文分类"
-        tabs={TABS}
-        active={tab}
-        onChange={setTab}
-      />
-
-      <div
-        id={`customization-tabs-${tab}-panel`}
-        role="tabpanel"
-        aria-labelledby={`customization-tabs-${tab}-tab`}
-      >
-        {tab === "hotwords" ? <HotwordsTab /> : <ContextTab />}
-      </div>
     </div>
   );
 }
