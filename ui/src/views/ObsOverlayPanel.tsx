@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { CMD, cmd } from "@/lib/tauri";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
@@ -175,31 +173,33 @@ export function ObsOverlayPanel() {
   };
 
   return (
-    <div className="flex flex-col gap-7">
-      <SettingsSection title="本地字幕服务" description="在 OBS 中添加浏览器来源即可显示字幕。字体、颜色和背景跟随“字幕样式”，位置和大小在 OBS 中调整。">
-        <FormGrid columns={1}>
-          <Field layout="row" label="字幕源 URL">
-            <div className="relative">
-              <Input className="pr-11" readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
-              <InputAffixButton label="复制字幕源 URL" onClick={copyUrl} disabled={!overlay.url}>
-                <Copy className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-              </InputAffixButton>
-            </div>
-          </Field>
-        </FormGrid>
-        {!overlay.ready && !overlay.error && <p className="text-xs text-[var(--color-fg-subtle)]">本地字幕服务正在启动…</p>}
-      </SettingsSection>
+    <>
+      <Group title="本地字幕服务" description="在 OBS 中添加浏览器来源即可显示字幕。字体、颜色和背景跟随“字幕样式”，位置和大小在 OBS 中调整。">
+        <Row label="字幕源 URL" message={!overlay.ready && !overlay.error && "本地字幕服务正在启动…"}>
+          <div className="relative w-64">
+            <Input className="pr-11" aria-label="字幕源 URL" readOnly value={overlay.url} placeholder="正在启动本地字幕服务…" />
+            <InputAffixButton label="复制字幕源 URL" onClick={copyUrl} disabled={!overlay.url}>
+              <Copy className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+            </InputAffixButton>
+          </div>
+        </Row>
+      </Group>
 
-      <SettingsSection title="连接 OBS" right={<Button size="sm" variant="primary" onClick={connect} disabled={busy}>连接 OBS</Button>} description="安装后，字幕样式会自动同步到 OBS，无需反复更新字幕源。你在 OBS 中调整的位置、缩放和裁切会保留，也可以随时切回桌面字幕。">
-        <FormGrid>
-          <Field layout="row" label="地址">
-            <Input value={host} onChange={(event) => setHost(event.target.value)} placeholder="127.0.0.1" disabled={busy} />
-          </Field>
-          <Field layout="row" label="端口">
-            <Input value={port} inputMode="numeric" onChange={(event) => setPort(event.target.value)} placeholder="4455" disabled={busy} />
-          </Field>
-          <Field layout="row" label="密码">
+      <Group
+        title="连接 OBS"
+        description="安装后，字幕样式会自动同步到 OBS，无需反复更新字幕源。你在 OBS 中调整的位置、缩放和裁切会保留，也可以随时切回桌面字幕。"
+        right={<Button size="sm" onClick={connect} disabled={busy}>连接 OBS</Button>}
+      >
+        <Row label="地址">
+          <Input className={ROW_CONTROL_W} aria-label="OBS 地址" value={host} onChange={(event) => setHost(event.target.value)} placeholder="127.0.0.1" disabled={busy} />
+        </Row>
+        <Row label="端口">
+          <Input className="w-32" aria-label="OBS 端口" value={port} inputMode="numeric" onChange={(event) => setPort(event.target.value)} placeholder="4455" disabled={busy} />
+        </Row>
+        <Row label="密码">
+          <div className={ROW_CONTROL_W}>
             <SecretInput
+              aria-label="OBS 密码"
               draftValue={password}
               hasStoredValue={hasSavedPassword}
               onDraftChange={(value) => {
@@ -210,27 +210,27 @@ export function ObsOverlayPanel() {
               placeholder={hasSavedPassword ? "输入新密码可覆盖当前配置" : "未启用认证可留空"}
               disabled={busy}
             />
-          </Field>
-          <Field layout="row" label="安装场景">
-            <Select value={sceneName} onChange={(event) => setSceneName(event.target.value)} disabled={busy || !connection?.browserSourceAvailable}>
-              {!connection?.scenes.length && <option value="">请先连接 OBS</option>}
-              {connection?.scenes.map((scene) => <option key={scene.name} value={scene.name}>{scene.name}</option>)}
-            </Select>
-          </Field>
-        </FormGrid>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" onClick={install} disabled={busy || !connection?.browserSourceAvailable || !overlay.ready}>
+          </div>
+        </Row>
+        <Row label="安装场景">
+          <Select className={ROW_CONTROL_W} aria-label="安装场景" value={sceneName} onChange={(event) => setSceneName(event.target.value)} disabled={busy || !connection?.browserSourceAvailable}>
+            {!connection?.scenes.length && <option value="">请先连接 OBS</option>}
+            {connection?.scenes.map((scene) => <option key={scene.name} value={scene.name}>{scene.name}</option>)}
+          </Select>
+        </Row>
+        <Row label="字幕源">
+          <Button size="sm" variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
+          <Button size="sm" variant="primary" onClick={install} disabled={busy || !connection?.browserSourceAvailable || !overlay.ready}>
             {overlay.installed ? "更新字幕源" : "安装字幕源"}
           </Button>
-          <Button variant="danger" onClick={uninstall} disabled={busy || !overlay.installed}>卸载字幕源</Button>
-        </div>
-      </SettingsSection>
+        </Row>
+      </Group>
 
       {(message || error) && (
-        <p className={error ? "whitespace-pre-line text-sm text-[#ff8589]" : "text-sm text-[var(--color-good)]"} role={error ? "alert" : "status"}>
+        <p className={error ? "whitespace-pre-line px-0.5 text-xs text-[var(--color-err)]" : "px-0.5 text-xs text-[var(--color-ok)]"} role={error ? "alert" : "status"}>
           {error || message}
         </p>
       )}
-    </div>
+    </>
   );
 }

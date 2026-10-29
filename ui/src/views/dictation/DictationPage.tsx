@@ -1,6 +1,7 @@
 import { Select } from "@/components/ui/Input";
 import { Group } from "@/components/ui/Group";
 import { Switch } from "@/components/ui/Switch";
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
@@ -106,7 +107,16 @@ export function DictationPage() {
         </>
       )}
       {node === "output" && <><InspectorHeader title={NODE_TITLES.output} /><InspectorBody><Group><InjectMethodRow /></Group></InspectorBody></>}
-      {node === "apps" && <><InspectorHeader title={NODE_TITLES.apps} /><AppProfilesPanel /></>}
+      {node === "apps" && (
+        <>
+          <InspectorHeader
+            title={<HelpLabel content="规则按从上到下的顺序匹配，使用第一条符合的规则；未匹配时使用默认场景。这里只查看软件名和窗口标题。">{NODE_TITLES.apps}</HelpLabel>}
+            right={<Switch checked={prefs.appProfilesEnabled} onChange={(value) => toggle({ appProfilesEnabled: value })} label="启用按软件区分" />}
+          />
+          {errorLine}
+          <AppProfilesPanel />
+        </>
+      )}
       {node === "shortcuts" && <><InspectorHeader title={NODE_TITLES.shortcuts} /><ShortcutProfilesPanel /></>}
     </MasterDetail>
   );

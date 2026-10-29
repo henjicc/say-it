@@ -1,13 +1,12 @@
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
-import { Switch } from "@/components/ui/Switch";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
+import { Tabs } from "@/components/ui/Tabs";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { cn } from "@/lib/cn";
@@ -18,6 +17,9 @@ import {
   useDictPrefs,
   type AppProfile,
 } from "@/store/useDictPrefs";
+
+/** 展开的规则详情与列表行的名称对齐（让过复选框）。 */
+const DETAIL_INDENT = "pl-[42px]";
 
 /** 三态覆盖项在下拉框里的取值；`inherit` 落库为 null。 */
 const OVERRIDE_OPTIONS = [
@@ -131,237 +133,227 @@ export function AppProfilesPanel() {
   };
 
   return (
-    <div className="flex flex-col gap-8">
-      <SectionHeader
-        title="按软件规则"
-        right={
-          <Switch
-            checked={prefs.appProfilesEnabled}
-            onChange={(v) => patch({ appProfilesEnabled: v })}
-            label="启用按软件规则"
-          />
-        }
-        description="为不同软件设置不同的文字处理方式。规则按从上到下的顺序匹配，使用第一条符合的规则；未匹配时使用通用设置。这里只查看软件名和窗口标题。" />
-
-      <div
+    <InspectorBody>
+      <Group
         className={cn(
-          "flex flex-col gap-4 transition-opacity",
+          "transition-opacity",
           !prefs.appProfilesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-          {profiles.length === 0 && (
-            <p className="px-3 py-2.5 text-xs text-[var(--color-fg-faint)]">
-              暂无软件规则，添加后可为指定软件单独设置本地处理和智能处理。
-            </p>
-          )}
-          {profiles.map((profile, index) => {
-            const open = editingId === profile.id;
-            const matcher = profile.matchers[0] ?? "";
-            const smartActive = profile.smartProcessingEnabled ?? prefs.smartProcessingEnabled;
-            const triggerMode = smartTriggerMode(profile.smartProcessingMinChars);
-            return (
-              <div key={profile.id} className="border-b border-[var(--color-line)] last:border-b-0">
-                <div className="flex items-center gap-2.5 px-3 py-2">
-                  <Checkbox
-                    checked={profile.enabled}
-                    onChange={(e) => updateProfile(profile.id, { enabled: e.target.checked })}
-                    title={profile.enabled ? "已启用" : "已停用"}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(open ? null : profile.id)}
-                    aria-expanded={open}
-                    className={cn(
-                      "flex min-w-0 flex-1 flex-col gap-0.5 text-left",
-                      profile.enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)]",
+        {profiles.length === 0 && (
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">
+            暂无软件规则，添加后可为指定软件单独设置本地处理和智能处理。
+          </p>
+        )}
+        {profiles.map((profile, index) => {
+          const open = editingId === profile.id;
+          const matcher = profile.matchers[0] ?? "";
+          const smartActive = profile.smartProcessingEnabled ?? prefs.smartProcessingEnabled;
+          const triggerMode = smartTriggerMode(profile.smartProcessingMinChars);
+          return (
+            <div key={profile.id}>
+              <div className="flex min-h-[var(--row-h)] items-center gap-2.5 px-3.5 py-2">
+                <Checkbox
+                  checked={profile.enabled}
+                  onChange={(e) => updateProfile(profile.id, { enabled: e.target.checked })}
+                  title={profile.enabled ? "已启用" : "已停用"}
+                />
+                <button
+                  type="button"
+                  onClick={() => setEditingId(open ? null : profile.id)}
+                  aria-expanded={open}
+                  className={cn(
+                    "flex min-w-0 flex-1 flex-col gap-0.5 text-left",
+                    profile.enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)]",
+                  )}
+                >
+                  <span className="flex items-center gap-2 text-[13px]">
+                    <span className="truncate">{profile.name || matcher || "（未指定软件）"}</span>
+                    {!matcher && (
+                      <span className="shrink-0 text-[11px] text-[var(--color-warn)]">● 未选择软件</span>
                     )}
-                  >
-                    <span className="flex items-center gap-2 text-sm">
-                      <span className="truncate">{profile.name || matcher || "（未指定软件）"}</span>
-                      {!matcher && (
-                        <span className="shrink-0 text-[11px] text-[var(--color-warn)]">● 未选择软件</span>
-                      )}
-                    </span>
-                    <span className="truncate text-[11px] text-[var(--color-fg-faint)]">
-                      {summarize(profile)}
-                    </span>
-                  </button>
-                  <IconButton
-                    size="sm"
-                    className="h-7 w-7 shrink-0"
-                    label="上移"
-                    disabled={index === 0}
-                    onClick={() => moveProfile(index, -1)}
-                  >
-                    <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                  </IconButton>
-                  <IconButton
-                    size="sm"
-                    className="h-7 w-7 shrink-0"
-                    label="下移"
-                    disabled={index === profiles.length - 1}
-                    onClick={() => moveProfile(index, 1)}
-                  >
-                    <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                  </IconButton>
-                  <IconButton
-                    size="sm"
-                    variant="dangerHover"
-                    className="h-7 w-7 shrink-0"
-                    label="删除软件规则"
-                    onClick={() => void deleteProfile(profile)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-                  </IconButton>
-                </div>
+                  </span>
+                  <span className="truncate text-[11px] text-[var(--color-fg-faint)]">
+                    {summarize(profile)}
+                  </span>
+                </button>
+                <IconButton
+                  size="sm"
+                  className="shrink-0"
+                  label="上移"
+                  disabled={index === 0}
+                  onClick={() => moveProfile(index, -1)}
+                >
+                  <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                </IconButton>
+                <IconButton
+                  size="sm"
+                  className="shrink-0"
+                  label="下移"
+                  disabled={index === profiles.length - 1}
+                  onClick={() => moveProfile(index, 1)}
+                >
+                  <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                </IconButton>
+                <IconButton
+                  size="sm"
+                  variant="dangerHover"
+                  className="shrink-0"
+                  label="删除软件规则"
+                  onClick={() => void deleteProfile(profile)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+                </IconButton>
+              </div>
 
-                {open && (
-                  <div className="border-t border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-4">
-                    <FormGrid>
-                      <RunningAppPicker
-                        value={matcher}
-                        label="软件"
-                        hint="按进程名匹配，大小写不敏感。列表只显示当前打开的软件。"
-                        onClear={() => updateProfile(profile.id, { matchers: [] })}
-                        onSelect={(selection) =>
-                          updateProfile(profile.id, {
-                            matchers: [selection.processName],
-                            // 名称留空时跟随所选软件，用户手动改过就不再覆盖。
-                            name: profile.name.trim() === "" ? selection.appName : profile.name,
-                          })
+              {open && (
+                <div className="border-t border-[var(--color-line)] [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
+                  <div className={cn("py-3 pr-3.5", DETAIL_INDENT)}>
+                    <RunningAppPicker
+                      value={matcher}
+                      label="软件"
+                      hint="按进程名匹配，大小写不敏感。列表只显示当前打开的软件。"
+                      onClear={() => updateProfile(profile.id, { matchers: [] })}
+                      onSelect={(selection) =>
+                        updateProfile(profile.id, {
+                          matchers: [selection.processName],
+                          // 名称留空时跟随所选软件，用户手动改过就不再覆盖。
+                          name: profile.name.trim() === "" ? selection.appName : profile.name,
+                        })
+                      }
+                    />
+                  </div>
+
+                  <Row className={DETAIL_INDENT} label="规则名称" hint="仅用于在列表里辨认，可留空。">
+                    <Input
+                      className={ROW_CONTROL_W}
+                      aria-label="规则名称"
+                      value={profile.name}
+                      placeholder={matcher || "例如：编程场景"}
+                      spellCheck={false}
+                      onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
+                    />
+                  </Row>
+
+                  <Row className={DETAIL_INDENT} label="本地处理">
+                    <Tabs
+                      variant="view"
+                      ariaLabel="本地处理"
+                      tabs={OVERRIDE_OPTIONS.map((option) => ({ key: option.value, label: option.label }))}
+                      active={overrideValue(profile.localRulesEnabled)}
+                      onChange={(value) =>
+                        updateProfile(profile.id, { localRulesEnabled: parseOverride(value) })
+                      }
+                    />
+                  </Row>
+
+                  <Row className={DETAIL_INDENT} label="智能处理">
+                    <Tabs
+                      variant="view"
+                      ariaLabel="智能处理"
+                      tabs={OVERRIDE_OPTIONS.map((option) => ({ key: option.value, label: option.label }))}
+                      active={overrideValue(profile.smartProcessingEnabled)}
+                      onChange={(value) =>
+                        updateProfile(profile.id, { smartProcessingEnabled: parseOverride(value) })
+                      }
+                    />
+                  </Row>
+
+                  <Row
+                    className={DETAIL_INDENT}
+                    label="处理时机"
+                    hint={smartActive ? undefined : "智能处理未生效时该条件不会被使用。"}
+                    disabled={!smartActive}
+                  >
+                    <Select
+                      className={ROW_CONTROL_W}
+                      aria-label="处理时机"
+                      disabled={!smartActive}
+                      value={triggerMode}
+                      onChange={(e) => {
+                        const mode = e.target.value as SmartTriggerMode;
+                        updateProfile(profile.id, {
+                          smartProcessingMinChars:
+                            mode === "inherit"
+                              ? null
+                              : mode === "always"
+                                ? 0
+                                : profile.smartProcessingMinChars
+                                  || prefs.smartProcessingMinChars
+                                  || DEFAULT_SMART_PROCESSING_MIN_CHARS,
+                        });
+                      }}
+                    >
+                      <option value="inherit">
+                        跟随全局（{prefs.smartProcessingMinChars === 0
+                          ? "每次听写"
+                          : `达到 ${prefs.smartProcessingMinChars} 字符`}）
+                      </option>
+                      <option value="always">每次听写</option>
+                      <option value="minimum">达到指定长度</option>
+                    </Select>
+                  </Row>
+
+                  {triggerMode === "minimum" && (
+                    <Row
+                      className={DETAIL_INDENT}
+                      label="最少文本长度"
+                      hint={`达到 ${profile.smartProcessingMinChars} 个字符时触发。`}
+                      disabled={!smartActive}
+                    >
+                      <NumberInput
+                        className="w-32"
+                        aria-label="最少文本长度"
+                        min={1}
+                        max={MAX_SMART_PROCESSING_MIN_CHARS}
+                        step={10}
+                        disabled={!smartActive}
+                        value={profile.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS}
+                        onValueChange={(value) =>
+                          updateProfile(profile.id, { smartProcessingMinChars: value })
                         }
                       />
+                    </Row>
+                  )}
 
-                      <Field label="规则名称" hint="仅用于在列表里辨认，可留空。">
-                        <Input
-                          value={profile.name}
-                          placeholder={matcher || "例如：编程场景"}
-                          spellCheck={false}
-                          onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
-                        />
-                      </Field>
-
-                      <Field label="本地处理">
-                        <Select
-                          value={overrideValue(profile.localRulesEnabled)}
-                          onChange={(e) =>
-                            updateProfile(profile.id, {
-                              localRulesEnabled: parseOverride(e.target.value),
-                            })
-                          }
-                        >
-                          {OVERRIDE_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-
-                      <Field label="智能处理">
-                        <Select
-                          value={overrideValue(profile.smartProcessingEnabled)}
-                          onChange={(e) =>
-                            updateProfile(profile.id, {
-                              smartProcessingEnabled: parseOverride(e.target.value),
-                            })
-                          }
-                        >
-                          {OVERRIDE_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-
-                      <Field
-                        label="处理时机"
-                        hint={smartActive ? undefined : "智能处理未生效时该条件不会被使用。"}
-                      >
-                        <Select
-                          disabled={!smartActive}
-                          value={triggerMode}
-                          onChange={(e) => {
-                            const mode = e.target.value as SmartTriggerMode;
-                            updateProfile(profile.id, {
-                              smartProcessingMinChars:
-                                mode === "inherit"
-                                  ? null
-                                  : mode === "always"
-                                    ? 0
-                                    : profile.smartProcessingMinChars
-                                      || prefs.smartProcessingMinChars
-                                      || DEFAULT_SMART_PROCESSING_MIN_CHARS,
-                            });
-                          }}
-                        >
-                          <option value="inherit">
-                            跟随全局（{prefs.smartProcessingMinChars === 0
-                              ? "每次听写"
-                              : `达到 ${prefs.smartProcessingMinChars} 字符`}）
-                          </option>
-                          <option value="always">每次听写</option>
-                          <option value="minimum">达到指定长度</option>
-                        </Select>
-                      </Field>
-
-                      {triggerMode === "minimum" && (
-                        <Field
-                          label="最少文本长度"
-                          hint={`达到 ${profile.smartProcessingMinChars} 个字符时触发。`}
-                        >
-                          <NumberInput
-                            min={1}
-                            max={MAX_SMART_PROCESSING_MIN_CHARS}
-                            step={10}
-                            disabled={!smartActive}
-                            value={profile.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS}
-                            onValueChange={(value) =>
-                              updateProfile(profile.id, { smartProcessingMinChars: value })
-                            }
-                          />
-                        </Field>
-                      )}
-
-                      <Field
-                        label="智能处理模板"
-                        hint={smartActive ? undefined : "智能处理未生效时该模板不会被使用。"}
-                      >
-                        <Select
-                          disabled={!smartActive}
-                          value={profile.smartTemplateId ?? ""}
-                          onChange={(e) =>
-                            updateProfile(profile.id, {
-                              smartTemplateId: e.target.value || null,
-                            })
-                          }
-                        >
-                          <option value="">跟随全局模板</option>
-                          {prefs.smartTemplates.map((template) => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-                    </FormGrid>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        <div>
+                  <Row
+                    className={DETAIL_INDENT}
+                    label="智能处理模板"
+                    hint={smartActive ? undefined : "智能处理未生效时该模板不会被使用。"}
+                    disabled={!smartActive}
+                  >
+                    <Select
+                      className={ROW_CONTROL_W}
+                      aria-label="智能处理模板"
+                      disabled={!smartActive}
+                      value={profile.smartTemplateId ?? ""}
+                      onChange={(e) =>
+                        updateProfile(profile.id, {
+                          smartTemplateId: e.target.value || null,
+                        })
+                      }
+                    >
+                      <option value="">跟随全局模板</option>
+                      {prefs.smartTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Row>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div className="flex items-center px-3.5 py-2.5">
           <Button size="sm" disabled={profiles.length >= MAX_APP_PROFILES} onClick={addProfile}>
             <Plus className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
             添加软件规则
           </Button>
         </div>
-      </div>
+      </Group>
       {dialog}
-    </div>
+    </InspectorBody>
   );
 }

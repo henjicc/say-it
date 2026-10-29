@@ -1,7 +1,7 @@
-import { Group, Row } from "@/components/ui/Group";
+import { Group, Row, ROW_CONTROL_W, SliderRow } from "@/components/ui/Group";
 import { Select } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
-import { Slider } from "@/components/ui/Slider";
+
 import { Tabs } from "@/components/ui/Tabs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
@@ -17,7 +17,6 @@ import { useMouseGestureStore } from "@/store/useMouseGestureStore";
 import { useUiStore } from "@/store/useUiStore";
 
 const DEFAULT_INPUT_VALUE = "";
-const CONTROL_W = "w-64";
 
 /** 主快捷键 + 触发方式，两种模式共用。 */
 export function ShortcutRows() {
@@ -25,7 +24,7 @@ export function ShortcutRows() {
   return (
     <>
       <Row label="快捷键" hint="点击后按下想用的按键；按 Esc 取消录制，聚焦后按 Delete 清除。Caps Lock 短按仍可切换大小写。">
-        <div className={CONTROL_W}>
+        <div className={ROW_CONTROL_W}>
           <ShortcutRecorder
             value={shortcut}
             onChange={setMainShortcut}
@@ -53,7 +52,7 @@ export function MicRow({ label = "麦克风" }: { label?: string }) {
   return (
     <Row label={label} hint="语音输入和实时字幕的麦克风共用这一设置。">
       <Select
-        className={CONTROL_W}
+        className={ROW_CONTROL_W}
         aria-label={label}
         searchable={inputs.length > 5}
         searchPlaceholder="搜索麦克风…"
@@ -75,7 +74,7 @@ export function AsrModelRow() {
   const patch = useDictPrefs((s) => s.patch);
   return (
     <Row label="识别模型" controlId="dictation-asr-model">
-      <div className={CONTROL_W}>
+      <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="dictation-asr-model"
           value={asrModel}
@@ -123,7 +122,7 @@ export function TriggerSection() {
         <Row
           label="启用悬浮球"
           hint="点击悬浮球开始或停止语音输入，右键可调整外观。识别结果会保留在剪贴板。"
-          message={floatingOrbError && <span className="text-[var(--color-err)]">保存悬浮球设置失败：{floatingOrbError}</span>}
+          message={floatingOrbError && <span role="alert" className="text-[var(--color-err)]">保存悬浮球设置失败：{floatingOrbError}</span>}
         >
           <Switch
             checked={floatingOrb.enabled}
@@ -136,7 +135,7 @@ export function TriggerSection() {
       <Group title="鼠标手势">
         <Row
           label="启用鼠标手势"
-          message={mouseGestureError && <span className="text-[var(--color-err)]">鼠标手势不可用：{mouseGestureError}</span>}
+          message={mouseGestureError && <span role="alert" className="text-[var(--color-err)]">鼠标手势不可用：{mouseGestureError}</span>}
         >
           <Switch
             checked={mouseGesture.enabled}
@@ -147,7 +146,7 @@ export function TriggerSection() {
         </Row>
         <Row label="晃动后" disabled={gestureOff}>
           <Select
-            className={CONTROL_W}
+            className={ROW_CONTROL_W}
             aria-label="晃动后"
             value={mouseGesture.mode}
             disabled={gestureOff}
@@ -157,20 +156,17 @@ export function TriggerSection() {
             <option value="direct">直接开始或停止</option>
           </Select>
         </Row>
-        <Row label="晃动灵敏度" disabled={gestureOff}>
-          <div className={CONTROL_W}>
-            <Slider
-              label="低误触"
-              min={0}
-              max={100}
-              step={5}
-              value={mouseGesture.sensitivity}
-              disabled={gestureOff}
-              format={(value) => `${value}%`}
-              onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
-            />
-          </div>
-        </Row>
+        <SliderRow
+          label="晃动灵敏度"
+          hint="数值越低越不容易误触发。"
+          min={0}
+          max={100}
+          step={5}
+          value={mouseGesture.sensitivity}
+          disabled={gestureOff}
+          format={(value) => `${value}%`}
+          onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
+        />
         <Row label="左键快速连击" disabled={gestureOff}>
           <Select
             className="w-32"

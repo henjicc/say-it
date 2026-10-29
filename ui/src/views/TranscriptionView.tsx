@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
-import { CheckField, Field } from "@/components/ui/Field";
-import { Input, Select } from "@/components/ui/Input";
+import { CheckField } from "@/components/ui/Field";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
+import { Input } from "@/components/ui/Input";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { Switch } from "@/components/ui/Switch";
 import { Tabs } from "@/components/ui/Tabs";
-import { SettingsSection } from "@/components/ui/SettingsSection";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { SubtitleEditor } from "@/components/transcription/SubtitleEditor";
 import { copyText } from "@/lib/clipboard";
 import { CMD, cmd } from "@/lib/tauri";
@@ -126,73 +128,75 @@ export function TranscriptionView() {
     statusText || (selectedFile ? "已就绪，可以开始识别。" : "等待选择文件。");
 
   return (
-    <div className="flex flex-col gap-7">
+    <InspectorBody>
       {tab === "transcribe" ? (
         <>
-          <SettingsSection title="音视频文件">
-            <FileCard
-              file={selectedFile}
-              dragActive={dragActive}
-              disabled={pickState === "loading" || running}
-              pickState={pickState}
-              message={message}
-              onPick={pickFile}
-              statusTone={statusTone}
-              statusText={cardStatusText}
-              errorMessage={errorMessage}
-              hint={stage !== "completed" ? saveMessage : undefined}
-              actions={
-                <>
-                  <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
-                    重新选择
+          <FileCard
+            file={selectedFile}
+            dragActive={dragActive}
+            disabled={pickState === "loading" || running}
+            pickState={pickState}
+            message={message}
+            onPick={pickFile}
+            statusTone={statusTone}
+            statusText={cardStatusText}
+            errorMessage={errorMessage}
+            hint={stage !== "completed" ? saveMessage : undefined}
+            actions={
+              <>
+                <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
+                  重新选择
+                </Button>
+                {!hasApiKey && (
+                  <Button size="sm" onClick={openProviderSettings}>
+                    去设置 API Key
                   </Button>
-                  {!hasApiKey && (
-                    <Button size="sm" onClick={openProviderSettings}>
-                      去设置 API Key
-                    </Button>
-                  )}
-                  {running ? (
-                    <Button size="sm" variant="danger" onClick={cancelTranscription}>
-                      取消
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile}>
-                      开始识别
-                    </Button>
-                  )}
-                </>
-              }
-            />
-          </SettingsSection>
+                )}
+                {running ? (
+                  <Button size="sm" variant="danger" onClick={cancelTranscription}>
+                    取消
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile}>
+                    开始识别
+                  </Button>
+                )}
+              </>
+            }
+          />
 
           {result && (
-            <SettingsSection
-              title="识别结果"
-              right={
-                <Tabs
-                  tabs={[
-                    { key: "text", label: "纯文本" },
-                    { key: "subtitles", label: "字幕编辑" },
-                  ]}
-                  active={resultView}
-                  onChange={(value) => setRuntime({ resultView: value })}
-                />
-              }
-            >
+            <section className="flex flex-col gap-2">
+              <SectionHeader
+                title="识别结果"
+                right={
+                  <Tabs
+                    variant="view"
+                    ariaLabel="识别结果视图"
+                    tabs={[
+                      { key: "text", label: "纯文本" },
+                      { key: "subtitles", label: "字幕编辑" },
+                    ]}
+                    active={resultView}
+                    onChange={(value) => setRuntime({ resultView: value })}
+                  />
+                }
+              />
               {resultView === "text" ? (
-                <>
+                <Group>
                   <textarea
                     readOnly
+                    aria-label="识别文本"
                     value={textResult}
-                    className="min-h-72 w-full resize-y rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
+                    className="block min-h-72 w-full resize-y bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
                   />
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
+                    <span className="min-w-0 truncate text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</span>
                     <Button size="sm" onClick={() => copyText(textResult)}>
                       复制文本
                     </Button>
-                    {saveMessage && <span className="text-xs text-[var(--color-fg-subtle)]">{saveMessage}</span>}
                   </div>
-                </>
+                </Group>
               ) : (
                 <>
                   <SubtitleEditor
@@ -210,49 +214,50 @@ export function TranscriptionView() {
                       </>
                     }
                   />
-                  {saveMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{saveMessage}</p>}
+                  {saveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</p>}
                 </>
               )}
-            </SettingsSection>
+            </section>
           )}
         </>
       ) : tab === "align" ? (
         <TranscriptAlignPanel />
       ) : (
-        <SettingsSection title="通用设置" description="这里的设置同时用于字幕转写和文稿对齐。">
-
-          <FormGrid>
-            <Field label="识别模型" controlId="transcription-asr-model">
-              <ModelPicker
-                id="transcription-asr-model"
-                value={params.model}
-                options={FILE_ASR_MODEL_OPTIONS}
-                panelLabel="选择语音识别模型"
-                onChange={(value) => setParams({ model: value })}
-              />
-            </Field>
-          </FormGrid>
-
-          <div>
-            <p className="text-xs font-medium text-[var(--color-fg-muted)]">语种提示</p>
-            <div className="mt-2 flex flex-wrap gap-4">
-              <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
-                自动
-              </CheckField>
-              {LANGUAGE_OPTIONS.map((lang) => (
-                <CheckField key={lang.value} checked={params.languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
-                  {lang.label}
+        <>
+          <Group>
+            <Row label="识别模型" controlId="transcription-asr-model" hint="这里的设置同时用于字幕转写和文稿对齐。">
+              <div className={ROW_CONTROL_W}>
+                <ModelPicker
+                  id="transcription-asr-model"
+                  value={params.model}
+                  options={FILE_ASR_MODEL_OPTIONS}
+                  panelLabel="选择语音识别模型"
+                  onChange={(value) => setParams({ model: value })}
+                />
+              </div>
+            </Row>
+            <Row label="语种提示">
+              <div className="flex flex-wrap justify-end gap-x-4 gap-y-2">
+                <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
+                  自动
                 </CheckField>
-              ))}
-            </div>
-          </div>
+                {LANGUAGE_OPTIONS.map((lang) => (
+                  <CheckField key={lang.value} checked={params.languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
+                    {lang.label}
+                  </CheckField>
+                ))}
+              </div>
+            </Row>
+          </Group>
 
-          <FormGrid className="items-center">
-            <CheckField checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })}>
-              说话人分离
-            </CheckField>
-            <Field label="说话人数" hint="留空自动判断；开启说话人分离后可填 2 到 100。">
+          <Group title="说话人">
+            <Row label="说话人分离">
+              <Switch checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })} label="说话人分离" />
+            </Row>
+            <Row label="说话人数" controlId="transcription-speaker-count" hint="留空自动判断；开启说话人分离后可填 2 到 100。" disabled={!params.diarizationEnabled}>
               <Input
+                id="transcription-speaker-count"
+                className="w-32"
                 type="number"
                 min={2}
                 max={100}
@@ -261,12 +266,12 @@ export function TranscriptionView() {
                 onChange={(event) => setParams({ speakerCount: parseSpeakerCount(event.target.value) })}
                 placeholder="自动"
               />
-            </Field>
-          </FormGrid>
+            </Row>
+          </Group>
 
-          {saveMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{saveMessage}</p>}
-        </SettingsSection>
+          {saveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</p>}
+        </>
       )}
-    </div>
+    </InspectorBody>
   );
 }

@@ -1,10 +1,10 @@
-import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Trash2 } from "lucide-react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
+import { Group, Row } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import type { ShortcutCombo, ShortcutTriggerMode } from "@/features/dictation/hotkeys";
@@ -113,81 +113,76 @@ export function SettingsKeyBindingsPanel() {
   const renderGroup = (title: string, groupItems: ShortcutBindingItem[]) => {
     if (groupItems.length === 0) return null;
     return (
-      <SettingsSection title={title}>
-        <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
-          {groupItems.map((item) => {
-            const key = shortcutTargetKey(item.target);
-            return (
-              <div key={key} className="border-b border-[var(--color-line)] p-4 last:border-b-0">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-medium text-[var(--color-fg)]">{item.name}</p>
-                      {!item.enabled && (
-                        <span className="rounded-[var(--radius-control)] bg-[var(--color-surface-strong)] px-2 py-0.5 text-[11px] text-[var(--color-fg-subtle)]">
-                          已停用
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{item.actionLabel}</p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button size="sm" variant="ghost" disabled={mutating} onClick={() => goToSource(item)}>
-                      前往设置
-                      <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                    </Button>
-                    <IconButton
-                      size="sm"
-                      variant="dangerHover"
-                      className="h-7 w-7"
-                      disabled={mutating}
-                      label={`清除 ${item.name} 的快捷键`}
-                      onClick={() => void clear(item)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                    </IconButton>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(180px,0.42fr)]">
-                  <ShortcutRecorder
-                    value={item}
-                    disabled={mutating}
-                    ariaLabel={`${item.name}的快捷键`}
-                    onChange={(shortcut) => changeShortcut(item, shortcut)}
-                  />
-                  {item.triggerModeEditable ? (
-                    <Select
-                      value={item.triggerMode}
-                      disabled={mutating}
-                      aria-label={`${item.name}的触发方式`}
-                      onChange={(event) => void changeTrigger(item, event.target.value as ShortcutTriggerMode)}
-                    >
-                      {TRIGGER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <div className="flex min-h-[var(--control-h)] items-center rounded-[var(--radius-control)] border border-[var(--color-line)] px-3 text-sm text-[var(--color-fg-subtle)]">
-                      单击切换（固定）
-                    </div>
+      <Group title={title}>
+        {groupItems.map((item) => {
+          const key = shortcutTargetKey(item.target);
+          return (
+            <Row
+              key={key}
+              label={
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate">{item.name}</span>
+                  <span className="truncate text-xs text-[var(--color-fg-subtle)]">{item.actionLabel}</span>
+                  {!item.enabled && (
+                    <span className="flex-none rounded-[var(--radius-control)] bg-[var(--color-surface-strong)] px-2 py-0.5 text-[11px] text-[var(--color-fg-subtle)]">
+                      已停用
+                    </span>
                   )}
-                </div>
-                {/* 注册失败时界面必须说出来：否则这里照样显示成已绑定，用户按了没反应
-                    也无从得知（启动时的失败原本只写进 release 版根本没有的控制台）。 */}
-                {item.registrationError && (
-                  <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">
-                    当前未生效：{item.registrationError}
-                  </p>
-                )}
-                {errors[key] && (
-                  <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">{errors[key]}</p>
-                )}
+                </span>
+              }
+              // 注册失败时界面必须说出来：否则这里照样显示成已绑定，用户按了没反应
+              // 也无从得知（启动时的失败原本只写进 release 版根本没有的控制台）。
+              message={(item.registrationError || errors[key]) && (
+                <span role="alert" className="flex flex-col gap-1 text-[var(--color-err)]">
+                  {item.registrationError && <span>当前未生效：{item.registrationError}</span>}
+                  {errors[key] && <span>{errors[key]}</span>}
+                </span>
+              )}
+            >
+              <div className="w-44">
+                <ShortcutRecorder
+                  value={item}
+                  disabled={mutating}
+                  ariaLabel={`${item.name}的快捷键`}
+                  onChange={(shortcut) => changeShortcut(item, shortcut)}
+                />
               </div>
-            );
-          })}
-        </div>
-      </SettingsSection>
+              {item.triggerModeEditable ? (
+                <Select
+                  className="w-32"
+                  value={item.triggerMode}
+                  disabled={mutating}
+                  aria-label={`${item.name}的触发方式`}
+                  onChange={(event) => void changeTrigger(item, event.target.value as ShortcutTriggerMode)}
+                >
+                  {TRIGGER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
+              ) : (
+                <span className="w-32 px-3 text-[13px] text-[var(--color-fg-subtle)]">单击切换（固定）</span>
+              )}
+              <IconButton
+                size="sm"
+                disabled={mutating}
+                label={`前往 ${item.name} 的设置`}
+                onClick={() => goToSource(item)}
+              >
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+              </IconButton>
+              <IconButton
+                size="sm"
+                variant="dangerHover"
+                disabled={mutating}
+                label={`清除 ${item.name} 的快捷键`}
+                onClick={() => void clear(item)}
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              </IconButton>
+            </Row>
+          );
+        })}
+      </Group>
     );
   };
 
@@ -197,13 +192,14 @@ export function SettingsKeyBindingsPanel() {
 
   if (items.length === 0) {
     return (
-      <SettingsSection title="按键">
+      <Group>
         {errors.page ? (
-          <>
-            <p className="text-sm text-[var(--color-err)]" role="alert">读取按键设置失败：{errors.page}</p>
+          <Row
+            label="读取按键设置失败"
+            message={<span role="alert" className="text-[var(--color-err)]">{errors.page}</span>}
+          >
             <Button
               size="sm"
-              className="mt-3"
               onClick={() => {
                 setErrors({});
                 setLoading(true);
@@ -214,21 +210,20 @@ export function SettingsKeyBindingsPanel() {
             >
               重新读取
             </Button>
-          </>
+          </Row>
         ) : (
-          <p className="text-sm text-[var(--color-fg-subtle)]">当前没有已设置的快捷键。</p>
+          <p className="px-3.5 py-3 text-[13px] text-[var(--color-fg-subtle)]">当前没有已设置的快捷键。</p>
         )}
-      </SettingsSection>
+      </Group>
     );
   }
 
   return (
-    <div className="flex flex-col gap-7">
-      <SectionHeader title="集中管理" description="在这里修改或清除快捷键。需要调整处理方式、模板或启用状态时，请前往对应功能页面。" />
+    <InspectorBody>
       {renderGroup("语音输入", groups.dictation)}
       {renderGroup("智能助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}
       {dialog}
-    </div>
+    </InspectorBody>
   );
 }

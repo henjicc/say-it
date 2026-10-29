@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { Group, Row } from "@/components/ui/Group";
 import { Textarea } from "@/components/ui/Input";
 import { LogPanel } from "@/components/ui/LogPanel";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { cn } from "@/lib/cn";
 import { contextDebugShortcutHint, contextDebugShortcutLabel } from "@/lib/platform";
 import { useDictationStore } from "@/store/useDictationStore";
@@ -36,20 +36,22 @@ export function DictationDebugSection() {
   };
 
   return (
-    <SettingsSection title="听写调试" description={`打开预览窗口，切换到要查看的软件，再按 ${contextDebugShortcutLabel}${contextDebugShortcutHint}，即可查看能读取到的文字。预览不会录音、调用智能模型或保存内容。`}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button disabled={opening} onClick={() => void openContextDebug()}>
-          {opening ? "正在打开…" : "打开上下文调试窗口"}
-        </Button>
-        <Button variant={recording ? "danger" : "primary"} onClick={toggleDictation}>
-          {recording ? "停止并输入" : "手动开始"}
-        </Button>
-        {notice && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{notice}</p>}
+    <Group title="听写调试">
+      <Row
+        label="当前软件上下文"
+        hint={`打开预览窗口，切换到要查看的软件，再按 ${contextDebugShortcutLabel}${contextDebugShortcutHint}，即可查看能读取到的文字。预览不会录音、调用智能模型或保存内容。`}
+        message={notice && <span role="status">{notice}</span>}
+      >
+        <Button size="sm" disabled={opening} onClick={() => void openContextDebug()}>{opening ? "正在打开…" : "打开调试窗口"}</Button>
+      </Row>
+      <Row label="手动听写" message={<span role="status" className={cn(toneClass[statusTone])}>{statusText}</span>}>
+        <Button size="sm" variant={recording ? "danger" : "primary"} onClick={toggleDictation}>{recording ? "停止并输入" : "手动开始"}</Button>
+      </Row>
+      <div className="flex flex-col gap-2 p-3.5">
+        <Textarea rows={3} readOnly aria-label="最近识别" value={latestText} placeholder="最近一次识别的完整文本会显示在这里" />
+        <div><Button size="sm" onClick={clearDictLog}>清空日志</Button></div>
+        <LogPanel>{log}</LogPanel>
       </div>
-      <p className={cn("text-sm", toneClass[statusTone])}>{statusText}</p>
-      <Textarea rows={3} readOnly value={latestText} placeholder="最近一次识别的完整文本会显示在这里" />
-      <div><Button size="sm" onClick={clearDictLog}>清空日志</Button></div>
-      <LogPanel>{log}</LogPanel>
-    </SettingsSection>
+    </Group>
   );
 }

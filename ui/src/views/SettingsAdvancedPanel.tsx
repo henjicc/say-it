@@ -1,12 +1,11 @@
-import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
-import { Slider } from "@/components/ui/Slider";
-import { CheckField, Field } from "@/components/ui/Field";
-import { FormGrid } from "@/components/ui/FormGrid";
+import { CheckField } from "@/components/ui/Field";
+import { Group, Row, SliderRow } from "@/components/ui/Group";
 import { Modal } from "@/components/ui/Modal";
-import { SettingsSection } from "@/components/ui/SettingsSection";
+import { RangeInput } from "@/components/ui/RangeInput";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
@@ -133,42 +132,40 @@ export function DiagnosticSection() {
   }
 
   return (
-    <SettingsSection title="诊断日志">
-      <FormGrid>
-        <Field label="详细元数据日志" controlId="diagnostic-verbose-logging">
+    <>
+      <Group title="诊断日志">
+        <Row label="详细元数据日志" controlId="diagnostic-verbose-logging">
           <Switch id="diagnostic-verbose-logging" checked={verboseLogging} onChange={(enabled) => void updateVerbose(enabled)} label="详细元数据日志" />
-        </Field>
-        <Field
+        </Row>
+        <Row
           label="临时正文日志"
           controlId="diagnostic-content-logging"
-          hint={status?.contentLoggingEnabled
-            ? `包含输入文本，将在 ${Math.ceil(status.contentLoggingRemainingSeconds / 60)} 分钟内自动关闭。`
-            : "默认关闭；开启后记录输入文本，30 分钟后自动关闭，重启不会恢复。"}
+          hint="默认关闭；开启后记录输入文本，30 分钟后自动关闭，重启不会恢复。"
+          message={status?.contentLoggingEnabled && (
+            <span className="text-[var(--color-warn)]">包含输入文本，将在 {Math.ceil(status.contentLoggingRemainingSeconds / 60)} 分钟内自动关闭。</span>
+          )}
         >
           <Switch id="diagnostic-content-logging" checked={status?.contentLoggingEnabled === true} onChange={(enabled) => void updateContent(enabled)} label="临时正文日志" />
-        </Field>
-        <Field label="日志目录" controlId="diagnostic-open-directory">
-          <Button id="diagnostic-open-directory" onClick={() => void cmd(CMD.openDiagnosticDirectory).catch((error) => setMessage(String(error)))}>打开日志目录</Button>
-        </Field>
-        <Field label="清空日志" controlId="diagnostic-clear-logs">
-          <Button id="diagnostic-clear-logs" variant="dangerHover" onClick={() => void clearLogs()}>清空诊断日志</Button>
-        </Field>
-        <Field
+        </Row>
+        <Row label="日志目录" controlId="diagnostic-open-directory">
+          <Button id="diagnostic-open-directory" size="sm" onClick={() => void cmd(CMD.openDiagnosticDirectory).catch((error) => setMessage(String(error)))}>打开日志目录</Button>
+        </Row>
+        <Row label="清空日志" controlId="diagnostic-clear-logs">
+          <Button id="diagnostic-clear-logs" size="sm" variant="danger" onClick={() => void clearLogs()}>清空诊断日志</Button>
+        </Row>
+        <Row
           label="导出诊断包"
           controlId="diagnostic-export-bundle"
           hint="默认仅包含版本、平台、不含隐私的设置和运行日志，不包含历史记录、密钥、音频或截图。"
-          className="sm:col-span-2"
+          message={includeContent && <span role="alert" className="text-[var(--color-err)]">风险：导出包包含输入文本</span>}
         >
-          <div className="flex flex-wrap items-center gap-3">
-            <Button id="diagnostic-export-bundle" onClick={() => void exportBundle()}>导出诊断包</Button>
-            <CheckField checked={includeContent} onChange={setIncludeContent}>包含正文日志</CheckField>
-            {includeContent && <span role="alert" className="text-xs text-[var(--color-err)]">风险：导出包包含输入文本</span>}
-          </div>
-        </Field>
-      </FormGrid>
-      {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+          <CheckField checked={includeContent} onChange={setIncludeContent}>包含正文日志</CheckField>
+          <Button id="diagnostic-export-bundle" size="sm" onClick={() => void exportBundle()}>导出诊断包</Button>
+        </Row>
+        {message && <p role="status" className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      </Group>
       {dialog}
-    </SettingsSection>
+    </>
   );
 }
 
@@ -200,15 +197,16 @@ export function DataResetSection() {
   }
 
   return (
-    <SettingsSection title="重置数据">
-      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-        清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。重置后应用会立即重启。
-      </p>
-      <FormGrid>
-        <Field label="重置全部数据" controlId="data-reset" message="不可撤销，请谨慎操作。">
-          <Button id="data-reset" variant="dangerHover" onClick={() => setPendingReset(true)}>重置数据并重启</Button>
-        </Field>
-      </FormGrid>
+    <>
+      <Group title="重置数据">
+        <Row
+          label="重置全部数据"
+          controlId="data-reset"
+          message="清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。重置后应用会立即重启。不可撤销，请谨慎操作。"
+        >
+          <Button id="data-reset" size="sm" variant="danger" onClick={() => setPendingReset(true)}>重置数据并重启</Button>
+        </Row>
+      </Group>
       <Modal
         open={pendingReset}
         onClose={closeDialog}
@@ -233,22 +231,21 @@ export function DataResetSection() {
           </div>
         </div>
       </Modal>
-    </SettingsSection>
+    </>
   );
 }
 
-function LevelMeter({ value }: { value: number }) {
+function LevelMeterRow({ value }: { value: number }) {
   return (
-    <div className="mt-1 grid grid-cols-[7rem_1fr_3.5rem] items-center gap-3">
-      <span className="text-xs text-[var(--color-fg-subtle)]">实时电平</span>
-      <div className="h-2 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
+    <Row label="实时电平">
+      <div className="h-2 w-48 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
         <span
           className="block h-full rounded-full bg-[var(--color-accent)] transition-[width] duration-75"
           style={{ width: levelWidth(value) }}
         />
       </div>
-      <span className="text-right text-xs tabular-nums text-[var(--color-fg-subtle)]">{value.toFixed(4)}</span>
-    </div>
+      <span className="w-20 text-right text-xs tabular-nums text-[var(--color-fg-subtle)]">{value.toFixed(4)}</span>
+    </Row>
   );
 }
 
@@ -320,68 +317,64 @@ function SilenceDisconnectSection() {
   }, [subtitlePrefs.source]);
 
   return (
-    <SettingsSection title="静音断流" description="开启后，有声音时才连接识别服务；持续安静达到设定时间后会暂停上传。再次有声音时自动恢复。">
-      <div className="flex flex-col gap-5">
-        <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[9rem_minmax(12rem,1fr)_minmax(16rem,1fr)]">
-          <CheckField
+    <>
+      <Group title="静音断流" description="开启后，有声音时才连接识别服务；持续安静达到设定时间后会暂停上传。再次有声音时自动恢复。">
+        <Row label="语音输入">
+          <Switch
             checked={dictPrefs.dictationSilenceDisconnectEnabled}
             onChange={(value) => patchDictPrefs({ dictationSilenceDisconnectEnabled: value })}
-          >
-            语音输入
-          </CheckField>
-          <Slider
-            label="时间"
-            min={1000}
-            max={30000}
-            step={500}
-            value={dictPrefs.dictationSilenceDisconnectMs}
-            format={fmtMs}
-            onChange={(value) => patchDictPrefs({ dictationSilenceDisconnectMs: value })}
+            label="语音输入静音断流"
           />
-          <div>
-            <Slider
-              label="阈值"
-              min={0.0001}
-              max={0.1}
-              step={0.0001}
-              value={dictPrefs.dictationSilenceThreshold}
-              format={fmtThreshold}
-              onChange={(value) => patchDictPrefs({ dictationSilenceThreshold: value })}
-            />
-            <LevelMeter value={dictationLevel} />
-          </div>
-        </div>
-        <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[9rem_minmax(12rem,1fr)_minmax(16rem,1fr)]">
-          <CheckField
+        </Row>
+        <SliderRow
+          label="静音时间"
+          min={1000}
+          max={30000}
+          step={500}
+          value={dictPrefs.dictationSilenceDisconnectMs}
+          format={fmtMs}
+          onChange={(value) => patchDictPrefs({ dictationSilenceDisconnectMs: value })}
+        />
+        <SliderRow
+          label="静音阈值"
+          min={0.0001}
+          max={0.1}
+          step={0.0001}
+          value={dictPrefs.dictationSilenceThreshold}
+          format={fmtThreshold}
+          onChange={(value) => patchDictPrefs({ dictationSilenceThreshold: value })}
+        />
+        <LevelMeterRow value={dictationLevel} />
+      </Group>
+      <Group>
+        <Row label="实时字幕">
+          <Switch
             checked={dictPrefs.subtitleSilenceDisconnectEnabled}
             onChange={(value) => patchDictPrefs({ subtitleSilenceDisconnectEnabled: value })}
-          >
-            实时字幕
-          </CheckField>
-          <Slider
-            label="时间"
-            min={1000}
-            max={30000}
-            step={500}
-            value={dictPrefs.subtitleSilenceDisconnectMs}
-            format={fmtMs}
-            onChange={(value) => patchDictPrefs({ subtitleSilenceDisconnectMs: value })}
+            label="实时字幕静音断流"
           />
-          <div>
-            <Slider
-              label="阈值"
-              min={0.0001}
-              max={0.1}
-              step={0.0001}
-              value={dictPrefs.subtitleSilenceThreshold}
-              format={fmtThreshold}
-              onChange={(value) => patchDictPrefs({ subtitleSilenceThreshold: value })}
-            />
-            <LevelMeter value={subtitleLevel} />
-          </div>
-        </div>
-      </div>
-    </SettingsSection>
+        </Row>
+        <SliderRow
+          label="静音时间"
+          min={1000}
+          max={30000}
+          step={500}
+          value={dictPrefs.subtitleSilenceDisconnectMs}
+          format={fmtMs}
+          onChange={(value) => patchDictPrefs({ subtitleSilenceDisconnectMs: value })}
+        />
+        <SliderRow
+          label="静音阈值"
+          min={0.0001}
+          max={0.1}
+          step={0.0001}
+          value={dictPrefs.subtitleSilenceThreshold}
+          format={fmtThreshold}
+          onChange={(value) => patchDictPrefs({ subtitleSilenceThreshold: value })}
+        />
+        <LevelMeterRow value={subtitleLevel} />
+      </Group>
+    </>
   );
 }
 
@@ -409,71 +402,78 @@ function AudioLabSections() {
 
   return (
     <>
-      <SettingsSection title="响度与降噪" description="在这里调整降噪和音量，设置会自动用于之后的语音输入。">
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2">
-          <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]"><HelpLabel content="让音量更均匀。目标响度建议先用 -20，想更响可试 -18。“最大提升”限制音量放大幅度，避免同时放大背景噪声。">响度归一化</HelpLabel></h3>
-            <Slider label="目标响度" min={-30} max={-14} step={0.5} value={prefs.targetLufs} format={fmt.targetLufs} onChange={(v) => onParam("targetLufs", v)} />
-            <Slider label="最大提升" min={0} max={80} step={1} value={prefs.maxGainDb} format={fmt.maxGainDb} onChange={(v) => onParam("maxGainDb", v)} />
-            <Slider label="峰值上限" min={-6} max={-0.5} step={0.5} value={prefs.peakLimitDbfs} format={fmt.peakLimitDbfs} onChange={(v) => onParam("peakLimitDbfs", v)} />
-          </div>
-          <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]"><HelpLabel content="100% 为最强降噪。声音发闷时可降到 70%～85%；停顿时仍有明显噪声，再适当提高“静音抑制”。">人声降噪</HelpLabel></h3>
-            <CheckField
-              checked={prefs.denoiseEnabled}
-              onChange={(v) => {
-                patch({ denoiseEnabled: v });
-                lab.paramChanged();
-              }}
-            >
-              启用降噪
-            </CheckField>
-            <Slider label="降噪强度" min={0} max={1} step={0.05} value={prefs.denoiseStrength} format={fmt.denoiseStrength} onChange={(v) => onParam("denoiseStrength", v)} />
-            <Slider label="静音抑制" min={0} max={0.9} step={0.05} value={prefs.vadGate} format={fmt.vadGate} onChange={(v) => onParam("vadGate", v)} />
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button size="sm" onClick={reset}>
-            恢复默认
-          </Button>
-          <span className={cn("text-xs", toneClass[labStatusTone])}>{labStatus}</span>
-        </div>
-      </SettingsSection>
+      <Group
+        title="响度与降噪"
+        description="在这里调整降噪和音量，设置会自动用于之后的语音输入。"
+        right={<Button size="sm" onClick={reset}>恢复默认</Button>}
+      >
+        <SliderRow
+          label="目标响度"
+          hint="让音量更均匀。目标响度建议先用 -20，想更响可试 -18。"
+          min={-30} max={-14} step={0.5} value={prefs.targetLufs} format={fmt.targetLufs} onChange={(v) => onParam("targetLufs", v)}
+        />
+        <SliderRow
+          label="最大提升"
+          hint="限制音量放大幅度，避免同时放大背景噪声。"
+          min={0} max={80} step={1} value={prefs.maxGainDb} format={fmt.maxGainDb} onChange={(v) => onParam("maxGainDb", v)}
+        />
+        <SliderRow label="峰值上限" min={-6} max={-0.5} step={0.5} value={prefs.peakLimitDbfs} format={fmt.peakLimitDbfs} onChange={(v) => onParam("peakLimitDbfs", v)} />
+        <Row label="人声降噪">
+          <Switch
+            checked={prefs.denoiseEnabled}
+            onChange={(v) => {
+              patch({ denoiseEnabled: v });
+              lab.paramChanged();
+            }}
+            label="启用降噪"
+          />
+        </Row>
+        <SliderRow
+          label="降噪强度"
+          hint="100% 为最强降噪。声音发闷时可降到 70%～85%。"
+          min={0} max={1} step={0.05} value={prefs.denoiseStrength} format={fmt.denoiseStrength} onChange={(v) => onParam("denoiseStrength", v)}
+        />
+        <SliderRow
+          label="静音抑制"
+          hint="停顿时仍有明显噪声，再适当提高“静音抑制”。"
+          min={0} max={0.9} step={0.05} value={prefs.vadGate} format={fmt.vadGate} onChange={(v) => onParam("vadGate", v)}
+        />
+        {labStatus && <p role="status" className={cn("px-3.5 py-3 text-xs", toneClass[labStatusTone])}>{labStatus}</p>}
+      </Group>
 
-      <SettingsSection title="均衡器（高低频）" description="低频影响声音的厚实程度，高频影响明亮程度。数值为 0 时保持原样。">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Slider label="低频增益" min={-12} max={12} step={0.5} value={prefs.bassGainDb} format={fmt.bassGainDb} onChange={(v) => onParam("bassGainDb", v)} />
-          <Slider label="高频增益" min={-12} max={12} step={0.5} value={prefs.trebleGainDb} format={fmt.trebleGainDb} onChange={(v) => onParam("trebleGainDb", v)} />
-        </div>
-      </SettingsSection>
+      <Group title="均衡器（高低频）" description="低频影响声音的厚实程度，高频影响明亮程度。数值为 0 时保持原样。">
+        <SliderRow label="低频增益" min={-12} max={12} step={0.5} value={prefs.bassGainDb} format={fmt.bassGainDb} onChange={(v) => onParam("bassGainDb", v)} />
+        <SliderRow label="高频增益" min={-12} max={12} step={0.5} value={prefs.trebleGainDb} format={fmt.trebleGainDb} onChange={(v) => onParam("trebleGainDb", v)} />
+      </Group>
 
-      <SettingsSection title="录音试听与波形" description="先录一段话，再调整参数，分别播放原始和处理后的声音进行比较。">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant={recording ? "danger" : "primary"} onClick={lab.toggleRecord}>
+      <Group title="录音试听与波形" description="先录一段话，再调整参数，分别播放原始和处理后的声音进行比较。">
+        <Row label="试听" message={recInfo && <span className={toneClass[recTone]}>{recInfo}</span>}>
+          <Button size="sm" variant={recording ? "danger" : "primary"} onClick={lab.toggleRecord}>
             {recording ? "■ 停止录音" : "● 开始录音"}
           </Button>
-          <Button disabled={!canPlay} onClick={lab.playOriginal}>
+          <Button size="sm" disabled={!canPlay} onClick={lab.playOriginal}>
             ▶ 播放原始
           </Button>
-          <Button disabled={!canPlay} onClick={lab.playProcessed}>
+          <Button size="sm" disabled={!canPlay} onClick={lab.playProcessed}>
             ▶ 播放处理后
           </Button>
-          {recInfo && <span className={cn("text-xs", toneClass[recTone])}>{recInfo}</span>}
+        </Row>
+        <div className="flex flex-col gap-3 p-3.5">
+          <div className="grid grid-cols-1 gap-2 text-xs text-[var(--color-fg-muted)] sm:grid-cols-3">
+            <div>原始：LUFS <b className="text-[var(--color-fg)]">{meters.olufs}</b>｜RMS <b className="text-[var(--color-fg)]">{meters.orms}</b> dB｜峰值 <b className="text-[var(--color-fg)]">{meters.opeak}</b> dB</div>
+            <div>处理后：LUFS <b className="text-[var(--color-fg)]">{meters.plufs}</b>｜RMS <b className="text-[var(--color-fg)]">{meters.prms}</b> dB｜峰值 <b className="text-[var(--color-fg)]">{meters.ppeak}</b> dB</div>
+            <div>削波样本：<b className="text-[var(--color-fg)]">{meters.clip}</b></div>
+          </div>
+          <div>
+            <div className="text-xs text-[var(--color-fg-subtle)]">原始波形</div>
+            <canvas ref={origRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+          </div>
+          <div>
+            <div className="text-xs text-[var(--color-fg-subtle)]">处理后波形（增益 + 降噪）</div>
+            <canvas ref={procRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+          </div>
         </div>
-        <div className="grid grid-cols-1 gap-2 text-xs text-[var(--color-fg-muted)] sm:grid-cols-3">
-          <div>原始：LUFS <b className="text-[var(--color-fg)]">{meters.olufs}</b>｜RMS <b className="text-[var(--color-fg)]">{meters.orms}</b> dB｜峰值 <b className="text-[var(--color-fg)]">{meters.opeak}</b> dB</div>
-          <div>处理后：LUFS <b className="text-[var(--color-fg)]">{meters.plufs}</b>｜RMS <b className="text-[var(--color-fg)]">{meters.prms}</b> dB｜峰值 <b className="text-[var(--color-fg)]">{meters.ppeak}</b> dB</div>
-          <div>削波样本：<b className="text-[var(--color-fg)]">{meters.clip}</b></div>
-        </div>
-        <div>
-          <div className="text-xs text-[var(--color-fg-subtle)]">原始波形</div>
-          <canvas ref={origRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
-        </div>
-        <div>
-          <div className="text-xs text-[var(--color-fg-subtle)]">处理后波形（增益 + 降噪）</div>
-          <canvas ref={procRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
-        </div>
-      </SettingsSection>
+      </Group>
     </>
   );
 }
@@ -481,9 +481,9 @@ function AudioLabSections() {
 /** 音频处理：静音断流、响度降噪、均衡与试听。 */
 export function AudioProcessingPanel() {
   return (
-    <div className="flex flex-col gap-8">
+    <InspectorBody>
       <SilenceDisconnectSection />
       <AudioLabSections />
-    </div>
+    </InspectorBody>
   );
 }

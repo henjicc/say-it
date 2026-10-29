@@ -37,7 +37,7 @@ export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
   { id: "background", label: "背景基色", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "背景色", keywords: "背景 柔和背景 自定义 主题 颜色" },
   { id: "glass", label: "全局系统毛玻璃", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "全局系统毛玻璃", keywords: "透明 模糊 材质 底色强度 边框强度" },
   { id: "history", label: "本地历史", target: { view: "settings", section: "history" }, tabLabel: "历史与学习", section: "本地历史", targetText: "本地历史", keywords: "保存历史 保留天数 排除应用 个性化纠错 学习记忆 清理数据" },
-  { id: "key-bindings", label: "快捷键集中管理", target: { view: "settings", section: "keys" }, tabLabel: "快捷键", section: "全部快捷键", targetText: "集中管理", keywords: "按键 热键 绑定 单击 长按 清除" },
+  { id: "key-bindings", label: "快捷键集中管理", target: { view: "settings", section: "keys" }, tabLabel: "快捷键", section: "全部快捷键", targetText: "语音输入", keywords: "按键 热键 绑定 单击 长按 清除" },
   { id: "model-compare", label: "模型对比", target: { view: "models", section: "compare" }, tabLabel: "模型对比", section: "录音或音频文件", targetText: "开始对比", keywords: "识别效果 多模型 并排比较 上传音频 录音" },
   { id: "diagnostics", label: "诊断日志", target: { view: "settings", section: "diagnostics" }, tabLabel: "诊断与数据", section: "日志与诊断包", targetText: "诊断日志", keywords: "详细元数据 正文日志 日志目录 清空 导出诊断包" },
   { id: "silence-disconnect", label: "静音断流", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "连接与阈值", targetText: "静音断流", keywords: "静音 阈值 断开 api 实时字幕 语音输入" },
