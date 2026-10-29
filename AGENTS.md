@@ -20,7 +20,7 @@
    - 优先理解现有设计意图，不根据文件名或局部代码猜测整体行为。
 
 2. **范围按根因划**
-   - 范围按根因划，不按改动大小划：同源问题一并修；与根因无关的重构、格式调整不夹带，发现的无关问题单独说明。
+   - 范围按根因划，不按改动大小划：同源问题一并修，共享实现的其他调用方一起查；与根因无关的重构、格式调整不夹带，发现的无关问题单独说明。
    - 尊重现有架构、命名、风格和抽象；引入新模式前先确认现有模式不能满足需求。
 
 3. **解决根因**
@@ -31,10 +31,16 @@
 4. **简单且可维护**
    - 只实现用户要求的内容，不加没要求的功能、选项或可配置项；项目规则要求的配套（测试、日志、数据迁移等）算要求的一部分。
    - 优先选择直接、清晰、容易验证的实现；能用 50 行写清楚的不写 200 行。
-   - 避免过度设计和不必要的兼容层：只用一次的代码不做抽象，不可能发生的情况不写错误处理。
    - 中途换了方案，收尾前删掉弃用的那条路径，不留新旧两套并存。
-   - 优先复用现有组件、工具函数、服务和约定，避免同一能力出现多份实现。
+   - 先搜索现有实现，优先复用现有组件、工具函数、服务和约定，避免同一能力出现多份实现。
    - 当多种行为仅由参数或类型差异决定时，优先使用配置、数据或策略驱动，避免散落硬编码分支。
+
+5. **不过度设计、防御和测试**
+   - 收尾前回看本次 diff，删掉“为了保险”多出来的设计、防御和测试。
+   - 设计：不为“以后可能”预留扩展点、配置项、开关、插件机制、抽象层或兼容层；只用一次的代码不建接口、包装层、配置或通用函数（为让长函数可读而拆出具名函数不算）；同一事实只存一处；几行能写完的不引新依赖，确需新增时考虑体积、维护、安全和许可成本。
+   - 防御：只在真实边界校验一次（用户输入、外部接口响应、文件、跨进程数据、插件包与插件返回）；内部调用、类型已保证或不可能发生的情况不写检查和错误处理；不写“以防万一”的 try/catch、空值兜底、默认值、重试和降级，出错就让它暴露，在用户操作的边界统一转成提示。
+   - 安全：守住底线——密钥不进代码、日志和提交；外部输入在入口校验；删除用户数据等不可逆操作可撤销或先确认。底线之外不为假想攻击加层层校验、加密、权限包装或白名单，不按公网多用户服务设防。
+   - 测试：只为行为变化和修过的缺陷写测试；一个行为一个用例，不穷举参数组合；不测私有实现、类型已保证的事和第三方库本身；不为覆盖率写测试，不为好测给生产代码加接口；不新建测试框架、通用 fixture 或测试工具，新用例优先放进已有测试文件；只改样式、文案、配置的不加测试。
 
 ## 工作流程
 
@@ -66,13 +72,14 @@
 ### 4. 完成前验证
 
 - 开发和回归测试默认使用测试数据、Mock 或本地渲染/领域测试，不得为了验证界面、布局、动画或路由而触发真实 API 请求；只有待验证行为确实依赖真实服务、无法用本地测试替代时，才执行最小必要的真实请求。验证字幕展示时直接注入测试文本，不启动真实识别或翻译会话。
-- 使用与改动最相关、成本最低的检查开始，再按风险扩大验证范围。
+- 动手前先跑与改动相关的已有检查留作基线，交付时只看新增的失败；原有失败单独说明，不算作本次引入。
+- 使用与改动最相关、成本最低的检查开始，再按风险扩大验证范围；只用项目已有的检查，不为一次验证新写脚本或测试工具。
 - 常见顺序：目标测试 → 静态检查/类型检查 → 相关测试集 → 构建 → 端到端或运行时验证。
-- 修复 Bug 时，在可行情况下补充能复现问题的回归测试。
+- 修复 Bug 时，在可行情况下补充能复现问题的回归测试，并确认去掉修复会失败、加上修复会通过。
 - UI 或交互修改不能只依赖编译通过；条件允许时实际运行并检查关键流程或截图。
 - 检查日志、错误处理、边界情况和失败路径，而不仅是正常路径。
 - 未获得验证证据前，不得声称“已完成”“已修复”或“没有问题”。
-- 若受环境限制无法执行某项验证，明确说明未验证的内容、原因和剩余风险。
+- 界面或运行验证跑不起来时先查原因（依赖路径、端口、环境变量），授权范围内能修就修；修不了再明确说明未验证的内容、原因和剩余风险。
 
 ### 5. 提交前审查
 
@@ -83,14 +90,14 @@
   - 用户数据删除与移动：历史清理（`application/history.rs`）、重置数据、数据目录迁移、插件卸载、剪贴板备份与恢复（`windows_native.rs`）；
   - 安全与权限：`providers/credential_vault.rs`、`SecretInput`、插件签名/信任库与 `.sayit` 解包（`providers/plugin_package.rs`）、插件运行时（`providers/plugin_runtime.rs`）、`src-tauri/capabilities/`；
   - 网络与费用：`src-tauri/src/providers/` 下的供应商请求、重试与重连、热词云端同步、模型下载；
-  - 契约：`ui/src/lib/tauri.ts` 的命令与事件、领域快照与 `domain-event`、插件 API v5、`components/ui` 基础组件、原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_overlay.rs`、`native_indicator.rs`、`native_orb.rs`、`native_subtitle.rs`）；
+  - 契约：`ui/src/lib/tauri.ts` 的命令与事件、领域快照与 `domain-event`、插件 API v5、`components/ui` 基础组件、原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_*.rs`、`native_win/`、`native_mac/`）；
   - 发布：`.github/workflows/`、版本号、签名脚本、`src-tauri/Cargo.toml` 的 workspace 结构。
 - 不审：只改文档、文案、局部样式或单个叶子函数。
-- 只交给审查者三样东西：本次 diff、一句话任务目标、相关规则文件（本文件；UI 加 `DESIGN.md`，供应商加 `docs/rules/新增供应商与模型操作手册.md`）。不交写代码时的推理和结论。
-- 审什么：正确性；修的是根因还是症状；共享实现的其他调用方有没有同源问题；是否违反项目规则。lint、格式检查能拦住的不报。
+- 只交给审查者三样东西：本次 diff、一句话任务目标、相关规则文件（本文件；UI 加 `DESIGN.md`，供应商加 `docs/rules/新增供应商与模型操作手册.md`）。不交写代码时的推理和结论。diff 只能含本次改动：同一文件里有他人未提交的改动时，动手前先给这些文件留快照，用快照对比生成 diff。
+- 审什么：正确性；修的是根因还是症状；共享实现的其他调用方有没有同源问题；有没有过度设计、过度防御、过度测试（见核心原则 5）；是否违反项目规则。类型检查、格式检查能拦住的不报。
 - 怎么报：每条带文件与行号、在什么输入或状态下出错，分「重要」「小问题」「原有问题」（非本次引入）三类；同一类问题报一次并列出全部位置。
 - 怎么处理：每条要么修，要么写明不修的理由；原有问题单独说明，不并入本次改动；审查意见与代码、测试证据冲突时以证据为准。
-- 最多三轮：第二轮起只审增量，不重复已处理的问题；三轮后仍有重要问题，停下来重新考虑方案或询问用户。
+- 最多三轮：第二轮起只把增量交给同一个审查者，不重复已处理的问题；三轮后仍有重要问题，停下来重新考虑方案或询问用户。
 
 ### 6. 最终复查
 
@@ -100,7 +107,7 @@
 - `git diff` 是否只包含预期改动；
 - 是否误改、覆盖或删除了用户已有工作；
 - 是否引入重复实现、无用代码、调试输出或临时文件；
-- 是否新增不必要依赖、硬编码、全局状态或跨层耦合；
+- 是否新增不必要依赖、硬编码、全局状态或跨层耦合，或多出核心原则 5 所说的设计、防御和测试；
 - 行为、测试、类型、文档和配置是否保持一致；
 - 实现是否可以进一步简化，但不要为了“优雅”扩大改动范围。
 
@@ -109,13 +116,11 @@
 - 每个模块、类和函数应有清晰职责；当职责难以一句话说明或难以独立测试时，优先拆分。
 - 依赖方向必须清晰，底层模块不得反向依赖上层界面或业务编排。
 - 业务逻辑不得散落在展示层；外部服务、存储和平台能力应通过明确边界封装。
-- 不复制已有逻辑；先搜索现有实现，再决定扩展还是新增。
 - 不引入裸类型逃逸、全局禁用检查或无说明的忽略标记；确有必要时写明原因和移除条件。
 - 导出的公共接口应保持明确、稳定，并有必要的类型或契约说明。
 - 错误必须被正确传播、转换或记录；禁止无声失败。
 - 注释写给只看得到当前代码的读者：只写代码本身看不出的约束、业务规则与取舍，语言沿用所在文件现有注释；不提会话、之前的尝试、修改过程或任务编号，不写“原来/改为/不再”这类相对旧版本的说法。只能写“做了什么”的注释删掉并改进命名。数据格式迁移的注释例外，可逐版本记录变化。
 - 生成产物应通过其源文件或生成命令更新，除非项目明确规定可以手工修改。
-- 新增依赖前确认现有依赖或标准库无法合理解决，并考虑体积、维护、安全和许可成本。
 
 ## 安全与破坏性操作
 
@@ -178,11 +183,11 @@
 - 安装命令：`npm install`。
 - 开发命令：前端独立开发用 `npm run ui:dev`；完整桌面应用开发用 `npm run tauri:dev`。
 - 格式化/静态检查命令：类型检查用 `npm run typecheck`；未配置 lint/format 脚本，Rust 侧按需 `cargo check`。
-- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。子 crate 快测：`cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core`；Mac 后端本机类型检查：`npm run check:mac-overlay`。
+- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；脚本 `npm run test:scripts`（node --test）；`npm run check` 依次跑类型检查、前端测试、脚本测试、前端构建和 Rust 测试。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。子 crate 快测：`cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core`；Mac 后端本机类型检查：`npm run check:mac-overlay`。
 - Rust 构建产物只放在 `src-tauri/target`，不得为绕开问题另建仓库外（尤其 C 盘）的 target 或缓存目录。`tauri:dev`、`test:rust` 在 Rust 工具链变更或 debug 超过 20 GiB（每天检查一次）时自动清理 dev profile（工具链变更时一并删除 `target/mac-check`），并回收旧版本 sherpa 预编译库；`tauri:build` 打包前清空 release，本地只保留最新一次。直接运行 `cargo` 不经过这道回收，实现见 `scripts/rust-cache-guard.mjs`。
-- `src-tauri` 是 Cargo workspace：根包 `say-it`，成员 `crates/overlay-core`（`sayit-overlay-core`）与 `crates/overlay-macos`（`sayit-overlay-macos`），`default-members` 含全部成员，所以无参数的 `npm run test:rust` 会顺带测试两个子 crate；`npm run test:rust -- --bin say-it <过滤>` 仍只跑主包。`vendor/ocr-rs` 经 `[patch]` 引入、被排除在 workspace 外，可在其目录单独运行 cargo。
-- 改原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_*.rs`）前先读 `docs/rules/原生悬浮窗开发约定.md`。
-- 并行 Git worktree（`.claude/worktrees/*`）中运行 Rust 构建或测试时，必须先把 `CARGO_TARGET_DIR` 设为主检出 `src-tauri/target` 的绝对路径，与主检出共用一份产物，不得在 worktree 内生成完整 target；worktree 内 build.rs 生成的 `src-tauri/target/runtime-libs/` 属预期。共用时构建按 Cargo 锁串行，切换 worktree 会重编 `say-it` 本体；build script 输出跨 worktree 共享，修改 `build.rs`、`tauri*.conf.json`、`capabilities/`、`sdk-runtime/`、`macos/*.m` 的任务合并后须在主检出重跑测试。worktree 首次构建前先 `npm run ui:build`（不与 cargo 并行）；`tauri:dev` 只在主检出运行。`npm run check:mac-overlay` 的产物固定在 `<target>/mac-check`。
+- `src-tauri` 是 Cargo workspace：根包 `say-it`，成员 `crates/overlay-core`（`sayit-overlay-core`）与 `crates/overlay-macos`（`sayit-overlay-macos`），`default-members` 含全部成员，所以无参数的 `npm run test:rust` 会顺带测试两个子 crate；`npm run test:rust -- --bin say-it <过滤>` 仍只跑主包。`src-tauri/vendor/ocr-rs` 经 `[patch]` 引入、被排除在 workspace 外，可在其目录单独运行 cargo。
+- 改原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_*.rs`、`native_win/`、`native_mac/`）前先读 `docs/rules/原生悬浮窗开发约定.md`。
+- 并行 Git worktree（`.claude/worktrees/*`）中运行 Rust 构建或测试时，必须先把 `CARGO_TARGET_DIR` 设为主检出 `src-tauri/target` 的绝对路径，与主检出共用一份产物，不得在 worktree 内生成完整 target；worktree 内 build.rs 生成的 `src-tauri/target/runtime-libs/` 属预期。共用时构建按 Cargo 锁串行，切换 worktree 会重编 `say-it` 本体；build script 输出跨 worktree 共享，修改 `src-tauri/` 下的 `build.rs`、`tauri*.conf.json`、`capabilities/`、`macos/*.m` 或仓库根 `sdk-runtime/` 的任务合并后须在主检出重跑测试。worktree 首次构建前先 `npm run ui:build`（不与 cargo 并行）；`tauri:dev` 只在主检出运行。`npm run check:mac-overlay` 的产物固定在 `<target>/mac-check`。
 - 打包配置（resources、frameworks）不得引用某个 profile 的输出目录：tauri-build 在每个 profile 都会复制它们。sherpa 运行库由 `build.rs` 同步到 `target/runtime-libs/`，配置只引用那里。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
