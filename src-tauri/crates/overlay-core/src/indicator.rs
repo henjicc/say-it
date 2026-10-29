@@ -25,7 +25,7 @@ const TEXT_PAD: f32 = 12.0;
 const TEXT_PAD_Y: f32 = 9.0;
 const TEXT_VISIBLE_H: f32 = 67.5; // 22.5 * 3
 const TEXT_RADIUS: f32 = 12.0;
-const PILL_W: f32 = 128.0;
+const PILL_W: f32 = 168.0;
 const PILL_H: f32 = 40.0;
 const PILL_RADIUS: f32 = 20.0;
 const FALLBACK_W: f32 = 396.0;
@@ -37,8 +37,10 @@ const WAVE_AREA_W: f32 = 80.0;
 const WAVE_AREA_H: f32 = 26.0;
 const WAVE_BAR_RATIO: f32 = 0.03; // OrbWaveform dense 变体
 const WAVE_GAP_RATIO: f32 = 0.07;
-const DOT_RADIUS: f32 = 5.0;
-const DOT_LABEL_GAP: f32 = 8.0;
+/// 处理中胶囊里四段进度文字之间的间距。
+const STAGE_GAP: f32 = 12.0;
+/// 处理阶段：识别结束后依次经过智能处理、本地规则，再输出到光标。
+const STAGES: [&str; 4] = ["识别", "处理", "规则", "输出"];
 
 const NOTICE_AUTO_HIDE_MS: u32 = 3500;
 
@@ -52,8 +54,6 @@ const TEXT_FRESH_FADE_S: f32 = 0.18;
 const TEXT_FRESH_FADE_MAX_CHARS: usize = 10;
 /// 波形柱高度平滑的时间常数，与 indicator.css 的 height 70ms ease-out 等效。
 const WAVE_SMOOTH_S: f32 = 0.070;
-/// 状态点颜色过渡时长（recording 红 → processing 蓝等状态切换）。
-const DOT_BLEND_S: f32 = 0.15;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -94,14 +94,12 @@ impl IndicatorState {
         }
     }
 
-    fn label(self) -> &'static str {
+    /// 处理中胶囊里当前高亮的阶段；其余状态不显示阶段。
+    fn active_stage(self) -> Option<usize> {
         match self {
-            Self::Recording => "聆听中…",
-            Self::Processing => "识别中…",
-            Self::SmartProcessing => "处理中…",
-            Self::Fallback => "",
-            // Notice 不显示胶囊标签，内容走通知面板。
-            Self::Notice => "",
+            Self::Processing => Some(0),
+            Self::SmartProcessing => Some(1),
+            _ => None,
         }
     }
 }
@@ -112,8 +110,6 @@ pub struct Indicator {
     /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
     fresh_from: usize,
     fresh_started: Option<Instant>,
-    /// 状态点呼吸相位（秒），随帧推进。
-    pulse_time: f32,
     /// 平滑后的波形柱高（CSS 的 70ms ease-out height 过渡等效）。
     wave_display: [f32; WAVE_BAR_COUNT],
 
@@ -122,10 +118,6 @@ pub struct Indicator {
     wave_peaks: Vec<f32>,
     /// Notice 态的自定义文案。
     notice_text: String,
-    /// 状态点颜色的 150ms 过渡：from → target。
-    dot_color_from: [f32; 3],
-    dot_color_target: [f32; 3],
-    dot_blend_start: Option<Instant>,
     dpi: u32,
     transition: Transition,
     notice_deadline: Option<Instant>,
@@ -139,15 +131,11 @@ impl Indicator {
             text: String::new(),
             fresh_from: 0,
             fresh_started: None,
-            pulse_time: 0.0,
             wave_display: [0.0; WAVE_BAR_COUNT],
             wave_active: false,
             wave_level: 0.0,
             wave_peaks: Vec::new(),
             notice_text: String::new(),
-            dot_color_from: dot_target_color(IndicatorState::Recording),
-            dot_color_target: dot_target_color(IndicatorState::Recording),
-            dot_blend_start: None,
             dpi: 96,
             transition: Transition::new(false),
             notice_deadline: None,
@@ -169,9 +157,8 @@ impl Indicator {
             Vec::new()
         }
     }
-    /// 每帧推进：呼吸相位、波形平滑、文本淡入与点色过渡的收尾。
+    /// 每帧推进：波形平滑与文本淡入的收尾。
     fn tick_animations(&mut self, dt: f32, now: Instant) {
-        self.pulse_time += dt;
         // 波形柱向目标值指数趋近，等效 CSS 的 70ms ease-out height 过渡。
         // 与 IndicatorApp.tsx 一致：每个峰值先过感知响度曲线再重采样；
         // 原始 RMS 响度正常说话只有 0.05~0.3，不过曲线柱高会常年压在最低线。
@@ -185,45 +172,6 @@ impl Indicator {
             now.saturating_duration_since(start).as_secs_f32() >= TEXT_FRESH_FADE_S
         }) {
             self.fresh_started = None;
-        }
-        if self
-            .dot_blend_start
-            .is_some_and(|start| now.saturating_duration_since(start).as_secs_f32() >= DOT_BLEND_S)
-        {
-            self.dot_blend_start = None;
-        }
-    }
-
-    /// 当前状态点颜色（含过渡中的插值）。
-    fn dot_color_now(&self, now: Instant) -> [f32; 3] {
-        let Some(start) = self.dot_blend_start else {
-            return self.dot_color_target;
-        };
-        let elapsed = now.saturating_duration_since(start).as_secs_f32();
-        let t = (elapsed / DOT_BLEND_S).clamp(0.0, 1.0);
-        let eased = ease_out_cubic(t);
-        let from = self.dot_color_from;
-        let to = self.dot_color_target;
-        [
-            from[0] + (to[0] - from[0]) * eased,
-            from[1] + (to[1] - from[1]) * eased,
-            from[2] + (to[2] - from[2]) * eased,
-        ]
-    }
-
-    /// 状态点的呼吸：CSS pulse（录音 1s，scale 1→0.6，opacity 1→0.5）与
-    /// processingPulse（1.35s，scale 0.88→1.08，opacity 0.72→1）。
-    fn dot_pulse(&self, state: IndicatorState) -> (f32, f32) {
-        let period = if state == IndicatorState::Recording {
-            1.0
-        } else {
-            1.35
-        };
-        let osc = 0.5 - 0.5 * (std::f32::consts::TAU * self.pulse_time / period).cos();
-        if state == IndicatorState::Recording {
-            (1.0 - 0.4 * osc, 1.0 - 0.5 * osc)
-        } else {
-            (0.88 + 0.20 * osc, 0.72 + 0.28 * osc)
         }
     }
 
@@ -258,12 +206,6 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
             }
             Command::SetState(state) => {
                 self.notice_deadline = None;
-                let target_color = dot_target_color(state);
-                if target_color != self.dot_color_target {
-                    self.dot_color_from = self.dot_color_now(cx.now);
-                    self.dot_color_target = target_color;
-                    self.dot_blend_start = Some(cx.now);
-                }
                 self.state = Some(state);
                 if state == IndicatorState::Fallback {
                     self.text.clear();
@@ -357,8 +299,12 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         ops.push(WindowOp::Redraw);
         ops
     }
+    /// 只有波形、文字淡入、通知倒计时和入退场需要逐帧推进；处理中与兜底是静态画面。
     fn wants_frames(&self, _: Instant) -> bool {
-        self.state.is_some() || self.transition.is_animating()
+        self.transition.is_animating()
+            || self.state == Some(IndicatorState::Recording)
+            || self.fresh_started.is_some()
+            || self.notice_deadline.is_some()
     }
     fn prepare_frame(&mut self, cx: &Cx<'_, T>) -> Option<FrameSpec> {
         self.state?;
@@ -438,6 +384,13 @@ impl Indicator {
         canvas.fill_rounded_rect(rect, radius, fill);
         canvas.stroke_rounded_rect(rect, radius, border, Stroke::plain(1.0));
     }
+    /// 胶囊、文本框与通知面板共用的底色与细边框，与主窗口检查器同色系。
+    fn panel_fill(&self) -> Color {
+        self.look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96)
+    }
+    fn panel_border(&self) -> Color {
+        self.look.color(1.0, 1.0, 1.0, 0.08)
+    }
     fn draw_content<C: Canvas>(&self, canvas: &mut C, now: Instant) {
         let Some(state) = self.state else { return };
         let content_bottom = LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM;
@@ -473,29 +426,15 @@ impl Indicator {
                 now,
             );
         }
-        self.fill_rounded(
-            canvas,
-            pill,
-            PILL_RADIUS,
-            self.look
-                .color(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94),
-            self.look.color(1.0, 1.0, 1.0, 0.16),
-        );
+        self.fill_rounded(canvas, pill, PILL_RADIUS, self.panel_fill(), self.panel_border());
         if state == IndicatorState::Recording {
             self.draw_waveform(canvas, pill);
-        } else {
-            self.draw_pill_face(canvas, state, pill, now);
+        } else if let Some(active) = state.active_stage() {
+            self.draw_stages(canvas, active, pill);
         }
     }
     fn draw_text_box<C: Canvas>(&self, canvas: &mut C, rect: Rect, now: Instant) {
-        self.fill_rounded(
-            canvas,
-            rect,
-            TEXT_RADIUS,
-            self.look
-                .color(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.96),
-            self.look.color(1.0, 1.0, 1.0, 0.16),
-        );
+        self.fill_rounded(canvas, rect, TEXT_RADIUS, self.panel_fill(), self.panel_border());
         let inner_w = TEXT_W - TEXT_PAD * 2.0;
         let Some(layout) =
             canvas
@@ -516,7 +455,7 @@ impl Indicator {
             (utf16_start < total).then_some(TextTint {
                 utf16_start,
                 utf16_len: total - utf16_start,
-                color: self.look.color(234.0 / 255.0, 240.0 / 255.0, 1.0, fade),
+                color: fg(&self.look, fade),
             })
         } else {
             None
@@ -534,52 +473,38 @@ impl Indicator {
         canvas.draw_text(
             &layout,
             Point::new(inner.left, inner.top - offset),
-            self.look.color(234.0 / 255.0, 240.0 / 255.0, 1.0, 1.0),
+            fg(&self.look, 1.0),
             tint,
         );
         canvas.restore();
     }
-    fn draw_pill_face<C: Canvas>(
-        &self,
-        canvas: &mut C,
-        state: IndicatorState,
-        rect: Rect,
-        now: Instant,
-    ) {
-        let label = state.label();
-        let style = text_style(13.0, true);
-        let label_w = canvas
-            .text()
-            .layout(label, &style, 1_000.0, 100.0)
-            .map(|layout| canvas.text().metrics(&layout).width)
-            .unwrap_or(0.0);
-        let total = DOT_RADIUS * 2.0 + DOT_LABEL_GAP + label_w;
-        let center_x = (rect.left + rect.right) / 2.0;
-        let center_y = (rect.top + rect.bottom) / 2.0;
-        let [cr, cg, cb] = self.dot_color_now(now);
-        let (dot_scale, dot_alpha) = self.dot_pulse(state);
-        let radius = DOT_RADIUS * dot_scale;
-        canvas.fill_circle(
-            Point::new(center_x - total / 2.0 + DOT_RADIUS, center_y),
-            radius,
-            self.look.color(cr, cg, cb, dot_alpha),
-        );
-        let bounds = Rect::new(
-            center_x - total / 2.0 + DOT_RADIUS * 2.0 + DOT_LABEL_GAP,
-            rect.top,
-            rect.right,
-            rect.bottom,
-        );
-        if let Some(layout) = canvas
-            .text()
-            .layout(label, &style, bounds.width(), bounds.height())
-        {
-            canvas.draw_text(
-                &layout,
-                Point::new(bounds.left, bounds.top),
-                self.look.color(1.0, 1.0, 1.0, 1.0),
-                None,
-            );
+    /// 处理中：胶囊里依次排列四个阶段，已完成为前景色，当前为强调色，未到为暗色。
+    fn draw_stages<C: Canvas>(&self, canvas: &mut C, active: usize, pill: Rect) {
+        let style = text_style(12.0, false);
+        let layouts: Vec<_> = STAGES
+            .iter()
+            .map(|label| canvas.text().layout(label, &style, 1_000.0, 100.0))
+            .collect();
+        let widths: Vec<f32> = layouts
+            .iter()
+            .map(|layout| layout.as_ref().map_or(0.0, |l| canvas.text().metrics(l).width))
+            .collect();
+        let total = widths.iter().sum::<f32>() + STAGE_GAP * (STAGES.len() - 1) as f32;
+        let center_y = (pill.top + pill.bottom) / 2.0;
+        let mut x = (pill.left + pill.right - total) / 2.0;
+        for (index, layout) in layouts.iter().enumerate() {
+            if let Some(layout) = layout {
+                let height = canvas.text().metrics(layout).height;
+                let color = if index < active {
+                    fg(&self.look, 1.0)
+                } else if index == active {
+                    self.look.color(113.0 / 255.0, 159.0 / 255.0, 219.0 / 255.0, 1.0)
+                } else {
+                    self.look.color(92.0 / 255.0, 95.0 / 255.0, 102.0 / 255.0, 1.0)
+                };
+                canvas.draw_text(layout, Point::new(x, center_y - height / 2.0), color, None);
+            }
+            x += widths[index] + STAGE_GAP;
         }
     }
     fn draw_waveform<C: Canvas>(&self, canvas: &mut C, pill: Rect) {
@@ -601,7 +526,7 @@ impl Indicator {
             canvas.fill_rounded_rect(
                 Rect::new(left, top, left + bar, top + height),
                 bar / 2.0,
-                self.look.color(118.0 / 255.0, 167.0 / 255.0, 1.0, 1.0),
+                fg(&self.look, 1.0),
             );
         }
     }
@@ -618,24 +543,11 @@ impl Indicator {
             (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
             content_bottom,
         );
-        let (bg, border) = if warn {
-            (
-                self.look
-                    .color(32.0 / 255.0, 22.0 / 255.0, 14.0 / 255.0, 0.97),
-                self.look.color(1.0, 171.0 / 255.0, 92.0 / 255.0, 0.5),
-            )
-        } else {
-            (
-                self.look
-                    .color(12.0 / 255.0, 24.0 / 255.0, 42.0 / 255.0, 0.97),
-                self.look.color(109.0 / 255.0, 174.0 / 255.0, 1.0, 0.5),
-            )
-        };
-        self.fill_rounded(canvas, rect, TEXT_RADIUS, bg, border);
+        self.fill_rounded(canvas, rect, TEXT_RADIUS, self.panel_fill(), self.panel_border());
         let color = if warn {
-            self.look.color(1.0, 171.0 / 255.0, 92.0 / 255.0, 1.0)
+            self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, 1.0)
         } else {
-            self.look.color(109.0 / 255.0, 174.0 / 255.0, 1.0, 1.0)
+            self.look.color(163.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, 1.0)
         };
         let icon_cx = rect.left + FALLBACK_PAD + FALLBACK_ICON / 2.0;
         let icon_cy = (rect.top + rect.bottom) / 2.0;
@@ -694,7 +606,7 @@ impl Indicator {
             canvas.draw_text(
                 &layout,
                 Point::new(bounds.left, bounds.top),
-                self.look.color(234.0 / 255.0, 242.0 / 255.0, 1.0, 1.0),
+                fg(&self.look, 1.0),
                 None,
             );
         }
@@ -717,13 +629,9 @@ fn text_style(size: f32, centered: bool) -> TextStyle<'static> {
     }
 }
 
-/// 状态点目标色（直线 RGB 0..1）：recording 红 / 其余蓝，与 indicator.css 一致。
-fn dot_target_color(state: IndicatorState) -> [f32; 3] {
-    if state == IndicatorState::Recording {
-        [1.0, 77.0 / 255.0, 79.0 / 255.0]
-    } else {
-        [109.0 / 255.0, 174.0 / 255.0, 1.0]
-    }
+/// 主前景色（与主窗口 --color-fg 一致）。
+fn fg(look: &Look, alpha: f32) -> Color {
+    look.color(236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0, alpha)
 }
 
 /// 波形柱数量，与 IndicatorApp.tsx 的 INDICATOR_WAVE_BAR_COUNT 一致。
@@ -919,10 +827,13 @@ mod tests {
         let mut canvas = RecordingCanvas::new(144);
         model.draw(&mut canvas, now);
         assert!(matches!(canvas.calls[0], Draw::FillRounded(_, 20.0, c)
-            if c == Look::WINDOWS_LEGACY.color(12.0/255.0, 16.0/255.0, 24.0/255.0, 0.94)));
+            if c == Look::WINDOWS_LEGACY.color(23.0/255.0, 24.0/255.0, 27.0/255.0, 0.96)));
         assert!(matches!(canvas.calls[1], Draw::StrokeRounded(_, _, _, _)));
-        assert!(matches!(canvas.calls[2], Draw::FillCircle(_, _, _)));
-        assert!(matches!(canvas.calls[3], Draw::Text(_, _, _, None)));
+        let stages = canvas.calls[2..]
+            .iter()
+            .filter(|call| matches!(call, Draw::Text(_, _, _, None)))
+            .count();
+        assert_eq!(stages, STAGES.len());
     }
 
     #[test]
@@ -994,7 +905,7 @@ mod tests {
         let mut canvas = RecordingCanvas::new(144);
         model.draw(&mut canvas, now);
         assert!(matches!(canvas.calls[0], Draw::FillRounded(_, _, color)
-            if color == Color::new(12.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 0.94)));
+            if color == Color::new(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96)));
         <Indicator as OverlayModel<FakeText>>::set_look(&mut model, &Look::MACOS_DEFAULT);
         assert!(shapes(&model).is_empty());
         <Indicator as OverlayModel<FakeText>>::set_look(
