@@ -1,3 +1,12 @@
+# target 与 Cargo.lock 仍在 src-tauri 下由全部成员共用；default-members 让无参数的
+# cargo test 同时覆盖子 crate，`--bin say-it` 等选择器只作用于根包。
+# vendor 下的 crate 经 [patch] 引入，保持独立，才能在其目录里单独运行 cargo。
+[workspace]
+members = ["crates/*"]
+default-members = [".", "crates/*"]
+exclude = ["vendor/ocr-rs"]
+resolver = "2"
+
 [package]
 name = "say-it"
 version = "0.4.0"
@@ -21,7 +30,6 @@ required-features = ["model-pack-builder"]
 [build-dependencies]
 cc = "1"
 tauri-build = { version = "2.0.1", features = [] }
-sherpa-onnx-sys = { version = "1.13.5", default-features = false, features = ["shared"] }
 
 [patch.crates-io]
 ocr-rs = { path = "vendor/ocr-rs" }
@@ -39,6 +47,9 @@ serde_json = "1"
 similar = "2.7"
 sha2 = "0.10"
 sherpa-onnx = { version = "1.13.5", default-features = false, features = ["shared"] }
+# 代码不直接使用；作为直接依赖，它声明的 `links` 才能保证其构建脚本先于 build.rs 运行，
+# build.rs 要读取它复制到 profile 输出目录的运行库。
+sherpa-onnx-sys = { version = "1.13.5", default-features = false, features = ["shared"] }
 rustls = { version = "0.23.37", features = ["ring"] }
 tauri = { version = "2.10.3", features = ["tray-icon", "protocol-asset", "macos-private-api"] }
 tauri-plugin-autostart = "2"
@@ -71,6 +82,7 @@ rand = "0.9"
 zeroize = "1"
 tauri-plugin-global-shortcut = "2"
 window-vibrancy = "0.6"
+sayit-overlay-core = { path = "crates/overlay-core" }
 
 [target.'cfg(windows)'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -79,6 +91,11 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_HiDpi",
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
@@ -87,27 +104,25 @@ windows = { version = "0.58", features = [
     "Win32_System_Ole",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
-    "Win32_System_WinRT",
     "Win32_UI_Accessibility",
     "Win32_UI_Input",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Storage_FileSystem",
-    "Media_Ocr",
-    "Graphics_Imaging",
-    "Storage_Streams",
-    "Foundation_Collections",
+    "Foundation_Numerics",
 ] }
 winreg = "0.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 ocr-rs = { version = "=2.3.2", default-features = false }
+sayit-overlay-macos = { path = "crates/overlay-macos" }
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 model-pack-builder = []
+performance-acceptance = []
 
 [dev-dependencies]
 ogg = "0.8.0"
@@ -117,3 +132,24 @@ ogg = "0.8.0"
 [profile.dev]
 debug = 1
 split-debuginfo = "packed"
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+
+[profile.dev.package.ebur128]
+opt-level = 3
+
+[profile.dev.package.ocr-rs]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3

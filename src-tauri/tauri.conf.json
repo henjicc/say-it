@@ -34,12 +34,8 @@
       }
     ],
     "resources": [
-      "resources/licenses/*"
-    ],
-    "windows": {
-      "nsis": {
-        "installerHooks": "./windows/nsis-hooks.nsh"
-      }
-    }
+      "resources/licenses/*",
+      "resources/ocr/*"
+    ]
   }
 }

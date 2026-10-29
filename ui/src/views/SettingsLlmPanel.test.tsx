@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsLlmPanel } from "./SettingsLlmPanel";
 
@@ -36,7 +36,7 @@ describe("SettingsLlmPanel", () => {
     updateConfig.mockReset().mockResolvedValue(undefined);
   });
 
-  it("shows capability-based plugin LLM without manual or removal controls", () => {
+  it("shows capability-based plugin LLM without manual or removal controls", async () => {
     profiles = [{
       id: "fixture-llm",
       kind: "plugin:fixture-llm",
@@ -54,7 +54,9 @@ describe("SettingsLlmPanel", () => {
       },
     }];
     render(<SettingsLlmPanel />);
-    expect(screen.getByText("API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。")).toBeInTheDocument();
+    expect(screen.queryByText("密钥会加密保存在这台电脑上。")).not.toBeInTheDocument();
+    act(() => screen.getByText("大语言模型").focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("密钥会加密保存在这台电脑上。");
     expect(screen.getByRole("combobox", { name: "当前模型" })).toHaveTextContent("chat");
     expect(screen.queryByRole("button", { name: "手动添加" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除供应商" })).not.toBeInTheDocument();

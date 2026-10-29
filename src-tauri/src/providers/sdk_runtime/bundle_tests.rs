@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -73,6 +73,7 @@ fn fixture(
         trust: "unsigned".into(),
     };
     let profile = ProviderProfile {
+        keep_loaded: false,
         id: provider_id.into(),
         kind: format!("sdk:{provider_id}"),
         display_name: format!("SDK {provider_id}"),
@@ -108,7 +109,7 @@ fn create_runtime(
         spec,
         &profile,
         Duration::from_secs(5),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         bindings,
     )
@@ -120,7 +121,7 @@ fn create_runtime_with_cancelled(
     source: &str,
     provider_id: &str,
     scopes: &[&str],
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
 ) -> (PathBuf, JsProviderRuntime) {
     let (root, spec, profile, bindings) = fixture(source, provider_id, scopes);
     let runtime = JsProviderRuntime::create_with_sdk_bindings(
@@ -158,10 +159,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.2.8");
+    assert_eq!(manifest["sdk"]["version"], "0.6.1");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-QJBuHiXKsIKXMBA96/sxQDAvGTZwoNBr2ER0bxjApgbx0zHRkYUKZtB0r/tZkT5OvZx5vlPsEbepcWdNWO/KeA=="
+        "sha512-0gY7crODwieU82r5XOgrmKVQIzLdJqFf8gAjsz8xv0wIpJe4aL8SeBM59qVVVSGpjckaVqzFe9NryhA/hjQw8Q=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -211,15 +212,21 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.2.8");
+    assert_eq!(result["version"], "0.6.1");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 18);
+    assert_eq!(result["count"], 21);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
     );
     let ids = result["ids"].as_array().unwrap();
+    for model in crate::providers::registry::models().iter().filter(|model| model.sdk_capability_source.is_some()) {
+        assert!(ids.iter().any(|id| id.as_str() == model.capability_id.as_deref()), "宿主目录中的模型 {} 没有 SDK module", model.id);
+    }
     for expected in [
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash",
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash-filetrans",
+        "bailian.speech-recognition.qwen-audio-3.1-asr-flash-streaming",
         "volcengine.speech-recognition.seedasr-2.0-file",
         "volcengine.speech-recognition.seedasr-2.0-realtime",
         "siliconflow.speech-recognition.FunAudioLLM/SenseVoiceSmall",
@@ -345,7 +352,7 @@ export default () => ({
   }
 });
 "#;
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let (root, runtime) =
         create_runtime_with_cancelled(source, "bailian", &["translation"], cancelled.clone());
     let cancel_worker = thread::spawn(move || {
@@ -518,7 +525,7 @@ export default () => ({
 }
 
 #[test]
-fn fun_asr_bundle_ignores_official_empty_sentence_begin_and_keeps_final() {
+fn fun_asr_bundle_ignores_empty_intermediate_frames_and_keeps_final() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = thread::spawn(move || {
@@ -534,6 +541,11 @@ fn fun_asr_bundle_ignores_official_empty_sentence_begin_and_keeps_final() {
         socket
             .send(Message::Text(
                 r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_begin":true,"sentence_end":false,"begin_time":0,"end_time":null,"text":"","words":[]}},"usage":null}}"#.into(),
+            ))
+            .unwrap();
+        socket
+            .send(Message::Text(
+                r#"{"header":{"event":"result-generated","task_id":"scripted-fun"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_end":false,"begin_time":0,"end_time":null,"text":"","words":[]}},"usage":null}}"#.into(),
             ))
             .unwrap();
         assert!(socket.read().unwrap().is_binary());

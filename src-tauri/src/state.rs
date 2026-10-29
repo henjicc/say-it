@@ -4,6 +4,8 @@ use std::sync::atomic::AtomicU64;
 
 #[derive(Default)]
 pub(crate) struct RuntimeState {
+    #[cfg(windows)]
+    pub(crate) idle_reclaim: crate::application::idle_reclaim::IdleReclaim,
     pub(crate) snapshot_revision: AtomicU64,
     pub(crate) app_settings: Mutex<crate::application::settings::AppSettings>,
     pub(crate) providers: Mutex<ProviderSettings>,
@@ -11,7 +13,7 @@ pub(crate) struct RuntimeState {
     pub(crate) plugin_registry: Mutex<crate::providers::plugin::PluginRegistry>,
     pub(crate) pending_plugin_imports: Mutex<VecDeque<String>>,
     pub(crate) asr_streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
+    pub(crate) transcriptions: Arc<Mutex<HashMap<String, Arc<crate::cancellation::CancellationFlag>>>>,
     pub(crate) dictation: Mutex<DictationSettings>,
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
     pub(crate) assistant_shortcuts: Mutex<crate::application::assistant::AssistantShortcutSettings>,
@@ -53,8 +55,8 @@ pub(crate) struct FloatingOrbPosition {
     pub(crate) y: i32,
 }
 
-/// 悬浮球大小，单位为屏幕参考边长的十分之一百分比（如 45 表示 4.5%）。
-pub(crate) const DEFAULT_FLOATING_ORB_SIZE_PERCENT: u16 = 45;
+/// 悬浮球大小，单位为屏幕参考边长的十分之一百分比（如 30 表示 3%）。
+pub(crate) const DEFAULT_FLOATING_ORB_SIZE_PERCENT: u16 = 30;
 pub(crate) const DEFAULT_FLOATING_ORB_OPACITY: u8 = 100;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_TINT: u8 = 8;
 pub(crate) const DEFAULT_FLOATING_ORB_GLASS_BORDER: u8 = 0;
@@ -136,6 +138,8 @@ pub(crate) struct FloatingOrbRuntime {
     pub(crate) transition_generation: AtomicU64,
     pub(crate) suppress_main_reopen_until_ms: AtomicU64,
     pub(crate) transient: std::sync::atomic::AtomicBool,
+    /// 这次位置变化是用户亲手拖出来的（而不是回退/夹持/缩放重定位）。
+    pub(crate) dragged_by_user: std::sync::atomic::AtomicBool,
     pub(crate) error_visible: std::sync::atomic::AtomicBool,
     pub(crate) armed: std::sync::atomic::AtomicBool,
     pub(crate) armed_generation: AtomicU64,
@@ -151,6 +155,7 @@ impl Default for FloatingOrbRuntime {
             transition_generation: AtomicU64::new(0),
             suppress_main_reopen_until_ms: AtomicU64::new(0),
             transient: std::sync::atomic::AtomicBool::new(false),
+            dragged_by_user: std::sync::atomic::AtomicBool::new(false),
             error_visible: std::sync::atomic::AtomicBool::new(false),
             armed: std::sync::atomic::AtomicBool::new(false),
             armed_generation: AtomicU64::new(0),
@@ -229,14 +234,25 @@ pub(crate) struct MouseGestureRuntime {
     pub(crate) error: Mutex<Option<String>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AsrPreroll {
+    Enabled,
+    Disabled,
+}
+
+pub(crate) struct BackendMicRawSubscriber {
+    pub(crate) tx: AsrInputSender,
+    pub(crate) preroll: AsrPreroll,
+}
+
 #[derive(Default)]
 pub(crate) struct BackendMicState {
     pub(crate) worker: Option<std::sync::mpsc::Sender<BackendMicCommand>>,
     pub(crate) sample_rate: u32,
     pub(crate) channels: usize,
     pub(crate) session_id: Option<String>,
-    pub(crate) tx: Option<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
-    pub(crate) raw_txs: Vec<tokio::sync::mpsc::UnboundedSender<AsrStreamInput>>,
+    pub(crate) tx: Option<AsrInputSender>,
+    pub(crate) raw_txs: Vec<BackendMicRawSubscriber>,
     pub(crate) pending: VecDeque<Vec<f32>>,
     pub(crate) buffer: Vec<f32>,
     pub(crate) chunk_count: u64,
@@ -250,11 +266,12 @@ pub(crate) struct BackendMicState {
 pub(crate) enum BackendMicCommand {
     Attach {
         session_id: String,
-        tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        tx: AsrInputSender,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
     AttachRaw {
-        tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
+        preroll: AsrPreroll,
+        tx: AsrInputSender,
         reply: std::sync::mpsc::Sender<Result<BackendMicAttachResponse, String>>,
     },
     Pause {
@@ -577,34 +594,6 @@ pub(crate) struct SessionStatus {
     pub(crate) default_asr_provider: String,
 }
 
-#[derive(Clone)]
-pub(crate) struct AsrStreamHandle {
-    pub(crate) tx: tokio::sync::mpsc::UnboundedSender<AsrStreamInput>,
-}
-
-pub(crate) enum AsrStreamInput {
-    RawF32(Vec<f32>),
-    Finish,
-    Stop,
-}
-
-#[derive(Serialize)]
-pub(crate) struct AsrStreamStartResponse {
-    pub(crate) session_id: String,
-}
-
-pub(crate) fn decode_f32_base64(input: &str) -> Result<Vec<f32>, String> {
-    let bytes = STANDARD
-        .decode(input.trim())
-        .map_err(|e| format!("invalid base64 f32 audio: {e}"))?;
-    if bytes.len() % 4 != 0 {
-        return Err(format!(
-            "invalid f32 audio byte length: {} is not divisible by 4",
-            bytes.len()
-        ));
-    }
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
-}
+pub(crate) use crate::asr_input::{
+    AsrInputSender, AsrStreamHandle, AsrStreamInput, AsrStreamReceiver, RawAudioReceiver,
+};

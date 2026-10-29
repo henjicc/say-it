@@ -318,6 +318,7 @@ mod tests {
     #[test]
     fn plugin_credentials_use_isolated_namespace() {
         let provider = super::super::ProviderProfile {
+            keep_loaded: false,
             id: "shared".into(),
             kind: "plugin:demo".into(),
             display_name: "Demo".into(),
@@ -362,6 +363,7 @@ mod tests {
         fake.set(&key, "retained").unwrap();
         let mut settings = super::super::ProviderSettings::default();
         settings.profiles.push(super::super::ProviderProfile {
+            keep_loaded: false,
             id: "temporary".into(),
             kind: "llm:custom".into(),
             display_name: "Temporary".into(),

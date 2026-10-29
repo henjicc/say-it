@@ -2,8 +2,13 @@
 
 mod active_app_context;
 mod application;
+mod asr_input;
 mod audio_dsp;
 mod audio_prep;
+mod audio_storage;
+mod temporary_audio;
+mod audio_wav;
+mod cancellation;
 mod commands;
 mod desktop;
 #[cfg(windows)]
@@ -16,6 +21,10 @@ mod macos_native;
 mod obs_overlay;
 mod ocr;
 mod persistence;
+#[cfg(all(test, windows))]
+mod performance_test_support;
+#[cfg(all(test, windows))]
+mod runtime_performance_tests;
 mod prelude;
 mod providers;
 mod stack_diagnostics;
@@ -41,7 +50,9 @@ use application::audio_lab::{
 use application::catalog::get_model_catalog;
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
-use application::data_root::{get_data_root_status, migrate_data_root, restart_app};
+use application::data_root::{
+    get_data_root_status, migrate_data_root, request_data_reset, restart_app,
+};
 use application::diagnostics::{
     clear_diagnostic_logs, export_diagnostic_bundle, get_diagnostic_status,
     open_diagnostic_directory, set_content_diagnostics,
@@ -65,7 +76,7 @@ use application::performance::get_performance_metrics;
 use application::plugin_management::{
     download_provider_model_pack, install_provider_plugin, list_provider_plugins,
     preview_provider_plugin, reload_provider_plugins, run_provider_plugin_action,
-    set_provider_plugin_enabled, take_pending_provider_plugin_imports, uninstall_provider_plugin,
+    set_provider_model_keep_loaded, set_provider_plugin_enabled, take_pending_provider_plugin_imports, uninstall_provider_plugin,
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::setup::{
@@ -73,8 +84,8 @@ use application::setup::{
 };
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
-    apply_subtitle_obs_routing, get_subtitle_runtime, subtitle_stop, subtitle_toggle,
-    sync_subtitle_presentation,
+    apply_subtitle_obs_routing, get_subtitle_runtime, hide_subtitle_preview,
+    show_subtitle_preview, subtitle_stop, subtitle_toggle, sync_subtitle_presentation,
 };
 use application::transcription::get_transcription_runtime;
 use commands::*;
@@ -189,9 +200,19 @@ macro_rules! dlog {
 }
 
 fn main() {
+    #[cfg(all(windows, feature = "performance-acceptance"))]
+    application::performance_acceptance::configure_process();
     // 保留 tokio 默认栈，只用自定义 runtime 为工作线程注册可符号化的栈溢出取证。
     // 深度不可控的 QuickJS 有自己的线程边界，不能再靠放大全局 worker 栈兜底。
-    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+    let mut runtime_builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(windows)]
+    if std::env::var_os("TOKIO_WORKER_THREADS").is_none() {
+        // 音频处理与 QuickJS 有独立工作边界，异步线程不必随桌面逻辑核心数无限增加。
+        // Windows 发布版对照选择 8：取得主要闲置收益，并为并行 I/O 和短计算留出余量。
+        let workers = std::thread::available_parallelism().map_or(1, |count| count.get()).min(8);
+        runtime_builder.worker_threads(workers);
+    }
+    let async_runtime = runtime_builder
         .enable_all()
         .thread_name_fn(|| {
             static INDEX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -207,10 +228,18 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     #[cfg(windows)]
-    std::env::set_var(
-        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required",
-    );
+    {
+        // 追加而不是覆盖：外部（如本地调试需要 --remote-debugging-port 时）
+        // 预先设置的参数必须保留，否则 CDP 等调试通道会被静默抹掉。
+        const REQUIRED_ARGS: &str = "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required";
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        let merged = if existing.trim().is_empty() {
+            REQUIRED_ARGS.to_string()
+        } else {
+            format!("{} {}", existing.trim(), REQUIRED_ARGS)
+        };
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+    }
 
     let builder = tauri::Builder::default();
     #[cfg(not(windows))]
@@ -246,8 +275,26 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(RuntimeState::default())
         .setup(|app| {
+            #[cfg(any(windows, target_os = "macos"))]
+            crate::ocr::ppocr::configure_resources(app.handle())?;
+            #[cfg(feature = "performance-acceptance")]
+            application::performance_acceptance::validate(app.handle())
+                .map_err(std::io::Error::other)?;
+            // 必须在任何模块打开状态文件/历史数据库之前执行，否则 Windows 下删除会因文件
+            // 被占用而失败；失败不阻断启动。标记已被无条件消费，不会重复清空，所以
+            // 未删掉的条目只能靠下面的诊断事件告知用户手动清理——release 是
+            // windows_subsystem="windows"，eprintln 用户看不到。
+            let reset_outcome = application::data_root::consume_pending_reset(&app.handle());
             application::data_root::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::diagnostics::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            if let Err(error) = reset_outcome {
+                application::diagnostics::event(
+                    "error",
+                    "dataRoot.resetIncomplete",
+                    json!({ "message": error }),
+                );
+                eprintln!("[data-root] 重置数据未完全成功：{error}");
+            }
             if let Err(error) = stack_diagnostics::install(&app.handle()) {
                 application::diagnostics::event(
                     "error",
@@ -383,8 +430,8 @@ fn main() {
             crate::desktop::floating_orb::start_floating_orb_hover_watcher(app.handle().clone());
             application::subtitles::initialize(app.handle().clone());
             application::compare::initialize(app.handle().clone());
-            // Tauri 会在 setup 前按平台配置预创建主窗口，这条路径不会经过
-            // `ensure_main_window`，因此必须在持久化设置加载后主动应用系统材质。
+            // 默认主窗口按需创建；若外部配置显式预创建窗口，仍在设置加载后同步材质。
+            // 后续创建的窗口由 `ensure_main_window` 同步。
             crate::desktop::floating_orb::sync_system_glass_windows(&app.handle());
             let dictation_settings = {
                 let state = app.state::<RuntimeState>();
@@ -421,11 +468,19 @@ fn main() {
                 .lock()
                 .map_err(|_| std::io::Error::other("assistant shortcut lock failed while registering"))?
                 .clone();
+            // 注册是全有全无的（见 assistant::set_shortcuts 的说明），失败原因由
+            // set_shortcuts 留在运行时状态里，快捷键设置页会把受影响的条目标注成
+            // 「当前未生效」。这里只留一条开发期日志——release 版没有控制台，
+            // 单靠它等于彻底静默。
             if let Err(error) = application::assistant::set_shortcuts(&app.handle(), &assistant_shortcuts) {
                 eprintln!("[assistant-shortcut] {error}");
             }
 
-            let _ = ensure_indicator_window(&app.handle());
+            // 原生听写指示器启用时不再预创建 WebView 指示窗；
+            // error/字幕态用到时仍由各路径按需创建。
+            if !crate::desktop::native_dictation_indicator_enabled() {
+                let _ = ensure_indicator_window(&app.handle());
+            }
             if let Err(error) = sync_floating_orb_window(&app.handle()) {
                 eprintln!("[floating-orb] 启动悬浮球失败: {error}");
             }
@@ -474,7 +529,17 @@ fn main() {
                     .map_err(|_| std::io::Error::other("startup lock failed while reading"))?;
                 guard.silent_start
             };
-            let start_hidden = should_start_hidden(launched_via_autostart, silent_start);
+            #[cfg(feature = "performance-acceptance")]
+            {
+                // 窗口验收不进入首次使用向导：向导会自动验证真实麦克风，污染资源对照。
+                app.state::<RuntimeState>()
+                    .app_settings
+                    .lock()
+                    .map_err(|_| std::io::Error::other("验收配置锁失败"))?
+                    .onboarding_version = 1;
+            }
+            let start_hidden = cfg!(feature = "performance-acceptance")
+                || should_start_hidden(launched_via_autostart, silent_start);
 
             // macOS 的普通应用即使没有窗口仍会留在 Dock。静默自启的产品语义是只驻留
             // 状态栏，因此必须在事件循环启动前隐藏 Dock 图标；用户从状态栏重新打开时，
@@ -494,6 +559,8 @@ fn main() {
                     eprintln!("[window] 静默启动销毁主窗口失败: {error}");
                 }
             }
+            #[cfg(feature = "performance-acceptance")]
+            application::performance_acceptance::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -504,6 +571,12 @@ fn main() {
                     }
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        // 快捷键录入态只能由前端发 set_hotkey_capturing{active:false} 复位，
+                        // 而下面的 destroy_main_window 直接销毁 webview，React 的清理回调
+                        // 根本不会执行。不在这里兜底的话，用户在「录入」状态下关掉主窗口，
+                        // CAPTURING 会一直为真，钩子从此吞掉 CapsLock/NumLock/ScrollLock
+                        // ——影响的是整个系统，且重开主窗口也不会恢复。
+                        hotkey::set_capturing(false);
                         if let Err(error) = destroy_main_window(&window.app_handle()) {
                             eprintln!("[window] 关闭主窗口失败: {error}");
                         }
@@ -535,6 +608,7 @@ fn main() {
             install_provider_plugin,
             take_pending_provider_plugin_imports,
             download_provider_model_pack,
+            set_provider_model_keep_loaded,
             set_provider_plugin_enabled,
             uninstall_provider_plugin,
             run_provider_plugin_action,
@@ -542,6 +616,7 @@ fn main() {
             get_data_root_status,
             migrate_data_root,
             restart_app,
+            request_data_reset,
             update_app_settings,
             update_custom_cue,
             get_session_status,
@@ -620,6 +695,8 @@ fn main() {
             subtitle_stop,
             get_subtitle_runtime,
             sync_subtitle_presentation,
+            show_subtitle_preview,
+            hide_subtitle_preview,
             apply_subtitle_obs_routing,
             set_debug_log,
             set_hotkey_capturing,
@@ -680,7 +757,11 @@ fn main() {
             stop_assistant_follow_up_voice,
             set_assistant_answer_pinned,
             close_assistant_answer,
-            get_performance_metrics
+            get_performance_metrics,
+            #[cfg(debug_assertions)]
+            dev_show_indicator_notice,
+            #[cfg(debug_assertions)]
+            dev_indicator_waveform
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -720,7 +801,14 @@ fn main() {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        app.run(|_, _| {});
+        app.run(|_, event| {
+            // 主窗口「关闭即销毁」后，应用可能不再有任何存活窗口，运行时会自动
+            // 请求退出（code 为 None）——阻止它以保持托盘驻留。托盘「退出」和
+            // app.restart() 都带退出码，不受影响。
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
         active_app_context::shutdown();
     }
 }

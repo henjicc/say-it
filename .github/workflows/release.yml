@@ -9,7 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  # 构建与发布全程只读 package.json 的版本号，从不看 tag 本身。版本号漏改一处就会静默
+  # 发出「tag 是新版、资产是旧版」的 Release，CHANGELOG 取的也是旧版那一节。先卡一道。
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: verify tag matches the recorded version
+        run: node scripts/verify-release-version.mjs "${{ github.ref_name }}"
+
   build-windows:
+    needs: verify-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +64,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: verify-version
     strategy:
       fail-fast: false
       matrix:
@@ -195,17 +211,7 @@ jobs:
           merge-multiple: true
 
       - name: prepare release notes
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const version = require('./package.json').version;
-          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
-          const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const match = changelog.match(new RegExp(`^## \\[${escaped}\\].*?(?=^## \\[|$)`, 'ms'));
-          if (!match) throw new Error(`Release notes for version ${version} were not found in CHANGELOG.md.`);
-          const modelNotes = fs.readFileSync('model-packs/RELEASE_NOTES.md', 'utf8').trim();
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/release-notes.md', `${match[0].trim()}\n\n---\n\n${modelNotes}\n`);
-          NODE
+        run: node scripts/release-notes.mjs "$RUNNER_TEMP/release-notes.md"
 
       - name: publish GitHub release
         env:

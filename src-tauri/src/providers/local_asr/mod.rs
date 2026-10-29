@@ -1,5 +1,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::cancellation::CancellationFlag;
 
 use serde_json::Value;
 use sherpa_onnx::{
@@ -11,6 +15,10 @@ use super::model_download;
 use super::plugin::{LocalModelSpec, ModelPackManifest};
 
 const SAMPLE_RATE: i32 = 16_000;
+
+pub mod cache;
+mod file;
+pub(crate) use file::recognize_audio_file;
 
 #[derive(Default)]
 pub struct LocalAsrOutput {
@@ -27,35 +35,23 @@ pub struct LocalSegment {
 }
 
 pub struct OnlineSession {
-    recognizer: OnlineRecognizer,
+    // 流先析构，最后一个会话释放时识别器仍然有效。
     stream: sherpa_onnx::OnlineStream,
+    recognizer: Arc<Mutex<OnlineRecognizer>>,
     last_partial: String,
 }
 
 impl OnlineSession {
-    pub fn create(spec: &LocalModelSpec) -> Result<Self, String> {
-        ensure_ready(spec)?;
-        let mut config = OnlineRecognizerConfig::default();
-        config.model_config.paraformer.encoder = Some(param_path(spec, "encoder")?);
-        config.model_config.paraformer.decoder = Some(param_path(spec, "decoder")?);
-        config.model_config.tokens = Some(param_path(spec, "tokens")?);
-        config.model_config.num_threads = int_param(&spec.params, "numThreads", 2);
-        config.model_config.provider = Some("cpu".into());
-        config.decoding_method = Some(string_param(
-            &spec.params,
-            "decodingMethod",
-            "greedy_search",
-        ));
-        config.enable_endpoint = true;
-        config.rule1_min_trailing_silence =
-            float_param(&spec.params, "rule1MinTrailingSilence", 2.4);
-        config.rule2_min_trailing_silence =
-            float_param(&spec.params, "rule2MinTrailingSilence", 1.2);
-        config.rule3_min_utterance_length =
-            float_param(&spec.params, "rule3MinUtteranceLength", 20.0);
-        let recognizer = OnlineRecognizer::create(&config)
-            .ok_or("创建 sherpa-onnx 在线识别器失败；请检查模型包文件与参数")?;
-        let stream = recognizer.create_stream();
+    pub fn create_realtime(
+        spec: &LocalModelSpec,
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<Self, String> {
+        let shared = cache::acquire(spec)?;
+        let cache::Recognizer::Online(recognizer) = shared.as_ref() else {
+            return Err("模型引擎不是在线 ASR".into());
+        };
+        let recognizer = recognizer.clone();
+        let stream = lock_recognizer(&recognizer, cancel)?.create_stream();
         Ok(Self {
             recognizer,
             stream,
@@ -63,38 +59,52 @@ impl OnlineSession {
         })
     }
 
-    pub fn accept(&mut self, samples: &[f32]) -> LocalAsrOutput {
+    pub fn accept(
+        &mut self,
+        samples: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<LocalAsrOutput, String> {
         self.stream.accept_waveform(SAMPLE_RATE, samples);
-        self.decode_ready()
+        self.decode_ready(cancel)
     }
 
-    pub fn finish(mut self) -> LocalAsrOutput {
+    pub fn finish(mut self, cancel: Option<&CancellationFlag>) -> Result<LocalAsrOutput, String> {
         self.stream.input_finished();
-        let mut output = self.decode_ready();
-        if let Some(result) = self.recognizer.get_result(&self.stream) {
+        let mut output = self.decode_ready(cancel)?;
+        let recognizer = lock_recognizer(&self.recognizer, cancel)?;
+        if let Some(result) = recognizer.get_result(&self.stream) {
             let text = result.text.trim();
             if !text.is_empty() && output.finals.last().is_none_or(|last| last != text) {
                 output.finals.push(text.to_string());
             }
         }
         output.partial = None;
-        output
+        Ok(output)
     }
 
-    fn decode_ready(&mut self) -> LocalAsrOutput {
-        while self.recognizer.is_ready(&self.stream) {
-            self.recognizer.decode(&self.stream);
+    fn decode_ready(
+        &mut self,
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<LocalAsrOutput, String> {
+        // sherpa 类型声明了 Send/Sync，但未承诺共享识别器并发 decode；每步单独串行化。
+        loop {
+            let recognizer = lock_recognizer(&self.recognizer, cancel)?;
+            if !recognizer.is_ready(&self.stream) {
+                break;
+            }
+            recognizer.decode(&self.stream);
         }
+        let recognizer = lock_recognizer(&self.recognizer, cancel)?;
         let mut output = LocalAsrOutput::default();
-        let result = self.recognizer.get_result(&self.stream);
-        if self.recognizer.is_endpoint(&self.stream) {
+        let result = recognizer.get_result(&self.stream);
+        if recognizer.is_endpoint(&self.stream) {
             if let Some(result) = result {
                 let text = result.text.trim();
                 if !text.is_empty() {
                     output.finals.push(text.to_string());
                 }
             }
-            self.recognizer.reset(&self.stream);
+            recognizer.reset(&self.stream);
             self.last_partial.clear();
         } else if let Some(result) = result {
             let text = result.text.trim();
@@ -103,43 +113,105 @@ impl OnlineSession {
                 output.partial = Some(text.to_string());
             }
         }
-        output
+        Ok(output)
     }
+}
+
+fn check_cancel(cancel: Option<&CancellationFlag>) -> Result<(), String> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        Err("本地语音识别已取消".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn lock_recognizer<'a, T>(
+    recognizer: &'a Mutex<T>,
+    cancel: Option<&CancellationFlag>,
+) -> Result<MutexGuard<'a, T>, String> {
+    let guard = recognizer.lock().map_err(|_| "本地识别器锁失败")?;
+    // 等待另一个实时句段时，停止或超时可能已经取消了本次会话。
+    check_cancel(cancel)?;
+    Ok(guard)
+}
+
+fn create_online_recognizer(spec: &LocalModelSpec) -> Result<OnlineRecognizer, String> {
+    ensure_ready(spec)?;
+    let mut config = OnlineRecognizerConfig::default();
+    config.model_config.paraformer.encoder = Some(param_path(spec, "encoder")?);
+    config.model_config.paraformer.decoder = Some(param_path(spec, "decoder")?);
+    config.model_config.tokens = Some(param_path(spec, "tokens")?);
+    config.model_config.num_threads = int_param(&spec.params, "numThreads", 2);
+    config.model_config.provider = Some("cpu".into());
+    config.decoding_method = Some(string_param(
+        &spec.params,
+        "decodingMethod",
+        "greedy_search",
+    ));
+    config.enable_endpoint = true;
+    config.rule1_min_trailing_silence = float_param(&spec.params, "rule1MinTrailingSilence", 2.4);
+    config.rule2_min_trailing_silence = float_param(&spec.params, "rule2MinTrailingSilence", 1.2);
+    config.rule3_min_utterance_length = float_param(&spec.params, "rule3MinUtteranceLength", 20.0);
+    let recognizer = OnlineRecognizer::create(&config)
+        .ok_or("创建 sherpa-onnx 在线识别器失败；请检查模型包文件与参数")?;
+    Ok(recognizer)
 }
 
 pub struct OfflineEngine {
-    recognizer: OfflineRecognizer,
+    recognizer: Arc<Mutex<OfflineRecognizer>>,
 }
 
 impl OfflineEngine {
-    pub fn create(spec: &LocalModelSpec) -> Result<Self, String> {
-        ensure_ready(spec)?;
-        let mut config = OfflineRecognizerConfig::default();
-        config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
-            model: Some(param_path(spec, "model")?),
-            language: Some(string_param(&spec.params, "language", "auto")),
-            use_itn: bool_param(&spec.params, "useItn", true),
+    fn create_realtime(spec: &LocalModelSpec) -> Result<Self, String> {
+        let shared = cache::acquire(spec)?;
+        let cache::Recognizer::Offline(recognizer) = shared.as_ref() else {
+            return Err("模型引擎不是离线 ASR".into());
         };
-        config.model_config.tokens = Some(param_path(spec, "tokens")?);
-        config.model_config.num_threads = int_param(&spec.params, "numThreads", 2);
-        config.model_config.provider = Some("cpu".into());
-        let recognizer = OfflineRecognizer::create(&config)
-            .ok_or("创建 sherpa-onnx SenseVoice 识别器失败；请检查模型包文件与参数")?;
+        let recognizer = recognizer.clone();
         Ok(Self { recognizer })
     }
 
-    pub fn recognize(&self, samples: &[f32]) -> Result<String, String> {
+    fn create_temporary(spec: &LocalModelSpec) -> Result<Self, String> {
+        Ok(Self {
+            recognizer: Arc::new(Mutex::new(create_offline_recognizer(spec)?)),
+        })
+    }
+
+    pub fn recognize(
+        &self,
+        samples: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<String, String> {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        let stream = self.recognizer.create_stream();
+        // 只有实时会话共享识别器，锁只覆盖一个句段。
+        let recognizer = lock_recognizer(&self.recognizer, cancel)?;
+        let stream = recognizer.create_stream();
         stream.accept_waveform(SAMPLE_RATE, samples);
-        self.recognizer.decode(&stream);
+        check_cancel(cancel)?;
+        recognizer.decode(&stream);
         stream
             .get_result()
             .map(|result| result.text.trim().to_string())
-            .ok_or("SenseVoice 未返回识别结果".into())
+            .ok_or("离线模型未返回识别结果".into())
     }
+}
+
+fn create_offline_recognizer(spec: &LocalModelSpec) -> Result<OfflineRecognizer, String> {
+    ensure_ready(spec)?;
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
+        model: Some(param_path(spec, "model")?),
+        language: Some(string_param(&spec.params, "language", "auto")),
+        use_itn: bool_param(&spec.params, "useItn", true),
+    };
+    config.model_config.tokens = Some(param_path(spec, "tokens")?);
+    config.model_config.num_threads = int_param(&spec.params, "numThreads", 2);
+    config.model_config.provider = Some("cpu".into());
+    let recognizer = OfflineRecognizer::create(&config)
+        .ok_or("创建 sherpa-onnx 离线识别器失败；请检查模型包文件与参数")?;
+    Ok(recognizer)
 }
 
 pub struct OfflineVadSession {
@@ -155,8 +227,15 @@ pub struct OfflineVadSession {
 }
 
 impl OfflineVadSession {
-    pub fn create(spec: &LocalModelSpec) -> Result<Self, String> {
-        let engine = OfflineEngine::create(spec)?;
+    pub fn create_realtime(spec: &LocalModelSpec) -> Result<Self, String> {
+        Self::with_engine(spec, OfflineEngine::create_realtime(spec)?)
+    }
+
+    pub fn create_temporary(spec: &LocalModelSpec) -> Result<Self, String> {
+        Self::with_engine(spec, OfflineEngine::create_temporary(spec)?)
+    }
+
+    fn with_engine(spec: &LocalModelSpec, engine: OfflineEngine) -> Result<Self, String> {
         let window_size = int_param(&spec.params, "vadWindowSize", 512).max(1);
         let mut config = VadModelConfig::default();
         config.silero_vad = SileroVadModelConfig {
@@ -182,26 +261,38 @@ impl OfflineVadSession {
     }
 
     /// 调用方可以传入任意长度的音频；这里负责切成 VAD 能正确处理的窗口。
-    pub fn accept(&mut self, samples: &[f32]) -> Result<Vec<LocalSegment>, String> {
+    pub fn accept(
+        &mut self,
+        samples: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<Vec<LocalSegment>, String> {
         // 必须按窗口大小小块喂入：单次传入过长音频会让 sherpa VAD 在语音确认前
         // 裁掉缓冲里的开头。实测 5.6s 音频，≤0.3s 的块识别完整，0.5s 的块丢失开头
         // 数字，整段一次性传入只剩一个语气词。
         let mut results = Vec::new();
         for window in samples.chunks(self.window_size) {
+            check_cancel(cancel)?;
             self.vad.accept_waveform(window);
             self.fed_samples += window.len() as u64;
-            results.extend(self.drain()?);
+            results.extend(self.drain(cancel)?);
         }
         Ok(results)
     }
 
-    pub fn finish(mut self) -> Result<Vec<LocalSegment>, String> {
-        self.flush_and_reset()
+    pub fn finish(
+        mut self,
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<Vec<LocalSegment>, String> {
+        self.flush_and_reset(cancel)
     }
 
-    pub fn flush_and_reset(&mut self) -> Result<Vec<LocalSegment>, String> {
+    pub fn flush_and_reset(
+        &mut self,
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<Vec<LocalSegment>, String> {
+        check_cancel(cancel)?;
         self.vad.flush();
-        let results = self.drain()?;
+        let results = self.drain(cancel)?;
         self.vad.reset();
         // reset 之后 SpeechSegment::start 重新从 0 计数，把本轮长度并入基准偏移。
         self.base_samples += self.fed_samples;
@@ -209,10 +300,10 @@ impl OfflineVadSession {
         Ok(results)
     }
 
-    fn drain(&mut self) -> Result<Vec<LocalSegment>, String> {
+    fn drain(&mut self, cancel: Option<&CancellationFlag>) -> Result<Vec<LocalSegment>, String> {
         let mut results = Vec::new();
         while let Some(segment) = self.vad.front() {
-            let text = self.engine.recognize(segment.samples())?;
+            let text = self.engine.recognize(segment.samples(), cancel)?;
             if !text.is_empty() {
                 let start = self.base_samples + segment.start().max(0) as u64;
                 let end = start + segment.n().max(0) as u64;
@@ -228,26 +319,28 @@ impl OfflineVadSession {
         // 这里不能 reset：Silero VAD 依赖跨窗口的循环状态累积语音概率，语音刚起始
         // 时 detected() 仍为 false，此刻 reset 会清空模型状态与尚未成段的缓冲，使
         // detected() 永远无法置位、reset 每块反复触发，VAD 再也切不出任何句段。
-        // 缓冲增长由 recognize_file_segments 的周期性 flush_and_reset 收口。
+        // 文件模式的缓冲增长由 file 模块的周期性 flush_and_reset 收口。
         Ok(results)
     }
 }
 
-pub fn recognize_file_segments(
+// 保留原整段算法作识别质量与时间轴的独立回归参照。
+#[cfg(test)]
+fn recognize_file_segments(
     spec: &LocalModelSpec,
     samples: &[f32],
 ) -> Result<Vec<LocalSegment>, String> {
-    let mut session = OfflineVadSession::create(spec)?;
+    let mut session = OfflineVadSession::create_temporary(spec)?;
     let mut results = Vec::new();
     for (index, chunk) in samples.chunks(SAMPLE_RATE as usize * 10).enumerate() {
-        results.extend(session.accept(chunk)?);
+        results.extend(session.accept(chunk, None)?);
         // 即使输入长时间没有静音，也每分钟强制收口一次，避免 sherpa VAD 的内部
         // 环形缓冲区随整段文件持续增长；边界处 flush 不丢样本，只多一个句段边界。
         if (index + 1) % 6 == 0 {
-            results.extend(session.flush_and_reset()?);
+            results.extend(session.flush_and_reset(None)?);
         }
     }
-    results.extend(session.finish()?);
+    results.extend(session.finish(None)?);
     Ok(results)
 }
 
@@ -317,8 +410,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cancellation_while_waiting_for_recognizer_skips_decode_after_lock() {
+        use std::sync::atomic::AtomicBool;
+        let recognizer = Arc::new(Mutex::new(()));
+        let cancel = Arc::new(CancellationFlag::new(false));
+        let decoded = Arc::new(AtomicBool::new(false));
+        let held = recognizer.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let task = {
+            let recognizer = recognizer.clone();
+            let cancel = cancel.clone();
+            let decoded = decoded.clone();
+            std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                lock_recognizer(&recognizer, Some(&cancel)).map(|_guard| {
+                    decoded.store(true, Ordering::Release);
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+        cancel.store(true, Ordering::Release);
+        drop(held);
+        assert_eq!(task.join().unwrap().unwrap_err(), "本地语音识别已取消");
+        assert!(!decoded.load(Ordering::Acquire));
+        assert!(
+            lock_recognizer(&recognizer, None).is_ok(),
+            "取消必须释放识别器锁"
+        );
+    }
+
+    #[test]
     fn rejects_params_that_reference_undeclared_files() {
         let spec = LocalModelSpec {
+            manifest_version: "1.0.0".into(),
             plugin_id: "test".into(),
             provider_id: "test".into(),
             engine: "sherpa-onnx-online".into(),
@@ -334,6 +458,7 @@ mod tests {
     fn recognizes_official_paraformer_wave() {
         let model_dir = PathBuf::from(std::env::var("SAYIT_SHERPA_POC_DIR").unwrap());
         let spec = LocalModelSpec {
+            manifest_version: "1.0.0".into(),
             plugin_id: "poc".into(),
             provider_id: "poc".into(),
             engine: "sherpa-onnx-online".into(),
@@ -370,10 +495,10 @@ mod tests {
         };
         let wave_path = model_dir.join("test.wav");
         let wave = sherpa_onnx::Wave::read(wave_path.to_str().unwrap()).unwrap();
-        let mut session = OnlineSession::create(&spec).unwrap();
+        let mut session = OnlineSession::create_realtime(&spec, None).unwrap();
         let mut text = String::new();
         for chunk in wave.samples().chunks(3_200) {
-            let output = session.accept(chunk);
+            let output = session.accept(chunk, None).unwrap();
             if let Some(partial) = output.partial {
                 text = partial;
             }
@@ -381,18 +506,17 @@ mod tests {
                 text = final_text.clone();
             }
         }
-        if let Some(final_text) = session.finish().finals.last() {
+        if let Some(final_text) = session.finish(None).unwrap().finals.last() {
             text = final_text.clone();
         }
         assert!(!text.trim().is_empty(), "Paraformer PoC 应输出非空文本");
         println!("Paraformer PoC: {text}");
     }
 
-    #[test]
-    #[ignore = "需要 SAYIT_SENSEVOICE_POC_DIR 指向官方 SenseVoice 模型与 test.wav"]
-    fn recognizes_official_sensevoice_wave_and_vad_segment() {
+    pub(super) fn sensevoice_spec() -> LocalModelSpec {
         let model_dir = PathBuf::from(std::env::var("SAYIT_SENSEVOICE_POC_DIR").unwrap());
-        let spec = LocalModelSpec {
+        LocalModelSpec {
+            manifest_version: "1.0.0".into(),
             plugin_id: "poc".into(),
             provider_id: "poc".into(),
             engine: "sherpa-onnx-offline".into(),
@@ -428,12 +552,18 @@ mod tests {
                 "useItn": true,
                 "numThreads": 2
             }),
-        };
-        let wave_path = model_dir.join("test.wav");
+        }
+    }
+
+    #[test]
+    #[ignore = "需要 SAYIT_SENSEVOICE_POC_DIR 指向官方 SenseVoice 模型与 test.wav"]
+    fn recognizes_official_sensevoice_wave_and_vad_segment() {
+        let spec = sensevoice_spec();
+        let wave_path = spec.model_dir.join("test.wav");
         let wave = sherpa_onnx::Wave::read(wave_path.to_str().unwrap()).unwrap();
-        let direct = OfflineEngine::create(&spec)
+        let direct = OfflineEngine::create_temporary(&spec)
             .unwrap()
-            .recognize(wave.samples())
+            .recognize(wave.samples(), None)
             .unwrap();
         assert!(
             !direct.trim().is_empty(),
@@ -457,12 +587,12 @@ mod tests {
 
         // 实时听写按小块喂入，是 VAD 状态最容易被破坏的路径（drain 里误加 reset 会
         // 让这里一个句段都切不出来），必须与文件模式分开回归。
-        let mut session = OfflineVadSession::create(&spec).unwrap();
+        let mut session = OfflineVadSession::create_temporary(&spec).unwrap();
         let mut realtime = Vec::new();
         for chunk in wave.samples().chunks(1_600) {
-            realtime.extend(session.accept(chunk).unwrap());
+            realtime.extend(session.accept(chunk, None).unwrap());
         }
-        realtime.extend(session.finish().unwrap());
+        realtime.extend(session.finish(None).unwrap());
         let realtime = joined(&realtime);
         assert!(
             !realtime.trim().is_empty(),

@@ -27,13 +27,7 @@ pub(crate) fn attach_backend_system_audio_to_asr_inner(
 
 pub(crate) fn attach_backend_system_audio_raw_inner(
     _state: &RuntimeState,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     Err(UNSUPPORTED.into())
 }
 

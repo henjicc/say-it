@@ -103,7 +103,7 @@ export function TranscriptAlignPanel() {
           statusTone={statusTone}
           statusText={cardStatusText}
           errorMessage={alignErrorMessage}
-          hint="识别参数沿用「通用设置」页签；同一文件重复执行时复用上次识别结果，只重新对齐。"
+          description="使用“通用设置”中的识别设置。同一文件再次对齐时会沿用上次的识别结果，不会重复识别。"
           actions={
             <>
               <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>

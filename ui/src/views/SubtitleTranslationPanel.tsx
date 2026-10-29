@@ -23,10 +23,7 @@ export function SubtitleTranslationPanel() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SettingsSection title="字幕翻译">
-        <p className="text-xs text-[var(--color-fg-subtle)]">
-          每句字幕定稿后立即翻译，支持增量流式输出的模型会边生成边显示，尽量减少等待。
-        </p>
+      <SettingsSection title="字幕翻译" description="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。">
         <FormGrid>
           <Field layout="row" label="翻译模型">
             <Select

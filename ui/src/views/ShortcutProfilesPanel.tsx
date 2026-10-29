@@ -1,3 +1,4 @@
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -6,7 +7,7 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select } from "@/components/ui/Input";
-import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import {
   MAX_DICTATION_SHORTCUT_PROFILES,
@@ -71,6 +72,7 @@ function shortcutTriggerLabel(mode: ShortcutTriggerMode): string {
 }
 
 export function ShortcutProfilesPanel() {
+  const { confirm, dialog } = useConfirm();
   const prefs = useDictPrefs((state) => state.prefs);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
   const focusedProfileId = useUiStore((state) => state.focusedShortcutProfileId);
@@ -111,8 +113,16 @@ export function ShortcutProfilesPanel() {
     untouchedDraftIds.current.delete(id);
     save(profiles.map((profile) => (profile.id === id ? { ...profile, ...partial } : profile)));
   };
-  const remove = (profile: DictationShortcutProfile) => {
-    if (!window.confirm(`确定删除快捷键方案“${profile.name}”吗？`)) return;
+  const remove = async (profile: DictationShortcutProfile) => {
+    if (
+      !(await confirm({
+        title: "确认删除快捷键方案",
+        message: `确定删除快捷键方案“${profile.name}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     untouchedDraftIds.current.delete(profile.id);
     save(profiles.filter((item) => item.id !== profile.id));
     if (editingId === profile.id) setEditingId(null);
@@ -127,12 +137,7 @@ export function ShortcutProfilesPanel() {
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsSection title="快捷键方案">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          为临时意图设置专用快捷键。听写开始时会冻结对应方案；录音过程中修改设置或按下其他听写快捷键，
-          都不会切换当前文本的处理方式。同一按键可分别设置一条单击和一条长按方案，相同触发方式则会提示冲突。
-        </p>
-      </SettingsSection>
+      <SectionHeader title="快捷键方案" description="为不同用途设置专用快捷键。一次录音开始后会一直使用当时的方案。同一个按键可以分别设置单击和长按；相同的按键与触发方式不能重复。" />
 
       <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]">
         {profiles.length === 0 && (
@@ -185,7 +190,7 @@ export function ShortcutProfilesPanel() {
                   variant="dangerHover"
                   className="h-7 w-7 shrink-0"
                   label="删除快捷键方案"
-                  onClick={() => remove(profile)}
+                  onClick={() => void remove(profile)}
                 >
                   <Trash2 className="h-3.5 w-3.5" aria-hidden />
                 </IconButton>
@@ -316,7 +321,7 @@ export function ShortcutProfilesPanel() {
                       </>
                     )}
 
-                    <Field label="注入方式">
+                    <Field label="文字输入方式">
                       <Select
                         value={profile.injectMethod ?? ""}
                         onChange={(event) => update(profile.id, {
@@ -344,6 +349,7 @@ export function ShortcutProfilesPanel() {
           添加快捷键方案
         </Button>
       </div>
+      {dialog}
     </div>
   );
 }

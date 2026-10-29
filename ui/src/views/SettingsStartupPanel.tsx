@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -35,8 +36,7 @@ function ToggleRow({
   return (
     <div className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-[var(--color-fg)]">{title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">{description}</p>
+        <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></p>
       </div>
       <Switch checked={checked} onChange={onChange} disabled={disabled} label={title} />
     </div>
@@ -104,23 +104,33 @@ function DataRootSection() {
     <SettingsSection title="数据目录">
       <div className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-[var(--color-fg)]">存储位置</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            设置、插件和模型统一保存在此目录；更改位置会把全部数据迁移过去，完成后需要重启生效。
-          </p>
+          <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="设置、插件和模型保存在这个文件夹。更改位置会搬移全部数据，完成后重启生效。">存储位置</HelpLabel></p>
           <p className="mt-1.5 break-all font-mono text-xs text-[var(--color-fg-subtle)]">
             {status ? status.configuredRoot : "读取中…"}
           </p>
+          {status?.restartRequired && (
+            <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-warn)]">
+              上一次更改尚未生效，重启后才会切换到该目录；在此之前无法再次更改位置。
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="ghost" size="sm" disabled={migrating || !status} onClick={() => void pickAndMigrate()}>
+          {/* 上一次迁移尚未重启生效时禁止再迁：此时进程仍在旧根目录，而旧目录的数据
+              已经被搬空，再迁一次会把指针指向一个空目录，重启后数据"消失"。
+              后端 migrate_blocking 也有同样的校验，这里只是提前把入口关掉。 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={migrating || !status || status.restartRequired}
+            onClick={() => void pickAndMigrate()}
+          >
             {migrating ? "迁移中…" : "更改位置"}
           </Button>
           {status?.isCustom && (
             <Button
               variant="ghost"
               size="sm"
-              disabled={migrating}
+              disabled={migrating || status.restartRequired}
               onClick={() => void migrateTo(status.defaultRoot)}
             >
               恢复默认位置

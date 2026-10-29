@@ -1,10 +1,13 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { Slider } from "@/components/ui/Slider";
 import { CheckField, Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
+import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
@@ -37,6 +40,7 @@ const fmtThreshold = (value: number) => value.toFixed(4);
 const levelWidth = (value: number) => `${Math.min(100, value * 140)}%`;
 
 export function DiagnosticSection() {
+  const { confirm, dialog } = useConfirm();
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [status, setStatus] = useState<DiagnosticStatus | null>(null);
   const [includeContent, setIncludeContent] = useState(false);
@@ -75,7 +79,17 @@ export function DiagnosticSection() {
   }
 
   async function updateContent(enabled: boolean) {
-    if (enabled && !window.confirm("临时正文日志会记录输入文本，可能包含隐私内容。确定开启 30 分钟吗？")) return;
+    if (
+      enabled &&
+      !(await confirm({
+        title: "开启临时正文日志",
+        message: "临时正文日志会记录输入文本，可能包含隐私内容。确定开启 30 分钟吗？",
+        confirmLabel: "开启 30 分钟",
+        danger: false,
+      }))
+    ) {
+      return;
+    }
     try {
       setStatus(await cmd<DiagnosticStatus>(CMD.setContentDiagnostics, { enabled }));
       setMessage(enabled ? "正文日志已开启，将在 30 分钟后自动关闭" : "正文日志已关闭");
@@ -85,7 +99,15 @@ export function DiagnosticSection() {
   }
 
   async function clearLogs() {
-    if (!window.confirm("确定清空全部诊断日志（包括正文日志）吗？")) return;
+    if (
+      !(await confirm({
+        title: "确认清空诊断日志",
+        message: "将清空全部诊断日志，包括正文日志。此操作不可撤销。",
+        confirmLabel: "清空日志",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearDiagnosticLogs);
       setIncludeContent(false);
@@ -134,7 +156,7 @@ export function DiagnosticSection() {
         <Field
           label="导出诊断包"
           controlId="diagnostic-export-bundle"
-          hint="默认仅包含版本、平台、非敏感配置投影和普通日志，不包含历史数据库、凭据、音频或截图。"
+          hint="默认仅包含版本、平台、不含隐私的设置和运行日志，不包含历史记录、密钥、音频或截图。"
           className="sm:col-span-2"
         >
           <div className="flex flex-wrap items-center gap-3">
@@ -145,6 +167,72 @@ export function DiagnosticSection() {
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
+    </SettingsSection>
+  );
+}
+
+export function DataResetSection() {
+  const [pendingReset, setPendingReset] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  // 失败提示必须留在弹窗**里面**。
+  //
+  // 原本写在弹窗外面的状态行上，而失败时 pendingReset 不会被清掉：弹窗还开着、
+  // 遮罩把那行字整个挡住，用户按了「确认重置」之后只看到按钮从「正在重置…」跳回
+  // 「确认重置」，得不到任何失败原因。
+  function closeDialog() {
+    if (busy) return;
+    setPendingReset(false);
+    setMessage("");
+  }
+
+  async function reset() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await cmd(CMD.requestDataReset);
+    } catch (error) {
+      setBusy(false);
+      setMessage(String(error));
+    }
+  }
+
+  return (
+    <SettingsSection title="重置数据">
+      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
+        清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。重置后应用会立即重启。
+      </p>
+      <FormGrid>
+        <Field label="重置全部数据" controlId="data-reset" message="不可撤销，请谨慎操作。">
+          <Button id="data-reset" variant="dangerHover" onClick={() => setPendingReset(true)}>重置数据并重启</Button>
+        </Field>
+      </FormGrid>
+      <Modal
+        open={pendingReset}
+        onClose={closeDialog}
+        title="确认重置全部数据"
+        showCloseButton={false}
+        className="max-w-[430px]"
+      >
+        <div className="p-5">
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            将清空设置、历史记录、学习记忆、已安装插件和本地模型等全部本地数据，恢复到刚安装时的状态；已保存的 API 密钥/凭据不受影响。此操作不可撤销，确认后应用会立即重启。
+          </p>
+          {message && (
+            <p role="alert" className="mt-4 text-sm text-[var(--color-err)]">
+              重置失败：{message}
+            </p>
+          )}
+          <div className="mt-6 flex justify-end gap-2">
+            <Button size="sm" variant="dangerHover" disabled={busy} onClick={() => void reset()}>
+              {busy ? "正在重置…" : "确认重置"}
+            </Button>
+            <Button size="sm" variant="primary" autoFocus disabled={busy} onClick={closeDialog}>取消</Button>
+          </div>
+        </div>
+      </Modal>
     </SettingsSection>
   );
 }
@@ -232,10 +320,7 @@ function SilenceDisconnectSection() {
   }, [subtitlePrefs.source]);
 
   return (
-    <SettingsSection title="静音断流">
-      <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-        开启后先本地采集检测电平，超过阈值才连接模型 API；连接后持续低于阈值达到设定时长会断开上游上传；功能保持开启，再次有声后重新连接。
-      </p>
+    <SettingsSection title="静音断流" description="开启后，有声音时才连接识别服务；持续安静达到设定时间后会暂停上传。再次有声音时自动恢复。">
       <div className="flex flex-col gap-5">
         <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[9rem_minmax(12rem,1fr)_minmax(16rem,1fr)]">
           <CheckField
@@ -324,22 +409,16 @@ function AudioLabSections() {
 
   return (
     <>
-      <SettingsSection title="响度与降噪">
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          处理算法与实际语音输入共用 Rust DSP：RNNoise 降噪 + LUFS 响度归一化，调好后自动应用到语音输入。
-        </p>
+      <SettingsSection title="响度与降噪" description="在这里调整降噪和音量，设置会自动用于之后的语音输入。">
         <div className="grid grid-cols-1 gap-8 sm:grid-cols-2">
           <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]">响度归一化</h3>
+            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]"><HelpLabel content="让音量更均匀。目标响度建议先用 -20，想更响可试 -18。“最大提升”限制音量放大幅度，避免同时放大背景噪声。">响度归一化</HelpLabel></h3>
             <Slider label="目标响度" min={-30} max={-14} step={0.5} value={prefs.targetLufs} format={fmt.targetLufs} onChange={(v) => onParam("targetLufs", v)} />
             <Slider label="最大提升" min={0} max={80} step={1} value={prefs.maxGainDb} format={fmt.maxGainDb} onChange={(v) => onParam("maxGainDb", v)} />
             <Slider label="峰值上限" min={-6} max={-0.5} step={0.5} value={prefs.peakLimitDbfs} format={fmt.peakLimitDbfs} onChange={(v) => onParam("peakLimitDbfs", v)} />
-            <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              建议语音目标先用 -20 LUFS；如果希望更响可试 -18 LUFS。最大提升用于防止把近似静音的底噪硬拉上来。
-            </p>
           </div>
           <div className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]">RNNoise 降噪</h3>
+            <h3 className="text-sm font-semibold text-[var(--color-fg-muted)]"><HelpLabel content="100% 为最强降噪。声音发闷时可降到 70%～85%；停顿时仍有明显噪声，再适当提高“静音抑制”。">人声降噪</HelpLabel></h3>
             <CheckField
               checked={prefs.denoiseEnabled}
               onChange={(v) => {
@@ -350,10 +429,7 @@ function AudioLabSections() {
               启用降噪
             </CheckField>
             <Slider label="降噪强度" min={0} max={1} step={0.05} value={prefs.denoiseStrength} format={fmt.denoiseStrength} onChange={(v) => onParam("denoiseStrength", v)} />
-            <Slider label="VAD 静音门" min={0} max={0.9} step={0.05} value={prefs.vadGate} format={fmt.vadGate} onChange={(v) => onParam("vadGate", v)} />
-            <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-              降噪强度 100% 是完整 RNNoise 输出；如果声音发闷可降到 70%~85%。VAD 静音门默认关闭，只有停顿底噪特别明显时再小幅打开。
-            </p>
+            <Slider label="静音抑制" min={0} max={0.9} step={0.05} value={prefs.vadGate} format={fmt.vadGate} onChange={(v) => onParam("vadGate", v)} />
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -364,20 +440,14 @@ function AudioLabSections() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="均衡器（高低频）">
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          两段搁架 EQ：低频拐点约 150Hz、高频拐点约 4000Hz，分别调整声音的"厚度"和"亮度"。0 dB 为不调整。
-        </p>
+      <SettingsSection title="均衡器（高低频）" description="低频影响声音的厚实程度，高频影响明亮程度。数值为 0 时保持原样。">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Slider label="低频增益" min={-12} max={12} step={0.5} value={prefs.bassGainDb} format={fmt.bassGainDb} onChange={(v) => onParam("bassGainDb", v)} />
           <Slider label="高频增益" min={-12} max={12} step={0.5} value={prefs.trebleGainDb} format={fmt.trebleGainDb} onChange={(v) => onParam("trebleGainDb", v)} />
         </div>
       </SettingsSection>
 
-      <SettingsSection title="录音试听与波形">
-        <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-          录一段话 → 调上面的参数 → A/B 试听「原始 vs 处理后」。
-        </p>
+      <SettingsSection title="录音试听与波形" description="先录一段话，再调整参数，分别播放原始和处理后的声音进行比较。">
         <div className="flex flex-wrap items-center gap-2">
           <Button variant={recording ? "danger" : "primary"} onClick={lab.toggleRecord}>
             {recording ? "■ 停止录音" : "● 开始录音"}
@@ -414,6 +484,7 @@ export function SettingsAdvancedPanel() {
       <SilenceDisconnectSection />
       <AudioLabSections />
       <DiagnosticSection />
+      <DataResetSection />
     </div>
   );
 }

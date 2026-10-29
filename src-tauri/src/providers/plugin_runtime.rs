@@ -1,3 +1,4 @@
+use crate::cancellation::CancellationFlag;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
@@ -13,8 +14,8 @@ use once_cell::sync::Lazy;
 use rand::RngCore;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    CaughtError, Context, Ctx, Error as JsError, Function, Module, Object, Promise, Runtime,
-    TypedArray,
+    CaughtError, Context, Ctx, Error as JsError, Exception, Function, Module, Object, Promise,
+    Runtime, TypedArray,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -33,20 +34,32 @@ use super::sdk_runtime::{
 };
 use super::ProviderProfile;
 
+mod sdk_upload;
+mod control;
+use control::Deadline;
+use sdk_upload::{MediaInput, UploadState};
+
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STACK_BYTES: usize = 1024 * 1024;
+/// 析构时留给插件收尾脚本的预算。独立于业务超时：运行时正是因为取消或超时才被销毁的。
+const PLUGIN_DISPOSE_BUDGET: Duration = Duration::from_secs(3);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
-// SDK 0.2.1 的 MediaReader 仍要求最终形成 Uint8Array，且 QuickJS 上限为 64 MiB。
-// 通过宿主分块避免单个超大 JSON；同时把 SDK 媒体明确收紧到官方短音频 10 MiB 上限，
-// 避免异步文件在 SDK 内多次复制后触发不可预测的 OOM。
-const MAX_SDK_MEDIA_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS: usize = 1024;
+
+/// 把事件压进「没有消费者」的回退队列：满了丢最旧的，绝不因此让请求失败。
+fn push_bounded_event(events: &mut Vec<Value>, event: Value) {
+    if events.len() >= MAX_EVENTS {
+        let overflow = events.len() - MAX_EVENTS + 1;
+        events.drain(..overflow);
+    }
+    events.push(event);
+}
 const MAX_CREDENTIAL_READ_WAIT: Duration = Duration::from_secs(10);
 const CREDENTIAL_WORKER_COUNT: usize = 4;
 // QuickJS 自身最多使用 1 MiB；网络/TLS 已投递到异步运行时后，剩余空间只承载
@@ -117,7 +130,7 @@ where
 struct CredentialReadRequest {
     credentials: super::credential_store::CredentialStoreHandle,
     key: CredentialKey,
-    response: std::sync::mpsc::SyncSender<Result<Option<String>, String>>,
+    response: tokio::sync::oneshot::Sender<Result<Option<String>, String>>,
 }
 
 static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadRequest>> =
@@ -144,7 +157,11 @@ static CREDENTIAL_READ_WORKERS: Lazy<std::sync::mpsc::SyncSender<CredentialReadR
         sender
     });
 
-type RuntimeOwnerMap = HashMap<String, HashMap<String, Weak<AtomicBool>>>;
+struct RuntimeOwner {
+    cancelled: Weak<CancellationFlag>,
+    wake: Weak<tokio::sync::Notify>,
+}
+type RuntimeOwnerMap = HashMap<String, HashMap<String, RuntimeOwner>>;
 static PLUGIN_RUNTIME_OWNERS: Lazy<(Mutex<RuntimeOwnerMap>, Condvar)> =
     Lazy::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
 
@@ -154,7 +171,11 @@ struct RuntimeOwnerRegistration {
 }
 
 impl RuntimeOwnerRegistration {
-    fn register(namespace: String, cancelled: &Arc<AtomicBool>) -> Result<Self, String> {
+    fn register(
+        namespace: String,
+        cancelled: &Arc<CancellationFlag>,
+        wake: &Arc<tokio::sync::Notify>,
+    ) -> Result<Self, String> {
         let id = uuid::Uuid::new_v4().to_string();
         PLUGIN_RUNTIME_OWNERS
             .0
@@ -162,7 +183,13 @@ impl RuntimeOwnerRegistration {
             .map_err(|_| "插件运行时所有权锁定失败".to_string())?
             .entry(namespace.clone())
             .or_default()
-            .insert(id.clone(), Arc::downgrade(cancelled));
+            .insert(
+                id.clone(),
+                RuntimeOwner {
+                    cancelled: Arc::downgrade(cancelled),
+                    wake: Arc::downgrade(wake),
+                },
+            );
         Ok(Self { namespace, id })
     }
 }
@@ -195,11 +222,14 @@ pub fn drain_plugin_namespace(namespace: &str, timeout: Duration) -> Result<usiz
             .get_mut(namespace)
             .map(|entries| {
                 entries.retain(|_, value| {
-                    let Some(cancelled) = value.upgrade() else {
+                    let Some(cancelled) = value.cancelled.upgrade() else {
                         return false;
                     };
                     if !cancelled.swap(true, Ordering::Relaxed) {
                         cancelled_count += 1;
+                    }
+                    if let Some(wake) = value.wake.upgrade() {
+                        wake.notify_one();
                     }
                     true
                 });
@@ -331,6 +361,20 @@ struct HttpStreamState {
     total_bytes: usize,
 }
 
+#[derive(Clone)]
+struct HostEventSender {
+    sender: std::sync::mpsc::Sender<Value>,
+    wake: Arc<tokio::sync::Notify>,
+}
+impl HostEventSender {
+    fn send(&self, event: Value) -> Result<(), std::sync::mpsc::SendError<Value>> {
+        self.sender.send(event)?;
+        // 先入队再通知；Notify 保留一个许可，覆盖检查队列与进入等待之间的到达。
+        self.wake.notify_one();
+        Ok(())
+    }
+}
+
 struct HostState {
     spec: PluginRuntimeSpec,
     inputs: HashMap<String, PathBuf>,
@@ -338,14 +382,39 @@ struct HostState {
     ws_connections: HashMap<String, mpsc::UnboundedSender<WsCommand>>,
     http_streams: HashMap<String, HttpStreamState>,
     timers: HashMap<String, Arc<AtomicBool>>,
-    ws_events_tx: std::sync::mpsc::Sender<Value>,
+    ws_events_tx: HostEventSender,
     ws_events_rx: std::sync::mpsc::Receiver<Value>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     event_tx: Option<mpsc::Sender<Value>>,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Deadline>,
     sdk: Option<SdkHostBindings>,
     spans: HashMap<String, Instant>,
     pending_request_bodies: HashMap<String, Vec<u8>>,
+    uploads: HashMap<String, UploadState>,
+    media_inputs: HashMap<String, MediaInput>,
+}
+
+fn sdk_encode_utf8<'js>(ctx: Ctx<'js>, text: String) -> Result<TypedArray<'js, u8>, JsError> {
+    if text.len() > MAX_REQUEST_BODY_BYTES {
+        return Err(JsError::new_from_js_message(
+            "string", "Uint8Array", "UTF-8 编码超过 16 MiB 限制",
+        ));
+    }
+    TypedArray::new(ctx, text.into_bytes())
+}
+
+fn sdk_media_chunk_reader<'js>(
+    host: Arc<Mutex<HostState>>,
+) -> impl Fn(Ctx<'js>, String) -> Result<TypedArray<'js, u8>, JsError> {
+    move |ctx, payload| {
+        let parsed = serde_json::from_str(&payload).unwrap_or(Value::Null);
+        let bytes = host
+            .lock()
+            .map_err(|_| "宿主状态锁定失败".to_string())
+            .and_then(|mut state| state.media_read_chunk(parsed))
+            .map_err(|message| Exception::throw_message(&ctx, &message))?;
+        TypedArray::new(ctx, bytes)
+    }
 }
 
 impl HostState {
@@ -353,10 +422,11 @@ impl HostState {
         spec: PluginRuntimeSpec,
         inputs: HashMap<String, PathBuf>,
         events: Arc<Mutex<Vec<Value>>>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         event_tx: Option<mpsc::Sender<Value>>,
-        deadline: Arc<Mutex<Instant>>,
+        deadline: Arc<Deadline>,
         sdk: Option<SdkHostBindings>,
+        host_wake: Arc<tokio::sync::Notify>,
     ) -> Self {
         let (ws_events_tx, ws_events_rx) = std::sync::mpsc::channel();
         Self {
@@ -366,7 +436,10 @@ impl HostState {
             ws_connections: HashMap::new(),
             http_streams: HashMap::new(),
             timers: HashMap::new(),
-            ws_events_tx,
+            ws_events_tx: HostEventSender {
+                sender: ws_events_tx,
+                wake: host_wake,
+            },
             ws_events_rx,
             cancelled,
             event_tx,
@@ -374,6 +447,8 @@ impl HostState {
             sdk,
             spans: HashMap::new(),
             pending_request_bodies: HashMap::new(),
+            uploads: HashMap::new(),
+            media_inputs: HashMap::new(),
         }
     }
 
@@ -439,17 +514,20 @@ impl HostState {
                     .and_then(Value::as_u64)
                     .unwrap_or_default()
                     .min(30_000);
-                let started = Instant::now();
-                while started.elapsed() < Duration::from_millis(millis) {
-                    if self.cancelled.load(Ordering::Relaxed) {
-                        return Err("插件操作已取消".into());
-                    }
-                    if deadline_expired(&self.deadline) {
-                        return Err("插件操作超时".into());
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                if millis == 0 {
+                    return Ok(Value::Null);
                 }
-                Ok(Value::Null)
+                let cancelled = self.cancelled.clone();
+                let deadline = self.deadline.clone();
+                wait_for_host_io(async move {
+                    tokio::select! {
+                        biased;
+                        _ = wait_for_stop(cancelled.clone(), deadline) => {
+                            Err(if cancelled.load(Ordering::Relaxed) { "插件操作已取消" } else { "插件操作超时" }.into())
+                        },
+                        _ = tokio::time::sleep(Duration::from_millis(millis)) => Ok(Value::Null),
+                    }
+                })
             }
             "storage.get" => {
                 let key = storage_key(&payload)?;
@@ -478,12 +556,20 @@ impl HostState {
             "http.stream.open" => self.http_stream_open(payload),
             "http.stream.read" => self.http_stream_read(payload),
             "http.stream.close" => self.http_stream_close(payload),
+            "http.upload.open" => self.upload_open(payload),
+            "http.upload.write" => self.upload_write(payload),
+            "http.upload.finish" => self.upload_finish(payload),
+            "http.upload.close" => self.upload_close(payload),
+            "http.file.open" => self.upload_file(payload),
             "websocket.open" => self.websocket_open(payload),
             "websocket.send" => self.websocket_send(payload),
             "websocket.close" => self.websocket_close(payload),
             "media.read" => self.media_read(payload),
             "media.describe" => self.media_describe(payload),
-            "media.readChunk" => self.media_read_chunk(payload),
+            "media.releaseAll" => {
+                self.media_inputs.clear();
+                Ok(Value::Null)
+            }
             "credential.get" => self.credential_get(payload),
             "plugin.credential.get" => self.plugin_credential_get(payload),
             "runtime.log" => self.runtime_log(payload),
@@ -492,17 +578,24 @@ impl HostState {
             "timer.open" => self.timer_open(payload),
             "timer.close" => self.timer_close(payload),
             "emit" => {
+                // host.emit 是单向通知，不能反过来把发出它的那次请求弄失败。
+                //
+                // 有接收端时，队列满意味着消费端跟不上、关闭意味着调用方已经不听了，
+                // 两种都不是插件的错。没有接收端时回退队列在生产路径上根本没有读取方
+                // （`take_events` 只有测试在用），以前它只增不减，累计满 MAX_EVENTS 之后每次
+                // emit 都返回 Err：任何用 host.emit 的插件最终都会随机「插件执行失败」。
                 let event = payload.get("event").cloned().unwrap_or(payload);
                 if let Some(tx) = &self.event_tx {
-                    tx.try_send(event)
-                        .map_err(|_| "插件事件队列已满或接收端已关闭")?;
+                    if let Err(error) = tx.try_send(event) {
+                        crate::dlog!(
+                            "[plugin {}] 事件未送达：{error}",
+                            self.spec.plugin_id
+                        );
+                    }
                     return Ok(Value::Null);
                 }
                 let mut events = self.events.lock().map_err(|_| "插件事件队列锁定失败")?;
-                if events.len() >= MAX_EVENTS {
-                    return Err("插件事件队列已满".into());
-                }
-                events.push(event);
+                push_bounded_event(&mut events, event);
                 Ok(Value::Null)
             }
             "log" => {
@@ -535,6 +628,8 @@ impl HostState {
             });
         }
         self.http_streams.clear();
+        self.uploads.clear();
+        self.media_inputs.clear();
         for (_, stopped) in self.timers.drain() {
             stopped.store(true, Ordering::Relaxed);
         }
@@ -561,6 +656,10 @@ impl HostState {
                 }
                 Err(_) => break,
             }
+        }
+        // 每轮最多分发 MAX_EVENTS；剩余事件不能因合并通知而滞留。
+        if events.len() == MAX_EVENTS {
+            self.ws_events_tx.wake.notify_one();
         }
         events
     }
@@ -614,13 +713,19 @@ impl HostState {
     fn save_storage(&self, value: &serde_json::Map<String, Value>) -> Result<(), String> {
         std::fs::create_dir_all(&self.spec.data_dir).map_err(|error| error.to_string())?;
         let target = self.spec.data_dir.join("storage.json");
-        let temporary = self.spec.data_dir.join("storage.json.tmp");
-        std::fs::write(
+        let temporary = storage_temp_path(&self.spec.data_dir);
+        if let Err(error) = std::fs::write(
             &temporary,
             serde_json::to_vec(value).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        std::fs::rename(temporary, target).map_err(|error| error.to_string())
+        ) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        if let Err(error) = std::fs::rename(&temporary, target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 
     fn http_request(&mut self, payload: Value) -> Result<Value, String> {
@@ -656,6 +761,10 @@ impl HostState {
 
     fn http_stream_open(&mut self, payload: Value) -> Result<Value, String> {
         let response = self.open_http_response(payload)?;
+        Ok(self.register_http_response(response))
+    }
+
+    fn register_http_response(&mut self, response: reqwest::Response) -> Value {
         let stream_id = uuid::Uuid::new_v4().to_string();
         let result = json!({
             "streamId": stream_id,
@@ -671,7 +780,7 @@ impl HostState {
                 total_bytes: 0,
             },
         );
-        Ok(result)
+        result
     }
 
     fn http_stream_read(&mut self, payload: Value) -> Result<Value, String> {
@@ -802,20 +911,20 @@ impl HostState {
         Ok(json!({"bytes": bytes, "mimeType": mime_type, "filename": filename}))
     }
 
-    fn media_describe(&self, payload: Value) -> Result<Value, String> {
+    fn media_describe(&mut self, payload: Value) -> Result<Value, String> {
         if self.sdk.is_none() {
             return Err("当前运行上下文未注入 SDK 媒体作用域".into());
         }
-        let (_, size, mime_type, filename) =
-            self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
-        Ok(json!({"size":size,"mimeType":mime_type,"filename":filename}))
+        let reference = payload.get("ref").and_then(Value::as_str)
+            .ok_or("媒体读取缺少 ref")?;
+        let input = self.sdk_media_input(reference)?;
+        input.describe()
     }
 
-    fn media_read_chunk(&self, payload: Value) -> Result<Value, String> {
+    fn media_read_chunk(&mut self, payload: Value) -> Result<Vec<u8>, String> {
         if self.sdk.is_none() {
             return Err("当前运行上下文未注入 SDK 媒体作用域".into());
         }
-        let (path, size, _, _) = self.media_description(&payload, MAX_SDK_MEDIA_BYTES)?;
         let offset = payload
             .get("offset")
             .and_then(Value::as_u64)
@@ -828,17 +937,9 @@ impl HostState {
         if requested == 0 || requested > MAX_MEDIA_CHUNK_BYTES {
             return Err("媒体分块大小必须在 1 到 64 KiB 之间".into());
         }
-        if offset >= size {
-            return Ok(json!({"bytes":[]}));
-        }
-        let remaining = usize::try_from(size - offset).unwrap_or(usize::MAX);
-        let mut bytes = vec![0_u8; requested.min(remaining)];
-        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|error| error.to_string())?;
-        file.read_exact(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        Ok(json!({"bytes":bytes}))
+        let reference = payload.get("ref").and_then(Value::as_str)
+            .ok_or("媒体读取缺少 ref")?;
+        self.sdk_media_input(reference)?.read_chunk(offset, requested)
     }
 
     fn media_description(
@@ -919,15 +1020,15 @@ impl HostState {
         if self.cancelled.load(Ordering::Relaxed) {
             return Err("SDK_RUNTIME_CANCELLED".into());
         }
-        let operation_deadline = *self
+        let operation_deadline = self
             .deadline
-            .lock()
+            .get()
             .map_err(|_| "SDK 凭据读取截止时间锁定失败")?;
         let credential_deadline = operation_deadline.min(Instant::now() + MAX_CREDENTIAL_READ_WAIT);
         if Instant::now() >= credential_deadline {
             return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
         }
-        let (response, result) = std::sync::mpsc::sync_channel(1);
+        let (response, result) = tokio::sync::oneshot::channel();
         CREDENTIAL_READ_WORKERS
             .try_send(CredentialReadRequest {
                 credentials: credentials.clone(),
@@ -935,22 +1036,15 @@ impl HostState {
                 response,
             })
             .map_err(|_| "本地加密凭据读取队列繁忙，请稍后重试".to_string())?;
-        loop {
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err("SDK_RUNTIME_CANCELLED".into());
+        let cancelled = self.cancelled.clone();
+        wait_for_host_io(async move {
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => Err("SDK_RUNTIME_CANCELLED".into()),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(credential_deadline)) => Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into()),
+                result = result => result.map_err(|_| "本地加密凭据读取工作线程意外退出".to_string())?,
             }
-            let remaining = credential_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err("SDK_RUNTIME_TIMEOUT：本地加密凭据读取未在宿主截止时间内完成".into());
-            }
-            match result.recv_timeout(remaining.min(Duration::from_millis(25))) {
-                Ok(value) => return value,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("本地加密凭据读取工作线程意外退出".into())
-                }
-            }
-        }
+        })
     }
 
     fn sdk_provider_id(&self) -> String {
@@ -1220,9 +1314,12 @@ pub struct JsProviderRuntime {
     _runtime: Runtime,
     context: Context,
     host: Arc<Mutex<HostState>>,
+    host_wake: Arc<tokio::sync::Notify>,
     events: Arc<Mutex<Vec<Value>>>,
-    deadline: Arc<Mutex<Instant>>,
-    cancelled: Arc<AtomicBool>,
+    deadline: Arc<Deadline>,
+    cancelled: Arc<CancellationFlag>,
+    /// 正在执行析构收尾脚本。置位期间中断处理器忽略 `cancelled`，只认新的 deadline。
+    disposing: Arc<AtomicBool>,
     _owner: RuntimeOwnerRegistration,
 }
 
@@ -1262,7 +1359,7 @@ pub fn create_plugin_capability_runtime(
     profile: &ProviderProfile,
     request_id: &str,
     timeout: Duration,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     inputs: HashMap<String, PathBuf>,
 ) -> Result<JsProviderRuntime, String> {
     let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
@@ -1274,7 +1371,7 @@ pub fn create_plugin_llm_runtime(
     profile: &ProviderProfile,
     request_id: &str,
     timeout: Duration,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     event_tx: Option<mpsc::Sender<Value>>,
 ) -> Result<JsProviderRuntime, String> {
     let sdk = plugin_sdk_bindings(&spec, profile, request_id)?;
@@ -1295,7 +1392,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
     ) -> Result<Self, String> {
         Self::create_with_event_sender_and_sdk(
@@ -1307,7 +1404,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
@@ -1322,7 +1419,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         sdk: SdkHostBindings,
     ) -> Result<Self, String> {
@@ -1341,7 +1438,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         sdk: SdkHostBindings,
@@ -1361,7 +1458,7 @@ impl JsProviderRuntime {
         spec: PluginRuntimeSpec,
         profile: &ProviderProfile,
         timeout: Duration,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         sdk: Option<SdkHostBindings>,
@@ -1382,19 +1479,23 @@ impl JsProviderRuntime {
                 root: spec.root.clone(),
             },
         );
-        let deadline = Arc::new(Mutex::new(Instant::now() + timeout));
+        let deadline = Arc::new(Deadline::new(Instant::now() + timeout));
+        let disposing = Arc::new(AtomicBool::new(false));
         let interrupt_deadline = deadline.clone();
         let interrupt_cancelled = cancelled.clone();
+        let interrupt_disposing = disposing.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            interrupt_cancelled.load(Ordering::Relaxed)
-                || interrupt_deadline
-                    .lock()
-                    .map(|value| Instant::now() >= *value)
-                    .unwrap_or(true)
+            // 析构收尾期间忽略 `cancelled`：运行时正是因为取消或超时才被销毁的，
+            // 继续沿用那两个条件会让插件的 dispose 在第一条语句就被打断，
+            // 收尾代码（关连接、退登录、落盘）永远跑不到。收尾另有自己的 deadline。
+            let cancelled_now = interrupt_cancelled.load(Ordering::Relaxed)
+                && !interrupt_disposing.load(Ordering::Relaxed);
+            cancelled_now || interrupt_deadline.expired()
         })));
         let context = Context::full(&runtime).map_err(js_error)?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let load_ai_sdk = sdk.is_some();
+        let host_wake = Arc::new(tokio::sync::Notify::new());
         let host = Arc::new(Mutex::new(HostState::new(
             spec.clone(),
             inputs,
@@ -1403,6 +1504,7 @@ impl JsProviderRuntime {
             event_tx,
             deadline.clone(),
             sdk,
+            host_wake.clone(),
         )));
         let session = plugin_secrets::load_session(&spec)?;
         if let Err(reason) = validate_capture_for_runtime(
@@ -1417,6 +1519,19 @@ impl JsProviderRuntime {
                 "浏览器临时会话凭据已失效：{reason}。请打开登录窗口并重新同步会话"
             ));
         }
+        // 所有权必须在**跑任何插件代码之前**登记。
+        //
+        // 原来它在模块求值 + capability 注册 + `__sayitInitialize` 全跑完之后才注册，
+        // 于是 `drain_plugin_namespace` 完全看不到「正在初始化」的运行时：既不置
+        // cancelled 也不等待就返回 0，卸载流程随后直接 `remove_dir_all` 删掉插件目录。
+        // 逃逸出来的 QuickJS 运行时会继续用已被删除的凭据跑云端识别，直到自己的
+        // deadline（最长 10 分钟）。提前登记还有一个好处：初始化期间也能被取消——
+        // 中断处理器与 promise 泵都会检查同一个 `cancelled`。
+        let owner = RuntimeOwnerRegistration::register(
+            spec.source_namespace.clone(),
+            &cancelled,
+            &host_wake,
+        )?;
         context.with(|ctx| -> Result<(), String> {
             let host_call_state = host.clone();
             let host_call = Function::new(
@@ -1437,6 +1552,9 @@ impl JsProviderRuntime {
             .map_err(js_error)?;
             ctx.globals()
                 .set("__sayitHostCall", host_call)
+                .map_err(js_error)?;
+            ctx.globals()
+                .set("__sayitHostEncodeUtf8", Function::new(ctx.clone(), sdk_encode_utf8).map_err(js_error)?)
                 .map_err(js_error)?;
             let request_body_state = host.clone();
             let store_request_body = Function::new(
@@ -1468,6 +1586,13 @@ impl JsProviderRuntime {
             ctx.globals()
                 .set("__sayitHostStoreRequestBody", store_request_body)
                 .map_err(js_error)?;
+            // 媒体分块直接以 Uint8Array 返回：经 JSON 数字数组中转时每字节都要建值、序列化再解析，
+            // 10 MiB 整文件读取在调试构建里要数秒，足以耗尽插件调用的截止时间。
+            let read_media_chunk = Function::new(ctx.clone(), sdk_media_chunk_reader(host.clone()))
+                .map_err(js_error)?;
+            ctx.globals()
+                .set("__sayitHostReadMediaChunk", read_media_chunk)
+                .map_err(js_error)?;
             ctx.eval::<(), _>(QUICKJS_RUNTIME_BOOTSTRAP)
                 .map_err(js_error)?;
             if load_ai_sdk {
@@ -1488,7 +1613,9 @@ impl JsProviderRuntime {
                 .replace('\\', "/");
             let module = Module::declare(ctx.clone(), entry_name, source).map_err(js_error)?;
             let (module, promise) = module.eval().map_err(js_error)?;
-            promise.finish::<()>().map_err(js_error)?;
+            // top-level await 同样可能等在 setTimeout / 长连接上，必须走会投递宿主事件的泵。
+            // 此刻 __sayitProvider 尚未创建，所以不回调插件的 onHostEvent。
+            pump_promise::<()>(&ctx, promise, &host, &cancelled, &deadline, false)?;
             let factory: Function = module
                 .get("default")
                 .map_err(|_| "插件入口必须默认导出 createProvider(host) 函数".to_string())?;
@@ -1523,25 +1650,24 @@ impl JsProviderRuntime {
             let promise: Promise = init
                 .call((serde_json::to_string(&request).map_err(|error| error.to_string())?,))
                 .map_err(|error| js_error_with_context(&ctx, error))?;
-            promise
-                .finish::<String>()
-                .map_err(|error| js_error_with_context(&ctx, error))?;
+            pump_promise::<String>(&ctx, promise, &host, &cancelled, &deadline, true)?;
             Ok(())
         })?;
-        let owner = RuntimeOwnerRegistration::register(spec.source_namespace.clone(), &cancelled)?;
         Ok(Self {
             _runtime: runtime,
             context,
             host,
+            host_wake,
             events,
             deadline,
             cancelled,
+            disposing,
             _owner: owner,
         })
     }
 
     pub fn call(&self, method: &str, payload: &Value, timeout: Duration) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         if self.cancelled.load(Ordering::Relaxed) {
             return Err("插件操作已取消".into());
         }
@@ -1572,7 +1698,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1606,7 +1732,7 @@ impl JsProviderRuntime {
         streaming: bool,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1639,7 +1765,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1678,7 +1804,7 @@ impl JsProviderRuntime {
         request_id: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1698,8 +1824,7 @@ impl JsProviderRuntime {
     }
 
     pub fn send_capability_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + Duration::from_secs(5);
+        self.deadline.set(Instant::now() + Duration::from_secs(5))?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1715,7 +1840,7 @@ impl JsProviderRuntime {
     }
 
     pub fn finish_capability_session(&self, timeout: Duration) -> Result<Value, String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? = Instant::now() + timeout;
+        self.deadline.set(Instant::now() + timeout)?;
         self.context.with(|ctx| {
             let call: Function = ctx
                 .globals()
@@ -1745,8 +1870,7 @@ impl JsProviderRuntime {
     }
 
     pub fn call_audio(&self, bytes: Vec<u8>) -> Result<(), String> {
-        *self.deadline.lock().map_err(|_| "插件截止时间锁定失败")? =
-            Instant::now() + Duration::from_secs(5);
+        self.deadline.set(Instant::now() + Duration::from_secs(5))?;
         let result = self.context.with(|ctx| {
             let call: Function = ctx.globals().get("__sayitAudio").map_err(js_error)?;
             let audio = TypedArray::<u8>::new(ctx.clone(), bytes).map_err(js_error)?;
@@ -1769,48 +1893,18 @@ impl JsProviderRuntime {
         ctx: &Ctx<'js>,
         promise: Promise<'js>,
     ) -> Result<String, String> {
-        loop {
-            if let Some(result) = promise.result::<String>() {
-                return result.map_err(|error| js_error_with_context(ctx, error));
-            }
-            let mut progressed = false;
-            while ctx.execute_pending_job() {
-                progressed = true;
-            }
-            let events = self
-                .host
-                .lock()
-                .map_err(|_| "宿主状态锁定失败")?
-                .take_host_events();
-            for event in events {
-                progressed = true;
-                self.dispatch_sdk_host_event(ctx, &event)?;
-                let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
-                let callback: Promise = call
-                    .call((
-                        "onHostEvent",
-                        serde_json::to_string(&event).map_err(|error| error.to_string())?,
-                    ))
-                    .map_err(|error| js_error_with_context(ctx, error))?;
-                callback
-                    .finish::<String>()
-                    .map_err(|error| js_error_with_context(ctx, error))?;
-            }
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err("插件操作已取消".into());
-            }
-            if self
-                .deadline
-                .lock()
-                .map(|deadline| Instant::now() >= *deadline)
-                .unwrap_or(true)
-            {
-                return Err("插件操作超时".into());
-            }
-            if !progressed {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
+        pump_promise(
+            ctx,
+            promise,
+            &self.host,
+            &self.cancelled,
+            &self.deadline,
+            true,
+        )
+    }
+
+    pub(crate) fn host_events_ready(&self) -> &tokio::sync::Notify {
+        &self.host_wake
     }
 
     pub fn dispatch_host_events(&self) -> Result<(), String> {
@@ -1828,13 +1922,7 @@ impl JsProviderRuntime {
     }
 
     fn dispatch_sdk_host_event<'js>(&self, ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
-        let dispatcher: Function = ctx
-            .globals()
-            .get("__sayitDispatchHostEventJson")
-            .map_err(js_error)?;
-        dispatcher
-            .call::<_, ()>((serde_json::to_string(event).map_err(|error| error.to_string())?,))
-            .map_err(|error| js_error_with_context(ctx, error))
+        dispatch_sdk_host_event_in(ctx, event)
     }
 
     pub fn take_events(&self) -> Vec<Value> {
@@ -1850,7 +1938,7 @@ impl JsProviderRuntime {
             .lock()
             .map(|state| {
                 (
-                    state.http_streams.len(),
+                    state.http_streams.len() + state.uploads.len(),
                     state.ws_connections.len(),
                     state.spans.len() + state.timers.len(),
                 )
@@ -1868,7 +1956,19 @@ impl Drop for JsProviderRuntime {
             .map(|host| host.spec.source_namespace.clone())
             .unwrap_or_default();
         if !namespace.is_empty() {
-            let _ = self.context.with(|ctx| -> Result<(), String> {
+            // 给收尾脚本一个干净的执行窗口：清掉取消/超时导致的中断条件，换成独立预算。
+            // 否则中断处理器会在 dispose 的第一条语句就把它打断，而错误又被整个吞掉，
+            // 表现为插件的连接、登录态与待落盘数据全部泄漏且毫无线索。
+            self.disposing.store(true, Ordering::Relaxed);
+            if let Err(error) = self.deadline.set(Instant::now() + PLUGIN_DISPOSE_BUDGET) {
+                crate::development_debug_log("plugin-runtime", format_args!("dispose deadline: {error}"));
+            }
+            let host = self.host.clone();
+            // 收尾期间用一个独立的取消位：promise 泵也检查 cancelled，沿用原来那个会让
+            // 收尾在第一次轮询就返回「插件操作已取消」。中断处理器那边由 disposing 屏蔽。
+            let dispose_cancelled = Arc::new(CancellationFlag::new(false));
+            let deadline = self.deadline.clone();
+            let outcome = self.context.with(|ctx| -> Result<(), String> {
                 let dispose: Function = ctx
                     .globals()
                     .get("__sayitDisposePluginModules")
@@ -1876,11 +1976,14 @@ impl Drop for JsProviderRuntime {
                 let promise: Promise = dispose
                     .call((namespace,))
                     .map_err(|error| js_error_with_context(&ctx, error))?;
-                promise
-                    .finish::<String>()
-                    .map_err(|error| js_error_with_context(&ctx, error))?;
+                // 收尾脚本同样可能 await 定时器或关闭握手，必须走会投递宿主事件的泵。
+                // 此时插件对象可能已半失效，不再回调它的 onHostEvent。
+                pump_promise::<String>(&ctx, promise, &host, &dispose_cancelled, &deadline, false)?;
                 Ok(())
             });
+            if let Err(error) = outcome {
+                crate::dlog!("[plugin-runtime] 插件收尾脚本失败：{error}");
+            }
         }
         if let Ok(mut host) = self.host.lock() {
             host.close_active_resources();
@@ -1894,7 +1997,7 @@ pub async fn execute_capability_cancellable<F>(
     module_id: &str,
     mut payload: Value,
     timeout: Duration,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<CancellationFlag>>,
     mut on_event: F,
 ) -> Result<Value, String>
 where
@@ -1904,7 +2007,7 @@ where
     let profile = profile.clone();
     let module_id = module_id.to_string();
     let request_id = uuid::Uuid::new_v4().to_string();
-    let cancelled = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancelled = cancel.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let (inputs, input_descriptor) = take_input_handle(&mut payload)?;
     if let Some(input) = input_descriptor {
         if let Some(object) = payload.as_object_mut() {
@@ -1913,6 +2016,7 @@ where
     }
     let sdk = plugin_sdk_bindings(&spec, &profile, &request_id)?;
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
+    let cancel_on_drop = cancelled.cancel_on_drop();
     let mut task = spawn_js_worker("plugin-capability", move || {
         let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
             spec,
@@ -1933,6 +2037,7 @@ where
                 while let Ok(event) = event_rx.try_recv() {
                     on_event(&event);
                 }
+                cancel_on_drop.disarm();
                 return result.map_err(|error| format!("插件 capability 运行线程失败：{error}"))?;
             }
             Some(event) = event_rx.recv() => on_event(&event),
@@ -1960,7 +2065,7 @@ pub async fn invoke_cancellable<F>(
     operation: &str,
     mut payload: Value,
     timeout: Duration,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<CancellationFlag>>,
     mut on_event: F,
 ) -> Result<Value, String>
 where
@@ -1969,7 +2074,7 @@ where
     let spec = spec.clone();
     let profile = profile.clone();
     let operation = operation.to_string();
-    let cancelled = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancelled = cancel.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let (inputs, input_descriptor) = take_input_handle(&mut payload)?;
     if let Some(input) = input_descriptor {
         if let Some(object) = payload.as_object_mut() {
@@ -1977,6 +2082,7 @@ where
         }
     }
     let (event_tx, mut event_rx) = mpsc::channel(MAX_EVENTS);
+    let cancel_on_drop = cancelled.cancel_on_drop();
     let mut task = spawn_js_worker("plugin-invoke", move || {
         let runtime = JsProviderRuntime::create_with_event_sender(
             spec,
@@ -2000,6 +2106,7 @@ where
                 while let Ok(event) = event_rx.try_recv() {
                     on_event(&event);
                 }
+                cancel_on_drop.disarm();
                 return result.map_err(|error| format!("插件运行线程失败：{error}"))?;
             }
             Some(event) = event_rx.recv() => on_event(&event),
@@ -2074,14 +2181,11 @@ fn parse_allowed_url(spec: &PluginRuntimeSpec, raw: &str, schemes: &[&str]) -> R
     Ok(url)
 }
 
-fn deadline_expired(deadline: &Arc<Mutex<Instant>>) -> bool {
-    deadline
-        .lock()
-        .map(|deadline| Instant::now() >= *deadline)
-        .unwrap_or(true)
+fn deadline_expired(deadline: &Arc<Deadline>) -> bool {
+    deadline.expired()
 }
 
-fn stop_reason(cancelled: &Arc<AtomicBool>, deadline: &Arc<Mutex<Instant>>) -> String {
+fn stop_reason(cancelled: &Arc<CancellationFlag>, deadline: &Arc<Deadline>) -> String {
     if cancelled.load(Ordering::Relaxed) {
         "SDK_RUNTIME_CANCELLED".into()
     } else if deadline_expired(deadline) {
@@ -2091,9 +2195,11 @@ fn stop_reason(cancelled: &Arc<AtomicBool>, deadline: &Arc<Mutex<Instant>>) -> S
     }
 }
 
-async fn wait_for_stop(cancelled: Arc<AtomicBool>, deadline: Arc<Mutex<Instant>>) {
-    while !cancelled.load(Ordering::Relaxed) && !deadline_expired(&deadline) {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+async fn wait_for_stop(cancelled: Arc<CancellationFlag>, deadline: Arc<Deadline>) {
+    tokio::select! {
+        biased;
+        _ = cancelled.cancelled() => {},
+        _ = deadline.elapsed() => {},
     }
 }
 
@@ -2390,6 +2496,106 @@ fn js_error_with_context(ctx: &Ctx<'_>, error: JsError) -> String {
     )
 }
 
+/// 把一条宿主事件交给 SDK 侧的分发器（它负责 resolve setTimeout / HTTP 流 / WebSocket）。
+///
+/// 没有 SDK bundle 的运行时不会注册这个全局；那种情况下本来也产生不了宿主事件，
+/// 直接跳过即可，不该因此报错。
+/// 插件 storage 落盘用的临时文件路径。
+///
+/// 必须每次唯一：同一个插件可能同时跑着多个运行时（例如听写与实时字幕各持一个），
+/// 固定用 `storage.json.tmp` 会让它们互相覆盖对方写了一半的内容，而且先完成的一方
+/// rename 之后，另一方的 rename 会因源文件已消失而失败。
+fn storage_temp_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(format!("storage.json.{}.tmp", uuid::Uuid::new_v4()))
+}
+
+fn dispatch_sdk_host_event_in<'js>(ctx: &Ctx<'js>, event: &Value) -> Result<(), String> {
+    let Ok(dispatcher) = ctx
+        .globals()
+        .get::<_, Function>("__sayitDispatchHostEventJson")
+    else {
+        return Ok(());
+    };
+    dispatcher
+        .call::<_, ()>((serde_json::to_string(event).map_err(|error| error.to_string())?,))
+        .map_err(|error| js_error_with_context(ctx, error))
+}
+
+/// 驱动一个 Promise 直到 settle：既跑 QuickJS 的 job queue，也把宿主事件投递回 JS。
+///
+/// 抽成自由函数是因为**初始化阶段还没有 `Self`**。模块求值与 `__sayitInitialize` 原本用
+/// 裸 `promise.finish()`，它只驱动 job queue、不投递宿主事件，job queue 跑空而 Promise
+/// 仍 pending 时直接返回 `Error::WouldBlock`。插件作者按常规 JS 写法在 `initialize()` 里
+/// `await new Promise(r => setTimeout(r, 300))` 退避重试、或建 WebSocket 握手就必然踩中，
+/// 用户只会看到无从排查的「JavaScript 插件执行失败」，该供应商的听写/字幕/翻译/LLM 全挂。
+///
+/// `notify_provider` 控制是否顺带调用插件自己的 `onHostEvent`：模块求值阶段
+/// `__sayitProvider` 还不存在，这时只能分发给 SDK，不能回调插件。
+fn pump_promise<'js, T: rquickjs::FromJs<'js>>(
+    ctx: &Ctx<'js>,
+    promise: Promise<'js>,
+    host: &Arc<Mutex<HostState>>,
+    cancelled: &Arc<CancellationFlag>,
+    deadline: &Arc<Deadline>,
+    notify_provider: bool,
+) -> Result<T, String> {
+    loop {
+        if let Some(result) = promise.result::<T>() {
+            return result.map_err(|error| js_error_with_context(ctx, error));
+        }
+        let mut progressed = false;
+        while ctx.execute_pending_job() {
+            progressed = true;
+        }
+        let events = host
+            .lock()
+            .map_err(|_| "宿主状态锁定失败")?
+            .take_host_events();
+        for event in events {
+            progressed = true;
+            dispatch_sdk_host_event_in(ctx, &event)?;
+            if !notify_provider {
+                continue;
+            }
+            let call: Function = ctx.globals().get("__sayitInvoke").map_err(js_error)?;
+            let callback: Promise = call
+                .call((
+                    "onHostEvent",
+                    serde_json::to_string(&event).map_err(|error| error.to_string())?,
+                ))
+                .map_err(|error| js_error_with_context(ctx, error))?;
+            callback
+                .finish::<String>()
+                .map_err(|error| js_error_with_context(ctx, error))?;
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("插件操作已取消".into());
+        }
+        if deadline.expired() {
+            return Err("插件操作超时".into());
+        }
+        if !progressed {
+            let wake = host
+                .lock()
+                .map_err(|_| "宿主状态锁定失败")?
+                .ws_events_tx
+                .wake
+                .clone();
+            let cancelled = cancelled.clone();
+            let deadline = deadline.clone();
+            // 仅在真正等待外部事件时挂起；QuickJS 的可运行 jobs 已在上面排空。
+            // I/O Future 仍由 Tokio 执行，不把网络栈嵌回解释器调用栈。
+            wait_for_host_io(async move {
+                tokio::select! {
+                    _ = wake.notified() => {},
+                    _ = wait_for_stop(cancelled, deadline) => {},
+                }
+                Ok(())
+            })?;
+        }
+    }
+}
+
 const HOST_BOOTSTRAP: &str = r#"
 (() => {
   const call = (operation, payload = {}) => {
@@ -2614,6 +2820,7 @@ mod tests {
             trust: "unsigned".into(),
         };
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test-provider".into(),
             kind: "plugin:test".into(),
             display_name: "Test".into(),
@@ -2855,6 +3062,53 @@ mod tests {
         assert!(parse_allowed_url(&spec, "ftp://127.0.0.1", &["https"]).is_err());
     }
 
+    /// host.emit 失败不得弄失败整次请求。
+    ///
+    /// 非流式的 LLM 路径（smart_text 的一次性执行、模型发现）传的 event_tx 是 None，
+    /// emit 会落回内部的 Vec，而这个 Vec 在生产路径上根本没有读取方。以前它只增不减，
+    /// 累计满 1024 条之后每次 emit 都返回 Err：用了 host.emit 的插件最终都会随机报
+    /// 「插件执行失败」，且重试不会好转（同一个运行时里队列不会清空）。
+    #[test]
+    fn emitting_more_events_than_the_queue_holds_does_not_fail_the_request() {
+        let (root, spec, profile) = fixture(
+            "export default host => ({ invoke(request) { for (let i = 0; i < 2000; i += 1) { host.emit({type:'event', index:i}); } return {text:'done'}; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(20),
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        let result = runtime.call(
+            "invoke",
+            &json!({"operation":"test","payload":{}}),
+            Duration::from_secs(20),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+
+        let result = result.expect("单向通知不得让整次请求失败");
+        assert_eq!(result["text"], "done");
+        // 回退队列有界，且保留的是最近的一批。
+        let events = runtime.take_events();
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(events[MAX_EVENTS - 1]["index"], 1999);
+    }
+
+    #[test]
+    fn the_fallback_event_queue_drops_the_oldest_instead_of_failing() {
+        let mut events = Vec::new();
+        for index in 0..(MAX_EVENTS + 10) {
+            push_bounded_event(&mut events, json!({ "index": index }));
+        }
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(events[0]["index"], 10);
+        assert_eq!(events[MAX_EVENTS - 1]["index"], MAX_EVENTS + 9);
+    }
+
     #[test]
     fn loads_relative_module_and_invokes_readable_javascript() {
         let (root, spec, profile) = fixture(
@@ -2865,7 +3119,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -2891,7 +3145,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -2901,6 +3155,262 @@ mod tests {
         assert_eq!(result["text"], "测试");
         assert_eq!(result["direct"], "测试");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `initialize()` 里 await 一个定时器必须能正常完成。
+    ///
+    /// 初始化阶段原本用裸 `promise.finish()` 收敛 Promise：它只驱动 QuickJS 的 job
+    /// queue，不投递宿主事件，而 `setTimeout` 正是靠 `take_host_events()` 回来的。
+    /// job queue 跑空而 Promise 仍 pending，rquickjs 直接返回 `Error::WouldBlock`，
+    /// 用户看到的是无从排查的「JavaScript 插件执行失败」，该供应商的听写/字幕/翻译/
+    /// LLM 全部不可用。插件作者写退避重试或长连接握手就必然踩中。
+    #[test]
+    fn initialize_can_await_a_host_timer() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ \
+               async initialize() { await new Promise(r => setTimeout(r, 30)); this.ready = true; }, \
+               invoke() { return { ready: this.ready === true }; } \
+             });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )
+        .expect("initialize 里 await setTimeout 不该失败");
+        let result = runtime
+            .call("invoke", &json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["ready"], true, "initialize 必须真的跑完");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_promise_and_host_sleep_observe_cancel_and_timeout_without_polling() {
+        for body in [
+            "await new Promise(() => {});",
+            "globalThis.__sayitHost.time.sleep(5000);",
+        ] {
+            for cancel in [false, true] {
+                let source = format!("export default () => ({{ async invoke() {{ {body} return {{ done: true }}; }} }});");
+                let (root, spec, profile) = fixture(&source, None);
+                let flag = Arc::new(CancellationFlag::default());
+                let runtime = JsProviderRuntime::create(
+                    spec,
+                    &profile,
+                    Duration::from_secs(1),
+                    flag.clone(),
+                    HashMap::new(),
+                )
+                .unwrap();
+                let worker = cancel.then(|| {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(20));
+                        flag.store(true, Ordering::Release);
+                    })
+                });
+                let started = Instant::now();
+                let error = runtime
+                    .call(
+                        "invoke",
+                        &Value::Null,
+                        Duration::from_millis(if cancel { 1000 } else { 30 }),
+                    )
+                    .unwrap_err();
+                assert!(started.elapsed() < Duration::from_millis(500), "{error}");
+                assert!(
+                    error.contains(if cancel { "取消" } else { "超时" }),
+                    "{error}"
+                );
+                if let Some(worker) = worker {
+                    worker.join().unwrap();
+                }
+                drop(runtime);
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn host_timer_notifies_an_idle_session_and_dispatches_its_callback() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ startTimer() { setTimeout(() => { this.ready = true; }, 20); }, status() { return this.ready === true; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        runtime
+            .call("startTimer", &Value::Null, Duration::from_secs(5))
+            .unwrap();
+        let wake = runtime.host_wake.clone();
+        wait_for_host_io(async move {
+            tokio::time::timeout(Duration::from_secs(2), wake.notified())
+                .await
+                .map_err(|_| "timer did not wake".to_string())
+        })
+        .unwrap();
+        runtime.dispatch_host_events().unwrap();
+        assert_eq!(
+            runtime
+                .call("status", &Value::Null, Duration::from_secs(5))
+                .unwrap(),
+            json!(true)
+        );
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_event_batch_limit_retains_a_wake_for_remaining_events() {
+        use futures_util::FutureExt;
+        let (root, spec, profile) = fixture("export default () => ({});", None);
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )
+        .unwrap();
+        let mut host = runtime.host.lock().unwrap();
+        for i in 0..MAX_EVENTS + 17 {
+            host.ws_events_tx
+                .send(json!({"type":"test", "index":i}))
+                .unwrap();
+        }
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_some());
+        let first = host.take_host_events();
+        assert_eq!(first.len(), MAX_EVENTS);
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_some());
+        let tail = host.take_host_events();
+        assert_eq!(tail.len(), 17);
+        for (i, event) in first.into_iter().chain(tail).enumerate() {
+            assert_eq!(event["index"], i);
+        }
+        assert!(runtime
+            .host_events_ready()
+            .notified()
+            .now_or_never()
+            .is_none());
+        drop(host);
+        drop(runtime);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 模块顶层 await 同样会等在定时器上。
+    #[test]
+    fn top_level_await_on_a_host_timer_resolves() {
+        let (root, spec, profile) = fixture(
+            "const delayed = await new Promise(r => setTimeout(() => r('late'), 30)); \
+             export default () => ({ invoke() { return { value: delayed }; } });",
+            None,
+        );
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )
+        .expect("顶层 await setTimeout 不该失败");
+        let result = runtime
+            .call("invoke", &json!({}), Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["value"], "late");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 临时文件名必须每次唯一，否则同一插件的两个运行时会互相覆盖对方写了一半的
+    /// 内容，且先完成的一方 rename 之后另一方必然失败。
+    #[test]
+    fn storage_temp_paths_never_collide() {
+        let dir = PathBuf::from("/tmp/plugin-data");
+        let first = storage_temp_path(&dir);
+        let second = storage_temp_path(&dir);
+
+        assert_ne!(first, second, "两次写入不能共用同一个临时文件");
+        for path in [&first, &second] {
+            assert_eq!(path.parent(), Some(dir.as_path()));
+            assert!(path.to_string_lossy().ends_with(".tmp"), "{path:?}");
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("storage.json."),
+                "{path:?}"
+            );
+        }
+    }
+
+    /// 同一个插件可能同时跑着多个运行时（听写与实时字幕各持一个）。固定的
+    /// `storage.json.tmp` 会让它们互相覆盖对方写了一半的内容，并且先完成的那一方
+    /// rename 之后，另一方的 rename 会因源文件已消失而失败。
+    #[test]
+    fn concurrent_storage_writes_do_not_share_a_temp_file() {
+        let (root, spec, profile) = fixture(
+            "export default host => ({ invoke(request) { host.storage.set('k', request.payload.value); return { value: host.storage.get('k') }; } });",
+            None,
+        );
+        let make = || {
+            JsProviderRuntime::create(
+                spec.clone(),
+                &profile,
+                Duration::from_secs(5),
+                Arc::new(CancellationFlag::new(false)),
+                HashMap::new(),
+            )
+            .unwrap()
+        };
+        let first = make();
+        let second = make();
+
+        for round in 0..20 {
+            first
+                .call(
+                    "invoke",
+                    &json!({"payload": {"value": format!("a{round}")}}),
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+            second
+                .call(
+                    "invoke",
+                    &json!({"payload": {"value": format!("b{round}")}}),
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+        }
+
+        // 写盘目录里不该留下任何临时残骸，storage.json 必须是完整可解析的。
+        let leftovers = std::fs::read_dir(spec.data_dir.as_path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "不应留下临时文件");
+        let saved = std::fs::read(spec.data_dir.join("storage.json")).unwrap();
+        serde_json::from_slice::<Value>(&saved).expect("storage.json 必须是完整的 JSON");
+
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2913,7 +3423,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(2),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         );
         assert!(result.is_err());
@@ -2930,7 +3440,7 @@ mod tests {
             spec,
             &profile,
             Duration::from_secs(2),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3010,7 +3520,7 @@ mod tests {
             &profile,
             "scripted",
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .unwrap();
@@ -3050,19 +3560,174 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// 被取消/超时销毁的运行时，仍然要让插件的收尾脚本跑完。
+    ///
+    /// 中断处理器在 `cancelled` 或超过 deadline 时立即中断，而 Drop 里跑
+    /// `__sayitDisposePluginModules` 之前两者都没有重置——运行时正是因为取消或超时
+    /// 才被销毁的，于是收尾在第一条语句就被打断；错误还被 `let _ =` 整个吞掉，表现为
+    /// 连接、登录态与待落盘数据全部泄漏且毫无线索。
+    #[test]
+    fn dispose_script_runs_even_after_cancellation() {
+        let (root, spec, profile) = fixture(
+            "export default () => ({ invoke() { return {}; } }); \
+             globalThis.__sayitDisposePluginModules = async () => { \
+               await new Promise(r => setTimeout(r, 20)); \
+               globalThis.__sayitHost.storage.set('disposed', 'yes'); \
+               return 'null'; \
+             };",
+            None,
+        );
+        let data_dir = spec.data_dir.clone();
+        let cancelled = Arc::new(CancellationFlag::new(false));
+        let runtime = JsProviderRuntime::create(
+            spec,
+            &profile,
+            Duration::from_secs(5),
+            cancelled.clone(),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        // 模拟卸载/超时：先取消，再销毁。
+        cancelled.store(true, Ordering::Relaxed);
+        drop(runtime);
+
+        let saved = std::fs::read(data_dir.join("storage.json")).expect("收尾脚本应当写过盘");
+        let value: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(
+            value["disposed"], "yes",
+            "取消之后收尾脚本仍必须完整跑完：{value}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn registered_owner_count(namespace: &str) -> usize {
+        PLUGIN_RUNTIME_OWNERS
+            .0
+            .lock()
+            .unwrap()
+            .get(namespace)
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn abandoning_invoke_cancels_worker_and_still_runs_disposal() {
+        let (root, mut spec, profile) = fixture(
+            "export default host => ({ async invoke() { host.emit({ready:true}); await new Promise(() => {}); } });
+             globalThis.__sayitDisposePluginModules = async () => {
+               globalThis.__sayitHost.storage.set('disposed', 'yes'); return 'null';
+             };", None,
+        );
+        spec.source_namespace = format!("drop-invoke-{}", uuid::Uuid::new_v4());
+        let namespace = spec.source_namespace.clone();
+        let data_dir = spec.data_dir.clone();
+        let flag = Arc::new(CancellationFlag::default());
+        let worker_flag = flag.clone();
+        tauri::async_runtime::block_on(async {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let mut started = Some(started);
+            let worker = tokio::spawn(async move {
+                invoke_cancellable(&spec, &profile, "test", json!({}), Duration::from_secs(60), Some(worker_flag), move |_| {
+                    if let Some(started) = started.take() { let _ = started.send(()); }
+                }).await
+            });
+            tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
+            assert_eq!(registered_owner_count(&namespace), 1);
+            worker.abort();
+            assert!(worker.await.unwrap_err().is_cancelled());
+        });
+        assert!(flag.load(Ordering::Acquire));
+        let (lock, wake) = &*PLUGIN_RUNTIME_OWNERS;
+        let (owners, timeout) = wake.wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(2), |owners| {
+            owners.get(&namespace).is_some_and(|entries| !entries.is_empty())
+        }).unwrap();
+        assert!(!timeout.timed_out());
+        assert!(!owners.contains_key(&namespace));
+        drop(owners);
+        let saved: Value = serde_json::from_slice(&std::fs::read(data_dir.join("storage.json")).unwrap()).unwrap();
+        assert_eq!(saved["disposed"], "yes");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completed_invoke_preserves_callers_uncancelled_flag() {
+        let (root, spec, profile) = fixture("export default () => ({ invoke() { return {text:'done'}; } });", None);
+        let flag = Arc::new(CancellationFlag::default());
+        let result = tauri::async_runtime::block_on(invoke_cancellable(&spec, &profile, "test", json!({}), Duration::from_secs(2), Some(flag.clone()), |_| {})).unwrap();
+        assert_eq!(result["text"], "done");
+        assert!(!flag.load(Ordering::Acquire));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 卸载/停用必须能看见**正在初始化**的运行时。
+    ///
+    /// 所有权原本在 initialize 全跑完之后才登记，于是 `drain_plugin_namespace` 对一个
+    /// 卡在初始化里的运行时返回 0：既不置 cancelled 也不等待，卸载流程紧接着
+    /// `remove_dir_all` 删掉插件目录。逃逸的 QuickJS 会继续用已删除的凭据跑云端识别，
+    /// 直到自己的 deadline（最长 10 分钟）。
+    #[test]
+    fn drain_sees_a_runtime_that_is_still_initializing() {
+        let (root, mut spec, profile) = fixture(
+            "export default () => ({ async initialize() { await new Promise(r => setTimeout(r, 60000)); } });",
+            None,
+        );
+        spec.source_namespace = format!("init-drain-{}", uuid::Uuid::new_v4());
+        let namespace = spec.source_namespace.clone();
+
+        let worker = std::thread::spawn(move || {
+            JsProviderRuntime::create(
+                spec,
+                &profile,
+                Duration::from_secs(120),
+                Arc::new(CancellationFlag::new(false)),
+                HashMap::new(),
+            )
+            .map(|_| ())
+        });
+
+        // 等初始化真的开始（初始化期间就必须已经登记在册）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registered_owner_count(&namespace) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            registered_owner_count(&namespace),
+            1,
+            "正在初始化的运行时必须已经登记所有权，否则卸载会把它漏掉"
+        );
+
+        let cancelled = drain_plugin_namespace(&namespace, Duration::from_secs(20)).unwrap();
+        assert_eq!(cancelled, 1, "drain 必须取消这个仍在初始化的运行时");
+        assert_eq!(
+            registered_owner_count(&namespace),
+            0,
+            "drain 返回时运行时必须已经释放"
+        );
+
+        assert!(
+            worker.join().unwrap().is_err(),
+            "被取消的初始化应当以失败返回，而不是继续跑下去"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn namespace_drain_cancels_and_waits_for_runtime_owner_drop() {
         let namespace = format!("drain-{}", uuid::Uuid::new_v4());
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled).unwrap();
+        let cancelled = Arc::new(CancellationFlag::new(false));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let owner = RuntimeOwnerRegistration::register(namespace.clone(), &cancelled, &wake).unwrap();
         let drain_namespace = namespace.clone();
         let drain = std::thread::spawn(move || {
             drain_plugin_namespace(&drain_namespace, Duration::from_secs(2))
         });
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
+        wait_for_host_io(async move {
+            tokio::time::timeout(Duration::from_secs(1), wake.notified())
+                .await
+                .map_err(|_| "namespace cancellation did not wake".to_string())
+        })
+        .unwrap();
         assert!(cancelled.load(Ordering::Relaxed));
         drop(owner);
         assert_eq!(drain.join().unwrap().unwrap(), 1);
@@ -3100,7 +3765,7 @@ mod tests {
             &profile,
             "llm-scripted",
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             None,
         )
         .unwrap();
@@ -3156,7 +3821,7 @@ mod tests {
             // Runtime initialization loads the real SDK bundle and is not the
             // behavior under test. Keep the short deadline on execute_llm.
             Duration::from_secs(5),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             None,
         )
         .unwrap();

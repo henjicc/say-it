@@ -77,6 +77,18 @@ describe("HistoryView", () => {
     expect(screen.getByRole("button", { name: "重试注入" })).toBeDisabled();
   });
 
+  it("shows a failure before recognition and preserves the full error without text actions", async () => {
+    const error = "实时语音识别失败：[invalid_response] response has no text\n完整错误详情";
+    cmd.mockResolvedValueOnce({ items: [{ id: "failed", createdAt: 1, taskKind: "dictation", sourceText: "", outputText: "", status: "failed", error }], total: 1 });
+    render(<HistoryView />);
+    expect(await screen.findByText("未获得识别文字")).toBeInTheDocument();
+    expect(screen.getByText(/完整错误详情/).textContent).toBe(error);
+    expect(screen.getByRole("button", { name: "复制错误" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "复制" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "修正" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试注入" })).toBeDisabled();
+  });
+
   it("does not let an older raw-text query overwrite an updated result", async () => {
     let finishOld: (value: unknown) => void = () => {};
     cmd.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));

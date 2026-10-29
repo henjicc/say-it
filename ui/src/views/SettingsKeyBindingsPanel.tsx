@@ -1,9 +1,11 @@
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Select } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import type { ShortcutCombo, ShortcutTriggerMode } from "@/features/dictation/hotkeys";
 import {
@@ -22,6 +24,7 @@ const TRIGGER_OPTIONS: Array<{ value: ShortcutTriggerMode; label: string }> = [
 ];
 
 export function SettingsKeyBindingsPanel() {
+  const { confirm, dialog } = useConfirm();
   const [items, setItems] = useState<ShortcutBindingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -84,8 +87,16 @@ export function SettingsKeyBindingsPanel() {
   const changeTrigger = (item: ShortcutBindingItem, triggerMode: ShortcutTriggerMode) =>
     runMutation(item, () => updateShortcutBinding(item, item, triggerMode));
 
-  const clear = (item: ShortcutBindingItem) => {
-    if (!window.confirm(`确定清除“${item.name}”的快捷键吗？对应功能配置会继续保留。`)) return;
+  const clear = async (item: ShortcutBindingItem) => {
+    if (
+      !(await confirm({
+        title: "确认清除快捷键",
+        message: `确定清除“${item.name}”的快捷键吗？对应功能配置会继续保留。`,
+        confirmLabel: "清除",
+      }))
+    ) {
+      return;
+    }
     void runMutation(item, () => clearShortcutBinding(item));
   };
 
@@ -131,7 +142,7 @@ export function SettingsKeyBindingsPanel() {
                       className="h-7 w-7"
                       disabled={mutating}
                       label={`清除 ${item.name} 的快捷键`}
-                      onClick={() => clear(item)}
+                      onClick={() => void clear(item)}
                     >
                       <Trash2 className="h-3.5 w-3.5" aria-hidden />
                     </IconButton>
@@ -162,6 +173,13 @@ export function SettingsKeyBindingsPanel() {
                     </div>
                   )}
                 </div>
+                {/* 注册失败时界面必须说出来：否则这里照样显示成已绑定，用户按了没反应
+                    也无从得知（启动时的失败原本只写进 release 版根本没有的控制台）。 */}
+                {item.registrationError && (
+                  <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">
+                    当前未生效：{item.registrationError}
+                  </p>
+                )}
                 {errors[key] && (
                   <p className="mt-2 text-xs text-[var(--color-err)]" role="alert">{errors[key]}</p>
                 )}
@@ -206,14 +224,11 @@ export function SettingsKeyBindingsPanel() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SettingsSection title="集中管理">
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          在这里修改或清除所有已绑定的快捷键。处理方式、模板和方案启用状态请前往对应功能页面调整。
-        </p>
-      </SettingsSection>
+      <SectionHeader title="集中管理" description="在这里修改或清除快捷键。需要调整处理方式、模板或启用状态时，请前往对应功能页面。" />
       {renderGroup("语音输入", groups.dictation)}
       {renderGroup("智能助手", groups.assistant)}
       {renderGroup("实时字幕", groups.subtitles)}
+      {dialog}
     </div>
   );
 }

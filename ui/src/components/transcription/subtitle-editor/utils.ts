@@ -55,3 +55,21 @@ export function joinTexts(a: string, b: string) {
   if (!right) return left;
   return /[a-zA-Z0-9]$/.test(left) && /^[a-zA-Z0-9]/.test(right) ? `${left} ${right}` : `${left}${right}`;
 }
+
+/**
+ * 把字幕时间码统一取整到整数毫秒。
+ *
+ * 所有基于像素的写回路径（拖动整块、拉伸左右边缘、按播放头拆分、"设为播放头位置"）
+ * 算出的都是浮点毫秒——100% 缩放下 1px = 1000/60 ≈ 16.67ms。而导出走的 Rust
+ * `SubtitleCue` 的 `begin_ms`/`end_ms` 是 `i64`，serde 会以
+ * `invalid type: floating point` 拒收，导致整条 `save_subtitle_srt` 命令失败。
+ *
+ * 值已经是整数时原样返回该 cue 对象，避免制造无谓的新引用。
+ */
+export function roundCueTimes(cues: EditableCue[]): EditableCue[] {
+  return cues.map((cue) => {
+    const beginMs = Math.round(cue.beginMs);
+    const endMs = Math.round(cue.endMs);
+    return beginMs === cue.beginMs && endMs === cue.endMs ? cue : { ...cue, beginMs, endMs };
+  });
+}

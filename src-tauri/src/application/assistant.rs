@@ -68,6 +68,47 @@ impl AssistantShortcutSettings {
     }
 }
 
+/// 注册期间的回滚守卫：未 `commit` 就被 drop 时，注销本轮已经注册进 OS 的快捷键。
+///
+/// 不能只靠在每个失败分支手写清理——`set_shortcuts` 里曾经有两处提前返回漏掉了它，
+/// 导致已注册的组合留在 OS 里而应用侧的表已被清空，二者永久失配（幽灵热键 +
+/// 后续保存全部 AlreadyRegistered）。用守卫兜住，新增的提前返回也不会再漏。
+struct RegistrationGuard<'a> {
+    app: &'a AppHandle,
+    registered: Vec<String>,
+    committed: bool,
+}
+
+impl<'a> RegistrationGuard<'a> {
+    fn new(app: &'a AppHandle) -> Self {
+        Self {
+            app,
+            registered: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn push(&mut self, shortcut: String) {
+        self.registered.push(shortcut);
+    }
+
+    fn commit(mut self) -> Vec<String> {
+        self.committed = true;
+        std::mem::take(&mut self.registered)
+    }
+}
+
+impl Drop for RegistrationGuard<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for value in &self.registered {
+            let _ = self.app.global_shortcut().unregister(value.as_str());
+        }
+    }
+}
+
 fn accelerator(shortcut: &AssistantShortcut) -> Result<Option<String>, String> {
     let code = shortcut.key_code.trim();
     if code.is_empty() {
@@ -104,18 +145,50 @@ fn accelerator(shortcut: &AssistantShortcut) -> Result<Option<String>, String> {
     Ok(Some(parts.join("+")))
 }
 
+static LAST_SHORTCUT_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn shortcut_error_slot() -> &'static Mutex<Option<String>> {
+    LAST_SHORTCUT_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+/// 上一次注册智能助手快捷键的失败原因；注册成功后清空。
+///
+/// `set_shortcuts` 是**全有全无**的（见其内部说明：解析必须先于任何注册完成，否则
+/// 会留下幽灵热键并把助手快捷键设置永久锁死），所以有一条解析失败就意味着三条都没
+/// 生效。启动时这个失败原本只走 `eprintln!`——release 版没有控制台，等于彻底静默，
+/// 而快捷键设置页仍按配置把三条显示成已绑定。把原因留在这里，设置页才能如实标注。
+pub(crate) fn last_shortcut_error() -> Option<String> {
+    shortcut_error_slot().lock().ok().and_then(|slot| slot.clone())
+}
+
 pub(crate) fn set_shortcuts(
+    app: &AppHandle,
+    settings: &AssistantShortcutSettings,
+) -> Result<(), String> {
+    let result = set_shortcuts_inner(app, settings);
+    if let Ok(mut slot) = shortcut_error_slot().lock() {
+        *slot = result.as_ref().err().cloned();
+    }
+    result
+}
+
+fn set_shortcuts_inner(
     app: &AppHandle,
     settings: &AssistantShortcutSettings,
 ) -> Result<(), String> {
     let storage = REGISTERED_SHORTCUTS.get_or_init(|| Mutex::new(Vec::new()));
     let mut registered = storage.lock().map_err(|_| "智能助手快捷键状态锁失败")?;
-    for shortcut in registered.drain(..) {
-        let _ = app.global_shortcut().unregister(shortcut.as_str());
-    }
-    #[cfg(target_os = "macos")]
-    crate::hotkey::set_assistant_fn_binding(None)?;
-    let mut next: Vec<String> = Vec::new();
+
+    // 第一步：只解析，不注册。
+    //
+    // 解析失败必须发生在动过任何注册之前。`accelerator` 只接受
+    // KeyX/DigitN/F1..F24/Space/Enter/Tab，而上游 `validate_assistant_shortcuts` 用的是
+    // `hotkey::code_to_vk`（还接受 CapsLock/Home/End/Arrow*/Comma 等），两者不等价，
+    // 所以"校验通过但解析失败"是常态而非边缘情况。旧实现在循环里边解析边注册，
+    // 解析到第二、三条才失败时，前面已经注册进 OS 的组合既不会被注销、也不会进
+    // 应用侧的表——旧键从此变成幽灵热键在全局误触发，而任何后续保存都会在重新
+    // 注册该组合时拿到 AlreadyRegistered，助手快捷键设置被永久锁死，只能重启。
+    let mut planned: Vec<(AssistantAction, String, crate::state::ShortcutTriggerMode)> = Vec::new();
     #[cfg(target_os = "macos")]
     let mut fn_binding = None;
     for action in [
@@ -141,45 +214,48 @@ pub(crate) fn set_shortcuts(
         let Some(shortcut) = accelerator(settings.get(action))? else {
             continue;
         };
-        let callback_action = action;
-        let trigger_mode = settings.get(action).trigger_mode;
-        let pressed = Arc::new(AtomicBool::new(false));
-        if let Err(error) =
-            app.global_shortcut()
-                .on_shortcut(shortcut.as_str(), move |app, _, event| match event.state {
-                    ShortcutState::Pressed => {
-                        if pressed.swap(true, Ordering::SeqCst) {
-                            return;
-                        }
-                        // 必须在全局快捷键回调内同步冻结前台窗口。回调返回后 macOS
-                        // 可能把本应用短暂视为活跃进程，异步任务再查询就会丢失原选区。
-                        let target = crate::active_app_context::activation_target();
-                        request_shortcut(app.clone(), callback_action, target);
-                    }
-                    ShortcutState::Released => {
-                        if !pressed.swap(false, Ordering::SeqCst)
-                            || trigger_mode != crate::state::ShortcutTriggerMode::PressHold
-                        {
-                            return;
-                        }
-                        request_shortcut_release(app.clone());
-                    }
-                })
-        {
-            for value in &next {
-                let _ = app.global_shortcut().unregister(value.as_str());
-            }
-            return Err(format!("注册智能助手快捷键 {shortcut} 失败：{error}"));
-        }
-        next.push(shortcut);
+        planned.push((action, shortcut, settings.get(action).trigger_mode));
+    }
+
+    // 第二步：解析全部成功后，才注销旧键并注册新键。
+    // 顺序不能反：新旧集合若有重叠，先注册会拿到 AlreadyRegistered。
+    for shortcut in registered.drain(..) {
+        let _ = app.global_shortcut().unregister(shortcut.as_str());
     }
     #[cfg(target_os = "macos")]
-    if let Err(error) = crate::hotkey::set_assistant_fn_binding(fn_binding) {
-        for value in &next {
-            let _ = app.global_shortcut().unregister(value.as_str());
-        }
-        return Err(error);
+    crate::hotkey::set_assistant_fn_binding(None)?;
+
+    let mut guard = RegistrationGuard::new(app);
+    for (action, shortcut, trigger_mode) in planned {
+        let callback_action = action;
+        let pressed = Arc::new(AtomicBool::new(false));
+        app.global_shortcut()
+            .on_shortcut(shortcut.as_str(), move |app, _, event| match event.state {
+                ShortcutState::Pressed => {
+                    if pressed.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
+                    // 必须在全局快捷键回调内同步冻结前台窗口。回调返回后 macOS
+                    // 可能把本应用短暂视为活跃进程，异步任务再查询就会丢失原选区。
+                    let target = crate::active_app_context::activation_target();
+                    request_shortcut(app.clone(), callback_action, target);
+                }
+                ShortcutState::Released => {
+                    if !pressed.swap(false, Ordering::SeqCst)
+                        || trigger_mode != crate::state::ShortcutTriggerMode::PressHold
+                    {
+                        return;
+                    }
+                    request_shortcut_release(app.clone());
+                }
+            })
+            .map_err(|error| format!("注册智能助手快捷键 {shortcut} 失败：{error}"))?;
+        guard.push(shortcut);
     }
+    #[cfg(target_os = "macos")]
+    crate::hotkey::set_assistant_fn_binding(fn_binding)?;
+
+    let next = guard.commit();
     *registered = next;
     Ok(())
 }
@@ -836,7 +912,7 @@ async fn capture_selection_for_target(
     }
     let state = app.state::<RuntimeState>();
     let handle = state.active_app_context.begin_selection_capture(target);
-    let captured = state.active_app_context.resolve_for_dictation(handle).await;
+    let captured = state.active_app_context.resolve_for_selection(handle).await;
     let current_target = crate::active_app_context::activation_target()
         .ok_or_else(|| "选区读取完成前目标窗口已丢失".to_string())?;
     if !crate::active_app_context::same_activation_target(current_target, target) {
@@ -1294,15 +1370,20 @@ async fn process_llm_action(
     parse_assistant_output(action, &raw)
 }
 
+/// 问答的回答本身是自由文本，不走 JSON 输出协议；但部分模型仍会按协议包一层
+/// `{"intent":"answer","text":"…"}`，所以先尝试按协议解一次。
+///
+/// 这里**不能**用「以 ``` 或 { 开头」当判据：代码类问题的回答本来就以代码围栏开头，
+/// 讲 JSON 的回答也会以 `{` 开头。一旦被误判成协议，解析失败就会把已经完整流式生成
+/// 出来的整条回答替换成「返回格式无效」，而且不可恢复——问代码问题几乎必现。
+/// 改成：能按协议解出来就用解出来的，解不出来一律当作原文。
 fn parse_assistant_answer_output(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with("```") {
-        return parse_assistant_output(AssistantAction::Ask, trimmed);
-    }
     if trimmed.is_empty() {
         return Err("大语言模型没有返回结果文本".into());
     }
-    Ok(trimmed.to_string())
+    Ok(parse_assistant_output(AssistantAction::Ask, trimmed)
+        .unwrap_or_else(|_| trimmed.to_string()))
 }
 
 async fn process_ask_action(
@@ -1435,7 +1516,7 @@ pub(crate) async fn continue_assistant_answer(
         Ok(_) => Err("大语言模型请求已取消".into()),
         Err(error) if cancellation.is_cancelled() => Err(error),
         Err(error) => {
-            publish_answer(&app, &request, String::new(), Some(error.clone()), false);
+            publish_answer_failure(&app, &request, error.clone());
             Err(error)
         }
     }
@@ -1559,6 +1640,24 @@ fn selection_bounds_match(
         // 不能因为可选坐标偶发缺失而让所有选区编辑失效。
         _ => true,
     }
+}
+
+/// 生成失败时发布错误，但**保留已经生成出来的正文**。
+///
+/// 追问 / 重新生成失败原本用空串覆盖 `answer.text`，而回答窗是「有 error 就只渲染
+/// error」，于是一次网络抖动就会把用户已经读了一半的流式回答整段清光，且没有任何
+/// 恢复入口。已累积的正文原样带上，错误作为附加提示显示在正文下方。
+///
+/// `can_insert` 保持 false：中断的回答是不完整的，可以复制但不该直接插进用户文档。
+fn publish_answer_failure(app: &AppHandle, request: &AssistantRequest, error: String) {
+    let kept = app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .answer
+        .lock()
+        .map(|answer| (answer.text.clone(), answer.reasoning.clone()))
+        .unwrap_or_default();
+    publish_answer_with_reasoning(app, request, kept.0, kept.1, Some(error), false);
 }
 
 pub(crate) fn publish_answer(
@@ -1870,13 +1969,7 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
             Ok(_) => Err("大语言模型请求已取消".into()),
             Err(error) if cancellation.is_cancelled() => Err(error),
             Err(error) => {
-                publish_answer(
-                    &app,
-                    &context.request,
-                    String::new(),
-                    Some(error.clone()),
-                    false,
-                );
+                publish_answer_failure(&app, &context.request, error.clone());
                 Err(error)
             }
         };
@@ -1894,13 +1987,7 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
             Ok(())
         }
         Err(error) => {
-            publish_answer(
-                &app,
-                &context.request,
-                String::new(),
-                Some(error.clone()),
-                false,
-            );
+            publish_answer_failure(&app, &context.request, error.clone());
             Err(error)
         }
     }
@@ -1936,6 +2023,45 @@ pub(crate) async fn close_assistant_answer(app: AppHandle) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shortcut(key_code: &str) -> AssistantShortcut {
+        AssistantShortcut {
+            key_code: key_code.into(),
+            ctrl: true,
+            ..Default::default()
+        }
+    }
+
+    /// `set_shortcuts` 现在依赖「先全部解析、再动手注册」：解析必须是纯函数且能对
+    /// 不支持的按键明确报错，否则 parse-first 就失去意义。
+    ///
+    /// 注意 `accelerator` 接受的集合**窄于**上游校验用的 `hotkey::code_to_vk`
+    /// （后者还接受 CapsLock/Home/End/Arrow*/Comma 等），所以"校验通过但解析失败"
+    /// 是常态。旧实现边解析边注册，解析到第二、三条才失败时，前面已注册进 OS 的
+    /// 组合会变成幽灵热键并把助手快捷键设置永久锁死。
+    #[test]
+    fn accelerator_accepts_only_the_supported_key_set() {
+        assert_eq!(accelerator(&shortcut("KeyA")).unwrap().as_deref(), Some("Control+A"));
+        assert_eq!(accelerator(&shortcut("Digit1")).unwrap().as_deref(), Some("Control+1"));
+        assert_eq!(accelerator(&shortcut("F9")).unwrap().as_deref(), Some("Control+F9"));
+        assert_eq!(accelerator(&shortcut("Space")).unwrap().as_deref(), Some("Control+Space"));
+
+        // 空按键表示未绑定，跳过而不是报错。
+        assert!(accelerator(&shortcut("")).unwrap().is_none());
+
+        // 这几个 code_to_vk 都接受，accelerator 必须明确拒绝——正是它们让
+        // 「校验通过、注册途中失败」成为常见路径。
+        for key in ["Home", "End", "CapsLock", "Comma", "ArrowLeft"] {
+            assert!(
+                crate::hotkey::code_to_vk(key).is_some(),
+                "用例前提：{key} 应当能通过上游校验"
+            );
+            assert!(
+                accelerator(&shortcut(key)).is_err(),
+                "{key} 不在 accelerator 支持范围内，必须在解析阶段就报错"
+            );
+        }
+    }
 
     #[test]
     fn conversation_keeps_only_the_latest_ten_turns() {
@@ -2050,6 +2176,45 @@ mod tests {
             .unwrap(),
             "结果"
         );
+    }
+
+    /// 问答回答走的是自由文本通道。此前用「以 ``` 或 `{` 开头」嗅探 JSON 协议，
+    /// 而代码类问题的回答本来就以代码围栏开头——嗅探命中后协议解析必然失败，
+    /// 已经完整流式生成出来的整条回答会被「返回格式无效」替换掉，不可恢复。
+    #[test]
+    fn answer_output_never_discards_a_plain_text_answer() {
+        let fenced = "```rust
+fn main() {}
+```";
+        assert_eq!(parse_assistant_answer_output(fenced).unwrap(), fenced);
+
+        let braced = "{ 这是一段以花括号开头的普通回答 }";
+        assert_eq!(parse_assistant_answer_output(braced).unwrap(), braced);
+
+        let fenced_json_sample = "```json
+{\"a\":1}
+```";
+        assert_eq!(
+            parse_assistant_answer_output(fenced_json_sample).unwrap(),
+            fenced_json_sample
+        );
+    }
+
+    /// 模型若真按协议包了一层，仍然要拆出 text，不能把整段 JSON 丢给用户。
+    #[test]
+    fn answer_output_still_unwraps_the_protocol_envelope() {
+        assert_eq!(
+            parse_assistant_answer_output(r#"{"intent":"answer","text":"结论"}"#).unwrap(),
+            "结论"
+        );
+        assert_eq!(
+            parse_assistant_answer_output("```json
+{\"intent\":\"answer\",\"text\":\"结论\"}
+```")
+                .unwrap(),
+            "结论"
+        );
+        assert!(parse_assistant_answer_output("   ").is_err());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use super::plugin::{
-    plugins_dir, safe_model_file_path, validate_plugin_dir, ModelPackManifest, PluginManifest,
+    plugin_staging_dir, plugins_dir, safe_model_file_path, validate_plugin_dir, ModelPackManifest, PluginManifest,
     PluginSignatureManifest,
 };
 
@@ -72,14 +72,14 @@ pub fn load_trusted_keys(app: &tauri::AppHandle) -> Result<HashMap<String, Strin
 
 fn save_trusted_keys(app: &tauri::AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
     let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
-    let temp = path.with_extension(format!("tmp-{}", Uuid::new_v4()));
     let bytes = serde_json::to_vec_pretty(&TrustedKeyFile { keys: keys.clone() })
         .map_err(|error| error.to_string())?;
-    std::fs::write(&temp, bytes).map_err(|error| error.to_string())?;
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|error| error.to_string())?;
-    }
-    std::fs::rename(&temp, &path).map_err(|error| error.to_string())
+    // 原来是「先删除旧文件再改名」：两步之间只要断电或进程被杀，信任库就整份消失，
+    // 所有已签名插件同时失效，而且没有备份可恢复。复用 credential_vault 里已有的
+    // 原子替换（Windows 走 MoveFileExW REPLACE_EXISTING|WRITE_THROUGH），旧文件在
+    // 新文件完整落盘前始终有效。
+    crate::providers::credential_vault::write_private_file_atomically(&path, &bytes)
+        .map_err(|error| format!("保存插件信任库失败：{error}"))
 }
 
 pub fn verify_installation(
@@ -191,6 +191,15 @@ fn canonical_json_value(value: Value) -> Value {
     }
 }
 
+pub(crate) fn ensure_model_pack_installable(manifest: &PluginManifest) -> Result<(), String> {
+    if super::plugin::is_superseded_ppocr(manifest) {
+        return Err(
+            "PP-OCRv6 Tiny 已随应用内置，无需安装此模型包；已安装的旧包可在插件管理卸载。".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn install_from_directory(
     app: &tauri::AppHandle,
     source: &Path,
@@ -204,6 +213,7 @@ pub fn install_from_directory(
         return Err("插件安装源必须是目录".into());
     }
     let manifest = validate_plugin_dir(&source)?;
+    ensure_model_pack_installable(&manifest)?;
     ensure_no_native_files(&source)?;
     let mut trusted = load_trusted_keys(app)?;
     let trust = verify_installation(&source, &manifest, &trusted)?;
@@ -223,8 +233,9 @@ pub fn install_from_directory(
     }
 
     let plugins = plugins_dir(app)?;
+    let staging = plugin_staging_dir(app)?;
     let target = plugins.join(&manifest.id);
-    let stage = plugins.join(format!(".install-{}-{}", manifest.id, Uuid::new_v4()));
+    let stage = staging.join(format!(".install-{}-{}", manifest.id, Uuid::new_v4()));
     if let Err(error) = copy_directory(&source, &stage) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
@@ -246,7 +257,7 @@ pub fn install_from_directory(
         if current_id != manifest.id {
             return Err("已安装插件目录与新插件 ID 不一致".into());
         }
-        let temporary = plugins.join(format!(".replace-{}-{}", manifest.id, Uuid::new_v4()));
+        let temporary = staging.join(format!(".replace-{}-{}", manifest.id, Uuid::new_v4()));
         std::fs::rename(&target, &temporary).map_err(|error| error.to_string())?;
         displaced = Some(temporary);
         Some(current_version)
@@ -306,8 +317,7 @@ pub fn install_from_path(
             "请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包或开发目录"
         ));
     }
-    let plugins = plugins_dir(app)?;
-    let extracted = plugins.join(format!(".archive-{}", Uuid::new_v4()));
+    let extracted = plugin_staging_dir(app)?.join(format!(".archive-{}", Uuid::new_v4()));
     let result = extract_archive(&source, &extracted, Some(app)).and_then(|_| {
         if let Some(expected) = expected_archive_sha256 {
             verify_expected_archive_hash(&source, expected)?;
@@ -337,14 +347,14 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
     {
         return Err(format!("请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包"));
     }
-    let plugins = plugins_dir(app)?;
-    let extracted = plugins.join(format!(".preview-{}", Uuid::new_v4()));
+    let extracted = plugin_staging_dir(app)?.join(format!(".preview-{}", Uuid::new_v4()));
     let archive_sha256 = sha256_file(&source)?;
     let result = (|| {
         extract_archive(&source, &extracted, None)?;
         verify_expected_archive_hash(&source, &archive_sha256)?;
         let declaration = read_package_declaration(&extracted)?;
         let manifest = validate_plugin_dir(&extracted)?;
+        ensure_model_pack_installable(&manifest)?;
         validate_declared_package_kind(&declaration, &manifest)?;
         let trust = verify_installation(&extracted, &manifest, &load_trusted_keys(app)?)?;
         let mut capabilities = manifest.provider.capabilities.clone();
@@ -426,6 +436,22 @@ fn extract_archive(
     destination: &Path,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
+    extract_archive_capped(
+        archive_path,
+        destination,
+        app,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    )
+}
+
+/// 解包实现。上限做成参数而不是直接读常量，测试才能用一个小额度真实跑到写入上限
+/// 那条分支上——4 GB 的用例没法在测试里跑。
+fn extract_archive_capped(
+    archive_path: &Path,
+    destination: &Path,
+    app: Option<&tauri::AppHandle>,
+    max_uncompressed_bytes: u64,
+) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("插件包不是有效 ZIP：{error}"))?;
@@ -438,7 +464,7 @@ fn extract_archive(
             .checked_add(entry.size())
             .ok_or_else(|| "插件包解压大小溢出".to_string())
     })?;
-    if declared_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+    if declared_size > max_uncompressed_bytes {
         return Err("说吧包解压后超过 4 GB 上限".into());
     }
     std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
@@ -474,16 +500,29 @@ fn extract_archive(
         output
             .write_all(&prefix[..prefix_len])
             .map_err(|error| error.to_string())?;
+        // 上面的 4 GB 预检查的是**中央目录里自报的** entry.size()，构造一个 zip
+        // 炸弹只要把它填小即可（deflate 压缩比可达 1032:1）。所以真正的写入循环必须
+        // 自己数字节：既比对单条目的声明大小，也累计校验整包上限，超出立即中止。
+        // 这段解包发生在「预览」阶段、用户点安装之前，而且无法中断。
+        let declared_entry_size = entry.size();
+        let mut entry_bytes = prefix_len as u64;
         let mut buffer = vec![0_u8; 1024 * 1024];
         loop {
             let count = entry.read(&mut buffer).map_err(|error| error.to_string())?;
             if count == 0 {
                 break;
             }
+            entry_bytes = entry_bytes.saturating_add(count as u64);
+            extracted_bytes = extracted_bytes.saturating_add(count as u64);
+            if entry_bytes > declared_entry_size {
+                return Err(format!("插件包条目 {key} 的实际大小与清单声明不符"));
+            }
+            if extracted_bytes > max_uncompressed_bytes {
+                return Err("说吧包解压后超过 4 GB 上限".into());
+            }
             output
                 .write_all(&buffer[..count])
                 .map_err(|error| error.to_string())?;
-            extracted_bytes = extracted_bytes.saturating_add(count as u64);
             if let Some(app) = app {
                 let _ = app.emit(
                     "plugin-install-progress",
@@ -894,6 +933,115 @@ mod tests {
         writer.finish().unwrap();
         let extracted = root.join("extracted");
         assert!(extract_archive(&archive_path, &extracted, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 信任库原来是「先 `remove_file` 再 `rename`」：两步之间断电或进程被杀就整份
+    /// 消失，所有已签名插件同时失效，而且没有 `.bak` 可恢复。原子替换必须保证
+    /// 替换失败时旧文件原样还在，且不留临时残骸。
+    #[test]
+    fn trusted_key_store_survives_a_failed_replace() {
+        use crate::providers::credential_vault::{fail_next_replace, write_private_file_atomically};
+
+        let root = std::env::temp_dir().join(format!("sayit-trust-atomic-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(TRUST_FILE);
+        let original = serde_json::to_vec_pretty(&TrustedKeyFile {
+            keys: HashMap::from([("key-1".to_string(), "pubkey".to_string())]),
+        })
+        .unwrap();
+        write_private_file_atomically(&path, &original).unwrap();
+
+        fail_next_replace(&path);
+        write_private_file_atomically(&path, br#"{"keys":{}}"#)
+            .expect_err("注入的替换失败必须向上报错");
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "替换失败后旧信任库必须原封不动"
+        );
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "替换失败后不应留下临时文件"
+        );
+
+        // 确认 save_trusted_keys 走的就是这条原子路径，而不是又退回先删后改名。
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("plugin_package.rs").replace("\r\n", "\n");
+        let body = &source[source
+            .find("fn save_trusted_keys")
+            .expect("save_trusted_keys 必须仍然存在")..];
+        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
+        assert!(
+            body.contains("write_private_file_atomically"),
+            "信任库必须用原子替换写入"
+        );
+        assert!(
+            !body.contains("remove_file("),
+            "信任库不得先删除旧文件再改名"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 构造一枚真正的 zip 炸弹：中央目录自报 1 KiB，实际解出 ~977 KiB。
+    ///
+    /// 4 GB 预检查只看 `entry.size()`，也就是攻击者自己填的数字，所以必须由写入
+    /// 循环自己数字节。这段解包发生在**预览**阶段、用户点安装之前且无法中断，
+    /// 没有写入上限就意味着拖进一个 .sayit 就能写满磁盘。
+    #[test]
+    fn extraction_stops_when_real_bytes_exceed_the_declared_size() {
+        const REAL_SIZE: usize = 999_983;
+        const FAKE_SIZE: u32 = 1_024;
+
+        let root = std::env::temp_dir().join(format!("sayit-zip-bomb-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("bomb.sayit");
+        let mut writer = ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        writer
+            .start_file(
+                "payload.bin",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        // 全 0 的内容压缩比极高，成品包只有几百字节。
+        writer.write_all(&vec![0_u8; REAL_SIZE]).unwrap();
+        writer.finish().unwrap();
+
+        // 把本地头与中央目录里声明的解压大小改小，模拟被篡改的清单。
+        let mut bytes = std::fs::read(&archive_path).unwrap();
+        let truth = (REAL_SIZE as u32).to_le_bytes();
+        let lie = FAKE_SIZE.to_le_bytes();
+        let mut patched = 0;
+        let mut cursor = 0;
+        while cursor + 4 <= bytes.len() {
+            if bytes[cursor..cursor + 4] == truth {
+                bytes[cursor..cursor + 4].copy_from_slice(&lie);
+                patched += 1;
+                cursor += 4;
+            } else {
+                cursor += 1;
+            }
+        }
+        assert_eq!(patched, 2, "应当恰好改掉本地头和中央目录各一处声明大小");
+        std::fs::write(&archive_path, &bytes).unwrap();
+
+        let extracted = root.join("extracted");
+        // 声明大小 1 KiB 远低于上限，预检查放行；必须由写入循环拦下。
+        let error = extract_archive_capped(&archive_path, &extracted, None, 8 * 1024)
+            .expect_err("实际写入超过声明大小时必须中止解包");
+        assert!(error.contains("payload.bin"), "错误信息应指明是哪个条目：{error}");
+
+        let written = std::fs::metadata(extracted.join("payload.bin"))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        assert!(
+            written < REAL_SIZE as u64,
+            "中止后落盘的字节数不应达到完整体积，实际 {written}"
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use super::session_wait::{SessionWait, SessionWake};
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
 use crate::providers::plugin::PluginRuntimeSpec;
@@ -21,7 +21,7 @@ pub(super) async fn start_plugin_asr_stream(
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     crate::application::plugin_management::refresh_browser_session_before_runtime(
         &app,
         state,
@@ -31,33 +31,35 @@ pub(super) async fn start_plugin_asr_stream(
     .await?;
     let customization = crate::application::customization::resolve_for_model(state, &model);
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    if let Err(error) = plugin_runtime::spawn_js_worker("plugin-asr", move || {
-        run_plugin_session(
-            app,
-            task_id,
-            streams,
-            rx,
-            super::stream_dsp(params, input_sample_rate),
-            model,
-            plugin,
-            profile,
-            customization,
-        );
-    }) {
-        cleanup_stream(&state.asr_streams, &session_id);
-        return Err(error);
-    }
-
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            plugin_runtime::spawn_js_worker("plugin-asr", move || {
+                run_plugin_session(
+                    app,
+                    task_id,
+                    streams,
+                    rx,
+                    super::stream_dsp(params, input_sample_rate),
+                    model,
+                    plugin,
+                    profile,
+                    customization,
+                );
+            })
+            .map(|_| ())
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -65,19 +67,39 @@ fn run_plugin_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
     plugin: PluginRuntimeSpec,
     profile: ProviderProfile,
     customization: RequestCustomization,
 ) {
-    let cancelled = Arc::new(AtomicBool::new(false));
+    if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
+    let cancelled = rx.cancellation_flag();
     let module_id = match plugin.capability_id(&model, "speech-recognition", true) {
         Ok(value) => value.to_string(),
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -91,8 +113,15 @@ fn run_plugin_session(
     ) {
         Ok(runtime) => runtime,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -108,8 +137,15 @@ fn run_plugin_session(
         &session_id,
         Duration::from_secs(30),
     ) {
+        let error = rx.take_failure().unwrap_or(error);
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
         cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR initialization failed" }),
+        );
         return;
     }
 
@@ -121,11 +157,15 @@ fn run_plugin_session(
     );
     flush_events(&runtime, &app, &session_id);
     let mut finishing_at = None;
-    let mut stop = false;
+    let waiter = SessionWait::new();
 
-    while !stop {
-        match rx.try_recv() {
-            Ok(AsrStreamInput::RawF32(samples)) => {
+    loop {
+        match waiter.wait(
+            &mut rx,
+            runtime.host_events_ready(),
+            finishing_at.map(|started| started + FINISH_TIMEOUT),
+        ) {
+            SessionWake::Input(Some(AsrStreamInput::RawF32(samples))) => {
                 let bytes = dsp.process(&samples);
                 if !bytes.is_empty() {
                     if let Err(error) = runtime.send_capability_audio(bytes) {
@@ -139,21 +179,31 @@ fn run_plugin_session(
                     }
                 }
             }
-            Ok(AsrStreamInput::Finish) => {
+            SessionWake::Input(Some(AsrStreamInput::Finish)) => {
+                let tail = dsp.finish();
+                if !tail.is_empty() {
+                    if let Err(error) = runtime.send_capability_audio(tail) {
+                        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                        break;
+                    }
+                }
                 if let Err(error) = runtime.finish_capability_session(FINISH_TIMEOUT) {
                     emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
                     break;
                 }
                 finishing_at = Some(Instant::now());
             }
-            Ok(AsrStreamInput::Stop) => {
+            SessionWake::Input(Some(AsrStreamInput::Failed(error))) => {
+                let _ = rx.take_failure();
+                emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                break;
+            }
+            SessionWake::Input(Some(AsrStreamInput::Stop)) => {
                 let _ = runtime.close_capability_session();
-                stop = true;
+                break;
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            SessionWake::Input(None) => break,
+            SessionWake::HostEvents | SessionWake::Deadline => {}
         }
         if let Err(error) = runtime.dispatch_host_events() {
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
@@ -171,6 +221,9 @@ fn run_plugin_session(
             );
             break;
         }
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(

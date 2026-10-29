@@ -163,12 +163,12 @@ pub(crate) fn start_backend_system_audio_inner(
                         })();
                         let _ = reply.send(result);
                     }
-                    BackendMicCommand::AttachRaw { tx, reply } => {
+                    BackendMicCommand::AttachRaw { tx, preroll, reply } => {
                         let result = system_audio
                             .lock()
                             .map_err(|_| "Backend system audio lock failed".to_string())
                             .map(|mut guard| {
-                                guard.raw_txs.push(tx);
+                                guard.raw_txs.push(BackendMicRawSubscriber { tx, preroll });
                                 BackendMicAttachResponse { flushed_chunks: 0 }
                             });
                         let _ = reply.send(result);
@@ -189,6 +189,9 @@ pub(crate) fn start_backend_system_audio_inner(
                     }
                     BackendMicCommand::CaptureError { message } => {
                         if let Ok(mut guard) = system_audio.lock() {
+                            for subscriber in &guard.raw_txs {
+                                subscriber.tx.fail(message.clone());
+                            }
                             guard.last_error = Some(message);
                         }
                         break;
@@ -265,18 +268,16 @@ pub(crate) fn attach_backend_system_audio_to_asr_inner(
 
 pub(crate) fn attach_backend_system_audio_raw_inner(
     state: &RuntimeState,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     let worker = system_audio_worker(state)?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = RawAudioReceiver::channel();
     let (reply, receiver) = std::sync::mpsc::channel();
     worker
-        .send(BackendMicCommand::AttachRaw { tx, reply })
+        .send(BackendMicCommand::AttachRaw {
+            tx,
+            preroll: AsrPreroll::Enabled,
+            reply,
+        })
         .map_err(|_| "系统音频采集线程已停止".to_string())?;
     let response = receiver
         .recv_timeout(Duration::from_secs(2))

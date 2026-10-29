@@ -16,6 +16,8 @@ export interface ShortcutBindingItem extends ShortcutCombo {
   enabled: boolean;
   triggerMode: ShortcutTriggerMode;
   triggerModeEditable: boolean;
+  /** 这条绑定当前没能真正注册进系统时的原因；正常时为 null。 */
+  registrationError?: string | null;
 }
 
 export function shortcutTargetKey(target: ShortcutTarget): string {

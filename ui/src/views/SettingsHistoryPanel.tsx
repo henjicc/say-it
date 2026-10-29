@@ -4,6 +4,7 @@ import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { NumberInput, Textarea } from "@/components/ui/Input";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
 
@@ -40,6 +41,7 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
 }
 
 export function SettingsHistoryPanel() {
+  const { confirm, dialog } = useConfirm();
   const [prefs, setPrefs] = useState<HistoryPrefs>(defaults);
   const [excludedText, setExcludedText] = useState("");
   const [message, setMessage] = useState("");
@@ -63,7 +65,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clear() {
-    if (!window.confirm("确定清空全部本地历史和纠错样本吗？此操作不可撤销。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空全部历史",
+        message: "将清空全部本地历史和纠错样本。此操作不可撤销。",
+        confirmLabel: "清空历史",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearHistory);
       setMessage("本地历史和纠错样本已清空");
@@ -73,7 +83,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clearUsage() {
-    if (!window.confirm("确定清空本地累计使用统计吗？历史记录不会受到影响。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空使用统计",
+        message: "将清空本地累计使用统计，历史记录不会受到影响。",
+        confirmLabel: "清空统计",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearUsageSummary);
       setMessage("本地累计使用统计已清空");
@@ -83,7 +101,15 @@ export function SettingsHistoryPanel() {
   }
 
   async function clearLearning() {
-    if (!window.confirm("确定清空全部个性化学习记忆吗？历史正文会保留，此操作不可撤销。")) return;
+    if (
+      !(await confirm({
+        title: "确认清空学习记忆",
+        message: "将清空全部个性化学习记忆，历史正文会保留。此操作不可撤销。",
+        confirmLabel: "清空记忆",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.clearLearningMemory);
       setMessage("个性化学习记忆已清空");
@@ -92,16 +118,24 @@ export function SettingsHistoryPanel() {
     }
   }
 
-  function setCloudLearningContext(enabled: boolean) {
-    if (enabled && !window.confirm("开启后，云端智能处理会接收最多三条与当前文本直接相关、已脱敏的局部纠错，以及一条已确认的表达偏好。是否继续？")) {
+  async function setCloudLearningContext(enabled: boolean) {
+    if (
+      enabled &&
+      !(await confirm({
+        title: "开启云端学习上下文",
+        message:
+          "开启后，云端智能处理会接收最多三条与当前文本直接相关、已脱敏的局部纠错，以及一条已确认的表达偏好。是否继续？",
+        confirmLabel: "开启",
+        danger: false,
+      }))
+    ) {
       return;
     }
     void save({ ...prefs, cloudLearningContextEnabled: enabled });
   }
 
   return (
-    <SettingsSection title="本地历史">
-      <p className="text-xs text-[var(--color-fg-subtle)]">历史只保存在当前数据目录，不保存音频；安全输入框永不记录。</p>
+    <SettingsSection title="本地历史" description="历史记录只保存在本机，不保存音频，也不会记录密码输入框中的内容。">
       <FormGrid>
         <Field label="保存历史" controlId="history-enabled" hint="关闭后新任务不再写入，已有记录不会自动删除。">
           <Switch id="history-enabled" checked={prefs.enabled} onChange={(enabled) => void save({ ...prefs, enabled })} label="保存历史" />
@@ -120,7 +154,7 @@ export function SettingsHistoryPanel() {
             label="记录发送前修改"
           />
         </Field>
-        <Field label="个性化纠错" controlId="history-correction-learning" hint="局部纠错重复出现两次或经你确认后，才会成为本地规则。">
+        <Field label="个性化纠错" controlId="history-correction-learning" hint="同一处纠正重复两次或经你确认后，才会用于以后的自动纠错。">
           <Switch
             id="history-correction-learning"
             checked={prefs.correctionLearningEnabled}
@@ -133,19 +167,19 @@ export function SettingsHistoryPanel() {
             label="个性化纠错"
           />
         </Field>
-        <Field label="云端参考学习记录" controlId="history-cloud-learning" hint="开启后，云端智能处理最多接收三条脱敏的相关局部示例；默认关闭。">
+        <Field label="云端参考学习记录" controlId="history-cloud-learning" hint="开启后，会向云端模型提供最多三条已去除敏感信息的纠错片段，帮助它理解你的习惯。默认关闭。">
           <Switch
             id="history-cloud-learning"
             checked={prefs.cloudLearningContextEnabled}
             disabled={!prefs.correctionLearningEnabled}
-            onChange={setCloudLearningContext}
+            onChange={(enabled) => void setCloudLearningContext(enabled)}
             label="云端参考学习记录"
           />
         </Field>
         <Field label="保留天数" hint="范围 1～3650 天，过期记录会自动清理。">
           <NumberInput value={prefs.retentionDays} min={1} max={3650} onValueChange={(retentionDays) => void save({ ...prefs, retentionDays })} aria-label="历史保留天数" />
         </Field>
-        <Field label="学习记忆保留天数" hint="已提炼的最小化纠错规则独立保留，范围 1～3650 天。">
+        <Field label="学习记忆保留天数" hint="已学会的纠错习惯单独保存，可保留 1～3650 天。">
           <NumberInput value={prefs.learningMemoryRetentionDays} min={1} max={3650} onValueChange={(learningMemoryRetentionDays) => void save({ ...prefs, learningMemoryRetentionDays })} aria-label="学习记忆保留天数" />
         </Field>
         <Field label="排除应用" hint="每行一个进程名或应用名，不区分大小写。">
@@ -154,10 +188,10 @@ export function SettingsHistoryPanel() {
             void save({ ...prefs, excludedApps });
           }} placeholder="例如：1Password.exe" aria-label="历史排除应用" />
         </Field>
-        <Field label="清理数据" hint="立即删除全部历史及其纠错样本，此操作不可撤销。">
+        <Field label="清理数据" message="立即删除全部历史及其纠错样本，此操作不可撤销。">
           <Button variant="dangerHover" onClick={() => void clear()}>清空全部历史</Button>
         </Field>
-        <Field label="使用统计" hint="统计只包含成功次数、字数和时长等聚合数字；清空历史不会影响它。">
+        <Field label="使用统计" hint="统计只包含次数、字数和时长；清空历史不会清除这些统计。">
           <Button variant="dangerHover" onClick={() => void clearUsage()}>清空使用统计</Button>
         </Field>
         <Field label="学习记忆" hint="清除纠错规则和表达偏好，但保留历史正文。">
@@ -165,6 +199,7 @@ export function SettingsHistoryPanel() {
         </Field>
       </FormGrid>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </SettingsSection>
   );
 }

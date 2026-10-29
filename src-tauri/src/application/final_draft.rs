@@ -216,14 +216,17 @@ pub(crate) struct FinalDraftRuntime {
     pending: Mutex<HashMap<String, PendingFinalDraft>>,
 }
 
-fn observation_allowed(app: &AppHandle, identity: &AppIdentity) -> bool {
-    let state = app.state::<crate::state::RuntimeState>();
-    let Ok(settings) = state.app_settings.lock() else {
-        return false;
-    };
-    let prefs = &settings.history_prefs;
+/// 判定是否允许对该应用做最终草稿观察。纯函数：只读传入的 `history_prefs`，
+/// 不接触 `RuntimeState`，因此可以安全地在持有 `app_settings` 守卫时调用。
+///
+/// 三个条件与 `learning::observation_enabled` 读的是同一份 `history_prefs`，
+/// 这里内联读取而不是回调过去——后者会再次 `lock()` 同一把非可重入互斥锁。
+fn observation_allowed_for(prefs: &serde_json::Value, identity: &AppIdentity) -> bool {
     prefs.get("enabled").and_then(serde_json::Value::as_bool) != Some(false)
-        && crate::application::learning::observation_enabled(&state)
+        && prefs
+            .get("finalDraftObservationEnabled")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
         && !prefs
             .get("excludedApps")
             .and_then(serde_json::Value::as_array)
@@ -234,6 +237,14 @@ fn observation_allowed(app: &AppHandle, identity: &AppIdentity) -> bool {
                 value.eq_ignore_ascii_case(identity.process_name.trim())
                     || value.eq_ignore_ascii_case(identity.app_name.trim())
             })
+}
+
+fn observation_allowed(app: &AppHandle, identity: &AppIdentity) -> bool {
+    let state = app.state::<crate::state::RuntimeState>();
+    let Ok(settings) = state.app_settings.lock() else {
+        return false;
+    };
+    observation_allowed_for(&settings.history_prefs, identity)
 }
 
 fn replacement_parts(snapshot: &DraftSnapshot, injected: &str) -> Option<(String, String, String)> {
@@ -892,5 +903,58 @@ mod tests {
             Some(("high", "autoEnter"))
         );
         assert_eq!(confirmed_candidate(None), None);
+    }
+
+    fn history_prefs(observation: bool, excluded: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "enabled": true,
+            "finalDraftObservationEnabled": observation,
+            "excludedApps": excluded,
+        })
+    }
+
+    fn identity(process: &str, app: &str) -> AppIdentity {
+        AppIdentity {
+            process_name: process.into(),
+            app_name: app.into(),
+            ..Default::default()
+        }
+    }
+
+    /// `observation_allowed_for` 必须是纯函数：只读传入的 prefs，绝不回到
+    /// `RuntimeState` 去二次加锁。用「持有 app_settings 守卫时调用它」+ 限时接收
+    /// 来锁死这个契约——一旦有人把它改回调用 `learning::observation_enabled`
+    /// （那会重入同一把非可重入互斥锁），这里就会超时失败而不是让线上卡死。
+    #[test]
+    fn observation_allowed_for_is_safe_while_holding_app_settings() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let state = crate::state::RuntimeState::default();
+            let mut settings = state.app_settings.lock().expect("首次加锁应当成功");
+            settings.history_prefs = history_prefs(true, &[]);
+            let allowed = observation_allowed_for(&settings.history_prefs, &identity("chrome.exe", "Chrome"));
+            drop(settings);
+            let _ = tx.send(allowed);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+            Ok(allowed) => assert!(allowed, "开关打开且未排除时应当允许观察"),
+            Err(_) => panic!("持有 app_settings 守卫时调用 observation_allowed_for 已阻塞"),
+        }
+    }
+
+    #[test]
+    fn observation_allowed_for_requires_the_switch_and_respects_exclusions() {
+        let target = identity("chrome.exe", "Chrome");
+        // 开关默认关闭：不观察
+        assert!(!observation_allowed_for(&history_prefs(false, &[]), &target));
+        // 开关打开：观察
+        assert!(observation_allowed_for(&history_prefs(true, &[]), &target));
+        // 命中排除名单（按进程名 / 按应用名，均忽略大小写）
+        assert!(!observation_allowed_for(&history_prefs(true, &["CHROME.EXE"]), &target));
+        assert!(!observation_allowed_for(&history_prefs(true, &["chrome"]), &target));
+        // 历史记录整体关闭：不观察
+        let mut disabled = history_prefs(true, &[]);
+        disabled["enabled"] = serde_json::Value::Bool(false);
+        assert!(!observation_allowed_for(&disabled, &target));
     }
 }

@@ -953,6 +953,106 @@ void sendChord(WORD key) {
     sendKey(VK_CONTROL, false);
 }
 
+// 剪贴板快照：枚举实际格式并用 OleDuplicateData 造独立副本，而不是保存
+// OleGetClipboard 返回的那个 IDataObject。
+//
+// OleGetClipboard 返回的是**代表当前系统剪贴板的代理**，不是拥有数据的快照。把它
+// 保存下来、在临时写入选区文本之后再 OleSetClipboard(saved) + OleFlushClipboard()，
+// 会把剪贴板代理重新设成剪贴板数据源；系统渲染各格式时，代理最终又去读它自己，
+// 形成无界的 CClipDataObject::GetData 递归，直到进程 STATUS_STACK_OVERFLOW。
+// 崩溃时机恰好在「已把选区复制进剪贴板、尚未恢复备份」之后，用户原有剪贴板内容
+// 就此永久丢失。
+//
+// 详见 docs/experience/OleGetClipboard代理回设导致CClipDataObject递归栈溢出.md，
+// 主进程侧（src-tauri/src/windows_native.rs）早已按同样思路修复，这里是同一份实现
+// 的 C++ 版本。
+class ClipboardSnapshot {
+public:
+    ClipboardSnapshot() = default;
+    ClipboardSnapshot(const ClipboardSnapshot&) = delete;
+    ClipboardSnapshot& operator=(const ClipboardSnapshot&) = delete;
+
+    ~ClipboardSnapshot() { releaseRemaining(); }
+
+    bool capture() {
+        releaseRemaining();
+        if (!OpenClipboard(nullptr)) return false;
+        bool ok = true;
+        UINT format = 0;
+        while ((format = EnumClipboardFormats(format)) != 0) {
+            HANDLE source = GetClipboardData(format);
+            if (!source) continue;  // 某些格式只在渲染时才有句柄，跳过即可。
+            HANDLE copy = OleDuplicateData(source, static_cast<CLIPFORMAT>(format), GMEM_MOVEABLE);
+            if (!copy) {
+                ok = false;
+                break;
+            }
+            entries_.push_back({format, copy});
+        }
+        CloseClipboard();
+        if (!ok) releaseRemaining();
+        return ok;
+    }
+
+    bool empty() const { return entries_.empty(); }
+
+    // 逐格式把所有权转交给剪贴板；转交成功的句柄不再由本对象释放。
+    bool restore() {
+        if (!OpenClipboard(nullptr)) return false;
+        if (!EmptyClipboard()) {
+            CloseClipboard();
+            return false;
+        }
+        bool ok = true;
+        for (auto& entry : entries_) {
+            if (!entry.handle) continue;
+            if (SetClipboardData(entry.format, entry.handle)) {
+                entry.handle = nullptr;  // 所有权已转交
+            } else {
+                ok = false;
+            }
+        }
+        CloseClipboard();
+        releaseRemaining();
+        return ok;
+    }
+
+private:
+    struct Entry {
+        UINT format;
+        HANDLE handle;
+    };
+
+    // 未转交出去的副本必须按 tymed 释放，否则每次深度读取都会泄漏一份剪贴板数据。
+    static void releaseEntry(const Entry& entry) {
+        if (!entry.handle) return;
+        STGMEDIUM medium{};
+        const UINT format = entry.format;
+        if (format == CF_METAFILEPICT || format == CF_DSPMETAFILEPICT) {
+            medium.tymed = TYMED_MFPICT;
+            medium.hMetaFilePict = entry.handle;
+        } else if (format == CF_ENHMETAFILE || format == CF_DSPENHMETAFILE) {
+            medium.tymed = TYMED_ENHMF;
+            medium.hEnhMetaFile = static_cast<HENHMETAFILE>(entry.handle);
+        } else if (format == CF_BITMAP || format == CF_PALETTE || format == CF_DSPBITMAP ||
+                   (format >= CF_GDIOBJFIRST && format <= CF_GDIOBJLAST)) {
+            medium.tymed = TYMED_GDI;
+            medium.hBitmap = static_cast<HBITMAP>(entry.handle);
+        } else {
+            medium.tymed = TYMED_HGLOBAL;
+            medium.hGlobal = static_cast<HGLOBAL>(entry.handle);
+        }
+        ReleaseStgMedium(&medium);
+    }
+
+    void releaseRemaining() {
+        for (const auto& entry : entries_) releaseEntry(entry);
+        entries_.clear();
+    }
+
+    std::vector<Entry> entries_;
+};
+
 std::wstring clipboardUnicodeText(bool preserveFormatting = false) {
     std::wstring output;
     if (!OpenClipboard(nullptr)) return output;
@@ -1033,12 +1133,10 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
         result.diagnostics.push_back(L"无法检查剪贴板状态，已跳过深度读取。 ");
         return false;
     }
-    // Materialize delayed-rendered formats before replacing the clipboard. This
-    // makes the IDataObject backup reliable even if the previous owner exits.
+    // 先让延迟渲染的格式落地，这样快照才拿得到真实数据（即使原属主随后退出）。
     OleFlushClipboard();
-    ComPtr<IDataObject> backup;
-    const HRESULT backupResult = OleGetClipboard(backup.put());
-    if (FAILED(backupResult) && !clipboardWasEmpty) {
+    ClipboardSnapshot backup;
+    if (!backup.capture() && !clipboardWasEmpty) {
         result.diagnostics.push_back(L"无法完整备份剪贴板，已跳过深度读取。 ");
         return false;
     }
@@ -1066,8 +1164,8 @@ bool readClipboardDeep(HWND target, IUIAutomationElement* focused, Result& resul
     }
     const bool clipboardUnchangedSinceCopy = GetClipboardSequenceNumber() == copiedSequence;
     if (clipboardUnchangedSinceCopy) {
-        if (backup) {
-            if (FAILED(OleSetClipboard(backup.get())) || FAILED(OleFlushClipboard())) {
+        if (!backup.empty()) {
+            if (!backup.restore()) {
                 text.clear();
                 result.diagnostics.push_back(L"恢复剪贴板失败，已放弃深度读取结果。 ");
             }
@@ -1111,10 +1209,10 @@ bool readClipboardSelection(HWND target, Result& result) {
         result.diagnostics.push_back(L"无法检查剪贴板状态，已停止选区复制回退。 ");
         return false;
     }
+    // 同上：快照必须是独立副本，不能保存 OleGetClipboard 返回的剪贴板代理。
     OleFlushClipboard();
-    ComPtr<IDataObject> backup;
-    const HRESULT backupResult = OleGetClipboard(backup.put());
-    if (FAILED(backupResult) && !clipboardWasEmpty) {
+    ClipboardSnapshot backup;
+    if (!backup.capture() && !clipboardWasEmpty) {
         result.diagnostics.push_back(L"无法完整备份剪贴板，已停止选区复制回退。 ");
         return false;
     }
@@ -1132,8 +1230,8 @@ bool readClipboardSelection(HWND target, Result& result) {
     }
     if (!copied || GetForegroundWindow() != target) text.clear();
     if (GetClipboardSequenceNumber() == copiedSequence) {
-        if (backup) {
-            if (FAILED(OleSetClipboard(backup.get())) || FAILED(OleFlushClipboard())) {
+        if (!backup.empty()) {
+            if (!backup.restore()) {
                 text.clear();
                 result.diagnostics.push_back(L"恢复剪贴板失败，已放弃选区结果。 ");
             }

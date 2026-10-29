@@ -97,33 +97,66 @@ function hotwordsFingerprint(prefs: CustomizationPrefs): string {
 
 interface CustomizationState {
   prefs: CustomizationPrefs;
+  /**
+   * 是否已经从 Rust 权威配置填充过。
+   *
+   * 本 store **没有 localStorage 镜像**，热词与上下文模板的唯一来源就是启动时的
+   * hydrateCustomizationPrefs。若初始化失败（自定义数据目录所在盘未挂载、settings
+   * 落盘失败等），store 会停在空默认值上；此时用户随手加一条热词，patch 就会把
+   * `{ ...空默认值, 新热词 }` 整份发给后端，把磁盘上真实的几百条热词与上下文模板
+   * 覆盖掉，且不可恢复。所以未填充时一律拒绝写入。
+   */
+  hydrated: boolean;
   syncState: SyncState;
   syncMessage: string;
   syncResults: ProviderSyncResult[];
-  patch: (partial: Partial<CustomizationPrefs>) => Promise<void>;
+  /**
+   * 写入热词/上下文。
+   *
+   * 传函数时会在**真正轮到这次写入**的那一刻拿最新的 prefs 计算负载。热词的增删改都是
+   * 按下标算的，若沿用渲染时捕获的数组，第一次保存还没返回就做第二次操作，后者会基于
+   * 旧数组算出负载并把前者整份覆盖掉。多次写入按调用顺序串行，不再互相竞争。
+   */
+  patch: (
+    partial:
+      | Partial<CustomizationPrefs>
+      | ((current: CustomizationPrefs) => Partial<CustomizationPrefs>),
+  ) => Promise<void>;
   pullFromProvider: (providerId: string) => Promise<void>;
   clearProviders: () => Promise<void>;
 }
 
 let autoSyncTimer: number | undefined;
 let syncedFingerprint: string | undefined;
+/** 串行化写入队列：热词的增删改必须按调用顺序落盘，否则彼此覆盖。 */
+let writeChain: Promise<void> = Promise.resolve();
 
 function cancelAutoSync() {
   if (autoSyncTimer !== undefined) window.clearTimeout(autoSyncTimer);
   autoSyncTimer = undefined;
 }
 
-/** 推送当前热词到所有支持云端词表的供应商。没有目标或词表为空时静默跳过。 */
+/**
+ * 把当前热词状态同步到所有支持云端词表的供应商。没有同步目标时才跳过。
+ *
+ * 热词被删光同样要同步：那是一次**清空**。此前这里对空列表提前 return（后端也拒收
+ * 空热词），供应商侧的旧词表和 vocabularyIds 会一直留着并在识别时继续下发——用户以为
+ * 删干净了，实际毫无变化。
+ */
 async function runAutoSync() {
   const state = useCustomizationStore.getState();
   const fingerprint = hotwordsFingerprint(state.prefs);
+  const clearing = fingerprint === "[]";
   const targets = useProviderStore.getState().profiles.filter(supportsHotwordSync);
-  if (fingerprint === "[]" || targets.length === 0) {
+  if (targets.length === 0) {
     syncedFingerprint = fingerprint;
     useCustomizationStore.setState({ syncState: "idle", syncMessage: "", syncResults: [] });
     return;
   }
-  useCustomizationStore.setState({ syncState: "syncing", syncMessage: "正在同步到供应商…" });
+  useCustomizationStore.setState({
+    syncState: "syncing",
+    syncMessage: clearing ? "正在清除供应商词表…" : "正在同步到供应商…",
+  });
   try {
     const response = await cmd<SyncResponse>(CMD.customizationSyncProviders);
     useProviderStore.getState().hydrateCatalog(response.providers);
@@ -132,7 +165,11 @@ async function runAutoSync() {
     useCustomizationStore.setState({
       syncResults: response.results,
       syncState: failed.length ? "error" : "done",
-      syncMessage: failed.length ? "部分供应商同步失败" : "已同步到供应商",
+      syncMessage: failed.length
+        ? "部分供应商同步失败"
+        : clearing
+          ? "已清除供应商词表"
+          : "已同步到供应商",
     });
   } catch (error) {
     useCustomizationStore.setState({
@@ -156,15 +193,26 @@ function scheduleAutoSync() {
 
 export const useCustomizationStore = create<CustomizationState>((set, get) => ({
   prefs: defaults(),
+  hydrated: false,
   syncState: "idle",
   syncMessage: "",
   syncResults: [],
 
-  patch: async (partial) => {
-    const next = { ...get().prefs, ...partial };
-    await cmd(CMD.updateAppSettings, { domain: "customization", value: next });
-    set({ prefs: next });
-    if ("hotwords" in partial) scheduleAutoSync();
+  patch: (partial) => {
+    const run = writeChain.then(async () => {
+      if (!get().hydrated) {
+        throw new Error("热词与上下文尚未加载完成，暂时无法保存；请重启应用后重试。");
+      }
+      const current = get().prefs;
+      const changes = typeof partial === "function" ? partial(current) : partial;
+      const next = { ...current, ...changes };
+      await cmd(CMD.updateAppSettings, { domain: "customization", value: next });
+      set({ prefs: next });
+      if ("hotwords" in changes) scheduleAutoSync();
+    });
+    // 链条不能因为一次失败就断掉，但错误仍要交给调用方。
+    writeChain = run.catch(() => {});
+    return run;
   },
 
   pullFromProvider: async (providerId) => {
@@ -190,5 +238,5 @@ export function hydrateCustomizationPrefs(value: Record<string, unknown> | undef
   const prefs = normalize(value);
   // 启动时的已存配置视为与云端一致，不因为打开应用就触发一次同步。
   syncedFingerprint = hotwordsFingerprint(prefs);
-  useCustomizationStore.setState({ prefs });
+  useCustomizationStore.setState({ prefs, hydrated: true });
 }

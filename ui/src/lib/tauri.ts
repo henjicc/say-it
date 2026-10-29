@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
 
+export type ModelPackState = "pending" | "partial" | "corrupt" | "downloading" | "ready" | "superseded";
+
 export const CMD = {
   getAppSnapshot: "get_app_snapshot",
   mainWindowReady: "main_window_ready",
@@ -11,6 +13,7 @@ export const CMD = {
   installProviderPlugin: "install_provider_plugin",
   takePendingProviderPluginImports: "take_pending_provider_plugin_imports",
   downloadProviderModelPack: "download_provider_model_pack",
+  setProviderModelKeepLoaded: "set_provider_model_keep_loaded",
   setProviderPluginEnabled: "set_provider_plugin_enabled",
   uninstallProviderPlugin: "uninstall_provider_plugin",
   runProviderPluginAction: "run_provider_plugin_action",
@@ -48,6 +51,8 @@ export const CMD = {
   subtitleToggle: "subtitle_toggle",
   subtitleStop: "subtitle_stop",
   syncSubtitlePresentation: "sync_subtitle_presentation",
+  showSubtitlePreview: "show_subtitle_preview",
+  hideSubtitlePreview: "hide_subtitle_preview",
   applySubtitleObsRouting: "apply_subtitle_obs_routing",
   listProviders: "list_providers",
   setDefaultProvider: "set_default_provider",
@@ -102,6 +107,7 @@ export const CMD = {
   getDataRootStatus: "get_data_root_status",
   migrateDataRoot: "migrate_data_root",
   restartApp: "restart_app",
+  requestDataReset: "request_data_reset",
   setDebugLog: "set_debug_log",
   setHotkeyCapturing: "set_hotkey_capturing",
   debugModelCallState: "debug_model_call_state",
@@ -409,4 +415,9 @@ export function on<T = unknown>(
 
 export function emitEvent(event: string, payload?: unknown): Promise<void> {
   return emit(event, payload);
+}
+
+export interface ModelResidencyStatus {
+  state: "unloaded" | "loading" | "loaded" | "failed";
+  error?: string;
 }

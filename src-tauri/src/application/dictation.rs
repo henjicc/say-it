@@ -1,13 +1,12 @@
 use crate::application::audio_session::{AudioLease, AudioOwner};
 use crate::application::contract::{next_revision, DomainEventEnvelope};
-use crate::application::events::BackendEvent;
 use crate::commands::asr::{
-    asr_stream_finish_inner, start_asr_stream_inner, stop_asr_stream_inner,
+    asr_stream_finish_inner, prepare_asr_stream_inner, stop_asr_stream_inner,
 };
 use crate::commands::dictation::{
     inject_text_inner, inject_text_with_policy, write_clipboard_text_inner, ClipboardDisposition,
 };
-use crate::commands::transcription::{transcription_cancel_inner, transcription_start_inner};
+use crate::commands::transcription::{transcription_cancel_inner, transcription_start_with_recording};
 use crate::desktop::{
     attach_backend_mic_raw_inner, attach_backend_mic_to_asr_inner, pause_backend_mic_inner,
     prepare_dictation_indicator, release_backend_mic_inner, start_backend_mic_inner,
@@ -15,13 +14,15 @@ use crate::desktop::{
 use crate::prelude::*;
 use crate::providers::alibabacloud::TranscriptionParams;
 use crate::state::{
-    AsrStreamInput, DictationShortcutProfile, RuntimeState, ShortcutProcessingMode,
+    DictationShortcutProfile, RawAudioReceiver, RuntimeState, ShortcutProcessingMode,
 };
 use fancy_regex::{Captures, RegexBuilder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::AppHandle;
 
 const DOMAIN_EVENT: &str = "domain-event";
+mod processing;
+mod delivery;
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
@@ -418,8 +419,12 @@ fn resolve_inject_method(
         .to_string()
 }
 
+type RawRecordingResult = Result<Option<crate::audio_wav::RecordedWav>, String>;
+
 #[derive(Default)]
 struct Session {
+    delivery: delivery::DeliveryState,
+    processing_cancellation: tokio_util::sync::CancellationToken,
     epoch: u64,
     phase: DictationPhase,
     mode: Option<DictationMode>,
@@ -428,8 +433,10 @@ struct Session {
     file_job_id: Option<String>,
     committed: String,
     segment: String,
-    raw_samples: Vec<f32>,
+    recorded_samples: usize,
     sample_rate: u32,
+    /// 停止并排空录音后冻结采样时长，避免把上传与识别耗时算进说话时长。
+    recorded_ms: Option<u64>,
     injected_epoch: Option<u64>,
     lease: Option<AudioLease>,
     prefs: DictationPrefs,
@@ -450,7 +457,7 @@ struct Session {
     pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
     silence_streaming: bool,
-    raw_done: Option<Arc<tokio::sync::Notify>>,
+    raw_done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
     temp_audio_path: Option<PathBuf>,
     active_app_context: Option<crate::active_app_context::DictationContextCaptureHandle>,
     /// finalize 会把捕获句柄移出会话；保留独立令牌，让取消/会话替换仍能中断 OCR。
@@ -470,15 +477,18 @@ impl Session {
     }
 
     fn claim_injection(&mut self, epoch: u64) -> bool {
-        if !self.is_current(epoch) || self.injected_epoch == Some(epoch) {
+        if !self.is_current(epoch) || self.injected_epoch == Some(epoch) || self.delivery.failed() {
             return false;
         }
         self.injected_epoch = Some(epoch);
+        self.delivery.finish();
         true
     }
 
     fn mark_failed(&mut self, error: String, pending_fallback: Option<PendingFallback>) {
+        self.processing_cancellation.cancel();
         self.phase = DictationPhase::Failed;
+        self.raw_done.take();
         self.error = Some(error);
         self.pending_fallback = pending_fallback;
     }
@@ -501,6 +511,7 @@ pub(crate) struct DictationRuntime {
     session: Arc<Mutex<Session>>,
     operation: Arc<tokio::sync::Mutex<()>>,
     epochs: AtomicU64,
+    changed: Arc<tokio::sync::Notify>,
 }
 impl Default for DictationRuntime {
     fn default() -> Self {
@@ -508,6 +519,7 @@ impl Default for DictationRuntime {
             session: Arc::new(Mutex::new(Session::default())),
             operation: Arc::new(tokio::sync::Mutex::new(())),
             epochs: AtomicU64::new(0),
+            changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -523,16 +535,11 @@ pub(crate) struct DictationSnapshot {
 }
 
 pub(crate) fn initialize(app: AppHandle) {
-    let mut receiver = app.state::<RuntimeState>().backend_events.subscribe();
+    let changed = app.state::<RuntimeState>().dictation_runtime.changed.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(event) => handle_backend_event(app.clone(), event).await,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    dlog!("[dictation] 后端事件积压，跳过 {count} 条")
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+            changed.notified().await;
+            delivery::flush(&app).await;
         }
     });
 }
@@ -621,7 +628,11 @@ fn present_request_error(app: &AppHandle, error: String) {
         .unwrap_or(false);
     publish_state(app, Some(error.clone()));
     if can_present {
-        let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
+        if crate::desktop::native_dictation_indicator_enabled() {
+            let _ = crate::desktop::show_dictation_indicator_notice(app, truncate_notice(&error));
+        } else {
+            let _ = crate::desktop::show_dictation_indicator_error(app, error, false);
+        }
     }
 }
 
@@ -965,7 +976,7 @@ async fn start_internal(
     let inline_follow_up = assistant_request
         .as_ref()
         .is_some_and(|request| request.follow_up);
-    let current_target = (!trigger.is_floating_orb())
+    let current_target = (!trigger.is_floating_orb() && !cfg!(feature = "performance-acceptance"))
         .then(crate::active_app_context::activation_target)
         .flatten();
     let activation_target = select_activation_target(trigger, activation_target, current_target);
@@ -1026,6 +1037,18 @@ async fn start_internal(
         .epochs
         .fetch_add(1, Ordering::AcqRel)
         + 1;
+    // 会话生命周期事件：有始有终才健康。曾经出现过会话无声消失（无完成/失败/
+    // 取消任何记录）导致首次听写没有注入也没有剪贴板回退，靠这组事件定位。
+    crate::application::diagnostics::event(
+        "info",
+        "dictation.sessionStarted",
+        serde_json::json!({
+            "sessionId": epoch,
+            "floatingOrb": trigger.is_floating_orb(),
+            "mouseGesture": trigger.is_mouse_gesture(),
+            "targetCaptured": activation_target.is_some(),
+        }),
+    );
     // 先解析前台软件并定下生效配置，再决定是否捕获上下文正文：应用规则可能把智能
     // 处理切到含 {{active_app_context}} 的模板，顺序反了就拿不到上下文。
     let app_identity = activation_target.and_then(crate::active_app_context::app_identity);
@@ -1130,6 +1153,7 @@ async fn start_internal(
             .session
             .lock()
             .map_err(|_| "听写状态锁失败")?;
+        s.processing_cancellation.cancel();
         *s = Session {
             epoch,
             phase: if mode == DictationMode::Realtime && prefs.dictation_silence_disconnect_enabled
@@ -1157,20 +1181,25 @@ async fn start_internal(
             ..Session::default()
         };
     }
-    let (_, raw_rx) = match attach_backend_mic_raw_inner(&state) {
+    let preroll = if mode == DictationMode::Realtime {
+        crate::state::AsrPreroll::Enabled
+    } else {
+        crate::state::AsrPreroll::Disabled
+    };
+    let (_, raw_rx) = match attach_backend_mic_raw_inner(&state, preroll) {
         Ok(value) => value,
         Err(error) => {
             cleanup_failed_start(&state, epoch);
             return Err(error);
         }
     };
-    let raw_done = Arc::new(tokio::sync::Notify::new());
+    let (raw_done, raw_result) = tokio::sync::oneshot::channel();
     if let Ok(mut s) = state.dictation_runtime.session.lock() {
         if s.epoch == epoch {
-            s.raw_done = Some(raw_done.clone());
+            s.raw_done = Some(raw_result);
         }
     }
-    spawn_raw_consumer(app.clone(), epoch, raw_rx, raw_done);
+    spawn_raw_consumer(app.clone(), epoch, raw_rx, raw_done, mode, mic.sample_rate);
     if mode == DictationMode::Realtime && !prefs.dictation_silence_disconnect_enabled {
         if let Err(error) = open_asr(app.clone(), epoch).await {
             cleanup_failed_start(&state, epoch);
@@ -1181,13 +1210,17 @@ async fn start_internal(
         let _ = prepare_dictation_indicator(&app);
     }
     if !inline_follow_up && !trigger.is_floating_orb() {
-        let _ = crate::desktop::set_indicator_layout(
-            app.clone(),
-            Some(460.0),
-            Some(188.0),
-            Some("bottom".into()),
-            Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
-        );
+        // 原生指示器几何固定，layout 只对 WebView（字幕）有意义；
+        // 跳过可避免这次调用连带创建 WebView 指示窗。
+        if !crate::desktop::native_dictation_indicator_enabled() {
+            let _ = crate::desktop::set_indicator_layout(
+                app.clone(),
+                Some(460.0),
+                Some(188.0),
+                Some("bottom".into()),
+                Some(crate::desktop::DICTATION_INDICATOR_OFFSET_Y),
+            );
+        }
         if mode == DictationMode::File {
             // 非实时模型从录音态第一帧就显示静态波形；首批 PCM 到达后再更新实际幅度，
             // 避免快捷键刚触发时短暂误显示成纯文字处理态。
@@ -1224,6 +1257,8 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
                 return None;
             }
             s.phase = DictationPhase::Failed;
+            s.processing_cancellation.cancel();
+            s.raw_done.take();
             s.mode = None;
             s.public_id = None;
             if let Some(cancellation) = s.active_app_context_cancellation.take() {
@@ -1238,20 +1273,60 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
     }
 }
 
+/// 保留 file 模式现有的 30 分钟自动收尾行为；PCM 已改为边录边写。
+const FILE_MODE_MAX_RECORDING: Duration = Duration::from_secs(30 * 60);
+const FILE_MODE_LIMIT_NOTICE: &str = "单次听写录音已达 30 分钟上限，已自动停止并开始识别。";
+
+fn file_mode_recording_is_full(samples: usize, sample_rate: u32) -> bool {
+    if sample_rate == 0 {
+        return false;
+    }
+    samples as u64 >= FILE_MODE_MAX_RECORDING.as_secs() * sample_rate as u64
+}
+
 fn spawn_raw_consumer(
     app: AppHandle,
     epoch: u64,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    done: Arc<tokio::sync::Notify>,
+    mut rx: RawAudioReceiver,
+    done: tokio::sync::oneshot::Sender<RawRecordingResult>,
+    mode: DictationMode,
+    sample_rate: u32,
 ) {
-    tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut recording = if mode == DictationMode::File {
+            match crate::audio_wav::WavRecording::new(
+                sample_rate,
+                crate::audio_wav::Quantization::Round,
+            ) {
+                Ok(recording) => Some(recording),
+                Err(error) => {
+                    let error = format!("创建听写录音失败：{error}");
+                    let _ = done.send(Err(error.clone()));
+                    let _ = tauri::async_runtime::block_on(fail(app, epoch, error));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let mut write_error = None;
         // 文件听写不建立 ASR 流，因此单独持有一份流式 DSP 只供波形预览使用。
-        // 原始 PCM 仍完整保留给文件识别上传，避免预览链路改变识别输入。
+        // 文件直接按原有量化方式写盘；波形预览 DSP 不得改变识别输入。
         let mut waveform_dsp: Option<StreamDsp> = None;
-        while let Some(input) = rx.recv().await {
-            let AsrStreamInput::RawF32(samples) = input else {
-                continue;
+        let mut stop_requested = false;
+        loop {
+            if done.is_closed() {
+                return;
+            }
+            let samples = match rx.blocking_recv() {
+                Ok(Some(samples)) => samples,
+                Ok(None) => break,
+                Err(error) => {
+                    write_error = Some(error);
+                    break;
+                }
             };
+            let mut limit_reached = false;
             let (need_open, need_close, waveform_config) = {
                 let state = app.state::<RuntimeState>();
                 let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -1268,7 +1343,8 @@ fn spawn_raw_consumer(
                     break;
                 }
                 if s.mode == Some(DictationMode::File) {
-                    s.raw_samples.extend_from_slice(&samples);
+                    s.recorded_samples += samples.len();
+                    limit_reached = file_mode_recording_is_full(s.recorded_samples, s.sample_rate);
                 }
                 let level = rms(&samples);
                 let mut need_open = false;
@@ -1314,6 +1390,13 @@ fn spawn_raw_consumer(
                     });
                 (need_open, need_close, waveform_config)
             };
+            // 不持有会话状态锁执行磁盘 I/O，查询状态与取消不必等写入。
+            if let Some(recording) = recording.as_mut() {
+                if let Err(error) = recording.append(&samples) {
+                    write_error = Some(format!("写入听写录音失败：{error}"));
+                    break;
+                }
+            }
             if let Some((params, sample_rate, assistant_follow_up, floating_orb)) = waveform_config
             {
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
@@ -1336,18 +1419,41 @@ fn spawn_raw_consumer(
                     }
                 }
             }
+            if limit_reached && !stop_requested {
+                stop_requested = true;
+                crate::dlog!("[dictation] file 模式录音达到上限，自动收尾");
+                publish_state(&app, Some(FILE_MODE_LIMIT_NOTICE.to_string()));
+                request_stop(app.clone());
+            }
             if need_close {
                 disconnect_silent_asr(app.clone(), epoch);
             }
             if need_open {
-                if let Err(error) = open_asr(app.clone(), epoch).await {
-                    let _ =
-                        fail(app.clone(), epoch, format!("连接实时语音识别失败：{error}")).await;
+                if let Err(error) = tauri::async_runtime::block_on(open_asr(app.clone(), epoch)) {
+                    let _ = tauri::async_runtime::block_on(fail(
+                        app.clone(),
+                        epoch,
+                        format!("连接实时语音识别失败：{error}"),
+                    ));
                     break;
                 }
             }
         }
-        done.notify_one();
+        if done.is_closed() {
+            return;
+        }
+        let result = if let Some(error) = write_error {
+            drop(recording);
+            Err(error)
+        } else {
+            recording
+                .map(|recording| recording.finish())
+                .transpose()
+                .map_err(|error| format!("完成听写录音失败：{error}"))
+        };
+        let recording_error = result.as_ref().err().cloned();
+        // 成功结果连同文件所有权一起交给 stop；取消后接收端不存在会自动清理文件。
+        let _ = done.send(result);
 
         let state = app.state::<RuntimeState>();
         let capture_error = state
@@ -1368,14 +1474,32 @@ fn spawn_raw_consumer(
             })
             .unwrap_or(false);
         if still_recording {
-            let _ = fail(
+            let _ = tauri::async_runtime::block_on(fail(
                 app,
                 epoch,
-                capture_error.unwrap_or_else(|| "麦克风采集已意外停止".into()),
-            )
-            .await;
+                recording_error
+                    .or(capture_error)
+                    .unwrap_or_else(|| "麦克风采集已意外停止".into()),
+            ));
         }
     });
+}
+
+/// 刚建好的 ASR 流是否仍然属于当前会话。
+///
+/// 判定同时看 epoch 与阶段：`stop()` / `fail_internal()` 不推进 epoch，只靠 epoch
+/// 判断会把已经收尾的会话误判成仍在进行。
+fn asr_stream_still_wanted(state: &RuntimeState, epoch: u64) -> Result<bool, String> {
+    let session = state
+        .dictation_runtime
+        .session
+        .lock()
+        .map_err(|_| "听写状态锁失败")?;
+    Ok(session.epoch == epoch
+        && matches!(
+            session.phase,
+            DictationPhase::Recording | DictationPhase::WaitingForVoice
+        ))
 }
 
 async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
@@ -1396,7 +1520,7 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         )
     };
     let state = app.state::<RuntimeState>();
-    let response = start_asr_stream_inner(
+    let response = prepare_asr_stream_inner(
         app.clone(),
         &state,
         None,
@@ -1405,6 +1529,22 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         Some(dsp),
     )
     .await?;
+    // 准备连接的 await 可能包含浏览器会话刷新或平台资源准备，期间会话
+    // 可能已经结束或被新会话取代，因此必须在把这条流挂回麦克风**之前**确认它仍然有效。
+    //
+    // 只比 epoch 不够：epoch 只在 `start_internal` 推进，`stop()` / `fail_internal()` 都不推进。
+    // stop() 若在建流期间完成，它看到 `asr_session_id` 仍是 None，会走「无 ASR 会话」分支
+    // 直接 finalize 把会话收尾，而此处的 epoch 依然相等。于是刚建好的流会被挂回麦克风并
+    // 写进一个已经结束的会话：`Pause` 只清路由不停 cpal 流、`keep_alive_ms` 默认 60 秒，
+    // 麦克风会在这段时间里继续把真实环境音上传给云端供应商（隐私与计费问题），
+    // 而这条流永远不会被 `stop_asr_stream_inner` 关闭。
+    //
+    // 挂接本身是无条件覆盖麦克风路由的，所以校验只能前置——放在挂接之后就已经把新会话的
+    // 路由冲掉了。
+    if !asr_stream_still_wanted(&state, epoch)? {
+        let _ = stop_asr_stream_inner(&response.session_id, &state);
+        return Ok(());
+    }
     if let Err(error) = attach_backend_mic_to_asr_inner(&response.session_id, &state) {
         let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Err(error);
@@ -1414,12 +1554,19 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         .session
         .lock()
         .map_err(|_| "听写状态锁失败")?;
-    if s.epoch != epoch {
-        stop_asr_stream_inner(&response.session_id, &state)?;
+    if s.epoch != epoch
+        || !matches!(
+            s.phase,
+            DictationPhase::Recording | DictationPhase::WaitingForVoice
+        )
+    {
+        drop(s);
+        let _ = stop_asr_stream_inner(&response.session_id, &state);
         return Ok(());
     }
-    s.asr_session_id = Some(response.session_id);
+    s.asr_session_id = Some(response.session_id.clone());
     drop(s);
+    response.start()?;
     publish_state(&app, None);
     Ok(())
 }
@@ -1451,17 +1598,7 @@ async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (
-        epoch,
-        mode,
-        session_id,
-        rate,
-        prefs,
-        raw_done,
-        audio_generation,
-        inline_follow_up,
-        trigger,
-    ) = {
+    let (epoch, mode, session_id, prefs, raw_done, audio_generation, inline_follow_up, trigger) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1473,6 +1610,11 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         ) {
             return Ok(());
         }
+        crate::application::diagnostics::event(
+            "info",
+            "dictation.stopRequested",
+            serde_json::json!({ "sessionId": s.epoch }),
+        );
         s.phase = if s.mode == Some(DictationMode::File) {
             DictationPhase::ProcessingFile
         } else {
@@ -1482,9 +1624,8 @@ async fn stop(app: AppHandle) -> Result<(), String> {
             s.epoch,
             s.mode,
             s.asr_session_id.clone(),
-            s.sample_rate,
             s.prefs.clone(),
-            s.raw_done.clone(),
+            s.raw_done.take(),
             s.lease.as_ref().map(|v| v.generation).unwrap_or(0),
             s.assistant_request
                 .as_ref()
@@ -1493,17 +1634,26 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         )
     };
     pause_backend_mic_inner(&state)?;
-    if mode == Some(DictationMode::File) {
-        if let Some(done) = raw_done {
-            let _ = tokio::time::timeout(Duration::from_secs(1), done.notified()).await;
+    let recording = if mode == Some(DictationMode::File) {
+        let result = drain_file_recording(raw_done).await;
+        match result {
+            Ok(recording) => Some(recording),
+            Err(error) => {
+                drop(_guard);
+                return fail(app, epoch, error).await;
+            }
         }
+    } else {
+        None
+    };
+    {
+        let mut session = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map_err(|_| "听写状态锁失败")?;
+        freeze_recorded_duration(&mut session);
     }
-    let raw = state
-        .dictation_runtime
-        .session
-        .lock()
-        .map_err(|_| "听写状态锁失败")
-        .map(|mut s| std::mem::take(&mut s.raw_samples))?;
     if prefs.keep_alive_ms == 0 {
         let _ = release_backend_mic_inner(&state);
     } else {
@@ -1528,7 +1678,15 @@ async fn stop(app: AppHandle) -> Result<(), String> {
                 return Ok(());
             }
         }
-        Some(DictationMode::File) => start_file_job(app.clone(), epoch, raw, rate, prefs).await,
+        Some(DictationMode::File) => {
+            start_file_job(
+                app.clone(),
+                epoch,
+                recording.expect("文件录音已排空"),
+                prefs,
+            )
+            .await
+        }
         None => Ok(()),
     };
     if let Err(error) = result {
@@ -1542,19 +1700,27 @@ async fn stop(app: AppHandle) -> Result<(), String> {
 async fn start_file_job(
     app: AppHandle,
     epoch: u64,
-    raw: Vec<f32>,
-    rate: u32,
+    recording: crate::audio_wav::RecordedWav,
     prefs: DictationPrefs,
 ) -> Result<(), String> {
-    if raw.is_empty() {
+    if recording.samples == 0 {
         return Err("未录到音频".into());
     }
-    let path = write_wav(raw, rate).await?;
-    if let Ok(mut s) = app.state::<RuntimeState>().dictation_runtime.session.lock() {
-        if s.epoch == epoch {
-            s.temp_audio_path = Some(PathBuf::from(&path));
+    let path = {
+        let state = app.state::<RuntimeState>();
+        let mut session = state
+            .dictation_runtime
+            .session
+            .lock()
+            .map_err(|_| "听写状态锁失败")?;
+        if session.epoch != epoch {
+            return Ok(());
         }
-    }
+        let path = recording.into_path();
+        let value = path.to_string_lossy().into_owned();
+        session.temp_audio_path = Some(path);
+        value
+    };
     let params = TranscriptionParams {
         model: prefs.asr_model,
         language_hints: vec![],
@@ -1564,42 +1730,39 @@ async fn start_file_job(
         special_word_filter: String::new(),
     };
     let state = app.state::<RuntimeState>();
-    let response = transcription_start_inner(app.clone(), &state, path, Some(params)).await?;
-    let mut s = state
-        .dictation_runtime
-        .session
-        .lock()
-        .map_err(|_| "听写状态锁失败")?;
-    if s.epoch == epoch {
-        s.file_job_id = Some(response.job_id);
-    }
+    transcription_start_with_recording(
+        app.clone(),
+        &state,
+        path,
+        Some(params),
+        "dictation",
+        None,
+        |job_id| {
+            let mut session = state
+                .dictation_runtime
+                .session
+                .lock()
+                .map_err(|_| "听写状态锁失败")?;
+            if session.epoch != epoch {
+                return Err("听写会话已结束".into());
+            }
+            session.file_job_id = Some(job_id.into());
+            Ok(())
+        },
+    )
+    .await?;
     Ok(())
 }
 
-async fn write_wav(samples: Vec<f32>, sample_rate: u32) -> Result<String, String> {
-    let pcm = crate::audio_prep::f32_to_i16(&samples);
-    let data_len = (pcm.len() * 2) as u32;
-    let mut bytes = Vec::with_capacity(44 + data_len as usize);
-    bytes.extend_from_slice(b"RIFF");
-    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-    bytes.extend_from_slice(b"WAVEfmt ");
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&sample_rate.to_le_bytes());
-    bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    bytes.extend_from_slice(&2u16.to_le_bytes());
-    bytes.extend_from_slice(&16u16.to_le_bytes());
-    bytes.extend_from_slice(b"data");
-    bytes.extend_from_slice(&data_len.to_le_bytes());
-    for v in pcm {
-        bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    let path = std::env::temp_dir().join(format!("say-it-dictation-{}.wav", Uuid::new_v4()));
-    tokio::fs::write(&path, bytes)
+async fn drain_file_recording(
+    done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
+) -> Result<crate::audio_wav::RecordedWav, String> {
+    let done = done.ok_or("听写录音任务不存在")?;
+    tokio::time::timeout(Duration::from_secs(10), done)
         .await
-        .map_err(|e| format!("写入听写录音失败：{e}"))?;
-    Ok(path.to_string_lossy().into_owned())
+        .map_err(|_| "听写尾部音频或文件写入超时".to_string())?
+        .map_err(|_| "听写录音任务提前结束".to_string())??
+        .ok_or_else(|| "听写录音文件不存在".into())
 }
 
 async fn cancel(app: AppHandle) -> Result<(), String> {
@@ -1638,17 +1801,27 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
                 )
             }),
         );
+        let cancelled_epoch = s.epoch;
+        s.processing_cancellation.cancel();
         s.epoch = state
             .dictation_runtime
             .epochs
             .fetch_add(1, Ordering::AcqRel)
             + 1;
+        crate::application::diagnostics::event(
+            "info",
+            "dictation.sessionCancelled",
+            serde_json::json!({ "sessionId": cancelled_epoch }),
+        );
         s.phase = DictationPhase::Idle;
+        s.delivery = delivery::DeliveryState::default();
         s.mode = None;
         s.public_id = None;
         s.committed.clear();
         s.segment.clear();
-        s.raw_samples.clear();
+        s.recorded_samples = 0;
+        s.raw_done.take();
+        s.recorded_ms = None;
         s.error = None;
         s.pending_fallback = None;
         s.activation_target = None;
@@ -1689,74 +1862,8 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-async fn handle_backend_event(app: AppHandle, event: BackendEvent) {
-    match event {
-        BackendEvent::Asr {
-            session_id,
-            kind,
-            payload,
-        } => handle_asr_event(app, session_id, kind, payload).await,
-        BackendEvent::Transcription {
-            job_id,
-            stage,
-            payload,
-        } => handle_file_event(app, job_id, stage, payload).await,
-        BackendEvent::SubtitleTranslation { .. } => {}
-    }
-}
-
-async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payload: Value) {
-    let mut finalize_epoch = None;
-    let mut failure = None;
-    {
-        let state = app.state::<RuntimeState>();
-        let Ok(mut s) = state.dictation_runtime.session.lock() else {
-            return;
-        };
-        if s.asr_session_id.as_deref() != Some(&session_id) {
-            return;
-        }
-        match kind.as_str() {
-            "result" => {
-                if let Some(text) = payload.get("text").and_then(Value::as_str) {
-                    s.segment = text.into();
-                    if payload.get("final").and_then(Value::as_bool) == Some(true) {
-                        commit_current_segment(&mut s);
-                    }
-                }
-            }
-            "finish" | "finish_timeout" => finalize_epoch = Some(s.epoch),
-            "ended" | "closed" if s.phase == DictationPhase::Finishing => {
-                finalize_epoch = Some(s.epoch)
-            }
-            "ended" | "closed" => {
-                s.asr_session_id = None;
-                failure = Some((s.epoch, "实时语音识别连接意外中断".to_string()));
-            }
-            "error" => {
-                let message = payload
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| payload.to_string());
-                s.asr_session_id = None;
-                failure = Some((s.epoch, format!("实时语音识别失败：{message}")));
-            }
-            _ => {}
-        }
-    }
-    if let Some((epoch, error)) = failure {
-        let _ = fail(app, epoch, error).await;
-        return;
-    }
-    publish_state(
-        &app,
-        if kind == "error" {
-            Some(payload.to_string())
-        } else {
-            None
-        },
-    );
+fn publish_recognition_state(app: &AppHandle) {
+    publish_state(app, None);
     let follow_up_voice = app
         .state::<RuntimeState>()
         .dictation_runtime
@@ -1779,10 +1886,7 @@ async fn handle_asr_event(app: AppHandle, session_id: String, kind: String, payl
                 })
         });
     if let Some((active, text)) = follow_up_voice {
-        crate::application::assistant::publish_follow_up_voice_input(&app, active, &text);
-    }
-    if let Some(epoch) = finalize_epoch {
-        finalize(app, epoch).await;
+        crate::application::assistant::publish_follow_up_voice_input(app, active, &text);
     }
 }
 
@@ -1790,52 +1894,6 @@ fn commit_current_segment(session: &mut Session) {
     if !session.segment.is_empty() {
         session.committed.push_str(&session.segment);
         session.segment.clear();
-    }
-}
-
-async fn handle_file_event(app: AppHandle, job_id: String, stage: String, payload: Value) {
-    let epoch = {
-        let state = app.state::<RuntimeState>();
-        let Ok(s) = state.dictation_runtime.session.lock() else {
-            return;
-        };
-        if s.file_job_id.as_deref() != Some(&job_id) {
-            return;
-        }
-        s.epoch
-    };
-    if stage == "completed" {
-        let text = payload
-            .get("result")
-            .and_then(|r| r.get("transcripts"))
-            .and_then(Value::as_array)
-            .map(|v| {
-                v.iter()
-                    .filter_map(|t| t.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        {
-            let state = app.state::<RuntimeState>();
-            if let Ok(mut s) = state.dictation_runtime.session.lock() {
-                if s.epoch == epoch {
-                    s.committed = text;
-                }
-            };
-        }
-        finalize(app, epoch).await;
-    } else if stage == "error" {
-        let _ = fail(
-            app,
-            epoch,
-            payload
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("文件识别失败")
-                .into(),
-        )
-        .await;
     }
 }
 
@@ -1900,11 +1958,21 @@ async fn prepare_target_for_injection(
     Ok(())
 }
 
+/// 在停止录音时冻结采样时长，不能把后续上传/转写等待算作说话时长。
+fn freeze_recorded_duration(session: &mut Session) {
+    let samples = std::mem::take(&mut session.recorded_samples);
+    if session.sample_rate > 0 && samples > 0 {
+        session.recorded_ms =
+            Some((samples as u64).saturating_mul(1000) / session.sample_rate as u64);
+    }
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let begin_guard = operation.lock().await;
     let (
+        processing_cancellation,
         text,
         prefs,
         effective,
@@ -1945,6 +2013,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             "paste".to_string()
         };
         (
+            s.processing_cancellation.clone(),
             format!("{}{}", s.committed, s.segment).trim().to_string(),
             s.prefs.clone(),
             s.effective
@@ -1960,13 +2029,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.activation_target,
             s.app_identity.clone(),
             s.started_at,
-            if s.sample_rate > 0 && !s.raw_samples.is_empty() {
-                (s.raw_samples.len() as u64).saturating_mul(1000) / s.sample_rate as u64
-            } else {
+            s.recorded_ms.unwrap_or_else(|| {
                 s.started_at
                     .map(|value| value.elapsed().as_millis() as u64)
                     .unwrap_or(0)
-            },
+            }),
             s.assistant_request.clone(),
             s.history_allowed,
             s.trigger,
@@ -2077,10 +2144,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         String::new()
     } else if let Some(handle) = active_app_context {
-        let captured = state
-            .active_app_context
-            .resolve_dictation_capture(handle)
-            .await;
+        let Some(captured) = processing::until_cancelled(
+            &processing_cancellation,
+            state.active_app_context.resolve_dictation_capture(handle),
+        )
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
         let current_session = state.dictation_runtime.session.lock().ok();
         if current_session.as_deref().is_some_and(|session| {
             session.epoch == epoch
@@ -2114,34 +2185,22 @@ async fn finalize(app: AppHandle, epoch: u64) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
     }
-    // 普通听写固定采用：ASR 原文 → 现有本地规则 → 智能处理 → 个性化精确纠错。
+    // 普通听写固定采用：ASR 原文 → 智能处理 → 本地规则 → 个性化精确纠错。
+    // 本地规则是用户对**最终文本**的确定性兜底修正，必须作用在大模型输出之上；
+    // 顺序反过来的话，用户为聊天框关掉的句末标点会被 LLM 重新补回、自定义查找替换
+    // 也会被改回去，现象是「规则开着但没生效」且没有任何提示。
     // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
-    let locally_processed = if assistant_request.is_some() {
-        text.clone()
-    } else {
-        match apply_rules(&text, &prefs, effective.local_rules_enabled) {
-            Ok(value) => value,
-            Err(error) => {
-                if let Some(lease) = &lease {
-                    let _ = state.audio_session.release(lease);
-                }
-                remove_temp(temp_path.clone());
-                let _ = fail_with_raw_fallback(
-                    app,
-                    epoch,
-                    error,
-                    raw_text.clone(),
-                    method.clone(),
-                    FloatingFallbackKind::Processing,
-                )
-                .await;
-                return;
-            }
-        }
-    };
     let assistant_processed = if let Some(request) = assistant_request.as_ref() {
-        match crate::application::assistant::process(&app, &state, request, &text).await {
+        let Some(result) = processing::until_cancelled(
+            &processing_cancellation,
+            crate::application::assistant::process(&app, &state, request, &text),
+        )
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
+        match result {
             Ok(value) => Some(value),
             Err(error) => {
                 if !finalize_session_is_current(
@@ -2231,19 +2290,25 @@ async fn finalize(app: AppHandle, epoch: u64) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         }
-        let smart_result = crate::application::smart_text::process_smart_text(
-            &state,
-            &locally_processed,
-            &template.prompt,
-            &active_app_context,
-            app_identity
-                .as_ref()
-                .map(|identity| identity.app_name.as_str())
-                .unwrap_or_default(),
-            &prefs.smart_llm_provider_id,
-            &prefs.smart_llm_model,
+        let Some(smart_result) = processing::until_cancelled(
+            &processing_cancellation,
+            crate::application::smart_text::process_smart_text(
+                &state,
+                &text,
+                &template.prompt,
+                &active_app_context,
+                app_identity
+                    .as_ref()
+                    .map(|identity| identity.app_name.as_str())
+                    .unwrap_or_default(),
+                &prefs.smart_llm_provider_id,
+                &prefs.smart_llm_model,
+            ),
         )
-        .await;
+        .await else {
+            cleanup_stale_finalize(&state, lease, temp_path);
+            return;
+        };
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
@@ -2268,7 +2333,31 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
     } else {
-        locally_processed
+        text.clone()
+    };
+    // 本地规则在这里才执行：作用对象是智能处理之后的最终文本。
+    let locally_processed = if assistant_request.is_some() {
+        smart_processed
+    } else {
+        match apply_rules(&smart_processed, &prefs, effective.local_rules_enabled) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(lease) = &lease {
+                    let _ = state.audio_session.release(lease);
+                }
+                remove_temp(temp_path.clone());
+                let _ = fail_with_raw_fallback(
+                    app,
+                    epoch,
+                    error,
+                    raw_text.clone(),
+                    method.clone(),
+                    FloatingFallbackKind::Processing,
+                )
+                .await;
+                return;
+            }
+        }
     };
     let learning_app_name = assistant_request
         .as_ref()
@@ -2279,12 +2368,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let learned = if assistant_processed.is_none() {
         crate::application::learning::apply_active_rules(
             &state,
-            &smart_processed,
+            &locally_processed,
             learning_app_name,
         )
     } else {
         crate::application::learning::AppliedLearning {
-            text: smart_processed,
+            text: locally_processed,
             rule_ids: Vec::new(),
         }
     };
@@ -2324,7 +2413,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
         }
     }
-    let injection_result = if processed.is_empty() {
+    #[cfg(feature = "performance-acceptance")]
+    let acceptance_delivery = {
+        super::performance_acceptance::capture_dictation_output(&processed);
+        true
+    };
+    #[cfg(not(feature = "performance-acceptance"))]
+    let acceptance_delivery = false;
+    let injection_result = if acceptance_delivery || processed.is_empty() {
         Ok(())
     } else if trigger.is_floating_orb() {
         match write_clipboard_text_inner(processed.clone()).await {
@@ -2774,7 +2870,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
 }
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
-    fail_internal(app, epoch, error, None, None).await
+    fail_internal(app, epoch, error, None, None, None).await
 }
 
 async fn fail_with_raw_fallback(
@@ -2796,25 +2892,40 @@ async fn fail_with_raw_fallback(
                 .then_some((session.activation_target, session.trigger.is_floating_orb()))
         })
         .unwrap_or((None, false));
-    let floating_feedback = if floating {
-        if text.is_empty() {
-            Some(("error", "未识别到内容".to_string(), 2000))
-        } else {
-            match write_clipboard_text_inner(text.clone()).await {
-                Ok(()) => Some((
-                    "fallback",
-                    match floating_kind {
-                        FloatingFallbackKind::Processing => "处理失败，原文已复制",
-                        FloatingFallbackKind::Delivery => "已复制，请手动粘贴",
-                    }
-                    .to_string(),
-                    3000,
-                )),
-                Err(_) => Some(("error", "复制失败，请在历史记录中查看".to_string(), 3000)),
+    // 已有识别原文时的恢复策略：智能处理失败优先把原文直接注入原输入框；
+    // 注入不了（目标丢失/注入失败/交付环节本就失败过）再写剪贴板保底。
+    // 用户至少要拿到原文，且知道是哪一步出的问题。
+    let step = match floating_kind {
+        FloatingFallbackKind::Processing => "智能处理",
+        FloatingFallbackKind::Delivery => "注入",
+    };
+    let mut feedback: Option<(&'static str, String, u64)> = None;
+    if !text.is_empty() {
+        let mut injected = false;
+        if matches!(floating_kind, FloatingFallbackKind::Processing) {
+            if let Some(target) = activation_target {
+                if crate::active_app_context::activate_target(target).is_ok() {
+                    sleep(Duration::from_millis(120)).await;
+                    injected = inject_text_inner(text.clone(), Some(method.clone()))
+                        .await
+                        .is_ok();
+                }
             }
         }
+        let clipboard_ok = !injected && write_clipboard_text_inner(text.clone()).await.is_ok();
+        let (phase, message) = if injected {
+            ("success", format!("{step}失败，已注入原文"))
+        } else if clipboard_ok {
+            ("fallback", format!("{step}失败，原文已复制到剪贴板"))
+        } else {
+            ("error", format!("{step}失败，原文已保存在历史记录"))
+        };
+        feedback = Some((phase, message, 3500));
+    }
+    let (floating_feedback, notice_message) = if floating {
+        (feedback, None)
     } else {
-        None
+        (None, feedback)
     };
     fail_internal(
         app,
@@ -2826,6 +2937,7 @@ async fn fail_with_raw_fallback(
             activation_target,
         }),
         floating_feedback,
+        notice_message.map(|(_, message, _)| message),
     )
     .await
 }
@@ -2836,6 +2948,7 @@ async fn fail_internal(
     error: String,
     pending_fallback: Option<PendingFallback>,
     floating_feedback: Option<(&'static str, String, u64)>,
+    notice_message: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -2862,31 +2975,12 @@ async fn fail_internal(
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
-        let history = s
-            .history_allowed
-            .then(|| {
-                pending_fallback.as_ref().map(|pending| {
-                    let identity = s.app_identity.clone().unwrap_or_default();
-                    crate::application::history::NewHistoryEntry {
-                        task_kind: "dictation".into(),
-                        source_text: pending.text.clone(),
-                        output_text: pending.text.clone(),
-                        smart_processing_applied: false,
-                        instruction: String::new(),
-                        app_name: identity.app_name,
-                        process_name: identity.process_name,
-                        provider_id: history_provider_id(&state, &s.prefs.asr_model),
-                        model_id: s.prefs.asr_model.clone(),
-                        status: "failed".into(),
-                        error: Some(error.clone()),
-                        duration_ms: s
-                            .started_at
-                            .map(|value| value.elapsed().as_millis() as u64)
-                            .unwrap_or(0),
-                    }
-                })
-            })
-            .flatten();
+        let history = failed_history_entry(
+            &s,
+            history_provider_id(&state, &s.prefs.asr_model),
+            &error,
+            pending_fallback.as_ref(),
+        );
         let floating = s.trigger.is_floating_orb();
         s.mark_failed(
             error.clone(),
@@ -2923,10 +3017,15 @@ async fn fail_internal(
     }
     let _ = release_backend_mic_inner(&state);
     if let Some(entry) = history {
-        if let Err(error) =
-            crate::application::history::record_or_update(&app, history_id.as_deref(), entry)
-        {
-            eprintln!("[history] 保存失败结果失败：{error}");
+        match crate::application::history::record_or_update(&app, history_id.as_deref(), entry) {
+            Ok(id) => {
+                if let Ok(mut session) = state.dictation_runtime.session.lock() {
+                    if session.is_current(epoch) {
+                        session.history_id = Some(id);
+                    }
+                }
+            }
+            Err(error) => eprintln!("[history] 保存失败结果失败：{error}"),
         }
     } else if let Some(id) = history_id {
         if let Err(error) = crate::application::history::update_result(
@@ -2945,6 +3044,11 @@ async fn fail_internal(
         let (phase, message, delay) = floating_feedback.unwrap_or(("error", error.clone(), 3000));
         let message = floating_failure_details(phase, message, &error);
         crate::desktop::complete_floating_orb(app.clone(), phase, message, delay);
+    } else if crate::desktop::native_dictation_indicator_enabled() {
+        // Windows 原生模式：错误提示走原生通知面板（哪步失败 + 已如何兜底），
+        // 自动消失，不再为可交互面板激活 WebView。
+        let message = notice_message.unwrap_or_else(|| truncate_notice(&error));
+        let _ = crate::desktop::show_dictation_indicator_notice(&app, message);
     } else {
         let can_use_raw_text = state
             .dictation_runtime
@@ -2957,6 +3061,58 @@ async fn fail_internal(
     }
     publish_state(&app, Some(error.clone()));
     Err(error)
+}
+
+fn failed_history_entry(
+    session: &Session,
+    provider_id: String,
+    error: &str,
+    pending_fallback: Option<&PendingFallback>,
+) -> Option<crate::application::history::NewHistoryEntry> {
+    if !session.history_allowed || (session.history_id.is_some() && pending_fallback.is_none()) {
+        return None;
+    }
+    let identity = session.app_identity.clone().unwrap_or_default();
+    // 尚未产出 final 的识别失败也要留痕；不要把错误提示伪装成识别文字。
+    let text = pending_fallback
+        .map(|pending| pending.text.clone())
+        .unwrap_or_else(|| format!("{}{}", session.committed, session.segment));
+    Some(crate::application::history::NewHistoryEntry {
+        task_kind: session
+            .assistant_request
+            .as_ref()
+            .map(|request| request.action.task_kind())
+            .unwrap_or("dictation")
+            .into(),
+        source_text: text.clone(),
+        output_text: text,
+        smart_processing_applied: false,
+        instruction: String::new(),
+        app_name: identity.app_name,
+        process_name: identity.process_name,
+        provider_id,
+        model_id: session.prefs.asr_model.clone(),
+        status: "failed".into(),
+        error: Some(error.into()),
+        duration_ms: session
+            .started_at
+            .map(|started| started.elapsed().as_millis() as u64)
+            .unwrap_or(0),
+    })
+}
+
+/// 把可能很长的内部错误（如插件抛出的 JSON 串）收成通知面板能放下的短文案：
+/// 取首行，最多 72 个字符。
+fn truncate_notice(error: &str) -> String {
+    let first_line = error.lines().next().unwrap_or("").trim();
+    const MAX: usize = 72;
+    if first_line.chars().count() > MAX {
+        let mut s: String = first_line.chars().take(MAX).collect();
+        s.push('…');
+        s
+    } else {
+        first_line.to_string()
+    }
 }
 
 fn floating_failure_details(phase: &str, message: String, error: &str) -> String {
@@ -2975,18 +3131,38 @@ fn remove_temp(path: Option<PathBuf>) {
     }
 }
 
+/// 「已复制到剪贴板」提示 3.2 秒后是否还该把指示窗收起来。
+///
+/// 指示窗是听写提示条与实时字幕条**共用**的同一个窗口。这次隐藏是延时执行的，
+/// 期间用户完全可能开起实时字幕——只看听写会话状态就会把刚出现的字幕条一并关掉，
+/// 而用户看不到任何原因。
+fn clipboard_notice_should_hide(
+    session_epoch: u64,
+    expected_epoch: u64,
+    dictation_phase: DictationPhase,
+    subtitle_owns_indicator: bool,
+) -> bool {
+    session_epoch == expected_epoch
+        && dictation_phase == DictationPhase::Idle
+        && !subtitle_owns_indicator
+}
+
 fn schedule_clipboard_fallback_hide(app: AppHandle, epoch: u64) {
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_millis(CLIPBOARD_FALLBACK_NOTICE_MS)).await;
-        let should_hide = app
-            .state::<RuntimeState>()
-            .dictation_runtime
-            .session
-            .lock()
-            .map(|session| session.epoch == epoch && session.phase == DictationPhase::Idle)
-            .unwrap_or(false);
-        if should_hide {
-            let _ = crate::desktop::set_indicator_state(app, "hidden".into());
+        let state = app.state::<RuntimeState>();
+        let Ok(session) = state.dictation_runtime.session.lock() else {
+            return;
+        };
+        let (session_epoch, phase) = (session.epoch, session.phase);
+        drop(session);
+        if clipboard_notice_should_hide(
+            session_epoch,
+            epoch,
+            phase,
+            crate::application::subtitles::owns_indicator(&state),
+        ) {
+            let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
         }
     });
 }
@@ -3058,9 +3234,15 @@ fn publish_state_with_text(
     if show_in_indicator && !text.is_empty() {
         let _ = crate::desktop::set_indicator_text(app.clone(), text, Some(false));
     }
+    if matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
+        super::idle_reclaim::request(app);
+    }
 }
 
 fn emit_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
+    if crate::desktop::native_dictation_indicator_enabled() {
+        crate::desktop::native_indicator_set_waveform(level, peaks.clone());
+    }
     if let Some(w) = app.get_webview_window("dictation-indicator") {
         let _ = w.emit(
             "dictation-indicator-waveform",
@@ -3074,7 +3256,10 @@ fn should_show_waveform(
     assistant_follow_up: bool,
     floating_orb: bool,
 ) -> bool {
-    floating_orb || assistant_follow_up || mode == Some(DictationMode::File)
+    // 胶囊录音态已常驻波形（方案二定稿），所有模式都发波形数据；
+    // 曾经的"仅文件听写显示波形"会让实时模型下胶囊波形永远静止。
+    let _ = (mode, assistant_follow_up, floating_orb);
+    true
 }
 
 fn should_show_final_text_in_indicator(mode: Option<DictationMode>) -> bool {
@@ -3317,30 +3502,18 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
     let selected = selected_model.trim();
     if selected.is_empty() {
         return match legacy_engine {
-            crate::active_app_context::OcrEngineKind::System => OcrProvider::System,
-            crate::active_app_context::OcrEngineKind::PpOcr => {
-                let spec = state
-                    .plugin_registry
-                    .lock()
-                    .ok()
-                    .and_then(|registry| registry.local_model_for_engine("ppocr-mnn"));
-                let spec = spec.filter(|spec| {
-                    state.providers.lock().is_ok_and(|settings| {
-                        settings
-                            .profiles
-                            .iter()
-                            .any(|profile| profile.id == spec.provider_id && profile.enabled)
-                    })
-                });
-                spec.map(|spec| OcrProvider::PpOcr { spec }).unwrap_or_else(|| OcrProvider::Unavailable {
-                    selection: "ppocr".into(),
-                    reason: "旧版 PP-OCR 设置已迁移，但本地模型包尚未安装；请在插件管理安装 PP-OCRv6 Tiny 后重新选择。".into(),
-                })
-            }
+            crate::active_app_context::OcrEngineKind::System => OcrProvider::default_local(),
+            crate::active_app_context::OcrEngineKind::PpOcr => OcrProvider::PpOcr,
         };
     }
-    if selected == crate::providers::SYSTEM_OCR_PROVIDER_ID || selected == "system" {
-        return OcrProvider::System;
+    if matches!(selected, "system-ocr" | "system" | "builtin-windows-ocr") {
+        return OcrProvider::default_local();
+    }
+    if selected == crate::providers::PPOCR_MODEL_ID
+        || selected == crate::providers::PPOCR_PROVIDER_ID
+        || selected == "ppocr"
+    {
+        return OcrProvider::PpOcr;
     }
 
     let settings = match crate::commands::common::read_provider_settings(state) {
@@ -3361,18 +3534,13 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
             }
         }
     };
-    let local = registry.local_model_for_model(selected);
-    let provider_id = local
-        .as_ref()
-        .map(|spec| spec.provider_id.clone())
-        .or_else(|| registry.provider_id_for_model(selected))
-        .or_else(|| {
-            settings
-                .profiles
-                .iter()
-                .find(|profile| profile.id == selected)
-                .map(|profile| profile.id.clone())
-        });
+    let provider_id = registry.provider_id_for_model(selected).or_else(|| {
+        settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == selected)
+            .map(|profile| profile.id.clone())
+    });
     let Some(provider_id) = provider_id else {
         return OcrProvider::Unavailable {
             selection: selected.into(),
@@ -3392,16 +3560,6 @@ pub(crate) fn resolve_active_app_context_ocr_provider(
             reason: format!("OCR 模型 {selected} 的供应商未启用或已卸载。"),
         };
     };
-    if let Some(spec) = local {
-        return if spec.engine == "ppocr-mnn" {
-            OcrProvider::PpOcr { spec }
-        } else {
-            OcrProvider::Unavailable {
-                selection: selected.into(),
-                reason: format!("模型引擎 {} 不支持场景感知 OCR。", spec.engine),
-            }
-        };
-    }
     let runtime = match registry.runtime_for_provider(&provider_id) {
         Ok(Some(runtime)) => runtime.bind_credentials(state.credentials.clone()),
         Ok(None) => {
@@ -3468,6 +3626,40 @@ fn regex_escape_find(input: &str) -> String {
         if last { "\\b" } else { "" }
     )
 }
+/// 内置「合并连续标点」规则的判定依据，与前端共用 `shared/builtin-punctuation-rule.json`。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuiltinPunctuationRule {
+    id: String,
+    flags: String,
+    replacement: String,
+    patterns: Vec<String>,
+}
+
+static BUILTIN_PUNCTUATION_RULE: std::sync::LazyLock<BuiltinPunctuationRule> =
+    std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!(
+            "../../../shared/builtin-punctuation-rule.json"
+        ))
+        .expect("shared/builtin-punctuation-rule.json 解析失败")
+    });
+
+/// 这条规则是否仍是**未被改写过的**内置标点合并规则。
+///
+/// 只认 `id` 是不够的：内置规则可以被用户编辑，改完之后它就是一条普通的正则替换规则，
+/// 必须按用户自己写的 `replacement` 执行。此前 Rust 侧只比 `id == "dedupe-punct"`，
+/// 而前端按 id + mode + flags + replacement + pattern 整体快照判定——用户改写内置规则后，
+/// 试运行预览用的是自己的替换结果，真实听写却仍走内置的标点归一化，改动等于永久无效。
+/// 判定依据两端共用 `shared/builtin-punctuation-rule.json`，避免再次分叉。
+fn is_builtin_punctuation_merge_rule(rule: &LocalRule) -> bool {
+    let builtin = &*BUILTIN_PUNCTUATION_RULE;
+    rule.id == builtin.id
+        && rule.mode != "find"
+        && rule.flags == builtin.flags
+        && rule.replacement == builtin.replacement
+        && builtin.patterns.iter().any(|pattern| *pattern == rule.pattern)
+}
+
 fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<String, String> {
     if !enabled {
         return Ok(text.into());
@@ -3488,7 +3680,7 @@ fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<Stri
             let caps = found.map_err(|e| format!("规则 {} 执行失败：{e}", rule.id))?;
             let m = caps.get(0).unwrap();
             next.push_str(&source[last..m.start()]);
-            if rule.id == "dedupe-punct" {
+            if is_builtin_punctuation_merge_rule(rule) {
                 next.push_str(&normalize_punctuation(m.as_str()));
             } else {
                 next.push_str(&expand_replacement(&rule.replacement, &caps, &source));
@@ -3654,6 +3846,30 @@ fn play_floating_orb_cue(app: &AppHandle, which: &'static str, prefs: &Dictation
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failure_before_transcript_is_recorded_and_existing_history_is_updated() {
+        let mut session = super::Session {
+            history_allowed: true,
+            ..Default::default()
+        };
+        let entry =
+            super::failed_history_entry(&session, "bailian".into(), "完整识别错误", None).unwrap();
+        assert!(entry.source_text.is_empty());
+        assert!(entry.output_text.is_empty());
+        assert_eq!(entry.error.as_deref(), Some("完整识别错误"));
+        assert_eq!(entry.status, "failed");
+        session.committed = "已识别".into();
+        session.segment = "部分文字".into();
+        let partial =
+            super::failed_history_entry(&session, "bailian".into(), "识别中断", None).unwrap();
+        assert_eq!(partial.source_text, "已识别部分文字");
+        session.history_allowed = false;
+        assert!(super::failed_history_entry(&session, "bailian".into(), "错误", None).is_none());
+        session.history_allowed = true;
+        session.history_id = Some("existing".into());
+        assert!(super::failed_history_entry(&session, "bailian".into(), "错误", None).is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -3866,6 +4082,290 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(apply_rules("中AA", &p, true).unwrap(), "中A");
+    }
+
+    fn punct_rule(pattern: &str, replacement: &str) -> DictationPrefs {
+        DictationPrefs {
+            local_rules_enabled: true,
+            local_rules: vec![LocalRule {
+                id: "dedupe-punct".into(),
+                enabled: true,
+                mode: "regex".into(),
+                find: String::new(),
+                pattern: pattern.into(),
+                flags: "g".into(),
+                replacement: replacement.into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 内置标点规则是可以被用户编辑的；改完它就是一条普通替换规则。
+    ///
+    /// Rust 此前只比 `id == "dedupe-punct"`，于是不论用户把 pattern / replacement 改成
+    /// 什么，真实听写都仍走内置的标点归一化；而前端试运行按整体快照判定，用的是用户
+    /// 自己的替换结果。两边给出不同答案，用户的改动等于永久无效且毫无提示。
+    #[test]
+    fn edited_builtin_punctuation_rule_uses_the_user_replacement() {
+        let untouched = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[1], "$1");
+        assert!(is_builtin_punctuation_merge_rule(&untouched.local_rules[0]));
+        // 未改动：走内置归一化，「，。」合并成「。」而不是保留第一个「，」。
+        assert_eq!(apply_rules("你好，。世界", &untouched, true).unwrap(), "你好。世界");
+
+        let edited = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[1], "");
+        assert!(!is_builtin_punctuation_merge_rule(&edited.local_rules[0]));
+        // 用户把替换改成「删除」，就必须真的删掉。
+        assert_eq!(apply_rules("你好，。世界", &edited, true).unwrap(), "你好世界");
+
+        let repatterned = punct_rule("，+", "、");
+        assert!(!is_builtin_punctuation_merge_rule(&repatterned.local_rules[0]));
+        assert_eq!(apply_rules("你好，，世界", &repatterned, true).unwrap(), "你好、世界");
+    }
+
+    /// 旧版内置 pattern 也必须被认成内置，否则老用户升级后行为会突变。
+    #[test]
+    fn legacy_builtin_punctuation_pattern_is_still_recognized() {
+        let legacy = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[0], "$1");
+        assert!(is_builtin_punctuation_merge_rule(&legacy.local_rules[0]));
+    }
+
+    /// 判定依据是两端共用的那份 JSON，改一边就会在这里暴露。
+    #[test]
+    fn builtin_punctuation_definition_matches_the_frontend_engine() {
+        let engine = include_str!("../../../ui/src/features/dictation/localRulesEngine.ts");
+        assert!(
+            engine.contains("builtin-punctuation-rule.json"),
+            "前端必须消费 shared/builtin-punctuation-rule.json，而不是另写一份常量"
+        );
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.id, "dedupe-punct");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.flags, "g");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.replacement, "$1");
+        assert_eq!(BUILTIN_PUNCTUATION_RULE.patterns.len(), 2);
+    }
+
+    /// 停止并冻结计数后，finalize 必须仍然拿得到真实说话时长。
+    ///
+    /// 四个 finalize 入口全在 stop() 之后，原来那段「按采样数算时长」的代码因此
+    /// 从未执行过，一律回落到 started_at.elapsed()：file 模式把上传与转写的耗时
+    /// 也算成说话时长，history::output_metrics 的「节省时间」长期 saturate 成 0。
+    #[test]
+    fn file_recording_waits_for_tail_and_propagates_worker_failure() {
+        tauri::async_runtime::block_on(async {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let worker = tauri::async_runtime::spawn_blocking(move || {
+                let mut recording = crate::audio_wav::WavRecording::new(16_000, crate::audio_wav::Quantization::Round).unwrap();
+                recording.append(&vec![0.1; 4096]).unwrap();
+                recording.append(&[0.2; 17]).unwrap();
+                let _ = tx.send(Ok(Some(recording.finish().unwrap())));
+            });
+            let recording = drain_file_recording(Some(rx)).await.unwrap();
+            assert_eq!(recording.samples, 4113);
+            worker.await.unwrap();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tx.send(Err("disk full".into())).ok().unwrap();
+            assert_eq!(drain_file_recording(Some(rx)).await.err().unwrap(), "disk full");
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            drop(tx);
+            assert!(drain_file_recording(Some(rx)).await.is_err());
+            assert!(drain_file_recording(None).await.is_err());
+        });
+    }
+
+    #[test]
+    fn recorded_duration_survives_the_recording_handoff() {
+        let mut session = Session {
+            sample_rate: 16_000,
+            recorded_samples: 32_000,
+            ..Session::default()
+        };
+
+        freeze_recorded_duration(&mut session);
+
+        assert_eq!(session.recorded_samples, 0, "冻结后清空计数，避免重复计算");
+        assert_eq!(
+            session.recorded_ms,
+            Some(2_000),
+            "32000 帧 / 16kHz = 2 秒，必须在停止时记下"
+        );
+    }
+
+    #[test]
+    fn recorded_duration_stays_unset_without_usable_samples() {
+        let mut empty = Session {
+            sample_rate: 16_000,
+            ..Session::default()
+        };
+        freeze_recorded_duration(&mut empty);
+        assert_eq!(empty.recorded_ms, None, "没有采样时应回落到时钟时长");
+
+        let mut unknown_rate = Session {
+            sample_rate: 0,
+            recorded_samples: 1_000,
+            ..Session::default()
+        };
+        freeze_recorded_duration(&mut unknown_rate);
+        assert_eq!(unknown_rate.recorded_ms, None, "采样率未知时不能瞎算");
+    }
+
+    /// finalize 必须读冻结后的时长，不能读已清空的采样计数。
+    #[test]
+    fn finalize_reads_the_recorded_duration_not_the_drained_samples() {
+        let source = include_str!("dictation.rs").replace("\r\n", "\n");
+        let production = &source[..source.find("#[cfg(test)]").expect("应当存在测试模块")];
+        let start = production
+            .find("async fn finalize(")
+            .expect("finalize 必须仍然存在");
+        let body = &production[start..];
+        let body = &body[..body.find("\n}\n").expect("函数体未闭合")];
+
+        assert!(
+            body.contains("recorded_ms"),
+            "finalize 必须用 stop() 记下的说话时长"
+        );
+        assert!(
+            !body.contains("recorded_samples"),
+            "finalize 不能用停止后已清空的计数计算时长"
+        );
+    }
+
+    /// 「已复制到剪贴板」提示的延时隐藏必须让开实时字幕。
+    ///
+    /// 指示窗是听写提示条与字幕条共用的同一个窗口，而这次隐藏是 3.2 秒之后才执行的。
+    /// 只看听写会话状态的话，用户在这期间开起实时字幕就会被这条延时任务一把关掉，
+    /// 而且看不到任何原因。
+    #[test]
+    fn file_mode_recording_stops_at_the_hard_limit() {
+        // 存储方式改变后仍保持原有 30 分钟自动收尾行为。
+        let rate = 48_000u32;
+        let limit = FILE_MODE_MAX_RECORDING.as_secs() as usize * rate as usize;
+        assert!(!file_mode_recording_is_full(limit - 1, rate));
+        assert!(file_mode_recording_is_full(limit, rate));
+        // 16kHz 设备的上限按同一个时长换算，而不是同一个采样数。
+        assert!(!file_mode_recording_is_full(limit, 192_000));
+        // 采样率未知时不误判为已满。
+        assert!(!file_mode_recording_is_full(usize::MAX, 0));
+    }
+
+    #[test]
+    fn written_wav_has_a_correct_header_and_payload() {
+        let path = std::env::temp_dir().join(format!("say-it-wav-test-{}.wav", Uuid::new_v4()));
+        crate::audio_wav::write_mono_pcm16(&path, &[0.0, 1.0, -1.0, 0.5], 16_000, crate::audio_wav::Quantization::Round).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 36 + 8);
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(&bytes[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 8);
+        assert_eq!(bytes.len(), 44 + 8);
+        let pcm: Vec<i16> = bytes[44..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(pcm, crate::audio_prep::f32_to_i16(&[0.0, 1.0, -1.0, 0.5]));
+    }
+
+    #[test]
+    fn clipboard_notice_hide_yields_to_a_live_subtitle_bar() {
+        // 听写已收尾、字幕没开：正常收起提示条。
+        assert!(clipboard_notice_should_hide(7, 7, DictationPhase::Idle, false));
+
+        // 这 3.2 秒里用户开了实时字幕：绝不能碰指示窗。
+        assert!(!clipboard_notice_should_hide(7, 7, DictationPhase::Idle, true));
+
+        // 已经开始了新一轮听写：本来就该跳过。
+        assert!(!clipboard_notice_should_hide(8, 7, DictationPhase::Idle, false));
+        assert!(!clipboard_notice_should_hide(
+            7,
+            7,
+            DictationPhase::Recording,
+            false
+        ));
+    }
+
+    /// 回归：刚建好的 ASR 流是否仍属于当前会话，必须同时看 epoch **和**阶段。
+    ///
+    /// epoch 只在 `start_internal` 推进，`stop()` / `fail_internal()` 都不推进。只比 epoch
+    /// 的话，「建流期间用户按停止」会被误判成会话仍在进行：刚建好的流被挂回麦克风并写进
+    /// 已结束的会话，麦克风在 keep_alive_ms（默认 60 秒）内继续把环境音上传给云端供应商，
+    /// 而这条流永远不会被关闭。
+    #[test]
+    fn asr_stream_is_abandoned_once_the_session_left_recording() {
+        let state = crate::state::RuntimeState::default();
+        let epoch = 7;
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch;
+            session.phase = DictationPhase::Recording;
+        }
+        assert!(asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 用户在建流期间按了停止：epoch 不变，只有阶段回到 Idle。
+        state.dictation_runtime.session.lock().unwrap().phase = DictationPhase::Idle;
+        assert!(
+            !asr_stream_still_wanted(&state, epoch).unwrap(),
+            "会话已收尾时必须放弃这条流，只比 epoch 会漏掉 stop() 这条路径"
+        );
+
+        // 失败态同理。
+        state.dictation_runtime.session.lock().unwrap().phase = DictationPhase::Failed;
+        assert!(!asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 被新会话取代：epoch 已推进。
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch + 1;
+            session.phase = DictationPhase::Recording;
+        }
+        assert!(!asr_stream_still_wanted(&state, epoch).unwrap());
+
+        // 等待声音阶段仍然需要这条流。
+        {
+            let mut session = state.dictation_runtime.session.lock().unwrap();
+            session.epoch = epoch + 1;
+            session.phase = DictationPhase::WaitingForVoice;
+        }
+        assert!(asr_stream_still_wanted(&state, epoch + 1).unwrap());
+    }
+
+    /// 回归：听写后处理顺序固定为「ASR 原文 → 智能处理 → 本地规则 → 个性化精确纠错」。
+    ///
+    /// 本地规则是用户对**最终文本**的确定性兜底修正，必须作用在大模型输出之上
+    /// （CLAUDE.md 的硬性约定）。反过来的话，用户为聊天框关掉的句末标点会被 LLM
+    /// 重新补回、自定义查找替换也会被改回去，现象是「规则开着但没生效」且无任何提示。
+    ///
+    /// 这个顺序曾被提交 8398053 在一次大改动里顺带翻转，且静默存活了很久——纯函数
+    /// 单测覆盖不到 `finalize` 里的调用顺序，所以这里对源码本身做契约检查：
+    /// 只看 `#[cfg(test)]` 之前的生产代码区间，避免匹配到测试自身。
+    #[test]
+    fn local_rules_must_run_after_smart_processing() {
+        let source = include_str!("dictation.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("应当存在测试模块")];
+
+        let smart_at = production
+            .find("smart_text::process_smart_text(")
+            .expect("finalize 应当调用 process_smart_text");
+        let rules_at = production
+            .find("apply_rules(&smart_processed")
+            .expect("本地规则必须作用在 smart_processed 上");
+        let learning_at = production
+            .find("learning::apply_active_rules(")
+            .expect("finalize 应当调用 apply_active_rules");
+
+        assert!(
+            smart_at < rules_at,
+            "本地规则必须跑在智能处理**之后**：它是对最终文本的确定性兜底"
+        );
+        assert!(
+            rules_at < learning_at,
+            "个性化精确纠错应当作用在本地规则之后"
+        );
+        assert!(
+            !production.contains("apply_rules(&text"),
+            "本地规则不得再作用在 ASR 原文上"
+        );
     }
     fn identity(process_name: &str) -> crate::active_app_context::AppIdentity {
         crate::active_app_context::AppIdentity {
@@ -4209,28 +4709,19 @@ mod tests {
     }
 
     #[test]
-    fn waveform_is_shown_for_file_follow_up_and_floating_orb_dictation() {
-        assert!(should_show_waveform(
-            Some(DictationMode::File),
-            false,
-            false
-        ));
-        assert!(should_show_waveform(
-            Some(DictationMode::Realtime),
-            true,
-            false
-        ));
-        assert!(should_show_waveform(
-            Some(DictationMode::Realtime),
-            false,
-            true
-        ));
-        assert!(!should_show_waveform(
-            Some(DictationMode::Realtime),
-            false,
-            false
-        ));
-        assert!(!should_show_waveform(None, false, false));
+    fn waveform_is_shown_for_all_dictation_modes() {
+        for (mode, follow_up, orb) in [
+            (Some(DictationMode::File), false, false),
+            (Some(DictationMode::Realtime), true, false),
+            (Some(DictationMode::Realtime), false, true),
+            (Some(DictationMode::Realtime), false, false),
+            (None, false, false),
+        ] {
+            assert!(
+                should_show_waveform(mode, follow_up, orb),
+                "mode={mode:?} follow_up={follow_up} orb={orb}"
+            );
+        }
     }
 
     #[test]
@@ -4273,26 +4764,46 @@ mod tests {
     }
 
     #[test]
-    fn legacy_ppocr_without_model_pack_is_unavailable_but_system_ocr_remains_available() {
+    fn legacy_ppocr_and_builtin_model_work_without_model_pack() {
         let state = RuntimeState::default();
-        assert!(matches!(
-            resolve_active_app_context_ocr_provider(
+        for selected in [
+            "",
+            crate::providers::PPOCR_MODEL_ID,
+            crate::providers::PPOCR_PROVIDER_ID,
+        ] {
+            assert!(matches!(
+                resolve_active_app_context_ocr_provider(
+                    &state,
+                    selected,
+                    crate::active_app_context::OcrEngineKind::PpOcr,
+                    &[],
+                ),
+                crate::providers::capabilities::OcrProvider::PpOcr
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_system_selection_uses_platform_default() {
+        let state = RuntimeState::default();
+        for selected in ["", "system-ocr", "system", "builtin-windows-ocr"] {
+            let provider = resolve_active_app_context_ocr_provider(
                 &state,
-                "",
-                crate::active_app_context::OcrEngineKind::PpOcr,
+                selected,
+                crate::active_app_context::OcrEngineKind::System,
                 &[],
-            ),
-            crate::providers::capabilities::OcrProvider::Unavailable { .. }
-        ));
-        assert!(matches!(
-            resolve_active_app_context_ocr_provider(
-                &state,
-                crate::providers::SYSTEM_OCR_PROVIDER_ID,
-                crate::active_app_context::OcrEngineKind::PpOcr,
-                &[],
-            ),
-            crate::providers::capabilities::OcrProvider::System
-        ));
+            );
+            #[cfg(windows)]
+            assert!(matches!(
+                provider,
+                crate::providers::capabilities::OcrProvider::PpOcr
+            ));
+            #[cfg(target_os = "macos")]
+            assert!(matches!(
+                provider,
+                crate::providers::capabilities::OcrProvider::System
+            ));
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/Button";
 import { CMD, cmd, on } from "@/lib/tauri";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 import "./index.css";
 import "./assistant.css";
 
@@ -113,6 +114,7 @@ function VoiceWave({ frame }: { frame: VoiceWaveform }) {
 }
 
 export function AssistantAnswerApp() {
+  useEntryTheme();
   const [answer, setAnswer] = useState<Answer>(EMPTY_ANSWER);
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState("");
@@ -245,11 +247,12 @@ export function AssistantAnswerApp() {
         <summary>思考过程{answer.streaming ? "（进行中）" : ""}</summary>
         <div className="mt-2 whitespace-pre-wrap break-words">{answer.reasoning}</div>
       </details>}
-      {answer.error
-        ? <p className="text-sm text-[var(--color-err)]">{answer.error}</p>
-        : answer.text
-          ? <SafeMarkdown text={answer.text} />
-          : <p className="text-sm text-[var(--color-fg-subtle)]">{answer.streaming ? "正在生成回答…" : "正在等待回答…"}</p>}
+      {/* 正文与错误必须同时渲染：生成中断时后端会把已生成的部分连同错误一起下发，
+          二选一的渲染会把用户已经读到一半的回答整段抹掉。 */}
+      {answer.text
+        ? <SafeMarkdown text={answer.text} />
+        : !answer.error && <p className="text-sm text-[var(--color-fg-subtle)]">{answer.streaming ? "正在生成回答…" : "正在等待回答…"}</p>}
+      {answer.error && <p className={`text-sm text-[var(--color-err)]${answer.text ? " mt-4" : ""}`}>{answer.error}</p>}
     </main>
     <footer className="assistant-footer flex-none border-t border-[var(--color-line)]">
       <div className="assistant-actions">

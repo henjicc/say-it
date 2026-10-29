@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "ui:dev"],
       "port": 5155
+    },
+    {
+      "name": "tauri-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "tauri:dev"],
+      "port": 5155
     }
   ]
 }

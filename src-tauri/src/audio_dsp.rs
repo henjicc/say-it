@@ -2,7 +2,7 @@
 //!
 //! 处理顺序固定为：降噪 → EQ → 响度归一化，EQ 造成的电平变化会被后续响度归一化一并拉回目标响度。
 //! 两条使用路径共用同一套参数 [`DspParams`]：
-//! - 离线：调校台录一段 → [`process_offline`] 返回处理后的 48k PCM 与前后 LUFS/峰值，供 A/B 试听。
+//! - 离线：调校台录一段 → [`offline::process_cancellable`] 返回分块存储的 48k PCM 与前后 LUFS/峰值，供 A/B 试听。
 //! - 实时：语音输入把麦克风原始音频喂给 [`StreamDsp::process`]，得到可直接送 ASR 的 16k PCM16。
 //!
 //! RNNoise 固定工作在 48kHz、480 样本/帧，且样本范围是 i16（±32768），而 ebur128 用 [-1,1]。
@@ -11,6 +11,15 @@
 use ebur128::{EbuR128, Mode};
 use nnnoiseless::DenoiseState;
 use serde::{Deserialize, Serialize};
+
+#[cfg(test)]
+mod stream_reference;
+#[cfg(test)]
+mod stream_tests;
+#[cfg(all(test, windows))]
+mod performance_tests;
+
+pub(crate) mod offline;
 
 const FRAME: usize = 480; // 48kHz 下 10ms
 const RATE_48K: u32 = 48_000;
@@ -246,11 +255,13 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 /// 简单线性重采样到 48kHz（仅在麦克风非 48k 时用；离线一次性版本）。
+#[cfg(test)]
 fn resample_to_48k(input: &[f32], in_rate: u32) -> Vec<f32> {
     resample_linear(input, in_rate, RATE_48K)
 }
 
-/// 简单线性重采样（离线一次性版本，非流式）。供录音识别等离线场景复用。
+/// 冻结的离线线性重采样参考，用于分块实现的等价回归。
+#[cfg(test)]
 pub(crate) fn resample_linear(input: &[f32], in_rate: u32, out_rate: u32) -> Vec<f32> {
     if in_rate == out_rate || input.is_empty() {
         return input.to_vec();
@@ -274,6 +285,7 @@ fn peak(samples: &[f32]) -> f32 {
 }
 
 /// 用 ebur128 测整段积分响度（LUFS）。样本不足或无声时返回 NEG_INFINITY。
+#[cfg(test)]
 fn integrated_lufs(samples: &[f32]) -> f32 {
     let mut m = match EbuR128::new(1, RATE_48K, Mode::I) {
         Ok(m) => m,
@@ -288,10 +300,10 @@ fn integrated_lufs(samples: &[f32]) -> f32 {
     }
 }
 
-/// 对整段 48k 信号做 RNNoise 降噪（含干/湿混合与 VAD 门）。返回 [-1,1] f32。
-fn denoise_all(s48: &[f32], strength: f32, vad_gate: f32) -> Vec<f32> {
+/// 就地处理 48k 信号；每帧先读入独立输入区，保留干/湿混合和尾帧补零语义。
+#[cfg(test)]
+fn denoise_all(s48: &mut [f32], strength: f32, vad_gate: f32) {
     let mut st = DenoiseState::new();
-    let mut out = vec![0f32; s48.len()];
     let mut inf = [0f32; FRAME];
     let mut outf = [0f32; FRAME];
     let mut i = 0;
@@ -309,33 +321,21 @@ fn denoise_all(s48: &[f32], strength: f32, vad_gate: f32) -> Vec<f32> {
         for j in 0..n {
             let wet = outf[j] / 32768.0;
             let dry = s48[i + j];
-            out[i + j] = (dry * (1.0 - strength) + wet * strength) * g;
+            s48[i + j] = (dry * (1.0 - strength) + wet * strength) * g;
         }
         i += n;
     }
-    out
 }
 
-/// 离线处理结果（供调校台 A/B 试听与读数）。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Rust 内部的离线处理结果。音频所有权直接交给调校会话，不经过 IPC 编码。
+#[cfg(test)]
 pub struct OfflineResult {
-    /// 处理后 PCM（f32 小端字节，base64）。
-    pub processed_base64: String,
+    pub processed: Vec<f32>,
     pub sample_rate: u32,
     pub in_lufs: f32,
     pub out_lufs: f32,
     pub in_peak_db: f32,
     pub out_peak_db: f32,
-}
-
-fn f32_to_base64(samples: &[f32]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let mut bytes = Vec::with_capacity(samples.len() * 4);
-    for &s in samples {
-        bytes.extend_from_slice(&s.to_le_bytes());
-    }
-    STANDARD.encode(bytes)
 }
 
 fn nan_to_neg(x: f32) -> f32 {
@@ -347,16 +347,16 @@ fn nan_to_neg(x: f32) -> f32 {
 }
 
 /// 离线处理一整段录音：降噪 → 响度归一化到目标 LUFS → 峰值限幅。
+#[cfg(test)]
 pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> OfflineResult {
-    let s48 = resample_to_48k(input, in_rate);
+    let mut s48 = resample_to_48k(input, in_rate);
     let in_lufs = integrated_lufs(&s48);
     let in_peak_db = lin_to_db(peak(&s48));
 
-    let mut wet = if params.denoise_enabled {
-        denoise_all(&s48, params.denoise_strength, params.vad_gate)
-    } else {
-        s48
-    };
+    if params.denoise_enabled {
+        denoise_all(&mut s48, params.denoise_strength, params.vad_gate);
+    }
+    let mut wet = s48;
     ShelfEq::new(RATE_48K as f32, params.bass_gain_db, params.treble_gain_db)
         .process_slice(&mut wet);
 
@@ -373,16 +373,15 @@ pub fn process_offline(input: &[f32], in_rate: u32, params: &DspParams) -> Offli
     let gain = db_to_lin(gain_db);
     let peak_lin = db_to_lin(params.peak_limit_dbfs);
 
-    let out: Vec<f32> = wet
-        .iter()
-        .map(|&x| (x * gain).clamp(-peak_lin, peak_lin))
-        .collect();
+    for sample in &mut wet {
+        *sample = (*sample * gain).clamp(-peak_lin, peak_lin);
+    }
 
-    let out_lufs = integrated_lufs(&out);
-    let out_peak_db = lin_to_db(peak(&out));
+    let out_lufs = integrated_lufs(&wet);
+    let out_peak_db = lin_to_db(peak(&wet));
 
     OfflineResult {
-        processed_base64: f32_to_base64(&out),
+        processed: wet,
         sample_rate: RATE_48K,
         in_lufs: nan_to_neg(in_lufs),
         out_lufs: nan_to_neg(out_lufs),
@@ -400,17 +399,44 @@ pub struct StreamDsp {
     meter: EbuR128,
     gain: f32,
     in_rate: u32,
+    input_samples: u64,
+    output_samples: u64,
+    finished: bool,
     // 线性重采样到 48k 的连续状态（仅非 48k 时使用）。
     rs_step: f64,
     rs_t: f64,
     rs_prev: f32,
     rs_init: bool,
     rs_in_idx: u64,
-    buf48: Vec<f32>,
+    // 只积累当前 10ms 帧；输入包再大也不扩展处理工作区。
+    buf48: [f32; FRAME],
+    filled48: usize,
+    denoise_input: [f32; FRAME],
+    denoise_output: [f32; FRAME],
     // 48k→16k 三抽一盒式平均状态。
     dec_acc: f32,
     dec_cnt: u32,
     peak_lin: f32,
+}
+
+/// 自适应增益的一阶平滑系数：越大收敛越快。
+///
+/// 抬高增益（`desired > current`，通常是进入安静段）走慢速，避免静默期把底噪迅速
+/// 放大造成抽气感；压低增益（进入说话段）走快速，好让增益尽快跟上、避免被
+/// `peak_lin` 硬钳削平。
+///
+/// 这两个方向**不能写反**：反过来的话静默期增益会飞快爬到 `max_gain_db` 顶格，
+/// 用户开口后又迟迟落不下来，每句话开头约一秒被硬削波，首字识别率明显下降。
+/// 该链路在 local/plugin/sdk/apple 全部实时识别路径上，且默认参数即生效。
+const GAIN_RISE_COEFF: f32 = 0.03;
+const GAIN_FALL_COEFF: f32 = 0.08;
+
+fn gain_smoothing_coeff(desired: f32, current: f32) -> f32 {
+    if desired > current {
+        GAIN_RISE_COEFF
+    } else {
+        GAIN_FALL_COEFF
+    }
 }
 
 impl StreamDsp {
@@ -426,137 +452,350 @@ impl StreamDsp {
             meter,
             gain: 1.0,
             in_rate,
+            input_samples: 0,
+            output_samples: 0,
+            finished: false,
             rs_step: in_rate as f64 / RATE_48K as f64,
             rs_t: 0.0,
             rs_prev: 0.0,
             rs_init: false,
             rs_in_idx: 0,
-            buf48: Vec::new(),
+            buf48: [0.0; FRAME],
+            filled48: 0,
+            denoise_input: [0.0; FRAME],
+            denoise_output: [0.0; FRAME],
             dec_acc: 0.0,
             dec_cnt: 0,
             peak_lin,
         }
     }
 
-    fn resample_into(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        if self.in_rate == RATE_48K {
-            out.extend_from_slice(input);
-            return;
+    /// 输入麦克风原始 f32，输出 16k PCM16；不足一帧留到下次调用，不补零。
+    pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
+        if input.is_empty() || self.finished {
+            return Vec::new();
         }
-        for &x in input {
-            if !self.rs_init {
-                self.rs_init = true;
+        self.input_samples += input.len() as u64;
+        // 只为本次返回的 PCM 预留空间；估计值不参与重采样或输出长度计算。
+        let estimated48 = if self.in_rate == RATE_48K {
+            input.len()
+        } else {
+            (input.len() as f64 * RATE_48K as f64 / self.in_rate as f64).ceil() as usize
+        };
+        let frames = estimated48.saturating_add(self.filled48) / FRAME;
+        let mut bytes = Vec::with_capacity(frames.saturating_mul(FRAME / 3 * 2));
+        if self.in_rate == RATE_48K {
+            let mut remaining = input;
+            while !remaining.is_empty() {
+                let count = remaining.len().min(FRAME - self.filled48);
+                self.buf48[self.filled48..self.filled48 + count]
+                    .copy_from_slice(&remaining[..count]);
+                self.filled48 += count;
+                remaining = &remaining[count..];
+                if self.filled48 == FRAME {
+                    self.process_frame(&mut bytes);
+                    self.filled48 = 0;
+                }
+            }
+        } else {
+            // 保留原实现的累计位置和运算顺序，改变分包不能改变插值相位。
+            for &x in input {
+                if !self.rs_init {
+                    self.rs_init = true;
+                    self.rs_prev = x;
+                    self.rs_in_idx = 1;
+                    self.rs_t = self.rs_step;
+                    self.push_resampled(x, &mut bytes);
+                    continue;
+                }
+                let cur = self.rs_in_idx as f64;
+                while self.rs_t <= cur {
+                    let frac = (self.rs_t - (cur - 1.0)) as f32;
+                    self.push_resampled(self.rs_prev + (x - self.rs_prev) * frac, &mut bytes);
+                    self.rs_t += self.rs_step;
+                }
                 self.rs_prev = x;
-                self.rs_in_idx = 1;
-                self.rs_t = self.rs_step;
-                out.push(x); // 第一帧对齐到输入起点
-                continue;
+                self.rs_in_idx += 1;
             }
-            let cur = self.rs_in_idx as f64;
-            while self.rs_t <= cur {
-                let frac = (self.rs_t - (cur - 1.0)) as f32;
-                out.push(self.rs_prev + (x - self.rs_prev) * frac);
-                self.rs_t += self.rs_step;
-            }
-            self.rs_prev = x;
-            self.rs_in_idx += 1;
+        }
+        self.output_samples += (bytes.len() / 2) as u64;
+        bytes
+    }
+
+    /// 正常结束时输出重采样和不足一帧的尾部；补齐计算帧，但不延长音频时长。
+    /// 取消时不调用。重复结束不重复发送，结束后也不再接收音频。
+    pub fn finish(&mut self) -> Vec<u8> {
+        if self.finished {
+            return Vec::new();
+        }
+        self.finished = true;
+        let rounded_length = |rate: u32| {
+            (self.input_samples * u64::from(rate) + u64::from(self.in_rate / 2))
+                / u64::from(self.in_rate)
+        };
+        let remaining = rounded_length(RATE_16K).saturating_sub(self.output_samples) as usize;
+        let missing48 = rounded_length(RATE_48K)
+            .saturating_sub(self.output_samples * 3 + self.filled48 as u64);
+        let mut bytes = Vec::with_capacity(FRAME / 3 * 2);
+        // 最后一输入样本之后没有下一个插值端点，按离线重采样规则延展末值。
+        for _ in 0..missing48 {
+            self.push_resampled(self.rs_prev, &mut bytes);
+        }
+        if bytes.len() / 2 < remaining {
+            self.buf48[self.filled48..].fill(0.0);
+            self.filled48 = FRAME;
+            self.process_frame(&mut bytes);
+        }
+        self.filled48 = 0;
+        bytes.truncate(remaining * 2);
+        self.output_samples += (bytes.len() / 2) as u64;
+        bytes
+    }
+
+    #[inline]
+    fn push_resampled(&mut self, sample: f32, bytes: &mut Vec<u8>) {
+        self.buf48[self.filled48] = sample;
+        self.filled48 += 1;
+        if self.filled48 == FRAME {
+            self.process_frame(bytes);
+            self.filled48 = 0;
         }
     }
 
-    /// 输入麦克风原始 f32（in_rate，[-1,1]），输出 16k PCM16 小端字节（可能为空，凑够一帧才出）。
-    pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
-        let mut resampled = Vec::new();
-        self.resample_into(input, &mut resampled);
-        self.buf48.append(&mut resampled);
-
-        let mut out16: Vec<f32> = Vec::new();
-        let mut inf = [0f32; FRAME];
-        let mut outf = [0f32; FRAME];
-        let mut wet = [0f32; FRAME];
-
-        while self.buf48.len() >= FRAME {
-            let strength = self.params.denoise_strength;
-            let mut vadg = 1.0f32;
-            if self.params.denoise_enabled {
-                for j in 0..FRAME {
-                    inf[j] = self.buf48[j] * 32768.0;
-                }
-                let vad = self.denoise.process_frame(&mut outf, &inf);
-                if self.params.vad_gate > 0.0 && vad < self.params.vad_gate {
-                    vadg = 0.0;
-                }
-                for j in 0..FRAME {
-                    let w = outf[j] / 32768.0;
-                    let dry = self.buf48[j];
-                    wet[j] = (dry * (1.0 - strength) + w * strength) * vadg;
-                }
-            } else {
-                wet[..FRAME].copy_from_slice(&self.buf48[..FRAME]);
-            }
-            self.eq.process_slice(&mut wet);
-
-            // 用降噪后的动量响度驱动自适应增益。
-            // ebur128 的 momentary loudness 需要一小段历史；如果暂时拿不到，使用当前
-            // RNNoise 帧的 RMS 作为保守 fallback，避免远麦克风开头一直不被增益拉起。
-            let _ = self.meter.add_frames_f32(&wet);
-            let meter_lufs = self
-                .meter
-                .loudness_momentary()
-                .ok()
-                .map(|v| v as f32)
-                .filter(|v| v.is_finite())
-                .unwrap_or(f32::NEG_INFINITY);
-            let frame_lufs = lin_to_db(rms(&wet));
-            let m = if meter_lufs > SILENCE_LUFS {
-                meter_lufs
-            } else {
-                frame_lufs
-            };
-
-            let desired = if m > SILENCE_LUFS {
-                let mut gdb = self.params.target_lufs - m;
-                if gdb > self.params.max_gain_db {
-                    gdb = self.params.max_gain_db;
-                }
-                if gdb < -12.0 {
-                    gdb = -12.0;
-                }
-                db_to_lin(gdb)
-            } else {
-                self.gain
-            };
-            // 提升慢一点、回落快一点，避免抽气感与削波。
-            let coeff = if desired > self.gain { 0.08 } else { 0.03 };
-            self.gain += (desired - self.gain) * coeff;
-
+    fn process_frame(&mut self, bytes: &mut Vec<u8>) {
+        debug_assert_eq!(self.filled48, FRAME);
+        if self.params.denoise_enabled {
             for j in 0..FRAME {
-                let mut s = wet[j] * self.gain;
-                if s > self.peak_lin {
-                    s = self.peak_lin;
-                } else if s < -self.peak_lin {
-                    s = -self.peak_lin;
-                }
-                self.dec_acc += s;
-                self.dec_cnt += 1;
-                if self.dec_cnt == 3 {
-                    out16.push(self.dec_acc / 3.0);
-                    self.dec_acc = 0.0;
-                    self.dec_cnt = 0;
-                }
+                self.denoise_input[j] = self.buf48[j] * 32768.0;
             }
-
-            self.buf48.drain(0..FRAME);
+            let vad = self
+                .denoise
+                .process_frame(&mut self.denoise_output, &self.denoise_input);
+            let vadg = if self.params.vad_gate > 0.0 && vad < self.params.vad_gate {
+                0.0
+            } else {
+                1.0
+            };
+            let strength = self.params.denoise_strength;
+            for j in 0..FRAME {
+                let wet = self.denoise_output[j] / 32768.0;
+                let dry = self.buf48[j];
+                self.buf48[j] = (dry * (1.0 - strength) + wet * strength) * vadg;
+            }
         }
+        self.eq.process_slice(&mut self.buf48);
 
-        let mut bytes = Vec::with_capacity(out16.len() * 2);
-        for &s in &out16 {
-            let c = s.clamp(-1.0, 1.0);
-            let v = (if c < 0.0 { c * 32768.0 } else { c * 32767.0 }) as i16;
-            bytes.extend_from_slice(&v.to_le_bytes());
+        // 动量响度和每帧 RMS 回退、增益平滑的顺序保持不变。
+        let _ = self.meter.add_frames_f32(&self.buf48);
+        let meter_lufs = self
+            .meter
+            .loudness_momentary()
+            .ok()
+            .map(|v| v as f32)
+            .filter(|v| v.is_finite())
+            .unwrap_or(f32::NEG_INFINITY);
+        let frame_lufs = lin_to_db(rms(&self.buf48));
+        let m = if meter_lufs > SILENCE_LUFS {
+            meter_lufs
+        } else {
+            frame_lufs
+        };
+        let desired = if m > SILENCE_LUFS {
+            let mut gdb = self.params.target_lufs - m;
+            if gdb > self.params.max_gain_db {
+                gdb = self.params.max_gain_db;
+            }
+            if gdb < -12.0 {
+                gdb = -12.0;
+            }
+            db_to_lin(gdb)
+        } else {
+            self.gain
+        };
+        let coeff = gain_smoothing_coeff(desired, self.gain);
+        self.gain += (desired - self.gain) * coeff;
+
+        for &wet in &self.buf48 {
+            let mut sample = wet * self.gain;
+            if sample > self.peak_lin {
+                sample = self.peak_lin;
+            } else if sample < -self.peak_lin {
+                sample = -self.peak_lin;
+            }
+            self.dec_acc += sample;
+            self.dec_cnt += 1;
+            if self.dec_cnt == 3 {
+                let value = (self.dec_acc / 3.0).clamp(-1.0, 1.0);
+                let pcm = (if value < 0.0 {
+                    value * 32768.0
+                } else {
+                    value * 32767.0
+                }) as i16;
+                bytes.extend_from_slice(&pcm.to_le_bytes());
+                self.dec_acc = 0.0;
+                self.dec_cnt = 0;
+            }
         }
-        bytes
     }
 }
 
 // 16k 是输出采样率常量，导出供主模块在日志里引用（统计时长）。
 pub const OUTPUT_RATE: u32 = RATE_16K;
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    #[test]
+    fn processing_preserves_raw_audio_and_partial_frame_duration() {
+        for rate in [16_000, 44_100, 48_000] {
+            for length in [0, 1, 479, 480, 997] {
+                let input: Vec<f32> = (0..length)
+                    .map(|index| (index % 31) as f32 / 31.0 - 0.5)
+                    .collect();
+                let original = input.clone();
+                let clean = process_offline(&input, rate, &DspParams {
+                    denoise_enabled: false,
+                    ..Default::default()
+                });
+                let dry_mix = process_offline(&input, rate, &DspParams {
+                    denoise_enabled: true,
+                    denoise_strength: 0.0,
+                    vad_gate: 0.0,
+                    ..Default::default()
+                });
+                assert_eq!(input, original, "A/B 试听必须保留原始音频");
+                assert_eq!(clean.sample_rate, RATE_48K);
+                assert_eq!(clean.processed.len(),
+                    (length as f64 * RATE_48K as f64 / rate as f64).round() as usize);
+                assert_eq!(clean.processed, dry_mix.processed,
+                    "干声混合必须保留整帧和补零尾帧的全部样本");
+                assert!(clean.processed.iter().all(|sample| sample.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn silence_stays_silent_with_finite_stats() {
+        let output = process_offline(&[0.0; 997], RATE_48K, &DspParams::default());
+        assert!(output.processed.iter().all(|sample| *sample == 0.0));
+        assert!(output.in_lufs.is_finite());
+        assert!(output.out_lufs.is_finite());
+        assert!(output.in_peak_db.is_finite());
+        assert!(output.out_peak_db.is_finite());
+    }
+
+    /// 固定信号的全量输出取自优化前的 Windows x64 release 程序；
+    /// 同时覆盖降噪开关，防止减少复制时改变样本或处理顺序。
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn output_matches_pre_optimization_reference() {
+        let input: Vec<f32> = (0..144_000)
+            .map(|index| ((index % 480) as f32 / 480.0 - 0.5) * 0.2)
+            .collect();
+        for (denoise, expected) in [(false, 0x39ec222cba68af75), (true, 0x85cb3c851ff27b5c)] {
+            let output = process_offline(&input, RATE_48K, &DspParams {
+                denoise_enabled: denoise,
+                ..Default::default()
+            });
+            let hash = output.processed.iter().fold(0xcbf29ce484222325_u64, |hash, value| {
+                (hash ^ u64::from(value.to_bits())).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(hash, expected, "降噪开关：{denoise}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod gain_tests {
+    use super::*;
+
+    /// 回归：抬高增益必须比压低增益慢。
+    /// 这两个方向曾被写反（提升 0.08 / 回落 0.03），导致静默后开口的首秒被硬削波。
+    #[test]
+    fn gain_rises_slower_than_it_falls() {
+        let rising = gain_smoothing_coeff(2.0, 1.0);
+        let falling = gain_smoothing_coeff(1.0, 2.0);
+        assert!(
+            rising < falling,
+            "抬高增益的系数（{rising}）必须小于压低增益的系数（{falling}）：\
+             coeff 越大收敛越快，写反会让说话首秒被钳位削平"
+        );
+    }
+
+    /// 生成 `seconds` 秒 48k 单声道信号：频率为 0 时是等幅底噪替身（直流小值 + 交替符号）。
+    fn tone(seconds: f32, freq: f32, amplitude: f32) -> Vec<f32> {
+        let count = (RATE_48K as f32 * seconds) as usize;
+        (0..count)
+            .map(|i| {
+                let t = i as f32 / RATE_48K as f32;
+                if freq <= 0.0 {
+                    if i % 2 == 0 { amplitude } else { -amplitude }
+                } else {
+                    amplitude * (2.0 * std::f32::consts::PI * freq * t).sin()
+                }
+            })
+            .collect()
+    }
+
+    fn clipped_ratio(pcm16_le: &[u8]) -> f32 {
+        if pcm16_le.len() < 2 {
+            return 0.0;
+        }
+        let samples: Vec<i16> = pcm16_le
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let clipped = samples.iter().filter(|s| s.unsigned_abs() >= 28_000).count();
+        clipped as f32 / samples.len() as f32
+    }
+
+    /// 行为回归：静默段之后突然开口，增益必须迅速回落。
+    ///
+    /// 这是系数写反的可听后果，比断言常量本身更有说服力。关掉降噪以隔离增益级——
+    /// RNNoise 会把合成正弦当噪声抑制掉，那样根本没有信号到达增益级。
+    ///
+    /// 实测（2 秒近静音 → 0.3 秒 -25 dBFS 正弦）：
+    /// - 正确方向：增益 99.8 → 12.1，削波 57%
+    /// - 写反方向：增益 100.0 → 43.1，削波 83%
+    #[test]
+    fn gain_recovers_quickly_when_speech_starts_after_silence() {
+        let params = DspParams {
+            denoise_enabled: false,
+            ..DspParams::default()
+        };
+        let mut dsp = StreamDsp::new(params, RATE_48K);
+
+        // 两秒极低电平底噪，让增益爬到 max_gain_db（默认 40dB = 100 倍）顶格。
+        for _ in 0..20 {
+            dsp.process(&tone(0.1, 0.0, 0.0005));
+        }
+        let peak_gain = dsp.gain;
+        assert!(
+            peak_gain > 90.0,
+            "用例前提：静默段应把增益顶到接近 100 倍，实际 {peak_gain:.1}"
+        );
+
+        // 突然开口：-25 dBFS 左右的 300Hz 正弦。
+        let speech = dsp.process(&tone(0.3, 300.0, 0.056));
+        let recovered_gain = dsp.gain;
+
+        assert!(
+            recovered_gain < peak_gain * 0.25,
+            "开口 0.3 秒后增益应已回落到峰值的四分之一以下，实际 {recovered_gain:.1}/{peak_gain:.1}：             回落太慢意味着这段音频被硬钳成方波，正好盖住每句话的首字"
+        );
+        assert!(
+            clipped_ratio(&speech) < 0.7,
+            "开口后被削到钳位上限的样本比例过高：{:.1}%",
+            clipped_ratio(&speech) * 100.0
+        );
+    }
+
+    /// 增益等于目标时不应再往上抬，按「压低」分支处理即可（差值为 0，不产生变化）。
+    #[test]
+    fn gain_holds_steady_when_already_at_target() {
+        let gain = 1.5_f32;
+        let coeff = gain_smoothing_coeff(gain, gain);
+        assert_eq!(gain + (gain - gain) * coeff, gain);
+    }
+}

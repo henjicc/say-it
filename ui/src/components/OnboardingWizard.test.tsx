@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizard } from "./OnboardingWizard";
 
@@ -88,6 +88,8 @@ describe("OnboardingWizard", () => {
     invoke.mockReset();
     patchDictPrefs.mockReset().mockResolvedValue(undefined);
     loadProviders.mockReset().mockResolvedValue(undefined);
+    setView.mockReset();
+    setSettingsTab.mockReset();
     updateProviderConfig.mockReset().mockImplementation(async () => {
       cloudProvider.status = { configured: true, hasApiKey: true };
       return cloudProvider;
@@ -103,6 +105,51 @@ describe("OnboardingWizard", () => {
     });
   });
 
+  it.each(["关闭", "Escape", "遮罩", "完成设置", "打开完整设置", "打开插件管理"])("persists acknowledgement before exiting through %s", async (exit) => {
+    let save: (() => void) | undefined;
+    invoke.mockImplementation(async (name: string) => {
+      if (name === "get_setup_status") return setupStatus;
+      if (name === "start_backend_mic") return { reused: false };
+      if (name === "complete_onboarding") return new Promise<void>((resolve) => { save = resolve; });
+    });
+    const onClose = vi.fn();
+    render(<OnboardingWizard open onClose={onClose} />);
+    await screen.findByText("麦克风可以正常使用");
+    expect(invoke).not.toHaveBeenCalledWith("complete_onboarding");
+
+    if (exit === "完成设置" || exit === "打开插件管理" || exit === "打开完整设置") {
+      fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+      if (exit !== "打开完整设置") fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    }
+    if (exit === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+    else if (exit === "遮罩") fireEvent.click(screen.getByRole("dialog").parentElement!);
+    else fireEvent.click(screen.getByRole("button", { name: exit }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("complete_onboarding"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(setView).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(invoke.mock.calls.filter(([name]) => name === "complete_onboarding")).toHaveLength(1);
+    save!();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    if (exit === "打开完整设置" || exit === "打开插件管理") {
+      expect(setView).toHaveBeenCalledWith("settings");
+      expect(setSettingsTab).toHaveBeenCalledWith(exit === "打开完整设置" ? "model" : "plugins");
+    }
+  });
+
+  it("keeps the wizard open when persistence fails and lets the user retry", async () => {
+    const onClose = vi.fn();
+    render(<OnboardingWizard open onClose={onClose} />);
+    await screen.findByText("麦克风可以正常使用");
+    invoke.mockRejectedValueOnce(new Error("磁盘写入失败"));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(await screen.findByText(/保存引导状态失败.*磁盘写入失败/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps onboarding focused on permissions, model setup, and offline installation", async () => {
     render(<OnboardingWizard open onClose={() => undefined} />);
 
@@ -113,7 +160,10 @@ describe("OnboardingWizard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(screen.getByRole("heading", { name: "选择主识别模型" })).toBeInTheDocument();
-    expect(screen.getByText("API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。")).toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => screen.getByText("配置 阿里云百炼 密钥").focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("密钥会加密保存在这台电脑上");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     fireEvent.click(screen.getByRole("combobox", { name: "语音识别模型" }));
     fireEvent.click(await screen.findByRole("option", { name: "离线模型" }));
     await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "local-model" }));
@@ -123,7 +173,9 @@ describe("OnboardingWizard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(screen.getByRole("heading", { name: "需要离线使用？" })).toBeInTheDocument();
-    expect(screen.getByText("下载后双击文件，或在“设置 → 插件”中选择安装。")).toBeInTheDocument();
+    expect(screen.queryByText("下载后双击文件，或在“设置 → 插件”中选择安装。")).not.toBeInTheDocument();
+    act(() => screen.getByText("安装 .sayit").focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("下载后双击文件，或在“设置 → 插件”中选择安装。");
     expect(screen.getByRole("button", { name: "打开模型下载页" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "打开插件管理" })).toBeInTheDocument();
     expect(screen.queryByText("处理后音量")).not.toBeInTheDocument();

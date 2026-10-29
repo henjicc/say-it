@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Slider } from "@/components/ui/Slider";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import {
   ApiKeyLink,
   ASR_API_KEY_URLS,
@@ -57,6 +58,7 @@ function hasProviderConfiguration(provider: ProviderProfile) {
 }
 
 function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
+  const { confirm, dialog } = useConfirm();
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
   const loadProviders = useProviderStore((state) => state.load);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -134,8 +136,15 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
   const runAction = async (action: string) => {
     if (
       ["openLogin", "syncSession", "clearSession"].includes(action) &&
-      !window.confirm(`插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`)
-    ) return;
+      !(await confirm({
+        title: "确认执行插件操作",
+        message: `插件将执行“${PLUGIN_ACTION_LABELS[action] || action}”。是否继续？`,
+        confirmLabel: "继续",
+        danger: action === "clearSession",
+      }))
+    ) {
+      return;
+    }
     try {
       const result = await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, {
         providerId: provider.id,
@@ -205,6 +214,7 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
         {errorMessage && <p className="text-xs text-[var(--color-danger)]">{errorMessage}</p>}
         {actionMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
       </div>
+      {dialog}
     </Collapse>
   );
 }
@@ -363,7 +373,7 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
           bodyClassName={NESTED_BODY_CLASS}
         >
           <div>
-            <p className="text-xs text-[var(--color-fg-subtle)]">语种提示（language_hints）</p>
+            <p className="text-xs text-[var(--color-fg-subtle)]">语种提示</p>
             <div className="mt-1.5 flex gap-4">
               {[
                 { value: "zh", label: "中文" },
@@ -449,9 +459,12 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
     (provider) => provider.enabled && provider.capabilities.includes(capability),
   );
 
-  // 无配置项的供应商（系统内置 OCR、无配置字段的插件、本地模型包）不占据分区位置；
+  // 无配置项的插件与本地模型包不占据分区位置；内置 OCR 显示可用状态；
   // 多能力供应商仍在非主分区保留一行指引，避免用户以为该能力没有供应商。
   const renderEntry = (provider: ProviderProfile) => {
+    if (capability === "ocr" && provider.kind.startsWith("builtin-")) {
+      return <ProviderSummaryRow key={provider.id} title={provider.displayName} subtitle="已内置 · 无需配置" />;
+    }
     const primary = primaryCapabilityOf(provider);
     if (primary !== capability) {
       return (
@@ -474,12 +487,7 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
   const rendered = entries.map(renderEntry).filter((entry) => entry !== null);
 
   return (
-    <SettingsSection title={SECTION_TITLES[capability]}>
-      {capability === "asr" && (
-        <p className="text-xs text-[var(--color-fg-subtle)]">
-          API Key 在应用私有目录中本地加密保存，不调用系统钥匙链。
-        </p>
-      )}
+    <SettingsSection title={SECTION_TITLES[capability]} description="密钥会加密保存在这台电脑上。">
       {rendered.length > 0 ? (
         rendered
       ) : (

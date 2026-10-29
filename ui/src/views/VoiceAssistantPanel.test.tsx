@@ -88,10 +88,10 @@ describe("VoiceAssistantView", () => {
   });
 
   it("restores built-in templates from the Rust catalog", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<VoiceAssistantView />);
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+    fireEvent.click(await screen.findByRole("button", { name: "恢复" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_default_assistant_preferences"));
     expect(cmd).toHaveBeenCalledWith("update_app_settings", expect.objectContaining({
       domain: "assistant",

@@ -14,9 +14,11 @@ import {
 import {
   contextDebugShortcutHint,
   contextDebugShortcutLabel,
-  systemOcrLabel,
+  defaultOcrModelId,
+  defaultOcrOption,
 } from "@/lib/platform";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import { useEntryTheme } from "@/hooks/useEntryTheme";
 
 const MAX_CAPTURE_SIDE_OPTIONS = [1600, 2200, 2800, 3400, 4000] as const;
 
@@ -94,6 +96,7 @@ function ResultSection({ title, value }: { title: string; value?: string | null 
 }
 
 export function ContextDebugApp() {
+  useEntryTheme();
   const [result, setResult] = useState<DebugResult>();
   const [capturing, setCapturing] = useState(false);
   const [ocrModel, setOcrModel] = useState(
@@ -101,7 +104,7 @@ export function ContextDebugApp() {
   );
   const [maxCaptureSide, setMaxCaptureSide] = useState<number>(MAX_CAPTURE_SIDE_OPTIONS[0]);
   const [ocrModels, setOcrModels] = useState<OcrModelOption[]>([
-    { value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false },
+    defaultOcrOption,
   ]);
 
   useEffect(() => {
@@ -119,13 +122,13 @@ export function ContextDebugApp() {
         const selected = models.some((model) => model.value === storedModel)
           ? storedModel
           : legacyPpOcr
-            ? models.find((model) => model.value === "local-ppocr-v6-tiny")?.value || "system-ocr"
-            : "system-ocr";
+            ? models.find((model) => model.value === "local-ppocr-v6-tiny")?.value || defaultOcrModelId
+            : defaultOcrModelId;
         setOcrModels(models);
         setOcrModel(selected);
       })
       .catch(() => setOcrModels([
-        { value: "system-ocr", label: systemOcrLabel, providerId: "system-ocr", remote: false },
+        defaultOcrOption,
       ]));
   }, []);
 

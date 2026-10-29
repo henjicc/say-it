@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { Tooltip } from "./Tooltip";
 import { Checkbox } from "./Checkbox";
 
 /**
@@ -19,6 +20,7 @@ const ACTIONS_CLASS = "flex shrink-0 items-stretch gap-2 [&>*]:h-[var(--control-
 export function Field({
   label,
   hint,
+  message,
   actions,
   controlId,
   className,
@@ -27,54 +29,57 @@ export function Field({
 }: {
   label?: React.ReactNode;
   hint?: React.ReactNode;
+  /** 必须立即可见的错误、风险或操作反馈。 */
+  message?: React.ReactNode;
   actions?: React.ReactNode;
   controlId?: string;
   className?: string;
   layout?: "stack" | "row";
   children: React.ReactNode;
 }) {
+  const labelContent = hint ? <span tabIndex={0} className="ui-help-label">{label}</span> : label;
   if (layout === "row") {
     return (
-      <div className={cn("grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5", className)}>
+      <Tooltip content={hint}><div className={cn("grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5", className)}>
         {label && controlId ? (
-          <label htmlFor={controlId} className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</label>
+          <label htmlFor={controlId} className="text-xs font-medium text-[var(--color-fg-muted)]">{labelContent}</label>
         ) : label ? (
-          <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>
+          <span className="text-xs font-medium text-[var(--color-fg-muted)]">{labelContent}</span>
         ) : null}
         <div className="flex min-w-0 items-stretch gap-2">
           <div className="min-w-0 flex-1">{children}</div>
           {actions && <div className={ACTIONS_CLASS}>{actions}</div>}
         </div>
-        {hint && (
-          <span className="col-start-2 text-xs text-[var(--color-fg-subtle)]">{hint}</span>
+        {message && (
+          <span className="col-start-2 text-xs text-[var(--color-fg-subtle)]" role="status">{message}</span>
         )}
-      </div>
+      </div></Tooltip>
     );
   }
 
   if (actions || controlId) {
     return (
-      <div className={cn("flex flex-col gap-1.5", className)}>
+      <Tooltip content={hint}><div className={cn("flex flex-col gap-1.5", className)}>
         {label && controlId ? (
-          <label htmlFor={controlId} className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</label>
+          <label htmlFor={controlId} className="text-xs font-medium text-[var(--color-fg-muted)]">{labelContent}</label>
         ) : label ? (
-          <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>
+          <span className="text-xs font-medium text-[var(--color-fg-muted)]">{labelContent}</span>
         ) : null}
         <div className="flex min-w-0 items-stretch gap-2">
           <div className="min-w-0 flex-1">{children}</div>
           {actions && <div className={ACTIONS_CLASS}>{actions}</div>}
         </div>
-        {hint && <span className="text-xs text-[var(--color-fg-subtle)]">{hint}</span>}
-      </div>
+        {message && <span className="text-xs text-[var(--color-fg-subtle)]" role="status">{message}</span>}
+      </div></Tooltip>
     );
   }
 
   return (
-    <label className={cn("flex flex-col gap-1.5", className)}>
-      {label && <span className="text-xs font-medium text-[var(--color-fg-muted)]">{label}</span>}
+    <Tooltip content={hint}><label className={cn("flex flex-col gap-1.5", className)}>
+      {label && <span className="text-xs font-medium text-[var(--color-fg-muted)]">{labelContent}</span>}
       {children}
-      {hint && <span className="text-xs text-[var(--color-fg-subtle)]">{hint}</span>}
-    </label>
+      {message && <span className="text-xs text-[var(--color-fg-subtle)]" role="status">{message}</span>}
+    </label></Tooltip>
   );
 }
 
