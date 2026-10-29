@@ -4,11 +4,8 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
 import { Input, Select, Textarea } from "@/components/ui/Input";
-import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
-import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import {
@@ -20,7 +17,7 @@ import { TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useUiStore, type AssistantActionKey, type AssistantTabKey } from "@/store/useUiStore";
+import { useUiStore, type AssistantActionKey } from "@/store/useUiStore";
 
 export interface AssistantPromptTemplate { id: string; name: string; prompt: string }
 export interface DeletedAssistantPromptTemplate { recoveryId: string; template: AssistantPromptTemplate; deletedAt: number }
@@ -122,24 +119,7 @@ function parseModel(value: string) {
   return { llmProviderId: "default", llmModel: "" };
 }
 
-const TABS: TabItem<AssistantTabKey>[] = [
-  { key: "smart", label: "智能优化" }, { key: "translateSpeech", label: "语音翻译" },
-  { key: "editSelection", label: "选区编辑" }, { key: "ask", label: "语音问答" },
-];
-
-export function VoiceAssistantView() {
-  const tab = useUiStore((state) => state.assistantTab);
-  const setTab = useUiStore((state) => state.setAssistantTab);
-  return <div className="flex flex-col gap-7">
-    <PageHeader title="智能助手" description="统一配置智能优化、语音翻译、选区编辑和语音问答。" />
-    <Tabs id="assistant-tabs" ariaLabel="智能助手功能" tabs={TABS} active={tab} onChange={setTab} />
-    <div id={`assistant-tabs-${tab}-panel`} role="tabpanel" aria-labelledby={`assistant-tabs-${tab}-tab`}>
-      {tab === "smart" ? <SmartTextPanel /> : <AssistantFeaturePanel action={tab} />}
-    </div>
-  </div>;
-}
-
-function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
+export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const { confirm, dialog } = useConfirm();
   useModelCatalogRevision();
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
@@ -223,7 +203,7 @@ function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const defaultProfile = profiles.find((item) => item.id === defaults.llm);
 
   return <div className="flex flex-col gap-8">
-    <SettingsSection title={title} description={description} right={<Button size="sm" onClick={() => useUiStore.setState({ view: "settings", settingsTab: "keys" })}>配置快捷键<ArrowRight className="h-3.5 w-3.5" /></Button>}>
+    <SettingsSection title={title} description={description} right={<Button size="sm" onClick={() => useUiStore.getState().openSettings("keys")}>配置快捷键<ArrowRight className="h-3.5 w-3.5" /></Button>}>
       <FormGrid>
         {action === "translateSpeech" && <>
           <Field label="翻译引擎"><Select value={prefs.translationEngine} onChange={(event) => void save({ ...prefs, translationEngine: event.target.value as AssistantPrefs["translationEngine"] })}><option value="llm">大语言模型（支持模板）</option><option value="dedicated">专用翻译模型（低延迟）</option></Select></Field>

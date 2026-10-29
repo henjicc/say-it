@@ -6,8 +6,7 @@ const invoke = vi.fn();
 const patchDictPrefs = vi.fn();
 const updateProviderConfig = vi.fn();
 const loadProviders = vi.fn();
-const setView = vi.fn();
-const setSettingsTab = vi.fn();
+const openModels = vi.fn();
 
 const cloudProvider = {
   id: "bailian",
@@ -64,7 +63,7 @@ vi.mock("@/store/useProviderStore", () => ({
 }));
 
 vi.mock("@/store/useUiStore", () => ({
-  useUiStore: (selector: (state: unknown) => unknown) => selector({ setView, setSettingsTab }),
+  useUiStore: (selector: (state: unknown) => unknown) => selector({ openModels }),
 }));
 
 const blockedPermission = {
@@ -88,8 +87,7 @@ describe("OnboardingWizard", () => {
     invoke.mockReset();
     patchDictPrefs.mockReset().mockResolvedValue(undefined);
     loadProviders.mockReset().mockResolvedValue(undefined);
-    setView.mockReset();
-    setSettingsTab.mockReset();
+    openModels.mockReset();
     updateProviderConfig.mockReset().mockImplementation(async () => {
       cloudProvider.status = { configured: true, hasApiKey: true };
       return cloudProvider;
@@ -127,14 +125,13 @@ describe("OnboardingWizard", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("complete_onboarding"));
     expect(onClose).not.toHaveBeenCalled();
-    expect(setView).not.toHaveBeenCalled();
+    expect(openModels).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(invoke.mock.calls.filter(([name]) => name === "complete_onboarding")).toHaveLength(1);
     save!();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     if (exit === "打开完整设置" || exit === "打开插件管理") {
-      expect(setView).toHaveBeenCalledWith("settings");
-      expect(setSettingsTab).toHaveBeenCalledWith(exit === "打开完整设置" ? "model" : "plugins");
+      expect(openModels).toHaveBeenCalledWith(exit === "打开完整设置" ? "asr" : "plugins");
     }
   });
 

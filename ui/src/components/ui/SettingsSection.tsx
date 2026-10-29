@@ -18,7 +18,7 @@ export function SettingsSection({
   bodyClassName?: string;
 }) {
   return (
-    <section className={cn("flex flex-col gap-4", className)}>
+    <section className={cn("flex flex-col gap-2", className)}>
       <SectionHeader title={title} description={description} right={right} />
       <div className={cn("flex flex-col gap-4", bodyClassName)}>{children}</div>
     </section>

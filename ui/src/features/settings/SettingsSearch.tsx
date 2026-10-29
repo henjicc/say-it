@@ -2,12 +2,17 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
-import type { SettingsTabKey } from "@/store/useUiStore";
+import { useUiStore, type ModelsSectionKey, type SettingsSectionKey } from "@/store/useUiStore";
+
+/** 搜索结果落到的页面分区：模型与密钥页或设置页的某一类。 */
+export type SettingsSearchTarget =
+  | { view: "models"; section: ModelsSectionKey }
+  | { view: "settings"; section: SettingsSectionKey };
 
 export interface SettingsSearchItem {
   id: string;
   label: string;
-  tab: SettingsTabKey;
+  target: SettingsSearchTarget;
   tabLabel: string;
   section: string;
   targetText: string;
@@ -15,30 +20,30 @@ export interface SettingsSearchItem {
 }
 
 export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
-  { id: "asr-providers", label: "ASR 供应商", tab: "model", tabLabel: "模型", section: "识别模型与密钥", targetText: "ASR 供应商", keywords: "语音识别 听写 api key 密钥 模型" },
-  { id: "ocr-providers", label: "OCR 供应商", tab: "model", tabLabel: "模型", section: "识别模型与密钥", targetText: "OCR 供应商", keywords: "文字识别 截图 api key 密钥 模型" },
-  { id: "translation-providers", label: "翻译供应商", tab: "model", tabLabel: "模型", section: "识别模型与密钥", targetText: "翻译供应商", keywords: "翻译 api key 密钥 模型" },
-  { id: "llm-providers", label: "大语言模型", tab: "model", tabLabel: "模型", section: "模型供应商", targetText: "大语言模型", keywords: "llm ai 智能处理 api key 密钥 默认模型" },
-  { id: "plugins", label: "插件管理", tab: "plugins", tabLabel: "插件", section: "安装、启用与卸载", targetText: "插件管理", keywords: "sayit 模型包 安装 扫描 启用 卸载" },
-  { id: "input-device", label: "输入设备", tab: "audio", tabLabel: "音频", section: "麦克风保活", targetText: "输入设备", keywords: "麦克风 录音设备 音频输入" },
-  { id: "microphone-keepalive", label: "麦克风保活", tab: "audio", tabLabel: "音频", section: "输入设备", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },
-  { id: "audio-cues", label: "提示音", tab: "audio", tabLabel: "音频", section: "开始与结束提示", targetText: "提示音", keywords: "声音 开始提示音 结束提示音 自定义音效" },
-  { id: "autostart", label: "开机自启", tab: "general", tabLabel: "通用", section: "启动设置", targetText: "开机自启", keywords: "登录系统 自动启动 开机启动" },
-  { id: "silent-start", label: "静默启动", tab: "general", tabLabel: "通用", section: "启动设置", targetText: "静默启动", keywords: "托盘 不弹窗口 后台启动" },
-  { id: "data-root", label: "数据目录", tab: "general", tabLabel: "通用", section: "存储位置", targetText: "数据目录", keywords: "存储位置 迁移 恢复默认 模型目录 插件目录" },
-  { id: "setup", label: "使用引导与环境状态", tab: "general", tabLabel: "通用", section: "使用引导", targetText: "使用引导", keywords: "首次使用 环境检查 权限 引导" },
-  { id: "tone", label: "整体色调", tab: "general", tabLabel: "通用", section: "外观", targetText: "整体色调", keywords: "暗色 亮色 主题 明暗" },
-  { id: "accent", label: "强调色", tab: "general", tabLabel: "通用", section: "外观", targetText: "强调色", keywords: "主题色 按钮 选中项 焦点 滑块 颜色" },
-  { id: "background", label: "背景基色", tab: "general", tabLabel: "通用", section: "外观", targetText: "背景色", keywords: "背景 柔和背景 自定义 主题 颜色" },
-  { id: "glass", label: "全局系统毛玻璃", tab: "general", tabLabel: "通用", section: "外观", targetText: "全局系统毛玻璃", keywords: "透明 模糊 材质 底色强度 边框强度" },
-  { id: "history", label: "本地历史", tab: "general", tabLabel: "通用", section: "历史与学习", targetText: "本地历史", keywords: "保存历史 保留天数 排除应用 个性化纠错 学习记忆 清理数据" },
-  { id: "key-bindings", label: "快捷键集中管理", tab: "keys", tabLabel: "按键", section: "全部快捷键", targetText: "集中管理", keywords: "按键 热键 绑定 单击 长按 清除" },
-  { id: "model-compare", label: "模型对比", tab: "compare", tabLabel: "对比", section: "录音或音频文件", targetText: "开始对比", keywords: "识别效果 多模型 并排比较 上传音频 录音" },
-  { id: "diagnostics", label: "诊断日志", tab: "advanced", tabLabel: "高级", section: "日志与诊断包", targetText: "诊断日志", keywords: "详细元数据 正文日志 日志目录 清空 导出诊断包" },
-  { id: "silence-disconnect", label: "静音断流", tab: "advanced", tabLabel: "高级", section: "连接与阈值", targetText: "静音断流", keywords: "静音 阈值 断开 api 实时字幕 语音输入" },
-  { id: "loudness-denoise", label: "响度与降噪", tab: "advanced", tabLabel: "高级", section: "音频调校", targetText: "响度与降噪", keywords: "lufs rnnoise vad 峰值 目标响度 降噪强度" },
-  { id: "equalizer", label: "均衡器（高低频）", tab: "advanced", tabLabel: "高级", section: "音频调校", targetText: "均衡器（高低频）", keywords: "eq 低频 高频 增益 厚度 亮度" },
-  { id: "audio-lab", label: "录音试听与波形", tab: "advanced", tabLabel: "高级", section: "音频调校", targetText: "录音试听与波形", keywords: "ab 试听 原始 处理后 波形 音频" },
+  { id: "asr-providers", label: "ASR 供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "ASR 供应商", keywords: "语音识别 听写 api key 密钥 模型" },
+  { id: "ocr-providers", label: "OCR 供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "OCR 供应商", keywords: "文字识别 截图 api key 密钥 模型" },
+  { id: "translation-providers", label: "翻译供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "翻译供应商", keywords: "翻译 api key 密钥 模型" },
+  { id: "llm-providers", label: "大语言模型", target: { view: "models", section: "llm" }, tabLabel: "模型与密钥", section: "大模型", targetText: "大语言模型", keywords: "llm ai 智能处理 api key 密钥 默认模型" },
+  { id: "plugins", label: "插件管理", target: { view: "models", section: "plugins" }, tabLabel: "模型与密钥", section: "安装、启用与卸载", targetText: "插件管理", keywords: "sayit 模型包 安装 扫描 启用 卸载" },
+  { id: "input-device", label: "输入设备", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "麦克风保活", targetText: "输入设备", keywords: "麦克风 录音设备 音频输入" },
+  { id: "microphone-keepalive", label: "麦克风保活", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "输入设备", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },
+  { id: "audio-cues", label: "提示音", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "开始与结束提示", targetText: "提示音", keywords: "声音 开始提示音 结束提示音 自定义音效" },
+  { id: "autostart", label: "开机自启", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "启动设置", targetText: "开机自启", keywords: "登录系统 自动启动 开机启动" },
+  { id: "silent-start", label: "静默启动", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "启动设置", targetText: "静默启动", keywords: "托盘 不弹窗口 后台启动" },
+  { id: "data-root", label: "数据目录", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "存储位置", targetText: "数据目录", keywords: "存储位置 迁移 恢复默认 模型目录 插件目录" },
+  { id: "setup", label: "使用引导与环境状态", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "使用引导", targetText: "使用引导", keywords: "首次使用 环境检查 权限 引导" },
+  { id: "tone", label: "整体色调", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "整体色调", keywords: "暗色 亮色 主题 明暗" },
+  { id: "accent", label: "强调色", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "强调色", keywords: "主题色 按钮 选中项 焦点 滑块 颜色" },
+  { id: "background", label: "背景基色", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "背景色", keywords: "背景 柔和背景 自定义 主题 颜色" },
+  { id: "glass", label: "全局系统毛玻璃", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "外观", targetText: "全局系统毛玻璃", keywords: "透明 模糊 材质 底色强度 边框强度" },
+  { id: "history", label: "本地历史", target: { view: "settings", section: "history" }, tabLabel: "历史与学习", section: "本地历史", targetText: "本地历史", keywords: "保存历史 保留天数 排除应用 个性化纠错 学习记忆 清理数据" },
+  { id: "key-bindings", label: "快捷键集中管理", target: { view: "settings", section: "keys" }, tabLabel: "快捷键", section: "全部快捷键", targetText: "集中管理", keywords: "按键 热键 绑定 单击 长按 清除" },
+  { id: "model-compare", label: "模型对比", target: { view: "models", section: "compare" }, tabLabel: "模型对比", section: "录音或音频文件", targetText: "开始对比", keywords: "识别效果 多模型 并排比较 上传音频 录音" },
+  { id: "diagnostics", label: "诊断日志", target: { view: "settings", section: "diagnostics" }, tabLabel: "诊断与数据", section: "日志与诊断包", targetText: "诊断日志", keywords: "详细元数据 正文日志 日志目录 清空 导出诊断包" },
+  { id: "silence-disconnect", label: "静音断流", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "连接与阈值", targetText: "静音断流", keywords: "静音 阈值 断开 api 实时字幕 语音输入" },
+  { id: "loudness-denoise", label: "响度与降噪", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "响度与降噪", keywords: "lufs rnnoise vad 峰值 目标响度 降噪强度" },
+  { id: "equalizer", label: "均衡器（高低频）", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "均衡器（高低频）", keywords: "eq 低频 高频 增益 厚度 亮度" },
+  { id: "audio-lab", label: "录音试听与波形", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "录音试听与波形", keywords: "ab 试听 原始 处理后 波形 音频" },
 ];
 
 function normalize(value: string) {
@@ -194,4 +199,56 @@ export function SettingsSearch({ onSelect }: { onSelect: (item: SettingsSearchIt
       )}
     </div>
   );
+}
+
+/**
+ * 页面切到搜索命中的分区后，在 panelId 容器里按文本找到目标，滚动到可见处、
+ * 聚焦其中第一个可操作控件，并短暂高亮。
+ */
+export function useSearchHitHighlight(view: SettingsSearchTarget["view"], section: string, panelId: string) {
+  const hit = useUiStore((state) => state.searchHit);
+  const clearSearchHit = useUiStore((state) => state.clearSearchHit);
+  useEffect(() => {
+    if (!hit || hit.view !== view || hit.section !== section) return;
+    let highlightTimer = 0;
+    let secondFrame = 0;
+    let highlighted: HTMLElement | null = null;
+    let cancelled = false;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const targetText = hit.targetText.trim();
+        const candidates = Array.from(panel.querySelectorAll<HTMLElement>("h2, h3, label, p, span, button"));
+        const target = candidates.find((element) => element.textContent?.trim() === targetText)
+          ?? candidates.find((element) => element.textContent?.trim().includes(targetText));
+        let owner = target ?? panel;
+        const focusSelector = "input:not([type='hidden']):not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex='-1'])";
+        let focusable = owner.matches(focusSelector) ? owner : undefined;
+        while (!focusable && owner !== panel) {
+          focusable = owner.querySelector<HTMLElement>(focusSelector) ?? undefined;
+          if (!focusable && owner.parentElement) owner = owner.parentElement;
+        }
+        const highlight = owner === panel ? target ?? panel : owner;
+        highlighted = highlight;
+        highlight.dataset.settingsSearchHit = "true";
+        const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+        highlight.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+        focusable?.focus({ preventScroll: true });
+        highlightTimer = window.setTimeout(() => {
+          delete highlight.dataset.settingsSearchHit;
+          highlighted = null;
+          clearSearchHit(hit.id);
+        }, 1400);
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(highlightTimer);
+      if (highlighted) delete highlighted.dataset.settingsSearchHit;
+    };
+  }, [hit, view, section, panelId, clearSearchHit]);
 }

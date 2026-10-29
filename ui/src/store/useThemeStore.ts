@@ -192,9 +192,13 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   root.style.setProperty("--color-accent-control-active", control.active);
   root.style.setProperty("--color-accent-control-contrast", control.foreground);
   const light = theme.tone === "light";
+  // 明度层级都从背景色推导：外框比内容层更沉，检查器、分组面、悬停、选中依次抬亮，
+  // 用户换背景色时层级关系保持不变。
+  const frame = mix(background, "#000000", light ? 0.035 : 0.22);
   root.style.setProperty("--theme-bg", background);
-  root.style.setProperty("--theme-bg-sidebar", mix(background, "#000000", light ? 0.04 : 0.18));
-  root.style.setProperty("--theme-bg-titlebar", mix(background, "#000000", light ? 0.04 : 0.18));
+  root.style.setProperty("--theme-bg-sidebar", frame);
+  root.style.setProperty("--theme-bg-titlebar", frame);
+  root.style.setProperty("--theme-panel", mix(background, "#FFFFFF", light ? 0.5 : 0.016));
   root.style.setProperty("--theme-overlay", mix(background, "#FFFFFF", light ? 0.88 : 0.06));
   const glassBase = theme.backgroundMode === "custom"
     ? background
@@ -202,15 +206,15 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
       ? "#F8FAFC"
       : "#05070B";
   root.style.setProperty("--system-glass-color", mix(theme.accent, glassBase, light ? 0.98 : 0.97));
-  root.style.setProperty("--color-fg", light ? "#111827" : "#FFFFFF");
-  root.style.setProperty("--color-fg-muted", light ? "rgba(17, 24, 39, 0.68)" : "rgba(255, 255, 255, 0.78)");
-  root.style.setProperty("--color-fg-subtle", light ? "rgba(17, 24, 39, 0.42)" : "rgba(255, 255, 255, 0.5)");
-  root.style.setProperty("--color-fg-faint", light ? "rgba(17, 24, 39, 0.32)" : "rgba(255, 255, 255, 0.30)");
-  root.style.setProperty("--theme-surface", light ? "rgba(255, 255, 255, 0.76)" : "rgba(255, 255, 255, 0.035)");
-  root.style.setProperty("--theme-surface-hover", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.06)");
-  root.style.setProperty("--theme-surface-strong", light ? "rgba(255, 255, 255, 0.92)" : "rgba(255, 255, 255, 0.08)");
-  root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.1)" : "rgba(255, 255, 255, 0.08)");
-  root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.18)" : "rgba(255, 255, 255, 0.16)");
+  root.style.setProperty("--color-fg", light ? "#111827" : "#ECEDEF");
+  root.style.setProperty("--color-fg-muted", light ? "#4B5160" : "#A3A6AD");
+  root.style.setProperty("--color-fg-subtle", light ? "#6B7180" : "#7E828A");
+  root.style.setProperty("--color-fg-faint", light ? "#9AA0AB" : "#5C5F66");
+  root.style.setProperty("--theme-surface", light ? mix(background, "#FFFFFF", 0.85) : mix(background, "#FFFFFF", 0.045));
+  root.style.setProperty("--theme-surface-hover", light ? mix(background, "#000000", 0.03) : mix(background, "#FFFFFF", 0.07));
+  root.style.setProperty("--theme-surface-strong", light ? mix(background, "#000000", 0.07) : mix(background, "#FFFFFF", 0.1));
+  root.style.setProperty("--color-line", light ? "rgba(17, 24, 39, 0.09)" : "rgba(255, 255, 255, 0.07)");
+  root.style.setProperty("--color-line-strong", light ? "rgba(17, 24, 39, 0.16)" : "rgba(255, 255, 255, 0.12)");
 }
 
 export function applySystemGlassToDocument(

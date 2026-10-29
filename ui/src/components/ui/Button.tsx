@@ -13,7 +13,7 @@ const variants: Record<Variant, string> = {
   primary:
     "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] font-medium hover:bg-[var(--color-accent-control-hover)] active:bg-[var(--color-accent-control-active)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
   ghost:
-    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] hover:border-[var(--accent-ring)] hover:bg-[var(--accent-soft)] active:bg-[var(--accent-soft-strong)] disabled:opacity-40",
+    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line)] shadow-[var(--shadow-raise)] hover:bg-[var(--color-surface-hover)] active:bg-[var(--color-surface-strong)] disabled:opacity-40",
   danger:
     "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[var(--color-err)] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
   dangerHover:
@@ -21,8 +21,8 @@ const variants: Record<Variant, string> = {
 };
 
 const sizes: Record<Size, string> = {
-  sm: "h-[var(--control-h-sm)] px-3 text-xs",
-  md: "h-[var(--control-h)] px-4 text-sm",
+  sm: "h-[var(--control-h-sm)] px-2.5 text-xs",
+  md: "h-[var(--control-h)] px-3.5 text-[13px]",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(

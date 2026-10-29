@@ -6,7 +6,7 @@ const { invoke, initializeSettings, state } = vi.hoisted(() => ({
   invoke: vi.fn(),
   initializeSettings: vi.fn(),
   state: {
-    view: "home", aboutOpen: false, closeAbout: vi.fn(), setSession: vi.fn(), setView: vi.fn(),
+    view: "dictation", layoutMode: "pro", setLayoutMode: vi.fn(), aboutOpen: false, closeAbout: vi.fn(), setSession: vi.fn(), setView: vi.fn(),
     theme: {}, settings: { glassEnabled: false, glassTint: "" },
   },
 }));
@@ -27,14 +27,18 @@ vi.mock("@/store/useThemeStore", () => ({
 vi.mock("@/store/useFloatingOrbStore", () => ({ useFloatingOrbStore: (select: (value: typeof state) => unknown) => select(state) }));
 vi.mock("@/components/shell/Titlebar", () => ({ Titlebar: () => null }));
 vi.mock("@/components/shell/Sidebar", () => ({ Sidebar: () => null }));
-vi.mock("@/views/DictationView", () => ({ DictationView: () => null }));
-vi.mock("@/views/HomeView", () => ({ HomeView: () => <div>应用主页</div> }));
-vi.mock("@/views/VoiceAssistantPanel", () => ({ VoiceAssistantView: () => null }));
-vi.mock("@/views/RealtimeSubtitlesPanel", () => ({ RealtimeSubtitlesPanel: () => null }));
-vi.mock("@/views/TranscriptionView", () => ({ TranscriptionView: () => null }));
-vi.mock("@/views/CustomizationView", () => ({ CustomizationView: () => null }));
-vi.mock("@/views/SettingsView", () => ({ SettingsView: () => null }));
-vi.mock("@/views/HistoryView", () => ({ HistoryView: () => null }));
+vi.mock("@/hooks/useLayoutMode", () => ({ useLayoutMode: () => undefined }));
+vi.mock("@/views/dictation/DictationPage", () => ({ DictationPage: () => <div>应用主页</div> }));
+vi.mock("@/views/assistant/AssistantPage", () => ({ AssistantPage: () => null }));
+vi.mock("@/views/subtitles/SubtitlesPage", () => ({ SubtitlesPage: () => null }));
+vi.mock("@/views/transcription/TranscriptionPage", () => ({ TranscriptionPage: () => null }));
+vi.mock("@/views/models/ModelsPage", () => ({ ModelsPage: () => null }));
+vi.mock("@/views/lexicon/LexiconPage", () => ({ LexiconPage: () => null }));
+vi.mock("@/views/history/HistoryPage", () => ({ HistoryPage: () => null }));
+vi.mock("@/views/settings/SettingsPage", () => ({ SettingsPage: () => null }));
+vi.mock("@/views/simple/SimplePages", () => ({
+  SimpleDictation: () => null, SimpleSubtitles: () => null, SimpleTranscription: () => null, SimpleHistory: () => null, SimpleSettings: () => null,
+}));
 vi.mock("@/views/AboutView", () => ({ AboutDialog: () => null }));
 vi.mock("@/components/PluginDropInstaller", () => ({ PluginDropInstaller: () => null }));
 vi.mock("@/features/hotkeys/ShortcutConflictDialog", () => ({ ShortcutConflictDialog: () => null }));

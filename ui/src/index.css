@@ -5,29 +5,30 @@
  * @theme 内为可生成 Tailwind 工具类的令牌；布局尺寸/层级等见其后的 :root。
  */
 @theme {
-  /* 背景层级：应用底 → 侧栏/标题栏 → 控件面 → 浮层 */
-  --color-bg: #0f0f0f;
-  --color-bg-sidebar: #0c0c0c;
-  --color-bg-titlebar: #0c0c0c;
-  --color-surface: rgba(255, 255, 255, 0.035);
-  --color-surface-hover: rgba(255, 255, 255, 0.06);
-  --color-surface-strong: rgba(255, 255, 255, 0.08);
-  --color-overlay: #1e1e1e;
+  /* 明度层级：外框（标题栏/导航）→ 内容层 → 检查器 → 分组面 → 浮层 */
+  --color-bg: #131417;
+  --color-bg-sidebar: #0e0f11;
+  --color-bg-titlebar: #0e0f11;
+  --color-panel: #17181b;
+  --color-surface: #1e1f23;
+  --color-surface-hover: #24262a;
+  --color-surface-strong: #2c2e33;
+  --color-overlay: #1e1f23;
 
   /* 边框/分割线 */
-  --color-line: rgba(255, 255, 255, 0.08);
-  --color-line-strong: rgba(255, 255, 255, 0.16);
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-line-strong: rgba(255, 255, 255, 0.12);
 
   /* 文字层级 */
-  --color-fg: #ffffff;
-  --color-fg-muted: rgba(255, 255, 255, 0.78);
-  --color-fg-subtle: rgba(255, 255, 255, 0.5);
-  --color-fg-faint: rgba(255, 255, 255, 0.3);
+  --color-fg: #ecedef;
+  --color-fg-muted: #a3a6ad;
+  --color-fg-subtle: #7e828a;
+  --color-fg-faint: #5c5f66;
 
   /* 状态色 */
-  --color-ok: #25c36f;
-  --color-err: #ff6b6b;
-  --color-warn: #ffd166;
+  --color-ok: #3fb27f;
+  --color-err: #e5726c;
+  --color-warn: #d9a441;
   --color-rec: #ff4d4f;
 
   /* 品牌强调 */
@@ -42,13 +43,14 @@
 
   /* 圆角 */
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
   --radius-pill: 9999px;
 
-  /* 阴影 */
+  /* 阴影：raise 是抬起表面顶部的一道细高光，只用于内容层里的分组面与选中项 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-raise: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.55);
 
   /* 动效 */
@@ -66,28 +68,32 @@
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
 :root {
-  --theme-bg: #0f0f0f;
-  --theme-bg-sidebar: #0c0c0c;
-  --theme-bg-titlebar: #0c0c0c;
-  --theme-overlay: #1e1e1e;
-  --theme-surface: rgba(255, 255, 255, 0.035);
-  --theme-surface-hover: rgba(255, 255, 255, 0.06);
-  --theme-surface-strong: rgba(255, 255, 255, 0.08);
+  --theme-bg: #131417;
+  --theme-bg-sidebar: #0e0f11;
+  --theme-bg-titlebar: #0e0f11;
+  --theme-panel: #17181b;
+  --theme-overlay: #1e1f23;
+  --theme-surface: #1e1f23;
+  --theme-surface-hover: #24262a;
+  --theme-surface-strong: #2c2e33;
   --system-glass-color: #101217;
   --system-glass-tint: 8%;
 
   --color-bg: var(--theme-bg);
   --color-bg-sidebar: var(--theme-bg-sidebar);
   --color-bg-titlebar: var(--theme-bg-titlebar);
+  --color-panel: var(--theme-panel);
   --color-overlay: var(--theme-overlay);
   --color-surface: var(--theme-surface);
   --color-surface-hover: var(--theme-surface-hover);
   --color-surface-strong: var(--theme-surface-strong);
 
-  --titlebar-h: 36px;
-  --sidebar-w: 232px;
-  --control-h: 44px;
-  --control-h-sm: 34px;
+  --titlebar-h: 40px;
+  --rail-w: 68px;
+  --list-col-w: 288px;
+  --row-h: 48px;
+  --control-h: 32px;
+  --control-h-sm: 28px;
   --onboarding-dialog-w: 680px;
   --onboarding-dialog-h: 680px;
 
@@ -101,7 +107,7 @@
   --z-tooltip: 220;
   --tooltip-max-w: 360px;
 
-  /* 强调色的柔和背景，用于选中/悬浮态 */
+  /* 强调色的柔和背景，用于焦点环与少量选中提示 */
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
   --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
@@ -170,6 +176,7 @@
   --color-bg: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-sidebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-titlebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
+  --color-panel: color-mix(in srgb, var(--theme-panel) 40%, transparent);
   --color-overlay: color-mix(in srgb, var(--theme-overlay) 58%, transparent);
   --color-surface: color-mix(in srgb, var(--theme-overlay) 24%, transparent);
   --color-surface-hover: color-mix(in srgb, var(--theme-overlay) 34%, transparent);
@@ -194,8 +201,8 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.45;
   overflow: hidden;
 }
 

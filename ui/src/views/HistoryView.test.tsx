@@ -4,6 +4,8 @@ import { HistoryView } from "./HistoryView";
 
 const cmd = vi.fn();
 const events = vi.hoisted(() => new Map<string, () => void>());
+vi.mock("@/views/history/UsageSummaryLine", () => ({ UsageSummaryLine: () => null }));
+
 vi.mock("@/lib/tauri", () => ({
   CMD: {
     queryHistory: "query_history",

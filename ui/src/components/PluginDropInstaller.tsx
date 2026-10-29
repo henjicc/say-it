@@ -24,8 +24,7 @@ export function PluginDropInstaller() {
   const sourcePath = usePluginImportStore((state) => state.pendingPaths[0]);
   const enqueue = usePluginImportStore((state) => state.enqueue);
   const finishCurrent = usePluginImportStore((state) => state.finishCurrent);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+  const openModels = useUiStore((state) => state.openModels);
   const [preview, setPreview] = useState<PackagePreview>();
   const [previewError, setPreviewError] = useState("");
   const [trustReason, setTrustReason] = useState("");
@@ -117,8 +116,7 @@ export function PluginDropInstaller() {
         expectedArchiveSha256: preview?.archiveSha256,
       });
       setInstallState({ status: "success" });
-      setView("settings");
-      setSettingsTab("plugins");
+      openModels("plugins");
       void emitEvent(EVT.pluginRegistryChanged).catch((error) => {
         console.error("刷新插件目录失败", error);
       });

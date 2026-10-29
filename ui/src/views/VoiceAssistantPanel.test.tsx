@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/store/useUiStore";
-import { VoiceAssistantView } from "./VoiceAssistantPanel";
+import { AssistantPage } from "@/views/assistant/AssistantPage";
 
 const cmd = vi.fn();
 
@@ -20,9 +20,7 @@ vi.mock("@/features/asr/modelRegistry", () => ({
   optionsForScene: () => [],
 }));
 
-vi.mock("@/views/SmartTextPanel", () => ({ SmartTextPanel: () => <div>智能优化设置</div> }));
-
-describe("VoiceAssistantView", () => {
+describe("AssistantPage", () => {
   afterEach(cleanup);
   beforeEach(() => {
     cmd.mockImplementation(async (name: string) => {
@@ -63,20 +61,20 @@ describe("VoiceAssistantView", () => {
       }
       return undefined;
     });
-    useUiStore.setState({ focusedAssistantAction: null, view: "assistant", assistantTab: "editSelection" });
+    useUiStore.setState({ view: "assistant", assistantAction: "editSelection" });
   });
 
   it("shows all assistant settings instead of redirecting to dictation basics", async () => {
-    render(<VoiceAssistantView />);
-    expect(screen.getByRole("heading", { name: "智能助手", level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "选区编辑" })).toBeInTheDocument();
+    render(<AssistantPage />);
+    expect(screen.getByRole("heading", { name: "助手", level: 1 })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "选区编辑" }).length).toBeGreaterThan(0);
     expect(screen.getByText("任务提示词")).toBeInTheDocument();
     expect(screen.getByText("试运行")).toBeInTheDocument();
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
   });
 
   it("runs the configured real model through the safe preview command", async () => {
-    render(<VoiceAssistantView />);
+    render(<AssistantPage />);
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
     fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("preview_assistant", expect.objectContaining({
@@ -88,7 +86,7 @@ describe("VoiceAssistantView", () => {
   });
 
   it("restores built-in templates from the Rust catalog", async () => {
-    render(<VoiceAssistantView />);
+    render(<AssistantPage />);
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
     fireEvent.click(await screen.findByRole("button", { name: "恢复" }));
@@ -106,7 +104,6 @@ describe("VoiceAssistantView", () => {
   it("keeps the shortcut deep link on the exact assistant action", () => {
     useUiStore.getState().openAssistantSettings("ask");
     expect(useUiStore.getState().view).toBe("assistant");
-    expect(useUiStore.getState().assistantTab).toBe("ask");
-    expect(useUiStore.getState().focusedAssistantAction).toBe("ask");
+    expect(useUiStore.getState().assistantAction).toBe("ask");
   });
 });

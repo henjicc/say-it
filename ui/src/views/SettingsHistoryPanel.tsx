@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
@@ -40,17 +40,17 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
   };
 }
 
-export function SettingsHistoryPanel() {
-  const { confirm, dialog } = useConfirm();
+/** 读取并保存历史偏好；设置页与简单模式共用。onLoaded 只在首次读取后调用一次。 */
+export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
   const [prefs, setPrefs] = useState<HistoryPrefs>(defaults);
-  const [excludedText, setExcludedText] = useState("");
   const [message, setMessage] = useState("");
+  const onLoadedRef = useRef(onLoaded);
 
   useEffect(() => {
     void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => {
       const next = normalize(snapshot.settings.historyPrefs);
       setPrefs(next);
-      setExcludedText(next.excludedApps.join("\n"));
+      onLoadedRef.current?.(next);
     }).catch((error) => setMessage(String(error)));
   }, []);
 
@@ -63,6 +63,14 @@ export function SettingsHistoryPanel() {
       setMessage(String(error));
     }
   }
+
+  return { prefs, save, message, setMessage };
+}
+
+export function SettingsHistoryPanel() {
+  const { confirm, dialog } = useConfirm();
+  const [excludedText, setExcludedText] = useState("");
+  const { prefs, save, message, setMessage } = useHistoryPrefs((loaded) => setExcludedText(loaded.excludedApps.join("\n")));
 
   async function clear() {
     if (
