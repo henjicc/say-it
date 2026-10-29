@@ -12,6 +12,14 @@ pub(crate) mod context_debug;
 pub(crate) mod floating_orb;
 pub(crate) mod indicator;
 pub(crate) mod mouse_gesture;
+pub(crate) mod native_common;
+pub(crate) mod native_indicator;
+#[cfg(target_os = "macos")]
+pub(crate) mod native_mac;
+pub(crate) mod native_orb;
+#[cfg(windows)]
+pub(crate) mod native_win;
+pub(crate) mod native_subtitle;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
 
@@ -22,5 +30,6 @@ pub(crate) use context_debug::*;
 pub(crate) use floating_orb::*;
 pub(crate) use indicator::*;
 pub(crate) use mouse_gesture::*;
+pub(crate) use native_indicator::*;
 pub(crate) use system_fonts::*;
 pub(crate) use window::*;

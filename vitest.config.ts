@@ -6,7 +6,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
-  resolve: { alias: { "@": `${root}ui/src` } },
+  resolve: { alias: { "@": `${root}ui/src`, "~shared": `${root}shared` } },
   test: {
     environment: "jsdom",
     setupFiles: ["ui/src/test/setup.ts"],

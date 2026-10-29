@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { HelpLabel, Tooltip } from "@/components/ui/Tooltip";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Combine, Plus, Split, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -35,6 +36,7 @@ import {
   isTypingTarget,
   isInteractiveTarget,
   joinTexts,
+  roundCueTimes,
   type DragMode,
   type DragState,
   type PanState,
@@ -197,10 +199,17 @@ export function SubtitleEditor({
     nextBegin: index < cues.length - 1 ? cues[index + 1].beginMs : Number.POSITIVE_INFINITY,
   });
 
-  /** 提交一次字幕数组变更；同时记下这是「自己触发的」变更，供下面的 effect 区分外部切换（换文件/切 Tab）。 */
+  /**
+   * 提交一次字幕数组变更；同时记下这是「自己触发的」变更，供下面的 effect 区分外部切换（换文件/切 Tab）。
+   *
+   * 时间码在这里统一取整：本组件所有写回都经由 applyCues，在唯一收口处理可以一次
+   * 覆盖拖动/拉伸/拆分/设为播放头等全部路径，也保证撤销栈里存的都是整数快照。
+   * 不取整的话，导出 SRT 会被 Rust 侧的 i64 反序列化拒收（见 roundCueTimes 注释）。
+   */
   const applyCues = (next: EditableCue[]) => {
-    expectedCuesRef.current = next;
-    onCuesChange(next);
+    const rounded = roundCueTimes(next);
+    expectedCuesRef.current = rounded;
+    onCuesChange(rounded);
   };
 
   /** 将变更前的快照压入撤销栈，并清空重做栈；用于拖动/文本编辑等连续操作的收尾，以及各类一次性操作。 */
@@ -584,15 +593,47 @@ export function SubtitleEditor({
     if (audioRef.current) audioRef.current.playbackRate = rate;
   }, [rate]);
 
-  useEffect(() => {
+  // 画布只覆盖时间轴的可视窗口，跟随横向滚动平移重绘。详见 waveform.ts 的说明：
+  // 跟随整条时间轴会在十几分钟的音频上触及浏览器画布上限，整块波形静默变空白。
+  const redrawWaveform = useCallback(() => {
+    const container = timelineRef.current;
+    const canvas = waveformCanvasRef.current;
+    if (!container || !canvas) return;
     drawWaveformCanvas(
-      waveformCanvasRef.current,
+      canvas,
       waveformColumns,
-      timelineWidth,
+      container.clientWidth,
       WAVEFORM_HEIGHT,
       waveformZoom,
+      container.scrollLeft,
+      timelineWidth,
     );
   }, [timelineWidth, waveformColumns, waveformZoom]);
+
+  useEffect(() => {
+    redrawWaveform();
+  }, [redrawWaveform]);
+
+  useEffect(() => {
+    const container = timelineRef.current;
+    if (!container) return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        redrawWaveform();
+      });
+    };
+    container.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    return () => {
+      container.removeEventListener("scroll", schedule);
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [redrawWaveform]);
 
   useEffect(() => {
     const anchor = zoomAnchorRef.current;
@@ -619,6 +660,11 @@ export function SubtitleEditor({
   useEffect(() => {
     const onUndoRedoKeydown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return;
+      // 与上面的空格键处理一致：输入框里的撤销/重做交还给浏览器原生行为。
+      // 这个监听挂在 window 上且是捕获阶段，不加这道守卫的话，只要本编辑器处于
+      // 挂载状态，主窗口里任何 input/textarea 的原生撤销都会被吃掉并错误地
+      // 改为撤销字幕改动（例如文稿对齐页上方的文稿框）。
+      if (isTypingTarget(event.target)) return;
       const key = event.key.toLowerCase();
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
@@ -692,9 +738,9 @@ export function SubtitleEditor({
       )}
 
       <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] px-4 py-3">
-        <Button size="sm" variant="primary" onClick={togglePlay} disabled={!mediaSrc || playbackError} className="w-16">
+        <Tooltip content="按空格键也可以播放或暂停。"><Button size="sm" variant="primary" onClick={togglePlay} disabled={!mediaSrc || playbackError} className="w-16">
           {playing ? "暂停" : "播放"}
-        </Button>
+        </Button></Tooltip>
         <Button size="sm" onClick={() => seek(currentMs - 5000)} disabled={!mediaSrc || playbackError} title="后退 5 秒">
           −5s
         </Button>
@@ -705,16 +751,13 @@ export function SubtitleEditor({
           {rate}×
         </Button>
         <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
-          时间轴 {formatZoom(timelineZoom)}
-          <span className="text-[var(--color-fg-subtle)]">{shortcutModifierLabels.ctrl}+滚轮</span>
+          <HelpLabel content={`按住 ${shortcutModifierLabels.ctrl} 并滚动鼠标滚轮可缩放时间轴；按住鼠标中键可拖动。${isMacOS ? "⌘Z 撤销，⌘⇧Z 重做。" : "Ctrl+Z 撤销，Ctrl+Y 重做。"}`}>时间轴 {formatZoom(timelineZoom)}</HelpLabel>
         </span>
         <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
-          波形 {formatZoom(waveformZoom)}
-          <span className="text-[var(--color-fg-subtle)]">{shortcutModifierLabels.alt}+滚轮</span>
+          <HelpLabel content={`按住 ${shortcutModifierLabels.alt} 并滚动鼠标滚轮可缩放波形。`}>波形 {formatZoom(waveformZoom)}</HelpLabel>
         </span>
-        <span
+        <Tooltip content="把短暂的字幕空白接起来：前一句延长到后一句开始，避免字幕忽隐忽现。"><span
           className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1"
-          title="小于该阈值的相邻字幕间隙会被合并（前一条延伸至后一条开始），避免烧录成片后字幕出现闪烁"
         >
           <span className="text-[11px] text-[var(--color-fg-faint)]">间隙 ≤</span>
           <input
@@ -726,19 +769,10 @@ export function SubtitleEditor({
             className="h-6 w-14 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] text-center font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)] focus:outline-none focus:border-[var(--accent-ring)]"
           />
           <span className="text-[11px] text-[var(--color-fg-faint)]">ms</span>
-        </span>
+        </span></Tooltip>
         <Button size="sm" onClick={mergeGaps} disabled={cues.length < 2}>
           合并字幕间隙
         </Button>
-        <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
-          Space 播放/暂停
-        </span>
-        <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
-          中键拖动时间轴
-        </span>
-        <span className="rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] leading-none text-[var(--color-fg-faint)]">
-          {isMacOS ? "⌘Z 撤销 / ⌘⇧Z 重做" : "Ctrl+Z 撤销 / Ctrl+Y 重做"}
-        </span>
         <span className="font-mono text-xs tabular-nums text-[var(--color-fg-subtle)]">
           {formatClock(currentMs)} / {formatClock(totalMs)}
         </span>
@@ -795,12 +829,12 @@ export function SubtitleEditor({
             ))}
           </div>
 
-          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg-sidebar)]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
+          <div className="absolute inset-x-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg-sidebar)]" style={{ top: `${WAVEFORM_TOP}px`, height: `${WAVEFORM_HEIGHT}px` }}>
             {waveformColumns.length > 0 ? (
               <canvas
                 ref={waveformCanvasRef}
-                className="block h-full w-full"
-                style={{ width: `${timelineWidth}px`, height: `${WAVEFORM_HEIGHT}px` }}
+                className="absolute left-0 top-0 block"
+                style={{ height: `${WAVEFORM_HEIGHT}px` }}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-faint)]">

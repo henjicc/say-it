@@ -89,12 +89,7 @@ export function SubtitleStylePanel() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SettingsSection title="字幕样式">
-        {outputToObs && (
-          <p className="text-xs leading-relaxed text-[var(--color-fg-subtle)]">
-            输出目标为 OBS：“位置”与“位置偏移”需要在 OBS 画布中调整；其余样式实时同步到 OBS。
-          </p>
-        )}
+      <SettingsSection title="字幕样式" description={outputToObs ? "字幕位置请在 OBS 中调整，其他样式会自动同步。" : undefined}>
         <FormGrid>
           <Field layout="row" label="字体">
             <Select
@@ -174,10 +169,7 @@ export function SubtitleStylePanel() {
         </div>
       </Modal>
 
-      <SettingsSection title="字幕动画">
-        <p className="text-xs text-[var(--color-fg-subtle)]">
-          位移动画用于单句替换的左右平移、滚动累积的上下滚动；淡入动画用于新增文字出现时的不透明度过渡。
-        </p>
+      <SettingsSection title="字幕动画" description="位移动画控制字幕切换和滚动时的移动效果；淡入动画让新出现的文字逐渐显示。">
         <FormGrid>
           <Field layout="row" label="位移动画">
             <Switch

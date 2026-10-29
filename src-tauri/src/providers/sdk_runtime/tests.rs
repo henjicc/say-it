@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::cancellation::CancellationFlag;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,6 +18,9 @@ use crate::providers::plugin_runtime::JsProviderRuntime;
 use crate::providers::ProviderProfile;
 
 const SECRET: &str = "sk-sayit-test-secret";
+
+#[path = "upload_tests.rs"]
+mod upload_tests;
 
 fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
     let root = std::env::temp_dir().join(format!("sayit-sdk-runtime-{}", uuid::Uuid::new_v4()));
@@ -38,6 +41,7 @@ fn fixture(source: &str) -> (PathBuf, PluginRuntimeSpec, ProviderProfile) {
         trust: "unsigned".into(),
     };
     let profile = ProviderProfile {
+        keep_loaded: false,
         id: "bailian".into(),
         kind: "plugin:test".into(),
         display_name: "Test".into(),
@@ -234,7 +238,7 @@ fn create_sdk_runtime(
     source: &str,
     mut spec: PluginRuntimeSpec,
     profile: &ProviderProfile,
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<CancellationFlag>,
     inputs: HashMap<String, PathBuf>,
     records: Arc<Mutex<Vec<Value>>>,
 ) -> JsProviderRuntime {
@@ -286,7 +290,7 @@ export default () => ({
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([("media-1".into(), media)]),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -347,7 +351,7 @@ export default () => ({
         spec,
         &profile,
         Duration::from_secs(1),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         bindings,
     )
@@ -362,6 +366,40 @@ export default () => ({
         "{error}"
     );
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancellation_interrupts_blocking_credential_wait() {
+    let (root, spec, profile) = fixture("export default () => ({ async invoke() { await globalThis.__sayitCreateRuntimeContext().credentials.get('api-key', 'bailian'); return { unexpected: true }; } });");
+    let mut bindings = bindings(Arc::new(Mutex::new(Vec::new())));
+    bindings.credentials = CredentialStoreHandle::from_store(Arc::new(BlockingCredentials));
+    let flag = Arc::new(CancellationFlag::default());
+    let runtime = JsProviderRuntime::create_with_sdk_bindings(
+        spec,
+        &profile,
+        Duration::from_secs(1),
+        flag.clone(),
+        HashMap::new(),
+        bindings,
+    )
+    .unwrap();
+    let cancel = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        flag.store(true, std::sync::atomic::Ordering::Release);
+    });
+    let started = std::time::Instant::now();
+    let error = runtime
+        .call("invoke", &json!({}), Duration::from_secs(1))
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(
+        error.contains("SDK_RUNTIME_CANCELLED") || error.contains("取消"),
+        "{error}"
+    );
+    cancel.join().unwrap();
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    drop(runtime);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -408,7 +446,7 @@ export default () => ({
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         records,
     );
@@ -462,7 +500,7 @@ export default () => ({
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -578,7 +616,7 @@ export default () => ({
         spec,
         &profile,
         Duration::from_secs(5),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::from([
             ("media-1".into(), media),
             ("media-oversized".into(), oversized),
@@ -658,7 +696,7 @@ export default () => {
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );
@@ -707,7 +745,7 @@ export default () => ({
         source,
         spec,
         &profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         records,
     );
@@ -744,7 +782,14 @@ export default () => ({
 
     let (cancel_url, cancel_server) = spawn_stalled_http();
     let (cancel_root, cancel_spec, cancel_profile) = fixture(source);
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let (asr_handle, mut asr_input) = crate::state::AsrStreamHandle::channel();
+    for _ in 0..1000 {
+        asr_handle
+            .tx
+            .send(crate::state::AsrStreamInput::RawF32(vec![0.1; 4096]))
+            .unwrap();
+    }
+    let cancelled = asr_input.cancellation_flag();
     let runtime = create_sdk_runtime(
         source,
         cancel_spec,
@@ -755,7 +800,7 @@ export default () => ({
     );
     let trigger = thread::spawn(move || {
         thread::sleep(Duration::from_millis(40));
-        cancelled.store(true, Ordering::Relaxed);
+        asr_handle.stop();
     });
     let error = runtime
         .call(
@@ -767,6 +812,10 @@ export default () => ({
     assert!(error.contains("取消") || error.contains("CANCELLED") || error.contains("interrupted"));
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
     trigger.join().unwrap();
+    assert!(matches!(
+        asr_input.try_recv(),
+        Ok(crate::state::AsrStreamInput::Stop)
+    ));
     cancel_server.join().unwrap();
     std::fs::remove_dir_all(cancel_root).unwrap();
 
@@ -776,7 +825,7 @@ export default () => ({
         source,
         timeout_spec,
         &timeout_profile,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(Mutex::new(Vec::new())),
     );

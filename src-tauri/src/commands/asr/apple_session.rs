@@ -48,7 +48,7 @@ pub(super) async fn start_apple_speech_stream(
     model: String,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     let mut capability = crate::providers::apple_speech::refresh_status();
     if !capability.identity_valid {
         return Err(if capability.message.trim().is_empty() {
@@ -81,39 +81,65 @@ pub(super) async fn start_apple_speech_stream(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    tauri::async_runtime::spawn(run_apple_session(
-        app,
-        task_id,
-        streams,
-        rx,
-        StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
-        model,
-    ));
-    Ok(AsrStreamStartResponse { session_id })
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            tauri::async_runtime::spawn(run_apple_session(
+                app,
+                task_id,
+                streams,
+                rx,
+                StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
+                model,
+            ));
+            Ok(())
+        },
+    ))
 }
 
 async fn run_apple_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
 ) {
+    if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
     let transport = match open_transport(OUTPUT_RATE).await {
         Ok(transport) => transport,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -127,6 +153,7 @@ async fn run_apple_session(
     let mut terminal_event = false;
     let mut stopped = false;
     let mut helper_pid = 0;
+    let cancellation = rx.cancellation();
 
     loop {
         tokio::select! {
@@ -136,7 +163,12 @@ async fn run_apple_session(
                     if pcm.is_empty() { continue; }
                     let bytes = pcm16_as_f32_bytes(&pcm);
                     let Some(channel) = writer.as_mut() else { continue; };
-                    if let Err(error) = channel.write_all(&bytes).await {
+                    let sent = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => { stopped = true; break; }
+                        result = channel.write_all(&bytes) => result,
+                    };
+                    if let Err(error) = sent {
                         emit_asr_stream_event(
                             &app,
                             &session_id,
@@ -149,17 +181,31 @@ async fn run_apple_session(
                 }
                 Some(AsrStreamInput::Finish) => {
                     if let Some(mut channel) = writer.take() {
+                        let bytes = pcm16_as_f32_bytes(&dsp.finish());
+                        let sent = tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => { stopped = true; break; }
+                            result = channel.write_all(&bytes) => result,
+                        };
+                        if let Err(error) = sent {
+                            emit_asr_stream_event(&app, &session_id, "error", json!({
+                                "message": format!("发送音频尾部到 Apple 系统本地识别失败：{error}")
+                            }));
+                            terminal_event = true;
+                            break;
+                        }
                         let _ = channel.shutdown().await;
                     }
                 }
+                Some(AsrStreamInput::Failed(error)) => {
+                    let _ = rx.take_failure();
+                    emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                    terminal_event = true;
+                    stopped = true;
+                    break;
+                }
                 Some(AsrStreamInput::Stop) | None => {
                     stopped = true;
-                    writer.take();
-                    if let Some(process) = child.as_mut() {
-                        let _ = process.kill().await;
-                    } else if helper_pid > 0 {
-                        terminate_process(helper_pid);
-                    }
                     break;
                 }
             },
@@ -232,6 +278,13 @@ async fn run_apple_session(
     }
 
     writer.take();
+    if stopped {
+        if let Some(process) = child.as_mut() {
+            let _ = process.kill().await;
+        } else if helper_pid > 0 {
+            terminate_process(helper_pid);
+        }
+    }
     let exit_status = if let Some(process) = child.as_mut() {
         process.wait().await.ok()
     } else {
@@ -255,6 +308,9 @@ async fn run_apple_session(
             format!("Apple 系统本地识别意外结束（{exit_status:?}）")
         };
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": message }));
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(

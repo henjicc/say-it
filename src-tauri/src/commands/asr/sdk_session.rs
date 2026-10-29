@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use super::session_wait::{SessionWait, SessionWake};
 use crate::commands::audio::emit_asr_stream_event;
 use crate::prelude::*;
 use crate::providers::sdk_runtime::online::{BuiltinSdkRuntime, BuiltinSdkScope};
@@ -18,37 +18,40 @@ pub(super) async fn start_sdk_stream(
     route: crate::providers::registry::BuiltinSdkAsrRoute,
     input_sample_rate: u32,
     params: Option<DspParams>,
-) -> Result<AsrStreamStartResponse, String> {
+) -> Result<super::PreparedAsrStream, String> {
     let session_id = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AsrStreamInput>();
+    let (handle, rx) = AsrStreamHandle::channel();
     state
         .asr_streams
         .lock()
         .map_err(|_| "ASR stream lock failed".to_string())?
-        .insert(session_id.clone(), AsrStreamHandle { tx });
+        .insert(session_id.clone(), handle);
 
     let credentials = state.credentials.clone();
     let streams = state.asr_streams.clone();
     let task_id = session_id.clone();
-    if let Err(error) =
-        crate::providers::plugin_runtime::spawn_js_worker("builtin-asr", move || {
-            run_sdk_session(
-                app,
-                task_id,
-                streams,
-                rx,
-                super::stream_dsp(params, input_sample_rate),
-                model,
-                route,
-                profile,
-                credentials,
-            );
-        })
-    {
-        cleanup_stream(&state.asr_streams, &session_id);
-        return Err(error);
-    }
-    Ok(AsrStreamStartResponse { session_id })
+    let customization = crate::application::customization::resolve_for_model(state, &model);
+    Ok(super::PreparedAsrStream::new(
+        session_id,
+        streams.clone(),
+        move || {
+            crate::providers::plugin_runtime::spawn_js_worker("builtin-asr", move || {
+                run_sdk_session(
+                    app,
+                    task_id,
+                    streams,
+                    rx,
+                    super::stream_dsp(params, input_sample_rate),
+                    model,
+                    route,
+                    profile,
+                    credentials,
+                    customization,
+                );
+            })
+            .map(|_| ())
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -56,19 +59,40 @@ fn run_sdk_session(
     app: tauri::AppHandle,
     session_id: String,
     streams: Arc<Mutex<HashMap<String, AsrStreamHandle>>>,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
+    mut rx: AsrStreamReceiver,
     mut dsp: StreamDsp,
     model: String,
     route: crate::providers::registry::BuiltinSdkAsrRoute,
     profile: ProviderProfile,
     credentials: crate::providers::credential_store::CredentialStoreHandle,
+    customization: crate::providers::RequestCustomization,
 ) {
-    let cancelled = Arc::new(AtomicBool::new(false));
+    if rx.is_cancelled() {
+        if let Some(error) = rx.take_failure() {
+            emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+        }
+        cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR cancelled before initialization" }),
+        );
+        return;
+    }
+    let cancelled = rx.cancellation_flag();
     let scope = match BuiltinSdkScope::speech_recognition(&profile) {
         Ok(scope) => scope,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
@@ -82,19 +106,33 @@ fn run_sdk_session(
     ) {
         Ok(runtime) => runtime,
         Err(error) => {
+            let error = rx.take_failure().unwrap_or(error);
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
             cleanup_stream(&streams, &session_id);
+            emit_asr_stream_event(
+                &app,
+                &session_id,
+                "ended",
+                json!({ "message": "ASR initialization failed" }),
+            );
             return;
         }
     };
     if let Err(error) = runtime.realtime_start(
         &route.source,
         &route.module_id,
-        realtime_input(&profile, &model),
+        realtime_input_with_customization(&profile, &model, &customization),
         &session_id,
     ) {
+        let error = rx.take_failure().unwrap_or(error);
         emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
         cleanup_stream(&streams, &session_id);
+        emit_asr_stream_event(
+            &app,
+            &session_id,
+            "ended",
+            json!({ "message": "ASR initialization failed" }),
+        );
         return;
     }
     emit_asr_stream_event(
@@ -106,10 +144,14 @@ fn run_sdk_session(
     flush_events(&runtime, &app, &session_id);
 
     let mut finishing_at = None;
-    let mut stop = false;
-    while !stop {
-        match rx.try_recv() {
-            Ok(AsrStreamInput::RawF32(samples)) => {
+    let waiter = SessionWait::new();
+    loop {
+        match waiter.wait(
+            &mut rx,
+            runtime.host_events_ready(),
+            finishing_at.map(|started| started + FINISH_TIMEOUT),
+        ) {
+            SessionWake::Input(Some(AsrStreamInput::RawF32(samples))) => {
                 let bytes = dsp.process(&samples);
                 if !bytes.is_empty() {
                     if let Err(error) = runtime.realtime_audio(bytes) {
@@ -123,7 +165,14 @@ fn run_sdk_session(
                     }
                 }
             }
-            Ok(AsrStreamInput::Finish) => {
+            SessionWake::Input(Some(AsrStreamInput::Finish)) => {
+                let tail = dsp.finish();
+                if !tail.is_empty() {
+                    if let Err(error) = runtime.realtime_audio(tail) {
+                        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error, "stage": "sdk_audio" }));
+                        break;
+                    }
+                }
                 if let Err(error) = runtime.realtime_finish() {
                     emit_asr_stream_event(
                         &app,
@@ -135,14 +184,17 @@ fn run_sdk_session(
                 }
                 finishing_at = Some(Instant::now());
             }
-            Ok(AsrStreamInput::Stop) => {
+            SessionWake::Input(Some(AsrStreamInput::Failed(error))) => {
+                let _ = rx.take_failure();
+                emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
+                break;
+            }
+            SessionWake::Input(Some(AsrStreamInput::Stop)) => {
                 let _ = runtime.realtime_stop();
-                stop = true;
+                break;
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            SessionWake::Input(None) => break,
+            SessionWake::HostEvents | SessionWake::Deadline => {}
         }
         if let Err(error) = runtime.dispatch_host_events() {
             emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
@@ -160,6 +212,9 @@ fn run_sdk_session(
             );
             break;
         }
+    }
+    if let Some(error) = rx.take_failure() {
+        emit_asr_stream_event(&app, &session_id, "error", json!({ "message": error }));
     }
     cleanup_stream(&streams, &session_id);
     emit_asr_stream_event(
@@ -185,6 +240,8 @@ struct SdkRealtimeAsrInput {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkBailianRealtimeOptions {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    vocabulary: std::collections::BTreeMap<String, i32>,
     format: &'static str,
     max_sentence_silence_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,7 +265,11 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
+fn realtime_input_with_customization(
+    profile: &ProviderProfile,
+    model: &str,
+    customization: &crate::providers::RequestCustomization,
+) -> Value {
     let mut input = SdkRealtimeAsrInput {
         media_type: "audio/pcm",
         sample_rate_hz: OUTPUT_RATE,
@@ -227,6 +288,7 @@ fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
         .filter(|value| !value.trim().is_empty());
     input.hints = string_list(config.get("languageHints"));
     input.options = Some(SdkBailianRealtimeOptions {
+        vocabulary: crate::providers::sdk_runtime::online::sdk_inline_vocabulary(model, customization),
         format: "pcm",
         max_sentence_silence_ms: config
             .get("maxSentenceSilence")
@@ -305,6 +367,21 @@ fn cleanup_stream(streams: &Arc<Mutex<HashMap<String, AsrStreamHandle>>>, sessio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn realtime_input(profile: &ProviderProfile, model: &str) -> Value {
+        realtime_input_with_customization(profile, model, &Default::default())
+    }
+
+    #[test]
+    fn qwen_audio_realtime_receives_global_inline_vocabulary() {
+        let customization = crate::providers::RequestCustomization {
+            hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: "说吧".into(), weight: 3 }],
+            ..Default::default()
+        };
+        let input = realtime_input_with_customization(&crate::providers::bailian_profile(), "qwen-audio-3.1-asr-flash-streaming", &customization);
+        assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));
+        assert!(input["options"].get("vocabularyId").is_none());
+    }
 
     #[test]
     fn realtime_routes_come_from_the_shared_model_catalog() {

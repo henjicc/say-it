@@ -11,9 +11,12 @@ pub(crate) mod dictation;
 pub(crate) mod events;
 pub(crate) mod final_draft;
 pub(crate) mod history;
+pub(crate) mod idle_reclaim;
 pub(crate) mod learning;
 pub(crate) mod llm_models;
 pub(crate) mod performance;
+#[cfg(feature = "performance-acceptance")]
+pub(crate) mod performance_acceptance;
 pub(crate) mod plugin_management;
 pub(crate) mod settings;
 pub(crate) mod setup;

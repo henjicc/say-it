@@ -19,18 +19,20 @@
    - 修改前阅读相关代码、测试、配置、项目说明和必要的 Git 历史。
    - 优先理解现有设计意图，不根据文件名或局部代码猜测整体行为。
 
-2. **最小影响**
-   - 只修改完成当前任务所必需的内容。
-   - 不顺手重构无关模块，不改变无关格式，不扩大任务范围。
+2. **范围按根因划**
+   - 范围按根因划，不按改动大小划：同源问题一并修；与根因无关的重构、格式调整不夹带，发现的无关问题单独说明。
    - 尊重现有架构、命名、风格和抽象；引入新模式前先确认现有模式不能满足需求。
 
 3. **解决根因**
-   - 修复根本原因，而不是隐藏错误、吞掉异常、关闭检查或堆叠临时补丁。
+   - 在原因处修缺陷，不在症状上打补丁：不隐藏错误、吞异常、关检查、复制分支或只改参数掩盖原因。
+   - 缺陷来自易用错的设计（同一事实存两处、隐式约定、语义含糊的接口）就修设计，让改后代码比改前更清楚，并在提交说明写明根因。
    - 不为了让测试通过而削弱测试；只有需求确实改变时才同步调整测试预期。
 
 4. **简单且可维护**
-   - 优先选择直接、清晰、容易验证的实现。
-   - 避免过度设计、过早抽象和不必要的兼容层。
+   - 只实现用户要求的内容，不加没要求的功能、选项或可配置项；项目规则要求的配套（测试、日志、数据迁移等）算要求的一部分。
+   - 优先选择直接、清晰、容易验证的实现；能用 50 行写清楚的不写 200 行。
+   - 避免过度设计和不必要的兼容层：只用一次的代码不做抽象，不可能发生的情况不写错误处理。
+   - 中途换了方案，收尾前删掉弃用的那条路径，不留新旧两套并存。
    - 优先复用现有组件、工具函数、服务和约定，避免同一能力出现多份实现。
    - 当多种行为仅由参数或类型差异决定时，优先使用配置、数据或策略驱动，避免散落硬编码分支。
 
@@ -63,6 +65,7 @@
 
 ### 4. 完成前验证
 
+- 开发和回归测试默认使用测试数据、Mock 或本地渲染/领域测试，不得为了验证界面、布局、动画或路由而触发真实 API 请求；只有待验证行为确实依赖真实服务、无法用本地测试替代时，才执行最小必要的真实请求。验证字幕展示时直接注入测试文本，不启动真实识别或翻译会话。
 - 使用与改动最相关、成本最低的检查开始，再按风险扩大验证范围。
 - 常见顺序：目标测试 → 静态检查/类型检查 → 相关测试集 → 构建 → 端到端或运行时验证。
 - 修复 Bug 时，在可行情况下补充能复现问题的回归测试。
@@ -71,10 +74,29 @@
 - 未获得验证证据前，不得声称“已完成”“已修复”或“没有问题”。
 - 若受环境限制无法执行某项验证，明确说明未验证的内容、原因和剩余风险。
 
-### 5. 最终复查
+### 5. 提交前审查
+
+写代码的上下文看不见自己的盲区，高风险改动在提交前派一个全新上下文的子代理审一遍。
+
+- 必审：改共享模块、公共接口、数据格式与迁移、用户数据的删除与移动、权限与安全、网络请求、会产生费用的调用。本项目对应：
+  - 持久化与数据根：`src-tauri/src/persistence.rs`、`application/data_root.rs`、`AppSettings` 字段与默认值；
+  - 用户数据删除与移动：历史清理（`application/history.rs`）、重置数据、数据目录迁移、插件卸载、剪贴板备份与恢复（`windows_native.rs`）；
+  - 安全与权限：`providers/credential_vault.rs`、`SecretInput`、插件签名/信任库与 `.sayit` 解包（`providers/plugin_package.rs`）、插件运行时（`providers/plugin_runtime.rs`）、`src-tauri/capabilities/`；
+  - 网络与费用：`src-tauri/src/providers/` 下的供应商请求、重试与重连、热词云端同步、模型下载；
+  - 契约：`ui/src/lib/tauri.ts` 的命令与事件、领域快照与 `domain-event`、插件 API v5、`components/ui` 基础组件、原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_overlay.rs`、`native_indicator.rs`、`native_orb.rs`、`native_subtitle.rs`）；
+  - 发布：`.github/workflows/`、版本号、签名脚本、`src-tauri/Cargo.toml` 的 workspace 结构。
+- 不审：只改文档、文案、局部样式或单个叶子函数。
+- 只交给审查者三样东西：本次 diff、一句话任务目标、相关规则文件（本文件；UI 加 `DESIGN.md`，供应商加 `docs/rules/新增供应商与模型操作手册.md`）。不交写代码时的推理和结论。
+- 审什么：正确性；修的是根因还是症状；共享实现的其他调用方有没有同源问题；是否违反项目规则。lint、格式检查能拦住的不报。
+- 怎么报：每条带文件与行号、在什么输入或状态下出错，分「重要」「小问题」「原有问题」（非本次引入）三类；同一类问题报一次并列出全部位置。
+- 怎么处理：每条要么修，要么写明不修的理由；原有问题单独说明，不并入本次改动；审查意见与代码、测试证据冲突时以证据为准。
+- 最多三轮：第二轮起只审增量，不重复已处理的问题；三轮后仍有重要问题，停下来重新考虑方案或询问用户。
+
+### 6. 最终复查
 
 完成任务或创建提交前检查：
 
+- 命中「提交前审查」必审范围的改动是否已审查，意见是否已逐条处理；
 - `git diff` 是否只包含预期改动；
 - 是否误改、覆盖或删除了用户已有工作；
 - 是否引入重复实现、无用代码、调试输出或临时文件；
@@ -91,7 +113,7 @@
 - 不引入裸类型逃逸、全局禁用检查或无说明的忽略标记；确有必要时写明原因和移除条件。
 - 导出的公共接口应保持明确、稳定，并有必要的类型或契约说明。
 - 错误必须被正确传播、转换或记录；禁止无声失败。
-- 注释解释“为什么”和非显而易见的约束，不复述代码本身。
+- 注释写给只看得到当前代码的读者：只写代码本身看不出的约束、业务规则与取舍，语言沿用所在文件现有注释；不提会话、之前的尝试、修改过程或任务编号，不写“原来/改为/不再”这类相对旧版本的说法。只能写“做了什么”的注释删掉并改进命名。数据格式迁移的注释例外，可逐版本记录变化。
 - 生成产物应通过其源文件或生成命令更新，除非项目明确规定可以手工修改。
 - 新增依赖前确认现有依赖或标准库无法合理解决，并考虑体积、维护、安全和许可成本。
 
@@ -110,7 +132,7 @@
 
 ## Git 约定
 
-- 默认完整流程为：开始前执行 `git pull --rebase` → 修改并验证 → 提交 → 再次执行 `git pull --rebase` → 推送 → 确认本地与上游一致。除非用户明确要求暂不提交、暂不推送或禁止同步，否则无需逐次确认。
+- 默认完整流程为：开始前执行 `git pull --rebase` → 修改并验证 → 提交 → 再次执行 `git pull --rebase` → 推送 → 确认本地与上游一致。本地含合并提交（例如把任务分支 `--no-ff` 合入功能分支）时，`git pull` 一律用 `--rebase=merges`，避免合并被线性化。任务分支吸收功能分支的新提交时，用 `git merge origin/<功能分支>`，不把已推送的提交变基。除非用户明确要求暂不提交、暂不推送或禁止同步，否则无需逐次确认。
 - 每个提交最终都必须推送成功，并确认当前分支相对上游没有 `ahead` 或 `behind`；不得把“已在本地提交”视为任务完成。
 - 默认禁止任何形式的强制推送，包括 `--force`、`--force-with-lease` 及等效操作；只有用户针对明确分支和风险作出显式授权时才可例外。
 - 提交应积极但有边界：完成一个独立修改、修复一个问题、实现一个可验证功能、完成一个阶段，或判断当前状态值得保留时，应及时提交，不要长期积累大量未提交改动。
@@ -155,16 +177,22 @@
 - 包管理器：npm，锁文件为 `package-lock.json`。
 - 安装命令：`npm install`。
 - 开发命令：前端独立开发用 `npm run ui:dev`；完整桌面应用开发用 `npm run tauri:dev`。
-- 格式化/静态检查命令：当前未在 `package.json` 中配置 lint/format/typecheck 脚本；需要按改动范围使用可用工具，例如 `npx tsc --noEmit` 或 `cargo check`。
-- 测试命令：当前未配置自动化测试脚本。
+- 格式化/静态检查命令：类型检查用 `npm run typecheck`；未配置 lint/format 脚本，Rust 侧按需 `cargo check`。
+- 测试命令：前端 `npm run test:ui`（vitest）；Rust `npm run test:rust`（包装 `cargo test`，参数透传，如 `npm run test:rust -- --bin say-it <过滤>`）；`npm run check` 依次跑类型检查、全部测试和前端构建。PATH 上若有不支持中文路径的 NASM（如 Strawberry Perl 自带的），`aws-lc-sys` 构建会失败，处理见 `docs/experience/本机Rust构建NASM不支持中文路径.md`。子 crate 快测：`cargo test --manifest-path src-tauri/Cargo.toml -p sayit-overlay-core`；Mac 后端本机类型检查：`npm run check:mac-overlay`。
+- Rust 构建产物只放在 `src-tauri/target`，不得为绕开问题另建仓库外（尤其 C 盘）的 target 或缓存目录。`tauri:dev`、`test:rust` 在 Rust 工具链变更或 debug 超过 20 GiB（每天检查一次）时自动清理 dev profile（工具链变更时一并删除 `target/mac-check`），并回收旧版本 sherpa 预编译库；`tauri:build` 打包前清空 release，本地只保留最新一次。直接运行 `cargo` 不经过这道回收，实现见 `scripts/rust-cache-guard.mjs`。
+- `src-tauri` 是 Cargo workspace：根包 `say-it`，成员 `crates/overlay-core`（`sayit-overlay-core`）与 `crates/overlay-macos`（`sayit-overlay-macos`），`default-members` 含全部成员，所以无参数的 `npm run test:rust` 会顺带测试两个子 crate；`npm run test:rust -- --bin say-it <过滤>` 仍只跑主包。`vendor/ocr-rs` 经 `[patch]` 引入、被排除在 workspace 外，可在其目录单独运行 cargo。
+- 改原生悬浮窗（`src-tauri/crates/overlay-*`、`src-tauri/src/desktop/native_*.rs`）前先读 `docs/rules/原生悬浮窗开发约定.md`。
+- 并行 Git worktree（`.claude/worktrees/*`）中运行 Rust 构建或测试时，必须先把 `CARGO_TARGET_DIR` 设为主检出 `src-tauri/target` 的绝对路径，与主检出共用一份产物，不得在 worktree 内生成完整 target；worktree 内 build.rs 生成的 `src-tauri/target/runtime-libs/` 属预期。共用时构建按 Cargo 锁串行，切换 worktree 会重编 `say-it` 本体；build script 输出跨 worktree 共享，修改 `build.rs`、`tauri*.conf.json`、`capabilities/`、`sdk-runtime/`、`macos/*.m` 的任务合并后须在主检出重跑测试。worktree 首次构建前先 `npm run ui:build`（不与 cargo 并行）；`tauri:dev` 只在主检出运行。`npm run check:mac-overlay` 的产物固定在 `<target>/mac-check`。
+- 打包配置（resources、frameworks）不得引用某个 profile 的输出目录：tauri-build 在每个 profile 都会复制它们。sherpa 运行库由 `build.rs` 同步到 `target/runtime-libs/`，配置只引用那里。
 - 构建命令：前端构建用 `npm run ui:build`；桌面应用打包用 `npm run tauri:build`。
 - 核心目录与依赖方向：`src-tauri/src` 为 Tauri/Rust 命令、桌面能力、音频与 ASR 服务；前端 `ui/src` 分层为 `views/`（页面）、`components/shell/`（标题栏/侧栏/状态栏等应用壳层）、`components/ui/`（Button/Switch/Card/Modal 等基础组件，无 barrel，按文件单独导入）、`store/`（Zustand 状态）、`features/`（业务 controller 与领域逻辑）、`hooks/`、`lib/`；前端通过 `ui/src/lib/tauri.ts`、hooks 和 Tauri invoke/event 与后端交互。
 - UI 设计系统：视觉走「深蓝黑桌面风格」，产品与视觉原则见根目录 `PRODUCT.md`、`DESIGN.md`；令牌集中定义在 `ui/src/index.css`（`@theme` 内颜色/圆角/字体生成 Tailwind 工具类，`:root` 内布局尺寸/层级/交互态为纯 CSS 变量）。新界面必须复用令牌与 `components/ui`、布局组件（`PageHeader/SectionHeader/SettingsSection/FormGrid/Field`），不写散落的硬编码颜色、尺寸或重复控件；确需新样式时先扩展令牌或组件，再消费。
 - 用户未明确要求时，任何界面都禁止使用渐变和发光效果；状态反馈优先使用纯色、边框、透明度、位移或缩放表达。
 - Tab 层级约定：侧栏入口不是 Tab；页面级 Tab 用于页面内主要任务分类，子页面 Tab 仅用于 2～4 个长期稳定、可独立完成且不需要并行对照的任务分类，最多允许一层，禁止第三层页面导航；长流程、单一开关/少量字段或需要同时查看的内容不拆子 Tab；纯文本/字幕编辑、现有模板/回收站等只使用内容区内的局部视图切换。`ui/src/components/ui/Tabs.tsx` 支持 `page`、`subpage`、`view` 变体，默认 `page` 以兼容现有调用，未经确认不得把其他现有页面切换到新变体。当前实现：`SceneRulesPanel` 使用“按软件/按快捷键”子 Tab；`SmartTextPanel` 使用“处理模板/当前软件上下文/试运行”子 Tab；本地处理不拆分。
 - UI 分区与卡片边界：设置页和 Tab 页面优先使用 `SettingsSection/FormGrid/Field` 形成扁平分区，禁止用一张外层卡片包住整个页面或整个 Tab，也禁止无意义的卡片嵌套；卡片仅用于独立实体、折叠内容、预览或边界明确的列表。
-- 设置项文案保持克制：开关或字段默认只显示必要标签与控件，禁止在下方添加隐私声明、实现原理、功能复述等说明型小字；只有错误、风险、不可逆影响或用户完成操作所必需的信息才允许使用 hint。
-- UI 控件尺寸与对齐：标准 Button/Input/Select 必须消费统一的 44px `--control-h` 或 34px `--control-h-sm`；同排字段操作使用 `Field.actions`，hint 独占下一行。禁止在页面通过 `items-end`、子选择器或额外 `h-*` 修补标准控件对齐；高密列表确需更小尺寸时必须显式限定在列表内部。
+- 界面少说明：不加不必要的副标题、说明文字和口号式文案，让布局、分组、控件与命名本身说明用途；把功夫花在想清楚交互上，不靠文字解释含糊的设计。
+- 设置项说明统一使用 `Tooltip` / `HelpLabel`：字段 `hint`、页面及分区 `description` 默认不直接显示，直接悬停在选项、控件或标题上约 500ms 后显示提示浮窗；禁止添加问号、帮助图标等额外入口，也不使用问号鼠标指针。支持键盘聚焦和 Esc 关闭。单独编写的说明也必须关联到对应选项。文案从用户视角说明用途、效果和操作，避免协议、投影、下发等开发术语。错误、当前状态、不看就会选错、涉及费用、数据丢失或不可逆操作、必须立即处理的信息保持可见，字段使用 `message`；链接和操作按钮不得藏入只读 Tooltip。
+- UI 控件尺寸与对齐：标准 Button/Input/Select 必须消费统一的 44px `--control-h` 或 34px `--control-h-sm`；同排字段操作使用 `Field.actions`，message 独占下一行。禁止在页面通过 `items-end`、子选择器或额外 `h-*` 修补标准控件对齐；高密列表确需更小尺寸时必须显式限定在列表内部。
 - 持久化密钥：已保存的 API Key、密码等敏感字段必须复用 `SecretInput`；掩码只能是展示状态，不得进入 input value、`onChange`、保存请求、日志或领域快照。目录快照只投影是否已配置，明文仅能在用户点击显隐操作后按需读取，并在失焦、保存、切换实体或卸载时清理。
 - UI 无障碍基线：新组件与页面以 WCAG AA 为默认门槛，必须支持键盘操作、可见焦点、明确标签与状态语义、足够文字对比度，并尊重 `prefers-reduced-motion`。
 - 不可违反的架构边界：业务与平台能力优先放在 `src-tauri/src` 的明确模块中；React 组件避免直接承载复杂业务流程；UI 改造不得破坏现有 store、`features` controller、Tauri invoke/event 和桌面交互；多入口页面需同时考虑 `ui/index.html` 主窗口和 `ui/indicator.html` 悬浮窗。
@@ -178,5 +206,7 @@
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
 - `.sayit` 同时承载 API v5 JavaScript 供应商插件与 API v5 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
 - “密钥与识别”按 ASR/OCR/翻译展示供应商配置；供应商不设用户可选默认值，启用后的模型按场景汇入运行下拉框。
+- 热词与上下文全局唯一一份，存在 `AppSettings.customizationPrefs`（配置领域 `customization`），权威实现在 `src-tauri/src/application/customization.rs`；按模型的 `supportsVocabulary` / `supportsContext` 分别下发，供应商配置里不得再存热词。上下文只由模板决定（模板留空即不下发），要带热词必须在模板里显式插入 `{{hotwords}}`；智能处理提示词用 `{{global_context}}` 引用渲染后的上下文，用 `{{hotwords}}` 引用全局热词列表。热词修改后自动防抖同步到需要云端词表的供应商。
+- 听写后处理顺序固定为「智能处理 → 本地规则」：本地规则是对最终文本的确定性兜底，必须作用在大模型输出之上。
 - 内置供应商的模型 ID 只能来自模型目录并由对应场景选择，禁止在供应商配置中暴露自由填写的模型 ID。供应商密钥和设置字段采用静默自动保存：文本/密钥停止输入或失焦后保存，开关立即保存；不显示保存按钮和成功提示，只在失败时显示错误。
 - sherpa-onnx VAD（`sherpa-onnx-offline` 引擎）必须按 `vadWindowSize` 小块喂入，且不得在语音未确认时 `reset()`；细节见 `docs/experience/sherpa-onnx-VAD喂入块过大与误reset导致无识别结果.md`。

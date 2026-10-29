@@ -120,9 +120,9 @@ mod tests {
             &PluginRegistry::default(),
         );
         let expected = if crate::providers::apple_speech::runtime_available() {
-            15
+            19
         } else {
-            14
+            18
         };
         assert_eq!(catalog.models.len(), expected);
         assert!(catalog
@@ -187,6 +187,7 @@ mod tests {
         settings.profiles[0].enabled = false;
         settings.defaults.asr = "missing".into();
         settings.profiles.push(crate::providers::ProviderProfile {
+            keep_loaded: false,
             id: "fallback".into(),
             kind: "test".into(),
             display_name: "Fallback".into(),

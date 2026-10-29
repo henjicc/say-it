@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { Switch } from "@/components/ui/Switch";
 import {
   refreshPluginConsumers,
@@ -29,11 +30,17 @@ const PERMISSION_LABEL: Record<string, string> = {
 };
 
 const MODEL_STATE_LABEL: Record<string, string> = {
+  superseded: "已内置，可卸载",
   pending: "等待下载",
   partial: "下载未完成",
   corrupt: "模型校验失败",
   downloading: "正在下载",
   ready: "模型已就绪",
+};
+
+const RESIDENCY_MEMORY: Record<string, string> = {
+  "official.sherpa-funasr-nano-ctc": "约 400 MB",
+  "official.sherpa-sensevoice-small": "约 350 MB",
 };
 
 function formatBytes(value: number) {
@@ -131,6 +138,18 @@ export function PluginManagerPanel() {
     }
   };
 
+  const setKeepLoaded = async (plugin: PluginSummary, keepLoaded: boolean) => {
+    setBusyPluginId(plugin.id);
+    setMessage("");
+    try {
+      setSnapshot(await cmd<PluginSnapshot>(CMD.setProviderModelKeepLoaded, { pluginId: plugin.id, keepLoaded }));
+    } catch (error) {
+      setMessage(`更新常驻内存失败：${String(error)}`);
+    } finally {
+      setBusyPluginId("");
+    }
+  };
+
   const downloadModel = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
     setMessage("");
@@ -165,9 +184,8 @@ export function PluginManagerPanel() {
   };
 
   return (
-    <SettingsSection title="插件管理">
+    <SettingsSection title="插件管理" description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-        <p className="text-sm text-[var(--color-fg-subtle)]">安装和管理供应商插件与本地模型包；安装并启用后，对应模型会自动出现在各场景的模型下拉框。</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
           <Button size="sm" disabled={scanning} onClick={() => void reload()}>
@@ -197,7 +215,7 @@ export function PluginManagerPanel() {
                   </p>
                   {plugin.modelPack && (
                     <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                      {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state} · {formatBytes(plugin.modelPack.readyBytes)} / {formatBytes(plugin.modelPack.totalBytes)}
+                      {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state}{plugin.modelPack.state !== "superseded" && ` · ${formatBytes(plugin.modelPack.readyBytes)} / ${formatBytes(plugin.modelPack.totalBytes)}`}
                     </p>
                   )}
                 </div>
@@ -208,13 +226,30 @@ export function PluginManagerPanel() {
                       {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}
                     </Button>
                   )}
-                  <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
-                  <Switch
-                    checked={plugin.enabled}
-                    disabled={busy}
-                    label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
-                    onChange={(enabled) => void setEnabled(plugin, enabled)}
-                  />
+                  {plugin.modelPack?.residency && (
+                    <Tooltip content={`开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
+                        <Switch
+                          checked={plugin.modelPack.keepLoaded}
+                          disabled={busy || (!plugin.modelPack.keepLoaded && (!plugin.enabled || plugin.modelPack.state !== "ready"))}
+                          label={`${plugin.name}常驻内存`}
+                          onChange={(keepLoaded) => void setKeepLoaded(plugin, keepLoaded)}
+                        />
+                      </div>
+                    </Tooltip>
+                  )}
+                  {plugin.modelPack?.state !== "superseded" && (
+                    <>
+                      <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
+                      <Switch
+                        checked={plugin.enabled}
+                        disabled={busy}
+                        label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
+                        onChange={(enabled) => void setEnabled(plugin, enabled)}
+                      />
+                    </>
+                  )}
                   <IconButton
                     size="sm"
                     variant="dangerHover"
@@ -226,6 +261,15 @@ export function PluginManagerPanel() {
                   </IconButton>
                 </div>
               </div>
+              {plugin.modelPack?.keepLoaded && plugin.modelPack.residency?.state === "loading" && (
+                <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">正在加载到内存…</p>
+              )}
+              {plugin.modelPack?.residency?.state === "loaded" && (
+                <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">已常驻内存</p>
+              )}
+              {plugin.modelPack?.residency?.state === "failed" && (
+                <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">常驻加载失败：{plugin.modelPack.residency.error}</p>
+              )}
             </div>
           );
         })}
@@ -247,7 +291,9 @@ export function PluginManagerPanel() {
       >
         <div className="p-5">
           <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            确认卸载“{pendingUninstall?.name}”吗？插件代码、登录会话、Cookie、浏览数据与已下载的模型文件会被删除；非敏感配置和本地加密凭据会保留，重新安装后可继续使用。
+            确认卸载“{pendingUninstall?.name}”吗？{pendingUninstall?.runtimeKind === "model-pack"
+              ? "模型文件与该模型包的设置会被删除。"
+              : "插件代码、登录会话、Cookie 与浏览数据会被删除；非敏感配置和本地加密凭据会保留，重新安装后可继续使用。"}
           </p>
           <div className="mt-6 flex justify-end gap-2">
             <Button size="sm" variant="dangerHover" disabled={Boolean(busyPluginId)} onClick={() => pendingUninstall && void uninstall(pendingUninstall)}>

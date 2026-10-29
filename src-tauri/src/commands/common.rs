@@ -104,6 +104,7 @@ pub(crate) fn provider_settings_response(
                 has_key
             };
             ProviderListItem {
+                keep_loaded: profile.keep_loaded,
                 id: profile.id.clone(),
                 kind: profile.kind.clone(),
                 display_name: profile.display_name.clone(),

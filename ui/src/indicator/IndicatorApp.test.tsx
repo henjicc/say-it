@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const eventHandlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
+const readyEvents = vi.hoisted(() => new Set<string>());
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ startDragging: vi.fn() }),
@@ -9,6 +10,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@/hooks/useTauriEvent", () => ({
   useTauriEvent: (event: string, handler: (payload: unknown) => void) => {
     eventHandlers.set(event, handler);
+    return readyEvents.has(event);
   },
 }));
 vi.mock("@/hooks/useCuePlayback", () => ({ useCuePlayback: vi.fn() }));
@@ -22,12 +24,14 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
   };
 });
 
-import { EVT } from "@/lib/tauri";
+import { CMD, EVT, cmdSilent } from "@/lib/tauri";
 import { IndicatorApp } from "./IndicatorApp";
 
 describe("dictation indicator presentation", () => {
   beforeEach(() => {
     eventHandlers.clear();
+    readyEvents.clear();
+    vi.mocked(cmdSilent).mockClear();
     vi.stubGlobal("ResizeObserver", class {
       observe() {}
       disconnect() {}
@@ -42,6 +46,23 @@ describe("dictation indicator presentation", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("rehydrates a new subtitle window only after all presentation listeners are ready", () => {
+    const view = render(<IndicatorApp />);
+    readyEvents.add(EVT.indicatorState);
+    readyEvents.add(EVT.indicatorText);
+    readyEvents.add(EVT.indicatorConfig);
+    view.rerender(<IndicatorApp />);
+    expect(cmdSilent).not.toHaveBeenCalled();
+    readyEvents.add(EVT.indicatorTranslation);
+    view.rerender(<IndicatorApp />);
+    expect(cmdSilent).toHaveBeenCalledWith(CMD.syncSubtitlePresentation, { rehydrate: true });
+    expect(cmdSilent).toHaveBeenCalledTimes(1);
+    act(() => eventHandlers.get(EVT.indicatorConfig)?.({ mode: "subtitle", subtitle: { displayMode: "replace" } }));
+    act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "subtitle" }));
+    expect(view.container.querySelector("#wrap")).toHaveClass("subtitle-mode", "subtitle-replace");
+    expect(cmdSilent).toHaveBeenCalledTimes(1);
   });
 
   it("shows only the waveform while recording and text during processing", () => {

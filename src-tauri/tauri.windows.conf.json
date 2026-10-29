@@ -3,6 +3,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "说吧！",
         "width": 1080,
         "height": 860,
@@ -17,13 +18,11 @@
   "bundle": {
     "targets": ["nsis"],
     "externalBin": ["binaries/context-probe"],
-    "resources": [
-      "resources/licenses/**/*",
-      "target/release/onnxruntime.dll",
-      "target/release/onnxruntime_providers_shared.dll",
-      "target/release/sherpa-onnx-c-api.dll",
-      "target/release/sherpa-onnx-cxx-api.dll"
-    ],
+    "resources": {
+      "resources/licenses": "resources/licenses",
+      "resources/ocr": "resources/ocr",
+      "target/runtime-libs/*.dll": "target/release"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -5,7 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -52,7 +53,7 @@ fn execute_capability(
         CredentialStoreHandle::default(),
         scope,
         request_id.clone(),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         inputs,
         Arc::new(recorder.clone()),
     );
@@ -133,7 +134,7 @@ fn run_realtime(
         CredentialStoreHandle::default(),
         BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
         request_id.clone(),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(recorder.clone()),
     );
@@ -195,7 +196,7 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
         CredentialStoreHandle::default(),
         BuiltinSdkScope::GROQ_LLM,
         request_id.clone(),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(recorder.clone()),
     );
@@ -251,7 +252,7 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
 fn run_pre_cancel(recorder: &AuditRecorder) -> LiveCaseResult {
     let started = Instant::now();
     let request_id = format!("live-cancel-{}", uuid::Uuid::new_v4());
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &groq_llm_profile(),
         CredentialStoreHandle::default(),
@@ -326,13 +327,13 @@ fn record_live_result(results: &mut Vec<LiveCaseResult>, result: LiveCaseResult)
 }
 
 #[test]
-fn live_catalog_maps_all_nine_bailian_asr_models() {
+fn live_catalog_maps_all_twelve_bailian_asr_models() {
     let catalog: Vec<Value> = serde_json::from_str(ASR_CATALOG).expect("ASR catalog");
     let online = catalog
         .iter()
         .filter(|model| model.get("providerId").and_then(Value::as_str) == Some("bailian"))
         .collect::<Vec<_>>();
-    assert_eq!(online.len(), 9);
+    assert_eq!(online.len(), 12);
     let mut protocols = BTreeMap::<String, usize>::new();
     for model in online {
         let protocol = model
@@ -341,11 +342,11 @@ fn live_catalog_maps_all_nine_bailian_asr_models() {
             .expect("online ASR protocol");
         *protocols.entry(protocol.into()).or_default() += 1;
     }
-    assert_eq!(protocols.get("dashscope-duplex"), Some(&2));
+    assert_eq!(protocols.get("dashscope-duplex"), Some(&3));
     assert_eq!(protocols.get("qwen-realtime"), Some(&2));
-    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&1));
+    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&2));
     assert_eq!(protocols.get("file-sync-qwen"), Some(&2));
-    assert_eq!(protocols.get("file-async-oss"), Some(&2));
+    assert_eq!(protocols.get("file-async-oss"), Some(&3));
 }
 
 #[test]
@@ -379,7 +380,7 @@ fn classifies_missing_bailian_credential_without_network() {
         CredentialStoreHandle::from_store(Arc::new(MissingCredentials)),
         BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
         request_id,
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
         Arc::new(AuditRecorder::default()),
     )

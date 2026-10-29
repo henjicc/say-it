@@ -245,6 +245,12 @@ fn signal_cancel() {
     }
 }
 
+/// 字幕热键当前是否由全局键盘钩子接管。
+/// 接管了就不需要前端的焦点兜底，否则同一次按键会 toggle 两次。
+pub fn subtitle_hotkey_registered() -> bool {
+    SUB_TARGET_VK.load(Ordering::SeqCst) != 0
+}
+
 fn signal_subtitle_toggle() {
     if let Some(lock) = SUB_TOGGLE_TX.get() {
         if let Ok(tx) = lock.lock() {

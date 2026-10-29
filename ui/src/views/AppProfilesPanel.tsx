@@ -1,3 +1,4 @@
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -6,8 +7,8 @@ import { Input, NumberInput, Select } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Field } from "@/components/ui/Field";
 import { FormGrid } from "@/components/ui/FormGrid";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Switch } from "@/components/ui/Switch";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { cn } from "@/lib/cn";
 import {
@@ -53,6 +54,7 @@ function newProfile(): AppProfile {
 }
 
 export function AppProfilesPanel() {
+  const { confirm, dialog } = useConfirm();
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
   const profiles = prefs.appProfiles;
@@ -90,9 +92,17 @@ export function AppProfilesPanel() {
     [next[index], next[target]] = [next[target], next[index]];
     void trackRuleWrite(patch({ appProfiles: next }));
   };
-  const deleteProfile = (profile: AppProfile) => {
+  const deleteProfile = async (profile: AppProfile) => {
     const label = profile.name.trim() || profile.matchers[0] || "未命名规则";
-    if (!window.confirm(`确定删除软件规则“${label}”吗？`)) return;
+    if (
+      !(await confirm({
+        title: "确认删除软件规则",
+        message: `确定删除软件规则“${label}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     void trackRuleWrite(patch({ appProfiles: profiles.filter((p) => p.id !== profile.id) }));
     if (editingId === profile.id) setEditingId(null);
   };
@@ -122,7 +132,7 @@ export function AppProfilesPanel() {
 
   return (
     <div className="flex flex-col gap-8">
-      <SettingsSection
+      <SectionHeader
         title="按软件规则"
         right={
           <Switch
@@ -131,12 +141,7 @@ export function AppProfilesPanel() {
             label="启用按软件规则"
           />
         }
-      >
-        <p className="max-w-[75ch] text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-          听写开始时识别当前软件，命中规则后按该规则的设置做后处理。规则从上往下匹配，取第一条命中的；
-          没有命中的软件一律走全局配置。这里只读取软件名和窗口标题，不读取窗口内容，与场景感知的隐私黑名单无关。
-        </p>
-      </SettingsSection>
+        description="为不同软件设置不同的文字处理方式。规则按从上到下的顺序匹配，使用第一条符合的规则；未匹配时使用通用设置。这里只查看软件名和窗口标题。" />
 
       <div
         className={cn(
@@ -205,7 +210,7 @@ export function AppProfilesPanel() {
                     variant="dangerHover"
                     className="h-7 w-7 shrink-0"
                     label="删除软件规则"
-                    onClick={() => deleteProfile(profile)}
+                    onClick={() => void deleteProfile(profile)}
                   >
                     <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                   </IconButton>
@@ -356,6 +361,7 @@ export function AppProfilesPanel() {
           </Button>
         </div>
       </div>
+      {dialog}
     </div>
   );
 }

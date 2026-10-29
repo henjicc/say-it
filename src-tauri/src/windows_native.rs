@@ -150,20 +150,54 @@ struct ClipboardSnapshot {
     formats: Vec<OwnedClipboardFormat>,
 }
 
+/// 备份剪贴板时，单个格式失败只跳过它。
+///
+/// 剪贴板里经常有拿不到或复制不了的格式（延迟渲染的格式、源进程已退出的 GDI
+/// 对象等）。以前这里一律 `?`，一个格式失败就放弃整份备份，而 `paste_text` 在备份失败时
+/// 直接返回错误——听写结果因此完全无法注入。备份里少一种格式，总好过整条注入路径不可用。
+/// context-probe 的 C++ 移植版一直就是跳过式的（`if (!source) continue;`）。
+fn duplicate_available<T>(
+    formats: &[u32],
+    mut duplicate: impl FnMut(u32) -> Result<T, String>,
+) -> Vec<T> {
+    formats
+        .iter()
+        .filter_map(|format| duplicate(*format).ok())
+        .collect()
+}
+
+/// 还原时同样不中途放弃：尽量把每一种格式都放回去，再报第一条失败原因。
+/// 半途 `?` 返回会把剩下的格式丢掉，用户的剪贴板反而缺得更多。
+fn transfer_all<T>(
+    items: &mut [T],
+    mut transfer: impl FnMut(&mut T) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut first_error = None;
+    for item in items {
+        if let Err(error) = transfer(item) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 impl ClipboardSnapshot {
     fn capture() -> Result<Self, String> {
         let _clipboard = ClipboardGuard::open()?;
-        let mut formats = Vec::new();
+        let mut available = Vec::new();
         let mut format = 0;
         loop {
             format = unsafe { EnumClipboardFormats(format) };
             if format == 0 {
                 break;
             }
+            available.push(format);
+        }
+        let formats = duplicate_available(&available, |format| {
             let source = unsafe { GetClipboardData(format) }
                 .map_err(|error| format!("读取 Windows 剪贴板格式 {format} 失败：{error}"))?;
-            formats.push(OwnedClipboardFormat::duplicate(format, source)?);
-        }
+            OwnedClipboardFormat::duplicate(format, source)
+        });
         Ok(Self { formats })
     }
 
@@ -171,10 +205,7 @@ impl ClipboardSnapshot {
         let _clipboard = ClipboardGuard::open()?;
         unsafe { EmptyClipboard() }
             .map_err(|error| format!("清空临时 Windows 剪贴板失败：{error}"))?;
-        for format in &mut self.formats {
-            format.transfer_to_clipboard()?;
-        }
-        Ok(())
+        transfer_all(&mut self.formats, |format| format.transfer_to_clipboard())
     }
 }
 
@@ -217,6 +248,38 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 单个格式复制不了时，备份不得整份放弃。
+    ///
+    /// 以前 `capture()` 对 GetClipboardData 与 duplicate 都用 `?`，而 `paste_text` 一开头就是
+    /// `ClipboardSnapshot::capture()?`：剪贴板里只要有一种拿不到的格式（延迟渲染、源进程
+    /// 已退出的 GDI 对象等），听写结果就完全无法注入。
+    #[test]
+    fn a_single_unreadable_format_does_not_abandon_the_whole_backup() {
+        let kept = duplicate_available(&[1, 13, 49161, 2], |format| {
+            if format == 49161 {
+                return Err("延迟渲染的格式拿不到".to_string());
+            }
+            Ok(format)
+        });
+        assert_eq!(kept, vec![1, 13, 2]);
+    }
+
+    /// 还原也不得中途放弃：半途返回会把剩下的格式丢掉，用户剪贴板缺得更多。
+    #[test]
+    fn restore_puts_back_every_format_it_can_and_still_reports_the_failure() {
+        let mut formats = vec![1u32, 13, 2];
+        let mut restored = Vec::new();
+        let result = transfer_all(&mut formats, |format| {
+            if *format == 13 {
+                return Err("还原格式 13 失败".to_string());
+            }
+            restored.push(*format);
+            Ok(())
+        });
+        assert_eq!(restored, vec![1, 2]);
+        assert!(result.is_err(), "失败仍然要报出来");
+    }
 
     #[test]
     fn clipboard_formats_use_matching_storage_medium() {

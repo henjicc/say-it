@@ -19,54 +19,122 @@ pub(crate) fn push_backend_mic_samples(mic: &Arc<Mutex<BackendMicState>>, input:
         return;
     };
     guard.last_rms = rms_f32(&input);
+    guard
+        .raw_txs
+        .retain(|subscriber| !subscriber.tx.is_closed());
+    if !guard
+        .raw_txs
+        .iter()
+        .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled)
+    {
+        guard.pending.clear();
+    }
     if guard.tx.is_none() && guard.session_id.is_none() && guard.raw_txs.is_empty() {
         return;
     }
-    guard.buffer.extend_from_slice(&input);
-    while guard.buffer.len() >= BACKEND_MIC_CHUNK_FRAMES {
-        let chunk: Vec<f32> = guard.buffer.drain(..BACKEND_MIC_CHUNK_FRAMES).collect();
-        guard.chunk_count += 1;
-        guard
-            .raw_txs
-            .retain(|tx| tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok());
-        if let Some(tx) = guard.tx.as_ref() {
-            if tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok() {
-                continue;
-            }
-            guard.tx = None;
-            guard.session_id = None;
+    // 不把整个设备输入块先塞入 buffer 再反复 drain 搬移；只拼齐当前 4096 帧。
+    let mut remaining = input.as_slice();
+    while !remaining.is_empty() {
+        if guard.buffer.capacity() < BACKEND_MIC_CHUNK_FRAMES {
+            let additional = BACKEND_MIC_CHUNK_FRAMES - guard.buffer.len();
+            guard.buffer.reserve_exact(additional);
         }
-        guard.pending.push_back(chunk);
-        while guard.pending.len() > 240 {
-            guard.pending.pop_front();
+        let take = (BACKEND_MIC_CHUNK_FRAMES - guard.buffer.len()).min(remaining.len());
+        guard.buffer.extend_from_slice(&remaining[..take]);
+        remaining = &remaining[take..];
+        if guard.buffer.len() < BACKEND_MIC_CHUNK_FRAMES {
+            break;
+        }
+        let chunk = std::mem::take(&mut guard.buffer);
+        guard.chunk_count += 1;
+        let preroll = guard
+            .raw_txs
+            .iter()
+            .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled);
+        let keep_original = guard.tx.is_some() || preroll;
+        let (chunk, _) = fanout_raw(&mut guard.raw_txs, chunk, keep_original);
+        let Some(mut chunk) = chunk else {
+            continue;
+        };
+        if let Some(tx) = guard.tx.as_ref() {
+            match tx.send(AsrStreamInput::RawF32(chunk)) {
+                Ok(()) => continue,
+                Err(error) => {
+                    let AsrStreamInput::RawF32(samples) = error.0 else {
+                        unreachable!()
+                    };
+                    chunk = samples;
+                    guard.tx = None;
+                    guard.session_id = None;
+                }
+            }
+        }
+        // 只有会重新绑定直接 ASR 的监视消费者需要预录音；文件/调校/对比已收到所有样本。
+        if guard
+            .raw_txs
+            .iter()
+            .any(|subscriber| subscriber.preroll == AsrPreroll::Enabled)
+        {
+            guard.pending.push_back(chunk);
+            while guard.pending.len() > 240 {
+                guard.pending.pop_front();
+            }
         }
     }
 }
 
+fn fanout_raw(
+    subscribers: &mut Vec<BackendMicRawSubscriber>,
+    samples: Vec<f32>,
+    keep_original: bool,
+) -> (Option<Vec<f32>>, bool) {
+    let mut samples = Some(samples);
+    let mut delivered = false;
+    let count = subscribers.len();
+    let mut index = 0;
+    subscribers.retain(|subscriber| {
+        index += 1;
+        // 无直接 ASR / 预录音时，将原分配交给最后的消费者，省去一份整块复制。
+        let packet = if !keep_original && index == count {
+            samples.take().unwrap()
+        } else {
+            samples.as_ref().unwrap().clone()
+        };
+        let sent = subscriber.tx.send(AsrStreamInput::RawF32(packet)).is_ok();
+        delivered |= sent;
+        sent
+    });
+    (samples, delivered)
+}
+
+/// 把攒着的音频送进 ASR 流。
+///
+/// 顺序很重要：`pending` 里装的是**更早**采集、因为当时还没有下游而被缓存下来的完整块，
+/// `buffer` 是**此刻**这一块还没攒够的残段。原实现先发 `buffer` 再发 `pending`，等于把
+/// 音频倒着送给识别侧。静音自动断开（默认 `dictationSilenceDisconnectMs = 5000`）之后
+/// 重连必定走到这条路径：说一句 → 静音 5 秒 → 再开口，新句子的开头会被排在那段预滚
+/// 之前，识别结果因此错乱。
 pub(crate) fn flush_backend_mic_buffer(guard: &mut BackendMicState) -> Result<usize, String> {
     let mut flushed = 0usize;
+    // 预滚块只补给 ASR 通道：raw_txs 在采集时就已经收到过它们了。
+    while let Some(samples) = guard.pending.pop_front() {
+        if let Some(tx) = guard.tx.as_ref() {
+            tx.send(AsrStreamInput::RawF32(samples))
+                .map_err(|_| "ASR stream channel closed".to_string())?;
+            flushed += 1;
+        }
+    }
     if !guard.buffer.is_empty() {
         let chunk = std::mem::take(&mut guard.buffer);
         guard.chunk_count += 1;
-        let mut delivered = false;
-        guard.raw_txs.retain(|tx| {
-            let sent = tx.send(AsrStreamInput::RawF32(chunk.clone())).is_ok();
-            delivered |= sent;
-            sent
-        });
-        if let Some(tx) = guard.tx.as_ref() {
+        let keep_original = guard.tx.is_some();
+        let (chunk, mut delivered) = fanout_raw(&mut guard.raw_txs, chunk, keep_original);
+        if let (Some(tx), Some(chunk)) = (guard.tx.as_ref(), chunk) {
             tx.send(AsrStreamInput::RawF32(chunk))
                 .map_err(|_| "ASR stream channel closed".to_string())?;
             delivered = true;
         }
         if delivered {
-            flushed += 1;
-        }
-    }
-    while let Some(samples) = guard.pending.pop_front() {
-        if let Some(tx) = guard.tx.as_ref() {
-            tx.send(AsrStreamInput::RawF32(samples))
-                .map_err(|_| "ASR stream channel closed".to_string())?;
             flushed += 1;
         }
     }
@@ -110,7 +178,9 @@ pub(crate) fn interleaved_to_mono_f32_from_u16(input: &[u16], channels: usize) -
         .collect()
 }
 
-fn report_backend_mic_capture_error(
+/// 向 worker 上报采集失败，同一条流只报一次。
+/// 系统音频 loopback（backend_system_audio.rs）复用同一套 worker 状态机，因此共用它。
+pub(crate) fn report_backend_mic_capture_error(
     worker: &std::sync::mpsc::Sender<BackendMicCommand>,
     capture_failed: &std::sync::atomic::AtomicBool,
     message: String,
@@ -224,6 +294,34 @@ pub(crate) fn start_backend_mic(
     }
 }
 
+fn prepare_backend_mic_input(
+    requested: &Option<String>,
+) -> Result<Option<(cpal::Device, cpal::SupportedStreamConfig, bool)>, String> {
+    #[cfg(feature = "performance-acceptance")]
+    if requested.as_deref() == Some("__sayit_acceptance__") {
+        // 隔离验收仅替代设备输入，下面的 worker、绑定、尾包与停止路径照常运行。
+        return Ok(None);
+    }
+    let host = cpal::default_host();
+    let (device, fallback) = match requested.as_deref() {
+        Some(name) => match find_input_device_by_name(&host, name) {
+            Some(device) => (device, false),
+            None => (
+                host.default_input_device().ok_or("未找到默认麦克风输入设备")?,
+                true,
+            ),
+        },
+        None => (
+            host.default_input_device().ok_or("未找到默认麦克风输入设备")?,
+            false,
+        ),
+    };
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
+    Ok(Some((device, config, fallback)))
+}
+
 pub(crate) fn start_backend_mic_inner(
     device_name: Option<String>,
     state: &RuntimeState,
@@ -274,30 +372,16 @@ pub(crate) fn start_backend_mic_inner(
         }
     }
 
-    let host = cpal::default_host();
-    let (device, fallback) = match requested.as_deref() {
-        Some(name) => match find_input_device_by_name(&host, name) {
-            Some(device) => (device, false),
-            None => {
-                let default = host
-                    .default_input_device()
-                    .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
-                (default, true)
-            }
-        },
-        None => {
-            let default = host
-                .default_input_device()
-                .ok_or_else(|| "未找到默认麦克风输入设备".to_string())?;
-            (default, false)
-        }
+    let input = prepare_backend_mic_input(&requested)?;
+    let (sample_rate, channels, fallback) = match input.as_ref() {
+        Some((_, config, fallback)) => (
+            config.sample_rate().0,
+            config.channels().max(1) as usize,
+            *fallback,
+        ),
+        None => (48_000, 1, false),
     };
     let resolved_device_name = if fallback { None } else { requested.clone() };
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("读取麦克风配置失败: {e}"))?;
-    let sample_rate = config.sample_rate().0;
-    let channels = config.channels().max(1) as usize;
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<BackendMicCommand>();
     let worker_for_stream = worker_tx.clone();
     let (startup_tx, startup_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -320,33 +404,31 @@ pub(crate) fn start_backend_mic_inner(
         guard.current_device = resolved_device_name.clone();
     }
     std::thread::spawn(move || {
-        let stream =
-            match build_backend_mic_stream(mic.clone(), worker_for_stream, &device, &config) {
-                Ok(stream) => stream,
-                Err(err) => {
-                    dlog!("[backend-mic] {err}");
-                    if let Ok(mut guard) = mic.lock() {
-                        guard.last_error = Some(err.clone());
-                        guard.worker = None;
-                        guard.sample_rate = 0;
-                        guard.channels = 0;
-                    }
-                    let _ = startup_tx.send(Err(err));
-                    return;
-                }
-            };
-        if let Err(err) = stream.play() {
-            let message = format!("启动麦克风输入流失败: {err}");
-            dlog!("[backend-mic] {message}");
-            if let Ok(mut guard) = mic.lock() {
-                guard.last_error = Some(message.clone());
-                guard.worker = None;
-                guard.sample_rate = 0;
-                guard.channels = 0;
+        let built = match input {
+            Some((device, config, _)) => {
+                build_backend_mic_stream(mic.clone(), worker_for_stream, &device, &config).and_then(|stream| {
+                    stream
+                        .play()
+                        .map_err(|error| format!("启动麦克风输入流失败: {error}"))?;
+                    Ok(Some(stream))
+                })
             }
-            let _ = startup_tx.send(Err(message));
-            return;
-        }
+            None => Ok(None),
+        };
+        let stream = match built {
+            Ok(stream) => stream,
+            Err(err) => {
+                dlog!("[backend-mic] {err}");
+                if let Ok(mut guard) = mic.lock() {
+                    guard.last_error = Some(err.clone());
+                    guard.worker = None;
+                    guard.sample_rate = 0;
+                    guard.channels = 0;
+                }
+                let _ = startup_tx.send(Err(err));
+                return;
+            }
+        };
         let _ = startup_tx.send(Ok(()));
         dlog!("[backend-mic] worker 已启动 sample_rate={sample_rate} channels={channels}");
         let mut stop_reply: Option<std::sync::mpsc::Sender<()>> = None;
@@ -376,12 +458,16 @@ pub(crate) fn start_backend_mic_inner(
                     })();
                     let _ = reply.send(result);
                 }
-                BackendMicCommand::AttachRaw { tx, reply } => {
+                BackendMicCommand::AttachRaw {
+                    tx,
+                    preroll,
+                    reply,
+                } => {
                     let result = (|| {
                         let mut guard = mic
                             .lock()
                             .map_err(|_| "Backend mic lock failed".to_string())?;
-                        guard.raw_txs.push(tx);
+                        guard.raw_txs.push(BackendMicRawSubscriber { tx, preroll });
                         Ok(BackendMicAttachResponse { flushed_chunks: 0 })
                     })();
                     let _ = reply.send(result);
@@ -402,6 +488,9 @@ pub(crate) fn start_backend_mic_inner(
                 }
                 BackendMicCommand::CaptureError { message } => {
                     if let Ok(mut guard) = mic.lock() {
+                        for subscriber in &guard.raw_txs {
+                            subscriber.tx.fail(message.clone());
+                        }
                         guard.last_error = Some(message);
                     }
                     break;
@@ -471,13 +560,8 @@ pub(crate) fn start_backend_mic_inner(
 /// 应用服务直接消费原始 PCM，避免完整音频经过 WebView 事件往返。
 pub(crate) fn attach_backend_mic_raw_inner(
     state: &RuntimeState,
-) -> Result<
-    (
-        BackendMicAttachResponse,
-        tokio::sync::mpsc::UnboundedReceiver<AsrStreamInput>,
-    ),
-    String,
-> {
+    preroll: AsrPreroll,
+) -> Result<(BackendMicAttachResponse, RawAudioReceiver), String> {
     let worker = state
         .backend_mic
         .lock()
@@ -485,10 +569,11 @@ pub(crate) fn attach_backend_mic_raw_inner(
         .worker
         .clone()
         .ok_or_else(|| "后端麦克风未启动".to_string())?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = RawAudioReceiver::channel();
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     worker
         .send(BackendMicCommand::AttachRaw {
+            preroll,
             tx,
             reply: reply_tx,
         })
@@ -592,7 +677,18 @@ pub(crate) fn release_backend_mic_inner(state: &RuntimeState) -> Result<(), Stri
         guard.worker.take()
     };
     if let Some(worker) = worker {
-        let _ = worker.send(BackendMicCommand::Stop { reply: None });
+        // 必须等旧 worker 收尾完成再清状态。它的收尾块（drop(stream) 之后）是
+        // **无条件**覆写 worker/sample_rate/raw_txs/current_device 等共享字段的，
+        // 而 drop(stream) 在 WASAPI 下要等音频线程 join，通常十几到几十毫秒。
+        // 不等的话，这段时间里若有新会话启动（连按两下听写热键即可），旧线程的
+        // 收尾会把新会话的状态整个抹掉：raw_txs 被清空导致「麦克风采集已意外停止」，
+        // 或 worker 被置 None 导致「后端麦克风未启动」；更糟的是新会话那条 cpal
+        // 流由新 worker 持有而 sender 已被抹掉，谁也停不掉它，麦克风一直开着。
+        // `reply` 正是为此设计的（见 state.rs 中 BackendMicCommand::Stop 的注释），
+        // macOS 的系统音频路径早已这么做，这里补齐。
+        let (reply, receiver) = std::sync::mpsc::channel();
+        let _ = worker.send(BackendMicCommand::Stop { reply: Some(reply) });
+        let _ = receiver.recv_timeout(Duration::from_secs(5));
     }
     let mut guard = state
         .backend_mic
@@ -627,9 +723,12 @@ mod tests {
 
     #[test]
     fn flush_sends_partial_tail_to_raw_subscribers() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = RawAudioReceiver::channel();
         let mut state = BackendMicState {
-            raw_txs: vec![tx],
+            raw_txs: vec![BackendMicRawSubscriber {
+                tx,
+                preroll: AsrPreroll::Enabled,
+            }],
             buffer: vec![0.25, -0.5, 0.75],
             ..Default::default()
         };
@@ -646,9 +745,12 @@ mod tests {
 
     #[test]
     fn flush_does_not_replay_pending_chunks_to_raw_subscribers() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = RawAudioReceiver::channel();
         let mut state = BackendMicState {
-            raw_txs: vec![tx],
+            raw_txs: vec![BackendMicRawSubscriber {
+                tx,
+                preroll: AsrPreroll::Enabled,
+            }],
             pending: VecDeque::from([vec![0.25, -0.5]]),
             ..Default::default()
         };
@@ -658,6 +760,38 @@ mod tests {
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    /// 预滚块（更早采集）必须排在残块（此刻还没攒够的那一段）之前。
+    ///
+    /// 原实现先发 `buffer` 再发 `pending`，等于把音频倒着送进 ASR。静音自动断开
+    /// 默认 5 秒，说一句 → 静音 → 再开口就会走到这条路径，新句子的开头被排到
+    /// 上一段预滚之前，识别结果错乱。
+    #[test]
+    fn flush_replays_pending_chunks_before_the_partial_tail() {
+        let (handle, mut rx) = AsrStreamHandle::channel();
+        let tx = handle.tx;
+        let mut state = BackendMicState {
+            tx: Some(tx),
+            // 时间顺序：早 → 晚
+            pending: VecDeque::from([vec![1.0], vec![2.0]]),
+            buffer: vec![3.0],
+            ..Default::default()
+        };
+
+        assert_eq!(flush_backend_mic_buffer(&mut state).unwrap(), 3);
+
+        let mut order = vec![];
+        while let Ok(AsrStreamInput::RawF32(samples)) = rx.try_recv() {
+            order.extend(samples);
+        }
+        assert_eq!(
+            order,
+            vec![1.0, 2.0, 3.0],
+            "必须按采集先后送出，残块排在所有预滚块之后"
+        );
+        assert!(state.pending.is_empty());
+        assert!(state.buffer.is_empty());
     }
 
     #[test]
@@ -678,3 +812,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod capture_tests;

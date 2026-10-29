@@ -4,6 +4,9 @@ use crate::state::{
     FloatingOrbSettings, MouseGestureMode, RuntimeState,
 };
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
+use sayit_overlay_core::look::Look;
+#[cfg(any(windows, target_os = "macos", test))]
+use sayit_overlay_core::look::{Theme, Tone};
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,56 +47,22 @@ fn normalized_orb_opacity(opacity: u8) -> u8 {
     opacity.clamp(ORB_OPACITY_MIN, ORB_OPACITY_MAX)
 }
 
-#[cfg(any(windows, test))]
-fn parse_hex_rgb(value: Option<&str>) -> Option<(u8, u8, u8)> {
-    let value = value?.trim();
-    let value = value.strip_prefix('#').unwrap_or(value);
-    if value.len() != 6 {
-        return None;
+#[cfg(any(windows, target_os = "macos", test))]
+fn theme_from_json(value: &serde_json::Value) -> Theme {
+    Theme {
+        tone: if value.get("tone").and_then(Value::as_str) == Some("light") {
+            Tone::Light
+        } else {
+            Tone::Dark
+        },
+        accent: Theme::parse_hex_rgb(value.get("accent").and_then(Value::as_str))
+            .unwrap_or(Theme::DEFAULT.accent),
+        custom_background: (value.get("backgroundMode").and_then(Value::as_str) == Some("custom"))
+            .then(|| {
+                Theme::parse_hex_rgb(value.get("background").and_then(Value::as_str))
+                    .unwrap_or([15, 15, 15])
+            }),
     }
-    Some((
-        u8::from_str_radix(&value[0..2], 16).ok()?,
-        u8::from_str_radix(&value[2..4], 16).ok()?,
-        u8::from_str_radix(&value[4..6], 16).ok()?,
-    ))
-}
-
-#[cfg(any(windows, test))]
-fn mix_rgb(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
-    let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
-    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
-}
-
-#[cfg(any(windows, test))]
-fn theme_background_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
-    let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
-    if custom {
-        return parse_hex_rgb(value.get("background").and_then(Value::as_str))
-            .unwrap_or((15, 15, 15));
-    }
-    let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
-    let target = if value.get("tone").and_then(Value::as_str) == Some("light") {
-        (244, 247, 251)
-    } else {
-        (7, 10, 16)
-    };
-    mix_rgb(accent, target, 0.98)
-}
-
-#[cfg(any(windows, test))]
-fn theme_glass_tint_rgb(value: &serde_json::Value) -> (u8, u8, u8) {
-    let accent =
-        parse_hex_rgb(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
-    let light = value.get("tone").and_then(Value::as_str) == Some("light");
-    let base = if value.get("backgroundMode").and_then(Value::as_str) == Some("custom") {
-        theme_background_rgb(value)
-    } else if light {
-        (248, 250, 252)
-    } else {
-        (5, 7, 11)
-    };
-    mix_rgb(accent, base, if light { 0.98 } else { 0.97 })
 }
 
 #[cfg(windows)]
@@ -101,8 +70,9 @@ fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
     app.state::<RuntimeState>()
         .app_settings
         .lock()
-        .map(|settings| theme_glass_tint_rgb(&settings.theme))
-        .unwrap_or((15, 15, 15))
+        .map(|settings| theme_from_json(&settings.theme).glass_tint_rgb())
+        .unwrap_or([15, 15, 15])
+        .into()
 }
 
 /// 参考边长：显示器逻辑分辨率（物理分辨率 / 缩放比例）中较短的一边。
@@ -183,6 +153,42 @@ fn current_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
             settings
         })
         .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn css_native_look(theme: Theme, settings: &FloatingOrbSettings) -> Look {
+    use sayit_overlay_core::look::{Glass, GlassMaterial, Profile};
+    Look {
+        profile: Profile::Css,
+        theme,
+        glass: settings.glass_enabled.then(|| Glass {
+            material: match settings.glass_material {
+                FloatingOrbGlassMaterial::UnderWindow => GlassMaterial::UnderWindow,
+                FloatingOrbGlassMaterial::Content => GlassMaterial::Content,
+                FloatingOrbGlassMaterial::Sidebar => GlassMaterial::Sidebar,
+            },
+            tint_percent: settings.glass_tint,
+            border_percent: settings.glass_border,
+        }),
+    }
+}
+
+pub(crate) fn native_look(app: &tauri::AppHandle) -> Look {
+    #[cfg(target_os = "macos")]
+    {
+        let theme = app
+            .state::<RuntimeState>()
+            .app_settings
+            .lock()
+            .map(|settings| theme_from_json(&settings.theme))
+            .unwrap_or(Theme::DEFAULT);
+        css_native_look(theme, &current_settings(app))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Look::WINDOWS_LEGACY
+    }
 }
 
 fn apply_native_glass(
@@ -270,6 +276,7 @@ pub(crate) fn sync_system_glass_window(window: &tauri::WebviewWindow) {
 }
 
 pub(crate) fn sync_system_glass_windows(app: &tauri::AppHandle) {
+    crate::desktop::native_common::native_overlay_set_look(native_look(app));
     for label in [
         "main",
         FLOATING_ORB_LABEL,
@@ -409,6 +416,26 @@ fn resolve_idle_position(
     clamp_orb_position(position, size, monitors)
 }
 
+/// 这次位置变化要不要写回配置。
+///
+/// 悬浮球的位置只有用户拖出来的那一个才算数；其余移动都是从它**推导**出来的
+/// （回退默认位、夹持回可见区、缩放后重新居中）。显示器临时缺失时
+/// `resolve_idle_position` 会退回主屏默认位，而这个 set_position 同样会触发
+/// `WindowEvent::Moved`；若照写不误，用户摆在那块屏上的位置就被回退值永久覆盖，
+/// 插回显示器也再也找不回来了。
+fn should_persist_orb_position(
+    saved: Option<tauri::PhysicalPosition<i32>>,
+    size: tauri::PhysicalSize<u32>,
+    monitors: &[MonitorRect],
+    dragged_by_user: bool,
+) -> bool {
+    if dragged_by_user {
+        return true;
+    }
+    // 已保存的位置还在某块屏上：当前位置是它本人或它的夹持结果，写回无害。
+    saved.is_none_or(|saved| position_is_on_a_monitor(saved, size, monitors))
+}
+
 fn resolve_menu_position(
     orb_position: tauri::PhysicalPosition<i32>,
     orb_size: tauri::PhysicalSize<u32>,
@@ -488,6 +515,10 @@ fn interpolate_orb_position(
 }
 
 pub(crate) fn is_cursor_over_floating_orb(app: &tauri::AppHandle) -> bool {
+    // 原生悬浮球没有 WebView 窗口，直接按真实指针位置与原生窗口矩形判断。
+    if use_native_orb() {
+        return crate::desktop::native_orb::native_orb_cursor_over();
+    }
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return false;
     };
@@ -538,6 +569,10 @@ fn cursor_is_over_floating_orb_now(app: &tauri::AppHandle, window: &tauri::Webvi
 }
 
 pub(crate) fn start_floating_orb_hover_watcher(app: tauri::AppHandle) {
+    // 原生悬浮球用 WM_MOUSEMOVE + TrackMouseEvent 拿到真实悬停，不需要轮询。
+    if use_native_orb() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let mut hovering = false;
         loop {
@@ -613,21 +648,38 @@ fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<MonitorRect> {
         .collect()
 }
 
-fn default_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosition<i32> {
-    let monitor = window
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten());
+/// 不依赖具体窗口的显示器列表，原生悬浮球（没有 WebviewWindow）与
+/// 菜单定位都走这里。
+fn app_monitor_rects(app: &tauri::AppHandle) -> Vec<MonitorRect> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(MonitorRect::from_monitor)
+        .collect()
+}
+
+/// 包含指定点的显示器；不在任何显示器内时取中心距离最近的一块。
+fn monitor_at_point(monitors: &[tauri::Monitor], x: i32, y: i32) -> Option<&tauri::Monitor> {
+    monitors
+        .iter()
+        .find(|monitor| MonitorRect::from_monitor(monitor).contains(x, y))
+        .or_else(|| {
+            monitors
+                .iter()
+                .min_by_key(|monitor| MonitorRect::from_monitor(monitor).distance_squared(x, y))
+        })
+}
+
+fn default_position(
+    app: &tauri::AppHandle,
+    monitor: Option<&tauri::Monitor>,
+) -> tauri::PhysicalPosition<i32> {
     let Some(monitor) = monitor else {
         return tauri::PhysicalPosition::new(24, 120);
     };
     let area = monitor.work_area();
     let scale = monitor.scale_factor();
-    let size = (orb_window_extent(
-        current_settings(window.app_handle()).size_percent,
-        Some(&monitor),
-    ) * scale)
+    let size = (orb_window_extent(current_settings(app).size_percent, Some(monitor)) * scale)
         .round() as i32;
     let margin = (DEFAULT_MARGIN * scale).round() as i32;
     tauri::PhysicalPosition::new(
@@ -662,12 +714,268 @@ fn resolved_idle_position(window: &tauri::WebviewWindow) -> tauri::PhysicalPosit
         (extent * scale).round() as u32,
         (extent * scale).round() as u32,
     );
+    let monitor = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
     resolve_idle_position(
         saved_position(window.app_handle()),
-        default_position(window),
+        default_position(window.app_handle(), monitor.as_ref()),
         size,
         &monitor_rects(window),
     )
+}
+
+/// 原生悬浮球（没有 WebviewWindow）的归位/初始矩形，单位为 DesktopPx。
+/// 沿用 saved→monitor→clamp 的同一套数学。
+fn native_idle_rect(app: &tauri::AppHandle, settings: &FloatingOrbSettings) -> (i32, i32, i32) {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let rects: Vec<MonitorRect> = monitors.iter().map(MonitorRect::from_monitor).collect();
+    let saved = saved_position(app);
+    // 已保存位置所在的显示器优先；否则主显示器（available_monitors 里按
+    // 工作区原点匹配），再退任意一块。
+    let monitor = saved
+        .and_then(|position| {
+            monitors
+                .iter()
+                .find(|monitor| MonitorRect::from_monitor(monitor).contains(position.x, position.y))
+        })
+        .or_else(|| {
+            let primary = app.primary_monitor().ok().flatten()?;
+            let origin = primary.work_area().position;
+            monitors
+                .iter()
+                .find(|monitor| monitor.work_area().position == origin)
+        })
+        .or_else(|| monitors.first());
+    let extent = orb_window_extent(settings.size_percent, monitor);
+    let scale = monitor.map_or(1.0, |monitor| monitor.scale_factor());
+    let size = (extent * scale).round().max(1.0) as u32;
+    let size = tauri::PhysicalSize::new(size, size);
+    let position = resolve_idle_position(saved, default_position(app, monitor), size, &rects);
+    (position.x, position.y, size.width as i32)
+}
+
+/// 悬浮球窗口后端开关：SAYIT_NATIVE_ORB=0 回退 WebView，其它已设置值启用
+/// 原生窗口；未设置时取平台默认（Windows 开启，macOS 开发期关闭）。
+fn use_native_orb() -> bool {
+    crate::desktop::native_orb::native_orb_enabled()
+}
+
+/// 悬浮球的窗口后端：原生窗口或 Tauri WebView。
+/// 业务代码只面对 OrbUi；原生侧没有 WebviewWindow，窗口操作经命令队列
+/// 投递到原生 UI 线程（见 native_orb.rs）。
+#[derive(Clone)]
+enum OrbUi {
+    Native,
+    Webview(tauri::WebviewWindow),
+}
+
+impl OrbUi {
+    /// 已存在的悬浮球窗口；原生模式以原生 UI 线程是否已启动为准。
+    fn current(app: &tauri::AppHandle) -> Option<Self> {
+        if use_native_orb() {
+            return crate::desktop::native_orb::native_orb_started().then_some(Self::Native);
+        }
+        app.get_webview_window(FLOATING_ORB_LABEL)
+            .map(Self::Webview)
+    }
+
+    /// 懒创建：确保窗口存在并返回。原生模式首次调用会启动原生 UI 线程。
+    fn ensure(app: &tauri::AppHandle) -> Result<Self, String> {
+        if use_native_orb() {
+            ensure_native_orb(app)?;
+            return Ok(Self::Native);
+        }
+        ensure_floating_orb_window(app).map(Self::Webview)
+    }
+
+    fn show(&self) -> Result<(), String> {
+        match self {
+            Self::Native => {
+                crate::desktop::native_orb::native_orb_show();
+                Ok(())
+            }
+            Self::Webview(window) => window.show().map_err(|error| format!("显示悬浮球失败：{error}")),
+        }
+    }
+
+    fn hide(&self) -> Result<(), String> {
+        match self {
+            Self::Native => {
+                crate::desktop::native_orb::native_orb_hide();
+                Ok(())
+            }
+            Self::Webview(window) => window.hide().map_err(|error| format!("隐藏悬浮球失败：{error}")),
+        }
+    }
+
+    /// interactive=false 等价于 WebView 的 set_ignore_cursor_events(true)。
+    fn set_interactive(&self, interactive: bool) -> Result<(), String> {
+        match self {
+            Self::Native => {
+                crate::desktop::native_orb::native_orb_set_interactive(interactive);
+                Ok(())
+            }
+            Self::Webview(window) => window
+                .set_ignore_cursor_events(!interactive)
+                .map_err(|error| format!("切换悬浮球交互失败：{error}")),
+        }
+    }
+
+    fn outer_position(&self) -> Result<tauri::PhysicalPosition<i32>, String> {
+        match self {
+            Self::Native => crate::desktop::native_orb::native_orb_rect()
+                .map(|(x, y, _)| tauri::PhysicalPosition::new(x, y))
+                .ok_or_else(|| "原生悬浮球位置不可用".to_string()),
+            Self::Webview(window) => window
+                .outer_position()
+                .map_err(|error| format!("读取悬浮球位置失败：{error}")),
+        }
+    }
+
+    fn outer_size(&self) -> Result<tauri::PhysicalSize<u32>, String> {
+        match self {
+            Self::Native => crate::desktop::native_orb::native_orb_rect()
+                .map(|(_, _, size)| tauri::PhysicalSize::new(size as u32, size as u32))
+                .ok_or_else(|| "原生悬浮球尺寸不可用".to_string()),
+            Self::Webview(window) => window
+                .outer_size()
+                .map_err(|error| format!("读取悬浮球尺寸失败：{error}")),
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        match self {
+            Self::Native => crate::desktop::native_orb::native_orb_is_visible(),
+            Self::Webview(window) => window.is_visible().unwrap_or(false),
+        }
+    }
+
+    fn set_position(&self, position: tauri::PhysicalPosition<i32>) -> Result<(), String> {
+        match self {
+            Self::Native => {
+                crate::desktop::native_orb::native_orb_move_to(position.x, position.y);
+                Ok(())
+            }
+            Self::Webview(window) => window
+                .set_position(position)
+                .map_err(|error| format!("移动悬浮球失败：{error}")),
+        }
+    }
+
+    fn scale_factor(&self, app: &tauri::AppHandle) -> f64 {
+        match self {
+            Self::Native => {
+                let monitors = app.available_monitors().unwrap_or_default();
+                crate::desktop::native_orb::native_orb_rect()
+                    .and_then(|(x, y, size)| {
+                        monitor_at_point(&monitors, x + size / 2, y + size / 2)
+                    })
+                    .or_else(|| monitors.first())
+                    .map_or(1.0, |monitor| monitor.scale_factor())
+            }
+            Self::Webview(window) => window.scale_factor().unwrap_or(1.0),
+        }
+    }
+
+    /// outer_size 读取失败时的估算尺寸（按当前设置与所在显示器缩放计算）。
+    fn estimated_size(&self, app: &tauri::AppHandle) -> tauri::PhysicalSize<u32> {
+        let extent = match self {
+            Self::Native => {
+                let (_, _, size) = native_idle_rect(app, &current_settings(app));
+                return tauri::PhysicalSize::new(size as u32, size as u32);
+            }
+            Self::Webview(window) => orb_window_extent(
+                current_settings(app).size_percent,
+                window_monitor_for_sizing(window).as_ref(),
+            ),
+        };
+        let scale = self.scale_factor(app);
+        let size = (extent * scale).round() as u32;
+        tauri::PhysicalSize::new(size, size)
+    }
+
+    fn resize_to_percent(&self, app: &tauri::AppHandle, size_percent: u16) -> Result<(), String> {
+        match self {
+            Self::Native => resize_native_orb(app, size_percent),
+            Self::Webview(window) => resize_floating_orb_window(window, size_percent),
+        }
+    }
+}
+
+/// 原生悬浮球的懒创建：启动原生 UI 线程并按当前设置配置矩形/透明度。
+/// 与 WebView 路径一样，瞬时（鼠标手势）模式下创建后先不显示。
+fn ensure_native_orb(app: &tauri::AppHandle) -> Result<(), String> {
+    use crate::desktop::native_orb as orb;
+    orb::native_orb_attach(app);
+    crate::desktop::native_common::native_overlay_set_look(native_look(app));
+    if !orb::native_orb_started() {
+        let settings = current_settings(app);
+        let (x, y, size) = native_idle_rect(app, &settings);
+        orb::native_orb_configure(x, y, size, settings.opacity);
+    }
+    if !app
+        .state::<RuntimeState>()
+        .floating_orb_runtime
+        .transient
+        .load(Ordering::Acquire)
+    {
+        orb::native_orb_show();
+    }
+    emit_config(app, &current_settings(app));
+    Ok(())
+}
+
+/// 原生悬浮球调整尺寸：与 WebView 路径一样围绕中心缩放并夹持回可见区。
+fn resize_native_orb(app: &tauri::AppHandle, size_percent: u16) -> Result<(), String> {
+    use crate::desktop::native_orb as orb;
+    let Some((x, y, size)) = orb::native_orb_rect() else {
+        return Ok(());
+    };
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitor = monitor_at_point(&monitors, x + size / 2, y + size / 2);
+    let extent = orb_window_extent(size_percent, monitor);
+    let scale = monitor.map_or(1.0, |monitor| monitor.scale_factor());
+    // Windows 的 windows_orb_extent 保证 extent * scale 是整数；macOS 依赖 round() 取整。
+    let new_size = (extent * scale).round().max(1.0) as i32;
+    if new_size == size {
+        return Ok(());
+    }
+    let center_x = x as f64 + size as f64 / 2.0;
+    let center_y = y as f64 + size as f64 / 2.0;
+    let position = tauri::PhysicalPosition::new(
+        (center_x - new_size as f64 / 2.0).round() as i32,
+        (center_y - new_size as f64 / 2.0).round() as i32,
+    );
+    let position = clamp_orb_position(
+        position,
+        tauri::PhysicalSize::new(new_size as u32, new_size as u32),
+        &monitors
+            .iter()
+            .map(MonitorRect::from_monitor)
+            .collect::<Vec<_>>(),
+    );
+    orb::native_orb_set_rect(position.x, position.y, new_size);
+    Ok(())
+}
+
+/// 原生悬浮球开始拖拽（原生窗口过程调用）：抑制主窗口重开并标记
+/// 「这次位置变化是用户亲手拖出来的」。
+pub(crate) fn native_orb_drag_started(app: &tauri::AppHandle) {
+    mark_floating_orb_interaction(app);
+    app.state::<RuntimeState>()
+        .floating_orb_runtime
+        .dragged_by_user
+        .store(true, Ordering::Release);
+}
+
+/// 原生悬浮球拖拽结束（系统移动循环返回后）：按调度持久化最终位置。
+/// WebView 路径靠 Tauri 窗口 Moved 事件触发同一个调度，原生窗口没有
+/// 这个事件，拖拽结束时主动调。
+pub(crate) fn native_orb_drag_finished(app: &tauri::AppHandle) {
+    schedule_remember_floating_orb_position(app.clone());
 }
 
 pub(crate) fn ensure_floating_orb_window(
@@ -804,22 +1112,25 @@ fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
     let _ = app.emit("floating-orb-config", config_payload(settings));
 }
 
-fn apply_floating_orb_config(
-    app: &tauri::AppHandle,
-    window: &tauri::WebviewWindow,
-) -> Result<(), String> {
+fn apply_floating_orb_config(app: &tauri::AppHandle, ui: &OrbUi) -> Result<(), String> {
     let settings = current_settings(app);
-    resize_floating_orb_window(window, settings.size_percent)?;
-    apply_native_glass(
-        window,
-        settings.glass_enabled,
-        orb_window_extent(
-            settings.size_percent,
-            window_monitor_for_sizing(window).as_ref(),
-        ) / 2.0,
-        settings.glass_material,
-        settings.glass_tint,
-    );
+    ui.resize_to_percent(app, settings.size_percent)?;
+    match ui {
+        OrbUi::Native => {
+            crate::desktop::native_common::native_overlay_set_look(native_look(app));
+            crate::desktop::native_orb::native_orb_set_opacity(settings.opacity);
+        }
+        OrbUi::Webview(window) => apply_native_glass(
+            window,
+            settings.glass_enabled,
+            orb_window_extent(
+                settings.size_percent,
+                window_monitor_for_sizing(window).as_ref(),
+            ) / 2.0,
+            settings.glass_material,
+            settings.glass_tint,
+        ),
+    }
     emit_config(app, &settings);
     Ok(())
 }
@@ -832,18 +1143,29 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
         .map_err(|_| "悬浮球配置锁失败".to_string())?
         .enabled;
     if enabled {
-        let window = ensure_floating_orb_window(app)?;
-        let _ = window.set_always_on_top(true);
-        apply_floating_orb_config(app, &window)?;
-        window
-            .set_ignore_cursor_events(false)
+        let ui = OrbUi::ensure(app)?;
+        if let OrbUi::Webview(window) = &ui {
+            let _ = window.set_always_on_top(true);
+        }
+        apply_floating_orb_config(app, &ui)?;
+        ui.set_interactive(true)
             .map_err(|error| format!("恢复悬浮球交互失败：{error}"))?;
-        window
-            .show()
-            .map_err(|error| format!("显示悬浮球失败：{error}"))
+        ui.show()
     } else {
         if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
-            let _ = menu.hide();
+            let _ = dismiss_floating_orb_menu_window(&menu);
+        }
+        if use_native_orb() {
+            if !app
+                .state::<RuntimeState>()
+                .floating_orb_runtime
+                .transient
+                .load(Ordering::Acquire)
+            {
+                crate::desktop::native_orb::native_orb_set_interactive(false);
+                crate::desktop::native_orb::native_orb_hide();
+            }
+            return Ok(());
         }
         if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
             // macOS 上悬浮球的 NSWindow 在创建后会改造成 nonactivating panel。
@@ -974,29 +1296,34 @@ pub(crate) fn set_floating_orb_appearance(
     };
     let current = current_settings(&app);
     let size_changed = previous.size_percent != current.size_percent;
-    let result = if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+    let result = if let Some(ui) = OrbUi::current(&app) {
         // 大小没变时（例如只是拖动不透明度/毛玻璃滑杆）完全跳过 resize，
         // 不去重新触发一次"逻辑尺寸 -> 物理像素"的换算和居中定位，
         // 避免和大小无关的设置也悄悄挪动悬浮球的位置。
         let resize_result = if size_changed {
-            resize_floating_orb_window(&window, current.size_percent)
+            ui.resize_to_percent(&app, current.size_percent)
         } else {
             Ok(())
         };
-        resize_result.map(|_| {
-            if native_glass_appearance_changed(&previous, &current)
-                || (current.glass_enabled && size_changed)
-            {
-                apply_native_glass(
-                    &window,
-                    current.glass_enabled,
-                    orb_window_extent(
-                        current.size_percent,
-                        window_monitor_for_sizing(&window).as_ref(),
-                    ) / 2.0,
-                    current.glass_material,
-                    current.glass_tint,
-                );
+        resize_result.map(|_| match &ui {
+            OrbUi::Native => {
+                crate::desktop::native_orb::native_orb_set_opacity(current.opacity)
+            }
+            OrbUi::Webview(window) => {
+                if native_glass_appearance_changed(&previous, &current)
+                    || (current.glass_enabled && size_changed)
+                {
+                    apply_native_glass(
+                        window,
+                        current.glass_enabled,
+                        orb_window_extent(
+                            current.size_percent,
+                            window_monitor_for_sizing(window).as_ref(),
+                        ) / 2.0,
+                        current.glass_material,
+                        current.glass_tint,
+                    );
+                }
             }
         })
     } else {
@@ -1006,13 +1333,15 @@ pub(crate) fn set_floating_orb_appearance(
         if let Ok(mut settings) = state.floating_orb.lock() {
             *settings = previous.clone();
         }
-        if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-            let _ = apply_floating_orb_config(&app, &window);
+        if let Some(ui) = OrbUi::current(&app) {
+            let _ = apply_floating_orb_config(&app, &ui);
         }
         return Err(error);
     }
     if native_glass_appearance_changed(&previous, &current) {
         sync_system_glass_windows(&app);
+    } else {
+        crate::desktop::native_common::native_overlay_set_look(native_look(&app));
     }
     emit_config(&app, &current);
     crate::application::contract::next_revision(&state.snapshot_revision);
@@ -1106,24 +1435,20 @@ fn resize_and_position_floating_orb_menu(
     app: &tauri::AppHandle,
     menu: &tauri::WebviewWindow,
 ) -> Result<(), String> {
-    let orb = app
-        .get_webview_window(FLOATING_ORB_LABEL)
-        .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
+    let ui = OrbUi::current(app).ok_or_else(|| "悬浮球窗口不存在".to_string())?;
     menu.set_size(tauri::LogicalSize::new(ORB_MENU_WIDTH, ORB_MENU_HEIGHT))
         .map_err(|error| format!("调整悬浮球设置面板尺寸失败：{error}"))?;
-    let scale = orb.scale_factor().unwrap_or(1.0);
+    let scale = ui.scale_factor(app);
     let menu_size = tauri::PhysicalSize::new(
         (ORB_MENU_WIDTH * scale).round() as u32,
         (ORB_MENU_HEIGHT * scale).round() as u32,
     );
     let position = resolve_menu_position(
-        orb.outer_position()
-            .map_err(|error| format!("读取悬浮球位置失败：{error}"))?,
-        orb.outer_size()
-            .map_err(|error| format!("读取悬浮球尺寸失败：{error}"))?,
+        ui.outer_position()?,
+        ui.outer_size()?,
         menu_size,
         (ORB_MENU_GAP * scale).round() as i32,
-        &monitor_rects(&orb),
+        &app_monitor_rects(app),
     );
     menu.set_position(position)
         .map_err(|error| format!("定位悬浮球设置面板失败：{error}"))
@@ -1150,11 +1475,30 @@ pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+/// 关闭菜单窗口。菜单 WebView 闲时也要占一个渲染进程，Windows 上改为按需
+/// 销毁、下次打开由 ensure 重建；macOS 的悬浮球窗口被改造成 panel，运行期间
+/// 销毁有跨 FFI 崩溃风险（见 sync_floating_orb_window），保持隐藏复用。
+fn dismiss_floating_orb_menu_window(menu: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        menu.destroy()
+            .map_err(|error| format!("销毁悬浮球设置面板失败：{error}"))
+    }
+    #[cfg(not(windows))]
+    {
+        menu.hide()
+            .map_err(|error| format!("隐藏悬浮球设置面板失败：{error}"))
+    }
+}
+
+// Windows 上窗口销毁不能发生在 WebView2 同步 IPC 回调里（菜单自己会调这个
+// 命令），与 show 一样切到异步派发；失焦自动隐藏走的是 Tauri 事件循环回调，
+// 直接调用销毁是安全的。
+#[cfg_attr(windows, tauri::command(async))]
+#[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn hide_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
-        menu.hide()
-            .map_err(|error| format!("隐藏悬浮球设置面板失败：{error}"))?;
+        dismiss_floating_orb_menu_window(&menu)?;
     }
     Ok(())
 }
@@ -1179,6 +1523,18 @@ pub(crate) async fn floating_orb_open_main_window(app: tauri::AppHandle) -> Resu
 }
 
 fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
+    if use_native_orb() {
+        let Some((x, y, size)) = crate::desktop::native_orb::native_orb_rect() else {
+            return Ok(());
+        };
+        let size = tauri::PhysicalSize::new(size as u32, size as u32);
+        let monitors = app_monitor_rects(app);
+        let position = clamp_orb_position(tauri::PhysicalPosition::new(x, y), size, &monitors);
+        if position.x != x || position.y != y {
+            crate::desktop::native_orb::native_orb_move_to(position.x, position.y);
+        }
+        return persist_orb_position(app, position, size);
+    }
     let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
         return Ok(());
     };
@@ -1195,7 +1551,29 @@ fn persist_current_position(app: &tauri::AppHandle) -> Result<(), String> {
     if window.outer_position().ok() != Some(position) {
         let _ = window.set_position(position);
     }
+    persist_orb_position(app, position, size)
+}
+
+/// 位置持久化的共享尾部：用户拖拽必写回；程序性移动只在已保存位置仍然
+/// 有效时写回（见 should_persist_orb_position 的说明）。
+fn persist_orb_position(
+    app: &tauri::AppHandle,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
+    let dragged_by_user = state
+        .floating_orb_runtime
+        .dragged_by_user
+        .swap(false, Ordering::AcqRel);
+    if !should_persist_orb_position(
+        saved_position(app),
+        size,
+        &app_monitor_rects(app),
+        dragged_by_user,
+    ) {
+        return Ok(());
+    }
     {
         let mut settings = state
             .floating_orb
@@ -1240,6 +1618,11 @@ pub(crate) fn floating_orb_start_dragging(app: tauri::AppHandle) -> Result<(), S
         .get_webview_window(FLOATING_ORB_LABEL)
         .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
     mark_floating_orb_interaction(&app);
+    // 拖拽是悬浮球唯一的用户摆位入口（窗口无边框，没有系统标题栏可拖）。
+    app.state::<RuntimeState>()
+        .floating_orb_runtime
+        .dragged_by_user
+        .store(true, Ordering::Release);
     let result = window
         .start_dragging()
         .map_err(|error| format!("拖动悬浮球失败：{error}"));
@@ -1277,19 +1660,24 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<&str>) {
     runtime
         .error_visible
         .store(phase == "error", Ordering::Release);
+    let can_submit = runtime
+        .post_injection_action
+        .lock()
+        .ok()
+        .and_then(|action| *action)
+        .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
+    let transient = runtime.transient.load(Ordering::Acquire);
+    if use_native_orb() {
+        crate::desktop::native_orb::native_orb_set_state(phase, transient, can_submit);
+        return;
+    }
     if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let can_submit = runtime
-            .post_injection_action
-            .lock()
-            .ok()
-            .and_then(|action| *action)
-            .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
         let _ = window.emit(
             "floating-orb-state",
             json!({
                 "phase": phase,
                 "message": message,
-                "transient": runtime.transient.load(Ordering::Acquire),
+                "transient": transient,
                 "canSubmit": can_submit,
             }),
         );
@@ -1349,11 +1737,11 @@ fn should_forward_orb_click(
 
 async fn animate_orb_window_to(
     app: &tauri::AppHandle,
-    window: &tauri::WebviewWindow,
+    ui: &OrbUi,
     target: tauri::PhysicalPosition<i32>,
     generation: u64,
 ) -> Result<bool, String> {
-    let start = window
+    let start = ui
         .outer_position()
         .map_err(|error| format!("读取悬浮球动画起点失败：{error}"))?;
     if start == target {
@@ -1371,9 +1759,7 @@ async fn animate_orb_window_to(
             return Ok(false);
         }
         let progress = frame as f64 / frame_count as f64;
-        window
-            .set_position(interpolate_orb_position(start, target, progress))
-            .map_err(|error| format!("移动悬浮球失败：{error}"))?;
+        ui.set_position(interpolate_orb_position(start, target, progress))?;
         if frame < frame_count {
             sleep(Duration::from_millis(ORB_MOVE_FRAME_MS)).await;
         }
@@ -1383,32 +1769,33 @@ async fn animate_orb_window_to(
 
 async fn place_hidden_orb_at(
     app: &tauri::AppHandle,
-    window: &tauri::WebviewWindow,
+    ui: &OrbUi,
     target: tauri::PhysicalPosition<i32>,
     generation: u64,
 ) -> Result<bool, String> {
-    window
-        .set_position(target)
+    ui.set_position(target)
         .map_err(|error| format!("定位手势悬浮球失败：{error}"))?;
     // macOS 会把窗口位置更新排进主事件循环。若紧接着 show，系统可能先用隐藏前
     // 的旧 frame 合成一帧，再跳到新坐标。保持内容不可见，等待 frame 真正落位。
-    for _ in 0..ORB_REPOSITION_MAX_CHECKS {
-        if app
-            .state::<RuntimeState>()
-            .floating_orb_runtime
-            .transition_generation
-            .load(Ordering::Acquire)
-            != generation
-        {
-            return Ok(false);
-        }
-        sleep(Duration::from_millis(ORB_REPOSITION_SETTLE_MS)).await;
-        if window.outer_position().ok() == Some(target) {
-            break;
+    // Windows 原生窗口的 SetWindowPos 即时生效，不需要这轮等待。
+    if let OrbUi::Webview(window) = ui {
+        for _ in 0..ORB_REPOSITION_MAX_CHECKS {
+            if app
+                .state::<RuntimeState>()
+                .floating_orb_runtime
+                .transition_generation
+                .load(Ordering::Acquire)
+                != generation
+            {
+                return Ok(false);
+            }
+            sleep(Duration::from_millis(ORB_REPOSITION_SETTLE_MS)).await;
+            if window.outer_position().ok() == Some(target) {
+                break;
+            }
         }
     }
-    window
-        .show()
+    ui.show()
         .map_err(|error| format!("显示手势悬浮球失败：{error}"))?;
     // 先让透明的定位态完成一帧合成，随后前端再切到 armed/recording 做出现动画。
     sleep(Duration::from_millis(ORB_REPOSITION_SETTLE_MS)).await;
@@ -1438,7 +1825,7 @@ async fn return_to_idle(
     {
         return;
     }
-    let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
+    let Some(ui) = OrbUi::current(&app) else {
         crate::desktop::mouse_gesture::resume_detection(&app);
         return;
     };
@@ -1459,15 +1846,21 @@ async fn return_to_idle(
             .map(|settings| settings.enabled)
             .unwrap_or(false);
         if enabled {
-            let _ = window.set_ignore_cursor_events(true);
-            let _ = window.show();
-            let target = resolved_idle_position(&window);
-            match animate_orb_window_to(&app, &window, target, generation).await {
+            let _ = ui.set_interactive(false);
+            let _ = ui.show();
+            let target = match &ui {
+                OrbUi::Native => {
+                    let (x, y, _) = native_idle_rect(&app, &current_settings(&app));
+                    tauri::PhysicalPosition::new(x, y)
+                }
+                OrbUi::Webview(window) => resolved_idle_position(window),
+            };
+            match animate_orb_window_to(&app, &ui, target, generation).await {
                 Ok(true) => {}
                 Ok(false) => return,
                 Err(error) => {
                     eprintln!("[floating-orb] 归位动画失败: {error}");
-                    let _ = window.set_position(target);
+                    let _ = ui.set_position(target);
                 }
             }
             if state
@@ -1482,10 +1875,10 @@ async fn return_to_idle(
                 .floating_orb_runtime
                 .transient
                 .store(false, Ordering::Release);
-            let _ = window.set_ignore_cursor_events(false);
+            let _ = ui.set_interactive(true);
             emit_state(&app, "idle", None);
         } else {
-            let _ = window.hide();
+            let _ = ui.hide();
             state
                 .floating_orb_runtime
                 .transient
@@ -1493,11 +1886,11 @@ async fn return_to_idle(
             // 窗口复用不销毁：若隐藏后"始终显示"被重新打开，会直接 show() 这个
             // 仍持有旧 phase/ignore_cursor_events 的实例，必须在这里同步重置，
             // 否则悬浮球会卡在隐藏前的最后状态（例如"勾"）且无法交互。
-            let _ = window.set_ignore_cursor_events(false);
+            let _ = ui.set_interactive(true);
             emit_state(&app, "idle", None);
         }
     } else {
-        let _ = window.set_ignore_cursor_events(false);
+        let _ = ui.set_interactive(true);
         emit_state(&app, "idle", None);
     }
     crate::desktop::mouse_gesture::resume_detection(&app);
@@ -1509,7 +1902,7 @@ pub(crate) fn complete_floating_orb(
     message: String,
     delay_ms: u64,
 ) {
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+    if let Some(ui) = OrbUi::current(&app) {
         let can_submit = phase == "success"
             && app
                 .state::<RuntimeState>()
@@ -1519,15 +1912,15 @@ pub(crate) fn complete_floating_orb(
                 .ok()
                 .and_then(|action| *action)
                 .is_some_and(|action| submit_enter_is_available(action.expires_at, Instant::now()));
-        let _ = window.set_ignore_cursor_events(!orb_accepts_pointer_events(phase, can_submit));
+        let _ = ui.set_interactive(orb_accepts_pointer_events(phase, can_submit));
     }
     tauri::async_runtime::spawn(return_to_idle(app, delay_ms, phase, message));
 }
 
 pub(crate) fn set_floating_orb_phase(app: &tauri::AppHandle, phase: &str, message: &str) {
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
+    if let Some(ui) = OrbUi::current(app) {
         let interactive = orb_accepts_pointer_events(phase, false);
-        let _ = window.set_ignore_cursor_events(!interactive);
+        let _ = ui.set_interactive(interactive);
         emit_state(app, phase, Some(message));
     }
 }
@@ -1563,8 +1956,8 @@ pub(crate) fn arm_floating_orb_submit_enter(
             })
             .unwrap_or(false);
         if expired {
-            if let Some(window) = timeout_app.get_webview_window(FLOATING_ORB_LABEL) {
-                let _ = window.set_ignore_cursor_events(true);
+            if let Some(ui) = OrbUi::current(&timeout_app) {
+                let _ = ui.set_interactive(false);
             }
             emit_state(&timeout_app, "success", Some("已完成并复制"));
         }
@@ -1572,38 +1965,30 @@ pub(crate) fn arm_floating_orb_submit_enter(
 }
 
 fn transient_orb_position(
-    window: &tauri::WebviewWindow,
+    app: &tauri::AppHandle,
+    ui: &OrbUi,
     fallback: (i32, i32),
 ) -> tauri::PhysicalPosition<i32> {
-    let cursor = window
-        .app_handle()
+    let cursor = app
         .cursor_position()
         .ok()
         .map(|value| (value.x.round() as i32, value.y.round() as i32))
         .unwrap_or(fallback);
-    let size = window.outer_size().unwrap_or_else(|_| {
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let extent = orb_window_extent(
-            current_settings(window.app_handle()).size_percent,
-            window_monitor_for_sizing(window).as_ref(),
-        );
-        let physical = (extent * scale).round() as u32;
-        tauri::PhysicalSize::new(physical, physical)
-    });
+    let size = ui.outer_size().unwrap_or_else(|_| ui.estimated_size(app));
     clamp_orb_position(
         tauri::PhysicalPosition::new(
             cursor.0.saturating_sub((size.width / 2) as i32),
             cursor.1.saturating_sub((size.height / 2) as i32),
         ),
         size,
-        &monitor_rects(window),
+        &app_monitor_rects(app),
     )
 }
 
 async fn prepare_transient_orb(
     app: &tauri::AppHandle,
     position: (i32, i32),
-) -> Result<tauri::WebviewWindow, String> {
+) -> Result<OrbUi, String> {
     let state = app.state::<RuntimeState>();
     state
         .floating_orb_runtime
@@ -1617,28 +2002,28 @@ async fn prepare_transient_orb(
     if let Ok(mut action) = state.floating_orb_runtime.post_injection_action.lock() {
         *action = None;
     }
-    let window = ensure_floating_orb_window(app)?;
-    let target = transient_orb_position(&window, position);
+    let ui = OrbUi::ensure(app)?;
+    let target = transient_orb_position(app, &ui, position);
     let persistent_enabled = state
         .floating_orb
         .lock()
         .map(|settings| settings.enabled)
         .unwrap_or(false);
-    let was_visible = window.is_visible().unwrap_or(false);
-    let _ = window.set_ignore_cursor_events(true);
+    let was_visible = ui.is_visible();
+    let _ = ui.set_interactive(false);
     if persistent_enabled && was_visible {
         emit_state(app, "moving", None);
-        if !animate_orb_window_to(app, &window, target, generation).await? {
+        if !animate_orb_window_to(app, &ui, target, generation).await? {
             return Err("悬浮球移动已被新的操作替代".into());
         }
     } else {
-        let _ = window.hide();
+        let _ = ui.hide();
         emit_state(app, "positioning", None);
-        if !place_hidden_orb_at(app, &window, target, generation).await? {
+        if !place_hidden_orb_at(app, &ui, target, generation).await? {
             return Err("悬浮球定位已被新的操作替代".into());
         }
     }
-    Ok(window)
+    Ok(ui)
 }
 
 async fn start_mouse_gesture_dictation(
@@ -1668,7 +2053,7 @@ async fn show_mouse_gesture_armed(
     // 连击本身已经把焦点交给了用户点击的位置。这里只冻结外部窗口，不再依赖
     // 浏览器/Electron 对 contenteditable 并不稳定的 AX 可编辑性声明。
     let target = crate::active_app_context::activation_target();
-    let window = prepare_transient_orb(&app, position).await?;
+    let ui = prepare_transient_orb(&app, position).await?;
     let state = app.state::<RuntimeState>();
     state
         .floating_orb_runtime
@@ -1682,7 +2067,7 @@ async fn show_mouse_gesture_armed(
         .armed_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    let _ = window.set_ignore_cursor_events(false);
+    let _ = ui.set_interactive(true);
     emit_state(&app, "armed", Some("点击开始语音输入"));
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_millis(3000)).await;
@@ -1751,6 +2136,18 @@ pub(crate) fn request_mouse_gesture(
 }
 
 pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &str) {
+    if use_native_orb() {
+        // 原生悬浮球没有 WebView 可播提示音，回退到主窗口；主窗口不存在
+        // （如 -cc-switch 模式）时直接丢弃。
+        if app.get_webview_window("main").is_some() {
+            let _ = app.emit_to(
+                "main",
+                "dictation-play-cue",
+                json!({ "which": which, "kind": kind }),
+            );
+        }
+        return;
+    }
     if app.get_webview_window(FLOATING_ORB_LABEL).is_some() {
         // Tauri 的 window.emit 仍是全局广播；隐藏指示器也会收到并再播一次。
         let _ = app.emit_to(
@@ -1762,6 +2159,10 @@ pub(crate) fn emit_floating_orb_cue(app: &tauri::AppHandle, which: &str, kind: &
 }
 
 pub(crate) fn emit_floating_orb_waveform(app: &tauri::AppHandle, level: f32, peaks: Vec<f32>) {
+    if use_native_orb() {
+        crate::desktop::native_orb::native_orb_set_waveform(level, peaks);
+        return;
+    }
     if app.get_webview_window(FLOATING_ORB_LABEL).is_some() {
         let _ = app.emit_to(
             FLOATING_ORB_LABEL,
@@ -1818,14 +2219,16 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
         return Ok(());
     }
     persist_current_position(&app)?;
-    let window = ensure_floating_orb_window(&app)?;
+    let ui = OrbUi::ensure(&app)?;
     app.state::<RuntimeState>()
         .floating_orb_runtime
         .transition_generation
         .fetch_add(1, Ordering::AcqRel);
-    let _ = window.set_ignore_cursor_events(true);
+    let _ = ui.set_interactive(false);
     emit_state(&app, "moving", None);
+    let editable_check_started = Instant::now();
     let already_focused = focused_editable_target().await;
+    let editable_check_ms = editable_check_started.elapsed().as_millis() as u64;
     let (target, target_confirmed) = if should_forward_orb_click(already_focused) {
         let click_position = cursor_location().await;
         sleep(Duration::from_millis(16)).await;
@@ -1841,8 +2244,20 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
     } else {
         (already_focused, true)
     };
+    // 目标捕获是首次注入失败的主要嫌疑点（UIA 冷启动可能超 180ms 配额）；
+    // 记录下来以便从诊断日志区分「捕获丢失」与「注入失败」。
+    crate::application::diagnostics::event(
+        "info",
+        "orb.activateTarget",
+        json!({
+            "editableCheckMs": editable_check_ms,
+            "alreadyFocusedEditable": already_focused.is_some(),
+            "targetCaptured": target.is_some(),
+            "targetConfirmed": target_confirmed,
+        }),
+    );
     emit_state(&app, "recording", Some("聆听中…"));
-    let _ = window.set_ignore_cursor_events(false);
+    let _ = ui.set_interactive(true);
     if let Err(error) = crate::application::dictation::start_from_floating_orb(
         app.clone(),
         target,
@@ -1858,10 +2273,10 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
 
 #[tauri::command]
 pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) else {
+    let Some(ui) = OrbUi::current(&app) else {
         return Ok(());
     };
-    let _ = window.set_ignore_cursor_events(true);
+    let _ = ui.set_interactive(false);
     emit_state(&app, "processing", Some("识别中…"));
     crate::application::dictation::stop_from_floating_orb(app).await
 }
@@ -1998,8 +2413,8 @@ pub(crate) async fn floating_orb_submit_enter(app: tauri::AppHandle) -> Result<(
     if !submit_enter_is_available(action.expires_at, Instant::now()) {
         return Err("快捷回车窗口已结束".into());
     }
-    if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-        let _ = window.set_ignore_cursor_events(true);
+    if let Some(ui) = OrbUi::current(&app) {
+        let _ = ui.set_interactive(false);
     }
     let result = submit_enter_with_delayed_feedback(&app, action.target).await;
     match result {
@@ -2022,8 +2437,8 @@ pub(crate) fn auto_submit_floating_orb_enter(
 ) {
     tauri::async_runtime::spawn(async move {
         crate::application::final_draft::mark_auto_enter(&app);
-        if let Some(window) = app.get_webview_window(FLOATING_ORB_LABEL) {
-            let _ = window.set_ignore_cursor_events(true);
+        if let Some(ui) = OrbUi::current(&app) {
+            let _ = ui.set_interactive(false);
         }
         match submit_enter_with_delayed_feedback(&app, target).await {
             Ok(()) => complete_floating_orb(app, "submitted", "已发送回车".into(), 800),
@@ -2132,30 +2547,156 @@ mod tests {
     }
 
     #[test]
-    fn background_tint_follows_accent_or_explicit_background() {
+    fn theme_json_preserves_defaults_and_custom_background_fallback() {
+        assert_eq!(theme_from_json(&serde_json::json!({})), Theme::DEFAULT);
+        for value in ["#中abc", "#中", "#中中", "#ａｂｃ", "", "#"] {
+            assert_eq!(
+                theme_from_json(&json!({
+                    "accent": value, "backgroundMode": "custom", "background": value
+                })),
+                Theme {
+                    custom_background: Some([15, 15, 15]),
+                    ..Theme::DEFAULT
+                },
+                "{value:?}"
+            );
+        }
         assert_eq!(
-            theme_background_rgb(&serde_json::json!({
-                "tone": "dark",
-                "accent": "#FF4013",
-                "backgroundMode": "followAccent"
+            theme_from_json(&serde_json::json!({
+                "tone": "light", "accent": " #FF4013 ",
+                "backgroundMode": "custom", "background": "221a18"
             })),
-            (12, 11, 16)
+            Theme {
+                tone: Tone::Light,
+                accent: [255, 64, 19],
+                custom_background: Some([34, 26, 24]),
+            }
         );
         assert_eq!(
-            theme_background_rgb(&serde_json::json!({
-                "backgroundMode": "custom",
-                "background": "#221A18"
+            theme_from_json(&serde_json::json!({
+                "tone": "unknown", "accent": false,
+                "backgroundMode": "custom", "background": "bad"
             })),
-            (34, 26, 24)
+            Theme {
+                custom_background: Some([15, 15, 15]),
+                ..Theme::DEFAULT
+            }
         );
-        assert_eq!(
-            theme_glass_tint_rgb(&serde_json::json!({
-                "tone": "dark",
-                "accent": "#FF4013",
-                "backgroundMode": "followAccent"
-            })),
-            (13, 9, 11)
-        );
+    }
+
+    // 冻结 Windows Acrylic 的迁移前实现，独立对照 JSON 解析、默认值与浮点运算顺序。
+    fn legacy_theme_colors(value: &Value) -> ([u8; 3], [u8; 3]) {
+        fn parse(value: Option<&str>) -> Option<(u8, u8, u8)> {
+            let value = value?.trim();
+            let value = value.strip_prefix('#').unwrap_or(value);
+            if value.len() != 6 {
+                return None;
+            }
+            Some((
+                u8::from_str_radix(&value[0..2], 16).ok()?,
+                u8::from_str_radix(&value[2..4], 16).ok()?,
+                u8::from_str_radix(&value[4..6], 16).ok()?,
+            ))
+        }
+        fn mix(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
+            let mix =
+                |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
+            (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
+        }
+        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
+        let light = value.get("tone").and_then(Value::as_str) == Some("light");
+        let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
+        let background = if custom {
+            parse(value.get("background").and_then(Value::as_str)).unwrap_or((15, 15, 15))
+        } else {
+            mix(
+                accent,
+                if light { (244, 247, 251) } else { (7, 10, 16) },
+                0.98,
+            )
+        };
+        let base = if custom {
+            background
+        } else if light {
+            (248, 250, 252)
+        } else {
+            (5, 7, 11)
+        };
+        let tint = mix(accent, base, if light { 0.98 } else { 0.97 });
+        (background.into(), tint.into())
+    }
+
+    #[test]
+    fn core_theme_matches_legacy_acrylic_for_json_variants() {
+        for tone in [Value::Null, json!("dark"), json!("light"), json!("unknown")] {
+            for accent in [
+                Value::Null,
+                json!(false),
+                json!("invalid"),
+                json!("#FF4013"),
+                json!(" #aBcDeF "),
+                json!("000000"),
+                json!("#FFFFFF"),
+            ] {
+                for mode in [Value::Null, json!("followAccent"), json!("custom")] {
+                    for background in [
+                        Value::Null,
+                        json!(42),
+                        json!("bad"),
+                        json!("#221A18"),
+                        json!("#000000"),
+                        json!("ffffff"),
+                    ] {
+                        let value = json!({
+                            "tone": tone, "accent": accent,
+                            "backgroundMode": mode, "background": background
+                        });
+                        let theme = theme_from_json(&value);
+                        assert_eq!(
+                            (theme.background_rgb(), theme.glass_tint_rgb()),
+                            legacy_theme_colors(&value),
+                            "{value}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn css_native_look_projects_theme_and_all_glass_materials() {
+        use sayit_overlay_core::look::{Glass, GlassMaterial, Profile};
+        let theme = theme_from_json(&json!({"tone": "light", "accent": "#FF4013"}));
+        for (material, expected) in [
+            (
+                FloatingOrbGlassMaterial::UnderWindow,
+                GlassMaterial::UnderWindow,
+            ),
+            (FloatingOrbGlassMaterial::Content, GlassMaterial::Content),
+            (FloatingOrbGlassMaterial::Sidebar, GlassMaterial::Sidebar),
+        ] {
+            let mut settings = FloatingOrbSettings {
+                glass_enabled: true,
+                glass_material: material,
+                glass_tint: 17,
+                glass_border: 23,
+                ..FloatingOrbSettings::default()
+            };
+            assert_eq!(
+                css_native_look(theme, &settings),
+                Look {
+                    profile: Profile::Css,
+                    theme,
+                    glass: Some(Glass {
+                        material: expected,
+                        tint_percent: 17,
+                        border_percent: 23
+                    }),
+                }
+            );
+            settings.glass_enabled = false;
+            assert_eq!(css_native_look(theme, &settings).glass, None);
+        }
     }
 
     #[test]
@@ -2275,6 +2816,66 @@ mod tests {
             ),
             tauri::PhysicalPosition::new(1904, 1064)
         );
+    }
+
+    /// 显示器临时缺失时的回退位置不得反写进配置。
+    ///
+    /// `resolve_idle_position` 退回主屏默认位后的 `set_position` 同样会触发
+    /// `WindowEvent::Moved` → `persist_current_position`。以前这里无条件写回：副屏拔掉
+    /// 一次，用户摆在副屏上的悬浮球位置就永久没了，插回去也不会回到原处。
+    #[test]
+    fn fallback_position_from_a_missing_monitor_is_not_written_back() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        let size = tauri::PhysicalSize::new(56, 56);
+        // 保存的位置在已经不存在的左侧副屏上。
+        assert!(!should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(-1700, 240)),
+            size,
+            &monitors,
+            false,
+        ));
+    }
+
+    /// 同一种状态下，用户亲手拖出来的位置仍然要存。
+    #[test]
+    fn a_user_drag_still_persists_even_while_a_monitor_is_missing() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        assert!(should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(-1700, 240)),
+            tauri::PhysicalSize::new(56, 56),
+            &monitors,
+            true,
+        ));
+    }
+
+    /// 保存的位置还在屏上（或还没存过）时，程序性移动照旧写回：
+    /// 缩放重新居中、夹持回可见区都依赖这条。
+    #[test]
+    fn derived_moves_are_written_back_while_the_saved_position_is_valid() {
+        let monitors = [MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
+        let size = tauri::PhysicalSize::new(56, 56);
+        assert!(should_persist_orb_position(
+            Some(tauri::PhysicalPosition::new(1840, 512)),
+            size,
+            &monitors,
+            false,
+        ));
+        assert!(should_persist_orb_position(None, size, &monitors, false));
     }
 
     #[test]

@@ -49,7 +49,7 @@ impl ActiveAppContextExtractionMethod {
     }
 }
 
-/// 仅在 `ActiveAppContextExtractionMethod::Ocr` 下生效：选择具体的窗口 OCR 实现。
+/// 旧设置读取兼容；运行时以 OCR 模型选择为准。
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum OcrEngineKind {
@@ -68,17 +68,6 @@ impl<'de> Deserialize<'de> for OcrEngineKind {
             Some("ppocr") => Self::PpOcr,
             _ => Self::System,
         })
-    }
-}
-
-impl OcrEngineKind {
-    /// 与自定义 `Deserialize` 使用同一套小写取值，供调试面板等场景直接输出给前端。
-    #[cfg(any(windows, target_os = "macos"))]
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::PpOcr => "ppocr",
-        }
     }
 }
 
@@ -140,7 +129,7 @@ impl Default for CaptureOptions {
     fn default() -> Self {
         Self::for_method(
             ActiveAppContextExtractionMethod::default(),
-            crate::providers::capabilities::OcrProvider::System,
+            crate::providers::capabilities::OcrProvider::default_local(),
         )
     }
 }

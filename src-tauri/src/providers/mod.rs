@@ -49,7 +49,28 @@ pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const GROQ_DEFAULT_LLM_MODEL_ID: &str = "qwen/qwen3.8-27b";
 const PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID: &str = "openai/gpt-oss-20b";
+/// 旧默认模型的一次性迁移标记，写在 Groq 供应商配置里。
+const GROQ_DEFAULT_MODEL_MIGRATED_KEY: &str = "groqDefaultModelMigrated";
 pub const SYSTEM_OCR_PROVIDER_ID: &str = "system-ocr";
+pub const PPOCR_PROVIDER_ID: &str = "local-ppocr";
+pub const PPOCR_MODEL_ID: &str = "local-ppocr-v6-tiny";
+pub const LEGACY_PPOCR_PACK_ID: &str = "official.ppocr-v6-tiny";
+
+pub const fn default_ocr_provider_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        SYSTEM_OCR_PROVIDER_ID
+    } else {
+        PPOCR_PROVIDER_ID
+    }
+}
+
+pub const fn default_ocr_model_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        SYSTEM_OCR_PROVIDER_ID
+    } else {
+        PPOCR_MODEL_ID
+    }
+}
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,6 +147,8 @@ fn default_llm_temperature() -> Option<f64> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProfile {
+    #[serde(default)]
+    pub keep_loaded: bool,
     pub id: String,
     pub kind: String,
     pub display_name: String,
@@ -149,7 +172,7 @@ pub struct ProviderDefaults {
     pub llm: String,
     #[serde(default)]
     pub translation: String,
-    /// OCR 能力默认供应商；空串表示未设置，normalize 后落到内置系统 OCR。旧 JSON 靠 `#[serde(default)]` 兼容。
+    /// OCR 能力默认供应商；空串表示未设置，normalize 后落到当前平台默认 OCR。旧 JSON 靠 `#[serde(default)]` 兼容。
     #[serde(default)]
     pub ocr: String,
 }
@@ -169,7 +192,7 @@ impl Default for ProviderSettings {
                 asr: BAILIAN_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
                 translation: BAILIAN_PROVIDER_ID.to_string(),
-                ocr: SYSTEM_OCR_PROVIDER_ID.to_string(),
+                ocr: default_ocr_provider_id().to_string(),
             },
         }
     }
@@ -187,6 +210,7 @@ pub struct ProviderStatus {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderListItem {
+    pub keep_loaded: bool,
     pub id: String,
     pub kind: String,
     pub display_name: String,
@@ -357,6 +381,7 @@ pub struct SetDefaultProviderRequest {
 
 pub fn bailian_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: BAILIAN_PROVIDER_ID.to_string(),
         kind: "sdk:bailian".to_string(),
         display_name: "阿里云百炼".to_string(),
@@ -384,6 +409,7 @@ pub fn bailian_profile() -> ProviderProfile {
 
 pub fn volcengine_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: VOLCENGINE_PROVIDER_ID.to_string(),
         kind: "sdk:volcengine".to_string(),
         display_name: "火山引擎".to_string(),
@@ -398,6 +424,7 @@ pub fn volcengine_profile() -> ProviderProfile {
 
 pub fn siliconflow_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: SILICONFLOW_PROVIDER_ID.to_string(),
         kind: "sdk:siliconflow".to_string(),
         display_name: "硅基流动".to_string(),
@@ -412,6 +439,7 @@ pub fn siliconflow_profile() -> ProviderProfile {
 
 pub fn groq_llm_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: GROQ_LLM_PROVIDER_ID.to_string(),
         kind: "llm:groq".to_string(),
         display_name: "Groq".to_string(),
@@ -428,30 +456,35 @@ pub fn groq_llm_profile() -> ProviderProfile {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn system_ocr_display_name() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macOS 系统 OCR"
-    } else {
-        "Windows 系统 OCR"
-    }
+    "macOS 系统 OCR"
 }
 
-fn system_ocr_kind() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "builtin-macos-vision-ocr"
-    } else {
-        "builtin-windows-ocr"
-    }
-}
-
-/// 内置系统 OCR：Windows 使用 WinRT，macOS 使用 Vision，无用户配置项。
+#[cfg(target_os = "macos")]
 pub fn system_ocr_profile() -> ProviderProfile {
     ProviderProfile {
-        id: SYSTEM_OCR_PROVIDER_ID.to_string(),
-        kind: system_ocr_kind().to_string(),
-        display_name: system_ocr_display_name().to_string(),
-        auth_kind: "none".to_string(),
-        capabilities: vec!["ocr".to_string()],
+        keep_loaded: false,
+        id: SYSTEM_OCR_PROVIDER_ID.into(),
+        kind: "builtin-macos-vision-ocr".into(),
+        display_name: system_ocr_display_name().into(),
+        auth_kind: "none".into(),
+        capabilities: vec!["ocr".into()],
+        enabled: true,
+        config: json!({}),
+        config_fields: vec![],
+        actions: vec![],
+    }
+}
+
+pub fn ppocr_profile() -> ProviderProfile {
+    ProviderProfile {
+        keep_loaded: false,
+        id: PPOCR_PROVIDER_ID.into(),
+        kind: "builtin-ppocr".into(),
+        display_name: "内置 PP-OCRv6 Tiny".into(),
+        auth_kind: "none".into(),
+        capabilities: vec!["ocr".into()],
         enabled: true,
         config: json!({}),
         config_fields: vec![],
@@ -461,6 +494,7 @@ pub fn system_ocr_profile() -> ProviderProfile {
 
 pub fn apple_speech_profile() -> ProviderProfile {
     ProviderProfile {
+        keep_loaded: false,
         id: apple_speech::PROVIDER_ID.to_string(),
         kind: apple_speech::PROVIDER_KIND.to_string(),
         display_name: "Apple 系统本地识别".to_string(),
@@ -490,7 +524,9 @@ pub fn builtin_profiles() -> Vec<ProviderProfile> {
         volcengine_profile(),
         siliconflow_profile(),
         groq_llm_profile(),
+        #[cfg(target_os = "macos")]
         system_ocr_profile(),
+        ppocr_profile(),
         apple_speech_profile(),
     ]
 }
@@ -571,8 +607,28 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     let _ = set_llm_models(&mut profile.config, &models);
 }
 
+/// 把还停在 Groq 旧默认模型上的配置迁移到新默认模型。
+///
+/// 迁移只能发生一次。`normalize_settings` 在每次供应商配置改动时都会跑，而形状守卫
+/// （模型列表恰好等于单个旧默认项）分不出「从没改过的旧默认」和「用户亲自选回去的
+/// 旧默认」：后者每次都会被静默改写，用户根本选不上这个模型。所以无论本次是否真的
+/// 改了东西，都给 Groq 配置盖上迁移标记，之后不再介入。
 fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
-    if profile.id != GROQ_LLM_PROVIDER_ID
+    if profile.id != GROQ_LLM_PROVIDER_ID {
+        return;
+    }
+    if !profile.config.is_object() {
+        profile.config = json!({});
+    }
+    let already_migrated = profile
+        .config
+        .get(GROQ_DEFAULT_MODEL_MIGRATED_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(config) = profile.config.as_object_mut() {
+        config.insert(GROQ_DEFAULT_MODEL_MIGRATED_KEY.to_string(), json!(true));
+    }
+    if already_migrated
         || profile.config.get("model").and_then(Value::as_str)
             != Some(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)
     {
@@ -591,7 +647,29 @@ fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
     );
 }
 
+/// id 是 profile 的唯一标识。保留首项的完整配置与顺序，与 find_profile 和配置更新一致；
+/// 不把后续副本的字段补回首项，避免恢复已被用户清空的旧设置。凭据由独立凭据库管理。
+pub(crate) fn deduplicate_profiles(settings: &mut ProviderSettings) {
+    let mut seen = std::collections::HashSet::new();
+    settings
+        .profiles
+        .retain(|profile| seen.insert(profile.id.clone()));
+}
+
 pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
+    deduplicate_profiles(&mut settings);
+    #[cfg(windows)]
+    {
+        settings.profiles.retain(|profile| {
+            profile.id != SYSTEM_OCR_PROVIDER_ID && profile.kind != "builtin-windows-ocr"
+        });
+        if matches!(
+            settings.defaults.ocr.as_str(),
+            "system-ocr" | "system" | "builtin-windows-ocr"
+        ) {
+            settings.defaults.ocr = PPOCR_PROVIDER_ID.into();
+        }
+    }
     let migrate_legacy_llm_default =
         settings.defaults.llm.is_empty() || settings.defaults.llm == BAILIAN_PROVIDER_ID;
     for builtin in builtin_profiles() {
@@ -637,6 +715,9 @@ fn valid_or_fallback(settings: &ProviderSettings, provider_id: &str, capability:
 }
 
 fn fallback_provider_for(settings: &ProviderSettings, capability: &str) -> String {
+    if capability == "ocr" && has_capability(settings, default_ocr_provider_id(), capability) {
+        return default_ocr_provider_id().into();
+    }
     if capability == "llm" && has_capability(settings, GROQ_LLM_PROVIDER_ID, capability) {
         return GROQ_LLM_PROVIDER_ID.to_string();
     }
@@ -710,15 +791,118 @@ mod tests {
     }"#;
 
     #[test]
-    fn system_ocr_profile_matches_current_platform() {
-        let profile = system_ocr_profile();
-        if cfg!(target_os = "macos") {
-            assert_eq!(profile.display_name, "macOS 系统 OCR");
-            assert_eq!(profile.kind, "builtin-macos-vision-ocr");
-        } else {
-            assert_eq!(profile.display_name, "Windows 系统 OCR");
-            assert_eq!(profile.kind, "builtin-windows-ocr");
-        }
+    fn provider_id_duplicates_keep_first_profile_config_and_valid_defaults() {
+        let settings: ProviderSettings =
+            serde_json::from_str(include_str!("fixtures/duplicate-profiles.json")).unwrap();
+        assert_eq!(settings.profiles.len(), 11);
+        let expected_defaults = serde_json::to_value(&settings.defaults).unwrap();
+        let expected_local = serde_json::to_value(settings.profiles.last().unwrap()).unwrap();
+        let normalized = normalize_settings(settings);
+        let ids = normalized
+            .profiles
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "bailian",
+                "volcengine",
+                "siliconflow",
+                "llm-groq",
+                "apple-speech",
+                "local-ppocr",
+                "local-funasr-nano",
+                #[cfg(target_os = "macos")]
+                "system-ocr"
+            ]
+        );
+        let first = find_profile(&normalized, BAILIAN_PROVIDER_ID).unwrap();
+        assert_eq!(first.config["languageHints"], json!(["zh"]));
+        assert_eq!(
+            first.config["vocabularyIds"]["fun-asr-realtime"],
+            "fixture-vocabulary"
+        );
+        assert_eq!(first.config["semanticPunctuationEnabled"], true);
+        assert!(first.config.get("staleOnly").is_none());
+        assert_eq!(
+            serde_json::to_value(&normalized.defaults).unwrap(),
+            expected_defaults
+        );
+        assert_eq!(
+            serde_json::to_value(find_profile(&normalized, "local-funasr-nano").unwrap()).unwrap(),
+            expected_local
+        );
+        let snapshot = serde_json::to_value(&normalized).unwrap();
+        assert_eq!(
+            serde_json::to_value(normalize_settings(normalized)).unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn provider_id_duplicates_preserve_unknown_profile_and_repair_invalid_defaults() {
+        let mut settings = ProviderSettings::default();
+        let mut first = bailian_profile();
+        first.id = "custom-local".into();
+        first.kind = "model-pack:custom-local".into();
+        first.capabilities = vec!["asr".into()];
+        first.keep_loaded = true;
+        first.enabled = false;
+        first.config = json!({"sampleRate": 16000});
+        let mut duplicate = first.clone();
+        duplicate.keep_loaded = false;
+        duplicate.enabled = true;
+        duplicate.config = json!({"sampleRate": 8000});
+        let expected = serde_json::to_value(&first).unwrap();
+        settings.profiles.extend([first, duplicate]);
+        settings.defaults.asr = "custom-local".into();
+        let normalized = normalize_settings(settings);
+        assert_eq!(
+            normalized
+                .profiles
+                .iter()
+                .filter(|p| p.id == "custom-local")
+                .count(),
+            1
+        );
+        assert_eq!(
+            serde_json::to_value(find_profile(&normalized, "custom-local").unwrap()).unwrap(),
+            expected
+        );
+        assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
+    }
+
+    #[test]
+    fn builtin_ocr_profiles_match_current_platform() {
+        let settings = normalize_settings(ProviderSettings::default());
+        assert!(has_capability(&settings, PPOCR_PROVIDER_ID, "ocr"));
+        assert_eq!(
+            has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(settings.defaults.ocr, default_ocr_provider_id());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_legacy_system_provider_migrates_to_builtin_ppocr() {
+        let mut settings = ProviderSettings::default();
+        let mut old = ppocr_profile();
+        old.id = SYSTEM_OCR_PROVIDER_ID.into();
+        old.kind = "builtin-windows-ocr".into();
+        settings.profiles.push(old);
+        settings.defaults.ocr = SYSTEM_OCR_PROVIDER_ID.into();
+        let normalized = normalize_settings(settings);
+        assert_eq!(normalized.defaults.ocr, PPOCR_PROVIDER_ID);
+        assert!(!normalized
+            .profiles
+            .iter()
+            .any(|profile| profile.id == SYSTEM_OCR_PROVIDER_ID));
+        assert_eq!(
+            normalize_settings(normalized).defaults.ocr,
+            PPOCR_PROVIDER_ID
+        );
     }
 
     #[test]
@@ -750,13 +934,14 @@ mod tests {
         assert_eq!(normalized.defaults.asr, BAILIAN_PROVIDER_ID);
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
-        // 旧 JSON 没有 ocr 默认值：normalize 后自动落到内置系统 OCR。
-        assert_eq!(normalized.defaults.ocr, SYSTEM_OCR_PROVIDER_ID);
+        // 旧 JSON 没有 ocr 默认值：normalize 后自动落到当前平台默认 OCR。
+        assert_eq!(normalized.defaults.ocr, default_ocr_provider_id());
     }
 
     #[test]
     fn malicious_manifest_cannot_downgrade_secret_fields_exposed_to_webview() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "malicious".into(),
             kind: "plugin:malicious".into(),
             display_name: "Malicious".into(),
@@ -796,11 +981,12 @@ mod tests {
         let mut settings = normalize_settings(ProviderSettings::default());
         assert_eq!(
             default_provider_id(&settings, "ocr"),
-            SYSTEM_OCR_PROVIDER_ID
+            default_ocr_provider_id()
         );
-        assert!(has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"));
+        assert!(has_capability(&settings, default_ocr_provider_id(), "ocr"));
 
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "plugin-ocr".to_string(),
             kind: "plugin:plugin-ocr".to_string(),
             display_name: "插件 OCR".to_string(),
@@ -888,6 +1074,78 @@ mod tests {
         );
     }
 
+    /// 用户亲自选回旧默认模型时，不得再被静默改写。
+    ///
+    /// 迁移以前只有形状守卫（模型列表恰好等于单个旧默认项），而 `normalize_settings`
+    /// 每次供应商配置改动都会跑：只要用户把模型列表设成只含 openai/gpt-oss-20b，
+    /// 下一次保存就被改回新默认模型，根本选不上。
+    #[test]
+    fn the_old_groq_default_is_migrated_only_once() {
+        let mut settings = ProviderSettings::default();
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        groq.config = json!({
+            "model": PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "models": [LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)]
+        });
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
+            GROQ_DEFAULT_LLM_MODEL_ID,
+            "从未改过的旧默认应该迁移一次"
+        );
+
+        // 用户重新选回旧模型，并把模型列表也改成只剩它。
+        let mut settings = settings;
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        if let Some(config) = groq.config.as_object_mut() {
+            config.insert("model".into(), json!(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID));
+        }
+        let _ = set_llm_models(
+            &mut groq.config,
+            &[LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)],
+        );
+
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
+            PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID,
+            "迁移过一次之后不得再介入用户的选择"
+        );
+    }
+
+    /// 从来没有旧默认模型的新装配置，同样不会被后来的一次迁移抓住。
+    #[test]
+    fn a_fresh_install_that_later_picks_the_old_model_keeps_it() {
+        let settings = normalize_settings(ProviderSettings::default());
+        let mut settings = settings;
+        let groq = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        if let Some(config) = groq.config.as_object_mut() {
+            config.insert("model".into(), json!(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID));
+        }
+        let _ = set_llm_models(
+            &mut groq.config,
+            &[LlmModelConfig::manual(PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID)],
+        );
+
+        let settings = normalize_settings(settings);
+        assert_eq!(
+            find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap().config["model"],
+            PREVIOUS_GROQ_DEFAULT_LLM_MODEL_ID
+        );
+    }
+
     #[test]
     fn p0_asr_profiles_use_stable_ids_and_expected_credential_fields() {
         let settings = ProviderSettings::default();
@@ -913,6 +1171,7 @@ mod tests {
     fn normalize_settings_keeps_unknown_profiles() {
         let mut settings = ProviderSettings::default();
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "future-llm".to_string(),
             kind: "future-llm-kind".to_string(),
             display_name: "未来供应商".to_string(),
@@ -964,6 +1223,7 @@ mod tests {
     fn disabling_provider_excludes_it_and_restores_a_valid_default() {
         let mut settings = ProviderSettings::default();
         settings.profiles.push(ProviderProfile {
+            keep_loaded: false,
             id: "plugin-provider".to_string(),
             kind: "plugin:plugin-provider".to_string(),
             display_name: "插件供应商".to_string(),

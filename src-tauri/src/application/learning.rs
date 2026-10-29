@@ -335,15 +335,11 @@ fn classify_correction(before: &str, after: &str) -> Classification {
     }
 }
 
-pub(crate) fn observation_enabled(state: &crate::state::RuntimeState) -> bool {
-    state.app_settings.lock().ok().and_then(|settings| {
-        settings
-            .history_prefs
-            .get("finalDraftObservationEnabled")
-            .and_then(Value::as_bool)
-    }) == Some(true)
-}
-
+/// 注意：本模块这几个开关读取函数都会 `lock()` `state.app_settings`，
+/// 调用方不得持有该锁的守卫——`std::sync::Mutex` 非可重入，同线程二次加锁会自死锁
+/// 并永久占住这把锁，导致此后所有读应用配置的路径连锁挂死。需要在已持锁的上下文里
+/// 判断时，直接从手上的 `history_prefs` 读对应字段
+/// （范例见 `final_draft::observation_allowed_for`）。
 fn learning_enabled(state: &crate::state::RuntimeState) -> bool {
     state.app_settings.lock().ok().and_then(|settings| {
         settings
@@ -876,7 +872,7 @@ pub(crate) fn record_correction(
     let classification = classify_correction(before, after);
     let state = app.state::<crate::state::RuntimeState>();
     let enabled = learning_enabled(&state);
-    let connection = crate::application::history::open(app)?;
+    let connection = crate::application::history::open_for_write(app)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始学习证据事务失败：{error}"))?;
@@ -1134,7 +1130,7 @@ pub(crate) fn record_rule_applications(
     if history_id.is_empty() || rule_ids.is_empty() {
         return Ok(());
     }
-    let connection = crate::application::history::open(app)?;
+    let connection = crate::application::history::open_for_write(app)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始记录学习规则应用失败：{error}"))?;
@@ -1183,7 +1179,7 @@ pub(crate) fn record_negative_feedback(
     history_id: &str,
     final_text: &str,
 ) -> Result<(), String> {
-    let connection = crate::application::history::open(app)?;
+    let connection = crate::application::history::open_for_write(app)?;
     if record_negative_feedback_with_connection(&connection, history_id, final_text)? {
         refresh_cache(app, &connection)?;
     }
@@ -1482,7 +1478,7 @@ pub(crate) fn confirm_history_learning(
 
 #[tauri::command]
 pub(crate) fn reject_history_learning(app: AppHandle, id: String) -> Result<(), String> {
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let pairs = pairs_for_history(&connection, &id)?;
     connection
         .execute(
@@ -1510,7 +1506,7 @@ pub(crate) fn set_learning_rule_scope(
     if !matches!(scope.as_str(), "app" | "global") {
         return Err("学习规则作用域无效".into());
     }
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let rule = connection
         .query_row(
             "SELECT pair_key, app_name, status FROM correction_rules WHERE id = ?1",
@@ -1573,7 +1569,7 @@ pub(crate) fn set_learning_rule_scope(
 
 #[tauri::command]
 pub(crate) fn delete_learning_rule(app: AppHandle, id: String) -> Result<(), String> {
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let target = connection
         .query_row(
             "SELECT pair_key, app_name, scope FROM correction_rules WHERE id = ?1",
@@ -1622,7 +1618,7 @@ pub(crate) fn set_learning_rule_enabled(
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let target = connection
         .query_row(
             "SELECT pair_key, scope, status FROM correction_rules WHERE id = ?1",
@@ -1765,7 +1761,7 @@ pub(crate) async fn generate_preference_summary(
     if !provider_is_local(&state, &provider_id) && !allow_cloud {
         return Err("当前模型需要联网；请明确确认本次允许发送脱敏的局部学习样本".into());
     }
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let app_name = scope.strip_prefix("app:").unwrap_or("");
     let (sample_count, entry_count): (i64, i64) = connection
         .query_row(
@@ -1861,7 +1857,7 @@ pub(crate) async fn generate_preference_summary(
 
 #[tauri::command]
 pub(crate) fn confirm_preference_summary(app: AppHandle, id: String) -> Result<(), String> {
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     let target = connection
         .query_row(
             "SELECT scope, app_name FROM preference_profiles WHERE id = ?1 AND status = 'draft'",
@@ -1897,7 +1893,7 @@ pub(crate) fn confirm_preference_summary(app: AppHandle, id: String) -> Result<(
 
 #[tauri::command]
 pub(crate) fn clear_learning_memory(app: AppHandle) -> Result<(), String> {
-    let connection = crate::application::history::open(&app)?;
+    let connection = crate::application::history::open_for_write(&app)?;
     connection
         .execute_batch(
             "DELETE FROM history_rule_applications;

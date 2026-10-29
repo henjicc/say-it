@@ -326,7 +326,7 @@ pub(crate) fn record_usage(
         return Ok(());
     }
     let (output_chars, saved_ms) = output_metrics(output, spoken_duration_ms);
-    open(app)?.execute(
+    open_for_write(app)?.execute(
         "INSERT INTO usage_totals (id, successful_actions, output_chars, spoken_duration_ms, estimated_time_saved_ms)
          VALUES (1, 1, ?1, ?2, ?3)
          ON CONFLICT(id) DO UPDATE SET
@@ -356,13 +356,30 @@ pub(crate) fn get_usage_summary(app: AppHandle) -> Result<UsageSummary, String> 
 
 #[tauri::command]
 pub(crate) fn clear_usage_summary(app: AppHandle) -> Result<(), String> {
-    open(&app)?
+    open_for_write(&app)?
         .execute("DELETE FROM usage_totals WHERE id = 1", [])
         .map_err(|error| format!("清空本地使用统计失败：{error}"))?;
     let _ = app.emit(HISTORY_EVENT, serde_json::json!({"kind":"usageCleared"}));
     Ok(())
 }
 
+/// 写入用的数据库入口：迁移期间一律拒绝。
+///
+/// 暂停标志曾经只在 record_or_update 与 update_result 两处检查，而同一个库还有
+/// 用量统计、文本修正、删除、清空、过期清理等近十个写入口没有守卫。它们在迁移
+/// 过程中照常提交并向前端 emit 成功事件，可这些提交落在 checkpoint 之后新生成的
+/// -wal 里，不在复制清单内，随后连同旧目录一起被删——用户看到「已修正/已删除/
+/// 已清空」，重启后全部复原，且全程没有任何错误提示。
+///
+/// 所以守卫收敛到这一个入口：凡是要写库的路径都必须走它，只读路径继续用 `open`。
+pub(crate) fn open_for_write(app: &AppHandle) -> Result<Connection, String> {
+    if WRITES_PAUSED.load(Ordering::Acquire) {
+        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
+    }
+    open(app)
+}
+
+/// 只读入口。迁移期间仍可读，因此**不要**用它写库。
 pub(crate) fn open(app: &AppHandle) -> Result<Connection, String> {
     let path = history_path(app)?;
     match open_path(&path) {
@@ -441,6 +458,8 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
         })
         .map(|value| value.clamp(1, 3650) as u32)
         .unwrap_or(DEFAULT_RETENTION_DAYS);
+    // 这里刻意用 `open` 而不是 `open_for_write`：启动期的建表/迁移/中断恢复必须
+    // 无条件执行，不能被迁移暂停标志挡住（此时也不可能正处于迁移中）。
     let connection = open(app)?;
     migrate_provider_ids(&connection)?;
     recover_interrupted_entries(&connection)?;
@@ -490,7 +509,7 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
             if let Err(error) = cleanup_expired(&app, days) {
                 eprintln!("[history] 每日清理失败：{error}");
             }
-            if let Ok(connection) = open(&app) {
+            if let Ok(connection) = open_for_write(&app) {
                 let _ = crate::application::learning::refresh_statistics(&connection);
                 if crate::application::learning::cleanup_stale_rules(&connection, memory_days)
                     .is_ok()
@@ -535,18 +554,27 @@ pub(crate) fn record(app: &AppHandle, entry: NewHistoryEntry) -> Result<String, 
     record_or_update(app, None, entry)
 }
 
+fn validate_entry_content(entry: &NewHistoryEntry) -> Result<(), String> {
+    let has_text = !entry.source_text.trim().is_empty() || !entry.output_text.trim().is_empty();
+    let has_failure = entry.status == "failed"
+        && entry
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty());
+    if has_text || has_failure {
+        Ok(())
+    } else {
+        Err("空内容不会写入历史".into())
+    }
+}
+
 /// 后处理只更新同一条记录的结果，原文与创建时间始终保留；已删除的记录不会被复活。
 pub(crate) fn record_or_update(
     app: &AppHandle,
     id: Option<&str>,
     entry: NewHistoryEntry,
 ) -> Result<String, String> {
-    if WRITES_PAUSED.load(Ordering::Acquire) {
-        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
-    }
-    if entry.source_text.trim().is_empty() && entry.output_text.trim().is_empty() {
-        return Err("空内容不会写入历史".into());
-    }
+    validate_entry_content(&entry)?;
     let prefs = app
         .state::<crate::state::RuntimeState>()
         .app_settings
@@ -575,7 +603,7 @@ pub(crate) fn record_or_update(
             entry.app_name.clone(),
         )
     });
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| format!("开始历史写入事务失败：{error}"))?;
@@ -679,10 +707,7 @@ pub(crate) fn update_result(
     if id.is_empty() {
         return Ok(());
     }
-    if WRITES_PAUSED.load(Ordering::Acquire) {
-        return Err("数据目录迁移后历史写入已暂停，请重启应用".into());
-    }
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let identity = connection
         .query_row(
             "SELECT app_name, process_name FROM history_entries WHERE id = ?1",
@@ -882,7 +907,7 @@ pub(crate) fn confirm_history_final_text(
     if final_text.trim().is_empty() {
         return Err("修正后的文本不能为空".into());
     }
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let current = get_entry(&connection, &id)?;
     if matches!(current.status.as_str(), "recognized" | "processed") {
         return Err("本次任务仍在处理，请完成后再修正；现在可以复制原文".into());
@@ -951,7 +976,7 @@ pub(crate) fn discard_history_final_text(
     app: AppHandle,
     id: String,
 ) -> Result<HistoryEntry, String> {
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let transaction = connection
         .unchecked_transaction()
@@ -1005,7 +1030,7 @@ pub(crate) fn record_observed_final_text(
     if final_text.trim().is_empty() {
         return Err("空的最终草稿不会保存".into());
     }
-    let connection = open(app)?;
+    let connection = open_for_write(app)?;
     let target = connection
         .query_row(
             "SELECT status, task_kind FROM history_entries WHERE id = ?1",
@@ -1113,11 +1138,30 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
     if injection_text.trim().is_empty() {
         return Err("这条记录没有可重试注入的结果".into());
     }
+    let mut hidden = false;
     if let Some(window) = app.get_webview_window("main") {
         window
             .hide()
             .map_err(|error| format!("隐藏主窗口失败：{error}"))?;
+        hidden = true;
     }
+    let result = inject_into_activation_target(&entry, injection_text).await;
+    // 隐藏主窗口只是为了把焦点让给目标应用，**任何**失败路径都必须把窗口还回来：
+    // 否则错误提示会被 setMessage 到一个用户根本看不见的窗口里，表现为「点了重试
+    // 什么都没发生」。所以失败判定全部收拢到 `inject_into_activation_target` 里，
+    // 隐藏之后这里不再出现第二个失败出口。
+    if hidden && result.is_err() {
+        let _ = crate::desktop::ensure_main_window(&app);
+    }
+    result
+}
+
+/// 把文本注入当前激活窗口，并确认它确实是这条历史记录的来源应用。
+/// 调用方已经隐藏了主窗口；本函数不碰窗口，只负责成败。
+async fn inject_into_activation_target(
+    entry: &HistoryEntry,
+    injection_text: String,
+) -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let target = crate::active_app_context::activation_target()
         .ok_or_else(|| "隐藏主窗口后未找到可注入的目标窗口".to_string())?;
@@ -1128,7 +1172,6 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
             .eq_ignore_ascii_case(&entry.process_name)
         || identity.app_name.eq_ignore_ascii_case(&entry.app_name);
     if !matches {
-        let _ = crate::desktop::ensure_main_window(&app);
         return Err(format!(
             "当前目标是 {}，与历史记录来源 {} 不一致，已取消注入",
             identity.app_name,
@@ -1145,7 +1188,7 @@ pub(crate) async fn retry_history_injection(app: AppHandle, id: String) -> Resul
 #[tauri::command]
 pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), String> {
     crate::application::final_draft::cancel_history(&app, &id);
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     let pairs = crate::application::learning::pairs_for_history(&connection, &id)?;
     let changed = connection
         .execute("DELETE FROM history_entries WHERE id = ?1", [&id])
@@ -1161,7 +1204,7 @@ pub(crate) fn delete_history_entry(app: AppHandle, id: String) -> Result<(), Str
 #[tauri::command]
 pub(crate) fn clear_history(app: AppHandle) -> Result<(), String> {
     crate::application::final_draft::cancel_current(&app, "historyCleared");
-    let connection = open(&app)?;
+    let connection = open_for_write(&app)?;
     connection
         .execute_batch(
             "DELETE FROM history_rule_applications;
@@ -1184,7 +1227,7 @@ pub(crate) fn open_history_window(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) fn cleanup_expired(app: &AppHandle, retention_days: u32) -> Result<usize, String> {
-    cleanup_expired_with_connection(&open(app)?, retention_days)
+    cleanup_expired_with_connection(&open_for_write(app)?, retention_days)
 }
 
 fn cleanup_expired_with_connection(
@@ -1217,6 +1260,37 @@ pub(crate) fn resume_after_failed_data_root_migration() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 重试注入先隐藏主窗口，所以隐藏之后不允许再有第二个失败出口。
+    ///
+    /// 以前三条失败路径里有两条（拿不到激活目标、注入本身失败）直接 `return Err`，
+    /// 不恢复窗口：错误提示被 setMessage 到一个已经看不见的窗口里，用户只看到
+    /// 「点了重试什么都没发生」。真跑这条路径需要真实窗口与前台应用，
+    /// 只能做源码契约校验。
+    #[test]
+    fn retry_injection_has_a_single_failure_exit_after_hiding_the_window() {
+        // 归一化行尾：按 core.autocrlf 检出时工作区是 CRLF，含 \n 的切片会失配。
+        let source = include_str!("history.rs").replace("\r\n", "\n");
+        let body = &source[..source
+            .find("#[cfg(test)]")
+            .expect("history.rs 必须有测试模块标记")];
+        let start = body
+            .find("pub(crate) async fn retry_history_injection")
+            .expect("重试注入命令必须仍然存在");
+        let command = &body[start..];
+        let command = &command[..command.find("\n}\n").expect("函数体未闭合")];
+
+        let hide = command.find(".hide()").expect("重试注入必须先隐藏主窗口");
+        let after_hide = &command[hide..];
+        assert!(
+            !after_hide.contains("return Err("),
+            "隐藏主窗口之后不得再直接 return Err，失败必须收拢到统一的恢复出口"
+        );
+        assert!(
+            after_hide.contains("result.is_err()") && after_hide.contains("ensure_main_window"),
+            "失败时必须把主窗口恢复出来"
+        );
+    }
 
     #[test]
     fn usage_metrics_ignore_whitespace_and_never_report_negative_savings() {
@@ -1413,6 +1487,30 @@ mod tests {
             error: None,
             duration_ms: 12,
         }
+    }
+
+    #[test]
+    fn empty_recognition_failure_retains_error_but_empty_success_is_rejected() {
+        let mut value = entry("");
+        assert!(validate_entry_content(&value).is_err());
+        value.status = "failed".into();
+        assert!(validate_entry_content(&value).is_err());
+        value.error = Some("   ".into());
+        assert!(validate_entry_content(&value).is_err());
+        value.error = Some("实时识别失败：invalid_response\n完整错误详情".into());
+        assert!(validate_entry_content(&value).is_ok());
+        let path =
+            std::env::temp_dir().join(format!("sayit-empty-failure-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        insert_entry(&connection, "failed-before-text", &value).unwrap();
+        let saved = get_entry(&connection, "failed-before-text").unwrap();
+        assert!(saved.source_text.is_empty());
+        assert!(saved.output_text.is_empty());
+        assert_eq!(saved.status, "failed");
+        assert_eq!(saved.error, value.error);
+        assert_eq!(saved.model_id, value.model_id);
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

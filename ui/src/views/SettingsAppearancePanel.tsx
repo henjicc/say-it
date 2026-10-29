@@ -1,3 +1,4 @@
+import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -46,8 +47,7 @@ function ThemeColorField({
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-[var(--color-fg)]">{label}</p>
-            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">{description}</p>
+            <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{label}</HelpLabel></p>
           </div>
           <span className="shrink-0 font-mono text-xs text-[var(--color-fg-subtle)]">{value}</span>
         </div>
@@ -62,7 +62,7 @@ function ThemeColorField({
           className={cn("mt-2 font-mono", invalid && "border-[var(--color-err)]")}
           spellCheck={false}
         />
-        {invalid && <p className="mt-1 text-xs text-[var(--color-err)]">请输入 3 或 6 位 Hex 颜色。</p>}
+        {invalid && <p className="mt-1 text-xs text-[var(--color-err)]">请输入 3 位或 6 位颜色代码，例如 #369 或 #336699。</p>}
       </div>
     </div>
   );
@@ -81,8 +81,7 @@ export function SettingsAppearancePanel() {
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_18rem]">
         <div className="grid gap-3">
           <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
-            <p className="text-sm font-medium text-[var(--color-fg)]">整体色调</p>
-            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">切换界面基础明暗。</p>
+            <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="选择深色或浅色界面。">整体色调</HelpLabel></p>
             <div className="mt-3 grid grid-cols-2 gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-1">
               {[
                 { value: "dark", label: "暗色调" },
@@ -116,8 +115,7 @@ export function SettingsAppearancePanel() {
           />
 
           <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-3">
-            <p className="text-sm font-medium text-[var(--color-fg)]">背景色</p>
-            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">优先保证清晰的背景模糊，也可使用独立背景基色。</p>
+            <p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content="使用柔和背景，或自选背景颜色。">背景色</HelpLabel></p>
             <div className="mt-3 grid grid-cols-2 gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-bg)] p-1">
               {[
                 { value: "followAccent", label: "柔和背景" },

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SettingsSection } from "@/components/ui/SettingsSection";
+import { useConfirm } from "@/components/ui/useConfirm";
 import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage, type LearningOverview, type LearningRule } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useUiStore } from "@/store/useUiStore";
@@ -39,6 +40,7 @@ function primaryText(entry: HistoryEntry) {
 }
 
 export function HistoryView() {
+  const { confirm, dialog } = useConfirm();
   const [page, setPage] = useState<HistoryPage>({ items: [], total: 0, recoveryNotice: null });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
@@ -163,7 +165,15 @@ export function HistoryView() {
   }
 
   async function removeRule(rule: LearningRule) {
-    if (!window.confirm(`确定删除学习规则“${rule.beforeText} → ${rule.afterText}”吗？`)) return;
+    if (
+      !(await confirm({
+        title: "确认删除学习规则",
+        message: `确定删除学习规则“${rule.beforeText} → ${rule.afterText}”吗？`,
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.deleteLearningRule, { id: rule.id });
       setMessage("学习规则已删除");
@@ -201,7 +211,17 @@ export function HistoryView() {
   }
 
   async function generateSummary() {
-    if (!window.confirm("将向当前默认大语言模型发送最多 30 条脱敏的局部修改样本，用于生成表达偏好草稿。是否继续？")) return;
+    if (
+      !(await confirm({
+        title: "生成表达偏好草稿",
+        message:
+          "将向当前默认大语言模型发送最多 30 条脱敏的局部修改样本，用于生成表达偏好草稿。是否继续？",
+        confirmLabel: "发送并生成",
+        danger: false,
+      }))
+    ) {
+      return;
+    }
     try {
       setMessage("正在生成表达偏好草稿…");
       await cmd(CMD.generatePreferenceSummary, { scope: "global", providerId: "default", allowCloud: true });
@@ -228,7 +248,15 @@ export function HistoryView() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm("确定删除这条本地历史吗？")) return;
+    if (
+      !(await confirm({
+        title: "确认删除历史记录",
+        message: "确定删除这条本地历史吗？删除后不可恢复。",
+        confirmLabel: "删除",
+      }))
+    ) {
+      return;
+    }
     try {
       await cmd(CMD.deleteHistoryEntry, { id });
       setMessage("记录已删除");
@@ -298,8 +326,7 @@ export function HistoryView() {
           </div>
         )}
       </SettingsSection>
-      <SettingsSection title="查找记录">
-        <p className="text-xs text-[var(--color-fg-subtle)]">按正文、应用、结果和任务类型筛选。</p>
+      <SettingsSection title="查找记录" description="按文字内容、软件、处理结果和任务类型筛选。">
         <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_180px_180px]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-fg-faint)]" aria-hidden />
@@ -329,7 +356,7 @@ export function HistoryView() {
               <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} aria-label="修正结果" autoFocus />
             ) : (
               <div>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{primaryText(entry)}</p>
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-fg)]">{primaryText(entry) || "未获得识别文字"}</p>
                 {entry.finalText && entry.diffSegments.length > 0 && (
                   <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)] p-3 text-sm leading-6" aria-label="最终草稿差异">
                     {entry.diffSegments.map((segment, index) => (
@@ -346,7 +373,7 @@ export function HistoryView() {
                 )}
               </div>
             )}
-            {entry.error && <p className="mt-2 text-xs text-[var(--color-err)]">{entry.error}</p>}
+            {entry.error && <p className="mt-2 whitespace-pre-wrap break-words text-xs text-[var(--color-err)]">{entry.error}</p>}
             {entry.finalText && entry.outputText && entry.finalText !== entry.outputText && (
               <details className="mt-3 text-sm text-[var(--color-fg-subtle)]">
                 <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">系统输出</summary>
@@ -361,12 +388,13 @@ export function HistoryView() {
               </details>
             )}
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+              <Button size="sm" disabled={!primaryText(entry)} onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+              {entry.error && <Button size="sm" onClick={() => void copy(entry.error!)}>复制错误</Button>}
               <Button size="sm" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
               {editing === entry.id ? <>
                 <Button size="sm" variant="primary" onClick={() => void save(entry)}><Check className="h-3.5 w-3.5" aria-hidden />保存</Button>
                 <Button size="sm" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
-              </> : <Button size="sm" disabled={entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+              </> : <Button size="sm" disabled={!primaryText(entry) || entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
               {entry.finalTextConfidence === "medium" && <>
                 <Button size="sm" variant="primary" onClick={() => void confirmObserved(entry)}><Check className="h-3.5 w-3.5" aria-hidden />确认并学习</Button>
                 <Button size="sm" onClick={() => void discardObserved(entry)}><X className="h-3.5 w-3.5" aria-hidden />忽略</Button>
@@ -388,6 +416,7 @@ export function HistoryView() {
         </div>
       </section>
       {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
+      {dialog}
     </div>
   );
 }

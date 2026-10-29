@@ -14,6 +14,8 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
 const POINTER_FILE: &str = "data-root.json";
+/// 重置数据的标记文件，固定放在默认目录（和指针文件同级），下次启动最早期读取。
+const RESET_MARKER_FILE: &str = "reset-pending.marker";
 
 /// 参与迁移的数据条目白名单。指针文件本身与 WebView2 运行时缓存（`EBWebView`）
 /// 固定留在默认目录：前者是定位新目录的锚点，后者由 WebView2 独占且无法重定位。
@@ -157,6 +159,84 @@ pub(crate) fn restart_app(app: AppHandle) {
     app.restart();
 }
 
+/// 排队一次"重置数据"：只写标记文件后立即重启，真正的删除放到下次启动最早期
+/// （见 `consume_pending_reset`）执行——此时历史数据库、状态文件都还没被任何模块
+/// 打开过，删除不会遇到 Windows 下"文件被占用"的问题。
+///
+/// 只清空 `MIGRATABLE_FILES`/`MIGRATABLE_DIRS`（设置、历史、插件、模型等）；
+/// 凭据库（`credentials/`）和数据根位置指针（`data-root.json`）不受影响。
+#[tauri::command]
+pub(crate) fn request_data_reset(app: AppHandle) -> Result<(), String> {
+    let marker = default_root(&app)?.join(RESET_MARKER_FILE);
+    std::fs::write(&marker, b"").map_err(|error| format!("创建重置标记失败：{error}"))?;
+    app.restart();
+}
+
+/// 本次启动是否消费过重置标记。供 `import_legacy_settings` 判断要不要跳过
+/// 从前端 localStorage 镜像导入——重置刚把后端数据清空，镜像里却仍是重置前的
+/// 旧配置，照常导入会把「恢复到刚安装时的状态」整套撤销。
+static RESET_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn reset_just_consumed() -> bool {
+    RESET_CONSUMED.load(Ordering::Acquire)
+}
+
+/// 在 `.setup()` 最开始调用：如果存在待处理的重置标记，清空当前数据根目录下的
+/// 可迁移数据并删除标记，再继续正常启动流程（后续模块会在空数据根上重新初始化）。
+pub(crate) fn consume_pending_reset(app: &AppHandle) -> Result<(), String> {
+    let marker = default_root(app)?.join(RESET_MARKER_FILE);
+    if !marker.is_file() {
+        return Ok(());
+    }
+    let root = data_root(app)?;
+    let legacy_state_files = crate::persistence::legacy_state_files_to_reset(app)?;
+    RESET_CONSUMED.store(true, Ordering::Release);
+    apply_pending_reset(&marker, &root, &legacy_state_files)
+}
+
+/// `consume_pending_reset` 的可测核心：清空白名单条目与旧 identifier 状态文件，
+/// 然后**无条件**消费标记。
+///
+/// 标记的消费不能取决于删除是否全部成功：`remove_migratable_entries` 是
+/// 「尽力删除 + 汇总失败」语义，只要有一项失败就保留标记的话，下一次启动会把
+/// 用户这期间重新配置的数据再清空一遍，如此反复，且用户完全无从察觉。
+fn apply_pending_reset(
+    marker: &Path,
+    root: &Path,
+    legacy_state_files: &[PathBuf],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Err(error) = remove_migratable_entries(root) {
+        failures.push(error);
+    }
+    for path in legacy_state_files {
+        if path.is_file() {
+            if let Err(error) = std::fs::remove_file(path) {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+    }
+    finish_pending_reset(marker, failures)
+}
+
+/// 无条件消费标记，再把删除阶段攒下的失败项汇报出去。
+///
+/// 顺序是关键：标记的删除**不能**放在 `failures` 的判空之后，否则「有条目删不掉」
+/// 就会让标记留到下次启动，把用户这期间重新配置的数据再清空一遍。
+fn finish_pending_reset(marker: &Path, failures: Vec<String>) -> Result<(), String> {
+    if let Err(error) = std::fs::remove_file(marker) {
+        return Err(format!(
+            "删除重置标记失败：{error}；下次启动会重复清空数据，请手动删除 {}",
+            marker.display()
+        ));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("以下条目未能删除，可手动清理：{}", failures.join("；")))
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn migrate_data_root(
     app: AppHandle,
@@ -223,6 +303,18 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     let default = default_root(app)?;
     let current = data_root(app)?;
 
+    // 上一次迁移尚未重启生效时，绝不能再迁一次。
+    //
+    // `current` 是 OnceLock 缓存的「本次进程生效根目录」，而指针文件已经指向上一次
+    // 的新目录，且旧根目录里的可迁移数据在上次迁移末尾就已被清空。此时再发起迁移，
+    // `collect_migration_plan(&current)` 会在这个空目录上收集到空计划、复制 0 个文件、
+    // 「校验通过」，然后把指针改写到新的空目录——重启后应用变成全新安装状态，真实
+    // 数据留在上一次的目录里，而 UI 不会给出任何指向它的线索。
+    //
+    // 这条路径很容易走到：上次迁移若在「旧数据清理」阶段部分失败，命令会返回 Err，
+    // 用户看到「迁移失败」后非常自然地会再迁一次。
+    ensure_previous_migration_applied(&default, &current)?;
+
     std::fs::create_dir_all(&target).map_err(|error| format!("创建目标目录失败：{error}"))?;
     let canonical_target =
         std::fs::canonicalize(&target).map_err(|error| format!("解析目标目录失败：{error}"))?;
@@ -240,9 +332,23 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     validate_target_contents(&target, target_is_default)?;
     probe_writable(&target)?;
 
-    let plan = collect_migration_plan(&current)?;
-    ensure_free_space(&target, plan.total_bytes)?;
+    // 顺序不能反：`pause_for_data_root_migration` 会先停掉历史写入再做一次
+    // `wal_checkpoint(TRUNCATE)`。若在它之前收集复制清单，checkpoint 之后新生成的
+    // `history.sqlite3-wal` 就不在清单里，而迁移末尾的 `remove_migratable_entries`
+    // 会把旧目录连同这个 wal 一起删掉——落在其中的提交静默丢失。
     crate::application::history::pause_for_data_root_migration(app)?;
+    // 暂停之后的每一条失败路径都必须先恢复写入，否则历史会一直停在暂停态直到重启。
+    let plan = match collect_migration_plan(&current) {
+        Ok(plan) => plan,
+        Err(error) => {
+            crate::application::history::resume_after_failed_data_root_migration();
+            return Err(error);
+        }
+    };
+    if let Err(error) = ensure_free_space(&target, plan.total_bytes) {
+        crate::application::history::resume_after_failed_data_root_migration();
+        return Err(error);
+    }
 
     let app_for_progress = app.clone();
     let mut last_emit = Instant::now();
@@ -282,6 +388,8 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
         }
     }
 
+    crate::providers::local_asr::cache::disable_until_restart()?;
+
     // 旧数据删除失败不回滚迁移（指针已切换），仅提示手动清理。
     if let Err(warning) = remove_migratable_entries(&current) {
         eprintln!("[data-root] 旧数据清理未完全成功：{warning}");
@@ -296,6 +404,19 @@ struct MigrationPlan {
     /// 相对数据根目录的文件相对路径列表。
     files: Vec<PathBuf>,
     total_bytes: u64,
+}
+
+/// 迁移前置校验：指针文件指向的根目录必须就是本次进程生效的根目录。
+///
+/// 两者不一致意味着上一次迁移已经改了指针但还没重启，此时 `current` 是那个已经被
+/// 搬空的旧目录——再迁一次会收集到空计划、复制 0 个文件并「校验通过」，然后把指针
+/// 改写到新的空目录，重启后应用变成全新安装状态。
+fn ensure_previous_migration_applied(default: &Path, current: &Path) -> Result<(), String> {
+    if same_path(&resolve_root_from(default), current) {
+        Ok(())
+    } else {
+        Err("上一次迁移尚未生效，请先重启应用再更改数据目录".into())
+    }
 }
 
 fn collect_migration_plan(source_root: &Path) -> Result<MigrationPlan, String> {
@@ -678,5 +799,92 @@ mod tests {
         std::fs::create_dir_all(target.join("plugins")).unwrap();
         assert!(validate_target_contents(&target, true).is_err());
         std::fs::remove_dir_all(target).unwrap();
+    }
+
+    /// 回归：上一次迁移改了指针但还没重启时，必须拒绝再次迁移。
+    ///
+    /// 此时进程仍在旧根目录，而旧目录的可迁移数据在上次迁移末尾已被清空。再迁一次
+    /// 会在这个空目录上收集到空计划、复制 0 个文件并「校验通过」，然后把指针改写到
+    /// 新的空目录——重启后应用变成全新安装状态，真实数据留在上一次的目录里且 UI
+    /// 不会给出任何指向它的线索。
+    #[test]
+    fn migration_is_refused_until_the_previous_one_takes_effect() {
+        let default = temp_dir("migrate-guard-default");
+        let migrated = temp_dir("migrate-guard-new");
+
+        // 指针缺失：生效目录就是默认目录，允许迁移。
+        assert!(ensure_previous_migration_applied(&default, &default).is_ok());
+
+        // 指针已指向新目录，但本次进程仍在默认目录 —— 必须拒绝。
+        std::fs::write(
+            default.join(POINTER_FILE),
+            serde_json::to_vec(&PointerFile {
+                root: migrated.display().to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let refused = ensure_previous_migration_applied(&default, &default);
+        assert!(refused.is_err(), "指针已切换却未重启时不得再次迁移");
+        assert!(refused.unwrap_err().contains("重启"), "错误信息应当告诉用户去重启");
+
+        // 重启之后：生效目录与指针一致，恢复允许。
+        assert!(ensure_previous_migration_applied(&default, &migrated).is_ok());
+
+        let _ = std::fs::remove_dir_all(&default);
+        let _ = std::fs::remove_dir_all(&migrated);
+    }
+
+    #[test]
+    fn pending_reset_clears_whitelist_legacy_state_and_marker() {
+        let root = temp_dir("reset-ok");
+        seed_source(&root);
+        let marker = root.join(RESET_MARKER_FILE);
+        std::fs::write(&marker, b"").unwrap();
+        let legacy_dir = temp_dir("reset-ok-legacy");
+        let legacy = legacy_dir.join("say-it-state.json");
+        std::fs::write(&legacy, b"{\"old\":true}").unwrap();
+        std::fs::write(legacy.with_extension("json.bak"), b"{\"old\":true}").unwrap();
+
+        apply_pending_reset(
+            &marker,
+            &root,
+            &[legacy.with_extension("json.bak"), legacy.clone()],
+        )
+        .expect("全部删除成功时应当返回 Ok");
+
+        assert!(!root.join("say-it-state.json").exists(), "状态文件应被删除");
+        assert!(!root.join("plugins").exists(), "插件目录应被删除");
+        assert!(!root.join("cues").exists(), "提示音目录应被删除");
+        // 旧 identifier 状态文件必须一并清掉，否则重启后 load_persisted_state
+        // 会回退过去，把改包名之前的配置复活。
+        assert!(!legacy.exists(), "旧 identifier 状态文件应被删除");
+        assert!(
+            !legacy.with_extension("json.bak").exists(),
+            "旧 identifier 备份应被删除"
+        );
+        // 白名单之外的内容不受影响。
+        assert!(root.join(POINTER_FILE).exists(), "指针文件应保留");
+        assert!(root.join("EBWebView/cache.bin").exists(), "WebView 缓存应保留");
+        assert!(!marker.exists(), "标记应被消费");
+    }
+
+    /// 回归：删除条目部分失败时，标记仍必须被消费。
+    /// 否则下一次启动会把用户这期间重新配置的数据再清空一遍，如此反复，
+    /// 而 release 没有控制台，用户完全无从察觉。
+    #[test]
+    fn pending_reset_consumes_marker_even_when_some_entries_fail() {
+        let root = temp_dir("reset-partial");
+        let marker = root.join(RESET_MARKER_FILE);
+        std::fs::write(&marker, b"").unwrap();
+
+        let outcome = finish_pending_reset(&marker, vec!["models: 文件被占用".into()]);
+
+        assert!(outcome.is_err(), "存在删不掉的条目时应当汇报失败");
+        assert!(
+            outcome.unwrap_err().contains("models"),
+            "失败信息应当指出是哪个条目，便于用户手动清理"
+        );
+        assert!(!marker.exists(), "标记必须被消费，不能留到下次启动重复清空");
     }
 }

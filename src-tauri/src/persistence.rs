@@ -209,6 +209,18 @@ fn persisted_state_files_exist(file: &Path) -> bool {
     file.exists() || file.with_extension("json.bak").exists()
 }
 
+/// 「重置数据」需要一并删除的旧 identifier 状态文件（含 `.bak` 备份）。
+///
+/// `load_persisted_state` 在当前数据根没有状态文件时会回退到这些路径（兼容改包名
+/// 之前的老用户），所以重置必须一并清掉它们——否则删空当前状态文件恰好制造出回退
+/// 条件，重启后加载的是改包名之前的那份旧配置，而不是出厂默认。
+pub(crate) fn legacy_state_files_to_reset(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
+    Ok(legacy_state_file_paths(app)?
+        .into_iter()
+        .flat_map(|path| [path.with_extension("json.bak"), path])
+        .collect())
+}
+
 fn migrate_persisted_data(data: &mut PersistedData) {
     if data.schema_version < FOUR_CLICK_DEFAULT_SCHEMA_VERSION
         && data.mouse_gesture.rapid_click_count == 3
@@ -238,6 +250,7 @@ fn migrate_provider_ids(settings: &mut ProviderSettings) {
     if settings.defaults.llm == "funasr" {
         settings.defaults.llm = crate::providers::GROQ_LLM_PROVIDER_ID.into();
     }
+    crate::providers::deduplicate_profiles(settings);
 }
 
 fn migrate_app_provider_ids(settings: &mut crate::application::settings::AppSettings) {
@@ -671,9 +684,16 @@ pub(crate) fn load_persisted_state(
     let Some(source) = source else {
         return Ok(None);
     };
-    let mut data = load_persisted_data_from_path(&source)?;
+    load_normalized_persisted_data(&source, &LocalCredentialStore::default()).map(Some)
+}
+
+fn load_normalized_persisted_data(
+    source: &Path,
+    store: &dyn CredentialStore,
+) -> Result<PersistedData, String> {
+    let mut data = load_persisted_data_from_path(source)?;
     migrate_persisted_data(&mut data);
-    migrate_credentials_and_ids(&source, &mut data, &LocalCredentialStore::default())?;
+    migrate_credentials_and_ids(source, &mut data, store)?;
     crate::application::settings::migrate_loaded_settings(&mut data.app_settings);
     data.providers = normalize_settings(data.providers);
     crate::application::dictation::repair_empty_asr_model(&mut data.app_settings.dictation_prefs);
@@ -681,7 +701,7 @@ pub(crate) fn load_persisted_state(
         &mut data.app_settings,
         &mut data.providers,
     );
-    Ok(Some(data))
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -777,7 +797,7 @@ mod tests {
         assert_eq!(data.schema_version, 1);
         assert!(!data.floating_orb.enabled);
         assert!(data.floating_orb.position.is_none());
-        assert_eq!(data.floating_orb.size_percent, 45);
+        assert_eq!(data.floating_orb.size_percent, 30);
         assert_eq!(data.floating_orb.opacity, 100);
         assert!(!data.floating_orb.glass_enabled);
         assert_eq!(
@@ -885,6 +905,225 @@ mod tests {
         let data = load_persisted_data_from_path(&file).unwrap();
         assert_eq!(data.schema_version, 1);
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provider_id_duplicates_migration_keeps_first_in_both_alias_orders() {
+        for legacy_first in [false, true] {
+            let mut settings = ProviderSettings::default();
+            let mut legacy = crate::providers::bailian_profile();
+            legacy.id = "funasr".into();
+            legacy.kind = "alibabacloud-funasr".into();
+            legacy.config = json!({"languageHints": ["en"]});
+            if legacy_first {
+                settings.profiles.insert(0, legacy);
+            } else {
+                settings.profiles.push(legacy);
+                settings.profiles[0].config = json!({"languageHints": ["zh"]});
+            }
+            settings.defaults.asr = "funasr".into();
+            settings.defaults.translation = "funasr".into();
+            settings.defaults.llm = "funasr".into();
+            migrate_provider_ids(&mut settings);
+            assert_eq!(
+                settings
+                    .profiles
+                    .iter()
+                    .filter(|p| p.id == "bailian")
+                    .count(),
+                1
+            );
+            assert!(!settings.profiles.iter().any(|p| p.id == "funasr"));
+            assert_eq!(
+                settings.profiles[0].config["languageHints"],
+                json!([if legacy_first { "en" } else { "zh" }])
+            );
+            assert_eq!(settings.defaults.asr, "bailian");
+            assert_eq!(settings.defaults.translation, "bailian");
+            assert_eq!(settings.defaults.llm, "llm-groq");
+            let snapshot = serde_json::to_value(&settings).unwrap();
+            migrate_provider_ids(&mut settings);
+            assert_eq!(serde_json::to_value(settings).unwrap(), snapshot);
+        }
+    }
+
+    #[test]
+    fn provider_id_duplicates_load_save_roundtrip_repairs_current_schema_without_vault_changes() {
+        let mut data: PersistedData = serde_json::from_str("{}").unwrap();
+        data.schema_version = CURRENT_STATE_SCHEMA_VERSION;
+        data.providers =
+            serde_json::from_str(include_str!("providers/fixtures/duplicate-profiles.json"))
+                .unwrap();
+        let store = FakeCredentialStore::default();
+        store
+            .set(
+                &CredentialKey::provider("bailian", "apiKey").unwrap(),
+                "fixture-vault-secret",
+            )
+            .unwrap();
+        let credentials = store.values.lock().unwrap().clone();
+        let (dir, file) = migration_file("duplicate-current", &data);
+        let defaults = serde_json::to_value(&data.providers.defaults).unwrap();
+        let expected_profile_count = crate::providers::builtin_profiles().len() + 1;
+        let mut expected = None;
+        for _ in 0..3 {
+            let mut loaded = load_normalized_persisted_data(&file, &store).unwrap();
+            assert_eq!(loaded.schema_version, CURRENT_STATE_SCHEMA_VERSION);
+            assert_eq!(loaded.providers.profiles.len(), expected_profile_count);
+            assert_eq!(
+                loaded
+                    .providers
+                    .profiles
+                    .iter()
+                    .map(|p| &p.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                expected_profile_count
+            );
+            assert_eq!(
+                serde_json::to_value(&loaded.providers.defaults).unwrap(),
+                defaults
+            );
+            assert!(
+                find_profile(&loaded.providers, "local-funasr-nano")
+                    .unwrap()
+                    .keep_loaded
+            );
+            assert_eq!(
+                find_profile(&loaded.providers, "bailian").unwrap().config["languageHints"],
+                json!(["zh"])
+            );
+            let snapshot = serde_json::to_value(&loaded.providers).unwrap();
+            if let Some(expected) = &expected {
+                assert_eq!(&snapshot, expected);
+            } else {
+                expected = Some(snapshot);
+            }
+            // 保存入口也会归一化；备份保留上一次磁盘内容，主文件首次保存即修复。
+            loaded.providers = normalize_settings(loaded.providers);
+            atomic_write_with_backup(&file, &serde_json::to_vec_pretty(&loaded).unwrap()).unwrap();
+            let saved = load_persisted_data_from_path(&file).unwrap();
+            assert_eq!(saved.providers.profiles.len(), expected_profile_count);
+            assert_eq!(
+                saved
+                    .providers
+                    .profiles
+                    .iter()
+                    .filter(|p| p.id == "bailian")
+                    .count(),
+                1
+            );
+            assert!(!fs::read_to_string(&file)
+                .unwrap()
+                .contains("fixture-vault-secret"));
+        }
+        assert_eq!(*store.values.lock().unwrap(), credentials);
+        assert_eq!(*store.reads.lock().unwrap(), 0);
+        assert_eq!(*store.deletes.lock().unwrap(), 0);
+        assert_eq!(
+            load_persisted_data_from_path(&file.with_extension("json.bak"))
+                .unwrap()
+                .providers
+                .profiles
+                .len(),
+            expected_profile_count
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provider_id_duplicates_repeated_legacy_import_does_not_accumulate() {
+        let mut data: PersistedData = serde_json::from_str("{}").unwrap();
+        data.providers =
+            serde_json::from_str(include_str!("providers/fixtures/duplicate-profiles.json"))
+                .unwrap();
+        let store = FakeCredentialStore::default();
+        let (dir, file) = migration_file("duplicate-legacy-import", &data);
+        let expected_profile_count = crate::providers::builtin_profiles().len() + 1;
+        for _ in 0..4 {
+            // 046bae3 之前的写入器使用 schema 2，并为缺失的内置 funasr 追加 profile。
+            data.schema_version = 2;
+            let mut legacy = crate::providers::bailian_profile();
+            legacy.id = "funasr".into();
+            legacy.kind = "alibabacloud-funasr".into();
+            legacy.config = json!({"languageHints": ["en"]});
+            data.providers.profiles.push(legacy);
+            data.providers.defaults.asr = "funasr".into();
+            atomic_write_with_backup(&file, &serde_json::to_vec_pretty(&data).unwrap()).unwrap();
+            data = load_normalized_persisted_data(&file, &store).unwrap();
+            assert_eq!(data.providers.profiles.len(), expected_profile_count);
+            assert_eq!(
+                data.providers
+                    .profiles
+                    .iter()
+                    .map(|p| &p.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                expected_profile_count
+            );
+            assert_eq!(data.providers.defaults.asr, "bailian");
+            assert!(
+                find_profile(&data.providers, "local-funasr-nano")
+                    .unwrap()
+                    .keep_loaded
+            );
+            assert_eq!(
+                find_profile(&data.providers, "bailian").unwrap().config["languageHints"],
+                json!(["zh"])
+            );
+            for path in [&file, &file.with_extension("json.bak")] {
+                let persisted = load_persisted_data_from_path(path).unwrap();
+                assert_eq!(
+                    persisted
+                        .providers
+                        .profiles
+                        .iter()
+                        .filter(|p| p.id == "bailian")
+                        .count(),
+                    1
+                );
+                assert!(!persisted
+                    .providers
+                    .profiles
+                    .iter()
+                    .any(|p| p.id == "funasr"));
+            }
+        }
+        assert!(store.values.lock().unwrap().is_empty());
+        assert_eq!(*store.reads.lock().unwrap(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provider_id_duplicates_collect_credentials_before_merging_alias_profiles() {
+        let mut data = legacy_data();
+        let mut current = crate::providers::bailian_profile();
+        current.config = json!({"languageHints": ["en"]});
+        data.providers.profiles.insert(0, current);
+        let store = FakeCredentialStore::default();
+        let (dir, file) = migration_file("duplicate-credentials", &data);
+        migrate_credentials_and_ids(&file, &mut data, &store).unwrap();
+        assert_eq!(
+            data.providers
+                .profiles
+                .iter()
+                .filter(|p| p.id == "bailian")
+                .count(),
+            1
+        );
+        assert_eq!(
+            data.providers.profiles[0].config,
+            json!({"languageHints": ["en"]})
+        );
+        assert_eq!(
+            store
+                .get(&CredentialKey::provider("bailian", "apiKey").unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("bailian-test-secret")
+        );
+        assert!(ensure_no_plaintext_credentials(&data.providers).is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1159,6 +1398,7 @@ mod tests {
             }))
             .unwrap();
             data.providers.profiles.push(ProviderProfile {
+                keep_loaded: false,
                 id: format!("malicious-plugin-{label}"),
                 kind: format!("plugin:malicious-plugin-{label}"),
                 display_name: "Malicious plugin".into(),

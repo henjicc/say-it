@@ -13,10 +13,17 @@ vi.mock("@/lib/tauri", () => ({
     startAssistantFollowUpVoice: "start_assistant_follow_up_voice",
     stopAssistantFollowUpVoice: "stop_assistant_follow_up_voice",
     setAssistantAnswerPinned: "set_assistant_answer_pinned",
+    getAppSnapshot: "get_app_snapshot",
   },
-  cmd: vi.fn(async (name: string) => name === "get_assistant_answer"
-    ? { text: "## 回答正文\n\n**重点**", reasoning: "先分析问题", sourceText: "选区", canInsert: true, streaming: false, pinned: false }
-    : undefined),
+  EVT: { themeChanged: "theme-changed" },
+  cmd: vi.fn(async (name: string) => {
+    if (name === "get_assistant_answer") {
+      return { text: "## 回答正文\n\n**重点**", reasoning: "先分析问题", sourceText: "选区", canInsert: true, streaming: false, pinned: false };
+    }
+    // 独立窗口启动时要自己初始化主题，这里给一份最小快照。
+    if (name === "get_app_snapshot") return { settings: { theme: {} } };
+    return undefined;
+  }),
   on: vi.fn(async () => () => undefined),
 }));
 
@@ -55,6 +62,51 @@ describe("AssistantAnswerApp", () => {
     const send = await screen.findByRole("button", { name: "结束语音并发送" });
     fireEvent.click(send);
     await waitFor(() => expect(cmd).toHaveBeenCalledWith(CMD.stopAssistantFollowUpVoice));
+  });
+
+  /// 生成中断时后端会把已经生成出来的正文连同错误一起下发（`processed + error`
+  /// 这条路径本来就存在）。原来的 `error ? 错误 : text` 二选一渲染会把用户已经
+  /// 读到一半的回答整段抹掉，而且没有任何恢复入口。
+  it("keeps the partial answer visible alongside the error", async () => {
+    vi.mocked(cmd).mockImplementation(async (name: string) =>
+      name === "get_assistant_answer"
+        ? {
+            text: "## 已生成的前半段",
+            reasoning: "",
+            sourceText: "",
+            canInsert: false,
+            streaming: false,
+            pinned: false,
+            error: "网络连接中断",
+          }
+        : undefined);
+
+    render(<AssistantAnswerApp />);
+
+    expect(await screen.findByText("已生成的前半段")).toBeInTheDocument();
+    expect(screen.getByText("网络连接中断")).toBeInTheDocument();
+    // 正文还在，复制按钮就该可用。
+    expect(screen.getByRole("button", { name: /复制/ })).toBeEnabled();
+  });
+
+  it("falls back to the error alone when nothing was generated", async () => {
+    vi.mocked(cmd).mockImplementation(async (name: string) =>
+      name === "get_assistant_answer"
+        ? {
+            text: "",
+            reasoning: "",
+            sourceText: "",
+            canInsert: false,
+            streaming: false,
+            pinned: false,
+            error: "未读取到选区",
+          }
+        : undefined);
+
+    render(<AssistantAnswerApp />);
+
+    expect(await screen.findByText("未读取到选区")).toBeInTheDocument();
+    expect(screen.queryByText("正在等待回答…")).not.toBeInTheDocument();
   });
 
   it("builds a fixed symmetric waveform without saturating every bar", () => {

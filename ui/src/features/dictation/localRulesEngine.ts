@@ -1,3 +1,5 @@
+import BUILTIN_PUNCT_RULE from "~shared/builtin-punctuation-rule.json";
+
 // 本地快速处理引擎：整套本地处理就是一串有序的「正则 find→replace」规则。
 // 语气词、口头禅、标点规范、句末补标点都是预置规则，用户可在规则表里增删改、调序。
 // 本文件为纯逻辑（无 DOM / 无 worker 依赖），同时被主线程与 Web Worker 复用。
@@ -15,11 +17,11 @@ export interface LocalRule {
   find?: string; // mode "find" 时的查找文本（字面量，非正则）
 }
 
-const LEGACY_DEDUPE_PUNCT_PATTERN = "([，。！？、])\\1+";
-const ADJACENT_PUNCT_PATTERN =
-  "(?:…{2}|[，。！？、；：．,.!?;:])(?:[ \\t]*(?:…{2}|[，。！？、；：．,.!?;:]))+";
-const ADJACENT_PUNCT_FLAGS = "g";
-const BUILTIN_PUNCT_REPLACEMENT = "$1";
+// 判定依据与 Rust 侧共用同一份定义，避免两端分叉后「试运行预览」与「实际听写」不一致。
+const [LEGACY_DEDUPE_PUNCT_PATTERN, ADJACENT_PUNCT_PATTERN] = BUILTIN_PUNCT_RULE.patterns;
+const ADJACENT_PUNCT_FLAGS = BUILTIN_PUNCT_RULE.flags;
+const BUILTIN_PUNCT_REPLACEMENT = BUILTIN_PUNCT_RULE.replacement;
+const BUILTIN_PUNCT_RULE_ID = BUILTIN_PUNCT_RULE.id;
 const BUILTIN_PUNCT_NOTE =
   "把没有正文夹在中间的连续标点合并成更自然的结果，如“，。”→“。”；会保留“……”以及“！？”这类常见合法组合。";
 
@@ -309,7 +311,7 @@ function normalizePunctuationCluster(cluster: string): string {
 
 function isBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
   return (
-    rule.id === "dedupe-punct" &&
+    rule.id === BUILTIN_PUNCT_RULE_ID &&
     rule.mode !== "find" &&
     rule.flags === ADJACENT_PUNCT_FLAGS &&
     rule.replacement === BUILTIN_PUNCT_REPLACEMENT &&
@@ -319,7 +321,7 @@ function isBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
 
 function shouldUpgradeBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
   return (
-    rule.id === "dedupe-punct" &&
+    rule.id === BUILTIN_PUNCT_RULE_ID &&
     rule.builtin === true &&
     BUILTIN_PUNCT_RULE_SNAPSHOTS.some(
       (snapshot) =>

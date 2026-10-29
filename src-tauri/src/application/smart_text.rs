@@ -13,7 +13,8 @@ use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::Instant as StdInstant;
 use tauri::State;
@@ -315,7 +316,8 @@ async fn run_plugin_llm(
 ) -> Result<(String, String), String> {
     let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
         let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
             spec,
@@ -379,8 +381,9 @@ where
         )
         .await;
     }
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
     let mut task =
@@ -602,7 +605,8 @@ async fn run_groq_sdk(
 ) -> Result<(String, String), String> {
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
@@ -644,8 +648,9 @@ where
 {
     let request = groq_sdk_request(&profile, messages, default_reasoning)?;
     let credentials = state.credentials.clone();
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(128);
     let task_request_id = request_id.clone();
     let mut task =
@@ -1202,6 +1207,7 @@ mod tests {
     #[test]
     fn legacy_model_uses_existing_temperature_default() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: "llm:groq".into(),
             display_name: "Test".into(),
@@ -1220,6 +1226,7 @@ mod tests {
     #[test]
     fn model_options_apply_reasoning_temperature_and_max_tokens() {
         let profile = ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: "llm:groq".into(),
             display_name: "Test".into(),
@@ -1291,6 +1298,7 @@ mod tests {
 
     fn llm_profile(kind: &str, reasoning_effort: &str) -> ProviderProfile {
         ProviderProfile {
+            keep_loaded: false,
             id: "test".into(),
             kind: kind.into(),
             display_name: "Test".into(),

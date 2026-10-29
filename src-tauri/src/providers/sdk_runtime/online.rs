@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use crate::cancellation::CancellationFlag;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -123,6 +123,8 @@ pub struct BuiltinSdkRuntime {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkFileAsrOptions {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    vocabulary: std::collections::BTreeMap<String, i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,7 +141,8 @@ struct SdkFileAsrOptions {
 
 impl SdkFileAsrOptions {
     fn is_empty(&self) -> bool {
-        self.context.is_none()
+        self.vocabulary.is_empty()
+            && self.context.is_none()
             && self.vocabulary_id.is_none()
             && self.diarization_enabled.is_none()
             && self.speaker_count.is_none()
@@ -166,6 +169,23 @@ fn non_empty_string(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// 新模型的即时热词直接使用全局词表；旧模型继续使用已同步的 vocabularyId。
+pub(crate) fn sdk_inline_vocabulary(
+    model: &str,
+    customization: &crate::providers::RequestCustomization,
+) -> std::collections::BTreeMap<String, i32> {
+    if !matches!(model,
+        "qwen-audio-3.1-asr-flash"
+        | "qwen-audio-3.1-asr-flash-filetrans"
+        | "qwen-audio-3.1-asr-flash-streaming"
+    ) {
+        return Default::default();
+    }
+    customization.hotwords.iter()
+        .filter_map(|word| non_empty_string(&word.text).map(|text| (text, word.weight.clamp(1, 5))))
+        .collect()
+}
+
 fn sdk_file_asr_input(
     params: &crate::providers::alibabacloud::TranscriptionParams,
     customization: &crate::providers::RequestCustomization,
@@ -183,6 +203,7 @@ fn sdk_file_asr_input(
         hints,
         timestamps: true,
         options: SdkFileAsrOptions {
+            vocabulary: sdk_inline_vocabulary(&params.model_id(), customization),
             context: non_empty_string(&customization.context),
             vocabulary_id,
             diarization_enabled: params.diarization_enabled,
@@ -204,7 +225,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
     ) -> Result<Self, String> {
         Self::create_with_event_sender(
@@ -223,7 +244,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
     ) -> Result<Self, String> {
@@ -244,7 +265,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         event_tx: Option<mpsc::Sender<Value>>,
         recorder: Arc<dyn HostRuntimeRecorder>,
@@ -288,7 +309,7 @@ impl BuiltinSdkRuntime {
         credentials: CredentialStoreHandle,
         scope: BuiltinSdkScope,
         request_id: impl Into<String>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Arc<CancellationFlag>,
         inputs: HashMap<String, PathBuf>,
         recorder: Arc<dyn HostRuntimeRecorder>,
     ) -> Result<Self, String> {
@@ -396,6 +417,10 @@ impl BuiltinSdkRuntime {
         self.runtime.dispatch_host_events()
     }
 
+    pub(crate) fn host_events_ready(&self) -> &tokio::sync::Notify {
+        self.runtime.host_events_ready()
+    }
+
     pub fn take_events(&self) -> Vec<Value> {
         self.runtime.take_events()
     }
@@ -423,7 +448,7 @@ pub async fn recognize_sdk_file(
     path: String,
     params: crate::providers::alibabacloud::TranscriptionParams,
     customization: crate::providers::RequestCustomization,
-    cancelled: Option<Arc<AtomicBool>>,
+    cancelled: Option<Arc<CancellationFlag>>,
 ) -> Result<crate::providers::alibabacloud::TranscriptionResult, String> {
     let model = params.model_id();
     let route = crate::providers::registry::builtin_sdk_asr_route(&model)
@@ -445,7 +470,7 @@ pub async fn recognize_sdk_file(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string);
     let input = sdk_file_asr_input(&params, &customization, vocabulary_id);
-    let cancel = cancelled.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel = cancelled.unwrap_or_else(|| Arc::new(CancellationFlag::new(false)));
     let value = crate::providers::plugin_runtime::spawn_js_worker("builtin-file-asr", move || {
         let runtime = BuiltinSdkRuntime::create(
             &profile,
@@ -493,8 +518,9 @@ where
         "options": { "stream": true },
     });
     let (event_tx, mut event_rx) = mpsc::channel(128);
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
+    let _cancel_on_drop = cancelled.cancel_on_drop();
     let task_request_id = request_id.clone();
     let mut task =
         crate::providers::plugin_runtime::spawn_js_worker("builtin-translation", move || {
@@ -599,6 +625,7 @@ fn sdk_asr_to_legacy(
                 "beginTime": sdk_millis(segment.get("startMs")).unwrap_or_default(),
                 "endTime": sdk_millis(segment.get("endMs")).unwrap_or_default(),
                 "text": segment.get("text").and_then(Value::as_str).unwrap_or_default(),
+                "speakerId": segment.get("speakerId"),
                 "words": words,
             })
         })
@@ -637,7 +664,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.2.8");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.6.1");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -686,7 +713,7 @@ mod tests {
             CredentialStoreHandle::default(),
             scope,
             "mismatched-provider",
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancellationFlag::new(false)),
             HashMap::new(),
         )
         .err()
@@ -721,6 +748,7 @@ mod tests {
                 "text": "你好",
                 "startMs": 10,
                 "endMs": 900,
+                "speakerId": 2,
                 "words": [{ "text": "你", "startMs": 10, "endMs": 300 }],
             }],
         }))
@@ -728,6 +756,7 @@ mod tests {
         assert_eq!(result.duration_ms, Some(1200));
         assert_eq!(result.transcripts[0].text, "你好");
         assert_eq!(result.transcripts[0].sentences[0].begin_time, 10);
+        assert_eq!(result.transcripts[0].sentences[0].speaker_id, Some(json!(2)));
         assert_eq!(result.transcripts[0].sentences[0].words[0].text, "你");
     }
 
@@ -772,6 +801,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen_audio_file_receives_inline_hotwords_without_changing_old_models() {
+        let customization = crate::providers::RequestCustomization {
+            hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: " 说吧 ".into(), weight: 3 }],
+            ..Default::default()
+        };
+        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans"] {
+            let params = crate::providers::alibabacloud::TranscriptionParams { model: model.into(), ..Default::default() };
+            let input = sdk_file_asr_input(&params, &customization, None);
+            assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));
+            assert!(input["options"].get("vocabularyId").is_none());
+        }
+        assert!(sdk_inline_vocabulary("fun-asr", &customization).is_empty());
+    }
+
+    #[test]
     fn sdk_file_asr_input_keeps_valid_language_hints_and_provider_options() {
         let params = crate::providers::alibabacloud::TranscriptionParams {
             language_hints: vec![" zh ".into(), "en".into()],
@@ -810,5 +854,38 @@ mod tests {
         );
         assert_eq!(single_language["language"], "zh");
         assert_eq!(single_language["hints"], json!(["zh"]));
+    }
+
+    /// 回归：SDK 的 `openSession` 把 `timeoutMs` 当作「从 open() 起整段会话的强制
+    /// 超时」，内部直接 `setTimeout(abort, timeoutMs)` 且不随 send/finish 续期。
+    /// 而 `DEFAULT_TIMEOUT` 是**单次请求**预算（45 秒），一旦转发进去，任何超过
+    /// 该时长的实时听写/实时字幕都会被硬切断。插件路径（plugin_runtime.rs 的
+    /// `__sayitPluginCapabilityOpen`）早已刻意不转发，内置 SDK 这条路径曾漏掉。
+    ///
+    /// 这里对 `include_str!` 进来的入口源码做契约检查：非实时路径仍应带
+    /// `timeoutMs`（那是正确的单次请求超时），唯独 `realtimeStart` 不得带。
+    #[test]
+    fn realtime_start_must_not_forward_timeout_into_open_session() {
+        let start = BUILTIN_SOURCE
+            .find("async realtimeStart(")
+            .expect("入口应当定义 realtimeStart");
+        let rest = &BUILTIN_SOURCE[start + "async realtimeStart(".len()..];
+        let end = rest.find("async realtime").unwrap_or(rest.len());
+        let body = &rest[..end];
+
+        assert!(
+            body.contains("openSession"),
+            "realtimeStart 应当通过 openSession 打开会话"
+        );
+        // 匹配属性赋值而不是单词本身——realtimeStart 里有一段解释为何不转发的注释，
+        // 那段注释提到了 request.timeoutMs，不应被误判成转发。
+        assert!(
+            !body.contains("timeoutMs:"),
+            "realtimeStart 不得把 timeoutMs 转发进 openSession：             那会让实时会话在固定时长后被硬切断"
+        );
+        assert!(
+            BUILTIN_SOURCE.contains("timeoutMs: request.timeoutMs"),
+            "非实时路径仍应保留单次请求超时，否则本测试已失去意义"
+        );
     }
 }
