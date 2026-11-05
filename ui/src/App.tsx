@@ -19,6 +19,7 @@ import { ModelsPage } from "@/views/models/ModelsPage";
 import { LexiconPage } from "@/views/lexicon/LexiconPage";
 import { HistoryPage } from "@/views/history/HistoryPage";
 import { SettingsPage } from "@/views/settings/SettingsPage";
+import { DeveloperPage } from "@/views/developer/DeveloperPage";
 import { SimpleDictation, SimpleHistory, SimpleSettings, SimpleSubtitles, SimpleTranscription } from "@/views/simple/SimplePages";
 import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { AboutDialog } from "@/views/AboutView";
@@ -36,6 +37,7 @@ const PRO_VIEWS: Record<ViewKey, React.ReactNode> = {
   lexicon: <LexiconPage />,
   history: <HistoryPage />,
   settings: <SettingsPage />,
+  developer: import.meta.env.DEV ? <DeveloperPage /> : null,
 };
 
 /** 简单模式只有这几页；停在专业模式独有的页面时，窄窗口先显示听写。 */

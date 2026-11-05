@@ -1,5 +1,5 @@
 import type { ViewKey } from "@/store/useUiStore";
-import { BookMarked, Box, Captions, FileAudio, History, Mic, SlidersHorizontal, Sparkles } from "lucide-react";
+import { BookMarked, Box, Bug, Captions, FileAudio, History, Mic, SlidersHorizontal, Sparkles } from "lucide-react";
 
 export interface NavItem {
   view: ViewKey;
@@ -22,6 +22,7 @@ export const PRO_NAV_GROUPS: NavItem[][] = [
     { view: "lexicon", label: "词库", icon: <BookMarked {...iconProps} /> },
     { view: "history", label: "历史", icon: <History {...iconProps} /> },
   ],
+  ...(import.meta.env.DEV ? [[{ view: "developer" as const, label: "开发者", icon: <Bug {...iconProps} /> }]] : []),
 ];
 
 export const SETTINGS_NAV: NavItem = { view: "settings", label: "设置", icon: <SlidersHorizontal {...iconProps} /> };

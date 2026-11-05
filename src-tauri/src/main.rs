@@ -421,6 +421,8 @@ fn main() {
             }
             // OBS 接入是可选能力；本地端口被占用时不影响既有桌面字幕功能，状态会在前端显示。
             let _ = start_obs_overlay_server(&state);
+            #[cfg(debug_assertions)]
+            application::dev_trace::initialize(app.handle());
 
             hotkey::init(app.handle().clone());
             application::dictation::initialize(app.handle().clone());
@@ -761,7 +763,23 @@ fn main() {
             #[cfg(debug_assertions)]
             dev_show_indicator_notice,
             #[cfg(debug_assertions)]
-            dev_indicator_waveform
+            dev_indicator_waveform,
+            #[cfg(debug_assertions)]
+            application::dev_trace::dev_trace_status,
+            #[cfg(debug_assertions)]
+            application::dev_trace::dev_trace_runs,
+            #[cfg(debug_assertions)]
+            application::dev_trace::dev_trace_run,
+            #[cfg(debug_assertions)]
+            application::dev_trace::dev_trace_stats,
+            #[cfg(debug_assertions)]
+            application::dev_trace::dev_trace_smart_test,
+            #[cfg(debug_assertions)]
+            application::dev_bench::dev_bench_models,
+            #[cfg(debug_assertions)]
+            application::dev_bench::dev_bench_state,
+            #[cfg(debug_assertions)]
+            application::dev_bench::dev_bench_run
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

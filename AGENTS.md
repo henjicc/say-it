@@ -206,6 +206,7 @@
 - 必需环境变量或平台限制：开发端口固定为 `5155` 且 `strictPort: true`；Tauri 配置的 `devUrl` 依赖该端口。
 - 已知陷阱和非显而易见行为：`vite.config.ts` 以 `ui/` 为 root，并配置 `main` 与 `indicator` 两个打包入口；`tauri.conf.json` 中主窗口初始 `visible: false`、`decorations: false`，窗口显示逻辑在后端控制；`ui/dist/`、`src-tauri/target/` 不应手工维护；主题为运行时切换——`App.tsx` 根据 `useThemeStore` 在 `<html>` 上写 `data-ui-tone` 并覆写 `--color-*` 令牌，`index.css` 靠 `[data-ui-tone="light"]` 选择器补齐亮色，暗色为主要方向、亮色仅保证可用不破版。
 - 发布流程：先同步更新 `src-tauri/tauri.conf.json` 和 `package.json` 的 `version`，提交后推送 `v*.*.*` 格式的 tag，会触发 `.github/workflows/release.yml` 自动构建并直接发布 GitHub Release。
+- 排查听写或智能处理的耗时，先用开发者追踪，不要另写脚本：`tauri:dev` 运行时每次听写写一条记录到 `工作区/dev-traces/runs-*.jsonl`（含原文和完整提示词，已 gitignore，应用没运行也能读）；运行中可调 `http://127.0.0.1:5156/`，`GET /` 列出接口，`GET /runs/latest`、`GET /stats` 看记录和统计，`POST /smart-test` 做基线、真实提示词、流式与连接探测的对比（调用 3 次大模型，有费用），`GET /models`、`POST /model-bench` 并发测多个模型的首字耗时和每秒 token（每模型每轮一次请求，有费用）。界面入口是侧栏「开发者」。实现在 `src-tauri/src/application/dev_trace.rs` 和 `dev_bench.rs`，发布构建不编译。
 - 新增/扩展识别模型、协议族或供应商时，先读取 `docs/rules/新增供应商与模型操作手册.md` 按场景执行，不要重新摸索。
 - 使用 `@henjicc/ai-sdk` 的功能升级或排障时，先对照当前精确版本的公共类型并冻结实际送入 SDK 的 DTO，再做同版本 SDK 最小直调：合法输入在 SDK 内失败或供应商请求偏离官方契约才回 Henji-AI 主仓修 SDK；Rust→QuickJS 序列化、凭据、HTTP/WS、媒体引用、取消、超时和资源释放问题在 say-it 修。`field?: T` 表示字段省略或值为 `T`，Rust 的 `None` 必须用 `skip_serializing_if` 等方式省略，不能写成 `null`；不得为掩盖宿主错误而放宽 SDK 校验，也不得在本仓复制 SDK provider/parser。
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
