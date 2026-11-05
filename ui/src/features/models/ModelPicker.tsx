@@ -71,7 +71,7 @@ function FilterChip({
         "shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors duration-[var(--dur-fast)]",
         active
           ? "border-[var(--accent-ring)] bg-[var(--accent-soft-strong)] text-[var(--color-accent-light)]"
-          : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-line-strong)] hover:text-[var(--color-fg)]",
+          : "border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
       )}
     >
       {children}
@@ -236,7 +236,7 @@ export function ModelPicker({
           } else if (event.key === "Escape") closeAndFocus();
         }}
         className={cn(
-          "flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
+          "flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
           "hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-hover)] focus:outline-none focus:border-[var(--accent-ring)]",
           open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
           disabled && "cursor-not-allowed opacity-50",

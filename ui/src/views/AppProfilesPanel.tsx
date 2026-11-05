@@ -141,7 +141,7 @@ export function AppProfilesPanel() {
         )}
       >
         {profiles.length === 0 && (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">
             暂无软件规则，添加后可为指定软件单独设置本地处理和智能处理。
           </p>
         )}
@@ -173,7 +173,7 @@ export function AppProfilesPanel() {
                       <span className="shrink-0 text-[11px] text-[var(--color-warn)]">● 未选择软件</span>
                     )}
                   </span>
-                  <span className="truncate text-[11px] text-[var(--color-fg-faint)]">
+                  <span className="truncate text-[11px] text-[var(--color-fg-subtle)]">
                     {summarize(profile)}
                   </span>
                 </button>

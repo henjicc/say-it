@@ -209,7 +209,7 @@ export function ContextDebugApp() {
               </Select>
             </label>
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-[var(--color-fg-faint)]">
+          <p className="mt-2 text-[11px] leading-4 text-[var(--color-fg-subtle)]">
             仅在「提取方式」设为「窗口 OCR」时生效；调整后点击目标应用，再按快捷键重新捕获查看效果。
           </p>
         </section>
@@ -235,17 +235,17 @@ export function ContextDebugApp() {
               <ResultSection title="捕获诊断" value={result.diagnostics.join("\n")} />
             )}
             <section className="grid grid-cols-2 gap-x-5 gap-y-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] p-4 text-xs">
-              <div><span className="text-[var(--color-fg-faint)]">应用</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.appName || "—"}</p></div>
-              <div><span className="text-[var(--color-fg-faint)]">进程</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.processName || "—"} {result.processId ? `(PID ${result.processId})` : ""}</p></div>
-              <div className="col-span-2"><span className="text-[var(--color-fg-faint)]">窗口标题</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.windowTitle || "—"}</p></div>
-              <div><span className="text-[var(--color-fg-faint)]">模式</span><p className="mt-1 text-[var(--color-fg)]">{result.captureMethod === "ocr" ? "窗口 OCR" : "文本提取"}</p></div>
-              <div><span className="text-[var(--color-fg-faint)]">来源</span><p className="mt-1 text-[var(--color-fg)]">{result.source || "—"}</p></div>
-              <div><span className="text-[var(--color-fg-faint)]">总耗时</span><p className="mt-1 text-[var(--color-fg)]">{result.elapsedMs} ms</p></div>
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 模型</span><p className="mt-1 text-[var(--color-fg)]">{ocrModels.find((model) => model.value === result.ocrModel)?.label || result.ocrModel || "—"}</p></div>}
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">图像</span><p className="mt-1 text-[var(--color-fg)]">{result.screenshotWidth && result.screenshotHeight ? `${result.screenshotWidth} × ${result.screenshotHeight}` : "—"}{result.maxCaptureSide ? `（长边上限 ${result.maxCaptureSide}）` : ""}</p></div>}
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">分项耗时</span><p className="mt-1 text-[var(--color-fg)]">截图 {result.screenshotElapsedMs} ms · 模型初始化 {result.modelInitMs} ms · OCR {result.ocrElapsedMs} ms</p></div>}
-              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-faint)]">OCR 文字框</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrBlocks.length} 个</p></div>}
-              <div><span className="text-[var(--color-fg-faint)]">结果</span><p className="mt-1 text-[var(--color-fg)]">{result.truncated ? "已按上下文预算裁剪" : "完整"}</p></div>
+              <div><span className="text-[var(--color-fg-subtle)]">应用</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.appName || "—"}</p></div>
+              <div><span className="text-[var(--color-fg-subtle)]">进程</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.processName || "—"} {result.processId ? `(PID ${result.processId})` : ""}</p></div>
+              <div className="col-span-2"><span className="text-[var(--color-fg-subtle)]">窗口标题</span><p className="mt-1 break-words text-[var(--color-fg)]">{result.windowTitle || "—"}</p></div>
+              <div><span className="text-[var(--color-fg-subtle)]">模式</span><p className="mt-1 text-[var(--color-fg)]">{result.captureMethod === "ocr" ? "窗口 OCR" : "文本提取"}</p></div>
+              <div><span className="text-[var(--color-fg-subtle)]">来源</span><p className="mt-1 text-[var(--color-fg)]">{result.source || "—"}</p></div>
+              <div><span className="text-[var(--color-fg-subtle)]">总耗时</span><p className="mt-1 text-[var(--color-fg)]">{result.elapsedMs} ms</p></div>
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-subtle)]">OCR 模型</span><p className="mt-1 text-[var(--color-fg)]">{ocrModels.find((model) => model.value === result.ocrModel)?.label || result.ocrModel || "—"}</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-subtle)]">图像</span><p className="mt-1 text-[var(--color-fg)]">{result.screenshotWidth && result.screenshotHeight ? `${result.screenshotWidth} × ${result.screenshotHeight}` : "—"}{result.maxCaptureSide ? `（长边上限 ${result.maxCaptureSide}）` : ""}</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-subtle)]">分项耗时</span><p className="mt-1 text-[var(--color-fg)]">截图 {result.screenshotElapsedMs} ms · 模型初始化 {result.modelInitMs} ms · OCR {result.ocrElapsedMs} ms</p></div>}
+              {result.captureMethod === "ocr" && <div><span className="text-[var(--color-fg-subtle)]">OCR 文字框</span><p className="mt-1 text-[var(--color-fg)]">{result.ocrBlocks.length} 个</p></div>}
+              <div><span className="text-[var(--color-fg-subtle)]">结果</span><p className="mt-1 text-[var(--color-fg)]">{result.truncated ? "已按上下文预算裁剪" : "完整"}</p></div>
             </section>
 
             {result.captureMethod === "ocr" && result.screenshotDataUrl && (

@@ -6,24 +6,24 @@
  */
 @theme {
   /* 明度层级：外框（标题栏/导航）→ 内容层 → 检查器 → 分组面 → 浮层 */
-  --color-bg: #131417;
-  --color-bg-sidebar: #0e0f11;
-  --color-bg-titlebar: #0e0f11;
-  --color-panel: #17181b;
-  --color-surface: #1e1f23;
-  --color-surface-hover: #24262a;
-  --color-surface-strong: #2c2e33;
-  --color-overlay: #1e1f23;
+  --color-bg: #0f0f0f;
+  --color-bg-sidebar: #0c0c0c;
+  --color-bg-titlebar: #0c0c0c;
+  --color-panel: #161616;
+  --color-surface: #222222;
+  --color-surface-hover: #292929;
+  --color-surface-strong: #333333;
+  --color-overlay: #252525;
 
   /* 边框/分割线 */
-  --color-line: rgba(255, 255, 255, 0.07);
-  --color-line-strong: rgba(255, 255, 255, 0.12);
+  --color-line: rgba(255, 255, 255, 0.11);
+  --color-line-strong: rgba(255, 255, 255, 0.18);
 
   /* 文字层级 */
   --color-fg: #ecedef;
-  --color-fg-muted: #a3a6ad;
-  --color-fg-subtle: #7e828a;
-  --color-fg-faint: #5c5f66;
+  --color-fg-muted: #b4b7bd;
+  --color-fg-subtle: #989ca4;
+  --color-fg-faint: #70747c;
 
   /* 状态色 */
   --color-ok: #3fb27f;
