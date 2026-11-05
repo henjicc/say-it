@@ -188,7 +188,7 @@ function TemplateRowSummary({
         )}
       </div>
       {!rename && (
-        <p className="mt-1 truncate text-xs text-[var(--color-fg-faint)]" title={template.prompt}>
+        <p className="mt-1 truncate text-xs text-[var(--color-fg-subtle)]" title={template.prompt}>
           {template.prompt.replace(/\s+/g, " ").trim() || "尚未填写提示词"}
         </p>
       )}
@@ -681,7 +681,7 @@ export function SmartTemplateManager({
               setPendingDeleteTemplateId("");
             }}
           />
-          <span className="text-xs text-[var(--color-fg-faint)]">
+          <span className="text-xs text-[var(--color-fg-subtle)]">
             最多 {MAX_SMART_TEXT_TEMPLATES} 个模板
           </span>
         </div>
@@ -918,7 +918,7 @@ export function SmartTemplateManager({
                       <p className="truncate text-sm font-medium text-[var(--color-fg)]" title={entry.template.name}>
                         {entry.template.name || "未命名模板"}
                       </p>
-                      <p className="mt-1 text-xs text-[var(--color-fg-faint)]">
+                      <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
                         删除于 {formatDeletedAt(entry.deletedAt)}
                       </p>
                     </div>

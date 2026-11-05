@@ -750,16 +750,16 @@ export function SubtitleEditor({
         <Button size="sm" onClick={cycleRate} disabled={!mediaSrc || playbackError} title="播放速度" className="w-14 font-mono tabular-nums">
           {rate}×
         </Button>
-        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
+        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-subtle)]">
           <HelpLabel content={`按住 ${shortcutModifierLabels.ctrl} 并滚动鼠标滚轮可缩放时间轴；按住鼠标中键可拖动。${isMacOS ? "⌘Z 撤销，⌘⇧Z 重做。" : "Ctrl+Z 撤销，Ctrl+Y 重做。"}`}>时间轴 {formatZoom(timelineZoom)}</HelpLabel>
         </span>
-        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
+        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-subtle)]">
           <HelpLabel content={`按住 ${shortcutModifierLabels.alt} 并滚动鼠标滚轮可缩放波形。`}>波形 {formatZoom(waveformZoom)}</HelpLabel>
         </span>
         <Tooltip content="把短暂的字幕空白接起来：前一句延长到后一句开始，避免字幕忽隐忽现。"><span
           className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1"
         >
-          <span className="text-[11px] text-[var(--color-fg-faint)]">间隙 ≤</span>
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">间隙 ≤</span>
           <input
             type="number"
             min={0}
@@ -768,7 +768,7 @@ export function SubtitleEditor({
             onChange={(event) => setGapMergeMs(Math.max(0, Number(event.target.value) || 0))}
             className="h-6 w-14 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] text-center font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)] focus:outline-none focus:border-[var(--accent-ring)]"
           />
-          <span className="text-[11px] text-[var(--color-fg-faint)]">ms</span>
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">ms</span>
         </span></Tooltip>
         <Button size="sm" onClick={mergeGaps} disabled={cues.length < 2}>
           合并字幕间隙
@@ -821,7 +821,7 @@ export function SubtitleEditor({
             {secondLabels.map((s) => (
               <span
                 key={s}
-                className="absolute top-0.5 font-mono text-[10px] tabular-nums text-[var(--color-fg-faint)]"
+                className="absolute top-0.5 font-mono text-[10px] tabular-nums text-[var(--color-fg-subtle)]"
                 style={{ left: `${s * pxPerSec + 3}px` }}
               >
                 {formatClock(s * 1000).replace(/\.\d+$/, "")}
@@ -837,7 +837,7 @@ export function SubtitleEditor({
                 style={{ height: `${WAVEFORM_HEIGHT}px` }}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-faint)]">
+              <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-subtle)]">
                 {waveformLoading ? "正在生成波形…" : "当前文件暂不支持波形预览"}
               </div>
             )}
@@ -933,7 +933,7 @@ export function SubtitleEditor({
                     "transition-colors duration-[var(--dur-fast)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                     isHighlighted
                       ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-                      : "text-[var(--color-fg-faint)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+                      : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >
                   {index + 1}

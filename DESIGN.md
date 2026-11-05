@@ -3,18 +3,18 @@ name: "说吧！"
 description: "克制、专业、高效的桌面语音工作台"
 colors:
   accent: "#286EC8"
-  frame: "#0E0F11"
-  content: "#131417"
-  panel: "#17181B"
-  surface: "#1E1F23"
-  surface-hover: "#24262A"
-  surface-strong: "#2C2E33"
+  frame: "#0C0C0C"
+  content: "#0F0F0F"
+  panel: "#161616"
+  surface: "#222222"
+  surface-hover: "#292929"
+  surface-strong: "#333333"
   foreground: "#ECEDEF"
-  foreground-muted: "#A3A6AD"
-  foreground-subtle: "#7E828A"
-  foreground-faint: "#5C5F66"
-  line: "#FFFFFF12"
-  line-strong: "#FFFFFF1F"
+  foreground-muted: "#B4B7BD"
+  foreground-subtle: "#989CA4"
+  foreground-faint: "#70747C"
+  line: "#FFFFFF1C"
+  line-strong: "#FFFFFF2E"
   success: "#3FB27F"
   error: "#E5726C"
   warning: "#D9A441"
@@ -82,11 +82,13 @@ components:
 
 ## Colors
 
-强调色只用于：开关打开、主按钮、当前选中节点的圆点、焦点环和链接。其他一律灰阶。状态色只表达状态，不做装饰。
+强调色只用于：开关打开、主按钮、焦点环和链接。其他一律灰阶。状态色只表达状态，不做装饰。
+
+暗色界面容易对比不足，以下是下限：需要阅读的文字最低用 `foreground-subtle`；`foreground-faint` 只给占位提示、禁用态、搜索图标和分隔符。分组与分隔线用 `line`，输入框、下拉框和普通按钮的边框用 `line-strong`。
 
 ## Typography
 
-统一无衬线字体栈。层级只有几档：页面标题 18/600，节点值与正文 14，行名称与控件 13，说明与分组标题 12。等宽字体只用于代码与路径。
+统一无衬线字体栈。层级只有几档：页面标题 18/600，中栏列表 14，行名称与控件 13，说明、分组标题与导航 12。新增界面文字不小于 12px。等宽字体只用于代码与路径。
 
 ## Components
 

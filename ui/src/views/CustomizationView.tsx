@@ -96,7 +96,7 @@ export function HotwordsTab() {
         right={<SyncStatus state={syncState} message={syncMessage} />}
         description="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">
         {prefs.hotwords.length === 0 ? (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">暂无热词</p>
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">暂无热词</p>
         ) : (
           <div className="max-h-[22rem] overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
             {prefs.hotwords.map((hotword, index) => (
@@ -135,7 +135,7 @@ export function HotwordsTab() {
           </div>
         )}
         <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
-          <span className="text-xs text-[var(--color-fg-faint)]">
+          <span className="text-xs text-[var(--color-fg-subtle)]">
             {prefs.hotwords.length} / {MAX_HOTWORDS}
           </span>
           <Button size="sm" disabled={prefs.hotwords.length >= MAX_HOTWORDS} onClick={addHotword}>
@@ -147,7 +147,7 @@ export function HotwordsTab() {
 
       <Group title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
         {targets.length === 0 ? (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-faint)]">当前没有已启用且支持热词的供应商。</p>
+          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">当前没有已启用且支持热词的供应商。</p>
         ) : (
           <Row label="云端词表" message="获取会用云端词表替换当前热词列表，上下文模板不受影响。">
             <Select
@@ -233,7 +233,7 @@ export function HotwordsTab() {
 
 const SYNC_TONE: Record<SyncState, string> = {
   idle: "",
-  pending: "text-[var(--color-fg-faint)]",
+  pending: "text-[var(--color-fg-subtle)]",
   syncing: "text-[var(--color-fg-subtle)]",
   done: "text-[var(--color-fg-subtle)]",
   error: "text-[var(--color-err)]",
