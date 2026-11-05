@@ -3,8 +3,8 @@ import { create } from "zustand";
 export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "models" | "lexicon" | "history" | "settings";
 /** 窗口宽度决定的界面形态：窄窗口为简单模式，宽窗口为专业模式。 */
 export type LayoutMode = "simple" | "pro";
-export type DictationNodeKey = "trigger" | "audio" | "asr" | "smart" | "rules" | "output" | "apps" | "shortcuts";
-export type SubtitleNodeKey = "trigger" | "audio" | "asr" | "translation" | "style" | "output";
+export type DictationNodeKey = "basics" | "smart" | "rules" | "apps" | "shortcuts" | "orbGesture";
+export type SubtitleNodeKey = "basics" | "translation" | "style" | "output";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
 export type ModelsSectionKey = "asr" | "llm" | "plugins" | "compare";
 export type LexiconSectionKey = "hotwords" | "context";
@@ -66,9 +66,9 @@ export const useUiStore = create<UiState>((set) => ({
   setView: (view) => set({ view }),
   layoutMode: "pro",
   setLayoutMode: (layoutMode) => set({ layoutMode }),
-  dictationNode: "trigger",
+  dictationNode: "basics",
   setDictationNode: (dictationNode) => set({ dictationNode }),
-  subtitleNode: "asr",
+  subtitleNode: "basics",
   setSubtitleNode: (subtitleNode) => set({ subtitleNode }),
   assistantAction: "translateSpeech",
   setAssistantAction: (assistantAction) => set({ assistantAction }),
@@ -91,7 +91,7 @@ export const useUiStore = create<UiState>((set) => ({
   consumeFocusedShortcutProfile: () => set({ focusedShortcutProfileId: null }),
   openDictationShortcutSettings: (profileId) => set({
     view: "dictation",
-    dictationNode: profileId ? "shortcuts" : "trigger",
+    dictationNode: profileId ? "shortcuts" : "basics",
     focusedShortcutProfileId: profileId ?? null,
   }),
   openAssistantSettings: (action) => set((state) => ({
@@ -101,7 +101,7 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   openSubtitleShortcutSettings: () => set({
     view: "subtitles",
-    subtitleNode: "trigger",
+    subtitleNode: "basics",
     focusedShortcutProfileId: null,
   }),
   aboutOpen: false,
