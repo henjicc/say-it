@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "models" | "lexicon" | "history" | "settings";
+export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" | "models" | "lexicon" | "history" | "settings" | "developer";
 /** 窗口宽度决定的界面形态：窄窗口为简单模式，宽窗口为专业模式。 */
 export type LayoutMode = "simple" | "pro";
 export type DictationNodeKey = "basics" | "smart" | "rules" | "apps" | "shortcuts" | "orbGesture";
