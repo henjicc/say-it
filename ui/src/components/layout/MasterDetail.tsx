@@ -1,7 +1,8 @@
+import { Fragment } from "react";
 import { cn } from "@/lib/cn";
 
 /**
- * 专业模式页面骨架：中间一栏是本页的条目（管线节点或分类），右侧检查器展示
+ * 专业模式页面骨架：中间一栏是本页的分类列表，右侧检查器展示
  * 选中条目的设置。两栏各自滚动。
  */
 export function MasterDetail({
@@ -50,78 +51,52 @@ export function InspectorBody({ children, className }: { children: React.ReactNo
 export interface NodeItem<K extends string> {
   key: K;
   label: string;
-  value?: React.ReactNode;
-  /** 管线节点的状态：on 为蓝点，off 为空心圆。 */
-  state?: "on" | "off";
-  icon?: React.ReactNode;
+  icon: React.ReactNode;
+  /** 可整体关闭的条目处于关闭状态时，在行尾标出。 */
+  off?: boolean;
+  /** 与上一条之间画分隔线，区分不同性质的条目。 */
+  dividerBefore?: boolean;
 }
 
-/**
- * 条目列表。chain 为真时是一条处理管线：竖线串起各节点，节点前是状态圆点；
- * 否则是普通分类列表，条目前是图标。
- */
+/** 中栏分类列表：单行、图标 + 名称。条目顺序即使用顺序。 */
 export function NodeList<K extends string>({
   items,
   active,
   onSelect,
-  chain = false,
   ariaLabel,
 }: {
   items: NodeItem<K>[];
   active: K;
   onSelect: (key: K) => void;
-  chain?: boolean;
   ariaLabel: string;
 }) {
   return (
-    <div role="list" aria-label={ariaLabel} className="relative flex flex-col gap-1.5">
-      {chain && <span aria-hidden className="absolute top-[30px] bottom-[30px] left-5 w-px bg-[var(--color-line-strong)]" />}
+    <div role="list" aria-label={ariaLabel} className="flex flex-col gap-1.5">
       {items.map((item) => {
         const selected = item.key === active;
         return (
-          <button
-            key={item.key}
-            type="button"
-            role="listitem"
-            aria-current={selected ? "true" : undefined}
-            onClick={() => onSelect(item.key)}
-            className={cn(
-              "relative flex w-full flex-col justify-center gap-0.5 rounded-[var(--radius-md)] border pr-3.5 pl-10 text-left transition-colors duration-[var(--dur-fast)]",
-              "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-              item.value === undefined ? "h-11" : "h-[60px]",
-              selected
-                ? "border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)]"
-                : "border-transparent hover:bg-[var(--color-surface-hover)]/60",
-            )}
-          >
-            {chain ? (
-              <span
-                aria-hidden
-                className={cn(
-                  "absolute top-1/2 left-[17px] h-[7px] w-[7px] -translate-y-1/2 rounded-full",
-                  item.state === "off"
-                    ? "border-[1.5px] border-[var(--color-fg-faint)] bg-[var(--color-bg)]"
-                    : selected || item.state === "on"
-                      ? "bg-[var(--color-accent)]"
-                      : "bg-[var(--color-fg-faint)]",
-                )}
-              />
-            ) : (
-              item.icon && (
-                <span aria-hidden className={cn("absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 [&>svg]:h-full [&>svg]:w-full", selected ? "text-[var(--color-fg-muted)]" : "text-[var(--color-fg-subtle)]")}>
-                  {item.icon}
-                </span>
-              )
-            )}
-            {item.value === undefined ? (
-              <span className={cn("truncate text-sm", selected ? "text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]")}>{item.label}</span>
-            ) : (
-              <>
-                <span className={cn("text-xs", selected ? "text-[var(--color-fg-muted)]" : "text-[var(--color-fg-subtle)]")}>{item.label}</span>
-                <span className="truncate text-sm text-[var(--color-fg)]">{item.value}</span>
-              </>
-            )}
-          </button>
+          <Fragment key={item.key}>
+            {item.dividerBefore && <span aria-hidden className="mx-3 my-1 h-px bg-[var(--color-line)]" />}
+            <button
+              type="button"
+              role="listitem"
+              aria-current={selected ? "true" : undefined}
+              onClick={() => onSelect(item.key)}
+              className={cn(
+                "flex h-11 w-full items-center gap-3 rounded-[var(--radius-md)] border px-4 text-left transition-colors duration-[var(--dur-fast)]",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+                selected
+                  ? "border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)]"
+                  : "border-transparent hover:bg-[var(--color-surface-hover)]/60",
+              )}
+            >
+              <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", selected ? "text-[var(--color-fg-muted)]" : "text-[var(--color-fg-subtle)]")}>
+                {item.icon}
+              </span>
+              <span className={cn("min-w-0 flex-1 truncate text-sm", selected ? "text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]")}>{item.label}</span>
+              {item.off && <span className="flex-none text-xs text-[var(--color-fg-subtle)]">已关闭</span>}
+            </button>
+          </Fragment>
         );
       })}
     </div>

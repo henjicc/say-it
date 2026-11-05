@@ -102,7 +102,32 @@ export function InjectMethodRow() {
   );
 }
 
-export function TriggerSection() {
+/** 基础设置按听写的先后顺序分组：触发 → 识别 → 输出。 */
+export function BasicsSection() {
+  const hotwordCount = useCustomizationStore((s) => s.prefs.hotwords.length);
+  const openLexicon = () => useUiStore.setState({ view: "lexicon", lexiconSection: "hotwords" });
+  return (
+    <>
+      <Group title="触发">
+        <ShortcutRows />
+      </Group>
+      <Group title="识别">
+        <MicRow />
+        <AsrModelRow />
+        <Row label="热词与上下文">
+          <button type="button" onClick={openLexicon} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
+            {hotwordCount ? `${hotwordCount} 个热词` : "去词库添加"}
+          </button>
+        </Row>
+      </Group>
+      <Group title="输出">
+        <InjectMethodRow />
+      </Group>
+    </>
+  );
+}
+
+export function OrbGestureSection() {
   const floatingOrb = useFloatingOrbStore((state) => state.settings);
   const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
   const floatingOrbError = useFloatingOrbStore((state) => state.error);
@@ -115,9 +140,6 @@ export function TriggerSection() {
 
   return (
     <>
-      <Group>
-        <ShortcutRows />
-      </Group>
       <Group title="悬浮球">
         <Row
           label="启用悬浮球"
@@ -183,23 +205,6 @@ export function TriggerSection() {
             onChange={(rapidClickEnabled) => void updateMouseGesture({ rapidClickEnabled }).catch(() => undefined)}
             label="启用左键快速连击"
           />
-        </Row>
-      </Group>
-    </>
-  );
-}
-
-export function AsrSection() {
-  const hotwordCount = useCustomizationStore((s) => s.prefs.hotwords.length);
-  const openLexicon = () => useUiStore.setState({ view: "lexicon", lexiconSection: "hotwords" });
-  return (
-    <>
-      <Group>
-        <AsrModelRow />
-        <Row label="热词与上下文">
-          <button type="button" onClick={openLexicon} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
-            {hotwordCount ? `${hotwordCount} 个热词` : "去词库添加"}
-          </button>
         </Row>
       </Group>
     </>

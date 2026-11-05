@@ -1,23 +1,21 @@
 import { useEffect } from "react";
+import { Languages, RadioTower, SlidersHorizontal, Type } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
-import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
-import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import { hideSubtitlePreview, showSubtitlePreview, syncSubtitleIndicator, toggleSubtitles } from "@/features/subtitles/controller";
-import { parseSubtitleSource, useSubtitleStore } from "@/store/useSubtitleStore";
-import { useDictPrefs } from "@/store/useDictPrefs";
+import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { useUiStore, type SubtitleNodeKey } from "@/store/useUiStore";
 import { SubtitleStylePanel } from "@/views/SubtitleStylePanel";
 import { SubtitleTranslationPanel } from "@/views/SubtitleTranslationPanel";
 import { ObsOverlayPanel } from "@/views/ObsOverlayPanel";
 import { SubtitleAsrRow, SubtitleModeRow, SubtitleOutputRow, SubtitleShortcutRow, SubtitleSourceRow } from "./SubtitleSections";
 
+const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
+
 const TITLES: Record<SubtitleNodeKey, string> = {
-  trigger: "触发",
-  audio: "声音",
-  asr: "识别",
+  basics: "基础",
   translation: "翻译",
   style: "样式",
   output: "输出",
@@ -44,32 +42,23 @@ export function SubtitleRunButton({ className }: { className?: string }) {
 }
 
 export function SubtitlesPage() {
-  useModelCatalogRevision();
   useSubtitlePreviewLifecycle();
   const node = useUiStore((s) => s.subtitleNode);
   const setNode = useUiStore((s) => s.setSubtitleNode);
-  const { prefs, running, previewActive, shortcutLabel } = useSubtitleStore();
-  const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
-
-  const source = parseSubtitleSource(prefs.source);
-  const sourceLabel = source.kind === "system" ? (source.deviceName || "系统音频") : (micDeviceId || "系统默认麦克风");
-  const asrLabel = SUBTITLE_ASR_MODEL_OPTIONS.find((item) => item.value === prefs.asrModel)?.label ?? prefs.asrModel;
-  const translating = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  const { prefs, running, previewActive } = useSubtitleStore();
 
   const items: NodeItem<SubtitleNodeKey>[] = [
-    { key: "trigger", label: "触发", value: shortcutLabel || "手动开始" },
-    { key: "audio", label: "声音", value: sourceLabel },
-    { key: "asr", label: "识别", value: asrLabel },
-    { key: "translation", label: "翻译", value: translating ? "已开启" : "不翻译", state: translating ? "on" : "off" },
-    { key: "style", label: "样式", value: prefs.mode === "replace" ? "单句替换" : "滚动累积" },
-    { key: "output", label: "输出", value: prefs.obsOutputEnabled ? "OBS" : "桌面" },
+    { key: "basics", label: TITLES.basics, icon: <SlidersHorizontal {...iconProps} /> },
+    { key: "translation", label: TITLES.translation, icon: <Languages {...iconProps} />, off: prefs.translationModel === TRANSLATION_MODEL_NONE },
+    { key: "style", label: TITLES.style, icon: <Type {...iconProps} /> },
+    { key: "output", label: TITLES.output, icon: <RadioTower {...iconProps} /> },
   ];
 
   return (
     <MasterDetail
       title="字幕"
       titleRight={<span className="text-xs text-[var(--color-fg-subtle)]">{running ? "运行中" : "未运行"}</span>}
-      list={<NodeList chain ariaLabel="字幕流程" items={items} active={node} onSelect={setNode} />}
+      list={<NodeList ariaLabel="字幕设置" items={items} active={node} onSelect={setNode} />}
       listFooter={<>
         <Button
           aria-pressed={previewActive}
@@ -82,9 +71,12 @@ export function SubtitlesPage() {
       </>}
     >
       <InspectorHeader title={TITLES[node]} />
-      {node === "trigger" && <InspectorBody><Group><SubtitleShortcutRow /></Group></InspectorBody>}
-      {node === "audio" && <InspectorBody><Group><SubtitleSourceRow /></Group></InspectorBody>}
-      {node === "asr" && <InspectorBody><Group><SubtitleAsrRow /></Group></InspectorBody>}
+      {node === "basics" && (
+        <InspectorBody>
+          <Group title="触发"><SubtitleShortcutRow /></Group>
+          <Group title="识别"><SubtitleSourceRow /><SubtitleAsrRow /></Group>
+        </InspectorBody>
+      )}
       {node === "translation" && <SubtitleTranslationPanel />}
       {node === "style" && <InspectorBody><Group><SubtitleModeRow /></Group><SubtitleStylePanel /></InspectorBody>}
       {node === "output" && <InspectorBody><Group><SubtitleOutputRow /></Group><ObsOverlayPanel /></InspectorBody>}
