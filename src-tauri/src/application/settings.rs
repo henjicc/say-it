@@ -420,6 +420,9 @@ pub(crate) fn update_app_settings(
             .unwrap_or(30) as u32;
         crate::application::history::cleanup_expired(&app, days)?;
     }
+    if domain == "dictation" {
+        crate::application::dictation::apply_cue_output(&app);
+    }
     if domain == "theme" {
         crate::desktop::floating_orb::sync_floating_orb_theme(&app, &next.theme);
         let _ = app.emit("app-theme-changed", next.theme.clone());

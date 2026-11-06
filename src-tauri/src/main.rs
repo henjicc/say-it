@@ -562,6 +562,7 @@ fn main() {
                     eprintln!("[window] 静默启动销毁主窗口失败: {error}");
                 }
             }
+            application::dictation::apply_cue_output(app.handle());
             #[cfg(feature = "performance-acceptance")]
             application::performance_acceptance::start(app.handle().clone());
             Ok(())
