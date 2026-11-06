@@ -1264,7 +1264,11 @@ impl PluginRegistry {
                         let status = super::model_download::inspect_pack(&model_dir, pack);
                         ModelPackSummary {
                             engine: pack.engine.clone(),
-                            state: status.state,
+                            state: if super::model_download::is_downloading(&plugin.manifest.id) {
+                                "downloading".into()
+                            } else {
+                                status.state
+                            },
                             total_bytes: status.total_bytes,
                             ready_bytes: status.ready_bytes,
                             downloadable: pack.files.iter().any(|file| file.download.is_some()),

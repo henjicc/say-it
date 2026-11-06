@@ -133,16 +133,27 @@ describe("官方模型", () => {
   beforeEach(() => { cmd.mockReset(); listeners.clear(); });
   afterEach(() => { cleanup(); officialPacks.length = 0; });
 
-  it("已装同版本显示已安装，未装的点下载会安装对应模型包", async () => {
+  it("已装且没有更新的不列出，未装的点下载会安装对应模型包", async () => {
     officialPacks.push(
       { id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 },
       { id: "official.punct", name: "标点", description: "加标点", version: "1.0.0", sizeBytes: 100 },
     );
     cmd.mockResolvedValue(snapshot());
     render(<PluginManagerPanel />);
-    expect(await screen.findByText("已安装")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "下载标点" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下载标点" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("install_official_model_pack", { packId: "official.punct" }));
+    expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)本地测试$/ })).toBeNull();
+  });
+
+  it("目录版本更高才显示更新", async () => {
+    officialPacks.push(
+      { id: "official.test", name: "本地测试", description: "测试", version: "1.0.10", sizeBytes: 100 },
+      { id: "official.old", name: "旧目录", description: "测试", version: "1.0.0", sizeBytes: 100 },
+    );
+    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [plugin({ version: "1.0.9" }), plugin({ id: "official.old", name: "旧目录", version: "1.0.1" })] });
+    render(<PluginManagerPanel />);
+    expect(await screen.findByRole("button", { name: "更新本地测试" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)旧目录$/ })).toBeNull();
   });
 
   it("清单已装但权重没下完时继续下载，不重装清单", async () => {

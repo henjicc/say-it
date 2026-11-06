@@ -52,6 +52,17 @@ interface OfficialModelPack {
   sizeBytes: number;
 }
 
+/** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
+function isNewerVersion(candidate: string, installed: string) {
+  const left = candidate.split(".").map(Number);
+  const right = installed.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
+
 function formatBytes(value: number) {
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
@@ -226,50 +237,60 @@ export function PluginManagerPanel() {
     }
   };
 
+  // 已装好且没有更新的官方模型不再列出；正在处理或出错的保留，进度和错误才看得到。
+  const visiblePacks = (officialPacks ?? []).filter((pack) => {
+    const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
+    return !installed
+      || isNewerVersion(pack.version, installed.version)
+      || installed.modelPack?.state !== "ready"
+      || busyPluginId === pack.id
+      || Boolean(packErrors[pack.id]);
+  });
+
   return (
     <InspectorBody>
-      <Group title="官方模型">
-        {officialPacks?.map((pack) => {
-          const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
-          const current = installed?.version === pack.version;
-          const ready = current && installed?.modelPack?.state === "ready";
-          const busy = busyPluginId === pack.id;
-          const progress = packProgress[pack.id];
-          const action = current ? "继续下载" : installed ? "更新" : "下载";
-          return (
-            <div key={pack.id} className="px-3.5 py-3">
-              <div className="flex items-center gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
-                    <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
+      {(!officialPacks || visiblePacks.length > 0) && (
+        <Group title="官方模型">
+          {visiblePacks.map((pack) => {
+            const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
+            const update = Boolean(installed) && isNewerVersion(pack.version, installed!.version);
+            const resume = Boolean(installed) && !update;
+            const busy = busyPluginId === pack.id;
+            const progress = packProgress[pack.id];
+            const action = resume ? "继续下载" : update ? "更新" : "下载";
+            return (
+              <div key={pack.id} className="px-3.5 py-3">
+                <div className="flex items-center gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
+                      <span className="text-xs text-[var(--color-fg-subtle)]">{update ? `v${installed!.version} → v${pack.version}` : formatBytes(pack.sizeBytes)}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
                   </div>
-                  <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
+                  {installed?.modelPack?.state === "downloading" && !busy ? (
+                    <span role="status" className="text-xs text-[var(--color-fg-subtle)]">下载中…</span>
+                  ) : (
+                    <Button size="sm" aria-label={`${action}${pack.name}`} disabled={Boolean(busyPluginId) || scanning} onClick={() => void installOfficial(pack, resume)}>
+                      <Download className="h-3.5 w-3.5" aria-hidden />
+                      {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : action}
+                    </Button>
+                  )}
                 </div>
-                {ready && !busy ? (
-                  <span className="text-xs text-[var(--color-fg-subtle)]">已安装</span>
-                ) : current && installed?.modelPack?.state === "downloading" && !busy ? (
-                  <span role="status" className="text-xs text-[var(--color-fg-subtle)]">下载中…</span>
-                ) : (
-                  <Button size="sm" aria-label={`${action}${pack.name}`} disabled={Boolean(busyPluginId) || scanning} onClick={() => void installOfficial(pack, current)}>
-                    <Download className="h-3.5 w-3.5" aria-hidden />
-                    {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : action}
-                  </Button>
-                )}
+                {packErrors[pack.id] && <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">{packErrors[pack.id]}</p>}
               </div>
-              {packErrors[pack.id] && <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">{packErrors[pack.id]}</p>}
+            );
+          })}
+          {!officialPacks && (
+            <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+              <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+                {officialError ? `读取官方模型列表失败：${officialError}` : "正在读取官方模型列表…"}
+              </p>
+              {officialError && <Button size="sm" onClick={() => void loadOfficialPacks()}>重试</Button>}
             </div>
-          );
-        })}
-        {!officialPacks && (
-          <div className="flex items-center justify-between gap-4 px-3.5 py-3">
-            <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-              {officialError ? `读取官方模型列表失败：${officialError}` : "正在读取官方模型列表…"}
-            </p>
-            {officialError && <Button size="sm" onClick={() => void loadOfficialPacks()}>重试</Button>}
-          </div>
-        )}
-      </Group>
+          )}
+        </Group>
+      )}
 
       <Group
         title="插件管理"
@@ -305,7 +326,7 @@ export function PluginManagerPanel() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {plugin.modelPack?.downloadable && plugin.modelPack.state !== "ready" && (
+                  {plugin.modelPack?.downloadable && !["ready", "downloading"].includes(plugin.modelPack.state) && (
                     <Button size="sm" disabled={busy} onClick={() => void downloadModel(plugin)}>
                       <Download className="h-3.5 w-3.5" aria-hidden />
                       {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}

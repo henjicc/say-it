@@ -11,6 +11,35 @@ use super::plugin::{safe_model_file_path, ModelPackFileManifest, ModelPackManife
 
 const PROGRESS_EVENT: &str = "model-pack-progress";
 
+/// 正在安装或下载的模型包。同一个包同时只能有一个任务，否则两个任务会写同一个模型目录。
+static ACTIVE_DOWNLOADS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// 持有期间该模型包处于「正在下载」，释放时自动解除。
+pub struct DownloadLease(String);
+
+impl Drop for DownloadLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_DOWNLOADS.lock() {
+            active.remove(&self.0);
+        }
+    }
+}
+
+pub fn begin_download(plugin_id: &str) -> Result<DownloadLease, String> {
+    let mut active = ACTIVE_DOWNLOADS.lock().map_err(|_| "模型下载状态锁失败")?;
+    if !active.insert(plugin_id.to_string()) {
+        return Err("这个模型包正在下载，请等它完成".into());
+    }
+    Ok(DownloadLease(plugin_id.to_string()))
+}
+
+pub fn is_downloading(plugin_id: &str) -> bool {
+    ACTIVE_DOWNLOADS
+        .lock()
+        .is_ok_and(|active| active.contains(plugin_id))
+}
+
 #[derive(Clone, Debug)]
 pub struct PackInspection {
     pub state: String,
@@ -300,6 +329,17 @@ pub(crate) fn verify_model_file(path: &Path, file: &ModelPackFileManifest) -> Re
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn same_pack_cannot_download_twice_until_lease_released() {
+        let id = format!("test-{}", Uuid::new_v4());
+        let lease = begin_download(&id).unwrap();
+        assert!(is_downloading(&id));
+        assert!(begin_download(&id).is_err());
+        drop(lease);
+        assert!(!is_downloading(&id));
+        assert!(begin_download(&id).is_ok());
+    }
 
     fn pack() -> ModelPackManifest {
         ModelPackManifest {
