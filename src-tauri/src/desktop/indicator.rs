@@ -97,6 +97,21 @@ fn place_indicator_window(
     }
 }
 
+/// 新建的指示器 WebView 要先注册事件监听器，这段时间内发给它的事件会丢失。
+const INDICATOR_LISTENER_GRACE: Duration = Duration::from_millis(100);
+static INDICATOR_CREATED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// 距指示器 WebView 能收到事件还要等多久；早已存在的窗口不必等。
+pub(crate) fn indicator_listener_wait() -> Duration {
+    INDICATOR_CREATED_AT
+        .lock()
+        .ok()
+        .and_then(|created| *created)
+        .map_or(Duration::ZERO, |created| {
+            INDICATOR_LISTENER_GRACE.saturating_sub(created.elapsed())
+        })
+}
+
 pub(crate) fn ensure_indicator_window(
     app: &tauri::AppHandle,
 ) -> Result<tauri::WebviewWindow, String> {
@@ -121,6 +136,9 @@ pub(crate) fn ensure_indicator_window(
     let window = builder
         .build()
         .map_err(|e| format!("创建指示器窗口失败: {e}"))?;
+    if let Ok(mut created) = INDICATOR_CREATED_AT.lock() {
+        *created = Some(Instant::now());
+    }
     crate::desktop::floating_orb::sync_system_glass_window(&window);
 
     // 点击穿透：空闲时整块透明、不拦截鼠标。
