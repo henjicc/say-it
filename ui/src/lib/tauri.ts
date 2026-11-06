@@ -13,6 +13,8 @@ export const CMD = {
   installProviderPlugin: "install_provider_plugin",
   takePendingProviderPluginImports: "take_pending_provider_plugin_imports",
   downloadProviderModelPack: "download_provider_model_pack",
+  listOfficialModelPacks: "list_official_model_packs",
+  installOfficialModelPack: "install_official_model_pack",
   setProviderModelKeepLoaded: "set_provider_model_keep_loaded",
   setProviderPluginEnabled: "set_provider_plugin_enabled",
   uninstallProviderPlugin: "uninstall_provider_plugin",

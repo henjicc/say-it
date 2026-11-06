@@ -3,13 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginManagerPanel } from "./PluginManagerPanel";
 import type { PluginSnapshot, PluginSummary } from "@/features/plugins/pluginInstaller";
 
-const { cmd, listeners } = vi.hoisted(() => ({
+const { cmd, listeners, officialPacks } = vi.hoisted(() => ({
   cmd: vi.fn(),
   listeners: new Map<string, (value: unknown) => void>(),
+  officialPacks: [] as unknown[],
 }));
 vi.mock("@/lib/tauri", async (original) => ({
   ...await original<typeof import("@/lib/tauri")>(),
-  cmd,
+  // 官方模型目录单独应答，不占用各用例为插件列表排好的返回顺序。
+  cmd: (name: string, args?: unknown) => name === "list_official_model_packs" ? Promise.resolve(officialPacks) : cmd(name, args),
   on: vi.fn(async (event: string, listener: (value: unknown) => void) => {
     listeners.set(event, listener);
     return () => listeners.delete(event);
@@ -124,5 +126,33 @@ describe("被内置取代的模型包", () => {
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "下载模型" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "卸载PP-OCRv6 Tiny 本地模型" })).toBeInTheDocument();
+  });
+});
+
+describe("官方模型", () => {
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  afterEach(() => { cleanup(); officialPacks.length = 0; });
+
+  it("已装同版本显示已安装，未装的点下载会安装对应模型包", async () => {
+    officialPacks.push(
+      { id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 },
+      { id: "official.punct", name: "标点", description: "加标点", version: "1.0.0", sizeBytes: 100 },
+    );
+    cmd.mockResolvedValue(snapshot());
+    render(<PluginManagerPanel />);
+    expect(await screen.findByText("已安装")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下载标点" }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("install_official_model_pack", { packId: "official.punct" }));
+  });
+
+  it("清单已装但权重没下完时继续下载，不重装清单", async () => {
+    officialPacks.push({ id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 });
+    const partial = plugin();
+    partial.modelPack!.state = "partial";
+    cmd.mockResolvedValue(snapshot(partial));
+    render(<PluginManagerPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "继续下载本地测试" }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("download_provider_model_pack", { pluginId: "official.test" }));
+    expect(cmd).not.toHaveBeenCalledWith("install_official_model_pack", expect.anything());
   });
 });

@@ -44,6 +44,14 @@ const RESIDENCY_MEMORY: Record<string, string> = {
   "official.sherpa-sensevoice-small": "约 350 MB",
 };
 
+interface OfficialModelPack {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  sizeBytes: number;
+}
+
 function formatBytes(value: number) {
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
@@ -56,6 +64,10 @@ export function PluginManagerPanel() {
   const [busyPluginId, setBusyPluginId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
+  const [officialPacks, setOfficialPacks] = useState<OfficialModelPack[]>();
+  const [officialError, setOfficialError] = useState("");
+  const [packProgress, setPackProgress] = useState<Record<string, number>>({});
+  const [packErrors, setPackErrors] = useState<Record<string, string>>({});
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
 
   const loadSnapshot = async () => {
@@ -63,8 +75,18 @@ export function PluginManagerPanel() {
     setSnapshot(next);
   };
 
+  const loadOfficialPacks = async () => {
+    setOfficialError("");
+    try {
+      setOfficialPacks(await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks));
+    } catch (error) {
+      setOfficialError(String(error));
+    }
+  };
+
   useEffect(() => {
     void loadSnapshot().catch((error) => setMessage(`读取插件失败：${String(error)}`));
+    void loadOfficialPacks();
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const keepListener = (stop: () => void) => {
@@ -77,6 +99,7 @@ export function PluginManagerPanel() {
       packTotalBytes: number;
       state: string;
     }>(EVT.modelPackProgress, (event) => {
+      setPackProgress((current) => ({ ...current, [event.pluginId]: event.packTotalBytes ? event.packDownloadedBytes / event.packTotalBytes : 0 }));
       setSnapshot((current) => current && ({
         ...current,
         plugins: current.plugins.map((plugin) => plugin.id === event.pluginId && plugin.modelPack
@@ -167,6 +190,25 @@ export function PluginManagerPanel() {
     }
   };
 
+  /** 清单已装好但权重没下完时走继续下载，其余情况重新安装官方清单包。 */
+  const installOfficial = async (pack: OfficialModelPack, resume: boolean) => {
+    setBusyPluginId(pack.id);
+    setPackErrors(({ [pack.id]: _, ...rest }) => rest);
+    setPackProgress(({ [pack.id]: _, ...rest }) => rest);
+    try {
+      setSnapshot(await cmd<PluginSnapshot>(
+        resume ? CMD.downloadProviderModelPack : CMD.installOfficialModelPack,
+        resume ? { pluginId: pack.id } : { packId: pack.id },
+      ));
+      await refreshPluginConsumers();
+    } catch (error) {
+      setPackErrors((current) => ({ ...current, [pack.id]: String(error) }));
+      await loadSnapshot();
+    } finally {
+      setBusyPluginId("");
+    }
+  };
+
   const uninstall = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
     setMessage("");
@@ -186,6 +228,49 @@ export function PluginManagerPanel() {
 
   return (
     <InspectorBody>
+      <Group title="官方模型">
+        {officialPacks?.map((pack) => {
+          const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
+          const current = installed?.version === pack.version;
+          const ready = current && installed?.modelPack?.state === "ready";
+          const busy = busyPluginId === pack.id;
+          const progress = packProgress[pack.id];
+          const action = current ? "继续下载" : installed ? "更新" : "下载";
+          return (
+            <div key={pack.id} className="px-3.5 py-3">
+              <div className="flex items-center gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
+                    <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
+                </div>
+                {ready && !busy ? (
+                  <span className="text-xs text-[var(--color-fg-subtle)]">已安装</span>
+                ) : current && installed?.modelPack?.state === "downloading" && !busy ? (
+                  <span role="status" className="text-xs text-[var(--color-fg-subtle)]">下载中…</span>
+                ) : (
+                  <Button size="sm" aria-label={`${action}${pack.name}`} disabled={Boolean(busyPluginId) || scanning} onClick={() => void installOfficial(pack, current)}>
+                    <Download className="h-3.5 w-3.5" aria-hidden />
+                    {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : action}
+                  </Button>
+                )}
+              </div>
+              {packErrors[pack.id] && <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">{packErrors[pack.id]}</p>}
+            </div>
+          );
+        })}
+        {!officialPacks && (
+          <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+            <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+              {officialError ? `读取官方模型列表失败：${officialError}` : "正在读取官方模型列表…"}
+            </p>
+            {officialError && <Button size="sm" onClick={() => void loadOfficialPacks()}>重试</Button>}
+          </div>
+        )}
+      </Group>
+
       <Group
         title="插件管理"
         description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。"

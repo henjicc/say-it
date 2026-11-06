@@ -3,7 +3,7 @@
     "apiVersion": 5,
     "id": "official.sherpa-paraformer-online",
     "name": "Paraformer Online 中英双语 INT8",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "provider": {
       "id": "local-paraformer",
       "displayName": "本地 Paraformer",
@@ -36,19 +36,19 @@
           "path": "encoder.int8.onnx",
           "sha256": "81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a",
           "sizeBytes": 165462184,
-          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/encoder.int8.onnx" }
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.sherpa-paraformer-online/encoder.int8.onnx" }
         },
         {
           "path": "decoder.int8.onnx",
           "sha256": "f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f",
           "sizeBytes": 71664561,
-          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/decoder.int8.onnx" }
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.sherpa-paraformer-online/decoder.int8.onnx" }
         },
         {
           "path": "tokens.txt",
           "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6",
           "sizeBytes": 75756,
-          "download": { "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main/tokens.txt" }
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.sherpa-paraformer-online/tokens.txt" }
         }
       ],
       "params": {
