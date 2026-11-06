@@ -497,6 +497,10 @@ export interface DictPrefs extends DspParams {
   cueEnabled: boolean;
   cueStart: CueKind;
   cueEnd: CueKind;
+  /** 两次听写之间保持音频输出，避免音箱在开关时发出呲啦声。 */
+  cueHoldEnabled: boolean;
+  /** 保持多少分钟，0 表示一直保持。 */
+  cueHoldMinutes: number;
   debugLog: boolean;
   localRulesEnabled: boolean;
   localRules: LocalRule[];
@@ -539,6 +543,8 @@ function defaults(): DictPrefs {
     asrModel: DEFAULT_REALTIME_ASR_MODEL,
     keepAliveMs: 60000,
     cueEnabled: true,
+    cueHoldEnabled: true,
+    cueHoldMinutes: 10,
     cueStart: "beep-up",
     cueEnd: "beep-down",
     debugLog: false,

@@ -15,6 +15,14 @@ import { CMD, cmd } from "@/lib/tauri";
 
 const DEFAULT_INPUT_VALUE = "";
 const SLOT_LABEL: Record<CueSlot, string> = { start: "开始", end: "结束" };
+const HOLD_OPTIONS = [
+  { value: 1, label: "1 分钟" },
+  { value: 5, label: "5 分钟" },
+  { value: 10, label: "10 分钟" },
+  { value: 30, label: "30 分钟" },
+  { value: 60, label: "1 小时" },
+  { value: 0, label: "一直保持" },
+];
 
 /** 音色表里的一格：左边试听，右边选中。 */
 function CueCell({
@@ -224,6 +232,36 @@ export function SettingsMicCuePanel() {
           <Button size="sm" onClick={() => setPickerOpen(true)}>
             选择…
           </Button>
+        </Row>
+        <Row
+          label="保持音频输出"
+          hint="两次听写之间不关闭音频输出，部分音箱就不会在提示音前后发出呲啦声。保持期间系统会认为一直在播放声音。"
+        >
+          <Switch checked={prefs.cueHoldEnabled} onChange={(v) => patch({ cueHoldEnabled: v })} label="保持音频输出" />
+        </Row>
+        <Row
+          label="保持时长"
+          hint="最后一次提示音之后再保持多久。"
+          disabled={!prefs.cueHoldEnabled}
+          message={
+            prefs.cueHoldEnabled && prefs.cueHoldMinutes === 0 ? (
+              <span className="text-[var(--color-fg-muted)]">一直保持时，系统不会自动睡眠，蓝牙耳机也不会待机。</span>
+            ) : undefined
+          }
+        >
+          <Select
+            className="w-40"
+            aria-label="保持时长"
+            disabled={!prefs.cueHoldEnabled}
+            value={String(prefs.cueHoldMinutes)}
+            onChange={(e) => patch({ cueHoldMinutes: Number(e.target.value) })}
+          >
+            {HOLD_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
         </Row>
       </Group>
       <CuePicker

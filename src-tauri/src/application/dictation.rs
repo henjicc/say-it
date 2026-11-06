@@ -218,6 +218,9 @@ struct DictationPrefs {
     cue_enabled: bool,
     cue_start: String,
     cue_end: String,
+    cue_hold_enabled: bool,
+    /// 提示音输出保持的分钟数，0 表示一直保持。
+    cue_hold_minutes: u64,
     local_rules_enabled: bool,
     local_rules: Vec<LocalRule>,
     smart_processing_enabled: bool,
@@ -254,6 +257,8 @@ impl Default for DictationPrefs {
             cue_enabled: true,
             cue_start: "beep-up".into(),
             cue_end: "beep-down".into(),
+            cue_hold_enabled: true,
+            cue_hold_minutes: 10,
             local_rules_enabled: false,
             local_rules: vec![],
             smart_processing_enabled: false,
@@ -1056,6 +1061,9 @@ async fn start_session(
     if prefs.asr_model.trim().is_empty() {
         prefs.asr_model = crate::providers::registry::default_realtime_model().into();
         dlog!("[dictation] 检测到空的听写模型配置，已回退到默认实时模型");
+    }
+    if prefs.cue_enabled {
+        crate::desktop::warm_cue_output();
     }
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
@@ -3921,6 +3929,23 @@ fn expand_replacement(replacement: &str, caps: &Captures<'_>, source: &str) -> S
         }
     }
     out
+}
+
+/// 按提示音设置打开或关闭原生输出流：应用启动时、每次保存听写设置后调用。
+pub(crate) fn apply_cue_output(app: &AppHandle) {
+    let prefs = app
+        .state::<RuntimeState>()
+        .app_settings
+        .lock()
+        .ok()
+        .and_then(|settings| serde_json::from_value::<DictationPrefs>(settings.dictation_prefs.clone()).ok());
+    let Some(prefs) = prefs else { return };
+    let hold = match (prefs.cue_hold_enabled, prefs.cue_hold_minutes) {
+        (false, _) => crate::desktop::CueHold::Off,
+        (true, 0) => crate::desktop::CueHold::Forever,
+        (true, minutes) => crate::desktop::CueHold::For(Duration::from_secs(minutes * 60)),
+    };
+    crate::desktop::configure_cue_output(prefs.cue_enabled, hold);
 }
 
 /// 听写开始/结束提示音：能原生播放就立即播放，与指示器同时出现；
