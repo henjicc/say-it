@@ -32,6 +32,7 @@ use super::sdk_runtime::{
     HostRuntimeRecorder, SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE,
     AI_SDK_GROQ_BUNDLE, AI_SDK_LLM_MODULES_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
 };
+use super::shared_http::SharedHttpClient;
 use super::ProviderProfile;
 
 mod sdk_upload;
@@ -119,6 +120,15 @@ fn trace_origin(payload: &Value) -> Option<String> {
     let url = url::Url::parse(payload.get("url")?.as_str()?).ok()?;
     Some(url.origin().ascii_serialization())
 }
+
+/// 插件的 HTTP 请求共用一个连接池。客户端不跟随重定向：每一跳都由 `prepare_fetch_redirect`
+/// 按插件权限校验。
+static HTTP_CLIENT: SharedHttpClient<reqwest::Client> = SharedHttpClient::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("插件 HTTP 客户端初始化失败")
+});
 
 fn wait_for_host_io<T, F>(future: F) -> Result<T, String>
 where
@@ -925,10 +935,7 @@ impl HostState {
         let cancelled = self.cancelled.clone();
         let deadline = self.deadline.clone();
         wait_for_host_io(async move {
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|error| error.to_string())?;
+            let client = HTTP_CLIENT.get();
             for _ in 0..=5 {
                 let mut request = client.request(method.clone(), url.clone());
                 for (name, value) in &headers {

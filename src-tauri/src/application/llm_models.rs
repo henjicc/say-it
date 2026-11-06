@@ -8,7 +8,6 @@ use crate::providers::{
 use crate::state::RuntimeState;
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ProviderConfig};
-use genai::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use crate::cancellation::CancellationFlag;
@@ -232,7 +231,7 @@ async fn fetch_model_names(
     let provider_config = provider_config(profile)?;
     timeout(
         MODEL_LIST_TIMEOUT,
-        Client::default().all_model_names(adapter_kind, provider_config),
+        super::smart_text::genai_builder().build().all_model_names(adapter_kind, provider_config),
     )
     .await
     .map_err(|_| "获取模型列表超时（20 秒）".to_string())?

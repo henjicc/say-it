@@ -16,6 +16,7 @@ pub mod plugin_runtime;
 pub mod plugin_secrets;
 pub mod registry;
 pub mod sdk_runtime;
+pub(crate) mod shared_http;
 #[cfg(test)]
 mod testing;
 
