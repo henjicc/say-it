@@ -539,7 +539,7 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if !manifest.provider.capabilities.iter().any(|capability| {
         matches!(
             capability.as_str(),
-            "asr" | "translation" | "customization" | "ocr" | "llm"
+            "asr" | "translation" | "customization" | "ocr" | "llm" | "punctuation"
         )
     }) {
         return Err("插件供应商未声明受支持的能力".into());
@@ -578,11 +578,20 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                 .provider
                 .capabilities
                 .iter()
-                .any(|capability| !matches!(capability.as_str(), "asr" | "ocr")))
+                .any(|capability| !matches!(capability.as_str(), "asr" | "ocr" | "punctuation")))
     {
-        return Err("模型包能力只允许 asr 或 ocr".into());
+        return Err("模型包能力只允许 asr、ocr 或 punctuation".into());
     }
     let is_model_pack = manifest.runtime.kind == "model-pack";
+    if !is_model_pack
+        && manifest
+            .provider
+            .capabilities
+            .iter()
+            .any(|capability| capability == "punctuation")
+    {
+        return Err("punctuation 能力只能由模型包提供".into());
+    }
     if !is_model_pack && manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
         return Err(format!(
             "不支持的宿主 API 版本：{}",
@@ -700,18 +709,18 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             return Err("插件入口不能通过符号链接跳出插件目录".into());
         }
     }
-    // OCR 能力按供应商而非模型选择，纯 OCR 插件允许不声明模型；其余能力仍要求至少一个模型。
-    let ocr_only = manifest
+    // OCR 与标点按供应商而非模型选择，只有这两种能力的插件允许不声明模型；其余能力仍要求至少一个模型。
+    let provider_selected_only = manifest
         .provider
         .capabilities
         .iter()
-        .all(|capability| matches!(capability.as_str(), "ocr" | "customization"))
+        .all(|capability| matches!(capability.as_str(), "ocr" | "punctuation" | "customization"))
         && manifest
             .provider
             .capabilities
             .iter()
-            .any(|capability| capability == "ocr");
-    if manifest.models.is_empty() && !ocr_only {
+            .any(|capability| matches!(capability.as_str(), "ocr" | "punctuation"));
+    if manifest.models.is_empty() && !provider_selected_only {
         return Err("插件至少需要声明一个模型".into());
     }
     if manifest.source.namespace != manifest.id {
@@ -863,13 +872,18 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         .ok_or("模型包缺少 modelPack 配置")?;
     if !matches!(
         pack.engine.as_str(),
-        "sherpa-onnx-online" | "sherpa-onnx-offline"
+        "sherpa-onnx-online" | "sherpa-onnx-offline" | "sherpa-onnx-punctuation"
     ) && !is_superseded_ppocr(manifest)
     {
         return Err(format!(
             "当前版本不支持模型引擎：{}；请升级软件",
             pack.engine
         ));
+    }
+    let punctuation_engine = pack.engine == "sherpa-onnx-punctuation";
+    let punctuation_capability = manifest.provider.capabilities == ["punctuation"];
+    if punctuation_engine != punctuation_capability {
+        return Err("标点模型包必须且只能声明 punctuation 能力".into());
     }
     if !pack.params.is_object() {
         return Err("modelPack.params 必须是 JSON 对象".into());
@@ -921,6 +935,7 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
     let required_params: &[&str] = match pack.engine.as_str() {
         "sherpa-onnx-online" => &["encoder", "decoder", "tokens"],
         "sherpa-onnx-offline" => &["model", "tokens", "vadModel"],
+        "sherpa-onnx-punctuation" => &["model"],
         "ppocr-mnn" => &["detModel", "recModel", "charset"],
         _ => unreachable!(),
     };
@@ -1146,6 +1161,24 @@ impl PluginRegistry {
                     .then_some(spec)
             })
             .collect()
+    }
+
+    /// 已启用且权重就绪的标点模型包；本地识别结果按它补标点。
+    pub fn punctuation_model(&self, settings: &ProviderSettings) -> Option<LocalModelSpec> {
+        self.plugins.iter().find_map(|plugin| {
+            let pack = plugin.manifest.model_pack.as_ref()?;
+            if pack.engine != "sherpa-onnx-punctuation" {
+                return None;
+            }
+            let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
+            let enabled = settings.profiles.iter().any(|profile| {
+                profile.id == spec.provider_id
+                    && profile.kind == format!("model-pack:{}", spec.plugin_id)
+                    && profile.enabled
+            });
+            (enabled && super::model_download::inspect_pack(&spec.model_dir, pack).state == "ready")
+                .then_some(spec)
+        })
     }
 
     pub fn set_keep_loaded(
@@ -1471,7 +1504,12 @@ impl PluginRegistry {
                     merge_missing_config(&mut profile.config, &provider.config);
                 }
                 None => settings.profiles.push(ProviderProfile {
-                    keep_loaded: false,
+                    // 标点模型小、每次听写都要用，默认常驻，免得每次多等一次加载。
+                    keep_loaded: plugin
+                        .manifest
+                        .model_pack
+                        .as_ref()
+                        .is_some_and(|pack| pack.engine == "sherpa-onnx-punctuation"),
                     id: provider.id.clone(),
                     kind: profile_kind,
                     display_name: provider.display_name.clone(),
@@ -2055,7 +2093,7 @@ mod tests {
         )
         .unwrap();
         let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("模型包能力只允许 asr 或 ocr"));
+        assert!(error.contains("模型包能力只允许 asr、ocr 或 punctuation"));
         std::fs::remove_dir_all(root).unwrap();
     }
     fn resident_registry(root: &Path) -> PluginRegistry {
@@ -2263,6 +2301,33 @@ mod tests {
         )
         .unwrap();
         validate_plugin_dir(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn punctuation_descriptor_needs_no_models_but_only_punctuation_capability() {
+        let value: Value = serde_json::from_str(include_str!(
+            "../../../model-packs/ct-punct-zh-en-int8.json"
+        ))
+        .unwrap();
+        let mut manifest = value["manifest"].clone();
+        let root =
+            std::env::temp_dir().join(format!("sayit-punct-descriptor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        for file in manifest["modelPack"]["files"].as_array().unwrap() {
+            std::fs::write(root.join(file["path"].as_str().unwrap()), b"x").unwrap();
+        }
+        let write = |manifest: &Value| {
+            std::fs::write(root.join("manifest.json"), serde_json::to_vec(manifest).unwrap())
+                .unwrap()
+        };
+        write(&manifest);
+        validate_plugin_dir(&root).unwrap();
+        manifest["provider"]["capabilities"] = serde_json::json!(["asr", "punctuation"]);
+        write(&manifest);
+        assert!(validate_plugin_dir(&root)
+            .unwrap_err()
+            .contains("标点模型包必须且只能声明 punctuation 能力"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

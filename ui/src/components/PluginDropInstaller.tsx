@@ -291,5 +291,5 @@ const TRUST_LABEL: Record<PackagePreview["trust"], string> = {
 };
 
 function capabilityLabel(capability: string) {
-  return ({ asr: "语音识别", ocr: "文字识别", translation: "翻译", customization: "自定义词表" } as Record<string, string>)[capability] || capability;
+  return ({ asr: "语音识别", ocr: "文字识别", translation: "翻译", customization: "自定义词表", punctuation: "标点" } as Record<string, string>)[capability] || capability;
 }

@@ -247,6 +247,8 @@ struct DictationPrefs {
     dictation_silence_disconnect_enabled: bool,
     dictation_silence_disconnect_ms: u64,
     dictation_silence_threshold: f32,
+    /// 本地模型包识别结果是否用标点模型补标点；未装标点模型包时不生效。
+    local_punctuation_enabled: bool,
     #[serde(flatten)]
     dsp: DspParams,
 }
@@ -280,6 +282,7 @@ impl Default for DictationPrefs {
             dictation_silence_disconnect_enabled: true,
             dictation_silence_disconnect_ms: 5_000,
             dictation_silence_threshold: 0.0001,
+            local_punctuation_enabled: true,
             dsp: DspParams::default(),
         }
     }
@@ -2042,6 +2045,47 @@ fn freeze_recorded_duration(session: &mut Session) {
     }
 }
 
+/// 本地模型包的识别结果没有标点；装了标点模型包且开关打开时先补上，再交给智能处理与本地规则。
+/// 补标点失败只记日志、沿用原文，不让整次听写失败。
+async fn punctuate_local_asr_text(
+    state: &RuntimeState,
+    prefs: &DictationPrefs,
+    text: String,
+) -> String {
+    if !prefs.local_punctuation_enabled || text.is_empty() {
+        return text;
+    }
+    let spec = (|| -> Result<_, String> {
+        let registry = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
+        if registry.local_model_for_model(&prefs.asr_model).is_none() {
+            return Ok(None);
+        }
+        let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+        Ok(registry.punctuation_model(&providers))
+    })();
+    let result = match spec {
+        Ok(None) => return text,
+        Ok(Some(spec)) => {
+            let input = text.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::providers::local_asr::add_punctuation(&spec, &input)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result)
+        }
+        Err(error) => Err(error),
+    };
+    result.unwrap_or_else(|error| {
+        crate::application::diagnostics::event(
+            "error",
+            "dictation.punctuationFailed",
+            serde_json::json!({ "message": error }),
+        );
+        text
+    })
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -2227,6 +2271,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
     }
     #[cfg(debug_assertions)]
     crate::application::dev_trace::mark("trace.historySaved", serde_json::json!({}));
+    // 历史里保留识别原文，标点只加在交给后续处理和输出的文本上；
+    // 是否做智能处理已在上面按原文字数判断。
+    let text = punctuate_local_asr_text(&state, &prefs, text).await;
     let active_app_context = if assistant_request.is_some() {
         drop(active_app_context);
         String::new()

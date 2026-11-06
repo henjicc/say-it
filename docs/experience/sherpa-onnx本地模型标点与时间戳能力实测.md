@@ -32,11 +32,12 @@
 `use_itn=false` 完整；但三句拼接时两者都完整。更像音频开头缺引导静音的边界效应，不是 ITN 的
 确定性缺陷，暂不据此改默认值。
 
-### 若要加标点
+### 外挂标点模型
 
-sherpa-onnx 的官方做法是外挂独立标点模型（ct-transformer），`sherpa-onnx` crate 已提供
-`OfflinePunctuation::add_punctuation()`。需要新增一个标点模型包并在识别后处理链上调用，
-属于新功能。
+已用官方 CT-Transformer 中英 INT8（`model-packs/ct-punct-zh-en-int8.json`）补标点。本机实测：
+加载约 0.34 秒，每句 4～10 毫秒；中文逗号、句号、问号基本正确。模型对英文也输出全角标点，
+`local_asr/punctuation.rs` 在两侧都是英文字母或数字时换成半角。该 INT8 权重只在 sherpa-onnx
+GitHub Release 的 tar.bz2 里，Hugging Face 只有 281MB 的 fp32 版，所以官方包只做内嵌版。
 
 ## 时间戳：SenseVoice 支持，Paraformer 不支持
 

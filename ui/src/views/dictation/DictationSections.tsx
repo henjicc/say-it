@@ -4,7 +4,7 @@ import { Switch } from "@/components/ui/Switch";
 
 import { Tabs } from "@/components/ui/Tabs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
-import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAudioDevices } from "@/features/audio/devices";
 import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
@@ -14,6 +14,7 @@ import { useDictationStore } from "@/store/useDictationStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { useMouseGestureStore } from "@/store/useMouseGestureStore";
+import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
 
 const DEFAULT_INPUT_VALUE = "";
@@ -87,6 +88,30 @@ export function AsrModelRow() {
   );
 }
 
+/** 只有本地模型包识别需要补标点，其他模型不显示这一行。 */
+export function LocalPunctuationRow() {
+  useModelCatalogRevision();
+  const asrModel = useDictPrefs((s) => s.prefs.asrModel);
+  const enabled = useDictPrefs((s) => s.prefs.localPunctuationEnabled);
+  const patch = useDictPrefs((s) => s.patch);
+  const pack = useProviderStore((s) => s.profiles.find((profile) => profile.capabilities.includes("punctuation")));
+  if (!modelInfo(asrModel)?.protocol.startsWith("local-sherpa")) return null;
+  if (!pack?.enabled) {
+    return (
+      <Row label="自动加标点" hint="本地模型识别出的文字没有标点。安装并启用标点模型包后会自动补上。">
+        <button type="button" onClick={() => useUiStore.getState().openModels("plugins")} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
+          {pack ? "启用标点模型包" : "安装标点模型包"}
+        </button>
+      </Row>
+    );
+  }
+  return (
+    <Row label="自动加标点" hint="本地模型识别出的文字没有标点，开启后先补上标点，再做智能处理和本地规则。" controlId="dictation-local-punctuation">
+      <Switch id="dictation-local-punctuation" checked={enabled} onChange={(checked) => patch({ localPunctuationEnabled: checked })} />
+    </Row>
+  );
+}
+
 export function InjectMethodRow() {
   const injectMethod = useDictationStore((s) => s.injectMethod);
   return (
@@ -114,6 +139,7 @@ export function BasicsSection() {
       <Group title="识别">
         <MicRow />
         <AsrModelRow />
+        <LocalPunctuationRow />
         <Row label="热词与上下文">
           <button type="button" onClick={openLexicon} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
             {hotwordCount ? `${hotwordCount} 个热词` : "去词库添加"}
