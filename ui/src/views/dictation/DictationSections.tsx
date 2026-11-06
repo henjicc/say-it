@@ -99,7 +99,7 @@ export function LocalPunctuationRow() {
   if (!pack?.enabled) {
     return (
       <Row label="自动加标点" hint="本地模型识别出的文字没有标点。安装并启用标点模型包后会自动补上。">
-        <button type="button" onClick={() => useUiStore.getState().openModels("plugins")} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
+        <button type="button" onClick={() => useUiStore.getState().openModels("plugins")} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-text)] hover:bg-[var(--color-surface-hover)]">
           {pack ? "启用标点模型包" : "安装标点模型包"}
         </button>
       </Row>
@@ -141,7 +141,7 @@ export function BasicsSection() {
         <AsrModelRow />
         <LocalPunctuationRow />
         <Row label="热词与上下文">
-          <button type="button" onClick={openLexicon} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-light)] hover:bg-[var(--color-surface-hover)]">
+          <button type="button" onClick={openLexicon} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-text)] hover:bg-[var(--color-surface-hover)]">
             {hotwordCount ? `${hotwordCount} 个热词` : "去词库添加"}
           </button>
         </Row>

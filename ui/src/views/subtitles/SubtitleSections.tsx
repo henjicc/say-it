@@ -20,7 +20,7 @@ export function SubtitleShortcutRow() {
   const { capturing, shortcutLabel } = useSubtitleStore();
   return (
     <Row label="快捷键" hint="用快捷键开始或停止实时字幕。">
-      <span className={cn("text-[13px]", capturing ? "text-[var(--color-accent-light)]" : shortcutLabel ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)]")}>
+      <span className={cn("text-[13px]", capturing ? "text-[var(--color-accent-text)]" : shortcutLabel ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)]")}>
         {capturing ? "请按下按键…" : shortcutLabel || "未设置"}
       </span>
       {!capturing && shortcutLabel && <Button size="sm" onClick={clearSubtitleShortcut}>清除</Button>}

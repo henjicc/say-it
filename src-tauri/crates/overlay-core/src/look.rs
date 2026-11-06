@@ -47,7 +47,7 @@ pub struct Theme {
 impl Theme {
     pub const DEFAULT: Self = Self {
         tone: Tone::Dark,
-        accent: [40, 110, 200],
+        accent: [39, 103, 234],
         custom_background: None,
     };
 

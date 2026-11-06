@@ -42,6 +42,7 @@ import {
   type PanState,
   type CueNeighbors,
 } from "./subtitle-editor/utils";
+import { useThemeStore } from "@/store/useThemeStore";
 import { buildWaveformColumns, drawWaveformCanvas, type WaveformColumn } from "./subtitle-editor/waveform";
 import { CueTextarea } from "./subtitle-editor/CueTextarea";
 import { TimeControl } from "./subtitle-editor/TimeControl";
@@ -593,6 +594,8 @@ export function SubtitleEditor({
     if (audioRef.current) audioRef.current.playbackRate = rate;
   }, [rate]);
 
+  // 画布颜色读自主题令牌，切换主题后也要重绘。
+  const theme = useThemeStore((s) => s.theme);
   // 画布只覆盖时间轴的可视窗口，跟随横向滚动平移重绘。详见 waveform.ts 的说明：
   // 跟随整条时间轴会在十几分钟的音频上触及浏览器画布上限，整块波形静默变空白。
   const redrawWaveform = useCallback(() => {
@@ -608,7 +611,7 @@ export function SubtitleEditor({
       container.scrollLeft,
       timelineWidth,
     );
-  }, [timelineWidth, waveformColumns, waveformZoom]);
+  }, [theme, timelineWidth, waveformColumns, waveformZoom]);
 
   useEffect(() => {
     redrawWaveform();
@@ -843,7 +846,7 @@ export function SubtitleEditor({
             )}
           </div>
 
-          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-line)_78%,transparent)] bg-[rgba(10,13,19,0.75)]" style={{ top: `${CUE_LANE_TOP}px`, height: `${CUE_LANE_HEIGHT}px` }} />
+          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-line)_78%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-sidebar)_75%,transparent)]" style={{ top: `${CUE_LANE_TOP}px`, height: `${CUE_LANE_HEIGHT}px` }} />
 
           {cues.map((cue) => {
             const left = (cue.beginMs / 1000) * pxPerSec;
@@ -945,7 +948,7 @@ export function SubtitleEditor({
                       "rounded-[var(--radius-pill)] px-1.5 py-0.5 text-[10px] leading-none",
                       cue.badge.tone === "warn"
                         ? "bg-[color-mix(in_srgb,var(--color-warn)_16%,transparent)] text-[var(--color-warn)]"
-                        : "bg-[var(--accent-soft-strong)] text-[var(--color-accent-light)]",
+                        : "bg-[var(--accent-soft-strong)] text-[var(--color-accent-text)]",
                     )}
                   >
                     {cue.badge.label}

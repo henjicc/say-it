@@ -43,7 +43,7 @@ export function ApiKeyLink({
   return (
     <a
       href={url}
-      className="inline-flex items-center gap-1 text-[var(--color-accent-light)] underline-offset-4 hover:underline"
+      className="inline-flex items-center gap-1 text-[var(--color-accent-text)] underline-offset-4 hover:underline"
       onClick={(event) => {
         event.preventDefault();
         void cmd(CMD.openExternalLink, { url }).catch((error) => onError(String(error)));

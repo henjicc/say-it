@@ -170,7 +170,7 @@ export function TranscriptAlignPanel() {
             ) : stats && stats.replaced > 0 ? (
               <>
                 与音频差异过大的片段已改用识别文本，音频中文稿没写但确实说了的内容也已补入（
-                <span className="text-[var(--color-accent-light)]">「识别」标注</span>
+                <span className="text-[var(--color-accent-text)]">「识别」标注</span>
                 ，共 {stats.replaced} 处），其余部分仍完全按文稿输出。
               </>
             ) : (

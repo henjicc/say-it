@@ -49,7 +49,7 @@ body,
 .assistant-title-button.is-active,
 .assistant-composer.is-listening .assistant-composer-button {
   background: var(--accent-soft);
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
 }
 
 .assistant-title-button:focus-visible,
@@ -162,7 +162,7 @@ body,
   transform: scaleY(0.09);
   transform-origin: center;
   border-radius: 999px;
-  background: var(--color-accent-light);
+  background: var(--color-accent-text);
   will-change: transform;
 }
 
@@ -208,7 +208,7 @@ body,
   color: var(--color-fg-muted);
 }
 .assistant-markdown a {
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }

@@ -158,7 +158,7 @@ export function ContextDebugApp() {
         className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-bg-titlebar)] px-3"
       >
         <div data-tauri-drag-region className="flex items-center gap-2 text-sm font-medium">
-          <Crosshair className="h-4 w-4 text-[var(--color-accent-light)]" strokeWidth={1.8} aria-hidden />
+          <Crosshair className="h-4 w-4 text-[var(--color-accent-text)]" strokeWidth={1.8} aria-hidden />
           当前软件上下文调试
         </div>
         <IconButton label="关闭上下文调试" className="no-drag" onClick={() => void close()}>
@@ -177,7 +177,7 @@ export function ContextDebugApp() {
                 调试窗口会保持置顶。先在其他软件中点击目标输入区，再按快捷键捕获一次；结果不会保存，第三方 OCR 模型仍会按已确认的隐私授权发送截图。
               </p>
             </div>
-            <kbd className="rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs text-[var(--color-accent-light)]">
+            <kbd className="rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs text-[var(--color-accent-text)]">
               {contextDebugShortcutLabel} {contextDebugShortcutHint}
             </kbd>
           </div>

@@ -29,9 +29,9 @@ const VARIANT_STYLES: Record<TabsVariant, {
   inactive: string;
 }> = {
   page: {
-    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface)] p-0.5",
-    button: "h-full rounded-[var(--radius-sm)] px-3 text-[13px]",
-    active: "bg-[var(--color-surface-strong)] text-[var(--color-fg)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
+    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
     inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
   subpage: {
@@ -41,9 +41,9 @@ const VARIANT_STYLES: Record<TabsVariant, {
     inactive: "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]",
   },
   view: {
-    list: "inline-flex h-[var(--control-h-sm)] w-fit items-center gap-0.5 rounded-[var(--radius-sm)] bg-[var(--color-surface)] p-0.5",
-    button: "h-full rounded-[4px] px-2.5 text-xs",
-    active: "bg-[var(--color-surface-strong)] text-[var(--color-fg)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
+    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
     inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
 };

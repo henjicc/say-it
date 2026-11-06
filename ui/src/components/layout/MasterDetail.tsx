@@ -86,15 +86,15 @@ export function NodeList<K extends string>({
                 "flex h-11 w-full items-center gap-3 rounded-[var(--radius-md)] border px-4 text-left transition-colors duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                 selected
-                  ? "border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)]"
+                  ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                   : "border-transparent hover:bg-[var(--color-surface-hover)]/60",
               )}
             >
-              <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", selected ? "text-[var(--color-fg-muted)]" : "text-[var(--color-fg-subtle)]")}>
+              <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", !selected && "text-[var(--color-fg-subtle)]")}>
                 {item.icon}
               </span>
-              <span className={cn("min-w-0 flex-1 truncate text-sm", selected ? "text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]")}>{item.label}</span>
-              {item.off && <span className="flex-none text-xs text-[var(--color-fg-subtle)]">已关闭</span>}
+              <span className={cn("min-w-0 flex-1 truncate text-sm", !selected && "text-[var(--color-fg-muted)]")}>{item.label}</span>
+              {item.off && <span className={cn("flex-none text-xs", !selected && "text-[var(--color-fg-subtle)]")}>已关闭</span>}
             </button>
           </Fragment>
         );

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
+import { cn } from "@/lib/cn";
 import { hideSubtitlePreview, showSubtitlePreview, syncSubtitleIndicator, toggleSubtitles } from "@/features/subtitles/controller";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { useUiStore, type SubtitleNodeKey } from "@/store/useUiStore";
@@ -57,7 +58,7 @@ export function SubtitlesPage() {
   return (
     <MasterDetail
       title="字幕"
-      titleRight={<span className="text-xs text-[var(--color-fg-subtle)]">{running ? "运行中" : "未运行"}</span>}
+      titleRight={<span className={cn("text-xs", running ? "text-[var(--color-accent-text)]" : "text-[var(--color-fg-subtle)]")}>{running ? "运行中" : "未运行"}</span>}
       list={<NodeList ariaLabel="字幕设置" items={items} active={node} onSelect={setNode} />}
       listFooter={<>
         <Button
