@@ -67,7 +67,11 @@
     "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
     system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
     "PingFang SC", sans-serif;
-  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  /* 等宽字体不含中文；路径、日志里的中文要落到与正文相同的黑体，否则会回落到系统等宽宋体。 */
+  --font-mono:
+    "Cascadia Mono", "Consolas", ui-monospace,
+    "HarmonyOS Sans SC", "MiSans", "Source Han Sans SC", "Noto Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", monospace;
 }
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
