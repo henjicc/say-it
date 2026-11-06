@@ -91,7 +91,7 @@ input {
 
 .orb-menu-close:focus-visible,
 .orb-menu-action:focus-visible {
-  outline: 2px solid var(--color-accent-light);
+  outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
 }
 
@@ -170,12 +170,8 @@ input {
   width: 17px;
   height: 17px;
   flex: none;
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
   stroke-width: 1.8;
-}
-
-[data-ui-tone="light"] .orb-menu-action > svg {
-  color: var(--color-accent-dark);
 }
 
 .orb-menu-action > span {

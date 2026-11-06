@@ -13,6 +13,8 @@ export const CMD = {
   installProviderPlugin: "install_provider_plugin",
   takePendingProviderPluginImports: "take_pending_provider_plugin_imports",
   downloadProviderModelPack: "download_provider_model_pack",
+  listOfficialModelPacks: "list_official_model_packs",
+  installOfficialModelPack: "install_official_model_pack",
   setProviderModelKeepLoaded: "set_provider_model_keep_loaded",
   setProviderPluginEnabled: "set_provider_plugin_enabled",
   uninstallProviderPlugin: "uninstall_provider_plugin",
@@ -163,6 +165,15 @@ export const CMD = {
   clearDiagnosticLogs: "clear_diagnostic_logs",
   openDiagnosticDirectory: "open_diagnostic_directory",
   exportDiagnosticBundle: "export_diagnostic_bundle",
+  // 以下命令只在开发构建注册，由开发者页面调用
+  devTraceStatus: "dev_trace_status",
+  devTraceRuns: "dev_trace_runs",
+  devTraceRun: "dev_trace_run",
+  devTraceStats: "dev_trace_stats",
+  devTraceSmartTest: "dev_trace_smart_test",
+  devBenchModels: "dev_bench_models",
+  devBenchState: "dev_bench_state",
+  devBenchRun: "dev_bench_run",
 } as const;
 
 export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";

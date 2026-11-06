@@ -60,7 +60,7 @@ button {
 .floating-orb.hover-tracked:not(:disabled) {
   border-color: var(--accent-ring);
   background: color-mix(in srgb, var(--color-bg) 78%, var(--color-accent) 22%);
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
 }
 
 .floating-orb.glass {
@@ -84,7 +84,7 @@ button {
       calc(var(--orb-glass-tint, 10%) + 14%),
     transparent
   );
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
 }
 
 .floating-orb:not(:disabled):hover .orb-icon-shell,
@@ -129,7 +129,7 @@ button {
 }
 
 .floating-orb.armed {
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
   border-color: var(--accent-ring);
   cursor: pointer;
 }
@@ -143,12 +143,12 @@ button {
 .floating-orb.moving,
 .floating-orb.processing,
 .floating-orb.smartProcessing {
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
 }
 
 .floating-orb.success,
 .floating-orb.submitted {
-  color: var(--color-accent-light);
+  color: var(--color-accent-text);
   border-color: var(--accent-ring);
 }
 
@@ -158,15 +158,15 @@ button {
 
 .floating-orb.fallback,
 .floating-orb.busy {
-  color: #ffd166;
-  border-color: rgba(255, 209, 102, 0.38);
+  color: var(--color-warn);
+  border-color: color-mix(in srgb, var(--color-warn) 38%, transparent);
 }
 
 .floating-orb.error,
 .floating-orb.error:not(:disabled):hover,
 .floating-orb.error.hover-tracked:not(:disabled) {
-  color: #ff6b6b;
-  border-color: rgba(255, 107, 107, 0.42);
+  color: var(--color-err);
+  border-color: color-mix(in srgb, var(--color-err) 42%, transparent);
   cursor: pointer;
 }
 
@@ -237,20 +237,6 @@ button {
   border-radius: 999px;
   background: var(--color-accent);
   transition: height 70ms ease-out;
-}
-
-[data-ui-tone="light"] .floating-orb.moving,
-[data-ui-tone="light"] .floating-orb.armed,
-[data-ui-tone="light"] .floating-orb.processing,
-[data-ui-tone="light"] .floating-orb.smartProcessing,
-[data-ui-tone="light"] .floating-orb.success,
-[data-ui-tone="light"] .floating-orb.submitted {
-  color: var(--color-accent-dark);
-}
-
-[data-ui-tone="light"] .floating-orb:not(:disabled):hover,
-[data-ui-tone="light"] .floating-orb.hover-tracked:not(:disabled) {
-  color: var(--color-accent-dark);
 }
 
 .orb-wave-bar:nth-child(1),

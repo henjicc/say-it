@@ -24,8 +24,7 @@ export function PluginDropInstaller() {
   const sourcePath = usePluginImportStore((state) => state.pendingPaths[0]);
   const enqueue = usePluginImportStore((state) => state.enqueue);
   const finishCurrent = usePluginImportStore((state) => state.finishCurrent);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+  const openModels = useUiStore((state) => state.openModels);
   const [preview, setPreview] = useState<PackagePreview>();
   const [previewError, setPreviewError] = useState("");
   const [trustReason, setTrustReason] = useState("");
@@ -117,8 +116,7 @@ export function PluginDropInstaller() {
         expectedArchiveSha256: preview?.archiveSha256,
       });
       setInstallState({ status: "success" });
-      setView("settings");
-      setSettingsTab("plugins");
+      openModels("plugins");
       void emitEvent(EVT.pluginRegistryChanged).catch((error) => {
         console.error("刷新插件目录失败", error);
       });
@@ -180,7 +178,7 @@ export function PluginDropInstaller() {
               </div>
             ) : installing ? (
               <div role="status" aria-live="polite" className="flex items-start gap-3">
-                <LoaderCircle className="mt-0.5 h-7 w-7 flex-none animate-spin text-[var(--color-accent-light)]" aria-hidden />
+                <LoaderCircle className="mt-0.5 h-7 w-7 flex-none animate-spin text-[var(--color-accent-text)]" aria-hidden />
                 <div className="min-w-0">
                   <h4 className="text-sm font-semibold text-[var(--color-fg)]">正在安装</h4>
                   <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">正在校验并安装 {packageName}，请不要关闭窗口。</p>
@@ -217,7 +215,7 @@ export function PluginDropInstaller() {
             ) : preview ? (
               <>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-1 text-xs text-[var(--color-accent-light)]">
+                  <span className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-1 text-xs text-[var(--color-accent-text)]">
                     {preview.packageKind === "model-pack" ? "本地模型包" : "在线插件"}
                   </span>
                   <p className="text-sm font-medium text-[var(--color-fg)]">{preview.name}</p>
@@ -236,7 +234,7 @@ export function PluginDropInstaller() {
               </>
             ) : (
               <div role="status" aria-live="polite" className="flex items-center gap-3 py-1">
-                <LoaderCircle className="h-5 w-5 animate-spin text-[var(--color-accent-light)]" aria-hidden />
+                <LoaderCircle className="h-5 w-5 animate-spin text-[var(--color-accent-text)]" aria-hidden />
                 <p className="text-sm text-[var(--color-fg-muted)]">正在校验插件清单、文件完整性与签名…</p>
               </div>
             )}
@@ -293,5 +291,5 @@ const TRUST_LABEL: Record<PackagePreview["trust"], string> = {
 };
 
 function capabilityLabel(capability: string) {
-  return ({ asr: "语音识别", ocr: "文字识别", translation: "翻译", customization: "自定义词表" } as Record<string, string>)[capability] || capability;
+  return ({ asr: "语音识别", ocr: "文字识别", translation: "翻译", customization: "自定义词表", punctuation: "标点" } as Record<string, string>)[capability] || capability;
 }

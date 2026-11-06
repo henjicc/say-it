@@ -235,6 +235,17 @@ pub(crate) async fn download_provider_model_pack(
     plugin_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    let lease = model_download::begin_download(&plugin_id)?;
+    download_model_pack_files(app, plugin_id, lease, state).await
+}
+
+/// 租约在生成返回快照前释放，快照里这个包才不会仍显示「正在下载」。
+pub(crate) async fn download_model_pack_files(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    lease: model_download::DownloadLease,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<PluginRegistrySnapshot, String> {
     let spec = state
         .plugin_registry
         .lock()
@@ -249,6 +260,7 @@ pub(crate) async fn download_provider_model_pack(
     let suspension = local_asr_cache::suspend(&plugin_id)?;
     let result = model_download::download_pack(&app, &plugin_id, &spec.model_dir, &pack).await;
     drop(suspension);
+    drop(lease);
     sync_resident_models(&app, &state)?;
     result?;
     list_provider_plugins(state)
@@ -348,6 +360,9 @@ pub(crate) fn uninstall_provider_plugin(
     plugin_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    if model_download::is_downloading(&plugin_id) {
+        return Err("这个模型包正在下载，请等它完成后再卸载".into());
+    }
     let (provider_id, spec) = state
         .plugin_registry
         .lock()

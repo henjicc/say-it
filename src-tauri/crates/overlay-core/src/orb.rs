@@ -32,13 +32,13 @@ const GLYPH_WARNING: u16 = 0xE7BA;
 
 // 颜色取自 ui/src/index.css 的暗色令牌与 floating-orb.css 的 color-mix 结果。
 const BG: (u8, u8, u8) = (25, 25, 25); // #0f0f0f 96% + 白 4%
-const BG_HOVER: (u8, u8, u8) = (20, 36, 56); // bg 78% + accent 22%
-const BG_RECORDING_HOVER: (u8, u8, u8) = (20, 34, 52); // bg 80% + accent 20%
+const BG_HOVER: (u8, u8, u8) = (20, 34, 63); // bg 78% + accent 22%
+const BG_RECORDING_HOVER: (u8, u8, u8) = (20, 33, 59); // bg 80% + accent 20%
 const FG: (u8, u8, u8) = (255, 255, 255);
-const ACCENT: (u8, u8, u8) = (40, 110, 200); // --color-accent #286ec8
-const ACCENT_LIGHT: (u8, u8, u8) = (113, 159, 219); // --color-accent-light #719fdb
-const WARN: (u8, u8, u8) = (255, 209, 102); // fallback/busy
-const ERROR_RGB: (u8, u8, u8) = (255, 107, 107);
+const ACCENT: (u8, u8, u8) = (39, 103, 234); // --color-accent #2767ea
+const ACCENT_LIGHT: (u8, u8, u8) = (112, 155, 241); // --color-accent-light #709bf1
+const WARN: (u8, u8, u8) = (217, 164, 65); // fallback/busy，--color-warn #d9a441
+const ERROR_RGB: (u8, u8, u8) = (229, 114, 108); // --color-err #e5726c
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrbPhase {

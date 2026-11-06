@@ -59,21 +59,43 @@ struct TrustedKeyFile {
     keys: HashMap<String, String>,
 }
 
+/// 官方发布者公钥随应用内置：官方模型包不需要用户逐个确认签名密钥。
+/// 同名密钥以内置值为准，信任库文件里的记录不能覆盖它。
+const OFFICIAL_SIGNING_KEYS: &[(&str, &str)] = &[(
+    "henjicc-sayit-publisher-v1",
+    "qsVqQy5sxJD6mWhifFug9+jApMdn0ifdecnLzJvRdfo=",
+)];
+
 pub fn load_trusted_keys(app: &tauri::AppHandle) -> Result<HashMap<String, String>, String> {
     let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
-    if !path.exists() {
-        return Ok(HashMap::new());
+    let mut keys = if path.exists() {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        serde_json::from_str::<TrustedKeyFile>(&text)
+            .map(|file| file.keys)
+            .map_err(|error| format!("插件信任库格式错误：{error}"))?
+    } else {
+        HashMap::new()
+    };
+    for (key_id, public_key) in OFFICIAL_SIGNING_KEYS {
+        keys.insert((*key_id).into(), (*public_key).into());
     }
-    let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str::<TrustedKeyFile>(&text)
-        .map(|file| file.keys)
-        .map_err(|error| format!("插件信任库格式错误：{error}"))
+    Ok(keys)
+}
+
+/// 信任库文件只存用户确认过的密钥；内置密钥不落盘，轮换或撤销时随应用版本生效。
+fn user_trusted_keys(keys: &HashMap<String, String>) -> HashMap<String, String> {
+    keys.iter()
+        .filter(|(key_id, _)| !OFFICIAL_SIGNING_KEYS.iter().any(|(official, _)| official == key_id))
+        .map(|(key_id, public_key)| (key_id.clone(), public_key.clone()))
+        .collect()
 }
 
 fn save_trusted_keys(app: &tauri::AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
     let path = crate::application::data_root::data_file(app, TRUST_FILE)?;
-    let bytes = serde_json::to_vec_pretty(&TrustedKeyFile { keys: keys.clone() })
-        .map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&TrustedKeyFile {
+        keys: user_trusted_keys(keys),
+    })
+    .map_err(|error| error.to_string())?;
     // 原来是「先删除旧文件再改名」：两步之间只要断电或进程被杀，信任库就整份消失，
     // 所有已签名插件同时失效，而且没有备份可恢复。复用 credential_vault 里已有的
     // 原子替换（Windows 走 MoveFileExW REPLACE_EXISTING|WRITE_THROUGH），旧文件在
@@ -895,6 +917,18 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use zip::{write::SimpleFileOptions, ZipWriter};
+
+    #[test]
+    fn official_keys_are_never_persisted_to_trust_file() {
+        let mut keys = HashMap::new();
+        keys.insert("third-party".to_string(), "abc".to_string());
+        for (key_id, public_key) in OFFICIAL_SIGNING_KEYS {
+            keys.insert((*key_id).into(), (*public_key).into());
+        }
+        let persisted = user_trusted_keys(&keys);
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted["third-party"], "abc");
+    }
 
     #[test]
     fn package_hash_binds_confirmation_to_previewed_bytes() {

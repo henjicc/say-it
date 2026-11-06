@@ -25,7 +25,7 @@ export function ColorInput({
       aria-label={label}
       className={cn(
         "h-[var(--control-h)] w-[var(--control-h)] flex-none cursor-pointer rounded-[var(--radius-md)]",
-        "border border-[var(--color-line)] bg-[var(--color-surface)] p-1",
+        "border border-[var(--color-line-strong)] bg-[var(--color-surface)] p-1",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
         className,
       )}

@@ -247,6 +247,8 @@ struct DictationPrefs {
     dictation_silence_disconnect_enabled: bool,
     dictation_silence_disconnect_ms: u64,
     dictation_silence_threshold: f32,
+    /// 本地模型包识别结果是否用标点模型补标点；未装标点模型包时不生效。
+    local_punctuation_enabled: bool,
     #[serde(flatten)]
     dsp: DspParams,
 }
@@ -280,6 +282,7 @@ impl Default for DictationPrefs {
             dictation_silence_disconnect_enabled: true,
             dictation_silence_disconnect_ms: 5_000,
             dictation_silence_threshold: 0.0001,
+            local_punctuation_enabled: true,
             dsp: DspParams::default(),
         }
     }
@@ -738,6 +741,28 @@ pub(crate) fn preview_dictation_cue(
     Ok(())
 }
 
+/// 开发者对比测试用：当前生效的智能处理模板、供应商和模型。
+#[cfg(debug_assertions)]
+pub(crate) fn smart_test_defaults(state: &RuntimeState) -> Result<(String, String, String), String> {
+    let prefs: DictationPrefs = serde_json::from_value(
+        state
+            .app_settings
+            .lock()
+            .map_err(|_| "应用配置锁失败")?
+            .dictation_prefs
+            .clone(),
+    )
+    .map_err(|e| format!("听写配置无效：{e}"))?;
+    let template = prefs
+        .smart_templates
+        .iter()
+        .find(|template| template.id == prefs.smart_template_id)
+        .ok_or("当前智能处理模板不存在")?
+        .prompt
+        .clone();
+    Ok((template, prefs.smart_llm_provider_id, prefs.smart_llm_model))
+}
+
 fn snapshot(state: &RuntimeState) -> Result<DictationSnapshot, String> {
     let s = state
         .dictation_runtime
@@ -965,7 +990,45 @@ pub(crate) async fn cancel_assistant_if_active(app: AppHandle) -> Result<(), Str
     }
 }
 
+/// 会话开始后才失败的请求（麦克风占用、ASR 建连失败）不经过 fail_internal，各入口又各自
+/// 处理错误，所以在这里统一补终态事件，否则这次会话在日志里有始无终。已有会话在进行时的
+/// 拒绝（例如语音追问撞上听写）不是那个会话的终态，不记。
 async fn start_internal(
+    app: AppHandle,
+    activation_target: Option<crate::active_app_context::ActivationTarget>,
+    shortcut_profile_id: Option<String>,
+    assistant_request: Option<crate::application::assistant::AssistantRequest>,
+    trigger: DictationTrigger,
+) -> Result<(), String> {
+    let result = start_session(
+        app.clone(),
+        activation_target,
+        shortcut_profile_id,
+        assistant_request,
+        trigger,
+    )
+    .await;
+    if let Err(error) = &result {
+        let no_active_session = app
+            .state::<RuntimeState>()
+            .dictation_runtime
+            .session
+            .lock()
+            .is_ok_and(|session| {
+                matches!(session.phase, DictationPhase::Idle | DictationPhase::Failed)
+            });
+        if no_active_session {
+            crate::application::diagnostics::event(
+                "warn",
+                crate::application::diagnostics::DICTATION_REQUEST_FAILED,
+                serde_json::json!({ "detail": error }),
+            );
+        }
+    }
+    result
+}
+
+async fn start_session(
     app: AppHandle,
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
@@ -1075,6 +1138,19 @@ async fn start_internal(
                 inject_method,
             ),
         );
+    }
+    if effective.smart_processing_enabled && assistant_request.is_none() {
+        let app = app.clone();
+        let provider_id = prefs.smart_llm_provider_id.clone();
+        let model = prefs.smart_llm_model.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::application::smart_text::prewarm_connection(
+                &app.state::<RuntimeState>(),
+                &provider_id,
+                &model,
+            )
+            .await;
+        });
     }
     let defer_active_app_context_ocr = should_defer_active_app_context_ocr(&prefs, &effective);
     let active_app_context = if effective.smart_processing_enabled {
@@ -1232,6 +1308,8 @@ async fn start_internal(
         "dictation.request_to_recording",
         start_requested_at.elapsed().as_millis() as u64,
     );
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark("trace.recordingReady", serde_json::json!({}));
     if trigger.is_floating_orb() {
         play_floating_orb_cue(&app, "start", &prefs);
     } else {
@@ -1967,6 +2045,47 @@ fn freeze_recorded_duration(session: &mut Session) {
     }
 }
 
+/// 本地模型包的识别结果没有标点；装了标点模型包且开关打开时先补上，再交给智能处理与本地规则。
+/// 补标点失败只记日志、沿用原文，不让整次听写失败。
+async fn punctuate_local_asr_text(
+    state: &RuntimeState,
+    prefs: &DictationPrefs,
+    text: String,
+) -> String {
+    if !prefs.local_punctuation_enabled || text.is_empty() {
+        return text;
+    }
+    let spec = (|| -> Result<_, String> {
+        let registry = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
+        if registry.local_model_for_model(&prefs.asr_model).is_none() {
+            return Ok(None);
+        }
+        let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+        Ok(registry.punctuation_model(&providers))
+    })();
+    let result = match spec {
+        Ok(None) => return text,
+        Ok(Some(spec)) => {
+            let input = text.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::providers::local_asr::add_punctuation(&spec, &input)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result)
+        }
+        Err(error) => Err(error),
+    };
+    result.unwrap_or_else(|error| {
+        crate::application::diagnostics::event(
+            "error",
+            "dictation.punctuationFailed",
+            serde_json::json!({ "message": error }),
+        );
+        text
+    })
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -2040,6 +2159,30 @@ async fn finalize(app: AppHandle, epoch: u64) {
         )
     };
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
+    #[cfg(debug_assertions)]
+    if !history_allowed {
+        crate::application::dev_trace::mark_sensitive();
+    }
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark(
+        "trace.asrFinal",
+        serde_json::json!({
+            "assistant":assistant_request.is_some(),
+            "asrModel":&prefs.asr_model,
+            "fileMode":mode == Some(DictationMode::File),
+            "appName":app_identity.as_ref().map(|identity| identity.app_name.as_str()),
+            "rawTextChars":text.chars().count(),
+            "rawText":&text,
+            "smartEnabled":effective.smart_processing_enabled,
+            "smartWillRun":should_process_smart_text,
+            "smartMinChars":effective.smart_processing_min_chars,
+            "smartTemplateId":&effective.smart_template_id,
+            "smartProviderId":&prefs.smart_llm_provider_id,
+            "smartModel":&prefs.smart_llm_model,
+            "matchedProfile":&effective.matched_profile,
+            "matchedShortcutProfile":&effective.matched_shortcut_profile,
+        }),
+    );
     // 原文必须先落盘，再释放 ASR / 等待上下文 / 调用智能处理 / 向目标软件输入。
     let initial_history = if history_allowed && !text.is_empty() {
         let identity = assistant_request
@@ -2126,6 +2269,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
         .await;
         return;
     }
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark("trace.historySaved", serde_json::json!({}));
+    // 历史里保留识别原文，标点只加在交给后续处理和输出的文本上；
+    // 是否做智能处理已在上面按原文字数判断。
+    let text = punctuate_local_asr_text(&state, &prefs, text).await;
     let active_app_context = if assistant_request.is_some() {
         drop(active_app_context);
         String::new()
@@ -2179,6 +2327,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         String::new()
     };
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark(
+        "trace.contextReady",
+        serde_json::json!({"activeAppContextChars":active_app_context.chars().count()}),
+    );
     // 延迟 OCR 最长会等待新的 5 秒截止。等待期间若用户取消或开始了新会话，
     // 旧会话不得继续调用智能处理，更不能注入文本。
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
@@ -2335,6 +2488,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         text.clone()
     };
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark(
+        "trace.smartDone",
+        serde_json::json!({"smartTextChars":smart_processed.chars().count()}),
+    );
     // 本地规则在这里才执行：作用对象是智能处理之后的最终文本。
     let locally_processed = if assistant_request.is_some() {
         smart_processed
@@ -2378,6 +2536,15 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
     };
     let processed = learned.text;
+    #[cfg(debug_assertions)]
+    crate::application::dev_trace::mark(
+        "trace.rulesDone",
+        serde_json::json!({
+            "outputTextChars":processed.chars().count(),
+            "outputText":&processed,
+            "learnedRuleIds":&learned.rule_ids,
+        }),
+    );
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
         cleanup_stale_finalize(&state, lease, temp_path);
         return;
@@ -2975,6 +3142,8 @@ async fn fail_internal(
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
+        #[cfg(debug_assertions)]
+        crate::application::dev_trace::finish_failed(&error);
         let history = failed_history_entry(
             &s,
             history_provider_id(&state, &s.prefs.asr_model),

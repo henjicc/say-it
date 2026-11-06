@@ -1,5 +1,5 @@
-import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect } from "react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { StatusBar } from "@/components/ui/StatusBar";
 import { ModelGrid } from "@/components/compare/ModelGrid";
@@ -39,9 +39,7 @@ export function SettingsComparePanel() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="text-sm font-medium"><HelpLabel content="用同一段录音或文件比较多个模型的识别效果。每个云端模型都会单独产生用量，请留意费用。">模型对比</HelpLabel></div>
-
+    <InspectorBody>
       <SourcePicker />
       <ModelGrid />
 
@@ -57,11 +55,12 @@ export function SettingsComparePanel() {
         </div>
       )}
 
-      <div>
+      <div className="flex flex-wrap items-center gap-3">
         <Button variant="primary" onClick={onMainClick}>
           {MAIN_LABEL[phase]}
         </Button>
+        <span className="text-xs text-[var(--color-fg-subtle)]">每个云端模型都会单独产生用量，请留意费用。</span>
       </div>
-    </div>
+    </InspectorBody>
   );
 }

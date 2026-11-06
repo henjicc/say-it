@@ -5,50 +5,56 @@
  * @theme 内为可生成 Tailwind 工具类的令牌；布局尺寸/层级等见其后的 :root。
  */
 @theme {
-  /* 背景层级：应用底 → 侧栏/标题栏 → 控件面 → 浮层 */
+  /* 明度层级：外框（标题栏/导航）→ 内容层 → 检查器 → 分组面 → 浮层 */
   --color-bg: #0f0f0f;
   --color-bg-sidebar: #0c0c0c;
   --color-bg-titlebar: #0c0c0c;
-  --color-surface: rgba(255, 255, 255, 0.035);
-  --color-surface-hover: rgba(255, 255, 255, 0.06);
-  --color-surface-strong: rgba(255, 255, 255, 0.08);
-  --color-overlay: #1e1e1e;
+  --color-panel: #161616;
+  --color-surface: #222222;
+  --color-surface-hover: #292929;
+  --color-surface-strong: #333333;
+  --color-overlay: #252525;
 
   /* 边框/分割线 */
-  --color-line: rgba(255, 255, 255, 0.08);
-  --color-line-strong: rgba(255, 255, 255, 0.16);
+  --color-line: rgba(255, 255, 255, 0.11);
+  --color-line-strong: rgba(255, 255, 255, 0.18);
 
   /* 文字层级 */
-  --color-fg: #ffffff;
-  --color-fg-muted: rgba(255, 255, 255, 0.78);
-  --color-fg-subtle: rgba(255, 255, 255, 0.5);
-  --color-fg-faint: rgba(255, 255, 255, 0.3);
+  --color-fg: #ecedef;
+  --color-fg-muted: #b4b7bd;
+  --color-fg-subtle: #989ca4;
+  --color-fg-faint: #70747c;
 
   /* 状态色 */
-  --color-ok: #25c36f;
-  --color-err: #ff6b6b;
-  --color-warn: #ffd166;
+  --color-ok: #3fb27f;
+  --color-err: #e5726c;
+  --color-warn: #d9a441;
   --color-rec: #ff4d4f;
 
-  /* 品牌强调 */
-  --color-accent: #286ec8;
-  --color-accent-light: #719fdb;
-  --color-accent-dark: #1b4b88;
+  /* 品牌强调：accent 用于填充（进度、滑块、下划线），accent-control 用于带字的填充控件，
+   * accent-text 用于强调色文字与图标，按色调保证 AA。运行时由 useThemeStore 推导覆写。 */
+  --color-accent: #2767ea;
+  --color-accent-light: #709bf1;
   --color-accent-contrast: #ffffff;
-  --color-accent-control: #286ec8;
-  --color-accent-control-hover: #3577cb;
-  --color-accent-control-active: #2463b4;
+  --color-accent-control: #2767ea;
+  --color-accent-control-hover: #3470eb;
+  --color-accent-control-active: #235dd3;
   --color-accent-control-contrast: #ffffff;
+  --color-accent-text: #6b98f1;
+
+  /* 对话框背后的遮罩 */
+  --color-scrim: rgba(0, 0, 0, 0.7);
 
   /* 圆角 */
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
   --radius-pill: 9999px;
 
-  /* 阴影 */
+  /* 阴影：raise 是抬起表面顶部的一道细高光，只用于内容层里的分组面与选中项 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-raise: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.55);
 
   /* 动效 */
@@ -66,28 +72,34 @@
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
 :root {
-  --theme-bg: #0f0f0f;
-  --theme-bg-sidebar: #0c0c0c;
-  --theme-bg-titlebar: #0c0c0c;
-  --theme-overlay: #1e1e1e;
-  --theme-surface: rgba(255, 255, 255, 0.035);
-  --theme-surface-hover: rgba(255, 255, 255, 0.06);
-  --theme-surface-strong: rgba(255, 255, 255, 0.08);
+  --theme-bg: #131417;
+  --theme-bg-sidebar: #0e0f11;
+  --theme-bg-titlebar: #0e0f11;
+  --theme-panel: #17181b;
+  --theme-overlay: #1e1f23;
+  --theme-surface: #1e1f23;
+  --theme-surface-hover: #24262a;
+  --theme-surface-strong: #2c2e33;
   --system-glass-color: #101217;
   --system-glass-tint: 8%;
 
   --color-bg: var(--theme-bg);
   --color-bg-sidebar: var(--theme-bg-sidebar);
   --color-bg-titlebar: var(--theme-bg-titlebar);
+  --color-panel: var(--theme-panel);
   --color-overlay: var(--theme-overlay);
   --color-surface: var(--theme-surface);
   --color-surface-hover: var(--theme-surface-hover);
   --color-surface-strong: var(--theme-surface-strong);
 
-  --titlebar-h: 36px;
-  --sidebar-w: 232px;
-  --control-h: 44px;
-  --control-h-sm: 34px;
+  --titlebar-h: 40px;
+  --rail-w: 68px;
+  --list-col-w: 288px;
+  --row-h: 48px;
+  --control-h: 32px;
+  --control-h-sm: 28px;
+  /* 分段按钮每段的最小宽度：短选项也给足点击面积 */
+  --segment-min-w: 76px;
   --onboarding-dialog-w: 680px;
   --onboarding-dialog-h: 680px;
 
@@ -101,10 +113,12 @@
   --z-tooltip: 220;
   --tooltip-max-w: 360px;
 
-  /* 强调色的柔和背景，用于选中/悬浮态 */
+  /* 强调色柔和底：soft 用于悬停、多选行与大面积提示，strong 用于标签与时间轴高亮。
+   * 浓度以 useThemeStore 的 ACCENT_SOFT* 为准（强调色文字色的 AA 计算依赖它），这里是首帧默认值。
+   * 焦点环与选中边框直接用强调色文字色，保证在各层上清晰可见。 */
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
-  --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  --accent-ring: var(--color-accent-text);
 }
 
 .ui-help-label {
@@ -170,6 +184,7 @@
   --color-bg: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-sidebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-titlebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
+  --color-panel: color-mix(in srgb, var(--theme-panel) 40%, transparent);
   --color-overlay: color-mix(in srgb, var(--theme-overlay) 58%, transparent);
   --color-surface: color-mix(in srgb, var(--theme-overlay) 24%, transparent);
   --color-surface-hover: color-mix(in srgb, var(--theme-overlay) 34%, transparent);
@@ -194,8 +209,8 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.45;
   overflow: hidden;
 }
 
@@ -314,32 +329,6 @@ input[type="checkbox"],
 input[type="range"],
 input[type="radio"] {
   accent-color: var(--color-accent);
-}
-
-[data-ui-tone="light"] [class*="border-white/"] {
-  border-color: var(--color-line) !important;
-}
-
-[data-ui-tone="light"] [class*="bg-white/"] {
-  background-color: rgba(255, 255, 255, 0.72) !important;
-}
-
-[data-ui-tone="light"] [class*="bg-black/"] {
-  background-color: rgba(255, 255, 255, 0.52) !important;
-}
-
-[data-ui-tone="light"] .bg-black {
-  background-color: var(--color-bg) !important;
-}
-
-[data-ui-tone="light"] .about-dialog {
-  border-color: rgba(17, 24, 39, 0.08);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
-}
-
-[data-system-glass="true"][data-ui-tone="light"] .about-dialog {
-  background: var(--color-overlay);
 }
 
 /* 下拉弹层进入/离开动画（自 transform-origin: top 展开） */

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/cn";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
 import { useTauriBridge } from "@/hooks/useTauriBridge";
@@ -10,29 +11,42 @@ import { applySystemGlassToDocument, applyThemeToDocument, useThemeStore } from 
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { initializeSettings } from "@/features/settings/settingsBridge";
 
-import { DictationView } from "@/views/DictationView";
-import { HomeView } from "@/views/HomeView";
-import { VoiceAssistantView } from "@/views/VoiceAssistantPanel";
-import { RealtimeSubtitlesPanel } from "@/views/RealtimeSubtitlesPanel";
-import { TranscriptionView } from "@/views/TranscriptionView";
-import { CustomizationView } from "@/views/CustomizationView";
-import { SettingsView } from "@/views/SettingsView";
-import { HistoryView } from "@/views/HistoryView";
+import { DictationPage } from "@/views/dictation/DictationPage";
+import { AssistantPage } from "@/views/assistant/AssistantPage";
+import { SubtitlesPage } from "@/views/subtitles/SubtitlesPage";
+import { TranscriptionPage } from "@/views/transcription/TranscriptionPage";
+import { ModelsPage } from "@/views/models/ModelsPage";
+import { LexiconPage } from "@/views/lexicon/LexiconPage";
+import { HistoryPage } from "@/views/history/HistoryPage";
+import { SettingsPage } from "@/views/settings/SettingsPage";
+import { DeveloperPage } from "@/views/developer/DeveloperPage";
+import { SimpleDictation, SimpleHistory, SimpleSettings, SimpleSubtitles, SimpleTranscription } from "@/views/simple/SimplePages";
+import { useLayoutMode } from "@/hooks/useLayoutMode";
 import { AboutDialog } from "@/views/AboutView";
 import { PluginDropInstaller } from "@/components/PluginDropInstaller";
 import { ShortcutConflictDialog } from "@/features/hotkeys/ShortcutConflictDialog";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import type { SetupStatus } from "@/lib/tauri";
 
-const VIEWS: Record<ViewKey, React.ReactNode> = {
-  home: <HomeView />,
-  dictation: <DictationView />,
-  assistant: <VoiceAssistantView />,
-  subtitles: <RealtimeSubtitlesPanel />,
-  transcription: <TranscriptionView />,
-  customization: <CustomizationView />,
-  history: <HistoryView />,
-  settings: <SettingsView />,
+const PRO_VIEWS: Record<ViewKey, React.ReactNode> = {
+  dictation: <DictationPage />,
+  assistant: <AssistantPage />,
+  subtitles: <SubtitlesPage />,
+  transcription: <TranscriptionPage />,
+  models: <ModelsPage />,
+  lexicon: <LexiconPage />,
+  history: <HistoryPage />,
+  settings: <SettingsPage />,
+  developer: import.meta.env.DEV ? <DeveloperPage /> : null,
+};
+
+/** 简单模式只有这几页；停在专业模式独有的页面时，窄窗口先显示听写。 */
+const SIMPLE_VIEWS: Partial<Record<ViewKey, React.ReactNode>> = {
+  dictation: <SimpleDictation />,
+  subtitles: <SimpleSubtitles />,
+  transcription: <SimpleTranscription />,
+  history: <SimpleHistory />,
+  settings: <SimpleSettings />,
 };
 
 export default function App() {
@@ -48,6 +62,8 @@ export default function App() {
   const [initError, setInitError] = useState("");
 
   const bridgeReady = useTauriBridge();
+  const layoutMode = useUiStore((s) => s.layoutMode);
+  useLayoutMode();
 
   useEffect(() => {
     // 初始化失败不能当作正常启动。这里是前端唯一一次从 Rust 拉取权威配置的地方，
@@ -66,7 +82,8 @@ export default function App() {
     });
   }, [bridgeReady, settingsReady]);
 
-  useEffect(() => {
+  // 布局阶段写入主题令牌：之后运行的各处 effect（如波形画布重绘）读到的已是新主题。
+  useLayoutEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 
@@ -96,7 +113,7 @@ export default function App() {
   }, [setView]);
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg)] text-[var(--color-fg)]">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg-sidebar)] text-[var(--color-fg)]">
       {!settingsReady ? null : <>
       <Titlebar />
       {initError && (
@@ -115,10 +132,13 @@ export default function App() {
         </div>
       )}
       <div className="relative flex min-h-0 flex-1">
-        <Sidebar />
-        <main className="min-h-0 flex-1 overflow-y-auto px-9 py-8">
-          <div className="mx-auto w-full max-w-[1180px]">{VIEWS[view]}</div>
-        </main>
+        {layoutMode === "pro" && <Sidebar />}
+        <div className={cn(
+          "flex min-h-0 min-w-0 flex-1 overflow-hidden border-t border-[var(--color-line)] bg-[var(--color-bg)]",
+          layoutMode === "pro" ? "rounded-tl-[10px] border-l" : "flex-col rounded-t-[10px]",
+        )}>
+          {layoutMode === "pro" ? PRO_VIEWS[view] : SIMPLE_VIEWS[view] ?? SIMPLE_VIEWS.dictation}
+        </div>
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
         <PluginDropInstaller />
         <ShortcutConflictDialog />

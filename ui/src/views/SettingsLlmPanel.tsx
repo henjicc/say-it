@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
 import { Field } from "@/components/ui/Field";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { SecretInput } from "@/components/ui/SecretInput";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { useConfirm } from "@/components/ui/useConfirm";
 import {
   ApiKeyLink,
@@ -46,6 +47,7 @@ const REASONING_OPTIONS: { value: LlmReasoningEffort; label: string }[] = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
 ];
+
 
 function isSource(value: unknown): value is LlmModelSource {
   return value === "remote" || value === "manual";
@@ -425,133 +427,132 @@ function LlmProfileEditor({ profile }: { profile: ProviderProfile }) {
     <Collapse
       title={profile.displayName}
       subtitle={`${isDefault ? "默认 · " : ""}${profile.status?.hasApiKey ? "已配置" : "需要填写"} · ${models.length} 个模型`}
+      className="rounded-none border-0 bg-transparent"
+      headerClassName="min-h-[var(--row-h)] px-3.5 py-2.5"
+      bodyClassName="px-0 py-1.5"
     >
-      <div className="grid grid-cols-1 gap-3">
-        {(!isPlugin || secretField) && <Field
-          label={secretField?.label ?? "API Key"}
-          controlId={`llm-api-key-${profile.id}`}
-          actions={apiKeyUrl ? (
-            <ApiKeyLink
-              url={apiKeyUrl}
-              label="点击此处获取 API Key"
-              onError={(error) => {
-                setMessage(`打开 API Key 管理页失败：${error}`);
-                setMessageError(true);
-              }}
-            />
-          ) : undefined}
-        >
-          <SecretInput
-            id={`llm-api-key-${profile.id}`}
-            draftValue={apiKey}
-            hasStoredValue={Boolean(profile.status?.hasApiKey)}
-            placeholder={profile.status?.hasApiKey ? "输入新 Key 可覆盖" : "输入 API Key"}
-            onDraftChange={handleApiKeyChange}
-            onBlur={handleApiKeyBlur}
+      {(!isPlugin || secretField) && apiKeyUrl && (
+        <p className="px-3.5 py-2 text-xs text-[var(--color-fg-subtle)]">
+          <ApiKeyLink
+            url={apiKeyUrl}
+            label="点击此处获取 API Key"
+            onError={(error) => {
+              setMessage(`打开 API Key 管理页失败：${error}`);
+              setMessageError(true);
+            }}
           />
-        </Field>}
-        {isCustom && (
-          <Field
-            label="接口地址"
-            hint="填写服务商提供的服务地址（需支持 OpenAI 格式），例如 https://example.com/v1/"
-          >
-            <Input
-              value={endpoint}
-              placeholder="https://example.com/v1/"
-              onChange={(event) => handleEndpointChange(event.target.value)}
+        </p>
+      )}
+      {(!isPlugin || secretField) && (
+        <Row label={secretField?.label ?? "API Key"} controlId={`llm-api-key-${profile.id}`}>
+          <div className={ROW_CONTROL_W}>
+            <SecretInput
+              id={`llm-api-key-${profile.id}`}
+              draftValue={apiKey}
+              hasStoredValue={Boolean(profile.status?.hasApiKey)}
+              placeholder={profile.status?.hasApiKey ? "输入新 Key 可覆盖" : "输入 API Key"}
+              onDraftChange={handleApiKeyChange}
+              onBlur={handleApiKeyBlur}
             />
-          </Field>
-        )}
-      </div>
-
-      <div className="mt-5 border-t border-[var(--color-line)] pt-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h4 className="text-sm font-medium text-[var(--color-fg)]">模型</h4>
-            <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">
-              {models.length} 个模型 · 最后更新：{formatTimestamp(profile.config?.modelsFetchedAt)}
-            </p>
           </div>
-          {!isPlugin && <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setManualModalOpen(true)}>
-              <Plus className="h-3.5 w-3.5" aria-hidden />手动添加
-            </Button>
-            <Button size="sm" onClick={refresh} disabled={refreshing}>
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
-              {refreshing ? "正在获取" : "刷新模型"}
-            </Button>
-          </div>}
-        </div>
+        </Row>
+      )}
+      {isCustom && (
+        <Row
+          label="接口地址"
+          controlId={`llm-endpoint-${profile.id}`}
+          hint="填写服务商提供的服务地址（需支持 OpenAI 格式），例如 https://example.com/v1/"
+        >
+          <Input
+            id={`llm-endpoint-${profile.id}`}
+            className={ROW_CONTROL_W}
+            value={endpoint}
+            placeholder="https://example.com/v1/"
+            onChange={(event) => handleEndpointChange(event.target.value)}
+          />
+        </Row>
+      )}
 
-        <div className={`grid grid-cols-1 gap-3 ${selectedModel ? "sm:grid-cols-[minmax(0,2fr)_minmax(14rem,1fr)]" : ""}`}>
-          <Field
-            label="当前模型"
-            controlId={`llm-model-${profile.id}`}
+      <Row
+        label="模型列表"
+        message={`${models.length} 个模型 · 最后更新：${formatTimestamp(profile.config?.modelsFetchedAt)}`}
+      >
+        {!isPlugin && <>
+          <Button size="sm" onClick={() => setManualModalOpen(true)}>
+            <Plus className="h-3.5 w-3.5" aria-hidden />手动添加
+          </Button>
+          <Button size="sm" onClick={refresh} disabled={refreshing}>
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
+            {refreshing ? "正在获取" : "刷新模型"}
+          </Button>
+        </>}
+      </Row>
+      <Row
+        label="当前模型"
+        controlId={`llm-model-${profile.id}`}
+        message={selectedModel?.availability === "missing" && (
+          <span className="text-[var(--color-warn)]">该模型未出现在最新接口结果中，配置已保留；调用是否可用取决于供应商。</span>
+        )}
+      >
+        <div className={ROW_CONTROL_W}>
+          <ModelPicker
+            id={`llm-model-${profile.id}`}
+            value={model}
+            options={models.map((item) => ({
+              value: item.name,
+              label: modelLabel(item),
+              providerId: profile.id,
+              providerLabel: profile.displayName,
+            }))}
+            panelLabel="选择智能模型"
+            searchPlaceholder="搜索模型…"
+            onChange={(value) => void changeModel(value)}
+          />
+        </div>
+      </Row>
+      {selectedModel && (
+        <Row label="推理强度">
+          <Select
+            className="w-40"
+            aria-label="推理强度"
+            value={selectedModel.reasoningEffort}
+            onChange={(event) => void changeReasoningEffort(event.target.value as LlmReasoningEffort)}
           >
-            <ModelPicker
-              id={`llm-model-${profile.id}`}
-              value={model}
-              options={models.map((item) => ({
-                value: item.name,
-                label: modelLabel(item),
-                providerId: profile.id,
-                providerLabel: profile.displayName,
-              }))}
-              panelLabel="选择智能模型"
-              searchPlaceholder="搜索模型…"
-              onChange={(value) => void changeModel(value)}
-            />
-          </Field>
+            {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </Select>
+        </Row>
+      )}
 
-          {selectedModel && (
-            <Field label="推理强度">
-              <Select
-                value={selectedModel.reasoningEffort}
-                onChange={(event) => void changeReasoningEffort(event.target.value as LlmReasoningEffort)}
+      {!isPlugin && manualModels.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-3.5 py-2">
+          <span className="text-xs text-[var(--color-fg-subtle)]">手动模型</span>
+          {manualModels.map((item) => (
+            <span
+              key={item.name}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-fg-muted)]"
+            >
+              <span className="max-w-52 truncate">{item.name}</span>
+              <button
+                type="button"
+                className="rounded p-0.5 text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-err)]"
+                aria-label={`删除手动模型 ${item.name}`}
+                onClick={() => void deleteManualModel(item.name)}
               >
-                {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </Select>
-            </Field>
-          )}
+                <Trash2 className="h-3 w-3" aria-hidden />
+              </button>
+            </span>
+          ))}
         </div>
+      )}
 
-        {selectedModel?.availability === "missing" && (
-          <p className="mt-3 text-xs text-[var(--color-warn)]">
-            该模型未出现在最新接口结果中，配置已保留；调用是否可用取决于供应商。
-          </p>
-        )}
-
-        {!isPlugin && manualModels.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-[var(--color-fg-subtle)]">手动模型</span>
-            {manualModels.map((item) => (
-              <span
-                key={item.name}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-1 text-xs text-[var(--color-fg-muted)]"
-              >
-                <span className="max-w-52 truncate">{item.name}</span>
-                <button
-                  type="button"
-                  className="rounded p-0.5 text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-err)]"
-                  aria-label={`删除手动模型 ${item.name}`}
-                  onClick={() => void deleteManualModel(item.name)}
-                >
-                  <Trash2 className="h-3 w-3" aria-hidden />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {(!isDefault || !isBuiltin) && (
-        <div className="mt-4 flex flex-wrap gap-2">
+      {(!isDefault || (!isBuiltin && !isPlugin)) && (
+        <div className="flex flex-wrap gap-2 px-3.5 py-2">
           {!isDefault && <Button size="sm" onClick={() => void setDefault("llm", profile.id)}>设为默认</Button>}
           {!isBuiltin && !isPlugin && <Button size="sm" variant="danger" onClick={deleteProfile}>删除供应商</Button>}
         </div>
       )}
       {message && (
-        <p className={`mt-2 text-xs ${messageError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+        <p className={`px-3.5 py-2 text-xs ${messageError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
           {message}
         </p>
       )}
@@ -658,26 +659,30 @@ export function SettingsLlmPanel() {
   ) : undefined;
 
   return (
-    <SettingsSection title="大语言模型" description="密钥会加密保存在这台电脑上。">
-      <Field
-        label="默认模型供应商"
-        controlId="default-llm-provider"
-        actions={<Button variant="primary" onClick={() => setOpen(true)}>+ 添加</Button>}
+    <InspectorBody>
+      <Group
+        title="大语言模型"
+        description="密钥会加密保存在这台电脑上。"
+        right={<Button size="sm" variant="primary" onClick={() => setOpen(true)}>+ 添加</Button>}
       >
-        <Select id="default-llm-provider" value={defaults.llm} onChange={(event) => void setDefault("llm", event.target.value)}>
-          {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName}</option>)}
-        </Select>
-      </Field>
+        <Row
+          label="默认模型供应商"
+          controlId="default-llm-provider"
+          message={panelMessage && (
+            <span className={panelMessageError ? "text-[var(--color-err)]" : undefined}>{panelMessage}</span>
+          )}
+        >
+          <Select id="default-llm-provider" className={ROW_CONTROL_W} value={defaults.llm} onChange={(event) => void setDefault("llm", event.target.value)}>
+            {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.displayName}</option>)}
+          </Select>
+        </Row>
+      </Group>
 
-      {panelMessage && (
-        <p className={`text-xs ${panelMessageError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-          {panelMessage}
-        </p>
+      {profiles.length > 0 && (
+        <Group>
+          {profiles.map((profile) => <LlmProfileEditor key={profile.id} profile={profile} />)}
+        </Group>
       )}
-
-      <div className="mt-3 flex flex-col gap-3">
-        {profiles.map((profile) => <LlmProfileEditor key={profile.id} profile={profile} />)}
-      </div>
 
       <Modal
         open={open}
@@ -717,6 +722,6 @@ export function SettingsLlmPanel() {
           </div>
         </div>
       </Modal>
-    </SettingsSection>
+    </InspectorBody>
   );
 }

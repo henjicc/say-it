@@ -103,8 +103,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
   const providers = useProviderStore((state) => state.profiles);
   const loadProviders = useProviderStore((state) => state.load);
   const updateProviderConfig = useProviderStore((state) => state.updateConfig);
-  const setView = useUiStore((state) => state.setView);
-  const setSettingsTab = useUiStore((state) => state.setSettingsTab);
+  const openModels = useUiStore((state) => state.openModels);
 
   const checks = useMemo(
     () => Object.fromEntries((status?.checks ?? []).map((item) => [item.id, item])) as Partial<Record<SetupCheckResult["id"], SetupCheckResult>>,
@@ -216,7 +215,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     }
   }
 
-  async function finish(settingsTab?: "model" | "plugins") {
+  async function finish(modelsSection?: "asr" | "plugins") {
     if (closing.current) return;
     closing.current = true;
     setRunning("finish");
@@ -225,10 +224,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     try {
       // 所有主动退出都表示用户已看过引导；必须落盘后再关闭，避免重启后反复弹出。
       await cmd(CMD.completeOnboarding);
-      if (settingsTab) {
-        setView("settings");
-        setSettingsTab(settingsTab);
-      }
+      if (modelsSection) openModels(modelsSection);
       onClose();
     } catch (error) {
       setMessage(`保存引导状态失败：${String(error)}`);
@@ -317,7 +313,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
             <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3.5">
               {selectedModelInfo && isOfflineModel(selectedModelInfo)
                 ? <HardDriveDownload className="h-5 w-5 shrink-0 text-[var(--color-ok)]" aria-hidden />
-                : <Cloud className="h-5 w-5 shrink-0 text-[var(--color-accent-light)]" aria-hidden />}
+                : <Cloud className="h-5 w-5 shrink-0 text-[var(--color-accent-text)]" aria-hidden />}
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-[var(--color-fg)]">{selectedProvider?.displayName || selectedModelInfo?.label || "正在读取模型信息…"}</p>
                 <p className="mt-0.5 text-xs text-[var(--color-fg-subtle)]">
@@ -331,7 +327,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
             </div>
             {requiresApiKey && !hasApiKey && selectedProvider && (
               <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-fg)]"><KeyRound className="h-4 w-4 text-[var(--color-accent-light)]" aria-hidden /><HelpLabel content="密钥会加密保存在这台电脑上。也可以稍后在设置的识别服务中配置。">配置 {selectedProvider.displayName} 密钥</HelpLabel></div>
+                <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-fg)]"><KeyRound className="h-4 w-4 text-[var(--color-accent-text)]" aria-hidden /><HelpLabel content="密钥会加密保存在这台电脑上。也可以稍后在设置的识别服务中配置。">配置 {selectedProvider.displayName} 密钥</HelpLabel></div>
                 <div className="mt-3 flex items-stretch gap-2">
                   <div className="min-w-0 flex-1">
                     <SecretInput
@@ -349,7 +345,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {selectedProvider.kind === "sdk:bailian" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
-                  <Button size="sm" onClick={() => void finish("model")}>打开完整设置</Button>
+                  <Button size="sm" onClick={() => void finish("asr")}>打开完整设置</Button>
                 </div>
               </div>
             )}
@@ -366,7 +362,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 ["3", "选择模型", "安装并启用后，模型会自动出现在语音识别下拉框。"],
               ].map(([number, title, description], index) => (
                 <div key={number} className={`flex items-start gap-3 px-4 py-3 ${index ? "border-t border-[var(--color-line)]" : ""}`}>
-                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-pill)] bg-[var(--accent-soft)] text-xs font-semibold text-[var(--color-accent-light)]">{number}</span>
+                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-[var(--radius-pill)] bg-[var(--accent-soft)] text-xs font-semibold text-[var(--color-accent-text)]">{number}</span>
                   <div><p className="text-sm font-medium text-[var(--color-fg)]"><HelpLabel content={description}>{title}</HelpLabel></p></div>
                 </div>
               ))}

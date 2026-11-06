@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Download, Trash2 } from "lucide-react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
+import { Group } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
-import { SettingsSection } from "@/components/ui/SettingsSection";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Switch } from "@/components/ui/Switch";
 import {
@@ -43,6 +44,25 @@ const RESIDENCY_MEMORY: Record<string, string> = {
   "official.sherpa-sensevoice-small": "约 350 MB",
 };
 
+interface OfficialModelPack {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  sizeBytes: number;
+}
+
+/** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
+function isNewerVersion(candidate: string, installed: string) {
+  const left = candidate.split(".").map(Number);
+  const right = installed.split(".").map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
+
 function formatBytes(value: number) {
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
@@ -55,6 +75,10 @@ export function PluginManagerPanel() {
   const [busyPluginId, setBusyPluginId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
+  const [officialPacks, setOfficialPacks] = useState<OfficialModelPack[]>();
+  const [officialError, setOfficialError] = useState("");
+  const [packProgress, setPackProgress] = useState<Record<string, number>>({});
+  const [packErrors, setPackErrors] = useState<Record<string, string>>({});
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
 
   const loadSnapshot = async () => {
@@ -62,8 +86,18 @@ export function PluginManagerPanel() {
     setSnapshot(next);
   };
 
+  const loadOfficialPacks = async () => {
+    setOfficialError("");
+    try {
+      setOfficialPacks(await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks));
+    } catch (error) {
+      setOfficialError(String(error));
+    }
+  };
+
   useEffect(() => {
     void loadSnapshot().catch((error) => setMessage(`读取插件失败：${String(error)}`));
+    void loadOfficialPacks();
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const keepListener = (stop: () => void) => {
@@ -76,6 +110,7 @@ export function PluginManagerPanel() {
       packTotalBytes: number;
       state: string;
     }>(EVT.modelPackProgress, (event) => {
+      setPackProgress((current) => ({ ...current, [event.pluginId]: event.packTotalBytes ? event.packDownloadedBytes / event.packTotalBytes : 0 }));
       setSnapshot((current) => current && ({
         ...current,
         plugins: current.plugins.map((plugin) => plugin.id === event.pluginId && plugin.modelPack
@@ -166,6 +201,25 @@ export function PluginManagerPanel() {
     }
   };
 
+  /** 清单已装好但权重没下完时走继续下载，其余情况重新安装官方清单包。 */
+  const installOfficial = async (pack: OfficialModelPack, resume: boolean) => {
+    setBusyPluginId(pack.id);
+    setPackErrors(({ [pack.id]: _, ...rest }) => rest);
+    setPackProgress(({ [pack.id]: _, ...rest }) => rest);
+    try {
+      setSnapshot(await cmd<PluginSnapshot>(
+        resume ? CMD.downloadProviderModelPack : CMD.installOfficialModelPack,
+        resume ? { pluginId: pack.id } : { packId: pack.id },
+      ));
+      await refreshPluginConsumers();
+    } catch (error) {
+      setPackErrors((current) => ({ ...current, [pack.id]: String(error) }));
+      await loadSnapshot();
+    } finally {
+      setBusyPluginId("");
+    }
+  };
+
   const uninstall = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
     setMessage("");
@@ -183,29 +237,81 @@ export function PluginManagerPanel() {
     }
   };
 
-  return (
-    <SettingsSection title="插件管理" description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
-          <Button size="sm" disabled={scanning} onClick={() => void reload()}>
-            {scanning ? "扫描中…" : "重新扫描"}
-          </Button>
-        </div>
-      </div>
+  // 已装好且没有更新的官方模型不再列出；正在处理或出错的保留，进度和错误才看得到。
+  const visiblePacks = (officialPacks ?? []).filter((pack) => {
+    const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
+    return !installed
+      || isNewerVersion(pack.version, installed.version)
+      || installed.modelPack?.state !== "ready"
+      || busyPluginId === pack.id
+      || Boolean(packErrors[pack.id]);
+  });
 
-      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)]">
-        {snapshot?.plugins.map((plugin, index) => {
+  return (
+    <InspectorBody>
+      {(!officialPacks || visiblePacks.length > 0) && (
+        <Group title="官方模型">
+          {visiblePacks.map((pack) => {
+            const installed = snapshot?.plugins.find((plugin) => plugin.id === pack.id);
+            const update = Boolean(installed) && isNewerVersion(pack.version, installed!.version);
+            const resume = Boolean(installed) && !update;
+            const busy = busyPluginId === pack.id;
+            const progress = packProgress[pack.id];
+            const action = resume ? "继续下载" : update ? "更新" : "下载";
+            return (
+              <div key={pack.id} className="px-3.5 py-3">
+                <div className="flex items-center gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
+                      <span className="text-xs text-[var(--color-fg-subtle)]">{update ? `v${installed!.version} → v${pack.version}` : formatBytes(pack.sizeBytes)}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
+                  </div>
+                  {installed?.modelPack?.state === "downloading" && !busy ? (
+                    <span role="status" className="text-xs text-[var(--color-fg-subtle)]">下载中…</span>
+                  ) : (
+                    <Button size="sm" aria-label={`${action}${pack.name}`} disabled={Boolean(busyPluginId) || scanning} onClick={() => void installOfficial(pack, resume)}>
+                      <Download className="h-3.5 w-3.5" aria-hidden />
+                      {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : action}
+                    </Button>
+                  )}
+                </div>
+                {packErrors[pack.id] && <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">{packErrors[pack.id]}</p>}
+              </div>
+            );
+          })}
+          {!officialPacks && (
+            <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+              <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+                {officialError ? `读取官方模型列表失败：${officialError}` : "正在读取官方模型列表…"}
+              </p>
+              {officialError && <Button size="sm" onClick={() => void loadOfficialPacks()}>重试</Button>}
+            </div>
+          )}
+        </Group>
+      )}
+
+      <Group
+        title="插件管理"
+        description="安装并启用插件或模型包后，就能在相应功能中选择其中的模型。"
+        right={
+          <>
+            <Button size="sm" disabled={scanning} onClick={() => void reload()}>
+              {scanning ? "扫描中…" : "重新扫描"}
+            </Button>
+            <Button size="sm" variant="primary" disabled={scanning} onClick={() => void install()}>安装 .sayit 包</Button>
+          </>
+        }
+      >
+        {snapshot?.plugins.map((plugin) => {
           const busy = busyPluginId === plugin.id;
           return (
-            <div
-              key={plugin.id}
-              className={index ? "border-t border-[var(--color-line)] px-4 py-3" : "px-4 py-3"}
-            >
+            <div key={plugin.id} className="px-3.5 py-3">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <p className="text-sm font-medium text-[var(--color-fg)]">{plugin.name}</p>
+                    <p className="text-[13px] font-medium text-[var(--color-fg)]">{plugin.name}</p>
                     <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.runtimeKind === "model-pack" ? "模型包" : "连接器"}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{TRUST_LABEL[plugin.trust]}</span>
@@ -220,14 +326,16 @@ export function PluginManagerPanel() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {plugin.modelPack?.downloadable && plugin.modelPack.state !== "ready" && (
+                  {plugin.modelPack?.downloadable && !["ready", "downloading"].includes(plugin.modelPack.state) && (
                     <Button size="sm" disabled={busy} onClick={() => void downloadModel(plugin)}>
-                      <Download className="h-4 w-4" aria-hidden />
+                      <Download className="h-3.5 w-3.5" aria-hidden />
                       {plugin.modelPack.state === "partial" ? "继续下载" : "下载模型"}
                     </Button>
                   )}
                   {plugin.modelPack?.residency && (
-                    <Tooltip content={`开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
+                    <Tooltip content={plugin.modelPack.engine === "sherpa-onnx-punctuation"
+                      ? `开启后标点模型一直留在内存里，每次听写不用再等加载。会持续占用约 100 MB 内存。`
+                      : `开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
                         <Switch
@@ -257,7 +365,7 @@ export function PluginManagerPanel() {
                     label={`卸载${plugin.name}`}
                     onClick={() => setPendingUninstall(plugin)}
                   >
-                    <Trash2 className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                    <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
                   </IconButton>
                 </div>
               </div>
@@ -273,15 +381,17 @@ export function PluginManagerPanel() {
             </div>
           );
         })}
-        {snapshot && snapshot.plugins.length === 0 && (
-          <p className="px-4 py-7 text-center text-sm text-[var(--color-fg-subtle)]">尚未安装插件。可点击上方按钮，或将 .sayit 文件拖入应用安装。</p>
+        {(!snapshot || snapshot.plugins.length === 0) && (
+          <p className="px-3.5 py-7 text-center text-[13px] text-[var(--color-fg-subtle)]">
+            {snapshot ? "尚未安装插件。可点击上方按钮，或将 .sayit 文件拖入应用安装。" : message ? "插件列表读取失败" : "正在读取插件…"}
+          </p>
         )}
-      </div>
+      </Group>
 
       {snapshot?.errors.map((error) => (
         <p key={error.path} className="text-xs text-[var(--color-err)]">{error.path}：{error.message}</p>
       ))}
-      {message && <p className="text-sm text-[var(--color-fg-subtle)]">{message}</p>}
+      {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       <Modal
         open={Boolean(pendingUninstall)}
         onClose={() => !busyPluginId && setPendingUninstall(undefined)}
@@ -303,6 +413,6 @@ export function PluginManagerPanel() {
           </div>
         </div>
       </Modal>
-    </SettingsSection>
+    </InspectorBody>
   );
 }

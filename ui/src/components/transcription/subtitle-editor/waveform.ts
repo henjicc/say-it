@@ -122,11 +122,13 @@ export function drawWaveformCanvas(
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
+  // 画布颜色取自设计令牌，随亮暗色调变化：波形区是比内容层更沉的一道凹槽。
+  const tokens = getComputedStyle(canvas);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(10, 13, 19, 0.94)";
+  ctx.fillStyle = tokens.getPropertyValue("--color-bg-sidebar");
   ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.strokeStyle = tokens.getPropertyValue("--color-line");
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(0, height / 2);
@@ -136,7 +138,7 @@ export function drawWaveformCanvas(
   const strokes = sampleWaveformWindow(columns, scrollLeft, width, totalWidth);
   if (strokes.length === 0) return;
 
-  ctx.strokeStyle = "rgba(139, 171, 255, 0.92)";
+  ctx.strokeStyle = tokens.getPropertyValue("--color-accent-text");
   ctx.lineWidth = 1;
   const amplitude = Math.max(1, (height / 2 - WAVEFORM_PADDING) * waveformScale);
   // 整个窗口合成一条路径再描边：逐像素 beginPath/stroke 是数万次独立绘制调用。

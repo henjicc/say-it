@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 8;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -57,18 +57,28 @@ fn empty_object() -> Value {
 fn default_theme() -> Value {
     serde_json::json!({
         "tone":"dark",
-        "accent":"#286EC8",
+        "accent":"#2767EA",
         "backgroundMode":"custom",
         "background":"#0F0F0F"
     })
 }
-fn previous_default_theme() -> Value {
-    serde_json::json!({
-        "tone":"dark",
-        "accent":"#5199FF",
-        "backgroundMode":"followAccent",
-        "background":"#0A0E16"
-    })
+/// 历代默认主题。用户从未改过主题时随版本换成当前默认值，改过的保持不动。
+/// schema 7 之前：#5199FF + 柔和背景；schema 9 之前：#286EC8 + 自定义 #0F0F0F。
+fn superseded_default_themes() -> [Value; 2] {
+    [
+        serde_json::json!({
+            "tone":"dark",
+            "accent":"#5199FF",
+            "backgroundMode":"followAccent",
+            "background":"#0A0E16"
+        }),
+        serde_json::json!({
+            "tone":"dark",
+            "accent":"#286EC8",
+            "backgroundMode":"custom",
+            "background":"#0F0F0F"
+        }),
+    ]
 }
 fn default_assistant_prefs() -> Value {
     serde_json::to_value(crate::application::assistant::AssistantPreferences::default())
@@ -189,7 +199,7 @@ pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
             .unwrap_or(false);
         settings.diagnostics_prefs = serde_json::json!({"verboseLogging":legacy_verbose});
     }
-    if settings.schema_version < 7 && settings.theme == previous_default_theme() {
+    if settings.schema_version < 9 && superseded_default_themes().contains(&settings.theme) {
         settings.theme = default_theme();
     }
     settings.schema_version = SETTINGS_SCHEMA_VERSION;
@@ -260,7 +270,7 @@ pub(crate) fn import_legacy_settings(
     if current.theme == default_theme() {
         if let Some(v) = legacy.theme {
             valid_object(&v)?;
-            current.theme = if v == previous_default_theme() {
+            current.theme = if superseded_default_themes().contains(&v) {
                 default_theme()
             } else {
                 v
@@ -628,7 +638,7 @@ mod tests {
         assert_eq!(v.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
-        assert_eq!(v.theme["accent"], "#286EC8");
+        assert_eq!(v.theme["accent"], "#2767EA");
         assert_eq!(v.theme["backgroundMode"], "custom");
         assert_eq!(v.theme["background"], "#0F0F0F");
         assert_eq!(v.assistant_prefs["translationModel"], "none");
@@ -680,12 +690,14 @@ mod tests {
             .is_none());
     }
     #[test]
-    fn previous_default_theme_migrates_without_overwriting_custom_colors() {
-        let mut defaults = AppSettings::default();
-        defaults.schema_version = 6;
-        defaults.theme = previous_default_theme();
-        migrate_loaded_settings(&mut defaults);
-        assert_eq!(defaults.theme, default_theme());
+    fn superseded_default_themes_migrate_without_overwriting_custom_colors() {
+        for theme in superseded_default_themes() {
+            let mut defaults = AppSettings::default();
+            defaults.schema_version = 8;
+            defaults.theme = theme;
+            migrate_loaded_settings(&mut defaults);
+            assert_eq!(defaults.theme, default_theme());
+        }
 
         let mut customized = AppSettings::default();
         customized.schema_version = 6;
