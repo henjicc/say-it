@@ -18,7 +18,9 @@ const SAMPLE_RATE: i32 = 16_000;
 
 pub mod cache;
 mod file;
+mod punctuation;
 pub(crate) use file::recognize_audio_file;
+pub use punctuation::add_punctuation;
 
 #[derive(Default)]
 pub struct LocalAsrOutput {

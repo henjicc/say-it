@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use sherpa_onnx::{OfflineRecognizer, OnlineRecognizer};
+use sherpa_onnx::{OfflinePunctuation, OfflineRecognizer, OnlineRecognizer};
 
 use crate::providers::plugin::LocalModelSpec;
 
@@ -39,6 +39,7 @@ impl From<&LocalModelSpec> for ModelKey {
 pub(super) enum Recognizer {
     Offline(Arc<Mutex<OfflineRecognizer>>),
     Online(Arc<Mutex<OnlineRecognizer>>),
+    Punctuation(Arc<Mutex<OfflinePunctuation>>),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -120,7 +121,10 @@ fn cache() -> &'static Mutex<ResidentCache<Recognizer>> {
 }
 
 pub fn supports_residency(engine: &str) -> bool {
-    matches!(engine, "sherpa-onnx-offline" | "sherpa-onnx-online")
+    matches!(
+        engine,
+        "sherpa-onnx-offline" | "sherpa-onnx-online" | "sherpa-onnx-punctuation"
+    )
 }
 
 fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
@@ -129,6 +133,8 @@ fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
             .map(|value| Recognizer::Offline(Arc::new(Mutex::new(value)))),
         "sherpa-onnx-online" => super::create_online_recognizer(spec)
             .map(|value| Recognizer::Online(Arc::new(Mutex::new(value)))),
+        "sherpa-onnx-punctuation" => super::punctuation::create_punctuator(spec)
+            .map(|value| Recognizer::Punctuation(Arc::new(Mutex::new(value)))),
         engine => Err(format!("模型引擎 {engine} 不支持常驻内存")),
     }
 }

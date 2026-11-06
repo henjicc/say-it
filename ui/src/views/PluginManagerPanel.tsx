@@ -227,7 +227,9 @@ export function PluginManagerPanel() {
                     </Button>
                   )}
                   {plugin.modelPack?.residency && (
-                    <Tooltip content={`开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
+                    <Tooltip content={plugin.modelPack.engine === "sherpa-onnx-punctuation"
+                      ? `开启后标点模型一直留在内存里，每次听写不用再等加载。会持续占用约 100 MB 内存。`
+                      : `开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
                         <Switch

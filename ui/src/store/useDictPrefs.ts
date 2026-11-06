@@ -524,6 +524,8 @@ export interface DictPrefs extends DspParams {
   dictationSilenceDisconnectEnabled: boolean;
   dictationSilenceDisconnectMs: number;
   dictationSilenceThreshold: number;
+  /** 本地模型包的识别结果用标点模型补标点；未装标点模型包时不生效。 */
+  localPunctuationEnabled: boolean;
   subtitleSilenceDisconnectEnabled: boolean;
   subtitleSilenceDisconnectMs: number;
   subtitleSilenceThreshold: number;
@@ -561,6 +563,7 @@ function defaults(): DictPrefs {
     dictationSilenceDisconnectEnabled: true,
     dictationSilenceDisconnectMs: 5000,
     dictationSilenceThreshold: 0.0001,
+    localPunctuationEnabled: true,
     subtitleSilenceDisconnectEnabled: true,
     subtitleSilenceDisconnectMs: 5000,
     subtitleSilenceThreshold: 0.0001,
