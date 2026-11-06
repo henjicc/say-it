@@ -31,15 +31,19 @@
   --color-warn: #d9a441;
   --color-rec: #ff4d4f;
 
-  /* 品牌强调 */
-  --color-accent: #286ec8;
-  --color-accent-light: #719fdb;
-  --color-accent-dark: #1b4b88;
+  /* 品牌强调：accent 用于填充（进度、滑块、下划线），accent-control 用于带字的填充控件，
+   * accent-text 用于强调色文字与图标，按色调保证 AA。运行时由 useThemeStore 推导覆写。 */
+  --color-accent: #2767ea;
+  --color-accent-light: #709bf1;
   --color-accent-contrast: #ffffff;
-  --color-accent-control: #286ec8;
-  --color-accent-control-hover: #3577cb;
-  --color-accent-control-active: #2463b4;
+  --color-accent-control: #2767ea;
+  --color-accent-control-hover: #3470eb;
+  --color-accent-control-active: #235dd3;
   --color-accent-control-contrast: #ffffff;
+  --color-accent-text: #6b98f1;
+
+  /* 对话框背后的遮罩 */
+  --color-scrim: rgba(0, 0, 0, 0.7);
 
   /* 圆角 */
   --radius-sm: 6px;
@@ -94,6 +98,8 @@
   --row-h: 48px;
   --control-h: 32px;
   --control-h-sm: 28px;
+  /* 分段按钮每段的最小宽度：短选项也给足点击面积 */
+  --segment-min-w: 76px;
   --onboarding-dialog-w: 680px;
   --onboarding-dialog-h: 680px;
 
@@ -107,10 +113,12 @@
   --z-tooltip: 220;
   --tooltip-max-w: 360px;
 
-  /* 强调色的柔和背景，用于焦点环与少量选中提示 */
+  /* 强调色柔和底：soft 用于悬停、多选行与大面积提示，strong 用于标签与时间轴高亮。
+   * 浓度以 useThemeStore 的 ACCENT_SOFT* 为准（强调色文字色的 AA 计算依赖它），这里是首帧默认值。
+   * 焦点环与选中边框直接用强调色文字色，保证在各层上清晰可见。 */
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
-  --accent-ring: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  --accent-ring: var(--color-accent-text);
 }
 
 .ui-help-label {
@@ -321,32 +329,6 @@ input[type="checkbox"],
 input[type="range"],
 input[type="radio"] {
   accent-color: var(--color-accent);
-}
-
-[data-ui-tone="light"] [class*="border-white/"] {
-  border-color: var(--color-line) !important;
-}
-
-[data-ui-tone="light"] [class*="bg-white/"] {
-  background-color: rgba(255, 255, 255, 0.72) !important;
-}
-
-[data-ui-tone="light"] [class*="bg-black/"] {
-  background-color: rgba(255, 255, 255, 0.52) !important;
-}
-
-[data-ui-tone="light"] .bg-black {
-  background-color: var(--color-bg) !important;
-}
-
-[data-ui-tone="light"] .about-dialog {
-  border-color: rgba(17, 24, 39, 0.08);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
-}
-
-[data-system-glass="true"][data-ui-tone="light"] .about-dialog {
-  background: var(--color-overlay);
 }
 
 /* 下拉弹层进入/离开动画（自 transform-origin: top 展开） */

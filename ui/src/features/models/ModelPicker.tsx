@@ -70,7 +70,7 @@ function FilterChip({
       className={cn(
         "shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors duration-[var(--dur-fast)]",
         active
-          ? "border-[var(--accent-ring)] bg-[var(--accent-soft-strong)] text-[var(--color-accent-light)]"
+          ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
           : "border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
       )}
     >
@@ -345,15 +345,15 @@ export function ModelPicker({
                   className={cn(
                     "flex w-full items-center gap-3 rounded-[var(--radius-md)] py-2.5 pl-3 pr-2 text-left transition-colors duration-[var(--dur-fast)]",
                     isSelected
-                      ? "bg-[var(--accent-soft-strong)] text-[var(--color-fg)]"
+                      ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                       : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block whitespace-normal break-words text-sm font-medium leading-5">{option.label}</span>
-                    <span className="mt-0.5 block whitespace-normal break-words text-xs text-[var(--color-fg-subtle)]">{optionProviderLabel(option)}</span>
+                    <span className={cn("mt-0.5 block whitespace-normal break-words text-xs", !isSelected && "text-[var(--color-fg-subtle)]")}>{optionProviderLabel(option)}</span>
                   </span>
-                  {option.mode && <span className="shrink-0 rounded-full border border-[var(--color-line)] px-2 py-1 text-[11px] text-[var(--color-fg-subtle)]">
+                  {option.mode && <span className={cn("shrink-0 rounded-full border px-2 py-1 text-[11px]", isSelected ? "border-current" : "border-[var(--color-line)] text-[var(--color-fg-subtle)]")}>
                     {asrModelModeLabel(option.mode)}
                   </span>}
                 </button>

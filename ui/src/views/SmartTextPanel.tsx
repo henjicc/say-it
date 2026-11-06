@@ -431,7 +431,7 @@ export function SmartTextPanel() {
           {active && (
             <Group
               title="提示词"
-              description={<>使用 <code className="text-[var(--color-accent-light)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-light)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-light)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
+              description={<>使用 <code className="text-[var(--color-accent-text)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-text)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
             >
               <div className="p-3.5">
                 <Textarea

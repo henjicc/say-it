@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
@@ -82,7 +82,8 @@ export default function App() {
     });
   }, [bridgeReady, settingsReady]);
 
-  useEffect(() => {
+  // 布局阶段写入主题令牌：之后运行的各处 effect（如波形画布重绘）读到的已是新主题。
+  useLayoutEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 

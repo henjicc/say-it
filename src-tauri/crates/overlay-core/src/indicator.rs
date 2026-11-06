@@ -498,7 +498,7 @@ impl Indicator {
                 let color = if index < active {
                     fg(&self.look, 1.0)
                 } else if index == active {
-                    self.look.color(113.0 / 255.0, 159.0 / 255.0, 219.0 / 255.0, 1.0)
+                    self.look.color(112.0 / 255.0, 155.0 / 255.0, 241.0 / 255.0, 1.0)
                 } else {
                     self.look.color(92.0 / 255.0, 95.0 / 255.0, 102.0 / 255.0, 1.0)
                 };

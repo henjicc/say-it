@@ -182,7 +182,7 @@ function TemplateRowSummary({
           </span>
         )}
         {isActive && (
-          <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-light)]">
+          <span className="shrink-0 rounded-[var(--radius-pill)] bg-[var(--accent-soft-strong)] px-2 py-0.5 text-[11px] text-[var(--color-accent-text)]">
             当前
           </span>
         )}

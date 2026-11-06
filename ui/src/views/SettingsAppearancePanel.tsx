@@ -8,7 +8,7 @@ import { RangeInput } from "@/components/ui/RangeInput";
 import { Switch } from "@/components/ui/Switch";
 import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
-import { useThemeStore } from "@/store/useThemeStore";
+import { backgroundSupportsText, useThemeStore } from "@/store/useThemeStore";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import {
   FLOATING_ORB_GLASS_BORDER_RANGE,
@@ -24,43 +24,60 @@ function ThemeColorRow({
   onChange,
   label,
   description,
+  validate,
 }: {
   value: string;
   onChange: (value: string) => void;
   label: string;
   description: string;
+  /** 颜色格式正确但不能用时返回原因，此时不保存。 */
+  validate?: (value: string) => string | undefined;
 }) {
   const [draft, setDraft] = useState(value);
   const invalid = draft.trim() !== "" && !isHexColor(draft);
+  // 只校验新输入：已保存的值即使不满足也在生效，不在打开设置时就报错。
+  const problem = isHexColor(draft) && draft !== value ? validate?.(draft) : undefined;
 
   useEffect(() => {
     setDraft(value);
   }, [value]);
 
-  const commit = () => {
-    if (isHexColor(draft)) onChange(draft);
-    else setDraft(value);
+  const commit = (next: string) => {
+    if (!isHexColor(next)) setDraft(value);
+    else if (!validate?.(next)) onChange(next);
   };
 
   return (
     <Row
       label={label}
       hint={description}
-      message={invalid && <span role="alert" className="text-[var(--color-err)]">请输入 3 位或 6 位颜色代码，例如 #369 或 #336699。</span>}
+      message={(invalid || problem) && (
+        <span role="alert" className="text-[var(--color-err)]">
+          {invalid ? "请输入 3 位或 6 位颜色代码，例如 #369 或 #336699。" : problem}
+        </span>
+      )}
     >
       <Input
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
+        onBlur={() => commit(draft)}
         onKeyDown={(event) => {
-          if (event.key === "Enter") commit();
+          if (event.key === "Enter") commit(draft);
         }}
         size="sm"
         aria-label={`${label}代码`}
-        className={cn("w-32 font-mono", invalid && "border-[var(--color-err)]")}
+        className={cn("w-32 font-mono", (invalid || problem) && "border-[var(--color-err)]")}
         spellCheck={false}
       />
-      <ColorInput value={value} onChange={onChange} label={label} className="h-[var(--control-h-sm)] w-[var(--control-h-sm)]" />
+      <ColorInput
+        value={value}
+        onChange={(next) => {
+          setDraft(next);
+          commit(next);
+        }}
+        label={label}
+        className="h-[var(--control-h-sm)] w-[var(--control-h-sm)]"
+      />
     </Row>
   );
 }
@@ -107,6 +124,11 @@ export function SettingsAppearancePanel() {
             onChange={(value) => patch({ background: value })}
             label="背景基色"
             description="用于主窗口、侧栏与悬浮窗口的基础背景"
+            validate={(value) => backgroundSupportsText(value, theme.tone)
+              ? undefined
+              : theme.tone === "light"
+                ? "亮色调需要足够浅的背景，这个颜色下文字会看不清。"
+                : "暗色调需要足够深的背景，这个颜色下文字会看不清。"}
           />
         )}
         <div className="flex flex-wrap items-center gap-3 px-3.5 py-3" aria-label="外观预览">
@@ -115,9 +137,8 @@ export function SettingsAppearancePanel() {
           <div className="h-1.5 w-24 rounded-full bg-[var(--color-surface-strong)]">
             <div className="h-full w-2/3 rounded-full bg-[var(--color-accent)]" />
           </div>
-          <div className="flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--accent-soft-strong)] px-2.5 py-1 text-xs ring-1 ring-[var(--accent-ring)]">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent-light)]" />
-            <span className="text-[var(--color-fg)]">当前选中状态</span>
+          <div className="rounded-[var(--radius-md)] bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] px-2.5 py-1 text-xs">
+            当前选中状态
           </div>
         </div>
       </Group>
