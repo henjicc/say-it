@@ -12,6 +12,7 @@ use genai::chat::{
 };
 use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -774,17 +775,56 @@ pub(crate) async fn prewarm_connection(state: &RuntimeState, provider_id: &str, 
     }
 }
 
+/// 一次智能处理实际交给模型的各项输入与模型原始输出（本地规则之前），随历史保存。
+/// 上下文只记录模板真正引用到的部分：模板没写占位符的内容模型看不到，记为空。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SmartTextRun {
+    pub(crate) template_id: String,
+    pub(crate) template: String,
+    pub(crate) provider_id: String,
+    pub(crate) model: String,
+    pub(crate) input_text: String,
+    pub(crate) hotwords: String,
+    pub(crate) global_context: String,
+    pub(crate) active_app_context: String,
+    pub(crate) learning_context: crate::application::learning::LearningContext,
+    pub(crate) output: String,
+}
+
+pub(crate) struct SmartPrompt {
+    pub(crate) text: String,
+    pub(crate) hotwords: String,
+    pub(crate) global_context: String,
+    pub(crate) active_app_context: String,
+    pub(crate) learning_context: crate::application::learning::LearningContext,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
     text: &str,
+    template_id: &str,
     template: &str,
     active_app_context: &str,
     active_app_name: &str,
     provider_id: &str,
     model_override: &str,
-) -> Result<String, String> {
+) -> Result<SmartTextRun, String> {
+    let mut run = SmartTextRun {
+        template_id: template_id.to_string(),
+        template: template.to_string(),
+        provider_id: String::new(),
+        model: String::new(),
+        input_text: text.to_string(),
+        hotwords: String::new(),
+        global_context: String::new(),
+        active_app_context: String::new(),
+        learning_context: Default::default(),
+        output: String::new(),
+    };
     if text.trim().is_empty() {
-        return Ok(String::new());
+        return Ok(run);
     }
     let prompt = build_smart_prompt(
         state,
@@ -794,16 +834,26 @@ pub(crate) async fn process_smart_text(
         active_app_name,
         provider_id,
     )?;
-    process_prompt(
+    let profile = selected_profile(state, Some(provider_id), Some(model_override))?;
+    run.provider_id = profile.id.clone();
+    run.model = profile_value(&profile, "model").to_string();
+    let output = process_prompt_with_profile(
         state,
+        profile,
         SYSTEM_PROMPT,
-        &prompt,
-        Some(provider_id),
-        Some(model_override),
+        &prompt.text,
         "smart-text",
         false,
+        "zero",
+        false,
     )
-    .await
+    .await?;
+    run.hotwords = prompt.hotwords;
+    run.global_context = prompt.global_context;
+    run.active_app_context = prompt.active_app_context;
+    run.learning_context = prompt.learning_context;
+    run.output = output;
+    Ok(run)
 }
 
 pub(crate) fn build_smart_prompt(
@@ -813,7 +863,7 @@ pub(crate) fn build_smart_prompt(
     active_app_context: &str,
     active_app_name: &str,
     provider_id: &str,
-) -> Result<String, String> {
+) -> Result<SmartPrompt, String> {
     let prefs = crate::application::customization::prefs(state);
     let global_context = crate::application::customization::render_context(&prefs);
     let hotwords = crate::application::customization::hotwords_as_text(&prefs.hotwords);
@@ -835,30 +885,34 @@ pub(crate) fn build_smart_prompt(
                 .map_err(|error| format!("序列化个性化学习上下文失败：{error}"))?,
         );
     }
-    // 这些占位符可能没写进模板：上下文字符数只有模板真正引用时才算进提示词。
+    let used = |placeholder: &str, value: &str| {
+        if template.contains(placeholder) {
+            value.to_string()
+        } else {
+            String::new()
+        }
+    };
+    let built = SmartPrompt {
+        hotwords: used(HOTWORDS_PLACEHOLDER, &hotwords),
+        global_context: used(GLOBAL_CONTEXT_PLACEHOLDER, &global_context),
+        active_app_context: used(ACTIVE_APP_CONTEXT_PLACEHOLDER, active_app_context),
+        learning_context,
+        text: prompt,
+    };
     #[cfg(debug_assertions)]
-    {
-        let used = |placeholder: &str, value: &str| {
-            if template.contains(placeholder) {
-                value.chars().count()
-            } else {
-                0
-            }
-        };
-        crate::application::dev_trace::mark(
-            "trace.promptBuilt",
-            json!({
-                "templateChars":template.chars().count(),
-                "textChars":text.chars().count(),
-                "activeAppContextChars":used(ACTIVE_APP_CONTEXT_PLACEHOLDER, active_app_context),
-                "globalContextChars":used(GLOBAL_CONTEXT_PLACEHOLDER, &global_context),
-                "hotwordsChars":used(HOTWORDS_PLACEHOLDER, &hotwords),
-                "learningChars":prompt.chars().count() - chars_before_learning,
-                "promptChars":prompt.chars().count(),
-            }),
-        );
-    }
-    Ok(prompt)
+    crate::application::dev_trace::mark(
+        "trace.promptBuilt",
+        json!({
+            "templateChars":template.chars().count(),
+            "textChars":text.chars().count(),
+            "activeAppContextChars":built.active_app_context.chars().count(),
+            "globalContextChars":built.global_context.chars().count(),
+            "hotwordsChars":built.hotwords.chars().count(),
+            "learningChars":built.text.chars().count() - chars_before_learning,
+            "promptChars":built.text.chars().count(),
+        }),
+    );
+    Ok(built)
 }
 
 pub(crate) async fn process_prompt(
@@ -895,8 +949,33 @@ pub(crate) async fn process_prompt_with_options(
     default_reasoning: &str,
     enable_web_search: bool,
 ) -> Result<String, String> {
-    let started = StdInstant::now();
     let profile = selected_profile(state, provider_id, model_override)?;
+    process_prompt_with_profile(
+        state,
+        profile,
+        system_prompt,
+        user_prompt,
+        log_scope,
+        structured_json,
+        default_reasoning,
+        enable_web_search,
+    )
+    .await
+}
+
+/// 用已解析好的供应商配置发请求：调用方需要记录实际使用的供应商与模型时，避免重复解析。
+#[allow(clippy::too_many_arguments)]
+async fn process_prompt_with_profile(
+    state: &RuntimeState,
+    profile: ProviderProfile,
+    system_prompt: &str,
+    user_prompt: &str,
+    log_scope: &str,
+    structured_json: bool,
+    default_reasoning: &str,
+    enable_web_search: bool,
+) -> Result<String, String> {
+    let started = StdInstant::now();
     crate::application::diagnostics::event(
         "debug",
         "smartText.requested",
@@ -1415,6 +1494,7 @@ pub(crate) async fn preview_smart_text(
     process_smart_text(
         &state,
         &text,
+        "",
         &prompt,
         active_app_context.as_deref().unwrap_or_default(),
         "",
@@ -1422,6 +1502,7 @@ pub(crate) async fn preview_smart_text(
         model.as_deref().unwrap_or_default(),
     )
     .await
+    .map(|run| run.output)
 }
 
 #[cfg(test)]

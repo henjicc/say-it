@@ -1894,9 +1894,15 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
         ids
     };
     if let Some((id, duration)) = history {
-        if let Err(error) =
-            crate::application::history::update_result(&app, &id, None, "cancelled", None, duration)
-        {
+        if let Err(error) = crate::application::history::update_result(
+            &app,
+            &id,
+            None,
+            "cancelled",
+            None,
+            duration,
+            None,
+        ) {
             eprintln!("[history] 保存取消状态失败：{error}");
         }
     }
@@ -2401,6 +2407,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         None
     };
+    let mut smart_run = None;
     let smart_processed = if let Some(result) = &assistant_processed {
         result.output.clone()
     } else if should_process_smart_text {
@@ -2434,6 +2441,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             crate::application::smart_text::process_smart_text(
                 &state,
                 &text,
+                &template.id,
                 &template.prompt,
                 &active_app_context,
                 app_identity
@@ -2453,7 +2461,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
             return;
         }
         match smart_result {
-            Ok(value) => value,
+            Ok(run) => {
+                let output = run.output.clone();
+                smart_run = Some(run);
+                output
+            }
             Err(error) => {
                 if let Some(lease) = &lease {
                     let _ = state.audio_session.release(lease);
@@ -2553,6 +2565,10 @@ async fn finalize(app: AppHandle, epoch: u64) {
             started_at
                 .map(|time| time.elapsed().as_millis() as u64)
                 .unwrap_or(0),
+            smart_run
+                .as_ref()
+                .map(|run| serde_json::json!(run).to_string())
+                .as_deref(),
         ) {
             eprintln!("[history] 保存处理结果失败（原文已保留）：{error}");
         }
@@ -3180,6 +3196,7 @@ async fn fail_internal(
             "failed",
             Some(&error),
             duration_ms,
+            None,
         ) {
             eprintln!("[history] 保存失败状态失败：{error}");
         }
