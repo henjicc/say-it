@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Collapse } from "@/components/ui/Collapse";
 import { Button } from "@/components/ui/Button";
-import { Field, CheckField } from "@/components/ui/Field";
+import { CheckField } from "@/components/ui/Field";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input } from "@/components/ui/Input";
+import { RangeInput } from "@/components/ui/RangeInput";
 import { SecretInput } from "@/components/ui/SecretInput";
-import { Slider } from "@/components/ui/Slider";
-import { SettingsSection } from "@/components/ui/SettingsSection";
+import { Switch } from "@/components/ui/Switch";
 import { useConfirm } from "@/components/ui/useConfirm";
 import {
   ApiKeyLink,
@@ -19,9 +21,12 @@ import {
   type ProviderProfile,
 } from "@/store/useProviderStore";
 
-const NESTED_COLLAPSE_CLASS = "bg-[var(--color-bg)]";
-const NESTED_HEADER_CLASS = "px-3 py-2.5";
-const NESTED_BODY_CLASS = "px-3 py-3";
+/** 供应商条目在分组面内展开：去掉 Collapse 自带的卡片外框，表头与 Row 同高同边距。 */
+const ITEM_COLLAPSE_PROPS = {
+  className: "rounded-none border-0 bg-transparent",
+  headerClassName: "min-h-[var(--row-h)] px-3.5 py-2.5",
+  bodyClassName: "px-0 py-1.5",
+} as const;
 
 const PLUGIN_ACTION_LABELS: Record<string, string> = {
   openLogin: "打开登录窗口",
@@ -161,59 +166,65 @@ function ProviderConfigEditor({ provider }: { provider: ProviderProfile }) {
     <Collapse
       title={provider.displayName}
       subtitle={providerConfigurationStatus(provider)}
+      {...ITEM_COLLAPSE_PROPS}
     >
-      <div className="flex flex-col gap-3">
-        {apiKeyUrl && (
-          <p className="text-xs text-[var(--color-fg-subtle)]">
-            <ApiKeyLink
-              url={apiKeyUrl}
-              label={`点击此处获取 ${credentialLabel}`}
-              onError={(error) => setErrorMessage(`打开密钥页面失败：${error}`)}
-            />
-          </p>
-        )}
-        {configFields.map((field) =>
-          field.fieldType === "boolean" ? (
-            <CheckField
-              key={field.key}
+      {apiKeyUrl && (
+        <p className="px-3.5 py-2 text-xs text-[var(--color-fg-subtle)]">
+          <ApiKeyLink
+            url={apiKeyUrl}
+            label={`点击此处获取 ${credentialLabel}`}
+            onError={(error) => setErrorMessage(`打开密钥页面失败：${error}`)}
+          />
+        </p>
+      )}
+      {configFields.map((field) => {
+        const controlId = `provider-${field.secret ? "secret" : "field"}-${provider.id}-${field.key}`;
+        return field.fieldType === "boolean" ? (
+          <Row key={field.key} label={field.label}>
+            <Switch
               checked={Boolean(draft[field.key])}
               onChange={(value) => updateField(field, value, true)}
-            >
-              {field.label}
-            </CheckField>
-          ) : field.secret ? (
-            <Field key={field.key} label={field.label}>
+              label={field.label}
+            />
+          </Row>
+        ) : field.secret ? (
+          <Row key={field.key} label={field.label} controlId={controlId}>
+            <div className={ROW_CONTROL_W}>
               <SecretInput
-                id={`provider-secret-${provider.id}-${field.key}`}
+                id={controlId}
                 draftValue={String(draft[field.key] ?? "")}
                 hasStoredValue={Boolean(provider.status?.hasApiKey)}
                 placeholder={provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
                 onDraftChange={(value) => updateField(field, value)}
                 onBlur={() => updateField(field, draftRef.current[field.key] ?? "", true)}
               />
-            </Field>
-          ) : (
-            <Field key={field.key} label={field.label}>
-              <Input
-                type={field.fieldType === "number" ? "number" : "text"}
-                value={String(draft[field.key] ?? "")}
-                placeholder={field.secret && provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
-                onChange={(event) => updateField(field, event.target.value)}
-                onBlur={() => updateField(field, draftRef.current[field.key] ?? "", true)}
-              />
-            </Field>
-          ),
-        )}
-        <div className="flex flex-wrap gap-2">
+            </div>
+          </Row>
+        ) : (
+          <Row key={field.key} label={field.label} controlId={controlId}>
+            <Input
+              id={controlId}
+              className={ROW_CONTROL_W}
+              type={field.fieldType === "number" ? "number" : "text"}
+              value={String(draft[field.key] ?? "")}
+              placeholder={field.secret && provider.status?.hasApiKey ? "已保存，留空表示不修改" : ""}
+              onChange={(event) => updateField(field, event.target.value)}
+              onBlur={() => updateField(field, draftRef.current[field.key] ?? "", true)}
+            />
+          </Row>
+        );
+      })}
+      {(provider.actions || []).some((action) => action !== "manageHotwords") && (
+        <div className="flex flex-wrap gap-2 px-3.5 py-2">
           {(provider.actions || []).filter((action) => action !== "manageHotwords").map((action) => (
             <Button key={action} size="sm" onClick={() => void runAction(action)}>
               {PLUGIN_ACTION_LABELS[action] || action}
             </Button>
           ))}
         </div>
-        {errorMessage && <p className="text-xs text-[var(--color-danger)]">{errorMessage}</p>}
-        {actionMessage && <p className="text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
-      </div>
+      )}
+      {errorMessage && <p className="px-3.5 py-2 text-xs text-[var(--color-danger)]">{errorMessage}</p>}
+      {actionMessage && <p className="px-3.5 py-2 text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
       {dialog}
     </Collapse>
   );
@@ -344,8 +355,9 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
     <Collapse
       title={provider.displayName}
       subtitle={hasApiKey ? "已配置" : "需要填写"}
+      {...ITEM_COLLAPSE_PROPS}
     >
-      <p className="text-xs text-[var(--color-fg-subtle)]">
+      <p className="px-3.5 py-2 text-xs text-[var(--color-fg-subtle)]">
         <ApiKeyLink
           url={ASR_API_KEY_URLS.bailian}
           label="点击此处获取 API Key"
@@ -353,91 +365,95 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
         />
       </p>
 
-      <div className="mt-3">
-        <SecretInput
-          id="bailian-api-key"
-          aria-label="阿里云百炼 API Key"
-          draftValue={apiKey}
-          hasStoredValue={hasApiKey}
-          placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
-          onDraftChange={(value) => updateApiKey(value)}
-          onBlur={() => updateApiKey(apiKeyRef.current, true)}
-        />
-      </div>
+      <Row label="API Key" controlId="bailian-api-key">
+        <div className={ROW_CONTROL_W}>
+          <SecretInput
+            id="bailian-api-key"
+            aria-label="阿里云百炼 API Key"
+            draftValue={apiKey}
+            hasStoredValue={hasApiKey}
+            placeholder={hasApiKey ? "输入新 API Key 可覆盖当前配置" : "输入阿里云百炼 API Key"}
+            onDraftChange={(value) => updateApiKey(value)}
+            onBlur={() => updateApiKey(apiKeyRef.current, true)}
+          />
+        </div>
+      </Row>
 
-      <div className="mt-4 flex flex-col gap-3">
-        <Collapse
-          title="高级参数"
-          className={NESTED_COLLAPSE_CLASS}
-          headerClassName={NESTED_HEADER_CLASS}
-          bodyClassName={NESTED_BODY_CLASS}
-        >
-          <div>
-            <p className="text-xs text-[var(--color-fg-subtle)]">语种提示</p>
-            <div className="mt-1.5 flex gap-4">
-              {[
-                { value: "zh", label: "中文" },
-                { value: "en", label: "英文" },
-                { value: "ja", label: "日语" },
-              ].map((lang) => (
-                <CheckField
-                  key={lang.value}
-                  checked={advanced.languageHints.includes(lang.value)}
-                  onChange={() => toggleLanguageHint(lang.value)}
-                >
-                  {lang.label}
-                </CheckField>
-              ))}
-            </div>
-          </div>
-          <CheckField
-            className="mt-3"
+      <Collapse
+        title="高级参数"
+        className="rounded-none border-0 bg-transparent"
+        headerClassName="min-h-[var(--row-h)] px-3.5 py-2.5"
+        bodyClassName="px-0 py-1.5"
+      >
+        <Row label="语种提示">
+          {[
+            { value: "zh", label: "中文" },
+            { value: "en", label: "英文" },
+            { value: "ja", label: "日语" },
+          ].map((lang) => (
+            <CheckField
+              key={lang.value}
+              checked={advanced.languageHints.includes(lang.value)}
+              onChange={() => toggleLanguageHint(lang.value)}
+            >
+              {lang.label}
+            </CheckField>
+          ))}
+        </Row>
+        <Row label="语义断句" hint="semantic_punctuation_enabled">
+          <Switch
             checked={advanced.semanticPunctuationEnabled}
             onChange={(value) => updateAdvanced({ semanticPunctuationEnabled: value }, true)}
-          >
-            语义断句（semantic_punctuation_enabled）
-          </CheckField>
-          <div className="mt-3">
-            <Slider
-              label="断句静音阈值"
-              min={200}
-              max={6000}
-              step={100}
-              value={advanced.maxSentenceSilence}
-              format={(value) => `${value.toFixed(0)} ms`}
-              onChange={(value) => updateAdvanced({ maxSentenceSilence: value })}
-            />
-          </div>
-          <CheckField
-            className="mt-3"
+            label="语义断句"
+          />
+        </Row>
+        <Row label="断句静音阈值">
+          <RangeInput
+            className="w-40"
+            ariaLabel="断句静音阈值"
+            min={200}
+            max={6000}
+            step={100}
+            value={advanced.maxSentenceSilence}
+            onChange={(value) => updateAdvanced({ maxSentenceSilence: value })}
+          />
+          <span className="w-16 text-right text-xs tabular-nums text-[var(--color-fg-muted)]">{advanced.maxSentenceSilence.toFixed(0)} ms</span>
+        </Row>
+        <Row
+          label="多阈值模式"
+          hint="multi_threshold_mode_enabled，防止 VAD 断句切割过长，仅在语义断句关闭时生效"
+          disabled={advanced.semanticPunctuationEnabled}
+        >
+          <Switch
             checked={advanced.multiThresholdModeEnabled}
             onChange={(value) => updateAdvanced({ multiThresholdModeEnabled: value }, true)}
             disabled={advanced.semanticPunctuationEnabled}
-          >
-            多阈值模式（multi_threshold_mode_enabled，防止 VAD 断句切割过长，仅在语义断句关闭时生效）
-          </CheckField>
-          <CheckField
-            className="mt-3"
+            label="多阈值模式"
+          />
+        </Row>
+        <Row label="心跳包" hint="heartbeat，长时间静音保活连接">
+          <Switch
             checked={advanced.heartbeat}
             onChange={(value) => updateAdvanced({ heartbeat: value }, true)}
-          >
-            心跳包（heartbeat，长时间静音保活连接）
-          </CheckField>
-          <Field label="噪音判定阈值（speech_noise_threshold，-1.0 ~ 1.0，留空使用默认）" className="mt-3">
-            <Input
-              type="number"
-              min={-1}
-              max={1}
-              step={0.1}
-              value={advanced.speechNoiseThreshold}
-              onChange={(event) => updateAdvanced({ speechNoiseThreshold: event.target.value })}
-              onBlur={() => updateAdvanced({ speechNoiseThreshold: advancedRef.current.speechNoiseThreshold }, true)}
-            />
-          </Field>
-        </Collapse>
-      </div>
+            label="心跳包"
+          />
+        </Row>
+        <Row label="噪音判定阈值" hint="speech_noise_threshold，-1.0 ~ 1.0，留空使用默认" controlId="bailian-speech-noise-threshold">
+          <Input
+            id="bailian-speech-noise-threshold"
+            className="w-32"
+            type="number"
+            min={-1}
+            max={1}
+            step={0.1}
+            value={advanced.speechNoiseThreshold}
+            onChange={(event) => updateAdvanced({ speechNoiseThreshold: event.target.value })}
+            onBlur={() => updateAdvanced({ speechNoiseThreshold: advancedRef.current.speechNoiseThreshold }, true)}
+          />
+        </Row>
+      </Collapse>
 
-      {errorMessage && <p className="mt-3 text-xs text-[var(--color-danger)]">{errorMessage}</p>}
+      {errorMessage && <p className="px-3.5 py-2 text-xs text-[var(--color-danger)]">{errorMessage}</p>}
     </Collapse>
   );
 }
@@ -445,10 +461,9 @@ function BailianProviderConfig({ provider }: { provider: ProviderProfile }) {
 /** 不展开配置的条目：内置无配置项供应商，或配置入口在其他分区的多能力供应商。 */
 function ProviderSummaryRow({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3">
-      <span className="truncate text-sm font-medium text-[var(--color-fg)]">{title}</span>
+    <Row label={title}>
       <span className="truncate text-xs text-[var(--color-fg-subtle)]">{subtitle}</span>
-    </div>
+    </Row>
   );
 }
 
@@ -487,17 +502,17 @@ function ProviderSectionForCapability({ capability }: { capability: ProviderSect
   const rendered = entries.map(renderEntry).filter((entry) => entry !== null);
 
   return (
-    <SettingsSection title={SECTION_TITLES[capability]} description="密钥会加密保存在这台电脑上。">
+    <Group title={SECTION_TITLES[capability]} description="密钥会加密保存在这台电脑上。">
       {rendered.length > 0 ? (
         rendered
       ) : (
-        <p className="text-xs text-[var(--color-fg-subtle)]">
+        <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">
           {entries.length === 0
             ? "暂无支持该能力的供应商，可通过「插件管理」安装。"
             : "当前已启用的供应商均无需配置。"}
         </p>
       )}
-    </SettingsSection>
+    </Group>
   );
 }
 
@@ -509,10 +524,10 @@ export function SettingsProviderPanel() {
   }, [loadProviders]);
 
   return (
-    <>
+    <InspectorBody>
       {SECTION_CAPABILITIES.map((capability) => (
         <ProviderSectionForCapability key={capability} capability={capability} />
       ))}
-    </>
+    </InspectorBody>
   );
 }

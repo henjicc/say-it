@@ -42,6 +42,7 @@ import {
   type PanState,
   type CueNeighbors,
 } from "./subtitle-editor/utils";
+import { useThemeStore } from "@/store/useThemeStore";
 import { buildWaveformColumns, drawWaveformCanvas, type WaveformColumn } from "./subtitle-editor/waveform";
 import { CueTextarea } from "./subtitle-editor/CueTextarea";
 import { TimeControl } from "./subtitle-editor/TimeControl";
@@ -593,6 +594,8 @@ export function SubtitleEditor({
     if (audioRef.current) audioRef.current.playbackRate = rate;
   }, [rate]);
 
+  // 画布颜色读自主题令牌，切换主题后也要重绘。
+  const theme = useThemeStore((s) => s.theme);
   // 画布只覆盖时间轴的可视窗口，跟随横向滚动平移重绘。详见 waveform.ts 的说明：
   // 跟随整条时间轴会在十几分钟的音频上触及浏览器画布上限，整块波形静默变空白。
   const redrawWaveform = useCallback(() => {
@@ -608,7 +611,7 @@ export function SubtitleEditor({
       container.scrollLeft,
       timelineWidth,
     );
-  }, [timelineWidth, waveformColumns, waveformZoom]);
+  }, [theme, timelineWidth, waveformColumns, waveformZoom]);
 
   useEffect(() => {
     redrawWaveform();
@@ -750,16 +753,16 @@ export function SubtitleEditor({
         <Button size="sm" onClick={cycleRate} disabled={!mediaSrc || playbackError} title="播放速度" className="w-14 font-mono tabular-nums">
           {rate}×
         </Button>
-        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
+        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-subtle)]">
           <HelpLabel content={`按住 ${shortcutModifierLabels.ctrl} 并滚动鼠标滚轮可缩放时间轴；按住鼠标中键可拖动。${isMacOS ? "⌘Z 撤销，⌘⇧Z 重做。" : "Ctrl+Z 撤销，Ctrl+Y 重做。"}`}>时间轴 {formatZoom(timelineZoom)}</HelpLabel>
         </span>
-        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-faint)]">
+        <span className="inline-flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1 font-mono text-[11px] text-[var(--color-fg-subtle)]">
           <HelpLabel content={`按住 ${shortcutModifierLabels.alt} 并滚动鼠标滚轮可缩放波形。`}>波形 {formatZoom(waveformZoom)}</HelpLabel>
         </span>
         <Tooltip content="把短暂的字幕空白接起来：前一句延长到后一句开始，避免字幕忽隐忽现。"><span
           className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--color-line)] px-2 py-1"
         >
-          <span className="text-[11px] text-[var(--color-fg-faint)]">间隙 ≤</span>
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">间隙 ≤</span>
           <input
             type="number"
             min={0}
@@ -768,7 +771,7 @@ export function SubtitleEditor({
             onChange={(event) => setGapMergeMs(Math.max(0, Number(event.target.value) || 0))}
             className="h-6 w-14 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] text-center font-mono text-[11px] tabular-nums text-[var(--color-fg-muted)] focus:outline-none focus:border-[var(--accent-ring)]"
           />
-          <span className="text-[11px] text-[var(--color-fg-faint)]">ms</span>
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">ms</span>
         </span></Tooltip>
         <Button size="sm" onClick={mergeGaps} disabled={cues.length < 2}>
           合并字幕间隙
@@ -821,7 +824,7 @@ export function SubtitleEditor({
             {secondLabels.map((s) => (
               <span
                 key={s}
-                className="absolute top-0.5 font-mono text-[10px] tabular-nums text-[var(--color-fg-faint)]"
+                className="absolute top-0.5 font-mono text-[10px] tabular-nums text-[var(--color-fg-subtle)]"
                 style={{ left: `${s * pxPerSec + 3}px` }}
               >
                 {formatClock(s * 1000).replace(/\.\d+$/, "")}
@@ -837,13 +840,13 @@ export function SubtitleEditor({
                 style={{ height: `${WAVEFORM_HEIGHT}px` }}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-faint)]">
+              <div className="flex h-full items-center justify-center text-[10px] text-[var(--color-fg-subtle)]">
                 {waveformLoading ? "正在生成波形…" : "当前文件暂不支持波形预览"}
               </div>
             )}
           </div>
 
-          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-line)_78%,transparent)] bg-[rgba(10,13,19,0.75)]" style={{ top: `${CUE_LANE_TOP}px`, height: `${CUE_LANE_HEIGHT}px` }} />
+          <div className="absolute inset-x-0 rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--color-line)_78%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-sidebar)_75%,transparent)]" style={{ top: `${CUE_LANE_TOP}px`, height: `${CUE_LANE_HEIGHT}px` }} />
 
           {cues.map((cue) => {
             const left = (cue.beginMs / 1000) * pxPerSec;
@@ -933,7 +936,7 @@ export function SubtitleEditor({
                     "transition-colors duration-[var(--dur-fast)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                     isHighlighted
                       ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-                      : "text-[var(--color-fg-faint)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+                      : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >
                   {index + 1}
@@ -945,7 +948,7 @@ export function SubtitleEditor({
                       "rounded-[var(--radius-pill)] px-1.5 py-0.5 text-[10px] leading-none",
                       cue.badge.tone === "warn"
                         ? "bg-[color-mix(in_srgb,var(--color-warn)_16%,transparent)] text-[var(--color-warn)]"
-                        : "bg-[var(--accent-soft-strong)] text-[var(--color-accent-light)]",
+                        : "bg-[var(--accent-soft-strong)] text-[var(--color-accent-text)]",
                     )}
                   >
                     {cue.badge.label}

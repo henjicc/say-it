@@ -2603,7 +2603,7 @@ mod tests {
                 |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
             (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
         }
-        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((40, 110, 200));
+        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((39, 103, 234));
         let light = value.get("tone").and_then(Value::as_str) == Some("light");
         let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
         let background = if custom {

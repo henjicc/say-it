@@ -1,0 +1,24 @@
+import { AlignLeft, FileAudio, SlidersHorizontal } from "lucide-react";
+import { InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
+import { useTranscriptionStore, type TranscriptionTab } from "@/store/useTranscriptionStore";
+import { TranscriptionView } from "@/views/TranscriptionView";
+
+const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
+
+const TITLES: Record<TranscriptionTab, string> = { transcribe: "文件", settings: "识别", align: "文稿对齐" };
+
+const ITEMS: NodeItem<TranscriptionTab>[] = [
+  { key: "transcribe", label: TITLES.transcribe, icon: <FileAudio {...iconProps} /> },
+  { key: "settings", label: TITLES.settings, icon: <SlidersHorizontal {...iconProps} /> },
+  { key: "align", label: TITLES.align, icon: <AlignLeft {...iconProps} /> },
+];
+
+export function TranscriptionPage() {
+  const { tab, setTab } = useTranscriptionStore();
+  return (
+    <MasterDetail title="转写" list={<NodeList ariaLabel="转写分类" items={ITEMS} active={tab} onSelect={setTab} />}>
+      <InspectorHeader title={TITLES[tab]} />
+      <TranscriptionView />
+    </MasterDetail>
+  );
+}

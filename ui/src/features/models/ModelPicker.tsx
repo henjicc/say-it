@@ -70,8 +70,8 @@ function FilterChip({
       className={cn(
         "shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors duration-[var(--dur-fast)]",
         active
-          ? "border-[var(--accent-ring)] bg-[var(--accent-soft-strong)] text-[var(--color-accent-light)]"
-          : "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-line-strong)] hover:text-[var(--color-fg)]",
+          ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
+          : "border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
       )}
     >
       {children}
@@ -236,7 +236,7 @@ export function ModelPicker({
           } else if (event.key === "Escape") closeAndFocus();
         }}
         className={cn(
-          "flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
+          "flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
           "hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-hover)] focus:outline-none focus:border-[var(--accent-ring)]",
           open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
           disabled && "cursor-not-allowed opacity-50",
@@ -345,15 +345,15 @@ export function ModelPicker({
                   className={cn(
                     "flex w-full items-center gap-3 rounded-[var(--radius-md)] py-2.5 pl-3 pr-2 text-left transition-colors duration-[var(--dur-fast)]",
                     isSelected
-                      ? "bg-[var(--accent-soft-strong)] text-[var(--color-fg)]"
+                      ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
                       : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
                   )}
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block whitespace-normal break-words text-sm font-medium leading-5">{option.label}</span>
-                    <span className="mt-0.5 block whitespace-normal break-words text-xs text-[var(--color-fg-subtle)]">{optionProviderLabel(option)}</span>
+                    <span className={cn("mt-0.5 block whitespace-normal break-words text-xs", !isSelected && "text-[var(--color-fg-subtle)]")}>{optionProviderLabel(option)}</span>
                   </span>
-                  {option.mode && <span className="shrink-0 rounded-full border border-[var(--color-line)] px-2 py-1 text-[11px] text-[var(--color-fg-subtle)]">
+                  {option.mode && <span className={cn("shrink-0 rounded-full border px-2 py-1 text-[11px]", isSelected ? "border-current" : "border-[var(--color-line)] text-[var(--color-fg-subtle)]")}>
                     {asrModelModeLabel(option.mode)}
                   </span>}
                 </button>

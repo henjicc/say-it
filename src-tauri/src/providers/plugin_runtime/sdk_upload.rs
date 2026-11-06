@@ -116,11 +116,7 @@ impl HostState {
             .parse::<reqwest::Method>()
             .map_err(|_| "非法 HTTP 方法")?;
         // 请求体是一次性流，禁止重定向重放或把凭据带往其他端点。
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| error.to_string())?;
-        let mut request = client.request(method, url);
+        let mut request = super::HTTP_CLIENT.get().request(method, url);
         if let Some(headers) = payload.get("headers").and_then(Value::as_object) {
             for (name, value) in headers {
                 if name.eq_ignore_ascii_case("content-length")

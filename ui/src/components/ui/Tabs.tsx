@@ -29,10 +29,10 @@ const VARIANT_STYLES: Record<TabsVariant, {
   inactive: string;
 }> = {
   page: {
-    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-1 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] p-1",
-    button: "h-[var(--control-h-sm)] rounded-[var(--radius-md)] px-4 text-sm",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
     active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
-    inactive: "text-[var(--color-fg-subtle)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg-muted)]",
+    inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
   subpage: {
     list: "flex h-[var(--control-h)] w-full items-end gap-5 border-b border-[var(--color-line)]",
@@ -41,10 +41,10 @@ const VARIANT_STYLES: Record<TabsVariant, {
     inactive: "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]",
   },
   view: {
-    list: "inline-flex h-[var(--control-h-sm)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] p-0.5",
-    button: "h-full rounded-[var(--radius-sm)] px-3 text-xs",
-    active: "bg-[var(--accent-soft)] text-[var(--color-accent-light)]",
-    inactive: "text-[var(--color-fg-subtle)] hover:bg-[var(--accent-soft)] hover:text-[var(--color-fg-muted)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
+    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
+    inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
 };
 
@@ -61,6 +61,8 @@ export function Tabs<K extends string>({
   const tabsId = id ?? `tabs-${generatedId}`;
   const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const styles = VARIANT_STYLES[variant];
+  // view 变体是表单里的分段选择，没有对应的面板，读屏按单选组播报。
+  const choice = variant === "view";
 
   if (tabs.length <= 1) return null;
 
@@ -85,7 +87,7 @@ export function Tabs<K extends string>({
   return (
     <div
       id={tabsId}
-      role="tablist"
+      role={choice ? "radiogroup" : "tablist"}
       aria-label={ariaLabel}
       className={cn(styles.list, className)}
     >
@@ -97,9 +99,10 @@ export function Tabs<K extends string>({
             key={tab.key}
             id={`${tabsId}-${tab.key}-tab`}
             type="button"
-            role="tab"
-            aria-selected={isActive}
-            aria-controls={id ? `${tabsId}-${tab.key}-panel` : undefined}
+            role={choice ? "radio" : "tab"}
+            aria-selected={choice ? undefined : isActive}
+            aria-checked={choice ? isActive : undefined}
+            aria-controls={!choice && id ? `${tabsId}-${tab.key}-panel` : undefined}
             tabIndex={isActive ? 0 : -1}
             onClick={() => onChange(tab.key)}
             onKeyDown={(event) => handleKeyDown(event, index)}

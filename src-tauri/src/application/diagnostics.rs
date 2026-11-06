@@ -21,6 +21,8 @@ const NORMAL_SEGMENT_BYTES: u64 = 5 * 1024 * 1024;
 const CONTENT_SEGMENT_BYTES: u64 = 2 * 1024 * 1024;
 const CONTENT_ENABLE_SECONDS: u64 = 30 * 60;
 
+pub(crate) const DICTATION_REQUEST_FAILED: &str = "dictation.requestFailed";
+
 static LOGGER: OnceLock<DiagnosticLogger> = OnceLock::new();
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -208,6 +210,8 @@ pub(crate) fn fingerprint(text: &str) -> String {
 }
 
 pub(crate) fn event(level: &str, name: &str, metadata: Value) {
+    #[cfg(debug_assertions)]
+    super::dev_trace::on_event(name, &metadata);
     if level == "debug" && !verbose_enabled() {
         return;
     }
@@ -229,6 +233,8 @@ pub(crate) fn event(level: &str, name: &str, metadata: Value) {
 }
 
 pub(crate) fn content_event(name: &str, content: Value) {
+    #[cfg(debug_assertions)]
+    super::dev_trace::on_content(name, &content);
     let Some(logger) = LOGGER.get() else {
         return;
     };
@@ -558,7 +564,7 @@ fn sanitize(value: Value) -> Value {
     }
 }
 
-fn cleanup_files(
+pub(super) fn cleanup_files(
     directory: &Path,
     prefix: &str,
     excluded_prefix: Option<&str>,
@@ -601,21 +607,21 @@ fn cleanup_files(
     Ok(())
 }
 
-fn now_seconds() -> u64 {
+pub(super) fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
 
-fn now_millis() -> u128 {
+pub(super) fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
 }
 
-fn date_key(seconds: u64) -> String {
+pub(super) fn date_key(seconds: u64) -> String {
     let days = (seconds / 86_400) as i64;
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

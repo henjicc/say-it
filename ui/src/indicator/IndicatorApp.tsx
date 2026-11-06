@@ -44,6 +44,10 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   error: "处理失败",
 };
 
+/** 处理阶段：识别结束后依次经过智能处理、本地规则，再输出到光标。 */
+const STAGES = ["识别", "处理", "规则", "输出"] as const;
+const ACTIVE_STAGE: Partial<Record<Phase, number>> = { processing: 0, smartProcessing: 1 };
+
 const INDICATOR_WAVE_BAR_COUNT = 9;
 
 function resampleWaveLevels(levels: number[], fallback: number) {
@@ -298,6 +302,7 @@ export function IndicatorApp() {
 
   const pillPhase = phase === "hidden" ? "recording" : phase;
   const pillVisualPhase = pillPhase === "smartProcessing" ? "processing" : pillPhase;
+  const activeStage = ACTIVE_STAGE[pillPhase];
   const visible = phase !== "hidden";
   const isNoMotion = mode === "subtitle" && subtitleConfig.motionEnabled === false;
   const isNoFade = mode === "subtitle" && subtitleConfig.fadeEnabled === false;
@@ -441,6 +446,14 @@ export function IndicatorApp() {
         <div className={`pill ${pillVisualPhase}${showWaveform ? " pill-wave" : ""}`} id="pill">
           {showWaveform ? (
             <OrbWaveform levels={waveformBars} variant="dense" />
+          ) : activeStage !== undefined ? (
+            <span className="stages" role="status" aria-label={LABELS[pillPhase]}>
+              {STAGES.map((stage, index) => (
+                <span key={stage} className={index < activeStage ? "done" : index === activeStage ? "active" : undefined}>
+                  {stage}
+                </span>
+              ))}
+            </span>
           ) : (
             <>
               <span className="dot" />

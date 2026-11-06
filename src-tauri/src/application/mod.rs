@@ -6,6 +6,10 @@ pub(crate) mod compare;
 pub(crate) mod contract;
 pub(crate) mod customization;
 pub(crate) mod data_root;
+#[cfg(debug_assertions)]
+pub(crate) mod dev_bench;
+#[cfg(debug_assertions)]
+pub(crate) mod dev_trace;
 pub(crate) mod diagnostics;
 pub(crate) mod dictation;
 pub(crate) mod events;
@@ -17,6 +21,7 @@ pub(crate) mod llm_models;
 pub(crate) mod performance;
 #[cfg(feature = "performance-acceptance")]
 pub(crate) mod performance_acceptance;
+pub(crate) mod official_models;
 pub(crate) mod plugin_management;
 pub(crate) mod settings;
 pub(crate) mod setup;

@@ -32,6 +32,7 @@ use super::sdk_runtime::{
     HostRuntimeRecorder, SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE,
     AI_SDK_GROQ_BUNDLE, AI_SDK_LLM_MODULES_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
 };
+use super::shared_http::SharedHttpClient;
 use super::ProviderProfile;
 
 mod sdk_upload;
@@ -111,6 +112,34 @@ where
         json!({"threadName":thread_name,"stackBytes":JS_WORKER_STACK_BYTES}),
     );
     Ok(receiver)
+}
+
+/// 开发追踪只记协议和主机：路径和查询串里可能有密钥。
+#[cfg(debug_assertions)]
+fn trace_origin(payload: &Value) -> Option<String> {
+    let url = url::Url::parse(payload.get("url")?.as_str()?).ok()?;
+    Some(url.origin().ascii_serialization())
+}
+
+/// 插件的 HTTP 请求共用一个连接池。客户端不跟随重定向：每一跳都由 `prepare_fetch_redirect`
+/// 按插件权限校验。
+static HTTP_CLIENT: SharedHttpClient<reqwest::Client> = SharedHttpClient::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("插件 HTTP 客户端初始化失败")
+});
+
+/// 提前和 `url` 所在的服务器建好连接放进共享连接池，之后同域名的插件请求直接复用。
+/// 不做插件网络权限校验，只能传宿主自己写定的地址，不能传插件给的地址。
+pub(crate) async fn prewarm_connection(url: &str) -> Result<(), String> {
+    HTTP_CLIENT
+        .get()
+        .head(url)
+        .send()
+        .await
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 fn wait_for_host_io<T, F>(future: F) -> Result<T, String>
@@ -359,6 +388,30 @@ struct HttpStreamState {
     response: reqwest::Response,
     pending: VecDeque<u8>,
     total_bytes: usize,
+    #[cfg(debug_assertions)]
+    trace: Option<HttpStreamTrace>,
+}
+
+/// 开发追踪：响应头到达只说明服务端开始回了，整次请求要记到响应体读完或流被关闭。
+#[cfg(debug_assertions)]
+struct HttpStreamTrace {
+    started: std::time::Instant,
+    headers_ms: u64,
+    origin: Option<String>,
+}
+
+#[cfg(debug_assertions)]
+impl HttpStreamTrace {
+    fn finish(self) {
+        crate::application::dev_trace::mark(
+            crate::application::dev_trace::HTTP_RESPONSE,
+            json!({
+                "ms":self.started.elapsed().as_millis() as u64,
+                "headersMs":self.headers_ms,
+                "origin":self.origin,
+            }),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -729,10 +782,12 @@ impl HostState {
     }
 
     fn http_request(&mut self, payload: Value) -> Result<Value, String> {
+        #[cfg(debug_assertions)]
+        let (started, origin) = (std::time::Instant::now(), trace_origin(&payload));
         let response = self.open_http_response(payload)?;
         let cancelled = self.cancelled.clone();
         let deadline = self.deadline.clone();
-        wait_for_host_io(async move {
+        let result = wait_for_host_io(async move {
             let status = response.status().as_u16();
             let response_headers = response_headers(&response);
             let mut stream = response.bytes_stream();
@@ -756,12 +811,34 @@ impl HostState {
                 "bodyText": String::from_utf8_lossy(&bytes),
                 "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
             }))
-        })
+        });
+        #[cfg(debug_assertions)]
+        crate::application::dev_trace::mark(
+            crate::application::dev_trace::HTTP_RESPONSE,
+            json!({"ms":started.elapsed().as_millis() as u64,"origin":origin}),
+        );
+        result
     }
 
     fn http_stream_open(&mut self, payload: Value) -> Result<Value, String> {
+        #[cfg(debug_assertions)]
+        let (started, origin) = (std::time::Instant::now(), trace_origin(&payload));
         let response = self.open_http_response(payload)?;
-        Ok(self.register_http_response(response))
+        #[cfg(debug_assertions)]
+        let headers_ms = started.elapsed().as_millis() as u64;
+        let result = self.register_http_response(response);
+        #[cfg(debug_assertions)]
+        if let Some(state) = result["streamId"]
+            .as_str()
+            .and_then(|stream_id| self.http_streams.get_mut(stream_id))
+        {
+            state.trace = Some(HttpStreamTrace {
+                started,
+                headers_ms,
+                origin,
+            });
+        }
+        Ok(result)
     }
 
     fn register_http_response(&mut self, response: reqwest::Response) -> Value {
@@ -778,6 +855,8 @@ impl HostState {
                 response,
                 pending: VecDeque::new(),
                 total_bytes: 0,
+                #[cfg(debug_assertions)]
+                trace: None,
             },
         );
         result
@@ -808,6 +887,10 @@ impl HostState {
             })?;
             state = next_state;
             let Some(chunk) = chunk else {
+                #[cfg(debug_assertions)]
+                if let Some(trace) = state.trace.take() {
+                    trace.finish();
+                }
                 return Ok(json!({"done": true}));
             };
             state.total_bytes = state.total_bytes.saturating_add(chunk.len());
@@ -827,7 +910,13 @@ impl HostState {
             .get("streamId")
             .and_then(Value::as_str)
             .ok_or("关闭流缺少 streamId")?;
-        self.http_streams.remove(stream_id);
+        let closed = self.http_streams.remove(stream_id);
+        #[cfg(debug_assertions)]
+        if let Some(trace) = closed.and_then(|mut state| state.trace.take()) {
+            trace.finish();
+        }
+        #[cfg(not(debug_assertions))]
+        drop(closed);
         Ok(Value::Null)
     }
 
@@ -858,10 +947,7 @@ impl HostState {
         let cancelled = self.cancelled.clone();
         let deadline = self.deadline.clone();
         wait_for_host_io(async move {
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|error| error.to_string())?;
+            let client = HTTP_CLIENT.get();
             for _ in 0..=5 {
                 let mut request = client.request(method.clone(), url.clone());
                 for (name, value) in &headers {

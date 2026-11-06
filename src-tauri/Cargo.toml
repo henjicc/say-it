@@ -74,6 +74,10 @@ mp3lame-encoder = "0.2.4"
 once_cell = "1.20"
 fancy-regex = "0.14"
 genai = "0.7.0-beta.13"
+# genai 依赖的 reqwest 大版本，用来给它传入共享客户端；特性沿用 genai 自己开启的。
+reqwest-genai = { package = "reqwest", version = "0.13", default-features = false }
+# 读取系统代理，与 reqwest 建客户端时用的是同一套逻辑。
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy-system"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 rquickjs = { version = "0.12.1", features = ["futures", "loader", "macro"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

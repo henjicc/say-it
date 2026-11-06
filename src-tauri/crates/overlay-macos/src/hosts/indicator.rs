@@ -104,15 +104,15 @@ mod tests {
             for (command, panel) in [
                 (
                     Command::SetState(IndicatorState::Recording),
-                    Rect::new(166.0, 124.0, 294.0, 164.0),
+                    Rect::new(146.0, 124.0, 314.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::Processing),
-                    Rect::new(166.0, 124.0, 294.0, 164.0),
+                    Rect::new(146.0, 124.0, 314.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::SmartProcessing),
-                    Rect::new(166.0, 124.0, 294.0, 164.0),
+                    Rect::new(146.0, 124.0, 314.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::Fallback),
