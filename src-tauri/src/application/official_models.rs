@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::application::plugin_management::{download_provider_model_pack, install_provider_plugin};
+use crate::application::plugin_management::{download_model_pack_files, install_provider_plugin};
 use crate::providers::model_download;
 use crate::providers::plugin::{plugin_staging_dir, safe_model_file_path, PluginRegistrySnapshot};
 use crate::state::RuntimeState;
@@ -89,6 +89,8 @@ pub(crate) async fn install_official_model_pack(
     pack_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    // 安装会替换模型目录，必须和该包的下载互斥。
+    let lease = model_download::begin_download(&pack_id)?;
     let client = model_download::https_client()?;
     let pack = fetch_catalog(&client)
         .await?
@@ -130,5 +132,5 @@ pub(crate) async fn install_official_model_pack(
     {
         return Err("安装的模型包与官方目录的 ID 或版本不一致".into());
     }
-    download_provider_model_pack(app, pack.id, state).await
+    download_model_pack_files(app, pack.id, lease, state).await
 }
