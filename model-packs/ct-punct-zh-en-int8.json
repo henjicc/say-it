@@ -3,7 +3,7 @@
     "apiVersion": 5,
     "id": "official.sherpa-ct-punct-zh-en",
     "name": "CT-Transformer 中英标点 INT8",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "provider": {
       "id": "local-ct-punct",
       "displayName": "本地标点",
@@ -21,12 +21,14 @@
         {
           "path": "model.int8.onnx",
           "sha256": "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1",
-          "sizeBytes": 75519198
+          "sizeBytes": 75519198,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.sherpa-ct-punct-zh-en/model.int8.onnx" }
         },
         {
           "path": "LICENSE-CT-Transformer.txt",
           "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
-          "sizeBytes": 11357
+          "sizeBytes": 11357,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.sherpa-ct-punct-zh-en/LICENSE-CT-Transformer.txt" }
         }
       ],
       "params": {

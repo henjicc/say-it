@@ -81,16 +81,9 @@ pub fn verify_pack(model_dir: &Path, pack: &ModelPackManifest) -> Result<(), Str
     Ok(())
 }
 
-pub async fn download_pack(
-    app: &tauri::AppHandle,
-    plugin_id: &str,
-    model_dir: &Path,
-    pack: &ModelPackManifest,
-) -> Result<(), String> {
-    tokio::fs::create_dir_all(model_dir)
-        .await
-        .map_err(|error| error.to_string())?;
-    let client = reqwest::Client::builder()
+/// 模型相关下载共用的客户端：只跟随 HTTPS 重定向，最多 5 跳。
+pub fn https_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {
                 attempt.error("模型下载重定向次数过多")
@@ -101,7 +94,19 @@ pub async fn download_pack(
             }
         }))
         .build()
+        .map_err(|error| error.to_string())
+}
+
+pub async fn download_pack(
+    app: &tauri::AppHandle,
+    plugin_id: &str,
+    model_dir: &Path,
+    pack: &ModelPackManifest,
+) -> Result<(), String> {
+    tokio::fs::create_dir_all(model_dir)
+        .await
         .map_err(|error| error.to_string())?;
+    let client = https_client()?;
     let pack_total = pack.files.iter().map(|file| file.size_bytes).sum();
 
     for file in &pack.files {
