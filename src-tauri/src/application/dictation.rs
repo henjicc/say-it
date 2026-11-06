@@ -3977,12 +3977,13 @@ fn play_cue_async(
         CuePlaybackTarget::IndicatorWindow => "dictation-indicator-play-cue",
     };
     tauri::async_runtime::spawn(async move {
-        // 第一次创建悬浮窗时，给它的 WebView 留出注册事件监听器的时间。
-        if matches!(target, CuePlaybackTarget::IndicatorWindow) {
-            sleep(Duration::from_millis(100)).await;
-        }
         if let CuePlaybackTarget::IndicatorWindow = target {
             if app.get_webview_window("dictation-indicator").is_some() {
+                // 提示音要和指示器同时出现：只有刚建好的 WebView 才等它注册监听器。
+                let wait = crate::desktop::indicator_listener_wait();
+                if !wait.is_zero() {
+                    sleep(wait).await;
+                }
                 let _ = app.emit_to(
                     "dictation-indicator",
                     event,
