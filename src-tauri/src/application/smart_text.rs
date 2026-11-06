@@ -2,6 +2,7 @@ use crate::providers::{
     default_provider_id, find_profile, llm_models_from_config, llm_responses_endpoint,
     llm_uses_responses, normalize_llm_endpoint, ProviderProfile,
 };
+use crate::providers::shared_http::SharedHttpClient;
 use crate::state::RuntimeState;
 use futures_util::StreamExt;
 use genai::adapter::AdapterKind;
@@ -152,6 +153,18 @@ fn selected_profile(
     Ok(profile)
 }
 
+/// genai 直连的大语言模型请求共用一个连接池，连接参数沿用 genai 的默认调优。
+static LLM_HTTP: SharedHttpClient<reqwest_genai::Client> = SharedHttpClient::new(|| {
+    genai::WebConfig::default()
+        .apply_to_builder(reqwest_genai::Client::builder())
+        .build()
+        .expect("大语言模型 HTTP 客户端初始化失败")
+});
+
+pub(crate) fn genai_builder() -> genai::ClientBuilder {
+    Client::builder().with_reqwest(LLM_HTTP.get())
+}
+
 fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), String> {
     let adapter = profile
         .kind
@@ -196,7 +209,7 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
             },
         );
         return Ok((
-            Client::builder()
+            genai_builder()
                 .with_service_target_resolver(target_resolver)
                 .build(),
             format!("openai_resp::{model}"),
@@ -218,7 +231,7 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
             },
         );
         return Ok((
-            Client::builder()
+            genai_builder()
                 .with_service_target_resolver(target_resolver)
                 .build(),
             format!("openai::{model}"),
@@ -236,7 +249,7 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         format!("{adapter}::{model}")
     };
     Ok((
-        Client::builder().with_auth_resolver(auth_resolver).build(),
+        genai_builder().with_auth_resolver(auth_resolver).build(),
         resolved_model,
     ))
 }
