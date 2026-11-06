@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => { listeners.delete(listener); };
   }),
 }));
-vi.mock("@/lib/cues", () => ({ playCueKind }));
+vi.mock("@/lib/cues", () => ({ playCueKind, preloadCues: vi.fn() }));
 
 import { EVT } from "@/lib/tauri";
 import { useCuePlayback } from "./useCuePlayback";

@@ -17,7 +17,8 @@ import {
   HOTWORDS_PLACEHOLDER,
 } from "@/store/useCustomizationStore";
 
-export type CueKind = "none" | "beep-up" | "beep-down" | "beep-double" | "custom";
+import type { CueKind } from "@/lib/cues";
+export type { CueKind };
 
 export interface SmartTextTemplate {
   id: string;

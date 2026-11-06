@@ -1,54 +1,137 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { Check, Play } from "lucide-react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
+import { IconButton } from "@/components/ui/IconButton";
 import { Input, Select } from "@/components/ui/Input";
+import { Modal } from "@/components/ui/Modal";
 import { Switch } from "@/components/ui/Switch";
+import { cn } from "@/lib/cn";
 import { useDictPrefs, type CueKind } from "@/store/useDictPrefs";
-import { playCue } from "@/lib/cues";
+import { CUE_DESIGNS, cueLabel, previewCue, type CueSlot } from "@/lib/cues";
 import { useAudioDevices } from "@/features/audio/devices";
 import { CMD, cmd } from "@/lib/tauri";
 
 const DEFAULT_INPUT_VALUE = "";
+const SLOT_LABEL: Record<CueSlot, string> = { start: "开始", end: "结束" };
 
-const CUE_OPTIONS: { value: CueKind; label: string }[] = [
-  { value: "none", label: "无" },
-  { value: "beep-up", label: "内置·升调" },
-  { value: "beep-down", label: "内置·降调" },
-  { value: "beep-double", label: "内置·双响" },
-  { value: "custom", label: "自定义文件…" },
-];
-
-/**
- * 提示音字段：音色下拉 + 试听。
- * 选中「自定义文件…」后额外给出「更换」——原生 select 重选同一项不触发 onChange，
- * 没有这个入口就无法替换已选文件。
- */
-function CueRow({
-  label,
-  value,
+/** 音色表里的一格：左边试听，右边选中。 */
+function CueCell({
+  slot,
+  kind,
+  name,
+  selected,
   onSelect,
-  onPickFile,
-  onPreview,
+  action,
+  canPreview = true,
 }: {
-  label: string;
-  value: CueKind;
-  onSelect: (value: CueKind) => void;
-  onPickFile: () => void;
-  onPreview: () => void;
+  slot: CueSlot;
+  kind: CueKind;
+  name: string;
+  selected: boolean;
+  onSelect: () => void;
+  /** 替换「选择」按钮的文字，如自定义文件的「选择文件…」。 */
+  action?: string;
+  canPreview?: boolean;
 }) {
   return (
-    <Row label={label}>
-      {value === "custom" && <Button size="sm" onClick={onPickFile}>更换</Button>}
-      <Button size="sm" onClick={onPreview}>试听</Button>
-      <Select className="w-40" aria-label={label} value={value} onChange={(e) => onSelect(e.target.value as CueKind)}>
-        {CUE_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
+    <div
+      className={cn(
+        "flex items-center gap-1 rounded-[var(--radius-md)] border p-1",
+        selected ? "border-[var(--color-accent)] bg-[var(--accent-soft)]" : "border-transparent",
+      )}
+    >
+      <IconButton
+        size="sm"
+        label={`试听${SLOT_LABEL[slot]}音：${name}`}
+        disabled={!canPreview}
+        onClick={() => previewCue(kind, slot)}
+      >
+        <Play size={14} />
+      </IconButton>
+      <Button
+        size="sm"
+        aria-pressed={action ? undefined : selected}
+        aria-label={action ? `${SLOT_LABEL[slot]}提示音：${action}` : `选为${SLOT_LABEL[slot]}提示音：${name}`}
+        className={cn("flex-1 justify-center", selected && !action && "text-[var(--color-accent-text)]")}
+        onClick={onSelect}
+      >
+        {action ?? (selected ? <Check size={14} /> : "选择")}
+      </Button>
+    </div>
+  );
+}
+
+/** 音色选择窗：一行一套音色，开始、结束两列各自试听和选中。 */
+function CuePicker({
+  open,
+  onClose,
+  start,
+  end,
+  onSelect,
+  onPickFile,
+}: {
+  open: boolean;
+  onClose: () => void;
+  start: CueKind;
+  end: CueKind;
+  onSelect: (slot: CueSlot, kind: CueKind) => void;
+  onPickFile: (slot: CueSlot) => void;
+}) {
+  const current = { start, end };
+  const rows: { name: string; start: CueKind; end: CueKind }[] = [
+    ...CUE_DESIGNS,
+    { name: "无", start: "none", end: "none" },
+  ];
+  return (
+    <Modal open={open} onClose={onClose} title="选择提示音" className="max-w-xl" bodyClassName="p-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_9rem_9rem] items-center gap-x-2 gap-y-1">
+        <span />
+        <span className="px-1 text-xs text-[var(--color-fg-muted)]">开始</span>
+        <span className="px-1 text-xs text-[var(--color-fg-muted)]">结束</span>
+        {rows.map((row) => (
+          <div key={row.name} className="contents">
+            <span className="truncate px-2 text-[13px] text-[var(--color-fg)]">{row.name}</span>
+            {(["start", "end"] as const).map((slot) =>
+              row[slot] === "none" ? (
+                <Button
+                  key={slot}
+                  size="sm"
+                  aria-pressed={current[slot] === "none"}
+                  className={cn(current[slot] === "none" && "border-[var(--color-accent)] text-[var(--color-accent-text)]")}
+                  onClick={() => onSelect(slot, "none")}
+                >
+                  {current[slot] === "none" ? <Check size={14} /> : "不播放"}
+                </Button>
+              ) : (
+                <CueCell
+                  key={slot}
+                  slot={slot}
+                  kind={row[slot]}
+                  name={row.name}
+                  selected={current[slot] === row[slot]}
+                  onSelect={() => onSelect(slot, row[slot])}
+                />
+              ),
+            )}
+          </div>
         ))}
-      </Select>
-    </Row>
+        <span className="truncate px-2 text-[13px] text-[var(--color-fg)]">自定义文件</span>
+        {(["start", "end"] as const).map((slot) => (
+          <CueCell
+            key={slot}
+            slot={slot}
+            kind="custom"
+            name="自定义文件"
+            selected={current[slot] === "custom"}
+            canPreview={current[slot] === "custom"}
+            action={current[slot] === "custom" ? "更换…" : "选择文件…"}
+            onSelect={() => onPickFile(slot)}
+          />
+        ))}
+      </div>
+    </Modal>
   );
 }
 
@@ -58,6 +141,7 @@ export function SettingsMicCuePanel() {
   const { inputs } = useAudioDevices();
   const cueTargetRef = useRef<"start" | "end" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const pickCueFile = (which: "start" | "end") => {
     cueTargetRef.current = which;
@@ -78,7 +162,7 @@ export function SettingsMicCuePanel() {
         await cmd(CMD.updateCustomCue, { which: target, dataUrl });
         localStorage.setItem(key, dataUrl);
         await patch(target === "start" ? { cueStart: "custom" } : { cueEnd: "custom" });
-        playCue(target);
+        previewCue("custom", target);
       } finally {
         cueTargetRef.current = null;
       }
@@ -86,9 +170,9 @@ export function SettingsMicCuePanel() {
     reader.readAsDataURL(file);
   };
 
-  const onCueSelect = (which: "start" | "end", value: CueKind) => {
-    patch(which === "start" ? { cueStart: value } : { cueEnd: value });
-    if (value === "custom") pickCueFile(which);
+  const onCueSelect = (which: CueSlot, value: CueKind) => {
+    void patch(which === "start" ? { cueStart: value } : { cueEnd: value });
+    previewCue(value, which);
   };
 
   return (
@@ -133,21 +217,23 @@ export function SettingsMicCuePanel() {
         <Row label="启用音频提示" hint="开始和结束语音输入时播放提示音。">
           <Switch checked={prefs.cueEnabled} onChange={(v) => patch({ cueEnabled: v })} label="启用音频提示" />
         </Row>
-        <CueRow
-          label="开始提示音"
-          value={prefs.cueStart}
-          onSelect={(v) => onCueSelect("start", v)}
-          onPickFile={() => pickCueFile("start")}
-          onPreview={() => playCue("start")}
-        />
-        <CueRow
-          label="结束提示音"
-          value={prefs.cueEnd}
-          onSelect={(v) => onCueSelect("end", v)}
-          onPickFile={() => pickCueFile("end")}
-          onPreview={() => playCue("end")}
-        />
+        <Row label="提示音" hint="听写开始和结束时各播放哪种声音。">
+          <span className="text-[13px] text-[var(--color-fg-muted)]">
+            {cueLabel(prefs.cueStart)} / {cueLabel(prefs.cueEnd)}
+          </span>
+          <Button size="sm" onClick={() => setPickerOpen(true)}>
+            选择…
+          </Button>
+        </Row>
       </Group>
+      <CuePicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        start={prefs.cueStart}
+        end={prefs.cueEnd}
+        onSelect={onCueSelect}
+        onPickFile={pickCueFile}
+      />
       <input ref={fileRef} type="file" accept="audio/*" className="hidden" onChange={onCueFile} />
     </InspectorBody>
   );
