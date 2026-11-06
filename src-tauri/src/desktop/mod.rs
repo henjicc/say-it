@@ -9,6 +9,7 @@ pub(crate) mod backend_system_audio;
 #[path = "backend_system_audio_unsupported.rs"]
 pub(crate) mod backend_system_audio;
 pub(crate) mod context_debug;
+pub(crate) mod cue_player;
 pub(crate) mod floating_orb;
 pub(crate) mod indicator;
 pub(crate) mod mouse_gesture;
@@ -27,6 +28,7 @@ pub(crate) use audio_devices::*;
 pub(crate) use backend_mic::*;
 pub(crate) use backend_system_audio::*;
 pub(crate) use context_debug::*;
+pub(crate) use cue_player::*;
 pub(crate) use floating_orb::*;
 pub(crate) use indicator::*;
 pub(crate) use mouse_gesture::*;

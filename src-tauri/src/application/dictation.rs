@@ -123,12 +123,6 @@ fn clipboard_delivery_outcome(
     }
 }
 
-#[derive(Clone, Copy)]
-enum CuePlaybackTarget {
-    MainWindow,
-    IndicatorWindow,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalRule {
@@ -715,28 +709,17 @@ pub(crate) fn get_dictation_runtime(
 }
 
 #[tauri::command]
-pub(crate) fn preview_dictation_cue(
-    app: AppHandle,
-    state: tauri::State<'_, RuntimeState>,
-    which: String,
-) -> Result<(), String> {
+pub(crate) fn preview_dictation_cue(app: AppHandle, kind: String, which: String) -> Result<(), String> {
     if which != "start" && which != "end" {
         return Err("未知提示音位置".into());
     }
-    let prefs: DictationPrefs = serde_json::from_value(
-        state
-            .app_settings
-            .lock()
-            .map_err(|_| "应用配置锁失败")?
-            .dictation_prefs
-            .clone(),
-    )
-    .map_err(|e| format!("听写配置无效：{e}"))?;
-    play_cue_async(
-        app,
-        if which == "start" { "start" } else { "end" },
-        &prefs,
-        CuePlaybackTarget::MainWindow,
+    if kind == "none" || crate::desktop::play_native_cue(&app, &kind, &which) {
+        return Ok(());
+    }
+    let _ = app.emit_to(
+        "main",
+        "dictation-play-cue",
+        json!({ "which": which, "kind": kind }),
     );
     Ok(())
 }
@@ -1313,12 +1296,7 @@ async fn start_session(
     if trigger.is_floating_orb() {
         play_floating_orb_cue(&app, "start", &prefs);
     } else {
-        play_cue_async(
-            app.clone(),
-            "start",
-            &prefs,
-            CuePlaybackTarget::IndicatorWindow,
-        );
+        play_cue_async(app.clone(), "start", &prefs);
     }
     publish_state(&app, None);
     Ok(())
@@ -2940,12 +2918,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         } else {
             let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
         }
-        play_cue_async(
-            app.clone(),
-            "end",
-            &prefs,
-            CuePlaybackTarget::IndicatorWindow,
-        );
+        play_cue_async(app.clone(), "end", &prefs);
     }
     publish_state_with_text(
         &app,
@@ -3021,12 +2994,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
     if !committed {
         return Ok(());
     }
-    play_cue_async(
-        app.clone(),
-        "end",
-        &prefs,
-        CuePlaybackTarget::IndicatorWindow,
-    );
+    play_cue_async(app.clone(), "end", &prefs);
     publish_state_with_text(
         &app,
         None,
@@ -3955,12 +3923,9 @@ fn expand_replacement(replacement: &str, caps: &Captures<'_>, source: &str) -> S
     out
 }
 
-fn play_cue_async(
-    app: AppHandle,
-    which: &'static str,
-    prefs: &DictationPrefs,
-    target: CuePlaybackTarget,
-) {
+/// 听写开始/结束提示音：能原生播放就立即播放，与指示器同时出现；
+/// 否则交给指示器 WebView（不存在时交给主窗口）播放。
+fn play_cue_async(app: AppHandle, which: &'static str, prefs: &DictationPrefs) {
     if !prefs.cue_enabled {
         return;
     }
@@ -3969,28 +3934,22 @@ fn play_cue_async(
     } else {
         prefs.cue_end.clone()
     };
-    if kind == "none" {
+    if kind == "none" || crate::desktop::play_native_cue(&app, &kind, which) {
         return;
     }
-    let event = match target {
-        CuePlaybackTarget::MainWindow => "dictation-play-cue",
-        CuePlaybackTarget::IndicatorWindow => "dictation-indicator-play-cue",
-    };
     tauri::async_runtime::spawn(async move {
-        if let CuePlaybackTarget::IndicatorWindow = target {
-            if app.get_webview_window("dictation-indicator").is_some() {
-                // 提示音要和指示器同时出现：只有刚建好的 WebView 才等它注册监听器。
-                let wait = crate::desktop::indicator_listener_wait();
-                if !wait.is_zero() {
-                    sleep(wait).await;
-                }
-                let _ = app.emit_to(
-                    "dictation-indicator",
-                    event,
-                    json!({ "which": which, "kind": kind }),
-                );
-                return;
+        if app.get_webview_window("dictation-indicator").is_some() {
+            // 只有刚建好的 WebView 才需要等它注册监听器。
+            let wait = crate::desktop::indicator_listener_wait();
+            if !wait.is_zero() {
+                sleep(wait).await;
             }
+            let _ = app.emit_to(
+                "dictation-indicator",
+                "dictation-indicator-play-cue",
+                json!({ "which": which, "kind": kind }),
+            );
+            return;
         }
         let _ = app.emit_to(
             "main",
@@ -4009,7 +3968,7 @@ fn play_floating_orb_cue(app: &AppHandle, which: &'static str, prefs: &Dictation
     } else {
         prefs.cue_end.as_str()
     };
-    if kind != "none" {
+    if kind != "none" && !crate::desktop::play_native_cue(app, kind, which) {
         crate::desktop::emit_floating_orb_cue(app, which, kind);
     }
 }

@@ -1,51 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/store/useDictPrefs", () => ({ useDictPrefs: { getState: vi.fn() } }));
+vi.mock("@/lib/tauri", () => ({ CMD: {}, cmdSilent: vi.fn() }));
 
-const oscillators: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; frequency: { value: number } }[] = [];
+const sources: { start: ReturnType<typeof vi.fn>; buffer: unknown }[] = [];
 let playCueKind: typeof import("./cues").playCueKind;
 
-describe("cue sound envelopes", () => {
+describe("WebView cue fallback", () => {
   beforeEach(async () => {
     vi.resetModules();
-    oscillators.length = 0;
+    sources.length = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    vi.stubGlobal("OfflineAudioContext", class {
+      decodeAudioData = vi.fn(async () => "decoded");
+    });
     vi.stubGlobal("AudioContext", class {
       state = "running";
-      currentTime = 0;
       destination = {};
-      createOscillator() {
-        const oscillator = {
-          type: "sine", connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
-          frequency: { value: 0 },
-        };
-        oscillators.push(oscillator);
-        return oscillator;
-      }
-      createGain() {
-        return { connect: vi.fn(), gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() } };
+      createBufferSource() {
+        const source = { buffer: null as unknown, connect: vi.fn(), start: vi.fn() };
+        sources.push(source);
+        return source;
       }
     });
     ({ playCueKind } = await import("./cues"));
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it.each([
-    ["beep-up", "start", [660, 990], 0.1, 0.02],
-    ["beep-down", "end", [880, 520], 0.12, 0.02],
-    ["beep-double", "start", [880, 880], 0.07, 0.05],
-  ] as const)("preserves the original %s frequencies and timing", (kind, which, frequencies, duration, gap) => {
-    playCueKind(kind, which);
-    expect(oscillators).toHaveLength(2);
-    oscillators.forEach((oscillator, index) => {
-      const start = 0.01 + index * (duration + gap);
-      expect(oscillator.frequency.value).toBe(frequencies[index]);
-      expect(oscillator.start).toHaveBeenCalledExactlyOnceWith(start);
-      expect(oscillator.stop).toHaveBeenCalledExactlyOnceWith(start + duration + 0.02);
-    });
+  it("plays the bundled WAV for a built-in cue", async () => {
+    playCueKind("drop-up", "start");
+    await vi.waitFor(() => expect(sources).toHaveLength(1));
+    expect(fetch).toHaveBeenCalledWith("/cues/drop-up.wav");
+    expect(sources[0].buffer).toBe("decoded");
+    expect(sources[0].start).toHaveBeenCalledOnce();
   });
 
-  it("does not produce a fallback beep for the none preset", () => {
+  it("stays silent for the none preset", async () => {
     playCueKind("none", "start");
-    expect(oscillators).toHaveLength(0);
+    await Promise.resolve();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
