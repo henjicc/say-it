@@ -28,7 +28,7 @@ ICO 按从小到大写时，第一项是 16px，150% 缩放下任务栏要画 36
 
 1. `src-tauri/icons/icon.ico` 必须把最大尺寸排在第一项，其余尺寸的顺序不影响 Windows 选图。`scripts/app-icon.test.mjs` 守这一条。
 2. 除常规尺寸外带上任务栏各缩放比例下的确切尺寸（24 × 缩放比：30、36、42、48、54、60、72、96）。固定到任务栏的快捷方式走 exe 资源，由 Windows 按尺寸选取。
-3. 用 `npx tauri icon` 重新生成图标后要覆盖 `icon.ico`，它写出的第一项不是最大尺寸。ICO 由 `src-tauri/icons/source/icon-small.svg` 渲染。
+3. 用 `npx tauri icon` 重新生成图标后要覆盖 `icon.ico`，它写出的第一项不是最大尺寸。ICO 里 ≤48px 的项（覆盖 100%–200% 缩放下的任务栏尺寸）由 `src-tauri/icons/source/icon-small.svg`（小尺寸专用稿）渲染，更大的项由 `icon-windows.svg`（满版）渲染；`32x32.png` 同样取小尺寸稿。主稿的细声柱在 36px 下会糊成一片，所以任务栏尺寸不能用主稿缩小。
 4. Windows 版底板要铺满画布：任务栏里其他应用的图标都占满 36×36，底板留边距就会显得小一圈。
 
 ## 排查方法
