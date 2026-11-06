@@ -802,7 +802,8 @@ pub(crate) struct SmartTestRequest {
 
 fn input_from_text(state: &RuntimeState, text: &str) -> Result<ReplayPrompt, String> {
     let (template, provider_id, model) = crate::application::dictation::smart_test_defaults(state)?;
-    let user_prompt = smart_text::build_smart_prompt(state, text, &template, "", "", &provider_id)?;
+    let user_prompt =
+        smart_text::build_smart_prompt(state, text, &template, "", "", &provider_id)?.text;
     Ok(ReplayPrompt {
         system_prompt: smart_text::SYSTEM_PROMPT.to_string(),
         user_prompt,

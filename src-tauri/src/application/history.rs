@@ -140,6 +140,7 @@ pub(crate) fn open_path(path: &Path) -> Result<Connection, String> {
                correction_kind TEXT,
                learning_scope TEXT,
                applied_rule_ids TEXT NOT NULL DEFAULT '[]',
+               smart_input TEXT,
                instruction TEXT NOT NULL DEFAULT '',
                app_name TEXT NOT NULL DEFAULT '',
                process_name TEXT NOT NULL DEFAULT '',
@@ -253,6 +254,7 @@ fn migrate_history_schema(connection: &Connection) -> Result<(), String> {
         ("correction_kind", "TEXT"),
         ("learning_scope", "TEXT"),
         ("applied_rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
+        ("smart_input", "TEXT"),
     ] {
         if !history.contains(column) {
             connection
@@ -615,6 +617,7 @@ pub(crate) fn record_or_update(
             &entry.status,
             entry.error.as_deref(),
             entry.duration_ms,
+            None,
         )? {
             return Ok(String::new());
         }
@@ -678,6 +681,8 @@ fn insert_entry(connection: &Connection, id: &str, entry: &NewHistoryEntry) -> R
     Ok(())
 }
 
+/// `smart_input` 是智能处理实际交给模型的完整输入与原始输出（JSON），供日后整理本地模型的训练数据；
+/// 传 None 时保留已有值。
 fn update_result_with_connection(
     connection: &Connection,
     id: &str,
@@ -685,12 +690,14 @@ fn update_result_with_connection(
     status: &str,
     error: Option<&str>,
     duration_ms: u64,
+    smart_input: Option<&str>,
 ) -> Result<bool, String> {
     connection
         .execute(
             "UPDATE history_entries SET output_text = COALESCE(?2, output_text), status = ?3,
-         error = ?4, duration_ms = ?5 WHERE id = ?1 AND status IN ('recognized', 'processed')",
-            params![id, output, status, error, duration_ms as i64],
+         error = ?4, duration_ms = ?5, smart_input = COALESCE(?6, smart_input)
+         WHERE id = ?1 AND status IN ('recognized', 'processed')",
+            params![id, output, status, error, duration_ms as i64, smart_input],
         )
         .map(|changed| changed > 0)
         .map_err(|error| format!("更新历史结果失败：{error}"))
@@ -703,6 +710,7 @@ pub(crate) fn update_result(
     status: &str,
     error: Option<&str>,
     duration_ms: u64,
+    smart_input: Option<&str>,
 ) -> Result<(), String> {
     if id.is_empty() {
         return Ok(());
@@ -729,7 +737,15 @@ pub(crate) fn update_result(
     if !history_recording_allowed(&prefs, &app_name, &process_name) {
         return Ok(());
     }
-    if update_result_with_connection(&connection, id, output, status, error, duration_ms)? {
+    if update_result_with_connection(
+        &connection,
+        id,
+        output,
+        status,
+        error,
+        duration_ms,
+        smart_input,
+    )? {
         if status == "succeeded" {
             crate::application::final_draft::consume_pending(app, id);
         } else if matches!(status, "failed" | "cancelled") {
@@ -1324,7 +1340,8 @@ mod tests {
             Some("优化后的结果"),
             "processed",
             None,
-            20
+            20,
+            None
         )
         .unwrap());
         // 输入目标失败也不丢优化后的内容，更不覆盖 ASR 原文。
@@ -1334,7 +1351,8 @@ mod tests {
             None,
             "failed",
             Some("输入失败"),
-            30
+            30,
+            None
         )
         .unwrap());
         let saved = get_entry(&connection, "one").unwrap();
@@ -1363,8 +1381,8 @@ mod tests {
     #[test]
     fn late_processing_cannot_overwrite_cancelled_completed_or_deleted_history() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE history_entries (id TEXT PRIMARY KEY, output_text TEXT, status TEXT, error TEXT, duration_ms INTEGER);
-            INSERT INTO history_entries VALUES ('cancelled', '原文', 'cancelled', NULL, 1), ('done', '结果', 'succeeded', NULL, 1);").unwrap();
+        connection.execute_batch("CREATE TABLE history_entries (id TEXT PRIMARY KEY, output_text TEXT, status TEXT, error TEXT, duration_ms INTEGER, smart_input TEXT);
+            INSERT INTO history_entries VALUES ('cancelled', '原文', 'cancelled', NULL, 1, NULL), ('done', '结果', 'succeeded', NULL, 1, NULL);").unwrap();
         for id in ["cancelled", "done", "deleted"] {
             assert!(!update_result_with_connection(
                 &connection,
@@ -1372,7 +1390,8 @@ mod tests {
                 Some("迟到结果"),
                 "processed",
                 None,
-                2
+                2,
+                None
             )
             .unwrap());
         }
@@ -1438,6 +1457,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sample, ("manual".into(), "confirmed".into()));
+        assert!(table_columns(&connection, "history_entries")
+            .unwrap()
+            .contains("smart_input"));
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn processed_result_keeps_smart_input_until_final_status() {
+        let path =
+            std::env::temp_dir().join(format!("sayit-history-smart-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        let recognized = NewHistoryEntry {
+            status: "recognized".into(),
+            ..entry("原文")
+        };
+        insert_entry(&connection, "one", &recognized).unwrap();
+        let input = r#"{"output":"结果"}"#;
+        update_result_with_connection(
+            &connection,
+            "one",
+            Some("结果"),
+            "processed",
+            None,
+            1,
+            Some(input),
+        )
+        .unwrap();
+        update_result_with_connection(&connection, "one", None, "succeeded", None, 2, None)
+            .unwrap();
+        let saved: Option<String> = connection
+            .query_row(
+                "SELECT smart_input FROM history_entries WHERE id = 'one'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved.as_deref(), Some(input));
         drop(connection);
         let _ = std::fs::remove_file(path);
     }

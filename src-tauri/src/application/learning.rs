@@ -1901,7 +1901,8 @@ pub(crate) fn clear_learning_memory(app: AppHandle) -> Result<(), String> {
              DELETE FROM correction_rules;
              DELETE FROM preference_profiles;
              UPDATE history_entries SET learning_status = 'none', correction_kind = NULL,
-               learning_scope = NULL, applied_rule_ids = '[]';",
+               learning_scope = NULL, applied_rule_ids = '[]',
+               smart_input = json_remove(smart_input, '$.learningContext');",
         )
         .map_err(|error| format!("清空学习记忆失败：{error}"))?;
     refresh_cache(&app, &connection)?;
