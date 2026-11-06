@@ -94,6 +94,15 @@ impl BuiltinSdkScope {
         self.credential_scope
     }
 
+    /// 预连接这个运行时会访问的主机；通配主机事先不知道具体域名，跳过。
+    pub async fn prewarm(self) -> Result<(), String> {
+        for host in self.allowed_hosts.iter().filter(|host| !host.contains('*')) {
+            crate::providers::plugin_runtime::prewarm_connection(&format!("https://{host}/"))
+                .await?;
+        }
+        Ok(())
+    }
+
     fn allowed_hosts(self) -> Vec<String> {
         self.allowed_hosts
             .iter()

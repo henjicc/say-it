@@ -130,6 +130,18 @@ static HTTP_CLIENT: SharedHttpClient<reqwest::Client> = SharedHttpClient::new(||
         .expect("插件 HTTP 客户端初始化失败")
 });
 
+/// 提前和 `url` 所在的服务器建好连接放进共享连接池，之后同域名的插件请求直接复用。
+/// 不做插件网络权限校验，只能传宿主自己写定的地址，不能传插件给的地址。
+pub(crate) async fn prewarm_connection(url: &str) -> Result<(), String> {
+    HTTP_CLIENT
+        .get()
+        .head(url)
+        .send()
+        .await
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 fn wait_for_host_io<T, F>(future: F) -> Result<T, String>
 where
     T: Send + 'static,
