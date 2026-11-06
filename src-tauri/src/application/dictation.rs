@@ -1136,6 +1136,19 @@ async fn start_session(
             ),
         );
     }
+    if effective.smart_processing_enabled && assistant_request.is_none() {
+        let app = app.clone();
+        let provider_id = prefs.smart_llm_provider_id.clone();
+        let model = prefs.smart_llm_model.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::application::smart_text::prewarm_connection(
+                &app.state::<RuntimeState>(),
+                &provider_id,
+                &model,
+            )
+            .await;
+        });
+    }
     let defer_active_app_context_ocr = should_defer_active_app_context_ocr(&prefs, &effective);
     let active_app_context = if effective.smart_processing_enabled {
         prefs

@@ -739,6 +739,41 @@ fn supports_web_search(profile: &ProviderProfile) -> bool {
         .is_some_and(|adapter| matches!(adapter, "volcengine" | "deepseek" | "bailian"))
 }
 
+/// 开始录音时先连上智能处理的服务器，TLS 握手和说话同时进行，松手后的请求直接复用这条连接。
+/// 只建连接、不调用模型，不产生费用；失败不影响之后的正式请求。
+/// 插件提供的模型由插件自己决定访问地址，不预连接。录音超过连接的空闲回收时间（客户端 90 秒，
+/// 服务端常更短）时，正式请求仍要重新握手。
+pub(crate) async fn prewarm_connection(state: &RuntimeState, provider_id: &str, model_override: &str) {
+    let result = async {
+        let profile = selected_profile(state, Some(provider_id), Some(model_override))?;
+        if profile.kind == "llm:groq" {
+            return crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM
+                .prewarm()
+                .await;
+        }
+        if is_plugin_llm(&profile) {
+            return Ok(());
+        }
+        let (client, model) = client_and_model(&profile)?;
+        let origin = genai_origin(&client, &model).await?;
+        LLM_HTTP
+            .get()
+            .head(origin)
+            .send()
+            .await
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    if let Err(error) = result {
+        crate::application::diagnostics::event(
+            "debug",
+            "smartText.prewarmFailed",
+            json!({"providerId":provider_id,"error":error}),
+        );
+    }
+}
+
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
     text: &str,
@@ -1084,12 +1119,22 @@ async fn llm_trace_settings_with_origin(
     model: &str,
 ) -> Value {
     let mut settings = llm_trace_settings(profile, default_reasoning);
-    if let Ok(target) = client.resolve_service_target(model).await {
-        if let Ok(url) = url::Url::parse(target.endpoint.base_url()) {
-            settings["origin"] = json!(url.origin().ascii_serialization());
-        }
+    if let Ok(origin) = genai_origin(client, model).await {
+        settings["origin"] = json!(origin);
     }
     settings
+}
+
+/// genai 实际请求的协议加主机。
+async fn genai_origin(client: &Client, model: &str) -> Result<String, String> {
+    let target = client
+        .resolve_service_target(model)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(url::Url::parse(target.endpoint.base_url())
+        .map_err(|error| error.to_string())?
+        .origin()
+        .ascii_serialization())
 }
 
 #[cfg(debug_assertions)]
