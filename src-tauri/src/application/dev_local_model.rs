@@ -20,6 +20,8 @@ const MODEL_FILE: &str = "ft-0.8b-Q8_0.gguf";
 const LOCAL_LABEL: &str = "本地微调 0.8B";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+/// 完整提示词带上软件上下文能到三四千 token，再留出输出的余量。
+const CONTEXT_TOKENS: u32 = 8192;
 const SCOPE: &str = "dev-local-compare";
 /// 训练时的输入格式，和 `工作区/smart-text-ft/scripts/common.py` 必须一致：模型只认这种输入，
 /// 云端模板里的整理规则已经训进权重。
@@ -58,6 +60,9 @@ pub(crate) struct LocalCompareRequest {
     text: Option<String>,
     /// 自定义文本的场景；重放时按当时所在软件推断。
     scene: Option<String>,
+    /// 本地模型也收云端那份完整提示词（模板、软件上下文、热词），看同样输入下的真实速度；
+    /// 模型没按这种输入训练过，效果只作参考。不给时用训练格式。
+    local_full_prompt: bool,
 }
 
 fn workspace() -> PathBuf {
@@ -112,7 +117,14 @@ fn spawn_server() -> Result<Child, String> {
     command
         .arg("-m")
         .arg(model)
-        .args(["--port", &PORT.to_string(), "-c", "4096", "-ngl", "99"])
+        .args([
+            "--port",
+            &PORT.to_string(),
+            "-c",
+            &CONTEXT_TOKENS.to_string(),
+            "-ngl",
+            "99",
+        ])
         .args(["--no-webui", "--reasoning-budget", "0"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -216,11 +228,16 @@ fn parse_sse_line(line: &str) -> Result<Option<(String, Option<f64>)>, String> {
     )))
 }
 
-async fn stream_local(client: &reqwest::Client, scene: &str, raw: &str) -> (RoundSample, String) {
+async fn stream_local(
+    client: &reqwest::Client,
+    system_prompt: &str,
+    user_prompt: &str,
+    raw: &str,
+) -> (RoundSample, String) {
     let body = json!({
         "messages":[
-            {"role":"system","content":SYSTEM_PROMPT},
-            {"role":"user","content":user_message(scene, raw)},
+            {"role":"system","content":system_prompt},
+            {"role":"user","content":user_prompt},
         ],
         "temperature":0,
         "max_tokens":raw.chars().count() * 2 + 64,
@@ -349,7 +366,19 @@ pub(crate) async fn compare(
         .collect::<Vec<_>>();
     let local = async {
         let measured = match local_ready? {
-            Ok(()) => stream_local(&client, &scene, &input.raw_text).await,
+            Ok(()) if request.local_full_prompt => {
+                stream_local(
+                    &client,
+                    &input.system_prompt,
+                    &input.user_prompt,
+                    &input.raw_text,
+                )
+                .await
+            }
+            Ok(()) => {
+                let user_prompt = user_message(&scene, &input.raw_text);
+                stream_local(&client, SYSTEM_PROMPT, &user_prompt, &input.raw_text).await
+            }
             Err(error) => {
                 let mut sample = RoundSample::default();
                 sample.record_finish(0, Err(error));
