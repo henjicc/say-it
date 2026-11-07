@@ -126,6 +126,7 @@ export function LocalComparePanel() {
   const [source, setSource] = useState<"replay" | "text">("replay");
   const [text, setText] = useState("");
   const [scene, setScene] = useState("assistant");
+  const [localInput, setLocalInput] = useState<"full" | "trained">("full");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<CompareResult | null>(null);
@@ -159,7 +160,12 @@ export function LocalComparePanel() {
     const models = options
       .filter((option) => selected.includes(modelKey(option)))
       .map(({ providerId, model }) => ({ providerId, model }));
-    const request = { models, local: selected.includes(LOCAL_KEY), ...(source === "text" ? { text, scene } : {}) };
+    const request = {
+      models,
+      local: selected.includes(LOCAL_KEY),
+      localFullPrompt: localInput === "full",
+      ...(source === "text" ? { text, scene } : {}),
+    };
     try {
       setResult(await cmd<CompareResult>(CMD.devLocalCompare, { request }));
     } catch (reason) {
@@ -196,6 +202,18 @@ export function LocalComparePanel() {
         </div>
       </Group>
       <Group>
+        <Row
+          label="本地模型输入"
+          hint="与云端相同：本地也收到完整模板、软件上下文和热词，速度和云端在同样输入下比较；模型没按这种输入训练过，效果只作参考。训练格式：只给场景和识别原文，看微调后的真实效果。"
+        >
+          <Tabs
+            variant="view"
+            ariaLabel="本地模型输入"
+            tabs={[{ key: "full", label: "与云端相同" }, { key: "trained", label: "训练格式" }]}
+            active={localInput}
+            onChange={(key) => setLocalInput(key as "full" | "trained")}
+          />
+        </Row>
         <Row label="测试内容">
           <Tabs
             variant="view"

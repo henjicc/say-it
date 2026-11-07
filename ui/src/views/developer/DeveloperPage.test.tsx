@@ -90,7 +90,7 @@ describe("开发者页面", () => {
     expect(screen.getByRole("checkbox", { name: /模型乙/ })).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "开始对比" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("devLocalCompare", {
-      request: { models: [{ providerId: "p1", model: "模型甲" }], local: true },
+      request: { models: [{ providerId: "p1", model: "模型甲" }], local: true, localFullPrompt: true },
     }));
     expect(await screen.findByText("本地结果")).toBeTruthy();
     expect(screen.getByText(/向 AI 提需求/)).toBeTruthy();
