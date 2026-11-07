@@ -729,10 +729,9 @@ pub(crate) fn preview_dictation_cue(app: AppHandle, kind: String, which: String)
     Ok(())
 }
 
-/// 开发者对比测试用：当前生效的智能处理模板、供应商和模型。
 #[cfg(debug_assertions)]
-pub(crate) fn smart_test_defaults(state: &RuntimeState) -> Result<(String, String, String), String> {
-    let prefs: DictationPrefs = serde_json::from_value(
+fn current_prefs(state: &RuntimeState) -> Result<DictationPrefs, String> {
+    serde_json::from_value(
         state
             .app_settings
             .lock()
@@ -740,7 +739,20 @@ pub(crate) fn smart_test_defaults(state: &RuntimeState) -> Result<(String, Strin
             .dictation_prefs
             .clone(),
     )
-    .map_err(|e| format!("听写配置无效：{e}"))?;
+    .map_err(|e| format!("听写配置无效：{e}"))
+}
+
+/// 开发者页标出当前模型用：智能处理选的供应商和模型，模型为空表示用供应商配置里的模型。
+#[cfg(debug_assertions)]
+pub(crate) fn smart_llm_selection(state: &RuntimeState) -> Result<(String, String), String> {
+    let prefs = current_prefs(state)?;
+    Ok((prefs.smart_llm_provider_id, prefs.smart_llm_model))
+}
+
+/// 开发者对比测试用：当前生效的智能处理模板、供应商和模型。
+#[cfg(debug_assertions)]
+pub(crate) fn smart_test_defaults(state: &RuntimeState) -> Result<(String, String, String), String> {
+    let prefs = current_prefs(state)?;
     let template = prefs
         .smart_templates
         .iter()

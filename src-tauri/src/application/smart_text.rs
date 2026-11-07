@@ -123,6 +123,17 @@ pub(crate) fn render_prompt(
     ))
 }
 
+/// 没选或选了「default」时用默认大模型供应商。
+pub(crate) fn resolve_llm_provider_id(
+    settings: &crate::providers::ProviderSettings,
+    requested: &str,
+) -> String {
+    match requested.trim() {
+        "" | "default" => default_provider_id(settings, "llm"),
+        id => id.to_string(),
+    }
+}
+
 fn selected_profile(
     state: &RuntimeState,
     requested_provider_id: Option<&str>,
@@ -131,12 +142,7 @@ fn selected_profile(
     // 只持有配置快照。用同名变量遮蔽 MutexGuard 并不会释放原锁，
     // 下方 provider_profile_for_execution 再读配置时会在同一线程永久等待。
     let settings = crate::commands::common::read_provider_settings(state)?;
-    let requested_provider_id = requested_provider_id.unwrap_or_default().trim();
-    let provider_id = if requested_provider_id.is_empty() || requested_provider_id == "default" {
-        default_provider_id(&settings, "llm")
-    } else {
-        requested_provider_id.to_string()
-    };
+    let provider_id = resolve_llm_provider_id(&settings, requested_provider_id.unwrap_or_default());
     let profile = find_profile(&settings, &provider_id)
         .filter(|profile| {
             profile.enabled && profile.capabilities.iter().any(|value| value == "llm")

@@ -175,6 +175,8 @@ export const CMD = {
   devBenchState: "dev_bench_state",
   devBenchRun: "dev_bench_run",
   devLocalCompare: "dev_local_compare",
+  devLocalPreload: "dev_local_preload",
+  devLocalStatus: "dev_local_status",
 } as const;
 
 export type DomainRunState = "frontendOwned" | "idle" | "running" | "stopping" | "failed";
