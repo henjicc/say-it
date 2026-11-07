@@ -785,7 +785,11 @@ fn main() {
             #[cfg(debug_assertions)]
             application::dev_bench::dev_bench_run,
             #[cfg(debug_assertions)]
-            application::dev_local_model::dev_local_compare
+            application::dev_local_model::dev_local_compare,
+            #[cfg(debug_assertions)]
+            application::dev_local_model::dev_local_preload,
+            #[cfg(debug_assertions)]
+            application::dev_local_model::dev_local_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

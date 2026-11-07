@@ -25,8 +25,8 @@ const STANDARD_USER_PROMPT: &str =
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BenchModel {
-    provider_id: String,
-    model: String,
+    pub(super) provider_id: String,
+    pub(super) model: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -43,7 +43,7 @@ pub(crate) struct BenchRequest {
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RoundSample {
+pub(super) struct RoundSample {
     /// 第一个内容到达（思考或正文）。
     first_token_ms: Option<u64>,
     /// 第一个正文到达；有思考时比 first_token_ms 晚。
@@ -113,27 +113,45 @@ pub(crate) fn current_state() -> Value {
 
 pub(crate) fn list_models(state: &RuntimeState) -> Result<Value, String> {
     let settings = crate::commands::common::read_provider_settings(state)?;
+    let (current_provider, current_model) =
+        crate::application::dictation::smart_llm_selection(state)?;
+    let current_provider = smart_text::resolve_llm_provider_id(&settings, &current_provider);
     let mut models = Vec::new();
-    for profile in settings
-        .profiles
-        .iter()
-        .filter(|profile| profile.enabled && profile.capabilities.iter().any(|value| value == "llm"))
-    {
+    for profile in settings.profiles.iter().filter(|profile| {
+        profile.enabled && profile.capabilities.iter().any(|value| value == "llm")
+    }) {
         let mut names = crate::providers::llm_models_from_config(&profile.config)
             .into_iter()
             .filter(|model| model.availability != crate::providers::LlmModelAvailability::Missing)
             .map(|model| model.name)
             .collect::<Vec<_>>();
-        if let Some(current) = profile.config.get("model").and_then(Value::as_str) {
-            let current = current.trim();
-            if !current.is_empty() && !names.iter().any(|name| name == current) {
-                names.insert(0, current.to_string());
+        let configured = profile
+            .config
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        // 智能处理没单独选模型时用的是供应商配置里的模型。
+        let current = if current_model.is_empty() {
+            configured
+        } else {
+            current_model.as_str()
+        };
+        let selected = if profile.id == current_provider {
+            current
+        } else {
+            ""
+        };
+        for name in [configured, selected] {
+            if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+                names.insert(0, name.to_string());
             }
         }
         models.extend(names.into_iter().map(|name| {
             json!({
                 "providerId":profile.id,
                 "providerName":profile.display_name,
+                "current":profile.id == current_provider && name == current,
                 "model":name,
             })
         }));
@@ -288,6 +306,110 @@ fn analyze(rows: &[ModelRow]) -> Value {
     json!({"summary":summary,"hints":hints})
 }
 
+impl RoundSample {
+    /// 流式收到新内容时调用；内容没有变长时不更新。
+    pub(super) fn record_progress(&mut self, elapsed_ms: u64, output: &str, reasoning: &str) {
+        let reasoning_grew = reasoning.chars().count() > self.reasoning_chars;
+        let output_grew = output.chars().count() > self.output_chars;
+        if !reasoning_grew && !output_grew {
+            return;
+        }
+        self.first_token_ms.get_or_insert(elapsed_ms);
+        if !output.is_empty() {
+            self.first_output_ms.get_or_insert(elapsed_ms);
+        }
+        self.last_token_ms = elapsed_ms;
+        self.output_chars = output.chars().count();
+        self.reasoning_chars = reasoning.chars().count();
+        let tokens = estimate_tokens(output) + estimate_tokens(reasoning);
+        self.output_tokens = Some(tokens);
+        self.tokens_estimated = true;
+        self.tokens_per_sec = tokens_per_sec(tokens, self.first_token_ms, elapsed_ms);
+    }
+
+    /// 请求结束时调用；`output_tokens` 是供应商返回的用量，没有时沿用按字符的估算。
+    pub(super) fn record_finish(
+        &mut self,
+        total_ms: u64,
+        result: Result<(&str, &str, Option<f64>), String>,
+    ) {
+        self.finished = true;
+        match result {
+            Ok((output, reasoning, output_tokens)) => {
+                // 整包返回的供应商不会触发增量回调，这里补上最终内容。
+                if self.last_token_ms == 0 {
+                    self.last_token_ms = total_ms;
+                    self.output_chars = output.chars().count();
+                    self.reasoning_chars = reasoning.chars().count();
+                    self.output_tokens = Some(estimate_tokens(output) + estimate_tokens(reasoning));
+                    self.tokens_estimated = true;
+                }
+                if let Some(tokens) = output_tokens.filter(|tokens| *tokens > 0.0) {
+                    self.output_tokens = Some(tokens);
+                    self.tokens_estimated = false;
+                }
+                self.tokens_per_sec = tokens_per_sec(
+                    self.output_tokens.unwrap_or(0.0),
+                    self.first_token_ms,
+                    self.last_token_ms,
+                );
+            }
+            Err(error) => {
+                self.last_token_ms = total_ms;
+                self.error = Some(short_error(&error));
+            }
+        }
+    }
+}
+
+/// 流式发一次请求并测速，边收边把实时数据交给 `on_update`；返回最终数据和正文。
+pub(super) async fn measure_stream(
+    state: &RuntimeState,
+    model: &BenchModel,
+    system_prompt: &str,
+    user_prompt: &str,
+    scope: &str,
+    mut on_update: impl FnMut(&RoundSample),
+) -> (RoundSample, String) {
+    let started = Instant::now();
+    let mut sample = RoundSample::default();
+    let result = smart_text::stream_prompt(
+        state,
+        system_prompt,
+        user_prompt,
+        Some(model.provider_id.as_str()),
+        Some(model.model.as_str()),
+        scope,
+        DEFAULT_REASONING,
+        false,
+        &[],
+        CancellationToken::new(),
+        true,
+        |output, reasoning| {
+            sample.record_progress(started.elapsed().as_millis() as u64, output, reasoning);
+            on_update(&sample);
+        },
+    )
+    .await;
+    let total_ms = started.elapsed().as_millis() as u64;
+    let output = result
+        .as_ref()
+        .map(|response| response.output.clone())
+        .unwrap_or_default();
+    sample.record_finish(
+        total_ms,
+        result.as_ref().map_err(String::clone).map(|response| {
+            let usage = dev_trace::normalize_usage(response.usage.as_ref());
+            (
+                response.output.as_str(),
+                response.reasoning.as_str(),
+                usage["outputTokens"].as_f64(),
+            )
+        }),
+    );
+    (sample, output)
+}
+
 async fn run_round(
     state: &RuntimeState,
     row: usize,
@@ -296,73 +418,11 @@ async fn run_round(
     system_prompt: &str,
     user_prompt: &str,
 ) {
-    let started = Instant::now();
-    let result = smart_text::stream_prompt(
-        state,
-        system_prompt,
-        user_prompt,
-        Some(model.provider_id.as_str()),
-        Some(model.model.as_str()),
-        SCOPE,
-        DEFAULT_REASONING,
-        false,
-        &[],
-        CancellationToken::new(),
-        true,
-        |output, reasoning| {
-            let elapsed = started.elapsed().as_millis() as u64;
-            with_sample(row, round, |sample| {
-                let reasoning_grew = reasoning.chars().count() > sample.reasoning_chars;
-                let output_grew = output.chars().count() > sample.output_chars;
-                if !reasoning_grew && !output_grew {
-                    return;
-                }
-                sample.first_token_ms.get_or_insert(elapsed);
-                if !output.is_empty() {
-                    sample.first_output_ms.get_or_insert(elapsed);
-                }
-                sample.last_token_ms = elapsed;
-                sample.output_chars = output.chars().count();
-                sample.reasoning_chars = reasoning.chars().count();
-                let tokens = estimate_tokens(output) + estimate_tokens(reasoning);
-                sample.output_tokens = Some(tokens);
-                sample.tokens_estimated = true;
-                sample.tokens_per_sec = tokens_per_sec(tokens, sample.first_token_ms, elapsed);
-            });
-        },
-    )
+    let (sample, _) = measure_stream(state, model, system_prompt, user_prompt, SCOPE, |live| {
+        with_sample(row, round, |slot| *slot = live.clone());
+    })
     .await;
-    let total_ms = started.elapsed().as_millis() as u64;
-    with_sample(row, round, |sample| {
-        sample.finished = true;
-        match result {
-            Ok(response) => {
-                // 整包返回的供应商不会触发增量回调，这里补上最终内容。
-                if sample.last_token_ms == 0 {
-                    sample.last_token_ms = total_ms;
-                    sample.output_chars = response.output.chars().count();
-                    sample.reasoning_chars = response.reasoning.chars().count();
-                    sample.output_tokens =
-                        Some(estimate_tokens(&response.output) + estimate_tokens(&response.reasoning));
-                    sample.tokens_estimated = true;
-                }
-                let usage = dev_trace::normalize_usage(response.usage.as_ref());
-                if let Some(tokens) = usage["outputTokens"].as_f64().filter(|tokens| *tokens > 0.0) {
-                    sample.output_tokens = Some(tokens);
-                    sample.tokens_estimated = false;
-                }
-                sample.tokens_per_sec = tokens_per_sec(
-                    sample.output_tokens.unwrap_or(0.0),
-                    sample.first_token_ms,
-                    sample.last_token_ms,
-                );
-            }
-            Err(error) => {
-                sample.last_token_ms = total_ms;
-                sample.error = Some(short_error(&error));
-            }
-        }
-    });
+    with_sample(row, round, |slot| *slot = sample);
 }
 
 async fn run_model(
@@ -383,7 +443,8 @@ async fn run_model(
     }
 }
 
-fn new_row(state: &RuntimeState, model: &BenchModel, rounds: u32) -> ModelRow {
+/// 供应商显示名、实际模型 ID 和推理强度；读不到时退回请求里的写法。
+pub(super) fn model_labels(state: &RuntimeState, model: &BenchModel) -> (String, String, String) {
     let settings = smart_text::llm_trace_settings_for(
         state,
         Some(model.provider_id.as_str()),
@@ -392,11 +453,20 @@ fn new_row(state: &RuntimeState, model: &BenchModel, rounds: u32) -> ModelRow {
     )
     .unwrap_or(Value::Null);
     let text = |key: &str| settings[key].as_str().map(str::to_string);
+    (
+        text("providerName").unwrap_or_else(|| model.provider_id.clone()),
+        text("modelId").unwrap_or_else(|| model.model.clone()),
+        text("reasoningEffective").unwrap_or_default(),
+    )
+}
+
+fn new_row(state: &RuntimeState, model: &BenchModel, rounds: u32) -> ModelRow {
+    let (provider_name, model_id, reasoning_effective) = model_labels(state, model);
     ModelRow {
         provider_id: model.provider_id.clone(),
-        provider_name: text("providerName").unwrap_or_else(|| model.provider_id.clone()),
-        model_id: text("modelId").unwrap_or_else(|| model.model.clone()),
-        reasoning_effective: text("reasoningEffective").unwrap_or_default(),
+        provider_name,
+        model_id,
+        reasoning_effective,
         samples: vec![RoundSample::default(); rounds as usize],
         summary: RowSummary::default(),
     }

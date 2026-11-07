@@ -59,28 +59,43 @@ describe("开发者页面", () => {
     expect(await screen.findByText("最慢的是智能处理")).toBeTruthy();
   });
 
-  it("本地模型对比把两边的输出和耗时并排列出", async () => {
+  it("本地模型对比：预加载本地模型、默认勾选当前云端模型，结果列出首字、速度和总耗时", async () => {
     cmd.mockImplementation(async (name: string) => {
       if (name === "devTraceRuns") return [];
+      if (name === "devLocalStatus") return { state: "ready", loadMs: 2700 };
+      if (name === "devBenchModels") {
+        return [
+          { providerId: "p1", providerName: "甲", model: "模型甲", current: true },
+          { providerId: "p2", providerName: "乙", model: "模型乙", current: false },
+        ];
+      }
       if (name === "devLocalCompare") {
         return {
           rawText: "原文",
           appName: "claude",
           scene: "assistant",
-          model: "ft-0.8b-Q8_0.gguf",
-          local: { output: "本地结果", ms: 180, startupMs: 2700 },
-          cloud: { providerId: "default", model: "模型甲", error: "401" },
+          rows: [
+            { providerId: "local", providerName: "本地微调 0.8B", modelId: "ft", output: "本地结果", sample: { firstTokenMs: 40, lastTokenMs: 180, tokensPerSec: 250 } },
+            { providerId: "p1", providerName: "甲", modelId: "模型甲", output: "", sample: { error: "401", lastTokenMs: 300 } },
+          ],
         };
       }
       return { runs: 0, wait: { samples: 0, p50Ms: 0, p90Ms: 0 }, phases: [], models: [] };
     });
     render(<DeveloperPage />);
     fireEvent.click(await screen.findByText("本地模型对比"));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("devLocalPreload"));
+    expect(await screen.findByText(/已就绪/)).toBeTruthy();
+    expect(await screen.findByRole("checkbox", { name: /模型甲/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /模型乙/ })).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "开始对比" }));
-    await waitFor(() => expect(cmd).toHaveBeenCalledWith("devLocalCompare", { request: {} }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("devLocalCompare", {
+      request: { models: [{ providerId: "p1", model: "模型甲" }], local: true },
+    }));
     expect(await screen.findByText("本地结果")).toBeTruthy();
     expect(screen.getByText(/向 AI 提需求/)).toBeTruthy();
-    expect(screen.getByText("加载模型")).toBeTruthy();
+    expect(screen.getByText("40 毫秒")).toBeTruthy();
+    expect(screen.getByText("250")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toBe("401");
   });
 });

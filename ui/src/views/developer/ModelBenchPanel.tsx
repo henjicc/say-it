@@ -6,7 +6,7 @@ import { Group, Row } from "@/components/ui/Group";
 import { Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { CMD, cmd } from "@/lib/tauri";
-import { formatMs } from "./format";
+import { formatMs, formatRate, modelKey } from "./format";
 
 const LIVE_REFRESH_MS = 250;
 
@@ -69,10 +69,6 @@ function displayed(row: BenchRow): BenchSummary {
     tokensEstimated: current?.tokensEstimated ?? false,
     failures: 0,
   };
-}
-
-function formatRate(rate: number | null, estimated: boolean) {
-  return rate === null ? "—" : `${estimated ? "≈" : ""}${Math.round(rate)}`;
 }
 
 function formatTokens(tokens: number | null, estimated: boolean) {
@@ -251,8 +247,6 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   // 自己发起的测速由请求结果收尾；轮询到的「未在运行」可能是上一次测速的旧状态。
   const awaitingResult = useRef(false);
 
-  const keyOf = (option: BenchModelOption) => JSON.stringify([option.providerId, option.model]);
-
   useEffect(() => {
     void cmd<BenchModelOption[]>(CMD.devBenchModels).then(setOptions).catch((reason) => setError(String(reason)));
     // 离开页面再回来时测速可能还在跑，接着显示进度。
@@ -288,7 +282,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
     setResult(null);
     setLive(null);
     const models = options
-      .filter((option) => selected.includes(keyOf(option)))
+      .filter((option) => selected.includes(modelKey(option)))
       .map(({ providerId, model }) => ({ providerId, model }));
     const request = {
       models,
@@ -318,7 +312,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
       <Group
         title="模型"
         right={(
-          <Button size="sm" onClick={() => setSelected(selected.length === options.length ? [] : options.map(keyOf))}>
+          <Button size="sm" onClick={() => setSelected(selected.length === options.length ? [] : options.map(modelKey))}>
             {selected.length === options.length && options.length > 0 ? "全不选" : "全选"}
           </Button>
         )}
@@ -327,7 +321,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
         {options.length > 0 && (
           <div className="max-h-72 overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
             {options.map((option) => {
-              const key = keyOf(option);
+              const key = modelKey(option);
               const id = `bench-model-${key}`;
               return (
                 <Row key={key} label={`${option.providerName} · ${option.model}`} controlId={id}>
