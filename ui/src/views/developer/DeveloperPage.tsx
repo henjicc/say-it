@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
+import { BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, ROW_CONTROL_W, Row } from "@/components/ui/Group";
@@ -8,12 +8,14 @@ import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
 import { formatMs, formatTime } from "./format";
+import { LocalComparePanel } from "./LocalComparePanel";
 import { BenchResult, ModelBenchPanel, type BenchRow } from "./ModelBenchPanel";
 
 const RUNS_REFRESH_MS = 3000;
 const OVERVIEW = "overview";
 const TEST = "test";
 const BENCH = "bench";
+const LOCAL = "local";
 
 interface RunSummary {
   id: string;
@@ -355,7 +357,7 @@ export function DeveloperPage() {
 
   useEffect(() => {
     setRecord(null);
-    if (active === OVERVIEW || active === TEST || active === BENCH) return;
+    if (active === OVERVIEW || active === TEST || active === BENCH || active === LOCAL) return;
     let stale = false;
     void cmd<RunRecord | null>(CMD.devTraceRun, { id: active })
       .then((value) => {
@@ -371,6 +373,7 @@ export function DeveloperPage() {
     { key: OVERVIEW, label: "统计", icon: <BarChart3 {...iconProps} /> },
     { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} /> },
     { key: BENCH, label: "模型测速", icon: <Gauge {...iconProps} /> },
+    { key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> },
     ...runs.map((run, index) => ({
       key: run.id,
       label: runLabel(run),
@@ -384,9 +387,11 @@ export function DeveloperPage() {
       ? "智能处理测试"
       : active === BENCH
         ? "模型测速"
-        : record
-          ? formatTime(record.startedAtMs)
-          : "";
+        : active === LOCAL
+          ? "本地模型对比"
+          : record
+            ? formatTime(record.startedAtMs)
+            : "";
 
   return (
     <MasterDetail title="开发者" list={<NodeList ariaLabel="运行记录" items={items} active={active} onSelect={setActive} />}>
@@ -395,6 +400,7 @@ export function DeveloperPage() {
       {active === OVERVIEW && <OverviewPanel />}
       {active === TEST && <SmartTestPanel onFinished={refresh} />}
       {active === BENCH && <ModelBenchPanel onFinished={refresh} />}
+      {active === LOCAL && <LocalComparePanel />}
       {record && <RunDetail record={record} />}
     </MasterDetail>
   );
