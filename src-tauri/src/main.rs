@@ -783,7 +783,9 @@ fn main() {
             #[cfg(debug_assertions)]
             application::dev_bench::dev_bench_state,
             #[cfg(debug_assertions)]
-            application::dev_bench::dev_bench_run
+            application::dev_bench::dev_bench_run,
+            #[cfg(debug_assertions)]
+            application::dev_local_model::dev_local_compare
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -827,8 +829,13 @@ fn main() {
             // 主窗口「关闭即销毁」后，应用可能不再有任何存活窗口，运行时会自动
             // 请求退出（code 为 None）——阻止它以保持托盘驻留。托盘「退出」和
             // app.restart() 都带退出码，不受影响。
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
-                api.prevent_exit();
+            match event {
+                tauri::RunEvent::ExitRequested {
+                    code: None, api, ..
+                } => api.prevent_exit(),
+                #[cfg(debug_assertions)]
+                tauri::RunEvent::Exit => application::dev_local_model::shutdown(),
+                _ => {}
             }
         });
         active_app_context::shutdown();

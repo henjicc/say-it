@@ -58,4 +58,29 @@ describe("开发者页面", () => {
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("devTraceSmartTest", { request: { fromRun: "latest" } }));
     expect(await screen.findByText("最慢的是智能处理")).toBeTruthy();
   });
+
+  it("本地模型对比把两边的输出和耗时并排列出", async () => {
+    cmd.mockImplementation(async (name: string) => {
+      if (name === "devTraceRuns") return [];
+      if (name === "devLocalCompare") {
+        return {
+          rawText: "原文",
+          appName: "claude",
+          scene: "assistant",
+          model: "ft-0.8b-Q8_0.gguf",
+          local: { output: "本地结果", ms: 180, startupMs: 2700 },
+          cloud: { providerId: "default", model: "模型甲", error: "401" },
+        };
+      }
+      return { runs: 0, wait: { samples: 0, p50Ms: 0, p90Ms: 0 }, phases: [], models: [] };
+    });
+    render(<DeveloperPage />);
+    fireEvent.click(await screen.findByText("本地模型对比"));
+    fireEvent.click(screen.getByRole("button", { name: "开始对比" }));
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("devLocalCompare", { request: {} }));
+    expect(await screen.findByText("本地结果")).toBeTruthy();
+    expect(screen.getByText(/向 AI 提需求/)).toBeTruthy();
+    expect(screen.getByText("加载模型")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe("401");
+  });
 });

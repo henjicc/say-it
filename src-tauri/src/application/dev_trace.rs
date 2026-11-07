@@ -755,6 +755,9 @@ pub(super) struct ReplayPrompt {
     pub(super) provider_id: String,
     pub(super) model: String,
     pub(super) breakdown: Option<Value>,
+    /// 智能处理之前的识别原文和所在软件，本地模型对比按训练格式重新拼输入时用。
+    pub(super) raw_text: String,
+    pub(super) app_name: String,
 }
 
 fn replay_from_record(record: &Value) -> Option<ReplayPrompt> {
@@ -771,6 +774,14 @@ fn replay_from_record(record: &Value) -> Option<ReplayPrompt> {
         provider_id: call["providerId"].as_str().unwrap_or("default").to_string(),
         model: call["modelId"].as_str().unwrap_or_default().to_string(),
         breakdown: record.get("promptBreakdown").cloned(),
+        raw_text: record["settings"]["rawText"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        app_name: record["settings"]["appName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -800,7 +811,7 @@ pub(crate) struct SmartTestRequest {
     model: Option<String>,
 }
 
-fn input_from_text(state: &RuntimeState, text: &str) -> Result<ReplayPrompt, String> {
+pub(super) fn input_from_text(state: &RuntimeState, text: &str) -> Result<ReplayPrompt, String> {
     let (template, provider_id, model) = crate::application::dictation::smart_test_defaults(state)?;
     let user_prompt =
         smart_text::build_smart_prompt(state, text, &template, "", "", &provider_id)?.text;
@@ -810,6 +821,8 @@ fn input_from_text(state: &RuntimeState, text: &str) -> Result<ReplayPrompt, Str
         provider_id,
         model,
         breakdown: None,
+        raw_text: text.to_string(),
+        app_name: String::new(),
     })
 }
 
