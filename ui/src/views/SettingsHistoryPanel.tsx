@@ -16,6 +16,7 @@ interface HistoryPrefs {
   learningMemoryRetentionDays: number;
   retentionDays: number;
   excludedApps: string[];
+  smartInputRecordingEnabled: boolean;
 }
 
 const defaults: HistoryPrefs = {
@@ -26,6 +27,7 @@ const defaults: HistoryPrefs = {
   learningMemoryRetentionDays: 180,
   retentionDays: 30,
   excludedApps: [],
+  smartInputRecordingEnabled: false,
 };
 
 function normalize(value: Record<string, unknown>): HistoryPrefs {
@@ -37,6 +39,7 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
     learningMemoryRetentionDays: Math.min(3650, Math.max(1, Number(value.learningMemoryRetentionDays) || 180)),
     retentionDays: Math.min(3650, Math.max(1, Number(value.retentionDays) || 30)),
     excludedApps: Array.isArray(value.excludedApps) ? value.excludedApps.filter((item): item is string => typeof item === "string") : [],
+    smartInputRecordingEnabled: value.smartInputRecordingEnabled === true,
   };
 }
 
@@ -147,6 +150,15 @@ export function SettingsHistoryPanel() {
       <Group title="本地历史" description="历史记录只保存在本机，不保存音频，也不会记录密码输入框中的内容。">
         <Row label="保存历史" controlId="history-enabled" hint="关闭后新任务不再写入，已有记录不会自动删除。">
           <Switch id="history-enabled" checked={prefs.enabled} onChange={(enabled) => void save({ ...prefs, enabled })} label="保存历史" />
+        </Row>
+        <Row label="保存智能处理输入" controlId="history-smart-input" hint="同时保存每次智能处理发给模型的完整内容（含屏幕识别出的文字）和模型原始输出，用于以后训练本地模型。屏幕文字较多时，每条记录会明显变大。">
+          <Switch
+            id="history-smart-input"
+            checked={prefs.smartInputRecordingEnabled}
+            disabled={!prefs.enabled}
+            onChange={(smartInputRecordingEnabled) => void save({ ...prefs, smartInputRecordingEnabled })}
+            label="保存智能处理输入"
+          />
         </Row>
         <Row label="保留天数" hint="范围 1～3650 天，过期记录会自动清理。">
           <NumberInput className="w-32" value={prefs.retentionDays} min={1} max={3650} onValueChange={(retentionDays) => void save({ ...prefs, retentionDays })} aria-label="历史保留天数" />
