@@ -534,6 +534,14 @@ fn migrate_provider_ids(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("迁移历史供应商 ID 失败：{error}"))
 }
 
+/// 完整输入含屏幕识别文字，体积和隐私代价都比正文大，只在用户主动开启时保存。
+fn smart_input_recording_allowed(prefs: &serde_json::Value) -> bool {
+    prefs
+        .get("smartInputRecordingEnabled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 fn history_recording_allowed(
     prefs: &serde_json::Value,
     app_name: &str,
@@ -744,7 +752,7 @@ pub(crate) fn update_result(
         status,
         error,
         duration_ms,
-        smart_input,
+        smart_input.filter(|_| smart_input_recording_allowed(&prefs)),
     )? {
         if status == "succeeded" {
             crate::application::final_draft::consume_pending(app, id);

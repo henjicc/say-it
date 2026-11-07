@@ -377,6 +377,7 @@ pub(crate) fn export_diagnostic_bundle(
             "cloudLearningContextEnabled": settings.history_prefs.get("cloudLearningContextEnabled").and_then(Value::as_bool).unwrap_or(false),
             "learningMemoryRetentionDays": settings.history_prefs.get("learningMemoryRetentionDays").and_then(Value::as_u64).unwrap_or(180),
             "historyRetentionDays": settings.history_prefs.get("retentionDays").and_then(Value::as_u64).unwrap_or(30),
+            "smartInputRecordingEnabled": settings.history_prefs.get("smartInputRecordingEnabled").and_then(Value::as_bool).unwrap_or(false),
             "verboseLogging": settings.diagnostics_prefs.get("verboseLogging").and_then(Value::as_bool).unwrap_or(false),
         }))
         .unwrap_or_else(|_| json!({"unavailable":true}));

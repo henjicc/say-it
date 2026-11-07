@@ -92,7 +92,8 @@ fn default_history_prefs() -> Value {
         "finalDraftObservationEnabled":false,
         "correctionLearningEnabled":false,
         "cloudLearningContextEnabled":false,
-        "learningMemoryRetentionDays":180
+        "learningMemoryRetentionDays":180,
+        "smartInputRecordingEnabled":false
     })
 }
 fn default_diagnostics_prefs() -> Value {
@@ -331,6 +332,7 @@ pub(crate) fn update_app_settings(
             ("finalDraftObservationEnabled", "最终草稿观察开关"),
             ("correctionLearningEnabled", "纠错学习开关"),
             ("cloudLearningContextEnabled", "云端学习上下文开关"),
+            ("smartInputRecordingEnabled", "保存智能处理输入开关"),
         ] {
             if value
                 .get(field)
