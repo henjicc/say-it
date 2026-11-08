@@ -14,7 +14,7 @@ fn register() {
                         WindowId::Indicator,
                         Indicator::new(&cx.look),
                         96,
-                        |never| match never {},
+                        crate::OverlayEvent::Indicator,
                     );
                 host.attach();
                 Box::new(host)
@@ -224,7 +224,7 @@ mod tests {
             WindowId::Indicator,
             Indicator::new(&look),
             96,
-            |never| match never {},
+            crate::OverlayEvent::Indicator,
         );
         host.apply(Command::SetState(IndicatorState::Recording), &cx);
         let ops = host.slot.take_for_test();

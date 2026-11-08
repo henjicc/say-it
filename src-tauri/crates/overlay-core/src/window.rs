@@ -1,7 +1,6 @@
 use crate::canvas::{Canvas, TextEngine};
 use crate::geom::{PxRect, Rect, Shape};
 use crate::look::Look;
-use std::convert::Infallible;
 use std::time::{Duration, Instant};
 
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -92,6 +91,8 @@ pub enum PointerStep<A, I> {
 pub enum CursorShape {
     Arrow,
     Move,
+    /// 可点击（胶囊智能处理中的「直接输入」）。
+    Hand,
 }
 
 /// 模型调用上下文：宿主每次处理消息取一次 now。
@@ -164,18 +165,6 @@ pub trait PointerModel: Default {
     fn cursor(&self, hit: &Self::Hit) -> CursorShape {
         let _ = hit;
         CursorShape::Arrow
-    }
-}
-
-/// 无输入窗口（胶囊始终点击穿透）。
-#[derive(Debug, Default)]
-pub struct NoPointer;
-impl PointerModel for NoPointer {
-    type Hit = ();
-    type Input = Infallible;
-    type Action = Infallible;
-    fn event(&mut self, _: PointerEvent, _: &()) -> Vec<PointerStep<Infallible, Infallible>> {
-        Vec::new()
     }
 }
 

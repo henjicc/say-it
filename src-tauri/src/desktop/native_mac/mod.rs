@@ -10,6 +10,10 @@ pub(crate) fn ensure_started(app: &tauri::AppHandle) {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             match event {
+                // Mac 胶囊尚未接通指针、保持点击穿透，目前不会产出这个动作。
+                sayit_overlay_macos::OverlayEvent::Indicator(
+                    sayit_overlay_core::indicator::IndicatorAction::SkipSmartProcessing,
+                ) => crate::application::dictation::skip_smart_processing(&app),
                 sayit_overlay_macos::OverlayEvent::Orb(action) => orb::on_action(&app, action),
                 sayit_overlay_macos::OverlayEvent::Subtitle(action) => {
                     subtitle::on_action(&app, action)

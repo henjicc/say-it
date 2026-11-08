@@ -464,6 +464,8 @@ struct Session {
     active_app_context: Option<crate::active_app_context::DictationContextCaptureHandle>,
     /// finalize 会把捕获句柄移出会话；保留独立令牌，让取消/会话替换仍能中断 OCR。
     active_app_context_cancellation: Option<crate::active_app_context::ContextCaptureCancellation>,
+    /// 智能处理进行中时存在；用户点胶囊跳过时取消它，改为直接输出识别原文。
+    smart_skip: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Clone, Debug)]
@@ -2097,6 +2099,21 @@ async fn punctuate_local_asr_text(
     })
 }
 
+/// 用户在胶囊上点击跳过：中断正在进行的智能处理，本次听写改为直接输出（补标点后）识别原文。
+/// 不在智能处理中时无事可做。
+pub(crate) fn skip_smart_processing(app: &AppHandle) {
+    let state = app.state::<RuntimeState>();
+    let skip = state
+        .dictation_runtime
+        .session
+        .lock()
+        .ok()
+        .and_then(|mut session| session.smart_skip.take());
+    if let Some(skip) = skip {
+        skip.cancel();
+    }
+}
+
 async fn finalize(app: AppHandle, epoch: u64) {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -2246,14 +2263,25 @@ async fn finalize(app: AppHandle, epoch: u64) {
         let _ = stop_asr_stream_inner(&id, &state);
     }
     let state = app.state::<RuntimeState>();
+    // 胶囊显示「可跳过」的同时就装好令牌：之后等截图识别、调大模型的任何时刻点击都有效。
+    let smart_skip = tokio_util::sync::CancellationToken::new();
     {
         if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         }
+        let skippable = assistant_request.is_none() && should_process_smart_text;
+        if skippable {
+            if let Ok(mut session) = state.dictation_runtime.session.lock() {
+                if session.is_current(epoch) {
+                    session.smart_skip = Some(smart_skip.clone());
+                }
+            }
+        }
         publish_state(&app, None);
         // ASR 已经结束；无论是普通听写的智能优化，还是智能助手任务，
         // 后续都统一投影为“处理中”，避免模型调用期间仍误显示“识别中”。
+        // 只有听写智能处理能跳过，胶囊用 smartProcessing 表示可点击；助手任务用 processing。
         if (assistant_request.is_some() || should_process_smart_text)
             && !assistant_request
                 .as_ref()
@@ -2262,7 +2290,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
             if trigger.is_floating_orb() {
                 crate::desktop::set_floating_orb_phase(&app, "smartProcessing", "处理中…");
             } else {
-                let _ = crate::desktop::set_indicator_state(app.clone(), "smartProcessing".into());
+                let indicator = if skippable { "smartProcessing" } else { "processing" };
+                let _ = crate::desktop::set_indicator_state(app.clone(), indicator.into());
             }
         }
     }
@@ -2307,37 +2336,49 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
         String::new()
     } else if let Some(handle) = active_app_context {
-        let Some(captured) = processing::until_cancelled(
-            &processing_cancellation,
-            state.active_app_context.resolve_dictation_capture(handle),
-        )
-        .await else {
-            cleanup_stale_finalize(&state, lease, temp_path);
-            return;
-        };
-        let current_session = state.dictation_runtime.session.lock().ok();
-        if current_session.as_deref().is_some_and(|session| {
-            session.epoch == epoch
-                && session.phase == DictationPhase::Injecting
-                && !active_app_context_cancellation
-                    .as_ref()
-                    .is_some_and(|cancellation| cancellation.is_cancelled())
-        }) {
-            // 保持会话锁直到 summary 写入完成，避免取消或新会话插在
-            // current 检查与 remember 之间，让旧会话覆盖最近上下文。
-            state.active_app_context.remember(&captured);
-            crate::development_debug_log(
-                "dictation",
-                format_args!(
-                    "本次听写采用的软件上下文：状态={:?}，字符数={}\n--- 上下文开始 ---\n{}\n--- 上下文结束 ---",
-                    captured.status,
-                    captured.format_for_prompt().chars().count(),
-                    captured.format_for_prompt(),
-                ),
-            );
-            captured.format_for_prompt()
-        } else {
-            String::new()
+        'capture: {
+            let Some(captured) = processing::until_cancelled(&processing_cancellation, async {
+                tokio::select! {
+                    biased;
+                    _ = smart_skip.cancelled() => None,
+                    captured = state.active_app_context.resolve_dictation_capture(handle) => {
+                        Some(captured)
+                    }
+                }
+            })
+            .await
+            else {
+                cleanup_stale_finalize(&state, lease, temp_path);
+                return;
+            };
+            // 用户已点跳过：不再等截图识别，智能处理也不会再用到上下文。
+            let Some(captured) = captured else {
+                break 'capture String::new();
+            };
+            let current_session = state.dictation_runtime.session.lock().ok();
+            if current_session.as_deref().is_some_and(|session| {
+                session.epoch == epoch
+                    && session.phase == DictationPhase::Injecting
+                    && !active_app_context_cancellation
+                        .as_ref()
+                        .is_some_and(|cancellation| cancellation.is_cancelled())
+            }) {
+                // 保持会话锁直到 summary 写入完成，避免取消或新会话插在
+                // current 检查与 remember 之间，让旧会话覆盖最近上下文。
+                state.active_app_context.remember(&captured);
+                crate::development_debug_log(
+                    "dictation",
+                    format_args!(
+                        "本次听写采用的软件上下文：状态={:?}，字符数={}\n--- 上下文开始 ---\n{}\n--- 上下文结束 ---",
+                        captured.status,
+                        captured.format_for_prompt().chars().count(),
+                        captured.format_for_prompt(),
+                    ),
+                );
+                captured.format_for_prompt()
+            } else {
+                String::new()
+            }
         }
     } else {
         String::new()
@@ -2431,6 +2472,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         None
     };
     let mut smart_run = None;
+    let mut smart_skipped = false;
     let smart_processed = if let Some(result) = &assistant_processed {
         result.output.clone()
     } else if should_process_smart_text {
@@ -2459,23 +2501,32 @@ async fn finalize(app: AppHandle, epoch: u64) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         }
-        let Some(smart_result) = processing::until_cancelled(
-            &processing_cancellation,
-            crate::application::smart_text::process_smart_text(
-                &state,
-                &text,
-                &template.id,
-                &template.prompt,
-                &active_app_context,
-                app_identity
-                    .as_ref()
-                    .map(|identity| identity.app_name.as_str())
-                    .unwrap_or_default(),
-                &prefs.smart_llm_provider_id,
-                &prefs.smart_llm_model,
-            ),
-        )
-        .await else {
+        let smart_result = processing::until_cancelled(&processing_cancellation, async {
+            tokio::select! {
+                biased;
+                _ = smart_skip.cancelled() => None,
+                result = crate::application::smart_text::process_smart_text(
+                    &state,
+                    &text,
+                    &template.id,
+                    &template.prompt,
+                    &active_app_context,
+                    app_identity
+                        .as_ref()
+                        .map(|identity| identity.app_name.as_str())
+                        .unwrap_or_default(),
+                    &prefs.smart_llm_provider_id,
+                    &prefs.smart_llm_model,
+                ) => Some(result),
+            }
+        })
+        .await;
+        if let Ok(mut session) = state.dictation_runtime.session.lock() {
+            if session.is_current(epoch) {
+                session.smart_skip = None;
+            }
+        }
+        let Some(smart_result) = smart_result else {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         };
@@ -2484,12 +2535,17 @@ async fn finalize(app: AppHandle, epoch: u64) {
             return;
         }
         match smart_result {
-            Ok(run) => {
+            // 用户跳过：智能处理时没补标点，这里补上再交给本地规则。
+            None => {
+                smart_skipped = true;
+                punctuate_local_asr_text(&state, &prefs, text.clone()).await
+            }
+            Some(Ok(run)) => {
                 let output = run.output.clone();
                 smart_run = Some(run);
                 output
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 if let Some(lease) = &lease {
                     let _ = state.audio_session.release(lease);
                 }
@@ -2509,6 +2565,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         text.clone()
     };
+    let smart_applied = assistant_request.is_none() && should_process_smart_text && !smart_skipped;
     #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.smartDone",
@@ -2767,7 +2824,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             },
             "outputTextChars":processed.chars().count(),
             "outputTextFingerprint":crate::application::diagnostics::fingerprint(&processed),
-            "smartProcessingApplied":assistant_request.is_none() && should_process_smart_text,
+            "smartProcessingApplied":smart_applied,
             "errorCode":delivery_error.map(|_| "injectionFailed"),
             "detail":delivery_error,
         }),
@@ -2884,7 +2941,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 task_kind: task_kind.into(),
                 source_text: history_source,
                 output_text: processed.clone(),
-                smart_processing_applied: assistant_request.is_none() && should_process_smart_text,
+                smart_processing_applied: smart_applied,
                 instruction,
                 app_name: identity.app_name,
                 process_name: identity.process_name,
