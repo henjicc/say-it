@@ -1499,7 +1499,8 @@ fn spawn_raw_consumer(
                             &app, level, peaks,
                         );
                     } else {
-                        let peaks = scale(summarize_peaks(&processed, 6));
+                        // 胶囊同样用分段 RMS：自动增益后的峰值几乎总在满幅附近，柱子会一直顶到头。
+                        let peaks = scale(summarize_rms(&processed, 6));
                         emit_waveform(&app, level, peaks);
                     }
                 }
@@ -3521,20 +3522,6 @@ fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|v| v * v).sum::<f32>() / samples.len() as f32).sqrt()
     }
 }
-fn summarize_peaks(samples: &[f32], n: usize) -> Vec<f32> {
-    let size = (samples.len() / n.max(1)).max(1);
-    (0..n)
-        .map(|i| {
-            samples
-                .get(i * size..((i + 1) * size).min(samples.len()))
-                .unwrap_or(&[])
-                .iter()
-                .map(|v| v.abs())
-                .fold(0.0, f32::max)
-        })
-        .collect()
-}
-
 fn summarize_rms(samples: &[f32], n: usize) -> Vec<f32> {
     let size = (samples.len() / n.max(1)).max(1);
     (0..n)
@@ -4980,8 +4967,6 @@ mod tests {
         let mut samples = vec![0.0; 64];
         samples[0] = 1.0;
         let rms_levels = summarize_rms(&samples, 1);
-        let peaks = summarize_peaks(&samples, 1);
-        assert_eq!(peaks, vec![1.0]);
         assert!(rms_levels[0] < 0.2);
     }
 
