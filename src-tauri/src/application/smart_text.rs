@@ -314,11 +314,14 @@ fn resolve_plugin_llm(
     Ok((spec, capability))
 }
 
+/// 「关闭」只发给声明了 `reasoning` 能力的插件，避免不支持思考的插件因多出的字段拒绝请求；
+/// 「低 / 高」是用户主动开启，照常发送。
 fn plugin_llm_request(
     profile: &ProviderProfile,
     messages: Vec<Value>,
     default_reasoning: &str,
     structured_json: bool,
+    supports_reasoning: bool,
 ) -> Result<Value, String> {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
@@ -336,9 +339,11 @@ fn plugin_llm_request(
         "policy": { "maxTokens": model.max_tokens.unwrap_or(4096) },
         "capabilities": { "jsonOutput": structured_json },
     });
-    if matches!(reasoning, "low" | "medium" | "high") {
+    if let Some(reasoning) =
+        sdk_reasoning(reasoning).filter(|value| supports_reasoning || value["enabled"] == true)
+    {
         request["capabilities"]["reasoning"] = Value::Bool(true);
-        request["reasoning"] = json!({ "enabled": true, "effort": reasoning });
+        request["reasoning"] = reasoning;
     }
     Ok(request)
 }
@@ -351,8 +356,14 @@ async fn run_plugin_llm(
     structured_json: bool,
     request_id: String,
 ) -> Result<LlmOutput, String> {
-    let request = plugin_llm_request(&profile, messages, default_reasoning, structured_json)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
+    let request = plugin_llm_request(
+        &profile,
+        messages,
+        default_reasoning,
+        structured_json,
+        capability.features.iter().any(|feature| feature == "reasoning"),
+    )?;
     let cancelled = Arc::new(CancellationFlag::new(false));
     let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
@@ -394,8 +405,14 @@ async fn run_plugin_llm_stream<F>(
 where
     F: FnMut(&str, &str),
 {
-    let request = plugin_llm_request(&profile, messages, default_reasoning, false)?;
     let (spec, capability) = resolve_plugin_llm(state, &profile)?;
+    let request = plugin_llm_request(
+        &profile,
+        messages,
+        default_reasoning,
+        false,
+        capability.features.iter().any(|feature| feature == "reasoning"),
+    )?;
     if !capability
         .execution_modes
         .iter()
@@ -476,8 +493,14 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     chat_options_for(profile, None)
 }
 
-fn supports_explicit_reasoning_zero(profile: &ProviderProfile) -> bool {
-    !matches!(crate::providers::llm_adapter(profile), Some("kimi" | "bigmodel"))
+/// Kimi K3、GLM-5 系列、MiniMax M3 系列始终思考，没有关闭的协议值（传关闭会被接口拒绝），
+/// 选「关闭」时按最低档 low 发送。按模型 ID 判断，同样覆盖百炼、火山方舟等平台上的同款模型；
+/// 同一家的其他模型（例如手动添加的旧版本）仍可正常关闭。
+fn thinking_can_be_disabled(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    !["kimi-k3", "glm-5", "minimax-m3"]
+        .iter()
+        .any(|family| model.contains(family))
 }
 
 fn chat_options_for(
@@ -507,11 +530,9 @@ fn chat_options_for(
         "auto" | "" => default_reasoning.unwrap_or("auto"),
         value => value,
     };
-    // 指南中的 Kimi K3 与 GLM-5.3 没有关闭思考的协议值；对这两类模型不能伪造
-    // `reasoning_effort=zero`，否则会被接口拒绝，只能保留供应商默认行为。
     let configured_reasoning =
-        if configured_reasoning == "zero" && !supports_explicit_reasoning_zero(profile) {
-            "auto"
+        if configured_reasoning == "zero" && !thinking_can_be_disabled(model_name) {
+            "low"
         } else {
             configured_reasoning
         };
@@ -602,6 +623,16 @@ fn final_text_from_output(output: &str) -> Result<String, String> {
     Ok(final_text.to_string())
 }
 
+/// SDK 与插件请求里的思考参数。「关闭」必须显式发 `enabled: false`：不发时 SDK 按供应商默认
+/// （通常开启思考）处理；能否真正关闭、关不掉时发什么由 SDK 按供应商与模型决定。
+fn sdk_reasoning(reasoning: &str) -> Option<Value> {
+    match reasoning {
+        "zero" => Some(json!({ "enabled": false })),
+        "low" | "medium" | "high" => Some(json!({ "enabled": true, "effort": reasoning })),
+        _ => None,
+    }
+}
+
 fn groq_sdk_request(
     profile: &ProviderProfile,
     messages: Vec<serde_json::Value>,
@@ -624,9 +655,9 @@ fn groq_sdk_request(
         "messages": messages,
         "policy": { "maxTokens": model.max_tokens.unwrap_or(4096) },
     });
-    if matches!(reasoning, "low" | "medium" | "high") {
+    if let Some(reasoning) = sdk_reasoning(reasoning) {
         request["capabilities"] = json!({ "reasoning": true });
-        request["reasoning"] = json!({ "enabled": true, "effort": reasoning });
+        request["reasoning"] = reasoning;
     }
     Ok(request)
 }
@@ -1639,7 +1670,8 @@ mod tests {
         };
         let options = chat_options(&profile).unwrap();
         assert_eq!(options.temperature, Some(0.1));
-        assert!(options.reasoning_effort.is_none());
+        // 没写过思考程度的旧配置按默认关闭思考。
+        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
     }
 
     #[test]
@@ -1736,6 +1768,25 @@ mod tests {
             config_fields: vec![],
             actions: vec![],
         }
+    }
+
+    #[test]
+    fn always_thinking_models_send_the_lowest_level_when_thinking_is_off() {
+        let mut profile = llm_profile("llm:bailian", "zero");
+        profile.config["model"] = "MiniMax/MiniMax-M3.1-Flash".into();
+        profile.config["models"][0]["name"] = "MiniMax/MiniMax-M3.1-Flash".into();
+        let options = chat_options(&profile).unwrap();
+        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Low)));
+
+        let mut kimi = llm_profile("llm:kimi", "zero");
+        kimi.config["model"] = "kimi-k3.1-pro".into();
+        kimi.config["models"][0]["name"] = "kimi-k3.1-pro".into();
+        let options = chat_options(&kimi).unwrap();
+        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Low)));
+
+        // 同一家能关闭思考的其他模型照常关闭。
+        let options = chat_options(&llm_profile("llm:kimi", "zero")).unwrap();
+        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
     }
 
     #[test]
@@ -1843,5 +1894,19 @@ mod tests {
         assert_eq!(request["reasoning"]["effort"], "high");
         assert!(request.get("providerId").is_none());
         assert!(request.to_string().find("apiKey").is_none());
+    }
+
+    /// 不发思考参数时 SDK 按供应商默认开启思考，「关闭」必须显式告诉 SDK。
+    #[test]
+    fn thinking_off_is_sent_explicitly_to_sdk_and_reasoning_plugins_only() {
+        let messages = || vec![json!({ "role": "user", "content": "hello" })];
+        let groq = groq_sdk_request(&llm_profile("llm:groq", "zero"), messages(), "zero").unwrap();
+        assert_eq!(groq["reasoning"], json!({ "enabled": false }));
+
+        let plugin = llm_profile("plugin:test", "zero");
+        let request = plugin_llm_request(&plugin, messages(), "zero", false, true).unwrap();
+        assert_eq!(request["reasoning"], json!({ "enabled": false }));
+        let request = plugin_llm_request(&plugin, messages(), "zero", false, false).unwrap();
+        assert!(request.get("reasoning").is_none(), "没声明思考能力的插件不收思考参数");
     }
 }

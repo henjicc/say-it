@@ -114,7 +114,7 @@ impl LlmModelConfig {
     }
 
     pub fn has_custom_options(&self) -> bool {
-        self.reasoning_effort != "auto"
+        self.reasoning_effort != default_reasoning_effort()
             || self.temperature != Some(DEFAULT_LLM_TEMPERATURE)
             || self.max_tokens.is_some()
     }
@@ -137,8 +137,9 @@ pub enum LlmModelAvailability {
     Unknown,
 }
 
+/// 默认关闭思考：听写后处理要快，不能关闭的模型在请求时按最低档发送。
 fn default_reasoning_effort() -> String {
-    "auto".to_string()
+    "zero".to_string()
 }
 
 fn default_llm_temperature() -> Option<f64> {
@@ -613,9 +614,22 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     if !profile.config.is_object() {
         profile.config = json!({});
     }
-    let models = llm_models_from_config(&profile.config);
+    let mut models = llm_models_from_config(&profile.config);
+    for model in &mut models {
+        model.reasoning_effort = normalized_reasoning_effort(&model.reasoning_effort).to_string();
+    }
     let _ = set_llm_models(&mut profile.config, &models);
     seed_recommended_llm_models(profile);
+}
+
+/// 思考程度只保留「关闭 / 低 / 高」三档：「自动」交给供应商默认（通常是最高档），
+/// 并入「关闭」；「中」并入「高」。
+fn normalized_reasoning_effort(value: &str) -> &str {
+    match value {
+        "low" => "low",
+        "medium" | "high" => "high",
+        _ => "zero",
+    }
 }
 
 /// 各大模型供应商的推荐模型，与前端共用 `shared/llm-recommended-models.json`；显示名只在前端使用。
@@ -1089,6 +1103,33 @@ mod tests {
         assert_eq!(profile.config["model"], "legacy-model");
         assert_eq!(profile.config["apiKey"], "secret");
         assert!(profile.capabilities.iter().any(|value| value == "asr"));
+    }
+
+    #[test]
+    fn reasoning_effort_is_normalized_to_off_low_or_high() {
+        let mut settings = ProviderSettings::default();
+        let profile = settings
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == GROQ_LLM_PROVIDER_ID)
+            .unwrap();
+        profile.config = json!({
+            "model": "a",
+            "models": [
+                { "name": "a", "reasoningEffort": "auto" },
+                { "name": "b", "reasoningEffort": "medium" },
+                { "name": "c", "reasoningEffort": "low" },
+                { "name": "d" }
+            ]
+        });
+        let normalized = normalize_settings(settings);
+        let profile = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
+        let efforts = llm_models_from_config(&profile.config)
+            .into_iter()
+            .filter(|model| ["a", "b", "c", "d"].contains(&model.name.as_str()))
+            .map(|model| model.reasoning_effort)
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, ["zero", "high", "low", "zero"]);
     }
 
     #[test]

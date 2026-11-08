@@ -6,7 +6,7 @@ import { Collapse } from "@/components/ui/Collapse";
 import { CheckField, Field } from "@/components/ui/Field";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { RangeInput } from "@/components/ui/RangeInput";
 import { SecretInput } from "@/components/ui/SecretInput";
@@ -18,16 +18,15 @@ import {
   llmModelShownByDefault,
   llmModelsFromProfile,
   manualLlmModel,
-  REASONING_OPTIONS,
 } from "@/features/models/llmModelOptions";
 import { isModelVisible, modelVisibilityPatch, providerReady } from "@/features/models/providerModels";
 import { isRecommendedLlmModel, llmModelLabel } from "@/features/models/recommendedLlmModels";
+import { enqueueProviderTask, useProviderConfigQueue } from "@/features/models/providerConfigQueue";
 import { TRANSLATION_MODEL_OPTIONS, TRANSLATION_PROVIDER_ID } from "@/features/translation/models";
 import { CMD, cmd } from "@/lib/tauri";
 import {
   useProviderStore,
   type LlmModelConfig,
-  type LlmReasoningEffort,
   type ProviderProfile,
 } from "@/store/useProviderStore";
 
@@ -42,25 +41,6 @@ const PLUGIN_ACTION_LABELS: Record<string, string> = {
 
 const ENDPOINT_FIELD: ConfigField = { key: "endpoint", label: "接口地址", fieldType: "text", secret: false };
 
-const providerQueues = new Map<string, Promise<unknown>>();
-
-/** 同一供应商的配置写入与模型列表刷新按顺序执行，避免整份写回的字段互相覆盖。 */
-function enqueue<T>(providerId: string, task: () => Promise<T>): Promise<T> {
-  const operation = (providerQueues.get(providerId) ?? Promise.resolve()).then(task);
-  providerQueues.set(providerId, operation.then(() => undefined, () => undefined));
-  return operation;
-}
-
-/** 写入时读取最新配置，再按它算出这次要写的字段。 */
-function useConfigQueue(providerId: string) {
-  const updateConfig = useProviderStore((state) => state.updateConfig);
-  return (build: (latest: ProviderProfile) => Record<string, unknown>): Promise<ProviderProfile> => enqueue(providerId, () => {
-    const latest = useProviderStore.getState().profiles.find((profile) => profile.id === providerId);
-    if (!latest) throw new Error("供应商不存在");
-    return updateConfig(providerId, build(latest));
-  });
-}
-
 function ErrorLine({ text }: { text: string }) {
   return text ? <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{text}</p> : null;
 }
@@ -69,7 +49,7 @@ function ErrorLine({ text }: { text: string }) {
 function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
   const { confirm, dialog } = useConfirm();
   const loadProviders = useProviderStore((state) => state.load);
-  const queue = useConfigQueue(profile.id);
+  const queue = useProviderConfigQueue(profile.id);
   const fields = [
     ...(profile.configFields ?? []).filter((field) => field.key !== "model"),
     ...(profile.kind === "llm:custom" ? [ENDPOINT_FIELD] : []),
@@ -204,7 +184,7 @@ interface CatalogModelRow {
 
 /** 识别、翻译模型：每个模型一个开关，决定它是否出现在用途下拉框里。 */
 function ModelSwitchGroup({ title, profile, models }: { title: string; profile: ProviderProfile; models: CatalogModelRow[] }) {
-  const queue = useConfigQueue(profile.id);
+  const queue = useProviderConfigQueue(profile.id);
   const [error, setError] = useState("");
   const ready = providerReady(profile);
   if (!models.length) return null;
@@ -237,7 +217,7 @@ function formatTimestamp(value: unknown): string {
 function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
   const refreshModels = useProviderStore((state) => state.refreshLlmModels);
   const defaults = useProviderStore((state) => state.defaults);
-  const queue = useConfigQueue(profile.id);
+  const queue = useProviderConfigQueue(profile.id);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [manualOpen, setManualOpen] = useState(false);
@@ -253,7 +233,7 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
     setRefreshing(true);
     setError("");
     try {
-      await enqueue(profile.id, () => refreshModels(profile.id));
+      await enqueueProviderTask(profile.id, () => refreshModels(profile.id));
     } catch (reason) {
       setError(`模型列表获取失败：${String(reason)}`);
     } finally {
@@ -274,9 +254,6 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
     return queue((latest) => ({ models: build(llmModelsFromProfile(latest)), ...extra?.(latest) }))
       .catch((reason) => setError(`保存失败：${String(reason)}`));
   };
-
-  const setReasoning = (name: string, reasoningEffort: LlmReasoningEffort) =>
-    void saveModels((current) => current.map((model) => model.name === name ? { ...model, reasoningEffort } : model));
 
   const toggle = (name: string, show: boolean) => {
     setError("");
@@ -313,18 +290,6 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
         disabled={!ready}
         message={shown && model.availability === "missing" && <span className="text-[var(--color-warn)]">最新列表里没有这个模型，能否调用取决于供应商。</span>}
       >
-        {shown && (
-          <Select
-            size="sm"
-            className="w-28"
-            aria-label={`${label} 推理强度`}
-            value={model.reasoningEffort}
-            disabled={!ready}
-            onChange={(event) => setReasoning(model.name, event.target.value as LlmReasoningEffort)}
-          >
-            {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>推理 {option.label}</option>)}
-          </Select>
-        )}
         {userAdded && !isPlugin && (
           <IconButton size="sm" variant="dangerHover" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
             <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -406,7 +371,7 @@ function bailianAdvancedConfig(config: Record<string, unknown> | undefined): Bai
 
 /** 百炼实时识别的高级参数。 */
 function BailianAdvancedSettings({ profile }: { profile: ProviderProfile }) {
-  const queue = useConfigQueue(profile.id);
+  const queue = useProviderConfigQueue(profile.id);
   const [advanced, setAdvanced] = useState(() => bailianAdvancedConfig(profile.config));
   const [error, setError] = useState("");
   const advancedRef = useRef(advanced);

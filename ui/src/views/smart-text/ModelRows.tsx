@@ -7,7 +7,8 @@ import { defaultOcrOption } from "@/lib/platform";
 import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
-import { UsageLinkRow, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
+import { UsageLinkRow, useInUsagePage, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 
@@ -19,30 +20,34 @@ export function SmartLlmRow() {
     (profile) => profile.enabled && profile.capabilities.includes("llm"),
   );
   const editable = useUsageEditable();
+  const inUsagePage = useInUsagePage();
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
   const options = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selected)];
   const issue = useUsageIssue(prefs.smartLlmProviderId === "default" ? undefined : prefs.smartLlmProviderId);
   const current = options.find((option) => option.value === selected);
   if (!editable) return <UsageLinkRow label="智能模型" value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
   return (
-    <Row label="智能模型" controlId="smart-text-llm-model" message={issue}>
-      <div className={ROW_CONTROL_W}>
-        <ModelPicker
-          id="smart-text-llm-model"
-          value={selected}
-          options={options}
-          panelLabel="选择智能模型"
-          onChange={(value) => {
-            if (value === "default") {
-              void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
-              return;
-            }
-            const [providerId, model] = JSON.parse(value) as [string, string];
-            void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
-          }}
-        />
-      </div>
-    </Row>
+    <>
+      <Row label="智能模型" controlId="smart-text-llm-model" message={issue}>
+        <div className={ROW_CONTROL_W}>
+          <ModelPicker
+            id="smart-text-llm-model"
+            value={selected}
+            options={options}
+            panelLabel="选择智能模型"
+            onChange={(value) => {
+              if (value === "default") {
+                void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
+                return;
+              }
+              const [providerId, model] = JSON.parse(value) as [string, string];
+              void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
+            }}
+          />
+        </div>
+      </Row>
+      {inUsagePage && selected !== "default" && <LlmThinkingRow providerId={prefs.smartLlmProviderId} model={prefs.smartLlmModel} />}
+    </>
   );
 }
 
