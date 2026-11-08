@@ -12,8 +12,6 @@ use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
 
 const SCOPE: &str = "dev-bench";
-/// 和听写智能处理同样的默认推理设置，测出来的才是实际会用到的速度。
-const DEFAULT_REASONING: &str = "zero";
 const DEFAULT_ROUNDS: u32 = 3;
 const MAX_ROUNDS: u32 = 5;
 /// 生成窗口太短时除出来的速度没有意义，例如供应商把全部内容一次性返回。
@@ -380,7 +378,6 @@ pub(super) async fn measure_stream(
         Some(model.provider_id.as_str()),
         Some(model.model.as_str()),
         scope,
-        DEFAULT_REASONING,
         false,
         &[],
         CancellationToken::new(),
@@ -449,7 +446,6 @@ pub(super) fn model_labels(state: &RuntimeState, model: &BenchModel) -> (String,
         state,
         Some(model.provider_id.as_str()),
         Some(model.model.as_str()),
-        DEFAULT_REASONING,
     )
     .unwrap_or(Value::Null);
     let text = |key: &str| settings[key].as_str().map(str::to_string);
