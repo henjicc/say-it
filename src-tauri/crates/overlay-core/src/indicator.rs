@@ -54,8 +54,12 @@ const WAVE_MAX_H: f32 = 22.0;
 const WAVE_MIN_H: f32 = 2.0;
 /// 最左侧这么多根逐渐变淡，表示更早的声音。
 const WAVE_FADE_BARS: f32 = 5.0;
-/// 每块音频拆成两根柱；柱间隔先按 85ms 一块估计，收到数据后按实际间隔平滑修正。
-const WAVE_DEFAULT_BAR_S: f32 = 0.0425;
+/// 每块音频一根柱；柱间隔先按 85ms 一块估计，收到数据后按实际间隔平滑修正。
+const WAVE_DEFAULT_BAR_S: f32 = 0.085;
+/// 柱高映射：分段 RMS 到这个值才满幅。自动增益后正常说话约 0.1，落在半高附近，留出起伏余量。
+const WAVE_FULL_RMS: f32 = 0.25;
+/// 新柱与上一根的混合比例：相邻柱不会忽高忽低，密集说话时也不刺眼。
+const WAVE_NEIGHBOR_SMOOTH: f32 = 0.35;
 /// 数据迟到时先停住等待；停太久（静音或没有新数据）才补一根空柱继续走。
 const WAVE_STALL_S: f32 = 0.3;
 const WAVE_MAX_PENDING: usize = 6;
@@ -387,8 +391,9 @@ impl Indicator {
             _ => 0.0,
         }
     }
+    /// 实时文字只在录音时显示；处理中收起，只留胶囊。
     fn text_visible(&self) -> bool {
-        !self.text.is_empty() && self.state.is_some_and(IndicatorState::is_pill)
+        !self.text.is_empty() && self.state == Some(IndicatorState::Recording)
     }
     /// 隐藏后重新出现时不从旧尺寸动画过来，直接落在目标上。
     fn snap_geometry(&mut self) {
@@ -420,26 +425,29 @@ impl Indicator {
             self.text_scroll.snap(self.text_target.scroll);
         }
     }
-    /// 一块音频拆成两根柱：每半块取峰值，先过感知响度曲线。
+    /// 一块音频一根柱：取分段 RMS 的平均，按留有余量的曲线映射，再与上一根混合。
     fn push_wave_chunk(&mut self, level: f32, peaks: &[f32], now: Instant) {
         if let Some(last) = self.wave_last_chunk {
-            let per_bar = now.saturating_duration_since(last).as_secs_f32() / 2.0;
-            if (0.01..0.5).contains(&per_bar) {
+            let per_bar = now.saturating_duration_since(last).as_secs_f32();
+            if (0.02..0.5).contains(&per_bar) {
                 self.wave_bar_s += (per_bar - self.wave_bar_s) * 0.2;
             }
         }
         self.wave_last_chunk = Some(now);
-        let halves: [&[f32]; 2] = if peaks.len() >= 2 {
-            let mid = peaks.len() / 2;
-            [&peaks[..mid], &peaks[mid..]]
+        let rms = if peaks.is_empty() {
+            level
         } else {
-            [peaks, peaks]
+            peaks.iter().sum::<f32>() / peaks.len() as f32
         };
-        for half in halves {
-            let peak = half.iter().copied().fold(f32::NAN, f32::max);
-            let value = if peak.is_nan() { level } else { peak };
-            self.wave_pending.push_back(wave_scale(value));
-        }
+        let target = bar_level(rms);
+        let previous = self
+            .wave_pending
+            .back()
+            .or(self.wave_bars.back())
+            .copied()
+            .unwrap_or(0.0);
+        self.wave_pending
+            .push_back(previous * WAVE_NEIGHBOR_SMOOTH + target * (1.0 - WAVE_NEIGHBOR_SMOOTH));
         while self.wave_pending.len() > WAVE_MAX_PENDING {
             self.wave_pending.pop_front();
         }
@@ -774,7 +782,7 @@ impl Indicator {
             inner,
             radius - 0.5,
             self.look
-                .color(1.0, 1.0, 1.0, (0.16 + 0.12 * emphasis) * alpha),
+                .color(1.0, 1.0, 1.0, (0.26 + 0.14 * emphasis) * alpha),
             Stroke::plain(1.0),
         );
     }
@@ -1056,6 +1064,12 @@ impl Indicator {
             );
         }
     }
+}
+
+/// 胶囊柱高：分段 RMS 线性归一后略微压缩，弱音也看得到，正常说话不会顶满。
+fn bar_level(rms: f32) -> f32 {
+    let normalized = if rms.is_nan() { 0.0 } else { (rms / WAVE_FULL_RMS).clamp(0.0, 1.0) };
+    normalized.powf(0.8)
 }
 
 fn text_style(size: f32, centered: bool) -> TextStyle<'static> {
@@ -1370,15 +1384,15 @@ mod tests {
             &cx(now, &text),
         );
         model.apply(
-            Command::SetWaveform { level: 0.2, peaks: vec![0.1, 0.4, 0.2, 0.3, 0.05, 0.6] },
+            Command::SetWaveform { level: 0.2, peaks: vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1] },
             &cx(now, &text),
         );
         model.on_frame(0.016, &cx(now + Duration::from_millis(16), &text));
-        assert!(model.wave_scroll > 0.2 && model.wave_scroll < 0.6);
-        model.on_frame(0.03, &cx(now + Duration::from_millis(46), &text));
-        assert_eq!(model.wave_bars.back().copied(), Some(wave_scale(0.4)));
-        model.on_frame(0.045, &cx(now + Duration::from_millis(91), &text));
-        assert_eq!(model.wave_bars.back().copied(), Some(wave_scale(0.6)));
+        assert!(model.wave_scroll > 0.1 && model.wave_scroll < 0.3);
+        model.on_frame(0.07, &cx(now + Duration::from_millis(86), &text));
+        let first = model.wave_bars.back().copied().unwrap();
+        // 正常说话（RMS≈0.1）在半高附近，并与上一根（静音）混合，不会一下顶满。
+        assert!(first > 0.3 && first < 0.6, "{first}");
         assert!(model.wave_pending.is_empty());
     }
 
