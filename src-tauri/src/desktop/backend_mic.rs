@@ -331,6 +331,10 @@ pub(crate) fn start_backend_mic_inner(
     device_name: Option<String>,
     state: &RuntimeState,
 ) -> Result<BackendMicStartResponse, String> {
+    let _lifecycle = state
+        .backend_mic_lifecycle
+        .lock()
+        .map_err(|_| "麦克风启停锁失败")?;
     let requested = device_name.and_then(|s| {
         let trimmed = s.trim().to_string();
         if trimmed.is_empty() {
@@ -676,6 +680,10 @@ pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Resu
 }
 
 pub(crate) fn release_backend_mic_inner(state: &RuntimeState) -> Result<(), String> {
+    let _lifecycle = state
+        .backend_mic_lifecycle
+        .lock()
+        .map_err(|_| "麦克风启停锁失败")?;
     let worker = {
         let mut guard = state
             .backend_mic

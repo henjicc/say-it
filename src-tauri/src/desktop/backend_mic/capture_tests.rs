@@ -318,3 +318,42 @@ fn capture_memory_profile() {
         })
     );
 }
+
+/// 回归：并发启动只能打开一条采集流。曾经每个并发调用各开一条流写进同一份状态，
+/// 4 路并发时每秒收到 4 倍采样，录音被拉长 4 倍。
+#[cfg(windows)]
+#[test]
+#[ignore = "真实设备诊断；显式允许后短时采集，不保存、不发送音频"]
+fn concurrent_starts_open_a_single_capture_stream() {
+    assert_eq!(
+        std::env::var("SAYIT_ALLOW_MIC_LIFECYCLE").as_deref(),
+        Ok("1")
+    );
+    let state = Arc::new(RuntimeState::default());
+    let starts: Vec<_> = (0..4)
+        .map(|_| {
+            let state = state.clone();
+            std::thread::spawn(move || start_backend_mic_inner(None, &state).unwrap())
+        })
+        .collect();
+    for start in starts {
+        start.join().unwrap();
+    }
+    let (_, mut rx) =
+        attach_backend_mic_raw_inner(&state, crate::state::AsrPreroll::Disabled).unwrap();
+    let started = std::time::Instant::now();
+    let mut samples = 0usize;
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        match rx.try_recv() {
+            Ok(crate::asr_input::AsrStreamInput::RawF32(chunk)) => samples += chunk.len(),
+            _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    let per_second = samples as f64 / started.elapsed().as_secs_f64();
+    let sample_rate = state.backend_mic.lock().unwrap().sample_rate as f64;
+    release_backend_mic_inner(&state).unwrap();
+    assert!(
+        per_second < sample_rate * 1.2,
+        "每秒 {per_second} 个采样，设备采样率 {sample_rate}"
+    );
+}

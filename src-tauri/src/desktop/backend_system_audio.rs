@@ -97,6 +97,10 @@ pub(crate) fn start_backend_system_audio_inner(
     device_name: Option<String>,
     state: &RuntimeState,
 ) -> Result<BackendMicStartResponse, String> {
+    let _lifecycle = state
+        .backend_system_audio_lifecycle
+        .lock()
+        .map_err(|_| "系统音频启停锁失败")?;
     let requested = device_name.and_then(|s| {
         let trimmed = s.trim().to_string();
         if trimmed.is_empty() {
@@ -457,6 +461,10 @@ pub(crate) fn release_backend_system_audio(
 }
 
 pub(crate) fn release_backend_system_audio_inner(state: &RuntimeState) -> Result<(), String> {
+    let _lifecycle = state
+        .backend_system_audio_lifecycle
+        .lock()
+        .map_err(|_| "系统音频启停锁失败")?;
     let worker = {
         let mut guard = state
             .backend_system_audio
