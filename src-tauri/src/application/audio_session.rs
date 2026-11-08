@@ -64,10 +64,13 @@ impl AudioSessionCoordinator {
     ///
     /// 这里不选择「拒绝重入」：那会让「后处理期间取消后立刻重新听写」直接报错，
     /// 而那是完全合理的用户操作。推进 generation 既保留了重入，又让过期租约自然失效。
+    ///
+    /// Legacy（电平预览、引导里的麦克风检测）优先级最低：其他域直接接管，Legacy 租约随
+    /// generation 推进失效；设备 worker 不停，由接管方复用。
     pub(crate) fn acquire(&self, owner: AudioOwner) -> Result<AudioLease, String> {
         let mut state = self.inner.lock().map_err(|_| "音频会话锁失败")?;
         if let Some(current) = state.owner {
-            if current != owner {
+            if current != owner && current != AudioOwner::Legacy {
                 return Err(format!("麦克风正被「{}」占用，结束后再试", current.label()));
             }
         }
@@ -86,6 +89,13 @@ impl AudioSessionCoordinator {
         validate(&state, lease)?;
         state.consumers.insert(consumer);
         Ok(())
+    }
+
+    pub(crate) fn holds(&self, lease: &AudioLease) -> bool {
+        self.inner
+            .lock()
+            .map(|state| validate(&state, lease).is_ok())
+            .unwrap_or(false)
     }
 
     pub(crate) fn release(&self, lease: &AudioLease) -> Result<(), String> {
@@ -149,6 +159,17 @@ mod tests {
         assert!(c.attach(&fresh, "dictation").is_ok());
         c.release(&fresh).unwrap();
         assert!(!c.is_busy());
+    }
+
+    #[test]
+    fn other_owners_take_over_legacy_but_legacy_cannot_take_over_them() {
+        let c = AudioSessionCoordinator::default();
+        let preview = c.acquire(AudioOwner::Legacy).unwrap();
+        let lab = c.acquire(AudioOwner::AudioLab).unwrap();
+        assert!(!c.holds(&preview));
+        assert!(c.release(&preview).is_err(), "被接管的预览租约不得释放接管方");
+        assert!(c.acquire(AudioOwner::Legacy).is_err());
+        assert!(c.holds(&lab));
     }
 
     #[test]

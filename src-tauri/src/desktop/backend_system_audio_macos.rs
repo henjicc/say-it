@@ -71,7 +71,7 @@ fn start_native_capture(
     Ok(MacSystemAudioCapture { handle, context })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn start_backend_system_audio(
     device_name: Option<String>,
     state: tauri::State<'_, RuntimeState>,
@@ -304,7 +304,7 @@ pub(crate) fn pause_backend_system_audio_inner(state: &RuntimeState) -> Result<(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn release_backend_system_audio(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<(), String> {
@@ -342,7 +342,7 @@ pub(crate) fn release_backend_system_audio_inner(state: &RuntimeState) -> Result
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_backend_system_audio_level(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<f32, String> {
