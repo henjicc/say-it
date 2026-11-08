@@ -518,12 +518,21 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
         options = options.with_max_tokens(max_tokens);
     }
     let is_deepseek = profile.kind == "llm:deepseek";
+    let uses_responses = crate::providers::llm_adapter(profile).is_some_and(llm_uses_responses);
     let reasoning = match effective_reasoning(&model.reasoning_effort, model_name) {
         // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
         // reasoning_effort="none"，但 DeepSeek V4 关闭思考必须使用 thinking.type=disabled。
         "zero" if is_deepseek => {
             options = options.with_extra_body(serde_json::json!({
                 "thinking": { "type": "disabled" }
+            }));
+            None
+        }
+        // genai 的 Responses 适配器把 ReasoningEffort::Zero 原样写成 reasoning.effort="zero"，
+        // 百炼、火山方舟都会以 400 拒绝；两家的 Responses 接口关闭思考的取值是 "none"。
+        "zero" if uses_responses => {
+            options = options.with_extra_body(serde_json::json!({
+                "reasoning": { "effort": "none" }
             }));
             None
         }
@@ -1715,6 +1724,20 @@ mod tests {
         // 同一家能关闭思考的其他模型照常关闭。
         let options = chat_options(&llm_profile("llm:kimi", "zero")).unwrap();
         assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
+    }
+
+    /// 回归：百炼选「关闭」时曾发出 reasoning.effort="zero"，接口返回 400。
+    #[test]
+    fn responses_adapters_turn_thinking_off_with_effort_none() {
+        for kind in ["llm:bailian", "llm:volcengine"] {
+            let options = chat_options(&llm_profile(kind, "zero")).unwrap();
+            assert!(options.reasoning_effort.is_none(), "{kind}");
+            assert_eq!(
+                options.extra_body,
+                Some(serde_json::json!({ "reasoning": { "effort": "none" } })),
+                "{kind}"
+            );
+        }
     }
 
     #[test]
