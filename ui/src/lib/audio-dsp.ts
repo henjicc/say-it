@@ -20,7 +20,7 @@ export const dspDefaults: DspParams = {
   denoiseStrength: 1.0,
   targetLufs: -20.0,
   peakLimitDbfs: -1.0,
-  maxGainDb: 40.0,
+  maxGainDb: 50.0,
   vadGate: 0.0,
   bassGainDb: 0.0,
   trebleGainDb: 0.0,
