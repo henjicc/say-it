@@ -1389,6 +1389,7 @@ fn spawn_raw_consumer(
         // 文件听写不建立 ASR 流，因此单独持有一份流式 DSP 只供波形预览使用。
         // 文件直接按原有量化方式写盘；波形预览 DSP 不得改变识别输入。
         let mut waveform_dsp: Option<StreamDsp> = None;
+        let mut noise_floor = NoiseFloor::new();
         let mut stop_requested = false;
         loop {
             if done.is_closed() {
@@ -1403,6 +1404,8 @@ fn spawn_raw_consumer(
                 }
             };
             let mut limit_reached = false;
+            let level = rms(&samples);
+            noise_floor.update(level, samples.len() as f32 / sample_rate.max(1) as f32);
             let (need_open, need_close, waveform_config) = {
                 let state = app.state::<RuntimeState>();
                 let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -1422,13 +1425,12 @@ fn spawn_raw_consumer(
                     s.recorded_samples += samples.len();
                     limit_reached = file_mode_recording_is_full(s.recorded_samples, s.sample_rate);
                 }
-                let level = rms(&samples);
                 let mut need_open = false;
                 let mut need_close = false;
                 if s.mode == Some(DictationMode::Realtime)
                     && s.prefs.dictation_silence_disconnect_enabled
                 {
-                    if level > s.prefs.dictation_silence_threshold {
+                    if noise_floor.is_voice(level, s.prefs.dictation_silence_threshold) {
                         s.last_voice_at = Some(Instant::now());
                         if !s.silence_streaming {
                             s.silence_streaming = true;
@@ -1478,19 +1480,24 @@ fn spawn_raw_consumer(
                 let dsp = waveform_dsp.get_or_insert_with(|| StreamDsp::new(params, sample_rate));
                 let processed = pcm16le_to_f32(&dsp.process(&samples));
                 if !processed.is_empty() {
-                    let level = rms(&processed);
+                    // 波形经过自动增益，安静时底噪会被放大撑满；按原始电平相对底噪的高度压掉。
+                    let display = noise_floor.display_gain(level);
+                    let scale = |values: Vec<f32>| -> Vec<f32> {
+                        values.into_iter().map(|value| value * display).collect()
+                    };
+                    let level = rms(&processed) * display;
                     if floating_orb {
-                        let peaks = summarize_rms(&processed, 5);
+                        let peaks = scale(summarize_rms(&processed, 5));
                         crate::desktop::emit_floating_orb_waveform(&app, level, peaks);
                     } else if assistant_follow_up {
                         // 追问窗展示的是实时响度而非瞬时峰值。分段 RMS 不会被单个
                         // 尖峰直接顶满，视觉上更接近用户实际说话强弱。
-                        let peaks = summarize_rms(&processed, 6);
+                        let peaks = scale(summarize_rms(&processed, 6));
                         crate::application::assistant::publish_follow_up_waveform(
                             &app, level, peaks,
                         );
                     } else {
-                        let peaks = summarize_peaks(&processed, 6);
+                        let peaks = scale(summarize_peaks(&processed, 6));
                         emit_waveform(&app, level, peaks);
                     }
                 }

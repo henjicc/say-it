@@ -6,7 +6,7 @@ pub(crate) use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use crate::audio_dsp::{DspParams, StreamDsp, OUTPUT_RATE};
+pub(crate) use crate::audio_dsp::{DspParams, NoiseFloor, StreamDsp, OUTPUT_RATE};
 pub(crate) use crate::providers::alibabacloud::HotwordEntry;
 pub(crate) use crate::providers::{
     actions_for, config_fields_for, default_provider_id, find_profile, has_capability,
