@@ -467,7 +467,7 @@ function AudioLabSections() {
           min={0} max={80} step={1} value={prefs.maxGainDb} format={fmt.maxGainDb} onChange={(v) => onParam("maxGainDb", v)}
         />
         <SliderRow label="峰值上限" min={-6} max={-0.5} step={0.5} value={prefs.peakLimitDbfs} format={fmt.peakLimitDbfs} onChange={(v) => onParam("peakLimitDbfs", v)} />
-        <Row label="人声降噪">
+        <Row label="人声降噪" hint="让试听更干净，但降噪留下的失真常会让识别更不准；离麦克风远时尤其明显，一般保持关闭。">
           <Switch
             checked={prefs.denoiseEnabled}
             onChange={(v) => {

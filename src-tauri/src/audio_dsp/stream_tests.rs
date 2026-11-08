@@ -31,7 +31,7 @@ fn finish_preserves_duration_for_short_partial_and_resampled_input() {
 fn finish_outputs_actual_tail_with_existing_dsp_processing() {
     // 不是仅补出正确字节数：尾部必须与继续输入时的实际处理样本一致。
     for rate in [16_000, 44_100, 48_000] {
-        for params in [DspParams::default(), DspParams { denoise_enabled: false, ..Default::default() }] {
+        for params in [DspParams { denoise_enabled: true, ..Default::default() }, DspParams::default()] {
             let input: Vec<_> = (0..rate + 97).map(|i| ((i % 79) as f32 - 39.0) * 0.003).collect();
             let mut actual = StreamDsp::new(params.clone(), rate);
             let mut reference = ReferenceStreamDsp::new(params, rate);
@@ -66,8 +66,9 @@ fn fixed_frames_match_legacy_output_across_rates_settings_and_packet_boundaries(
                 treble_gain_db: -2.0,
                 ..Default::default()
             },
-            DspParams::default(),
+            DspParams { denoise_enabled: true, ..Default::default() },
             DspParams {
+                denoise_enabled: true,
                 denoise_strength: 0.65,
                 vad_gate: 0.02,
                 bass_gain_db: -3.0,

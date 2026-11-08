@@ -88,7 +88,12 @@ fn stale_processing_cannot_replace_the_current_result() {
     runtime.begin(48_000).unwrap();
     runtime.append(&[0.25; 997]);
     runtime.stop().unwrap();
-    runtime.reprocess(DspParams::default()).unwrap();
+    runtime
+        .reprocess(DspParams {
+            denoise_enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
     let old_revision = runtime.processing_revision.load(Ordering::Acquire);
     runtime
         .reprocess(DspParams {
@@ -98,13 +103,25 @@ fn stale_processing_cannot_replace_the_current_result() {
         .unwrap();
     let expected = runtime.state.lock().unwrap().processed.to_vec();
     assert!(runtime
-        .reprocess_at(DspParams::default(), old_revision)
+        .reprocess_at(
+            DspParams {
+                denoise_enabled: true,
+                ..Default::default()
+            },
+            old_revision
+        )
         .is_err());
     assert_eq!(runtime.state.lock().unwrap().processed.to_vec(), expected);
     runtime.begin(48_000).unwrap();
     runtime.append(&[-0.25; 997]);
     assert!(runtime
-        .reprocess_at(DspParams::default(), old_revision)
+        .reprocess_at(
+            DspParams {
+                denoise_enabled: true,
+                ..Default::default()
+            },
+            old_revision
+        )
         .is_err());
     assert!(runtime.state.lock().unwrap().processed.is_empty());
 }
@@ -131,7 +148,12 @@ fn preview_files_are_reused_and_reclaimed_with_their_material() {
     assert!(bytes[44..]
         .chunks_exact(2)
         .all(|b| i16::from_le_bytes(b.try_into().unwrap()) == (0.25 * i16::MAX as f32) as i16));
-    runtime.reprocess(DspParams::default()).unwrap();
+    runtime
+        .reprocess(DspParams {
+            denoise_enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
     // 更换参数时，播放器仍可分段读取上一次返回的文件。
     assert!(std::path::Path::new(&processed).exists());
     assert_eq!(runtime.write_wav(false).unwrap(), raw);

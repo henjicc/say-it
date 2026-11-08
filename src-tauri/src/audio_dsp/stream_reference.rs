@@ -1,4 +1,5 @@
 //! 优化前的实时 DSP 缓冲算法，冻结为测试参考；不得跟随生产缓冲重构同步修改。
+//! 只有信号处理本身变化（干湿对齐、抽取滤波）时才同步，缓冲与分包方式保持原样。
 use super::*;
 
 pub(super) struct ReferenceStreamDsp {
@@ -15,9 +16,8 @@ pub(super) struct ReferenceStreamDsp {
     rs_init: bool,
     rs_in_idx: u64,
     buf48: Vec<f32>,
-    // 48k→16k 三抽一盒式平均状态。
-    dec_acc: f32,
-    dec_cnt: u32,
+    dry_delay: [f32; FRAME],
+    decimator: Decimator3,
     peak_lin: f32,
 }
 
@@ -40,8 +40,8 @@ impl ReferenceStreamDsp {
             rs_init: false,
             rs_in_idx: 0,
             buf48: Vec::new(),
-            dec_acc: 0.0,
-            dec_cnt: 0,
+            dry_delay: [0.0; FRAME],
+            decimator: Decimator3::new(),
             peak_lin,
         }
     }
@@ -95,7 +95,7 @@ impl ReferenceStreamDsp {
                 }
                 for j in 0..FRAME {
                     let w = outf[j] / 32768.0;
-                    let dry = self.buf48[j];
+                    let dry = std::mem::replace(&mut self.dry_delay[j], self.buf48[j]);
                     wet[j] = (dry * (1.0 - strength) + w * strength) * vadg;
                 }
             } else {
@@ -143,12 +143,8 @@ impl ReferenceStreamDsp {
                 } else if s < -self.peak_lin {
                     s = -self.peak_lin;
                 }
-                self.dec_acc += s;
-                self.dec_cnt += 1;
-                if self.dec_cnt == 3 {
-                    out16.push(self.dec_acc / 3.0);
-                    self.dec_acc = 0.0;
-                    self.dec_cnt = 0;
+                if let Some(value) = self.decimator.push(s) {
+                    out16.push(value);
                 }
             }
 
