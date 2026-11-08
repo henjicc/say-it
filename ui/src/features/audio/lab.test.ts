@@ -5,13 +5,14 @@ vi.mock("@/lib/tauri", () => ({
   CMD: new Proxy({}, { get: (_target, key) => String(key) }),
   cmd: (...args: unknown[]) => cmd(...args),
 }));
+vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => `asset://${path}` }));
 vi.mock("@/store/useDictPrefs", () => ({
   useDictPrefs: {
     getState: () => ({ prefs: { micDeviceId: "" }, dspParams: () => ({}) }),
   },
 }));
 
-const { toggleRecord, reprocess } = await import("./lab");
+const { toggleRecord, reprocess, togglePlay } = await import("./lab");
 const { useAudioStore } = await import("@/store/useAudioStore");
 
 const idleSnapshot = { recording: false, rawWaveform: [], processedWaveform: [] };
@@ -84,5 +85,25 @@ describe("音频调校的录音开关", () => {
     cmd.mockResolvedValue({ ...idleSnapshot, recording: true });
     await toggleRecord();
     expect(cmd).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("音频调校的试听", () => {
+  it("同一音轨再点在暂停与继续间切换，点另一条音轨从头播放", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+    cmd.mockResolvedValue("C:/tmp/lab.wav");
+
+    await togglePlay("processed");
+    expect(useAudioStore.getState().playback).toEqual({ track: "processed", paused: false });
+    await togglePlay("processed");
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(useAudioStore.getState().playback).toEqual({ track: "processed", paused: true });
+    await togglePlay("processed");
+    expect(useAudioStore.getState().playback).toEqual({ track: "processed", paused: false });
+    await togglePlay("original");
+    expect(cmd).toHaveBeenLastCalledWith("audioLabAudioPath", { processed: false });
+    expect(useAudioStore.getState().playback).toEqual({ track: "original", paused: false });
+    expect(play).toHaveBeenCalledTimes(3);
   });
 });

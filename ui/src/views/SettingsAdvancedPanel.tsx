@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import { useAudioStore } from "@/store/useAudioStore";
+import { useAudioStore, type PlaybackTrack } from "@/store/useAudioStore";
 import { parseSubtitleSource, useSubtitleStore } from "@/store/useSubtitleStore";
 import { dspDefaults } from "@/lib/audio-dsp";
 import * as lab from "@/features/audio/lab";
@@ -392,6 +392,38 @@ function SilenceDisconnectSection() {
   );
 }
 
+/** 叠在波形上的播放头：只在本音轨播放时按帧移动，直接改样式，不触发 React 渲染。 */
+function Playhead({ track }: { track: PlaybackTrack }) {
+  const playback = useAudioStore((s) => (s.playback?.track === track ? s.playback : null));
+  const lineRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const line = lineRef.current;
+    if (!line || !playback) return;
+    const place = () => { line.style.left = `${lab.playbackProgress() * 100}%`; };
+    place();
+    if (playback.paused) return;
+    let frame = requestAnimationFrame(function step() {
+      place();
+      frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [playback]);
+
+  if (!playback) return null;
+  return <span ref={lineRef} aria-hidden className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-[var(--color-accent)]" />;
+}
+
+function PlayButton({ track, label, disabled }: { track: PlaybackTrack; label: string; disabled: boolean }) {
+  const playback = useAudioStore((s) => (s.playback?.track === track ? s.playback : null));
+  const playing = playback && !playback.paused;
+  return (
+    <Button size="sm" variant={playback ? "primary" : undefined} disabled={disabled} onClick={() => void lab.togglePlay(track)}>
+      {playing ? `❚❚ 暂停${label}` : playback ? `▶ 继续${label}` : `▶ 播放${label}`}
+    </Button>
+  );
+}
+
 function AudioLabSections() {
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
@@ -401,7 +433,10 @@ function AudioLabSections() {
 
   useEffect(() => {
     lab.setCanvases(origRef.current, procRef.current);
-    return () => lab.setCanvases(null, null);
+    return () => {
+      lab.setCanvases(null, null);
+      lab.stopPlayback();
+    };
   }, []);
 
   const onParam = (key: keyof typeof fmt, value: number) => {
@@ -465,12 +500,8 @@ function AudioLabSections() {
           <Button size="sm" variant={recording ? "danger" : "primary"} onClick={lab.toggleRecord}>
             {recording ? "■ 停止录音" : "● 开始录音"}
           </Button>
-          <Button size="sm" disabled={!canPlay} onClick={lab.playOriginal}>
-            ▶ 播放原始
-          </Button>
-          <Button size="sm" disabled={!canPlay} onClick={lab.playProcessed}>
-            ▶ 播放处理后
-          </Button>
+          <PlayButton track="original" label="原始" disabled={!canPlay} />
+          <PlayButton track="processed" label="处理后" disabled={!canPlay} />
         </Row>
         <div className="flex flex-col gap-3 p-3.5">
           <div className="grid grid-cols-1 gap-2 text-xs text-[var(--color-fg-muted)] sm:grid-cols-3">
@@ -480,11 +511,17 @@ function AudioLabSections() {
           </div>
           <div>
             <div className="text-xs text-[var(--color-fg-subtle)]">原始波形</div>
-            <canvas ref={origRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+            <div className="relative mt-1">
+              <canvas ref={origRef} width={860} height={90} className="block w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+              <Playhead track="original" />
+            </div>
           </div>
           <div>
             <div className="text-xs text-[var(--color-fg-subtle)]">处理后波形（增益 + 降噪）</div>
-            <canvas ref={procRef} width={860} height={90} className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+            <div className="relative mt-1">
+              <canvas ref={procRef} width={860} height={90} className="block w-full rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-bg)]" />
+              <Playhead track="processed" />
+            </div>
           </div>
         </div>
       </Group>

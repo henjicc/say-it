@@ -22,6 +22,8 @@ const emptyMeters: Meters = {
   clip: "-",
 };
 
+export type PlaybackTrack = "original" | "processed";
+
 interface AudioState {
   recording: boolean;
   recInfo: string;
@@ -30,6 +32,8 @@ interface AudioState {
   meters: Meters;
   labStatus: string;
   labStatusTone: Tone;
+  /** 正在试听的音轨；暂停时保留，播完或停止后为 null。 */
+  playback: { track: PlaybackTrack; paused: boolean } | null;
 }
 
 export const useAudioStore = create<AudioState>(() => ({
@@ -40,6 +44,7 @@ export const useAudioStore = create<AudioState>(() => ({
   meters: { ...emptyMeters },
   labStatus: "参数改动实时生效并自动保存到速记。",
   labStatusTone: "",
+  playback: null,
 }));
 
 export { emptyMeters };
