@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import { CheckField } from "@/components/ui/Field";
@@ -24,10 +24,11 @@ import {
   useFilePick,
 } from "@/features/transcription/filePicker";
 import { editablePlainText, plainText } from "@/features/transcription/subtitles";
-import { parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
+import { normalizeStoredParams, parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
 import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
+import { UsageLinkRow, useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
@@ -41,6 +42,56 @@ const LANGUAGE_OPTIONS = [
   { value: "en", label: "英文" },
   { value: "ja", label: "日语" },
 ];
+
+const TRANSCRIPTION_SCENES = ["transcription"];
+
+/** 转写识别模型。参数存在默认识别供应商的配置里；在「用途」页修改时转写页未打开，直接写回那里。 */
+export function TranscriptionModelRow() {
+  useModelCatalogRevision();
+  const params = useTranscriptionStore((s) => s.params);
+  const setParams = useTranscriptionStore((s) => s.setParams);
+  const asrProvider = useProviderStore((s) => s.profiles.find((profile) => profile.id === s.effective("asr")));
+  const updateProviderConfig = useProviderStore((s) => s.updateConfig);
+  const inUsagePage = useInUsagePage();
+  const editable = useUsageEditable();
+  const [error, setError] = useState("");
+  const stored = normalizeStoredParams(asrProvider?.config?.transcription);
+  const model = inUsagePage ? stored.model : params.model;
+  const options = useOfferedAsrOptions(FILE_ASR_MODEL_OPTIONS, model);
+  const issue = useAsrUsageIssue(model, TRANSCRIPTION_SCENES);
+  if (!editable) {
+    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === model)?.label ?? model} message={issue} />;
+  }
+  const change = (value: string) => {
+    setParams({ model: value });
+    if (!inUsagePage) return;
+    if (!asrProvider) {
+      setError("没有可用的识别供应商，暂时无法保存。");
+      return;
+    }
+    setError("");
+    updateProviderConfig(asrProvider.id, { transcription: { ...stored, model: value } })
+      .catch((reason: unknown) => setError(`保存失败：${String(reason)}`));
+  };
+  return (
+    <Row
+      label="识别模型"
+      controlId="transcription-asr-model"
+      hint="同时用于字幕转写和文稿对齐。"
+      message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
+    >
+      <div className={ROW_CONTROL_W}>
+        <ModelPicker
+          id="transcription-asr-model"
+          value={model}
+          options={options}
+          panelLabel="选择语音识别模型"
+          onChange={change}
+        />
+      </div>
+    </Row>
+  );
+}
 
 /** 转写内容区；当前显示哪一部分由转写 store 的 tab 决定。 */
 export function TranscriptionView() {
@@ -225,17 +276,7 @@ export function TranscriptionView() {
       ) : (
         <>
           <Group>
-            <Row label="识别模型" controlId="transcription-asr-model" hint="这里的设置同时用于字幕转写和文稿对齐。">
-              <div className={ROW_CONTROL_W}>
-                <ModelPicker
-                  id="transcription-asr-model"
-                  value={params.model}
-                  options={FILE_ASR_MODEL_OPTIONS}
-                  panelLabel="选择语音识别模型"
-                  onChange={(value) => setParams({ model: value })}
-                />
-              </div>
-            </Row>
+            <TranscriptionModelRow />
             <Row label="语种提示">
               <div className="flex flex-wrap justify-end gap-x-4 gap-y-2">
                 <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>

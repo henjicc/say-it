@@ -56,7 +56,16 @@ export interface NodeItem<K extends string> {
   off?: boolean;
   /** 与上一条之间画分隔线，区分不同性质的条目。 */
   dividerBefore?: boolean;
+  /** 本条之前的小标题，标出一组同类条目；可带一个操作按钮。 */
+  headingBefore?: { label: string; action?: React.ReactNode };
+  /** 行尾状态点：已配置为实心点，尚未配置为空心圈。 */
+  status?: { tone: "ok" | "unset"; label: string };
 }
+
+const STATUS_DOT: Record<NonNullable<NodeItem<string>["status"]>["tone"], string> = {
+  ok: "bg-[var(--color-ok)]",
+  unset: "border border-[var(--color-fg-faint)]",
+};
 
 /** 中栏分类列表：单行、图标 + 名称。条目顺序即使用顺序。 */
 export function NodeList<K extends string>({
@@ -77,6 +86,12 @@ export function NodeList<K extends string>({
         return (
           <Fragment key={item.key}>
             {item.dividerBefore && <span aria-hidden className="mx-3 my-1 h-px bg-[var(--color-line)]" />}
+            {item.headingBefore && (
+              <div role="listitem" className="mt-3 flex h-7 items-center justify-between pr-1 pl-4 text-xs text-[var(--color-fg-faint)]">
+                <span>{item.headingBefore.label}</span>
+                {item.headingBefore.action}
+              </div>
+            )}
             <button
               type="button"
               role="listitem"
@@ -95,6 +110,13 @@ export function NodeList<K extends string>({
               </span>
               <span className={cn("min-w-0 flex-1 truncate text-sm", !selected && "text-[var(--color-fg-muted)]")}>{item.label}</span>
               {item.off && <span className={cn("flex-none text-xs", !selected && "text-[var(--color-fg-subtle)]")}>已关闭</span>}
+              {item.status && (
+                <span
+                  role="img"
+                  aria-label={item.status.label}
+                  className={cn("h-2 w-2 flex-none rounded-full", STATUS_DOT[item.status.tone], selected && item.status.tone === "ok" && "bg-[var(--color-accent-control-contrast)]")}
+                />
+              )}
             </button>
           </Fragment>
         );

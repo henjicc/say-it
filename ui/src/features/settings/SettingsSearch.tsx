@@ -20,10 +20,8 @@ export interface SettingsSearchItem {
 }
 
 export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
-  { id: "asr-providers", label: "ASR 供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "ASR 供应商", keywords: "语音识别 听写 api key 密钥 模型" },
-  { id: "ocr-providers", label: "OCR 供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "OCR 供应商", keywords: "文字识别 截图 api key 密钥 模型" },
-  { id: "translation-providers", label: "翻译供应商", target: { view: "models", section: "asr" }, tabLabel: "模型与密钥", section: "识别模型与密钥", targetText: "翻译供应商", keywords: "翻译 api key 密钥 模型" },
-  { id: "llm-providers", label: "大语言模型", target: { view: "models", section: "llm" }, tabLabel: "模型与密钥", section: "大模型", targetText: "大语言模型", keywords: "llm ai 智能处理 api key 密钥 默认模型" },
+  { id: "model-usage", label: "用途", target: { view: "models", section: "usage" }, tabLabel: "模型与密钥", section: "各功能使用的模型", targetText: "通用大模型", keywords: "识别模型 智能模型 大模型 llm 翻译模型 ocr 读屏 字幕 转写 助手 听写 默认模型" },
+  { id: "bailian-provider", label: "阿里云百炼", target: { view: "models", section: "provider:bailian" }, tabLabel: "模型与密钥", section: "供应商", targetText: "API Key", keywords: "百炼 dashscope qwen api key 密钥 供应商 识别 翻译 大模型" },
   { id: "plugins", label: "插件管理", target: { view: "models", section: "plugins" }, tabLabel: "模型与密钥", section: "安装、启用与卸载", targetText: "插件管理", keywords: "sayit 模型包 安装 扫描 启用 卸载" },
   { id: "input-device", label: "输入设备", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "麦克风保活", targetText: "输入设备", keywords: "麦克风 录音设备 音频输入" },
   { id: "microphone-keepalive", label: "麦克风保活", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "输入设备", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },

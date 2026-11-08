@@ -12,8 +12,10 @@ import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { isMacOS, isWindows } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
+import { UsageLinkRow, useAsrUsageIssue, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
 
 const systemAudioSupported = isWindows || isMacOS;
+const SUBTITLE_SCENES = ["subtitles"];
 const systemAudioSupportsDeviceSelection = isWindows;
 
 export function SubtitleShortcutRow() {
@@ -79,14 +81,20 @@ export function SubtitleSourceRow() {
 export function SubtitleAsrRow() {
   useModelCatalogRevision();
   const { prefs, running, patch } = useSubtitleStore();
+  const editable = useUsageEditable();
+  const options = useOfferedAsrOptions(SUBTITLE_ASR_MODEL_OPTIONS, prefs.asrModel);
+  const issue = useAsrUsageIssue(prefs.asrModel, SUBTITLE_SCENES);
+  if (!editable) {
+    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === prefs.asrModel)?.label ?? prefs.asrModel} message={issue} />;
+  }
   return (
-    <Row label="识别模型" controlId="subtitle-asr-model">
+    <Row label="识别模型" controlId="subtitle-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="subtitle-asr-model"
           value={prefs.asrModel}
           disabled={running}
-          options={SUBTITLE_ASR_MODEL_OPTIONS}
+          options={options}
           panelLabel="选择语音识别模型"
           onChange={(value) => patch({ asrModel: value })}
         />

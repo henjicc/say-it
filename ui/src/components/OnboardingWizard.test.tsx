@@ -131,7 +131,7 @@ describe("OnboardingWizard", () => {
     save!();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     if (exit === "打开完整设置" || exit === "打开插件管理") {
-      expect(openModels).toHaveBeenCalledWith(exit === "打开完整设置" ? "asr" : "plugins");
+      expect(openModels).toHaveBeenCalledWith(exit === "打开完整设置" ? "provider:bailian" : "plugins");
     }
   });
 
