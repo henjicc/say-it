@@ -159,10 +159,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.6.1");
+    assert_eq!(manifest["sdk"]["version"], "0.10.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-0gY7crODwieU82r5XOgrmKVQIzLdJqFf8gAjsz8xv0wIpJe4aL8SeBM59qVVVSGpjckaVqzFe9NryhA/hjQw8Q=="
+        "sha512-ZREAzNuvVBgTXE5Ptu1xhauJCrqQ4z4lDjbzq2III0dYE82VbYoVqqcWVz1YYsrJdDXVz0OkzKXbJQ+TByaPeQ=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -170,7 +170,7 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     assert!(manifest["bundles"]["groq"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0));
-    assert_eq!(manifest["bundles"]["groq"]["modules"], 101);
+    assert_eq!(manifest["bundles"]["groq"]["modules"], 103);
     assert!(manifest["bundles"]["llmModules"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
@@ -212,9 +212,9 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.6.1");
+    assert_eq!(result["version"], "0.10.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 21);
+    assert_eq!(result["count"], 23);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
@@ -230,7 +230,9 @@ export default () => ({
         "volcengine.speech-recognition.seedasr-2.0-file",
         "volcengine.speech-recognition.seedasr-2.0-realtime",
         "siliconflow.speech-recognition.FunAudioLLM/SenseVoiceSmall",
-        "siliconflow.speech-recognition.TeleAI/TeleSpeechASR",
+        "bailian.speech-recognition.qwen-audio-3.0-asr-flash",
+        "bailian.speech-recognition.qwen-audio-3.0-asr-flash-filetrans",
+        "bailian.speech-recognition.qwen-audio-3.0-asr-flash-streaming",
         "groq.speech-recognition.whisper-large-v3-turbo",
         "groq.speech-recognition.whisper-large-v3",
     ] {

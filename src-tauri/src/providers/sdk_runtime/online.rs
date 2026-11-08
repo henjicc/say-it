@@ -187,6 +187,8 @@ pub(crate) fn sdk_inline_vocabulary(
         "qwen-audio-3.1-asr-flash"
         | "qwen-audio-3.1-asr-flash-filetrans"
         | "qwen-audio-3.1-asr-flash-streaming"
+        | "qwen-audio-3.0-asr-flash"
+        | "qwen-audio-3.0-asr-flash-filetrans"
     ) {
         return Default::default();
     }
@@ -673,7 +675,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.6.1");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.10.0");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -815,7 +817,7 @@ mod tests {
             hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: " 说吧 ".into(), weight: 3 }],
             ..Default::default()
         };
-        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans"] {
+        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans", "qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans"] {
             let params = crate::providers::alibabacloud::TranscriptionParams { model: model.into(), ..Default::default() };
             let input = sdk_file_asr_input(&params, &customization, None);
             assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));
