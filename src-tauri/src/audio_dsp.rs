@@ -42,7 +42,7 @@ fn d_peak() -> f32 {
     -1.0
 }
 fn d_maxgain() -> f32 {
-    40.0
+    50.0
 }
 fn d_vad() -> f32 {
     0.0
@@ -813,13 +813,15 @@ mod gain_tests {
     /// - 写反方向：增益 100.0 → 43.1，削波 83%
     #[test]
     fn gain_recovers_quickly_when_speech_starts_after_silence() {
+        // 固定 40dB，下面的实测数据基于这个上限。
         let params = DspParams {
             denoise_enabled: false,
+            max_gain_db: 40.0,
             ..DspParams::default()
         };
         let mut dsp = StreamDsp::new(params, RATE_48K);
 
-        // 两秒极低电平底噪，让增益爬到 max_gain_db（默认 40dB = 100 倍）顶格。
+        // 两秒极低电平底噪，让增益爬到 max_gain_db（40dB = 100 倍）顶格。
         for _ in 0..20 {
             dsp.process(&tone(0.1, 0.0, 0.0005));
         }
