@@ -76,6 +76,27 @@ describe("听写设置的写入", () => {
     expect(useDictPrefs.getState().prefs.localRules.map((item) => item.id)).toEqual(["keep"]);
   });
 
+  /// 拖动滑块每帧都会 patch；界面要立刻跟手，在途期间的改动合成一次保存，而不是排队整份落盘几十次。
+  it("界面立即显示新值，保存在途期间的多次改动合并为一次保存", async () => {
+    const pending: Array<() => void> = [];
+    cmd.mockImplementation(() => new Promise<void>((resolve) => pending.push(resolve)));
+
+    const writes = [0.2, 0.4, 0.6, 0.8].map((denoiseStrength) =>
+      useDictPrefs.getState().patch({ denoiseStrength }),
+    );
+    expect(useDictPrefs.getState().prefs.denoiseStrength).toBe(0.8);
+
+    await tick();
+    expect(cmd).toHaveBeenCalledTimes(1);
+    pending.shift()!();
+    await tick();
+    expect(cmd).toHaveBeenCalledTimes(2);
+    expect(cmd.mock.calls[1][1].value.denoiseStrength).toBe(0.8);
+    pending.shift()!();
+    await Promise.all(writes);
+    expect(cmd).toHaveBeenCalledTimes(2);
+  });
+
   it("一次失败不会堵死后续写入", async () => {
     cmd.mockRejectedValueOnce(new Error("磁盘满了"));
     await expect(useDictPrefs.getState().patch({ localRules: [rule("x")] })).rejects.toThrow(

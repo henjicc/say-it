@@ -687,9 +687,10 @@ interface DictPrefsState {
   /**
    * 写入听写设置。
    *
-   * 传函数时会在**真正轮到这次写入**的那一刻拿最新的 prefs 计算负载。本地规则的增删
-   * 改序都是基于整份数组重算的，若沿用渲染时捕获的数组，上一次保存还没返回就做下一次
-   * 操作，后者会把前者整份覆盖掉。多次写入按调用顺序串行。
+   * 界面先显示新值，保存在后台合并执行：同一时刻最多一次保存在途，在途期间的改动合成下一次，
+   * 拖动滑块时不会排起几十次整份落盘。传函数时基于最新（含未落盘）的 prefs 计算负载，
+   * 本地规则这类整份数组重算的改动不会互相覆盖。
+   * 保存失败时回滚到最后一次成功落盘的值，并让这一批及之后排队的调用全部 reject。
    */
   patch: (
     partial: Partial<DictPrefs> | ((current: DictPrefs) => Partial<DictPrefs>),
@@ -698,30 +699,62 @@ interface DictPrefsState {
   dspParams: () => DspParams;
 }
 
-/** 串行化写入队列：设置的多次改动必须按调用顺序落盘，否则彼此覆盖。 */
-let dictWriteChain: Promise<void> = Promise.resolve();
+type Waiter = { resolve: () => void; reject: (error: unknown) => void };
+
+/** 没有待保存改动时的设置（即已落盘或刚从后端水合的值），保存失败时回滚到这里。 */
+let savedPrefs: DictPrefs;
+let saving = false;
+let waiters: Waiter[] = [];
+let templatesChanged = false;
+
+async function flushDictWrites() {
+  if (saving) return;
+  saving = true;
+  try {
+    while (waiters.length) {
+      const batch = waiters.splice(0);
+      const pruneTemplates = templatesChanged;
+      templatesChanged = false;
+      const value = useDictPrefs.getState().prefs;
+      try {
+        if (pruneTemplates) {
+          const { pruneShortcutProfileTemplates } = await import("@/features/dictation/hotkeys");
+          await pruneShortcutProfileTemplates(value.smartTemplates.map((template) => template.id));
+        }
+        await cmd(CMD.updateAppSettings, { domain: "dictation", value });
+        savedPrefs = value;
+        persist(value);
+        batch.forEach((waiter) => waiter.resolve());
+      } catch (error) {
+        const queued = waiters.splice(0);
+        templatesChanged = false;
+        useDictPrefs.setState({ prefs: savedPrefs });
+        [...batch, ...queued].forEach((waiter) => waiter.reject(error));
+      }
+    }
+  } finally {
+    saving = false;
+  }
+}
 
 export const useDictPrefs = create<DictPrefsState>((set, get) => ({
   prefs: readStored(),
   patch: (partial) => {
-    const run = dictWriteChain.then(async () => {
-      const current = get().prefs;
-      const changes = typeof partial === "function" ? partial(current) : partial;
-      const next = { ...current, ...changes };
-      // 删除模板会让引用它的软件规则变成孤儿，后端保存校验会直接拒绝整份配置。
-      // 在唯一的写入口把失效引用降级为"跟随全局"，删模板才不会卡住所有设置的保存。
-      if (changes.smartTemplates) {
-        next.appProfiles = pruneProfileTemplates(next.appProfiles, next.smartTemplates);
-        const { pruneShortcutProfileTemplates } = await import("@/features/dictation/hotkeys");
-        await pruneShortcutProfileTemplates(next.smartTemplates.map((template) => template.id));
-      }
-      await cmd(CMD.updateAppSettings, { domain: "dictation", value: next });
-      persist(next);
-      set({ prefs: next });
+    const current = get().prefs;
+    if (!saving && waiters.length === 0) savedPrefs = current;
+    const changes = typeof partial === "function" ? partial(current) : partial;
+    const next = { ...current, ...changes };
+    // 删除模板会让引用它的软件规则变成孤儿，后端保存校验会直接拒绝整份配置。
+    // 在唯一的写入口把失效引用降级为"跟随全局"，删模板才不会卡住所有设置的保存。
+    if (changes.smartTemplates) {
+      next.appProfiles = pruneProfileTemplates(next.appProfiles, next.smartTemplates);
+      templatesChanged = true;
+    }
+    set({ prefs: next });
+    return new Promise<void>((resolve, reject) => {
+      waiters.push({ resolve, reject });
+      void flushDictWrites();
     });
-    // 链条不能因为一次失败就断掉，但错误仍要交给调用方。
-    dictWriteChain = run.catch(() => {});
-    return run;
   },
   resetLocalRules: () => get().patch({ localRules: defaultLocalRules() }),
   dspParams: () => dspParamsFromPrefs(get().prefs),
@@ -802,6 +835,8 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     next.smartTemplateId = next.smartTemplates[0]?.id ?? DEFAULT_SMART_TEMPLATE_ID;
   }
   persist(next);
+  // 只在启动时水合，此时没有在途保存；若在保存在途时水合，排队的改动会基于水合值落盘。
+  savedPrefs = next;
   useDictPrefs.setState({ prefs: next });
   return (
     storedAsrModel !== next.asrModel ||
