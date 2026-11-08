@@ -4,6 +4,7 @@ import { Group, Row } from "@/components/ui/Group";
 import { Switch } from "@/components/ui/Switch";
 import { Tabs } from "@/components/ui/Tabs";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import { isManagedProvider, providerReady } from "@/features/models/providerModels";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useThemeStore } from "@/store/useThemeStore";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
@@ -68,9 +69,11 @@ export function SimpleSettings() {
   const configured = useProviderStore((s) => s.profiles)
     .filter((profile) => profile.enabled && profile.status?.hasApiKey)
     .map((profile) => profile.displayName);
-  // 管理密钥需要专业模式的完整界面：放大窗口后自动切到专业模式。
+  // 管理密钥需要专业模式的完整界面：放大窗口后自动切到专业模式，先打开还没配置的供应商。
+  const managed = useProviderStore((s) => s.profiles).filter(isManagedProvider);
   const manageKeys = () => {
-    useUiStore.getState().openModels("asr");
+    const target = managed.find((profile) => !providerReady(profile)) ?? managed[0];
+    useUiStore.getState().openModels(target ? `provider:${target.id}` : "usage");
     void getCurrentWindow().maximize();
   };
 

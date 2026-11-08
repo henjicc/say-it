@@ -37,7 +37,7 @@ fn profile_value<'a>(profile: &'a ProviderProfile, key: &str) -> &'a str {
 }
 
 fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
-    match profile.kind.strip_prefix("llm:") {
+    match crate::providers::llm_adapter(profile) {
         Some("openai") => Ok(AdapterKind::OpenAI),
         Some("anthropic") => Ok(AdapterKind::Anthropic),
         Some("gemini") => Ok(AdapterKind::Gemini),
@@ -59,9 +59,7 @@ fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> 
         return Err(format!("请先为 {} 设置 API Key", profile.display_name));
     }
     let auth = AuthData::from_single(api_key.to_string());
-    let adapter = profile
-        .kind
-        .strip_prefix("llm:")
+    let adapter = crate::providers::llm_adapter(profile)
         .ok_or_else(|| "供应商不是大语言模型配置".to_string())?;
     if profile.kind == "llm:custom" || llm_uses_responses(adapter) {
         let endpoint = if profile.kind == "llm:custom" {
@@ -383,6 +381,19 @@ mod tests {
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
             Some("https://api.deepseek.com/v1/")
+        );
+    }
+
+    #[test]
+    fn builtin_bailian_chats_through_bailian_responses_endpoint() {
+        let mut profile = custom_profile("secret", "");
+        profile.kind = "sdk:bailian".into();
+        profile.display_name = "阿里云百炼".into();
+        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAIResp);
+        let config = provider_config(&profile).unwrap();
+        assert_eq!(
+            config.endpoint.as_ref().map(Endpoint::base_url),
+            Some("https://dashscope.aliyuncs.com/compatible-mode/v1/")
         );
     }
 

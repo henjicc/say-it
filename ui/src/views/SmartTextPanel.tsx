@@ -9,19 +9,10 @@ import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { CMD, cmd } from "@/lib/tauri";
-import { isMacOS, defaultOcrOption } from "@/lib/platform";
-import {
-  ocrOptionsForScene,
-  useModelCatalogRevision,
-  type OcrModelOption,
-} from "@/features/asr/modelRegistry";
+import { isMacOS } from "@/lib/platform";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
-import { ModelPicker } from "@/features/models/ModelPicker";
-import {
-  FOLLOW_DEFAULT_LLM_OPTION,
-  llmModelPickerOptions,
-} from "@/features/models/llmModelOptions";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
+import { OcrModelRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
 import {
   GLOBAL_CONTEXT_PLACEHOLDER,
   HOTWORDS_PLACEHOLDER,
@@ -37,7 +28,6 @@ import {
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
 import { useUiStore, type SmartTextTabKey } from "@/store/useUiStore";
-import { useProviderStore } from "@/store/useProviderStore";
 
 const PREVIEW_SAMPLE = "嗯，我我觉得这个方案其实可以再简单一点，然后明天发给大家。";
 const PREVIEW_CONTEXT_SAMPLE = "应用：Visual Studio Code\n窗口：方案说明.md\n窗口可见文字：Tauri；OCR；上下文捕获";
@@ -57,70 +47,20 @@ export function SmartTextPanel() {
   const [previewContext, setPreviewContext] = useState(PREVIEW_CONTEXT_SAMPLE);
   const [previewing, setPreviewing] = useState(false);
   const [message, setMessage] = useState("");
-  const [ocrMessage, setOcrMessage] = useState("");
   const [contextMessage, setContextMessage] = useState("");
   const [draftPrompt, setDraftPrompt] = useState(active?.prompt ?? "");
   const [pendingDelete, setPendingDelete] = useState<SmartTextTemplate>();
-  const [pendingOcrModel, setPendingOcrModel] = useState<OcrModelOption>();
   const [managerOpen, setManagerOpen] = useState(false);
   const [templateActionBusy, setTemplateActionBusy] = useState(false);
   const [templateNotice, setTemplateNotice] = useState<{ tone: "ok" | "err"; text: string }>();
   const [recentRecoveryId, setRecentRecoveryId] = useState("");
   const tab = useUiStore((state) => state.smartTextTab);
   const setTab = useUiStore((state) => state.setSmartTextTab);
-  const llmProfiles = useProviderStore((state) => state.profiles).filter(
-    (profile) => profile.enabled && profile.capabilities.includes("llm"),
-  );
-  const llmDefaults = useProviderStore((state) => state.defaults);
-  const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(llmProfiles)];
-  const selectedLlm = prefs.smartLlmProviderId === "default" ? "default" : JSON.stringify([prefs.smartLlmProviderId, prefs.smartLlmModel]);
   const recentDeletion = prefs.smartTemplateTrash.find(
     (entry) => entry.recoveryId === recentRecoveryId,
   );
-  useModelCatalogRevision();
-  const ocrModels = ocrOptionsForScene("activeAppContext");
-  const selectedOcrModel = ocrModels.find(
-    (option) => option.value === prefs.activeAppContextOcrModel,
-  );
   const draftTemplateIdRef = useRef(active?.id ?? "");
   const draftUsesActiveAppContext = draftPrompt.includes(ACTIVE_APP_CONTEXT_PLACEHOLDER);
-
-  const selectOcrModel = async (model: OcrModelOption) => {
-    setOcrMessage("");
-    if (
-      model.remote
-      && !prefs.activeAppContextOcrApprovedProviders.includes(model.providerId)
-    ) {
-      setPendingOcrModel(model);
-      return;
-    }
-    try {
-      await patch({
-        activeAppContextOcrModel: model.value,
-        activeAppContextOcrEngine: model.value === "local-ppocr-v6-tiny" ? "ppocr" : "system",
-      });
-    } catch (error) {
-      setOcrMessage(`OCR 模型切换失败：${String(error)}`);
-    }
-  };
-
-  const approveRemoteOcr = async () => {
-    if (!pendingOcrModel) return;
-    setOcrMessage("");
-    try {
-      await patch({
-        activeAppContextOcrModel: pendingOcrModel.value,
-        activeAppContextOcrEngine: "system",
-        activeAppContextOcrApprovedProviders: Array.from(new Set([
-          ...prefs.activeAppContextOcrApprovedProviders,
-          pendingOcrModel.providerId,
-        ])),
-      });
-      setPendingOcrModel(undefined);
-    } catch (error) {
-      setOcrMessage(`OCR 模型切换失败：${String(error)}`);
-    }
-  };
 
   useEffect(() => {
     if (!active) {
@@ -312,26 +252,7 @@ export function SmartTextPanel() {
       {tab === "template" && (
         <>
           <Group>
-            <Row label="智能模型" controlId="smart-text-llm-model" hint={`跟随默认时使用：${llmProfiles.find((item) => item.id === llmDefaults.llm)?.displayName ?? "尚未配置"}`}>
-              <div className={ROW_CONTROL_W}>
-                <ModelPicker
-                  id="smart-text-llm-model"
-                  value={selectedLlm}
-                  options={llmOptions}
-                  panelLabel="选择智能模型"
-                  onChange={(value) => {
-                    if (value === "default") {
-                      void patch({ smartLlmProviderId: "default", smartLlmModel: "" });
-                      return;
-                    }
-                    try {
-                      const [providerId, model] = JSON.parse(value) as [string, string];
-                      void patch({ smartLlmProviderId: providerId, smartLlmModel: model });
-                    } catch { /* 选项值由页面生成 */ }
-                  }}
-                />
-              </div>
-            </Row>
+            <SmartLlmRow />
             <Row label="处理时机">
               <Select
                 className={ROW_CONTROL_W}
@@ -478,34 +399,7 @@ export function SmartTextPanel() {
               </Select>
             </Row>
 
-            {prefs.activeAppContextExtractionMethod === "ocr" && (
-              <Row
-                label="OCR 模型"
-                hint={selectedOcrModel?.remote
-                  ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
-                  : selectedOcrModel?.value === "local-ppocr-v6-tiny"
-                    ? "使用内置 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
-                    : `使用${defaultOcrOption.label}，不会向第三方发送截图。`}
-                message={ocrMessage && <span role="alert" className="text-[var(--color-err)]">{ocrMessage}</span>}
-              >
-                <Select
-                  className={ROW_CONTROL_W}
-                  aria-label="OCR 模型"
-                  value={prefs.activeAppContextOcrModel}
-                  onChange={(event) => {
-                    const model = ocrModels.find((option) => option.value === event.target.value);
-                    if (model) void selectOcrModel(model);
-                  }}
-                >
-                  {!selectedOcrModel && (
-                    <option value={prefs.activeAppContextOcrModel} disabled>当前模型不可用，请重新选择</option>
-                  )}
-                  {ocrModels.map((model) => (
-                    <option key={model.value} value={model.value}>{model.label}</option>
-                  ))}
-                </Select>
-              </Row>
-            )}
+            {prefs.activeAppContextExtractionMethod === "ocr" && <OcrModelRow />}
             {prefs.activeAppContextExtractionMethod === "ocr" && !isMacOS && (
               <Row
                 label="OCR 跟随处理时机"
@@ -610,25 +504,6 @@ export function SmartTextPanel() {
             >
               {templateActionBusy ? "正在删除..." : "删除模板"}
             </Button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={Boolean(pendingOcrModel)}
-        onClose={() => setPendingOcrModel(undefined)}
-        title="确认使用第三方 OCR"
-        showCloseButton={false}
-        className="max-w-[460px]"
-      >
-        <div className="p-5">
-          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
-            选择“{pendingOcrModel?.label}”后，场景感知会把当前窗口截图发送给该第三方供应商进行识别。确认后才会保存选择并发送截图。
-          </p>
-          {ocrMessage && <p role="alert" className="mt-3 text-xs text-[var(--color-err)]">{ocrMessage}</p>}
-          <div className="mt-6 flex justify-end gap-2">
-            <Button size="sm" autoFocus onClick={() => setPendingOcrModel(undefined)}>取消</Button>
-            <Button size="sm" variant="primary" onClick={() => void approveRemoteOcr()}>确认并使用</Button>
           </div>
         </div>
       </Modal>

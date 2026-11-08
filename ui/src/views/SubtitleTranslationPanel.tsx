@@ -7,44 +7,46 @@ import {
   type SubtitleTranslationLayout,
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
-import { TRANSLATION_MODEL_NONE, TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
-import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
+import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
   TRANSLATION_TARGET_LANGUAGE_OPTIONS,
 } from "@/features/translation/languages";
 
 
-export function SubtitleTranslationPanel() {
-  useModelCatalogRevision();
-  const { prefs, patch } = useSubtitleStore();
+/** 字幕翻译模型；选「无」即不翻译。 */
+export function SubtitleTranslationModelRow() {
+  const translationModel = useSubtitleStore((state) => state.prefs.translationModel);
   const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
+  const editable = useUsageEditable();
+  const options = useOfferedTranslationOptions(translationModel);
+  const selected = options.find((option) => option.value === translationModel);
+  const issue = useUsageIssue(selected?.providerId, translationModel === TRANSLATION_MODEL_NONE || Boolean(selected));
+  if (!editable) return <UsageLinkRow label="翻译模型" value={selected?.label ?? "不翻译"} message={issue} />;
+  return (
+    <Row label="翻译模型" hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>
+      <Select
+        className={ROW_CONTROL_W}
+        aria-label="翻译模型"
+        value={translationModel}
+        onChange={(event) => void setTranslationModel(event.target.value)}
+      >
+        <option value={TRANSLATION_MODEL_NONE}>无（不翻译）</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </Select>
+    </Row>
+  );
+}
+
+export function SubtitleTranslationPanel() {
+  const { prefs, patch } = useSubtitleStore();
   const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
-  const pluginOptions = optionsForScene("subtitleTranslation");
 
   return (
     <InspectorBody>
       <Group>
-        <Row label="翻译模型" hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。">
-          <Select
-            className={ROW_CONTROL_W}
-            aria-label="翻译模型"
-            value={prefs.translationModel}
-            onChange={(event) => void setTranslationModel(event.target.value)}
-          >
-            <option value={TRANSLATION_MODEL_NONE}>无（不翻译）</option>
-            {TRANSLATION_MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-            {pluginOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </Select>
-        </Row>
+        <SubtitleTranslationModelRow />
       </Group>
 
       {enabled && (

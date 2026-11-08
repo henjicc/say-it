@@ -6,7 +6,8 @@ export type LayoutMode = "simple" | "pro";
 export type DictationNodeKey = "basics" | "smart" | "rules" | "apps" | "shortcuts" | "orbGesture";
 export type SubtitleNodeKey = "basics" | "translation" | "style" | "output";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
-export type ModelsSectionKey = "asr" | "llm" | "plugins" | "compare";
+/** 模型页中栏：用途、某个供应商（`provider:<id>`）、本地模型与插件、模型对比。 */
+export type ModelsSectionKey = "usage" | "plugins" | "compare" | `provider:${string}`;
 export type LexiconSectionKey = "hotwords" | "context";
 export type SettingsSectionKey = "general" | "sound" | "processing" | "keys" | "history" | "diagnostics";
 export type SmartTextTabKey = "template" | "context" | "preview";
@@ -72,7 +73,7 @@ export const useUiStore = create<UiState>((set) => ({
   setSubtitleNode: (subtitleNode) => set({ subtitleNode }),
   assistantAction: "translateSpeech",
   setAssistantAction: (assistantAction) => set({ assistantAction }),
-  modelsSection: "asr",
+  modelsSection: "usage",
   setModelsSection: (modelsSection) => set({ modelsSection }),
   lexiconSection: "hotwords",
   setLexiconSection: (lexiconSection) => set({ lexiconSection }),

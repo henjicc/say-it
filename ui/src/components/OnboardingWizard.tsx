@@ -27,7 +27,7 @@ import { isMacOS } from "@/lib/platform";
 import { CMD, cmd, type SetupCheckResult, type SetupStatus } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
-import { useUiStore } from "@/store/useUiStore";
+import { useUiStore, type ModelsSectionKey } from "@/store/useUiStore";
 
 const STEPS = [
   { title: "权限", description: "允许录音和文字输入" },
@@ -215,7 +215,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     }
   }
 
-  async function finish(modelsSection?: "asr" | "plugins") {
+  async function finish(modelsSection?: ModelsSectionKey) {
     if (closing.current) return;
     closing.current = true;
     setRunning("finish");
@@ -345,7 +345,7 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {selectedProvider.kind === "sdk:bailian" && <Button size="sm" onClick={() => void openApiKeyPage()}>获取 API Key<ExternalLink className="h-3.5 w-3.5" aria-hidden /></Button>}
-                  <Button size="sm" onClick={() => void finish("asr")}>打开完整设置</Button>
+                  <Button size="sm" onClick={() => void finish(`provider:${selectedProvider.id}`)}>打开完整设置</Button>
                 </div>
               </div>
             )}

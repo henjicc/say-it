@@ -173,9 +173,7 @@ pub(crate) fn genai_builder() -> genai::ClientBuilder {
 }
 
 fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), String> {
-    let adapter = profile
-        .kind
-        .strip_prefix("llm:")
+    let adapter = crate::providers::llm_adapter(profile)
         .ok_or_else(|| "大语言模型供应商类型无效".to_string())?;
     if adapter == "groq" {
         return Err("内置 Groq 必须通过 @henjicc/ai-sdk 执行".into());
@@ -479,7 +477,7 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
 }
 
 fn supports_explicit_reasoning_zero(profile: &ProviderProfile) -> bool {
-    !matches!(profile.kind.strip_prefix("llm:"), Some("kimi" | "bigmodel"))
+    !matches!(crate::providers::llm_adapter(profile), Some("kimi" | "bigmodel"))
 }
 
 fn chat_options_for(
@@ -740,9 +738,7 @@ where
 }
 
 fn supports_web_search(profile: &ProviderProfile) -> bool {
-    profile
-        .kind
-        .strip_prefix("llm:")
+    crate::providers::llm_adapter(profile)
         .is_some_and(|adapter| matches!(adapter, "volcengine" | "deepseek" | "bailian"))
 }
 

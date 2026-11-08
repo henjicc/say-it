@@ -6,6 +6,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
+import { UsageLinkRow, useAsrUsageIssue, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
 import { useAudioDevices } from "@/features/audio/devices";
 import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
@@ -18,6 +19,7 @@ import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
 
 const DEFAULT_INPUT_VALUE = "";
+const DICTATION_SCENES = ["dictationRealtime", "dictationFile"];
 
 /** 主快捷键 + 触发方式，两种模式共用。 */
 export function ShortcutRows() {
@@ -73,13 +75,19 @@ export function AsrModelRow() {
   useModelCatalogRevision();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const patch = useDictPrefs((s) => s.patch);
+  const editable = useUsageEditable();
+  const options = useOfferedAsrOptions(DICTATION_ASR_MODEL_OPTIONS, asrModel);
+  const issue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
+  if (!editable) {
+    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === asrModel)?.label ?? asrModel} message={issue} />;
+  }
   return (
-    <Row label="识别模型" controlId="dictation-asr-model">
+    <Row label="识别模型" controlId="dictation-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="dictation-asr-model"
           value={asrModel}
-          options={DICTATION_ASR_MODEL_OPTIONS}
+          options={options}
           panelLabel="选择语音识别模型"
           onChange={(value) => patch({ asrModel: value })}
         />

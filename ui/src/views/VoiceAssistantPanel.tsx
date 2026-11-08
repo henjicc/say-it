@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRight, ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { InspectorBody } from "@/components/layout/MasterDetail";
@@ -7,14 +7,13 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { optionsForScene, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   FOLLOW_DEFAULT_LLM_OPTION,
   llmModelPickerOptions,
   llmModelValue,
 } from "@/features/models/llmModelOptions";
-import { TRANSLATION_MODEL_OPTIONS } from "@/features/translation/models";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -121,22 +120,79 @@ function parseModel(value: string) {
   return { llmProviderId: "default", llmModel: "" };
 }
 
+const ACTION_LABELS: Record<AssistantActionKey, string> = { translateSpeech: "语音翻译", editSelection: "选区编辑", ask: "语音问答" };
+
+/** 某个助手功能用的模型：语音翻译选了专用翻译引擎时是翻译模型，否则是大模型。 */
+function AssistantModelRow({ action, label, prefs, save }: {
+  action: AssistantActionKey;
+  label: string;
+  prefs: AssistantPrefs;
+  save: (next: AssistantPrefs) => Promise<void>;
+}) {
+  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
+  const editable = useUsageEditable();
+  const feature = prefs[action];
+  const dedicated = action === "translateSpeech" && prefs.translationEngine === "dedicated";
+  const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
+  const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selectedLlm)];
+  const translationOptions = useOfferedTranslationOptions(prefs.translationModel);
+  const selectedTranslation = translationOptions.find((item) => item.value === prefs.translationModel);
+  const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId);
+  const translationIssue = useUsageIssue(selectedTranslation?.providerId, prefs.translationModel === "none" || Boolean(selectedTranslation));
+  const controlId = `assistant-${action}-model`;
+  if (dedicated) {
+    if (!editable) return <UsageLinkRow label={label} value={selectedTranslation?.label ?? "未启用"} message={translationIssue} />;
+    return (
+      <Row label={label} message={translationIssue}>
+        <Select className={ROW_CONTROL_W} aria-label={label} value={prefs.translationModel} onChange={(event) => void save({ ...prefs, translationModel: event.target.value })}>
+          <option value="none">无（暂不启用）</option>
+          {translationOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </Select>
+      </Row>
+    );
+  }
+  const current = llmOptions.find((option) => option.value === selectedLlm);
+  if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? feature.llmModel} message={llmIssue} />;
+  return (
+    <Row label={label} controlId={controlId} message={llmIssue}>
+      <div className={ROW_CONTROL_W}>
+        <ModelPicker id={controlId} value={selectedLlm} options={llmOptions} panelLabel="选择智能模型" onChange={(value) => void save({ ...prefs, [action]: { ...feature, ...parseModel(value) } })} />
+      </div>
+    </Row>
+  );
+}
+
+/** 「用途」页里的助手三项。助手设置整份保存，这里单独读取一份，助手页未打开也能改。 */
+export function AssistantModelRows() {
+  const [prefs, setPrefs] = useState<AssistantPrefs>();
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    void cmd<AppSnapshot>(CMD.getAppSnapshot)
+      .then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs)))
+      .catch((error) => setMessage(`读取助手设置失败：${String(error)}`));
+  }, []);
+  const save = async (next: AssistantPrefs) => {
+    setPrefs(next);
+    setMessage("");
+    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); }
+    catch (error) { setMessage(`保存失败：${String(error)}`); }
+  };
+  return <>
+    {prefs && (Object.keys(ACTION_LABELS) as AssistantActionKey[]).map((action) => (
+      <AssistantModelRow key={action} action={action} label={ACTION_LABELS[action]} prefs={prefs} save={save} />
+    ))}
+    {message && <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{message}</p>}
+  </>;
+}
+
 export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const { confirm, dialog } = useConfirm();
-  useModelCatalogRevision();
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
   const [message, setMessage] = useState("");
   const [previewSelection, setPreviewSelection] = useState("明天下午把新版方案发给客户，内容要写清楚，但是不要承诺具体上线日期。");
   const [previewInstruction, setPreviewInstruction] = useState(action === "ask" ? "这段话有哪些潜在风险？" : action === "translateSpeech" ? "Please send the updated proposal tomorrow afternoon." : "改成一封简洁、专业的邮件");
   const [previewResult, setPreviewResult] = useState("");
   const [previewing, setPreviewing] = useState(false);
-  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
-  const defaults = useProviderStore((state) => state.defaults);
-  const pluginOptions = optionsForScene("subtitleTranslation");
-  const modelOptions = useMemo(
-    () => [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles)],
-    [profiles],
-  );
   const feature = prefs[action];
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
   const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
@@ -148,7 +204,6 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     catch (error) { setMessage(`保存失败：${String(error)}`); }
   };
   const updateFeature = (nextFeature: AssistantFeaturePreferences) => save({ ...prefs, [action]: nextFeature });
-  const selectModel = (value: string) => void updateFeature({ ...feature, ...parseModel(value) });
   const addTemplate = () => {
     if (feature.templates.length >= 20) return setMessage("每个功能最多支持 20 个模板");
     const item = { id: crypto.randomUUID(), name: "新模板", prompt: "在这里填写这个功能的处理规则。保留事实，不添加未经提供的信息。" };
@@ -200,8 +255,6 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
       setMessage("试运行完成，不会输入到其他软件或保存到历史。");
     } catch (error) { setMessage(`试运行失败：${String(error)}`); } finally { setPreviewing(false); }
   };
-  const selectedModel = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
-  const defaultProfile = profiles.find((item) => item.id === defaults.llm);
 
   const usesTemplates = !(action === "translateSpeech" && prefs.translationEngine === "dedicated");
 
@@ -217,9 +270,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
         <Row label="源语言"><Select className={ROW_CONTROL_W} aria-label="源语言" value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
         <Row label="目标语言"><Select className={ROW_CONTROL_W} aria-label="目标语言" value={prefs.targetLanguage} onChange={(event) => void save({ ...prefs, targetLanguage: event.target.value })}>{TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
       </>}
-      {usesTemplates
-        ? <Row label="智能模型" controlId={`assistant-${action}-llm-model`} hint={`跟随默认时使用：${defaultProfile?.displayName ?? "尚未配置"}`}><div className={ROW_CONTROL_W}><ModelPicker id={`assistant-${action}-llm-model`} value={selectedModel} options={modelOptions} panelLabel="选择智能模型" onChange={selectModel} /></div></Row>
-        : <Row label="专用翻译模型"><Select className={ROW_CONTROL_W} aria-label="专用翻译模型" value={prefs.translationModel} onChange={(event) => void save({ ...prefs, translationModel: event.target.value })}><option value="none">无（暂不启用）</option>{TRANSLATION_MODEL_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}{pluginOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>}
+      <AssistantModelRow action={action} label={usesTemplates ? "智能模型" : "专用翻译模型"} prefs={prefs} save={save} />
     </Group>
 
     <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>

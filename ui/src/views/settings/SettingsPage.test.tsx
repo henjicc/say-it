@@ -2,8 +2,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/store/useUiStore";
 
-vi.mock("@/views/SettingsProviderPanel", () => ({ SettingsProviderPanel: () => <section><h2>ASR 供应商</h2><button>配置识别模型</button></section> }));
-vi.mock("@/views/SettingsLlmPanel", () => ({ SettingsLlmPanel: () => <section><h2>大语言模型</h2><button>配置语言模型</button></section> }));
 vi.mock("@/views/PluginManagerPanel", () => ({ PluginManagerPanel: () => <section><h2>插件管理</h2><button>安装插件</button></section> }));
 vi.mock("@/views/SettingsMicCuePanel", () => ({ SettingsMicCuePanel: () => <section><h2>提示音</h2><button>启用音频提示</button></section> }));
 vi.mock("@/views/SettingsStartupPanel", () => ({ useStartupSettings: () => ({ startup: {}, startupMsg: "", saveStartup: vi.fn() }), SettingsStartupPanel: () => <section><h2>启动设置</h2><div><p>开机自启</p><button>切换开机自启</button></div></section> }));
@@ -54,12 +52,8 @@ describe("SettingsPage", () => {
   });
 
   it("matches aliases as well as visible labels", () => {
-    expect(filterSettings("api key").map((item) => item.id)).toEqual(expect.arrayContaining([
-      "asr-providers",
-      "ocr-providers",
-      "translation-providers",
-      "llm-providers",
-    ]));
+    expect(filterSettings("api key").map((item) => item.id)).toContain("bailian-provider");
+    expect(filterSettings("翻译模型").map((item) => item.id)).toContain("model-usage");
     expect(filterSettings("开机启动")[0]?.id).toBe("autostart");
   });
 });

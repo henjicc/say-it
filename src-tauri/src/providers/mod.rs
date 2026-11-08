@@ -593,6 +593,15 @@ pub fn llm_responses_endpoint(adapter: &str) -> Option<&'static str> {
     }
 }
 
+/// 走 genai 直连时使用的大语言模型适配器。内置阿里云百炼的 Key 同时用于识别、翻译与对话，
+/// 不必再单独添加一个百炼大模型供应商。
+pub fn llm_adapter(profile: &ProviderProfile) -> Option<&str> {
+    match profile.kind.as_str() {
+        "sdk:bailian" => Some("bailian"),
+        kind => kind.strip_prefix("llm:"),
+    }
+}
+
 pub fn llm_uses_responses(adapter: &str) -> bool {
     llm_responses_endpoint(adapter).is_some()
 }
@@ -671,8 +680,7 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
             settings.defaults.ocr = PPOCR_PROVIDER_ID.into();
         }
     }
-    let migrate_legacy_llm_default =
-        settings.defaults.llm.is_empty() || settings.defaults.llm == BAILIAN_PROVIDER_ID;
+    let migrate_legacy_llm_default = settings.defaults.llm.is_empty();
     for builtin in builtin_profiles() {
         match settings.profiles.iter_mut().find(|p| p.id == builtin.id) {
             Some(existing) => {

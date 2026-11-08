@@ -5,6 +5,9 @@ export interface TranslationModelOption {
   supportsIncremental: boolean;
 }
 
+/** 内置 Qwen-MT 翻译模型使用阿里云百炼的密钥。 */
+export const TRANSLATION_PROVIDER_ID = "bailian";
+
 /** 关闭字幕翻译时 SubtitlePrefs.translationModel 的取值。 */
 export const TRANSLATION_MODEL_NONE = "none";
 
