@@ -3,7 +3,7 @@ use crate::state::*;
 
 const UNSUPPORTED: &str = "当前平台尚未实现系统音频采集；请改用麦克风输入";
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn start_backend_system_audio(
     _device_name: Option<String>,
     _state: tauri::State<'_, RuntimeState>,
@@ -35,7 +35,7 @@ pub(crate) fn pause_backend_system_audio_inner(_state: &RuntimeState) -> Result<
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn release_backend_system_audio(
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<(), String> {
@@ -56,7 +56,7 @@ pub(crate) fn release_backend_system_audio_inner(state: &RuntimeState) -> Result
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_backend_system_audio_level(
     _state: tauri::State<'_, RuntimeState>,
 ) -> Result<f32, String> {

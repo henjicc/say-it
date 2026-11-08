@@ -249,32 +249,31 @@ function LevelMeterRow({ value }: { value: number }) {
   );
 }
 
-function SilenceDisconnectSection() {
-  const dictPrefs = useDictPrefs((s) => s.prefs);
-  const patchDictPrefs = useDictPrefs((s) => s.patch);
-  const subtitlePrefs = useSubtitleStore((s) => s.prefs);
-  const [dictationLevel, setDictationLevel] = useState(0);
-  const [subtitleLevel, setSubtitleLevel] = useState(0);
+/** 电平轮询放在独立组件里，每 50ms 只重绘这一行，不带动整个分区。 */
+function DictationLevelRow() {
+  const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
+  const [level, setLevel] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     let ownsMic = false;
     const tick = async () => {
+      // 预览优先级最低：听写、试听等会直接接管麦克风，这时申请失败，但电平照常读共用的采集。
       try {
-        // 成功即持有麦克风租约；reused 只说明设备已开着（例如听写结束后的延迟释放期），不代表租约属于别人。
-        await cmd(CMD.startBackendMic, { deviceName: dictPrefs.micDeviceId || undefined });
+        await cmd(CMD.startBackendMic, { deviceName: micDeviceId || undefined });
         ownsMic = true;
-        if (cancelled) {
-          cmdSilent(CMD.releaseBackendMic);
-          return;
-        }
-        const level = await cmd<number>(CMD.getBackendMicLevel);
-        if (!cancelled) setDictationLevel(level || 0);
       } catch {
-        if (!cancelled) setDictationLevel(0);
+        // 麦克风正被其他功能使用。
       }
-      if (!cancelled) timer = window.setTimeout(tick, 50);
+      if (cancelled) {
+        if (ownsMic) cmdSilent(CMD.releaseBackendMic);
+        return;
+      }
+      const value = await cmd<number>(CMD.getBackendMicLevel).catch(() => 0);
+      if (cancelled) return;
+      setLevel(value || 0);
+      timer = window.setTimeout(tick, 50);
     };
     tick();
     return () => {
@@ -282,18 +281,25 @@ function SilenceDisconnectSection() {
       window.clearTimeout(timer);
       if (ownsMic) cmdSilent(CMD.releaseBackendMic);
     };
-  }, [dictPrefs.micDeviceId]);
+  }, [micDeviceId]);
+
+  return <LevelMeterRow value={level} />;
+}
+
+function SubtitleLevelRow() {
+  const source = useSubtitleStore((s) => s.prefs.source);
+  const [level, setLevel] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     let ownsSystemAudio = false;
-    const { kind, deviceName } = parseSubtitleSource(subtitlePrefs.source);
+    const { kind, deviceName } = parseSubtitleSource(source);
     const tick = async () => {
       try {
         if (kind === "mic") {
-          const level = await cmd<number>(CMD.getBackendMicLevel);
-          if (!cancelled) setSubtitleLevel(level || 0);
+          const value = await cmd<number>(CMD.getBackendMicLevel);
+          if (!cancelled) setLevel(value || 0);
         } else {
           const started = await cmd<{ reused?: boolean }>(CMD.startBackendSystemAudio, { deviceName });
           if (cancelled) {
@@ -301,11 +307,11 @@ function SilenceDisconnectSection() {
             return;
           }
           if (!started.reused) ownsSystemAudio = true;
-          const level = await cmd<number>(CMD.getBackendSystemAudioLevel);
-          if (!cancelled) setSubtitleLevel(level || 0);
+          const value = await cmd<number>(CMD.getBackendSystemAudioLevel);
+          if (!cancelled) setLevel(value || 0);
         }
       } catch {
-        if (!cancelled) setSubtitleLevel(0);
+        if (!cancelled) setLevel(0);
       }
       if (!cancelled) timer = window.setTimeout(tick, 50);
     };
@@ -315,7 +321,14 @@ function SilenceDisconnectSection() {
       window.clearTimeout(timer);
       if (ownsSystemAudio) cmdSilent(CMD.releaseBackendSystemAudio);
     };
-  }, [subtitlePrefs.source]);
+  }, [source]);
+
+  return <LevelMeterRow value={level} />;
+}
+
+function SilenceDisconnectSection() {
+  const dictPrefs = useDictPrefs((s) => s.prefs);
+  const patchDictPrefs = useDictPrefs((s) => s.patch);
 
   return (
     <>
@@ -345,7 +358,7 @@ function SilenceDisconnectSection() {
           format={fmtThreshold}
           onChange={(value) => patchDictPrefs({ dictationSilenceThreshold: value })}
         />
-        <LevelMeterRow value={dictationLevel} />
+        <DictationLevelRow />
       </Group>
       <Group>
         <Row label="实时字幕">
@@ -373,7 +386,7 @@ function SilenceDisconnectSection() {
           format={fmtThreshold}
           onChange={(value) => patchDictPrefs({ subtitleSilenceThreshold: value })}
         />
-        <LevelMeterRow value={subtitleLevel} />
+        <SubtitleLevelRow />
       </Group>
     </>
   );

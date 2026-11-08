@@ -261,7 +261,8 @@ fn find_input_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Devi
         .find(|device| device.name().map(|n| n == name).unwrap_or(false))
 }
 
-#[tauri::command]
+// 电平预览高频轮询这几条命令，必须离开主线程，否则拖动窗口、滚动都会被拖慢。
+#[tauri::command(async)]
 pub(crate) fn start_backend_mic(
     device_name: Option<String>,
     state: tauri::State<'_, RuntimeState>,
@@ -271,7 +272,11 @@ pub(crate) fn start_backend_mic(
             .legacy_audio_lease
             .lock()
             .map_err(|_| "音频会话锁失败")?;
-        if current.is_none() {
+        // 被其他域接管过的旧租约已失效，接管方结束后要重新申请。
+        if !current
+            .as_ref()
+            .is_some_and(|lease| state.audio_session.holds(lease))
+        {
             *current = Some(
                 state
                     .audio_session
@@ -654,17 +659,19 @@ pub(crate) fn pause_backend_mic_inner(state: &RuntimeState) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn release_backend_mic(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
-    release_backend_mic_inner(&state)?;
-    if let Some(lease) = state
+    let lease = state
         .legacy_audio_lease
         .lock()
         .map_err(|_| "音频会话锁失败")?
-        .take()
-    {
-        state.audio_session.release(&lease)?;
-    }
+        .take();
+    // 租约已被其他域接管时，设备归接管方，不能停。
+    let Some(lease) = lease.filter(|lease| state.audio_session.holds(lease)) else {
+        return Ok(());
+    };
+    release_backend_mic_inner(&state)?;
+    let _ = state.audio_session.release(&lease);
     Ok(())
 }
 
@@ -708,7 +715,7 @@ pub(crate) fn release_backend_mic_inner(state: &RuntimeState) -> Result<(), Stri
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_backend_mic_level(state: tauri::State<'_, RuntimeState>) -> Result<f32, String> {
     let guard = state
         .backend_mic
