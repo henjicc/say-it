@@ -19,6 +19,33 @@ fn replacing_a_processing_request_stops_at_the_next_chunk() {
     }
 }
 
+/// 回归：RNNoise 输出晚一帧，干声必须同样延迟一帧再混合。强度为 0 时输出应是整体延迟一帧的原声；
+/// 干声不延迟时两路错开 10ms 相加，强度介于 0～1 之间会形成梳状失真。
+#[test]
+fn dry_mix_is_delayed_to_line_up_with_denoised_output() {
+    let samples: Vec<f32> = (0..4000)
+        .map(|i| ((i % 97) as f32 / 97.0 - 0.5) * 0.5)
+        .collect();
+    let mut input = AudioBuffer::default();
+    input.append(&samples).unwrap();
+    let params = DspParams {
+        denoise_enabled: true,
+        denoise_strength: 0.0,
+        vad_gate: 0.0,
+        // 增益恰好为 1、不限幅，输出只剩干声本身。
+        target_lufs: 10.0,
+        max_gain_db: 0.0,
+        peak_limit_dbfs: 0.0,
+        ..Default::default()
+    };
+    let output = process_cancellable(&input, 48000, &params, || false)
+        .unwrap()
+        .processed
+        .to_vec();
+    assert!(output[..FRAME].iter().all(|s| *s == 0.0));
+    assert_eq!(&output[FRAME..], &samples[..samples.len() - FRAME]);
+}
+
 fn compare(input: &[f32], rate: u32, params: &DspParams) {
     let old = process_offline(input, rate, params);
     let mut source = AudioBuffer::default();
@@ -68,6 +95,7 @@ fn partitioned_offline_matches_reference_bits_for_rates_frames_and_parameters() 
                     ..Default::default()
                 },
                 DspParams {
+                    denoise_enabled: true,
                     denoise_strength: 0.35,
                     bass_gain_db: 5.0,
                     treble_gain_db: -3.0,
@@ -86,7 +114,14 @@ fn long_spilled_audio_silence_and_clipping_preserve_reference() {
     let input: Vec<_> = (0..600017)
         .map(|i| (i % 541) as f32 / 200.0 - 1.0)
         .collect();
-    compare(&input, 48000, &DspParams::default());
+    compare(
+        &input,
+        48000,
+        &DspParams {
+            denoise_enabled: true,
+            ..Default::default()
+        },
+    );
     compare(
         &input,
         44100,
@@ -97,7 +132,14 @@ fn long_spilled_audio_silence_and_clipping_preserve_reference() {
             ..Default::default()
         },
     );
-    compare(&[0.0; 48017], 16000, &DspParams::default());
+    compare(
+        &[0.0; 48017],
+        16000,
+        &DspParams {
+            denoise_enabled: true,
+            ..Default::default()
+        },
+    );
     compare(
         &[-0.0; 48017],
         48000,

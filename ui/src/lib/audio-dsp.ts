@@ -16,7 +16,7 @@ export interface DspParams {
 }
 
 export const dspDefaults: DspParams = {
-  denoiseEnabled: true,
+  denoiseEnabled: false,
   denoiseStrength: 1.0,
   targetLufs: -20.0,
   peakLimitDbfs: -1.0,

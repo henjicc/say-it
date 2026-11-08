@@ -73,6 +73,8 @@ pub(crate) fn process_cancellable(
     let mut chunk = [0f32; FRAME * 32];
     let mut noise_in = [0f32; FRAME];
     let mut noise_out = [0f32; FRAME];
+    // RNNoise 输出比输入晚一帧，干声同样延迟一帧再混合（见 DspParams::denoise_strength）。
+    let mut dry_delay = [0f32; FRAME];
     for start in (0..length).step_by(chunk.len()) {
         if cancelled() {
             return Err("音频处理已被新任务替换".into());
@@ -112,7 +114,8 @@ pub(crate) fn process_cancellable(
                 };
                 for (j, sample) in frame.iter_mut().enumerate() {
                     let processed = noise_out[j] / 32768.0;
-                    *sample = (*sample * (1.0 - params.denoise_strength)
+                    let dry = std::mem::replace(&mut dry_delay[j], *sample);
+                    *sample = (dry * (1.0 - params.denoise_strength)
                         + processed * params.denoise_strength)
                         * gate;
                 }
