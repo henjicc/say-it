@@ -8,6 +8,7 @@ use sayit_overlay_core::window::*;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use windows::core::{w, PCWSTR};
@@ -15,6 +16,7 @@ use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::ID2D1Factory;
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
@@ -23,17 +25,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, KillTimer,
-    LoadCursorW, RegisterClassW, SendMessageW, SetCursor, SetTimer, SetWindowLongPtrW,
+    CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, LoadCursorW,
+    PostMessageW, RegisterClassW, SendMessageW, SetCursor, SetWindowLongPtrW,
     SetWindowPos, ShowWindow, GWLP_USERDATA, GWL_EXSTYLE, HTCAPTION, HTCLIENT, HWND_TOPMOST,
-    IDC_ARROW, IDC_SIZEALL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    IDC_ARROW, IDC_HAND, IDC_SIZEALL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SW_HIDE, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCLBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER,
     WNDCLASSW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const FRAME_TIMER: usize = 1;
-const FRAME_MS: u32 = 16;
+/// DWM 不可用、DwmFlush 立即返回时的帧间隔下限。
+const FALLBACK_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 // windows crate 将此常量放在未启用的 UI_Controls 特性中，值来自 winuser.h。
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 
@@ -60,6 +63,80 @@ struct Host<W: WinWindow> {
     resources: D2dResources,
     surface: LayeredSurface,
     clock: FrameClock,
+    pacer: Option<FramePacer>,
+}
+
+/// 帧节拍：独立线程跟随 DWM 合成（显示器刷新）给窗口投递帧消息。
+///
+/// SetTimer 精度约 15.6ms、优先级低，线程一忙就被推迟，动画帧率忽高忽低。
+/// 帧仍以 WM_TIMER(FRAME_TIMER) 进入窗口过程；上一帧还没处理时不再投递，消息不会堆积。
+struct FramePacer {
+    shared: std::sync::Arc<PacerShared>,
+    thread: std::thread::Thread,
+}
+struct PacerShared {
+    active: AtomicBool,
+    pending: AtomicBool,
+    alive: AtomicBool,
+}
+impl FramePacer {
+    fn start(hwnd: HWND, name: &str) -> Option<Self> {
+        let shared = std::sync::Arc::new(PacerShared {
+            active: AtomicBool::new(false),
+            pending: AtomicBool::new(false),
+            alive: AtomicBool::new(true),
+        });
+        let worker = shared.clone();
+        let target = hwnd.0 as isize;
+        let handle = std::thread::Builder::new()
+            .name(format!("{name}-pacer"))
+            .spawn(move || {
+                let hwnd = HWND(target as *mut _);
+                while worker.alive.load(Ordering::Acquire) {
+                    if !worker.active.load(Ordering::Acquire) {
+                        std::thread::park();
+                        continue;
+                    }
+                    let started = Instant::now();
+                    let flushed = unsafe { DwmFlush() }.is_ok();
+                    if !flushed || started.elapsed() < std::time::Duration::from_millis(2) {
+                        std::thread::sleep(FALLBACK_FRAME.saturating_sub(started.elapsed()));
+                    }
+                    if worker.active.load(Ordering::Acquire)
+                        && !worker.pending.swap(true, Ordering::AcqRel)
+                    {
+                        let posted = unsafe {
+                            PostMessageW(hwnd, WM_TIMER, WPARAM(FRAME_TIMER), LPARAM(0))
+                        };
+                        if posted.is_err() {
+                            worker.pending.store(false, Ordering::Release);
+                        }
+                    }
+                }
+            })
+            .map_err(|error| eprintln!("[{name}] 帧节拍线程启动失败：{error}"))
+            .ok()?;
+        Some(Self {
+            shared,
+            thread: handle.thread().clone(),
+        })
+    }
+    fn set_active(&self, active: bool) {
+        self.shared.active.store(active, Ordering::Release);
+        if active {
+            self.thread.unpark();
+        }
+    }
+    fn frame_delivered(&self) {
+        self.shared.pending.store(false, Ordering::Release);
+    }
+}
+impl Drop for FramePacer {
+    fn drop(&mut self) {
+        self.shared.alive.store(false, Ordering::Release);
+        self.shared.active.store(false, Ordering::Release);
+        self.thread.unpark();
+    }
 }
 
 /// 仅用于不调用窗口系统的闭包；返回值必须拥有全部数据，不能把借用带到副作用中。
@@ -121,21 +198,17 @@ fn window_event<W: WinWindow>(hwnd: HWND, event: WindowEvent, now: Instant) {
     update::<W>(hwnd, now, |model, cx| model.window_event(event, cx));
 }
 fn sync_timer<W: WinWindow>(hwnd: HWND, now: Instant) {
-    let change = with_state::<W, _>(hwnd, |state| {
-        state.clock.sync(state.model.wants_frames(now))
-    })
-    .flatten();
-    unsafe {
-        match change {
-            Some(true) => {
-                SetTimer(hwnd, FRAME_TIMER, FRAME_MS, None);
-            }
-            Some(false) => {
-                let _ = KillTimer(hwnd, FRAME_TIMER);
-            }
-            None => {}
+    with_state::<W, _>(hwnd, |state| {
+        let Some(active) = state.clock.sync(state.model.wants_frames(now)) else {
+            return;
+        };
+        if active && state.pacer.is_none() {
+            state.pacer = FramePacer::start(hwnd, W::THREAD_NAME);
         }
-    }
+        if let Some(pacer) = &state.pacer {
+            pacer.set_active(active);
+        }
+    });
 }
 fn finish<W: WinWindow>(hwnd: HWND, now: Instant) {
     sync_timer::<W>(hwnd, now);
@@ -338,8 +411,13 @@ unsafe extern "system" fn window_proc<W: WinWindow>(
     let now = overlay_now();
     match message {
         WM_TIMER if wparam.0 == FRAME_TIMER => {
-            let dt =
-                with_state::<W, _>(hwnd, |state| state.clock.delta(now)).unwrap_or(FIRST_FRAME_DT);
+            let dt = with_state::<W, _>(hwnd, |state| {
+                if let Some(pacer) = &state.pacer {
+                    pacer.frame_delivered();
+                }
+                state.clock.delta(now)
+            })
+            .unwrap_or(FIRST_FRAME_DT);
             update::<W>(hwnd, now, |model, cx| model.on_frame(dt, cx));
         }
         WM_MOUSEMOVE => pointer_event::<W>(
@@ -390,10 +468,10 @@ unsafe extern "system" fn window_proc<W: WinWindow>(
         }
         WM_SETCURSOR if (lparam.0 & 0xffff) == HTCLIENT as isize => {
             let cursor = with_state::<W, _>(hwnd, |state| state.pointer.cursor(&state.model.hit()));
-            let id = if cursor == Some(CursorShape::Move) {
-                IDC_SIZEALL
-            } else {
-                IDC_ARROW
+            let id = match cursor {
+                Some(CursorShape::Move) => IDC_SIZEALL,
+                Some(CursorShape::Hand) => IDC_HAND,
+                _ => IDC_ARROW,
             };
             if let Ok(cursor) = LoadCursorW(None, id) {
                 SetCursor(cursor);
@@ -460,6 +538,7 @@ pub(crate) fn create_window<W: WinWindow>() -> Option<HWND> {
                 resources: Default::default(),
                 surface: LayeredSurface::new(hwnd),
                 clock: FrameClock::new(),
+                pacer: None,
             }));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
             Some(hwnd).ok_or_else(|| "创建窗口失败".to_string())

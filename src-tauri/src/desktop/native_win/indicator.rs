@@ -25,13 +25,13 @@ impl WinWindow for Window {
     const THREAD_NAME: &'static str = "sayit-native-indicator";
     const TITLE: PCWSTR = w!("说吧！语音输入");
     fn create_model(_: u32) -> Indicator {
-        Indicator::new(&Look::WINDOWS_LEGACY)
+        Indicator::new(&Look::WINDOWS_LEGACY).clickable()
     }
     fn area(_: u32) -> PxRect {
         host::primary_area(true)
     }
     fn dispatch(action: <Indicator as OverlayModel<DWriteText>>::Action) {
-        match action {}
+        super::super::native_indicator::run_indicator_action(action);
     }
 }
 pub(crate) fn post(command: Command) {

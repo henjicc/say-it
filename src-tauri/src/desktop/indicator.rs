@@ -185,6 +185,7 @@ pub(crate) fn prepare_dictation_indicator(app: &tauri::AppHandle) -> Result<(), 
         crate::desktop::native_common::native_overlay_set_look(
             crate::desktop::floating_orb::native_look(app),
         );
+        crate::desktop::native_indicator_attach(app);
         crate::desktop::native_indicator_prepare();
         return Ok(());
     }

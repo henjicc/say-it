@@ -9,7 +9,24 @@
 //! 视觉规格以 ui/src/indicator/indicator.css 的 dictation-mode 为准。
 //! 分层窗口/D2D 渲染目标/DIB/命令队列/UI 线程等基础设施见 native_win/；状态与绘制位于 sayit-overlay-core::indicator。
 
+use sayit_overlay_core::indicator::IndicatorAction;
 use std::sync::OnceLock;
+
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub(crate) fn native_indicator_attach(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+}
+
+/// 胶囊动作在原生窗口线程触发；只取消令牌，不阻塞窗口线程。
+pub(crate) fn run_indicator_action(action: IndicatorAction) {
+    let Some(app) = APP.get() else { return };
+    match action {
+        IndicatorAction::SkipSmartProcessing => {
+            crate::application::dictation::skip_smart_processing(app)
+        }
+    }
+}
 
 /// Windows 上默认启用原生听写指示器；`SAYIT_NATIVE_INDICATOR=0` 回退 WebView。
 pub(crate) fn native_dictation_indicator_enabled() -> bool {

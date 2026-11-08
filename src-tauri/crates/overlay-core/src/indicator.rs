@@ -1,12 +1,17 @@
 //! 听写胶囊的状态、动画与绘制；窗口副作用由宿主按序执行。
+//!
+//! 布局窗口固定大小，胶囊与文字框的尺寸变化都在窗口内用弹簧动画绘制，不改窗口几何。
 use crate::anim::{ease_out_cubic, Transition};
 use crate::canvas::{
     Canvas, FontFamily, ParagraphAlign, TextAlign, TextEngine, TextStyle, TextTint,
 };
 use crate::geom::{Color, Point, PxRect, Rect, Shape, Stroke};
 use crate::look::{Look, Profile};
-use crate::window::{Cx, FrameSpec, NoPointer, Ops, OverlayModel, WindowEvent, WindowOp};
-use std::convert::Infallible;
+use crate::window::{
+    CursorShape, Cx, FrameSpec, Ops, OverlayModel, PointerEvent, PointerModel, PointerStep,
+    WindowEvent, WindowOp,
+};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 // 与 indicator.rs 的 DEFAULT_INDICATOR_WIDTH/HEIGHT 保持一致。
@@ -15,45 +20,66 @@ const LOGICAL_HEIGHT: f32 = 188.0;
 // 距主显示器工作区底边的逻辑像素。窗口底部自带 24px 透明内边距，
 // -12 让可见内容最终停在任务栏上方约 12px（与 macOS 相对 Dock 的取值同理）。
 const OFFSET_Y: f32 = -12.0;
-
-// 以下几何与 indicator.css 的 dictation-mode 一一对应。
 const WRAP_PADDING_BOTTOM: f32 = 24.0;
 const STACK_GAP: f32 = 10.0;
-const TEXT_W: f32 = 396.0;
-const TEXT_H: f32 = 85.5; // 22.5 * 3 + 18
-const TEXT_PAD: f32 = 12.0;
-const TEXT_PAD_Y: f32 = 9.0;
-const TEXT_VISIBLE_H: f32 = 67.5; // 22.5 * 3
+
+const PILL_H: f32 = 34.0;
+const PILL_RADIUS: f32 = PILL_H / 2.0;
+/// 录音时放得下滚动波形；处理中收窄；可跳过时悬停展开，放下「直接输入」。
+const PILL_W_RECORDING: f32 = 96.0;
+const PILL_W_PROCESSING: f32 = 84.0;
+const PILL_W_HOVER: f32 = 116.0;
+
+const TEXT_MAX_W: f32 = 396.0;
+const TEXT_MIN_W: f32 = 96.0;
+const TEXT_PAD_X: f32 = 12.0;
+const TEXT_PAD_Y: f32 = 8.0;
+const TEXT_MAX_LINES: u32 = 3;
 const TEXT_RADIUS: f32 = 12.0;
-const PILL_W: f32 = 168.0;
-const PILL_H: f32 = 40.0;
-const PILL_RADIUS: f32 = 20.0;
+const TEXT_SIZE: f32 = 14.0;
+/// 文字框出现时从下方这么远滑入。
+const TEXT_ENTER_SLIDE: f32 = 6.0;
+
 const FALLBACK_W: f32 = 396.0;
 const FALLBACK_H: f32 = 56.0;
 const FALLBACK_PAD: f32 = 14.0;
 const FALLBACK_ICON: f32 = 18.0;
 const FALLBACK_ICON_GAP: f32 = 10.0;
-const WAVE_AREA_W: f32 = 80.0;
-const WAVE_AREA_H: f32 = 26.0;
-const WAVE_BAR_RATIO: f32 = 0.03; // OrbWaveform dense 变体
-const WAVE_GAP_RATIO: f32 = 0.07;
-/// 处理中胶囊里四段进度文字之间的间距。
-const STAGE_GAP: f32 = 12.0;
-/// 处理阶段：识别结束后依次经过智能处理、本地规则，再输出到光标。
-const STAGES: [&str; 4] = ["识别", "处理", "规则", "输出"];
+
+/// 滚动波形：每根柱是一小段时间的音量，新柱从右侧进入、整体连续左移。
+const WAVE_BARS: usize = 14;
+const WAVE_BAR_W: f32 = 2.0;
+const WAVE_BAR_GAP: f32 = 4.0;
+const WAVE_MAX_H: f32 = 22.0;
+const WAVE_MIN_H: f32 = 2.0;
+/// 最左侧这么多根逐渐变淡，表示更早的声音。
+const WAVE_FADE_BARS: f32 = 5.0;
+/// 每块音频拆成两根柱；柱间隔先按 85ms 一块估计，收到数据后按实际间隔平滑修正。
+const WAVE_DEFAULT_BAR_S: f32 = 0.0425;
+/// 数据迟到时先停住等待；停太久（静音或没有新数据）才补一根空柱继续走。
+const WAVE_STALL_S: f32 = 0.3;
+const WAVE_MAX_PENDING: usize = 6;
+
+/// 处理中：点阵铺满胶囊，用内缩的胶囊形状遮住，一道亮带左右扫过。
+const DOT_STEP: f32 = 3.6;
+const DOT_MASK_INSET: f32 = 3.5;
+const DOT_EDGE_FADE: f32 = 2.2;
+const DOT_BASE_R: f32 = 0.65;
+const DOT_PEAK_R: f32 = 1.5;
+/// 亮带往返的角速度（弧度/秒）。
+const SCAN_SPEED: f32 = 2.1;
+const SCAN_BAND: f32 = 0.045;
+const SCAN_TRAIL: f32 = 8.0;
 
 const NOTICE_AUTO_HIDE_MS: u32 = 3500;
 
 /// 出场时从最终位置下方这么远（逻辑像素）淡入滑入；退场反向。
-/// 与 indicator.css 的 wrapIn（translateY(10px)）一致。
 const TRANSITION_SLIDE_PX: f32 = 10.0;
 
-/// 文本新增内容的淡入时长，与 indicator.css 的 freshIn 180ms 一致。
+/// 文本新增内容的淡入时长。
 const TEXT_FRESH_FADE_S: f32 = 0.18;
-/// CSS 只给 ≤10 字符的短追加挂 .fresh 淡入；长追加直接显示。
+/// 只给 ≤10 字符的短追加淡入；长追加直接显示。
 const TEXT_FRESH_FADE_MAX_CHARS: usize = 10;
-/// 波形柱高度平滑的时间常数，与 indicator.css 的 height 70ms ease-out 等效。
-const WAVE_SMOOTH_S: f32 = 0.070;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -94,14 +120,142 @@ impl IndicatorState {
         }
     }
 
-    /// 处理中胶囊里当前高亮的阶段；其余状态不显示阶段。
-    fn active_stage(self) -> Option<usize> {
-        match self {
-            Self::Processing => Some(0),
-            Self::SmartProcessing => Some(1),
-            _ => None,
+    fn is_pill(self) -> bool {
+        matches!(
+            self,
+            Self::Recording | Self::Processing | Self::SmartProcessing
+        )
+    }
+}
+
+/// 胶囊发给应用的动作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorAction {
+    /// 智能处理中点击胶囊：跳过大模型，直接输出识别原文。
+    SkipSmartProcessing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorInput {
+    Hover(bool),
+    /// 已点击跳过：立刻退出可点击状态，给出反馈。
+    Skip,
+}
+
+/// 指针层的命中快照：只有智能处理中才有可点击区域（布局坐标，DIP）。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct IndicatorHit {
+    skip: Option<Rect>,
+    dpi: u32,
+}
+
+/// 胶囊平时点击穿透；智能处理中整窗可交互，但只有胶囊本身响应悬停与点击。
+#[derive(Debug, Default)]
+pub struct IndicatorPointer {
+    hovering: bool,
+    pressed: bool,
+}
+
+impl IndicatorPointer {
+    fn inside(hit: &IndicatorHit, client: (i32, i32)) -> bool {
+        let scale = if hit.dpi == 0 { 1.0 } else { hit.dpi as f32 / 96.0 };
+        let point = Point::new(client.0 as f32 / scale, client.1 as f32 / scale);
+        hit.skip.is_some_and(|rect| rect.contains(point))
+    }
+    fn set_hover(
+        &mut self,
+        hovering: bool,
+        steps: &mut Vec<PointerStep<IndicatorAction, IndicatorInput>>,
+    ) {
+        if hovering == self.hovering {
+            return;
+        }
+        self.hovering = hovering;
+        if hovering {
+            steps.push(PointerStep::Op(WindowOp::TrackMouseLeave));
+        }
+        steps.push(PointerStep::Model(IndicatorInput::Hover(hovering)));
+    }
+}
+
+impl PointerModel for IndicatorPointer {
+    type Hit = IndicatorHit;
+    type Input = IndicatorInput;
+    type Action = IndicatorAction;
+    fn event(
+        &mut self,
+        event: PointerEvent,
+        hit: &IndicatorHit,
+    ) -> Vec<PointerStep<IndicatorAction, IndicatorInput>> {
+        let mut steps = Vec::new();
+        match event {
+            PointerEvent::Move { client, .. } => {
+                self.set_hover(Self::inside(hit, client), &mut steps);
+            }
+            PointerEvent::LeftDown { client, .. } => {
+                self.pressed = Self::inside(hit, client);
+            }
+            PointerEvent::LeftUp { client } => {
+                if std::mem::take(&mut self.pressed) && Self::inside(hit, client) {
+                    self.hovering = false;
+                    steps.push(PointerStep::Model(IndicatorInput::Skip));
+                    steps.push(PointerStep::Op(WindowOp::Action(
+                        IndicatorAction::SkipSmartProcessing,
+                    )));
+                }
+            }
+            PointerEvent::RightUp { .. } => {}
+            PointerEvent::Leave | PointerEvent::CaptureLost => {
+                self.pressed = false;
+                self.set_hover(false, &mut steps);
+            }
+        }
+        steps
+    }
+    fn cursor(&self, hit: &IndicatorHit) -> CursorShape {
+        if self.hovering && hit.skip.is_some() {
+            CursorShape::Hand
+        } else {
+            CursorShape::Arrow
         }
     }
+}
+
+/// 临界阻尼附近的弹簧；子步长积分，帧间隔抖动时也稳定。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Spring {
+    x: f32,
+    v: f32,
+}
+
+impl Spring {
+    const fn at(x: f32) -> Self {
+        Self { x, v: 0.0 }
+    }
+    fn snap(&mut self, x: f32) {
+        *self = Self::at(x);
+    }
+    fn step(&mut self, target: f32, dt: f32, stiffness: f32, damping: f32) {
+        let mut left = dt.clamp(0.0, 0.1);
+        while left > 0.0 {
+            let h = left.min(1.0 / 240.0);
+            let accel = stiffness * (target - self.x) - damping * self.v;
+            self.v += accel * h;
+            self.x += self.v * h;
+            left -= h;
+        }
+    }
+    fn settled(&self, target: f32, epsilon: f32) -> bool {
+        (self.x - target).abs() < epsilon && self.v.abs() < epsilon
+    }
+}
+
+/// 文字框的目标几何：宽度贴合最长一行，高度最多三行，超出时向上滚动。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TextTarget {
+    width: f32,
+    height: f32,
+    scroll: f32,
 }
 
 pub struct Indicator {
@@ -110,12 +264,30 @@ pub struct Indicator {
     /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
     fresh_from: usize,
     fresh_started: Option<Instant>,
-    /// 平滑后的波形柱高（CSS 的 70ms ease-out height 过渡等效）。
-    wave_display: [f32; WAVE_BAR_COUNT],
-
-    wave_active: bool,
-    wave_level: f32,
-    wave_peaks: Vec<f32>,
+    /// 屏幕上的波形柱（最旧在前），比可见数量多一根用于滚入。
+    wave_bars: VecDeque<f32>,
+    /// 已收到、还没滚入的柱。
+    wave_pending: VecDeque<f32>,
+    /// 0..1：当前柱向左滚过的比例。
+    wave_scroll: f32,
+    wave_bar_s: f32,
+    wave_last_chunk: Option<Instant>,
+    wave_stalled: f32,
+    /// 处理中扫描动画的时间轴。
+    scan_t: f32,
+    pill_w: Spring,
+    /// 0 = 录音波形，1 = 处理中点阵。
+    morph: Spring,
+    hover: Spring,
+    hovering: bool,
+    /// 宿主能把指针事件交给胶囊时才允许点击跳过（Windows）；否则始终点击穿透。
+    clickable: bool,
+    interactive: bool,
+    text_target: TextTarget,
+    text_w: Spring,
+    text_h: Spring,
+    text_scroll: Spring,
+    text_alpha: Spring,
     /// Notice 态的自定义文案。
     notice_text: String,
     dpi: u32,
@@ -131,10 +303,24 @@ impl Indicator {
             text: String::new(),
             fresh_from: 0,
             fresh_started: None,
-            wave_display: [0.0; WAVE_BAR_COUNT],
-            wave_active: false,
-            wave_level: 0.0,
-            wave_peaks: Vec::new(),
+            wave_bars: VecDeque::from(vec![0.0; WAVE_BARS + 1]),
+            wave_pending: VecDeque::new(),
+            wave_scroll: 0.0,
+            wave_bar_s: WAVE_DEFAULT_BAR_S,
+            wave_last_chunk: None,
+            wave_stalled: 0.0,
+            scan_t: 0.0,
+            pill_w: Spring::at(PILL_W_RECORDING),
+            morph: Spring::at(0.0),
+            hover: Spring::at(0.0),
+            hovering: false,
+            clickable: false,
+            interactive: false,
+            text_target: TextTarget::default(),
+            text_w: Spring::at(0.0),
+            text_h: Spring::at(0.0),
+            text_scroll: Spring::at(0.0),
+            text_alpha: Spring::at(0.0),
             notice_text: String::new(),
             dpi: 96,
             transition: Transition::new(false),
@@ -142,37 +328,176 @@ impl Indicator {
             look: *look,
         }
     }
+    /// 宿主接通了指针事件：智能处理中允许点击胶囊跳过。
+    pub fn clickable(mut self) -> Self {
+        self.clickable = true;
+        self
+    }
+    fn reset_wave(&mut self) {
+        self.wave_bars = VecDeque::from(vec![0.0; WAVE_BARS + 1]);
+        self.wave_pending.clear();
+        self.wave_scroll = 0.0;
+        self.wave_last_chunk = None;
+        self.wave_stalled = 0.0;
+    }
     fn clear_content(&mut self) {
         self.state = None;
         self.text.clear();
-        self.wave_active = false;
-        self.wave_peaks.clear();
+        self.text_target = TextTarget::default();
+        self.text_alpha.snap(0.0);
+        self.reset_wave();
+        self.hovering = false;
+        self.hover.snap(0.0);
     }
-    fn begin_exit(&mut self) -> Ops<Infallible> {
+    /// 只有智能处理中可以点击跳过；其余状态保持点击穿透。
+    fn sync_interactive(&mut self, ops: &mut Ops<IndicatorAction>) {
+        let want = self.clickable && self.state == Some(IndicatorState::SmartProcessing);
+        if !want {
+            self.hovering = false;
+        }
+        if want != self.interactive {
+            self.interactive = want;
+            ops.push(WindowOp::SetInteractive(want));
+        }
+    }
+    fn begin_exit(&mut self) -> Ops<IndicatorAction> {
         self.notice_deadline = None;
+        let mut ops = Vec::new();
         if !self.transition.hide() {
             self.clear_content();
-            vec![WindowOp::Hide]
-        } else {
-            Vec::new()
+            ops.push(WindowOp::Hide);
+        }
+        self.hovering = false;
+        if self.interactive {
+            self.interactive = false;
+            ops.push(WindowOp::SetInteractive(false));
+        }
+        ops
+    }
+    fn pill_target(&self) -> f32 {
+        match self.state {
+            Some(IndicatorState::Recording) | None => PILL_W_RECORDING,
+            _ if self.hovering => PILL_W_HOVER,
+            _ => PILL_W_PROCESSING,
         }
     }
-    /// 每帧推进：波形平滑与文本淡入的收尾。
-    fn tick_animations(&mut self, dt: f32, now: Instant) {
-        // 波形柱向目标值指数趋近，等效 CSS 的 70ms ease-out height 过渡。
-        // 与 IndicatorApp.tsx 一致：每个峰值先过感知响度曲线再重采样；
-        // 原始 RMS 响度正常说话只有 0.05~0.3，不过曲线柱高会常年压在最低线。
-        let scaled_peaks: Vec<f32> = self.wave_peaks.iter().map(|v| wave_scale(*v)).collect();
-        let target = resample_wave_levels(&scaled_peaks, wave_scale(self.wave_level));
-        let k = 1.0 - (-dt / WAVE_SMOOTH_S).exp();
-        for (display, target) in self.wave_display.iter_mut().zip(target) {
-            *display += (target - *display) * k;
+    fn morph_target(&self) -> f32 {
+        match self.state {
+            Some(IndicatorState::Processing | IndicatorState::SmartProcessing) => 1.0,
+            _ => 0.0,
         }
+    }
+    fn text_visible(&self) -> bool {
+        !self.text.is_empty() && self.state.is_some_and(IndicatorState::is_pill)
+    }
+    /// 隐藏后重新出现时不从旧尺寸动画过来，直接落在目标上。
+    fn snap_geometry(&mut self) {
+        self.pill_w.snap(self.pill_target());
+        self.morph.snap(self.morph_target());
+        self.hover.snap(0.0);
+    }
+    fn measure_text<T: TextEngine>(&mut self, text: &T) {
+        if self.text.is_empty() {
+            return;
+        }
+        let inner = TEXT_MAX_W - TEXT_PAD_X * 2.0;
+        let Some(layout) = text.layout(&self.text, &text_style(TEXT_SIZE, false), inner, 10_000.0)
+        else {
+            return;
+        };
+        let metrics = text.metrics(&layout);
+        let lines = metrics.line_count.max(1);
+        let line_h = metrics.height / lines as f32;
+        let visible = lines.min(TEXT_MAX_LINES);
+        self.text_target = TextTarget {
+            width: (metrics.width + TEXT_PAD_X * 2.0).clamp(TEXT_MIN_W, TEXT_MAX_W),
+            height: visible as f32 * line_h + TEXT_PAD_Y * 2.0,
+            scroll: (lines - visible) as f32 * line_h,
+        };
+        if self.text_alpha.x < 0.05 {
+            self.text_w.snap(self.text_target.width);
+            self.text_h.snap(self.text_target.height);
+            self.text_scroll.snap(self.text_target.scroll);
+        }
+    }
+    /// 一块音频拆成两根柱：每半块取峰值，先过感知响度曲线。
+    fn push_wave_chunk(&mut self, level: f32, peaks: &[f32], now: Instant) {
+        if let Some(last) = self.wave_last_chunk {
+            let per_bar = now.saturating_duration_since(last).as_secs_f32() / 2.0;
+            if (0.01..0.5).contains(&per_bar) {
+                self.wave_bar_s += (per_bar - self.wave_bar_s) * 0.2;
+            }
+        }
+        self.wave_last_chunk = Some(now);
+        let halves: [&[f32]; 2] = if peaks.len() >= 2 {
+            let mid = peaks.len() / 2;
+            [&peaks[..mid], &peaks[mid..]]
+        } else {
+            [peaks, peaks]
+        };
+        for half in halves {
+            let peak = half.iter().copied().fold(f32::NAN, f32::max);
+            let value = if peak.is_nan() { level } else { peak };
+            self.wave_pending.push_back(wave_scale(value));
+        }
+        while self.wave_pending.len() > WAVE_MAX_PENDING {
+            self.wave_pending.pop_front();
+        }
+    }
+    fn advance_wave(&mut self, dt: f32) {
+        self.wave_scroll += dt / self.wave_bar_s.max(0.01);
+        while self.wave_scroll >= 1.0 {
+            // 停顿够久后持续补空柱，波形照常连续左移；新数据到达才重新计时。
+            let next = match self.wave_pending.pop_front() {
+                Some(value) => {
+                    self.wave_stalled = 0.0;
+                    value
+                }
+                None if self.wave_stalled >= WAVE_STALL_S => 0.0,
+                None => {
+                    self.wave_scroll = self.wave_scroll.min(0.999);
+                    self.wave_stalled += dt;
+                    return;
+                }
+            };
+            self.wave_bars.pop_front();
+            self.wave_bars.push_back(next);
+            self.wave_scroll -= 1.0;
+        }
+    }
+    /// 每帧推进全部动画。
+    fn tick_animations(&mut self, dt: f32, now: Instant) {
+        if self.state == Some(IndicatorState::Recording) {
+            self.advance_wave(dt);
+        }
+        if self.morph.x > 0.001 || self.morph_target() > 0.0 {
+            self.scan_t += dt;
+        }
+        self.pill_w.step(self.pill_target(), dt, 260.0, 28.0);
+        self.morph.step(self.morph_target(), dt, 150.0, 22.0);
+        let hover = if self.hovering { 1.0 } else { 0.0 };
+        self.hover.step(hover, dt, 320.0, 30.0);
+        let alpha = if self.text_visible() { 1.0 } else { 0.0 };
+        self.text_alpha.step(alpha, dt, 220.0, 28.0);
+        self.text_w.step(self.text_target.width, dt, 240.0, 30.0);
+        self.text_h.step(self.text_target.height, dt, 240.0, 30.0);
+        self.text_scroll.step(self.text_target.scroll, dt, 200.0, 28.0);
         if self.fresh_started.is_some_and(|start| {
             now.saturating_duration_since(start).as_secs_f32() >= TEXT_FRESH_FADE_S
         }) {
             self.fresh_started = None;
         }
+    }
+    fn springs_settled(&self) -> bool {
+        let text_alpha = if self.text_visible() { 1.0 } else { 0.0 };
+        let hover = if self.hovering { 1.0 } else { 0.0 };
+        self.pill_w.settled(self.pill_target(), 0.05)
+            && self.morph.settled(self.morph_target(), 0.002)
+            && self.hover.settled(hover, 0.002)
+            && self.text_alpha.settled(text_alpha, 0.002)
+            && self.text_w.settled(self.text_target.width, 0.05)
+            && self.text_h.settled(self.text_target.height, 0.05)
+            && self.text_scroll.settled(self.text_target.scroll, 0.05)
     }
 
     /// 文本新增部分的淡入进度（1.0 = 已完成/无新增）。
@@ -185,35 +510,63 @@ impl Indicator {
             })
             .unwrap_or(1.0)
     }
+    fn content_bottom() -> f32 {
+        LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM
+    }
+    fn pill_rect(&self) -> Rect {
+        let width = self.pill_w.x;
+        let bottom = Self::content_bottom();
+        Rect::new(
+            (LOGICAL_WIDTH - width) / 2.0,
+            bottom - PILL_H,
+            (LOGICAL_WIDTH + width) / 2.0,
+            bottom,
+        )
+    }
+    fn text_rect(&self) -> Rect {
+        let width = self.text_w.x;
+        let bottom =
+            self.pill_rect().top - STACK_GAP + (1.0 - self.text_alpha.x) * TEXT_ENTER_SLIDE;
+        Rect::new(
+            (LOGICAL_WIDTH - width) / 2.0,
+            bottom - self.text_h.x,
+            (LOGICAL_WIDTH + width) / 2.0,
+            bottom,
+        )
+    }
 }
 
 impl<T: TextEngine> OverlayModel<T> for Indicator {
     type Command = Command;
-    type Action = Infallible;
-    type Pointer = NoPointer;
+    type Action = IndicatorAction;
+    type Pointer = IndicatorPointer;
 
-    fn apply(&mut self, command: Command, cx: &Cx<'_, T>) -> Ops<Infallible> {
+    fn apply(&mut self, command: Command, cx: &Cx<'_, T>) -> Ops<IndicatorAction> {
         match command {
             Command::Prepare => {
                 self.notice_deadline = None;
                 self.text.clear();
+                self.text_target = TextTarget::default();
                 self.fresh_from = 0;
                 self.fresh_started = None;
-                self.wave_active = false;
-                self.wave_peaks.clear();
-                self.wave_level = 0.0;
+                self.reset_wave();
                 Vec::new()
             }
             Command::SetState(state) => {
                 self.notice_deadline = None;
+                let reappearing = self.transition.is_fully_hidden() || self.state.is_none();
                 self.state = Some(state);
                 if state == IndicatorState::Fallback {
                     self.text.clear();
-                    self.wave_active = false;
-                    self.wave_peaks.clear();
+                    self.reset_wave();
+                }
+                if reappearing {
+                    self.snap_geometry();
                 }
                 self.transition.show();
-                vec![WindowOp::Redraw, WindowOp::RaiseTopmost]
+                let mut ops = vec![WindowOp::Redraw, WindowOp::RaiseTopmost];
+                self.sync_interactive(&mut ops);
+                ops
             }
             Command::SetText { text, fade } => {
                 // 只有短追加或显式换新才淡入；修订已有内容直接替换。
@@ -233,6 +586,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 self.fresh_started =
                     (fresh_len > 0 && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS).then_some(cx.now);
                 self.text = text;
+                self.measure_text(cx.text);
                 if self.state.is_some() {
                     vec![WindowOp::Redraw]
                 } else {
@@ -240,31 +594,40 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 }
             }
             Command::SetWaveform { level, peaks } => {
-                self.wave_active = true;
-                self.wave_level = level;
-                self.wave_peaks = peaks;
+                self.push_wave_chunk(level, &peaks, cx.now);
                 Vec::new()
             }
             Command::ShowNotice(text) => {
                 self.text.clear();
                 self.fresh_from = 0;
                 self.fresh_started = None;
-                self.wave_active = false;
-                self.wave_peaks.clear();
+                self.reset_wave();
                 self.notice_text = text;
                 self.state = Some(IndicatorState::Notice);
                 self.transition.show();
                 self.notice_deadline =
                     Some(cx.now + Duration::from_millis(NOTICE_AUTO_HIDE_MS as u64));
-                vec![WindowOp::Redraw, WindowOp::RaiseTopmost]
+                let mut ops = vec![WindowOp::Redraw, WindowOp::RaiseTopmost];
+                self.sync_interactive(&mut ops);
+                ops
             }
             Command::Hide => self.begin_exit(),
         }
     }
-    fn input(&mut self, input: Infallible, _: &Cx<'_, T>) -> Ops<Infallible> {
-        match input {}
+    fn input(&mut self, input: IndicatorInput, _: &Cx<'_, T>) -> Ops<IndicatorAction> {
+        let mut ops = vec![WindowOp::Redraw];
+        match input {
+            IndicatorInput::Hover(hovering) => self.hovering = hovering && self.interactive,
+            IndicatorInput::Skip => {
+                if self.state == Some(IndicatorState::SmartProcessing) {
+                    self.state = Some(IndicatorState::Processing);
+                    self.sync_interactive(&mut ops);
+                }
+            }
+        }
+        ops
     }
-    fn window_event(&mut self, event: WindowEvent, cx: &Cx<'_, T>) -> Ops<Infallible> {
+    fn window_event(&mut self, event: WindowEvent, cx: &Cx<'_, T>) -> Ops<IndicatorAction> {
         if let WindowEvent::DpiChanged { dpi, .. } = event {
             if dpi != 0 {
                 self.dpi = dpi;
@@ -277,11 +640,11 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         }
         Vec::new()
     }
-    fn set_look(&mut self, look: &Look) -> Ops<Infallible> {
+    fn set_look(&mut self, look: &Look) -> Ops<IndicatorAction> {
         self.look = *look;
         vec![WindowOp::Redraw]
     }
-    fn on_frame(&mut self, dt: f32, cx: &Cx<'_, T>) -> Ops<Infallible> {
+    fn on_frame(&mut self, dt: f32, cx: &Cx<'_, T>) -> Ops<IndicatorAction> {
         let mut ops = if self
             .notice_deadline
             .is_some_and(|deadline| deadline <= cx.now)
@@ -299,12 +662,13 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         ops.push(WindowOp::Redraw);
         ops
     }
-    /// 只有波形、文字淡入、通知倒计时和入退场需要逐帧推进；处理中与兜底是静态画面。
+    /// 录音波形与处理中扫描持续动画；其余状态只在弹簧、淡入、倒计时或入退场未完成时要帧。
     fn wants_frames(&self, _: Instant) -> bool {
         self.transition.is_animating()
-            || self.state == Some(IndicatorState::Recording)
+            || self.state.is_some_and(IndicatorState::is_pill)
             || self.fresh_started.is_some()
             || self.notice_deadline.is_some()
+            || (self.state.is_some() && !self.springs_settled())
     }
     fn prepare_frame(&mut self, cx: &Cx<'_, T>) -> Option<FrameSpec> {
         self.state?;
@@ -326,7 +690,16 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
     fn draw<C: Canvas<Text = T>>(&self, canvas: &mut C, now: Instant) {
         self.draw_content(canvas, now);
     }
-    fn hit(&self) {}
+    fn hit(&self) -> IndicatorHit {
+        let skip = (self.interactive && self.transition.visual() > 0.5).then(|| {
+            let pill = self.pill_rect();
+            Rect::new(pill.left - 2.0, pill.top - 2.0, pill.right + 2.0, pill.bottom + 2.0)
+        });
+        IndicatorHit {
+            skip,
+            dpi: self.dpi,
+        }
+    }
     fn glass(&self) -> Vec<Shape> {
         if self.look.profile != Profile::Css || self.look.glass.is_none() {
             return Vec::new();
@@ -334,37 +707,19 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         let Some(state) = self.state else {
             return Vec::new();
         };
-        let bottom = LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM;
         if matches!(state, IndicatorState::Fallback | IndicatorState::Notice) {
             return vec![Shape::RoundedRect {
-                rect: Rect::new(
-                    (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
-                    bottom - FALLBACK_H,
-                    (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
-                    bottom,
-                ),
+                rect: Self::notice_rect(),
                 radius: TEXT_RADIUS,
             }];
         }
-        let pill = Rect::new(
-            (LOGICAL_WIDTH - PILL_W) / 2.0,
-            bottom - PILL_H,
-            (LOGICAL_WIDTH + PILL_W) / 2.0,
-            bottom,
-        );
         let mut shapes = vec![Shape::RoundedRect {
-            rect: pill,
+            rect: self.pill_rect(),
             radius: PILL_RADIUS,
         }];
-        if !self.text.is_empty() {
-            let bottom = pill.top - STACK_GAP;
+        if self.text_alpha.x > 0.01 {
             shapes.push(Shape::RoundedRect {
-                rect: Rect::new(
-                    (LOGICAL_WIDTH - TEXT_W) / 2.0,
-                    bottom - TEXT_H,
-                    (LOGICAL_WIDTH + TEXT_W) / 2.0,
-                    bottom,
-                ),
+                rect: self.text_rect(),
                 radius: TEXT_RADIUS,
             });
         }
@@ -373,73 +728,101 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
 }
 
 impl Indicator {
-    fn fill_rounded<C: Canvas>(
+    fn notice_rect() -> Rect {
+        let bottom = Self::content_bottom();
+        Rect::new(
+            (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
+            bottom - FALLBACK_H,
+            (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
+            bottom,
+        )
+    }
+    /// 胶囊、文字框与通知面板共用：深色底，内侧浅色细线、外侧深色细线，
+    /// 深浅两种桌面背景上都能看清轮廓。
+    fn draw_panel<C: Canvas>(
         &self,
         canvas: &mut C,
         rect: Rect,
         radius: f32,
-        fill: Color,
-        border: Color,
+        alpha: f32,
+        emphasis: f32,
     ) {
-        canvas.fill_rounded_rect(rect, radius, fill);
-        canvas.stroke_rounded_rect(rect, radius, border, Stroke::plain(1.0));
-    }
-    /// 胶囊、文本框与通知面板共用的底色与细边框，与主窗口检查器同色系。
-    fn panel_fill(&self) -> Color {
-        self.look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96)
-    }
-    fn panel_border(&self) -> Color {
-        self.look.color(1.0, 1.0, 1.0, 0.08)
+        canvas.fill_rounded_rect(
+            rect,
+            radius,
+            self.look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96 * alpha),
+        );
+        let outer = Rect::new(
+            rect.left - 0.5,
+            rect.top - 0.5,
+            rect.right + 0.5,
+            rect.bottom + 0.5,
+        );
+        canvas.stroke_rounded_rect(
+            outer,
+            radius + 0.5,
+            self.look.color(0.0, 0.0, 0.0, 0.55 * alpha),
+            Stroke::plain(1.0),
+        );
+        let inner = Rect::new(
+            rect.left + 0.5,
+            rect.top + 0.5,
+            rect.right - 0.5,
+            rect.bottom - 0.5,
+        );
+        canvas.stroke_rounded_rect(
+            inner,
+            radius - 0.5,
+            self.look
+                .color(1.0, 1.0, 1.0, (0.16 + 0.12 * emphasis) * alpha),
+            Stroke::plain(1.0),
+        );
     }
     fn draw_content<C: Canvas>(&self, canvas: &mut C, now: Instant) {
         let Some(state) = self.state else { return };
-        let content_bottom = LOGICAL_HEIGHT - WRAP_PADDING_BOTTOM;
         if state == IndicatorState::Fallback {
             self.draw_notice_panel(
                 canvas,
-                content_bottom,
+                Self::content_bottom(),
                 "已经把结果放到你的剪贴板里了，你粘贴就可以用了",
                 false,
             );
             return;
         }
         if state == IndicatorState::Notice {
-            self.draw_notice_panel(canvas, content_bottom, &self.notice_text, true);
+            self.draw_notice_panel(canvas, Self::content_bottom(), &self.notice_text, true);
             return;
         }
-        let pill = Rect::new(
-            (LOGICAL_WIDTH - PILL_W) / 2.0,
-            content_bottom - PILL_H,
-            (LOGICAL_WIDTH + PILL_W) / 2.0,
-            content_bottom,
-        );
-        if !self.text.is_empty() {
-            let text_bottom = pill.top - STACK_GAP;
-            self.draw_text_box(
-                canvas,
-                Rect::new(
-                    (LOGICAL_WIDTH - TEXT_W) / 2.0,
-                    text_bottom - TEXT_H,
-                    (LOGICAL_WIDTH + TEXT_W) / 2.0,
-                    text_bottom,
-                ),
-                now,
-            );
+        if self.text_alpha.x > 0.01 {
+            self.draw_text_box(canvas, now);
         }
-        self.fill_rounded(canvas, pill, PILL_RADIUS, self.panel_fill(), self.panel_border());
-        if state == IndicatorState::Recording {
-            self.draw_waveform(canvas, pill);
-        } else if let Some(active) = state.active_stage() {
-            self.draw_stages(canvas, active, pill);
+        let pill = self.pill_rect();
+        self.draw_panel(canvas, pill, PILL_RADIUS, 1.0, self.hover.x);
+        let content = 1.0 - self.hover.x.clamp(0.0, 1.0);
+        let morph = self.morph.x.clamp(0.0, 1.0);
+        if morph < 0.999 {
+            self.draw_waveform(canvas, pill, (1.0 - morph) * content, 1.0 - morph);
+        }
+        if morph > 0.001 {
+            self.draw_scan(canvas, pill, morph * content);
+        }
+        if self.hover.x > 0.01 {
+            self.draw_skip_hint(canvas, pill, self.hover.x.clamp(0.0, 1.0));
         }
     }
-    fn draw_text_box<C: Canvas>(&self, canvas: &mut C, rect: Rect, now: Instant) {
-        self.fill_rounded(canvas, rect, TEXT_RADIUS, self.panel_fill(), self.panel_border());
-        let inner_w = TEXT_W - TEXT_PAD * 2.0;
+    fn draw_text_box<C: Canvas>(&self, canvas: &mut C, now: Instant) {
+        let alpha = self.text_alpha.x.clamp(0.0, 1.0);
+        let rect = self.text_rect();
+        self.draw_panel(canvas, rect, TEXT_RADIUS, alpha, 0.0);
+        if self.text.is_empty() {
+            return;
+        }
+        // 换行宽度固定为最大宽度：框宽在动画时，已排好的行不会跟着重新折行。
+        let wrap_w = TEXT_MAX_W - TEXT_PAD_X * 2.0;
         let Some(layout) =
             canvas
                 .text()
-                .layout(&self.text, &text_style(14.0, false), inner_w, 10_000.0)
+                .layout(&self.text, &text_style(TEXT_SIZE, false), wrap_w, 10_000.0)
         else {
             return;
         };
@@ -455,78 +838,140 @@ impl Indicator {
             (utf16_start < total).then_some(TextTint {
                 utf16_start,
                 utf16_len: total - utf16_start,
-                color: fg(&self.look, fade),
+                color: fg(&self.look, fade * alpha),
             })
         } else {
             None
         };
-        let metrics = canvas.text().metrics(&layout);
         let inner = Rect::new(
-            rect.left + TEXT_PAD,
+            rect.left + TEXT_PAD_X,
             rect.top + TEXT_PAD_Y,
-            rect.right - TEXT_PAD,
-            rect.top + TEXT_PAD_Y + TEXT_VISIBLE_H,
+            rect.right - TEXT_PAD_X,
+            rect.bottom - TEXT_PAD_Y,
         );
-        let offset = (metrics.height - TEXT_VISIBLE_H).max(0.0);
         canvas.save();
         canvas.clip_rect(inner);
         canvas.draw_text(
             &layout,
-            Point::new(inner.left, inner.top - offset),
-            fg(&self.look, 1.0),
+            Point::new(inner.left, inner.top - self.text_scroll.x),
+            fg(&self.look, alpha),
             tint,
         );
         canvas.restore();
     }
-    /// 处理中：胶囊里依次排列四个阶段，已完成为前景色，当前为强调色，未到为暗色。
-    fn draw_stages<C: Canvas>(&self, canvas: &mut C, active: usize, pill: Rect) {
-        let style = text_style(12.0, false);
-        let layouts: Vec<_> = STAGES
-            .iter()
-            .map(|label| canvas.text().layout(label, &style, 1_000.0, 100.0))
-            .collect();
-        let widths: Vec<f32> = layouts
-            .iter()
-            .map(|layout| layout.as_ref().map_or(0.0, |l| canvas.text().metrics(l).width))
-            .collect();
-        let total = widths.iter().sum::<f32>() + STAGE_GAP * (STAGES.len() - 1) as f32;
+    /// 录音：柱子连续左移，最左侧几根渐隐；高度随 `shrink` 收向中线，过渡到点阵。
+    fn draw_waveform<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32, shrink: f32) {
+        if alpha < 0.01 {
+            return;
+        }
+        let step = WAVE_BAR_W + WAVE_BAR_GAP;
+        let span = WAVE_BARS as f32 * step - WAVE_BAR_GAP;
+        let center_x = (pill.left + pill.right) / 2.0;
         let center_y = (pill.top + pill.bottom) / 2.0;
-        let mut x = (pill.left + pill.right - total) / 2.0;
-        for (index, layout) in layouts.iter().enumerate() {
-            if let Some(layout) = layout {
-                let height = canvas.text().metrics(layout).height;
-                let color = if index < active {
-                    fg(&self.look, 1.0)
-                } else if index == active {
-                    self.look.color(112.0 / 255.0, 155.0 / 255.0, 241.0 / 255.0, 1.0)
-                } else {
-                    self.look.color(92.0 / 255.0, 95.0 / 255.0, 102.0 / 255.0, 1.0)
-                };
-                canvas.draw_text(layout, Point::new(x, center_y - height / 2.0), color, None);
+        let left = center_x - span / 2.0;
+        let clip = Rect::new(
+            pill.left + PILL_RADIUS * 0.5,
+            pill.top,
+            pill.right - PILL_RADIUS * 0.5,
+            pill.bottom,
+        );
+        canvas.save();
+        canvas.clip_rect(clip);
+        for (index, level) in self.wave_bars.iter().enumerate() {
+            let x = left + (index as f32 - self.wave_scroll) * step;
+            let fade = ((x - left + step) / (WAVE_FADE_BARS * step)).clamp(0.0, 1.0);
+            let height =
+                (WAVE_MIN_H + level.clamp(0.0, 1.0) * (WAVE_MAX_H - WAVE_MIN_H)) * shrink;
+            let height = height.max(WAVE_BAR_W);
+            canvas.fill_rounded_rect(
+                Rect::new(
+                    x,
+                    center_y - height / 2.0,
+                    x + WAVE_BAR_W,
+                    center_y + height / 2.0,
+                ),
+                WAVE_BAR_W / 2.0,
+                fg(&self.look, alpha * (0.35 + 0.65 * fade)),
+            );
+        }
+        canvas.restore();
+    }
+    /// 处理中：点阵铺满胶囊、由内缩的胶囊形状遮住（点不碰描边），亮带左右往返并拖着渐淡的尾巴。
+    fn draw_scan<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32) {
+        if alpha < 0.01 {
+            return;
+        }
+        let width = pill.width();
+        let height = pill.height();
+        let center_x = (pill.left + pill.right) / 2.0;
+        let center_y = (pill.top + pill.bottom) / 2.0;
+        let mask_r = height / 2.0 - DOT_MASK_INSET;
+        let straight = width / 2.0 - height / 2.0;
+        let cols = (width / DOT_STEP).ceil() as i32 + 1;
+        let rows = (height / DOT_STEP).ceil() as i32 + 1;
+        let start_x = center_x - (cols - 1) as f32 * DOT_STEP / 2.0;
+        let start_y = center_y - (rows - 1) as f32 * DOT_STEP / 2.0;
+        let band_left = pill.left + DOT_MASK_INSET + 1.5;
+        let band_right = pill.right - DOT_MASK_INSET - 1.5;
+        let phase = self.scan_t * SCAN_SPEED;
+        let sweep = phase.sin() * 0.5 + 0.5;
+        let direction = if phase.cos() > 0.0 { 1.0 } else { -1.0 };
+        for col in 0..cols {
+            let x = start_x + col as f32 * DOT_STEP;
+            let u = (x - band_left) / (band_right - band_left).max(1.0);
+            let behind = (sweep - u) * direction;
+            let distance = (u - sweep).abs();
+            let band = (-(distance * distance) / (2.0 * SCAN_BAND * SCAN_BAND)).exp();
+            let trail = if behind > 0.0 {
+                (-behind * SCAN_TRAIL).exp() * 0.55
+            } else {
+                0.0
+            };
+            let lit = (band + trail).min(1.0);
+            for row in 0..rows {
+                let y = start_y + row as f32 * DOT_STEP;
+                let dx = ((x - center_x).abs() - straight).max(0.0);
+                let edge_distance = mask_r - (dx * dx + (y - center_y).powi(2)).sqrt();
+                if edge_distance <= 0.0 {
+                    continue;
+                }
+                let edge = (edge_distance / DOT_EDGE_FADE).min(1.0);
+                let radius = ((DOT_BASE_R + (DOT_PEAK_R - DOT_BASE_R) * lit)
+                    * (0.6 + 0.4 * edge))
+                    .min(edge_distance);
+                let opacity = (0.2 + 0.75 * lit) * edge * alpha;
+                if opacity < 0.01 || radius < 0.15 {
+                    continue;
+                }
+                canvas.fill_circle(Point::new(x, y), radius, fg(&self.look, opacity));
             }
-            x += widths[index] + STAGE_GAP;
         }
     }
-    fn draw_waveform<C: Canvas>(&self, canvas: &mut C, pill: Rect) {
-        let area_left = pill.left + (PILL_W - WAVE_AREA_W) / 2.0;
-        let area_top = pill.top + (PILL_H - WAVE_AREA_H) / 2.0;
-        let dpr = self.dpi as f32 / 96.0;
-        let dpr = if dpr > 0.0 { dpr } else { 1.0 };
-        let bar = ((WAVE_AREA_W * dpr * WAVE_BAR_RATIO).round() as i32).max(1) as f32 / dpr;
-        let gap = ((WAVE_AREA_W * dpr * WAVE_GAP_RATIO).round() as i32).max(1) as f32 / dpr;
-        let total = WAVE_BAR_COUNT as f32 * bar + (WAVE_BAR_COUNT - 1) as f32 * gap;
-        let start = area_left + ((WAVE_AREA_W * dpr - total * dpr) / 2.0).round() / dpr;
-        let levels = self.wave_display;
-        for (index, level) in levels.iter().enumerate() {
-            let scale = level.max(WAVE_BAR_MIN_SCALE);
-            let mut height = WAVE_AREA_H * WAVE_BAR_HEIGHTS[index] * scale;
-            height = height.max(bar);
-            let left = start + index as f32 * (bar + gap);
-            let top = area_top + (WAVE_AREA_H - height) / 2.0;
-            canvas.fill_rounded_rect(
-                Rect::new(left, top, left + bar, top + height),
-                bar / 2.0,
-                fg(&self.look, 1.0),
+    /// 悬停提示：回车图标 +「直接输入」。
+    fn draw_skip_hint<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32) {
+        const ICON_W: f32 = 9.0;
+        const ICON_GAP: f32 = 6.0;
+        let color = fg(&self.look, alpha);
+        let label = canvas
+            .text()
+            .layout("直接输入", &text_style(12.0, false), 200.0, 40.0);
+        let metrics = label.as_ref().map(|layout| canvas.text().metrics(layout));
+        let text_w = metrics.as_ref().map_or(0.0, |metrics| metrics.width);
+        let total = ICON_W + ICON_GAP + text_w;
+        let left = (pill.left + pill.right - total) / 2.0;
+        let cy = (pill.top + pill.bottom) / 2.0;
+        let stroke = Stroke::plain(1.4);
+        let right = left + ICON_W;
+        canvas.line(Point::new(right, cy - 4.0), Point::new(right, cy + 1.5), color, stroke);
+        canvas.line(Point::new(right, cy + 1.5), Point::new(left, cy + 1.5), color, stroke);
+        canvas.line(Point::new(left, cy + 1.5), Point::new(left + 3.0, cy - 1.5), color, stroke);
+        canvas.line(Point::new(left, cy + 1.5), Point::new(left + 3.0, cy + 4.5), color, stroke);
+        if let (Some(layout), Some(metrics)) = (label, metrics) {
+            canvas.draw_text(
+                &layout,
+                Point::new(left + ICON_W + ICON_GAP, cy - metrics.height / 2.0),
+                color,
+                None,
             );
         }
     }
@@ -543,7 +988,7 @@ impl Indicator {
             (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
             content_bottom,
         );
-        self.fill_rounded(canvas, rect, TEXT_RADIUS, self.panel_fill(), self.panel_border());
+        self.draw_panel(canvas, rect, TEXT_RADIUS, 1.0, 0.0);
         let color = if warn {
             self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, 1.0)
         } else {
@@ -634,16 +1079,6 @@ fn fg(look: &Look, alpha: f32) -> Color {
     look.color(236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0, alpha)
 }
 
-/// 波形柱数量，与 IndicatorApp.tsx 的 INDICATOR_WAVE_BAR_COUNT 一致。
-pub const WAVE_BAR_COUNT: usize = 9;
-
-/// 每根波形柱的基础高度占比，与 indicator.css 的 --bar-height 逐个对应。
-pub const WAVE_BAR_HEIGHTS: [f32; WAVE_BAR_COUNT] =
-    [0.46, 0.58, 0.70, 0.82, 0.94, 0.82, 0.70, 0.58, 0.46];
-
-/// 波形柱最小缩放，与 OrbWaveform 的 `max(0.18, level)` 一致。
-pub const WAVE_BAR_MIN_SCALE: f32 = 0.18;
-
 /// 感知响度曲线，移植自 ui/src/floating-orb/interaction.ts 的 floatingOrbWaveScale。
 pub fn wave_scale(value: f32) -> f32 {
     // JS 侧 `Number(value) || 0` 会把 NaN 归 0。
@@ -653,25 +1088,6 @@ pub fn wave_scale(value: f32) -> f32 {
         value.clamp(0.0, 1.0)
     };
     (normalized.sqrt() * 1.8).min(1.0)
-}
-
-/// 把任意数量的峰值重采样到 9 根柱，移植自 IndicatorApp.tsx 的 resampleWaveLevels。
-pub fn resample_wave_levels(levels: &[f32], fallback: f32) -> [f32; WAVE_BAR_COUNT] {
-    if levels.is_empty() {
-        return [fallback; WAVE_BAR_COUNT];
-    }
-    if levels.len() == 1 {
-        return [levels[0]; WAVE_BAR_COUNT];
-    }
-    let mut out = [0.0; WAVE_BAR_COUNT];
-    for (index, slot) in out.iter_mut().enumerate() {
-        let position = index as f32 * (levels.len() - 1) as f32 / (WAVE_BAR_COUNT - 1) as f32;
-        let lower = position.floor() as usize;
-        let upper = (levels.len() - 1).min(position.ceil() as usize);
-        let progress = position - lower as f32;
-        *slot = levels[lower] + (levels[upper] - levels[lower]) * progress;
-    }
-    out
 }
 
 #[cfg(test)]
@@ -794,6 +1210,7 @@ mod tests {
                 "{old:?} → {new:?}"
             );
             if old == "😀" {
+                model.on_frame(0.08, &cx(now + Duration::from_millis(80), &text));
                 let mut canvas = RecordingCanvas::new(144);
                 model.draw(&mut canvas, now + Duration::from_millis(90));
                 assert!(canvas.calls.iter().any(|call| matches!(
@@ -813,7 +1230,7 @@ mod tests {
         }
     }
     #[test]
-    fn legacy_draw_keeps_premultiplied_brush_order_and_work_area_placement() {
+    fn legacy_draw_keeps_premultiplied_panel_and_work_area_placement() {
         let now = Instant::now();
         let text = FakeText;
         let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
@@ -826,14 +1243,143 @@ mod tests {
         assert_eq!(frame.bounds, PxRect::new(615, 776, 690, 282));
         let mut canvas = RecordingCanvas::new(144);
         model.draw(&mut canvas, now);
-        assert!(matches!(canvas.calls[0], Draw::FillRounded(_, 20.0, c)
+        assert!(matches!(canvas.calls[0], Draw::FillRounded(_, PILL_RADIUS, c)
             if c == Look::WINDOWS_LEGACY.color(23.0/255.0, 24.0/255.0, 27.0/255.0, 0.96)));
         assert!(matches!(canvas.calls[1], Draw::StrokeRounded(_, _, _, _)));
-        let stages = canvas.calls[2..]
-            .iter()
-            .filter(|call| matches!(call, Draw::Text(_, _, _, None)))
-            .count();
-        assert_eq!(stages, STAGES.len());
+        assert!(matches!(canvas.calls[2], Draw::StrokeRounded(_, _, _, _)));
+        assert!(!canvas.calls.iter().any(|call| matches!(call, Draw::Text(..))));
+    }
+
+    /// 处理中的点阵铺满胶囊，但任何一个点都不能碰到或越过内缩的胶囊遮罩。
+    #[test]
+    fn scan_dots_stay_inside_the_inset_pill_mask() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(
+            Command::SetState(IndicatorState::Processing),
+            &cx(now, &text),
+        );
+        settled(&mut model, now, &text);
+        let pill = model.pill_rect();
+        let (cx_, cy) = ((pill.left + pill.right) / 2.0, (pill.top + pill.bottom) / 2.0);
+        let mask_r = PILL_H / 2.0 - DOT_MASK_INSET;
+        let straight = pill.width() / 2.0 - PILL_H / 2.0;
+        for step in 0..12 {
+            model.on_frame(0.05, &cx(now + Duration::from_millis(400 + step * 50), &text));
+            let mut canvas = RecordingCanvas::new(144);
+            model.draw(&mut canvas, now);
+            let dots: Vec<_> = canvas
+                .calls
+                .iter()
+                .filter_map(|call| match call {
+                    Draw::FillCircle(center, radius, _) => Some((*center, *radius)),
+                    _ => None,
+                })
+                .collect();
+            assert!(dots.len() > 100, "点阵应铺满胶囊");
+            for (center, radius) in dots {
+                let dx = ((center.x - cx_).abs() - straight).max(0.0);
+                let distance = (dx * dx + (center.y - cy).powi(2)).sqrt();
+                assert!(distance + radius <= mask_r + 1e-3, "点越过了遮罩：{center:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_smart_processing_is_clickable_and_click_skips() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY).clickable();
+        let ops = model.apply(
+            Command::SetState(IndicatorState::Recording),
+            &cx(now, &text),
+        );
+        assert!(!ops.contains(&WindowOp::SetInteractive(true)));
+        let ops = model.apply(
+            Command::SetState(IndicatorState::SmartProcessing),
+            &cx(now, &text),
+        );
+        assert!(ops.contains(&WindowOp::SetInteractive(true)));
+        settled(&mut model, now, &text);
+        model.prepare_frame(&cx(now, &text));
+
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
+        let pill = model.pill_rect();
+        let scale = 144.0 / 96.0;
+        let inside = (
+            (((pill.left + pill.right) / 2.0) * scale) as i32,
+            (((pill.top + pill.bottom) / 2.0) * scale) as i32,
+        );
+        let mut pointer = IndicatorPointer::default();
+        let steps = pointer.event(
+            PointerEvent::Move { client: inside, screen: inside },
+            &hit,
+        );
+        assert!(steps.contains(&PointerStep::Model(IndicatorInput::Hover(true))));
+        assert_eq!(pointer.cursor(&hit), CursorShape::Hand);
+        model.input(IndicatorInput::Hover(true), &cx(now, &text));
+        assert_eq!(model.pill_target(), PILL_W_HOVER);
+        pointer.event(PointerEvent::LeftDown { client: inside, screen: inside }, &hit);
+        assert_eq!(
+            pointer.event(PointerEvent::LeftUp { client: inside }, &hit),
+            vec![
+                PointerStep::Model(IndicatorInput::Skip),
+                PointerStep::Op(WindowOp::Action(IndicatorAction::SkipSmartProcessing)),
+            ]
+        );
+        // 点击后立即退出可点击状态，不必等应用回传。
+        let ops = model.input(IndicatorInput::Skip, &cx(now, &text));
+        assert!(ops.contains(&WindowOp::SetInteractive(false)));
+        assert_eq!(model.state, Some(IndicatorState::Processing));
+        let ops = model.apply(
+            Command::SetState(IndicatorState::SmartProcessing),
+            &cx(now, &text),
+        );
+        assert!(ops.contains(&WindowOp::SetInteractive(true)));
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
+        // 点在胶囊外不触发。
+        pointer.event(PointerEvent::LeftDown { client: (2, 2), screen: (2, 2) }, &hit);
+        assert!(pointer.event(PointerEvent::LeftUp { client: (2, 2) }, &hit).is_empty());
+
+        let ops = model.apply(
+            Command::SetState(IndicatorState::Processing),
+            &cx(now, &text),
+        );
+        assert!(ops.contains(&WindowOp::SetInteractive(false)));
+        assert!(<Indicator as OverlayModel<FakeText>>::hit(&model).skip.is_none());
+        assert_eq!(model.pill_target(), PILL_W_PROCESSING);
+
+        // 宿主没接通指针（macOS）时始终点击穿透。
+        let mut passive = Indicator::new(&Look::WINDOWS_LEGACY);
+        let ops = passive.apply(
+            Command::SetState(IndicatorState::SmartProcessing),
+            &cx(now, &text),
+        );
+        assert!(!ops.contains(&WindowOp::SetInteractive(true)));
+    }
+
+    /// 波形按帧连续左移：两次数据之间也有亚像素的滚动，而不是一格一格地跳。
+    #[test]
+    fn waveform_scrolls_continuously_between_chunks() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(
+            Command::SetState(IndicatorState::Recording),
+            &cx(now, &text),
+        );
+        model.apply(
+            Command::SetWaveform { level: 0.2, peaks: vec![0.1, 0.4, 0.2, 0.3, 0.05, 0.6] },
+            &cx(now, &text),
+        );
+        model.on_frame(0.016, &cx(now + Duration::from_millis(16), &text));
+        assert!(model.wave_scroll > 0.2 && model.wave_scroll < 0.6);
+        model.on_frame(0.03, &cx(now + Duration::from_millis(46), &text));
+        assert_eq!(model.wave_bars.back().copied(), Some(wave_scale(0.4)));
+        model.on_frame(0.045, &cx(now + Duration::from_millis(91), &text));
+        assert_eq!(model.wave_bars.back().copied(), Some(wave_scale(0.6)));
+        assert!(model.wave_pending.is_empty());
     }
 
     #[test]
@@ -928,31 +1474,4 @@ mod tests {
         assert!((wave_scale(0.25) - 0.9).abs() < 1e-6);
     }
 
-    #[test]
-    fn resample_fills_fallback_when_no_levels() {
-        assert_eq!(resample_wave_levels(&[], 0.5), [0.5; WAVE_BAR_COUNT]);
-        assert_eq!(resample_wave_levels(&[0.3], 0.0), [0.3; WAVE_BAR_COUNT]);
-    }
-
-    #[test]
-    fn resample_interpolates_like_the_webview() {
-        let levels = [0.0, 1.0];
-        let bars = resample_wave_levels(&levels, 0.0);
-        assert_eq!(bars[0], 0.0);
-        assert_eq!(bars[WAVE_BAR_COUNT - 1], 1.0);
-        assert!((bars[4] - 0.5).abs() < 1e-6);
-
-        let six = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
-        let bars = resample_wave_levels(&six, 0.0);
-        // 6 → 9：position = index * 5 / 8，索引 4 落在 2.5 处。
-        assert!((bars[4] - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn wave_bar_height_table_matches_css() {
-        assert_eq!(WAVE_BAR_HEIGHTS.len(), WAVE_BAR_COUNT);
-        assert_eq!(WAVE_BAR_HEIGHTS[0], 0.46);
-        assert_eq!(WAVE_BAR_HEIGHTS[4], 0.94);
-        assert!(WAVE_BAR_MIN_SCALE > 0.0);
-    }
 }

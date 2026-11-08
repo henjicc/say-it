@@ -25,6 +25,7 @@ pub type EventSink = Box<dyn Fn(OverlayEvent) + Send + Sync + 'static>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayEvent {
+    Indicator(core::indicator::IndicatorAction),
     Orb(core::orb::OrbAction),
     Subtitle(core::subtitle::SubtitleAction),
 }
