@@ -259,8 +259,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 12 个百炼、5 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
-        assert_eq!(REGISTRY.len(), 19, "当前应有 19 个模型");
+        // 15 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
+        assert_eq!(REGISTRY.len(), 21, "当前应有 21 个模型");
     }
 
     #[test]

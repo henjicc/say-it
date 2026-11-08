@@ -327,13 +327,13 @@ fn record_live_result(results: &mut Vec<LiveCaseResult>, result: LiveCaseResult)
 }
 
 #[test]
-fn live_catalog_maps_all_twelve_bailian_asr_models() {
+fn live_catalog_maps_all_fifteen_bailian_asr_models() {
     let catalog: Vec<Value> = serde_json::from_str(ASR_CATALOG).expect("ASR catalog");
     let online = catalog
         .iter()
         .filter(|model| model.get("providerId").and_then(Value::as_str) == Some("bailian"))
         .collect::<Vec<_>>();
-    assert_eq!(online.len(), 12);
+    assert_eq!(online.len(), 15);
     let mut protocols = BTreeMap::<String, usize>::new();
     for model in online {
         let protocol = model
@@ -342,11 +342,11 @@ fn live_catalog_maps_all_twelve_bailian_asr_models() {
             .expect("online ASR protocol");
         *protocols.entry(protocol.into()).or_default() += 1;
     }
-    assert_eq!(protocols.get("dashscope-duplex"), Some(&3));
+    assert_eq!(protocols.get("dashscope-duplex"), Some(&4));
     assert_eq!(protocols.get("qwen-realtime"), Some(&2));
-    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&2));
+    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&3));
     assert_eq!(protocols.get("file-sync-qwen"), Some(&2));
-    assert_eq!(protocols.get("file-async-oss"), Some(&3));
+    assert_eq!(protocols.get("file-async-oss"), Some(&4));
 }
 
 #[test]
@@ -359,7 +359,7 @@ fn p0_catalog_exposes_only_runnable_say_it_routes() {
     assert!(ids.contains(&"seedasr-2.0-realtime"));
     assert!(!ids.contains(&"seedasr-2.0-file"));
     assert!(ids.contains(&"FunAudioLLM/SenseVoiceSmall"));
-    assert!(ids.contains(&"TeleAI/TeleSpeechASR"));
+    assert!(!ids.contains(&"TeleAI/TeleSpeechASR"));
     assert!(ids.contains(&"whisper-large-v3-turbo"));
     assert!(ids.contains(&"whisper-large-v3"));
     assert_eq!(
