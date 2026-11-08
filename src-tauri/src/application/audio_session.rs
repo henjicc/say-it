@@ -11,6 +11,19 @@ pub(crate) enum AudioOwner {
     Legacy,
 }
 
+impl AudioOwner {
+    /// 占用冲突提示里给用户看的名称。Legacy 是设置页电平预览与首次引导的麦克风检测。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Dictation => "听写",
+            Self::Subtitles => "实时字幕",
+            Self::Comparison => "模型对比",
+            Self::AudioLab => "音频调校",
+            Self::Legacy => "麦克风测试",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AudioLease {
     pub(crate) owner: AudioOwner,
@@ -55,7 +68,7 @@ impl AudioSessionCoordinator {
         let mut state = self.inner.lock().map_err(|_| "音频会话锁失败")?;
         if let Some(current) = state.owner {
             if current != owner {
-                return Err(format!("麦克风正被 {current:?} 使用"));
+                return Err(format!("麦克风正被「{}」占用，结束后再试", current.label()));
             }
         }
         state.generation = state.generation.wrapping_add(1).max(1);

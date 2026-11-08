@@ -125,10 +125,8 @@ export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: ()
     setMicrophoneState("checking");
     setMicrophoneMessage("正在请求麦克风访问…");
     try {
-      const result = await cmd<{ reused?: boolean }>(CMD.startBackendMic, {
-        deviceName: micDeviceId || undefined,
-      });
-      if (!result.reused) await cmd(CMD.releaseBackendMic).catch(() => undefined);
+      await cmd(CMD.startBackendMic, { deviceName: micDeviceId || undefined });
+      await cmd(CMD.releaseBackendMic).catch(() => undefined);
       setMicrophoneState("ready");
       setMicrophoneMessage("麦克风可以正常使用");
     } catch (error) {

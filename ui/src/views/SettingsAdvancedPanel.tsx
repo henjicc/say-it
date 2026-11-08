@@ -262,12 +262,13 @@ function SilenceDisconnectSection() {
     let ownsMic = false;
     const tick = async () => {
       try {
-        const started = await cmd<{ reused?: boolean }>(CMD.startBackendMic, { deviceName: dictPrefs.micDeviceId || undefined });
+        // 成功即持有麦克风租约；reused 只说明设备已开着（例如听写结束后的延迟释放期），不代表租约属于别人。
+        await cmd(CMD.startBackendMic, { deviceName: dictPrefs.micDeviceId || undefined });
+        ownsMic = true;
         if (cancelled) {
-          if (!started.reused) cmdSilent(CMD.releaseBackendMic);
+          cmdSilent(CMD.releaseBackendMic);
           return;
         }
-        if (!started.reused) ownsMic = true;
         const level = await cmd<number>(CMD.getBackendMicLevel);
         if (!cancelled) setDictationLevel(level || 0);
       } catch {
