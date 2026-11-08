@@ -2049,7 +2049,7 @@ fn freeze_recorded_duration(session: &mut Session) {
     }
 }
 
-/// 本地模型包的识别结果没有标点；装了标点模型包且开关打开时先补上，再交给智能处理与本地规则。
+/// 本地模型包的识别结果没有标点；装了标点模型包且开关打开时补上，再交给本地规则。
 /// 补标点失败只记日志、沿用原文，不让整次听写失败。
 async fn punctuate_local_asr_text(
     state: &RuntimeState,
@@ -2276,8 +2276,12 @@ async fn finalize(app: AppHandle, epoch: u64) {
     #[cfg(debug_assertions)]
     crate::application::dev_trace::mark("trace.historySaved", serde_json::json!({}));
     // 历史里保留识别原文，标点只加在交给后续处理和输出的文本上；
-    // 是否做智能处理已在上面按原文字数判断。
-    let text = punctuate_local_asr_text(&state, &prefs, text).await;
+    // 是否做智能处理已在上面按原文字数判断。这次真会做智能处理时由大模型整理标点，不再先补。
+    let text = if assistant_request.is_none() && should_process_smart_text {
+        text
+    } else {
+        punctuate_local_asr_text(&state, &prefs, text).await
+    };
     let active_app_context = if assistant_request.is_some() {
         drop(active_app_context);
         String::new()
