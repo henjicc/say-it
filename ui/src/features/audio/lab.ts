@@ -2,7 +2,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CMD, cmd } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
-import { useAudioStore, emptyMeters } from "@/store/useAudioStore";
+import { useAudioStore, emptyMeters, type PlaybackTrack } from "@/store/useAudioStore";
 
 type Snapshot = { recording: boolean; rawWaveform: [number, number][]; processedWaveform: [number, number][]; stats?: { inLufs: number; outLufs: number; inPeakDb: number; outPeakDb: number; clippedSamples: number }; error?: string | null };
 let rawCanvas: HTMLCanvasElement | null = null;
@@ -31,7 +31,7 @@ export async function loadAudioLabRuntime() { applyAudioLabRuntime(await cmd<Sna
  */
 let toggling = false;
 let processingRevision = 0;
-export async function toggleRecord() { if (toggling) return; toggling = true; try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { processingRevision += 1; const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } finally { toggling = false; } }
+export async function toggleRecord() { if (toggling) return; toggling = true; try { if (useAudioStore.getState().recording) { const snapshot = await cmd<Snapshot>(CMD.audioLabStop); apply(snapshot); await reprocess(); useAudioStore.setState({ recInfo: "录音完成", recTone: "ok" }); } else { stopPlayback(); processingRevision += 1; const snapshot = await cmd<Snapshot>(CMD.audioLabStart, { deviceName: useDictPrefs.getState().prefs.micDeviceId || undefined }); apply(snapshot); useAudioStore.setState({ recInfo: "录音中…", recTone: "" }); } } catch (error) { useAudioStore.setState({ recInfo: `录音失败：${error}`, recTone: "err", recording: false }); } finally { toggling = false; } }
 export async function reprocess() {
   const revision = ++processingRevision;
   try {
@@ -42,7 +42,41 @@ export async function reprocess() {
   }
 }
 export function paramChanged() { if (timer) clearTimeout(timer); timer = setTimeout(() => { void reprocess().catch((error) => useAudioStore.setState({ recInfo: `处理失败：${error}`, recTone: "err" })); }, 120); }
-async function play(processed: boolean) { try { const path = await cmd<string>(CMD.audioLabAudioPath, { processed }); if (!audio) audio = new Audio(); audio.src = convertFileSrc(path); await audio.play(); } catch (error) { useAudioStore.setState({ recInfo: `播放失败：${error}`, recTone: "err" }); } }
-export function playOriginal() { void play(false); }
-export function playProcessed() { void play(true); }
+function ensureAudio() {
+  if (audio) return audio;
+  audio = new Audio();
+  audio.addEventListener("ended", () => useAudioStore.setState({ playback: null }));
+  return audio;
+}
+/** 同一音轨再点一次在暂停与继续之间切换；点另一条音轨从头播放那一条。 */
+export async function togglePlay(track: PlaybackTrack) {
+  const current = useAudioStore.getState().playback;
+  const player = ensureAudio();
+  try {
+    if (current?.track === track) {
+      if (current.paused) {
+        await player.play();
+        useAudioStore.setState({ playback: { track, paused: false } });
+      } else {
+        player.pause();
+        useAudioStore.setState({ playback: { track, paused: true } });
+      }
+      return;
+    }
+    const path = await cmd<string>(CMD.audioLabAudioPath, { processed: track === "processed" });
+    player.src = convertFileSrc(path);
+    await player.play();
+    useAudioStore.setState({ playback: { track, paused: false } });
+  } catch (error) {
+    useAudioStore.setState({ playback: null, recInfo: `播放失败：${error}`, recTone: "err" });
+  }
+}
+export function stopPlayback() {
+  if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
+  useAudioStore.setState({ playback: null });
+}
+/** 当前试听进度（0～1），由播放头按帧读取，不经过 store，避免每帧重渲染整页。 */
+export function playbackProgress() {
+  return audio && audio.duration > 0 ? audio.currentTime / audio.duration : 0;
+}
 export function resetParams() { useAudioStore.setState({ labStatus: "已恢复默认参数并应用到速记。", labStatusTone: "ok" }); paramChanged(); }
