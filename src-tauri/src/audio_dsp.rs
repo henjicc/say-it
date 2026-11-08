@@ -418,6 +418,68 @@ pub struct StreamDsp {
     peak_lin: f32,
 }
 
+/// 底噪估计每秒最多抬升的幅度。说话时音节间隙会把估计拉回底噪，持续说话不会被当成底噪。
+const NOISE_FLOOR_RISE_DB_PER_SEC: f32 = 3.0;
+/// 开始采集后的头两秒快速爬升，尽快从保守的初值追上真实底噪。
+const NOISE_FLOOR_FAST_RISE_DB_PER_SEC: f32 = 30.0;
+const NOISE_FLOOR_FAST_SECONDS: f32 = 2.0;
+/// 电平高出底噪 3dB 就算有声音：宁可多连一会儿，也不能把小声说话当成静音断开。
+const VOICE_OVER_NOISE_FLOOR: f32 = 1.41;
+/// 波形从高出底噪 6dB 开始显示，到 12dB 显示满幅。
+const DISPLAY_OVER_NOISE_FLOOR: f32 = 2.0;
+/// 低于这个电平视为数字静音（设备刚启动、静音键），不参与底噪估计。
+const NOISE_FLOOR_MIN: f32 = 1e-5;
+
+/// 按原始采集电平跟踪底噪，只用于静音判断和波形显示，不改变送去识别的音频。
+///
+/// 固定阈值在底噪大的环境里永远判不出静音；这里改为相对底噪判断。
+pub(crate) struct NoiseFloor {
+    floor: Option<f32>,
+    elapsed: f32,
+}
+
+impl NoiseFloor {
+    pub(crate) fn new() -> Self {
+        Self {
+            floor: None,
+            elapsed: 0.0,
+        }
+    }
+
+    pub(crate) fn update(&mut self, level: f32, seconds: f32) {
+        if level <= NOISE_FLOOR_MIN {
+            return;
+        }
+        let rise = if self.elapsed < NOISE_FLOOR_FAST_SECONDS {
+            NOISE_FLOOR_FAST_RISE_DB_PER_SEC
+        } else {
+            NOISE_FLOOR_RISE_DB_PER_SEC
+        };
+        self.elapsed += seconds;
+        self.floor = Some(match self.floor {
+            // 第一块可能已经在说话，先按低 12dB 估计，头两秒快速爬到真实底噪。
+            None => level / 4.0,
+            Some(floor) => level.min(floor * 10f32.powf(rise * seconds / 20.0)),
+        });
+    }
+
+    fn floor(&self) -> f32 {
+        self.floor.unwrap_or(NOISE_FLOOR_MIN)
+    }
+
+    /// 同时满足用户设置的静音阈值和“高出底噪 3dB”才算有声音。
+    pub(crate) fn is_voice(&self, level: f32, threshold: f32) -> bool {
+        level > threshold.max(self.floor() * VOICE_OVER_NOISE_FLOOR)
+    }
+
+    /// 波形显示的缩放：高出底噪 6dB 以内为 0，12dB 以上为 1，中间平滑过渡。
+    pub(crate) fn display_gain(&self, level: f32) -> f32 {
+        let t = ((level / self.floor() - DISPLAY_OVER_NOISE_FLOOR) / DISPLAY_OVER_NOISE_FLOOR)
+            .clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
 const DECIMATOR_TAPS: usize = 97;
 
 /// 48k→16k 抗混叠抽取：Blackman 窗 sinc 低通（截止 7kHz，约 8.4kHz 起进入阻带）后每 3 点取 1 点。
@@ -756,6 +818,49 @@ mod offline_tests {
             });
             assert_eq!(hash, expected, "降噪开关：{denoise}");
         }
+    }
+}
+
+#[cfg(test)]
+mod noise_floor_tests {
+    use super::*;
+
+    #[test]
+    fn steady_noise_is_silence_and_speech_above_it_is_voice() {
+        let mut floor = NoiseFloor::new();
+        for _ in 0..60 {
+            floor.update(0.01, 0.085);
+        }
+        assert!(!floor.is_voice(0.012, 0.0001), "底噪本身不能算有声音");
+        assert_eq!(floor.display_gain(0.012), 0.0, "底噪不撑起波形");
+        assert!(floor.is_voice(0.016, 0.0001), "高出底噪 3dB 的小声说话不能被当成静音");
+        assert!(floor.is_voice(0.03, 0.0001));
+        assert_eq!(floor.display_gain(0.05), 1.0);
+    }
+
+    #[test]
+    fn digital_silence_at_start_does_not_pull_the_floor_down() {
+        let mut floor = NoiseFloor::new();
+        for _ in 0..5 {
+            floor.update(0.0, 0.085);
+        }
+        for _ in 0..30 {
+            floor.update(0.01, 0.085);
+        }
+        assert_eq!(floor.display_gain(0.012), 0.0);
+    }
+
+    #[test]
+    fn continuous_speech_does_not_become_the_noise_floor_quickly() {
+        let mut floor = NoiseFloor::new();
+        for _ in 0..30 {
+            floor.update(0.005, 0.085);
+        }
+        // 连续两秒说话，底噪估计最多抬升约 6dB，说话仍被判为有声音。
+        for _ in 0..24 {
+            floor.update(0.05, 0.085);
+        }
+        assert!(floor.is_voice(0.05, 0.0001));
     }
 }
 

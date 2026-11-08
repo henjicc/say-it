@@ -837,6 +837,7 @@ async fn stop_locked(app: AppHandle) -> Result<(), String> {
 fn spawn_raw_consumer(app: AppHandle, epoch: u64, source: SourceKind, mut rx: RawAudioReceiver) {
     tauri::async_runtime::spawn(async move {
         let mut queue_error = None;
+        let mut noise_floor = NoiseFloor::new();
         loop {
             let samples = match rx.recv().await {
                 Ok(Some(samples)) => samples,
@@ -860,9 +861,18 @@ fn spawn_raw_consumer(app: AppHandle, epoch: u64, source: SourceKind, mut rx: Ra
                 {
                     break;
                 }
+                noise_floor.update(
+                    level,
+                    samples.len() as f32 / session.sample_rate.max(1) as f32,
+                );
                 if !session.audio_prefs.subtitle_silence_disconnect_enabled {
                     (false, false)
-                } else if level > session.audio_prefs.subtitle_silence_threshold {
+                } else if match source {
+                    SourceKind::Mic => noise_floor
+                        .is_voice(level, session.audio_prefs.subtitle_silence_threshold),
+                    // 系统音频里的背景音乐、环境声就是内容，不能当底噪抬高门槛，否则对白会被判成静音。
+                    SourceKind::System => level > session.audio_prefs.subtitle_silence_threshold,
+                } {
                     session.last_voice_at = Some(Instant::now());
                     let open = session.asr_session_id.is_none() && !session.opening;
                     if open {
