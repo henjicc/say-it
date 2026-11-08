@@ -11,6 +11,7 @@ use crate::window::{
     CursorShape, Cx, FrameSpec, Ops, OverlayModel, PointerEvent, PointerModel, PointerStep,
     WindowEvent, WindowOp,
 };
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 // 与 indicator.rs 的 DEFAULT_INDICATOR_WIDTH/HEIGHT 保持一致。
@@ -45,21 +46,22 @@ const FALLBACK_PAD: f32 = 14.0;
 const FALLBACK_ICON: f32 = 18.0;
 const FALLBACK_ICON_GAP: f32 = 10.0;
 
-/// 录音波形：柱子位置固定，中间高、两边略低，各自按不同节奏轻微起伏，整体高度跟随音量。
-const WAVE_BARS: usize = 13;
+/// 滚动波形：每根柱是一小段时间的音量，新柱从右侧进入、整体连续左移。
+const WAVE_BARS: usize = 14;
 const WAVE_BAR_W: f32 = 2.0;
 const WAVE_BAR_GAP: f32 = 4.0;
 const WAVE_MAX_H: f32 = 22.0;
 const WAVE_MIN_H: f32 = 2.0;
-/// 最外侧柱相对中间柱的高度比例（1 - 0.55）。
-const WAVE_EDGE_DROP: f32 = 0.55;
+/// 最左侧这么多根逐渐变淡，表示更早的声音。
+const WAVE_FADE_BARS: f32 = 5.0;
+/// 固定每 160ms 出一根柱，期间收到的音频块取平均：滚动慢而稳，不随数据节奏抖动。
+const WAVE_BAR_S: f32 = 0.16;
 /// 柱高映射：分段 RMS 到这个值才满幅。自动增益后正常说话约 0.1，落在半高附近，留出起伏余量。
 const WAVE_FULL_RMS: f32 = 0.25;
-/// 音量跟随：声音变大较快跟上，变小慢慢回落；密集说话时连续起伏，不会忽高忽低地闪。
-const WAVE_LEVEL_RISE_S: f32 = 0.05;
-const WAVE_LEVEL_FALL_S: f32 = 0.16;
-const WAVE_BAR_RISE_S: f32 = 0.06;
-const WAVE_BAR_FALL_S: f32 = 0.2;
+/// 新柱与上一根的混合比例：相邻柱不会忽高忽低，密集说话时也不刺眼。
+const WAVE_NEIGHBOR_SMOOTH: f32 = 0.35;
+/// 低于这个柱高视为静音；整排都静音时波形停住，开口再继续滚动，不一直平移。
+const WAVE_SILENT: f32 = 0.03;
 
 /// 处理中：点阵铺满胶囊，用内缩的胶囊形状遮住，一道亮带左右扫过。
 const DOT_STEP: f32 = 3.6;
@@ -265,14 +267,13 @@ pub struct Indicator {
     /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
     fresh_from: usize,
     fresh_started: Option<Instant>,
-    /// 最近一块音频映射出的目标音量（0..1）。
-    wave_input: f32,
-    /// 平滑跟随后的整体音量。
-    wave_level: f32,
-    /// 各柱当前高度（0..1）。
-    wave_bars: [f32; WAVE_BARS],
-    /// 柱子各自起伏的时间轴。
-    wave_t: f32,
+    /// 屏幕上的波形柱（最旧在前），比可见数量多一根用于滚入。
+    wave_bars: VecDeque<f32>,
+    /// 本根柱周期内收到的音频块柱高之和与块数。
+    wave_acc_sum: f32,
+    wave_acc_count: u32,
+    /// 0..1：当前柱向左滚过的比例；停住时保持 1.0。
+    wave_scroll: f32,
     /// 处理中扫描动画的时间轴。
     scan_t: f32,
     pill_w: Spring,
@@ -303,10 +304,10 @@ impl Indicator {
             text: String::new(),
             fresh_from: 0,
             fresh_started: None,
-            wave_input: 0.0,
-            wave_level: 0.0,
-            wave_bars: [0.0; WAVE_BARS],
-            wave_t: 0.0,
+            wave_bars: VecDeque::from(vec![0.0; WAVE_BARS + 1]),
+            wave_acc_sum: 0.0,
+            wave_acc_count: 0,
+            wave_scroll: 0.0,
             scan_t: 0.0,
             pill_w: Spring::at(PILL_W_RECORDING),
             morph: Spring::at(0.0),
@@ -332,9 +333,10 @@ impl Indicator {
         self
     }
     fn reset_wave(&mut self) {
-        self.wave_input = 0.0;
-        self.wave_level = 0.0;
-        self.wave_bars = [0.0; WAVE_BARS];
+        self.wave_bars = VecDeque::from(vec![0.0; WAVE_BARS + 1]);
+        self.wave_acc_sum = 0.0;
+        self.wave_acc_count = 0;
+        self.wave_scroll = 0.0;
     }
     fn clear_content(&mut self) {
         self.state = None;
@@ -417,35 +419,39 @@ impl Indicator {
             self.text_scroll.snap(self.text_target.scroll);
         }
     }
-    /// 一块音频：分段 RMS 取平均后按留有余量的曲线映射为目标音量。
+    /// 记入本根柱周期：分段 RMS 取平均后按留有余量的曲线映射。
     fn push_wave_chunk(&mut self, level: f32, peaks: &[f32]) {
         let rms = if peaks.is_empty() {
             level
         } else {
             peaks.iter().sum::<f32>() / peaks.len() as f32
         };
-        self.wave_input = bar_level(rms);
+        self.wave_acc_sum += bar_level(rms);
+        self.wave_acc_count += 1;
     }
-    /// 整体音量平滑跟随目标；每根柱的目标 = 音量 × 离中心的衰减 × 自己的起伏，再各自平滑跟随。
+    /// 到出柱时刻：周期内的平均与上一根混合后滚入；没收到数据或整排静音时停在当前位置。
+    /// 停住时 scroll 保持 1.0，与刚滚入一根时的位置完全一致，恢复时不会跳。
     fn advance_wave(&mut self, dt: f32) {
-        self.wave_t += dt;
-        self.wave_level = follow(
-            self.wave_level,
-            self.wave_input,
-            dt,
-            WAVE_LEVEL_RISE_S,
-            WAVE_LEVEL_FALL_S,
-        );
-        let center = (WAVE_BARS - 1) as f32 / 2.0;
-        let t = self.wave_t;
-        for (index, bar) in self.wave_bars.iter_mut().enumerate() {
-            let i = index as f32;
-            let distance = (i - center).abs() / center;
-            let wobble =
-                0.5 + 0.25 * (t * 2.3 + i * 1.7).sin() + 0.25 * (t * 3.7 + i * 2.9 + 1.3).sin();
-            let target = self.wave_level * (1.0 - distance * WAVE_EDGE_DROP) * wobble * 1.25;
-            *bar = follow(*bar, target, dt, WAVE_BAR_RISE_S, WAVE_BAR_FALL_S);
+        self.wave_scroll += dt / WAVE_BAR_S;
+        if self.wave_scroll < 1.0 {
+            return;
         }
+        if self.wave_acc_count == 0 {
+            self.wave_scroll = 1.0;
+            return;
+        }
+        let target = self.wave_acc_sum / self.wave_acc_count as f32;
+        self.wave_acc_sum = 0.0;
+        self.wave_acc_count = 0;
+        let previous = self.wave_bars.back().copied().unwrap_or(0.0);
+        let next = previous * WAVE_NEIGHBOR_SMOOTH + target * (1.0 - WAVE_NEIGHBOR_SMOOTH);
+        if next < WAVE_SILENT && self.wave_bars.iter().all(|bar| *bar < WAVE_SILENT) {
+            self.wave_scroll = 1.0;
+            return;
+        }
+        self.wave_bars.pop_front();
+        self.wave_bars.push_back(next);
+        self.wave_scroll = (self.wave_scroll - 1.0).min(0.999);
     }
     /// 每帧推进全部动画。
     fn tick_animations(&mut self, dt: f32, now: Instant) {
@@ -828,7 +834,7 @@ impl Indicator {
         );
         canvas.restore();
     }
-    /// 录音：柱子位置固定、上下对称起伏；高度随 `shrink` 收向中线，过渡到点阵。
+    /// 录音：柱子连续左移，最左侧几根渐隐；高度随 `shrink` 收向中线，过渡到点阵。
     fn draw_waveform<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32, shrink: f32) {
         if alpha < 0.01 {
             return;
@@ -838,8 +844,17 @@ impl Indicator {
         let center_x = (pill.left + pill.right) / 2.0;
         let center_y = (pill.top + pill.bottom) / 2.0;
         let left = center_x - span / 2.0;
+        let clip = Rect::new(
+            pill.left + PILL_RADIUS * 0.5,
+            pill.top,
+            pill.right - PILL_RADIUS * 0.5,
+            pill.bottom,
+        );
+        canvas.save();
+        canvas.clip_rect(clip);
         for (index, level) in self.wave_bars.iter().enumerate() {
-            let x = left + index as f32 * step;
+            let x = left + (index as f32 - self.wave_scroll) * step;
+            let fade = ((x - left + step) / (WAVE_FADE_BARS * step)).clamp(0.0, 1.0);
             let height =
                 (WAVE_MIN_H + level.clamp(0.0, 1.0) * (WAVE_MAX_H - WAVE_MIN_H)) * shrink;
             let height = height.max(WAVE_BAR_W);
@@ -851,9 +866,10 @@ impl Indicator {
                     center_y + height / 2.0,
                 ),
                 WAVE_BAR_W / 2.0,
-                fg(&self.look, alpha),
+                fg(&self.look, alpha * (0.35 + 0.65 * fade)),
             );
         }
+        canvas.restore();
     }
     /// 处理中：点阵铺满胶囊、由内缩的胶囊形状遮住（点不碰描边），亮带左右往返并拖着渐淡的尾巴。
     fn draw_scan<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32) {
@@ -1015,12 +1031,6 @@ impl Indicator {
             );
         }
     }
-}
-
-/// 一阶跟随：目标更高时用 rise 时间常数，更低时用 fall。
-fn follow(current: f32, target: f32, dt: f32, rise: f32, fall: f32) -> f32 {
-    let tau = if target > current { rise } else { fall };
-    current + (target - current) * (1.0 - (-dt / tau).exp())
 }
 
 /// 胶囊柱高：分段 RMS 线性归一后略微压缩，弱音也看得到，正常说话不会顶满。
@@ -1330,9 +1340,9 @@ mod tests {
         assert!(!ops.contains(&WindowOp::SetInteractive(true)));
     }
 
-    /// 录音波形不滚动：柱子位置固定，说话时升起，安静后回落到细线。
+    /// 波形按帧连续左移，固定周期出一根柱，周期内的音频块取平均。
     #[test]
-    fn waveform_bars_stay_in_place_and_follow_the_voice() {
+    fn waveform_scrolls_continuously_and_averages_chunks_per_bar() {
         let now = Instant::now();
         let text = FakeText;
         let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
@@ -1340,40 +1350,46 @@ mod tests {
             Command::SetState(IndicatorState::Recording),
             &cx(now, &text),
         );
-        let bar_lefts = |model: &Indicator| {
-            let mut canvas = RecordingCanvas::new(144);
-            model.draw(&mut canvas, now);
-            canvas
-                .calls
-                .iter()
-                .filter_map(|call| match call {
-                    Draw::FillRounded(rect, radius, _) if *radius == WAVE_BAR_W / 2.0 => {
-                        Some(rect.left)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        let quiet_lefts = bar_lefts(&model);
-        assert_eq!(quiet_lefts.len(), WAVE_BARS);
+        for rms in [0.05, 0.15] {
+            model.apply(
+                Command::SetWaveform { level: rms, peaks: vec![rms; 6] },
+                &cx(now, &text),
+            );
+        }
+        model.on_frame(0.016, &cx(now + Duration::from_millis(16), &text));
+        assert!(model.wave_scroll > 0.05 && model.wave_scroll < 0.15);
+        model.on_frame(0.15, &cx(now + Duration::from_millis(166), &text));
+        let expected = (bar_level(0.05) + bar_level(0.15)) / 2.0 * (1.0 - WAVE_NEIGHBOR_SMOOTH);
+        assert!((model.wave_bars.back().copied().unwrap() - expected).abs() < 1e-5);
+        assert!(model.wave_scroll < 0.1);
+    }
+
+    /// 整排都静音时波形停住，开口后继续滚动。
+    #[test]
+    fn waveform_holds_still_during_silence() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(
+            Command::SetState(IndicatorState::Recording),
+            &cx(now, &text),
+        );
         for step in 1..=10 {
             model.apply(
-                Command::SetWaveform { level: 0.1, peaks: vec![0.1; 6] },
+                Command::SetWaveform { level: 0.001, peaks: vec![0.001; 6] },
                 &cx(now, &text),
             );
-            model.on_frame(0.03, &cx(now + Duration::from_millis(step * 30), &text));
+            model.on_frame(0.1, &cx(now + Duration::from_millis(step * 100), &text));
         }
-        let center = model.wave_bars[WAVE_BARS / 2];
-        assert!(center > 0.25, "说话时中间柱应升起：{center}");
-        assert_eq!(bar_lefts(&model), quiet_lefts, "柱子位置不能移动");
-        for step in 11..=60 {
-            model.apply(
-                Command::SetWaveform { level: 0.0, peaks: vec![0.0; 6] },
-                &cx(now, &text),
-            );
-            model.on_frame(0.03, &cx(now + Duration::from_millis(step * 30), &text));
-        }
-        assert!(model.wave_bars.iter().all(|bar| *bar < 0.02), "安静后应回落");
+        assert_eq!(model.wave_scroll, 1.0);
+        assert!(model.wave_bars.iter().all(|bar| *bar == 0.0));
+        model.apply(
+            Command::SetWaveform { level: 0.1, peaks: vec![0.1; 6] },
+            &cx(now, &text),
+        );
+        model.on_frame(0.016, &cx(now + Duration::from_millis(1016), &text));
+        assert!(model.wave_bars.back().copied().unwrap() > WAVE_SILENT);
+        assert!(model.wave_scroll < 0.2);
     }
 
     #[test]
