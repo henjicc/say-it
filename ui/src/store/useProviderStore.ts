@@ -37,7 +37,7 @@ export interface ProviderResponse {
   defaults?: ProviderDefaults;
 }
 
-export type LlmReasoningEffort = "auto" | "zero" | "low" | "medium" | "high";
+export type LlmReasoningEffort = "zero" | "low" | "high";
 export type LlmModelSource = "remote" | "manual";
 export type LlmModelAvailability = "available" | "missing" | "unknown";
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
+import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
 import { UsageEditScope, useUsageIssue } from "@/features/models/usage";
@@ -37,22 +38,25 @@ function GeneralLlmRow() {
   };
 
   return (
-    <Row
-      label="通用大模型"
-      controlId="usage-general-llm"
-      hint="没有单独选择模型的功能会使用它，例如选了「跟随通用大模型」的智能处理和助手。"
-      message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
-    >
-      <div className={ROW_CONTROL_W}>
-        <ModelPicker
-          id="usage-general-llm"
-          value={selected}
-          options={llmModelPickerOptions(profiles, selected)}
-          panelLabel="选择通用大模型"
-          onChange={(value) => void change(value)}
-        />
-      </div>
-    </Row>
+    <>
+      <Row
+        label="通用大模型"
+        controlId="usage-general-llm"
+        hint="没有单独选择模型的功能会使用它，例如选了「跟随通用大模型」的智能处理和助手。"
+        message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
+      >
+        <div className={ROW_CONTROL_W}>
+          <ModelPicker
+            id="usage-general-llm"
+            value={selected}
+            options={llmModelPickerOptions(profiles, selected)}
+            panelLabel="选择通用大模型"
+            onChange={(value) => void change(value)}
+          />
+        </div>
+      </Row>
+      {current && <LlmThinkingRow providerId={current.id} model={String(current.config?.model ?? "")} />}
+    </>
   );
 }
 

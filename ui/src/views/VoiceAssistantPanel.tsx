@@ -7,7 +7,8 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
+import { UsageLinkRow, useInUsagePage, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   FOLLOW_DEFAULT_LLM_OPTION,
@@ -131,6 +132,7 @@ function AssistantModelRow({ action, label, prefs, save }: {
 }) {
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const editable = useUsageEditable();
+  const inUsagePage = useInUsagePage();
   const feature = prefs[action];
   const dedicated = action === "translateSpeech" && prefs.translationEngine === "dedicated";
   const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
@@ -154,11 +156,14 @@ function AssistantModelRow({ action, label, prefs, save }: {
   const current = llmOptions.find((option) => option.value === selectedLlm);
   if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? feature.llmModel} message={llmIssue} />;
   return (
-    <Row label={label} controlId={controlId} message={llmIssue}>
-      <div className={ROW_CONTROL_W}>
-        <ModelPicker id={controlId} value={selectedLlm} options={llmOptions} panelLabel="选择智能模型" onChange={(value) => void save({ ...prefs, [action]: { ...feature, ...parseModel(value) } })} />
-      </div>
-    </Row>
+    <>
+      <Row label={label} controlId={controlId} message={llmIssue}>
+        <div className={ROW_CONTROL_W}>
+          <ModelPicker id={controlId} value={selectedLlm} options={llmOptions} panelLabel="选择智能模型" onChange={(value) => void save({ ...prefs, [action]: { ...feature, ...parseModel(value) } })} />
+        </div>
+      </Row>
+      {inUsagePage && selectedLlm !== "default" && <LlmThinkingRow providerId={feature.llmProviderId} model={feature.llmModel} />}
+    </>
   );
 }
 

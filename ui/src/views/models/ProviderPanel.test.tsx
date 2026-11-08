@@ -4,6 +4,7 @@ import type { ProviderProfile } from "@/store/useProviderStore";
 import { llmModelPickerOptions } from "@/features/models/llmModelOptions";
 import { ProviderPanel } from "./ProviderPanel";
 import { AddProviderModal } from "./AddProviderModal";
+import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
 
 const invoke = vi.fn();
 const updateConfig = vi.fn();
@@ -118,6 +119,25 @@ describe("ProviderPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /识别高级设置/ }));
     fireEvent.click(screen.getByLabelText(/心跳包/));
     await waitFor(() => expect(updateConfig).toHaveBeenCalledWith("bailian", expect.objectContaining({ heartbeat: true })));
+  });
+});
+
+describe("LlmThinkingRow", () => {
+  afterEach(cleanup);
+
+  it("旧的「自动」显示为关闭，切到高时只改这个模型的思考程度", async () => {
+    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote")] })];
+    updateConfig.mockResolvedValue(profiles[0]);
+    render(<LlmThinkingRow providerId="bailian" model="qwen3.8-max" />);
+
+    expect(screen.getByRole("radio", { name: "关闭" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("radio", { name: "高" }));
+    await waitFor(() => expect(updateConfig).toHaveBeenCalledWith("bailian", {
+      models: [
+        expect.objectContaining({ name: "qwen3.8-flash", reasoningEffort: "zero" }),
+        expect.objectContaining({ name: "qwen3.8-max", reasoningEffort: "high" }),
+      ],
+    }));
   });
 });
 
