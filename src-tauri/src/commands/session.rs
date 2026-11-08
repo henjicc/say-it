@@ -272,7 +272,7 @@ pub(crate) fn add_llm_provider(
         } else {
             vec![crate::providers::LlmModelConfig::manual(model)]
         };
-        settings.profiles.push(ProviderProfile {
+        let mut profile = ProviderProfile {
             keep_loaded: false,
             id: id.clone(),
             kind: format!("llm:{adapter}"),
@@ -287,7 +287,9 @@ pub(crate) fn add_llm_provider(
             }),
             config_fields: vec![],
             actions: vec![],
-        });
+        };
+        crate::providers::seed_recommended_llm_models(&mut profile);
+        settings.profiles.push(profile);
         if settings.defaults.llm.is_empty() {
             settings.defaults.llm = id.clone();
         }

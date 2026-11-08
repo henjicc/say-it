@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "adapters": {
+    "deepseek": [
+      { "id": "deepseek-flash", "label": "DeepSeek Flash" },
+      { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro" }
+    ],
+    "volcengine": [
+      { "id": "doubao-seed-evolving", "label": "Doubao Seed Evolving" },
+      { "id": "doubao-seed-2-1-pro-260915", "label": "Doubao Seed 2.1 Pro" },
+      { "id": "doubao-seed-2-1-lite-260915", "label": "Doubao Seed 2.1 Lite" },
+      { "id": "doubao-seed-2-1-turbo-260628", "label": "Doubao Seed 2.1 Turbo" },
+      { "id": "deepseek-v4-1-flash-261017", "label": "DeepSeek V4.1 Flash" },
+      { "id": "deepseek-v4-pro-ga-260813", "label": "DeepSeek V4 Pro" },
+      { "id": "kimi-k3-1-pro-261024", "label": "Kimi K3.1 Pro" },
+      { "id": "glm-5-3-flash-260828", "label": "GLM-5.3 Flash" }
+    ],
+    "kimi": [
+      { "id": "kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
+      { "id": "kimi-k3.1-pro-highspeed", "label": "Kimi K3.1 Pro HighSpeed" },
+      { "id": "kimi-k3", "label": "Kimi K3" }
+    ],
+    "bigmodel": [
+      { "id": "glm-5.3", "label": "GLM-5.3" },
+      { "id": "glm-5.3-flash", "label": "GLM-5.3 Flash" },
+      { "id": "glm-5.3-flashx", "label": "GLM-5.3 FlashX" },
+      { "id": "glm-5v-turbo", "label": "GLM-5V Turbo" }
+    ],
+    "mimo": [
+      { "id": "mimo-v2.6-pro", "label": "MiMo V2.6 Pro" },
+      { "id": "mimo-v2.6-flash", "label": "MiMo V2.6 Flash" }
+    ],
+    "minimax": [
+      { "id": "MiniMax-M3", "label": "MiniMax M3" },
+      { "id": "MiniMax-M3.1-Flash", "label": "MiniMax M3.1 Flash" }
+    ],
+    "bailian": [
+      { "id": "qwen3.8-flash", "label": "Qwen3.8 Flash" },
+      { "id": "qwen3.7-plus", "label": "Qwen3.7 Plus" },
+      { "id": "qwen3.8-max", "label": "Qwen3.8 Max" },
+      { "id": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash" },
+      { "id": "deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro" },
+      { "id": "kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
+      { "id": "glm-5.3", "label": "GLM-5.3" },
+      { "id": "MiniMax/MiniMax-M3.1-Flash", "label": "MiniMax M3.1 Flash" }
+    ],
+    "groq": [
+      { "id": "qwen/qwen3.8-27b", "label": "Qwen3.8 27B" },
+      { "id": "openai/gpt-oss-120b", "label": "GPT-OSS 120B" },
+      { "id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B" }
+    ],
+    "open_router": [
+      { "id": "deepseek/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash" },
+      { "id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash" },
+      { "id": "anthropic/claude-sonnet-5-5", "label": "Claude Sonnet 5.5" },
+      { "id": "moonshotai/kimi-k3.1-pro", "label": "Kimi K3.1 Pro" }
+    ]
+  }
+}

@@ -64,13 +64,16 @@ describe("ProviderPanel", () => {
   });
 
   it("一处展示密钥、识别、翻译与大模型，开关写入显示设置", async () => {
-    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote")] })];
+    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote"), llmModel("qwen-long", "remote")] })];
     render(<ProviderPanel profile={profiles[0]} />);
 
     expect(screen.getByLabelText("API Key")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /获取 API Key/ })).toHaveAttribute("href", expect.stringContaining("bailian.console.aliyun.com"));
-    expect(screen.getByRole("switch", { name: "在用途中显示 qwen3.8-max" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("switch", { name: "在用途中显示 qwen3.8-flash", hidden: true })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "在用途中显示 Qwen3.8 Max" })).toHaveAttribute("aria-checked", "true");
+    // 推荐模型即使来自远端列表也默认显示，并用规范的显示名；其余远端模型默认隐藏。
+    expect(screen.getByRole("switch", { name: "在用途中显示 Qwen3.8 Flash" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Qwen3.8 Flash")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "在用途中显示 qwen-long", hidden: true })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("未显示的模型（1）")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "在用途中显示 Fun-ASR 实时（实时）" }));
@@ -126,7 +129,7 @@ describe("llmModelPickerOptions", () => {
       modelVisibility: { "qwen3.7-plus": true, "my-model": false },
     });
     const selected = JSON.stringify(["bailian", "qwen3.8-flash"]);
-    expect(llmModelPickerOptions([profile], selected).map((option) => option.label)).toEqual(["qwen3.7-plus", "qwen3.8-flash", "qwen3.8-max"]);
+    expect(llmModelPickerOptions([profile], selected).map((option) => option.label)).toEqual(["Qwen3.7 Plus", "Qwen3.8 Flash", "Qwen3.8 Max"]);
     expect(llmModelPickerOptions([{ ...profile, status: { hasApiKey: false } }])).toEqual([]);
   });
 });

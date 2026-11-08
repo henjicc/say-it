@@ -7,6 +7,7 @@ import type {
 } from "@/store/useProviderStore";
 import type { ModelPickerOption } from "./ModelPicker";
 import { isModelOffered } from "./providerModels";
+import { isRecommendedLlmModel, llmModelLabel } from "./recommendedLlmModels";
 
 export const FOLLOW_DEFAULT_LLM_OPTION: ModelPickerOption = {
   value: "default",
@@ -56,9 +57,11 @@ export function llmModelsFromProfile(profile: ProviderProfile): LlmModelConfig[]
   return models.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-/** 大模型列表可能有上百个，没设过显示开关时只显示手动添加的和供应商当前模型。 */
+/** 大模型列表可能有上百个，没设过显示开关时只显示手动添加的、推荐的和供应商当前模型。 */
 export function llmModelShownByDefault(profile: ProviderProfile, model: LlmModelConfig): boolean {
-  return model.source === "manual" || String(profile.config?.model ?? "").trim() === model.name;
+  return model.source === "manual"
+    || isRecommendedLlmModel(profile, model.name)
+    || String(profile.config?.model ?? "").trim() === model.name;
 }
 
 export const llmModelValue = (providerId: string, model: string) => JSON.stringify([providerId, model]);
@@ -72,8 +75,8 @@ export function llmModelPickerOptions(profiles: readonly ProviderProfile[], sele
     })
     .map((model) => ({
       value: llmModelValue(profile.id, model.name),
-      label: model.name,
-      triggerLabel: `${profile.displayName} · ${model.name}`,
+      label: llmModelLabel(profile, model.name),
+      triggerLabel: `${profile.displayName} · ${llmModelLabel(profile, model.name)}`,
       providerId: profile.id,
       providerLabel: profile.displayName,
     })));

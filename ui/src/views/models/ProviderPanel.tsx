@@ -21,6 +21,7 @@ import {
   REASONING_OPTIONS,
 } from "@/features/models/llmModelOptions";
 import { isModelVisible, modelVisibilityPatch, providerReady } from "@/features/models/providerModels";
+import { isRecommendedLlmModel, llmModelLabel } from "@/features/models/recommendedLlmModels";
 import { TRANSLATION_MODEL_OPTIONS, TRANSLATION_PROVIDER_ID } from "@/features/translation/models";
 import { CMD, cmd } from "@/lib/tauri";
 import {
@@ -301,33 +302,38 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
     void saveModels((current) => current.filter((model) => model.name !== name));
   };
 
-  const renderRow = (model: LlmModelConfig, shown: boolean) => (
-    <Row
-      key={model.name}
-      label={<span className="flex items-center gap-2">{model.name}{model.source === "manual" && <span className="text-xs text-[var(--color-fg-faint)]">手动</span>}</span>}
-      disabled={!ready}
-      message={shown && model.availability === "missing" && <span className="text-[var(--color-warn)]">最新列表里没有这个模型，能否调用取决于供应商。</span>}
-    >
-      {shown && (
-        <Select
-          size="sm"
-          className="w-28"
-          aria-label={`${model.name} 推理强度`}
-          value={model.reasoningEffort}
-          disabled={!ready}
-          onChange={(event) => setReasoning(model.name, event.target.value as LlmReasoningEffort)}
-        >
-          {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>推理 {option.label}</option>)}
-        </Select>
-      )}
-      {model.source === "manual" && !isPlugin && (
-        <IconButton size="sm" variant="dangerHover" label={`删除手动模型 ${model.name}`} onClick={() => removeManual(model.name)}>
-          <Trash2 className="h-3.5 w-3.5" aria-hidden />
-        </IconButton>
-      )}
-      <Switch checked={shown} disabled={!ready} onChange={(show) => toggle(model.name, show)} label={`在用途中显示 ${model.name}`} />
-    </Row>
-  );
+  const renderRow = (model: LlmModelConfig, shown: boolean) => {
+    const label = llmModelLabel(profile, model.name);
+    // 推荐模型不提供删除：删了也会随远端列表回来，用显示开关隐藏即可。
+    const userAdded = model.source === "manual" && !isRecommendedLlmModel(profile, model.name);
+    return (
+      <Row
+        key={model.name}
+        label={<span className="flex items-center gap-2">{label}{userAdded && <span className="text-xs text-[var(--color-fg-faint)]">手动</span>}</span>}
+        disabled={!ready}
+        message={shown && model.availability === "missing" && <span className="text-[var(--color-warn)]">最新列表里没有这个模型，能否调用取决于供应商。</span>}
+      >
+        {shown && (
+          <Select
+            size="sm"
+            className="w-28"
+            aria-label={`${label} 推理强度`}
+            value={model.reasoningEffort}
+            disabled={!ready}
+            onChange={(event) => setReasoning(model.name, event.target.value as LlmReasoningEffort)}
+          >
+            {REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>推理 {option.label}</option>)}
+          </Select>
+        )}
+        {userAdded && !isPlugin && (
+          <IconButton size="sm" variant="dangerHover" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
+            <Trash2 className="h-3.5 w-3.5" aria-hidden />
+          </IconButton>
+        )}
+        <Switch checked={shown} disabled={!ready} onChange={(show) => toggle(model.name, show)} label={`在用途中显示 ${label}`} />
+      </Row>
+    );
+  };
 
   return (
     <Group
