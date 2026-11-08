@@ -1351,7 +1351,6 @@ async fn process_llm_action(
             Some(&feature.llm_model),
             "assistant-preview",
             false,
-            "high",
             true,
         )
         .await?;
@@ -1420,7 +1419,6 @@ async fn process_ask_action(
         Some(&feature.llm_provider_id),
         Some(&feature.llm_model),
         "assistant",
-        "high",
         true,
         history,
         cancellation.clone(),

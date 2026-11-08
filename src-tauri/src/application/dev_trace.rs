@@ -1038,12 +1038,10 @@ async fn probe_connection(origin: &str) -> Option<Value> {
 
 /// 听写走整包请求，只能测到总耗时；这里用同样的提示词走流式，拆出首字和生成各花了多久。
 async fn run_stream_variant(state: &RuntimeState, input: &ReplayPrompt) -> Result<(), String> {
-    const STREAM_DEFAULT_REASONING: &str = "zero";
     let mut call = smart_text::llm_trace_settings_for(
         state,
         Some(input.provider_id.as_str()),
         Some(input.model.as_str()),
-        STREAM_DEFAULT_REASONING,
     )?;
     let started = Instant::now();
     let mut first_reasoning_ms = None;
@@ -1055,7 +1053,6 @@ async fn run_stream_variant(state: &RuntimeState, input: &ReplayPrompt) -> Resul
         Some(input.provider_id.as_str()),
         Some(input.model.as_str()),
         "dev-stream",
-        STREAM_DEFAULT_REASONING,
         false,
         &[],
         CancellationToken::new(),

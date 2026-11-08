@@ -266,7 +266,7 @@ pub(crate) fn validate_available_for(
 ) -> Result<(), String> {
     let profile = selected_profile(state, provider_id, model)?;
     if profile.kind == "llm:groq" {
-        groq_sdk_request(&profile, Vec::new(), "zero")?;
+        groq_sdk_request(&profile, Vec::new())?;
         let key =
             crate::providers::credential_store::CredentialKey::provider("llm-groq", "apiKey")?;
         if state.credentials.get(&key)?.is_none() {
@@ -319,7 +319,6 @@ fn resolve_plugin_llm(
 fn plugin_llm_request(
     profile: &ProviderProfile,
     messages: Vec<Value>,
-    default_reasoning: &str,
     structured_json: bool,
     supports_reasoning: bool,
 ) -> Result<Value, String> {
@@ -328,10 +327,7 @@ fn plugin_llm_request(
         .into_iter()
         .find(|model| model.name == model_name)
         .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
-    let reasoning = match model.reasoning_effort.as_str() {
-        "auto" | "" => default_reasoning,
-        value => value,
-    };
+    let reasoning = model.reasoning_effort.as_str();
     let mut request = json!({
         "providerId": profile.id,
         "modelId": model_name,
@@ -352,7 +348,6 @@ async fn run_plugin_llm(
     state: &RuntimeState,
     profile: ProviderProfile,
     messages: Vec<Value>,
-    default_reasoning: &str,
     structured_json: bool,
     request_id: String,
 ) -> Result<LlmOutput, String> {
@@ -360,7 +355,6 @@ async fn run_plugin_llm(
     let request = plugin_llm_request(
         &profile,
         messages,
-        default_reasoning,
         structured_json,
         capability.features.iter().any(|feature| feature == "reasoning"),
     )?;
@@ -397,7 +391,6 @@ async fn run_plugin_llm_stream<F>(
     state: &RuntimeState,
     profile: ProviderProfile,
     messages: Vec<Value>,
-    default_reasoning: &str,
     request_id: String,
     cancellation: CancellationToken,
     mut on_update: F,
@@ -409,7 +402,6 @@ where
     let request = plugin_llm_request(
         &profile,
         messages,
-        default_reasoning,
         false,
         capability.features.iter().any(|feature| feature == "reasoning"),
     )?;
@@ -422,7 +414,6 @@ where
             state,
             profile,
             request["messages"].as_array().cloned().unwrap_or_default(),
-            default_reasoning,
             false,
             request_id,
         )
@@ -489,10 +480,6 @@ where
 }
 
 #[cfg(test)]
-fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
-    chat_options_for(profile, None)
-}
-
 /// Kimi K3、GLM-5 系列、MiniMax M3 系列始终思考，没有关闭的协议值（传关闭会被接口拒绝），
 /// 选「关闭」时按最低档 low 发送。按模型 ID 判断，同样覆盖百炼、火山方舟等平台上的同款模型；
 /// 同一家的其他模型（例如手动添加的旧版本）仍可正常关闭。
@@ -503,10 +490,16 @@ fn thinking_can_be_disabled(model: &str) -> bool {
         .any(|family| model.contains(family))
 }
 
-fn chat_options_for(
-    profile: &ProviderProfile,
-    default_reasoning: Option<&str>,
-) -> Result<ChatOptions, String> {
+/// 真正发给 genai 直连的思考档位：始终思考的模型把「关闭」换成最低档。
+fn effective_reasoning<'a>(configured: &'a str, model: &str) -> &'a str {
+    if configured == "zero" && !thinking_can_be_disabled(model) {
+        "low"
+    } else {
+        configured
+    }
+}
+
+fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
         .into_iter()
@@ -526,18 +519,7 @@ fn chat_options_for(
         options = options.with_max_tokens(max_tokens);
     }
     let is_deepseek = profile.kind == "llm:deepseek";
-    let configured_reasoning = match model.reasoning_effort.as_str() {
-        "auto" | "" => default_reasoning.unwrap_or("auto"),
-        value => value,
-    };
-    let configured_reasoning =
-        if configured_reasoning == "zero" && !thinking_can_be_disabled(model_name) {
-            "low"
-        } else {
-            configured_reasoning
-        };
-    let reasoning = match configured_reasoning {
-        "auto" | "" => None,
+    let reasoning = match effective_reasoning(&model.reasoning_effort, model_name) {
         // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
         // reasoning_effort="none"，但 DeepSeek V4 关闭思考必须使用 thinking.type=disabled。
         "zero" if is_deepseek => {
@@ -548,7 +530,6 @@ fn chat_options_for(
         }
         "zero" => Some(ReasoningEffort::Zero),
         "low" => Some(ReasoningEffort::Low),
-        "medium" => Some(ReasoningEffort::Medium),
         "high" => Some(ReasoningEffort::High),
         value => return Err(format!("不支持的推理强度：{value}")),
     };
@@ -563,12 +544,7 @@ fn chat_options_for(
     Ok(options)
 }
 
-#[cfg(test)]
 fn request_timeout(profile: &ProviderProfile) -> Duration {
-    request_timeout_for(profile, None)
-}
-
-fn request_timeout_for(profile: &ProviderProfile, default_reasoning: Option<&str>) -> Duration {
     if profile.kind != "llm:deepseek" {
         return DEFAULT_REQUEST_TIMEOUT;
     }
@@ -576,11 +552,7 @@ fn request_timeout_for(profile: &ProviderProfile, default_reasoning: Option<&str
     let thinking_disabled = llm_models_from_config(&profile.config)
         .iter()
         .find(|model| model.name == model_name)
-        .is_some_and(|model| {
-            model.reasoning_effort == "zero"
-                || (matches!(model.reasoning_effort.as_str(), "auto" | "")
-                    && default_reasoning == Some("zero"))
-        });
+        .is_some_and(|model| model.reasoning_effort == "zero");
     if thinking_disabled {
         DEFAULT_REQUEST_TIMEOUT
     } else {
@@ -628,7 +600,7 @@ fn final_text_from_output(output: &str) -> Result<String, String> {
 fn sdk_reasoning(reasoning: &str) -> Option<Value> {
     match reasoning {
         "zero" => Some(json!({ "enabled": false })),
-        "low" | "medium" | "high" => Some(json!({ "enabled": true, "effort": reasoning })),
+        "low" | "high" => Some(json!({ "enabled": true, "effort": reasoning })),
         _ => None,
     }
 }
@@ -636,7 +608,6 @@ fn sdk_reasoning(reasoning: &str) -> Option<Value> {
 fn groq_sdk_request(
     profile: &ProviderProfile,
     messages: Vec<serde_json::Value>,
-    default_reasoning: &str,
 ) -> Result<serde_json::Value, String> {
     let model_name = profile_value(profile, "model");
     if model_name.is_empty() {
@@ -646,10 +617,7 @@ fn groq_sdk_request(
         .into_iter()
         .find(|model| model.name == model_name)
         .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
-    let reasoning = match model.reasoning_effort.as_str() {
-        "auto" | "" => default_reasoning,
-        value => value,
-    };
+    let reasoning = model.reasoning_effort.as_str();
     let mut request = json!({
         "modelId": model_name,
         "messages": messages,
@@ -666,10 +634,9 @@ async fn run_groq_sdk(
     state: &RuntimeState,
     profile: ProviderProfile,
     messages: Vec<serde_json::Value>,
-    default_reasoning: &str,
     request_id: String,
 ) -> Result<LlmOutput, String> {
-    let request = groq_sdk_request(&profile, messages, default_reasoning)?;
+    let request = groq_sdk_request(&profile, messages)?;
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
     let _cancel_on_drop = cancelled.cancel_on_drop();
@@ -698,7 +665,6 @@ async fn run_groq_sdk_stream<F>(
     state: &RuntimeState,
     profile: ProviderProfile,
     messages: Vec<serde_json::Value>,
-    default_reasoning: &str,
     request_id: String,
     cancellation: CancellationToken,
     mut on_update: F,
@@ -706,7 +672,7 @@ async fn run_groq_sdk_stream<F>(
 where
     F: FnMut(&str, &str),
 {
-    let request = groq_sdk_request(&profile, messages, default_reasoning)?;
+    let request = groq_sdk_request(&profile, messages)?;
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
@@ -877,7 +843,6 @@ pub(crate) async fn process_smart_text(
         &prompt.text,
         "smart-text",
         false,
-        "zero",
         false,
     )
     .await?;
@@ -965,7 +930,6 @@ pub(crate) async fn process_prompt(
         model_override,
         log_scope,
         structured_json,
-        "zero",
         false,
     )
     .await
@@ -979,7 +943,6 @@ pub(crate) async fn process_prompt_with_options(
     model_override: Option<&str>,
     log_scope: &str,
     structured_json: bool,
-    default_reasoning: &str,
     enable_web_search: bool,
 ) -> Result<String, String> {
     let profile = selected_profile(state, provider_id, model_override)?;
@@ -990,14 +953,12 @@ pub(crate) async fn process_prompt_with_options(
         user_prompt,
         log_scope,
         structured_json,
-        default_reasoning,
         enable_web_search,
     )
     .await
 }
 
 /// 用已解析好的供应商配置发请求：调用方需要记录实际使用的供应商与模型时，避免重复解析。
-#[allow(clippy::too_many_arguments)]
 async fn process_prompt_with_profile(
     state: &RuntimeState,
     profile: ProviderProfile,
@@ -1005,7 +966,6 @@ async fn process_prompt_with_profile(
     user_prompt: &str,
     log_scope: &str,
     structured_json: bool,
-    default_reasoning: &str,
     enable_web_search: bool,
 ) -> Result<String, String> {
     let started = StdInstant::now();
@@ -1040,8 +1000,8 @@ async fn process_prompt_with_profile(
             ),
         );
         #[cfg(debug_assertions)]
-        let trace_settings = llm_trace_settings(&profile, default_reasoning);
-        let response = run_groq_sdk(state, profile, messages, default_reasoning, request_id).await;
+        let trace_settings = llm_trace_settings(&profile);
+        let response = run_groq_sdk(state, profile, messages, request_id).await;
         let result = response
             .as_ref()
             .map_err(Clone::clone)
@@ -1066,12 +1026,11 @@ async fn process_prompt_with_profile(
             json!({ "role": "user", "content": user_prompt }),
         ];
         #[cfg(debug_assertions)]
-        let trace_settings = llm_trace_settings(&profile, default_reasoning);
+        let trace_settings = llm_trace_settings(&profile);
         let response = run_plugin_llm(
             state,
             profile,
             messages,
-            default_reasoning,
             structured_json,
             request_id,
         )
@@ -1113,17 +1072,17 @@ async fn process_prompt_with_profile(
     let options = if structured_json {
         structured_output_options(
             &profile,
-            chat_options_for(&profile, Some(default_reasoning))?,
+            chat_options(&profile)?,
         )
     } else {
         final_output_options(
             &profile,
-            chat_options_for(&profile, Some(default_reasoning))?,
+            chat_options(&profile)?,
         )
     };
-    let request_timeout = request_timeout_for(&profile, Some(default_reasoning));
+    let request_timeout = request_timeout(&profile);
     #[cfg(debug_assertions)]
-    let trace_settings = llm_trace_settings_with_origin(&profile, default_reasoning, &client, &model).await;
+    let trace_settings = llm_trace_settings_with_origin(&profile, &client, &model).await;
     let response = timeout(
         request_timeout,
         client.exec_chat(&model, request, Some(&options)),
@@ -1192,7 +1151,7 @@ async fn process_prompt_with_profile(
 
 /// 开发追踪里这次请求实际生效的模型参数，判断「是不是设置导致慢」主要看这里。
 #[cfg(debug_assertions)]
-fn llm_trace_settings(profile: &ProviderProfile, default_reasoning: &str) -> Value {
+fn llm_trace_settings(profile: &ProviderProfile) -> Value {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
         .into_iter()
@@ -1201,9 +1160,11 @@ fn llm_trace_settings(profile: &ProviderProfile, default_reasoning: &str) -> Val
         .as_ref()
         .map(|model| model.reasoning_effort.as_str())
         .unwrap_or_default();
-    let effective = match configured {
-        "auto" | "" => default_reasoning,
-        value => value,
+    // Groq 与插件把「关闭」交给 SDK/插件处理，只有 genai 直连会换成最低档。
+    let effective = if profile.kind == "llm:groq" || is_plugin_llm(profile) {
+        configured
+    } else {
+        effective_reasoning(configured, &model_name)
     };
     json!({
         "providerId":profile.id,
@@ -1218,7 +1179,7 @@ fn llm_trace_settings(profile: &ProviderProfile, default_reasoning: &str) -> Val
         "reasoningEffective":effective,
         "temperature":model.as_ref().and_then(|model| model.temperature),
         "maxTokens":model.as_ref().and_then(|model| model.max_tokens),
-        "timeoutSecs":request_timeout_for(profile, Some(default_reasoning)).as_secs(),
+        "timeoutSecs":request_timeout(profile).as_secs(),
     })
 }
 
@@ -1226,11 +1187,10 @@ fn llm_trace_settings(profile: &ProviderProfile, default_reasoning: &str) -> Val
 #[cfg(debug_assertions)]
 async fn llm_trace_settings_with_origin(
     profile: &ProviderProfile,
-    default_reasoning: &str,
     client: &Client,
     model: &str,
 ) -> Value {
-    let mut settings = llm_trace_settings(profile, default_reasoning);
+    let mut settings = llm_trace_settings(profile);
     if let Ok(origin) = genai_origin(client, model).await {
         settings["origin"] = json!(origin);
     }
@@ -1262,10 +1222,9 @@ pub(crate) fn llm_trace_settings_for(
     state: &RuntimeState,
     provider_id: Option<&str>,
     model_override: Option<&str>,
-    default_reasoning: &str,
 ) -> Result<Value, String> {
     let profile = selected_profile(state, provider_id, model_override)?;
-    Ok(llm_trace_settings(&profile, default_reasoning))
+    Ok(llm_trace_settings(&profile))
 }
 
 #[cfg(debug_assertions)]
@@ -1327,7 +1286,6 @@ pub(crate) async fn process_prompt_stream<F>(
     provider_id: Option<&str>,
     model_override: Option<&str>,
     log_scope: &str,
-    default_reasoning: &str,
     enable_web_search: bool,
     history: &[PromptConversationTurn],
     cancellation: CancellationToken,
@@ -1343,7 +1301,6 @@ where
         provider_id,
         model_override,
         log_scope,
-        default_reasoning,
         enable_web_search,
         history,
         cancellation,
@@ -1363,7 +1320,6 @@ pub(crate) async fn stream_prompt<F>(
     provider_id: Option<&str>,
     model_override: Option<&str>,
     log_scope: &str,
-    default_reasoning: &str,
     enable_web_search: bool,
     history: &[PromptConversationTurn],
     cancellation: CancellationToken,
@@ -1386,7 +1342,6 @@ where
             state,
             profile,
             messages,
-            default_reasoning,
             request_id,
             cancellation,
             on_update,
@@ -1410,7 +1365,6 @@ where
             state,
             profile,
             messages,
-            default_reasoning,
             request_id,
             cancellation,
             on_update,
@@ -1446,13 +1400,13 @@ where
     }
     let options = final_output_options(
         &profile,
-        chat_options_for(&profile, Some(default_reasoning))?
+        chat_options(&profile)?
             .with_capture_content(true)
             .with_capture_reasoning_content(true)
             .with_normalize_reasoning_content(true)
             .with_capture_usage(capture_usage),
     );
-    let request_timeout = request_timeout_for(&profile, Some(default_reasoning));
+    let request_timeout = request_timeout(&profile);
     let stream_result = tokio::select! {
         _ = cancellation.cancelled() => return Err("大语言模型请求已取消".into()),
         result = timeout(
@@ -1545,7 +1499,7 @@ mod tests {
     #[test]
     fn selected_profile_releases_settings_lock_before_loading_execution_profile() {
         let state = Arc::new(RuntimeState::default());
-        let mut profile = llm_profile("plugin:test-lock", "auto");
+        let mut profile = llm_profile("plugin:test-lock", "zero");
         profile.id = "test-lock".into();
         state.providers.lock().unwrap().profiles.push(profile);
         let worker_state = state.clone();
@@ -1708,36 +1662,11 @@ mod tests {
     }
 
     #[test]
-    fn scenario_defaults_turn_thinking_off_or_on_without_overriding_explicit_choice() {
-        let profile = llm_profile("llm:deepseek", "auto");
-        let disabled = chat_options_for(&profile, Some("zero")).unwrap();
-        assert!(disabled.reasoning_effort.is_none());
-        assert_eq!(
-            disabled.extra_body,
-            Some(serde_json::json!({
-                "thinking": { "type": "disabled" }
-            }))
-        );
-
-        let enabled = chat_options_for(&profile, Some("high")).unwrap();
-        assert!(matches!(
-            enabled.reasoning_effort,
-            Some(ReasoningEffort::High)
-        ));
-        assert_eq!(
-            enabled.extra_body,
-            Some(serde_json::json!({
-                "thinking": { "type": "enabled" }
-            }))
-        );
-    }
-
-    #[test]
     fn web_search_is_limited_to_responses_adapters_with_documented_support() {
-        assert!(supports_web_search(&llm_profile("llm:deepseek", "auto")));
-        assert!(supports_web_search(&llm_profile("llm:bailian", "auto")));
-        assert!(!supports_web_search(&llm_profile("llm:kimi", "auto")));
-        assert!(!supports_web_search(&llm_profile("llm:custom", "auto")));
+        assert!(supports_web_search(&llm_profile("llm:deepseek", "zero")));
+        assert!(supports_web_search(&llm_profile("llm:bailian", "zero")));
+        assert!(!supports_web_search(&llm_profile("llm:kimi", "zero")));
+        assert!(!supports_web_search(&llm_profile("llm:custom", "zero")));
     }
 
     #[test]
@@ -1815,14 +1744,6 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_auto_keeps_provider_defaults() {
-        let options = chat_options(&llm_profile("llm:deepseek", "auto")).unwrap();
-
-        assert!(options.reasoning_effort.is_none());
-        assert!(options.extra_body.is_none());
-    }
-
-    #[test]
     fn non_deepseek_zero_keeps_generic_reasoning_option() {
         let options = chat_options(&llm_profile("llm:openai", "zero")).unwrap();
 
@@ -1836,7 +1757,7 @@ mod tests {
     #[test]
     fn deepseek_uses_longer_request_timeout() {
         assert_eq!(
-            request_timeout(&llm_profile("llm:deepseek", "auto")),
+            request_timeout(&llm_profile("llm:deepseek", "high")),
             Duration::from_secs(90)
         );
         assert_eq!(
@@ -1844,7 +1765,7 @@ mod tests {
             Duration::from_secs(30)
         );
         assert_eq!(
-            request_timeout(&llm_profile("llm:openai", "auto")),
+            request_timeout(&llm_profile("llm:openai", "high")),
             Duration::from_secs(30)
         );
     }
@@ -1885,7 +1806,6 @@ mod tests {
         let request = groq_sdk_request(
             &profile,
             vec![json!({ "role": "user", "content": "hello" })],
-            "zero",
         )
         .unwrap();
         assert_eq!(request["modelId"], "demo");
@@ -1900,13 +1820,13 @@ mod tests {
     #[test]
     fn thinking_off_is_sent_explicitly_to_sdk_and_reasoning_plugins_only() {
         let messages = || vec![json!({ "role": "user", "content": "hello" })];
-        let groq = groq_sdk_request(&llm_profile("llm:groq", "zero"), messages(), "zero").unwrap();
+        let groq = groq_sdk_request(&llm_profile("llm:groq", "zero"), messages()).unwrap();
         assert_eq!(groq["reasoning"], json!({ "enabled": false }));
 
         let plugin = llm_profile("plugin:test", "zero");
-        let request = plugin_llm_request(&plugin, messages(), "zero", false, true).unwrap();
+        let request = plugin_llm_request(&plugin, messages(), false, true).unwrap();
         assert_eq!(request["reasoning"], json!({ "enabled": false }));
-        let request = plugin_llm_request(&plugin, messages(), "zero", false, false).unwrap();
+        let request = plugin_llm_request(&plugin, messages(), false, false).unwrap();
         assert!(request.get("reasoning").is_none(), "没声明思考能力的插件不收思考参数");
     }
 }
