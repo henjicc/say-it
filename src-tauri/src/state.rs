@@ -21,6 +21,9 @@ pub(crate) struct RuntimeState {
     pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
+    /// 采集设备的启动与释放必须串行：并发启动会各开一条流写进同一份状态，被覆盖的
+    /// worker 再也停不掉，所有消费者收到的音频成倍重复（听起来像慢放）。
+    pub(crate) backend_mic_lifecycle: Mutex<()>,
     pub(crate) backend_events: crate::application::events::BackendEventHub,
     pub(crate) audio_session: crate::application::audio_session::AudioSessionCoordinator,
     pub(crate) legacy_audio_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
@@ -39,6 +42,8 @@ pub(crate) struct RuntimeState {
         Mutex<crate::application::window_lifecycle::MainWindowLifecycle>,
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
     pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
+    /// 同 `backend_mic_lifecycle`。
+    pub(crate) backend_system_audio_lifecycle: Mutex<()>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
     pub(crate) floating_orb: Mutex<FloatingOrbSettings>,
     pub(crate) floating_orb_runtime: FloatingOrbRuntime,
