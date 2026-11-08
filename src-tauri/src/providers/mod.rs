@@ -615,6 +615,60 @@ fn normalize_llm_profile_config(profile: &mut ProviderProfile) {
     }
     let models = llm_models_from_config(&profile.config);
     let _ = set_llm_models(&mut profile.config, &models);
+    seed_recommended_llm_models(profile);
+}
+
+/// 各大模型供应商的推荐模型，与前端共用 `shared/llm-recommended-models.json`；显示名只在前端使用。
+#[derive(Deserialize)]
+struct RecommendedLlmCatalog {
+    version: u64,
+    adapters: std::collections::HashMap<String, Vec<RecommendedLlmModel>>,
+}
+
+#[derive(Deserialize)]
+struct RecommendedLlmModel {
+    id: String,
+}
+
+static RECOMMENDED_LLM_MODELS: std::sync::LazyLock<RecommendedLlmCatalog> =
+    std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../../shared/llm-recommended-models.json"))
+            .expect("shared/llm-recommended-models.json 解析失败")
+    });
+
+const RECOMMENDED_LLM_MODELS_VERSION_KEY: &str = "recommendedModelsVersion";
+
+/// 把推荐模型补进供应商的模型列表，作为手动项（拉取远端列表时也会保留）。
+///
+/// 每个目录版本只补一次并在配置里记下版本：用户删掉的推荐模型不会在下次保存时被加回来；
+/// 目录升版本后才会再补一次缺少的项。不改动当前选中的模型。
+pub(crate) fn seed_recommended_llm_models(profile: &mut ProviderProfile) {
+    let catalog = &*RECOMMENDED_LLM_MODELS;
+    let Some(recommended) = llm_adapter(profile).and_then(|adapter| catalog.adapters.get(adapter))
+    else {
+        return;
+    };
+    let seeded = profile
+        .config
+        .get(RECOMMENDED_LLM_MODELS_VERSION_KEY)
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if seeded >= catalog.version {
+        return;
+    }
+    let mut models = llm_models_from_config(&profile.config);
+    for model in recommended {
+        if !models.iter().any(|item| item.name == model.id) {
+            models.push(LlmModelConfig::manual(model.id.clone()));
+        }
+    }
+    let _ = set_llm_models(&mut profile.config, &models);
+    if let Some(config) = profile.config.as_object_mut() {
+        config.insert(
+            RECOMMENDED_LLM_MODELS_VERSION_KEY.to_string(),
+            json!(catalog.version),
+        );
+    }
 }
 
 /// 把还停在 Groq 旧默认模型上的配置迁移到新默认模型。
@@ -1029,10 +1083,41 @@ mod tests {
         let normalized = normalize_settings(settings);
         let profile = find_profile(&normalized, GROQ_LLM_PROVIDER_ID).unwrap();
         let models = llm_models_from_config(&profile.config);
-        assert_eq!(models.len(), 1);
+        // 旧的单模型配置保留为第一项，其后补上推荐模型。
         assert_eq!(models[0], LlmModelConfig::manual("legacy-model"));
+        assert!(models.iter().any(|model| model.name == GROQ_DEFAULT_LLM_MODEL_ID));
+        assert_eq!(profile.config["model"], "legacy-model");
         assert_eq!(profile.config["apiKey"], "secret");
         assert!(profile.capabilities.iter().any(|value| value == "asr"));
+    }
+
+    #[test]
+    fn recommended_models_are_seeded_once_and_deleted_ones_stay_deleted() {
+        let mut profile = ProviderProfile {
+            keep_loaded: false,
+            id: "llm-test".into(),
+            kind: "llm:deepseek".into(),
+            display_name: "DeepSeek".into(),
+            auth_kind: "api-key".into(),
+            capabilities: vec!["llm".into()],
+            enabled: true,
+            config: json!({ "model": "deepseek-flash", "models": [] }),
+            config_fields: vec![],
+            actions: vec![],
+        };
+        seed_recommended_llm_models(&mut profile);
+        let names = |profile: &ProviderProfile| {
+            llm_models_from_config(&profile.config)
+                .into_iter()
+                .map(|model| model.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&profile), ["deepseek-flash", "deepseek-v4-pro"]);
+
+        let kept = vec![LlmModelConfig::manual("deepseek-flash")];
+        set_llm_models(&mut profile.config, &kept).unwrap();
+        seed_recommended_llm_models(&mut profile);
+        assert_eq!(names(&profile), ["deepseek-flash"], "用户删掉的推荐模型不能被加回来");
     }
 
     #[test]
