@@ -54,15 +54,14 @@ const WAVE_MAX_H: f32 = 22.0;
 const WAVE_MIN_H: f32 = 2.0;
 /// 最左侧这么多根逐渐变淡，表示更早的声音。
 const WAVE_FADE_BARS: f32 = 5.0;
-/// 每块音频一根柱；柱间隔先按 85ms 一块估计，收到数据后按实际间隔平滑修正。
-const WAVE_DEFAULT_BAR_S: f32 = 0.085;
+/// 固定每 160ms 出一根柱，期间收到的音频块取平均：滚动慢而稳，不随数据节奏抖动。
+const WAVE_BAR_S: f32 = 0.16;
 /// 柱高映射：分段 RMS 到这个值才满幅。自动增益后正常说话约 0.1，落在半高附近，留出起伏余量。
 const WAVE_FULL_RMS: f32 = 0.25;
 /// 新柱与上一根的混合比例：相邻柱不会忽高忽低，密集说话时也不刺眼。
 const WAVE_NEIGHBOR_SMOOTH: f32 = 0.35;
-/// 数据迟到时先停住等待；停太久（静音或没有新数据）才补一根空柱继续走。
-const WAVE_STALL_S: f32 = 0.3;
-const WAVE_MAX_PENDING: usize = 6;
+/// 低于这个柱高视为静音；整排都静音时波形停住，开口再继续滚动，不一直平移。
+const WAVE_SILENT: f32 = 0.03;
 
 /// 处理中：点阵铺满胶囊，用内缩的胶囊形状遮住，一道亮带左右扫过。
 const DOT_STEP: f32 = 3.6;
@@ -270,13 +269,11 @@ pub struct Indicator {
     fresh_started: Option<Instant>,
     /// 屏幕上的波形柱（最旧在前），比可见数量多一根用于滚入。
     wave_bars: VecDeque<f32>,
-    /// 已收到、还没滚入的柱。
-    wave_pending: VecDeque<f32>,
-    /// 0..1：当前柱向左滚过的比例。
+    /// 本根柱周期内收到的音频块柱高之和与块数。
+    wave_acc_sum: f32,
+    wave_acc_count: u32,
+    /// 0..1：当前柱向左滚过的比例；停住时保持 1.0。
     wave_scroll: f32,
-    wave_bar_s: f32,
-    wave_last_chunk: Option<Instant>,
-    wave_stalled: f32,
     /// 处理中扫描动画的时间轴。
     scan_t: f32,
     pill_w: Spring,
@@ -308,11 +305,9 @@ impl Indicator {
             fresh_from: 0,
             fresh_started: None,
             wave_bars: VecDeque::from(vec![0.0; WAVE_BARS + 1]),
-            wave_pending: VecDeque::new(),
+            wave_acc_sum: 0.0,
+            wave_acc_count: 0,
             wave_scroll: 0.0,
-            wave_bar_s: WAVE_DEFAULT_BAR_S,
-            wave_last_chunk: None,
-            wave_stalled: 0.0,
             scan_t: 0.0,
             pill_w: Spring::at(PILL_W_RECORDING),
             morph: Spring::at(0.0),
@@ -339,10 +334,9 @@ impl Indicator {
     }
     fn reset_wave(&mut self) {
         self.wave_bars = VecDeque::from(vec![0.0; WAVE_BARS + 1]);
-        self.wave_pending.clear();
+        self.wave_acc_sum = 0.0;
+        self.wave_acc_count = 0;
         self.wave_scroll = 0.0;
-        self.wave_last_chunk = None;
-        self.wave_stalled = 0.0;
     }
     fn clear_content(&mut self) {
         self.state = None;
@@ -425,53 +419,39 @@ impl Indicator {
             self.text_scroll.snap(self.text_target.scroll);
         }
     }
-    /// 一块音频一根柱：取分段 RMS 的平均，按留有余量的曲线映射，再与上一根混合。
-    fn push_wave_chunk(&mut self, level: f32, peaks: &[f32], now: Instant) {
-        if let Some(last) = self.wave_last_chunk {
-            let per_bar = now.saturating_duration_since(last).as_secs_f32();
-            if (0.02..0.5).contains(&per_bar) {
-                self.wave_bar_s += (per_bar - self.wave_bar_s) * 0.2;
-            }
-        }
-        self.wave_last_chunk = Some(now);
+    /// 记入本根柱周期：分段 RMS 取平均后按留有余量的曲线映射。
+    fn push_wave_chunk(&mut self, level: f32, peaks: &[f32]) {
         let rms = if peaks.is_empty() {
             level
         } else {
             peaks.iter().sum::<f32>() / peaks.len() as f32
         };
-        let target = bar_level(rms);
-        let previous = self
-            .wave_pending
-            .back()
-            .or(self.wave_bars.back())
-            .copied()
-            .unwrap_or(0.0);
-        self.wave_pending
-            .push_back(previous * WAVE_NEIGHBOR_SMOOTH + target * (1.0 - WAVE_NEIGHBOR_SMOOTH));
-        while self.wave_pending.len() > WAVE_MAX_PENDING {
-            self.wave_pending.pop_front();
-        }
+        self.wave_acc_sum += bar_level(rms);
+        self.wave_acc_count += 1;
     }
+    /// 到出柱时刻：周期内的平均与上一根混合后滚入；没收到数据或整排静音时停在当前位置。
+    /// 停住时 scroll 保持 1.0，与刚滚入一根时的位置完全一致，恢复时不会跳。
     fn advance_wave(&mut self, dt: f32) {
-        self.wave_scroll += dt / self.wave_bar_s.max(0.01);
-        while self.wave_scroll >= 1.0 {
-            // 停顿够久后持续补空柱，波形照常连续左移；新数据到达才重新计时。
-            let next = match self.wave_pending.pop_front() {
-                Some(value) => {
-                    self.wave_stalled = 0.0;
-                    value
-                }
-                None if self.wave_stalled >= WAVE_STALL_S => 0.0,
-                None => {
-                    self.wave_scroll = self.wave_scroll.min(0.999);
-                    self.wave_stalled += dt;
-                    return;
-                }
-            };
-            self.wave_bars.pop_front();
-            self.wave_bars.push_back(next);
-            self.wave_scroll -= 1.0;
+        self.wave_scroll += dt / WAVE_BAR_S;
+        if self.wave_scroll < 1.0 {
+            return;
         }
+        if self.wave_acc_count == 0 {
+            self.wave_scroll = 1.0;
+            return;
+        }
+        let target = self.wave_acc_sum / self.wave_acc_count as f32;
+        self.wave_acc_sum = 0.0;
+        self.wave_acc_count = 0;
+        let previous = self.wave_bars.back().copied().unwrap_or(0.0);
+        let next = previous * WAVE_NEIGHBOR_SMOOTH + target * (1.0 - WAVE_NEIGHBOR_SMOOTH);
+        if next < WAVE_SILENT && self.wave_bars.iter().all(|bar| *bar < WAVE_SILENT) {
+            self.wave_scroll = 1.0;
+            return;
+        }
+        self.wave_bars.pop_front();
+        self.wave_bars.push_back(next);
+        self.wave_scroll = (self.wave_scroll - 1.0).min(0.999);
     }
     /// 每帧推进全部动画。
     fn tick_animations(&mut self, dt: f32, now: Instant) {
@@ -602,7 +582,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 }
             }
             Command::SetWaveform { level, peaks } => {
-                self.push_wave_chunk(level, &peaks, cx.now);
+                self.push_wave_chunk(level, &peaks);
                 Vec::new()
             }
             Command::ShowNotice(text) => {
@@ -745,8 +725,7 @@ impl Indicator {
             bottom,
         )
     }
-    /// 胶囊、文字框与通知面板共用：深色底，内侧浅色细线、外侧深色细线，
-    /// 深浅两种桌面背景上都能看清轮廓。
+    /// 胶囊、文字框与通知面板共用：深色底加一圈内侧浅色细线；深色桌面靠亮线、浅色桌面靠深底看清轮廓。
     fn draw_panel<C: Canvas>(
         &self,
         canvas: &mut C,
@@ -760,18 +739,6 @@ impl Indicator {
             radius,
             self.look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96 * alpha),
         );
-        let outer = Rect::new(
-            rect.left - 0.5,
-            rect.top - 0.5,
-            rect.right + 0.5,
-            rect.bottom + 0.5,
-        );
-        canvas.stroke_rounded_rect(
-            outer,
-            radius + 0.5,
-            self.look.color(0.0, 0.0, 0.0, 0.55 * alpha),
-            Stroke::plain(1.0),
-        );
         let inner = Rect::new(
             rect.left + 0.5,
             rect.top + 0.5,
@@ -782,7 +749,7 @@ impl Indicator {
             inner,
             radius - 0.5,
             self.look
-                .color(1.0, 1.0, 1.0, (0.26 + 0.14 * emphasis) * alpha),
+                .color(1.0, 1.0, 1.0, (0.34 + 0.14 * emphasis) * alpha),
             Stroke::plain(1.0),
         );
     }
@@ -1260,7 +1227,7 @@ mod tests {
         assert!(matches!(canvas.calls[0], Draw::FillRounded(_, PILL_RADIUS, c)
             if c == Look::WINDOWS_LEGACY.color(23.0/255.0, 24.0/255.0, 27.0/255.0, 0.96)));
         assert!(matches!(canvas.calls[1], Draw::StrokeRounded(_, _, _, _)));
-        assert!(matches!(canvas.calls[2], Draw::StrokeRounded(_, _, _, _)));
+        assert!(!matches!(canvas.calls[2], Draw::StrokeRounded(_, _, _, _)));
         assert!(!canvas.calls.iter().any(|call| matches!(call, Draw::Text(..))));
     }
 
@@ -1373,9 +1340,9 @@ mod tests {
         assert!(!ops.contains(&WindowOp::SetInteractive(true)));
     }
 
-    /// 波形按帧连续左移：两次数据之间也有亚像素的滚动，而不是一格一格地跳。
+    /// 波形按帧连续左移，固定周期出一根柱，周期内的音频块取平均。
     #[test]
-    fn waveform_scrolls_continuously_between_chunks() {
+    fn waveform_scrolls_continuously_and_averages_chunks_per_bar() {
         let now = Instant::now();
         let text = FakeText;
         let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
@@ -1383,17 +1350,46 @@ mod tests {
             Command::SetState(IndicatorState::Recording),
             &cx(now, &text),
         );
+        for rms in [0.05, 0.15] {
+            model.apply(
+                Command::SetWaveform { level: rms, peaks: vec![rms; 6] },
+                &cx(now, &text),
+            );
+        }
+        model.on_frame(0.016, &cx(now + Duration::from_millis(16), &text));
+        assert!(model.wave_scroll > 0.05 && model.wave_scroll < 0.15);
+        model.on_frame(0.15, &cx(now + Duration::from_millis(166), &text));
+        let expected = (bar_level(0.05) + bar_level(0.15)) / 2.0 * (1.0 - WAVE_NEIGHBOR_SMOOTH);
+        assert!((model.wave_bars.back().copied().unwrap() - expected).abs() < 1e-5);
+        assert!(model.wave_scroll < 0.1);
+    }
+
+    /// 整排都静音时波形停住，开口后继续滚动。
+    #[test]
+    fn waveform_holds_still_during_silence() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
         model.apply(
-            Command::SetWaveform { level: 0.2, peaks: vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1] },
+            Command::SetState(IndicatorState::Recording),
             &cx(now, &text),
         );
-        model.on_frame(0.016, &cx(now + Duration::from_millis(16), &text));
-        assert!(model.wave_scroll > 0.1 && model.wave_scroll < 0.3);
-        model.on_frame(0.07, &cx(now + Duration::from_millis(86), &text));
-        let first = model.wave_bars.back().copied().unwrap();
-        // 正常说话（RMS≈0.1）在半高附近，并与上一根（静音）混合，不会一下顶满。
-        assert!(first > 0.3 && first < 0.6, "{first}");
-        assert!(model.wave_pending.is_empty());
+        for step in 1..=10 {
+            model.apply(
+                Command::SetWaveform { level: 0.001, peaks: vec![0.001; 6] },
+                &cx(now, &text),
+            );
+            model.on_frame(0.1, &cx(now + Duration::from_millis(step * 100), &text));
+        }
+        assert_eq!(model.wave_scroll, 1.0);
+        assert!(model.wave_bars.iter().all(|bar| *bar == 0.0));
+        model.apply(
+            Command::SetWaveform { level: 0.1, peaks: vec![0.1; 6] },
+            &cx(now, &text),
+        );
+        model.on_frame(0.016, &cx(now + Duration::from_millis(1016), &text));
+        assert!(model.wave_bars.back().copied().unwrap() > WAVE_SILENT);
+        assert!(model.wave_scroll < 0.2);
     }
 
     #[test]
