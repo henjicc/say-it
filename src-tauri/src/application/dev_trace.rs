@@ -1140,6 +1140,7 @@ async fn api_index() -> Json<Value> {
             "GET /runs/{id}":"一次运行的完整记录，id 可写 latest",
             "GET /stats?limit=50":"最近若干次听写的各阶段与各模型耗时分布",
             "POST /smart-test":"对比测试，会调用 3 次大模型并产生费用。请求体 {text?, fromRun?, providerId?, model?}，text 和 fromRun 都不给时重放最近一次听写",
+            "POST /smart-eval":"模板回归评测，每条样本一次真实请求（并发，有费用）。请求体 {template?, cases:[{text, appName?, context?}]}，template 不给时用当前模板",
             "GET /models":"可以测速的大模型列表",
             "POST /model-bench":"多模型并发测速，每个模型每轮一次真实请求，有费用。请求体 {models?:[{providerId, model}], rounds?, prompt?, fromRun?}，models 不给时测当前智能处理模型，完成后返回结果",
             "GET /model-bench":"测速进度：进行中返回实时数据，结束后返回最近一次结果",
@@ -1177,6 +1178,78 @@ async fn api_smart_test(
     Json(request): Json<SmartTestRequest>,
 ) -> ApiResult {
     api_result(smart_test(&app, request).await)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmartEvalCase {
+    text: String,
+    #[serde(default)]
+    app_name: String,
+    #[serde(default)]
+    context: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SmartEvalRequest {
+    /// 不给时用当前智能处理模板，便于和改过的模板对比。
+    template: Option<String>,
+    cases: Vec<SmartEvalCase>,
+}
+
+/// 调模板用的回归评测：每条样本按给定模板、软件名和上下文渲染后真实请求一次（并发，有费用），
+/// 返回每条的输出和耗时。不写入运行记录，也不和听写互斥。
+async fn smart_eval(app: &AppHandle, request: SmartEvalRequest) -> Result<Value, String> {
+    let state = app.state::<RuntimeState>();
+    let state: &RuntimeState = state.inner();
+    let (current, provider_id, model) = crate::application::dictation::smart_test_defaults(state)?;
+    let template = request.template.unwrap_or(current);
+    let runs = request.cases.iter().map(|case| {
+        let template = template.as_str();
+        let provider_id = provider_id.as_str();
+        let model = model.as_str();
+        async move {
+            let started = Instant::now();
+            let output = async {
+                let prompt = smart_text::build_smart_prompt(
+                    state,
+                    &case.text,
+                    template,
+                    &case.context,
+                    &case.app_name,
+                    provider_id,
+                )?
+                .text;
+                smart_text::process_prompt(
+                    state,
+                    smart_text::SYSTEM_PROMPT,
+                    &prompt,
+                    Some(provider_id),
+                    Some(model),
+                    "dev-eval",
+                    false,
+                )
+                .await
+            }
+            .await;
+            json!({
+                "appName":case.app_name,
+                "text":case.text,
+                "output":output.as_ref().ok(),
+                "error":output.as_ref().err(),
+                "ms":started.elapsed().as_millis() as u64,
+            })
+        }
+    });
+    Ok(Value::from(futures_util::future::join_all(runs).await))
+}
+
+async fn api_smart_eval(
+    RouteState(app): RouteState<AppHandle>,
+    Json(request): Json<SmartEvalRequest>,
+) -> ApiResult {
+    api_result(smart_eval(&app, request).await)
 }
 
 async fn api_models(RouteState(app): RouteState<AppHandle>) -> ApiResult {
@@ -1227,6 +1300,7 @@ fn start_api(app: AppHandle) {
         .route("/runs/{id}", get(api_run))
         .route("/stats", get(api_stats))
         .route("/smart-test", post(api_smart_test))
+        .route("/smart-eval", post(api_smart_eval))
         .route("/models", get(api_models))
         .route("/model-bench", get(api_bench_state).post(api_bench_run))
         .layer(middleware::from_fn(only_loopback_host))
