@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { CMD, cmd } from "@/lib/tauri";
+import { audioPrice, FREE_PRICE, type ModelPrice, type SdkPricing } from "@/features/models/pricing";
 
 export interface ModelInfo {
   id: string; label: string; providerId: string; category: string; protocol: string;
@@ -7,6 +8,7 @@ export interface ModelInfo {
   emitsPartialResults: boolean; scenes: string[];
   isDefaultRealtime: boolean; isDefaultFile: boolean; isQwenRealtime: boolean;
   isQwenFile: boolean; isQwenShortAudioFile: boolean; isFunasrFlashFile: boolean;
+  capabilityId?: string;
 }
 export type AsrModelMode = "realtime" | "nonRealtime";
 export interface AsrModelOption {
@@ -17,6 +19,7 @@ export interface AsrModelOption {
   filterProviderId?: string;
   filterProviderLabel?: string;
   mode?: AsrModelMode;
+  price?: ModelPrice;
 }
 export interface OcrModelOption extends AsrModelOption {
   providerId: string;
@@ -32,6 +35,7 @@ interface CatalogProvider {
 export interface ModelCatalogResponse {
   version: number; defaultRealtimeModel: string; defaultFileModel: string; models: ModelInfo[];
   providers: { profiles?: CatalogProvider[]; defaults?: Record<string, string> };
+  pricing: SdkPricing;
 }
 
 let catalog: ModelCatalogResponse | null = null;
@@ -63,6 +67,8 @@ export function currentCatalog(): ModelCatalogResponse {
   if (!catalog) throw new Error("模型目录尚未加载");
   return catalog;
 }
+/** 目录尚未加载（如单元测试）时没有价格。 */
+export function sdkPricing(): SdkPricing | undefined { return catalog?.pricing; }
 export function modelInfo(id: string) { return catalog?.models.find((item) => item.id === id.trim()); }
 export function asrModelMode(item: Pick<ModelInfo, "category">): AsrModelMode | undefined {
   if (item.category === "realtime") return "realtime";
@@ -100,6 +106,7 @@ export function optionsForScene(scene: string): AsrModelOption[] {
       filterProviderId: local ? "local" : undefined,
       filterProviderLabel: local ? "本地" : undefined,
       mode: asrModelMode(item),
+      price: local ? FREE_PRICE : audioPrice(item.capabilityId ? current.pricing.capabilities[item.capabilityId] : undefined),
     };
   });
 }

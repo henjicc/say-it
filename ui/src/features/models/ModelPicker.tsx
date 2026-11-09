@@ -8,6 +8,7 @@ import {
   asrModelModeLabel,
   type AsrModelMode,
 } from "@/features/asr/modelRegistry";
+import type { ModelPrice } from "./pricing";
 
 export interface ModelPickerOption {
   value: string;
@@ -18,6 +19,7 @@ export interface ModelPickerOption {
   filterProviderId?: string;
   filterProviderLabel?: string;
   mode?: AsrModelMode;
+  price?: ModelPrice;
 }
 
 interface PickerLayout {
@@ -374,9 +376,12 @@ export function ModelPicker({
                       else groupRefs.current.delete(group.id);
                     }}
                     aria-hidden
-                    className="px-3 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]"
+                    className="flex items-baseline justify-between gap-3 px-3 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]"
                   >
-                    {group.label}
+                    <span className="min-w-0 truncate">{group.label}</span>
+                    {group.options.some((option) => option.price?.perMillionTokens) && (
+                      <span className="shrink-0">每百万 token 输入 / 输出</span>
+                    )}
                   </div>
                   {group.options.map((option) => {
                     const isSelected = option.value === value;
@@ -398,6 +403,11 @@ export function ModelPicker({
                         )}
                       >
                         <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                        {option.price && (
+                          <span className={cn("shrink-0 text-xs tabular-nums", !isSelected && "text-[var(--color-fg-subtle)]")}>
+                            {option.price.text}
+                          </span>
+                        )}
                         {option.mode && (
                           <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[11px]", isSelected ? "border-current" : "border-[var(--color-line)] text-[var(--color-fg-subtle)]")}>
                             {asrModelModeLabel(option.mode)}

@@ -159,10 +159,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.10.0");
+    assert_eq!(manifest["sdk"]["version"], "0.11.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-ZREAzNuvVBgTXE5Ptu1xhauJCrqQ4z4lDjbzq2III0dYE82VbYoVqqcWVz1YYsrJdDXVz0OkzKXbJQ+TByaPeQ=="
+        "sha512-o7cbOD/hrFhj4VEzrMsDq935P+kXdi1lKfP0LyzBZchcjNPcbF4why2urxB/8bjLvk0FlpZh36Sf7Mv9ZhfhUA=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -174,7 +174,18 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     assert!(manifest["bundles"]["llmModules"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
-    assert_eq!(manifest["bundles"]["llmModules"]["modules"], 12);
+    // 0.11.0 起描述校验会检查价格，多引入 pricing/capabilityPricing.js。
+    assert_eq!(manifest["bundles"]["llmModules"]["modules"], 13);
+    let pricing = &manifest["pricing"];
+    assert_eq!(
+        pricing["capabilities"]["bailian.speech-recognition.fun-asr-realtime-2026-02-28"]["billing"],
+        "audio-duration"
+    );
+    assert_eq!(
+        pricing["capabilities"]["bailian.translation.qwen-mt-flash"]["billing"],
+        "tokens"
+    );
+    assert_eq!(pricing["llm"]["bailian"]["qwen3.8-flash"]["currency"], "CNY");
 
     let source = r#"
 export default () => ({
@@ -212,7 +223,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.10.0");
+    assert_eq!(result["version"], "0.11.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 23);
     assert_eq!(

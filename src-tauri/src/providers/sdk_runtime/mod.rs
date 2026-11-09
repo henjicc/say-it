@@ -26,11 +26,17 @@ pub const AI_SDK_BOOTSTRAP: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-ai-sdk-bootstrap.js"
 ));
-#[cfg(test)]
 pub const AI_SDK_BUNDLE_MANIFEST: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-ai-sdk-manifest.json"
 ));
+
+/// 构建时从 SDK 导出的官方按量标准价：`capabilities` 按能力模块 ID，`llm` 按供应商预设 ID 再按模型 ID。
+pub static SDK_PRICING: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    let mut manifest: Value =
+        serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
+    manifest["pricing"].take()
+});
 
 pub trait HostRuntimeRecorder: Send + Sync {
     fn record(&self, event: Value);

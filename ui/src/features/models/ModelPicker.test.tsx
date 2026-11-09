@@ -110,7 +110,7 @@ describe("ModelPicker", () => {
         value="openai"
         options={[
           { value: "openai", label: "gpt-5", triggerLabel: "OpenAI · gpt-5", providerId: "openai", providerLabel: "OpenAI" },
-          { value: "qwen", label: "qwen-max", triggerLabel: "阿里云百炼 · qwen-max", providerId: "bailian", providerLabel: "阿里云百炼" },
+          { value: "qwen", label: "qwen-max", triggerLabel: "阿里云百炼 · qwen-max", providerId: "bailian", providerLabel: "阿里云百炼", price: { text: "¥12 / ¥36", perMillionTokens: true } },
         ]}
         aria-label="智能模型"
         panelLabel="选择智能模型"
@@ -122,6 +122,9 @@ describe("ModelPicker", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "智能模型" }));
     const dialog = await screen.findByRole("dialog", { name: "选择智能模型" });
     expect(within(dialog).queryByRole("group", { name: "按识别方式筛选" })).not.toBeInTheDocument();
+    expect(within(within(dialog).getByRole("option", { name: "qwen-max" })).getByText("¥12 / ¥36")).toBeInTheDocument();
+    expect(within(within(dialog).getByRole("group", { name: "阿里云百炼" })).getByText("每百万 token 输入 / 输出")).toBeInTheDocument();
+    expect(within(within(dialog).getByRole("group", { name: "OpenAI" })).queryByText("每百万 token 输入 / 输出")).not.toBeInTheDocument();
     fireEvent.change(within(dialog).getByRole("textbox", { name: "搜索智能模型" }), {
       target: { value: "百炼" },
     });

@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import ts from 'typescript'
 
@@ -13,10 +14,10 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-const expectedSdkVersion = '0.10.0'
-const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.10.0.tgz'
-const expectedSdkShasum = '1d26c1ecc18d8c958b7a32d09f2b577422c639bf'
-const expectedSdkIntegrity = 'sha512-ZREAzNuvVBgTXE5Ptu1xhauJCrqQ4z4lDjbzq2III0dYE82VbYoVqqcWVz1YYsrJdDXVz0OkzKXbJQ+TByaPeQ=='
+const expectedSdkVersion = '0.11.0'
+const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.11.0.tgz'
+const expectedSdkShasum = 'acaf9a16f173b37080c744e06024fb2b2384c28e'
+const expectedSdkIntegrity = 'sha512-o7cbOD/hrFhj4VEzrMsDq935P+kXdi1lKfP0LyzBZchcjNPcbF4why2urxB/8bjLvk0FlpZh36Sf7Mv9ZhfhUA=='
 if (sdkVersion !== expectedSdkVersion || sdkLock?.version !== sdkVersion) {
   throw new Error(`Say-It 必须精确锁定 @henjicc/ai-sdk@${expectedSdkVersion}`)
 }
@@ -79,6 +80,8 @@ const llmModules = await bundleSdkEntry({
   ],
 })
 
+const pricing = await collectPricing()
+
 const manifest = {
   sdk: {
     package: '@henjicc/ai-sdk',
@@ -108,6 +111,7 @@ const manifest = {
     llmModules,
     bootstrap: describeFile(sdkBootstrapPath, 1),
   },
+  pricing,
 }
 fs.writeFileSync(
   path.join(outputRoot, 'sayit-ai-sdk-manifest.json'),
@@ -172,6 +176,43 @@ async function bundleSdkEntry({ entry, globalName, output, forbiddenInputs, plug
     throw new Error(`${entry} 产物包含 Node/WebView 或全局 fetch 依赖`)
   }
   return describeFile(outputPath, inputs.length)
+}
+
+/**
+ * SDK 登记的官方按量标准价，供模型目录下发给界面显示。能力价格取自运行时实际注册的模块
+ * （与 capability-entry 同一份来源列表），大模型价格取自 SDK 的供应商预设。
+ */
+async function collectPricing() {
+  const probePath = path.join(outputRoot, 'sayit-pricing-probe.mjs')
+  await build({
+    absWorkingDir: projectRoot,
+    entryPoints: [path.join('sdk-runtime', 'capability-entry.ts')],
+    outfile: probePath,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'es2020',
+    logLevel: 'silent',
+  })
+  let entry
+  try {
+    entry = await import(pathToFileURL(probePath).href)
+  } finally {
+    fs.rmSync(probePath)
+  }
+  const runtime = entry.createSayItCapabilityRuntime({}, { sources: entry.SAYIT_CAPABILITY_MODULE_SOURCES })
+  const capabilities = Object.fromEntries(
+    runtime.descriptors()
+      .filter(descriptor => descriptor.pricing)
+      .map(descriptor => [descriptor.id, descriptor.pricing])
+  )
+  const { LLM_PROVIDER_PRESETS } = await import('@henjicc/ai-sdk/llm')
+  const llm = Object.fromEntries(
+    LLM_PROVIDER_PRESETS
+      .filter(preset => preset.modelPricing)
+      .map(preset => [preset.providerId, preset.modelPricing])
+  )
+  return { capabilities, llm }
 }
 
 function groqBundleBoundaryPlugin() {
