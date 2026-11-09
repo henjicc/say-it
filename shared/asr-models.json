@@ -108,7 +108,7 @@
     "protocol": "sdk-capability-realtime",
     "capabilityId": "volcengine.speech-recognition.seedasr-2.0-realtime",
     "sdkCapabilitySource": "volcengine-speech-recognition-realtime",
-    "supportsVocabulary": false,
+    "supportsVocabulary": true,
     "supportsAlignmentTimestamps": false,
     "emitsPartialResults": true,
     "scenes": ["dictationRealtime", "subtitles"],

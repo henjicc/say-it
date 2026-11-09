@@ -234,7 +234,14 @@ struct SdkRealtimeAsrInput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     hints: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<SdkBailianRealtimeOptions>,
+    options: Option<SdkRealtimeOptions>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum SdkRealtimeOptions {
+    Bailian(SdkBailianRealtimeOptions),
+    Volcengine { hotwords: Vec<String> },
 }
 
 #[derive(serde::Serialize)]
@@ -277,6 +284,18 @@ fn realtime_input_with_customization(
         hints: Vec::new(),
         options: None,
     };
+    if profile.kind == "sdk:volcengine" {
+        // 火山热词直传只有词本身，没有权重。
+        let hotwords = customization
+            .hotwords
+            .iter()
+            .map(|word| word.text.clone())
+            .collect::<Vec<_>>();
+        if !hotwords.is_empty() {
+            input.options = Some(SdkRealtimeOptions::Volcengine { hotwords });
+        }
+        return serde_json::to_value(input).expect("SDK 实时识别输入只包含可序列化基础类型");
+    }
     if profile.kind != "sdk:bailian" {
         return serde_json::to_value(input).expect("SDK 实时识别输入只包含可序列化基础类型");
     }
@@ -287,7 +306,7 @@ fn realtime_input_with_customization(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty());
     input.hints = string_list(config.get("languageHints"));
-    input.options = Some(SdkBailianRealtimeOptions {
+    input.options = Some(SdkRealtimeOptions::Bailian(SdkBailianRealtimeOptions {
         vocabulary: crate::providers::sdk_runtime::online::sdk_inline_vocabulary(model, customization),
         format: "pcm",
         max_sentence_silence_ms: config
@@ -308,7 +327,7 @@ fn realtime_input_with_customization(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         speech_noise_threshold: config.get("speechNoiseThreshold").and_then(Value::as_f64),
-    });
+    }));
     serde_json::to_value(input).expect("SDK 实时识别输入只包含可序列化基础类型")
 }
 
@@ -425,5 +444,19 @@ mod tests {
             input,
             json!({ "mediaType": "audio/pcm", "sampleRateHz": 16_000, "channels": 1 })
         );
+    }
+
+    #[test]
+    fn volcengine_realtime_receives_global_hotwords_without_weights() {
+        let customization = crate::providers::RequestCustomization {
+            hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: "说吧".into(), weight: 3 }],
+            ..Default::default()
+        };
+        let input = realtime_input_with_customization(
+            &crate::providers::volcengine_profile(),
+            "seedasr-2.0-realtime",
+            &customization,
+        );
+        assert_eq!(input["options"], json!({ "hotwords": ["说吧"] }));
     }
 }
