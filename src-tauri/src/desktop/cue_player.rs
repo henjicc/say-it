@@ -239,7 +239,11 @@ mod output {
                     }
                 }
                 Command::Play(samples, rate) => {
-                    ensure_output(&mut output);
+                    // 查默认输出设备每次要三四十毫秒，提示音会比胶囊晚；输出流完好时直接播放，
+                    // 换设备的检查留给听写开始时的 Warm。
+                    if !output.as_ref().is_some_and(|out| !out.failed.load(Ordering::Relaxed)) {
+                        ensure_output(&mut output);
+                    }
                     let Some(out) = &output else { continue };
                     let samples = with_fades(resample(&samples, rate, out.rate), out.rate);
                     let length = Duration::from_secs_f64(samples.len() as f64 / out.rate as f64);
