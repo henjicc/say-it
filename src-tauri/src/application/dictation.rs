@@ -2270,6 +2270,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         Ok(None)
     };
+    crate::application::dev_trace::mark("trace.historyWritten", serde_json::json!({}));
     let history_id = initial_history.as_ref().ok().cloned().flatten();
     if let Ok(mut session) = state.dictation_runtime.session.lock() {
         session.history_id = history_id.clone();
@@ -2278,6 +2279,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         let state = app.state::<RuntimeState>();
         let _ = stop_asr_stream_inner(&id, &state);
     }
+    crate::application::dev_trace::mark("trace.asrStreamStopped", serde_json::json!({}));
     let state = app.state::<RuntimeState>();
     // 胶囊显示「可跳过」的同时就装好令牌：之后等截图识别、调大模型的任何时刻点击都有效。
     let smart_skip = tokio_util::sync::CancellationToken::new();
@@ -2295,6 +2297,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
         publish_state(&app, None);
+        crate::application::dev_trace::mark("trace.statePublished", serde_json::json!({}));
         // ASR 已经结束；无论是普通听写的智能优化，还是智能助手任务，
         // 后续都统一投影为“处理中”，避免模型调用期间仍误显示“识别中”。
         // 只有听写智能处理能跳过，胶囊用 smartProcessing 表示可点击；助手任务用 processing。
@@ -2311,6 +2314,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             }
         }
     }
+    crate::application::dev_trace::mark("trace.indicatorUpdated", serde_json::json!({}));
     drop(begin_guard);
     if let Err(error) = initial_history {
         cleanup_stale_finalize(&state, lease, temp_path);
