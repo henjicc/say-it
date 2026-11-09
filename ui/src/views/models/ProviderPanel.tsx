@@ -141,18 +141,20 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
         const controlId = `provider-${profile.id}-${field.key}`;
         const keyUrl = providerApiKeyUrl(profile, field.key, index);
         const link = keyUrl
-          ? <ApiKeyLink url={keyUrl} label={`获取 ${field.label}`} onError={(reason) => setError(`打开密钥页面失败：${reason}`)} />
+          ? <ApiKeyLink url={keyUrl} label="获取" ariaLabel={`获取 ${field.label}`} onError={(reason) => setError(`打开密钥页面失败：${reason}`)} />
           : undefined;
         const hasSecret = configuredSecrets.includes(field.key);
         if (field.fieldType === "boolean") {
           return (
-            <Row key={field.key} label={field.label} message={link}>
+            <Row key={field.key} label={field.label}>
+              {link}
               <Switch checked={Boolean(draft[field.key])} onChange={(value) => update(field, value, true)} label={field.label} />
             </Row>
           );
         }
         return (
-          <Row key={field.key} label={field.label} controlId={controlId} message={link}>
+          <Row key={field.key} label={field.label} controlId={controlId}>
+            {link}
             <div className={ROW_CONTROL_W}>
               {field.secret ? (
                 <SecretInput
