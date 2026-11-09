@@ -43,15 +43,19 @@ export function providerApiKeyUrl(provider: { id: string; kind: string }, fieldK
 export function ApiKeyLink({
   url,
   label,
+  ariaLabel,
   onError,
 }: {
   url: string;
   label: string;
+  /** 可见文字只写「获取」时，读屏用的完整名称。 */
+  ariaLabel?: string;
   onError: (message: string) => void;
 }) {
   return (
     <a
       href={url}
+      aria-label={ariaLabel}
       className="inline-flex items-center gap-1 text-[var(--color-accent-text)] underline-offset-4 hover:underline"
       onClick={(event) => {
         event.preventDefault();
