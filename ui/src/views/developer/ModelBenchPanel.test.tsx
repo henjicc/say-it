@@ -105,10 +105,11 @@ describe("模型测速面板", () => {
 
     fireEvent.click(screen.getByLabelText("甲家 · m1"));
     expect(screen.getByText("2 个模型同时测速，共 6 次真实请求")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: "开始测速" }));
 
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("devBenchRun", {
-      request: { models: [{ providerId: "a", model: "m1" }, { providerId: "a", model: "m3" }], rounds: 3 },
+      request: { models: [{ providerId: "a", model: "m1" }, { providerId: "a", model: "m3" }], rounds: 3, reasoningEffort: "zero" },
     }));
     expect(await screen.findByText("首字最快的是 m1")).toBeTruthy();
   });

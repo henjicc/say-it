@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Group, Row } from "@/components/ui/Group";
 import { Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
-import { llmModelPickerOptions, llmModelValue, llmPrice } from "@/features/models/llmModelOptions";
+import { llmModelPickerOptions, llmModelValue, llmPrice, THINKING_OPTIONS, type ThinkingLevel } from "@/features/models/llmModelOptions";
 import { adapterOf, llmModelLabel } from "@/features/models/recommendedLlmModels";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -274,6 +274,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   const [source, setSource] = useState<PromptSource>("standard");
   const [prompt, setPrompt] = useState("");
   const [rounds, setRounds] = useState("3");
+  const [thinking, setThinking] = useState<"model" | ThinkingLevel>("model");
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState<BenchState | null>(null);
   const [result, setResult] = useState<BenchFinished | null>(null);
@@ -325,6 +326,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
     const request = {
       models,
       rounds: Number(rounds),
+      ...(thinking === "model" ? {} : { reasoningEffort: thinking }),
       ...(source === "custom" ? { prompt } : {}),
       ...(source === "replay" ? { fromRun: "latest" } : {}),
     };
@@ -412,6 +414,15 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
             <Textarea aria-label="测试提示词" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
           </div>
         )}
+        <Row label="思考程度" hint="统一设置所有模型这次测速的思考程度，不改动各模型保存的设置。始终思考的模型选「关闭」时按最低档。">
+          <Tabs<"model" | ThinkingLevel>
+            variant="view"
+            ariaLabel="思考程度"
+            tabs={[{ key: "model", label: "按模型设置" }, ...THINKING_OPTIONS]}
+            active={thinking}
+            onChange={setThinking}
+          />
+        </Row>
         <Row label="轮数" hint="每个模型重复测几次，结果取中位数。网络波动大时多测几轮更准。">
           <Tabs
             variant="view"

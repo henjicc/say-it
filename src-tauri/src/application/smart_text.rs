@@ -160,6 +160,21 @@ fn selected_profile(
     Ok(profile)
 }
 
+/// 只改这次请求用的配置副本：当前模型的思考程度换成 `effort`（模型不在列表里时补一项）。
+fn override_model_reasoning(profile: &mut ProviderProfile, effort: &str) {
+    let model = profile_value(profile, "model").to_string();
+    let mut models = llm_models_from_config(&profile.config);
+    match models.iter_mut().find(|entry| entry.name == model) {
+        Some(entry) => entry.reasoning_effort = effort.into(),
+        None => {
+            let mut entry = crate::providers::LlmModelConfig::manual(model);
+            entry.reasoning_effort = effort.into();
+            models.push(entry);
+        }
+    }
+    profile.config["models"] = serde_json::to_value(models).expect("模型配置可序列化");
+}
+
 /// genai 直连的大语言模型请求共用一个连接池，连接参数沿用 genai 的默认调优。
 static LLM_HTTP: SharedHttpClient<reqwest_genai::Client> = SharedHttpClient::new(|| {
     genai::WebConfig::default()
@@ -1308,6 +1323,7 @@ where
         user_prompt,
         provider_id,
         model_override,
+        None,
         log_scope,
         enable_web_search,
         history,
@@ -1327,6 +1343,7 @@ pub(crate) async fn stream_prompt<F>(
     user_prompt: &str,
     provider_id: Option<&str>,
     model_override: Option<&str>,
+    reasoning_override: Option<&str>,
     log_scope: &str,
     enable_web_search: bool,
     history: &[PromptConversationTurn],
@@ -1337,7 +1354,10 @@ pub(crate) async fn stream_prompt<F>(
 where
     F: FnMut(&str, &str),
 {
-    let profile = selected_profile(state, provider_id, model_override)?;
+    let mut profile = selected_profile(state, provider_id, model_override)?;
+    if let Some(effort) = reasoning_override {
+        override_model_reasoning(&mut profile, effort);
+    }
     if profile.kind == "llm:groq" {
         let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
         let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
@@ -1705,6 +1725,22 @@ mod tests {
             config_fields: vec![],
             actions: vec![],
         }
+    }
+
+    /// 测速的统一思考程度只改这次请求的配置副本，列表里没有的模型补一项。
+    #[test]
+    fn reasoning_override_applies_to_current_model_only() {
+        let mut profile = llm_profile("llm:bailian", "zero");
+        override_model_reasoning(&mut profile, "high");
+        let options = chat_options(&profile).unwrap();
+        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::High)));
+
+        profile.config["model"] = "unlisted".into();
+        override_model_reasoning(&mut profile, "low");
+        let models = llm_models_from_config(&profile.config);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[1].name, "unlisted");
+        assert_eq!(models[1].reasoning_effort, "low");
     }
 
     #[test]

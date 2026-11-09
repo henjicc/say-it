@@ -1052,6 +1052,7 @@ async fn run_stream_variant(state: &RuntimeState, input: &ReplayPrompt) -> Resul
         &input.user_prompt,
         Some(input.provider_id.as_str()),
         Some(input.model.as_str()),
+        None,
         "dev-stream",
         false,
         &[],
