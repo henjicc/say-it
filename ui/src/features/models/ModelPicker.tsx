@@ -92,19 +92,17 @@ export function ModelPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const selectedOptionRef = useRef<HTMLButtonElement>(null);
-  const groupRefs = useRef(new Map<string, HTMLDivElement>());
-  // 代码设置 scrollTop 也会触发一次 scroll 事件；这次不按滚动位置重算高亮，保留点选或已选项所在的组。
-  const programmaticScrollRef = useRef(false);
   const shouldPositionSelectedRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [rendered, setRendered] = useState(false);
   const [layout, setLayout] = useState<PickerLayout | null>(null);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"all" | AsrModelMode>("all");
-  const [activeGroup, setActiveGroup] = useState("");
+  const [providerId, setProviderId] = useState("all");
 
   const selected = options.find((option) => option.value === value);
   const supportsModeFilter = options.some((option) => Boolean(option.mode));
+  // 左栏按搜索与识别方式过滤后的结果计数；选中某家时右侧只列这一家。
   const groups = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return groupByProvider(options.filter((option) => {
@@ -114,46 +112,10 @@ export function ModelPicker({
         .some((text) => text.toLocaleLowerCase().includes(normalizedQuery));
     }));
   }, [mode, options, query, supportsModeFilter]);
-
-  /**
-   * 左栏高亮列表顶部所在的分组：标题已滚到列表顶部或之上的最后一组。
-   * 末尾几组太短、标题滚不到顶部，所以滚到底时高亮最后一组。
-   */
-  const syncActiveGroup = useCallback(() => {
-    const listbox = listboxRef.current;
-    if (!listbox) return;
-    let current = groups[0]?.id ?? "";
-    const atBottom = listbox.scrollTop > 0 && listbox.scrollTop + listbox.clientHeight >= listbox.scrollHeight - 1;
-    if (atBottom) current = groups[groups.length - 1]?.id ?? current;
-    else {
-      for (const group of groups) {
-        const header = groupRefs.current.get(group.id);
-        if (header && header.offsetTop - listbox.offsetTop <= listbox.scrollTop + 1) current = group.id;
-      }
-    }
-    setActiveGroup(current);
-  }, [groups]);
-
-  const handleListScroll = () => {
-    if (programmaticScrollRef.current) programmaticScrollRef.current = false;
-    else syncActiveGroup();
-  };
-
-  const scrollListTo = (top: number) => {
-    const listbox = listboxRef.current;
-    if (!listbox) return;
-    const next = Math.max(0, Math.min(top, listbox.scrollHeight - listbox.clientHeight));
-    if (next !== listbox.scrollTop) programmaticScrollRef.current = true;
-    listbox.scrollTop = next;
-  };
-
-  const scrollToGroup = (groupId: string) => {
-    const listbox = listboxRef.current;
-    const header = groupRefs.current.get(groupId);
-    if (!listbox || !header) return;
-    scrollListTo(header.offsetTop - listbox.offsetTop);
-    setActiveGroup(groupId);
-  };
+  const providers = useMemo(() => groupByProvider(options), [options]);
+  const visibleGroups = providerId === "all" ? groups : groups.filter((group) => group.id === providerId);
+  const matchCount = (id: string) => groups.find((group) => group.id === id)?.options.length ?? 0;
+  const totalCount = groups.reduce((sum, group) => sum + group.options.length, 0);
 
   const measurePanel = useCallback(() => {
     const rect = buttonRef.current?.getBoundingClientRect();
@@ -199,35 +161,26 @@ export function ModelPicker({
     };
   }, [measurePanel, open]);
 
-  // 打开时把已选项滚到列表中间，左栏高亮它所在的供应商。
+  // 打开时把已选项滚到列表中间。
   useLayoutEffect(() => {
     if (!open || !rendered || !layout || !shouldPositionSelectedRef.current) return;
     shouldPositionSelectedRef.current = false;
     const listbox = listboxRef.current;
     const selectedOption = selectedOptionRef.current;
-    if (!listbox || !selectedOption || !selected) {
-      syncActiveGroup();
-      return;
-    }
-    scrollListTo(
+    if (!listbox || !selectedOption) return;
+    listbox.scrollTop = Math.max(
+      0,
       selectedOption.offsetTop
         - listbox.offsetTop
         - (listbox.clientHeight - selectedOption.offsetHeight) / 2,
     );
-    setActiveGroup(optionProviderId(selected));
   }, [layout, open, rendered]);
-
-  // 搜索或筛选改变了分组后，按当前滚动位置重算高亮。调用方每次渲染都可能传入新数组，
-  // 所以按分组内容而不是数组引用触发。
-  const groupsKey = groups.map((group) => `${group.id}:${group.options.length}`).join("|");
-  useLayoutEffect(() => {
-    if (open) syncActiveGroup();
-  }, [groupsKey]);
 
   useEffect(() => {
     if (open || rendered) return;
     setQuery("");
     setMode("all");
+    setProviderId("all");
   }, [open, rendered]);
 
   useEffect(() => {
@@ -336,45 +289,45 @@ export function ModelPicker({
           </div>
 
           <div className="flex min-h-0 flex-1">
-            <nav aria-label="按供应商定位" className="w-40 shrink-0 overflow-y-auto border-r border-[var(--color-line)] p-2">
-              {groups.map((group) => (
-                <button
-                  key={group.id}
-                  type="button"
-                  aria-label={`${group.label}，${group.options.length} 个模型`}
-                  aria-current={activeGroup === group.id ? "location" : undefined}
-                  onClick={() => scrollToGroup(group.id)}
-                  className={cn(
-                    "flex h-[var(--control-h)] w-full items-center justify-between gap-2 rounded-[var(--radius-md)] px-3 text-left text-sm transition-colors duration-[var(--dur-fast)]",
-                    activeGroup === group.id
-                      ? "bg-[var(--color-surface-hover)] text-[var(--color-fg)]"
-                      : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
-                  )}
-                >
-                  <span className="min-w-0 truncate">{group.label}</span>
-                  <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-faint)]">{group.options.length}</span>
-                </button>
-              ))}
-            </nav>
+            <div role="group" aria-label="按供应商筛选" className="w-40 shrink-0 overflow-y-auto border-r border-[var(--color-line)] p-2">
+              {[{ id: "all", label: "全部", count: totalCount }, ...providers.map((provider) => ({ ...provider, count: matchCount(provider.id) }))]
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-label={`${item.label}，${item.count} 个模型`}
+                    aria-pressed={providerId === item.id}
+                    onClick={() => {
+                      setProviderId(item.id);
+                      if (listboxRef.current) listboxRef.current.scrollTop = 0;
+                    }}
+                    className={cn(
+                      "flex h-[var(--control-h)] w-full items-center justify-between gap-2 rounded-[var(--radius-md)] px-3 text-left text-sm transition-colors duration-[var(--dur-fast)]",
+                      providerId === item.id
+                        ? "bg-[var(--color-surface-hover)] text-[var(--color-fg)]"
+                        : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
+                      item.count === 0 && providerId !== item.id && "opacity-50",
+                    )}
+                  >
+                    <span className="min-w-0 truncate">{item.label}</span>
+                    <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-subtle)]">{item.count}</span>
+                  </button>
+                ))}
+            </div>
 
             <div
               ref={listboxRef}
               id={listboxId}
               role="listbox"
               aria-label={panelLabel.replace(/^选择/u, "")}
-              onScroll={handleListScroll}
               className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
             >
-              {groups.length === 0 && (
+              {visibleGroups.length === 0 && (
                 <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
               )}
-              {groups.map((group) => (
+              {visibleGroups.map((group) => (
                 <div key={group.id} role="group" aria-label={group.label}>
                   <div
-                    ref={(node) => {
-                      if (node) groupRefs.current.set(group.id, node);
-                      else groupRefs.current.delete(group.id);
-                    }}
                     aria-hidden
                     className="flex items-baseline justify-between gap-3 px-3 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]"
                   >
