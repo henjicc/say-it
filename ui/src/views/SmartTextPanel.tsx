@@ -5,7 +5,6 @@ import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { CMD, cmd } from "@/lib/tauri";
@@ -400,22 +399,6 @@ export function SmartTextPanel() {
             </Row>
 
             {prefs.activeAppContextExtractionMethod === "ocr" && <OcrModelRow />}
-            {prefs.activeAppContextExtractionMethod === "ocr" && !isMacOS && (
-              <Row
-                label="OCR 跟随处理时机"
-                controlId="active-app-context-ocr-follow-smart-min-chars"
-                hint="只在文字达到智能处理的最少长度时读取屏幕；最少长度为 0 时，每次听写都会读取。"
-              >
-                <Switch
-                  id="active-app-context-ocr-follow-smart-min-chars"
-                  label="OCR 跟随处理时机"
-                  checked={prefs.activeAppContextOcrFollowSmartProcessingMinChars}
-                  onChange={(value) => void patch({
-                    activeAppContextOcrFollowSmartProcessingMinChars: value,
-                  })}
-                />
-              </Row>
-            )}
           </Group>
 
           <Group>

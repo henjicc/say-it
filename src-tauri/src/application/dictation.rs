@@ -234,9 +234,6 @@ struct DictationPrefs {
     active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind,
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
-    /// 新建配置默认开启；旧配置缺失字段时必须保持原先的 eager OCR 行为。
-    #[serde(default = "legacy_ocr_follow_smart_processing_min_chars")]
-    active_app_context_ocr_follow_smart_processing_min_chars: bool,
     active_app_context_blocked_apps: Vec<String>,
     app_profiles_enabled: bool,
     app_profiles: Vec<AppProfile>,
@@ -273,7 +270,6 @@ impl Default for DictationPrefs {
             active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind::default(),
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
-            active_app_context_ocr_follow_smart_processing_min_chars: true,
             active_app_context_blocked_apps: vec![],
             app_profiles_enabled: false,
             app_profiles: vec![],
@@ -285,10 +281,6 @@ impl Default for DictationPrefs {
             dsp: DspParams::default(),
         }
     }
-}
-
-fn legacy_ocr_follow_smart_processing_min_chars() -> bool {
-    false
 }
 
 impl DictationPrefs {
@@ -392,13 +384,16 @@ fn should_run_smart_processing(effective: &EffectivePostProcessing, text: &str) 
             || char_count >= effective.smart_processing_min_chars as usize)
 }
 
+/// 本地 OCR 不花钱，按下时就和录音并行识别，松开后不用再等；插件 OCR 可能按次计费，
+/// 等识别出的文字达到智能处理的最少长度才提交。
 fn should_defer_active_app_context_ocr(
     prefs: &DictationPrefs,
     effective: &EffectivePostProcessing,
+    ocr_is_plugin: bool,
 ) -> bool {
     cfg!(windows)
+        && ocr_is_plugin
         && effective.smart_processing_enabled
-        && prefs.active_app_context_ocr_follow_smart_processing_min_chars
         && platform_context_method(prefs.active_app_context_extraction_method)
             == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
         && effective.smart_processing_min_chars > 0
@@ -1157,7 +1152,6 @@ async fn start_session(
             .await;
         });
     }
-    let defer_active_app_context_ocr = should_defer_active_app_context_ocr(&prefs, &effective);
     let active_app_context = if effective.smart_processing_enabled {
         prefs
             .smart_templates
@@ -1174,12 +1168,17 @@ async fn start_session(
                     prefs.active_app_context_ocr_engine,
                     &prefs.active_app_context_ocr_approved_providers,
                 );
+                let defer_ocr = should_defer_active_app_context_ocr(
+                    &prefs,
+                    &effective,
+                    matches!(ocr_provider, crate::providers::capabilities::OcrProvider::Plugin { .. }),
+                );
                 state.active_app_context.begin_dictation_capture(
                     target,
                     prefs.active_app_context_blocked_apps.clone(),
                     platform_context_method(prefs.active_app_context_extraction_method),
                     ocr_provider,
-                    defer_active_app_context_ocr,
+                    defer_ocr,
                 )
             })
     } else {
@@ -4194,13 +4193,6 @@ mod tests {
     }
 
     #[test]
-    fn ocr_follow_min_chars_is_enabled_for_new_defaults_but_not_legacy_json() {
-        assert!(DictationPrefs::default().active_app_context_ocr_follow_smart_processing_min_chars);
-        let legacy: DictationPrefs = serde_json::from_value(json!({})).unwrap();
-        assert!(!legacy.active_app_context_ocr_follow_smart_processing_min_chars);
-    }
-
-    #[test]
     fn explicit_empty_asr_model_is_repaired_without_changing_legacy_empty_object() {
         let mut broken = json!({ "asrModel": "  " });
         assert!(repair_empty_asr_model(&mut broken));
@@ -4215,7 +4207,7 @@ mod tests {
     }
 
     #[test]
-    fn ocr_is_deferred_only_for_an_enabled_positive_minimum() {
+    fn only_plugin_ocr_is_deferred_and_only_for_an_enabled_positive_minimum() {
         let effective = EffectivePostProcessing {
             local_rules_enabled: false,
             smart_processing_enabled: true,
@@ -4227,24 +4219,21 @@ mod tests {
         let mut prefs = DictationPrefs {
             active_app_context_extraction_method:
                 crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
-            active_app_context_ocr_follow_smart_processing_min_chars: true,
             ..Default::default()
         };
         assert_eq!(
-            should_defer_active_app_context_ocr(&prefs, &effective),
+            should_defer_active_app_context_ocr(&prefs, &effective, true),
             cfg!(windows)
         );
+        // 本地 OCR 按下时就识别。
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, false));
 
         let mut immediate = effective.clone();
         immediate.smart_processing_min_chars = 0;
-        assert!(!should_defer_active_app_context_ocr(&prefs, &immediate));
+        assert!(!should_defer_active_app_context_ocr(&prefs, &immediate, true));
         prefs.active_app_context_extraction_method =
             crate::active_app_context::ActiveAppContextExtractionMethod::NativeText;
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
-        prefs.active_app_context_extraction_method =
-            crate::active_app_context::ActiveAppContextExtractionMethod::Ocr;
-        prefs.active_app_context_ocr_follow_smart_processing_min_chars = false;
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
     }
 
     #[test]
@@ -4675,7 +4664,7 @@ mod tests {
         let effective = prefs.resolve_post_processing(Some(&identity("code.exe")));
         assert_eq!(effective.smart_processing_min_chars, 0);
         assert!(should_run_smart_processing(&effective, "短句"));
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
     }
 
     fn shortcut_profile(mode: ShortcutProcessingMode) -> DictationShortcutProfile {
@@ -4768,7 +4757,6 @@ mod tests {
         let prefs = DictationPrefs {
             active_app_context_extraction_method:
                 crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
-            active_app_context_ocr_follow_smart_processing_min_chars: true,
             smart_processing_enabled: true,
             smart_processing_min_chars: 100,
             ..Default::default()
@@ -4782,7 +4770,7 @@ mod tests {
                 .resolve_post_processing(None)
                 .apply_shortcut_profile(Some(&profile));
             assert!(!effective.smart_processing_enabled);
-            assert!(!should_defer_active_app_context_ocr(&prefs, &effective));
+            assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
         }
     }
 
