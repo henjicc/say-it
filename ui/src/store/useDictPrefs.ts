@@ -843,6 +843,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   const storedOcrModel = value.activeAppContextOcrModel;
   const storedOcrApprovals = value.activeAppContextOcrApprovedProviders;
   const storedAppProfiles = value.appProfiles;
+  const storedLocalRules = value.localRules;
   const storedSmartProcessingMinChars = value.smartProcessingMinChars;
   const storedSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
     value,
@@ -909,6 +910,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     storedOcrModel !== next.activeAppContextOcrModel ||
     JSON.stringify(storedOcrApprovals ?? []) !== JSON.stringify(next.activeAppContextOcrApprovedProviders) ||
     JSON.stringify(storedBlockedApps ?? []) !== JSON.stringify(next.activeAppContextBlockedApps) ||
-    JSON.stringify(storedAppProfiles ?? []) !== JSON.stringify(next.appProfiles)
+    JSON.stringify(storedAppProfiles ?? []) !== JSON.stringify(next.appProfiles) ||
+    JSON.stringify(storedLocalRules ?? []) !== JSON.stringify(next.localRules)
   );
 }

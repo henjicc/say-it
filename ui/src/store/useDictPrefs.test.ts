@@ -121,6 +121,15 @@ describe("内置模板升级", () => {
       .toBe(customized.prompt);
   });
 
+  it("内置本地规则升级后要求回写到后端", async () => {
+    const { hydrateDictPrefs } = await import("./useDictPrefs");
+    hydrateDictPrefs({ localRules: [] });
+    const current = { ...useDictPrefs.getState().prefs } as unknown as Record<string, unknown>;
+    expect(hydrateDictPrefs(current)).toBe(false);
+    const legacy = useDictPrefs.getState().prefs.localRules.filter((rule) => rule.id !== "dedupe-stutter");
+    expect(hydrateDictPrefs({ ...current, localRules: legacy })).toBe(true);
+  });
+
   it("目录升级不改动用户主动选中的其他模板", async () => {
     const { defaultSmartTextTemplates, hydrateDictPrefs } = await import("./useDictPrefs");
     hydrateDictPrefs({ smartTemplateCatalogVersion: 5, smartTemplates: defaultSmartTextTemplates(), smartTemplateId: "polish" });
