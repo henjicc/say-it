@@ -108,3 +108,22 @@ describe("听写设置的写入", () => {
     expect(useDictPrefs.getState().prefs.localRules.map((item) => item.id)).toEqual(["y"]);
   });
 });
+
+describe("内置模板升级", () => {
+  it("升级目录时保留用户改过的场景感知润色，新装默认用带使用场景的版本", async () => {
+    const { APP_SCENE_PLACEHOLDER, defaultSmartTextTemplates, hydrateDictPrefs } = await import("./useDictPrefs");
+    const builtin = defaultSmartTextTemplates().find((template) => template.id === "context-aware-polish");
+    expect(builtin?.prompt).toContain(APP_SCENE_PLACEHOLDER);
+
+    const customized = { id: "context-aware-polish", name: "场景感知润色", prompt: "我自己的提示词 {{text}}" };
+    hydrateDictPrefs({ smartTemplateCatalogVersion: 5, smartTemplates: [customized], smartTemplateId: "context-aware-polish" });
+    expect(useDictPrefs.getState().prefs.smartTemplates.find((template) => template.id === "context-aware-polish")?.prompt)
+      .toBe(customized.prompt);
+  });
+
+  it("目录升级不改动用户主动选中的其他模板", async () => {
+    const { defaultSmartTextTemplates, hydrateDictPrefs } = await import("./useDictPrefs");
+    hydrateDictPrefs({ smartTemplateCatalogVersion: 5, smartTemplates: defaultSmartTextTemplates(), smartTemplateId: "polish" });
+    expect(useDictPrefs.getState().prefs.smartTemplateId).toBe("polish");
+  });
+});

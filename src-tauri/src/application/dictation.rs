@@ -3589,7 +3589,7 @@ fn validate_template(prefs: &DictationPrefs, template_id: &str, scope: &str) -> 
     if template.name.trim().is_empty() {
         return Err("智能处理模板名称不能为空".to_string());
     }
-    crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "", "", "")?;
+    crate::application::smart_text::render_prompt(&template.prompt, "验证文本", "", "", "", "")?;
     Ok(())
 }
 
