@@ -38,6 +38,7 @@ export function Row({
   label,
   hint,
   controlId,
+  labelAside,
   message,
   disabled,
   className,
@@ -46,6 +47,8 @@ export function Row({
   label: React.ReactNode;
   hint?: React.ReactNode;
   controlId?: string;
+  /** 紧跟在名称后面的链接等小操作；放在 label 元素之外，不并入控件的可访问名称。 */
+  labelAside?: React.ReactNode;
   /** 必须立即可见的错误或状态，显示在本行下方；读屏语义（status/alert）由调用方在内容上声明。 */
   message?: React.ReactNode;
   disabled?: boolean;
@@ -56,11 +59,14 @@ export function Row({
   return (
     <div className={cn("flex flex-col justify-center px-3.5", disabled && "opacity-50", className)}>
       <div className="flex min-h-[var(--row-h)] items-center justify-between gap-4">
-        {controlId ? (
-          <label htmlFor={controlId} className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</label>
-        ) : (
-          <span className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</span>
-        )}
+        <div className="flex min-w-0 items-center gap-3">
+          {controlId ? (
+            <label htmlFor={controlId} className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</label>
+          ) : (
+            <span className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</span>
+          )}
+          {labelAside && <span className="flex-none text-[13px]">{labelAside}</span>}
+        </div>
         {children && <div className="flex min-w-0 flex-none items-center justify-end gap-2">{children}</div>}
       </div>
       {message && <div className="pb-3 text-xs text-[var(--color-fg-subtle)]">{message}</div>}

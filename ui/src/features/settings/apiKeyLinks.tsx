@@ -48,7 +48,7 @@ export function ApiKeyLink({
 }: {
   url: string;
   label: string;
-  /** 可见文字只写「获取」时，读屏用的完整名称。 */
+  /** 可见文字省略了字段名时，读屏用的完整名称。 */
   ariaLabel?: string;
   onError: (message: string) => void;
 }) {
