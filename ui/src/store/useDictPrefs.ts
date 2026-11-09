@@ -518,7 +518,6 @@ export interface DictPrefs extends DspParams {
   activeAppContextOcrModel: string;
   activeAppContextOcrApprovedProviders: string[];
   /** OCR 是否复用命中软件规则后的智能处理最少文本长度。 */
-  activeAppContextOcrFollowSmartProcessingMinChars: boolean;
   activeAppContextBlockedApps: string[];
   /** 按软件覆盖后处理配置；关闭时所有听写一律走全局配置。 */
   appProfilesEnabled: boolean;
@@ -562,7 +561,6 @@ function defaults(): DictPrefs {
     activeAppContextOcrEngine: "system",
     activeAppContextOcrModel: defaultOcrModelId,
     activeAppContextOcrApprovedProviders: [],
-    activeAppContextOcrFollowSmartProcessingMinChars: true,
     activeAppContextBlockedApps: [],
     appProfilesEnabled: false,
     appProfiles: [],
@@ -584,7 +582,6 @@ function readStored(): DictPrefs {
   let storedOcrModelPresent = false;
   let storedPrefsPresent = false;
   let storedSmartProcessingMinCharsPresent = false;
-  let storedOcrFollowSmartProcessingMinCharsPresent = false;
   try {
     const raw = localStorage.getItem(DICT_PREFS_KEY);
     if (raw) {
@@ -598,10 +595,6 @@ function readStored(): DictPrefs {
         ? stored.smartTemplateCatalogVersion
         : 1;
       storedOcrModelPresent = typeof stored.activeAppContextOcrModel === "string";
-      storedOcrFollowSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
-        stored,
-        "activeAppContextOcrFollowSmartProcessingMinChars",
-      );
       Object.assign(base, stored);
     }
   } catch {
@@ -658,11 +651,6 @@ function readStored(): DictPrefs {
       .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
       .map((value) => value.trim()),
   ));
-  // 旧版已保存配置在该开关出现前始终执行 OCR，迁移时必须保持原行为。
-  base.activeAppContextOcrFollowSmartProcessingMinChars = storedPrefsPresent
-    ? storedOcrFollowSmartProcessingMinCharsPresent
-      && base.activeAppContextOcrFollowSmartProcessingMinChars === true
-    : true;
   base.activeAppContextBlockedApps = normalizeBlockedApps(base.activeAppContextBlockedApps);
   base.appProfiles = pruneProfileTemplates(
     normalizeAppProfiles(base.appProfiles),
@@ -773,12 +761,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   const storedOcrEngine = value.activeAppContextOcrEngine;
   const storedOcrModel = value.activeAppContextOcrModel;
   const storedOcrApprovals = value.activeAppContextOcrApprovedProviders;
-  const storedOcrFollowSmartProcessingMinChars =
-    value.activeAppContextOcrFollowSmartProcessingMinChars;
-  const storedOcrFollowSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
-    value,
-    "activeAppContextOcrFollowSmartProcessingMinChars",
-  );
   const storedAppProfiles = value.appProfiles;
   const storedSmartProcessingMinChars = value.smartProcessingMinChars;
   const storedSmartProcessingMinCharsPresent = Object.prototype.hasOwnProperty.call(
@@ -822,10 +804,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
       .filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
       .map((entry) => entry.trim()),
   ));
-  // 后端权威配置缺少该字段时来自旧版本，保留原先每次执行 OCR 的行为。
-  next.activeAppContextOcrFollowSmartProcessingMinChars =
-    storedOcrFollowSmartProcessingMinCharsPresent
-    && storedOcrFollowSmartProcessingMinChars === true;
   next.activeAppContextBlockedApps = normalizeBlockedApps(next.activeAppContextBlockedApps);
   next.appProfiles = pruneProfileTemplates(
     normalizeAppProfiles(next.appProfiles),
@@ -849,8 +827,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     storedOcrEngine !== next.activeAppContextOcrEngine ||
     storedOcrModel !== next.activeAppContextOcrModel ||
     JSON.stringify(storedOcrApprovals ?? []) !== JSON.stringify(next.activeAppContextOcrApprovedProviders) ||
-    storedOcrFollowSmartProcessingMinChars
-      !== next.activeAppContextOcrFollowSmartProcessingMinChars ||
     JSON.stringify(storedBlockedApps ?? []) !== JSON.stringify(next.activeAppContextBlockedApps) ||
     JSON.stringify(storedAppProfiles ?? []) !== JSON.stringify(next.appProfiles)
   );
