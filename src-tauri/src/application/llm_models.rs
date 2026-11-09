@@ -1,7 +1,7 @@
 use crate::commands::common::{provider_profile_for_execution, provider_settings_response};
 use crate::persistence::save_persisted_state;
 use crate::providers::{
-    llm_models_from_config, llm_responses_endpoint, llm_uses_responses, normalize_llm_endpoint,
+    llm_chat_endpoint, llm_models_from_config, llm_responses_endpoint, llm_uses_responses, normalize_llm_endpoint,
     normalize_settings, set_llm_models, LlmModelAvailability, LlmModelConfig, LlmModelSource,
     ProviderProfile, ProviderSettingsResponse,
 };
@@ -47,7 +47,7 @@ fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
         Some("mimo") => Ok(AdapterKind::Mimo),
         Some("minimax") => Ok(AdapterKind::MiniMax),
         Some("open_router") => Ok(AdapterKind::OpenRouter),
-        Some("custom") => Ok(AdapterKind::OpenAI),
+        Some("custom" | "siliconflow") => Ok(AdapterKind::OpenAI),
         Some(other) => Err(format!("不支持的大语言模型适配器：{other}")),
         None => Err("供应商不是大语言模型配置".to_string()),
     }
@@ -61,26 +61,16 @@ fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> 
     let auth = AuthData::from_single(api_key.to_string());
     let adapter = crate::providers::llm_adapter(profile)
         .ok_or_else(|| "供应商不是大语言模型配置".to_string())?;
-    if profile.kind == "llm:custom" || llm_uses_responses(adapter) {
-        let endpoint = if profile.kind == "llm:custom" {
-            profile_value(profile, "endpoint").to_string()
-        } else {
-            profile_value(profile, "endpoint")
-                .to_string()
-                .trim()
-                .to_string()
-        };
-        let endpoint = if endpoint.is_empty() {
-            llm_responses_endpoint(adapter).unwrap_or("").to_string()
-        } else {
-            endpoint
+    if profile.kind == "llm:custom" || llm_uses_responses(adapter) || llm_chat_endpoint(adapter).is_some() {
+        let endpoint = match profile_value(profile, "endpoint") {
+            "" => llm_responses_endpoint(adapter)
+                .or_else(|| llm_chat_endpoint(adapter))
+                .unwrap_or("")
+                .to_string(),
+            endpoint => endpoint.to_string(),
         };
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(if profile.kind == "llm:custom" {
-                "自定义大语言模型的接口地址无效".to_string()
-            } else {
-                format!("{} 的 Responses API 接口地址无效", profile.display_name)
-            });
+            return Err(format!("{} 的接口地址无效", profile.display_name));
         }
         return Ok(ProviderConfig::from((
             Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
@@ -226,6 +216,9 @@ async fn fetch_model_names(
         }
         return Ok(names);
     }
+    if crate::providers::llm_adapter(profile) == Some("siliconflow") {
+        return siliconflow_chat_model_names(profile).await;
+    }
     let adapter_kind = adapter_kind(profile)?;
     let provider_config = provider_config(profile)?;
     timeout(
@@ -235,6 +228,33 @@ async fn fetch_model_names(
     .await
     .map_err(|_| "获取模型列表超时（20 秒）".to_string())?
     .map_err(|error| format!("获取模型列表失败：{error}"))
+}
+
+/// 硅基流动的 /models 默认连识别、生图、向量模型一起返回，只取对话模型。
+async fn siliconflow_chat_model_names(profile: &ProviderProfile) -> Result<Vec<String>, String> {
+    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile));
+    let endpoint = crate::providers::llm_chat_endpoint("siliconflow").expect("硅基流动有固定接口地址");
+    let response = reqwest::Client::new()
+        .get(format!("{endpoint}models"))
+        .query(&[("sub_type", "chat")])
+        .bearer_auth(api_key)
+        .timeout(MODEL_LIST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("获取模型列表失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("获取模型列表失败：{error}"))?;
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("获取模型列表失败：{error}"))?;
+    Ok(body["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["id"].as_str())
+        .map(str::to_string)
+        .collect())
 }
 
 #[tauri::command]
@@ -411,6 +431,18 @@ mod tests {
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
             Some("https://ark.cn-beijing.volces.com/api/v3/")
+        );
+    }
+
+    #[test]
+    fn builtin_siliconflow_chats_with_its_speech_key_on_its_own_endpoint() {
+        let mut profile = crate::providers::siliconflow_profile();
+        profile.config = serde_json::json!({"apiKey": "sf-key"});
+        assert!(matches!(adapter_kind(&profile), Ok(AdapterKind::OpenAI)));
+        let config = provider_config(&profile).unwrap();
+        assert_eq!(
+            config.endpoint.as_ref().map(Endpoint::base_url),
+            Some("https://api.siliconflow.cn/v1/")
         );
     }
 

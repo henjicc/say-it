@@ -15,6 +15,14 @@
       { "id": "kimi-k3-1-pro-261024", "label": "Kimi K3.1 Pro" },
       { "id": "glm-5-3-flash-260828", "label": "GLM-5.3 Flash" }
     ],
+    "siliconflow": [
+      { "id": "deepseek-ai/DeepSeek-V4-Flash", "label": "DeepSeek V4 Flash" },
+      { "id": "deepseek-ai/DeepSeek-V4.1-Flash", "label": "DeepSeek V4.1 Flash" },
+      { "id": "deepseek-ai/DeepSeek-V4-Pro", "label": "DeepSeek V4 Pro" },
+      { "id": "zai-org/GLM-5.3", "label": "GLM-5.3" },
+      { "id": "zai-org/GLM-5.3-Flash", "label": "GLM-5.3 Flash" },
+      { "id": "Qwen/Qwen3.8-27B", "label": "Qwen3.8 27B" }
+    ],
     "kimi": [
       { "id": "kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
       { "id": "kimi-k3.1-pro-highspeed", "label": "Kimi K3.1 Pro HighSpeed" },

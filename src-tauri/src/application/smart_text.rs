@@ -1,5 +1,5 @@
 use crate::providers::{
-    default_provider_id, find_profile, llm_models_from_config, llm_responses_endpoint,
+    default_provider_id, find_profile, llm_chat_endpoint, llm_models_from_config, llm_responses_endpoint,
     llm_uses_responses, normalize_llm_endpoint, ProviderProfile,
 };
 use crate::providers::shared_http::SharedHttpClient;
@@ -302,10 +302,13 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         ));
     }
 
-    if adapter == "custom" {
-        let endpoint = profile_value(profile, "endpoint").to_string();
+    if adapter == "custom" || llm_chat_endpoint(adapter).is_some() {
+        let endpoint = match profile_value(profile, "endpoint") {
+            "" => llm_chat_endpoint(adapter).unwrap_or("").to_string(),
+            endpoint => endpoint.to_string(),
+        };
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err("自定义大语言模型的接口地址无效".to_string());
+            return Err(format!("{} 的接口地址无效", profile.display_name));
         }
         let target_resolver = ServiceTargetResolver::from_resolver_fn(
             move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
@@ -575,6 +578,13 @@ fn effective_reasoning<'a>(configured: &'a str, model: &str) -> &'a str {
     }
 }
 
+/// 硅基流动接口文档列出的、接受 reasoning_effort 的模型。
+const SILICONFLOW_EFFORT_MODELS: [&str; 3] = [
+    "deepseek-ai/deepseek-v4-flash",
+    "pro/deepseek-ai/deepseek-v4",
+    "pro/zai-org/glm-5.2",
+];
+
 fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
@@ -593,6 +603,16 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
             return Err("最大输出 Token 必须是正整数".to_string());
         }
         options = options.with_max_tokens(max_tokens);
+    }
+    if crate::providers::llm_adapter(profile) == Some("siliconflow") {
+        // 硅基流动用 enable_thinking 开关思考（GLM 也能关）；reasoning_effort 只有少数模型接受，
+        // 且只有 high / max 两档，genai 编码出的 none / low 会被拒绝。
+        let enabled = model.reasoning_effort != "zero";
+        let mut body = serde_json::json!({ "enable_thinking": enabled });
+        if enabled && SILICONFLOW_EFFORT_MODELS.contains(&model_name.to_ascii_lowercase().as_str()) {
+            body["reasoning_effort"] = "high".into();
+        }
+        return Ok(options.with_extra_body(body));
     }
     let is_deepseek = profile.kind == "llm:deepseek";
     let uses_responses = crate::providers::llm_adapter(profile).is_some_and(llm_uses_responses);
@@ -1842,6 +1862,30 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn siliconflow_switches_thinking_with_enable_thinking_and_effort_only_where_listed() {
+        let mut glm = llm_profile("sdk:siliconflow", "zero");
+        glm.config["model"] = "zai-org/GLM-5.3".into();
+        glm.config["models"][0]["name"] = "zai-org/GLM-5.3".into();
+        let options = chat_options(&glm).unwrap();
+        assert!(options.reasoning_effort.is_none());
+        assert_eq!(options.extra_body, Some(serde_json::json!({ "enable_thinking": false })));
+
+        glm.config["models"][0]["reasoningEffort"] = "low".into();
+        let options = chat_options(&glm).unwrap();
+        assert_eq!(options.extra_body, Some(serde_json::json!({ "enable_thinking": true })));
+
+        let mut flash = llm_profile("sdk:siliconflow", "low");
+        flash.config["model"] = "deepseek-ai/DeepSeek-V4-Flash".into();
+        flash.config["models"][0]["name"] = "deepseek-ai/DeepSeek-V4-Flash".into();
+        let options = chat_options(&flash).unwrap();
+        assert!(options.reasoning_effort.is_none());
+        assert_eq!(
+            options.extra_body,
+            Some(serde_json::json!({ "enable_thinking": true, "reasoning_effort": "high" }))
+        );
     }
 
     #[test]
