@@ -1137,17 +1137,7 @@ async fn start_session(
         );
     }
     if effective.smart_processing_enabled && assistant_request.is_none() {
-        let app = app.clone();
-        let provider_id = prefs.smart_llm_provider_id.clone();
-        let model = prefs.smart_llm_model.clone();
-        tauri::async_runtime::spawn(async move {
-            crate::application::smart_text::prewarm_connection(
-                &app.state::<RuntimeState>(),
-                &provider_id,
-                &model,
-            )
-            .await;
-        });
+        spawn_smart_prewarm(&app, &prefs);
     }
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
     let context_capture = if effective.smart_processing_enabled {
@@ -1684,6 +1674,22 @@ fn disconnect_silent_asr(app: AppHandle, epoch: u64) {
     publish_state(&app, None);
 }
 
+/// 后台连上智能处理的服务器（不调用模型）。开始录音时连一次；录音较长时连接可能已被服务端
+/// 回收，松手时再连一次，与等待识别结果并行，松手后的请求直接复用。
+fn spawn_smart_prewarm(app: &AppHandle, prefs: &DictationPrefs) {
+    let app = app.clone();
+    let provider_id = prefs.smart_llm_provider_id.clone();
+    let model = prefs.smart_llm_model.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::application::smart_text::prewarm_connection(
+            &app.state::<RuntimeState>(),
+            &provider_id,
+            &model,
+        )
+        .await;
+    });
+}
+
 async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
@@ -1710,6 +1716,13 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         } else {
             DictationPhase::Finishing
         };
+        if s.assistant_request.is_none()
+            && s.effective
+                .as_ref()
+                .is_some_and(|effective| effective.smart_processing_enabled)
+        {
+            spawn_smart_prewarm(&app, &s.prefs);
+        }
         (
             s.epoch,
             s.mode,
