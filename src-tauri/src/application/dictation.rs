@@ -2486,11 +2486,13 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 let _ = state.audio_session.release(lease);
             }
             remove_temp(temp_path.clone());
+            let fallback =
+                smart_failure_fallback_text(&state, &prefs, &effective, text.clone()).await;
             let _ = fail_with_raw_fallback(
                 app,
                 epoch,
                 "当前智能处理模板不存在".to_string(),
-                raw_text.clone(),
+                fallback,
                 method.clone(),
                 FloatingFallbackKind::Processing,
             )
@@ -2550,11 +2552,13 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     let _ = state.audio_session.release(lease);
                 }
                 remove_temp(temp_path.clone());
+                let fallback =
+                    smart_failure_fallback_text(&state, &prefs, &effective, text.clone()).await;
                 let _ = fail_with_raw_fallback(
                     app,
                     epoch,
                     error,
-                    raw_text.clone(),
+                    fallback,
                     method.clone(),
                     FloatingFallbackKind::Processing,
                 )
@@ -3115,6 +3119,18 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
 
 async fn fail(app: AppHandle, epoch: u64, error: String) -> Result<(), String> {
     fail_internal(app, epoch, error, None, None, None).await
+}
+
+/// 智能处理没做成时交给用户的原文：和跳过智能处理一样补标点、再过本地规则；
+/// 规则出错时退回只补了标点的文本，不能因此丢掉原文。
+async fn smart_failure_fallback_text(
+    state: &RuntimeState,
+    prefs: &DictationPrefs,
+    effective: &EffectivePostProcessing,
+    text: String,
+) -> String {
+    let punctuated = punctuate_local_asr_text(state, prefs, text).await;
+    apply_rules(&punctuated, prefs, effective.local_rules_enabled).unwrap_or(punctuated)
 }
 
 async fn fail_with_raw_fallback(
