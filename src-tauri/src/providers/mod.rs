@@ -457,7 +457,7 @@ pub fn siliconflow_profile() -> ProviderProfile {
         kind: "sdk:siliconflow".to_string(),
         display_name: "硅基流动".to_string(),
         auth_kind: "api-key".to_string(),
-        capabilities: vec!["asr".to_string()],
+        capabilities: vec!["asr".to_string(), "llm".to_string()],
         enabled: true,
         config: json!({}),
         config_fields: vec![],
@@ -626,6 +626,7 @@ pub fn llm_adapter(profile: &ProviderProfile) -> Option<&str> {
     match profile.kind.as_str() {
         "sdk:bailian" => Some("bailian"),
         "sdk:volcengine" => Some("volcengine"),
+        "sdk:siliconflow" => Some("siliconflow"),
         kind => kind.strip_prefix("llm:"),
     }
 }
@@ -645,6 +646,14 @@ pub fn llm_api_key_field(profile: &ProviderProfile) -> String {
 pub fn missing_llm_api_key_message(profile: &ProviderProfile) -> String {
     let label = llm_key_field(profile).map_or_else(|| "API Key".to_string(), |field| field.label);
     format!("请先为 {} 设置 {label}", profile.display_name)
+}
+
+/// 走 OpenAI Chat Completions、但不能复用 genai 默认端点的内置供应商。
+pub fn llm_chat_endpoint(adapter: &str) -> Option<&'static str> {
+    match adapter {
+        "siliconflow" => Some("https://api.siliconflow.cn/v1/"),
+        _ => None,
+    }
 }
 
 pub fn llm_uses_responses(adapter: &str) -> bool {
