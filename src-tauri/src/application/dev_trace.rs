@@ -1093,6 +1093,18 @@ pub(crate) fn dev_trace_status() -> Value {
     })
 }
 
+/// 读写「保存听写录音」开关；`enabled` 不给时只读。
+#[tauri::command]
+pub(crate) fn dev_audio_recording(enabled: Option<bool>) -> Result<Value, String> {
+    if let Some(enabled) = enabled {
+        crate::audio_dsp::dev_record::set_enabled(enabled)?;
+    }
+    Ok(json!({
+        "enabled":crate::audio_dsp::dev_record::enabled(),
+        "dir":crate::audio_dsp::dev_record::dir().display().to_string(),
+    }))
+}
+
 // 读记录的命令都放到后台线程：同步命令跑在主线程上，页面轮询时读文件会干扰正在测量的听写。
 #[tauri::command(async)]
 pub(crate) fn dev_trace_runs(limit: Option<usize>) -> Result<Vec<Value>, String> {
