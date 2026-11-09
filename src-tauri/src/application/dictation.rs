@@ -2767,6 +2767,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     } else {
                         None
                     };
+                    // 粘贴之后还要等剪贴板恢复、写历史，胶囊在这里就开始退场，和文字上屏同步；
+                    // 粘贴失败时下面的剪贴板兜底会重新显示提示。
+                    if !trigger.is_floating_orb() {
+                        let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+                    }
                     let injection_result =
                         inject_text_inner(processed.clone(), Some(method.clone())).await;
                     if let Some(observation) = observation {
