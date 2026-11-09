@@ -439,7 +439,7 @@ export function IndicatorApp() {
       {mode === "dictation" && phase === "fallback" && (
         <div id="fallback-panel" role="status" aria-live="polite">
           <ClipboardCheck aria-hidden="true" />
-          <span>已经把结果放到你的剪贴板里了，你粘贴就可以用了</span>
+          <span>已复制，请手动粘贴</span>
         </div>
       )}
       {pillPhase !== "subtitle" && pillPhase !== "fallback" && (

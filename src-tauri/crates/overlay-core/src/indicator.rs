@@ -40,11 +40,14 @@ const TEXT_SIZE: f32 = 14.0;
 /// 文字框出现时从下方这么远滑入。
 const TEXT_ENTER_SLIDE: f32 = 6.0;
 
-const FALLBACK_W: f32 = 396.0;
-const FALLBACK_H: f32 = 56.0;
-const FALLBACK_PAD: f32 = 14.0;
-const FALLBACK_ICON: f32 = 18.0;
-const FALLBACK_ICON_GAP: f32 = 10.0;
+/// 通知与剪贴板兜底：和胶囊同高同圆角，宽度跟着文字走；放不下一行时换行变高。
+const NOTICE_MAX_W: f32 = 360.0;
+const NOTICE_PAD_X: f32 = 14.0;
+const NOTICE_PAD_Y: f32 = 8.0;
+const NOTICE_ICON: f32 = 16.0;
+const NOTICE_ICON_GAP: f32 = 8.0;
+const NOTICE_TEXT_SIZE: f32 = 13.0;
+const FALLBACK_TEXT: &str = "已复制，请手动粘贴";
 
 /// 滚动波形：每根柱是一小段时间的音量，新柱从右侧进入、整体连续左移。
 const WAVE_BARS: usize = 14;
@@ -293,6 +296,8 @@ pub struct Indicator {
     text_alpha: Spring,
     /// Notice 态的自定义文案。
     notice_text: String,
+    /// 通知面板的宽高，在显示时按文字量好。
+    notice_size: (f32, f32),
     dpi: u32,
     transition: Transition,
     notice_deadline: Option<Instant>,
@@ -323,6 +328,7 @@ impl Indicator {
             text_scroll: Spring::at(0.0),
             text_alpha: Spring::at(0.0),
             notice_text: String::new(),
+            notice_size: (PILL_H, PILL_H),
             dpi: 96,
             transition: Transition::new(false),
             notice_deadline: None,
@@ -549,6 +555,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 if state == IndicatorState::Fallback {
                     self.text.clear();
                     self.reset_wave();
+                    self.notice_size = notice_size(cx.text, FALLBACK_TEXT);
                 }
                 if reappearing {
                     self.snap_geometry();
@@ -593,6 +600,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 self.fresh_started = None;
                 self.reset_wave();
                 self.notice_text = text;
+                self.notice_size = notice_size(cx.text, &self.notice_text);
                 self.state = Some(IndicatorState::Notice);
                 self.transition.show();
                 self.notice_deadline =
@@ -699,8 +707,8 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         };
         if matches!(state, IndicatorState::Fallback | IndicatorState::Notice) {
             return vec![Shape::RoundedRect {
-                rect: Self::notice_rect(),
-                radius: TEXT_RADIUS,
+                rect: self.notice_rect(),
+                radius: PILL_RADIUS,
             }];
         }
         let mut shapes = vec![Shape::RoundedRect {
@@ -718,12 +726,13 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
 }
 
 impl Indicator {
-    fn notice_rect() -> Rect {
+    fn notice_rect(&self) -> Rect {
         let bottom = Self::content_bottom();
+        let (width, height) = self.notice_size;
         Rect::new(
-            (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
-            bottom - FALLBACK_H,
-            (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
+            (LOGICAL_WIDTH - width) / 2.0,
+            bottom - height,
+            (LOGICAL_WIDTH + width) / 2.0,
             bottom,
         )
     }
@@ -758,16 +767,11 @@ impl Indicator {
     fn draw_content<C: Canvas>(&self, canvas: &mut C, now: Instant) {
         let Some(state) = self.state else { return };
         if state == IndicatorState::Fallback {
-            self.draw_notice_panel(
-                canvas,
-                Self::content_bottom(),
-                "已经把结果放到你的剪贴板里了，你粘贴就可以用了",
-                false,
-            );
+            self.draw_notice_panel(canvas, FALLBACK_TEXT, false);
             return;
         }
         if state == IndicatorState::Notice {
-            self.draw_notice_panel(canvas, Self::content_bottom(), &self.notice_text, true);
+            self.draw_notice_panel(canvas, &self.notice_text, true);
             return;
         }
         if self.text_alpha.x > 0.01 {
@@ -955,29 +959,18 @@ impl Indicator {
             );
         }
     }
-    fn draw_notice_panel<C: Canvas>(
-        &self,
-        canvas: &mut C,
-        content_bottom: f32,
-        text: &str,
-        warn: bool,
-    ) {
-        let rect = Rect::new(
-            (LOGICAL_WIDTH - FALLBACK_W) / 2.0,
-            content_bottom - FALLBACK_H,
-            (LOGICAL_WIDTH + FALLBACK_W) / 2.0,
-            content_bottom,
-        );
-        self.draw_panel(canvas, rect, TEXT_RADIUS, 1.0, 0.0);
+    fn draw_notice_panel<C: Canvas>(&self, canvas: &mut C, text: &str, warn: bool) {
+        let rect = self.notice_rect();
+        self.draw_panel(canvas, rect, PILL_RADIUS.min(rect.height() / 2.0), 1.0, 0.0);
         let color = if warn {
             self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, 1.0)
         } else {
             self.look.color(163.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, 1.0)
         };
-        let icon_cx = rect.left + FALLBACK_PAD + FALLBACK_ICON / 2.0;
+        let icon_cx = rect.left + NOTICE_PAD_X + NOTICE_ICON / 2.0;
         let icon_cy = (rect.top + rect.bottom) / 2.0;
         if warn {
-            let r = FALLBACK_ICON / 2.0 - 1.0;
+            let r = NOTICE_ICON / 2.0 - 1.0;
             let top = Point::new(icon_cx, icon_cy - r);
             let left = Point::new(icon_cx - r, icon_cy + r * 0.8);
             let right = Point::new(icon_cx + r, icon_cy + r * 0.8);
@@ -994,7 +987,7 @@ impl Indicator {
         } else {
             canvas.stroke_circle(
                 Point::new(icon_cx, icon_cy),
-                FALLBACK_ICON / 2.0 - 1.0,
+                NOTICE_ICON / 2.0 - 1.0,
                 color,
                 Stroke::plain(1.8),
             );
@@ -1017,14 +1010,14 @@ impl Indicator {
             );
         }
         let bounds = Rect::new(
-            rect.left + FALLBACK_PAD + FALLBACK_ICON + FALLBACK_ICON_GAP,
+            rect.left + NOTICE_PAD_X + NOTICE_ICON + NOTICE_ICON_GAP,
             rect.top,
-            rect.right - FALLBACK_PAD,
+            rect.right - NOTICE_PAD_X,
             rect.bottom,
         );
         if let Some(layout) = canvas.text().layout(
             text,
-            &text_style(13.0, true),
+            &text_style(NOTICE_TEXT_SIZE, true),
             bounds.width(),
             bounds.height(),
         ) {
@@ -1036,6 +1029,19 @@ impl Indicator {
             );
         }
     }
+}
+
+/// 通知面板尺寸：一行放得下时和胶囊同高，宽度贴着文字；放不下时在最大宽度内换行加高。
+fn notice_size<T: TextEngine>(text: &T, content: &str) -> (f32, f32) {
+    let chrome = NOTICE_PAD_X * 2.0 + NOTICE_ICON + NOTICE_ICON_GAP;
+    let metrics = text
+        .layout(content, &text_style(NOTICE_TEXT_SIZE, true), NOTICE_MAX_W - chrome, 10_000.0)
+        .map(|layout| text.metrics(&layout));
+    let (width, height) = metrics.map_or((0.0, 0.0), |metrics| (metrics.width, metrics.height));
+    (
+        (width + chrome).min(NOTICE_MAX_W),
+        (height + NOTICE_PAD_Y * 2.0).max(PILL_H),
+    )
 }
 
 /// 胶囊柱高：分段 RMS 线性归一后略微压缩，弱音也看得到，正常说话不会顶满。
