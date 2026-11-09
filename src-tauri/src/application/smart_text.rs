@@ -836,10 +836,10 @@ fn supports_web_search(profile: &ProviderProfile) -> bool {
         .is_some_and(|adapter| llm_uses_responses(adapter, profile_value(profile, "model")))
 }
 
-/// 开始录音时先连上智能处理的服务器，TLS 握手和说话同时进行，松手后的请求直接复用这条连接。
-/// 只建连接、不调用模型，不产生费用；失败不影响之后的正式请求。
-/// 插件提供的模型由插件自己决定访问地址，不预连接。录音超过连接的空闲回收时间（客户端 90 秒，
-/// 服务端常更短）时，正式请求仍要重新握手。
+/// 先连上智能处理的服务器，TLS 握手和说话、等识别结果同时进行，之后的正式请求直接复用这条连接。
+/// 开始录音与松手时各调一次：录音超过连接的空闲回收时间（客户端 90 秒，服务端常更短）时，
+/// 松手这一次会重新连上。只建连接、不调用模型，不产生费用；失败不影响之后的正式请求。
+/// 插件提供的模型由插件自己决定访问地址，不预连接。
 pub(crate) async fn prewarm_connection(state: &RuntimeState, provider_id: &str, model_override: &str) {
     let result = async {
         let profile = selected_profile(state, Some(provider_id), Some(model_override))?;
