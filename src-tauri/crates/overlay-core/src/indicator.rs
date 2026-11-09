@@ -88,6 +88,9 @@ const TRANSITION_SLIDE_PX: f32 = 10.0;
 const TEXT_FRESH_FADE_S: f32 = 0.18;
 /// 只给 ≤10 字符的短追加淡入；长追加直接显示。
 const TEXT_FRESH_FADE_MAX_CHARS: usize = 10;
+/// 实时识别的中间结果常把末尾改短一行又马上长回来；文字框变大立即跟上，
+/// 变小要持续这么久才收，避免框和文字上下来回跳。
+const TEXT_SHRINK_HOLD_S: f32 = 0.6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -269,6 +272,8 @@ struct TextTarget {
 pub struct Indicator {
     state: Option<IndicatorState>,
     text: String,
+    /// 本段已经显示过的最长文本：中间结果把末尾改短再长回来时，显示过的字不再淡入。
+    seen_text: String,
     /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
     fresh_from: usize,
     fresh_started: Option<Instant>,
@@ -290,6 +295,9 @@ pub struct Indicator {
     clickable: bool,
     interactive: bool,
     text_target: TextTarget,
+    /// 最近一次量出的几何；比 `text_target` 小时，从 `text_shrink_since` 起等满保持时间才收。
+    text_measured: TextTarget,
+    text_shrink_since: Option<Instant>,
     text_w: Spring,
     text_h: Spring,
     text_scroll: Spring,
@@ -309,6 +317,7 @@ impl Indicator {
         Self {
             state: None,
             text: String::new(),
+            seen_text: String::new(),
             fresh_from: 0,
             fresh_started: None,
             wave_bars: VecDeque::from(vec![0.0; WAVE_BARS + 1]),
@@ -323,6 +332,8 @@ impl Indicator {
             clickable: false,
             interactive: false,
             text_target: TextTarget::default(),
+            text_measured: TextTarget::default(),
+            text_shrink_since: None,
             text_w: Spring::at(0.0),
             text_h: Spring::at(0.0),
             text_scroll: Spring::at(0.0),
@@ -346,10 +357,16 @@ impl Indicator {
         self.wave_acc_count = 0;
         self.wave_scroll = 0.0;
     }
+    fn reset_text_geometry(&mut self) {
+        self.text_target = TextTarget::default();
+        self.text_measured = TextTarget::default();
+        self.text_shrink_since = None;
+    }
     fn clear_content(&mut self) {
         self.state = None;
         self.text.clear();
-        self.text_target = TextTarget::default();
+        self.seen_text.clear();
+        self.reset_text_geometry();
         self.text_alpha.snap(0.0);
         self.reset_wave();
         self.hovering = false;
@@ -403,7 +420,7 @@ impl Indicator {
         self.morph.snap(self.morph_target());
         self.hover.snap(0.0);
     }
-    fn measure_text<T: TextEngine>(&mut self, text: &T) {
+    fn measure_text<T: TextEngine>(&mut self, text: &T, now: Instant) {
         if self.text.is_empty() {
             return;
         }
@@ -416,15 +433,42 @@ impl Indicator {
         let lines = metrics.line_count.max(1);
         let line_h = metrics.height / lines as f32;
         let visible = lines.min(TEXT_MAX_LINES);
-        self.text_target = TextTarget {
+        let measured = TextTarget {
             width: (metrics.width + TEXT_PAD_X * 2.0).clamp(TEXT_MIN_W, TEXT_MAX_W),
             height: visible as f32 * line_h + TEXT_PAD_Y * 2.0,
             scroll: (lines - visible) as f32 * line_h,
         };
+        let previous = std::mem::replace(&mut self.text_measured, measured);
         if self.text_alpha.x < 0.05 {
-            self.text_w.snap(self.text_target.width);
-            self.text_h.snap(self.text_target.height);
-            self.text_scroll.snap(self.text_target.scroll);
+            self.text_target = measured;
+            self.text_shrink_since = None;
+            self.text_w.snap(measured.width);
+            self.text_h.snap(measured.height);
+            self.text_scroll.snap(measured.scroll);
+            return;
+        }
+        let current = self.text_target;
+        self.text_target = TextTarget {
+            width: current.width.max(measured.width),
+            height: current.height.max(measured.height),
+            scroll: current.scroll.max(measured.scroll),
+        };
+        // 量出的尺寸又变了就重新计时：收拢到的必须是持续了保持时间的那个尺寸。
+        self.text_shrink_since = if self.text_target == measured {
+            None
+        } else if measured != previous {
+            Some(now)
+        } else {
+            self.text_shrink_since.or(Some(now))
+        };
+    }
+    /// 变小的几何保持够久仍未长回来，才真正收拢。
+    fn settle_text_shrink(&mut self, now: Instant) {
+        if self.text_shrink_since.is_some_and(|since| {
+            now.saturating_duration_since(since).as_secs_f32() >= TEXT_SHRINK_HOLD_S
+        }) {
+            self.text_target = self.text_measured;
+            self.text_shrink_since = None;
         }
     }
     /// 记入本根柱周期：分段 RMS 取平均后按留有余量的曲线映射。
@@ -463,6 +507,7 @@ impl Indicator {
     }
     /// 每帧推进全部动画。
     fn tick_animations(&mut self, dt: f32, now: Instant) {
+        self.settle_text_shrink(now);
         if self.state == Some(IndicatorState::Recording) {
             self.advance_wave(dt);
         }
@@ -494,6 +539,7 @@ impl Indicator {
             && self.text_w.settled(self.text_target.width, 0.05)
             && self.text_h.settled(self.text_target.height, 0.05)
             && self.text_scroll.settled(self.text_target.scroll, 0.05)
+            && self.text_shrink_since.is_none()
     }
 
     /// 文本新增部分的淡入进度（1.0 = 已完成/无新增）。
@@ -542,7 +588,8 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
             Command::Prepare => {
                 self.notice_deadline = None;
                 self.text.clear();
-                self.text_target = TextTarget::default();
+                self.seen_text.clear();
+                self.reset_text_geometry();
                 self.fresh_from = 0;
                 self.fresh_started = None;
                 self.reset_wave();
@@ -566,14 +613,20 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 ops
             }
             Command::SetText { text, fade } => {
-                // 只有短追加或显式换新才淡入；修订已有内容直接替换。
+                // 只有短追加或显式换新才淡入；修订已有内容直接替换。追加按本段显示过的最长文本算，
+                // 末尾先被改短、再长回原样的字不算新字。
                 let fresh_from = if fade {
                     0
-                } else if text.starts_with(&self.text) {
-                    self.text.chars().count()
+                } else if text.starts_with(&self.seen_text) {
+                    self.seen_text.chars().count()
+                } else if self.seen_text.starts_with(&text) {
+                    text.chars().count()
                 } else {
                     usize::MAX
                 };
+                if fade || !self.seen_text.starts_with(&text) {
+                    self.seen_text.clone_from(&text);
+                }
                 let fresh_len = if fresh_from == usize::MAX {
                     usize::MAX
                 } else {
@@ -583,7 +636,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 self.fresh_started =
                     (fresh_len > 0 && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS).then_some(cx.now);
                 self.text = text;
-                self.measure_text(cx.text);
+                self.measure_text(cx.text, cx.now);
                 if self.state.is_some() {
                     vec![WindowOp::Redraw]
                 } else {
@@ -1161,6 +1214,52 @@ mod tests {
         model.on_frame(1.0, &cx(now + Duration::from_secs(1), &text));
         assert_eq!(model.state, Some(IndicatorState::Processing));
         assert_eq!(model.transition.visual(), 1.0);
+    }
+    /// 中间结果把末尾改短一行又长回来时，文字框与滚动位置不动；持续变短才收拢。
+    #[test]
+    fn text_box_grows_at_once_but_shrinks_only_after_hold() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
+        let set = |model: &mut Indicator, chars: usize, at: Instant| {
+            model.apply(
+                Command::SetText { text: "字".repeat(chars), fade: false },
+                &cx(at, &text),
+            );
+        };
+        set(&mut model, 20, now);
+        settled(&mut model, now, &text);
+        let line_h = TEXT_SIZE * 1.5;
+        set(&mut model, 140, now + Duration::from_millis(400));
+        assert_eq!(model.text_target.scroll, line_h);
+        assert_eq!(model.text_target.height, 3.0 * line_h + TEXT_PAD_Y * 2.0);
+
+        set(&mut model, 120, now + Duration::from_millis(450));
+        model.on_frame(0.3, &cx(now + Duration::from_millis(750), &text));
+        assert_eq!(model.text_target.scroll, line_h);
+        set(&mut model, 141, now + Duration::from_millis(800));
+        model.on_frame(0.5, &cx(now + Duration::from_millis(1300), &text));
+        assert_eq!(model.text_target.scroll, line_h);
+
+        set(&mut model, 120, now + Duration::from_millis(1400));
+        model.on_frame(0.5, &cx(now + Duration::from_millis(1900), &text));
+        assert_eq!(model.text_target.scroll, line_h);
+        model.on_frame(0.2, &cx(now + Duration::from_millis(2100), &text));
+        assert_eq!(model.text_target.scroll, 0.0);
+    }
+    /// 末尾先被改短、再长回来时，原先显示过的字不再淡入，只有真正的新字淡入。
+    #[test]
+    fn text_shortened_then_regrown_only_fades_never_shown_characters() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
+        for value in ["今天天气", "今天天", "今天天气很好"] {
+            model.apply(Command::SetText { text: value.into(), fade: false }, &cx(now, &text));
+        }
+        assert_eq!(model.fresh_from, 4);
+        assert!(model.fresh_started.is_some());
     }
     #[test]
     fn fresh_only_fades_one_to_ten_new_characters_and_tracks_utf16() {

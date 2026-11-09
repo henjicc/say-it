@@ -65,6 +65,8 @@ function resampleWaveLevels(levels: number[], fallback: number) {
 const MAX_RENDER_CHARS = 20000;
 const FRESH_FADE_MAX = 10;
 const OVERLAP_SEARCH_MAX = 200;
+/** 实时识别的中间结果常把末尾改短一行又马上长回来；滚动位置变高立即跟上，变低要持续这么久才回落。 */
+const SCROLL_SHRINK_HOLD_MS = 600;
 
 /**
  * 一路独立的字幕文本轨道：管理"稳定前缀 + 新增高亮 + 滚动/平移定位"的整套渲染逻辑。
@@ -78,13 +80,19 @@ function useTextTrack(isReplaceMode: boolean) {
   const [hasText, setHasText] = useState(false);
   const pendingText = useRef("");
   const displayedText = useRef("");
+  /** 本段显示过的最长文本：末尾被改短再长回来时，显示过的字不再淡入。 */
+  const seenText = useRef("");
   const renderFrame = useRef(0);
   const lastTransform = useRef("");
+  const scrollOffset = useRef(0);
+  const scrollShrinkTimer = useRef(0);
+  /** 等待回落的目标位置；目标又变了就重新计时，回落到的必须是持续了保持时间的位置。 */
+  const scrollShrinkTarget = useRef(0);
 
   const paintText = (next: string) => {
     const content = textContentRef.current;
     if (!content) return;
-    const prevText = displayedText.current;
+    const prevText = seenText.current;
     const min = Math.min(prevText.length, next.length);
     let prefix = 0;
     while (prefix < min && prevText[prefix] === next[prefix]) prefix += 1;
@@ -107,9 +115,15 @@ function useTextTrack(isReplaceMode: boolean) {
       content.appendChild(span);
     }
     displayedText.current = next;
+    if (!prevText.startsWith(next)) seenText.current = next;
   };
 
-  const applyScroll = (skipAnimation = false) => {
+  const clearScrollShrink = () => {
+    window.clearTimeout(scrollShrinkTimer.current);
+    scrollShrinkTimer.current = 0;
+  };
+
+  const applyScroll = (skipAnimation = false, allowShrink = false) => {
     const content = textContentRef.current;
     const flow = textFlowRef.current;
     if (!content || !flow) return;
@@ -124,7 +138,21 @@ function useTextTrack(isReplaceMode: boolean) {
       // 滚动累积模式框高只留固定行数，但内容可能超出；
       // 这里统一按溢出量向上滚动，让最新说的内容始终留在可见区域内，不会被锁在框顶而"卡住不更新"。
       const overflow = content.scrollHeight - flow.clientHeight;
-      const offset = overflow > 0 ? overflow : 0;
+      let offset = overflow > 0 ? overflow : 0;
+      if (offset < scrollOffset.current && !skipAnimation && !allowShrink) {
+        if (!scrollShrinkTimer.current || scrollShrinkTarget.current !== offset) {
+          clearScrollShrink();
+          scrollShrinkTarget.current = offset;
+          scrollShrinkTimer.current = window.setTimeout(() => {
+            scrollShrinkTimer.current = 0;
+            applyScroll(false, true);
+          }, SCROLL_SHRINK_HOLD_MS);
+        }
+        offset = scrollOffset.current;
+      } else {
+        clearScrollShrink();
+      }
+      scrollOffset.current = offset;
       next = `translate3d(0, ${-offset}px, 0)`;
     }
     if (next !== lastTransform.current) {
@@ -146,6 +174,9 @@ function useTextTrack(isReplaceMode: boolean) {
   const resetText = () => {
     pendingText.current = "";
     displayedText.current = "";
+    seenText.current = "";
+    scrollOffset.current = 0;
+    clearScrollShrink();
     setHasText(false);
     if (textContentRef.current) {
       textContentRef.current.textContent = "";
@@ -185,6 +216,7 @@ function useTextTrack(isReplaceMode: boolean) {
   const swapText = (nextText: string) => {
     const content = textContentRef.current;
     displayedText.current = "";
+    seenText.current = "";
     if (content) {
       content.textContent = "";
       content.classList.remove("swap-in");
@@ -199,6 +231,9 @@ function useTextTrack(isReplaceMode: boolean) {
       if (renderFrame.current) cancelAnimationFrame(renderFrame.current);
     };
   }, []);
+
+  // 待回落的计时器按排队时的显示模式写位移；切换模式或卸载时丢弃。
+  useEffect(() => clearScrollShrink, [isReplaceMode]);
 
   return { textElRef, textFlowRef, textContentRef, hasText, renderText, swapText, resetText };
 }

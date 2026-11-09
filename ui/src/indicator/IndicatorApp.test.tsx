@@ -96,6 +96,21 @@ describe("dictation indicator presentation", () => {
     expect(view.container.querySelector("#pill .orb-waveform")).not.toBeInTheDocument();
   });
 
+  it("does not fade characters back in when a partial result shortens and regrows", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const view = render(<IndicatorApp />);
+    act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "subtitle" }));
+    for (const text of ["今天天气", "今天天", "今天天气很好"]) {
+      act(() => {
+        eventHandlers.get(EVT.indicatorText)?.({ text });
+        frames.splice(0).forEach((frame) => frame(0));
+      });
+    }
+    expect(view.container.querySelector(".fresh")?.textContent).toBe("很好");
+  });
+
   it("presents clipboard delivery as guidance instead of an error", () => {
     const view = render(<IndicatorApp />);
 
