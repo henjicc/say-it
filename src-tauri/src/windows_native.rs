@@ -209,10 +209,76 @@ impl ClipboardSnapshot {
     }
 }
 
+/// 粘贴后要等目标软件读完剪贴板（约 180ms）才能还原。这段等待和还原放在专用线程上做，
+/// 调用方在按下粘贴键后就返回，胶囊与结束音不必再等它。所有粘贴在这条线程上排队，
+/// 下一次粘贴备份剪贴板时，上一次的还原一定已经做完。
+///
+/// 粘贴线程从备份到还原完成一直持有这把锁；其他要读写剪贴板的地方先调用
+/// `wait_clipboard_restored`，免得读到注入的文字，或被随后的还原覆盖。
+static CLIPBOARD_RESTORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn wait_clipboard_restored() {
+    drop(CLIPBOARD_RESTORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+}
+
+struct PasteJob {
+    text: String,
+    pasted: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
 pub(crate) fn paste_text(text: &str) -> Result<(), String> {
-    unsafe { OleInitialize(None) }
-        .map_err(|error| format!("初始化 Windows OLE 剪贴板失败：{error}"))?;
-    let _guard = OleGuard;
+    static WORKER: std::sync::OnceLock<Result<std::sync::mpsc::Sender<PasteJob>, String>> =
+        std::sync::OnceLock::new();
+    let worker = WORKER
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<PasteJob>();
+            std::thread::Builder::new()
+                .name("clipboard-paste".into())
+                .spawn(move || run_paste_worker(rx))
+                .map(|_| tx)
+                .map_err(|error| format!("创建粘贴线程失败：{error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let (pasted, result) = std::sync::mpsc::channel();
+    worker
+        .send(PasteJob { text: text.to_string(), pasted })
+        .map_err(|_| "粘贴线程已退出".to_string())?;
+    result.recv().map_err(|_| "粘贴线程已退出".to_string())?
+}
+
+fn run_paste_worker(jobs: std::sync::mpsc::Receiver<PasteJob>) {
+    for job in jobs {
+        let _restoring = CLIPBOARD_RESTORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 每次粘贴各自初始化、还原后释放 OLE：线程在两次粘贴之间不处理窗口消息，不常驻单线程套间。
+        let ole = unsafe { OleInitialize(None) }
+            .map(|()| OleGuard)
+            .map_err(|error| format!("初始化 Windows OLE 剪贴板失败：{error}"));
+        let pending_restore = match &ole {
+            Ok(_) => paste_once(&job.text),
+            Err(error) => Err(error.clone()),
+        };
+        let (result, pending_restore) = match pending_restore {
+            Ok(pending) => (Ok(()), Some(pending)),
+            Err(error) => (Err(error), None),
+        };
+        let _ = job.pasted.send(result);
+        if let Some((backup, clipboard, injected_sequence)) = pending_restore {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+            if let Err(error) = restore_if_unchanged(backup, clipboard, injected_sequence) {
+                crate::application::diagnostics::event(
+                    "warn",
+                    "clipboard.restoreFailed",
+                    serde_json::json!({ "error": error }),
+                );
+            }
+        }
+    }
+}
+
+/// 写入文本并按下粘贴键。成功时返回还原所需的备份，由调用方等目标软件读完后还原；
+/// 按键失败时当场还原并返回错误。
+fn paste_once(text: &str) -> Result<(ClipboardSnapshot, arboard::Clipboard, u32), String> {
     let backup = ClipboardSnapshot::capture()?;
     let mut clipboard =
         arboard::Clipboard::new().map_err(|error| format!("打开剪贴板失败：{error}"))?;
@@ -232,17 +298,26 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     let release = enigo
         .key(Key::Control, Direction::Release)
         .map_err(|error| format!("释放粘贴按键失败：{error}"));
-    let paste_result = click.and(release);
-    if paste_result.is_ok() {
-        std::thread::sleep(std::time::Duration::from_millis(180));
+    match click.and(release) {
+        Ok(()) => Ok((backup, clipboard, injected_sequence)),
+        Err(error) => Err(match restore_if_unchanged(backup, clipboard, injected_sequence) {
+            Ok(()) => error,
+            Err(restore) => format!("{error}；{restore}"),
+        }),
     }
-    let restore_result = if unsafe { GetClipboardSequenceNumber() } == injected_sequence {
-        drop(clipboard);
-        backup.restore()
-    } else {
-        Ok(())
-    };
-    paste_result.and(restore_result)
+}
+
+/// 剪贴板在粘贴之后被别的程序改过时不还原，以免覆盖用户新复制的内容。
+fn restore_if_unchanged(
+    backup: ClipboardSnapshot,
+    clipboard: arboard::Clipboard,
+    injected_sequence: u32,
+) -> Result<(), String> {
+    if unsafe { GetClipboardSequenceNumber() } != injected_sequence {
+        return Ok(());
+    }
+    drop(clipboard);
+    backup.restore()
 }
 
 #[cfg(test)]
