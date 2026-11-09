@@ -8,6 +8,7 @@ vi.mock("@/lib/tauri", () => ({
     version: 1,
     defaultRealtimeModel: "fun-asr-realtime-2026-02-28",
     defaultFileModel: "fun-asr-flash-2026-06-15",
+    pricing: { capabilities: {}, llm: {} },
     models: [
       ...builtinModels,
       {

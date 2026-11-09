@@ -18,6 +18,7 @@ vi.mock("@/lib/tauri", () => ({
 vi.mock("@/features/asr/modelRegistry", () => ({
   useModelCatalogRevision: () => 1,
   optionsForScene: () => [],
+  sdkPricing: () => undefined,
 }));
 
 describe("AssistantPage", () => {

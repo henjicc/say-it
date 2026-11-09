@@ -6,7 +6,7 @@ type RecommendedModel = { id: string; label: string };
 const adapters: Record<string, RecommendedModel[] | undefined> = catalog.adapters;
 
 /** 与后端 `llm_adapter` 一致：内置百炼走 bailian，其余取 `llm:` 之后的部分。 */
-function adapterOf(kind: string): string {
+export function adapterOf(kind: string): string {
   return kind === "sdk:bailian" ? "bailian" : kind.replace(/^llm:/, "");
 }
 

@@ -30,6 +30,9 @@ pub struct ModelCatalogItem {
     pub is_qwen_file: bool,
     pub is_qwen_short_audio_file: bool,
     pub is_funasr_flash_file: bool,
+    /// SDK 能力模块 ID，界面按它查 `ModelCatalog::pricing`。本地模型没有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -40,6 +43,8 @@ pub struct ModelCatalog {
     pub default_file_model: String,
     pub models: Vec<ModelCatalogItem>,
     pub providers: ProviderSettingsResponse,
+    /// SDK 登记的参考价，见 `sdk_runtime::SDK_PRICING`；界面按模型的 `capabilityId` 或大模型供应商查找。
+    pub pricing: serde_json::Value,
 }
 
 pub fn build_catalog(
@@ -82,6 +87,7 @@ pub fn build_catalog(
                 is_qwen_file: model.id.starts_with("qwen3-asr-flash-filetrans"),
                 is_qwen_short_audio_file: route == FileTranscriptionRoute::SyncQwen,
                 is_funasr_flash_file: route == FileTranscriptionRoute::SyncFunAsrFlash,
+                capability_id: model.capability_id.clone(),
             }
         })
         .collect();
@@ -91,6 +97,7 @@ pub fn build_catalog(
         default_file_model: registry::default_file_model().into(),
         models,
         providers,
+        pricing: crate::providers::sdk_runtime::SDK_PRICING.clone(),
     }
 }
 

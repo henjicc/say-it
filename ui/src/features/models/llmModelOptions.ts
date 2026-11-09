@@ -7,7 +7,9 @@ import type {
 } from "@/store/useProviderStore";
 import type { ModelPickerOption } from "./ModelPicker";
 import { isModelOffered } from "./providerModels";
-import { isRecommendedLlmModel, llmModelLabel } from "./recommendedLlmModels";
+import { sdkPricing } from "@/features/asr/modelRegistry";
+import { tokenPrice } from "./pricing";
+import { adapterOf, isRecommendedLlmModel, llmModelLabel } from "./recommendedLlmModels";
 
 export const FOLLOW_DEFAULT_LLM_OPTION: ModelPickerOption = {
   value: "default",
@@ -71,6 +73,11 @@ export function llmModelShownByDefault(profile: ProviderProfile, model: LlmModel
 
 export const llmModelValue = (providerId: string, model: string) => JSON.stringify([providerId, model]);
 
+function llmPrice(adapter: string, model: string) {
+  const pricing = sdkPricing()?.llm[adapter]?.[model];
+  return pricing && tokenPrice(pricing);
+}
+
 /** 用途下拉框里的大模型：只列已配置且设为显示的；当前选中的即使被隐藏也保留，避免下拉框显示空白。 */
 export function llmModelPickerOptions(profiles: readonly ProviderProfile[], selected?: string): ModelPickerOption[] {
   return profiles.flatMap((profile) => llmModelsFromProfile(profile)
@@ -84,5 +91,6 @@ export function llmModelPickerOptions(profiles: readonly ProviderProfile[], sele
       triggerLabel: `${profile.displayName} · ${llmModelLabel(profile, model.name)}`,
       providerId: profile.id,
       providerLabel: profile.displayName,
+      price: llmPrice(adapterOf(profile.kind), model.name),
     })));
 }
