@@ -25,6 +25,9 @@ const STANDARD_USER_PROMPT: &str =
 pub(crate) struct BenchModel {
     pub(super) provider_id: String,
     pub(super) model: String,
+    /// 测速时统一的思考程度，来自 `BenchRequest::reasoning_effort`；不给时用模型自己的设置。
+    #[serde(skip)]
+    pub(super) reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -37,6 +40,8 @@ pub(crate) struct BenchRequest {
     prompt: Option<String>,
     /// 重放某次听写的完整提示词，`latest` 表示最近一次。
     from_run: Option<String>,
+    /// 所有模型统一用这个思考程度（zero / low / high）；不给时各用各的设置。
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -377,6 +382,7 @@ pub(super) async fn measure_stream(
         user_prompt,
         Some(model.provider_id.as_str()),
         Some(model.model.as_str()),
+        model.reasoning_effort.as_deref(),
         scope,
         false,
         &[],
@@ -457,7 +463,8 @@ pub(super) fn model_labels(state: &RuntimeState, model: &BenchModel) -> (String,
 }
 
 fn new_row(state: &RuntimeState, model: &BenchModel, rounds: u32) -> ModelRow {
-    let (provider_name, model_id, reasoning_effective) = model_labels(state, model);
+    let (provider_name, model_id, configured_reasoning) = model_labels(state, model);
+    let reasoning_effective = model.reasoning_effort.clone().unwrap_or(configured_reasoning);
     ModelRow {
         provider_id: model.provider_id.clone(),
         provider_name,
@@ -473,7 +480,11 @@ fn resolve_models(state: &RuntimeState, request: &BenchRequest) -> Result<Vec<Be
         return Ok(request.models.clone());
     }
     let (_, provider_id, model) = crate::application::dictation::smart_test_defaults(state)?;
-    Ok(vec![BenchModel { provider_id, model }])
+    Ok(vec![BenchModel {
+        provider_id,
+        model,
+        reasoning_effort: None,
+    }])
 }
 
 /// 放进独立任务：调用方断开时测速照常跑完并落盘。
@@ -487,7 +498,18 @@ pub(crate) async fn run(app: &AppHandle, request: BenchRequest) -> Result<Value,
 async fn run_detached(app: &AppHandle, request: BenchRequest) -> Result<Value, String> {
     let state = app.state::<RuntimeState>();
     let state: &RuntimeState = state.inner();
-    let models = resolve_models(state, &request)?;
+    if let Some(effort) = request.reasoning_effort.as_deref() {
+        if !matches!(effort, "zero" | "low" | "high") {
+            return Err(format!("思考程度无效：{effort}"));
+        }
+    }
+    let models = resolve_models(state, &request)?
+        .into_iter()
+        .map(|model| BenchModel {
+            reasoning_effort: request.reasoning_effort.clone(),
+            ..model
+        })
+        .collect::<Vec<_>>();
     let rounds = request.rounds.unwrap_or(DEFAULT_ROUNDS).clamp(1, MAX_ROUNDS);
     let (system_prompt, user_prompt, source) = match (&request.prompt, &request.from_run) {
         (Some(prompt), _) if !prompt.trim().is_empty() => {
