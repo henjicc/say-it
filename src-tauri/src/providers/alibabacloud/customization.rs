@@ -14,7 +14,6 @@ const CUSTOMIZATION_URL: &str =
 /// 但本应用未为其建独立词表）。两者一致性由单元测试确保。
 pub const VOCABULARY_TARGETS: &[(&str, &str)] = &[
     ("fun-asr-realtime-2026-02-28", "deskhwrl"),
-    ("fun-asr-realtime", "deskhwrs"),
     ("fun-asr", "deskhwfa"),
 ];
 

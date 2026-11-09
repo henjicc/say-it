@@ -327,13 +327,13 @@ fn record_live_result(results: &mut Vec<LiveCaseResult>, result: LiveCaseResult)
 }
 
 #[test]
-fn live_catalog_maps_all_fifteen_bailian_asr_models() {
+fn live_catalog_maps_all_twelve_bailian_asr_models() {
     let catalog: Vec<Value> = serde_json::from_str(ASR_CATALOG).expect("ASR catalog");
     let online = catalog
         .iter()
         .filter(|model| model.get("providerId").and_then(Value::as_str) == Some("bailian"))
         .collect::<Vec<_>>();
-    assert_eq!(online.len(), 15);
+    assert_eq!(online.len(), 12);
     let mut protocols = BTreeMap::<String, usize>::new();
     for model in online {
         let protocol = model
@@ -342,10 +342,10 @@ fn live_catalog_maps_all_fifteen_bailian_asr_models() {
             .expect("online ASR protocol");
         *protocols.entry(protocol.into()).or_default() += 1;
     }
-    assert_eq!(protocols.get("dashscope-duplex"), Some(&4));
-    assert_eq!(protocols.get("qwen-realtime"), Some(&2));
+    assert_eq!(protocols.get("dashscope-duplex"), Some(&3));
+    assert_eq!(protocols.get("qwen-realtime"), Some(&1));
     assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&3));
-    assert_eq!(protocols.get("file-sync-qwen"), Some(&2));
+    assert_eq!(protocols.get("file-sync-qwen"), Some(&1));
     assert_eq!(protocols.get("file-async-oss"), Some(&4));
 }
 
@@ -414,10 +414,10 @@ fn paid_provider_minimum_acceptance() {
 
     let recorder = AuditRecorder::default();
     let mut results = Vec::new();
-    if live_case_enabled("qwen3-asr-flash") {
+    if live_case_enabled("qwen3-asr-flash-2026-02-10") {
         record_live_result(
             &mut results,
-            run_asr(&recorder, "qwen3-asr-flash", "short-audio-http", &audio),
+            run_asr(&recorder, "qwen3-asr-flash-2026-02-10", "short-audio-http", &audio),
         );
     }
     if live_case_enabled("fun-asr") {
@@ -426,18 +426,18 @@ fn paid_provider_minimum_acceptance() {
             run_asr(&recorder, "fun-asr", "file-async-upload-poll", &audio),
         );
     }
-    if live_case_enabled("fun-asr-realtime") {
+    if live_case_enabled("fun-asr-realtime-2026-02-28") {
         record_live_result(
             &mut results,
-            run_realtime(&recorder, "fun-asr-realtime", "fun-duplex-ws", &pcm),
+            run_realtime(&recorder, "fun-asr-realtime-2026-02-28", "fun-duplex-ws", &pcm),
         );
     }
-    if live_case_enabled("qwen3-asr-flash-realtime") {
+    if live_case_enabled("qwen3-asr-flash-realtime-2026-02-10") {
         record_live_result(
             &mut results,
             run_realtime(
                 &recorder,
-                "qwen3-asr-flash-realtime",
+                "qwen3-asr-flash-realtime-2026-02-10",
                 "qwen-realtime-ws",
                 &pcm,
             ),
