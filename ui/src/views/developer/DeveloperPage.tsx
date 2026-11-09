@@ -3,6 +3,7 @@ import { BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, ROW_CONTROL_W, Row } from "@/components/ui/Group";
+import { Switch } from "@/components/ui/Switch";
 import { Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
@@ -238,6 +239,38 @@ function RunDetail({ record }: { record: RunRecord }) {
   );
 }
 
+interface AudioRecording {
+  enabled: boolean;
+  dir: string;
+}
+
+/** 每次听写保存原始麦克风声音和送去识别的声音，用真实录音排查识别问题。 */
+function AudioRecordingRow() {
+  const [state, setState] = useState<AudioRecording | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void cmd<AudioRecording>(CMD.devAudioRecording).then(setState).catch((reason) => setError(String(reason)));
+  }, []);
+
+  const toggle = (enabled: boolean) => {
+    setError("");
+    void cmd<AudioRecording>(CMD.devAudioRecording, { enabled }).then(setState).catch((reason) => setError(String(reason)));
+  };
+
+  return (
+    <Group title="录音">
+      <Row
+        label="保存听写录音"
+        hint={`每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "工作区/dev-traces/audio"}`}
+        message={error && <span role="alert" className="text-[var(--color-err)]">{error}</span>}
+      >
+        <Switch label="保存听写录音" checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
+      </Row>
+    </Group>
+  );
+}
+
 function OverviewPanel() {
   const [stats, setStats] = useState<TraceStats | null>(null);
   const [status, setStatus] = useState<TraceStatus | null>(null);
@@ -251,6 +284,7 @@ function OverviewPanel() {
   return (
     <InspectorBody>
       {error && <p role="alert" className="text-xs text-[var(--color-err)]">{error}</p>}
+      <AudioRecordingRow />
       {stats && (
         <>
           <Group title={`最近 ${stats.runs} 次成功的听写`}>

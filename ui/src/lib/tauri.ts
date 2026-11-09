@@ -167,6 +167,7 @@ export const CMD = {
   exportDiagnosticBundle: "export_diagnostic_bundle",
   // 以下命令只在开发构建注册，由开发者页面调用
   devTraceStatus: "dev_trace_status",
+  devAudioRecording: "dev_audio_recording",
   devTraceRuns: "dev_trace_runs",
   devTraceRun: "dev_trace_run",
   devTraceStats: "dev_trace_stats",

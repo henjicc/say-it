@@ -99,7 +99,7 @@ pub(super) async fn start_apple_speech_stream(
                 task_id,
                 streams,
                 rx,
-                StreamDsp::new(params.unwrap_or_default(), input_sample_rate),
+                super::stream_dsp(params, input_sample_rate),
                 model,
             ));
             Ok(())

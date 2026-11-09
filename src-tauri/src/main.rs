@@ -771,6 +771,8 @@ fn main() {
             #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_status,
             #[cfg(debug_assertions)]
+            application::dev_trace::dev_audio_recording,
+            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_runs,
             #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_run,
