@@ -7,6 +7,14 @@ vi.mock("@/lib/tauri", () => ({
   cmd: (...args: unknown[]) => cmd(...args),
 }));
 
+const profiles = [{
+  id: "a", kind: "llm:custom", displayName: "甲家", authKind: "api-key", capabilities: ["llm"], enabled: true,
+  status: { hasApiKey: true }, config: { models: [{ name: "m1", source: "manual" }] },
+}];
+vi.mock("@/store/useProviderStore", () => ({
+  useProviderStore: (selector: (state: { profiles: typeof profiles }) => unknown) => selector({ profiles }),
+}));
+
 const { BenchResult, ModelBenchPanel, benchToTsv } = await import("./ModelBenchPanel");
 
 const sample = (firstTokenMs: number, tokensPerSec: number, estimated = false) => ({
@@ -77,28 +85,30 @@ describe("模型测速结果", () => {
 
 describe("模型测速面板", () => {
   const options = [
-    { providerId: "a", providerName: "甲家", model: "m1" },
-    { providerId: "b", providerName: "乙家", model: "m2" },
+    { providerId: "a", providerName: "甲家", model: "m1", current: false },
+    { providerId: "b", providerName: "乙家", model: "qwen3-asr-flash", current: false },
+    { providerId: "a", providerName: "甲家", model: "m3", current: true },
   ];
 
-  it("没选模型不能开始，选中后把模型和轮数发给后端并显示费用提示", async () => {
+  it("只列用途里能选的大模型和当前模型，默认勾上当前模型，把选中的模型和轮数发给后端", async () => {
     cmd.mockImplementation(async (name: string) => {
       if (name === "devBenchModels") return options;
       if (name === "devBenchRun") return { running: false, models: [row("m1", sample(800, 100))], analysis: { summary: "首字最快的是 m1", hints: [] } };
       return null;
     });
     render(<ModelBenchPanel onFinished={() => {}} />);
-    await screen.findByLabelText("甲家 · m1");
-    const start = screen.getByRole("button", { name: "开始测速" }) as HTMLButtonElement;
-    expect(start.disabled).toBe(true);
+    const current = await screen.findByLabelText("甲家 · m3");
+    expect((current as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByLabelText("乙家 · qwen3-asr-flash")).toBeNull();
     expect(screen.getByText(/会产生费用/)).toBeTruthy();
+    expect(screen.getByText("1 个模型同时测速，共 3 次真实请求")).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("甲家 · m1"));
-    expect(screen.getByText("同时测速，共 3 次真实请求")).toBeTruthy();
-    fireEvent.click(start);
+    expect(screen.getByText("2 个模型同时测速，共 6 次真实请求")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "开始测速" }));
 
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("devBenchRun", {
-      request: { models: [{ providerId: "a", model: "m1" }], rounds: 3 },
+      request: { models: [{ providerId: "a", model: "m1" }, { providerId: "a", model: "m3" }], rounds: 3 },
     }));
     expect(await screen.findByText("首字最快的是 m1")).toBeTruthy();
   });

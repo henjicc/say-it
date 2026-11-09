@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Group, Row } from "@/components/ui/Group";
 import { Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
+import { llmModelPickerOptions, llmModelValue, llmPrice } from "@/features/models/llmModelOptions";
+import { adapterOf, llmModelLabel } from "@/features/models/recommendedLlmModels";
 import { CMD, cmd } from "@/lib/tauri";
+import { useProviderStore } from "@/store/useProviderStore";
 import { formatMs, formatRate, modelKey } from "./format";
 
 const LIVE_REFRESH_MS = 250;
@@ -14,6 +17,14 @@ interface BenchModelOption {
   providerId: string;
   providerName: string;
   model: string;
+  /** 智能处理当前用的模型。 */
+  current: boolean;
+}
+
+interface BenchChoice extends BenchModelOption {
+  key: string;
+  label: string;
+  price?: string;
 }
 
 interface BenchSample {
@@ -234,8 +245,31 @@ export function BenchResult({ state, analysis }: { state: BenchState; analysis?:
   );
 }
 
+/**
+ * 只测「用途」里能选的大模型（已填密钥且设为显示），加上智能处理当前用的那个；
+ * 供应商远端列表里的语音、翻译等其他模型不列出。
+ */
+function useBenchChoices(options: BenchModelOption[]): BenchChoice[] {
+  const profiles = useProviderStore((state) => state.profiles);
+  return useMemo(() => {
+    const offered = new Set(llmModelPickerOptions(profiles).map((option) => option.value));
+    return options
+      .filter((option) => option.current || offered.has(llmModelValue(option.providerId, option.model)))
+      .map((option) => {
+        const profile = profiles.find((item) => item.id === option.providerId);
+        return {
+          ...option,
+          key: modelKey(option),
+          label: profile ? llmModelLabel(profile, option.model) : option.model,
+          price: profile && llmPrice(adapterOf(profile.kind), option.model)?.text,
+        };
+      });
+  }, [options, profiles]);
+}
+
 export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
-  const [options, setOptions] = useState<BenchModelOption[]>([]);
+  const [rawOptions, setRawOptions] = useState<BenchModelOption[]>([]);
+  const options = useBenchChoices(rawOptions);
   const [selected, setSelected] = useState<string[]>([]);
   const [source, setSource] = useState<PromptSource>("standard");
   const [prompt, setPrompt] = useState("");
@@ -248,7 +282,11 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   const awaitingResult = useRef(false);
 
   useEffect(() => {
-    void cmd<BenchModelOption[]>(CMD.devBenchModels).then(setOptions).catch((reason) => setError(String(reason)));
+    void cmd<BenchModelOption[]>(CMD.devBenchModels).then((models) => {
+      setRawOptions(models);
+      // 默认勾上当前在用的模型，拿它和其他模型比。
+      setSelected(models.filter((model) => model.current).map(modelKey));
+    }).catch((reason) => setError(String(reason)));
     // 离开页面再回来时测速可能还在跑，接着显示进度。
     void cmd<BenchState | null>(CMD.devBenchState).then((state) => {
       if (state?.running) {
@@ -282,7 +320,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
     setResult(null);
     setLive(null);
     const models = options
-      .filter((option) => selected.includes(modelKey(option)))
+      .filter((option) => selected.includes(option.key))
       .map(({ providerId, model }) => ({ providerId, model }));
     const request = {
       models,
@@ -304,33 +342,56 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   const toggle = (key: string, checked: boolean) => {
     setSelected((current) => (checked ? [...current, key] : current.filter((item) => item !== key)));
   };
-  const requests = selected.length * Number(rounds);
+  const chosen = options.filter((option) => selected.includes(option.key));
+  const requests = chosen.length * Number(rounds);
+  const allSelected = options.length > 0 && chosen.length === options.length;
+  const providers = [...new Set(options.map((option) => option.providerName))];
   const missingPrompt = source === "custom" && !prompt.trim();
 
   return (
     <InspectorBody>
       <Group
-        title="模型"
-        right={(
-          <Button size="sm" onClick={() => setSelected(selected.length === options.length ? [] : options.map(modelKey))}>
-            {selected.length === options.length && options.length > 0 ? "全不选" : "全选"}
+        title={chosen.length ? `模型（已选 ${chosen.length}）` : "模型"}
+        right={options.length > 0 && (
+          <Button size="sm" onClick={() => setSelected(allSelected ? [] : options.map((option) => option.key))}>
+            {allSelected ? "全不选" : "全选"}
           </Button>
         )}
       >
-        {options.length === 0 && <p className="px-3.5 py-3 text-[13px] text-[var(--color-fg-muted)]">没有已启用的大模型</p>}
-        {options.length > 0 && (
-          <div className="max-h-72 overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
-            {options.map((option) => {
-              const key = modelKey(option);
-              const id = `bench-model-${key}`;
+        {options.length === 0 && (
+          <p className="px-3.5 py-3 text-[13px] text-[var(--color-fg-muted)]">没有可测的大模型。在「模型」页填好密钥并打开要测的模型后再来。</p>
+        )}
+        {providers.map((provider) => (
+          <div key={provider} role="group" aria-label={provider}>
+            <div className="flex items-baseline justify-between px-3.5 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]">
+              <span>{provider}</span>
+              {options.some((option) => option.providerName === provider && option.price) && <span>每百万 token 输入 / 输出</span>}
+            </div>
+            {options.filter((option) => option.providerName === provider).map((option) => {
+              const id = `bench-model-${option.key}`;
               return (
-                <Row key={key} label={`${option.providerName} · ${option.model}`} controlId={id}>
-                  <Checkbox id={id} checked={selected.includes(key)} onChange={(event) => toggle(key, event.target.checked)} />
+                <Row
+                  key={option.key}
+                  controlId={id}
+                  label={(
+                    <span className="flex items-center gap-2">
+                      {option.label}
+                      {option.current && <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-fg-subtle)]">当前</span>}
+                    </span>
+                  )}
+                >
+                  {option.price && <span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{option.price}</span>}
+                  <Checkbox
+                    id={id}
+                    aria-label={`${option.providerName} · ${option.label}`}
+                    checked={selected.includes(option.key)}
+                    onChange={(event) => toggle(option.key, event.target.checked)}
+                  />
                 </Row>
               );
             })}
           </div>
-        )}
+        ))}
       </Group>
       <Group>
         <Row label="测试内容">
@@ -361,10 +422,10 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
           />
         </Row>
         <Row
-          label={`同时测速，共 ${requests} 次真实请求`}
+          label={chosen.length ? `${chosen.length} 个模型同时测速，共 ${requests} 次真实请求` : "先勾选要测的模型"}
           message={<>按量计费的模型会产生费用。{error && <span role="alert" className="text-[var(--color-err)]"> {error}</span>}</>}
         >
-          <Button size="sm" variant="primary" disabled={running || selected.length === 0 || missingPrompt} onClick={() => void start()}>
+          <Button size="sm" variant="primary" disabled={running || chosen.length === 0 || missingPrompt} onClick={() => void start()}>
             {running ? "测速中…" : "开始测速"}
           </Button>
         </Row>
