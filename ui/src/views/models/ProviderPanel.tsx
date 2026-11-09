@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { InspectorBody, InspectorHeader } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { RangeInput } from "@/components/ui/RangeInput";
 import { SecretInput } from "@/components/ui/SecretInput";
+import { Tabs } from "@/components/ui/Tabs";
 import { Switch } from "@/components/ui/Switch";
 import { useConfirm } from "@/components/ui/useConfirm";
 import {
@@ -189,6 +190,14 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
   );
 }
 
+const PER_MILLION_TOKENS = "每百万 token 输入 / 输出";
+
+/** 模型名称或 ID 包含搜索词；搜索词为空时都算匹配。 */
+function matchesQuery(query: string, ...texts: string[]): boolean {
+  const normalized = query.trim().toLocaleLowerCase();
+  return !normalized || texts.some((text) => text.toLocaleLowerCase().includes(normalized));
+}
+
 interface CatalogModelRow {
   id: string;
   label: string;
@@ -217,19 +226,25 @@ function ModelMeta({ price, mode }: { price?: ModelPrice; mode?: AsrModelMode })
   );
 }
 
+type ModelCategory = "all" | "asr" | "translation" | "llm";
+
 /** 识别、翻译模型：每个模型一个开关，决定它是否出现在用途下拉框里。 */
-function ModelSwitchGroup({ title, profile, models }: { title: string; profile: ProviderProfile; models: CatalogModelRow[] }) {
+function ModelSwitchGroup({ title, profile, models, query }: { title: string; profile: ProviderProfile; models: CatalogModelRow[]; query: string }) {
   const queue = useProviderConfigQueue(profile.id);
   const [error, setError] = useState("");
   const ready = providerReady(profile);
-  if (!models.length) return null;
+  const shown = models.filter((model) => matchesQuery(query, model.label, model.id));
+  if (!shown.length) return null;
   const toggle = (id: string, visible: boolean) => {
     setError("");
     queue((latest) => modelVisibilityPatch(latest, id, visible)).catch((reason) => setError(`保存失败：${String(reason)}`));
   };
   return (
-    <Group title={title}>
-      {models.map((model) => (
+    <Group
+      title={title}
+      right={shown.some((model) => model.price?.perMillionTokens) && <span className="text-xs text-[var(--color-fg-subtle)]">{PER_MILLION_TOKENS}</span>}
+    >
+      {shown.map((model) => (
         <Row key={model.id} label={model.label} disabled={!ready}>
           <ModelMeta price={model.price} mode={model.mode} />
           <Switch
@@ -250,7 +265,7 @@ function formatTimestamp(value: unknown): string {
 }
 
 /** 大模型列表：显示开关、推理强度、手动添加与刷新。列表通常很长，未显示的收起来。 */
-function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
+function LlmModelsGroup({ profile, query }: { profile: ProviderProfile; query: string }) {
   const refreshModels = useProviderStore((state) => state.refreshLlmModels);
   const defaults = useProviderStore((state) => state.defaults);
   const queue = useProviderConfigQueue(profile.id);
@@ -262,8 +277,9 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
   const ready = providerReady(profile);
   const isPlugin = profile.kind.startsWith("plugin:");
   const models = llmModelsFromProfile(profile);
-  const visible = models.filter((model) => isModelVisible(profile, model.name, llmModelShownByDefault(profile, model)));
-  const hidden = models.filter((model) => !visible.includes(model));
+  const matched = models.filter((model) => matchesQuery(query, llmModelLabel(profile, model.name), model.name));
+  const visible = matched.filter((model) => isModelVisible(profile, model.name, llmModelShownByDefault(profile, model)));
+  const hidden = matched.filter((model) => !visible.includes(model));
 
   const refresh = async () => {
     setRefreshing(true);
@@ -342,7 +358,7 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
       title="大模型"
       right={!isPlugin && (
         <>
-          <span className="text-xs text-[var(--color-fg-subtle)]">{formatTimestamp(profile.config?.modelsFetchedAt)}</span>
+          <span className="text-xs text-[var(--color-fg-subtle)]">{PER_MILLION_TOKENS} · 列表更新于 {formatTimestamp(profile.config?.modelsFetchedAt)}</span>
           <Button size="sm" disabled={!ready} onClick={() => setManualOpen(true)}><Plus className="h-3.5 w-3.5" aria-hidden />手动添加</Button>
           <Button size="sm" disabled={!ready || refreshing} onClick={() => void refresh()}>
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} aria-hidden />{refreshing ? "正在获取" : "刷新"}
@@ -352,8 +368,11 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
     >
       {visible.map((model) => renderRow(model, true))}
       {!models.length && <Row label={ready ? "还没有模型，点「刷新」获取列表" : "填写密钥后可获取模型列表"} disabled />}
+      {models.length > 0 && !matched.length && <Row label="没有匹配的模型" disabled />}
       {hidden.length > 0 && (
         <Collapse
+          key={query.trim() ? "searching" : "browsing"}
+          defaultOpen={Boolean(query.trim())}
           title={`未显示的模型（${hidden.length}）`}
           className="rounded-none border-0 bg-transparent"
           headerClassName="min-h-[var(--row-h)] px-3.5 py-2.5 text-[13px] text-[var(--color-fg-muted)]"
@@ -536,6 +555,15 @@ export function ProviderPanel({ profile }: { profile: ProviderProfile }) {
     ...catalog.filter((model) => model.category === "translation").map((model) => ({ id: model.id, label: model.label })),
   ];
   const removable = profile.kind.startsWith("llm:") && profile.id !== "llm-groq";
+  const hasLlm = profile.capabilities.includes("llm");
+  const [category, setCategory] = useState<ModelCategory>("all");
+  const [query, setQuery] = useState("");
+  const categories = [
+    { key: "asr" as const, label: "识别", count: asrModels.length },
+    { key: "translation" as const, label: "翻译", count: translationModels.length },
+    { key: "llm" as const, label: "大模型", count: hasLlm ? llmModelsFromProfile(profile).length : 0 },
+  ].filter((item) => item.count > 0 || (item.key === "llm" && hasLlm));
+  const showCategory = (key: ModelCategory) => category === "all" || category === key;
 
   const remove = async () => {
     if (!(await confirm({
@@ -562,9 +590,32 @@ export function ProviderPanel({ profile }: { profile: ProviderProfile }) {
       <InspectorBody>
         {error && <p role="alert" className="text-xs text-[var(--color-err)]">{error}</p>}
         <CredentialsGroup profile={profile} />
-        <ModelSwitchGroup title="识别模型" profile={profile} models={asrModels} />
-        <ModelSwitchGroup title="翻译模型" profile={profile} models={translationModels} />
-        {profile.capabilities.includes("llm") && <LlmModelsGroup profile={profile} />}
+        {categories.length > 0 && (
+          <div className="flex items-center gap-2">
+            {categories.length > 1 && (
+              <Tabs<ModelCategory>
+                variant="view"
+                ariaLabel="按模型类型筛选"
+                tabs={[{ key: "all", label: "全部" }, ...categories.map((item) => ({ key: item.key, label: `${item.label} ${item.count}` }))]}
+                active={category}
+                onChange={setCategory}
+              />
+            )}
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-fg-faint)]" aria-hidden />
+              <Input
+                value={query}
+                aria-label="搜索模型"
+                placeholder="搜索模型"
+                onChange={(event) => setQuery(event.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+        )}
+        {showCategory("asr") && <ModelSwitchGroup title="识别模型" profile={profile} models={asrModels} query={query} />}
+        {showCategory("translation") && <ModelSwitchGroup title="翻译模型" profile={profile} models={translationModels} query={query} />}
+        {hasLlm && showCategory("llm") && <LlmModelsGroup profile={profile} query={query} />}
         {profile.kind === "sdk:bailian" && <BailianAdvancedSettings profile={profile} />}
       </InspectorBody>
       {dialog}

@@ -64,6 +64,23 @@ describe("ProviderPanel", () => {
     updateConfig.mockReset().mockImplementation(async (id: string) => profiles.find((profile) => profile.id === id));
   });
 
+  it("按模型类型筛选并搜索，搜索时展开未显示的大模型", () => {
+    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen-long", "remote")] })];
+    render(<ProviderPanel profile={profiles[0]} />);
+    const filter = screen.getByRole("radiogroup", { name: "按模型类型筛选" });
+    expect(within(filter).getAllByRole("radio").map((radio) => radio.textContent)).toEqual(["全部", "识别 1", "翻译 3", "大模型 2"]);
+
+    fireEvent.click(within(filter).getByRole("radio", { name: "识别 1" }));
+    expect(screen.getByText("Fun-ASR 实时")).toBeInTheDocument();
+    expect(screen.queryByText("Qwen3.8 Max")).not.toBeInTheDocument();
+
+    fireEvent.click(within(filter).getByRole("radio", { name: "全部" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索模型" }), { target: { value: "long" } });
+    expect(screen.getByRole("switch", { name: "在用途中显示 qwen-long" })).toBeVisible();
+    expect(screen.queryByText("Fun-ASR 实时")).not.toBeInTheDocument();
+    expect(screen.queryByText("Qwen3.8 Max")).not.toBeInTheDocument();
+  });
+
   it("一处展示密钥、识别、翻译与大模型，开关写入显示设置", async () => {
     profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote"), llmModel("qwen-long", "remote")] })];
     render(<ProviderPanel profile={profiles[0]} />);
