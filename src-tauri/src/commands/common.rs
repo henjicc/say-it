@@ -91,13 +91,19 @@ pub(crate) fn provider_settings_response(
         })
         .map(|profile| {
             let fields = config_fields_for(profile);
-            let has_key = fields.iter().filter(|field| field.secret).any(|field| {
-                credentials.is_some_and(|credentials| {
-                    crate::providers::credential_store::key_for_profile(profile, &field.key)
-                        .and_then(|key| credentials.get(&key))
-                        .is_ok_and(|value| value.is_some_and(|value| !value.trim().is_empty()))
+            let configured_secrets = fields
+                .iter()
+                .filter(|field| field.secret)
+                .filter(|field| {
+                    credentials.is_some_and(|credentials| {
+                        crate::providers::credential_store::key_for_profile(profile, &field.key)
+                            .and_then(|key| credentials.get(&key))
+                            .is_ok_and(|value| value.is_some_and(|value| !value.trim().is_empty()))
+                    })
                 })
-            });
+                .map(|field| field.key.clone())
+                .collect::<Vec<_>>();
+            let has_key = !configured_secrets.is_empty();
             let configured = if profile.kind == crate::providers::apple_speech::PROVIDER_KIND {
                 crate::providers::apple_speech::status().available
             } else {
@@ -123,6 +129,7 @@ pub(crate) fn provider_settings_response(
                 status: Some(ProviderStatus {
                     has_api_key: Some(has_key),
                     configured: Some(configured),
+                    configured_secrets,
                 }),
                 config: sanitized_config(profile),
             }

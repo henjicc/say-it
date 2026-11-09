@@ -72,8 +72,7 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
   const [actionMessage, setActionMessage] = useState("");
   const draftRef = useRef(draft);
   const timersRef = useRef(new Map<string, number>());
-  const apiKeyUrl = providerApiKeyUrl(profile);
-  const hasSecret = Boolean(profile.status?.hasApiKey);
+  const configuredSecrets = profile.status?.configuredSecrets ?? [];
 
   useEffect(() => () => {
     for (const timer of timersRef.current.values()) window.clearTimeout(timer);
@@ -140,9 +139,11 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
     <Group>
       {fields.map((field, index) => {
         const controlId = `provider-${profile.id}-${field.key}`;
-        const link = index === 0 && apiKeyUrl
-          ? <ApiKeyLink url={apiKeyUrl} label={`获取 ${field.label}`} onError={(reason) => setError(`打开密钥页面失败：${reason}`)} />
+        const keyUrl = providerApiKeyUrl(profile, field.key, index);
+        const link = keyUrl
+          ? <ApiKeyLink url={keyUrl} label={`获取 ${field.label}`} onError={(reason) => setError(`打开密钥页面失败：${reason}`)} />
           : undefined;
+        const hasSecret = configuredSecrets.includes(field.key);
         if (field.fieldType === "boolean") {
           return (
             <Row key={field.key} label={field.label} message={link}>
@@ -229,10 +230,16 @@ function ModelMeta({ price, mode }: { price?: ModelPrice; mode?: AsrModelMode })
 type ModelCategory = "all" | "asr" | "translation" | "llm";
 
 /** 识别、翻译模型：每个模型一个开关，决定它是否出现在用途下拉框里。 */
-function ModelSwitchGroup({ title, profile, models, query }: { title: string; profile: ProviderProfile; models: CatalogModelRow[]; query: string }) {
+function ModelSwitchGroup({ title, capability, profile, models, query }: {
+  title: string;
+  capability: "asr" | "translation";
+  profile: ProviderProfile;
+  models: CatalogModelRow[];
+  query: string;
+}) {
   const queue = useProviderConfigQueue(profile.id);
   const [error, setError] = useState("");
-  const ready = providerReady(profile);
+  const ready = providerReady(profile, capability);
   const shown = models.filter((model) => matchesQuery(query, model.label, model.id));
   if (!shown.length) return null;
   const toggle = (id: string, visible: boolean) => {
@@ -274,7 +281,7 @@ function LlmModelsGroup({ profile, query }: { profile: ProviderProfile; query: s
   const [manualOpen, setManualOpen] = useState(false);
   const [manualName, setManualName] = useState("");
   const autoRefreshStartedRef = useRef(Boolean(profile.config?.modelListAttemptedAt));
-  const ready = providerReady(profile);
+  const ready = providerReady(profile, "llm");
   const isPlugin = profile.kind.startsWith("plugin:");
   const models = llmModelsFromProfile(profile);
   const matched = models.filter((model) => matchesQuery(query, llmModelLabel(profile, model.name), model.name));
@@ -613,8 +620,8 @@ export function ProviderPanel({ profile }: { profile: ProviderProfile }) {
             </div>
           </div>
         )}
-        {showCategory("asr") && <ModelSwitchGroup title="识别模型" profile={profile} models={asrModels} query={query} />}
-        {showCategory("translation") && <ModelSwitchGroup title="翻译模型" profile={profile} models={translationModels} query={query} />}
+        {showCategory("asr") && <ModelSwitchGroup title="识别模型" capability="asr" profile={profile} models={asrModels} query={query} />}
+        {showCategory("translation") && <ModelSwitchGroup title="翻译模型" capability="translation" profile={profile} models={translationModels} query={query} />}
         {hasLlm && showCategory("llm") && <LlmModelsGroup profile={profile} query={query} />}
         {profile.kind === "sdk:bailian" && <BailianAdvancedSettings profile={profile} />}
       </InspectorBody>

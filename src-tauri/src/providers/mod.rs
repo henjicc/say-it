@@ -46,6 +46,8 @@ impl RequestCustomization {
 
 pub const BAILIAN_PROVIDER_ID: &str = "bailian";
 pub const VOLCENGINE_PROVIDER_ID: &str = "volcengine";
+/// 火山引擎内置供应商里方舟大模型的密钥字段。
+pub const VOLCENGINE_ARK_KEY_FIELD: &str = "arkApiKey";
 pub const SILICONFLOW_PROVIDER_ID: &str = "siliconflow";
 pub const GROQ_LLM_PROVIDER_ID: &str = "llm-groq";
 pub const GROQ_DEFAULT_LLM_MODEL_ID: &str = "qwen/qwen3.8-27b";
@@ -207,6 +209,9 @@ pub struct ProviderStatus {
     pub has_api_key: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configured: Option<bool>,
+    /// 已保存的密钥字段；一家供应商有几把密钥时，前端按字段判断哪种能力可用。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_secrets: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -235,6 +240,10 @@ pub struct ProviderConfigField {
     pub label: String,
     pub field_type: String,
     pub secret: bool,
+    /// 这把密钥只解锁供应商的某一种能力（如火山引擎的语音与方舟大模型各用一把）；不填即全部能力。
+    /// 只给内置供应商用，由 `config_fields_for` 现算，不从插件清单读入。
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
 }
 
 pub(crate) fn is_sensitive_config_key(key: &str) -> bool {
@@ -297,18 +306,31 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                 label: "API Key".into(),
                 field_type: "password".into(),
                 secret: true,
+                capability: None,
             }],
-            "sdk:volcengine" => vec![ProviderConfigField {
-                key: "apiKey".into(),
-                label: "APP Key".into(),
-                field_type: "password".into(),
-                secret: true,
-            }],
+            // 语音识别和方舟大模型是火山引擎的两个控制台，各发一把密钥。
+            "sdk:volcengine" => vec![
+                ProviderConfigField {
+                    key: "apiKey".into(),
+                    label: "语音 API Key".into(),
+                    field_type: "password".into(),
+                    secret: true,
+                    capability: Some("asr".into()),
+                },
+                ProviderConfigField {
+                    key: VOLCENGINE_ARK_KEY_FIELD.into(),
+                    label: "方舟 API Key".into(),
+                    field_type: "password".into(),
+                    secret: true,
+                    capability: Some("llm".into()),
+                },
+            ],
             "llm:groq" => vec![ProviderConfigField {
                 key: "apiKey".into(),
                 label: "API Key".into(),
                 field_type: "password".into(),
                 secret: true,
+                capability: None,
             }],
             kind if kind.starts_with("llm:") => vec![
                 ProviderConfigField {
@@ -316,12 +338,14 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                     label: "API Key".into(),
                     field_type: "password".into(),
                     secret: true,
+                    capability: None,
                 },
                 ProviderConfigField {
                     key: "model".into(),
                     label: "模型".into(),
                     field_type: "text".into(),
                     secret: false,
+                    capability: None,
                 },
             ],
             _ if profile.auth_kind == "api-key" => vec![ProviderConfigField {
@@ -329,6 +353,7 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                 label: "API Key".into(),
                 field_type: "password".into(),
                 secret: true,
+                capability: None,
             }],
             _ => Vec::new(),
         }
@@ -342,6 +367,7 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
             label: "API Key".into(),
             field_type: "password".into(),
             secret: true,
+            capability: None,
         });
     }
     fields
@@ -416,7 +442,7 @@ pub fn volcengine_profile() -> ProviderProfile {
         kind: "sdk:volcengine".to_string(),
         display_name: "火山引擎".to_string(),
         auth_kind: "api-key".to_string(),
-        capabilities: vec!["asr".to_string()],
+        capabilities: vec!["asr".to_string(), "llm".to_string()],
         enabled: true,
         config: json!({}),
         config_fields: vec![],
@@ -595,12 +621,30 @@ pub fn llm_responses_endpoint(adapter: &str) -> Option<&'static str> {
 }
 
 /// 走 genai 直连时使用的大语言模型适配器。内置阿里云百炼的 Key 同时用于识别、翻译与对话，
-/// 不必再单独添加一个百炼大模型供应商。
+/// 内置火山引擎同时带方舟大模型，都不必再单独添加大模型供应商。
 pub fn llm_adapter(profile: &ProviderProfile) -> Option<&str> {
     match profile.kind.as_str() {
         "sdk:bailian" => Some("bailian"),
+        "sdk:volcengine" => Some("volcengine"),
         kind => kind.strip_prefix("llm:"),
     }
+}
+
+/// 大模型请求用的密钥字段：有专管大模型的密钥（如火山引擎的方舟密钥）就用它，否则是 `apiKey`。
+fn llm_key_field(profile: &ProviderProfile) -> Option<ProviderConfigField> {
+    config_fields_for(profile)
+        .into_iter()
+        .find(|field| field.secret && field.capability.as_deref() == Some("llm"))
+}
+
+pub fn llm_api_key_field(profile: &ProviderProfile) -> String {
+    llm_key_field(profile).map_or_else(|| "apiKey".to_string(), |field| field.key)
+}
+
+/// 缺少大模型密钥时的提示：「请先为 火山引擎 设置 方舟 API Key」。
+pub fn missing_llm_api_key_message(profile: &ProviderProfile) -> String {
+    let label = llm_key_field(profile).map_or_else(|| "API Key".to_string(), |field| field.label);
+    format!("请先为 {} 设置 {label}", profile.display_name)
 }
 
 pub fn llm_uses_responses(adapter: &str) -> bool {
@@ -1038,12 +1082,14 @@ mod tests {
                     label: "Client secret".into(),
                     field_type: "text".into(),
                     secret: false,
+                    capability: None,
                 },
                 ProviderConfigField {
                     key: "passwordValue".into(),
                     label: "Password".into(),
                     field_type: "password".into(),
                     secret: false,
+                    capability: None,
                 },
             ],
             actions: vec![],
@@ -1284,16 +1330,26 @@ mod tests {
     #[test]
     fn p0_asr_profiles_use_stable_ids_and_expected_credential_fields() {
         let settings = ProviderSettings::default();
-        for id in [VOLCENGINE_PROVIDER_ID, SILICONFLOW_PROVIDER_ID] {
-            let profile = find_profile(&settings, id).unwrap();
-            assert!(profile.capabilities.iter().any(|value| value == "asr"));
-            let fields = config_fields_for(profile);
-            assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].key, "apiKey");
-            assert!(fields[0].secret);
-        }
+        let siliconflow = find_profile(&settings, SILICONFLOW_PROVIDER_ID).unwrap();
+        assert!(siliconflow.capabilities.iter().any(|value| value == "asr"));
+        let fields = config_fields_for(siliconflow);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].key, "apiKey");
+        assert!(fields[0].secret);
+        // 火山引擎的语音与方舟大模型各用一把密钥。
         let volcengine = find_profile(&settings, VOLCENGINE_PROVIDER_ID).unwrap();
-        assert_eq!(config_fields_for(volcengine)[0].label, "APP Key");
+        assert_eq!(volcengine.capabilities, vec!["asr", "llm"]);
+        let fields = config_fields_for(volcengine)
+            .into_iter()
+            .map(|field| (field.key, field.capability, field.secret))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields,
+            vec![
+                ("apiKey".into(), Some("asr".into()), true),
+                (VOLCENGINE_ARK_KEY_FIELD.into(), Some("llm".into()), true),
+            ]
+        );
         let groq = find_profile(&settings, GROQ_LLM_PROVIDER_ID).unwrap();
         assert!(groq.capabilities.iter().any(|value| value == "llm"));
         assert!(groq.capabilities.iter().any(|value| value == "asr"));

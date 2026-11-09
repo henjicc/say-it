@@ -1411,6 +1411,7 @@ mod tests {
                     label: "Credential".into(),
                     field_type: field_type.into(),
                     secret: false,
+                    capability: None,
                 }],
                 actions: vec![],
             });

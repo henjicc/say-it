@@ -263,9 +263,9 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
     if model.is_empty() {
         return Err(format!("请先为 {} 设置模型", profile.display_name));
     }
-    let api_key = profile_value(profile, "apiKey").to_string();
+    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile)).to_string();
     if api_key.is_empty() {
-        return Err(format!("请先为 {} 设置 API Key", profile.display_name));
+        return Err(crate::providers::missing_llm_api_key_message(profile));
     }
 
     if adapter != "custom" && llm_uses_responses(adapter) {

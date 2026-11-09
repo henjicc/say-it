@@ -139,8 +139,8 @@ function AssistantModelRow({ action, label, prefs, save }: {
   const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selectedLlm)];
   const translationOptions = useOfferedTranslationOptions(prefs.translationModel);
   const selectedTranslation = translationOptions.find((item) => item.value === prefs.translationModel);
-  const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId);
-  const translationIssue = useUsageIssue(selectedTranslation?.providerId, prefs.translationModel === "none" || Boolean(selectedTranslation));
+  const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId, true, "llm");
+  const translationIssue = useUsageIssue(selectedTranslation?.providerId, prefs.translationModel === "none" || Boolean(selectedTranslation), "translation");
   const controlId = `assistant-${action}-model`;
   if (dedicated) {
     if (!editable) return <UsageLinkRow label={label} value={selectedTranslation?.label ?? "未启用"} message={translationIssue} />;

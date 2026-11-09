@@ -172,6 +172,22 @@ describe("llmModelPickerOptions", () => {
     expect(llmModelPickerOptions([profile], selected).map((option) => option.label)).toEqual(["Qwen3.7 Plus", "Qwen3.8 Flash", "Qwen3.8 Max"]);
     expect(llmModelPickerOptions([{ ...profile, status: { hasApiKey: false } }])).toEqual([]);
   });
+
+  it("火山引擎只填了语音密钥时，大模型不出现在下拉框里", () => {
+    const volcengine: ProviderProfile = {
+      id: "volcengine", kind: "sdk:volcengine", displayName: "火山引擎", authKind: "api-key",
+      capabilities: ["asr", "llm"], enabled: true,
+      configFields: [
+        { key: "apiKey", label: "语音 API Key", fieldType: "password", secret: true, capability: "asr" },
+        { key: "arkApiKey", label: "方舟 API Key", fieldType: "password", secret: true, capability: "llm" },
+      ],
+      status: { hasApiKey: true, configured: true, configuredSecrets: ["apiKey"] },
+      config: { models: [llmModel("doubao-seed-2-1-lite-260915", "remote")], modelVisibility: { "doubao-seed-2-1-lite-260915": true } },
+    };
+    expect(llmModelPickerOptions([volcengine])).toEqual([]);
+    const withArk = { ...volcengine, status: { ...volcengine.status, configuredSecrets: ["apiKey", "arkApiKey"] } };
+    expect(llmModelPickerOptions([withArk]).map((option) => option.value)).toEqual([JSON.stringify(["volcengine", "doubao-seed-2-1-lite-260915"])]);
+  });
 });
 
 describe("AddProviderModal", () => {

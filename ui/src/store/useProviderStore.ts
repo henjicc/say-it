@@ -6,6 +6,17 @@ export type ProviderCapability = "asr" | "llm" | "translation" | "customization"
 export interface ProviderStatus {
   hasApiKey?: boolean;
   configured?: boolean;
+  /** 已保存的密钥字段。 */
+  configuredSecrets?: string[];
+}
+
+export interface ProviderConfigField {
+  key: string;
+  label: string;
+  fieldType: string;
+  secret: boolean;
+  /** 这把密钥只解锁某一种能力（如火山引擎的语音与方舟大模型）；不填即全部能力。 */
+  capability?: ProviderCapability;
 }
 
 export interface ProviderProfile {
@@ -18,7 +29,7 @@ export interface ProviderProfile {
   keepLoaded?: boolean;
   isDefaultAsr?: boolean;
   effectiveCapabilities?: ProviderCapability[];
-  configFields?: { key: string; label: string; fieldType: string; secret: boolean }[];
+  configFields?: ProviderConfigField[];
   actions?: string[];
   status?: ProviderStatus;
   config?: Record<string, unknown>;

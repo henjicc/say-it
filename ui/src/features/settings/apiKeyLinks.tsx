@@ -23,7 +23,15 @@ export const ASR_API_KEY_URLS: Readonly<Record<string, string>> = {
   "llm-groq": API_KEY_URLS_BY_ADAPTER.groq,
 };
 
-export function providerApiKeyUrl(provider: { id: string; kind: string }): string | undefined {
+/** 内置供应商里有自己获取页的附加密钥字段（火山引擎的方舟密钥与语音密钥不在同一个控制台）。 */
+const FIELD_API_KEY_URLS: Readonly<Record<string, string>> = {
+  "volcengine.arkApiKey": API_KEY_URLS_BY_ADAPTER.volcengine,
+};
+
+/** 某个配置字段的密钥获取页：附加字段按字段查，其余只给第一个字段挂供应商的获取页。 */
+export function providerApiKeyUrl(provider: { id: string; kind: string }, fieldKey: string, index: number): string | undefined {
+  const fieldUrl = FIELD_API_KEY_URLS[`${provider.id}.${fieldKey}`];
+  if (fieldUrl || index > 0) return fieldUrl;
   if (provider.kind.startsWith("llm:")) {
     const adapter = provider.kind.slice("llm:".length) as keyof typeof API_KEY_URLS_BY_ADAPTER;
     return API_KEY_URLS_BY_ADAPTER[adapter];

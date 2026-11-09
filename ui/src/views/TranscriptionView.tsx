@@ -1,3 +1,4 @@
+import { providerReady } from "@/features/models/providerModels";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -117,7 +118,7 @@ export function TranscriptionView() {
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
-  const hasApiKey = !!asrProvider?.status?.hasApiKey;
+  const hasApiKey = Boolean(asrProvider && providerReady(asrProvider, "asr"));
   const running = stage === "uploading" || stage === "recognizing";
   const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile);
   const dragActive = useFileDrop(loadFileInfo, tab === "transcribe");
