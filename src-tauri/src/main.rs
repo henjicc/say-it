@@ -160,15 +160,13 @@ pub fn debug_log_enabled() -> bool {
     DEBUG_LOG.load(Ordering::Relaxed)
 }
 
-// 上下文和提示词可能包含用户正在编辑的内容，只允许开发构建输出到终端。
-// 发布构建完全移除实际日志输出，避免把这类数据写入用户机器日志。
-#[cfg(debug_assertions)]
+// 上下文和提示词可能包含用户正在编辑的内容，只在开发者模式下记录，
+// 避免把这类数据写进普通用户机器上的日志。
 pub(crate) fn development_debug_log(component: &str, message: impl std::fmt::Display) {
-    application::diagnostics::legacy_debug_log(component, &message.to_string());
+    if application::diagnostics::developer_mode() {
+        application::diagnostics::legacy_debug_log(component, &message.to_string());
+    }
 }
-
-#[cfg(not(debug_assertions))]
-pub(crate) fn development_debug_log(_component: &str, _message: impl std::fmt::Display) {}
 
 #[tauri::command]
 fn set_debug_log(enabled: bool) {
@@ -403,6 +401,23 @@ fn main() {
                 .unwrap_or(false);
             DEBUG_LOG.store(verbose_logging, Ordering::Relaxed);
             application::diagnostics::set_verbose(verbose_logging);
+            let diagnostics_prefs = app
+                .state::<RuntimeState>()
+                .app_settings
+                .lock()
+                .map_err(|_| std::io::Error::other("app settings lock failed"))?
+                .diagnostics_prefs
+                .clone();
+            // 开发者模式只是排障工具，准备失败不能挡住应用启动；开发者页会显示未开启。
+            if let Err(error) =
+                application::diagnostics::apply_developer_mode(app.handle(), &diagnostics_prefs)
+            {
+                application::diagnostics::event(
+                    "warn",
+                    "diagnostics.developerModeFailed",
+                    serde_json::json!({"detail":error}),
+                );
+            }
 
             application::history::initialize(&app.handle()).map_err(std::io::Error::other)?;
             application::plugin_management::initialize(&app.handle())?;
@@ -422,8 +437,6 @@ fn main() {
             }
             // OBS 接入是可选能力；本地端口被占用时不影响既有桌面字幕功能，状态会在前端显示。
             let _ = start_obs_overlay_server(&state);
-            #[cfg(debug_assertions)]
-            application::dev_trace::initialize(app.handle());
 
             hotkey::init(app.handle().clone());
             application::dictation::initialize(app.handle().clone());
@@ -764,27 +777,16 @@ fn main() {
             set_assistant_answer_pinned,
             close_assistant_answer,
             get_performance_metrics,
-            #[cfg(debug_assertions)]
             dev_show_indicator_notice,
-            #[cfg(debug_assertions)]
             dev_indicator_waveform,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_status,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_audio_recording,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_runs,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_run,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_stats,
-            #[cfg(debug_assertions)]
             application::dev_trace::dev_trace_smart_test,
-            #[cfg(debug_assertions)]
             application::dev_bench::dev_bench_models,
-            #[cfg(debug_assertions)]
             application::dev_bench::dev_bench_state,
-            #[cfg(debug_assertions)]
             application::dev_bench::dev_bench_run,
             #[cfg(debug_assertions)]
             application::dev_local_model::dev_local_compare,

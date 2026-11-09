@@ -8,6 +8,7 @@ import { contextDebugShortcutHint, contextDebugShortcutLabel } from "@/lib/platf
 import { useDictationStore } from "@/store/useDictationStore";
 import { toggleDictation, clearDictLog } from "@/features/dictation/controller";
 import { CMD, cmd } from "@/lib/tauri";
+import { useDeveloperStore } from "@/store/useDeveloperStore";
 
 const toneClass: Record<string, string> = {
   "": "text-[var(--color-fg-muted)]",
@@ -15,12 +16,13 @@ const toneClass: Record<string, string> = {
   err: "text-[var(--color-err)]",
 };
 
-/** 开发构建专用：当前软件上下文预览、手动听写与日志。 */
+/** 开发者模式：当前软件上下文预览、手动听写与日志。 */
 export function DictationDebugSection() {
   const { statusText, statusTone, latestText, log, recording } = useDictationStore();
   const [opening, setOpening] = useState(false);
   const [notice, setNotice] = useState("");
-  if (!import.meta.env.DEV) return null;
+  const developer = useDeveloperStore((s) => s.enabled);
+  if (!developer) return null;
 
   const openContextDebug = async () => {
     setOpening(true);

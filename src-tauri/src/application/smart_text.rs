@@ -104,7 +104,6 @@ pub(crate) const SYSTEM_PROMPT: &str = "你是桌面听写应用的文本处理�
 pub(crate) struct LlmOutput {
     pub(crate) output: String,
     pub(crate) reasoning: String,
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     pub(crate) usage: Option<Value>,
 }
 
@@ -443,7 +442,6 @@ async fn run_plugin_llm(
     let cancelled = Arc::new(CancellationFlag::new(false));
     let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("plugin-llm", move || {
-        #[cfg(debug_assertions)]
         let runtime_started = StdInstant::now();
         let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
             spec,
@@ -453,7 +451,6 @@ async fn run_plugin_llm(
             cancelled,
             None,
         )?;
-        #[cfg(debug_assertions)]
         trace_runtime_ready(runtime_started);
         let output = runtime.execute_llm(
             &capability.module_id,
@@ -508,7 +505,6 @@ where
     let task_request_id = request_id.clone();
     let mut task =
         crate::providers::plugin_runtime::spawn_js_worker("plugin-llm-stream", move || {
-            #[cfg(debug_assertions)]
             let runtime_started = StdInstant::now();
             let runtime = crate::providers::plugin_runtime::create_plugin_llm_runtime(
                 spec,
@@ -518,7 +514,6 @@ where
                 task_cancelled,
                 Some(event_tx),
             )?;
-            #[cfg(debug_assertions)]
             trace_runtime_ready(runtime_started);
             runtime.execute_llm(
                 &capability.module_id,
@@ -731,7 +726,6 @@ async fn run_groq_sdk(
     let cancelled = Arc::new(CancellationFlag::new(false));
     let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
-        #[cfg(debug_assertions)]
         let runtime_started = StdInstant::now();
         let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
             &profile,
@@ -741,7 +735,6 @@ async fn run_groq_sdk(
             cancelled,
             HashMap::new(),
         )?;
-        #[cfg(debug_assertions)]
         trace_runtime_ready(runtime_started);
         let output = runtime.run_groq(request, &request_id, false)?;
         Ok::<_, String>(LlmOutput::from_runtime(&output))
@@ -771,7 +764,6 @@ where
     let task_request_id = request_id.clone();
     let mut task =
         crate::providers::plugin_runtime::spawn_js_worker("builtin-llm-stream", move || {
-            #[cfg(debug_assertions)]
             let runtime_started = StdInstant::now();
             let runtime =
                 crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
@@ -783,7 +775,6 @@ where
                     HashMap::new(),
                     Some(event_tx),
                 )?;
-            #[cfg(debug_assertions)]
             trace_runtime_ready(runtime_started);
             runtime.run_groq(request, &task_request_id, true)
         })?;
@@ -965,7 +956,6 @@ pub(crate) fn build_smart_prompt(
     )?;
     let learning_context =
         crate::application::learning::build_context(state, text, active_app_name, provider_id);
-    #[cfg(debug_assertions)]
     let chars_before_learning = prompt.chars().count();
     if !learning_context.is_empty() {
         prompt.push_str("\n\n已确认的个性化学习上下文（仅在当前内容相关时采用，JSON）：\n");
@@ -988,7 +978,6 @@ pub(crate) fn build_smart_prompt(
         learning_context,
         text: prompt,
     };
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.promptBuilt",
         json!({
@@ -1090,7 +1079,6 @@ async fn process_prompt_with_profile(
                 profile_value(&profile, "model")
             ),
         );
-        #[cfg(debug_assertions)]
         let trace_settings = llm_trace_settings(&profile);
         let response = run_groq_sdk(state, profile, messages, request_id).await;
         let result = response
@@ -1098,7 +1086,6 @@ async fn process_prompt_with_profile(
             .map_err(Clone::clone)
             .and_then(|response| final_text_from_output(&response.output));
         log_prompt_completion(log_scope, started, &result);
-        #[cfg(debug_assertions)]
         trace_llm_call(
             trace_settings,
             log_scope,
@@ -1116,7 +1103,6 @@ async fn process_prompt_with_profile(
             json!({ "role": "system", "content": system_prompt }),
             json!({ "role": "user", "content": user_prompt }),
         ];
-        #[cfg(debug_assertions)]
         let trace_settings = llm_trace_settings(&profile);
         let response = run_plugin_llm(
             state,
@@ -1131,7 +1117,6 @@ async fn process_prompt_with_profile(
             .map_err(Clone::clone)
             .and_then(|response| final_text_from_output(&response.output));
         log_prompt_completion(log_scope, started, &result);
-        #[cfg(debug_assertions)]
         trace_llm_call(
             trace_settings,
             log_scope,
@@ -1172,7 +1157,6 @@ async fn process_prompt_with_profile(
         )
     };
     let request_timeout = request_timeout(&profile);
-    #[cfg(debug_assertions)]
     let trace_settings = llm_trace_settings_with_origin(&profile, &client, &model).await;
     let response = timeout(
         request_timeout,
@@ -1181,7 +1165,6 @@ async fn process_prompt_with_profile(
     .await
     .map_err(|_| format!("大语言模型处理超时（{} 秒）", request_timeout.as_secs()))
     .and_then(|result| result.map_err(|error| format!("大语言模型调用失败：{error}")));
-    #[cfg(debug_assertions)]
     if let Err(error) = &response {
         trace_llm_call(
             trace_settings.clone(),
@@ -1194,7 +1177,6 @@ async fn process_prompt_with_profile(
         );
     }
     let response = response?;
-    #[cfg(debug_assertions)]
     let trace_output = LlmOutput {
         output: String::new(),
         reasoning: response.reasoning_content.clone().unwrap_or_default(),
@@ -1205,7 +1187,6 @@ async fn process_prompt_with_profile(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "大语言模型没有返回文本".to_string());
-    #[cfg(debug_assertions)]
     if let Err(error) = &output {
         trace_llm_call(
             trace_settings.clone(),
@@ -1227,7 +1208,6 @@ async fn process_prompt_with_profile(
     );
     let result = final_text_from_output(output);
     log_prompt_completion(log_scope, started, &result);
-    #[cfg(debug_assertions)]
     trace_llm_call(
         trace_settings,
         log_scope,
@@ -1241,7 +1221,6 @@ async fn process_prompt_with_profile(
 }
 
 /// 开发追踪里这次请求实际生效的模型参数，判断「是不是设置导致慢」主要看这里。
-#[cfg(debug_assertions)]
 fn llm_trace_settings(profile: &ProviderProfile) -> Value {
     let model_name = profile_value(profile, "model");
     let model = llm_models_from_config(&profile.config)
@@ -1275,12 +1254,15 @@ fn llm_trace_settings(profile: &ProviderProfile) -> Value {
 }
 
 /// genai 直连的请求不经过宿主 HTTP，主机要从它解析出的目标地址拿，连接探测才有地方可连。
-#[cfg(debug_assertions)]
 async fn llm_trace_settings_with_origin(
     profile: &ProviderProfile,
     client: &Client,
     model: &str,
 ) -> Value {
+    // 解析请求地址要走一遍 genai 的服务解析，没开开发者模式时不做。
+    if !crate::application::diagnostics::developer_mode() {
+        return Value::Null;
+    }
     let mut settings = llm_trace_settings(profile);
     if let Ok(origin) = genai_origin(client, model).await {
         settings["origin"] = json!(origin);
@@ -1300,7 +1282,6 @@ async fn genai_origin(client: &Client, model: &str) -> Result<String, String> {
         .ascii_serialization())
 }
 
-#[cfg(debug_assertions)]
 fn trace_runtime_ready(started: StdInstant) {
     crate::application::dev_trace::mark(
         crate::application::dev_trace::RUNTIME_READY,
@@ -1308,7 +1289,6 @@ fn trace_runtime_ready(started: StdInstant) {
     );
 }
 
-#[cfg(debug_assertions)]
 pub(crate) fn llm_trace_settings_for(
     state: &RuntimeState,
     provider_id: Option<&str>,
@@ -1318,7 +1298,6 @@ pub(crate) fn llm_trace_settings_for(
     Ok(llm_trace_settings(&profile))
 }
 
-#[cfg(debug_assertions)]
 #[allow(clippy::too_many_arguments)]
 fn trace_llm_call(
     settings: Value,

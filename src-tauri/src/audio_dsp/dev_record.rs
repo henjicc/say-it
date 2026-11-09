@@ -1,5 +1,5 @@
-//! 开发构建专用：把每次识别会话的麦克风原始输入和处理后送去识别的 16k 音频存成 WAV，
-//! 用真实录音离线复现识别问题、对比处理参数。发布构建不编译。
+//! 开发者模式下可选：把每次识别会话的麦克风原始输入和处理后送去识别的 16k 音频存成 WAV，
+//! 用真实录音离线复现识别问题、对比处理参数。
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
@@ -8,22 +8,22 @@ use crate::audio_wav::{write_mono_pcm16, Quantization};
 
 /// 只保留最近这么多次会话（每次两个文件）。
 const KEEP_SESSIONS: usize = 40;
+/// 每次会话最多录这么长。字幕这类长会话也走同一条链路，录音全攒在内存里直到结束才写盘。
+const MAX_SECONDS: usize = 10 * 60;
 const ENABLED_MARKER: &str = "enabled";
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static LOAD: Once = Once::new();
 
 pub(crate) fn dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("src-tauri 一定有上级目录")
-        .join("工作区")
-        .join("dev-traces")
-        .join("audio")
+    crate::application::dev_trace::traces_dir().join("audio")
 }
 
-/// 开关存成目录里的标记文件，重启后仍然有效。
+/// 开关存成目录里的标记文件，重启后仍然有效；只在开发者模式下生效。
 pub(crate) fn enabled() -> bool {
+    if !crate::application::diagnostics::developer_mode() {
+        return false;
+    }
     LOAD.call_once(|| ENABLED.store(dir().join(ENABLED_MARKER).exists(), Ordering::Relaxed));
     ENABLED.load(Ordering::Relaxed)
 }
@@ -62,14 +62,17 @@ impl DevRecorder {
     }
 
     pub(crate) fn push_raw(&mut self, samples: &[f32]) {
-        self.raw.extend_from_slice(samples);
+        let room = (self.raw_rate as usize * MAX_SECONDS).saturating_sub(self.raw.len());
+        self.raw.extend_from_slice(&samples[..samples.len().min(room)]);
     }
 
     pub(crate) fn push_processed(&mut self, pcm16: &[u8]) {
+        let room = (super::OUTPUT_RATE as usize * MAX_SECONDS).saturating_sub(self.processed.len());
         self.processed.extend(
             pcm16
                 .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0),
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+                .take(room),
         );
     }
 }

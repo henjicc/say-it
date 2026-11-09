@@ -66,10 +66,10 @@ pub(crate) struct LocalCompareRequest {
 }
 
 fn workspace() -> PathBuf {
-    dev_trace::traces_dir()
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("追踪目录在工作区下")
-        .to_path_buf()
+        .expect("src-tauri 一定有上级目录")
+        .join("工作区")
 }
 
 fn scene_of(app_name: &str) -> &'static str {
@@ -415,12 +415,14 @@ pub(crate) async fn dev_local_compare(
     app: AppHandle,
     request: LocalCompareRequest,
 ) -> Result<Value, String> {
+    crate::application::diagnostics::require_developer_mode()?;
     compare(&app, request).await
 }
 
 /// 后台开始加载本地模型，立即返回；进度用 `dev_local_status` 查。
 #[tauri::command]
 pub(crate) fn dev_local_preload() -> Result<(), String> {
+    crate::application::diagnostics::require_developer_mode()?;
     let client = local_client().inspect_err(|error| {
         set_status(LoadStatus::Failed {
             error: error.clone(),

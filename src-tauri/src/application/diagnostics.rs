@@ -25,6 +25,7 @@ pub(crate) const DICTATION_REQUEST_FAILED: &str = "dictation.requestFailed";
 
 static LOGGER: OnceLock<DiagnosticLogger> = OnceLock::new();
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+static DEVELOPER_MODE: AtomicBool = AtomicBool::new(false);
 
 struct RollingFile {
     day: String,
@@ -193,6 +194,44 @@ pub(crate) fn verbose_enabled() -> bool {
     VERBOSE.load(Ordering::Relaxed)
 }
 
+/// 开发者模式：开发追踪、听写录音和本机开发者接口只在开启时工作。开发构建始终开启，
+/// 发布构建由用户在「关于」里连点图标打开（`diagnosticsPrefs.developerMode`）。
+pub(crate) fn developer_mode_requested(prefs: &Value) -> bool {
+    cfg!(debug_assertions) || prefs.get("developerMode").and_then(Value::as_bool) == Some(true)
+}
+
+/// 按设置打开或关闭开发者模式。打开前先准备好追踪目录和接口：开关一开就会有调用方写记录。
+pub(crate) fn apply_developer_mode(app: &AppHandle, prefs: &Value) -> Result<(), String> {
+    let enabled = developer_mode_requested(prefs);
+    if enabled {
+        super::dev_trace::initialize(app)?;
+    }
+    set_developer_mode(enabled);
+    Ok(())
+}
+
+/// 打开前须已 `dev_trace::initialize`。关闭时先关开关再丢弃未收尾的记录，
+/// 这之间开始的听写不会再建出没人收尾的新记录。
+pub(crate) fn set_developer_mode(enabled: bool) {
+    DEVELOPER_MODE.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        super::dev_trace::discard_active();
+    }
+}
+
+pub(crate) fn developer_mode() -> bool {
+    DEVELOPER_MODE.load(Ordering::Relaxed)
+}
+
+/// 开发者命令与接口的入口校验。
+pub(crate) fn require_developer_mode() -> Result<(), String> {
+    if developer_mode() {
+        Ok(())
+    } else {
+        Err("开发者模式未开启".into())
+    }
+}
+
 pub(crate) fn fingerprint(text: &str) -> String {
     let Some(logger) = LOGGER.get() else {
         return String::new();
@@ -210,8 +249,9 @@ pub(crate) fn fingerprint(text: &str) -> String {
 }
 
 pub(crate) fn event(level: &str, name: &str, metadata: Value) {
-    #[cfg(debug_assertions)]
-    super::dev_trace::on_event(name, &metadata);
+    if developer_mode() {
+        super::dev_trace::on_event(name, &metadata);
+    }
     if level == "debug" && !verbose_enabled() {
         return;
     }
@@ -233,8 +273,9 @@ pub(crate) fn event(level: &str, name: &str, metadata: Value) {
 }
 
 pub(crate) fn content_event(name: &str, content: Value) {
-    #[cfg(debug_assertions)]
-    super::dev_trace::on_content(name, &content);
+    if developer_mode() {
+        super::dev_trace::on_content(name, &content);
+    }
     let Some(logger) = LOGGER.get() else {
         return;
     };

@@ -12,7 +12,6 @@ use ebur128::{EbuR128, Mode};
 use nnnoiseless::DenoiseState;
 use serde::{Deserialize, Serialize};
 
-#[cfg(debug_assertions)]
 pub(crate) mod dev_record;
 #[cfg(test)]
 mod stream_reference;
@@ -418,7 +417,6 @@ pub struct StreamDsp {
     dry_delay: [f32; FRAME],
     decimator: Decimator3,
     peak_lin: f32,
-    #[cfg(debug_assertions)]
     dev_record: Option<dev_record::DevRecorder>,
 }
 
@@ -591,13 +589,11 @@ impl StreamDsp {
             dry_delay: [0.0; FRAME],
             decimator: Decimator3::new(),
             peak_lin,
-            #[cfg(debug_assertions)]
             dev_record: None,
         }
     }
 
-    /// 开发构建里开了「保存听写录音」时，记下这条识别链路的原始输入和处理结果。
-    #[cfg(debug_assertions)]
+    /// 开发者模式下开了「保存听写录音」时，记下这条识别链路的原始输入和处理结果。
     pub(crate) fn record_for_dev(&mut self) {
         if dev_record::enabled() {
             self.dev_record = Some(dev_record::DevRecorder::new(self.in_rate));
@@ -607,7 +603,6 @@ impl StreamDsp {
     /// 输入麦克风原始 f32，输出 16k PCM16；不足一帧留到下次调用，不补零。
     pub fn process(&mut self, input: &[f32]) -> Vec<u8> {
         let bytes = self.process_input(input);
-        #[cfg(debug_assertions)]
         if let Some(record) = self.dev_record.as_mut() {
             record.push_raw(input);
             record.push_processed(&bytes);
@@ -670,7 +665,6 @@ impl StreamDsp {
     /// 取消时不调用。重复结束不重复发送，结束后也不再接收音频。
     pub fn finish(&mut self) -> Vec<u8> {
         let bytes = self.finish_output();
-        #[cfg(debug_assertions)]
         if let Some(record) = self.dev_record.as_mut() {
             record.push_processed(&bytes);
         }

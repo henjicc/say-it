@@ -398,11 +398,11 @@ pub(crate) fn update_app_settings(
         }
     }
     if domain == "diagnostics"
-        && value
-            .get("verboseLogging")
-            .is_some_and(|enabled| !enabled.is_boolean())
+        && ["verboseLogging", "developerMode"]
+            .iter()
+            .any(|key| value.get(*key).is_some_and(|enabled| !enabled.is_boolean()))
     {
-        return Err("详细日志开关必须是布尔值".into());
+        return Err("诊断开关必须是布尔值".into());
     }
     let current = state
         .app_settings
@@ -410,6 +410,12 @@ pub(crate) fn update_app_settings(
         .map_err(|_| "应用配置锁失败")?
         .clone();
     let next = settings_with_domain_value(current, &domain, value)?;
+    // 开发者模式要先建好追踪目录；建不了就报错，不把打不开的开关存下来。
+    if domain == "diagnostics"
+        && crate::application::diagnostics::developer_mode_requested(&next.diagnostics_prefs)
+    {
+        crate::application::dev_trace::initialize(&app)?;
+    }
     // 模板目录和快捷键方案分属两份持久化设置。后端在同一保存路径清理孤立引用，
     // 即使调用方不是当前前端，也不会留下启动后才报错的快捷键方案。
     let previous_dictation = if domain == "dictation" {
@@ -437,6 +443,9 @@ pub(crate) fn update_app_settings(
                 .get("verboseLogging")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        );
+        crate::application::diagnostics::set_developer_mode(
+            crate::application::diagnostics::developer_mode_requested(&next.diagnostics_prefs),
         );
     }
     if domain == "history" {
@@ -473,7 +482,17 @@ fn settings_with_domain_value(
         "customization" => next.customization_prefs = value,
         "assistant" => next.assistant_prefs = value,
         "history" => next.history_prefs = value,
-        "diagnostics" => next.diagnostics_prefs = value,
+        // 诊断设置是几个互不相关的开关，按字段合并，改一个不会冲掉另一个。
+        "diagnostics" => {
+            let Value::Object(patch) = value else {
+                return Err("诊断设置必须是对象".into());
+            };
+            if !next.diagnostics_prefs.is_object() {
+                next.diagnostics_prefs = serde_json::json!({});
+            }
+            let prefs = next.diagnostics_prefs.as_object_mut().expect("诊断设置刚确保为对象");
+            prefs.extend(patch);
+        }
         "theme" => next.theme = value,
         _ => return Err(format!("未知配置领域：{domain}")),
     }
@@ -701,6 +720,21 @@ mod tests {
         assert_eq!(v.history_prefs["cloudLearningContextEnabled"], false);
         assert_eq!(v.history_prefs["learningMemoryRetentionDays"], 180);
         assert_eq!(v.diagnostics_prefs["verboseLogging"], false);
+    }
+    #[test]
+    fn diagnostics_update_merges_fields() {
+        let mut settings = AppSettings::default();
+        settings.diagnostics_prefs = serde_json::json!({"verboseLogging":true});
+        let next = settings_with_domain_value(
+            settings,
+            "diagnostics",
+            serde_json::json!({"developerMode":true}),
+        )
+        .unwrap();
+        assert_eq!(
+            next.diagnostics_prefs,
+            serde_json::json!({"verboseLogging":true,"developerMode":true})
+        );
     }
     #[test]
     fn legacy_debug_log_migrates_once_to_diagnostics() {

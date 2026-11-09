@@ -11,15 +11,10 @@ use crate::commands::common::*;
 use crate::prelude::*;
 use crate::state::*;
 
-/// 识别会话用的音频处理；开发构建里按开关保存这条链路的录音。
+/// 识别会话用的音频处理；开发者模式下按开关保存这条链路的录音。
 fn stream_dsp(params: Option<DspParams>, input_sample_rate: u32) -> StreamDsp {
-    let dsp = StreamDsp::new(params.unwrap_or_default(), input_sample_rate);
-    #[cfg(debug_assertions)]
-    let dsp = {
-        let mut dsp = dsp;
-        dsp.record_for_dev();
-        dsp
-    };
+    let mut dsp = StreamDsp::new(params.unwrap_or_default(), input_sample_rate);
+    dsp.record_for_dev();
     dsp
 }
 

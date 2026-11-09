@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
+import { updateDiagnosticsPrefs } from "@/store/useDeveloperStore";
 import { useAudioStore, type PlaybackTrack } from "@/store/useAudioStore";
 import { parseSubtitleSource, useSubtitleStore } from "@/store/useSubtitleStore";
 import { dspDefaults } from "@/lib/audio-dsp";
@@ -70,7 +71,7 @@ export function DiagnosticSection() {
   async function updateVerbose(enabled: boolean) {
     setVerboseLogging(enabled);
     try {
-      await cmd(CMD.updateAppSettings, { domain: "diagnostics", value: { verboseLogging: enabled } });
+      await updateDiagnosticsPrefs({ verboseLogging: enabled });
     } catch (error) {
       setVerboseLogging(!enabled);
       setMessage(String(error));
