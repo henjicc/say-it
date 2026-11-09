@@ -73,7 +73,7 @@ export function llmModelShownByDefault(profile: ProviderProfile, model: LlmModel
 
 export const llmModelValue = (providerId: string, model: string) => JSON.stringify([providerId, model]);
 
-function llmPrice(adapter: string, model: string) {
+export function llmPrice(adapter: string, model: string) {
   const pricing = sdkPricing()?.llm[adapter]?.[model];
   return pricing && tokenPrice(pricing);
 }

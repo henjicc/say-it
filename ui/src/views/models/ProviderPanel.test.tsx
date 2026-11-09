@@ -77,7 +77,10 @@ describe("ProviderPanel", () => {
     expect(screen.getByRole("switch", { name: "在用途中显示 qwen-long", hidden: true })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("未显示的模型（1）")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("switch", { name: "在用途中显示 Fun-ASR 实时（实时）" }));
+    // 识别方式不写进名称，作为名称右侧的标签显示。
+    expect(screen.getByText("Fun-ASR 实时")).toBeInTheDocument();
+    expect(screen.getByText("实时")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "在用途中显示 Fun-ASR 实时" }));
     await waitFor(() => expect(updateConfig).toHaveBeenCalledWith("bailian", {
       modelVisibility: { "fun-asr-realtime": false },
     }));
@@ -91,7 +94,7 @@ describe("ProviderPanel", () => {
     profiles = [bailian({}, false)];
     render(<ProviderPanel profile={profiles[0]} />);
 
-    expect(screen.getByRole("switch", { name: "在用途中显示 Fun-ASR 实时（实时）" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "在用途中显示 Fun-ASR 实时" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test" } });
     fireEvent.blur(screen.getByLabelText("API Key"));
     await waitFor(() => expect(updateConfig).toHaveBeenCalledWith("bailian", { apiKey: "sk-test" }));

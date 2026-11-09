@@ -57,7 +57,7 @@ export function useOfferedAsrOptions(options: readonly AsrModelOption[], selecte
  * 内置 Qwen-MT 的 SDK 能力模块 ID 为 `bailian.translation.<模型>`（SDK `BAILIAN_QWEN_MT_PRESETS` 的 moduleId），
  * 与运行时注册的翻译模块一致。
  */
-function translationPrice(model: string) {
+export function translationPrice(model: string) {
   const pricing = sdkPricing()?.capabilities[`bailian.translation.${model}`];
   return pricing?.billing === "tokens" ? tokenPrice(pricing) : undefined;
 }
