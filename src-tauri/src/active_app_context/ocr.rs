@@ -62,13 +62,71 @@ fn skip_reason(cancelled: &AtomicBool, deadline: Instant) -> Option<&'static str
     }
 }
 
-/// 排序、去重、截断——本地与插件 OCR 共用的收尾步骤，保证输出契约一致。
-fn finalize_blocks(mut blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
+/// 清理、排序、去重、截断——本地与插件 OCR 共用的收尾步骤，保证输出契约一致。
+fn finalize_blocks(blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
+    let mut blocks = keep_main_columns(blocks.into_iter().filter(is_meaningful).collect());
     sort_blocks_by_reading_order(&mut blocks);
     let mut seen = HashSet::new();
     blocks.retain(|block| seen.insert(block.text.to_lowercase()));
     blocks.truncate(MAX_BLOCKS);
     blocks
+}
+
+/// 文字框里有效字符（汉字、字母、数字）的个数。
+fn meaningful_chars(text: &str) -> usize {
+    text.chars().filter(|value| value.is_alphanumeric()).count()
+}
+
+/// 去掉按钮、图标被误认出的碎片和乱码：有效字符不到 3 个（纯数字除外），
+/// 或有效字符占比不到一半。
+fn is_meaningful(block: &OcrTextBlock) -> bool {
+    let text = block.text.trim();
+    let total = text.chars().filter(|value| !value.is_whitespace()).count();
+    let useful = meaningful_chars(text);
+    let numeric = useful > 0 && text.chars().all(|value| value.is_ascii_digit() || !value.is_alphanumeric());
+    (useful >= 3 || numeric) && useful * 2 >= total
+}
+
+/// 只保留正文所在的栏：横向有重叠的文字框归为同一栏，侧栏、目录、工具栏通常是独立的窄栏。
+/// 保留字数最多的栏，以及字数不少于它一半的栏（比如文档旁边的对话面板）。
+fn keep_main_columns(blocks: Vec<OcrTextBlock>) -> Vec<OcrTextBlock> {
+    if blocks.len() < 2 {
+        return blocks;
+    }
+    let mut column: Vec<usize> = (0..blocks.len()).collect();
+    fn root(column: &mut [usize], mut index: usize) -> usize {
+        while column[index] != index {
+            column[index] = column[column[index]];
+            index = column[index];
+        }
+        index
+    }
+    for left in 0..blocks.len() {
+        for right in left + 1..blocks.len() {
+            let (a, b) = (&blocks[left].bounds, &blocks[right].bounds);
+            let overlap = a.right.min(b.right) - a.left.max(b.left);
+            let narrower = (a.right - a.left).min(b.right - b.left);
+            // 重叠超过较窄一方的一半才算同一栏，避免两栏之间偶然擦边就连成一片。
+            if overlap > 0.0 && overlap * 2.0 >= narrower {
+                let (a, b) = (root(&mut column, left), root(&mut column, right));
+                column[a] = b;
+            }
+        }
+    }
+    let mut chars = std::collections::HashMap::<usize, usize>::new();
+    for index in 0..blocks.len() {
+        let key = root(&mut column, index);
+        *chars.entry(key).or_default() += meaningful_chars(&blocks[index].text);
+    }
+    let largest = chars.values().copied().max().unwrap_or(0);
+    let kept = (0..blocks.len())
+        .map(|index| chars[&root(&mut column, index)] * 2 >= largest)
+        .collect::<Vec<_>>();
+    blocks
+        .into_iter()
+        .zip(kept)
+        .filter_map(|(block, keep)| keep.then_some(block))
+        .collect()
 }
 
 fn sort_blocks_by_reading_order(blocks: &mut [OcrTextBlock]) {
@@ -435,6 +493,56 @@ mod tests {
                 bottom: top + 0.01,
             },
         }
+    }
+
+    fn wide(left: f32, right: f32, top: f32, text: &str) -> OcrTextBlock {
+        OcrTextBlock {
+            text: text.into(),
+            confidence: 1.0,
+            bounds: NormalizedRegion {
+                left,
+                top,
+                right,
+                bottom: top + 0.02,
+            },
+        }
+    }
+
+    /// 截图来自一个左侧会话列表、中间对话、右侧小面板的窗口：只留对话正文，
+    /// 并去掉图标误认出的碎片和乱码。
+    #[test]
+    fn cleanup_keeps_the_main_column_and_drops_fragments() {
+        let blocks = finalize_blocks(vec![
+            wide(0.02, 0.15, 0.10, "手机运行程序清理"),
+            wide(0.02, 0.12, 0.14, "GKD 开屏广告规则"),
+            wide(0.02, 0.05, 0.02, "三口"),
+            wide(0.30, 0.85, 0.10, "胶囊变慢的原因已经找到：听写把文字粘贴进输入框后，要等剪贴板恢复"),
+            wide(0.30, 0.80, 0.14, "现在改成准备粘贴前就让胶囊开始退场，退场动画和文字上屏同时发生"),
+            wide(0.30, 0.40, 0.18, "已运行 2 个命令"),
+            wide(0.32, 0.36, 0.22, "+新"),
+            wide(0.30, 0.34, 0.26, "目>…—·"),
+            wide(0.40, 0.42, 0.30, "2026"),
+            wide(0.88, 0.98, 0.10, "Free space"),
+        ]);
+        assert_eq!(
+            blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>(),
+            vec![
+                "胶囊变慢的原因已经找到：听写把文字粘贴进输入框后，要等剪贴板恢复",
+                "现在改成准备粘贴前就让胶囊开始退场，退场动画和文字上屏同时发生",
+                "已运行 2 个命令",
+                "2026",
+            ]
+        );
+    }
+
+    /// 两栏字数相当（如文档旁的对话面板）时都保留。
+    #[test]
+    fn cleanup_keeps_comparable_side_by_side_columns() {
+        let blocks = finalize_blocks(vec![
+            wide(0.05, 0.45, 0.10, "左侧文档的第一段正文内容"),
+            wide(0.55, 0.95, 0.10, "右侧对话里的一段回复"),
+        ]);
+        assert_eq!(blocks.len(), 2);
     }
 
     #[test]
