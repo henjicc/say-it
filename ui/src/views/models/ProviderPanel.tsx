@@ -12,7 +12,19 @@ import { RangeInput } from "@/components/ui/RangeInput";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { Switch } from "@/components/ui/Switch";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { asrModelDisplayLabel, asrModelMode, currentCatalog, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import {
+  asrModelBaseLabel,
+  asrModelMode,
+  asrModelModeLabel,
+  currentCatalog,
+  sdkPricing,
+  useModelCatalogRevision,
+  type AsrModelMode,
+} from "@/features/asr/modelRegistry";
+import { llmPrice } from "@/features/models/llmModelOptions";
+import { audioPrice, type ModelPrice } from "@/features/models/pricing";
+import { adapterOf } from "@/features/models/recommendedLlmModels";
+import { translationPrice } from "@/features/models/usage";
 import { ApiKeyLink, providerApiKeyUrl } from "@/features/settings/apiKeyLinks";
 import {
   llmModelShownByDefault,
@@ -180,6 +192,29 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
 interface CatalogModelRow {
   id: string;
   label: string;
+  mode?: AsrModelMode;
+  price?: ModelPrice;
+}
+
+/** 与模型选择面板一致：参考价和识别方式放在名称右侧，不写进名称。 */
+function ModelMeta({ price, mode }: { price?: ModelPrice; mode?: AsrModelMode }) {
+  return (
+    <>
+      {price && (
+        <span
+          className="text-xs tabular-nums text-[var(--color-fg-subtle)]"
+          aria-label={price.perMillionTokens ? `每百万 token 输入 / 输出 ${price.text}` : undefined}
+        >
+          {price.text}
+        </span>
+      )}
+      {mode && (
+        <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-fg-subtle)]">
+          {asrModelModeLabel(mode)}
+        </span>
+      )}
+    </>
+  );
 }
 
 /** 识别、翻译模型：每个模型一个开关，决定它是否出现在用途下拉框里。 */
@@ -196,6 +231,7 @@ function ModelSwitchGroup({ title, profile, models }: { title: string; profile: 
     <Group title={title}>
       {models.map((model) => (
         <Row key={model.id} label={model.label} disabled={!ready}>
+          <ModelMeta price={model.price} mode={model.mode} />
           <Switch
             checked={isModelVisible(profile, model.id, true)}
             disabled={!ready}
@@ -290,6 +326,7 @@ function LlmModelsGroup({ profile }: { profile: ProviderProfile }) {
         disabled={!ready}
         message={shown && model.availability === "missing" && <span className="text-[var(--color-warn)]">最新列表里没有这个模型，能否调用取决于供应商。</span>}
       >
+        <ModelMeta price={llmPrice(adapterOf(profile.kind), model.name)} />
         {userAdded && !isPlugin && (
           <IconButton size="sm" variant="dangerHover" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
             <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -488,9 +525,14 @@ export function ProviderPanel({ profile }: { profile: ProviderProfile }) {
   const catalog = currentCatalog().models.filter((model) => model.providerId === profile.id);
   const asrModels = catalog
     .filter((model) => asrModelMode(model))
-    .map((model) => ({ id: model.id, label: asrModelDisplayLabel(model) }));
+    .map((model) => ({
+      id: model.id,
+      label: asrModelBaseLabel(model),
+      mode: asrModelMode(model),
+      price: audioPrice(model.capabilityId ? sdkPricing()?.capabilities[model.capabilityId] : undefined),
+    }));
   const translationModels = [
-    ...(profile.id === TRANSLATION_PROVIDER_ID ? TRANSLATION_MODEL_OPTIONS.map((option) => ({ id: option.value, label: option.label })) : []),
+    ...(profile.id === TRANSLATION_PROVIDER_ID ? TRANSLATION_MODEL_OPTIONS.map((option) => ({ id: option.value, label: option.label, price: translationPrice(option.value) })) : []),
     ...catalog.filter((model) => model.category === "translation").map((model) => ({ id: model.id, label: model.label })),
   ];
   const removable = profile.kind.startsWith("llm:") && profile.id !== "llm-groq";
