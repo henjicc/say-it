@@ -86,7 +86,7 @@ describe("ProviderPanel", () => {
     render(<ProviderPanel profile={profiles[0]} />);
 
     expect(screen.getByLabelText("API Key")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /获取 API Key/ })).toHaveAttribute("href", expect.stringContaining("bailian.console.aliyun.com"));
+    expect(screen.getByRole("link", { name: "获取密钥：API Key" })).toHaveAttribute("href", expect.stringContaining("bailian.console.aliyun.com"));
     expect(screen.getByRole("switch", { name: "在用途中显示 Qwen3.8 Max" })).toHaveAttribute("aria-checked", "true");
     // 推荐模型即使来自远端列表也默认显示，并用规范的显示名；其余远端模型默认隐藏。
     expect(screen.getByRole("switch", { name: "在用途中显示 Qwen3.8 Flash" })).toHaveAttribute("aria-checked", "true");
