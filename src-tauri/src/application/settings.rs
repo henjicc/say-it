@@ -169,8 +169,33 @@ fn migrate_ocr_selection(prefs: &mut Value) {
     }
 }
 
+/// 已下架的识别模型选择换成对应的当前模型：听写、字幕的 asrModel 与模型对比的各格。
+fn migrate_superseded_asr_models(settings: &mut AppSettings) {
+    let current = |value: &mut Value| {
+        if let Some(model) = value.as_str() {
+            let next = crate::providers::registry::current_asr_model_id(model);
+            if next != model {
+                *value = Value::String(next.into());
+            }
+        }
+    };
+    for prefs in [&mut settings.dictation_prefs, &mut settings.subtitle_prefs] {
+        if let Some(model) = prefs.get_mut("asrModel") {
+            current(model);
+        }
+    }
+    if let Some(cells) = settings
+        .compare_prefs
+        .get_mut("cellModels")
+        .and_then(Value::as_array_mut)
+    {
+        cells.iter_mut().for_each(current);
+    }
+}
+
 pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
     migrate_ocr_selection(&mut settings.dictation_prefs);
+    migrate_superseded_asr_models(settings);
     if let Some(history) = settings.history_prefs.as_object_mut() {
         let legacy_learning = history
             .get("finalDraftLearningEnabled")
@@ -289,6 +314,7 @@ pub(crate) fn import_legacy_settings(
         }
     }
     migrate_ocr_selection(&mut current.dictation_prefs);
+    migrate_superseded_asr_models(&mut current);
     current.schema_version = SETTINGS_SCHEMA_VERSION;
     current.legacy_imported = true;
     save_settings_then_commit(&app, &state, current.clone())?;
@@ -598,6 +624,22 @@ mod tests {
         .unwrap();
         assert_eq!(next.dictation_prefs, expected);
         assert_eq!(next.compare_prefs["enabled"], true);
+    }
+
+    #[test]
+    fn loaded_settings_replace_superseded_asr_models() {
+        let mut settings = AppSettings::default();
+        settings.dictation_prefs = serde_json::json!({"asrModel":"qwen3-asr-flash"});
+        settings.subtitle_prefs = serde_json::json!({"asrModel":"fun-asr-realtime"});
+        settings.compare_prefs =
+            serde_json::json!({"cellModels":["qwen3-asr-flash-realtime", "fun-asr", ""]});
+        migrate_loaded_settings(&mut settings);
+        assert_eq!(settings.dictation_prefs["asrModel"], "qwen3-asr-flash-2026-02-10");
+        assert_eq!(settings.subtitle_prefs["asrModel"], "fun-asr-realtime-2026-02-28");
+        assert_eq!(
+            settings.compare_prefs["cellModels"],
+            serde_json::json!(["qwen3-asr-flash-realtime-2026-02-10", "fun-asr", ""])
+        );
     }
 
     #[test]

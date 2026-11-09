@@ -195,13 +195,28 @@ pub fn file_transcription_route(model: &str) -> FileTranscriptionRoute {
     }
 }
 
+/// 百炼同一模型只提供最新快照；旧设置里选中的稳定版 ID 读入时换成对应的最新快照。
+const SUPERSEDED_ASR_MODELS: &[(&str, &str)] = &[
+    ("fun-asr-realtime", "fun-asr-realtime-2026-02-28"),
+    ("qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2026-02-10"),
+    ("qwen3-asr-flash", "qwen3-asr-flash-2026-02-10"),
+];
+
+/// 已下架模型 ID 对应的当前模型；其他 ID 原样返回。
+pub fn current_asr_model_id(model: &str) -> &str {
+    SUPERSEDED_ASR_MODELS
+        .iter()
+        .find(|(old, _)| *old == model.trim())
+        .map_or(model, |(_, current)| current)
+}
+
 /// 获取默认的实时识别模型 ID。
 pub fn default_realtime_model() -> &'static str {
     REGISTRY
         .iter()
         .find(|info| info.is_default_realtime)
         .map(|info| info.id.as_str())
-        .unwrap_or("fun-asr-realtime")
+        .unwrap_or("fun-asr-realtime-2026-02-28")
 }
 
 /// 获取默认的文件识别模型 ID。
@@ -259,20 +274,20 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 15 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
-        assert_eq!(REGISTRY.len(), 21, "当前应有 21 个模型");
+        // 12 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
+        assert_eq!(REGISTRY.len(), 18, "当前应有 18 个模型");
     }
 
     #[test]
     fn test_realtime_family_in_table() {
         // 表内模型：fun-asr-realtime 走 DashscopeDuplex
         assert_eq!(
-            realtime_asr_family("fun-asr-realtime"),
+            realtime_asr_family("fun-asr-realtime-2026-02-28"),
             RealtimeAsrFamily::DashscopeDuplex
         );
         // 表内模型：qwen3-asr-flash-realtime 走 QwenRealtime
         assert_eq!(
-            realtime_asr_family("qwen3-asr-flash-realtime"),
+            realtime_asr_family("qwen3-asr-flash-realtime-2026-02-10"),
             RealtimeAsrFamily::QwenRealtime
         );
     }
@@ -294,9 +309,9 @@ mod tests {
     #[test]
     fn test_supports_vocabulary_in_table() {
         // 表内模型：fun-asr-realtime 支持热词
-        assert!(supports_vocabulary("fun-asr-realtime"));
+        assert!(supports_vocabulary("fun-asr-realtime-2026-02-28"));
         // 表内模型：qwen3-asr-flash-realtime 不支持热词
-        assert!(!supports_vocabulary("qwen3-asr-flash-realtime"));
+        assert!(!supports_vocabulary("qwen3-asr-flash-realtime-2026-02-10"));
     }
 
     #[test]
@@ -314,7 +329,7 @@ mod tests {
         // 表内声明支持上下文增强的模型
         assert!(supports_context("fun-asr-flash-2026-06-15"));
         // 表内未声明的模型按不支持处理
-        assert!(!supports_context("fun-asr-realtime"));
+        assert!(!supports_context("fun-asr-realtime-2026-02-28"));
         // 表外模型不做前缀兜底，一律不支持
         assert!(!supports_context("fun-asr-unknown"));
     }
@@ -333,7 +348,7 @@ mod tests {
         );
         // qwen3-asr-flash 走同步 Qwen
         assert_eq!(
-            file_transcription_route("qwen3-asr-flash"),
+            file_transcription_route("qwen3-asr-flash-2026-02-10"),
             FileTranscriptionRoute::SyncQwen
         );
         // qwen3-asr-flash-filetrans 走异步 OSS
@@ -371,9 +386,19 @@ mod tests {
         // fun-asr-flash-2026-06-15 支持对齐时间戳
         assert!(supports_alignment_timestamps("fun-asr-flash-2026-06-15"));
         // qwen3-asr-flash 不支持对齐时间戳（无 words 字段）
-        assert!(!supports_alignment_timestamps("qwen3-asr-flash"));
+        assert!(!supports_alignment_timestamps("qwen3-asr-flash-2026-02-10"));
         // 实时模型不支持对齐时间戳
-        assert!(!supports_alignment_timestamps("fun-asr-realtime"));
+        assert!(!supports_alignment_timestamps("fun-asr-realtime-2026-02-28"));
+    }
+
+    #[test]
+    fn superseded_stable_models_map_to_latest_snapshot() {
+        assert!(model_info("fun-asr-realtime").is_none());
+        assert_eq!(
+            current_asr_model_id("fun-asr-realtime"),
+            "fun-asr-realtime-2026-02-28"
+        );
+        assert_eq!(current_asr_model_id("fun-asr"), "fun-asr");
     }
 
     #[test]
@@ -387,9 +412,9 @@ mod tests {
     #[test]
     fn test_model_info() {
         // 表内模型能查到
-        let info = model_info("fun-asr-realtime");
+        let info = model_info("fun-asr-realtime-2026-02-28");
         assert!(info.is_some());
-        assert_eq!(info.unwrap().label, "Fun-ASR-Realtime 稳定版");
+        assert_eq!(info.unwrap().label, "Fun-ASR-Realtime");
         // 表外模型返回 None
         assert!(model_info("unknown-model").is_none());
     }
