@@ -1152,7 +1152,8 @@ async fn start_session(
             .await;
         });
     }
-    let active_app_context = if effective.smart_processing_enabled {
+    // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
+    let context_capture = if effective.smart_processing_enabled {
         prefs
             .smart_templates
             .iter()
@@ -1173,20 +1174,11 @@ async fn start_session(
                     &effective,
                     matches!(ocr_provider, crate::providers::capabilities::OcrProvider::Plugin { .. }),
                 );
-                state.active_app_context.begin_dictation_capture(
-                    target,
-                    prefs.active_app_context_blocked_apps.clone(),
-                    platform_context_method(prefs.active_app_context_extraction_method),
-                    ocr_provider,
-                    defer_ocr,
-                )
+                (target, ocr_provider, defer_ocr)
             })
     } else {
         None
     };
-    let active_app_context_cancellation = active_app_context
-        .as_ref()
-        .map(crate::active_app_context::DictationContextCaptureHandle::cancellation);
     let info = crate::providers::registry::model_info(&prefs.asr_model)
         .cloned()
         .or_else(|| {
@@ -1256,8 +1248,6 @@ async fn start_session(
             assistant_request,
             history_allowed,
             silence_streaming: false,
-            active_app_context,
-            active_app_context_cancellation,
             ..Session::default()
         };
     }
@@ -1318,6 +1308,25 @@ async fn start_session(
         play_floating_orb_cue(&app, "start", &prefs);
     } else {
         play_cue_async(app.clone(), "start", &prefs);
+    }
+    // 截图和 OCR 很吃 CPU，和麦克风、本地识别模型一起启动会把按下到开始录音拖慢一两百毫秒，
+    // 所以等录音、提示音都起来了再开始；截的仍是听写目标窗口。
+    if let Some((target, ocr_provider, defer_ocr)) = context_capture {
+        let handle = state.active_app_context.begin_dictation_capture(
+            target,
+            prefs.active_app_context_blocked_apps.clone(),
+            platform_context_method(prefs.active_app_context_extraction_method),
+            ocr_provider,
+            defer_ocr,
+        );
+        let cancellation = handle.cancellation();
+        match state.dictation_runtime.session.lock() {
+            Ok(mut session) if session.epoch == epoch => {
+                session.active_app_context = Some(handle);
+                session.active_app_context_cancellation = Some(cancellation);
+            }
+            _ => cancellation.cancel(),
+        }
     }
     publish_state(&app, None);
     Ok(())
