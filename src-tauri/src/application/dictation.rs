@@ -3953,34 +3953,68 @@ fn apply_rules(text: &str, prefs: &DictationPrefs, enabled: bool) -> Result<Stri
     }
     Ok(out.trim().to_string())
 }
+/// 合并一串连续标点，与前端 `normalizePunctuationCluster` 逐条对应：
+/// 有省略号时保留省略号并附上首个问号、感叹号；否则有问号、感叹号就只留它们；
+/// 都没有时留最强的那个（句号 > 分号、冒号 > 逗号、顿号），删掉语气词后
+/// 「。，」这类残留不能把句子边界降成逗号。
 fn normalize_punctuation(value: &str) -> String {
-    let compact = value.replace([' ', '\t'], "");
-    if compact.contains('…') {
-        let mut out = String::new();
-        if compact.contains("……") {
-            out.push_str("……")
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut rest = value;
+    while let Some(ch) = rest.chars().next() {
+        let len = if rest.starts_with("……") {
+            "……".len()
+        } else if rest.starts_with("...") {
+            3
         } else {
-            out.push('…')
+            ch.len_utf8()
+        };
+        if ch != ' ' && ch != '\t' {
+            tokens.push(&rest[..len]);
         }
-        if compact.contains('？') || compact.contains('?') {
-            out.push('？')
+        rest = &rest[len..];
+    }
+    if tokens.len() <= 1 {
+        return tokens.concat();
+    }
+    let is_ellipsis = |token: &str| token == "……" || token == "...";
+    let is_question = |token: &str| token == "？" || token == "?";
+    let is_exclamation = |token: &str| token == "！" || token == "!";
+    let has_ellipsis = tokens.iter().any(|token| is_ellipsis(token));
+    let mut out = String::new();
+    let (mut saw_question, mut saw_exclamation) = (false, false);
+    for token in &tokens {
+        if has_ellipsis && is_ellipsis(token) {
+            out.push_str(token);
+        } else if is_question(token) {
+            if !saw_question {
+                out.push_str(token);
+            }
+            saw_question = true;
+        } else if is_exclamation(token) {
+            if !saw_exclamation {
+                out.push_str(token);
+            }
+            saw_exclamation = true;
         }
-        if compact.contains('！') || compact.contains('!') {
-            out.push('！')
-        }
+    }
+    if has_ellipsis || !out.is_empty() {
         return out;
     }
-    if compact.contains('？') || compact.contains('?') {
-        let mut out = "？".to_string();
-        if compact.contains('！') || compact.contains('!') {
-            out.push('！')
+    let rank = |token: &str| match token {
+        "，" | "," | "、" => 1,
+        "；" | ";" | "：" | ":" => 2,
+        "。" | "．" | "." => 3,
+        _ => -1,
+    };
+    let mut winner = "";
+    let mut best = -1;
+    for token in tokens {
+        if rank(token) >= best {
+            winner = token;
+            best = rank(token);
         }
-        return out;
     }
-    if compact.contains('！') || compact.contains('!') {
-        return "！".into();
-    }
-    compact.chars().last().map(String::from).unwrap_or_default()
+    winner.to_string()
 }
 fn expand_replacement(replacement: &str, caps: &Captures<'_>, source: &str) -> String {
     let whole = caps.get(0).unwrap();
@@ -4377,6 +4411,14 @@ mod tests {
         let repatterned = punct_rule("，+", "、");
         assert!(!is_builtin_punctuation_merge_rule(&repatterned.local_rules[0]));
         assert_eq!(apply_rules("你好，，世界", &repatterned, true).unwrap(), "你好、世界");
+    }
+
+    /// 删掉语气词后留下的「。，」要合并成句号，不能把句子边界降成逗号。
+    #[test]
+    fn builtin_punctuation_merge_keeps_the_strongest_mark() {
+        let rule = punct_rule(&BUILTIN_PUNCTUATION_RULE.patterns[1], "$1");
+        assert_eq!(apply_rules("还不错。，其实", &rule, true).unwrap(), "还不错。其实");
+        assert_eq!(apply_rules("真的吗？。好", &rule, true).unwrap(), "真的吗？好");
     }
 
     /// 旧版内置 pattern 也必须被认成内置，否则老用户升级后行为会突变。

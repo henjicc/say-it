@@ -40,50 +40,94 @@ const PUNCT_PRIORITY = new Map<string, number>([
   ["．", 3],
   [".", 3],
 ]);
-const BUILTIN_PUNCT_RULE_SNAPSHOTS: Array<
-  Pick<LocalRule, "name" | "pattern" | "flags" | "replacement" | "note" | "mode">
-> = [
-  {
-    name: "合并连续重复标点",
-    pattern: LEGACY_DEDUPE_PUNCT_PATTERN,
-    flags: "g",
-    replacement: "$1",
-    note: undefined,
-    mode: undefined,
-  },
-  {
-    name: "合并连续标点",
-    pattern: ADJACENT_PUNCT_PATTERN,
-    flags: ADJACENT_PUNCT_FLAGS,
-    replacement: BUILTIN_PUNCT_REPLACEMENT,
-    note: BUILTIN_PUNCT_NOTE,
-    mode: undefined,
-  },
-];
+type PresetSnapshot = Pick<
+  LocalRule,
+  "enabled" | "name" | "pattern" | "flags" | "replacement" | "note" | "mode"
+>;
 
-// ---- 预置规则（保守默认：易误伤的项默认关闭）----
-// 顺序即执行顺序：先清理语气词/口头禅，再规范空格标点，最后补句末标点。
+// 内置规则的历代默认值。存量规则与某一版内容一致（说明用户没改过）时升级到当前预置；
+// 开关也与那一版默认一致时连开关一起跟随当前预置，否则保留用户自己的开关。
+const LEGACY_PRESETS: Record<string, PresetSnapshot[]> = {
+  "fillers-core": [
+    {
+      enabled: true,
+      name: "去语气词（嗯/呃/唉/哎…）",
+      pattern: "(?:嗯|呃|唉|呣|哎|噢|喔|唔|咦|嗯哼|呵呵)+",
+      flags: "g",
+      replacement: "",
+      note: "这些字几乎不构成正常词语，任意位置出现都按语气词删除。可在此自行增减。",
+      mode: undefined,
+    },
+  ],
+  "fillers-bound": [
+    {
+      enabled: false,
+      name: "去语气词（额/啊/哦，仅独立出现）",
+      pattern: "(?<=^|[\\s，。！？、；：])(?:额|啊|哦|哎)+(?=$|[\\s，。！？、；：])",
+      flags: "g",
+      replacement: "",
+      note: "额/啊/哦 常出现在正常词语里（如“额外”“好啊”），仅在被标点或空格包围、独立成词时才删，默认关闭。",
+      mode: undefined,
+    },
+  ],
+  "fillers-soft": [
+    {
+      enabled: false,
+      name: "去口头禅（句首：那个/这个/然后/就是说）",
+      pattern: "(?<=^|[。！？\\n])\\s*(?:那个|这个|然后|就是说|你知道吧|对吧)",
+      flags: "g",
+      replacement: "",
+      note: "这些词常有正常用法（“那个人”），仅在句首出现时删除，默认关闭，请按需开启。",
+      mode: undefined,
+    },
+  ],
+  "dedupe-punct": [
+    {
+      enabled: true,
+      name: "合并连续重复标点",
+      pattern: LEGACY_DEDUPE_PUNCT_PATTERN,
+      flags: "g",
+      replacement: "$1",
+      note: undefined,
+      mode: undefined,
+    },
+  ],
+  "end-strip-punct": [
+    {
+      enabled: true,
+      name: "删除句末标点",
+      pattern: "[。．.！!？?、，,；;：:…]+\\s*$",
+      flags: "g",
+      replacement: "",
+      note: "去掉结尾的句号 / 逗号等标点，适合注入到聊天框这类不想带句末标点的场景。",
+      mode: undefined,
+    },
+  ],
+};
+
+// ---- 预置规则（只在边界明确时删改；仍会误伤正常用法的项默认关闭）----
+// 顺序即执行顺序：先清理语气词/口头禅/口吃重复，再规范空格标点，最后处理句末标点。
 function presets(): LocalRule[] {
   return [
     {
       id: "fillers-core",
       enabled: true,
       builtin: true,
-      name: "去语气词（嗯/呃/唉/哎…）",
-      pattern: "(?:嗯|呃|唉|呣|哎|噢|喔|唔|咦|嗯哼|呵呵)+",
+      name: "去语气词（嗯/呃/唔）",
+      pattern: "(?:嗯哼|嗯|呃|呣|唔)+",
       flags: "g",
       replacement: "",
       note: "这些字几乎不构成正常词语，任意位置出现都按语气词删除。可在此自行增减。",
     },
     {
       id: "fillers-bound",
-      enabled: false,
+      enabled: true,
       builtin: true,
-      name: "去语气词（额/啊/哦，仅独立出现）",
-      pattern: "(?<=^|[\\s，。！？、；：])(?:额|啊|哦|哎)+(?=$|[\\s，。！？、；：])",
+      name: "去语气词（啊/哦/哎…，仅独立出现）",
+      pattern: "(?<=^|[\\s，。！？、；：])(?:额|啊|哦|哎|唉|噢|喔|咦)+(?=[\\s，。！？、；：]+[^\\s，。！？、；：])",
       flags: "g",
       replacement: "",
-      note: "额/啊/哦 常出现在正常词语里（如“额外”“好啊”），仅在被标点或空格包围、独立成词时才删，默认关闭。",
+      note: "这些字常出现在正常词语里（如“好啊”“哎呀”），只在被标点或空格隔开、独立成词且后面还有话时才删；单独回一句“哦。”会保留。",
     },
     {
       id: "fillers-en",
@@ -95,14 +139,25 @@ function presets(): LocalRule[] {
       replacement: "",
     },
     {
-      id: "fillers-soft",
-      enabled: false,
+      id: "dedupe-stutter",
+      enabled: true,
       builtin: true,
-      name: "去口头禅（句首：那个/这个/然后/就是说）",
-      pattern: "(?<=^|[。！？\\n])\\s*(?:那个|这个|然后|就是说|你知道吧|对吧)",
+      name: "去口吃重复（我我/这这个/然后然后）",
+      pattern:
+        "([我你他她它这那])\\1+(?=[\\u4e00-\\u9fa5])|(这个|那个|就是|然后|我们|现在|还是|比如说|比如|因为|所以|但是|如果|其实|可能|应该)\\2+",
+      flags: "g",
+      replacement: "$1$2",
+      note: "只合并代词和常见虚词紧挨着的重复；“看看”“研究研究”这类正常叠词，以及“相信我，我们”这种隔着标点的不动。",
+    },
+    {
+      id: "fillers-soft",
+      enabled: true,
+      builtin: true,
+      name: "去句首口头禅（然后/就是说/那个，）",
+      pattern: "(?<=^|[。！？\\n])[\\s，、]*(?:然后(?!呢?(?:[？?。]|$))(?:呢|的话|啊)?|就是说|那个(?=[，、])|这个(?=[，、]))",
       flags: "g",
       replacement: "",
-      note: "这些词常有正常用法（“那个人”），仅在句首出现时删除，默认关闭，请按需开启。",
+      note: "只删句首的“然后”“就是说”，以及后面紧跟逗号的“那个”“这个”；“这个可不行”“然后呢？”这类有实际意思的不动。",
     },
     {
       id: "start-strip-punct",
@@ -167,11 +222,11 @@ function presets(): LocalRule[] {
       id: "end-strip-punct",
       enabled: true,
       builtin: true,
-      name: "删除句末标点",
-      pattern: "[。．.！!？?、，,；;：:…]+\\s*$",
+      name: "删除句末标点（保留问号、感叹号）",
+      pattern: "[。．.、，,；;：:]+\\s*$",
       flags: "g",
       replacement: "",
-      note: "去掉结尾的句号 / 逗号等标点，适合注入到聊天框这类不想带句末标点的场景。",
+      note: "去掉结尾的句号、逗号等，问号、感叹号和省略号保留，适合发到聊天框这类不想带句号的场景。",
     },
   ];
 }
@@ -319,33 +374,30 @@ function isBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
   );
 }
 
-function shouldUpgradeBuiltinPunctuationMergeRule(rule: LocalRule): boolean {
+function matchesSnapshot(rule: LocalRule, snapshot: PresetSnapshot): boolean {
   return (
-    rule.id === BUILTIN_PUNCT_RULE_ID &&
-    rule.builtin === true &&
-    BUILTIN_PUNCT_RULE_SNAPSHOTS.some(
-      (snapshot) =>
-        rule.name === snapshot.name &&
-        rule.pattern === snapshot.pattern &&
-        rule.flags === snapshot.flags &&
-        rule.replacement === snapshot.replacement &&
-        rule.note === snapshot.note &&
-        rule.mode === snapshot.mode,
-    )
+    rule.name === snapshot.name &&
+    rule.pattern === snapshot.pattern &&
+    rule.flags === snapshot.flags &&
+    rule.replacement === snapshot.replacement &&
+    rule.note === snapshot.note &&
+    rule.mode === snapshot.mode
   );
 }
 
 function upgradeBuiltinRule(rule: LocalRule, preset: LocalRule): LocalRule {
-  if (!shouldUpgradeBuiltinPunctuationMergeRule(rule)) return { ...rule };
+  const snapshot = LEGACY_PRESETS[rule.id]?.find((item) => matchesSnapshot(rule, item));
+  if (!snapshot) return { ...rule };
   return {
     ...preset,
-    enabled: rule.enabled,
+    enabled: rule.enabled === snapshot.enabled ? preset.enabled : rule.enabled,
   };
 }
 
 /**
- * 升级合并：保留用户已存的规则（含其开关 / 编辑 / 顺序），把本次版本新增的内置预置补到末尾。
- * 不覆盖用户对已知内置规则的改动。
+ * 升级合并：保留用户已存的规则（含其开关 / 编辑 / 顺序），没改过的内置规则升级到当前预置。
+ * 新增的内置预置插到预置表里排在它前面的规则之后，而不是末尾：规则按顺序执行，
+ * 排在“删除句末标点”之后的清理规则会让结尾重新露出标点。
  */
 export function mergeLocalRules(stored: LocalRule[] | undefined): LocalRule[] {
   if (!Array.isArray(stored) || stored.length === 0) return defaultLocalRules();
@@ -360,9 +412,15 @@ export function mergeLocalRules(stored: LocalRule[] | undefined): LocalRule[] {
       return preset ? upgradeBuiltinRule(r, preset) : { ...r };
     });
   const known = new Set(merged.map((r) => r.id));
-  for (const preset of presetRules) {
-    if (!known.has(preset.id)) merged.push({ ...preset });
-  }
+  presetRules.forEach((preset, index) => {
+    if (known.has(preset.id)) return;
+    const earlier = new Set(presetRules.slice(0, index).map((p) => p.id));
+    let at = 0;
+    merged.forEach((r, i) => {
+      if (earlier.has(r.id)) at = i + 1;
+    });
+    merged.splice(at, 0, { ...preset });
+  });
   return merged;
 }
 
