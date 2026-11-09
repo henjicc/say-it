@@ -892,7 +892,10 @@ impl Indicator {
         let band_right = pill.right - DOT_MASK_INSET - 1.5;
         let phase = self.scan_t * SCAN_SPEED;
         let sweep = phase.sin() * 0.5 + 0.5;
-        let direction = if phase.cos() > 0.0 { 1.0 } else { -1.0 };
+        // 尾巴强度随速度变化：折返点速度为零、尾巴恰好消失，换到另一侧时不会闪。
+        let velocity = phase.cos();
+        let direction = velocity.signum();
+        let trail_strength = SCAN_TRAIL_STRENGTH * velocity.abs();
         for col in 0..cols {
             let x = start_x + col as f32 * DOT_STEP;
             let u = (x - band_left) / (band_right - band_left).max(1.0);
@@ -900,7 +903,7 @@ impl Indicator {
             let distance = (u - sweep).abs();
             let band = (-(distance * distance) / (2.0 * SCAN_BAND * SCAN_BAND)).exp();
             let trail = if behind > 0.0 {
-                (-behind * SCAN_TRAIL).exp() * SCAN_TRAIL_STRENGTH
+                (-behind * SCAN_TRAIL).exp() * trail_strength
             } else {
                 0.0
             };
@@ -1267,6 +1270,42 @@ mod tests {
                 assert!(distance + radius <= mask_r + 1e-3, "点越过了遮罩：{center:?}");
             }
         }
+    }
+
+    /// 亮带在两端折返时，相邻两帧的点阵几乎一样，不会因为尾巴换边而闪一下。
+    #[test]
+    fn scan_turnaround_is_continuous() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(
+            Command::SetState(IndicatorState::Processing),
+            &cx(now, &text),
+        );
+        settled(&mut model, now, &text);
+        let mut radii = |t: f32| {
+            model.scan_t = t;
+            let mut canvas = RecordingCanvas::new(144);
+            model.draw(&mut canvas, now);
+            canvas
+                .calls
+                .iter()
+                .filter_map(|call| match call {
+                    Draw::FillCircle(_, radius, _) => Some(*radius),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let turn = std::f32::consts::FRAC_PI_2 / SCAN_SPEED;
+        let before = radii(turn - 0.008);
+        let after = radii(turn + 0.008);
+        assert_eq!(before.len(), after.len());
+        let jump = before
+            .iter()
+            .zip(&after)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(jump < 0.05, "折返时点阵跳变：{jump}");
     }
 
     #[test]
