@@ -3,6 +3,7 @@ import { Row } from "@/components/ui/Group";
 import { Tabs } from "@/components/ui/Tabs";
 import { useProviderStore, type LlmReasoningEffort } from "@/store/useProviderStore";
 import { THINKING_OPTIONS, llmModelsFromProfile, thinkingLevel } from "./llmModelOptions";
+import { adapterOf } from "./recommendedLlmModels";
 import { useProviderConfigQueue } from "./providerConfigQueue";
 
 /**
@@ -13,7 +14,8 @@ export function LlmThinkingRow({ providerId, model }: { providerId: string; mode
   const queue = useProviderConfigQueue(providerId);
   const [error, setError] = useState("");
   const config = profile && llmModelsFromProfile(profile).find((item) => item.name === model);
-  if (!profile || !config) return null;
+  // 派欧云的思考不可配置，请求里不带思考字段。
+  if (!profile || !config || adapterOf(profile.kind) === "ppio") return null;
 
   const change = (reasoningEffort: LlmReasoningEffort) => {
     setError("");

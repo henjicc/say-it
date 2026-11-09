@@ -1,7 +1,7 @@
 use crate::commands::common::{provider_profile_for_execution, provider_settings_response};
 use crate::persistence::save_persisted_state;
 use crate::providers::{
-    llm_chat_endpoint, llm_models_from_config, llm_responses_endpoint, llm_uses_responses, normalize_llm_endpoint,
+    llm_default_endpoint, llm_models_from_config, normalize_llm_endpoint,
     normalize_settings, set_llm_models, LlmModelAvailability, LlmModelConfig, LlmModelSource,
     ProviderProfile, ProviderSettingsResponse,
 };
@@ -41,13 +41,15 @@ fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
         Some("openai") => Ok(AdapterKind::OpenAI),
         Some("anthropic") => Ok(AdapterKind::Anthropic),
         Some("gemini") => Ok(AdapterKind::Gemini),
-        Some("deepseek" | "volcengine" | "bailian") => Ok(AdapterKind::OpenAIResp),
         Some("kimi") => Ok(AdapterKind::Kimi),
         Some("bigmodel") => Ok(AdapterKind::BigModel),
         Some("mimo") => Ok(AdapterKind::Mimo),
         Some("minimax") => Ok(AdapterKind::MiniMax),
         Some("open_router") => Ok(AdapterKind::OpenRouter),
-        Some("custom" | "siliconflow") => Ok(AdapterKind::OpenAI),
+        // 只用于列模型：OpenAI 兼容的几家都在 {endpoint}models 列出，与对话走哪个协议无关。
+        Some("custom" | "siliconflow" | "ppio" | "deepseek" | "volcengine" | "bailian") => {
+            Ok(AdapterKind::OpenAI)
+        }
         Some(other) => Err(format!("不支持的大语言模型适配器：{other}")),
         None => Err("供应商不是大语言模型配置".to_string()),
     }
@@ -61,12 +63,9 @@ fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> 
     let auth = AuthData::from_single(api_key.to_string());
     let adapter = crate::providers::llm_adapter(profile)
         .ok_or_else(|| "供应商不是大语言模型配置".to_string())?;
-    if profile.kind == "llm:custom" || llm_uses_responses(adapter) || llm_chat_endpoint(adapter).is_some() {
+    if profile.kind == "llm:custom" || llm_default_endpoint(adapter).is_some() {
         let endpoint = match profile_value(profile, "endpoint") {
-            "" => llm_responses_endpoint(adapter)
-                .or_else(|| llm_chat_endpoint(adapter))
-                .unwrap_or("")
-                .to_string(),
+            "" => llm_default_endpoint(adapter).unwrap_or("").to_string(),
             endpoint => endpoint.to_string(),
         };
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
@@ -233,7 +232,7 @@ async fn fetch_model_names(
 /// 硅基流动的 /models 默认连识别、生图、向量模型一起返回，只取对话模型。
 async fn siliconflow_chat_model_names(profile: &ProviderProfile) -> Result<Vec<String>, String> {
     let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile));
-    let endpoint = crate::providers::llm_chat_endpoint("siliconflow").expect("硅基流动有固定接口地址");
+    let endpoint = llm_default_endpoint("siliconflow").expect("硅基流动有固定接口地址");
     let response = reqwest::Client::new()
         .get(format!("{endpoint}models"))
         .query(&[("sub_type", "chat")])
@@ -393,11 +392,11 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_uses_responses_adapter_and_v1_endpoint() {
+    fn deepseek_lists_models_on_its_v1_endpoint() {
         let mut profile = custom_profile("secret", "");
         profile.kind = "llm:deepseek".into();
         profile.display_name = "DeepSeek".into();
-        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAIResp);
+        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAI);
         let config = provider_config(&profile).unwrap();
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
@@ -406,11 +405,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_bailian_chats_through_bailian_responses_endpoint() {
+    fn builtin_bailian_lists_models_on_its_compatible_endpoint() {
         let mut profile = custom_profile("secret", "");
         profile.kind = "sdk:bailian".into();
         profile.display_name = "阿里云百炼".into();
-        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAIResp);
+        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAI);
         let config = provider_config(&profile).unwrap();
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
@@ -443,6 +442,18 @@ mod tests {
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
             Some("https://api.siliconflow.cn/v1/")
+        );
+    }
+
+    #[test]
+    fn ppio_chats_on_its_v1_endpoint() {
+        let mut profile = crate::providers::siliconflow_profile();
+        profile.kind = "llm:ppio".into();
+        profile.config = serde_json::json!({"apiKey": "ppio-key"});
+        let config = provider_config(&profile).unwrap();
+        assert_eq!(
+            config.endpoint.as_ref().map(Endpoint::base_url),
+            Some("https://api.ppio.com/openai/v1/")
         );
     }
 

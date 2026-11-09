@@ -609,15 +609,26 @@ pub fn normalize_llm_endpoint(endpoint: &str) -> String {
     }
 }
 
-/// 需要走 OpenAI Responses API、但不能复用 genai 默认端点的供应商。
-/// 端点只作为协议路由默认值；用户在自定义配置中填写的 endpoint 仍优先。
-pub fn llm_responses_endpoint(adapter: &str) -> Option<&'static str> {
+/// 走 OpenAI 兼容协议（Responses 或 Chat Completions）、不能复用 genai 默认端点的供应商。
+/// 用户在配置中填写的 endpoint 仍优先。
+pub fn llm_default_endpoint(adapter: &str) -> Option<&'static str> {
     match adapter {
         "volcengine" => Some("https://ark.cn-beijing.volces.com/api/v3/"),
         "deepseek" => Some("https://api.deepseek.com/v1/"),
         "bailian" => Some("https://dashscope.aliyuncs.com/compatible-mode/v1/"),
+        "siliconflow" => Some("https://api.siliconflow.cn/v1/"),
+        "ppio" => Some("https://api.ppio.com/openai/v1/"),
         _ => None,
     }
+}
+
+/// 只有 SDK 预设登记为 Responses 的模型才走 Responses API，其余在同一端点走 Chat Completions；
+/// 托管的第三方模型多数只支持 Chat。
+pub fn llm_uses_responses(adapter: &str, model: &str) -> bool {
+    llm_default_endpoint(adapter).is_some()
+        && crate::providers::sdk_runtime::SDK_LLM_RESPONSES_MODELS
+            .get(adapter)
+            .is_some_and(|models| models.iter().any(|item| item == model))
 }
 
 /// 走 genai 直连时使用的大语言模型适配器。内置阿里云百炼的 Key 同时用于识别、翻译与对话，
@@ -646,18 +657,6 @@ pub fn llm_api_key_field(profile: &ProviderProfile) -> String {
 pub fn missing_llm_api_key_message(profile: &ProviderProfile) -> String {
     let label = llm_key_field(profile).map_or_else(|| "API Key".to_string(), |field| field.label);
     format!("请先为 {} 设置 {label}", profile.display_name)
-}
-
-/// 走 OpenAI Chat Completions、但不能复用 genai 默认端点的内置供应商。
-pub fn llm_chat_endpoint(adapter: &str) -> Option<&'static str> {
-    match adapter {
-        "siliconflow" => Some("https://api.siliconflow.cn/v1/"),
-        _ => None,
-    }
-}
-
-pub fn llm_uses_responses(adapter: &str) -> bool {
-    llm_responses_endpoint(adapter).is_some()
 }
 
 fn normalize_llm_profile_config(profile: &mut ProviderProfile) {

@@ -80,7 +80,14 @@ const llmModules = await bundleSdkEntry({
   ],
 })
 
+const { LLM_PROVIDER_PRESETS } = await import('@henjicc/ai-sdk/llm')
 const pricing = await collectPricing()
+// 供应商预设里走 Responses API 的模型；不在表里的模型走 Chat Completions。
+const llmResponsesModels = Object.fromEntries(
+  LLM_PROVIDER_PRESETS
+    .filter(preset => preset.responsesModelIds)
+    .map(preset => [preset.providerId, preset.responsesModelIds])
+)
 
 const manifest = {
   sdk: {
@@ -112,6 +119,7 @@ const manifest = {
     bootstrap: describeFile(sdkBootstrapPath, 1),
   },
   pricing,
+  llmResponsesModels,
 }
 fs.writeFileSync(
   path.join(outputRoot, 'sayit-ai-sdk-manifest.json'),
@@ -206,7 +214,6 @@ async function collectPricing() {
       .filter(descriptor => descriptor.pricing)
       .map(descriptor => [descriptor.id, descriptor.pricing])
   )
-  const { LLM_PROVIDER_PRESETS } = await import('@henjicc/ai-sdk/llm')
   const llm = Object.fromEntries(
     LLM_PROVIDER_PRESETS
       .filter(preset => preset.modelPricing)

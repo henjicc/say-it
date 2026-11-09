@@ -38,6 +38,16 @@ pub static SDK_PRICING: std::sync::LazyLock<Value> = std::sync::LazyLock::new(||
     manifest["pricing"].take()
 });
 
+/// 构建时从 SDK 供应商预设导出的、走 Responses API 的模型，按供应商预设 ID。
+pub static SDK_LLM_RESPONSES_MODELS: std::sync::LazyLock<
+    std::collections::HashMap<String, Vec<String>>,
+> = std::sync::LazyLock::new(|| {
+    let mut manifest: Value =
+        serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
+    serde_json::from_value(manifest["llmResponsesModels"].take())
+        .expect("SDK 清单的 llmResponsesModels 是按供应商的模型列表")
+});
+
 pub trait HostRuntimeRecorder: Send + Sync {
     fn record(&self, event: Value);
 }

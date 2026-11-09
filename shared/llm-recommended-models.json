@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "adapters": {
     "deepseek": [
       { "id": "deepseek-flash", "label": "DeepSeek Flash" },
@@ -13,7 +13,13 @@
       { "id": "deepseek-v4-1-flash-261017", "label": "DeepSeek V4.1 Flash" },
       { "id": "deepseek-v4-pro-ga-260813", "label": "DeepSeek V4 Pro" },
       { "id": "kimi-k3-1-pro-261024", "label": "Kimi K3.1 Pro" },
-      { "id": "glm-5-3-flash-260828", "label": "GLM-5.3 Flash" }
+      { "id": "glm-5-3-flash-260828", "label": "GLM-5.3 Flash" },
+      { "id": "doubao-seed-2-0-lite-260428", "label": "Doubao Seed 2.0 Lite" },
+      { "id": "doubao-seed-2-0-mini-260428", "label": "Doubao Seed 2.0 Mini" },
+      { "id": "doubao-seed-character-260628", "label": "Doubao Seed Character" },
+      { "id": "deepseek-v4-1-flash-economy-261017", "label": "DeepSeek V4.1 Flash Economy" },
+      { "id": "deepseek-v4-flash-ga-260731", "label": "DeepSeek V4 Flash" },
+      { "id": "glm-5-2-260617", "label": "GLM-5.2" }
     ],
     "siliconflow": [
       { "id": "deepseek-ai/DeepSeek-V4-Flash", "label": "DeepSeek V4 Flash" },
@@ -21,7 +27,9 @@
       { "id": "deepseek-ai/DeepSeek-V4-Pro", "label": "DeepSeek V4 Pro" },
       { "id": "zai-org/GLM-5.3", "label": "GLM-5.3" },
       { "id": "zai-org/GLM-5.3-Flash", "label": "GLM-5.3 Flash" },
-      { "id": "Qwen/Qwen3.8-27B", "label": "Qwen3.8 27B" }
+      { "id": "Qwen/Qwen3.8-27B", "label": "Qwen3.8 27B" },
+      { "id": "zai-org/GLM-5.2", "label": "GLM-5.2" },
+      { "id": "moonshotai/Kimi-K2.7-Code", "label": "Kimi K2.7 Code" }
     ],
     "kimi": [
       { "id": "kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
@@ -50,7 +58,10 @@
       { "id": "deepseek-v4-pro-0813", "label": "DeepSeek V4 Pro" },
       { "id": "kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
       { "id": "glm-5.3", "label": "GLM-5.3" },
-      { "id": "MiniMax/MiniMax-M3.1-Flash", "label": "MiniMax M3.1 Flash" }
+      { "id": "MiniMax/MiniMax-M3.1-Flash", "label": "MiniMax M3.1 Flash" },
+      { "id": "kimi-k3", "label": "Kimi K3" },
+      { "id": "xiaomi/mimo-v2.6-pro-ultraspeed", "label": "MiMo V2.6 Pro UltraSpeed" },
+      { "id": "stepfun/step-5-preview", "label": "Step 5 Preview" }
     ],
     "groq": [
       { "id": "qwen/qwen3.8-27b", "label": "Qwen3.8 27B" },
@@ -62,6 +73,16 @@
       { "id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash" },
       { "id": "anthropic/claude-sonnet-5-5", "label": "Claude Sonnet 5.5" },
       { "id": "moonshotai/kimi-k3.1-pro", "label": "Kimi K3.1 Pro" }
+    ],
+    "ppio": [
+      { "id": "deepseek/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash" },
+      { "id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro" },
+      { "id": "moonshotai/kimi-k3.1-pro", "label": "Kimi K3.1 Pro" },
+      { "id": "moonshotai/kimi-k3", "label": "Kimi K3" },
+      { "id": "moonshotai/kimi-k2.6", "label": "Kimi K2.6" },
+      { "id": "zai-org/glm-5.3", "label": "GLM-5.3" },
+      { "id": "xiaomimimo/mimo-v2.6-pro", "label": "MiMo V2.6 Pro" },
+      { "id": "minimax/minimax-m3.1-flash", "label": "MiniMax M3.1 Flash" }
     ]
   }
 }

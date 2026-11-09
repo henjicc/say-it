@@ -1,5 +1,5 @@
 use crate::providers::{
-    default_provider_id, find_profile, llm_chat_endpoint, llm_models_from_config, llm_responses_endpoint,
+    default_provider_id, find_profile, llm_default_endpoint, llm_models_from_config,
     llm_uses_responses, normalize_llm_endpoint, ProviderProfile,
 };
 use crate::providers::shared_http::SharedHttpClient;
@@ -268,54 +268,28 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
         return Err(crate::providers::missing_llm_api_key_message(profile));
     }
 
-    if adapter != "custom" && llm_uses_responses(adapter) {
-        let endpoint = profile_value(profile, "endpoint");
-        let endpoint = if endpoint.is_empty() {
-            llm_responses_endpoint(adapter)
-                .ok_or_else(|| {
-                    format!("供应商 {} 未配置 Responses API 地址", profile.display_name)
-                })?
-                .to_string()
-        } else {
-            endpoint.to_string()
-        };
-        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(format!(
-                "{} 的 Responses API 接口地址无效",
-                profile.display_name
-            ));
-        }
-        let target_resolver = ServiceTargetResolver::from_resolver_fn(
-            move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
-                Ok(ServiceTarget {
-                    endpoint: Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
-                    auth: AuthData::from_single(api_key.clone()),
-                    model: ModelIden::new(AdapterKind::OpenAIResp, target.model.model_name),
-                })
-            },
-        );
-        return Ok((
-            genai_builder()
-                .with_service_target_resolver(target_resolver)
-                .build(),
-            format!("openai_resp::{model}"),
-        ));
-    }
-
-    if adapter == "custom" || llm_chat_endpoint(adapter).is_some() {
-        let endpoint = match profile_value(profile, "endpoint") {
-            "" => llm_chat_endpoint(adapter).unwrap_or("").to_string(),
+    let endpoint = match adapter {
+        "custom" => Some(profile_value(profile, "endpoint").to_string()),
+        adapter => llm_default_endpoint(adapter).map(|default| match profile_value(profile, "endpoint") {
+            "" => default.to_string(),
             endpoint => endpoint.to_string(),
-        };
+        }),
+    };
+    if let Some(endpoint) = endpoint {
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
             return Err(format!("{} 的接口地址无效", profile.display_name));
         }
+        let (kind, namespace) = if llm_uses_responses(adapter, model) {
+            (AdapterKind::OpenAIResp, "openai_resp")
+        } else {
+            (AdapterKind::OpenAI, "openai")
+        };
         let target_resolver = ServiceTargetResolver::from_resolver_fn(
             move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
                 Ok(ServiceTarget {
                     endpoint: Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
                     auth: AuthData::from_single(api_key.clone()),
-                    model: ModelIden::new(AdapterKind::OpenAI, target.model.model_name),
+                    model: ModelIden::new(kind, target.model.model_name),
                 })
             },
         );
@@ -323,7 +297,7 @@ fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), Strin
             genai_builder()
                 .with_service_target_resolver(target_resolver)
                 .build(),
-            format!("openai::{model}"),
+            format!("{namespace}::{model}"),
         ));
     }
 
@@ -604,18 +578,39 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
         }
         options = options.with_max_tokens(max_tokens);
     }
-    if crate::providers::llm_adapter(profile) == Some("siliconflow") {
-        // 硅基流动用 enable_thinking 开关思考（GLM 也能关）；reasoning_effort 只有少数模型接受，
-        // 且只有 high / max 两档，genai 编码出的 none / low 会被拒绝。
+    let adapter = crate::providers::llm_adapter(profile).unwrap_or_default();
+    let uses_responses = llm_uses_responses(adapter, model_name);
+    // Chat Completions 上各家的思考字段写法不同，genai 统一编码的 reasoning_effort（含 none）
+    // 会被拒绝；写法与 SDK 的 providerReasoningRequest 一致。
+    if !uses_responses {
         let enabled = model.reasoning_effort != "zero";
-        let mut body = serde_json::json!({ "enable_thinking": enabled });
-        if enabled && SILICONFLOW_EFFORT_MODELS.contains(&model_name.to_ascii_lowercase().as_str()) {
-            body["reasoning_effort"] = "high".into();
+        match adapter {
+            // 派欧云的思考不可配置，不发任何思考字段。
+            "ppio" => return Ok(options),
+            // reasoning_effort 只有少数模型接受，且只有 high / max 两档。
+            "siliconflow" => {
+                let mut body = serde_json::json!({ "enable_thinking": enabled });
+                if enabled && SILICONFLOW_EFFORT_MODELS.contains(&model_name.to_ascii_lowercase().as_str()) {
+                    body["reasoning_effort"] = "high".into();
+                }
+                return Ok(options.with_extra_body(body));
+            }
+            // 两家托管的 GLM、Kimi K3、MiniMax 关不掉思考，「关闭」同样按最低档。
+            "bailian" => {
+                let effective = effective_reasoning(&model.reasoning_effort, model_name);
+                return Ok(options.with_extra_body(serde_json::json!({ "enable_thinking": effective != "zero" })));
+            }
+            "volcengine" => {
+                let body = match effective_reasoning(&model.reasoning_effort, model_name) {
+                    "zero" => serde_json::json!({ "thinking": { "type": "disabled" } }),
+                    effort => serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": effort }),
+                };
+                return Ok(options.with_extra_body(body));
+            }
+            _ => {}
         }
-        return Ok(options.with_extra_body(body));
     }
     let is_deepseek = profile.kind == "llm:deepseek";
-    let uses_responses = crate::providers::llm_adapter(profile).is_some_and(llm_uses_responses);
     let reasoning = match effective_reasoning(&model.reasoning_effort, model_name) {
         // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
         // reasoning_effort="none"，但 DeepSeek V4 关闭思考必须使用 thinking.type=disabled。
@@ -835,9 +830,10 @@ where
     }
 }
 
+/// 联网搜索是 Responses API 的内置工具，只有走 Responses 的模型能用。
 fn supports_web_search(profile: &ProviderProfile) -> bool {
     crate::providers::llm_adapter(profile)
-        .is_some_and(|adapter| matches!(adapter, "volcengine" | "deepseek" | "bailian"))
+        .is_some_and(|adapter| llm_uses_responses(adapter, profile_value(profile, "model")))
 }
 
 /// 开始录音时先连上智能处理的服务器，TLS 握手和说话同时进行，松手后的请求直接复用这条连接。
@@ -1778,9 +1774,11 @@ mod tests {
     }
 
     #[test]
-    fn web_search_is_limited_to_responses_adapters_with_documented_support() {
-        assert!(supports_web_search(&llm_profile("llm:deepseek", "zero")));
-        assert!(supports_web_search(&llm_profile("llm:bailian", "zero")));
+    fn web_search_is_limited_to_models_on_the_responses_api() {
+        assert!(supports_web_search(&llm_model_profile("llm:deepseek", "zero", "deepseek-flash")));
+        assert!(supports_web_search(&llm_model_profile("llm:bailian", "zero", "qwen3.8-flash")));
+        // 百炼托管的第三方模型走 Chat Completions，没有联网搜索工具。
+        assert!(!supports_web_search(&llm_model_profile("llm:bailian", "zero", "stepfun/step-5-preview")));
         assert!(!supports_web_search(&llm_profile("llm:kimi", "zero")));
         assert!(!supports_web_search(&llm_profile("llm:custom", "zero")));
     }
@@ -1790,6 +1788,13 @@ mod tests {
         let mut profile = crate::providers::groq_llm_profile();
         profile.config["models"][0]["temperature"] = serde_json::json!(2.5);
         assert!(chat_options(&profile).unwrap_err().contains("0 到 2"));
+    }
+
+    fn llm_model_profile(kind: &str, reasoning_effort: &str, model: &str) -> ProviderProfile {
+        let mut profile = llm_profile(kind, reasoning_effort);
+        profile.config["model"] = model.into();
+        profile.config["models"][0]["name"] = model.into();
+        profile
     }
 
     fn llm_profile(kind: &str, reasoning_effort: &str) -> ProviderProfile {
@@ -1818,7 +1823,7 @@ mod tests {
     /// 测速的统一思考程度只改这次请求的配置副本，列表里没有的模型补一项。
     #[test]
     fn reasoning_override_applies_to_current_model_only() {
-        let mut profile = llm_profile("llm:bailian", "zero");
+        let mut profile = llm_profile("llm:openai", "zero");
         override_model_reasoning(&mut profile, "high");
         let options = chat_options(&profile).unwrap();
         assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::High)));
@@ -1833,11 +1838,13 @@ mod tests {
 
     #[test]
     fn always_thinking_models_send_the_lowest_level_when_thinking_is_off() {
-        let mut profile = llm_profile("llm:bailian", "zero");
-        profile.config["model"] = "MiniMax/MiniMax-M3.1-Flash".into();
-        profile.config["models"][0]["name"] = "MiniMax/MiniMax-M3.1-Flash".into();
-        let options = chat_options(&profile).unwrap();
-        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Low)));
+        let bailian = chat_options(&llm_model_profile("llm:bailian", "zero", "MiniMax/MiniMax-M3.1-Flash")).unwrap();
+        assert_eq!(bailian.extra_body, Some(serde_json::json!({ "enable_thinking": true })));
+        let volcengine = chat_options(&llm_model_profile("llm:volcengine", "zero", "glm-5-2-260617")).unwrap();
+        assert_eq!(
+            volcengine.extra_body,
+            Some(serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }))
+        );
 
         let mut kimi = llm_profile("llm:kimi", "zero");
         kimi.config["model"] = "kimi-k3.1-pro".into();
@@ -1853,8 +1860,8 @@ mod tests {
     /// 回归：百炼选「关闭」时曾发出 reasoning.effort="zero"，接口返回 400。
     #[test]
     fn responses_adapters_turn_thinking_off_with_effort_none() {
-        for kind in ["llm:bailian", "llm:volcengine"] {
-            let options = chat_options(&llm_profile(kind, "zero")).unwrap();
+        for (kind, model) in [("llm:bailian", "qwen3.8-flash"), ("llm:volcengine", "doubao-seed-evolving")] {
+            let options = chat_options(&llm_model_profile(kind, "zero", model)).unwrap();
             assert!(options.reasoning_effort.is_none(), "{kind}");
             assert_eq!(
                 options.extra_body,
@@ -1862,6 +1869,28 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    /// 百炼、火山托管的第三方模型走 Chat Completions，思考开关按各家 Chat 写法发送。
+    #[test]
+    fn chat_models_on_responses_providers_use_each_providers_chat_thinking_fields() {
+        let bailian = chat_options(&llm_model_profile("llm:bailian", "zero", "stepfun/step-5-preview")).unwrap();
+        assert!(bailian.reasoning_effort.is_none());
+        assert_eq!(bailian.extra_body, Some(serde_json::json!({ "enable_thinking": false })));
+
+        let volcengine = chat_options(&llm_model_profile("llm:volcengine", "low", "glm-5-2-260617")).unwrap();
+        assert!(volcengine.reasoning_effort.is_none());
+        assert_eq!(
+            volcengine.extra_body,
+            Some(serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }))
+        );
+    }
+
+    #[test]
+    fn ppio_sends_no_thinking_fields() {
+        let options = chat_options(&llm_profile("llm:ppio", "high")).unwrap();
+        assert!(options.reasoning_effort.is_none());
+        assert!(options.extra_body.is_none());
     }
 
     #[test]
