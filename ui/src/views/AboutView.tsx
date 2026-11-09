@@ -95,15 +95,16 @@ export function AboutDialog({
         <IconButton size="sm" variant="ghost" label="关闭" onClick={onClose} className="absolute top-3 right-3">
           <ClearIcon />
         </IconButton>
-        {/* 图标是可点的：连点打开开发者模式。源图四周留了约 10% 透明边，放大后裁掉，让圆角块铺满按钮。 */}
+        {/* 图标是可点的：连点打开开发者模式。源图（1024）四周各留 100 的透明边，按 1024/824 放大，
+            让圆角块正好铺满按钮；只用变换放大，不裁切，保留图标自身的圆角形状。 */}
         <button
           ref={iconRef}
           type="button"
           onClick={tapIcon}
           aria-label={`${appName} 图标`}
-          className="grid h-20 w-20 place-items-center overflow-hidden rounded-[22px] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
+          className="block h-20 w-20 rounded-[18px] p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] focus-visible:ring-offset-4 focus-visible:ring-offset-[var(--color-overlay)]"
         >
-          <img src={appIcon} alt="" draggable={false} className="h-[100px] w-[100px] max-w-none select-none" />
+          <img src={appIcon} alt="" draggable={false} className="pointer-events-none block h-20 w-20 max-w-none scale-[1.243] select-none" />
         </button>
 
         <h2 className="mt-4 text-xl font-semibold text-[var(--color-fg)]">{appName}</h2>
