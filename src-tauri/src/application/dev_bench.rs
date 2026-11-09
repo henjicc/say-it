@@ -1,4 +1,4 @@
-//! 开发构建专用的多模型测速：同一段提示词并发发给多个模型，比较首字耗时和每秒 token 数。
+//! 开发者模式的多模型测速：同一段提示词并发发给多个模型，比较首字耗时和每秒 token 数。
 
 use crate::application::dev_trace;
 use crate::application::smart_text;
@@ -584,16 +584,19 @@ async fn run_detached(app: &AppHandle, request: BenchRequest) -> Result<Value, S
 
 #[tauri::command(async)]
 pub(crate) fn dev_bench_models(state: tauri::State<'_, RuntimeState>) -> Result<Value, String> {
+    crate::application::diagnostics::require_developer_mode()?;
     list_models(state.inner())
 }
 
 #[tauri::command]
-pub(crate) fn dev_bench_state() -> Value {
-    current_state()
+pub(crate) fn dev_bench_state() -> Result<Value, String> {
+    crate::application::diagnostics::require_developer_mode()?;
+    Ok(current_state())
 }
 
 #[tauri::command]
 pub(crate) async fn dev_bench_run(app: AppHandle, request: BenchRequest) -> Result<Value, String> {
+    crate::application::diagnostics::require_developer_mode()?;
     run(&app, request).await
 }
 

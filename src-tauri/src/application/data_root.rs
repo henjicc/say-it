@@ -34,6 +34,8 @@ const MIGRATABLE_DIRS: &[&str] = &[
     "plugin-webviews",
     "cues",
     "models",
+    // 开发者模式的听写追踪与录音：含原文和提示词，重置数据时要一起清掉。
+    "dev-traces",
 ];
 
 pub(crate) const MIGRATION_EVENT: &str = "data-root-migration";

@@ -115,7 +115,6 @@ where
 }
 
 /// 开发追踪只记协议和主机：路径和查询串里可能有密钥。
-#[cfg(debug_assertions)]
 fn trace_origin(payload: &Value) -> Option<String> {
     let url = url::Url::parse(payload.get("url")?.as_str()?).ok()?;
     Some(url.origin().ascii_serialization())
@@ -388,19 +387,16 @@ struct HttpStreamState {
     response: reqwest::Response,
     pending: VecDeque<u8>,
     total_bytes: usize,
-    #[cfg(debug_assertions)]
     trace: Option<HttpStreamTrace>,
 }
 
 /// 开发追踪：响应头到达只说明服务端开始回了，整次请求要记到响应体读完或流被关闭。
-#[cfg(debug_assertions)]
 struct HttpStreamTrace {
     started: std::time::Instant,
     headers_ms: u64,
     origin: Option<String>,
 }
 
-#[cfg(debug_assertions)]
 impl HttpStreamTrace {
     fn finish(self) {
         crate::application::dev_trace::mark(
@@ -782,7 +778,6 @@ impl HostState {
     }
 
     fn http_request(&mut self, payload: Value) -> Result<Value, String> {
-        #[cfg(debug_assertions)]
         let (started, origin) = (std::time::Instant::now(), trace_origin(&payload));
         let response = self.open_http_response(payload)?;
         let cancelled = self.cancelled.clone();
@@ -812,7 +807,6 @@ impl HostState {
                 "bodyBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
             }))
         });
-        #[cfg(debug_assertions)]
         crate::application::dev_trace::mark(
             crate::application::dev_trace::HTTP_RESPONSE,
             json!({"ms":started.elapsed().as_millis() as u64,"origin":origin}),
@@ -821,13 +815,10 @@ impl HostState {
     }
 
     fn http_stream_open(&mut self, payload: Value) -> Result<Value, String> {
-        #[cfg(debug_assertions)]
         let (started, origin) = (std::time::Instant::now(), trace_origin(&payload));
         let response = self.open_http_response(payload)?;
-        #[cfg(debug_assertions)]
         let headers_ms = started.elapsed().as_millis() as u64;
         let result = self.register_http_response(response);
-        #[cfg(debug_assertions)]
         if let Some(state) = result["streamId"]
             .as_str()
             .and_then(|stream_id| self.http_streams.get_mut(stream_id))
@@ -855,7 +846,6 @@ impl HostState {
                 response,
                 pending: VecDeque::new(),
                 total_bytes: 0,
-                #[cfg(debug_assertions)]
                 trace: None,
             },
         );
@@ -887,7 +877,6 @@ impl HostState {
             })?;
             state = next_state;
             let Some(chunk) = chunk else {
-                #[cfg(debug_assertions)]
                 if let Some(trace) = state.trace.take() {
                     trace.finish();
                 }
@@ -911,12 +900,9 @@ impl HostState {
             .and_then(Value::as_str)
             .ok_or("关闭流缺少 streamId")?;
         let closed = self.http_streams.remove(stream_id);
-        #[cfg(debug_assertions)]
         if let Some(trace) = closed.and_then(|mut state| state.trace.take()) {
             trace.finish();
         }
-        #[cfg(not(debug_assertions))]
-        drop(closed);
         Ok(Value::Null)
     }
 

@@ -443,18 +443,17 @@ pub(crate) fn show_dictation_indicator_notice(
     show_dictation_indicator_error(app, message, false)
 }
 
-/// 开发构建专用的通知面板自检入口：直接从主窗口触发一条原生通知，
-/// 用于验证渲染与自动消失，release 中不存在此命令。
-#[cfg(debug_assertions)]
+/// 开发者模式的通知面板自检入口：直接从主窗口触发一条原生通知，用于验证渲染与自动消失。
 #[tauri::command]
 pub(crate) fn dev_show_indicator_notice(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    crate::application::diagnostics::require_developer_mode()?;
     show_dictation_indicator_notice(&app, text)
 }
 
-/// 开发构建专用的波形驱动入口：注入合成响度，验证波形/缩放动效。
-#[cfg(debug_assertions)]
+/// 开发者模式的波形驱动入口：注入合成响度，验证波形/缩放动效。
 #[tauri::command]
 pub(crate) fn dev_indicator_waveform(level: f32, fade: Option<bool>) -> Result<(), String> {
+    crate::application::diagnostics::require_developer_mode()?;
     let _ = fade;
     crate::desktop::native_indicator_set_waveform(level, vec![level; 6]);
     Ok(())

@@ -1,7 +1,7 @@
-//! 开发构建专用的运行追踪。
+//! 开发者模式下的运行追踪。
 //!
-//! 每次听写写成一条 JSON 记录，放在仓库已 gitignore 的 `工作区/dev-traces/`，开发者页面和
-//! 本地接口读的都是这份文件。记录里有听写原文和完整提示词，所以发布构建完全不编译本模块。
+//! 每次听写写成一条 JSON 记录，放在数据目录的 `dev-traces/`，开发者页面和本地接口读的都是
+//! 这份文件。记录里有听写原文和完整提示词，所以只在开发者模式开启时记录、开放接口。
 
 use crate::application::diagnostics;
 use crate::application::smart_text;
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
@@ -126,28 +126,33 @@ fn new_run(kind: &'static str) -> Run {
     }
 }
 
-pub(super) fn traces_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("src-tauri 一定有上级目录")
-        .join("工作区")
-        .join("dev-traces")
+static TRACES_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// 读写追踪的入口都在开发者模式开启后才会走到，而开启前一定先 `initialize` 过。
+pub(crate) fn traces_dir() -> PathBuf {
+    TRACES_DIR
+        .get()
+        .expect("开发者模式开启前已初始化追踪目录")
+        .clone()
 }
 
-pub(crate) fn initialize(app: &AppHandle) {
-    let directory = traces_dir();
-    let prepared = std::fs::create_dir_all(&directory)
-        .map_err(|error| error.to_string())
-        .and_then(|()| {
-            diagnostics::cleanup_files(&directory, "runs-", None, RETENTION, MAX_BYTES)
-        });
-    if let Err(error) = prepared {
-        eprintln!("[dev-trace] 准备追踪目录失败：{error}");
+/// 开发者模式开启时调用；同一进程里只做一次。
+pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
+    if TRACES_DIR.get().is_some() {
+        return Ok(());
     }
+    let directory = crate::application::data_root::data_subdir(app, "dev-traces")?;
+    if let Err(error) =
+        diagnostics::cleanup_files(&directory, "runs-", None, RETENTION, MAX_BYTES)
+    {
+        eprintln!("[dev-trace] 清理旧追踪失败：{error}");
+    }
+    let _ = TRACES_DIR.set(directory);
     start_api(app.clone());
+    Ok(())
 }
 
-/// `diagnostics::event` 的旁路：开发构建里所有事件都进当前运行的时间线，不受详细日志开关影响。
+/// `diagnostics::event` 的旁路：开发者模式下所有事件都进当前运行的时间线，不受详细日志开关影响。
 pub(super) fn on_event(name: &str, metadata: &Value) {
     if name == "dictation.sessionStarted" {
         begin_dictation();
@@ -177,6 +182,9 @@ pub(super) fn on_content(name: &str, content: &Value) {
 }
 
 pub(crate) fn mark(name: &str, data: Value) {
+    if !diagnostics::developer_mode() {
+        return;
+    }
     let Ok(mut active) = ACTIVE.lock() else {
         return;
     };
@@ -197,6 +205,9 @@ pub(crate) fn mark_sensitive() {
 }
 
 pub(crate) fn llm_call(mut call: Value) {
+    if !diagnostics::developer_mode() {
+        return;
+    }
     let Ok(mut active) = ACTIVE.lock() else {
         return;
     };
@@ -295,7 +306,17 @@ fn begin_dictation() {
     }
 }
 
+/// 关掉开发者模式时丢弃还没收尾的记录：之后不再有事件替它收尾，留着只会写进关闭期间的内容。
+pub(crate) fn discard_active() {
+    if let Ok(mut active) = ACTIVE.lock() {
+        *active = None;
+    }
+}
+
 fn finish(outcome: &str, error: Option<&str>) {
+    if !diagnostics::developer_mode() {
+        return;
+    }
     let run = ACTIVE
         .lock()
         .ok()
@@ -1086,16 +1107,18 @@ async fn run_stream_variant(state: &RuntimeState, input: &ReplayPrompt) -> Resul
 }
 
 #[tauri::command]
-pub(crate) fn dev_trace_status() -> Value {
-    json!({
+pub(crate) fn dev_trace_status() -> Result<Value, String> {
+    diagnostics::require_developer_mode()?;
+    Ok(json!({
         "tracesDir":traces_dir().display().to_string(),
         "apiUrl":format!("http://127.0.0.1:{API_PORT}"),
-    })
+    }))
 }
 
 /// 读写「保存听写录音」开关；`enabled` 不给时只读。
 #[tauri::command]
 pub(crate) fn dev_audio_recording(enabled: Option<bool>) -> Result<Value, String> {
+    diagnostics::require_developer_mode()?;
     if let Some(enabled) = enabled {
         crate::audio_dsp::dev_record::set_enabled(enabled)?;
     }
@@ -1108,17 +1131,20 @@ pub(crate) fn dev_audio_recording(enabled: Option<bool>) -> Result<Value, String
 // 读记录的命令都放到后台线程：同步命令跑在主线程上，页面轮询时读文件会干扰正在测量的听写。
 #[tauri::command(async)]
 pub(crate) fn dev_trace_runs(limit: Option<usize>) -> Result<Vec<Value>, String> {
+    diagnostics::require_developer_mode()?;
     read_records(&traces_dir(), limit.unwrap_or(DEFAULT_LIST_LIMIT))
         .map(|records| records.iter().map(summarize).collect())
 }
 
 #[tauri::command(async)]
 pub(crate) fn dev_trace_run(id: String) -> Result<Option<Value>, String> {
+    diagnostics::require_developer_mode()?;
     find_record(&traces_dir(), &id)
 }
 
 #[tauri::command(async)]
 pub(crate) fn dev_trace_stats(limit: Option<usize>) -> Result<Value, String> {
+    diagnostics::require_developer_mode()?;
     read_records(&traces_dir(), limit.unwrap_or(DEFAULT_LIST_LIMIT))
         .map(|records| compute_stats(&records))
 }
@@ -1128,6 +1154,7 @@ pub(crate) async fn dev_trace_smart_test(
     app: AppHandle,
     request: SmartTestRequest,
 ) -> Result<Value, String> {
+    diagnostics::require_developer_mode()?;
     smart_test(&app, request).await
 }
 
@@ -1279,14 +1306,17 @@ async fn api_bench_run(
     api_result(crate::application::dev_bench::run(&app, request).await)
 }
 
-async fn only_loopback_host(request: Request, next: Next) -> Response {
+async fn guard_request(request: Request, next: Next) -> Response {
     let host = request
         .headers()
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     let loopback = host == format!("127.0.0.1:{API_PORT}") || host == format!("localhost:{API_PORT}");
-    if loopback {
+    // 关掉开发者模式后接口仍在监听（关闭要等下次启动），但不再给任何数据。
+    if !diagnostics::developer_mode() {
+        StatusCode::NOT_FOUND.into_response()
+    } else if loopback {
         next.run(request).await
     } else {
         StatusCode::FORBIDDEN.into_response()
@@ -1315,7 +1345,7 @@ fn start_api(app: AppHandle) {
         .route("/smart-eval", post(api_smart_eval))
         .route("/models", get(api_models))
         .route("/model-bench", get(api_bench_state).post(api_bench_run))
-        .layer(middleware::from_fn(only_loopback_host))
+        .layer(middleware::from_fn(guard_request))
         .with_state(app);
     tauri::async_runtime::spawn(async move {
         // 和 OBS 字幕服务一样：setup 钩子是同步的，要进了 Tauri 运行时才能注册 Tokio 监听。

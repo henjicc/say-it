@@ -726,7 +726,6 @@ pub(crate) fn preview_dictation_cue(app: AppHandle, kind: String, which: String)
     Ok(())
 }
 
-#[cfg(debug_assertions)]
 fn current_prefs(state: &RuntimeState) -> Result<DictationPrefs, String> {
     serde_json::from_value(
         state
@@ -740,14 +739,12 @@ fn current_prefs(state: &RuntimeState) -> Result<DictationPrefs, String> {
 }
 
 /// 开发者页标出当前模型用：智能处理选的供应商和模型，模型为空表示用供应商配置里的模型。
-#[cfg(debug_assertions)]
 pub(crate) fn smart_llm_selection(state: &RuntimeState) -> Result<(String, String), String> {
     let prefs = current_prefs(state)?;
     Ok((prefs.smart_llm_provider_id, prefs.smart_llm_model))
 }
 
 /// 开发者对比测试用：当前生效的智能处理模板、供应商和模型。
-#[cfg(debug_assertions)]
 pub(crate) fn smart_test_defaults(state: &RuntimeState) -> Result<(String, String, String), String> {
     let prefs = current_prefs(state)?;
     let template = prefs
@@ -1302,7 +1299,6 @@ async fn start_session(
         "dictation.request_to_recording",
         start_requested_at.elapsed().as_millis() as u64,
     );
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark("trace.recordingReady", serde_json::json!({}));
     if trigger.is_floating_orb() {
         play_floating_orb_cue(&app, "start", &prefs);
@@ -2196,11 +2192,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
         )
     };
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
-    #[cfg(debug_assertions)]
     if !history_allowed {
         crate::application::dev_trace::mark_sensitive();
     }
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.asrFinal",
         serde_json::json!({
@@ -2318,7 +2312,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
         .await;
         return;
     }
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark("trace.historySaved", serde_json::json!({}));
     // 历史里保留识别原文，标点只加在交给后续处理和输出的文本上；
     // 是否做智能处理已在上面按原文字数判断。这次真会做智能处理时由大模型整理标点，不再先补。
@@ -2392,7 +2385,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         String::new()
     };
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.contextReady",
         serde_json::json!({"activeAppContextChars":active_app_context.chars().count()}),
@@ -2579,7 +2571,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
         text.clone()
     };
     let smart_applied = assistant_request.is_none() && should_process_smart_text && !smart_skipped;
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.smartDone",
         serde_json::json!({"smartTextChars":smart_processed.chars().count()}),
@@ -2627,7 +2618,6 @@ async fn finalize(app: AppHandle, epoch: u64) {
         }
     };
     let processed = learned.text;
-    #[cfg(debug_assertions)]
     crate::application::dev_trace::mark(
         "trace.rulesDone",
         serde_json::json!({
@@ -3244,7 +3234,6 @@ async fn fail_internal(
         if s.epoch != epoch || matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
             return Ok(());
         }
-        #[cfg(debug_assertions)]
         crate::application::dev_trace::finish_failed(&error);
         let history = failed_history_entry(
             &s,

@@ -37,7 +37,7 @@ const PRO_VIEWS: Record<ViewKey, React.ReactNode> = {
   lexicon: <LexiconPage />,
   history: <HistoryPage />,
   settings: <SettingsPage />,
-  developer: import.meta.env.DEV ? <DeveloperPage /> : null,
+  developer: <DeveloperPage />,
 };
 
 /** 简单模式只有这几页；停在专业模式独有的页面时，窄窗口先显示听写。 */

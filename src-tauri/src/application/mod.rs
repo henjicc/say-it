@@ -6,11 +6,9 @@ pub(crate) mod compare;
 pub(crate) mod contract;
 pub(crate) mod customization;
 pub(crate) mod data_root;
-#[cfg(debug_assertions)]
 pub(crate) mod dev_bench;
 #[cfg(debug_assertions)]
 pub(crate) mod dev_local_model;
-#[cfg(debug_assertions)]
 pub(crate) mod dev_trace;
 pub(crate) mod diagnostics;
 pub(crate) mod dictation;

@@ -262,7 +262,7 @@ function AudioRecordingRow() {
     <Group title="录音">
       <Row
         label="保存听写录音"
-        hint={`每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "工作区/dev-traces/audio"}`}
+        hint={`每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "数据目录的 dev-traces/audio"}`}
         message={error && <span role="alert" className="text-[var(--color-err)]">{error}</span>}
       >
         <Switch label="保存听写录音" checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
@@ -367,7 +367,7 @@ function SmartTestPanel({ onFinished }: { onFinished: () => void }) {
   );
 }
 
-/** 开发构建专用：查看每次听写的耗时记录，并对比测试智能处理。 */
+/** 开发者模式：查看每次听写的耗时记录，并对比测试智能处理。 */
 export function DeveloperPage() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [active, setActive] = useState<string>(OVERVIEW);
@@ -407,7 +407,8 @@ export function DeveloperPage() {
     { key: OVERVIEW, label: "统计", icon: <BarChart3 {...iconProps} /> },
     { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} /> },
     { key: BENCH, label: "模型测速", icon: <Gauge {...iconProps} /> },
-    { key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> },
+    // 本地模型对比依赖仓库工作区里的模型和 llama.cpp，只有开发构建有。
+    ...(import.meta.env.DEV ? [{ key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> }] : []),
     ...runs.map((run, index) => ({
       key: run.id,
       label: runLabel(run),

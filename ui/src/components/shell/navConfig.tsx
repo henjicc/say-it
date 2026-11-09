@@ -9,8 +9,14 @@ export interface NavItem {
 
 const iconProps = { className: "h-full w-full", strokeWidth: 1.6, "aria-hidden": true };
 
-/** 专业模式侧栏：按「功能 | 资源 | 记录」分组，设置单独放在底部。 */
-export const PRO_NAV_GROUPS: NavItem[][] = [
+/** 专业模式侧栏：按「功能 | 资源 | 记录」分组，设置单独放在底部；开发者模式下多一组开发者入口。 */
+export function proNavGroups(developer: boolean): NavItem[][] {
+  return developer ? [...PRO_NAV_GROUPS, [DEVELOPER_NAV]] : PRO_NAV_GROUPS;
+}
+
+const DEVELOPER_NAV: NavItem = { view: "developer", label: "开发者", icon: <Bug {...iconProps} /> };
+
+const PRO_NAV_GROUPS: NavItem[][] = [
   [
     { view: "dictation", label: "听写", icon: <Mic {...iconProps} /> },
     { view: "assistant", label: "助手", icon: <Sparkles {...iconProps} /> },
@@ -22,7 +28,6 @@ export const PRO_NAV_GROUPS: NavItem[][] = [
     { view: "lexicon", label: "词库", icon: <BookMarked {...iconProps} /> },
     { view: "history", label: "历史", icon: <History {...iconProps} /> },
   ],
-  ...(import.meta.env.DEV ? [[{ view: "developer" as const, label: "开发者", icon: <Bug {...iconProps} /> }]] : []),
 ];
 
 export const SETTINGS_NAV: NavItem = { view: "settings", label: "设置", icon: <SlidersHorizontal {...iconProps} /> };
