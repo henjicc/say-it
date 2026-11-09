@@ -715,6 +715,8 @@ pub(crate) fn preview_dictation_cue(app: AppHandle, kind: String, which: String)
     if which != "start" && which != "end" {
         return Err("未知提示音位置".into());
     }
+    // 输出流常驻时播放不再查默认设备，试听前先检查一次，换了设备也从新设备播出。
+    crate::desktop::warm_cue_output();
     if kind == "none" || crate::desktop::play_native_cue(&app, &kind, &which) {
         return Ok(());
     }
@@ -2689,6 +2691,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     #[cfg(not(feature = "performance-acceptance"))]
     let acceptance_delivery = false;
+    // 普通听写在粘贴前就收起胶囊，结束音跟着在那里发出，收尾处不再重复。
+    let mut end_cue_played = false;
     let injection_result = if acceptance_delivery || processed.is_empty() {
         Ok(())
     } else if trigger.is_floating_orb() {
@@ -2789,6 +2793,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     // 粘贴之后还要等剪贴板恢复、写历史，胶囊在这里就开始退场，和文字上屏同步；
                     // 粘贴失败时下面的剪贴板兜底会重新显示提示。
                     if !trigger.is_floating_orb() {
+                        play_cue_async(app.clone(), "end", &prefs);
+                        end_cue_played = true;
                         let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
                     }
                     let injection_result =
@@ -3041,13 +3047,16 @@ async fn finalize(app: AppHandle, epoch: u64) {
             );
         }
     } else {
+        // 结束音先发出，再收起胶囊：声音和胶囊消失同时被感知。
+        if !end_cue_played {
+            play_cue_async(app.clone(), "end", &prefs);
+        }
         if used_clipboard_fallback {
             let _ = crate::desktop::show_dictation_indicator_clipboard_fallback(&app);
             schedule_clipboard_fallback_hide(app.clone(), epoch);
         } else {
             let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
         }
-        play_cue_async(app.clone(), "end", &prefs);
     }
     publish_state_with_text(
         &app,
