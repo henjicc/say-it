@@ -245,6 +245,11 @@ pub(crate) fn capture(
     if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Ok(CaptureStatus::TimedOut);
     }
+    // 探针会按复制键读选中文字；上一次粘贴还没还原剪贴板时先等它，免得读到注入的文字。
+    crate::windows_native::wait_clipboard_restored();
+    if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+        return Ok(CaptureStatus::TimedOut);
+    }
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let request = ProbeRequest {
         protocol_version: 1,

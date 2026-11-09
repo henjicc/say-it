@@ -170,6 +170,8 @@ pub(crate) enum ClipboardDisposition {
 
 pub(crate) async fn write_clipboard_text_inner(text: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        crate::windows_native::wait_clipboard_restored();
         let mut clipboard =
             arboard::Clipboard::new().map_err(|error| format!("打开剪贴板失败：{error}"))?;
         clipboard
@@ -202,6 +204,8 @@ pub(crate) async fn inject_text_with_policy(
     dlog!("[inject] 开始注入：方式={method}，{char_count} 字");
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         if clipboard_disposition == ClipboardDisposition::KeepResult {
+            #[cfg(windows)]
+            crate::windows_native::wait_clipboard_restored();
             let mut clipboard =
                 arboard::Clipboard::new().map_err(|e| format!("打开剪贴板失败: {e}"))?;
             clipboard
