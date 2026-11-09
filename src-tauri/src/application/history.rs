@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{config::DbConfig, params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,11 +118,19 @@ fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub(crate) fn open_path(path: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(path).map_err(|error| format!("打开历史数据库失败：{error}"))?;
+    // 每次读写都开一条新连接；默认最后一条连接关闭时会把 WAL 合回主库并删掉它，下次写入再重建，
+    // 两步都要同步落盘，数据目录在机械硬盘上时一次写入约 140ms，卡在听写松手后的关键路径上。
+    // 关闭时不合并，WAL 照常在满 1000 页时由提交自动合并，合并后按 journal_size_limit 截短；
+    // 迁移前的 TRUNCATE checkpoint、迁移与重置都已连同 -wal / -shm 一起处理。
+    connection
+        .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .map_err(|error| format!("配置历史数据库失败：{error}"))?;
     connection
         .execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
              PRAGMA synchronous=NORMAL;
+             PRAGMA journal_size_limit=4194304;
              PRAGMA busy_timeout=3000;
              CREATE TABLE IF NOT EXISTS history_entries (
                id TEXT PRIMARY KEY,
@@ -1426,6 +1434,27 @@ mod tests {
         let prefs = serde_json::json!({"enabled": true, "excludedApps": ["NOTEPAD.EXE"]});
         assert!(!history_recording_allowed(&prefs, "Notepad", "notepad.exe"));
         assert!(history_recording_allowed(&prefs, "Editor", "editor.exe"));
+    }
+
+    /// 最后一条连接关闭时不把 WAL 合回主库：机械硬盘上这一步要上百毫秒，卡在听写松手之后。
+    #[test]
+    fn closing_the_last_connection_keeps_the_wal_instead_of_checkpointing() {
+        let path = std::env::temp_dir().join(format!("sayit-history-wal-{}.sqlite3", Uuid::new_v4()));
+        let connection = open_path(&path).unwrap();
+        connection
+            .execute("INSERT INTO usage_totals (id, successful_actions) VALUES (1, 1)", [])
+            .unwrap();
+        drop(connection);
+        let wal = PathBuf::from(format!("{}-wal", path.display()));
+        assert!(std::fs::metadata(&wal).is_ok_and(|meta| meta.len() > 0));
+        let count: i64 = open_path(&path)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM usage_totals", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
     }
 
     #[test]
