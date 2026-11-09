@@ -8,6 +8,7 @@ import {
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
 import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
+import { ModelPicker } from "@/features/models/ModelPicker";
 import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
@@ -26,15 +27,15 @@ export function SubtitleTranslationModelRow() {
   if (!editable) return <UsageLinkRow label="翻译模型" value={selected?.label ?? "不翻译"} message={issue} />;
   return (
     <Row label="翻译模型" hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>
-      <Select
-        className={ROW_CONTROL_W}
-        aria-label="翻译模型"
-        value={translationModel}
-        onChange={(event) => void setTranslationModel(event.target.value)}
-      >
-        <option value={TRANSLATION_MODEL_NONE}>无（不翻译）</option>
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </Select>
+      <div className={ROW_CONTROL_W}>
+        <ModelPicker
+          aria-label="翻译模型"
+          value={translationModel}
+          options={[{ value: TRANSLATION_MODEL_NONE, label: "无（不翻译）", providerId: "none", providerLabel: "不翻译" }, ...options]}
+          panelLabel="选择翻译模型"
+          onChange={(value) => void setTranslationModel(value)}
+        />
+      </div>
     </Row>
   );
 }
