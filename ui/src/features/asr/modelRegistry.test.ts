@@ -64,17 +64,17 @@ describe("ASR model labels", () => {
     }]);
   });
 
-  it("marks every ASR option as realtime or non-realtime", () => {
+  it("marks every ASR option as realtime or non-realtime outside its name", () => {
     const options = [
       ...optionsForScene("dictationRealtime"),
       ...optionsForScene("dictationFile"),
     ];
     expect(options.length).toBeGreaterThan(0);
-    expect(options.every((option) => /（(?:实时|非实时)）$/u.test(option.label))).toBe(true);
+    expect(options.every((option) => option.mode && !/[（(](?:实时|非实时)[）)]/u.test(option.label))).toBe(true);
     expect(options.find((option) => option.value === "apple-speech-transcriber-live")?.label)
-      .toBe("Apple 系统本地识别（实时）");
+      .toBe("Apple 系统本地识别");
     expect(options.find((option) => option.value === "seedasr-2.0-realtime")?.label)
-      .toBe("火山引擎 SeedASR 2.0（实时）");
+      .toBe("火山引擎 SeedASR 2.0");
     expect(options.filter((option) => option.filterProviderId === "local").map((option) => option.value))
       .toEqual(["apple-speech-transcriber-live", "local-plugin-fixture"]);
     expect(options.filter((option) => option.filterProviderId === "local").every((option) => option.filterProviderLabel === "本地"))

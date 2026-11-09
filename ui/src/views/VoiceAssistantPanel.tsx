@@ -146,10 +146,15 @@ function AssistantModelRow({ action, label, prefs, save }: {
     if (!editable) return <UsageLinkRow label={label} value={selectedTranslation?.label ?? "未启用"} message={translationIssue} />;
     return (
       <Row label={label} message={translationIssue}>
-        <Select className={ROW_CONTROL_W} aria-label={label} value={prefs.translationModel} onChange={(event) => void save({ ...prefs, translationModel: event.target.value })}>
-          <option value="none">无（暂不启用）</option>
-          {translationOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-        </Select>
+        <div className={ROW_CONTROL_W}>
+          <ModelPicker
+            aria-label={label}
+            value={prefs.translationModel}
+            options={[{ value: "none", label: "无（暂不启用）", providerId: "none", providerLabel: "不启用" }, ...translationOptions]}
+            panelLabel="选择翻译模型"
+            onChange={(value) => void save({ ...prefs, translationModel: value })}
+          />
+        </div>
       </Row>
     );
   }

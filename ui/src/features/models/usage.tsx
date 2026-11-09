@@ -5,6 +5,7 @@ import { optionsForScene, useModelCatalogRevision, type AsrModelOption } from "@
 import { TRANSLATION_MODEL_OPTIONS, TRANSLATION_PROVIDER_ID } from "@/features/translation/models";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
+import type { ModelPickerOption } from "./ModelPicker";
 import { isManagedProvider, isModelOffered, providerReady } from "./providerModels";
 
 /**
@@ -52,11 +53,12 @@ export function useOfferedAsrOptions(options: readonly AsrModelOption[], selecte
 }
 
 /** 专用翻译模型：内置 Qwen-MT 加插件提供的翻译模型，按供应商密钥与显示开关过滤，当前选中的始终保留。 */
-export function useOfferedTranslationOptions(selected: string): { value: string; label: string; providerId: string }[] {
+export function useOfferedTranslationOptions(selected: string): Array<ModelPickerOption & { providerId: string }> {
   useModelCatalogRevision();
   const profiles = useProviderStore((state) => state.profiles);
+  const providerLabel = profiles.find((profile) => profile.id === TRANSLATION_PROVIDER_ID)?.displayName;
   return [
-    ...TRANSLATION_MODEL_OPTIONS.map((option) => ({ ...option, providerId: TRANSLATION_PROVIDER_ID })),
+    ...TRANSLATION_MODEL_OPTIONS.map(({ value, label }) => ({ value, label, providerId: TRANSLATION_PROVIDER_ID, providerLabel })),
     ...optionsForScene("subtitleTranslation"),
   ].filter((option) => option.value === selected
     || isModelOffered(profiles.find((profile) => profile.id === option.providerId), option.value, true));

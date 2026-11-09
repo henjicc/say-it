@@ -72,11 +72,14 @@ export function asrModelMode(item: Pick<ModelInfo, "category">): AsrModelMode | 
 export function asrModelModeLabel(mode: AsrModelMode): string {
   return mode === "realtime" ? "实时" : "非实时";
 }
+/** 去掉插件名称里自带的识别方式后缀；选择面板用单独的标签显示识别方式。 */
+export function asrModelBaseLabel(item: Pick<ModelInfo, "label">): string {
+  return item.label.replace(/\s*[（(](?:实时|非实时)[）)]\s*$/u, "");
+}
 export function asrModelDisplayLabel(item: Pick<ModelInfo, "label" | "category">): string {
   const mode = asrModelMode(item);
   if (!mode) return item.label;
-  const baseLabel = item.label.replace(/\s*[（(](?:实时|非实时)[）)]\s*$/u, "");
-  return `${baseLabel}（${asrModelModeLabel(mode)}）`;
+  return `${asrModelBaseLabel(item)}（${asrModelModeLabel(mode)}）`;
 }
 export function isLocalAsrModel(item: Pick<ModelInfo, "category" | "protocol">): boolean {
   return Boolean(asrModelMode(item))
@@ -91,7 +94,7 @@ export function optionsForScene(scene: string): AsrModelOption[] {
     const local = isLocalAsrModel(item);
     return {
       value: item.id,
-      label: asrModelDisplayLabel(item),
+      label: asrModelBaseLabel(item),
       providerId: item.providerId,
       providerLabel: providerNames.get(item.providerId) || item.providerId,
       filterProviderId: local ? "local" : undefined,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import { ChevronDown, Search } from "lucide-react";
 import { Input } from "@/components/ui/Input";
+import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import {
   asrModelModeLabel,
@@ -41,42 +42,31 @@ export interface ModelPickerProps {
   placeholder?: string;
 }
 
-const modeFilters: Array<{ value: "all" | AsrModelMode; label: string }> = [
-  { value: "all", label: "全部" },
-  { value: "realtime", label: "实时" },
-  { value: "nonRealtime", label: "非实时" },
+const modeFilters: Array<TabItem<"all" | AsrModelMode>> = [
+  { key: "all", label: "全部" },
+  { key: "realtime", label: "实时" },
+  { key: "nonRealtime", label: "非实时" },
 ];
 
 const optionProviderId = (option: ModelPickerOption) => option.filterProviderId || option.providerId || "other";
 const optionProviderLabel = (option: ModelPickerOption) => option.filterProviderLabel || option.providerLabel || "其他";
 
-function FilterChip({
-  active,
-  children,
-  ariaLabel,
-  onClick,
-}: {
-  active: boolean;
-  children: React.ReactNode;
-  ariaLabel: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={ariaLabel}
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "shrink-0 rounded-full border px-3 py-1.5 text-xs transition-colors duration-[var(--dur-fast)]",
-        active
-          ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-          : "border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg-muted)] hover:border-[var(--color-fg-faint)] hover:text-[var(--color-fg)]",
-      )}
-    >
-      {children}
-    </button>
-  );
+interface OptionGroup {
+  id: string;
+  label: string;
+  options: ModelPickerOption[];
+}
+
+/** 按供应商分组，组和组内顺序都沿用传入顺序。 */
+function groupByProvider(options: readonly ModelPickerOption[]): OptionGroup[] {
+  const groups = new Map<string, OptionGroup>();
+  options.forEach((option) => {
+    const id = optionProviderId(option);
+    const group = groups.get(id) ?? { id, label: optionProviderLabel(option), options: [] };
+    group.options.push(option);
+    groups.set(id, group);
+  });
+  return Array.from(groups.values());
 }
 
 export function ModelPicker({
@@ -100,31 +90,68 @@ export function ModelPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const selectedOptionRef = useRef<HTMLButtonElement>(null);
+  const groupRefs = useRef(new Map<string, HTMLDivElement>());
+  // 代码设置 scrollTop 也会触发一次 scroll 事件；这次不按滚动位置重算高亮，保留点选或已选项所在的组。
+  const programmaticScrollRef = useRef(false);
   const shouldPositionSelectedRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [rendered, setRendered] = useState(false);
   const [layout, setLayout] = useState<PickerLayout | null>(null);
   const [query, setQuery] = useState("");
-  const [providerId, setProviderId] = useState("all");
   const [mode, setMode] = useState<"all" | AsrModelMode>("all");
+  const [activeGroup, setActiveGroup] = useState("");
 
   const selected = options.find((option) => option.value === value);
-  const providers = useMemo(() => {
-    const unique = new Map<string, string>();
-    options.forEach((option) => unique.set(optionProviderId(option), optionProviderLabel(option)));
-    return Array.from(unique, ([value, label]) => ({ value, label }));
-  }, [options]);
   const supportsModeFilter = options.some((option) => Boolean(option.mode));
-  const visibleOptions = useMemo(() => {
+  const groups = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    return options.filter((option) => {
-      if (providerId !== "all" && optionProviderId(option) !== providerId) return false;
+    return groupByProvider(options.filter((option) => {
       if (supportsModeFilter && mode !== "all" && option.mode !== mode) return false;
       if (!normalizedQuery) return true;
       return [option.label, optionProviderLabel(option), option.value]
         .some((text) => text.toLocaleLowerCase().includes(normalizedQuery));
-    });
-  }, [mode, options, providerId, query, supportsModeFilter]);
+    }));
+  }, [mode, options, query, supportsModeFilter]);
+
+  /**
+   * 左栏高亮列表顶部所在的分组：标题已滚到列表顶部或之上的最后一组。
+   * 末尾几组太短、标题滚不到顶部，所以滚到底时高亮最后一组。
+   */
+  const syncActiveGroup = useCallback(() => {
+    const listbox = listboxRef.current;
+    if (!listbox) return;
+    let current = groups[0]?.id ?? "";
+    const atBottom = listbox.scrollTop > 0 && listbox.scrollTop + listbox.clientHeight >= listbox.scrollHeight - 1;
+    if (atBottom) current = groups[groups.length - 1]?.id ?? current;
+    else {
+      for (const group of groups) {
+        const header = groupRefs.current.get(group.id);
+        if (header && header.offsetTop - listbox.offsetTop <= listbox.scrollTop + 1) current = group.id;
+      }
+    }
+    setActiveGroup(current);
+  }, [groups]);
+
+  const handleListScroll = () => {
+    if (programmaticScrollRef.current) programmaticScrollRef.current = false;
+    else syncActiveGroup();
+  };
+
+  const scrollListTo = (top: number) => {
+    const listbox = listboxRef.current;
+    if (!listbox) return;
+    const next = Math.max(0, Math.min(top, listbox.scrollHeight - listbox.clientHeight));
+    if (next !== listbox.scrollTop) programmaticScrollRef.current = true;
+    listbox.scrollTop = next;
+  };
+
+  const scrollToGroup = (groupId: string) => {
+    const listbox = listboxRef.current;
+    const header = groupRefs.current.get(groupId);
+    if (!listbox || !header) return;
+    scrollListTo(header.offsetTop - listbox.offsetTop);
+    setActiveGroup(groupId);
+  };
 
   const measurePanel = useCallback(() => {
     const rect = buttonRef.current?.getBoundingClientRect();
@@ -132,9 +159,10 @@ export function ModelPicker({
     const viewportMargin = 8;
     const triggerGap = 6;
     const availableWidth = Math.max(280, window.innerWidth - viewportMargin * 2);
-    const width = Math.min(520, availableWidth);
+    const width = Math.min(640, availableWidth);
+    // 触发按钮通常在行的右侧，面板右缘与它对齐、向左展开。
     const left = Math.min(
-      Math.max(viewportMargin, rect.left),
+      Math.max(viewportMargin, rect.right - width),
       Math.max(viewportMargin, window.innerWidth - width - viewportMargin),
     );
     const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - viewportMargin - triggerGap);
@@ -169,25 +197,34 @@ export function ModelPicker({
     };
   }, [measurePanel, open]);
 
+  // 打开时把已选项滚到列表中间，左栏高亮它所在的供应商。
   useLayoutEffect(() => {
     if (!open || !rendered || !layout || !shouldPositionSelectedRef.current) return;
+    shouldPositionSelectedRef.current = false;
     const listbox = listboxRef.current;
     const selectedOption = selectedOptionRef.current;
-    if (!listbox || !selectedOption) return;
-
-    listbox.scrollTop = Math.max(
-      0,
+    if (!listbox || !selectedOption || !selected) {
+      syncActiveGroup();
+      return;
+    }
+    scrollListTo(
       selectedOption.offsetTop
         - listbox.offsetTop
         - (listbox.clientHeight - selectedOption.offsetHeight) / 2,
     );
-    shouldPositionSelectedRef.current = false;
+    setActiveGroup(optionProviderId(selected));
   }, [layout, open, rendered]);
+
+  // 搜索或筛选改变了分组后，按当前滚动位置重算高亮。调用方每次渲染都可能传入新数组，
+  // 所以按分组内容而不是数组引用触发。
+  const groupsKey = groups.map((group) => `${group.id}:${group.options.length}`).join("|");
+  useLayoutEffect(() => {
+    if (open) syncActiveGroup();
+  }, [groupsKey]);
 
   useEffect(() => {
     if (open || rendered) return;
     setQuery("");
-    setProviderId("all");
     setMode("all");
   }, [open, rendered]);
 
@@ -279,8 +316,8 @@ export function ModelPicker({
             !open && "pointer-events-none",
           )}
         >
-          <div className="shrink-0 border-b border-[var(--color-line)] p-3">
-            <div className="relative">
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-line)] p-3">
+            <div className="relative min-w-0 flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-fg-faint)]" aria-hidden />
               <Input
                 ref={searchRef}
@@ -291,74 +328,87 @@ export function ModelPicker({
                 className="pl-9"
               />
             </div>
-
-            <div className="mt-3 grid gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="w-12 shrink-0 text-xs text-[var(--color-fg-subtle)]">供应商</span>
-                <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1" role="group" aria-label="按供应商筛选">
-                  <FilterChip active={providerId === "all"} ariaLabel="供应商：全部" onClick={() => setProviderId("all")}>全部</FilterChip>
-                  {providers.map((provider) => (
-                    <FilterChip
-                      key={provider.value}
-                      active={providerId === provider.value}
-                      ariaLabel={`供应商：${provider.label}`}
-                      onClick={() => setProviderId(provider.value)}
-                    >
-                      {provider.label}
-                    </FilterChip>
-                  ))}
-                </div>
-              </div>
-              {supportsModeFilter && <div className="flex items-center gap-2">
-                <span className="w-12 shrink-0 text-xs text-[var(--color-fg-subtle)]">识别方式</span>
-                <div className="flex gap-1.5" role="group" aria-label="按识别方式筛选">
-                  {modeFilters.map((filter) => (
-                    <FilterChip
-                      key={filter.value}
-                      active={mode === filter.value}
-                      ariaLabel={`识别方式：${filter.label}`}
-                      onClick={() => setMode(filter.value)}
-                    >
-                      {filter.label}
-                    </FilterChip>
-                  ))}
-                </div>
-              </div>}
-            </div>
+            {supportsModeFilter && (
+              <Tabs<"all" | AsrModelMode> variant="view" ariaLabel="按识别方式筛选" tabs={modeFilters} active={mode} onChange={setMode} />
+            )}
           </div>
 
-          <div ref={listboxRef} id={listboxId} role="listbox" aria-label={panelLabel.replace(/^选择/u, "")} className="min-h-0 flex-1 overflow-y-auto py-2 pl-2 pr-1">
-            {visibleOptions.length === 0 && (
-              <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
-            )}
-            {visibleOptions.map((option) => {
-              const isSelected = option.value === value;
-              return (
+          <div className="flex min-h-0 flex-1">
+            <nav aria-label="按供应商定位" className="w-40 shrink-0 overflow-y-auto border-r border-[var(--color-line)] p-2">
+              {groups.map((group) => (
                 <button
-                  key={option.value}
-                  ref={isSelected ? selectedOptionRef : undefined}
+                  key={group.id}
                   type="button"
-                  role="option"
-                  aria-label={option.label}
-                  aria-selected={isSelected}
-                  onClick={() => commit(option.value)}
+                  aria-label={`${group.label}，${group.options.length} 个模型`}
+                  aria-current={activeGroup === group.id ? "location" : undefined}
+                  onClick={() => scrollToGroup(group.id)}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-[var(--radius-md)] py-2.5 pl-3 pr-2 text-left transition-colors duration-[var(--dur-fast)]",
-                    isSelected
-                      ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-                      : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+                    "flex h-[var(--control-h)] w-full items-center justify-between gap-2 rounded-[var(--radius-md)] px-3 text-left text-sm transition-colors duration-[var(--dur-fast)]",
+                    activeGroup === group.id
+                      ? "bg-[var(--color-surface-hover)] text-[var(--color-fg)]"
+                      : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
                   )}
                 >
-                  <span className="min-w-0 flex-1">
-                    <span className="block whitespace-normal break-words text-sm font-medium leading-5">{option.label}</span>
-                    <span className={cn("mt-0.5 block whitespace-normal break-words text-xs", !isSelected && "text-[var(--color-fg-subtle)]")}>{optionProviderLabel(option)}</span>
-                  </span>
-                  {option.mode && <span className={cn("shrink-0 rounded-full border px-2 py-1 text-[11px]", isSelected ? "border-current" : "border-[var(--color-line)] text-[var(--color-fg-subtle)]")}>
-                    {asrModelModeLabel(option.mode)}
-                  </span>}
+                  <span className="min-w-0 truncate">{group.label}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-faint)]">{group.options.length}</span>
                 </button>
-              );
-            })}
+              ))}
+            </nav>
+
+            <div
+              ref={listboxRef}
+              id={listboxId}
+              role="listbox"
+              aria-label={panelLabel.replace(/^选择/u, "")}
+              onScroll={handleListScroll}
+              className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
+            >
+              {groups.length === 0 && (
+                <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
+              )}
+              {groups.map((group) => (
+                <div key={group.id} role="group" aria-label={group.label}>
+                  <div
+                    ref={(node) => {
+                      if (node) groupRefs.current.set(group.id, node);
+                      else groupRefs.current.delete(group.id);
+                    }}
+                    aria-hidden
+                    className="px-3 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]"
+                  >
+                    {group.label}
+                  </div>
+                  {group.options.map((option) => {
+                    const isSelected = option.value === value;
+                    return (
+                      <button
+                        key={option.value}
+                        ref={isSelected ? selectedOptionRef : undefined}
+                        type="button"
+                        role="option"
+                        aria-label={option.label}
+                        aria-selected={isSelected}
+                        title={option.label}
+                        onClick={() => commit(option.value)}
+                        className={cn(
+                          "flex h-9 w-full items-center gap-3 rounded-[var(--radius-md)] px-3 text-left text-sm transition-colors duration-[var(--dur-fast)]",
+                          isSelected
+                            ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
+                            : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                        {option.mode && (
+                          <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[11px]", isSelected ? "border-current" : "border-[var(--color-line)] text-[var(--color-fg-subtle)]")}>
+                            {asrModelModeLabel(option.mode)}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
         </div>,
         document.body,
