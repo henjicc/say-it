@@ -71,8 +71,10 @@ const DOT_BASE_R: f32 = 0.65;
 const DOT_PEAK_R: f32 = 1.5;
 /// 亮带往返的角速度（弧度/秒）。
 const SCAN_SPEED: f32 = 2.1;
-const SCAN_BAND: f32 = 0.045;
-const SCAN_TRAIL: f32 = 8.0;
+/// 亮带是宽而柔的高斯（σ 占扫描范围的比例），身后拖一条更长更淡的尾巴。
+const SCAN_BAND: f32 = 0.13;
+const SCAN_TRAIL: f32 = 4.0;
+const SCAN_TRAIL_STRENGTH: f32 = 0.35;
 
 const NOTICE_AUTO_HIDE_MS: u32 = 3500;
 
@@ -898,7 +900,7 @@ impl Indicator {
             let distance = (u - sweep).abs();
             let band = (-(distance * distance) / (2.0 * SCAN_BAND * SCAN_BAND)).exp();
             let trail = if behind > 0.0 {
-                (-behind * SCAN_TRAIL).exp() * 0.55
+                (-behind * SCAN_TRAIL).exp() * SCAN_TRAIL_STRENGTH
             } else {
                 0.0
             };
