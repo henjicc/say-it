@@ -24,7 +24,7 @@ function GeneralLlmRow() {
   const [error, setError] = useState("");
   const current = profiles.find((profile) => profile.id === defaults.llm);
   const selected = current ? llmModelValue(current.id, String(current.config?.model ?? "")) : "";
-  const issue = useUsageIssue(current?.id);
+  const issue = useUsageIssue(current?.id, true, "llm");
 
   const change = async (value: string) => {
     const [providerId, model] = JSON.parse(value) as [string, string];

@@ -1,3 +1,4 @@
+import { providerReady } from "@/features/models/providerModels";
 import { useMemo } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
@@ -44,7 +45,8 @@ export function TranscriptAlignPanel() {
   } = useTranscriptionStore();
   const providers = useProviderStore((s) => s.profiles);
   const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
-  const hasApiKey = !!providers.find((profile) => profile.id === effectiveAsrId)?.status?.hasApiKey;
+  const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
+  const hasApiKey = Boolean(asrProvider && providerReady(asrProvider, "asr"));
 
   const { pickState, message, loadFileInfo, pickFile } = useFilePick(setAlignFile);
   const running = alignStage === "uploading" || alignStage === "recognizing" || alignStage === "aligning";

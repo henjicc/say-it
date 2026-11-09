@@ -1,3 +1,4 @@
+import { providerReady } from "@/features/models/providerModels";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -83,7 +84,7 @@ function isOfflineModel(item: ModelInfo) {
 }
 
 function providerHasKey(provider?: ProviderProfile) {
-  return Boolean(provider?.status?.configured || provider?.status?.hasApiKey);
+  return Boolean(provider && providerReady(provider, "asr"));
 }
 
 export function OnboardingWizard({ open, onClose }: { open: boolean; onClose: () => void }) {

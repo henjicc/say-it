@@ -83,7 +83,7 @@ export function llmModelPickerOptions(profiles: readonly ProviderProfile[], sele
   return profiles.flatMap((profile) => llmModelsFromProfile(profile)
     .filter((model) => {
       const value = llmModelValue(profile.id, model.name);
-      return value === selected || isModelOffered(profile, model.name, llmModelShownByDefault(profile, model));
+      return value === selected || isModelOffered(profile, model.name, llmModelShownByDefault(profile, model), "llm");
     })
     .map((model) => ({
       value: llmModelValue(profile.id, model.name),

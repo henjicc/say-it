@@ -54,9 +54,9 @@ fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
 }
 
 fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> {
-    let api_key = profile_value(profile, "apiKey");
+    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile));
     if api_key.is_empty() {
-        return Err(format!("请先为 {} 设置 API Key", profile.display_name));
+        return Err(crate::providers::missing_llm_api_key_message(profile));
     }
     let auth = AuthData::from_single(api_key.to_string());
     let adapter = crate::providers::llm_adapter(profile)
@@ -92,7 +92,8 @@ fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> 
 
 fn same_connection(left: &ProviderProfile, right: &ProviderProfile) -> bool {
     left.kind == right.kind
-        && profile_value(left, "apiKey") == profile_value(right, "apiKey")
+        && profile_value(left, &crate::providers::llm_api_key_field(left))
+            == profile_value(right, &crate::providers::llm_api_key_field(right))
         && profile_value(left, "endpoint") == profile_value(right, "endpoint")
 }
 
@@ -394,6 +395,22 @@ mod tests {
         assert_eq!(
             config.endpoint.as_ref().map(Endpoint::base_url),
             Some("https://dashscope.aliyuncs.com/compatible-mode/v1/")
+        );
+    }
+
+    #[test]
+    fn builtin_volcengine_chats_with_the_ark_key() {
+        let mut profile = crate::providers::volcengine_profile();
+        profile.config = serde_json::json!({"apiKey": "speech-key"});
+        assert_eq!(
+            provider_config(&profile).unwrap_err(),
+            "请先为 火山引擎 设置 方舟 API Key"
+        );
+        profile.config["arkApiKey"] = "ark-key".into();
+        let config = provider_config(&profile).unwrap();
+        assert_eq!(
+            config.endpoint.as_ref().map(Endpoint::base_url),
+            Some("https://ark.cn-beijing.volces.com/api/v3/")
         );
     }
 

@@ -1,3 +1,4 @@
+import { providerReady } from "@/features/models/providerModels";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import {
@@ -35,7 +36,8 @@ let pendingAlignParamsKey = "";
 export function providerHasApiKey() {
   const state = useProviderStore.getState();
   const providerId = state.effective("asr");
-  return !!state.profiles.find((profile) => profile.id === providerId)?.status?.hasApiKey;
+  const profile = state.profiles.find((item) => item.id === providerId);
+  return Boolean(profile && providerReady(profile, "asr"));
 }
 
 function normalizeParams(params: TranscriptionParams) {

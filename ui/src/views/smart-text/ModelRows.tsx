@@ -23,7 +23,7 @@ export function SmartLlmRow() {
   const inUsagePage = useInUsagePage();
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
   const options = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selected)];
-  const issue = useUsageIssue(prefs.smartLlmProviderId === "default" ? undefined : prefs.smartLlmProviderId);
+  const issue = useUsageIssue(prefs.smartLlmProviderId === "default" ? undefined : prefs.smartLlmProviderId, true, "llm");
   const current = options.find((option) => option.value === selected);
   if (!editable) return <UsageLinkRow label="智能模型" value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
   return (

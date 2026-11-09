@@ -23,7 +23,7 @@ export function SubtitleTranslationModelRow() {
   const editable = useUsageEditable();
   const options = useOfferedTranslationOptions(translationModel);
   const selected = options.find((option) => option.value === translationModel);
-  const issue = useUsageIssue(selected?.providerId, translationModel === TRANSLATION_MODEL_NONE || Boolean(selected));
+  const issue = useUsageIssue(selected?.providerId, translationModel === TRANSLATION_MODEL_NONE || Boolean(selected), "translation");
   if (!editable) return <UsageLinkRow label="翻译模型" value={selected?.label ?? "不翻译"} message={issue} />;
   return (
     <Row label="翻译模型" hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>

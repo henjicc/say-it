@@ -3,7 +3,7 @@ import { ArrowRight } from "lucide-react";
 import { Row } from "@/components/ui/Group";
 import { optionsForScene, sdkPricing, useModelCatalogRevision, type AsrModelOption } from "@/features/asr/modelRegistry";
 import { TRANSLATION_MODEL_OPTIONS, TRANSLATION_PROVIDER_ID } from "@/features/translation/models";
-import { useProviderStore } from "@/store/useProviderStore";
+import { useProviderStore, type ProviderCapability } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
 import type { ModelPickerOption } from "./ModelPicker";
 import { tokenPrice } from "./pricing";
@@ -50,7 +50,7 @@ export function useOfferedAsrOptions(options: readonly AsrModelOption[], selecte
   useModelCatalogRevision();
   const profiles = useProviderStore((state) => state.profiles);
   return options.filter((option) => option.value === selected
-    || isModelOffered(profiles.find((profile) => profile.id === option.providerId), option.value, true));
+    || isModelOffered(profiles.find((profile) => profile.id === option.providerId), option.value, true, "asr"));
 }
 
 /**
@@ -77,17 +77,22 @@ export function useOfferedTranslationOptions(selected: string): Array<ModelPicke
     })),
     ...optionsForScene("subtitleTranslation"),
   ].filter((option) => option.value === selected
-    || isModelOffered(profiles.find((profile) => profile.id === option.providerId), option.value, true));
+    || isModelOffered(profiles.find((profile) => profile.id === option.providerId), option.value, true, "translation"));
 }
 
 /** 当前选择不能用时，返回写在用途行下方的原因和处理入口；能用时返回 null。 */
-export function useUsageIssue(providerId: string | undefined, modelKnown = true): React.ReactNode {
+export function useUsageIssue(
+  providerId: string | undefined,
+  modelKnown = true,
+  capability?: ProviderCapability,
+): React.ReactNode {
   const profile = useProviderStore((state) => state.profiles.find((item) => item.id === providerId));
   if (!modelKnown) return <span role="status" className="text-[var(--color-err)]">这个模型已下线，请重新选择。</span>;
-  if (!profile || !isManagedProvider(profile) || providerReady(profile)) return null;
+  if (!profile || !isManagedProvider(profile) || providerReady(profile, capability)) return null;
+  const missingKey = profile.configFields?.find((field) => field.secret && field.capability === capability)?.label ?? "密钥";
   return (
     <span role="status" className="text-[var(--color-err)]">
-      {profile.displayName} 还没有填写密钥。
+      {profile.displayName} 还没有填写{missingKey}。
       <button type="button" className="ml-1 text-[var(--color-accent-text)] hover:underline" onClick={() => useUiStore.getState().openModels(`provider:${profile.id}`)}>
         去填写
       </button>
@@ -99,5 +104,5 @@ export function useUsageIssue(providerId: string | undefined, modelKnown = true)
 export function useAsrUsageIssue(model: string, scenes: readonly string[]): React.ReactNode {
   useModelCatalogRevision();
   const option = scenes.flatMap((scene) => optionsForScene(scene)).find((item) => item.value === model);
-  return useUsageIssue(option?.providerId, Boolean(option));
+  return useUsageIssue(option?.providerId, Boolean(option), "asr");
 }

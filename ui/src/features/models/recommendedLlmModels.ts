@@ -5,9 +5,11 @@ type RecommendedModel = { id: string; label: string };
 
 const adapters: Record<string, RecommendedModel[] | undefined> = catalog.adapters;
 
-/** 与后端 `llm_adapter` 一致：内置百炼走 bailian，其余取 `llm:` 之后的部分。 */
+const BUILTIN_LLM_ADAPTERS: Record<string, string> = { "sdk:bailian": "bailian", "sdk:volcengine": "volcengine" };
+
+/** 与后端 `llm_adapter` 一致：内置百炼、火山引擎各走自家适配器，其余取 `llm:` 之后的部分。 */
 export function adapterOf(kind: string): string {
-  return kind === "sdk:bailian" ? "bailian" : kind.replace(/^llm:/, "");
+  return BUILTIN_LLM_ADAPTERS[kind] ?? kind.replace(/^llm:/, "");
 }
 
 /** 供应商的推荐模型；后端按同一份目录把它们补进模型列表。 */
