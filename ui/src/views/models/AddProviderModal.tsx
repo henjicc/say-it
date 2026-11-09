@@ -21,6 +21,7 @@ const PRESETS = [
   { adapter: "deepseek", name: "DeepSeek", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.deepseek },
   { adapter: "mimo", name: "小米 MiMo", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.mimo },
   { adapter: "minimax", name: "MiniMax", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.minimax },
+  { adapter: "ppio", name: "派欧云", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.ppio },
   { adapter: "open_router", name: "OpenRouter", apiKeyUrl: API_KEY_URLS_BY_ADAPTER.open_router },
   { adapter: "custom", name: "自定义 OpenAI 兼容接口", apiKeyUrl: null },
 ] as const;

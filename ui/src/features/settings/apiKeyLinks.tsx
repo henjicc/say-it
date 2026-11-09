@@ -13,6 +13,7 @@ export const API_KEY_URLS_BY_ADAPTER = {
   mimo: "https://platform.xiaomimimo.com/",
   bailian: "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key",
   minimax: "https://platform.minimaxi.com/console/access?tab=api-keys",
+  ppio: "https://ppio.com/settings/key-management",
   open_router: "https://openrouter.ai/settings/keys",
 } as const;
 

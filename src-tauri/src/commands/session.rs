@@ -16,6 +16,7 @@ const LLM_ADAPTERS: &[&str] = &[
     "mimo",
     "bailian",
     "minimax",
+    "ppio",
     "open_router",
     "custom",
 ];
