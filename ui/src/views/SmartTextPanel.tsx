@@ -18,6 +18,7 @@ import {
 } from "@/store/useCustomizationStore";
 import {
   ACTIVE_APP_CONTEXT_PLACEHOLDER,
+  APP_SCENE_PLACEHOLDER,
   DEFAULT_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_TEXT_TEMPLATES,
@@ -351,7 +352,7 @@ export function SmartTextPanel() {
           {active && (
             <Group
               title="提示词"
-              description={<>使用 <code className="text-[var(--color-accent-text)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-text)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选）。</>}
+              description={<>使用 <code className="text-[var(--color-accent-text)]">{SMART_TEXT_PLACEHOLDER}</code> 表示识别文本（必须保留），使用 <code className="text-[var(--color-accent-text)]">{ACTIVE_APP_CONTEXT_PLACEHOLDER}</code> 表示当前软件上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{GLOBAL_CONTEXT_PLACEHOLDER}</code> 引用「热词上下文」里的全局上下文（可选），使用 <code className="text-[var(--color-accent-text)]">{HOTWORDS_PLACEHOLDER}</code> 引用全局热词列表（可选），使用 <code className="text-[var(--color-accent-text)]">{APP_SCENE_PLACEHOLDER}</code> 表示按当前软件判断的使用场景，如“AI 对话”“聊天”“写作”（可选）。</>}
             >
               <div className="p-3.5">
                 <Textarea
@@ -368,6 +369,7 @@ export function SmartTextPanel() {
                 <Button size="sm" onClick={() => insertPlaceholder(ACTIVE_APP_CONTEXT_PLACEHOLDER)}>插入软件上下文</Button>
                 <Button size="sm" onClick={() => insertPlaceholder(GLOBAL_CONTEXT_PLACEHOLDER)}>插入全局上下文</Button>
                 <Button size="sm" onClick={() => insertPlaceholder(HOTWORDS_PLACEHOLDER)}>插入全局热词</Button>
+                <Button size="sm" onClick={() => insertPlaceholder(APP_SCENE_PLACEHOLDER)}>插入使用场景</Button>
               </div>
             </Group>
           )}
