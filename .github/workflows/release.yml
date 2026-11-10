@@ -42,6 +42,10 @@ jobs:
       - name: install frontend dependencies
         run: npm install
 
+      - name: install Vulkan SDK
+        shell: pwsh
+        run: ./scripts/install-vulkan-sdk.ps1
+
       - name: build Windows installer
         run: npm run tauri:build
 

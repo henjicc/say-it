@@ -1,0 +1,4 @@
+# 中文系统的 MSVC 默认按 GBK 读取无 BOM 的源码，transcribe.cpp 的 UTF-8 源文件会编译失败。
+# 只设 C++：aws-lc-sys 一见到 CFLAGS 就改走另一条构建路径并链接失败。
+[env]
+CXXFLAGS_x86_64_pc_windows_msvc = "/utf-8"

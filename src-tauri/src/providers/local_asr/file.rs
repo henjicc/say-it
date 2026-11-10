@@ -1,6 +1,7 @@
 //! 文件解码与 VAD 同步衔接；只缓冲一个识别块，保留原有十秒喂入、每分钟收口的节奏。
 use super::{samples_to_ms, LocalModelSpec, LocalSegment, OfflineVadSession, SAMPLE_RATE};
 use crate::cancellation::CancellationFlag;
+use crate::providers::RequestCustomization;
 use std::sync::atomic::Ordering;
 
 const CHUNK_SAMPLES: usize = SAMPLE_RATE as usize * 10;
@@ -13,9 +14,9 @@ struct FileVadSession {
 }
 
 impl FileVadSession {
-    fn create(spec: &LocalModelSpec) -> Result<Self, String> {
+    fn create(spec: &LocalModelSpec, customization: RequestCustomization) -> Result<Self, String> {
         Ok(Self {
-            session: OfflineVadSession::create_temporary(spec)?,
+            session: OfflineVadSession::create_temporary(spec, customization)?,
             pending: Vec::with_capacity(CHUNK_SAMPLES),
             chunks: 0,
             results: Vec::new(),
@@ -63,6 +64,7 @@ impl FileVadSession {
 pub(crate) fn recognize_audio_file(
     spec: &LocalModelSpec,
     path: &str,
+    customization: &RequestCustomization,
     cancel: Option<&CancellationFlag>,
 ) -> Result<(Vec<LocalSegment>, u64), String> {
     let check_cancel = || {
@@ -75,7 +77,7 @@ pub(crate) fn recognize_audio_file(
     let mut session = None;
     let count = crate::audio_prep::decode_mono_16k_chunks(path, check_cancel, |chunk| {
         if session.is_none() {
-            session = Some(FileVadSession::create(spec)?);
+            session = Some(FileVadSession::create(spec, customization.clone())?);
             check_cancel()?;
         }
         session.as_mut().unwrap().accept(chunk, cancel)
@@ -106,7 +108,13 @@ mod tests {
         };
         let cancel = CancellationFlag::new(true);
         assert_eq!(
-            recognize_audio_file(&spec, "missing.wav", Some(&cancel)).unwrap_err(),
+            recognize_audio_file(
+                &spec,
+                "missing.wav",
+                &RequestCustomization::default(),
+                Some(&cancel)
+            )
+            .unwrap_err(),
             "录音识别已取消"
         );
     }
@@ -138,8 +146,13 @@ mod tests {
             let samples = crate::audio_prep::decode_to_mono_16k(path.to_str().unwrap()).unwrap();
             let expected = super::super::recognize_file_segments(&spec, &samples).unwrap();
             assert!(!expected.is_empty());
-            let (actual, duration_ms) =
-                recognize_audio_file(&spec, path.to_str().unwrap(), None).unwrap();
+            let (actual, duration_ms) = recognize_audio_file(
+                &spec,
+                path.to_str().unwrap(),
+                &RequestCustomization::default(),
+                None,
+            )
+            .unwrap();
             assert_eq!(duration_ms, samples_to_ms(samples.len() as u64));
             assert_eq!(actual, expected, "样本数 {count} 的文本或时间戳发生变化");
             std::fs::remove_file(path).unwrap();

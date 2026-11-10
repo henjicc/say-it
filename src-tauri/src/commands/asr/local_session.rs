@@ -15,6 +15,7 @@ pub(super) async fn start_local_asr_stream(
     input_sample_rate: u32,
     params: Option<DspParams>,
 ) -> Result<super::PreparedAsrStream, String> {
+    let customization = crate::application::customization::resolve_for_model(state, &model);
     let session_id = Uuid::new_v4().to_string();
     let (handle, rx) = AsrStreamHandle::channel();
     state
@@ -38,6 +39,7 @@ pub(super) async fn start_local_asr_stream(
                     super::stream_dsp(params, input_sample_rate),
                     model,
                     spec,
+                    customization,
                 );
             });
             Ok(())
@@ -58,6 +60,7 @@ fn run_local_session(
     mut dsp: StreamDsp,
     model: String,
     spec: LocalModelSpec,
+    customization: crate::providers::RequestCustomization,
 ) {
     if rx.is_cancelled() {
         if let Some(error) = rx.take_failure() {
@@ -75,7 +78,9 @@ fn run_local_session(
     let cancel = rx.cancellation_flag();
     let session = match spec.engine.as_str() {
         "sherpa-onnx-online" => OnlineSession::create_realtime(&spec, Some(&cancel)).map(Session::Online),
-        "sherpa-onnx-offline" => OfflineVadSession::create_realtime(&spec).map(Session::Offline),
+        "sherpa-onnx-offline" | "transcribe-cpp" => {
+            OfflineVadSession::create_realtime(&spec, customization).map(Session::Offline)
+        }
         engine => Err(format!("模型引擎 {engine} 不支持本地 ASR 会话")),
     };
     let mut session = match session {
@@ -130,8 +135,8 @@ fn run_local_session(
                     Session::Online(session) => session.accept(&samples, Some(&cancel)),
                     Session::Offline(session) => {
                         session.accept(&samples, Some(&cancel)).map(|segments| LocalAsrOutput {
-                            partial: None,
                             finals: segments.into_iter().map(|item| item.text).collect(),
+                            partial: session.take_preview(),
                         })
                     }
                 };
@@ -157,8 +162,8 @@ fn run_local_session(
                     let result = match &mut session {
                         Session::Online(session) => session.accept(&tail, Some(&cancel)),
                         Session::Offline(session) => session.accept(&tail, Some(&cancel)).map(|segments| LocalAsrOutput {
-                            partial: None,
                             finals: segments.into_iter().map(|item| item.text).collect(),
+                            partial: session.take_preview(),
                         }),
                     };
                     if rx.is_cancelled() {
@@ -174,9 +179,10 @@ fn run_local_session(
                 }
                 let result = match session {
                     Session::Online(session) => session.finish(Some(&cancel)),
-                    Session::Offline(session) => session.finish(Some(&cancel)).map(|segments| LocalAsrOutput {
-                        partial: None,
+                    // 最后一句识别为空时，要靠这条预览把已显示的那句清掉，否则它会被当成结果提交。
+                    Session::Offline(mut session) => session.flush_and_reset(Some(&cancel)).map(|segments| LocalAsrOutput {
                         finals: segments.into_iter().map(|item| item.text).collect(),
+                        partial: session.take_preview(),
                     }),
                 };
                 if rx.is_cancelled() {
@@ -217,20 +223,21 @@ fn run_local_session(
 }
 
 fn emit_output(app: &tauri::AppHandle, session_id: &str, output: LocalAsrOutput) {
-    if let Some(text) = output.partial {
-        emit_asr_stream_event(
-            app,
-            session_id,
-            "result",
-            json!({ "text": text, "final": false }),
-        );
-    }
     for text in output.finals {
         emit_asr_stream_event(
             app,
             session_id,
             "result",
             json!({ "text": text, "final": true }),
+        );
+    }
+    // 中间结果属于最后一个 final 之后正在说的那句，必须排在后面。
+    if let Some(text) = output.partial {
+        emit_asr_stream_event(
+            app,
+            session_id,
+            "result",
+            json!({ "text": text, "final": false }),
         );
     }
 }

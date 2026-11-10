@@ -803,9 +803,14 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                                 .iter()
                                 .any(|scene| scene == "dictationRealtime" || scene == "subtitles")
                     }
-                    Some("sherpa-onnx-offline") => {
+                    Some(engine @ ("sherpa-onnx-offline" | "transcribe-cpp")) => {
+                        let protocol = if engine == "transcribe-cpp" {
+                            "local-transcribe"
+                        } else {
+                            "local-sherpa-offline"
+                        };
                         matches!(model.category.as_str(), "realtime" | "file")
-                            && model.protocol == "local-sherpa-offline"
+                            && model.protocol == protocol
                             && match model.category.as_str() {
                                 "realtime" => model.scenes.iter().any(|scene| {
                                     scene == "dictationRealtime" || scene == "subtitles"
@@ -872,7 +877,7 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         .ok_or("模型包缺少 modelPack 配置")?;
     if !matches!(
         pack.engine.as_str(),
-        "sherpa-onnx-online" | "sherpa-onnx-offline" | "sherpa-onnx-punctuation"
+        "sherpa-onnx-online" | "sherpa-onnx-offline" | "sherpa-onnx-punctuation" | "transcribe-cpp"
     ) && !is_superseded_ppocr(manifest)
     {
         return Err(format!(
@@ -936,6 +941,7 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         "sherpa-onnx-online" => &["encoder", "decoder", "tokens"],
         "sherpa-onnx-offline" => &["model", "tokens", "vadModel"],
         "sherpa-onnx-punctuation" => &["model"],
+        "transcribe-cpp" => &["model", "vadModel"],
         "ppocr-mnn" => &["detModel", "recModel", "charset"],
         _ => unreachable!(),
     };
@@ -2305,6 +2311,31 @@ mod tests {
         )
         .unwrap();
         validate_plugin_dir(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qwen3_asr_descriptor_binds_transcribe_engine_to_its_own_protocol() {
+        let value: Value =
+            serde_json::from_str(include_str!("../../../model-packs/qwen3-asr-1.7b-q5.json"))
+                .unwrap();
+        let mut manifest = value["manifest"].clone();
+        let root =
+            std::env::temp_dir().join(format!("sayit-qwen3-descriptor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let write = |manifest: &Value| {
+            std::fs::write(
+                root.join("manifest.json"),
+                serde_json::to_vec(manifest).unwrap(),
+            )
+            .unwrap()
+        };
+        write(&manifest);
+        validate_plugin_dir(&root).unwrap();
+        // sherpa 协议的模型会被界面当成没有标点、需要外挂标点模型。
+        manifest["models"][0]["protocol"] = "local-sherpa-offline".into();
+        write(&manifest);
+        assert!(validate_plugin_dir(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

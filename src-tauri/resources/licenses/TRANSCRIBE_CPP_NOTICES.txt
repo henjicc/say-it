@@ -1,0 +1,15 @@
+transcribe.cpp
+Copyright (c) 2026 The transcribe.cpp authors
+Licensed under the MIT License. See MIT.txt.
+https://github.com/handy-computer/transcribe.cpp
+
+ggml
+Copyright (c) 2023-2026 The ggml authors
+Licensed under the MIT License. See MIT.txt.
+https://github.com/ggml-org/ggml
+
+miniz
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+Licensed under the MIT License. See MIT.txt.
+https://github.com/richgel999/miniz

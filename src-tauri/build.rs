@@ -2,19 +2,19 @@ fn main() {
     build_sdk_runtime_bridge();
     #[cfg(target_os = "macos")]
     build_macos_native_bridge();
-    distribute_sherpa_runtime_libs();
+    distribute_runtime_libs();
     tauri_build::build()
 }
 
-/// 增删运行库时同步 tauri.macos.conf.json 的 frameworks 与 nsis-hooks.nsh 的复制和删除；
+/// 增删运行库时同步 tauri.macos.conf.json 的 frameworks 与 nsis-hooks.nsh 的删除清单；
 /// Windows 的打包资源按通配符取 target/runtime-libs 下全部 DLL。
-const WINDOWS_RUNTIME_LIBS: [&str; 4] = [
+const WINDOWS_SHERPA_LIBS: [&str; 4] = [
     "onnxruntime.dll",
     "onnxruntime_providers_shared.dll",
     "sherpa-onnx-c-api.dll",
     "sherpa-onnx-cxx-api.dll",
 ];
-const MACOS_RUNTIME_LIBS: [&str; 2] = ["libsherpa-onnx-c-api.dylib", "libonnxruntime.dylib"];
+const MACOS_SHERPA_LIBS: [&str; 2] = ["libsherpa-onnx-c-api.dylib", "libonnxruntime.dylib"];
 
 fn build_sdk_runtime_bridge() {
     let out_dir = std::env::var("OUT_DIR").expect("Cargo 缺少 OUT_DIR");
@@ -69,16 +69,17 @@ fn build_macos_native_bridge() {
     println!("cargo:rerun-if-changed=macos/SayItMacBridge.m");
 }
 
-/// sherpa-onnx-sys（直接依赖且声明了 `links`，构建脚本先于本脚本运行）把共享运行库复制到当前 profile
-/// 的输出目录，这里再分发两处：
+/// sherpa-onnx-sys 与 transcribe-cpp（都是直接依赖且声明了 `links`，构建脚本先于本脚本运行）各自产出
+/// 共享运行库：前者复制到当前 profile 的输出目录，后者经 `DEP_TRANSCRIBE_CPP_RUNTIME_DIR` 给出所在目录
+/// （只有 Windows 以共享库加运行时后端模块的形态构建，macOS 静态链接，没有这个变量）。这里再分发两处：
 /// - `target/runtime-libs/`：打包配置引用的固定位置。tauri-build 在每个 profile 都会复制打包
 ///   资源与 frameworks，配置若引用 `target/release`，dev、测试和 cargo check 都得先打过一次包。
 /// - Windows 的 `deps/`：cargo test 的测试程序在这里运行，需要旁边就有 DLL。
-fn distribute_sherpa_runtime_libs() {
+fn distribute_runtime_libs() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let names: &[&str] = match target_os.as_str() {
-        "windows" => &WINDOWS_RUNTIME_LIBS,
-        "macos" => &MACOS_RUNTIME_LIBS,
+    let sherpa_names: &[&str] = match target_os.as_str() {
+        "windows" => &WINDOWS_SHERPA_LIBS,
+        "macos" => &MACOS_SHERPA_LIBS,
         _ => return,
     };
     let out_dir = std::env::var("OUT_DIR").expect("Cargo 缺少 OUT_DIR");
@@ -87,6 +88,28 @@ fn distribute_sherpa_runtime_libs() {
         .ancestors()
         .find(|path| path.file_name() == Some(std::ffi::OsStr::new(&profile)))
         .expect("无法从 OUT_DIR 定位 Cargo profile 输出目录");
+    let mut sources: Vec<std::path::PathBuf> = sherpa_names
+        .iter()
+        .map(|name| profile_dir.join(name))
+        .collect();
+    println!("cargo:rerun-if-env-changed=DEP_TRANSCRIBE_CPP_RUNTIME_DIR");
+    let runtime_dir = std::env::var_os("DEP_TRANSCRIBE_CPP_RUNTIME_DIR");
+    if target_os == "windows" && runtime_dir.is_none() {
+        panic!("transcribe-cpp 没有给出运行库目录；Windows 必须以 dynamic-backends 形态构建");
+    }
+    if let Some(runtime_dir) = runtime_dir {
+        let entries = std::fs::read_dir(&runtime_dir).expect("无法读取 transcribe.cpp 运行库目录");
+        sources.extend(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension() == Some(std::ffi::OsStr::new("dll"))),
+        );
+    }
+    let names: Vec<&std::ffi::OsStr> = sources
+        .iter()
+        .map(|path| path.file_name().expect("运行库路径缺少文件名"))
+        .collect();
     // 打包配置的路径相对 src-tauri 解析，所以固定写到清单目录下的 target，而不是实际 target 目录。
     let stage_dir = std::path::Path::new(
         &std::env::var("CARGO_MANIFEST_DIR").expect("Cargo 缺少 CARGO_MANIFEST_DIR"),
@@ -99,29 +122,22 @@ fn distribute_sherpa_runtime_libs() {
         .expect("无法读取 target/runtime-libs")
         .flatten()
     {
-        if !names
-            .iter()
-            .any(|name| entry.file_name() == std::ffi::OsStr::new(name))
-        {
+        if !names.contains(&entry.file_name().as_os_str()) {
             std::fs::remove_file(entry.path())
                 .unwrap_or_else(|error| panic!("无法删除 {}：{error}", entry.path().display()));
         }
     }
-    for name in names {
-        let source = profile_dir.join(name);
-        if !source.is_file() {
-            panic!(
-                "sherpa-onnx-sys 没有在 {} 生成 {name}，无法准备打包运行库",
-                profile_dir.display()
-            );
-        }
-        copy_if_changed(&source, &stage_dir.join(name));
+    let deps_dir = (target_os == "windows").then(|| profile_dir.join("deps"));
+    if let Some(deps_dir) = &deps_dir {
+        std::fs::create_dir_all(deps_dir).expect("无法创建 deps 目录");
     }
-    if target_os == "windows" {
-        let deps_dir = profile_dir.join("deps");
-        std::fs::create_dir_all(&deps_dir).expect("无法创建 deps 目录");
-        for name in names {
-            copy_if_changed(&profile_dir.join(name), &deps_dir.join(name));
+    for (source, name) in sources.iter().zip(&names) {
+        if !source.is_file() {
+            panic!("缺少运行库 {}，无法准备打包", source.display());
+        }
+        copy_if_changed(source, &stage_dir.join(name));
+        if let Some(deps_dir) = &deps_dir {
+            copy_if_changed(source, &deps_dir.join(name));
         }
     }
 }

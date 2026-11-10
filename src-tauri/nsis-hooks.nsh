@@ -15,6 +15,8 @@
   Delete "$INSTDIR\onnxruntime_providers_shared.dll"
   Delete "$INSTDIR\sherpa-onnx-c-api.dll"
   Delete "$INSTDIR\sherpa-onnx-cxx-api.dll"
+  Delete "$INSTDIR\transcribe.dll"
+  Delete "$INSTDIR\ggml*.dll"
   !if "${INSTALLMODE}" == "currentUser"
     ${If} $INSTDIR == "$LOCALAPPDATA\${PRODUCTNAME}"
     ${OrIf} $INSTDIR == "$LOCALAPPDATA\${MAINBINARYNAME}"
@@ -25,14 +27,9 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  CopyFiles /SILENT "$INSTDIR\target\release\onnxruntime.dll" "$INSTDIR\onnxruntime.dll"
-  CopyFiles /SILENT "$INSTDIR\target\release\onnxruntime_providers_shared.dll" "$INSTDIR\onnxruntime_providers_shared.dll"
-  CopyFiles /SILENT "$INSTDIR\target\release\sherpa-onnx-c-api.dll" "$INSTDIR\sherpa-onnx-c-api.dll"
-  CopyFiles /SILENT "$INSTDIR\target\release\sherpa-onnx-cxx-api.dll" "$INSTDIR\sherpa-onnx-cxx-api.dll"
-  Delete "$INSTDIR\target\release\onnxruntime.dll"
-  Delete "$INSTDIR\target\release\onnxruntime_providers_shared.dll"
-  Delete "$INSTDIR\target\release\sherpa-onnx-c-api.dll"
-  Delete "$INSTDIR\target\release\sherpa-onnx-cxx-api.dll"
+  ; 运行库随打包资源落在 target\release，主程序只在自己所在目录找 DLL。
+  CopyFiles /SILENT "$INSTDIR\target\release\*.dll" "$INSTDIR"
+  Delete "$INSTDIR\target\release\*.dll"
   RMDir "$INSTDIR\target\release"
   RMDir "$INSTDIR\target"
 
@@ -51,6 +48,8 @@
   Delete "$INSTDIR\onnxruntime_providers_shared.dll"
   Delete "$INSTDIR\sherpa-onnx-c-api.dll"
   Delete "$INSTDIR\sherpa-onnx-cxx-api.dll"
+  Delete "$INSTDIR\transcribe.dll"
+  Delete "$INSTDIR\ggml*.dll"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

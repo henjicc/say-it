@@ -41,8 +41,10 @@ const MODEL_STATE_LABEL: Record<string, string> = {
 };
 
 const RESIDENCY_MEMORY: Record<string, string> = {
-  "official.sherpa-funasr-nano-ctc": "约 400 MB",
-  "official.sherpa-sensevoice-small": "约 350 MB",
+  "official.sherpa-funasr-nano-ctc": "约 400 MB 内存",
+  "official.sherpa-sensevoice-small": "约 350 MB 内存",
+  "official.transcribe-qwen3-asr-1.7b": "约 1.8 GB 显存（没有可用显卡时占内存）",
+  "official.transcribe-qwen3-asr-0.6b": "约 1 GB 显存（没有可用显卡时占内存）",
 };
 
 /** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
@@ -327,7 +329,7 @@ export function PluginManagerPanel() {
                   {plugin.modelPack?.residency && (
                     <Tooltip content={plugin.modelPack.engine === "sherpa-onnx-punctuation"
                       ? `开启后标点模型一直留在内存里，每次听写不用再等加载。会持续占用约 100 MB 内存。`
-                      : `开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB"}内存，处理长音频时可能更多。`}>
+                      : `开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB 内存"}，处理长音频时可能更多。关闭时，模型用过后还会保留几分钟，方便连续听写。`}>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
                         <Switch
