@@ -38,6 +38,10 @@ const VK_SCROLL: u16 = 0x91;
 const CONTEXT_DEBUG_VK: u16 = 0x77; // F8
 const CONTEXT_DEBUG_MODS: u8 = MOD_CTRL | MOD_SHIFT;
 const MAX_DICTATION_BINDINGS: usize = 1 + crate::state::MAX_DICTATION_SHORTCUT_PROFILES;
+/// 远程控制软件（如 UU 远程）同步大小写时会经驱动连发 CapsLock 的按下与抬起，
+/// 不带注入标记、扫描码与真实键盘一致，只有按住时长在 1ms 内；人手按键至少持续数十毫秒。
+/// 快捷键按下后延迟这么久才生效，期间抬起的视为模拟点击：不触发，并把锁定键还给系统。
+const MIN_HUMAN_PRESS_MS: u32 = 15;
 
 #[derive(Clone, Debug)]
 pub struct HotkeyBinding {
@@ -59,7 +63,14 @@ static BINDING_PRESS_HOLD: [AtomicBool; MAX_DICTATION_BINDINGS] =
 static PRESS_HOLD_STARTED: [AtomicBool; MAX_DICTATION_BINDINGS] =
     [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
 static PRESS_HOLD_START_MS: AtomicU32 = AtomicU32::new(260);
-static PRESS_HOLD_SEQUENCE: [AtomicU32; MAX_DICTATION_BINDINGS] =
+// 听写进行中按下长按键：在抬起时才决定是否停止，模拟点击不应停掉正在进行的听写。
+static PRESS_STOPS_ACTIVE: [AtomicBool; MAX_DICTATION_BINDINGS] =
+    [const { AtomicBool::new(false) }; MAX_DICTATION_BINDINGS];
+// 每次按下递增；待发出的信号携带按下时的序号，序号变了说明这次按下已作废。
+static PRESS_SEQUENCE: [AtomicU32; MAX_DICTATION_BINDINGS] =
+    [const { AtomicU32::new(0) }; MAX_DICTATION_BINDINGS];
+// 按下事件的系统时间戳（KBDLLHOOKSTRUCT.time），抬起时据此判断是否为模拟点击。
+static PRESS_DOWN_TIME: [AtomicU32; MAX_DICTATION_BINDINGS] =
     [const { AtomicU32::new(0) }; MAX_DICTATION_BINDINGS];
 static HOTKEY_GENERATION: AtomicU32 = AtomicU32::new(0);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -68,6 +79,8 @@ static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static SUB_TARGET_VK: AtomicU16 = AtomicU16::new(0);
 static SUB_TARGET_MODS: AtomicU8 = AtomicU8::new(0);
 static SUB_TRIGGERED: AtomicBool = AtomicBool::new(false);
+static SUB_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+static SUB_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
 static CONTEXT_DEBUG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONTEXT_DEBUG_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
@@ -78,16 +91,14 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 // 钩子回调 → 发送线程的信号通道。钩子回调里只做 send()（极快、非阻塞），
 // 真正的 app.emit 放到独立线程，避免在低级钩子回调里耗时被系统超时卸载。
-static TOGGLE_TX: OnceLock<Mutex<Sender<HotkeySignal>>> = OnceLock::new();
+static TOGGLE_TX: OnceLock<Mutex<Sender<(HotkeySignal, u32)>>> = OnceLock::new();
 static PRESS_TX: OnceLock<Mutex<Sender<PressSignal>>> = OnceLock::new();
 static CANCEL_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 
 enum PressSignal {
     Start {
         hotkey: HotkeySignal,
-        sequence: u32,
         delay_ms: u32,
-        immediate: bool,
     },
     End {
         hotkey: HotkeySignal,
@@ -98,10 +109,11 @@ enum PressSignal {
 struct HotkeySignal {
     slot: u8,
     generation: u32,
+    sequence: u32,
 }
 
 static BINDING_PROFILE_IDS: OnceLock<RwLock<Vec<Option<String>>>> = OnceLock::new();
-static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<u32>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static CONTEXT_DEBUG_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -118,11 +130,11 @@ pub fn init(app: AppHandle) {
     }
 
     // 发送线程：把钩子信号转成前端事件。
-    let (tx, rx) = channel::<HotkeySignal>();
+    let (tx, rx) = channel::<(HotkeySignal, u32)>();
     let _ = TOGGLE_TX.set(Mutex::new(tx));
     std::thread::spawn(move || {
-        while let Ok(signal) = rx.recv() {
-            emit_toggle(signal);
+        while let Ok((signal, delay_ms)) = rx.recv() {
+            emit_toggle(signal, delay_ms);
         }
     });
 
@@ -131,12 +143,7 @@ pub fn init(app: AppHandle) {
     std::thread::spawn(move || {
         while let Ok(signal) = press_rx.recv() {
             match signal {
-                PressSignal::Start {
-                    hotkey,
-                    sequence,
-                    delay_ms,
-                    immediate,
-                } => emit_press_start(hotkey, sequence, delay_ms, immediate),
+                PressSignal::Start { hotkey, delay_ms } => emit_press_start(hotkey, delay_ms),
                 PressSignal::End { hotkey } => emit_press_end(hotkey),
             }
         }
@@ -150,11 +157,11 @@ pub fn init(app: AppHandle) {
         }
     });
 
-    let (sub_tx, sub_rx) = channel::<()>();
+    let (sub_tx, sub_rx) = channel::<u32>();
     let _ = SUB_TOGGLE_TX.set(Mutex::new(sub_tx));
     std::thread::spawn(move || {
-        while sub_rx.recv().is_ok() {
-            emit_subtitle_toggle();
+        while let Ok(sequence) = sub_rx.recv() {
+            emit_subtitle_toggle(sequence);
         }
     });
 
@@ -208,23 +215,18 @@ pub fn init(app: AppHandle) {
 }
 
 /// 钩子回调里调用：发一个非阻塞信号给发送线程。
-fn signal_toggle(signal: HotkeySignal) {
+fn signal_toggle(signal: HotkeySignal, delay_ms: u32) {
     if let Some(lock) = TOGGLE_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(signal);
+            let _ = tx.send((signal, delay_ms));
         }
     }
 }
 
-fn signal_press_start(hotkey: HotkeySignal, sequence: u32, delay_ms: u32, immediate: bool) {
+fn signal_press_start(hotkey: HotkeySignal, delay_ms: u32) {
     if let Some(lock) = PRESS_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(PressSignal::Start {
-                hotkey,
-                sequence,
-                delay_ms,
-                immediate,
-            });
+            let _ = tx.send(PressSignal::Start { hotkey, delay_ms });
         }
     }
 }
@@ -251,10 +253,10 @@ pub fn subtitle_hotkey_registered() -> bool {
     SUB_TARGET_VK.load(Ordering::SeqCst) != 0
 }
 
-fn signal_subtitle_toggle() {
+fn signal_subtitle_toggle(sequence: u32) {
     if let Some(lock) = SUB_TOGGLE_TX.get() {
         if let Ok(tx) = lock.lock() {
-            let _ = tx.send(());
+            let _ = tx.send(sequence);
         }
     }
 }
@@ -294,7 +296,8 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
         BINDING_PRESS_HOLD[slot].store(false, Ordering::SeqCst);
         TRIGGERED[slot].store(false, Ordering::SeqCst);
         PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
-        PRESS_HOLD_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
+        PRESS_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
+        PRESS_STOPS_ACTIVE[slot].store(false, Ordering::SeqCst);
     }
     if let Some(ids) = BINDING_PROFILE_IDS.get() {
         *ids.write().map_err(|_| "快捷键方案锁失败".to_string())? = bindings
@@ -322,6 +325,7 @@ pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
     SUB_TARGET_VK.store(vk, Ordering::SeqCst);
     SUB_TARGET_MODS.store(mods, Ordering::SeqCst);
     SUB_TRIGGERED.store(false, Ordering::SeqCst);
+    SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     if is_lock_key(vk) {
         force_lock_off(vk);
     }
@@ -333,6 +337,7 @@ pub fn clear_subtitle_hotkey() {
     SUB_TARGET_VK.store(0, Ordering::SeqCst);
     SUB_TARGET_MODS.store(0, Ordering::SeqCst);
     SUB_TRIGGERED.store(false, Ordering::SeqCst);
+    SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst);
 }
 
 /// 前端“设置快捷键”界面开始/结束等待按键时调用。开启期间锁定键一律被钩子吞掉，
@@ -376,6 +381,11 @@ fn force_lock_off(vk: u16) {
     }
 }
 
+/// 按住时长短于人手可能达到的下限，说明是程序模拟的点击。`time` 为系统毫秒时间戳，会回绕。
+fn is_synthetic_tap(down_time: u32, up_time: u32) -> bool {
+    up_time.wrapping_sub(down_time) < MIN_HUMAN_PRESS_MS
+}
+
 fn key_down(vk: u16) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
@@ -403,21 +413,27 @@ fn profile_for_signal(signal: HotkeySignal) -> Option<Option<String>> {
         .cloned()
 }
 
-fn emit_toggle(signal: HotkeySignal) {
+fn press_still_current(signal: HotkeySignal) -> bool {
+    let slot = signal.slot as usize;
+    slot < MAX_DICTATION_BINDINGS
+        && HOTKEY_GENERATION.load(Ordering::SeqCst) == signal.generation
+        && PRESS_SEQUENCE[slot].load(Ordering::SeqCst) == signal.sequence
+}
+
+fn emit_toggle(signal: HotkeySignal, delay_ms: u32) {
+    std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
+    if !press_still_current(signal) {
+        return;
+    }
     if let (Some(app), Some(profile_id)) = (APP.get(), profile_for_signal(signal)) {
         crate::application::dictation::request_toggle_with_profile(app.clone(), profile_id);
     }
 }
 
-fn emit_press_start(signal: HotkeySignal, sequence: u32, delay_ms: u32, immediate: bool) {
+fn emit_press_start(signal: HotkeySignal, delay_ms: u32) {
     std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
     let slot = signal.slot as usize;
-    if slot >= MAX_DICTATION_BINDINGS
-        || HOTKEY_GENERATION.load(Ordering::SeqCst) != signal.generation
-        || (!immediate
-            && (!TRIGGERED[slot].load(Ordering::SeqCst)
-                || PRESS_HOLD_SEQUENCE[slot].load(Ordering::SeqCst) != sequence))
-    {
+    if !press_still_current(signal) || !TRIGGERED[slot].load(Ordering::SeqCst) {
         return;
     }
     PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
@@ -427,6 +443,7 @@ fn emit_press_start(signal: HotkeySignal, sequence: u32, delay_ms: u32, immediat
 }
 
 fn emit_press_end(signal: HotkeySignal) {
+    // 结束信号只随快捷键变更作废：同一键在信号排队期间再次按下，上一次的结束仍须送达。
     if HOTKEY_GENERATION.load(Ordering::SeqCst) == signal.generation {
         let Some(app) = APP.get() else { return };
         crate::application::dictation::request_stop(app.clone());
@@ -439,7 +456,11 @@ fn emit_cancel() {
     }
 }
 
-fn emit_subtitle_toggle() {
+fn emit_subtitle_toggle(sequence: u32) {
+    std::thread::sleep(Duration::from_millis(u64::from(MIN_HUMAN_PRESS_MS)));
+    if SUB_SEQUENCE.load(Ordering::SeqCst) != sequence {
+        return;
+    }
     if let Some(app) = APP.get() {
         crate::application::subtitles::request_toggle(app.clone());
     }
@@ -540,40 +561,44 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 }
                 if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
                     PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
-                    let sequence = PRESS_HOLD_SEQUENCE[slot]
+                    PRESS_DOWN_TIME[slot].store(kb.time, Ordering::SeqCst);
+                    let sequence = PRESS_SEQUENCE[slot]
                         .fetch_add(1, Ordering::SeqCst)
                         .wrapping_add(1);
-                    let immediate = DICTATION_ACTIVE.load(Ordering::SeqCst);
-                    if immediate {
-                        PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
+                    let stops_active = DICTATION_ACTIVE.load(Ordering::SeqCst);
+                    PRESS_STOPS_ACTIVE[slot].store(stops_active, Ordering::SeqCst);
+                    if !stops_active {
+                        crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
+                        signal_press_start(
+                            HotkeySignal {
+                                slot: slot as u8,
+                                generation,
+                                sequence,
+                            },
+                            PRESS_HOLD_START_MS.load(Ordering::SeqCst),
+                        );
                     }
-                    let delay_ms = if immediate {
-                        0
-                    } else {
-                        PRESS_HOLD_START_MS.load(Ordering::SeqCst)
-                    };
-                    crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
-                    signal_press_start(
-                        HotkeySignal {
-                            slot: slot as u8,
-                            generation,
-                        },
-                        sequence,
-                        delay_ms,
-                        immediate,
-                    );
                 }
             } else if let Some(slot) = matching_toggle {
                 if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
-                    crate::dlog!("[hotkey] 触发 toggle (slot={slot}, vk={vk:#04x})");
-                    signal_toggle(HotkeySignal {
-                        slot: slot as u8,
-                        generation,
-                    });
+                    PRESS_DOWN_TIME[slot].store(kb.time, Ordering::SeqCst);
+                    let sequence = PRESS_SEQUENCE[slot]
+                        .fetch_add(1, Ordering::SeqCst)
+                        .wrapping_add(1);
+                    crate::dlog!("[hotkey] 触发 toggle 候选 (slot={slot}, vk={vk:#04x})");
+                    signal_toggle(
+                        HotkeySignal {
+                            slot: slot as u8,
+                            generation,
+                            sequence,
+                        },
+                        MIN_HUMAN_PRESS_MS,
+                    );
                 }
             }
         } else if is_up {
             let mut handled_toggle_slots = [false; MAX_DICTATION_BINDINGS];
+            let mut synthetic_lock_tap = false;
             for slot in 0..MAX_DICTATION_BINDINGS {
                 if TARGET_VKS[slot].load(Ordering::SeqCst) != vk
                     || !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
@@ -591,19 +616,35 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 if let Some(toggle_slot) = paired_toggle {
                     handled_toggle_slots[toggle_slot] = true;
                 }
+                let stops_active = PRESS_STOPS_ACTIVE[slot].swap(false, Ordering::SeqCst);
+                if is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), kb.time) {
+                    PRESS_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
+                    PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
+                    crate::dlog!("[hotkey] 忽略模拟点击 (slot={slot}, vk={vk:#04x})");
+                    synthetic_lock_tap |= is_lock_key(vk);
+                    continue;
+                }
                 let press_hold_started = PRESS_HOLD_STARTED[slot].swap(false, Ordering::SeqCst);
-                if press_hold_started {
+                if stops_active || press_hold_started {
                     crate::dlog!("[hotkey] 触发长按结束 (slot={slot}, vk={vk:#04x})");
                     signal_press_end(HotkeySignal {
                         slot: slot as u8,
                         generation,
+                        sequence: PRESS_SEQUENCE[slot].load(Ordering::SeqCst),
                     });
                 } else if let Some(toggle_slot) = paired_toggle {
                     crate::dlog!("[hotkey] 触发配对短按 (slot={toggle_slot}, vk={vk:#04x})");
-                    signal_toggle(HotkeySignal {
-                        slot: toggle_slot as u8,
-                        generation,
-                    });
+                    let sequence = PRESS_SEQUENCE[toggle_slot]
+                        .fetch_add(1, Ordering::SeqCst)
+                        .wrapping_add(1);
+                    signal_toggle(
+                        HotkeySignal {
+                            slot: toggle_slot as u8,
+                            generation,
+                            sequence,
+                        },
+                        0,
+                    );
                 } else if is_lock_key(vk) {
                     unsafe { tap_key(vk) };
                 }
@@ -612,9 +653,17 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 if TARGET_VKS[slot].load(Ordering::SeqCst) == vk
                     && !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
                     && !handled_toggle_slots[slot]
+                    && TRIGGERED[slot].swap(false, Ordering::SeqCst)
+                    && is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), kb.time)
                 {
-                    TRIGGERED[slot].store(false, Ordering::SeqCst);
+                    PRESS_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
+                    crate::dlog!("[hotkey] 忽略模拟点击 (slot={slot}, vk={vk:#04x})");
+                    synthetic_lock_tap |= is_lock_key(vk);
                 }
+            }
+            if synthetic_lock_tap {
+                // 被吞掉的是其他程序要的锁定键切换，原样还给系统。
+                unsafe { tap_key(vk) };
             }
         }
         if matched_lock_key {
@@ -627,17 +676,25 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             let sub_mods = SUB_TARGET_MODS.load(Ordering::SeqCst);
             let lock = is_lock_key(sub_target);
             if is_down {
-                if modifiers_match(sub_mods) {
-                    if !SUB_TRIGGERED.swap(true, Ordering::SeqCst) {
-                        crate::dlog!("[hotkey] 触发字幕 toggle (vk={vk:#04x})");
-                        signal_subtitle_toggle();
-                    }
+                if modifiers_match(sub_mods) && !SUB_TRIGGERED.swap(true, Ordering::SeqCst) {
+                    SUB_DOWN_TIME.store(kb.time, Ordering::SeqCst);
+                    let sequence = SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                    crate::dlog!("[hotkey] 触发字幕 toggle 候选 (vk={vk:#04x})");
+                    signal_subtitle_toggle(sequence);
                 }
                 if lock {
                     return LRESULT(1);
                 }
             } else if is_up {
-                SUB_TRIGGERED.store(false, Ordering::SeqCst);
+                if SUB_TRIGGERED.swap(false, Ordering::SeqCst)
+                    && is_synthetic_tap(SUB_DOWN_TIME.load(Ordering::SeqCst), kb.time)
+                {
+                    SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+                    crate::dlog!("[hotkey] 忽略字幕模拟点击 (vk={vk:#04x})");
+                    if lock {
+                        unsafe { tap_key(vk) };
+                    }
+                }
                 if lock {
                     return LRESULT(1);
                 }
@@ -739,6 +796,13 @@ mod tests {
         set_hotkeys(&[]).unwrap();
         assert_eq!(TARGET_VKS[0].load(Ordering::SeqCst), 0);
         assert_eq!(TARGET_VKS[1].load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn instant_release_is_synthetic_tap_including_timestamp_wraparound() {
+        assert!(is_synthetic_tap(1000, 1001));
+        assert!(!is_synthetic_tap(1000, 1060));
+        assert!(is_synthetic_tap(u32::MAX - 2, 3));
     }
 
     #[test]
