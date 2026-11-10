@@ -92,7 +92,7 @@ export function DiagnosticSection() {
     }
     try {
       setStatus(await cmd<DiagnosticStatus>(CMD.setContentDiagnostics, { enabled }));
-      setMessage(enabled ? "正文日志已开启，将在 30 分钟后自动关闭" : "正文日志已关闭");
+      setMessage("");
     } catch (error) {
       setMessage(String(error));
     }

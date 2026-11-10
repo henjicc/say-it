@@ -79,4 +79,4 @@ export function stopPlayback() {
 export function playbackProgress() {
   return audio && audio.duration > 0 ? audio.currentTime / audio.duration : 0;
 }
-export function resetParams() { useAudioStore.setState({ labStatus: "已恢复默认参数并应用到速记。", labStatusTone: "ok" }); paramChanged(); }
+export function resetParams() { useAudioStore.setState({ labStatus: "" }); paramChanged(); }
