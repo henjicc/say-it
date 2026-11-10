@@ -25,6 +25,17 @@ fn asr(state: &RuntimeState, kind: &str, payload: Value) {
 }
 
 #[test]
+fn only_changed_recognition_text_counts_as_new_activity() {
+    let state = configured(DictationPhase::Recording);
+    let last_activity = || state.dictation_runtime.session.lock().unwrap().last_activity_at;
+    asr(&state, "result", json!({"text":"你好", "final":false}));
+    let first = last_activity().expect("新文字应记为活动");
+    asr(&state, "result", json!({"text":"你好", "final":false}));
+    asr(&state, "result", json!({"text":"  ", "final":false}));
+    assert_eq!(last_activity(), Some(first));
+}
+
+#[test]
 fn stalled_consumer_keeps_every_final_and_only_one_completion_action() {
     let state = configured(DictationPhase::Finishing);
     let mut broadcast = state.backend_events.subscribe();
