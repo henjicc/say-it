@@ -332,10 +332,47 @@ fn realtime_input_with_customization(
 }
 
 fn flush_events(runtime: &BuiltinSdkRuntime, app: &tauri::AppHandle, session_id: &str) -> bool {
-    runtime
-        .take_events()
+    without_superseded_partials(runtime.take_events())
+        .iter()
+        .any(|event| handle_sdk_event(app, session_id, event))
+}
+
+fn sdk_event_type(value: &Value) -> &str {
+    value
+        .get("event")
+        .unwrap_or(value)
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// 同一批里 partial 之后已有 final，这条 partial 显示的当前句会被 final 覆盖，不再转发。
+/// 火山在句子定稿的那一帧先发 partial 再发 final，这条 partial 还可能没有当前句、只剩累计全文
+/// （见 `partial_text`），转发会让已提交的句子再显示一遍，字幕还会把全文多翻译一次。
+fn without_superseded_partials(events: Vec<Value>) -> Vec<Value> {
+    let last_final = events
+        .iter()
+        .rposition(|event| sdk_event_type(event) == "final");
+    events
         .into_iter()
-        .any(|event| handle_sdk_event(app, session_id, &event))
+        .enumerate()
+        .filter(|(index, event)| {
+            sdk_event_type(event) != "partial" || last_final.is_none_or(|last| *index > last)
+        })
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// 宿主约定 partial 只是当前这一句（final 再把它提交）。SDK 0.12.0 的 partial `text`
+/// 各供应商含义不一：火山是整场累计全文、当前句另放在 `segment`；百炼的 segment 与 text
+/// 相同，Qwen 实时没有 segment、text 即当前句。所以有 segment 时取它，没有才用 text。
+/// SDK 统一 partial `text` 为当前句后可改回直接读 `text`。
+fn partial_text(event: &Value) -> &str {
+    event
+        .pointer("/segment/text")
+        .or_else(|| event.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 fn handle_sdk_event(app: &tauri::AppHandle, session_id: &str, value: &Value) -> bool {
@@ -355,7 +392,7 @@ fn handle_sdk_event(app: &tauri::AppHandle, session_id: &str, value: &Value) -> 
             app,
             session_id,
             "result",
-            json!({ "text": event.get("text").and_then(Value::as_str).unwrap_or_default(), "final": false }),
+            json!({ "text": partial_text(event), "final": false }),
         ),
         "final" => emit_asr_stream_event(
             app,
@@ -400,6 +437,30 @@ mod tests {
         let input = realtime_input_with_customization(&crate::providers::bailian_profile(), "qwen-audio-3.1-asr-flash-streaming", &customization);
         assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));
         assert!(input["options"].get("vocabularyId").is_none());
+    }
+
+    #[test]
+    fn partial_uses_the_current_segment_instead_of_the_cumulative_text() {
+        let volcengine = json!({
+            "type": "partial",
+            "text": "第一句。第二句正在说",
+            "segment": { "text": "第二句正在说" },
+        });
+        assert_eq!(partial_text(&volcengine), "第二句正在说");
+        assert_eq!(partial_text(&json!({ "type": "partial", "text": "当前句" })), "当前句");
+    }
+
+    #[test]
+    fn partial_before_a_final_in_the_same_batch_is_not_forwarded() {
+        // 火山句子定稿那一帧：partial 没有 segment、只有累计全文，紧跟着当前句的 final。
+        let batch = vec![
+            json!({ "type": "partial", "text": "第一句。第二句。" }),
+            json!({ "type": "final", "text": "第二句。" }),
+            json!({ "type": "partial", "text": "第一句。第二句。第三", "segment": { "text": "第三" } }),
+        ];
+        let kept = without_superseded_partials(batch);
+        let types: Vec<_> = kept.iter().map(sdk_event_type).collect();
+        assert_eq!(types, ["final", "partial"]);
     }
 
     #[test]
