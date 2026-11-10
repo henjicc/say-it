@@ -453,6 +453,8 @@ struct Session {
     error: Option<String>,
     pending_fallback: Option<PendingFallback>,
     last_voice_at: Option<Instant>,
+    /// 最近一次出现新识别文字（文件模式为检测到说话）的时间，见 `IDLE_AUTO_STOP`。
+    last_activity_at: Option<Instant>,
     silence_streaming: bool,
     raw_done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
     temp_audio_path: Option<PathBuf>,
@@ -1234,6 +1236,7 @@ async fn start_session(
             activation_target,
             app_identity,
             started_at: Some(Instant::now()),
+            last_activity_at: Some(Instant::now()),
             assistant_request,
             history_allowed,
             silence_streaming: false,
@@ -1351,6 +1354,81 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
 const FILE_MODE_MAX_RECORDING: Duration = Duration::from_secs(30 * 60);
 const FILE_MODE_LIMIT_NOTICE: &str = "单次听写录音已达 30 分钟上限，已自动停止并开始识别。";
 
+/// 误触发或忘了结束时，不让听写一直占着麦克风、持续消耗识别额度：
+/// 这么久没有新的识别文字就自动结束。实时模式不以“检测到声音”为准——背景音乐、
+/// 电视会被当成人声，连接一直开着却识别不出字；文件模式结束后才有文字，只能看有没有人说话。
+const IDLE_AUTO_STOP: Duration = Duration::from_secs(120);
+
+/// 自动结束时取消前的会话内容，由 `cancel_session` 在确认会话仍在录音后原子取出。
+struct IdleStopped {
+    text: String,
+    save_history: bool,
+    identity: crate::active_app_context::AppIdentity,
+    model: String,
+    duration_ms: u64,
+    trigger: DictationTrigger,
+}
+
+/// 自动结束时用户多半已在做别的事：已识别的原文只存进历史，不切窗口、不粘贴、
+/// 不调用智能处理，其余收尾与取消相同。
+async fn auto_stop_idle(app: AppHandle, epoch: u64) {
+    let stopped = match cancel_session(app.clone(), Some(epoch)).await {
+        Ok(Some(stopped)) => stopped,
+        Ok(None) => return,
+        Err(error) => {
+            crate::application::diagnostics::event(
+                "error",
+                "dictation.idleAutoStopFailed",
+                serde_json::json!({ "sessionId": epoch, "error": error }),
+            );
+            return;
+        }
+    };
+    crate::application::diagnostics::event(
+        "info",
+        "dictation.idleAutoStop",
+        serde_json::json!({ "sessionId": epoch, "textChars": stopped.text.chars().count() }),
+    );
+    let notice = if stopped.text.is_empty() {
+        "两分钟没有识别到内容，已自动结束".to_string()
+    } else if !stopped.save_history {
+        "两分钟没有识别到新内容，已自动结束".to_string()
+    } else {
+        let state = app.state::<RuntimeState>();
+        match crate::application::history::record(
+            &app,
+            crate::application::history::NewHistoryEntry {
+                task_kind: "dictation".into(),
+                source_text: stopped.text.clone(),
+                output_text: stopped.text,
+                smart_processing_applied: false,
+                instruction: String::new(),
+                app_name: stopped.identity.app_name,
+                process_name: stopped.identity.process_name,
+                provider_id: history_provider_id(&state, &stopped.model),
+                model_id: stopped.model,
+                status: "recognized".into(),
+                error: None,
+                duration_ms: stopped.duration_ms,
+            },
+        ) {
+            // 历史记录关闭或当前软件被排除时不会写入，返回空 id。
+            Ok(id) if id.is_empty() => "两分钟没有识别到新内容，已自动结束".to_string(),
+            Ok(_) => "两分钟没有识别到新内容，已自动结束，内容已存到历史记录".to_string(),
+            Err(error) => format!("已自动结束，但保存到历史记录失败：{error}"),
+        }
+    };
+    // 写历史期间用户可能已开始新的听写，提示不能盖住它。
+    if is_active(&app) {
+        return;
+    }
+    if stopped.trigger.is_floating_orb() {
+        crate::desktop::complete_floating_orb(app, "cancelled", notice, 3000);
+    } else {
+        let _ = crate::desktop::show_dictation_indicator_notice(&app, notice);
+    }
+}
+
 fn file_mode_recording_is_full(samples: usize, sample_rate: u32) -> bool {
     if sample_rate == 0 {
         return false;
@@ -1402,6 +1480,7 @@ fn spawn_raw_consumer(
                 }
             };
             let mut limit_reached = false;
+            let mut idle_expired = false;
             let level = rms(&samples);
             noise_floor.update(level, samples.len() as f32 / sample_rate.max(1) as f32);
             let (need_open, need_close, waveform_config) = {
@@ -1422,6 +1501,19 @@ fn spawn_raw_consumer(
                 if s.mode == Some(DictationMode::File) {
                     s.recorded_samples += samples.len();
                     limit_reached = file_mode_recording_is_full(s.recorded_samples, s.sample_rate);
+                    // 文件模式结束后才识别，自动结束会丢掉已录的话；只拦从头到尾没人说话的误触发，
+                    // 录到过说话后交给 30 分钟上限。
+                    if noise_floor.is_voice(level, s.prefs.dictation_silence_threshold) {
+                        s.last_activity_at = None;
+                    }
+                }
+                if matches!(
+                    s.phase,
+                    DictationPhase::Recording | DictationPhase::WaitingForVoice
+                ) {
+                    idle_expired = s
+                        .last_activity_at
+                        .is_some_and(|at| at.elapsed() >= IDLE_AUTO_STOP);
                 }
                 let mut need_open = false;
                 let mut need_close = false;
@@ -1506,6 +1598,10 @@ fn spawn_raw_consumer(
                 crate::dlog!("[dictation] file 模式录音达到上限，自动收尾");
                 publish_state(&app, Some(FILE_MODE_LIMIT_NOTICE.to_string()));
                 request_stop(app.clone());
+            }
+            if idle_expired && !stop_requested {
+                stop_requested = true;
+                tauri::async_runtime::spawn(auto_stop_idle(app.clone(), epoch));
             }
             if need_close {
                 disconnect_silent_asr(app.clone(), epoch);
@@ -1871,9 +1967,19 @@ async fn drain_file_recording(
 }
 
 async fn cancel(app: AppHandle) -> Result<(), String> {
+    cancel_session(app, None).await.map(|_| ())
+}
+
+/// `idle_epoch` 为自动结束的会话：只有它仍在录音或等待说话时才取消，并带出取消前的原文；
+/// 确认与清理在同一把操作锁内完成，期间用户手动结束或开始新会话都不会被误取消。
+async fn cancel_session(
+    app: AppHandle,
+    idle_epoch: Option<u64>,
+) -> Result<Option<IdleStopped>, String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
+    let mut idle_stopped = None;
     let (
         asr,
         file_job,
@@ -1889,6 +1995,27 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
             .session
             .lock()
             .map_err(|_| "听写状态锁失败")?;
+        if let Some(epoch) = idle_epoch {
+            if s.epoch != epoch
+                || !matches!(
+                    s.phase,
+                    DictationPhase::Recording | DictationPhase::WaitingForVoice
+                )
+            {
+                return Ok(None);
+            }
+            idle_stopped = Some(IdleStopped {
+                text: format!("{}{}", s.committed, s.segment).trim().to_string(),
+                save_history: s.history_allowed && s.assistant_request.is_none(),
+                identity: s.app_identity.clone().unwrap_or_default(),
+                model: s.prefs.asr_model.clone(),
+                duration_ms: s
+                    .started_at
+                    .map(|at| at.elapsed().as_millis() as u64)
+                    .unwrap_or(0),
+                trigger: s.trigger,
+            });
+        }
         let ids = (
             s.asr_session_id.take(),
             s.file_job_id.take(),
@@ -1964,13 +2091,14 @@ async fn cancel(app: AppHandle) -> Result<(), String> {
     }
     remove_temp(temp_path);
     hotkey::set_dictation_active(false);
-    if trigger.is_floating_orb() {
-        crate::desktop::complete_floating_orb(app.clone(), "cancelled", "已取消".to_string(), 800);
-    } else {
+    if !trigger.is_floating_orb() {
         let _ = crate::desktop::set_indicator_state(app.clone(), "hidden".into());
+    } else if idle_stopped.is_none() {
+        // 自动结束由调用方在悬浮球上显示原因，这里不再先闪一下「已取消」。
+        crate::desktop::complete_floating_orb(app.clone(), "cancelled", "已取消".to_string(), 800);
     }
     publish_state(&app, None);
-    Ok(())
+    Ok(idle_stopped)
 }
 
 fn publish_recognition_state(app: &AppHandle) {

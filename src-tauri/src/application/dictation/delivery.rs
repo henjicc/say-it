@@ -62,10 +62,27 @@ impl DictationRuntime {
         match kind {
             "result" => {
                 if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    let is_final = payload.get("final").and_then(Value::as_bool) == Some(true);
+                    // 供应商常重复发同样的中间结果，或用同样的文字发 final；只有文字变了才算新内容。
+                    let changed = text != session.segment;
+                    if changed && !text.trim().is_empty() {
+                        session.last_activity_at = Some(std::time::Instant::now());
+                    }
                     session.segment.clear();
                     session.segment.push_str(text);
-                    if payload.get("final").and_then(Value::as_bool) == Some(true) {
+                    if is_final {
                         commit_current_segment(&mut session);
+                    }
+                    if changed || is_final {
+                        crate::application::dev_trace::mark(
+                            "trace.asrResult",
+                            json!({
+                                "final": is_final,
+                                "rawText": text,
+                                "shownChars": session.committed.chars().count()
+                                    + session.segment.chars().count(),
+                            }),
+                        );
                     }
                 }
             }
