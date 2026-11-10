@@ -73,17 +73,6 @@ impl DictationRuntime {
                     if is_final {
                         commit_current_segment(&mut session);
                     }
-                    if changed || is_final {
-                        crate::application::dev_trace::mark(
-                            "trace.asrResult",
-                            json!({
-                                "final": is_final,
-                                "rawText": text,
-                                "shownChars": session.committed.chars().count()
-                                    + session.segment.chars().count(),
-                            }),
-                        );
-                    }
                 }
             }
             "finish" | "finish_timeout" if session.phase == DictationPhase::Finishing => {
