@@ -146,14 +146,14 @@ export function useStartupSettings() {
       .catch((e) => setStartupMsg(`读取启动设置失败：${String(e)}`));
   }, []);
 
-  const saveStartup = async (next: StartupStatus, message: string) => {
+  const saveStartup = async (next: StartupStatus) => {
     try {
       const status = await cmd<StartupStatus>(CMD.setStartupSettings, {
         autostart: next.autostart,
         silentStart: next.silentStart,
       });
       setStartup(status);
-      setStartupMsg(message);
+      setStartupMsg("");
     } catch (e) {
       setStartupMsg(`保存启动设置失败：${String(e)}`);
       cmd<StartupStatus>(CMD.getStartupSettings).then(setStartup).catch(() => {});
@@ -173,10 +173,7 @@ export function SettingsStartupPanel() {
             checked={!!startup.autostart}
             label="开机自启"
             onChange={(v) =>
-              saveStartup(
-                { autostart: v, silentStart: startup.silentStart },
-                v ? "已开启开机自启。" : "已关闭开机自启。",
-              )
+              saveStartup({ autostart: v, silentStart: startup.silentStart })
             }
           />
         </Row>
@@ -190,10 +187,7 @@ export function SettingsStartupPanel() {
             disabled={!startup.autostart}
             label="静默启动"
             onChange={(v) =>
-              saveStartup(
-                { autostart: startup.autostart, silentStart: v },
-                v ? "已开启静默启动（仅开机自启时生效）。" : "已关闭静默启动。",
-              )
+              saveStartup({ autostart: startup.autostart, silentStart: v })
             }
           />
         </Row>

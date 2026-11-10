@@ -102,7 +102,7 @@ export function useTranscriptionParamsSync({
       lastSavedRef.current = key;
       try {
         await save(params);
-        onMessage("识别参数已保存。");
+        onMessage("");
       } catch (error) {
         lastSavedRef.current = previous;
         onMessage(`识别参数保存失败：${String(error)}`);

@@ -110,7 +110,7 @@ async function completeSubtitleCapture(
   updateSubtitleShortcutDisplay();
   try {
     await saveSubtitleShortcut();
-    hooks.setStatus(`实时字幕快捷键已设为：${subtitleComboLabel()}（在任意软件中按下即可）`, "ok");
+    hooks.setStatus("");
   } catch (error) {
     ({ subKeyCode, subCtrl, subShift, subAlt, subMeta } = prev);
     updateSubtitleShortcutDisplay();
@@ -179,7 +179,7 @@ export async function clearSubtitleShortcut() {
   updateSubtitleShortcutDisplay();
   try {
     await saveSubtitleShortcut();
-    hooks.setStatus("已清除实时字幕快捷键。");
+    hooks.setStatus("");
   } catch (error) {
     ({ subKeyCode, subCtrl, subShift, subAlt, subMeta } = prev);
     updateSubtitleShortcutDisplay();

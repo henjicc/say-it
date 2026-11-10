@@ -61,7 +61,7 @@ export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
     setPrefs(next);
     try {
       await cmd(CMD.updateAppSettings, { domain: "history", value: next });
-      setMessage("历史设置已保存");
+      setMessage("");
     } catch (error) {
       setMessage(String(error));
     }

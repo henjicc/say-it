@@ -165,7 +165,6 @@ export function PluginManagerPanel() {
       const next = await cmd<PluginSnapshot>(CMD.setProviderPluginEnabled, { pluginId: plugin.id, enabled });
       setSnapshot(next);
       await refreshPluginConsumers();
-      setMessage(`${plugin.name}已${enabled ? "启用" : "停用"}。`);
     } catch (error) {
       setMessage(`更新插件状态失败：${String(error)}`);
     } finally {

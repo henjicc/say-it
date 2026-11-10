@@ -210,7 +210,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => setMessage(`读取设置失败：${String(error)}`)); }, []);
   const save = async (next: AssistantPrefs) => {
     setPrefs(next);
-    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); setMessage("智能助手设置已保存"); }
+    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); setMessage(""); }
     catch (error) { setMessage(`保存失败：${String(error)}`); }
   };
   const updateFeature = (nextFeature: AssistantFeaturePreferences) => save({ ...prefs, [action]: nextFeature });

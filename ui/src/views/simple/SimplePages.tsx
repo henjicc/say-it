@@ -88,7 +88,7 @@ export function SimpleSettings() {
       </Group>
       <Group>
         <Row label="开机自启" message={startupMsg && <span>{startupMsg}</span>}>
-          <Switch checked={!!startup.autostart} onChange={(value) => void saveStartup({ autostart: value, silentStart: startup.silentStart }, value ? "已开启开机自启。" : "已关闭开机自启。")} label="开机自启" />
+          <Switch checked={!!startup.autostart} onChange={(value) => void saveStartup({ autostart: value, silentStart: startup.silentStart })} label="开机自启" />
         </Row>
         <Row label="提示音">
           <Switch checked={cueEnabled} onChange={(value) => void patchDict({ cueEnabled: value })} label="提示音" />
