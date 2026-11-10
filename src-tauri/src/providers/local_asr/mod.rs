@@ -13,12 +13,14 @@ use sherpa_onnx::{
 
 use super::model_download;
 use super::plugin::{LocalModelSpec, ModelPackManifest};
+use super::RequestCustomization;
 
 const SAMPLE_RATE: i32 = 16_000;
 
 pub mod cache;
 mod file;
 mod punctuation;
+mod transcribe;
 pub(crate) use file::recognize_audio_file;
 pub use punctuation::add_punctuation;
 
@@ -159,23 +161,47 @@ fn create_online_recognizer(spec: &LocalModelSpec) -> Result<OnlineRecognizer, S
     Ok(recognizer)
 }
 
+/// 把一个 VAD 句段识别成文本的整句识别器。
+#[derive(Clone)]
+pub(super) enum SegmentRecognizer {
+    Sherpa(Arc<Mutex<OfflineRecognizer>>),
+    Transcribe(Arc<transcribe::TranscribeRecognizer>),
+}
+
 pub struct OfflineEngine {
-    recognizer: Arc<Mutex<OfflineRecognizer>>,
+    recognizer: SegmentRecognizer,
+    customization: RequestCustomization,
 }
 
 impl OfflineEngine {
-    fn create_realtime(spec: &LocalModelSpec) -> Result<Self, String> {
+    fn create_realtime(
+        spec: &LocalModelSpec,
+        customization: RequestCustomization,
+    ) -> Result<Self, String> {
         let shared = cache::acquire(spec)?;
-        let cache::Recognizer::Offline(recognizer) = shared.as_ref() else {
-            return Err("模型引擎不是离线 ASR".into());
+        let cache::Recognizer::Segment(recognizer) = shared.as_ref() else {
+            return Err("模型引擎不是整句 ASR".into());
         };
-        let recognizer = recognizer.clone();
-        Ok(Self { recognizer })
+        Ok(Self {
+            recognizer: recognizer.clone(),
+            customization,
+        })
     }
 
-    fn create_temporary(spec: &LocalModelSpec) -> Result<Self, String> {
+    fn fast_enough_for_preview(&self) -> bool {
+        match &self.recognizer {
+            SegmentRecognizer::Sherpa(_) => false,
+            SegmentRecognizer::Transcribe(recognizer) => recognizer.fast_enough_for_preview(),
+        }
+    }
+
+    fn create_temporary(
+        spec: &LocalModelSpec,
+        customization: RequestCustomization,
+    ) -> Result<Self, String> {
         Ok(Self {
-            recognizer: Arc::new(Mutex::new(create_offline_recognizer(spec)?)),
+            recognizer: create_segment_recognizer(spec)?,
+            customization,
         })
     }
 
@@ -187,16 +213,33 @@ impl OfflineEngine {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        // 只有实时会话共享识别器，锁只覆盖一个句段。
-        let recognizer = lock_recognizer(&self.recognizer, cancel)?;
-        let stream = recognizer.create_stream();
-        stream.accept_waveform(SAMPLE_RATE, samples);
-        check_cancel(cancel)?;
-        recognizer.decode(&stream);
-        stream
-            .get_result()
-            .map(|result| result.text.trim().to_string())
-            .ok_or("离线模型未返回识别结果".into())
+        match &self.recognizer {
+            SegmentRecognizer::Sherpa(recognizer) => {
+                // 只有实时会话共享识别器，锁只覆盖一个句段。
+                let recognizer = lock_recognizer(recognizer, cancel)?;
+                let stream = recognizer.create_stream();
+                stream.accept_waveform(SAMPLE_RATE, samples);
+                check_cancel(cancel)?;
+                recognizer.decode(&stream);
+                stream
+                    .get_result()
+                    .map(|result| result.text.trim().to_string())
+                    .ok_or("离线模型未返回识别结果".into())
+            }
+            SegmentRecognizer::Transcribe(recognizer) => {
+                recognizer.recognize(samples, &self.customization, cancel)
+            }
+        }
+    }
+}
+
+fn create_segment_recognizer(spec: &LocalModelSpec) -> Result<SegmentRecognizer, String> {
+    match spec.engine.as_str() {
+        "sherpa-onnx-offline" => create_offline_recognizer(spec)
+            .map(|value| SegmentRecognizer::Sherpa(Arc::new(Mutex::new(value)))),
+        "transcribe-cpp" => transcribe::create_recognizer(spec)
+            .map(|value| SegmentRecognizer::Transcribe(Arc::new(value))),
+        engine => Err(format!("模型引擎 {engine} 不是整句 ASR")),
     }
 }
 
@@ -226,15 +269,70 @@ pub struct OfflineVadSession {
     /// 之前各轮 VAD 累计的样本数。`SpeechSegment::start` 只在本轮内计数，
     /// reset 会清零，因此句段的绝对位置必须由这里补齐。
     base_samples: u64,
+    preview: Option<Preview>,
+}
+
+/// 当前这句话的预览：VAD 还没切出句段时，隔一段时间把已说的部分整体识别一遍。
+#[derive(Default)]
+struct Preview {
+    /// VAD 确认语音前的一小段前导音频，加上确认之后的全部音频。
+    speech: Vec<f32>,
+    /// 上次预览时 `speech` 的长度。
+    previewed_samples: usize,
+    last_cost: std::time::Duration,
+    text: Option<String>,
+    /// 这句话已经有预览被取走，结束时必须给出替换它的结果。
+    shown: bool,
+}
+
+impl Preview {
+    /// VAD 要听到一小段语音才置位，这段开头靠保留的前导音频补回。
+    const LEAD_SAMPLES: usize = SAMPLE_RATE as usize / 2;
+    const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(800);
+
+    fn push(&mut self, window: &[f32], in_speech: bool) {
+        self.speech.extend_from_slice(window);
+        if !in_speech && self.speech.len() > Self::LEAD_SAMPLES {
+            let excess = self.speech.len() - Self::LEAD_SAMPLES;
+            self.speech.drain(..excess);
+            self.previewed_samples = 0;
+        }
+    }
+
+    /// 预览占用的时间不超过新增音频时长的四分之一，识别变慢时自动拉长间隔。
+    fn due(&self, in_speech: bool) -> bool {
+        let interval = Self::MIN_INTERVAL.max(self.last_cost * 4);
+        let fresh = self.speech.len().saturating_sub(self.previewed_samples);
+        in_speech && fresh as f64 >= interval.as_secs_f64() * SAMPLE_RATE as f64
+    }
+
+    /// 最终结果为空（咳嗽、噪声被预览误认成了字）时不会有 final 去替换已显示的预览，
+    /// 要用一条空预览把它清掉。
+    fn sentence_finished(&mut self, recognized: bool) {
+        self.speech.clear();
+        self.previewed_samples = 0;
+        self.text = (self.shown && !recognized).then(String::new);
+        self.shown = false;
+    }
 }
 
 impl OfflineVadSession {
-    pub fn create_realtime(spec: &LocalModelSpec) -> Result<Self, String> {
-        Self::with_engine(spec, OfflineEngine::create_realtime(spec)?)
+    pub fn create_realtime(
+        spec: &LocalModelSpec,
+        customization: RequestCustomization,
+    ) -> Result<Self, String> {
+        let engine = OfflineEngine::create_realtime(spec, customization)?;
+        let preview = engine.fast_enough_for_preview().then(Preview::default);
+        let mut session = Self::with_engine(spec, engine)?;
+        session.preview = preview;
+        Ok(session)
     }
 
-    pub fn create_temporary(spec: &LocalModelSpec) -> Result<Self, String> {
-        Self::with_engine(spec, OfflineEngine::create_temporary(spec)?)
+    pub fn create_temporary(
+        spec: &LocalModelSpec,
+        customization: RequestCustomization,
+    ) -> Result<Self, String> {
+        Self::with_engine(spec, OfflineEngine::create_temporary(spec, customization)?)
     }
 
     fn with_engine(spec: &LocalModelSpec, engine: OfflineEngine) -> Result<Self, String> {
@@ -259,6 +357,7 @@ impl OfflineVadSession {
             window_size: window_size as usize,
             fed_samples: 0,
             base_samples: 0,
+            preview: None,
         })
     }
 
@@ -277,8 +376,42 @@ impl OfflineVadSession {
             self.vad.accept_waveform(window);
             self.fed_samples += window.len() as u64;
             results.extend(self.drain(cancel)?);
+            self.update_preview(window, cancel)?;
         }
         Ok(results)
+    }
+
+    /// 当前这句话的最新预览；同一份只取得到一次。
+    pub fn take_preview(&mut self) -> Option<String> {
+        let preview = self.preview.as_mut()?;
+        let text = preview.text.take()?;
+        preview.shown = !text.is_empty();
+        Some(text)
+    }
+
+    fn update_preview(
+        &mut self,
+        window: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<(), String> {
+        let Some(preview) = &mut self.preview else {
+            return Ok(());
+        };
+        let in_speech = self.vad.detected();
+        preview.push(window, in_speech);
+        if !preview.due(in_speech) {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let text = self.engine.recognize(&preview.speech, cancel)?;
+        preview.last_cost = started.elapsed();
+        preview.previewed_samples = preview.speech.len();
+        // 模型把每次输入都当成完整的话来收尾，而这句话其实还在说。
+        let text = text.trim_end_matches(['。', '.']);
+        if !text.is_empty() {
+            preview.text = Some(text.to_string());
+        }
+        Ok(())
     }
 
     pub fn finish(
@@ -306,6 +439,9 @@ impl OfflineVadSession {
         let mut results = Vec::new();
         while let Some(segment) = self.vad.front() {
             let text = self.engine.recognize(segment.samples(), cancel)?;
+            if let Some(preview) = &mut self.preview {
+                preview.sentence_finished(!text.is_empty());
+            }
             if !text.is_empty() {
                 let start = self.base_samples + segment.start().max(0) as u64;
                 let end = start + segment.n().max(0) as u64;
@@ -332,7 +468,7 @@ fn recognize_file_segments(
     spec: &LocalModelSpec,
     samples: &[f32],
 ) -> Result<Vec<LocalSegment>, String> {
-    let mut session = OfflineVadSession::create_temporary(spec)?;
+    let mut session = OfflineVadSession::create_temporary(spec, RequestCustomization::default())?;
     let mut results = Vec::new();
     for (index, chunk) in samples.chunks(SAMPLE_RATE as usize * 10).enumerate() {
         results.extend(session.accept(chunk, None)?);
@@ -439,6 +575,20 @@ mod tests {
             lock_recognizer(&recognizer, None).is_ok(),
             "取消必须释放识别器锁"
         );
+    }
+
+    #[test]
+    fn shown_preview_is_cleared_when_its_sentence_turns_out_empty() {
+        let mut preview = Preview {
+            shown: true,
+            ..Default::default()
+        };
+        preview.sentence_finished(false);
+        assert_eq!(preview.text.as_deref(), Some(""));
+        // 有最终结果的句子由 final 替换预览，不需要再发清除。
+        preview.shown = true;
+        preview.sentence_finished(true);
+        assert_eq!(preview.text, None);
     }
 
     #[test]
@@ -563,7 +713,7 @@ mod tests {
         let spec = sensevoice_spec();
         let wave_path = spec.model_dir.join("test.wav");
         let wave = sherpa_onnx::Wave::read(wave_path.to_str().unwrap()).unwrap();
-        let direct = OfflineEngine::create_temporary(&spec)
+        let direct = OfflineEngine::create_temporary(&spec, RequestCustomization::default())
             .unwrap()
             .recognize(wave.samples(), None)
             .unwrap();
@@ -589,7 +739,8 @@ mod tests {
 
         // 实时听写按小块喂入，是 VAD 状态最容易被破坏的路径（drain 里误加 reset 会
         // 让这里一个句段都切不出来），必须与文件模式分开回归。
-        let mut session = OfflineVadSession::create_temporary(&spec).unwrap();
+        let mut session =
+            OfflineVadSession::create_temporary(&spec, RequestCustomization::default()).unwrap();
         let mut realtime = Vec::new();
         for chunk in wave.samples().chunks(1_600) {
             realtime.extend(session.accept(chunk, None).unwrap());
@@ -627,6 +778,71 @@ mod tests {
         );
         println!("SenseVoice PoC: {segmented}");
         println!("SenseVoice 首句时间轴: {:?}", segments.first());
+    }
+
+    #[test]
+    #[ignore = "需要 SAYIT_QWEN3_ASR_POC_DIR 指向 Qwen3-ASR 1.7B Q5 权重、silero_vad.onnx 与中文 test.wav"]
+    fn recognizes_qwen3_asr_wave_with_punctuation_through_vad() {
+        let model_dir = PathBuf::from(std::env::var("SAYIT_QWEN3_ASR_POC_DIR").unwrap());
+        let spec = LocalModelSpec {
+            manifest_version: "1.0.0".into(),
+            plugin_id: "poc".into(),
+            provider_id: "poc".into(),
+            engine: "transcribe-cpp".into(),
+            model_dir: model_dir.clone(),
+            files: vec![
+                ModelPackFileManifest {
+                    path: "Qwen3-ASR-1.7B-Q5_K_M.gguf".into(),
+                    sha256: "034c557fe92ff8fcd9a9c041cbdaad347be0a86a58d3a348f63cf3f0180879d0"
+                        .into(),
+                    size_bytes: 1_517_290_464,
+                    download: None,
+                },
+                ModelPackFileManifest {
+                    path: "silero_vad.onnx".into(),
+                    sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+                        .into(),
+                    size_bytes: 643_854,
+                    download: None,
+                },
+            ],
+            params: serde_json::json!({
+                "model": "Qwen3-ASR-1.7B-Q5_K_M.gguf",
+                "vadModel": "silero_vad.onnx"
+            }),
+        };
+        let wave_path = model_dir.join("test.wav");
+        let wave = sherpa_onnx::Wave::read(wave_path.to_str().unwrap()).unwrap();
+        let direct = OfflineEngine::create_temporary(&spec, RequestCustomization::default())
+            .unwrap()
+            .recognize(wave.samples(), None)
+            .unwrap();
+        assert!(
+            direct.contains(['，', '。', '？']),
+            "Qwen3-ASR 应自带标点：{direct:?}"
+        );
+        let mut session =
+            OfflineVadSession::create_realtime(&spec, RequestCustomization::default()).unwrap();
+        let previewing = session.preview.is_some();
+        let mut segments = Vec::new();
+        let mut previews = Vec::new();
+        for chunk in wave.samples().chunks(1_600) {
+            segments.extend(session.accept(chunk, None).unwrap());
+            previews.extend(session.take_preview());
+        }
+        segments.extend(session.finish(None).unwrap());
+        let segmented = joined(&segments);
+        assert!(
+            segmented.chars().count() * 2 >= direct.chars().count(),
+            "VAD 分段结果明显短于整段识别：分段={segmented:?} 整段={direct:?}"
+        );
+        assert_eq!(
+            previewing,
+            !previews.is_empty(),
+            "有 GPU 时说话过程中应给出预览，纯 CPU 时不应预览"
+        );
+        println!("预览: {previews:#?}");
+        println!("Qwen3-ASR 整段: {direct}\nQwen3-ASR 分段: {segmented}");
     }
 
     fn joined(segments: &[LocalSegment]) -> String {

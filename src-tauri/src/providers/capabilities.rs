@@ -55,6 +55,7 @@ pub enum FileRecognitionProvider {
     },
     Local {
         spec: LocalModelSpec,
+        customization: RequestCustomization,
     },
 }
 #[cfg(test)]
@@ -84,7 +85,10 @@ pub fn file_recognition_for_with_extensions(
     customization: RequestCustomization,
 ) -> Result<FileRecognitionProvider, CapabilityError> {
     if let Some(spec) = local {
-        return Ok(FileRecognitionProvider::Local { spec });
+        return Ok(FileRecognitionProvider::Local {
+            spec,
+            customization,
+        });
     }
     if let Some(spec) = plugin {
         return Ok(FileRecognitionProvider::Plugin {
@@ -155,7 +159,10 @@ impl FileRecognitionProvider {
                 serde_json::from_value(value)
                     .map_err(|error| format!("插件文件识别结果格式错误：{error}"))
             }
-            Self::Local { spec } => {
+            Self::Local {
+                spec,
+                customization,
+            } => {
                 if cancel
                     .as_ref()
                     .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
@@ -163,12 +170,14 @@ impl FileRecognitionProvider {
                     return Err("录音识别已取消".into());
                 }
                 let spec = spec.clone();
+                let customization = customization.clone();
                 let path = path.to_string();
                 let worker_cancel = cancel.clone();
                 let result = tauri::async_runtime::spawn_blocking(move || {
                     let (segments, duration_ms) = super::local_asr::recognize_audio_file(
                         &spec,
                         &path,
+                        &customization,
                         worker_cancel.as_deref(),
                     )?;
                     // VAD 句段边界即字幕时间轴，逐句透传，文稿对齐与字幕转写才能用上本地模型。

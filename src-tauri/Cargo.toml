@@ -116,11 +116,14 @@ windows = { version = "0.58", features = [
     "Foundation_Numerics",
 ] }
 winreg = "0.52"
+# 后端按运行时可加载模块发布：各档 CPU 指令集与 Vulkan 各一个 DLL，由 transcribe.dll 按本机挑选。
+transcribe-cpp = { version = "0.4.1", default-features = false, features = ["vulkan", "dynamic-backends"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 ocr-rs = { version = "=2.3.2", default-features = false }
 sayit-overlay-macos = { path = "crates/overlay-macos" }
+transcribe-cpp = { version = "0.4.1", default-features = false, features = ["metal"] }
 
 [features]
 default = ["custom-protocol"]

@@ -1,9 +1,10 @@
-//! 仅实时会话共享常驻识别器；文件识别独占临时识别器，音频流与 VAD 归会话所有。
+//! 仅实时会话共享识别器：开了常驻的一直留着，没开的用完再留一小段时间；
+//! 文件识别独占临时识别器，音频流与 VAD 归会话所有。
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use sherpa_onnx::{OfflinePunctuation, OfflineRecognizer, OnlineRecognizer};
+use sherpa_onnx::{OfflinePunctuation, OnlineRecognizer};
 
 use crate::providers::plugin::LocalModelSpec;
 
@@ -37,7 +38,7 @@ impl From<&LocalModelSpec> for ModelKey {
 }
 
 pub(super) enum Recognizer {
-    Offline(Arc<Mutex<OfflineRecognizer>>),
+    Segment(super::SegmentRecognizer),
     Online(Arc<Mutex<OnlineRecognizer>>),
     Punctuation(Arc<Mutex<OfflinePunctuation>>),
 }
@@ -60,11 +61,23 @@ struct Entry<T> {
     state: Mutex<LoadState<T>>,
 }
 
+/// 没开常驻的模型从一次实时会话开始起继续留在内存里的时长：连续听写不必每次重新加载，
+/// 这么久没有新的会话用到它就释放。
+const LINGER: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+struct Lingering<T> {
+    value: Arc<T>,
+    /// 每次使用都换一个新值，过期任务据此判断期间有没有被再次用到。
+    turn: u64,
+}
+
 struct ResidentCache<T> {
     entries: HashMap<ModelKey, Arc<Entry<T>>>,
     suspended: HashMap<String, usize>,
     disabled: bool,
     all_suspended: usize,
+    lingering: HashMap<ModelKey, Lingering<T>>,
+    turns: u64,
 }
 
 impl<T> Default for ResidentCache<T> {
@@ -74,6 +87,8 @@ impl<T> Default for ResidentCache<T> {
             suspended: HashMap::new(),
             disabled: false,
             all_suspended: 0,
+            lingering: HashMap::new(),
+            turns: 0,
         }
     }
 }
@@ -82,25 +97,67 @@ impl<T> ResidentCache<T> {
     fn reconcile(&mut self, specs: Vec<LocalModelSpec>) -> Vec<(LocalModelSpec, Arc<Entry<T>>)> {
         let desired: HashMap<_, _> = specs
             .into_iter()
-            .filter(|spec| {
-                !self.disabled
-                    && self.all_suspended == 0
-                    && !self.suspended.contains_key(&spec.plugin_id)
-            })
+            .filter(|spec| !self.blocked(&spec.plugin_id))
             .map(|spec| (ModelKey::from(&spec), spec))
             .collect();
         self.entries.retain(|key, _| desired.contains_key(key));
         let mut jobs = Vec::new();
         for (key, spec) in desired {
+            // 刚用过还留在内存里的同一个模型直接转为常驻，不再加载第二份。
+            let lingering = self.lingering.remove(&key);
             self.entries.entry(key).or_insert_with(|| {
+                let state = match lingering {
+                    Some(item) => LoadState::Ready(item.value),
+                    None => LoadState::Loading,
+                };
+                let loading = matches!(state, LoadState::Loading);
                 let entry = Arc::new(Entry {
-                    state: Mutex::new(LoadState::Loading),
+                    state: Mutex::new(state),
                 });
-                jobs.push((spec, entry.clone()));
+                if loading {
+                    jobs.push((spec, entry.clone()));
+                }
                 entry
             });
         }
+        // 启用状态刚变过，停用的包不能继续占着内存。
+        self.lingering.clear();
         jobs
+    }
+
+    fn blocked(&self, plugin_id: &str) -> bool {
+        self.disabled || self.all_suspended > 0 || self.suspended.contains_key(plugin_id)
+    }
+
+    /// 取出仍留在内存里的同一个模型，并把它的释放时间往后推。
+    fn reuse_lingering(&mut self, key: &ModelKey) -> Option<(Arc<T>, u64)> {
+        let lingering = self.lingering.get_mut(key)?;
+        self.turns += 1;
+        lingering.turn = self.turns;
+        Some((lingering.value.clone(), lingering.turn))
+    }
+
+    /// 包正在替换、数据根已迁移，或这个模型已开常驻（预载还没完成）时不留，返回 `None`：
+    /// 前两种情况不能再占着文件，后一种等预载完成就会有两份。
+    fn linger(&mut self, spec: &LocalModelSpec, value: Arc<T>) -> Option<u64> {
+        let key = ModelKey::from(spec);
+        if self.blocked(&spec.plugin_id) || self.entries.contains_key(&key) {
+            return None;
+        }
+        self.turns += 1;
+        let turn = self.turns;
+        self.lingering.insert(key, Lingering { value, turn });
+        Some(turn)
+    }
+
+    fn expire_lingering(&mut self, key: &ModelKey, turn: u64) {
+        if self
+            .lingering
+            .get(key)
+            .is_some_and(|item| item.turn == turn)
+        {
+            self.lingering.remove(key);
+        }
     }
 
     fn get(&self, spec: &LocalModelSpec) -> Result<Option<Arc<T>>, String> {
@@ -123,14 +180,15 @@ fn cache() -> &'static Mutex<ResidentCache<Recognizer>> {
 pub fn supports_residency(engine: &str) -> bool {
     matches!(
         engine,
-        "sherpa-onnx-offline" | "sherpa-onnx-online" | "sherpa-onnx-punctuation"
+        "sherpa-onnx-offline" | "transcribe-cpp" | "sherpa-onnx-online" | "sherpa-onnx-punctuation"
     )
 }
 
 fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
     match spec.engine.as_str() {
-        "sherpa-onnx-offline" => super::create_offline_recognizer(spec)
-            .map(|value| Recognizer::Offline(Arc::new(Mutex::new(value)))),
+        "sherpa-onnx-offline" | "transcribe-cpp" => {
+            super::create_segment_recognizer(spec).map(Recognizer::Segment)
+        }
         "sherpa-onnx-online" => super::create_online_recognizer(spec)
             .map(|value| Recognizer::Online(Arc::new(Mutex::new(value)))),
         "sherpa-onnx-punctuation" => super::punctuation::create_punctuator(spec)
@@ -140,12 +198,34 @@ fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
 }
 
 pub(super) fn acquire(spec: &LocalModelSpec) -> Result<Arc<Recognizer>, String> {
-    // 全局锁只查询缓存，不覆盖模型加载或实时解码。
-    let ready = cache()
-        .lock()
-        .map_err(|_| "本地模型缓存锁失败")?
-        .get(spec)?;
-    acquire_with(ready, || load(spec))
+    // 全局锁只查询和登记缓存，不覆盖模型加载或实时解码。
+    let lock = || cache().lock().map_err(|_| "本地模型缓存锁失败");
+    let key = ModelKey::from(spec);
+    let (value, turn) = {
+        let mut cache = lock()?;
+        if let Some(value) = cache.get(spec)? {
+            return Ok(value);
+        }
+        match cache.reuse_lingering(&key) {
+            Some((value, turn)) => (value, Some(turn)),
+            None => {
+                drop(cache);
+                let value = Arc::new(load(spec)?);
+                let turn = lock()?.linger(spec, value.clone());
+                (value, turn)
+            }
+        }
+    };
+    if let Some(turn) = turn {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(LINGER).await;
+            match cache().lock() {
+                Ok(mut cache) => cache.expire_lingering(&key, turn),
+                Err(error) => eprintln!("[local-asr] 释放闲置模型失败：{error}"),
+            }
+        });
+    }
+    Ok(value)
 }
 
 pub fn status(spec: &LocalModelSpec) -> Result<ResidencyStatus, String> {
@@ -214,6 +294,7 @@ pub fn suspend(plugin_id: &str) -> Result<Suspension, String> {
     let mut cache = cache().lock().map_err(|_| "本地模型缓存锁失败")?;
     *cache.suspended.entry(plugin_id.into()).or_default() += 1;
     cache.entries.retain(|key, _| key.plugin_id != plugin_id);
+    cache.lingering.retain(|key, _| key.plugin_id != plugin_id);
     Ok(Suspension(Some(plugin_id.into())))
 }
 
@@ -242,6 +323,7 @@ pub fn disable_until_restart() -> Result<(), String> {
     let mut cache = cache().lock().map_err(|_| "本地模型缓存锁失败")?;
     cache.disabled = true;
     cache.entries.clear();
+    cache.lingering.clear();
     Ok(())
 }
 
@@ -249,17 +331,8 @@ pub fn suspend_all() -> Result<Suspension, String> {
     let mut cache = cache().lock().map_err(|_| "本地模型缓存锁失败")?;
     cache.all_suspended += 1;
     cache.entries.clear();
+    cache.lingering.clear();
     Ok(Suspension(None))
-}
-
-fn acquire_with<T>(
-    ready: Option<Arc<T>>,
-    load: impl FnOnce() -> Result<T, String>,
-) -> Result<Arc<T>, String> {
-    match ready {
-        Some(value) => Ok(value),
-        None => load().map(Arc::new),
-    }
 }
 
 #[cfg(test)]
@@ -291,10 +364,7 @@ mod tests {
         let jobs = cache.reconcile(vec![spec.clone()]);
         let value = Arc::new(42);
         *jobs[0].1.state.lock().unwrap() = LoadState::Ready(value.clone());
-        let actual = acquire_with(cache.get(&spec).unwrap(), || {
-            panic!("命中缓存不得校验或创建模型")
-        })
-        .unwrap();
+        let actual = cache.get(&spec).unwrap().unwrap();
         assert!(Arc::ptr_eq(&value, &actual));
         assert!(cache.reconcile(vec![spec]).is_empty());
     }
@@ -350,24 +420,51 @@ mod tests {
     }
 
     #[test]
-    fn failed_or_loading_preload_falls_back_to_temporary_creation() {
+    fn failed_or_loading_preload_is_not_served_from_cache() {
         let spec = spec();
         let mut cache = ResidentCache::<usize>::default();
         let jobs = cache.reconcile(vec![spec.clone()]);
-        assert_eq!(
-            *acquire_with(cache.get(&spec).unwrap(), || Ok(10)).unwrap(),
-            10
-        );
+        assert!(cache.get(&spec).unwrap().is_none());
         *jobs[0].1.state.lock().unwrap() = LoadState::Failed("校验失败".into());
-        assert_eq!(
-            *acquire_with(cache.get(&spec).unwrap(), || Ok(20)).unwrap(),
-            20
-        );
-        assert_eq!(
-            acquire_with::<usize>(cache.get(&spec).unwrap(), || Err("临时加载失败".into()))
-                .unwrap_err(),
-            "临时加载失败"
-        );
+        assert!(cache.get(&spec).unwrap().is_none());
+    }
+
+    #[test]
+    fn lingering_model_is_reused_until_an_unused_period_expires() {
+        let spec = spec();
+        let key = ModelKey::from(&spec);
+        let mut cache = ResidentCache::<usize>::default();
+        let value = Arc::new(7);
+        let first = cache.linger(&spec, value.clone()).unwrap();
+        let (reused, second) = cache.reuse_lingering(&key).unwrap();
+        assert!(Arc::ptr_eq(&value, &reused));
+        // 第一次使用排下的过期任务到点时，模型期间又被用过，不能释放。
+        cache.expire_lingering(&key, first);
+        assert!(cache.lingering.contains_key(&key));
+        cache.expire_lingering(&key, second);
+        assert!(cache.reuse_lingering(&key).is_none());
+    }
+
+    #[test]
+    fn turning_on_residency_adopts_the_lingering_model_instead_of_loading_twice() {
+        let spec = spec();
+        let mut cache = ResidentCache::<usize>::default();
+        let value = Arc::new(7);
+        cache.linger(&spec, value.clone()).unwrap();
+        assert!(cache.reconcile(vec![spec.clone()]).is_empty());
+        assert!(Arc::ptr_eq(&value, &cache.get(&spec).unwrap().unwrap()));
+        // 已经是常驻模型：预载没完成时临时加载的那份用完即弃。
+        assert!(cache.linger(&spec, Arc::new(8)).is_none());
+        assert!(cache.lingering.is_empty());
+    }
+
+    #[test]
+    fn replacing_a_pack_drops_its_lingering_model() {
+        let spec = spec();
+        let mut cache = ResidentCache::<usize>::default();
+        cache.suspended.insert(spec.plugin_id.clone(), 1);
+        assert!(cache.linger(&spec, Arc::new(7)).is_none());
+        assert!(cache.lingering.is_empty());
     }
 
     #[test]
@@ -382,6 +479,16 @@ mod tests {
         assert!(cache.reconcile(vec![spec]).is_empty());
         assert!(cache.entries.is_empty());
     }
+    #[cfg(target_os = "windows")]
+    fn sherpa(
+        recognizer: &super::super::SegmentRecognizer,
+    ) -> &Arc<Mutex<sherpa_onnx::OfflineRecognizer>> {
+        let super::super::SegmentRecognizer::Sherpa(recognizer) = recognizer else {
+            panic!("需要 sherpa 离线模型")
+        };
+        recognizer
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     #[ignore = "需要 SAYIT_RESIDENCY_DESCRIPTOR、SAYIT_RESIDENCY_MODEL_DIR、SAYIT_RESIDENCY_WAV；独立进程测量"]
@@ -417,7 +524,9 @@ mod tests {
         let mut text = String::new();
         for _ in 0..2 {
             let start = Instant::now();
-            let mut session = super::super::OfflineVadSession::create_realtime(&spec).unwrap();
+            let mut session =
+                super::super::OfflineVadSession::create_realtime(&spec, Default::default())
+                    .unwrap();
             let create_ms = start.elapsed().as_secs_f64() * 1000.0;
             let mut segments = session.accept(wave.samples(), None).unwrap();
             segments.extend(session.finish(None).unwrap());
@@ -445,11 +554,14 @@ mod tests {
             })
         );
         if resident {
-            let first = super::super::OfflineVadSession::create_realtime(&spec).unwrap();
-            let second = super::super::OfflineVadSession::create_realtime(&spec).unwrap();
+            let first = super::super::OfflineVadSession::create_realtime(&spec, Default::default())
+                .unwrap();
+            let second =
+                super::super::OfflineVadSession::create_realtime(&spec, Default::default())
+                    .unwrap();
             assert!(Arc::ptr_eq(
-                &first.engine.recognizer,
-                &second.engine.recognizer
+                sherpa(&first.engine.recognizer),
+                sherpa(&second.engine.recognizer)
             ));
             let samples = wave.samples();
             std::thread::scope(|scope| {
@@ -468,13 +580,16 @@ mod tests {
                 assert_eq!(second_task.join().unwrap(), text);
             });
             let cached = cache().lock().unwrap().get(&spec).unwrap().unwrap();
-            let Recognizer::Offline(realtime_recognizer) = cached.as_ref() else {
+            let Recognizer::Segment(realtime_recognizer) = cached.as_ref() else {
                 panic!("需要离线模型")
             };
-            let temporary = super::super::OfflineVadSession::create_temporary(&spec).unwrap();
+            let realtime_recognizer = sherpa(realtime_recognizer);
+            let temporary =
+                super::super::OfflineVadSession::create_temporary(&spec, Default::default())
+                    .unwrap();
             assert!(!Arc::ptr_eq(
                 realtime_recognizer,
-                &temporary.engine.recognizer
+                sherpa(&temporary.engine.recognizer)
             ));
             drop(temporary);
             // 实时识别器被占用时，完整文件路径仍应使用独立实例完成识别。
@@ -483,7 +598,12 @@ mod tests {
             let path = std::env::var("SAYIT_RESIDENCY_WAV").unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             let file_task = std::thread::spawn(move || {
-                let result = super::super::recognize_audio_file(&file_spec, &path, None);
+                let result = super::super::recognize_audio_file(
+                    &file_spec,
+                    &path,
+                    &Default::default(),
+                    None,
+                );
                 let _ = tx.send(result);
             });
             let result = rx.recv_timeout(std::time::Duration::from_secs(30));
@@ -495,14 +615,19 @@ mod tests {
             assert!(segments
                 .iter()
                 .all(|segment| segment.begin_ms < segment.end_ms && segment.end_ms <= duration));
-            let mut active = super::super::OfflineVadSession::create_realtime(&spec).unwrap();
-            let weak = Arc::downgrade(&active.engine.recognizer);
+            let mut active =
+                super::super::OfflineVadSession::create_realtime(&spec, Default::default())
+                    .unwrap();
+            let weak = Arc::downgrade(sherpa(&active.engine.recognizer));
             {
                 let cached = cache().lock().unwrap().get(&spec).unwrap().unwrap();
-                let Recognizer::Offline(recognizer) = cached.as_ref() else {
+                let Recognizer::Segment(recognizer) = cached.as_ref() else {
                     panic!("需要离线模型")
                 };
-                assert!(Arc::ptr_eq(recognizer, &active.engine.recognizer));
+                assert!(Arc::ptr_eq(
+                    sherpa(recognizer),
+                    sherpa(&active.engine.recognizer)
+                ));
             }
             cache().lock().unwrap().reconcile(vec![]);
             assert!(weak.upgrade().is_some());

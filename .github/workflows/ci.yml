@@ -35,6 +35,10 @@ jobs:
       - name: Install macOS native dependency
         if: runner.os == 'macOS'
         run: brew install opus
+      - name: Install Vulkan SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install-vulkan-sdk.ps1
       - run: npm ci
       - name: Build Apple system speech helper
         if: runner.os == 'macOS'

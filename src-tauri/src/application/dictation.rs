@@ -2206,7 +2206,7 @@ fn freeze_recorded_duration(session: &mut Session) {
     }
 }
 
-/// 本地模型包的识别结果没有标点；装了标点模型包且开关打开时补上，再交给本地规则。
+/// sherpa 本地模型的识别结果没有标点；装了标点模型包且开关打开时补上，再交给本地规则。
 /// 补标点失败只记日志、沿用原文，不让整次听写失败。
 async fn punctuate_local_asr_text(
     state: &RuntimeState,
@@ -2218,7 +2218,10 @@ async fn punctuate_local_asr_text(
     }
     let spec = (|| -> Result<_, String> {
         let registry = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
-        if registry.local_model_for_model(&prefs.asr_model).is_none() {
+        let unpunctuated = registry
+            .model(&prefs.asr_model)
+            .is_some_and(|model| model.protocol.starts_with("local-sherpa"));
+        if !unpunctuated {
             return Ok(None);
         }
         let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;

@@ -15,6 +15,12 @@ const PROGRESS_EVENT: &str = "model-pack-progress";
 static ACTIVE_DOWNLOADS: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
+/// 本次运行里已通过完整校验的模型文件，记下当时的大小、修改时间和哈希。三者都没变就不再重读：
+/// 每次加载模型都会校验，1.5 GB 的权重整份读一遍要一秒左右。
+static VERIFIED_FILES: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime, String)>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// 持有期间该模型包处于「正在下载」，释放时自动解除。
 pub struct DownloadLease(String);
 
@@ -308,6 +314,12 @@ pub(crate) fn verify_model_file(path: &Path, file: &ModelPackFileManifest) -> Re
     if metadata.len() != file.size_bytes {
         return Err(format!("模型文件大小不匹配：{}", file.path));
     }
+    let modified = metadata.modified().map_err(|error| error.to_string())?;
+    let stamp = (file.size_bytes, modified, file.sha256.to_ascii_lowercase());
+    let verified = || VERIFIED_FILES.lock().map_err(|_| "模型校验记录锁失败");
+    if verified()?.get(path) == Some(&stamp) {
+        return Ok(());
+    }
     let mut input = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
@@ -322,6 +334,7 @@ pub(crate) fn verify_model_file(path: &Path, file: &ModelPackFileManifest) -> Re
     if !actual.eq_ignore_ascii_case(&file.sha256) {
         return Err(format!("模型文件 SHA256 不匹配：{}", file.path));
     }
+    verified()?.insert(path.to_path_buf(), stamp);
     Ok(())
 }
 
@@ -367,6 +380,33 @@ mod tests {
         std::fs::write(root.join("model.bin.part"), b"").unwrap();
         assert_eq!(inspect_pack(&root, &pack).state, "partial");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rewritten_model_file_is_verified_again() {
+        let path = std::env::temp_dir().join(format!("sayit-model-verify-{}", Uuid::new_v4()));
+        let file = ModelPackFileManifest {
+            path: "model.bin".into(),
+            sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
+            size_bytes: 5,
+            download: None,
+        };
+        std::fs::write(&path, b"hello").unwrap();
+        verify_model_file(&path, &file).unwrap();
+        // 同样大小的内容被改写：修改时间变了，必须重新读文件而不是沿用上次的结论。
+        std::fs::write(&path, b"jello").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(
+            verify_model_file(&path, &file).unwrap_err(),
+            "模型文件 SHA256 不匹配：model.bin"
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

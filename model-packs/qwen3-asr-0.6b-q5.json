@@ -1,0 +1,100 @@
+{
+  "manifest": {
+    "apiVersion": 5,
+    "id": "official.transcribe-qwen3-asr-0.6b",
+    "name": "Qwen3-ASR 0.6B",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-qwen3-asr-0.6b",
+      "displayName": "本地 Qwen3-ASR 0.6B",
+      "authKind": "none",
+      "capabilities": ["asr"],
+      "config": {}
+    },
+    "source": { "namespace": "official.transcribe-qwen3-asr-0.6b" },
+    "capabilities": [],
+    "models": [
+      {
+        "id": "local-qwen3-asr-0.6b-sentence-q5",
+        "label": "Qwen3-ASR 0.6B 整句",
+        "providerId": "local-qwen3-asr-0.6b",
+        "category": "realtime",
+        "protocol": "local-transcribe",
+        "supportsVocabulary": true,
+        "supportsContext": true,
+        "supportsAlignmentTimestamps": false,
+        "emitsPartialResults": true,
+        "scenes": ["dictationRealtime", "subtitles"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      },
+      {
+        "id": "local-qwen3-asr-0.6b-file-q5",
+        "label": "Qwen3-ASR 0.6B 文件识别",
+        "providerId": "local-qwen3-asr-0.6b",
+        "category": "file",
+        "protocol": "local-transcribe",
+        "supportsVocabulary": true,
+        "supportsContext": true,
+        "supportsAlignmentTimestamps": true,
+        "emitsPartialResults": false,
+        "scenes": ["dictationFile", "transcription"],
+        "isDefaultRealtime": false,
+        "isDefaultFile": false
+      }
+    ],
+    "runtime": { "kind": "model-pack" },
+    "modelPack": {
+      "engine": "transcribe-cpp",
+      "files": [
+        {
+          "path": "Qwen3-ASR-0.6B-Q5_K_M.gguf",
+          "sha256": "062a7bcb18675c2fe5ffd0e8b354eac6a1ceada9b2af9ef7168746ae16b54358",
+          "sizeBytes": 645356192,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.transcribe-qwen3-asr-0.6b/Qwen3-ASR-0.6B-Q5_K_M.gguf" }
+        },
+        {
+          "path": "silero_vad.onnx",
+          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+          "sizeBytes": 643854,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.transcribe-qwen3-asr-0.6b/silero_vad.onnx" }
+        },
+        {
+          "path": "LICENSE-Qwen3-ASR.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "sizeBytes": 11358,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.transcribe-qwen3-asr-0.6b/LICENSE-Qwen3-ASR.txt" }
+        },
+        {
+          "path": "NOTICE-Qwen3-ASR.txt",
+          "sha256": "8ce09c74b1929991d1c775bd21662e2a7a863e9669d2537ddba15b780b138adc",
+          "sizeBytes": 392,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.transcribe-qwen3-asr-0.6b/NOTICE-Qwen3-ASR.txt" }
+        },
+        {
+          "path": "LICENSE-silero-vad.txt",
+          "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
+          "sizeBytes": 1075,
+          "download": { "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.transcribe-qwen3-asr-0.6b/LICENSE-silero-vad.txt" }
+        }
+      ],
+      "params": {
+        "model": "Qwen3-ASR-0.6B-Q5_K_M.gguf",
+        "vadModel": "silero_vad.onnx",
+        "language": "auto",
+        "vadThreshold": 0.5,
+        "vadMinSilenceDuration": 1.2,
+        "vadMinSpeechDuration": 0.25,
+        "vadWindowSize": 512,
+        "vadMaxSpeechDuration": 30.0
+      }
+    }
+  },
+  "sources": {
+    "Qwen3-ASR-0.6B-Q5_K_M.gguf": "files/qwen3-asr-0.6b/Qwen3-ASR-0.6B-Q5_K_M.gguf",
+    "silero_vad.onnx": "files/qwen3-asr-0.6b/silero_vad.onnx",
+    "LICENSE-Qwen3-ASR.txt": "files/qwen3-asr-0.6b/LICENSE-Qwen3-ASR.txt",
+    "NOTICE-Qwen3-ASR.txt": "files/qwen3-asr-0.6b/NOTICE-Qwen3-ASR.txt",
+    "LICENSE-silero-vad.txt": "files/qwen3-asr-0.6b/LICENSE-silero-vad.txt"
+  }
+}
