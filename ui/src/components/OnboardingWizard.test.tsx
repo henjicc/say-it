@@ -1,203 +1,160 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 const invoke = vi.fn();
 const patchDictPrefs = vi.fn();
-const updateProviderConfig = vi.fn();
-const loadProviders = vi.fn();
-const openModels = vi.fn();
+const updateConfig = vi.fn();
+const setDefault = vi.fn();
+const addLlmProvider = vi.fn();
 
-const cloudProvider = {
+const bailian = {
   id: "bailian",
   kind: "sdk:bailian",
   displayName: "阿里云百炼",
   authKind: "api-key",
-  capabilities: ["asr"],
+  capabilities: ["asr", "llm"],
   enabled: true,
+  configFields: [],
   status: { configured: false, hasApiKey: false },
+};
+
+const providerState = {
+  profiles: [bailian],
+  defaults: { asr: "", llm: "", translation: "", ocr: "" },
+  load: vi.fn(async () => undefined),
+  updateConfig,
+  setDefault,
+  addLlmProvider,
 };
 
 vi.mock("@/lib/tauri", () => ({
   CMD: {
-    getSetupStatus: "get_setup_status",
-    startBackendMic: "start_backend_mic",
-    releaseBackendMic: "release_backend_mic",
-    requestSetupPermissions: "request_setup_permissions",
-    openExternalLink: "open_external_link",
-    openApiKeyPage: "open_api_key_page",
+    listProviderPlugins: "list_provider_plugins",
+    listOfficialModelPacks: "list_official_model_packs",
     completeOnboarding: "complete_onboarding",
+    openExternalLink: "open_external_link",
   },
+  EVT: { modelPackProgress: "model-pack-progress" },
   cmd: (...args: unknown[]) => invoke(...args),
+  cmdSilent: vi.fn(),
+  on: vi.fn(async () => () => undefined),
 }));
-
-vi.mock("@/lib/platform", () => ({ isMacOS: true }));
-
-vi.mock("@/features/asr/modelOptions", () => ({
-  DICTATION_ASR_MODEL_OPTIONS: [
-    { value: "cloud-model", label: "云端模型" },
-    { value: "local-model", label: "离线模型" },
-  ],
+vi.mock("@/lib/platform", () => ({ isMacOS: false }));
+vi.mock("@/features/audio/useMicLevel", () => ({
+  useMicLevel: () => ({ level: 0.2, startError: "" }),
+  micLevelFraction: () => 0.2,
 }));
-
-vi.mock("@/features/asr/modelRegistry", () => ({
-  useModelCatalogRevision: () => 0,
-  modelInfo: (id: string) => id === "local-model"
-    ? { id, label: "离线模型", providerId: "local", protocol: "local-sherpa-offline" }
-    : { id, label: "云端模型", providerId: "bailian", protocol: "dashscope-duplex" },
+vi.mock("@/views/dictation/DictationSections", () => ({
+  MicRow: () => null,
+  ShortcutRows: () => null,
+  OrbGestureSection: () => null,
 }));
-
-vi.mock("@/store/useDictPrefs", () => ({
-  useDictPrefs: (selector: (state: unknown) => unknown) => selector({
-    prefs: { asrModel: "cloud-model", micDeviceId: "" },
-    patch: patchDictPrefs,
-  }),
+vi.mock("@/features/dictation/hotkeys", () => ({ shortcutLabel: () => "CapsLock" }));
+vi.mock("@/store/useDictationStore", () => ({
+  useDictationStore: (selector: (state: unknown) => unknown) => selector({ shortcut: { keyCode: "CapsLock" } }),
 }));
-
+vi.mock("@/features/plugins/pluginInstaller", () => ({ refreshPluginConsumers: vi.fn() }));
+vi.mock("@/store/useDictPrefs", () => {
+  const state = { prefs: { micDeviceId: "" }, patch: (...args: unknown[]) => patchDictPrefs(...args) };
+  return { useDictPrefs: Object.assign((selector: (s: unknown) => unknown) => selector(state), { getState: () => state }) };
+});
 vi.mock("@/store/useProviderStore", () => ({
-  useProviderStore: (selector: (state: unknown) => unknown) => selector({
-    profiles: [cloudProvider],
-    load: loadProviders,
-    updateConfig: updateProviderConfig,
-  }),
+  useProviderStore: Object.assign((selector: (s: unknown) => unknown) => selector(providerState), { getState: () => providerState }),
 }));
 
-vi.mock("@/store/useUiStore", () => ({
-  useUiStore: (selector: (state: unknown) => unknown) => selector({ openModels }),
-}));
-
-const blockedPermission = {
-  id: "permissions",
-  status: "blocked",
-  title: "文字输入权限",
-  message: "需要辅助功能权限",
-  action: "permissions",
-};
-
-const setupStatus = {
-  onboardingVersion: 0,
-  requiredVersion: 1,
-  complete: false,
-  checks: [blockedPermission],
-};
+function next() {
+  fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+}
 
 describe("OnboardingWizard", () => {
   afterEach(cleanup);
   beforeEach(() => {
-    invoke.mockReset();
-    patchDictPrefs.mockReset().mockResolvedValue(undefined);
-    loadProviders.mockReset().mockResolvedValue(undefined);
-    openModels.mockReset();
-    updateProviderConfig.mockReset().mockImplementation(async () => {
-      cloudProvider.status = { configured: true, hasApiKey: true };
-      return cloudProvider;
-    });
-    cloudProvider.status = { configured: false, hasApiKey: false };
-    invoke.mockImplementation(async (name: string) => {
-      if (name === "get_setup_status") return setupStatus;
-      if (name === "start_backend_mic") return { reused: false };
-      if (name === "request_setup_permissions") {
-        return { ...blockedPermission, status: "ready", message: "文字输入权限已授予", action: null };
-      }
+    invoke.mockReset().mockImplementation(async (name: string) => {
+      if (name === "list_provider_plugins") return { apiVersion: 5, plugins: [], errors: [] };
+      if (name === "list_official_model_packs") return [];
       return undefined;
     });
+    patchDictPrefs.mockReset().mockResolvedValue(undefined);
+    setDefault.mockReset().mockResolvedValue(undefined);
+    updateConfig.mockReset().mockImplementation(async () => {
+      bailian.status = { configured: true, hasApiKey: true };
+      return bailian;
+    });
+    bailian.status = { configured: false, hasApiKey: false };
+    providerState.defaults.llm = "";
   });
 
-  it.each(["关闭", "Escape", "遮罩", "完成设置", "打开完整设置", "打开插件管理"])("persists acknowledgement before exiting through %s", async (exit) => {
+  it("can only be finished, and the first step has no way back", () => {
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("dialog").parentElement!);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /上一步|关闭|稍后设置/ })).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith("complete_onboarding");
+  });
+
+  it("can be closed when re-run from settings", () => {
+    const onClose = vi.fn();
+    render(<OnboardingWizard open required={false} onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(invoke).not.toHaveBeenCalledWith("complete_onboarding");
+  });
+
+  it("needs a recognition key before continuing and saves it with the model", async () => {
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    next();
+    const button = screen.getByRole("button", { name: "下一步" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText("填好密钥后继续")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("阿里云百炼 API Key"), { target: { value: " sk-test " } });
+    next();
+
+    await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "fun-asr-realtime-2026-02-28" }));
+    expect(updateConfig).toHaveBeenCalledWith("bailian", { apiKey: "sk-test" });
+    expect(await screen.findByText("沿用识别模型的百炼密钥")).toBeTruthy();
+  });
+
+  it("reuses the Bailian key for smart cleanup and makes it the general model", async () => {
+    bailian.status = { configured: true, hasApiKey: true };
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    next();
+    next();
+    await screen.findByText("沿用识别模型的百炼密钥");
+    expect(screen.queryByLabelText("阿里云百炼 API Key")).toBeNull();
+    next();
+
+    await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({
+      smartProcessingEnabled: true,
+      smartLlmProviderId: "default",
+      smartLlmModel: "",
+    }));
+    expect(updateConfig).toHaveBeenCalledWith("bailian", { model: expect.any(String) });
+    expect(setDefault).toHaveBeenCalledWith("llm", "bailian");
+  });
+
+  it("saves completion before closing", async () => {
+    bailian.status = { configured: true, hasApiKey: true };
     let save: (() => void) | undefined;
     invoke.mockImplementation(async (name: string) => {
-      if (name === "get_setup_status") return setupStatus;
-      if (name === "start_backend_mic") return { reused: false };
       if (name === "complete_onboarding") return new Promise<void>((resolve) => { save = resolve; });
+      if (name === "list_provider_plugins") return { apiVersion: 5, plugins: [], errors: [] };
+      if (name === "list_official_model_packs") return [];
     });
     const onClose = vi.fn();
-    render(<OnboardingWizard open onClose={onClose} />);
-    await screen.findByText("麦克风可以正常使用");
-    expect(invoke).not.toHaveBeenCalledWith("complete_onboarding");
-
-    if (exit === "完成设置" || exit === "打开插件管理" || exit === "打开完整设置") {
-      fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-      if (exit !== "打开完整设置") fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    }
-    if (exit === "Escape") fireEvent.keyDown(window, { key: "Escape" });
-    else if (exit === "遮罩") fireEvent.click(screen.getByRole("dialog").parentElement!);
-    else fireEvent.click(screen.getByRole("button", { name: exit }));
+    render(<OnboardingWizard open required onClose={onClose} />);
+    next();
+    next();
+    await screen.findByText("沿用识别模型的百炼密钥");
+    next();
+    fireEvent.click(await screen.findByRole("button", { name: "开始使用" }));
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("complete_onboarding"));
     expect(onClose).not.toHaveBeenCalled();
-    expect(openModels).not.toHaveBeenCalled();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(invoke.mock.calls.filter(([name]) => name === "complete_onboarding")).toHaveLength(1);
     save!();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    if (exit === "打开完整设置" || exit === "打开插件管理") {
-      expect(openModels).toHaveBeenCalledWith(exit === "打开完整设置" ? "provider:bailian" : "plugins");
-    }
-  });
-
-  it("keeps the wizard open when persistence fails and lets the user retry", async () => {
-    const onClose = vi.fn();
-    render(<OnboardingWizard open onClose={onClose} />);
-    await screen.findByText("麦克风可以正常使用");
-    invoke.mockRejectedValueOnce(new Error("磁盘写入失败"));
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    expect(await screen.findByText(/保存引导状态失败.*磁盘写入失败/)).toBeInTheDocument();
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-  });
-
-  it("keeps onboarding focused on permissions, model setup, and offline installation", async () => {
-    render(<OnboardingWizard open onClose={() => undefined} />);
-
-    expect(screen.getByRole("heading", { name: "授予必要权限" })).toBeInTheDocument();
-    expect(await screen.findByText("麦克风可以正常使用")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "授予权限" }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("request_setup_permissions"));
-
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(screen.getByRole("heading", { name: "选择主识别模型" })).toBeInTheDocument();
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    act(() => screen.getByText("配置 阿里云百炼 密钥").focus());
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("密钥会加密保存在这台电脑上");
-    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    fireEvent.click(screen.getByRole("combobox", { name: "语音识别模型" }));
-    fireEvent.click(await screen.findByRole("option", { name: "离线模型" }));
-    await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "local-model" }));
-    fireEvent.change(screen.getByLabelText("阿里云百炼 API Key"), { target: { value: "test-key" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(updateProviderConfig).toHaveBeenCalledWith("bailian", { apiKey: "test-key" }));
-
-    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-    expect(screen.getByRole("heading", { name: "需要离线使用？" })).toBeInTheDocument();
-    expect(screen.queryByText("下载后双击文件，或在“设置 → 插件”中选择安装。")).not.toBeInTheDocument();
-    act(() => screen.getByText("安装 .sayit").focus());
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("下载后双击文件，或在“设置 → 插件”中选择安装。");
-    expect(screen.getByRole("button", { name: "打开模型下载页" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "打开插件管理" })).toBeInTheDocument();
-    expect(screen.queryByText("处理后音量")).not.toBeInTheDocument();
-    expect(screen.queryByText("快捷键与输入")).not.toBeInTheDocument();
-  });
-
-  it("keeps a fixed dialog and separate footer while replacing each step's scroll region", async () => {
-    render(<OnboardingWizard open onClose={() => undefined} />);
-    await screen.findByText("麦克风可以正常使用");
-    const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveClass("h-[var(--onboarding-dialog-h)]", "max-h-[85vh]");
-    const previous = screen.getByRole("button", { name: "上一步" });
-    expect(previous.parentElement).toHaveClass("shrink-0");
-    let content = screen.getByRole("region", { name: "权限设置内容" });
-    expect(content).toHaveClass("min-h-0", "overflow-y-auto");
-    expect(content).not.toContainElement(previous);
-    for (const name of ["识别模型设置内容", "离线模型设置内容"]) {
-      content.scrollTop = 160;
-      fireEvent.click(screen.getByRole("button", { name: "下一步" }));
-      const next = screen.getByRole("region", { name });
-      expect(next).not.toBe(content);
-      expect(next.scrollTop).toBe(0);
-      expect(screen.getByRole("dialog")).toBe(dialog);
-      expect(screen.getByRole("button", { name: "上一步" })).toBe(previous);
-      content = next;
-    }
   });
 });

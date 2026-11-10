@@ -4,6 +4,7 @@ import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { CheckField } from "@/components/ui/Field";
 import { Group, Row, SliderRow } from "@/components/ui/Group";
+import { Meter } from "@/components/ui/Meter";
 import { Modal } from "@/components/ui/Modal";
 import { RangeInput } from "@/components/ui/RangeInput";
 import { useConfirm } from "@/components/ui/useConfirm";
@@ -16,6 +17,7 @@ import { useAudioStore, type PlaybackTrack } from "@/store/useAudioStore";
 import { parseSubtitleSource, useSubtitleStore } from "@/store/useSubtitleStore";
 import { dspDefaults } from "@/lib/audio-dsp";
 import * as lab from "@/features/audio/lab";
+import { micLevelFraction, useMicLevel } from "@/features/audio/useMicLevel";
 
 const toneClass: Record<string, string> = {
   "": "text-[var(--color-fg-subtle)]",
@@ -37,7 +39,6 @@ const fmt = {
 
 const fmtMs = (value: number) => `${(value / 1000).toFixed(1)} 秒`;
 const fmtThreshold = (value: number) => value.toFixed(4);
-const levelWidth = (value: number) => `${Math.min(100, value * 140)}%`;
 
 export function DiagnosticSection() {
   const { confirm, dialog } = useConfirm();
@@ -239,12 +240,7 @@ export function DataResetSection() {
 function LevelMeterRow({ value }: { value: number }) {
   return (
     <Row label="实时电平">
-      <div className="h-2 w-48 overflow-hidden rounded-full bg-[var(--color-surface-strong)]">
-        <span
-          className="block h-full rounded-full bg-[var(--color-accent)] transition-[width] duration-75"
-          style={{ width: levelWidth(value) }}
-        />
-      </div>
+      <Meter value={micLevelFraction(value)} label="实时电平" kind="level" className="h-2 w-48" />
       <span className="w-20 text-right text-xs tabular-nums text-[var(--color-fg-subtle)]">{value.toFixed(4)}</span>
     </Row>
   );
@@ -253,37 +249,7 @@ function LevelMeterRow({ value }: { value: number }) {
 /** 电平轮询放在独立组件里，每 50ms 只重绘这一行，不带动整个分区。 */
 function DictationLevelRow() {
   const micDeviceId = useDictPrefs((s) => s.prefs.micDeviceId);
-  const [level, setLevel] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer = 0;
-    let ownsMic = false;
-    const tick = async () => {
-      // 预览优先级最低：听写、试听等会直接接管麦克风，这时申请失败，但电平照常读共用的采集。
-      try {
-        await cmd(CMD.startBackendMic, { deviceName: micDeviceId || undefined });
-        ownsMic = true;
-      } catch {
-        // 麦克风正被其他功能使用。
-      }
-      if (cancelled) {
-        if (ownsMic) cmdSilent(CMD.releaseBackendMic);
-        return;
-      }
-      const value = await cmd<number>(CMD.getBackendMicLevel).catch(() => 0);
-      if (cancelled) return;
-      setLevel(value || 0);
-      timer = window.setTimeout(tick, 50);
-    };
-    tick();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      if (ownsMic) cmdSilent(CMD.releaseBackendMic);
-    };
-  }, [micDeviceId]);
-
+  const { level } = useMicLevel(micDeviceId);
   return <LevelMeterRow value={level} />;
 }
 

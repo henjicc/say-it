@@ -102,7 +102,6 @@ export const CMD = {
   transcriptionStart: "transcription_start",
   transcriptionCancel: "transcription_cancel",
   alignTranscript: "align_transcript",
-  openApiKeyPage: "open_api_key_page",
   openExternalLink: "open_external_link",
   getStartupSettings: "get_startup_settings",
   setStartupSettings: "set_startup_settings",

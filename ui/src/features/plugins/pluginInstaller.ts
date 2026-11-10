@@ -32,6 +32,15 @@ export interface PluginSnapshot {
   errors: { path: string; message: string }[];
 }
 
+/** 官方模型目录里的一项（`list_official_model_packs`）。 */
+export interface OfficialModelPack {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  sizeBytes: number;
+}
+
 export function requiresExplicitTrust(error: unknown) {
   const reason = String(error);
   return reason.includes("未签名") || reason.includes("尚未受信任");

@@ -655,7 +655,6 @@ fn main() {
             start_backend_system_audio,
             get_backend_system_audio_level,
             release_backend_system_audio,
-            open_api_key_page,
             open_external_link,
             get_dictation_settings,
             get_dictation_runtime,

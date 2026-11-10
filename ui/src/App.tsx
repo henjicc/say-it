@@ -58,7 +58,8 @@ export default function App() {
   const theme = useThemeStore((s) => s.theme);
   const systemGlass = useFloatingOrbStore((s) => s.settings);
   const [settingsReady, setSettingsReady] = useState(false);
-  const [setupOpen, setSetupOpen] = useState(false);
+  // 首次启动必须走完引导；从设置页重新运行的可以随时关闭。
+  const [setup, setSetup] = useState<"closed" | "required" | "optional">("closed");
   const [initError, setInitError] = useState("");
 
   const bridgeReady = useTauriBridge();
@@ -100,8 +101,8 @@ export default function App() {
   useEffect(() => {
     if (!settingsReady) return;
     // 引导版本升级不能撤销用户已关闭的选择；后续只通过设置页手动打开。
-    void cmd<SetupStatus>(CMD.getSetupStatus).then((status) => setSetupOpen(status.onboardingVersion === 0)).catch(() => {});
-    const open = () => setSetupOpen(true);
+    void cmd<SetupStatus>(CMD.getSetupStatus).then((status) => { if (status.onboardingVersion === 0) setSetup("required"); }).catch(() => {});
+    const open = () => setSetup((current) => current === "required" ? current : "optional");
     window.addEventListener("sayit-open-setup", open);
     return () => window.removeEventListener("sayit-open-setup", open);
   }, [settingsReady]);
@@ -142,7 +143,7 @@ export default function App() {
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
         <PluginDropInstaller />
         <ShortcutConflictDialog />
-        <OnboardingWizard open={setupOpen} onClose={() => setSetupOpen(false)} />
+        <OnboardingWizard open={setup !== "closed"} required={setup === "required"} onClose={() => setSetup("closed")} />
       </div>
       </>}
     </div>
