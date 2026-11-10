@@ -1246,7 +1246,7 @@ mod tests {
         );
     }
 
-    /// 实时流的 `result.text` 只是当前这一句。此前 `handle_event` 无视 `final`
+    /// 实时流非 final 的 `result.text` 只是未定稿的文字，final 只是刚定稿的一句。此前 `handle_event` 无视 `final`
     /// 直接整体替换单元格文本，于是一段多句录音跑完只剩最后一句。
     #[test]
     fn streaming_keeps_every_finalized_sentence() {
