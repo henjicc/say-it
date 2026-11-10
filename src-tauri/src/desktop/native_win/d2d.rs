@@ -239,6 +239,16 @@ fn color_f(c: Color) -> D2D1_COLOR_F {
 fn rect_f(r: Rect) -> D2D_RECT_F {
     super::rect_f(r.left, r.top, r.right, r.bottom)
 }
+/// DirectWrite 默认把每行基线分别纵向对齐到像素；文字起点 y 是小数（滚动、伸缩动画中的弹簧值）时，
+/// 各行在不同时刻跳格，滚动时文字上下抖动，靠裁剪边的首行最明显。先把起点 y 对齐到物理像素，
+/// 整块文字按整像素一起移动，静止时也清晰；横向不吸附，x 保持亚像素以免横向滚动一像素一跳。
+/// Canvas 的变换只有统一缩放与平移。
+fn align_baseline_to_device(origin: Point, transform: &Matrix3x2, dpi: u32) -> Point {
+    let px = dpi as f32 / 96.0;
+    let device_y = ((origin.y * transform.M22 + transform.M32) * px).round();
+    Point::new(origin.x, (device_y / px - transform.M32) / transform.M22)
+}
+
 fn point_f(p: Point) -> D2D_POINT_2F {
     D2D_POINT_2F { x: p.x, y: p.y }
 }
@@ -393,6 +403,9 @@ impl Canvas for D2dCanvas<'_> {
         tint: Option<TextTint>,
     ) {
         self.color(color);
+        let mut transform = Matrix3x2::default();
+        unsafe { self.target.GetTransform(&mut transform) };
+        let origin = align_baseline_to_device(origin, &transform, self.dpi);
         unsafe {
             let range = tint.map(|t| DWRITE_TEXT_RANGE {
                 startPosition: t.utf16_start,
@@ -669,6 +682,24 @@ mod tests {
         let alpha: u64 = frames[1].chunks_exact(4).map(|p| p[3] as u64).sum();
         let faint: u64 = frames[0].chunks_exact(4).map(|p| p[3] as u64).sum();
         assert!(alpha > faint * 3);
+    }
+    #[test]
+    fn text_baseline_lands_on_whole_physical_pixels() {
+        // 150% 缩放，外层平移、整体再放大 2 倍：纵向落点换算到物理像素必须是整数。
+        let transform = Matrix3x2 {
+            M11: 2.0,
+            M12: 0.0,
+            M21: 0.0,
+            M22: 2.0,
+            M31: 2.3,
+            M32: 1.1,
+        };
+        let aligned = align_baseline_to_device(Point::new(10.37, 7.91), &transform, 144);
+        let device_y = (aligned.y * 2.0 + transform.M32) * 1.5;
+        assert!((device_y - device_y.round()).abs() < 1e-3, "{device_y}");
+        // 只移动不足一个物理像素，横向不动。
+        assert!((aligned.y - 7.91).abs() <= 0.5 / 3.0 + 1e-4);
+        assert_eq!(aligned.x, 10.37);
     }
     #[test]
     fn native_d2d_canvas_restores_transform_clip_and_draws_cached_and_dynamic_paths() {
