@@ -10,6 +10,7 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { Switch } from "@/components/ui/Switch";
 import {
   refreshPluginConsumers,
+  type OfficialModelPack,
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
@@ -43,14 +44,6 @@ const RESIDENCY_MEMORY: Record<string, string> = {
   "official.sherpa-funasr-nano-ctc": "约 400 MB",
   "official.sherpa-sensevoice-small": "约 350 MB",
 };
-
-interface OfficialModelPack {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  sizeBytes: number;
-}
 
 /** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
 function isNewerVersion(candidate: string, installed: string) {

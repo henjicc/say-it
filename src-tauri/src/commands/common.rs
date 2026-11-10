@@ -2,14 +2,6 @@ use crate::prelude::*;
 use crate::state::*;
 use tauri_plugin_opener::OpenerExt;
 
-const API_KEY_PAGE_URL: &str =
-    "https://bailian.console.aliyun.com/cn-beijing?tab=globalset#/efm/api_key";
-
-#[tauri::command]
-pub(crate) fn open_api_key_page(app: tauri::AppHandle) -> Result<(), String> {
-    open_external_url(&app, API_KEY_PAGE_URL)
-}
-
 #[tauri::command]
 pub(crate) fn open_external_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let url = url.trim();

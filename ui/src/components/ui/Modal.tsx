@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { Button } from "./Button";
 
-/** 可复用模态框：默认覆盖视口，也可限制在父容器内。 */
+/** 可复用模态框：默认覆盖视口，也可限制在父容器内。不传 `onClose` 时只能由内容自己结束，Esc、点遮罩都关不掉，也不显示关闭按钮。 */
 export function Modal({
   open,
   onClose,
@@ -17,7 +17,7 @@ export function Modal({
   ariaLabel,
 }: {
   open: boolean;
-  onClose: () => void;
+  onClose?: () => void;
   title?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
@@ -49,7 +49,7 @@ export function Modal({
   }, [ariaLabel, bodyClassName, children, className, open, overlayClassName, scope, showCloseButton, showHeader, title]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !onClose) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
@@ -95,7 +95,7 @@ export function Modal({
         {shouldShowHeader && (
           <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-line)] px-5 py-4">
             <h3 className="text-base font-semibold text-[var(--color-fg)]">{visuals.title}</h3>
-            {visuals.showCloseButton && (
+            {visuals.showCloseButton && onClose && (
               <Button size="sm" onClick={onClose}>
                 关闭
               </Button>
