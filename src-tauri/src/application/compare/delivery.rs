@@ -20,7 +20,7 @@ impl CompareRuntime {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     cell.status = "streaming".into();
-                    // result 是当前一句；每次 final 都提交，合并的仅是界面刷新通知。
+                    // 非 final 的 result 是全部未定稿文字，final 是刚定稿的一句；每次 final 都提交，合并的仅是界面刷新通知。
                     cell.text.clear();
                     cell.text.push_str(&cell.committed);
                     cell.text.push_str(segment);
