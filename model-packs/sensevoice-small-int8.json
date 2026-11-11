@@ -3,7 +3,7 @@
     "apiVersion": 5,
     "id": "official.sherpa-sensevoice-small",
     "name": "SenseVoice Small 多语种 INT8",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "provider": {
       "id": "local-sensevoice",
       "displayName": "本地 SenseVoice",
@@ -22,7 +22,7 @@
         "protocol": "local-sherpa-offline",
         "supportsVocabulary": false,
         "supportsAlignmentTimestamps": false,
-        "emitsPartialResults": false,
+        "emitsPartialResults": true,
         "scenes": ["dictationRealtime", "subtitles"],
         "isDefaultRealtime": false,
         "isDefaultFile": false
@@ -70,9 +70,9 @@
         "vadModel": "silero_vad.onnx",
         "language": "auto",
         "useItn": true,
-        "numThreads": 2,
+        "numThreads": 4,
         "vadThreshold": 0.5,
-        "vadMinSilenceDuration": 0.6,
+        "vadMinSilenceDuration": 1.2,
         "vadMinSpeechDuration": 0.25,
         "vadWindowSize": 512,
         "vadMaxSpeechDuration": 30.0

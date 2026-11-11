@@ -163,10 +163,10 @@ mod tests {
 
     #[test]
     fn explicit_emits_partial_results_overrides_category() {
-        // VAD 分段整句模型：category 是 realtime，但必须能声明自己没有中间结果。
+        // 说完一句才出字的实时模型：category 是 realtime，但必须能声明自己没有中间结果。
         let model: registry::ModelInfo = serde_json::from_value(serde_json::json!({
             "id": "x", "label": "X", "providerId": "p", "category": "realtime",
-            "protocol": "local-sherpa-offline", "supportsVocabulary": false,
+            "protocol": "plugin-asr", "supportsVocabulary": false,
             "supportsAlignmentTimestamps": false, "emitsPartialResults": false,
             "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
         }))
@@ -175,17 +175,17 @@ mod tests {
     }
 
     #[test]
-    fn offline_engine_has_no_partials_even_without_declaration() {
-        // 字段上线前打包安装的模型包清单里没有 emitsPartialResults，此时不能退回
-        // category 推导，否则整句模型会被当成真流式，下拉里看不出区别。
+    fn host_driven_sentence_model_previews_whatever_its_manifest_says() {
+        // 宿主给整句模型出预览之前打包的清单都写着 false，标注要跟着宿主的实际行为走。
         let model: registry::ModelInfo = serde_json::from_value(serde_json::json!({
             "id": "local-sensevoice-sentence-int8", "label": "SenseVoice", "providerId": "p",
             "category": "realtime", "protocol": "local-sherpa-offline",
             "supportsVocabulary": false, "supportsAlignmentTimestamps": false,
+            "emitsPartialResults": false,
             "scenes": ["dictationRealtime"], "isDefaultRealtime": false, "isDefaultFile": false
         }))
         .unwrap();
-        assert!(!model.emits_partial_results());
+        assert!(model.emits_partial_results());
     }
 
     #[test]
