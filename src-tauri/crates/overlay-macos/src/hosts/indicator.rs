@@ -100,27 +100,28 @@ mod tests {
     #[test]
     fn cg_renders_all_indicator_states_inside_their_visible_panels() {
         let _guard = crate::cg::cg_test_lock();
+        // 胶囊底边固定在 164（窗口高 188 减底部留白 24），高 34，水平居中；宽度随状态变化。
         for scale in [1, 2] {
             for (command, panel) in [
                 (
                     Command::SetState(IndicatorState::Recording),
-                    Rect::new(146.0, 124.0, 314.0, 164.0),
+                    Rect::new(182.0, 130.0, 278.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::Processing),
-                    Rect::new(146.0, 124.0, 314.0, 164.0),
+                    Rect::new(188.0, 130.0, 272.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::SmartProcessing),
-                    Rect::new(146.0, 124.0, 314.0, 164.0),
+                    Rect::new(188.0, 130.0, 272.0, 164.0),
                 ),
                 (
                     Command::SetState(IndicatorState::Fallback),
-                    Rect::new(32.0, 108.0, 428.0, 164.0),
+                    Rect::new(145.0, 130.0, 315.0, 164.0),
                 ),
                 (
                     Command::ShowNotice("这是一个通知".into()),
-                    Rect::new(32.0, 108.0, 428.0, 164.0),
+                    Rect::new(165.0, 130.0, 295.0, 164.0),
                 ),
             ] {
                 let pixels = render(command.clone(), "", scale);
@@ -136,18 +137,11 @@ mod tests {
                     visible += 1;
                     ink += usize::from(pixel[..3].iter().copied().max().unwrap() > 100);
                 }
+                // 圆角胶囊约占外接矩形的九成；低于八成说明面板没有铺满应有的宽度。
+                let area = (panel.right - panel.left) * (panel.bottom - panel.top);
                 assert!(
-                    visible > 1000 && ink > 10,
+                    visible as f32 / (scale * scale) as f32 > area * 0.8 && ink > 10,
                     "{command:?} did not render its face"
-                );
-                // 通知/兜底的左侧面板区域不属于普通胶囊，必须确实出现。
-                let alpha = pixels[((140 * scale * 460 * scale + 50 * scale) * 4 + 3) as usize];
-                assert_eq!(
-                    alpha > 0,
-                    matches!(
-                        command,
-                        Command::ShowNotice(_) | Command::SetState(IndicatorState::Fallback)
-                    )
                 );
             }
         }
@@ -157,14 +151,15 @@ mod tests {
     fn cg_clips_overflowing_text_to_the_text_box_and_keeps_the_tail_visible() {
         let _guard = crate::cg::cg_test_lock();
         for scale in [1, 2] {
-            let command = Command::SetState(IndicatorState::Processing);
+            // 实时文字只在录音时显示，最多三行；文字框底边在胶囊顶边（130）上方 10，入场滑动未完全落定时略低。
+            let command = Command::SetState(IndicatorState::Recording);
             let empty = render(command.clone(), " ", scale);
             let long = render(
                 command,
                 &format!("{}最后一行可见文本", "溢出测试文本\n".repeat(30)),
                 scale,
             );
-            let clip = Rect::new(44.0, 37.5, 416.0, 105.0);
+            let clip = Rect::new(32.0, 56.0, 428.0, 124.0);
             let mut changed = 0;
             let mut tail = 0;
             for (index, (a, b)) in empty.chunks_exact(4).zip(long.chunks_exact(4)).enumerate() {
@@ -175,7 +170,7 @@ mod tests {
                 let y = (index / (460 * scale) as usize) as f32 / scale as f32;
                 assert!(inside(clip, x, y, 1.0), "overflow ink at {x},{y}");
                 changed += 1;
-                if y > 90.0 {
+                if y > 100.0 {
                     tail += 1;
                 }
             }
