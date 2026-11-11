@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
+import { withMacBuildEnv } from "./macos-build-env.mjs";
+
 const sherpaLinkLibraryPattern = /^(?:lib)?sherpa-onnx-c-api\.(?:a|dylib|lib|so)$/i;
 
 function containsSherpaLinkLibrary(root) {
@@ -65,7 +67,7 @@ const result = spawnSync(
   {
     stdio: "inherit",
     env: {
-      ...process.env,
+      ...withMacBuildEnv(process.env),
       TAURI_CONFIG: JSON.stringify(testConfig),
     },
   },
