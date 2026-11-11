@@ -660,6 +660,8 @@ fn main() {
             get_backend_system_audio_level,
             release_backend_system_audio,
             open_external_link,
+            microphone_permission_denied,
+            open_microphone_settings,
             get_dictation_settings,
             get_dictation_runtime,
             resolve_application_identity,

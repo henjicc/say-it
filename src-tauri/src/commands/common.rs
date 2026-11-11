@@ -11,6 +11,38 @@ pub(crate) fn open_external_link(app: tauri::AppHandle, url: String) -> Result<(
     open_external_url(&app, url)
 }
 
+/// 麦克风权限是否已被用户拒绝。被拒后系统不再弹授权，界面据此给出打开系统设置的入口。
+#[tauri::command]
+pub(crate) fn microphone_permission_denied() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_native::microphone_denied()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// 打开系统设置里的麦克风隐私页。
+#[tauri::command]
+pub(crate) fn open_microphone_settings(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app.opener()
+            .open_url(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                None::<&str>,
+            )
+            .map_err(|err| format!("打开系统设置失败：{err}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("当前平台没有单独的麦克风隐私设置页".into())
+    }
+}
+
 fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)

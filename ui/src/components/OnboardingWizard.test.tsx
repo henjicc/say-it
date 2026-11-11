@@ -35,15 +35,19 @@ vi.mock("@/lib/tauri", () => ({
     completeOnboarding: "complete_onboarding",
     detectHardware: "detect_hardware",
     openExternalLink: "open_external_link",
+    openMicrophoneSettings: "open_microphone_settings",
+    microphonePermissionDenied: "microphone_permission_denied",
   },
   EVT: { modelPackProgress: "model-pack-progress" },
   cmd: (...args: unknown[]) => invoke(...args),
   cmdSilent: vi.fn(),
   on: vi.fn(async () => () => undefined),
 }));
-vi.mock("@/lib/platform", () => ({ isMacOS: false }));
+const platform = vi.hoisted(() => ({ isMacOS: false }));
+vi.mock("@/lib/platform", () => platform);
+const mic = { level: 0.2, startError: "" };
 vi.mock("@/features/audio/useMicLevel", () => ({
-  useMicLevel: () => ({ level: 0.2, startError: "" }),
+  useMicLevel: () => mic,
   micLevelFraction: () => 0.2,
 }));
 vi.mock("@/views/dictation/DictationSections", () => ({
@@ -84,6 +88,17 @@ describe("OnboardingWizard", () => {
     });
     bailian.status = { configured: false, hasApiKey: false };
     providerState.defaults.llm = "";
+    Object.assign(mic, { level: 0.2, startError: "" });
+  });
+
+  it("points to system settings when microphone permission was denied", async () => {
+    platform.isMacOS = true;
+    Object.assign(mic, { level: 0, startError: "没有麦克风权限" });
+    invoke.mockImplementation(async (name: string) => name === "microphone_permission_denied" ? true : undefined);
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "打开系统设置" }));
+    expect(invoke).toHaveBeenCalledWith("open_microphone_settings");
+    platform.isMacOS = false;
   });
 
   it("can only be finished, and the first step has no way back", () => {
