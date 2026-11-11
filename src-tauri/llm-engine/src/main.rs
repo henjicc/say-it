@@ -62,6 +62,7 @@ fn main() {
                     Ok(json!({
                         "loadMs": started.elapsed().as_millis() as u64,
                         "gpu": loaded.on_gpu(),
+                        "stagesMs": loaded.load_stages(),
                     }))
                 }),
             Some("run") => serde_json::from_value::<engine::RunRequest>(command)

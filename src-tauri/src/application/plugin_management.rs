@@ -127,18 +127,31 @@ pub(crate) fn sync_resident_models(
     app: &tauri::AppHandle,
     state: &RuntimeState,
 ) -> Result<(), String> {
-    let mut models_in_use = {
+    let (mut models_in_use, smart_provider) = {
         let settings = state.app_settings.lock().map_err(|_| "应用配置锁失败")?;
-        [&settings.dictation_prefs, &settings.subtitle_prefs]
+        let in_use = [&settings.dictation_prefs, &settings.subtitle_prefs]
             .into_iter()
             .filter_map(|prefs| prefs.get("asrModel")?.as_str().map(str::to_string))
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<std::collections::HashSet<_>>();
+        // 智能处理开着时，它用的大模型供应商也算在用（本地整理模型按供应商选用）；没单独选就是通用大模型。
+        let dictation = &settings.dictation_prefs;
+        let smart_provider = (dictation.get("smartProcessingEnabled").and_then(serde_json::Value::as_bool) == Some(true)).then(|| {
+            dictation
+                .get("smartLlmProviderId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        });
+        (in_use, smart_provider)
     };
     let registry = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败")?;
     let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+    if let Some(provider) = smart_provider {
+        models_in_use.insert(if provider.is_empty() { providers.defaults.llm.clone() } else { provider });
+    }
     // 转写用的模型存在识别供应商的配置里。
     models_in_use.extend(providers.profiles.iter().filter_map(|profile| {
         profile
@@ -148,10 +161,12 @@ pub(crate) fn sync_resident_models(
             .as_str()
             .map(str::to_string)
     }));
-    local_asr_cache::reconcile(
-        registry.resident_model_specs(&providers, &models_in_use),
-        app,
-    )
+    let (polish, recognizers): (Vec<_>, Vec<_>) = registry
+        .resident_model_specs(&providers, &models_in_use)
+        .into_iter()
+        .partition(|spec| spec.engine == crate::providers::local_llm::ENGINE);
+    crate::providers::local_llm::set_resident(polish.into_iter().next(), app);
+    local_asr_cache::reconcile(recognizers, app)
 }
 
 #[tauri::command]

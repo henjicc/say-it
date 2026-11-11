@@ -71,6 +71,8 @@ pub(crate) struct Engine {
     draft_tokens: usize,
     on_gpu: bool,
     checkpoints: [Checkpoint; 2],
+    /// 加载各阶段的耗时（毫秒）：读权重并传到显卡、建推理上下文、预热。
+    load_stages: [u64; 3],
 }
 
 /// 某段提示词算完时的模型状态，存在内存里。
@@ -113,6 +115,10 @@ impl Engine {
         self.on_gpu
     }
 
+    pub(crate) fn load_stages(&self) -> [u64; 3] {
+        self.load_stages
+    }
+
     pub(crate) fn load(request: &LoadRequest) -> Result<Self, String> {
         let path = CString::new(request.model.as_str()).map_err(|_| "模型路径含空字符")?;
         unsafe {
@@ -121,11 +127,13 @@ impl Engine {
             let on_gpu = request.gpu && sys::llama_supports_gpu_offload();
             let mut model_params = sys::llama_model_default_params();
             model_params.n_gpu_layers = if on_gpu { 999 } else { 0 };
+            let started = Instant::now();
             let model = sys::llama_model_load_from_file(path.as_ptr(), model_params);
             if model.is_null() {
                 return Err(format!("加载模型失败：{}", request.model));
             }
             let mut params = sys::llama_context_default_params();
+            let model_ms = started.elapsed().as_millis() as u64;
             params.n_ctx = request.context_tokens;
             params.n_batch = request.context_tokens;
             params.n_seq_max = 1;
@@ -163,8 +171,11 @@ impl Engine {
                 draft_tokens: request.draft_tokens as usize,
                 on_gpu,
                 checkpoints: Default::default(),
+                load_stages: [model_ms, started.elapsed().as_millis() as u64 - model_ms, 0],
             };
+            let warm_started = Instant::now();
             engine.warm_up()?;
+            engine.load_stages[2] = warm_started.elapsed().as_millis() as u64;
             if on_gpu {
                 release_load_pages();
             }
