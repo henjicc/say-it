@@ -141,7 +141,7 @@ describe("OnboardingWizard", () => {
 
   it("offers local models first on a capable machine and points smart cleanup at the local model", async () => {
     invoke.mockImplementation(async (name: string) => {
-      if (name === "detect_hardware") return { gpuName: "RTX 4090", gpuMemoryMb: 24564, memoryMb: 65536 };
+      if (name === "detect_hardware") return { gpuName: "RTX 4090", gpuMemoryMb: 24564, memoryMb: 65536, unifiedMemory: false };
       if (name === "list_provider_plugins") {
         return {
           apiVersion: 5,

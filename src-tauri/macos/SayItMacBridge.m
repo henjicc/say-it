@@ -9,6 +9,7 @@
 #import <IOKit/hidsystem/IOHIDLib.h>
 #import <IOKit/hidsystem/IOHIDParameter.h>
 #import <IOKit/hidsystem/IOHIDShared.h>
+#import <Metal/Metal.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <Vision/Vision.h>
 #import <dlfcn.h>
@@ -618,6 +619,21 @@ bool sayit_macos_volume_available_capacity(
     }
     *capacity = (uint64_t)value;
     return true;
+}
+
+/// 没有 Metal 设备时 gpuName 为 NULL、workingSet 为 0。
+void sayit_macos_hardware(
+    uint64_t *memory,
+    char **gpuName,
+    uint64_t *workingSet,
+    bool *unifiedMemory
+) {
+    *memory = NSProcessInfo.processInfo.physicalMemory;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    *gpuName = device == nil ? NULL : SayItCopyString(device.name);
+    // 显卡一次能常驻的内存上限；统一内存的 Mac 上它就是本地模型实际可用的「显存」。
+    *workingSet = device == nil ? 0 : device.recommendedMaxWorkingSetSize;
+    *unifiedMemory = device != nil && device.hasUnifiedMemory;
 }
 
 static NSScreen *SayItIndicatorScreen(NSWindow *window) {

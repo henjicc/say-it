@@ -152,6 +152,12 @@ unsafe extern "C" {
     fn sayit_macos_context_ocr_permissions(request: bool) -> u32;
     fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
+    fn sayit_macos_hardware(
+        memory: *mut u64,
+        gpu_name: *mut *mut c_char,
+        working_set: *mut u64,
+        unified_memory: *mut bool,
+    );
     fn sayit_macos_volume_available_capacity(
         path: *const c_char,
         capacity: *mut u64,
@@ -508,6 +514,24 @@ pub(crate) fn system_font_families() -> Result<Vec<String>, String> {
     families.sort_by_key(|family| family.to_lowercase());
     families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     Ok(families)
+}
+
+pub(crate) struct MacHardware {
+    pub(crate) memory_bytes: u64,
+    pub(crate) gpu_name: Option<String>,
+    pub(crate) gpu_working_set_bytes: u64,
+    pub(crate) unified_memory: bool,
+}
+
+pub(crate) fn hardware() -> MacHardware {
+    let (mut memory, mut name, mut working_set, mut unified) = (0, ptr::null_mut(), 0, false);
+    unsafe { sayit_macos_hardware(&mut memory, &mut name, &mut working_set, &mut unified) };
+    MacHardware {
+        memory_bytes: memory,
+        gpu_name: unsafe { take_string(name) },
+        gpu_working_set_bytes: working_set,
+        unified_memory: unified,
+    }
 }
 
 pub(crate) fn volume_available_capacity(path: &Path) -> Result<u64, String> {
