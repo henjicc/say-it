@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { cn } from "@/lib/cn";
+import { WindowDragStrip } from "./WindowDragStrip";
 
 /**
  * 专业模式页面骨架：中间一栏是本页的分类列表，右侧检查器展示
@@ -20,15 +21,21 @@ export function MasterDetail({
 }) {
   return (
     <div className="flex min-h-0 flex-1">
-      <section className="flex w-[var(--list-col-w)] flex-none flex-col border-r border-[var(--color-line)] bg-[var(--color-bg)] px-4 pt-5 pb-4">
-        <div className="flex h-8 items-center justify-between gap-2 pr-1 pl-1.5">
-          <h1 className="text-lg font-semibold text-[var(--color-fg)]">{title}</h1>
-          {titleRight}
+      <section className="flex w-[var(--list-col-w)] flex-none flex-col border-r border-[var(--color-line)] bg-[var(--color-bg)]">
+        <WindowDragStrip />
+        <div className="flex min-h-0 flex-1 flex-col px-4 pt-5 pb-4">
+          <div className="flex h-8 items-center justify-between gap-2 pr-1 pl-1.5">
+            <h1 className="text-lg font-semibold text-[var(--color-fg)]">{title}</h1>
+            {titleRight}
+          </div>
+          <div className="mt-4 min-h-0 flex-1 overflow-y-auto">{list}</div>
+          {listFooter && <div className="mt-3 flex flex-none gap-2 [&>*]:flex-1">{listFooter}</div>}
         </div>
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto">{list}</div>
-        {listFooter && <div className="mt-3 flex flex-none gap-2 [&>*]:flex-1">{listFooter}</div>}
       </section>
-      <main className="min-w-0 flex-1 overflow-y-auto bg-[var(--color-panel)] px-8 pt-5 pb-8">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col bg-[var(--color-panel)]">
+        <WindowDragStrip />
+        <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-8">{children}</main>
+      </div>
     </div>
   );
 }

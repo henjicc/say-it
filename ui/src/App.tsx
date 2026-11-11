@@ -27,6 +27,7 @@ import { PluginDropInstaller } from "@/components/PluginDropInstaller";
 import { ShortcutConflictDialog } from "@/features/hotkeys/ShortcutConflictDialog";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import type { SetupStatus } from "@/lib/tauri";
+import { isMacOS } from "@/lib/platform";
 
 const PRO_VIEWS: Record<ViewKey, React.ReactNode> = {
   dictation: <DictationPage />,
@@ -64,6 +65,7 @@ export default function App() {
 
   const bridgeReady = useTauriBridge();
   const layoutMode = useUiStore((s) => s.layoutMode);
+  const macPro = isMacOS && layoutMode === "pro";
   useLayoutMode();
 
   useEffect(() => {
@@ -116,7 +118,7 @@ export default function App() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg-sidebar)] text-[var(--color-fg)]">
       {!settingsReady ? null : <>
-      <Titlebar />
+      {!macPro && <Titlebar />}
       {initError && (
         <div
           role="alert"
@@ -136,7 +138,8 @@ export default function App() {
         {layoutMode === "pro" && <Sidebar />}
         <div className={cn(
           "flex min-h-0 min-w-0 flex-1 overflow-hidden border-t border-[var(--color-line)] bg-[var(--color-bg)]",
-          layoutMode === "pro" ? "rounded-tl-[10px] border-l" : "flex-col rounded-t-[10px]",
+          // macOS 专业模式各栏直通窗口顶部，内容层只靠左侧细线与导航分开。
+          macPro ? "border-t-0 border-l" : layoutMode === "pro" ? "rounded-tl-[10px] border-l" : "flex-col rounded-t-[10px]",
         )}>
           {layoutMode === "pro" ? PRO_VIEWS[view] : SIMPLE_VIEWS[view] ?? SIMPLE_VIEWS.dictation}
         </div>

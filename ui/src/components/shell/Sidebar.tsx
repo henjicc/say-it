@@ -1,6 +1,7 @@
 import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/cn";
 import { useDeveloperStore } from "@/store/useDeveloperStore";
+import { WindowDragStrip } from "@/components/layout/WindowDragStrip";
 import { proNavGroups, SETTINGS_NAV, type NavItem } from "./navConfig";
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
@@ -31,6 +32,7 @@ export function Sidebar() {
 
   return (
     <nav aria-label="主导航" className="flex w-[var(--rail-w)] flex-none flex-col items-center gap-1 bg-[var(--color-bg-sidebar)] pt-1 pb-3">
+      <WindowDragStrip />
       {proNavGroups(developer).map((group, index) => (
         <div key={index} className="flex flex-col items-center gap-1">
           {index > 0 && <span aria-hidden className="my-1.5 h-px w-6 bg-[var(--color-line)]" />}

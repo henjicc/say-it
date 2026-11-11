@@ -11,7 +11,7 @@ const appWindow = getCurrentWindow();
 
 /**
  * 标题栏。专业模式只有品牌与窗口按钮；简单模式把功能切换放进标题栏中部，
- * 设置作为图标放在窗口按钮左侧。macOS 左侧留给系统红绿灯。
+ * 设置作为图标放在窗口按钮左侧。macOS 只在简单模式出现，左侧留给系统红绿灯，不放品牌。
  */
 export function Titlebar() {
   const mode = useUiStore((s) => s.layoutMode);
@@ -53,7 +53,7 @@ export function Titlebar() {
         isMacOS ? "pl-[78px]" : "pl-3.5",
       )}
     >
-      {!(isMacOS && simple) && (
+      {!isMacOS && (
         <div data-tauri-drag-region className="flex items-center gap-2 pr-1.5">
           <AppMark />
           {!simple && <span data-tauri-drag-region className="text-[13px] font-semibold text-[var(--color-fg)]">说吧！</span>}
