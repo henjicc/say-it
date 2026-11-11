@@ -124,8 +124,11 @@ export function PluginManagerPanel() {
           : plugin),
       }));
     }).then(keepListener);
+    // 解包进度只在解包过程中显示；解包完成后安装结果由各入口自己的提示给出。
     void on<{ extractedBytes: number; totalBytes: number }>(EVT.pluginInstallProgress, (event) => {
-      setMessage(`正在安装：${formatBytes(event.extractedBytes)} / ${formatBytes(event.totalBytes)}`);
+      setMessage(event.extractedBytes >= event.totalBytes
+        ? ""
+        : `正在安装：${formatBytes(event.extractedBytes)} / ${formatBytes(event.totalBytes)}`);
     }).then(keepListener);
     void on(EVT.pluginRegistryChanged, () => {
       void loadSnapshot().catch((error) => setMessage(`刷新插件列表失败：${String(error)}`));
