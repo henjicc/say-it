@@ -34,6 +34,28 @@ pub(crate) fn configure_engine_path(path: PathBuf) {
     let _ = ENGINE_PATH.set(path);
 }
 
+/// 安装后推理程序在主程序旁边（Tauri 打包 sidecar 时去掉目标三元组）；开发时用
+/// `npm run llm-engine:build` 放进 `src-tauri/binaries/` 的带三元组副本。
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn bundled_engine_path() -> PathBuf {
+    #[cfg(windows)]
+    const TRIPLE: &str = "x86_64-pc-windows-msvc";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    const TRIPLE: &str = "aarch64-apple-darwin";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    const TRIPLE: &str = "x86_64-apple-darwin";
+    let suffix = std::env::consts::EXE_SUFFIX;
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join(format!("sayit-llm{suffix}"))))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(format!("sayit-llm-{TRIPLE}{suffix}"))
+        })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PolishInput {
     /// 训练时用的场景标签，见 `scene_tag`。
@@ -628,11 +650,7 @@ mod tests {
     #[ignore]
     fn polishes_dictation_with_the_real_engine() {
         let model = PathBuf::from(std::env::var("SAYIT_POLISH_MODEL").unwrap());
-        configure_engine_path(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("binaries")
-                .join("sayit-llm-x86_64-pc-windows-msvc.exe"),
-        );
+        configure_engine_path(bundled_engine_path());
         let spec = LocalModelSpec {
             manifest_version: "test".into(),
             plugin_id: "test.polish".into(),
