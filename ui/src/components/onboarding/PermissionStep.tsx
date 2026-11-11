@@ -1,15 +1,43 @@
+import { useEffect, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Meter } from "@/components/ui/Meter";
 import { micLevelFraction, useMicLevel } from "@/features/audio/useMicLevel";
 import { useTextInputPermission } from "@/features/onboarding/permissions";
+import { isMacOS } from "@/lib/platform";
+import { CMD, cmd } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { MicRow } from "@/views/dictation/DictationSections";
 import { StepBody, StepError, StepFooter } from "./StepLayout";
 
 function ReadyMark({ label }: { label: string }) {
   return <CheckCircle2 role="img" className="h-4 w-4 flex-none text-[var(--color-ok)]" aria-label={label} />;
+}
+
+/** macOS 上麦克风被拒后系统不会再弹授权，只能去系统设置里打开；启动出错时才查询一次。 */
+function useMicPermissionDenied(startError: string) {
+  const [denied, setDenied] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setError("");
+    if (!isMacOS || !startError) {
+      setDenied(false);
+      return;
+    }
+    let active = true;
+    void cmd<boolean>(CMD.microphonePermissionDenied)
+      .then((value) => active && setDenied(value))
+      .catch((reason) => console.error("读取麦克风权限状态失败", reason));
+    return () => { active = false; };
+  }, [startError]);
+
+  const openSettings = () => {
+    setError("");
+    void cmd(CMD.openMicrophoneSettings).catch((reason) => setError(String(reason)));
+  };
+  return { denied, error, openSettings };
 }
 
 /**
@@ -20,6 +48,7 @@ export function PermissionStep({ onNext }: { onNext: () => void }) {
   const micDeviceId = useDictPrefs((state) => state.prefs.micDeviceId);
   const { level, startError } = useMicLevel(micDeviceId);
   const textInput = useTextInputPermission();
+  const mic = useMicPermissionDenied(startError);
 
   return (
     <>
@@ -28,12 +57,20 @@ export function PermissionStep({ onNext }: { onNext: () => void }) {
           <MicRow />
           <Row
             label="说句话试试"
-            message={startError && <span role="alert" className="text-[var(--color-err)]">无法使用麦克风：{startError}</span>}
+            message={startError && (
+              <span role="alert" className="text-[var(--color-err)]">
+                {mic.denied ? `麦克风权限已被拒绝${mic.error && `：${mic.error}`}` : `无法使用麦克风：${startError}`}
+              </span>
+            )}
           >
-            <div className={`${ROW_CONTROL_W} flex items-center gap-2`}>
-              <Meter value={micLevelFraction(level)} label="麦克风电平" kind="level" className="flex-1" />
-              {level > 0 && !startError && <ReadyMark label="麦克风可以使用" />}
-            </div>
+            {mic.denied ? (
+              <Button size="sm" onClick={mic.openSettings}>打开系统设置</Button>
+            ) : (
+              <div className={`${ROW_CONTROL_W} flex items-center gap-2`}>
+                <Meter value={micLevelFraction(level)} label="麦克风电平" kind="level" className="flex-1" />
+                {level > 0 && !startError && <ReadyMark label="麦克风可以使用" />}
+              </div>
+            )}
           </Row>
         </Group>
         {textInput.needed && (

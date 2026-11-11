@@ -153,6 +153,7 @@ unsafe extern "C" {
     fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_microphone_access() -> bool;
+    fn sayit_macos_microphone_denied() -> bool;
     fn sayit_macos_hardware(
         memory: *mut u64,
         gpu_name: *mut *mut c_char,
@@ -524,6 +525,11 @@ pub(crate) fn ensure_microphone_access() -> Result<(), String> {
     } else {
         Err("没有麦克风权限：请在「系统设置 → 隐私与安全性 → 麦克风」里允许说吧！，然后重试".into())
     }
+}
+
+/// 被拒绝后系统不会再弹授权，只能由用户到系统设置里打开。
+pub(crate) fn microphone_denied() -> bool {
+    unsafe { sayit_macos_microphone_denied() }
 }
 
 pub(crate) struct MacHardware {

@@ -103,6 +103,8 @@ export const CMD = {
   transcriptionCancel: "transcription_cancel",
   alignTranscript: "align_transcript",
   openExternalLink: "open_external_link",
+  microphonePermissionDenied: "microphone_permission_denied",
+  openMicrophoneSettings: "open_microphone_settings",
   getStartupSettings: "get_startup_settings",
   setStartupSettings: "set_startup_settings",
   getDataRootStatus: "get_data_root_status",
