@@ -10,9 +10,13 @@ export function useTextInputPermission() {
 
   useEffect(() => {
     if (!isMacOS) return;
-    void cmd<SetupStatus>(CMD.getSetupStatus)
+    const refresh = () => void cmd<SetupStatus>(CMD.getSetupStatus)
       .then((status) => setCheck(status.checks.find((item) => item.id === "permissions")))
       .catch((reason) => setError(`读取权限状态失败：${String(reason)}`));
+    refresh();
+    // 授权在系统设置里完成，回到软件时重新读取。
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, []);
 
   const request = async () => {

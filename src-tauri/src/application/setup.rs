@@ -65,6 +65,12 @@ fn permission_check() -> SetupCheckResult {
     {
         let permissions = crate::macos_native::context_ocr_permissions(false);
         let ready = permissions.accessibility;
+        // 启动时没有权限的话 Caps Lock / Fn 监听没起来；用户授权后回到软件即补上，不必重启。
+        if ready {
+            if let Err(error) = crate::hotkey::refresh_keyboard_tap() {
+                eprintln!("[hotkey] 授权后启动键盘监听失败：{error}");
+            }
+        }
         let message = match permissions.accessibility {
             true => "文字输入权限已授予".to_string(),
             false => "需要辅助功能权限，才能把识别文字输入其他软件".to_string(),
