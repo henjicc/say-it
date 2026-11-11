@@ -80,8 +80,8 @@ fn scene_of(app_name: &str) -> &'static str {
     }
 }
 
-/// 训练格式还有可选的 `<terms>`，但训练集每条最多几个、真实测试集为空；全局热词动辄几十上百个，
-/// 塞进去反而偏离模型见过的输入，所以不带。
+/// 这个 0.8B 是早期的实验权重，训练时热词每条最多几个；全局热词动辄几十上百个，
+/// 塞进去反而偏离它见过的输入，所以不带。
 fn user_message(scene: &str, raw: &str) -> String {
     format!("<scene>{scene}</scene>\n<text>{raw}</text>")
 }

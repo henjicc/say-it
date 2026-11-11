@@ -26,7 +26,7 @@
       "files": [
         {
           "path": "sayit-polish-4b-Q4_K_M.gguf",
-          "sha256": "28b8d37964f1ac17305cd644ecdccb3b61cd3bd55fbeb0d4078f413bff334219",
+          "sha256": "9ec1e680ca8e5caada0fb92e6e25b5dbfb8e556cf5b79dbd48bee85b14edb204",
           "sizeBytes": 2708804000,
           "download": {
             "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.llama-polish-4b/sayit-polish-4b-Q4_K_M.gguf"
