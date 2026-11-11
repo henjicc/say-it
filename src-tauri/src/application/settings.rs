@@ -460,6 +460,9 @@ pub(crate) fn update_app_settings(
     if domain == "dictation" {
         crate::application::dictation::apply_cue_output(&app);
     }
+    if domain == "dictation" || domain == "subtitles" {
+        crate::application::plugin_management::sync_resident_models(&app, &state)?;
+    }
     if domain == "theme" {
         crate::desktop::floating_orb::sync_floating_orb_theme(&app, &next.theme);
         let _ = app.emit("app-theme-changed", next.theme.clone());

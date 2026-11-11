@@ -380,6 +380,9 @@ export function PluginManagerPanel() {
               {plugin.modelPack?.keepLoaded && plugin.modelPack.residency?.state === "loading" && (
                 <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">正在加载到内存…</p>
               )}
+              {plugin.modelPack?.keepLoaded && plugin.enabled && plugin.modelPack.state === "ready" && plugin.modelPack.residency?.state === "unloaded" && (
+                <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">没有功能在用这个模型，暂不加载</p>
+              )}
               {plugin.modelPack?.residency?.state === "loaded" && (
                 <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">已常驻内存</p>
               )}

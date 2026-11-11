@@ -1174,11 +1174,44 @@ fn merge_missing_config(target: &mut Value, defaults: &Value) {
 }
 
 impl PluginRegistry {
-    pub fn resident_model_specs(&self, settings: &ProviderSettings) -> Vec<LocalModelSpec> {
+    /// 要常驻内存的模型包：开了常驻、权重就绪，并且正被某个功能选用。
+    /// `models_in_use` 是各功能当前选中的识别模型 ID；没被选用的模型常驻着只是白占内存。
+    /// 标点模型没有可选的模型 ID，有 sherpa 识别模型在用时才算在用。
+    pub fn resident_model_specs(
+        &self,
+        settings: &ProviderSettings,
+        models_in_use: &HashSet<String>,
+    ) -> Vec<LocalModelSpec> {
+        let recognizer_in_use = |engines: &[&str]| {
+            self.plugins.iter().any(|plugin| {
+                plugin
+                    .manifest
+                    .model_pack
+                    .as_ref()
+                    .is_some_and(|pack| engines.contains(&pack.engine.as_str()))
+                    && plugin
+                        .manifest
+                        .models
+                        .iter()
+                        .any(|model| models_in_use.contains(model.id()))
+            })
+        };
         self.plugins
             .iter()
             .filter_map(|plugin| {
                 let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
+                let in_use = if spec.engine == "sherpa-onnx-punctuation" {
+                    recognizer_in_use(&["sherpa-onnx-offline", "sherpa-onnx-online"])
+                } else {
+                    plugin
+                        .manifest
+                        .models
+                        .iter()
+                        .any(|model| models_in_use.contains(model.id()))
+                };
+                if !in_use {
+                    return None;
+                }
                 let enabled = settings.profiles.iter().any(|profile| {
                     profile.id == spec.provider_id
                         && profile.kind == format!("model-pack:{}", spec.plugin_id)
@@ -2237,11 +2270,18 @@ mod tests {
         settings = super::super::normalize_settings(settings);
         settings = serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         registry.merge_provider_profiles(&mut settings);
-        assert_eq!(registry.resident_model_specs(&settings).len(), 1);
+        let in_use = HashSet::from([registry.plugins[0].manifest.models[0].id().to_string()]);
+        assert_eq!(registry.resident_model_specs(&settings, &in_use).len(), 1);
+        // 开了常驻但没有功能选用它：不加载。
+        assert!(registry
+            .resident_model_specs(&settings, &HashSet::new())
+            .is_empty());
         let snapshot = registry.snapshot_with_provider_settings(Some(&settings));
         assert!(snapshot.plugins[0].model_pack.as_ref().unwrap().keep_loaded);
         registry.set_keep_loaded(&mut settings, id, false).unwrap();
-        assert!(registry.resident_model_specs(&settings).is_empty());
+        assert!(registry
+            .resident_model_specs(&settings, &in_use)
+            .is_empty());
         registry.set_keep_loaded(&mut settings, id, true).unwrap();
         settings
             .profiles
@@ -2249,7 +2289,9 @@ mod tests {
             .find(|profile| profile.id == spec.provider_id)
             .unwrap()
             .enabled = false;
-        assert!(registry.resident_model_specs(&settings).is_empty());
+        assert!(registry
+            .resident_model_specs(&settings, &in_use)
+            .is_empty());
         assert!(registry
             .set_keep_loaded(&mut settings, id, true)
             .unwrap_err()

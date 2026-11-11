@@ -229,6 +229,9 @@ pub(crate) fn update_provider_config(
             Err(rollback) => Err(format!("{error}；{rollback}")),
         };
     }
+    if config.get("transcription").is_some() {
+        crate::application::plugin_management::sync_resident_models(&app, &state)?;
+    }
     Ok(provider_settings_response(
         settings,
         Some(&state.credentials),
