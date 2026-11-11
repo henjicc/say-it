@@ -61,6 +61,7 @@ fn build_macos_native_bridge() {
         "CoreMedia",
         "Foundation",
         "IOKit",
+        "Metal",
         "ScreenCaptureKit",
         "Vision",
     ] {

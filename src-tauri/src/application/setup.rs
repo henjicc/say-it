@@ -282,8 +282,11 @@ pub(crate) fn request_setup_permissions(
 pub(crate) struct HardwareSummary {
     /// 独立显存最大的那块显卡；没有读到时为空。
     gpu_name: Option<String>,
+    /// 显卡可用的内存。统一内存的 Mac 上是系统建议给显卡常驻的上限，不是独立显存。
     gpu_memory_mb: u64,
     memory_mb: u64,
+    /// 显卡与处理器共用内存（Apple 芯片）。
+    unified_memory: bool,
 }
 
 #[cfg(windows)]
@@ -318,7 +321,18 @@ fn hardware_summary() -> HardwareSummary {
     summary
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn hardware_summary() -> HardwareSummary {
+    let hardware = crate::macos_native::hardware();
+    HardwareSummary {
+        gpu_name: hardware.gpu_name,
+        gpu_memory_mb: hardware.gpu_working_set_bytes / (1024 * 1024),
+        memory_mb: hardware.memory_bytes / (1024 * 1024),
+        unified_memory: hardware.unified_memory,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn hardware_summary() -> HardwareSummary {
     HardwareSummary::default()
 }
