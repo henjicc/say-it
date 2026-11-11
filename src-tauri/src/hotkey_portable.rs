@@ -563,8 +563,10 @@ fn keyboard_tap_requirements(
     )
 }
 
+/// 按当前绑定启动、调整或停止事件过滤器；所需状态与运行中的一致时无操作。
+/// 缺少辅助功能权限时启动失败且不留状态，授权后再次调用即可补上。
 #[cfg(target_os = "macos")]
-fn refresh_keyboard_tap() -> Result<(), String> {
+pub(crate) fn refresh_keyboard_tap() -> Result<(), String> {
     let has_caps_lock_binding = CAPS_LOCK_BINDING
         .get()
         .and_then(|binding| binding.lock().ok())
