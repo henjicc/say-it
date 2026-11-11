@@ -198,7 +198,30 @@ macro_rules! dlog {
     }};
 }
 
+/// tauri:dev 经 `scripts/macos-dev-launcher.c` 拉起时，启动器被强制结束后开发版也随之退出，
+/// 否则旧实例会占着单实例锁，重编出的新实例启动后直接把自己转交给它。
+#[cfg(target_os = "macos")]
+fn exit_with_dev_launcher() {
+    if std::env::var_os("SAYIT_DEV_LAUNCHER").is_none() {
+        return;
+    }
+    // 开发版自己重启（app.restart）拉起的新进程不能继承它，否则会把旧实例当成启动器，旧实例一退出就跟着退出。
+    std::env::remove_var("SAYIT_DEV_LAUNCHER");
+    let launcher = std::os::unix::process::parent_id();
+    std::thread::Builder::new()
+        .name("dev-launcher-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if std::os::unix::process::parent_id() != launcher {
+                std::process::exit(0);
+            }
+        })
+        .expect("启动开发启动器监视线程失败");
+}
+
 fn main() {
+    #[cfg(target_os = "macos")]
+    exit_with_dev_launcher();
     #[cfg(all(windows, feature = "performance-acceptance"))]
     application::performance_acceptance::configure_process();
     // 保留 tokio 默认栈，只用自定义 runtime 为工作线程注册可符号化的栈溢出取证。
