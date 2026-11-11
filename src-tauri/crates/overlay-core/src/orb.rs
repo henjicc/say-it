@@ -493,7 +493,48 @@ impl PointerModel for OrbPointer {
     }
 }
 
+/// 供任意线程同步读取的悬浮球请求镜像。可见性只由投递侧按请求写入；矩形由投递侧写入请求，
+/// 模型只在移动、有效 DPI 变更和系统拖拽结束时回报几何（移动只改原点），
+/// 普通帧和指针消息不得把尚未消费的请求覆盖为旧模型状态。
+pub struct OrbMirrors {
+    visible: std::sync::atomic::AtomicBool,
+    rect: std::sync::Mutex<Option<(i32, i32, i32)>>,
+}
+impl OrbMirrors {
+    pub const fn new() -> Self {
+        Self {
+            visible: std::sync::atomic::AtomicBool::new(false),
+            rect: std::sync::Mutex::new(None),
+        }
+    }
+    pub fn set_visible(&self, visible: bool) {
+        self.visible
+            .store(visible, std::sync::atomic::Ordering::Release);
+    }
+    pub fn is_visible(&self) -> bool {
+        self.visible.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn set_rect(&self, x: i32, y: i32, size: i32) {
+        *self.rect.lock().expect("orb rect mirror poisoned") = Some((x, y, size));
+    }
+    pub fn move_to(&self, x: i32, y: i32) {
+        if let Some(rect) = self.rect.lock().expect("orb rect mirror poisoned").as_mut() {
+            rect.0 = x;
+            rect.1 = y;
+        }
+    }
+    pub fn rect(&self) -> Option<(i32, i32, i32)> {
+        *self.rect.lock().expect("orb rect mirror poisoned")
+    }
+}
+impl Default for OrbMirrors {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Orb {
+    mirrors: Option<&'static OrbMirrors>,
     phase: OrbPhase,
     transient: bool,
     can_submit: bool,
@@ -516,6 +557,7 @@ pub struct Orb {
 impl Orb {
     pub fn new(dpi: u32, look: &Look) -> Self {
         Self {
+            mirrors: None,
             phase: OrbPhase::Idle,
             transient: false,
             can_submit: false,
@@ -535,6 +577,11 @@ impl Orb {
             transition: Transition::new(false),
             look: *look,
         }
+    }
+    /// 系统几何回报写入宿主平台的请求镜像。
+    pub fn with_mirrors(mut self, mirrors: &'static OrbMirrors) -> Self {
+        self.mirrors = Some(mirrors);
+        self
     }
     pub fn rect(&self) -> PxRect {
         self.bounds
@@ -630,10 +677,17 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
             WindowEvent::Moved { x, y } => {
                 self.bounds.x = x;
                 self.bounds.y = y;
+                if let Some(mirrors) = self.mirrors {
+                    mirrors.move_to(x, y);
+                }
                 Vec::new()
             }
             WindowEvent::SystemDragEnded { bounds } => {
                 self.bounds = bounds;
+                // 先回写镜像再发动作：拖拽结束的处理会读取镜像保存位置。
+                if let Some(mirrors) = self.mirrors {
+                    mirrors.set_rect(bounds.x, bounds.y, bounds.width);
+                }
                 vec![WindowOp::Action(OrbAction::DragFinished)]
             }
             WindowEvent::DpiChanged { dpi, suggested } => {
@@ -645,6 +699,9 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
                 let logical = f64::from(self.bounds.width) * 96.0 / f64::from(old_dpi);
                 let size = (logical * f64::from(dpi) / 96.0).round().max(1.0) as i32;
                 self.bounds = PxRect::new(suggested.x, suggested.y, size, size);
+                if let Some(mirrors) = self.mirrors {
+                    mirrors.set_rect(self.bounds.x, self.bounds.y, size);
+                }
                 vec![WindowOp::SetBounds(self.bounds), WindowOp::Redraw]
             }
             WindowEvent::AreaChanged => Vec::new(),
@@ -1298,18 +1355,22 @@ mod model_tests {
     }
     #[test]
     fn moved_and_system_drag_end_update_rect_before_drag_finished() {
-        let mut model = Orb::new(96, &Look::WINDOWS_LEGACY);
+        static MIRRORS: OrbMirrors = OrbMirrors::new();
+        MIRRORS.set_rect(0, 0, 64);
+        let mut model = Orb::new(96, &Look::WINDOWS_LEGACY).with_mirrors(&MIRRORS);
         let context = cx(Instant::now(), 96);
         assert!(model
             .window_event(WindowEvent::Moved { x: -80, y: -20 }, &context)
             .is_empty());
         assert_eq!(model.rect(), PxRect::new(-80, -20, 64, 64));
+        assert_eq!(MIRRORS.rect(), Some((-80, -20, 64)));
         let bounds = PxRect::new(-90, 200, 96, 96);
         assert_eq!(
             model.window_event(WindowEvent::SystemDragEnded { bounds }, &context),
             vec![WindowOp::Action(OrbAction::DragFinished)]
         );
         assert_eq!(model.rect(), bounds);
+        assert_eq!(MIRRORS.rect(), Some((-90, 200, 96)));
     }
     #[test]
     fn hidden_phase_and_positioning_defer_style_target_until_visible_prepare() {

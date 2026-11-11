@@ -157,7 +157,6 @@ fn render_loop(rx: Receiver<Message>, look: Look) {
         look,
         screens: screens::snapshot(),
     };
-    crate::hosts::register();
     loop {
         let wait = wait_duration(
             hosts.iter().flatten().filter_map(|h| h.deadline()),

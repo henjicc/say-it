@@ -758,7 +758,7 @@ fn native_idle_rect(app: &tauri::AppHandle, settings: &FloatingOrbSettings) -> (
 }
 
 /// 悬浮球窗口后端开关：SAYIT_NATIVE_ORB=0 回退 WebView，其它已设置值启用
-/// 原生窗口；未设置时取平台默认（Windows 开启，macOS 开发期关闭）。
+/// 原生窗口；未设置时取平台默认（Windows 与 macOS 均开启）。
 fn use_native_orb() -> bool {
     crate::desktop::native_orb::native_orb_enabled()
 }

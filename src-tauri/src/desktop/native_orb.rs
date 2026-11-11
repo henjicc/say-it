@@ -1,23 +1,24 @@
-//! Windows 原生悬浮球原型。
+//! 原生悬浮球的平台分发。
 //!
-//! 目标与 native_indicator 相同：悬浮球不再占用常驻 WebView 进程。圆形窗口
-//! 画在 UpdateLayeredWindow 分层窗口的透明背景上，按像素 alpha 命中测试天然
-//! 获得圆形可点区域；「非交互态点击穿透」用动态切换 WS_EX_TRANSPARENT 实现，
-//! 等价于 WebView 路径的 set_ignore_cursor_events。
+//! 目标与 native_indicator 相同：悬浮球不再占用常驻 WebView 进程。Windows 用
+//! UpdateLayeredWindow 分层窗口，按像素 alpha 命中测试获得圆形可点区域；macOS 用
+//! 不激活的 NSPanel。「非交互态点击穿透」等价于 WebView 路径的 set_ignore_cursor_events。
 //!
 //! 视觉规格以 ui/src/floating-orb.css 为准；点击/右键动作映射与拖拽阈值
 //! 移植自 ui/src/floating-orb/interaction.ts；波形柱布局来自 OrbWaveform.tsx。
-//! 模型与指针层在 overlay-core，Windows 宿主与绘图后端在 native_win。
+//! 模型与指针层在 overlay-core，Windows 宿主在 native_win，macOS 宿主在 overlay-macos。
 
 #[cfg(windows)]
 use super::native_win::orb as imp;
-use sayit_overlay_core::orb::{OrbAction, OrbClickAction, OrbContextAction};
+#[cfg(target_os = "macos")]
+use super::native_mac::orb as imp;
+use sayit_overlay_core::orb::{OrbAction, OrbClickAction, OrbContextAction, OrbMirrors};
 use std::sync::OnceLock;
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-#[cfg(windows)]
+/// 投递侧写入请求，窗口的移动、DPI 与拖拽结束由模型回写；任意线程同步读取。
 pub(super) static MIRRORS: OrbMirrors = OrbMirrors::new();
 
-/// Windows 上默认启用原生悬浮球；`SAYIT_NATIVE_ORB=0` 回退 WebView。
+/// 未设置 `SAYIT_NATIVE_ORB` 时取平台默认；`0` 回退 WebView。
 pub(crate) fn native_orb_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| super::native_common::native_window_enabled("SAYIT_NATIVE_ORB"))
@@ -26,20 +27,14 @@ pub(crate) fn native_orb_enabled() -> bool {
 pub(crate) fn native_orb_attach(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
     #[cfg(target_os = "macos")]
-    super::native_mac::orb::attach(app);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = app;
+    super::native_mac::ensure_started(app);
 }
 
-/// 原生悬浮球的 UI 线程是否已经启动（窗口是否已创建）。
+/// 原生悬浮球窗口是否已经创建。
 pub(crate) fn native_orb_started() -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         imp::started()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        super::native_mac::orb::started()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -49,188 +44,100 @@ pub(crate) fn native_orb_started() -> bool {
 
 /// 首次创建原生悬浮球窗口并设置矩形与整体透明度（物理像素 / 百分比）。
 pub(crate) fn native_orb_configure(x: i32, y: i32, size: i32, opacity_percent: u8) {
-    #[cfg(windows)]
+    MIRRORS.set_rect(x, y, size);
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        MIRRORS.set_rect(x, y, size);
         imp::post(imp::Command::SetRect { x, y, size });
         imp::post(imp::Command::SetOpacity(f32::from(opacity_percent) / 100.0));
     }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::configure(x, y, size, opacity_percent);
     #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (x, y, size, opacity_percent);
+    let _ = opacity_percent;
 }
 
 pub(crate) fn native_orb_set_rect(x: i32, y: i32, size: i32) {
-    #[cfg(windows)]
-    {
-        MIRRORS.set_rect(x, y, size);
-        imp::post_if_started(imp::Command::SetRect { x, y, size });
-    }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::set_rect(x, y, size);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (x, y, size);
+    MIRRORS.set_rect(x, y, size);
+    #[cfg(any(windows, target_os = "macos"))]
+    imp::post_if_started(imp::Command::SetRect { x, y, size });
 }
 
 pub(crate) fn native_orb_move_to(x: i32, y: i32) {
-    #[cfg(windows)]
-    {
-        MIRRORS.move_to(x, y);
-        imp::post_if_started(imp::Command::MoveTo { x, y });
-    }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::move_to(x, y);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (x, y);
+    MIRRORS.move_to(x, y);
+    #[cfg(any(windows, target_os = "macos"))]
+    imp::post_if_started(imp::Command::MoveTo { x, y });
 }
 
 pub(crate) fn native_orb_set_opacity(percent: u8) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     imp::post_if_started(imp::Command::SetOpacity(f32::from(percent) / 100.0));
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::set_opacity(percent);
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = percent;
 }
 
 pub(crate) fn native_orb_show() {
-    #[cfg(windows)]
-    {
-        MIRRORS.set_visible(true);
-        imp::post_if_started(imp::Command::Show);
-    }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::show();
+    MIRRORS.set_visible(true);
+    #[cfg(any(windows, target_os = "macos"))]
+    imp::post_if_started(imp::Command::Show);
 }
 
 pub(crate) fn native_orb_hide() {
-    #[cfg(windows)]
-    {
-        MIRRORS.set_visible(false);
-        imp::post_if_started(imp::Command::Hide);
-    }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::hide();
+    MIRRORS.set_visible(false);
+    #[cfg(any(windows, target_os = "macos"))]
+    imp::post_if_started(imp::Command::Hide);
 }
 
 /// 等价于 WebView 的 `set_ignore_cursor_events(!interactive)`。
 pub(crate) fn native_orb_set_interactive(interactive: bool) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     imp::post_if_started(imp::Command::SetInteractive(interactive));
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::set_interactive(interactive);
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = interactive;
 }
 
 /// 未知 phase 静默丢弃，与 native_indicator 的状态过滤一致。
 pub(crate) fn native_orb_set_state(phase: &str, transient: bool, can_submit: bool) {
-    #[cfg(windows)]
-    if let Some(phase) = imp::OrbPhase::from_str(phase) {
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Some(phase) = sayit_overlay_core::orb::OrbPhase::from_str(phase) {
         imp::post_if_started(imp::Command::SetState {
             phase,
             transient,
             can_submit,
         });
     }
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::set_state(phase, transient, can_submit);
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (phase, transient, can_submit);
 }
 
 pub(crate) fn native_orb_set_waveform(level: f32, peaks: Vec<f32>) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     imp::post_if_started(imp::Command::SetWaveform { level, peaks });
-    #[cfg(target_os = "macos")]
-    super::native_mac::orb::set_waveform(level, peaks);
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (level, peaks);
 }
 
-/// 最近一次已知的窗口矩形（物理像素 x/y/边长），由命令投递方与拖拽
-/// 结束后的窗口过程共同维护，供任意线程同步读取。
+/// 最近一次已知的窗口矩形（物理像素 x/y/边长）。
 pub(crate) fn native_orb_rect() -> Option<(i32, i32, i32)> {
-    #[cfg(windows)]
-    {
-        MIRRORS.rect()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        super::native_mac::orb::rect()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        None
-    }
+    MIRRORS.rect()
 }
 
 pub(crate) fn native_orb_is_visible() -> bool {
-    #[cfg(windows)]
-    {
-        MIRRORS.is_visible()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        super::native_mac::orb::is_visible()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        false
-    }
+    MIRRORS.is_visible()
 }
 
 /// 与 WebView 路径的 is_cursor_over_floating_orb 同语义：真实指针位置
 /// 是否落在当前可见的悬浮球矩形内。
 pub(crate) fn native_orb_cursor_over() -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        imp::cursor_over()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        super::native_mac::orb::cursor_over()
+        let (Some((x, y, size)), true, Some((cx, cy))) =
+            (MIRRORS.rect(), MIRRORS.is_visible(), imp::cursor_px())
+        else {
+            return false;
+        };
+        cx >= x && cx < x + size && cy >= y && cy < y + size
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
-    }
-}
-
-/// 请求可见性只由投递侧写入；矩形还接收窗口移动、DPI 和拖拽结束的回报。
-/// 普通帧和指针消息不得把尚未消费的请求覆盖为旧模型状态。
-#[cfg(windows)]
-pub(super) struct OrbMirrors {
-    visible: std::sync::atomic::AtomicBool,
-    rect: std::sync::Mutex<Option<(i32, i32, i32)>>,
-}
-#[cfg(windows)]
-impl OrbMirrors {
-    pub(super) const fn new() -> Self {
-        Self {
-            visible: std::sync::atomic::AtomicBool::new(false),
-            rect: std::sync::Mutex::new(None),
-        }
-    }
-    pub(super) fn set_visible(&self, visible: bool) {
-        self.visible
-            .store(visible, std::sync::atomic::Ordering::Release);
-    }
-    pub(super) fn is_visible(&self) -> bool {
-        self.visible.load(std::sync::atomic::Ordering::Acquire)
-    }
-    pub(super) fn set_rect(&self, x: i32, y: i32, size: i32) {
-        *self.rect.lock().expect("orb rect mirror poisoned") = Some((x, y, size));
-    }
-    pub(super) fn move_to(&self, x: i32, y: i32) {
-        if let Some(rect) = self.rect.lock().expect("orb rect mirror poisoned").as_mut() {
-            rect.0 = x;
-            rect.1 = y;
-        }
-    }
-    pub(super) fn rect(&self) -> Option<(i32, i32, i32)> {
-        *self.rect.lock().expect("orb rect mirror poisoned")
     }
 }
 

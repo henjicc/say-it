@@ -1,4 +1,3 @@
-use super::super::native_orb::OrbMirrors;
 use super::d2d::DWriteText;
 use super::host::{self, WinWindow};
 use super::OverlayThread;
@@ -17,16 +16,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(crate) use sayit_overlay_core::orb::{Command, OrbPhase};
 static UI: OnceLock<Option<OverlayThread<Command>>> = OnceLock::new();
-/// 只有系统几何事件能从 UI 侧写回请求镜像；模型其余响应保持平台无关。
-pub(crate) struct WindowModel<'a> {
+/// 测试需要在每批副作用后读到悬停状态，其余行为直接转交平台无关模型。
+pub(crate) struct WindowModel {
     orb: Orb,
-    mirrors: &'a OrbMirrors,
 }
-impl<'a> WindowModel<'a> {
-    fn new(dpi: u32, mirrors: &'a OrbMirrors) -> Self {
+impl WindowModel {
+    fn new(dpi: u32) -> Self {
         Self {
-            orb: Orb::new(dpi, &Look::WINDOWS_LEGACY),
-            mirrors,
+            orb: Orb::new(dpi, &Look::WINDOWS_LEGACY)
+                .with_mirrors(&super::super::native_orb::MIRRORS),
         }
     }
     fn after_ops(&self) {
@@ -34,7 +32,7 @@ impl<'a> WindowModel<'a> {
         HOVERING.with(|slot| slot.set(self.orb.hovering()));
     }
 }
-impl OverlayModel<DWriteText> for WindowModel<'_> {
+impl OverlayModel<DWriteText> for WindowModel {
     type Command = Command;
     type Action = OrbAction;
     type Pointer = sayit_overlay_core::orb::OrbPointer;
@@ -49,19 +47,7 @@ impl OverlayModel<DWriteText> for WindowModel<'_> {
         self.orb.input(input, cx)
     }
     fn window_event(&mut self, event: WindowEvent, cx: &Cx<'_, DWriteText>) -> Ops<OrbAction> {
-        let ops = self.orb.window_event(event, cx);
-        match event {
-            WindowEvent::Moved { x, y } => self.mirrors.move_to(x, y),
-            WindowEvent::SystemDragEnded { bounds } => {
-                self.mirrors.set_rect(bounds.x, bounds.y, bounds.width)
-            }
-            WindowEvent::DpiChanged { .. } if !ops.is_empty() => {
-                let rect = self.orb.rect();
-                self.mirrors.set_rect(rect.x, rect.y, rect.width);
-            }
-            _ => {}
-        }
-        ops
+        self.orb.window_event(event, cx)
     }
     fn set_look(&mut self, look: &Look) -> Ops<OrbAction> {
         <Orb as OverlayModel<DWriteText>>::set_look(&mut self.orb, look)
@@ -84,7 +70,7 @@ impl OverlayModel<DWriteText> for WindowModel<'_> {
 }
 pub(crate) struct Window;
 impl WinWindow for Window {
-    type Model = WindowModel<'static>;
+    type Model = WindowModel;
     const CLASS_NAME: PCWSTR = w!("SayItNativeFloatingOrb");
     const EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(
         WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0,
@@ -92,7 +78,7 @@ impl WinWindow for Window {
     const THREAD_NAME: &'static str = "sayit-native-orb";
     const TITLE: PCWSTR = w!("说吧！语音输入悬浮球");
     fn create_model(dpi: u32) -> Self::Model {
-        WindowModel::new(dpi, &super::super::native_orb::MIRRORS)
+        WindowModel::new(dpi)
     }
     fn area(_: u32) -> PxRect {
         PxRect::default()
@@ -124,18 +110,10 @@ pub(crate) fn post_if_started(command: Command) {
         thread.post(command);
     }
 }
-pub(crate) fn cursor_over() -> bool {
-    let Some((x, y, size)) = super::super::native_orb::native_orb_rect() else {
-        return false;
-    };
-    if !super::super::native_orb::native_orb_is_visible() {
-        return false;
-    }
+pub(crate) fn cursor_px() -> Option<(i32, i32)> {
     let mut cursor = POINT::default();
-    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
-        return false;
-    }
-    cursor.x >= x && cursor.x < x + size && cursor.y >= y && cursor.y < y + size
+    unsafe { GetCursorPos(&mut cursor) }.ok()?;
+    Some((cursor.x, cursor.y))
 }
 #[cfg(test)]
 thread_local! { static HOVERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -166,6 +144,7 @@ pub(crate) mod snapshot_driver {
 mod tests {
     use super::super::test_seams::OffscreenGuard;
     use super::*;
+    use sayit_overlay_core::orb::OrbMirrors;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         DestroyWindow, GetWindowRect, SendMessageW, WM_DPICHANGED,
@@ -247,6 +226,14 @@ mod tests {
         );
     }
 
+    fn leaked_mirrors() -> &'static OrbMirrors {
+        Box::leak(Box::new(OrbMirrors::new()))
+    }
+    fn model_with(mirrors: &'static OrbMirrors) -> WindowModel {
+        WindowModel {
+            orb: Orb::new(96, &Look::WINDOWS_LEGACY).with_mirrors(mirrors),
+        }
+    }
     fn cx(now: Instant, text: &DWriteText) -> Cx<'_, DWriteText> {
         Cx {
             now,
@@ -262,8 +249,8 @@ mod tests {
         let text = DWriteText::new().unwrap();
         let now = Instant::now();
         for requested_visible in [true, false] {
-            let mirrors = OrbMirrors::new();
-            let mut model = WindowModel::new(96, &mirrors);
+            let mirrors = leaked_mirrors();
+            let mut model = model_with(mirrors);
             model.apply(
                 Command::SetRect {
                     x: 10,
@@ -321,8 +308,8 @@ mod tests {
         let text = DWriteText::new().unwrap();
         let now = Instant::now();
         let context = cx(now, &text);
-        let mirrors = OrbMirrors::new();
-        let mut model = WindowModel::new(96, &mirrors);
+        let mirrors = leaked_mirrors();
+        let mut model = model_with(mirrors);
         model.apply(
             Command::SetRect {
                 x: 10,

@@ -1,23 +1,25 @@
-//! macOS 字幕条桥接契约；宿主接入前保持无操作桩。
+//! macOS 字幕条薄桥：配置、布局或显示时注册宿主，文本与隐藏只在宿主存在时投递。
+pub(crate) use sayit_overlay_core::subtitle::Command;
+use sayit_overlay_core::subtitle::SubtitleAction;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use sayit_overlay_core::subtitle::{SubtitleAction, SubtitleConfig};
+static STARTED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn set_translation(_text: String) {}
-
-pub(crate) fn set_text(_text: String, _fade: bool) {}
-
-pub(crate) fn hide() {}
-
-pub(crate) fn show() {}
-
-pub(crate) fn set_layout(_width: f64, _height: f64, _anchor: &str, _offset_y: f64) {}
-
-pub(crate) fn set_config(_config: SubtitleConfig) {}
-
-pub(crate) fn attach(_app: &tauri::AppHandle) {}
-
-pub(crate) fn reference_size() -> Option<(f64, f64)> {
-    None
+pub(crate) fn post(command: Command) {
+    sayit_overlay_macos::subtitle::post(command);
+    STARTED.store(true, Ordering::Release);
 }
 
-pub(super) fn on_action(_app: &tauri::AppHandle, _action: SubtitleAction) {}
+pub(crate) fn post_if_started(command: Command) {
+    if STARTED.load(Ordering::Acquire) {
+        sayit_overlay_macos::subtitle::post(command);
+    }
+}
+
+pub(crate) fn reference_size() -> Option<(f64, f64)> {
+    sayit_overlay_macos::subtitle::reference_size()
+}
+
+pub(super) fn on_action(action: SubtitleAction) {
+    crate::desktop::native_subtitle::run_subtitle_action(action);
+}
