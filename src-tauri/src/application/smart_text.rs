@@ -928,7 +928,8 @@ fn local_polish_input(
     active_app_context: &str,
     active_app_name: &str,
 ) -> crate::providers::local_llm::PolishInput {
-    let hotwords = crate::application::customization::prefs(state)
+    let prefs = crate::application::customization::prefs(state);
+    let hotwords = prefs
         .hotwords
         .iter()
         .map(|item| item.text.trim().to_string())
@@ -937,6 +938,7 @@ fn local_polish_input(
     crate::providers::local_llm::PolishInput::new(
         crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
         &hotwords,
+        &crate::application::customization::render_context(&prefs),
         active_app_context,
         text,
     )
@@ -973,6 +975,7 @@ async fn process_with_local_polish(
         "outputChars":result.as_deref().map_or(0, |output| output.chars().count()),
         "scene":input.scene,
         "hotwords":input.hotwords,
+        "context":input.note,
         "screenChars":input.screen.chars().count(),
         "userPrompt":input.text,
         "output":result.as_deref().unwrap_or_default(),
