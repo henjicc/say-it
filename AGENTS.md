@@ -216,4 +216,5 @@
 - 听写后处理顺序固定为「智能处理 → 本地规则」：本地规则是对最终文本的确定性兜底，必须作用在大模型输出之上。
 - 内置供应商的模型 ID 只能来自模型目录并由对应场景选择，禁止在供应商配置中暴露自由填写的模型 ID。供应商密钥和设置字段采用静默自动保存：文本/密钥停止输入或失焦后保存，开关立即保存；不显示保存按钮和成功提示，只在失败时显示错误。
 - 本地识别有两套原生运行时：sherpa-onnx（ONNX 权重，纯 CPU）和 transcribe.cpp（GGUF 权重，引擎名 `transcribe-cpp`，显卡可用时走 Vulkan/Metal）。Windows 构建后者需要 Vulkan SDK 并设好 `VULKAN_SDK`（CI 用 `scripts/install-vulkan-sdk.ps1`）；中文系统的编译问题见 `docs/experience/中文系统MSVC编译transcribe-cpp失败.md`。
+- 本地听写整理模型（引擎名 `llama-cpp`，能力 `polish`）跑在独立进程 `sayit-llm` 里：源码在 `src-tauri/llm-engine`（workspace 成员但不在 `default-members`，`cargo test` 不会带上它），由 `npm run llm-engine:build` 构建并放进 `src-tauri/binaries/`，`tauri:dev` 和 `tauri:build` 会自动先跑；同样需要 Vulkan SDK。改它的提示词格式前先读 `docs/experience/本地听写整理模型的选型提速与显存实测.md`。
 - sherpa-onnx VAD（`sherpa-onnx-offline` 引擎）必须按 `vadWindowSize` 小块喂入，且不得在语音未确认时 `reset()`；细节见 `docs/experience/sherpa-onnx-VAD喂入块过大与误reset导致无识别结果.md`。

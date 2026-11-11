@@ -842,6 +842,10 @@ fn supports_web_search(profile: &ProviderProfile) -> bool {
 /// 插件提供的模型由插件自己决定访问地址，不预连接。
 pub(crate) async fn prewarm_connection(state: &RuntimeState, provider_id: &str, model_override: &str) {
     let result = async {
+        // 本地听写整理模型没有连接可建，预热就是把模型加载进内存。
+        if let Some(spec) = local_polish_spec(state, provider_id)? {
+            return crate::providers::local_llm::prewarm(&spec).await;
+        }
         let profile = selected_profile(state, Some(provider_id), Some(model_override))?;
         if profile.kind == "llm:groq" {
             return crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM
@@ -896,6 +900,105 @@ pub(crate) struct SmartPrompt {
     pub(crate) learning_context: crate::application::learning::LearningContext,
 }
 
+/// 本地听写整理模型的整理规则训在权重里，只对应这两个内置模板的效果，不读模板内容。
+/// 空 ID 是设置页的试运行，放行让用户看到本地模型的实际效果。
+const LOCAL_POLISH_TEMPLATES: &[&str] = &["context-aware-polish", "polish", ""];
+
+/// 智能处理选的是本地听写整理模型时返回它的规格；选的是大模型供应商时返回 `None`。
+fn local_polish_spec(
+    state: &RuntimeState,
+    provider_id: &str,
+) -> Result<Option<crate::providers::plugin::LocalModelSpec>, String> {
+    let registry = state.plugin_registry.lock().map_err(|_| "插件注册表锁失败")?;
+    let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
+    let is_polish_provider = find_profile(&providers, provider_id)
+        .is_some_and(|profile| profile.capabilities.iter().any(|value| value == "polish"));
+    if !is_polish_provider {
+        return Ok(None);
+    }
+    registry
+        .polish_model(&providers, provider_id)
+        .map(Some)
+        .ok_or_else(|| "本地听写整理模型没有启用或还没有下载好，请到扩展里检查".to_string())
+}
+
+fn local_polish_input(
+    state: &RuntimeState,
+    text: &str,
+    active_app_context: &str,
+    active_app_name: &str,
+) -> crate::providers::local_llm::PolishInput {
+    let hotwords = crate::application::customization::prefs(state)
+        .hotwords
+        .iter()
+        .map(|item| item.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    crate::providers::local_llm::PolishInput {
+        scene: crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
+        terms: crate::providers::local_llm::collect_terms(&hotwords, active_app_context),
+        text: text.trim().to_string(),
+    }
+}
+
+async fn process_with_local_polish(
+    state: &RuntimeState,
+    spec: &crate::providers::plugin::LocalModelSpec,
+    template_id: &str,
+    text: &str,
+    active_app_context: &str,
+    active_app_name: &str,
+) -> Result<String, String> {
+    if !LOCAL_POLISH_TEMPLATES.contains(&template_id) {
+        return Err("本地听写整理模型只支持内置的润色模板，其他模板请换用大模型".into());
+    }
+    let input = local_polish_input(state, text, active_app_context, active_app_name);
+    let started = StdInstant::now();
+    let result = crate::providers::local_llm::polish(spec, &input)
+        .await
+        .and_then(|output| match output.is_empty() {
+            true => Err("本地听写整理模型没有返回内容".to_string()),
+            false => Ok(output),
+        });
+    crate::application::dev_trace::llm_call(json!({
+        "providerId":spec.provider_id,
+        "providerName":"本地",
+        "providerKind":format!("model-pack:{}", spec.plugin_id),
+        "modelId":spec.plugin_id,
+        "scope":"smart-text",
+        "stream":false,
+        "durationMs":started.elapsed().as_millis() as u64,
+        "userPromptChars":input.text.chars().count(),
+        "outputChars":result.as_deref().map_or(0, |output| output.chars().count()),
+        "scene":input.scene,
+        "terms":input.terms,
+        "userPrompt":input.text,
+        "output":result.as_deref().unwrap_or_default(),
+        "error":result.as_ref().err(),
+    }));
+    result
+}
+
+/// 边说边用本地模型整理已识别的文字，见 `local_llm::speculate`。选的不是本地模型时什么也不做。
+pub(crate) fn speculate_local_polish(
+    state: &RuntimeState,
+    text: &str,
+    template_id: &str,
+    active_app_name: &str,
+    provider_id: &str,
+) {
+    if !LOCAL_POLISH_TEMPLATES.contains(&template_id) {
+        return;
+    }
+    if let Ok(Some(spec)) = local_polish_spec(state, provider_id) {
+        // 屏幕文字此时多半还没识别完，先只带热词；松手后的正式请求带上完整词表，这一版结果给它当草稿。
+        crate::providers::local_llm::speculate(
+            spec,
+            local_polish_input(state, text, "", active_app_name),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_smart_text(
     state: &RuntimeState,
@@ -920,6 +1023,20 @@ pub(crate) async fn process_smart_text(
         output: String::new(),
     };
     if text.trim().is_empty() {
+        return Ok(run);
+    }
+    if let Some(spec) = local_polish_spec(state, provider_id)? {
+        run.provider_id = spec.provider_id.clone();
+        run.model = spec.plugin_id.clone();
+        run.output = process_with_local_polish(
+            state,
+            &spec,
+            template_id,
+            text,
+            active_app_context,
+            active_app_name,
+        )
+        .await?;
         return Ok(run);
     }
     let prompt = build_smart_prompt(

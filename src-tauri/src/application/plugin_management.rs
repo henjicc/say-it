@@ -196,6 +196,7 @@ pub(crate) async fn install_provider_plugin(
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    crate::providers::local_llm::release(None);
     let suspension = local_asr_cache::suspend_all()?;
     let install_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -257,6 +258,7 @@ pub(crate) async fn download_model_pack_files(
         files: spec.files,
         params: spec.params,
     };
+    crate::providers::local_llm::release(Some(&plugin_id));
     let suspension = local_asr_cache::suspend(&plugin_id)?;
     let result = model_download::download_pack(&app, &plugin_id, &spec.model_dir, &pack).await;
     drop(suspension);
@@ -280,6 +282,7 @@ pub(crate) fn set_provider_plugin_enabled(
         .runtime_for_provider_id_by_plugin(&plugin_id)?
         .ok_or_else(|| format!("插件 {plugin_id} 不存在"))?;
     if !enabled {
+        crate::providers::local_llm::release(Some(&plugin_id));
         if let Some(runtime) = runtime {
             plugin_runtime::drain_plugin_namespace(
                 &runtime.source_namespace,
@@ -382,6 +385,7 @@ pub(crate) fn uninstall_provider_plugin(
             window.close().map_err(|error| error.to_string())?;
         }
     }
+    crate::providers::local_llm::release(Some(&plugin_id));
     let suspension = local_asr_cache::suspend(&plugin_id)?;
     if let Err(error) = plugin_package::uninstall(&app, &plugin_id) {
         drop(suspension);

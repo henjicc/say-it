@@ -318,6 +318,17 @@ fn main() {
                     .filter(|path| path.is_file())
                     .unwrap_or(development_probe);
                 active_app_context::configure_native_probe_path(probe_path);
+                let development_engine = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("binaries")
+                    .join("sayit-llm-x86_64-pc-windows-msvc.exe");
+                let installed_engine = std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(|parent| parent.join("sayit-llm.exe")));
+                providers::local_llm::configure_engine_path(
+                    installed_engine
+                        .filter(|path| path.is_file())
+                        .unwrap_or(development_engine),
+                );
             }
             if let Some(persisted) = load_persisted_state(&app.handle())? {
                 let state = app.state::<RuntimeState>();
@@ -840,8 +851,11 @@ fn main() {
                 tauri::RunEvent::ExitRequested {
                     code: None, api, ..
                 } => api.prevent_exit(),
-                #[cfg(debug_assertions)]
-                tauri::RunEvent::Exit => application::dev_local_model::shutdown(),
+                tauri::RunEvent::Exit => {
+                    providers::local_llm::release(None);
+                    #[cfg(debug_assertions)]
+                    application::dev_local_model::shutdown();
+                }
                 _ => {}
             }
         });

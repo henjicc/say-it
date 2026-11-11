@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CMD, cmd } from "@/lib/tauri";
 
-export type ProviderCapability = "asr" | "llm" | "translation" | "customization" | "ocr" | "punctuation";
+export type ProviderCapability = "asr" | "llm" | "translation" | "customization" | "ocr" | "punctuation" | "polish";
 
 export interface ProviderStatus {
   hasApiKey?: boolean;

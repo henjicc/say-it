@@ -1,0 +1,14 @@
+llama.cpp
+Copyright (c) 2023-2026 The ggml authors
+Licensed under the MIT License. See MIT.txt.
+https://github.com/ggml-org/llama.cpp
+
+llama-cpp-rs (llama-cpp-sys-2)
+Copyright (c) utilityai
+Licensed under the MIT License or the Apache License, Version 2.0, at your option. See MIT.txt and Apache-2.0.txt.
+https://github.com/utilityai/llama-cpp-rs
+
+Vulkan-Headers, Vulkan-Loader
+Copyright (c) 2015-2026 The Khronos Group Inc.
+Licensed under the Apache License, Version 2.0. See Apache-2.0.txt.
+https://github.com/KhronosGroup/Vulkan-Headers

@@ -19,7 +19,7 @@
   },
   "bundle": {
     "targets": ["nsis"],
-    "externalBin": ["binaries/context-probe"],
+    "externalBin": ["binaries/context-probe", "binaries/sayit-llm"],
     "resources": {
       "resources/licenses": "resources/licenses",
       "resources/ocr": "resources/ocr",

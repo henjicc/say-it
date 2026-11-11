@@ -50,3 +50,6 @@ jobs:
       - name: Build and test Windows context probe
         if: runner.os == 'Windows'
         run: npm run context-probe:build && npm run context-probe:test
+      - name: Build and test local LLM engine
+        if: runner.os == 'Windows'
+        run: npm run llm-engine:build && cargo test --release --manifest-path src-tauri/Cargo.toml -p sayit-llm-engine

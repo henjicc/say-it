@@ -1,0 +1,16 @@
+[package]
+name = "sayit-llm-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sayit-llm"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+llama-cpp-sys-2 = { version = "0.1.161", default-features = false, features = ["vulkan"] }
