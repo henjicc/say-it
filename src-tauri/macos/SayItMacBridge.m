@@ -622,9 +622,9 @@ bool sayit_macos_volume_available_capacity(
     return true;
 }
 
-/// 用户拒绝过麦克风；只查询，不弹授权。被管理策略禁止时用户在系统设置里也改不了，不算在内。
-bool sayit_macos_microphone_denied(void) {
-    return [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] == AVAuthorizationStatusDenied;
+/// 麦克风授权状态，取值同 AVAuthorizationStatus；只查询，不弹授权。
+int sayit_macos_microphone_status(void) {
+    return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
 }
 
 /// 麦克风是否已允许；尚未决定时弹出系统授权并等待用户作答，所以不能在主线程调用。

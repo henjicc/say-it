@@ -42,13 +42,43 @@ fn check(
 
 fn microphone_check() -> SetupCheckResult {
     match crate::desktop::list_audio_devices() {
-        Ok(devices) if !devices.inputs.is_empty() => check(
-            "microphone",
-            "ready",
-            "麦克风",
-            format!("检测到 {} 个输入设备", devices.inputs.len()),
-            None,
-        ),
+        Ok(devices) if !devices.inputs.is_empty() => {
+            let ready = format!("检测到 {} 个输入设备", devices.inputs.len());
+            #[cfg(target_os = "macos")]
+            {
+                use crate::macos_native::MicrophoneAuthorization;
+                // 没有授权时设备照样列得出来，录到的却全是静音。
+                return match crate::macos_native::microphone_authorization() {
+                    MicrophoneAuthorization::Allowed => {
+                        check("microphone", "ready", "麦克风", ready, None)
+                    }
+                    // 用户此时无事可做，第一次用麦克风时系统会询问，不算待处理。
+                    MicrophoneAuthorization::Undetermined => check(
+                        "microphone",
+                        "ready",
+                        "麦克风",
+                        format!("{ready}，第一次使用时系统会询问是否允许"),
+                        None,
+                    ),
+                    MicrophoneAuthorization::Denied => check(
+                        "microphone",
+                        "blocked",
+                        "麦克风",
+                        "麦克风权限已被拒绝，需要在系统设置里允许",
+                        Some("microphone-settings"),
+                    ),
+                    MicrophoneAuthorization::Restricted => check(
+                        "microphone",
+                        "blocked",
+                        "麦克风",
+                        "麦克风被这台电脑的管理策略禁用",
+                        None,
+                    ),
+                };
+            }
+            #[cfg(not(target_os = "macos"))]
+            check("microphone", "ready", "麦克风", ready, None)
+        }
         Ok(_) => check(
             "microphone",
             "blocked",

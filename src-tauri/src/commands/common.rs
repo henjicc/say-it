@@ -16,7 +16,8 @@ pub(crate) fn open_external_link(app: tauri::AppHandle, url: String) -> Result<(
 pub(crate) fn microphone_permission_denied() -> bool {
     #[cfg(target_os = "macos")]
     {
-        crate::macos_native::microphone_denied()
+        crate::macos_native::microphone_authorization()
+            == crate::macos_native::MicrophoneAuthorization::Denied
     }
     #[cfg(not(target_os = "macos"))]
     {
