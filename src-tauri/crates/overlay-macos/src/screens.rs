@@ -32,11 +32,16 @@ impl Screens {
             .or_else(|| self.list.first())
     }
 
-    pub fn area(&self) -> PxRect {
+    /// 非胶囊窗口的布局区：焦点屏的 visibleFrame。
+    pub fn area_screen(&self) -> Option<&ScreenInfo> {
         self.list
             .iter()
             .find(|s| Some(s.id) == self.main)
             .or_else(|| self.list.first())
+    }
+
+    pub fn area(&self) -> PxRect {
+        self.area_screen()
             .map(|s| screen::rect_pts_to_px(&self.list, s.visible, Some(s.id)))
             .unwrap_or_default()
     }

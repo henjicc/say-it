@@ -1,6 +1,6 @@
 //! 原生悬浮窗共用的环境开关与外观分发。
 
-const PLATFORM_DEFAULT: bool = cfg!(windows);
+const PLATFORM_DEFAULT: bool = cfg!(any(windows, target_os = "macos"));
 
 /// SAYIT_NATIVE_<NAME>："0" 关闭，其它已设置值开启，未设置取平台默认。
 pub(crate) fn native_window_enabled(var: &str) -> bool {

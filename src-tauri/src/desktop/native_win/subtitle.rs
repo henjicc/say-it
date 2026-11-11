@@ -4,10 +4,7 @@ use sayit_overlay_core::geom::PxRect;
 use sayit_overlay_core::look::Look;
 use sayit_overlay_core::subtitle::Subtitle;
 use sayit_overlay_core::window::OverlayModel;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -15,7 +12,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(crate) use sayit_overlay_core::subtitle::Command;
-pub(crate) static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
 pub(crate) struct Window;
 impl WinWindow for Window {
