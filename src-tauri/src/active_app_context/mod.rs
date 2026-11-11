@@ -60,9 +60,21 @@ pub(crate) struct ContextCaptureHandle {
     started: std::time::Instant,
     deadline: std::time::Instant,
     receiver: Option<oneshot::Receiver<CapturedActiveAppContext>>,
+    /// 听写过程中先取到的结果；正式解析直接用它，保证与边说边整理时看到的一致。
+    ready: Option<CapturedActiveAppContext>,
     cancelled: Arc<AtomicBool>,
     /// 正文读取在独立线程/进程中执行，超时不能抹去已同步获得的窗口元信息。
     fallback: CapturedActiveAppContext,
+}
+
+impl ContextCaptureHandle {
+    /// 结果已经到达时取出并留在句柄里；还没到时返回 `None`，不等待。
+    fn ready(&mut self) -> Option<&CapturedActiveAppContext> {
+        if self.ready.is_none() {
+            self.ready = self.receiver.as_mut().and_then(|receiver| receiver.try_recv().ok());
+        }
+        self.ready.as_ref()
+    }
 }
 
 #[derive(Clone)]
@@ -89,6 +101,15 @@ pub(crate) enum DictationContextCaptureHandle {
 }
 
 impl DictationContextCaptureHandle {
+    /// 已经读到的上下文，按正式整理时的格式给出；还没读到，或要到听写结束才识别（延迟 OCR）时为 `None`。
+    pub(crate) fn ready_for_prompt(&mut self) -> Option<String> {
+        match self {
+            Self::Eager(handle) => handle.ready().map(CapturedActiveAppContext::format_for_prompt),
+            #[cfg(windows)]
+            Self::DeferredOcr(_) => None,
+        }
+    }
+
     pub(crate) fn cancellation(&self) -> ContextCaptureCancellation {
         let cancelled = match self {
             Self::Eager(handle) => Arc::clone(&handle.cancelled),
@@ -106,6 +127,7 @@ impl DictationContextCaptureHandle {
 pub(crate) struct DeferredOcrCaptureHandle {
     deadline: std::time::Instant,
     receiver: Option<oneshot::Receiver<windows::PreparedOcrCapture>>,
+    ready: None,
     cancelled: Arc<AtomicBool>,
     fallback: CapturedActiveAppContext,
 }
@@ -306,6 +328,7 @@ impl ContextCaptureService {
                 started,
                 deadline,
                 receiver: Some(receiver),
+                ready: None,
                 cancelled,
                 fallback: CapturedActiveAppContext::default(),
             };
@@ -346,6 +369,7 @@ impl ContextCaptureService {
             started,
             deadline,
             receiver: Some(receiver),
+            ready: None,
             cancelled,
             fallback,
         }
@@ -487,6 +511,7 @@ impl ContextCaptureService {
         let started = handle.started;
         let deadline = handle.deadline;
         let fallback = handle.fallback.clone();
+        let ready = handle.ready.take();
         let mut receiver = handle
             .receiver
             .take()
@@ -507,7 +532,7 @@ impl ContextCaptureService {
         );
         // 听写可能持续超过捕获硬截止，但 OCR 已在截止前完成并写入通道。
         // 必须先读取已就绪的结果，不能因为“现在已过截止”而错误丢弃它。
-        let mut result = match receiver.try_recv() {
+        let mut result = match ready.map_or_else(|| receiver.try_recv(), Ok) {
             Ok(result) => {
                 crate::development_debug_log(
                     "active-app-context",
@@ -766,6 +791,7 @@ mod tests {
                 started: now - timeout - std::time::Duration::from_millis(1),
                 deadline: now - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
+                ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
             })
@@ -795,6 +821,7 @@ mod tests {
                     - std::time::Duration::from_millis(1),
                 deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
+                ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
             })
@@ -830,6 +857,7 @@ mod tests {
                 deadline: std::time::Instant::now()
                     + ActiveAppContextExtractionMethod::NativeText.timeout(),
                 receiver: Some(receiver),
+                ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
             }
@@ -864,6 +892,7 @@ mod tests {
                 started: std::time::Instant::now(),
                 deadline: std::time::Instant::now() + std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
+                ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext {
                     app_name: "msedge".into(),
@@ -880,6 +909,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn context_read_during_dictation_is_reused_by_the_final_resolve() {
+        let service = ContextCaptureService::default();
+        let (sender, receiver) = oneshot::channel();
+        let mut handle = DictationContextCaptureHandle::Eager(ContextCaptureHandle {
+            started: std::time::Instant::now(),
+            deadline: std::time::Instant::now()
+                + ActiveAppContextExtractionMethod::Ocr.timeout(),
+            receiver: Some(receiver),
+            ready: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            fallback: CapturedActiveAppContext::default(),
+        });
+        assert_eq!(handle.ready_for_prompt(), None);
+        sender
+            .send(CapturedActiveAppContext {
+                status: CaptureStatus::Captured,
+                app_name: "Claude".into(),
+                ocr_text: vec!["屏幕上的文字".into()],
+                ..Default::default()
+            })
+            .expect("receiver should accept the capture");
+        let early = handle.ready_for_prompt().expect("capture already arrived");
+        assert!(early.contains("屏幕上的文字"));
+
+        let result = service.resolve_dictation_capture(handle).await;
+        assert_eq!(result.format_for_prompt(), early);
+    }
+
     #[test]
     fn dropping_capture_handle_cancels_pending_work() {
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -889,6 +947,7 @@ mod tests {
             deadline: std::time::Instant::now()
                 + ActiveAppContextExtractionMethod::NativeText.timeout(),
             receiver: Some(receiver),
+            ready: None,
             cancelled: Arc::clone(&cancelled),
             fallback: CapturedActiveAppContext::default(),
         };
@@ -907,6 +966,7 @@ mod tests {
             deadline: std::time::Instant::now()
                 + ActiveAppContextExtractionMethod::NativeText.timeout(),
             receiver: Some(receiver),
+            ready: None,
             cancelled: Arc::clone(&capture_cancelled),
             fallback: CapturedActiveAppContext::default(),
         });
