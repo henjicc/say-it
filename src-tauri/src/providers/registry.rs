@@ -47,9 +47,9 @@ pub struct ModelInfo {
     pub supports_alignment_timestamps: bool,
     /// 识别过程中是否输出可变的中间结果（"边说边出字"）。
     ///
-    /// `category` 只区分"实时会话"与"文件批处理"，装不下 VAD 分段的整句模型：这类模型
-    /// 走实时会话，但说完一句才整句出字，没有中间态。省略时按 `category` 推导，保证既有
-    /// 内置模型与旧插件清单行为不变。
+    /// `category` 只区分"实时会话"与"文件批处理"，装不下说完一句才整句出字的实时模型，
+    /// 这类模型要显式声明 `false`。省略时按 `category` 推导，保证既有内置模型与旧插件
+    /// 清单行为不变。
     /// 必须 `skip_serializing_if`：签名载荷是对本结构体**重新序列化**得到的
     /// （见 `plugin_package::signing_payload`），若缺省时序列化成 `null`，所有在本字段
     /// 之前签名的插件载荷都会改变，签名集体验证失败。新增可选字段一律照此处理。
@@ -61,20 +61,16 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    /// 未显式声明时的推导顺序：宿主自有引擎按实现判定，其余按 `category` 兜底。
-    ///
-    /// `local-sherpa-offline` 由宿主自己驱动，走 VAD 分段整句识别，实现上不存在中间结果
-    /// （见 `commands/asr/local_session.rs` 的 Offline 分支）。这是宿主的事实而非插件的
-    /// 声明，因此优先于 `category`——否则字段上线前已安装的模型包必须重新打包安装才能
-    /// 拿到正确标注。
+    /// `local-sherpa-offline` 由宿主自己驱动：实时会话里宿主会反复识别正在说的这句话给出
+    /// 中间结果（见 `local_asr::OfflineVadSession` 的预览）。这是宿主的事实而非插件的声明，
+    /// 因此优先于清单里的值，已安装的模型包不必重新打包。其余模型以声明为准，未声明时按
+    /// `category` 兜底。
     pub fn emits_partial_results(&self) -> bool {
-        if let Some(explicit) = self.emits_partial_results {
-            return explicit;
-        }
         if self.protocol == "local-sherpa-offline" {
-            return false;
+            return self.category == "realtime";
         }
-        self.category == "realtime"
+        self.emits_partial_results
+            .unwrap_or(self.category == "realtime")
     }
 }
 

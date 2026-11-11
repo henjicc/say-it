@@ -190,7 +190,8 @@ impl OfflineEngine {
 
     fn fast_enough_for_preview(&self) -> bool {
         match &self.recognizer {
-            SegmentRecognizer::Sherpa(_) => false,
+            // 处理器上的整句模型也有几十倍实时；预览间隔随耗时自动拉长，慢机器上只是更新得慢。
+            SegmentRecognizer::Sherpa(_) => true,
             SegmentRecognizer::Transcribe(recognizer) => recognizer.fast_enough_for_preview(),
         }
     }

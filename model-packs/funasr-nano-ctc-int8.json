@@ -3,7 +3,7 @@
     "apiVersion": 5,
     "id": "official.sherpa-funasr-nano-ctc",
     "name": "Fun-ASR-Nano CTC INT8",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "provider": {
       "id": "local-funasr-nano",
       "displayName": "本地 Fun-ASR",
@@ -22,7 +22,7 @@
         "protocol": "local-sherpa-offline",
         "supportsVocabulary": false,
         "supportsAlignmentTimestamps": false,
-        "emitsPartialResults": false,
+        "emitsPartialResults": true,
         "scenes": ["dictationRealtime", "subtitles"],
         "isDefaultRealtime": false,
         "isDefaultFile": false
@@ -84,7 +84,7 @@
         "useItn": true,
         "numThreads": 4,
         "vadThreshold": 0.5,
-        "vadMinSilenceDuration": 0.6,
+        "vadMinSilenceDuration": 1.2,
         "vadMinSpeechDuration": 0.25,
         "vadWindowSize": 512,
         "vadMaxSpeechDuration": 30.0
