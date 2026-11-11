@@ -331,6 +331,10 @@ pub(crate) fn start_backend_mic_inner(
     device_name: Option<String>,
     state: &RuntimeState,
 ) -> Result<BackendMicStartResponse, String> {
+    // 没有授权时 CoreAudio 不报错，只送静音，必须在打开设备前查清。首次会等用户在系统
+    // 授权框里作答，所以放在启停锁之外，等待期间其他会话照常停止和释放麦克风。
+    #[cfg(target_os = "macos")]
+    crate::macos_native::ensure_microphone_access()?;
     let _lifecycle = state
         .backend_mic_lifecycle
         .lock()
