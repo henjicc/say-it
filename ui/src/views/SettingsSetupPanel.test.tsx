@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
 import { SettingsSetupPanel } from "./SettingsSetupPanel";
 
-vi.mock("@/lib/tauri", () => ({ CMD: { getSetupStatus: "get_setup_status" }, cmd: vi.fn() }));
+vi.mock("@/lib/tauri", () => ({
+  CMD: { getSetupStatus: "get_setup_status", openMicrophoneSettings: "open_microphone_settings" },
+  cmd: vi.fn(),
+}));
 
 const blocked: SetupStatus = {
   onboardingVersion: 1, requiredVersion: 1, complete: true,
@@ -21,11 +24,9 @@ describe("SettingsSetupPanel", () => {
   beforeEach(() => vi.mocked(cmd).mockReset().mockResolvedValue(blocked));
   afterEach(cleanup);
 
-  it("keeps environment checks collapsed and preserves the existing guide entry", () => {
+  it("checks nothing until the status dialog is opened and preserves the existing guide entry", () => {
     render(<SettingsSetupPanel />);
-    const toggle = screen.getByRole("button", { name: "环境状态" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(cmd).not.toHaveBeenCalled();
     const openGuide = vi.fn();
     window.addEventListener("sayit-open-setup", openGuide);
@@ -34,11 +35,11 @@ describe("SettingsSetupPanel", () => {
     window.removeEventListener("sayit-open-setup", openGuide);
   });
 
-  it("reads details on demand and fetches current results after refreshing or reopening", async () => {
+  it("shows details in a dialog and fetches current results after refreshing or reopening", async () => {
     render(<SettingsSetupPanel />);
-    const toggle = screen.getByRole("button", { name: "环境状态" });
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const open = screen.getByRole("button", { name: "环境状态" });
+    fireEvent.click(open);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("正在检查环境");
     expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
     expect(await screen.findByText("尚未配置认证信息")).toBeInTheDocument();
@@ -47,11 +48,21 @@ describe("SettingsSetupPanel", () => {
     vi.mocked(cmd).mockResolvedValue(ready);
     fireEvent.click(screen.getByRole("button", { name: "重新检查" }));
     expect(await screen.findByText("所有关键能力均可用")).toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(screen.queryByRole("list")).not.toBeInTheDocument();
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(open);
     await screen.findByText("所有关键能力均可用");
     expect(cmd).toHaveBeenCalledTimes(3);
+  });
+
+  it("opens the system microphone settings when the permission was denied", async () => {
+    vi.mocked(cmd).mockResolvedValue({
+      ...blocked,
+      checks: [{ id: "microphone", title: "麦克风", message: "麦克风权限已被拒绝", status: "blocked", action: "microphone-settings" }],
+    });
+    render(<SettingsSetupPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "环境状态" }));
+    fireEvent.click(await screen.findByRole("button", { name: "打开系统设置" }));
+    expect(cmd).toHaveBeenCalledWith(CMD.openMicrophoneSettings);
   });
 
   it("shows check failures and allows retry without leaving stale success feedback", async () => {
@@ -65,14 +76,14 @@ describe("SettingsSetupPanel", () => {
     expect(await screen.findByText("尚未配置认证信息")).toBeInTheDocument();
   });
 
-  it("ignores an earlier check that finishes after its panel was closed", async () => {
+  it("ignores an earlier check that finishes after its dialog was closed", async () => {
     let resolveOld!: (value: SetupStatus) => void;
     vi.mocked(cmd).mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
     render(<SettingsSetupPanel />);
-    const toggle = screen.getByRole("button", { name: "环境状态" });
-    fireEvent.click(toggle);
-    fireEvent.click(toggle);
-    fireEvent.click(toggle);
+    const open = screen.getByRole("button", { name: "环境状态" });
+    fireEvent.click(open);
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(open);
     await screen.findByText("尚未配置认证信息");
     await act(async () => resolveOld(ready));
     expect(screen.getByRole("status")).toHaveTextContent("1 项需要处理");

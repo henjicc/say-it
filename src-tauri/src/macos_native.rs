@@ -153,7 +153,7 @@ unsafe extern "C" {
     fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_microphone_access() -> bool;
-    fn sayit_macos_microphone_denied() -> bool;
+    fn sayit_macos_microphone_status() -> i32;
     fn sayit_macos_hardware(
         memory: *mut u64,
         gpu_name: *mut *mut c_char,
@@ -527,9 +527,23 @@ pub(crate) fn ensure_microphone_access() -> Result<(), String> {
     }
 }
 
-/// 被拒绝后系统不会再弹授权，只能由用户到系统设置里打开。
-pub(crate) fn microphone_denied() -> bool {
-    unsafe { sayit_macos_microphone_denied() }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MicrophoneAuthorization {
+    Undetermined,
+    /// 被管理策略禁止，用户在系统设置里也改不了。
+    Restricted,
+    /// 被拒绝后系统不会再弹授权，只能由用户到系统设置里打开。
+    Denied,
+    Allowed,
+}
+
+pub(crate) fn microphone_authorization() -> MicrophoneAuthorization {
+    match unsafe { sayit_macos_microphone_status() } {
+        0 => MicrophoneAuthorization::Undetermined,
+        1 => MicrophoneAuthorization::Restricted,
+        2 => MicrophoneAuthorization::Denied,
+        _ => MicrophoneAuthorization::Allowed,
+    }
 }
 
 pub(crate) struct MacHardware {
