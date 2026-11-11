@@ -2,11 +2,11 @@
   "manifest": {
     "apiVersion": 5,
     "id": "official.llama-polish-4b",
-    "name": "听写整理 4B",
+    "name": "Qwen3.5-4B 听写微调",
     "version": "1.0.0",
     "provider": {
       "id": "local-polish-4b",
-      "displayName": "本地整理 4B",
+      "displayName": "本地 Qwen3.5-4B 听写微调",
       "authKind": "none",
       "capabilities": [
         "polish"
