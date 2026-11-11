@@ -8,7 +8,7 @@ export interface HardwareSummary {
   memoryMb: number;
 }
 
-/** 本地模型对电脑的要求。数字来自实测，见 docs/experience 里两份本地模型的实测记录。 */
+/** 本地模型对电脑的要求。数字来自实测，见 docs/experience 里本地模型的实测记录。 */
 export interface LocalModelNeed {
   /** 一句话的占用说明。 */
   summary: string;
@@ -22,8 +22,8 @@ export const LOCAL_MODEL_NEEDS: Record<string, LocalModelNeed> = {
   "official.llama-polish-4b": { summary: "占约 3.5 GB 显存，需要独立显卡", gpuMemoryMb: 6 * 1024, gpu: "required" },
   "official.transcribe-qwen3-asr-1.7b": { summary: "占约 1.8 GB 显存；没有显卡时用处理器，占约 2.5 GB 内存", gpuMemoryMb: 4 * 1024, gpu: "preferred" },
   "official.transcribe-qwen3-asr-0.6b": { summary: "占约 1 GB 显存；没有显卡时用处理器，占约 1.5 GB 内存", gpuMemoryMb: 2 * 1024, gpu: "preferred" },
-  "official.sherpa-sensevoice-small": { summary: "只用处理器，占约 350 MB 内存" },
-  "official.sherpa-funasr-nano-ctc": { summary: "只用处理器，占约 400 MB 内存" },
+  "official.sherpa-sensevoice-small": { summary: "只用处理器，占约 450 MB 内存" },
+  "official.sherpa-funasr-nano-ctc": { summary: "只用处理器，占约 550 MB 内存" },
   "official.sherpa-paraformer-online": { summary: "只用处理器，占约 300 MB 内存" },
   "official.sherpa-ct-punct-zh-en": { summary: "只用处理器，占约 100 MB 内存" },
 };
