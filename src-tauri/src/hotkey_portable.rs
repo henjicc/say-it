@@ -563,14 +563,20 @@ fn keyboard_tap_requirements(
     )
 }
 
+/// 主快捷键或任一已启用的快捷键方案用了 Caps Lock。
+#[cfg(target_os = "macos")]
+pub(crate) fn has_caps_lock_binding() -> bool {
+    CAPS_LOCK_BINDING
+        .get()
+        .and_then(|binding| binding.lock().ok())
+        .is_some_and(|binding| binding.is_some())
+}
+
 /// 按当前绑定启动、调整或停止事件过滤器；所需状态与运行中的一致时无操作。
 /// 缺少辅助功能权限时启动失败且不留状态，授权后再次调用即可补上。
 #[cfg(target_os = "macos")]
 pub(crate) fn refresh_keyboard_tap() -> Result<(), String> {
-    let has_caps_lock_binding = CAPS_LOCK_BINDING
-        .get()
-        .and_then(|binding| binding.lock().ok())
-        .is_some_and(|binding| binding.is_some());
+    let has_caps_lock_binding = has_caps_lock_binding();
     let has_fn_binding = FN_DICTATION_BINDING
         .get()
         .and_then(|binding| binding.lock().ok())

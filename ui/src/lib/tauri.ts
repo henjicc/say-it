@@ -104,7 +104,7 @@ export const CMD = {
   alignTranscript: "align_transcript",
   openExternalLink: "open_external_link",
   microphonePermissionDenied: "microphone_permission_denied",
-  openMicrophoneSettings: "open_microphone_settings",
+  openPrivacySettings: "open_privacy_settings",
   getStartupSettings: "get_startup_settings",
   setStartupSettings: "set_startup_settings",
   getDataRootStatus: "get_data_root_status",
@@ -370,7 +370,7 @@ export interface LearningOverview {
 }
 
 export interface SetupCheckResult {
-  id: "microphone" | "permissions" | "provider" | "shortcut";
+  id: "microphone" | "permissions" | "screenRecording" | "inputMonitoring" | "provider" | "shortcut";
   status: "ready" | "warning" | "blocked";
   title: string;
   message: string;

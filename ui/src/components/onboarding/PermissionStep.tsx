@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Meter } from "@/components/ui/Meter";
 import { micLevelFraction, useMicLevel } from "@/features/audio/useMicLevel";
-import { useTextInputPermission } from "@/features/onboarding/permissions";
+import { PRIVACY_ROWS, useSetupPermissions } from "@/features/onboarding/permissions";
 import { isMacOS } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -35,7 +35,7 @@ function useMicPermissionDenied(startError: string) {
 
   const openSettings = () => {
     setError("");
-    void cmd(CMD.openMicrophoneSettings).catch((reason) => setError(String(reason)));
+    void cmd(CMD.openPrivacySettings, { kind: "microphone" }).catch((reason) => setError(String(reason)));
   };
   return { denied, error, openSettings };
 }
@@ -47,7 +47,7 @@ function useMicPermissionDenied(startError: string) {
 export function PermissionStep({ onNext }: { onNext: () => void }) {
   const micDeviceId = useDictPrefs((state) => state.prefs.micDeviceId);
   const { level, startError } = useMicLevel(micDeviceId);
-  const textInput = useTextInputPermission();
+  const permissions = useSetupPermissions();
   const mic = useMicPermissionDenied(startError);
 
   return (
@@ -73,19 +73,39 @@ export function PermissionStep({ onNext }: { onNext: () => void }) {
             )}
           </Row>
         </Group>
-        {textInput.needed && (
+        {permissions.needed && (
           <Group>
             <Row
               label="文字输入"
               hint="需要辅助功能权限，才能把识别出的文字输入其他软件。"
-              message={textInput.error && <StepError>{textInput.error}</StepError>}
+              message={permissions.errors.permissions && <StepError>{permissions.errors.permissions}</StepError>}
             >
-              {textInput.ready ? (
+              {permissions.textInputReady ? (
                 <ReadyMark label="已授权" />
               ) : (
-                <Button size="sm" disabled={textInput.requesting} onClick={() => void textInput.request()}>授予权限</Button>
+                <Button size="sm" disabled={permissions.requesting} onClick={() => void permissions.requestTextInput()}>授予权限</Button>
               )}
             </Row>
+            {PRIVACY_ROWS.map((row) => {
+              const check = permissions.check(row.id);
+              if (!check) return null;
+              const ready = check.status === "ready";
+              const error = permissions.errors[row.id];
+              return (
+                <Row
+                  key={row.id}
+                  label={row.label}
+                  hint={row.hint}
+                  message={error ? <StepError>{error}</StepError> : !ready && row.pending}
+                >
+                  {ready ? (
+                    <ReadyMark label="已授权" />
+                  ) : (
+                    <Button size="sm" onClick={() => permissions.openSettings(row.id, row.kind)}>打开系统设置</Button>
+                  )}
+                </Row>
+              );
+            })}
           </Group>
         )}
       </StepBody>

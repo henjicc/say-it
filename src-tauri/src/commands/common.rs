@@ -25,22 +25,34 @@ pub(crate) fn microphone_permission_denied() -> bool {
     }
 }
 
-/// 打开系统设置里的麦克风隐私页。
+/// 打开系统设置里对应的隐私授权页：microphone、screen-recording、input-monitoring。
 #[tauri::command]
-pub(crate) fn open_microphone_settings(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn open_privacy_settings(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        let pane = match kind.as_str() {
+            "microphone" => "Privacy_Microphone",
+            "screen-recording" => {
+                crate::macos_native::request_screen_capture();
+                "Privacy_ScreenCapture"
+            }
+            "input-monitoring" => {
+                crate::macos_native::request_input_monitoring();
+                "Privacy_ListenEvent"
+            }
+            _ => return Err(format!("未知的隐私设置：{kind}")),
+        };
         app.opener()
             .open_url(
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                format!("x-apple.systempreferences:com.apple.preference.security?{pane}"),
                 None::<&str>,
             )
             .map_err(|err| format!("打开系统设置失败：{err}"))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = app;
-        Err("当前平台没有单独的麦克风隐私设置页".into())
+        let _ = (app, kind);
+        Err("当前平台没有单独的隐私设置页".into())
     }
 }
 

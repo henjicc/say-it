@@ -31,9 +31,9 @@ function EnvironmentStatus() {
   }, []);
 
   const pending = status?.checks.filter((check) => check.status !== "ready").length ?? 0;
-  const runAction = (command: string) => {
+  const runAction = (command: string, args?: Record<string, unknown>) => {
     setError("");
-    void cmd(command).then(() => setRevision((current) => current + 1)).catch((cause) => setError(String(cause)));
+    void cmd(command, args).then(() => setRevision((current) => current + 1)).catch((cause) => setError(String(cause)));
   };
   return <>
     <div className="flex min-h-[var(--row-h)] items-center justify-between gap-4 px-3.5">
@@ -52,7 +52,9 @@ function EnvironmentStatus() {
           <p className="text-[13px] text-[var(--color-fg)]">{check.title}<span className="ml-2 text-xs text-[var(--color-fg-muted)]">{check.status === "ready" ? "可用" : "待处理"}</span></p>
           <p className="mt-1 break-words text-xs leading-5 text-[var(--color-fg-muted)]">{check.message}</p>
         </div>
-        {check.action === "microphone-settings" && <Button size="sm" onClick={() => runAction(CMD.openMicrophoneSettings)}>打开系统设置</Button>}
+        {check.action?.startsWith("privacy:") && (
+          <Button size="sm" onClick={() => runAction(CMD.openPrivacySettings, { kind: check.action!.slice("privacy:".length) })}>打开系统设置</Button>
+        )}
         {check.action === "permissions" && <Button size="sm" onClick={() => runAction(CMD.requestSetupPermissions)}>授予权限</Button>}
       </li>)}
     </ul>}

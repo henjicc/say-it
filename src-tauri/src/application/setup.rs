@@ -65,7 +65,7 @@ fn microphone_check() -> SetupCheckResult {
                         "blocked",
                         "麦克风",
                         "麦克风权限已被拒绝，需要在系统设置里允许",
-                        Some("microphone-settings"),
+                        Some("privacy:microphone"),
                     ),
                     MicrophoneAuthorization::Restricted => check(
                         "microphone",
@@ -133,6 +133,49 @@ fn permission_check() -> SetupCheckResult {
             None,
         )
     }
+}
+
+/// 用截图读取当前软件上下文时才需要屏幕录制；只读焦点文字的方式不需要，不检查。
+#[cfg(target_os = "macos")]
+fn screen_recording_check(state: &RuntimeState) -> Option<SetupCheckResult> {
+    let method = state.app_settings.lock().ok().map(|settings| {
+        crate::application::dictation::active_app_context_extraction_method_from_value(
+            &settings.dictation_prefs,
+        )
+    })?;
+    if method != crate::active_app_context::ActiveAppContextExtractionMethod::Ocr {
+        return None;
+    }
+    Some(if crate::macos_native::context_ocr_permissions(false).screen_recording {
+        check("screenRecording", "ready", "屏幕录制权限", "截图读取软件上下文所需的权限已授予", None)
+    } else {
+        check(
+            "screenRecording",
+            "blocked",
+            "屏幕录制权限",
+            "截图读取软件上下文需要屏幕录制权限，允许后要重启说吧！才生效",
+            Some("privacy:screen-recording"),
+        )
+    })
+}
+
+/// 有快捷键用了 Caps Lock 时才需要输入监控。
+#[cfg(target_os = "macos")]
+fn input_monitoring_check() -> Option<SetupCheckResult> {
+    if !crate::hotkey::has_caps_lock_binding() {
+        return None;
+    }
+    Some(if crate::macos_native::input_monitoring_granted() {
+        check("inputMonitoring", "ready", "输入监控权限", "Caps Lock 快捷键所需的权限已授予", None)
+    } else {
+        check(
+            "inputMonitoring",
+            "blocked",
+            "输入监控权限",
+            "没有输入监控权限时 Caps Lock 快捷键无法使用",
+            Some("privacy:input-monitoring"),
+        )
+    })
 }
 
 fn provider_check(state: &RuntimeState) -> SetupCheckResult {
@@ -234,6 +277,8 @@ fn collect(state: &RuntimeState) -> Vec<SetupCheckResult> {
     // “已通过”的技术性权限检查。macOS 和尚未正式支持的平台仍保留检查。
     #[cfg(not(windows))]
     checks.push(permission_check());
+    #[cfg(target_os = "macos")]
+    checks.extend(screen_recording_check(state).into_iter().chain(input_monitoring_check()));
     checks.push(provider_check(state));
     checks.push(shortcut_check(state));
     checks

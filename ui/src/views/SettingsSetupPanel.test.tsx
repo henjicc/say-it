@@ -4,7 +4,7 @@ import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
 import { SettingsSetupPanel } from "./SettingsSetupPanel";
 
 vi.mock("@/lib/tauri", () => ({
-  CMD: { getSetupStatus: "get_setup_status", openMicrophoneSettings: "open_microphone_settings" },
+  CMD: { getSetupStatus: "get_setup_status", openPrivacySettings: "open_privacy_settings" },
   cmd: vi.fn(),
 }));
 
@@ -54,15 +54,15 @@ describe("SettingsSetupPanel", () => {
     expect(cmd).toHaveBeenCalledTimes(3);
   });
 
-  it("opens the system microphone settings when the permission was denied", async () => {
+  it("opens the matching system privacy page for a missing permission", async () => {
     vi.mocked(cmd).mockResolvedValue({
       ...blocked,
-      checks: [{ id: "microphone", title: "麦克风", message: "麦克风权限已被拒绝", status: "blocked", action: "microphone-settings" }],
+      checks: [{ id: "screenRecording", title: "屏幕录制权限", message: "需要屏幕录制权限", status: "blocked", action: "privacy:screen-recording" }],
     });
     render(<SettingsSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: "环境状态" }));
     fireEvent.click(await screen.findByRole("button", { name: "打开系统设置" }));
-    expect(cmd).toHaveBeenCalledWith(CMD.openMicrophoneSettings);
+    expect(cmd).toHaveBeenCalledWith(CMD.openPrivacySettings, { kind: "screen-recording" });
   });
 
   it("shows check failures and allows retry without leaving stale success feedback", async () => {
