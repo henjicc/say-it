@@ -214,8 +214,10 @@ pub fn verify_pack(model_dir: &Path, pack: &ModelPackManifest) -> Result<(), Str
 }
 
 /// 模型相关下载共用的客户端：只跟随 HTTPS 重定向，最多 5 跳。
+/// ModelScope 对不带 User-Agent 的大文件请求返回 403（小文本文件不受限），所以必须带上。
 pub fn https_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .user_agent("SayIt")
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 {
                 attempt.error("模型下载重定向次数过多")
@@ -520,7 +522,9 @@ mod tests {
             let mut request = [0_u8; 2048];
             let count = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..count]);
-            assert!(request.to_ascii_lowercase().contains("range: bytes=2-"));
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("range: bytes=2-"));
+            assert!(request.contains("user-agent: sayit"));
             stream
                 .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 2-4/5\r\nConnection: close\r\n\r\nllo")
                 .unwrap();
@@ -541,7 +545,7 @@ mod tests {
             .unwrap();
         runtime
             .block_on(download_file(
-                &reqwest::Client::new(),
+                &https_client().unwrap(),
                 None,
                 "test",
                 &format!("http://{address}/model.bin"),

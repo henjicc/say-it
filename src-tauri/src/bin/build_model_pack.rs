@@ -227,7 +227,11 @@ async fn download_to(url: &str, destination: &Path) -> Result<(), String> {
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let response = reqwest::Client::new()
+    // ModelScope 拒绝不带 User-Agent 的大文件请求（HTTP 403）。
+    let response = reqwest::Client::builder()
+        .user_agent("SayIt")
+        .build()
+        .map_err(|error| error.to_string())?
         .get(url)
         .send()
         .await
