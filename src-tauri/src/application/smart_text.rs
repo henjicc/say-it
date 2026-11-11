@@ -1036,6 +1036,7 @@ pub(crate) fn speculate_local_polish(
     state: &RuntimeState,
     text: &str,
     template_id: &str,
+    active_app_context: &str,
     active_app_name: &str,
     provider_id: &str,
 ) {
@@ -1043,10 +1044,10 @@ pub(crate) fn speculate_local_polish(
         return;
     }
     if let Ok(Some(spec)) = local_polish_spec(state, provider_id) {
-        // 屏幕文字此时多半还没识别完，先不带；松手后的正式请求带上它，这一版结果给它当草稿。
+        // 屏幕文字还没识别完时先不带，松手后的正式请求带上它，这一版结果给它当草稿。
         crate::providers::local_llm::speculate(
             spec,
-            local_polish_input(state, text, "", active_app_name),
+            local_polish_input(state, text, active_app_context, active_app_name),
         );
     }
 }

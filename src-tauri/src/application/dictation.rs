@@ -2147,7 +2147,7 @@ fn publish_recognition_state(app: &AppHandle) {
 /// 录音还在继续时，把已经识别出的文字先交给本地整理模型（选的是云端模型时不做任何事）。
 fn speculate_smart_processing(app: &AppHandle) {
     let state = app.state::<RuntimeState>();
-    let Ok(session) = state.dictation_runtime.session.lock() else {
+    let Ok(mut session) = state.dictation_runtime.session.lock() else {
         return;
     };
     let Some(effective) = session.effective.as_ref() else {
@@ -2167,11 +2167,18 @@ fn speculate_smart_processing(app: &AppHandle) {
         .as_ref()
         .map(|identity| identity.app_name.clone())
         .unwrap_or_default();
+    // 上下文读到了就一起带上：放在提示词开头，松手后的正式整理只需补算新增的文字。
+    let active_app_context = session
+        .active_app_context
+        .as_mut()
+        .and_then(|handle| handle.ready_for_prompt())
+        .unwrap_or_default();
     drop(session);
     crate::application::smart_text::speculate_local_polish(
         &state,
         &text,
         &template_id,
+        &active_app_context,
         &app_name,
         &provider_id,
     );
