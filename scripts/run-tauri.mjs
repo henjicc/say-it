@@ -1,31 +1,19 @@
-import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
 
+import { withMacBuildEnv } from "./macos-build-env.mjs";
 import { buildWithFreshRelease } from "./rust-cache-guard.mjs";
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("缺少 Tauri 子命令");
 
-const env = { ...process.env };
-if (process.platform === "darwin" && !env.MACOSX_DEPLOYMENT_TARGET) {
-  env.MACOSX_DEPLOYMENT_TARGET = "15.5";
-}
+const env = withMacBuildEnv(process.env);
 if (
   process.platform === "darwin" &&
   command === "build" &&
   !env.APPLE_SIGNING_IDENTITY
 ) {
   env.APPLE_SIGNING_IDENTITY = "-";
-}
-if (process.platform === "darwin" && !env.OPUS_LIB_DIR && !env.LIBOPUS_LIB_DIR) {
-  const opusLibraries = [
-    "/opt/homebrew/lib/libopus.a",
-    "/usr/local/lib/libopus.a",
-  ];
-  const opusLibrary = opusLibraries.find(existsSync);
-  if (opusLibrary) env.OPUS_LIB_DIR = dirname(opusLibrary);
 }
 
 // Windows 的 npm 命令入口是 .cmd，不能直接作为 spawnSync 的可执行文件。
