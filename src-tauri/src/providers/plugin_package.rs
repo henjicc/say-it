@@ -50,7 +50,8 @@ pub struct PackagePreview {
     pub model_labels: Vec<String>,
     pub trust: String,
     pub signing_key_id: Option<String>,
-    pub archive_sha256: String,
+    /// 预览时包文件的大小和修改时间；安装时对不上说明文件在确认后被换过。
+    pub archive_stamp: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -228,6 +229,17 @@ pub fn install_from_directory(
     allow_unsigned: bool,
     trust_signing_key: bool,
 ) -> Result<InstallResult, String> {
+    install_from_directory_inner(app, source, allow_unsigned, trust_signing_key, false)
+}
+
+/// `take_source` 为真时安装源是本模块自己解包出来的暂存目录：直接挪过去用，不再复制和重复校验。
+fn install_from_directory_inner(
+    app: &tauri::AppHandle,
+    source: &Path,
+    allow_unsigned: bool,
+    trust_signing_key: bool,
+    take_source: bool,
+) -> Result<InstallResult, String> {
     let source = source
         .canonicalize()
         .map_err(|error| format!("插件目录不存在：{error}"))?;
@@ -258,18 +270,23 @@ pub fn install_from_directory(
     let staging = plugin_staging_dir(app)?;
     let target = plugins.join(&manifest.id);
     let stage = staging.join(format!(".install-{}-{}", manifest.id, Uuid::new_v4()));
-    if let Err(error) = copy_directory(&source, &stage) {
-        let _ = std::fs::remove_dir_all(&stage);
-        return Err(error);
-    }
-    let staged_manifest = match validate_plugin_dir(&stage).and_then(|manifest| {
-        verify_installation(&stage, &manifest, &trusted)?;
-        Ok(manifest)
-    }) {
-        Ok(manifest) => manifest,
-        Err(error) => {
+    let staged_manifest = if take_source {
+        std::fs::rename(&source, &stage).map_err(|error| error.to_string())?;
+        manifest.clone()
+    } else {
+        if let Err(error) = copy_directory(&source, &stage) {
             let _ = std::fs::remove_dir_all(&stage);
             return Err(error);
+        }
+        match validate_plugin_dir(&stage).and_then(|manifest| {
+            verify_installation(&stage, &manifest, &trusted)?;
+            Ok(manifest)
+        }) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&stage);
+                return Err(error);
+            }
         }
     };
 
@@ -320,7 +337,7 @@ pub fn install_from_directory(
 pub fn install_from_path(
     app: &tauri::AppHandle,
     source: &Path,
-    expected_archive_sha256: Option<&str>,
+    expected_archive_stamp: Option<&str>,
     allow_unsigned: bool,
     trust_signing_key: bool,
 ) -> Result<InstallResult, String> {
@@ -339,23 +356,25 @@ pub fn install_from_path(
             "请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包或开发目录"
         ));
     }
+    if expected_archive_stamp.is_some_and(|expected| archive_stamp(&source).as_deref() != Ok(expected)) {
+        return Err("说吧包在预览后已发生变化，请重新打开并确认".into());
+    }
     let extracted = plugin_staging_dir(app)?.join(format!(".archive-{}", Uuid::new_v4()));
-    let result = extract_archive(&source, &extracted, Some(app)).and_then(|_| {
-        if let Some(expected) = expected_archive_sha256 {
-            verify_expected_archive_hash(&source, expected)?;
-        }
-        dispatch_sayit_package(&extracted, app, allow_unsigned, trust_signing_key)
-    });
+    let result = extract_archive(&source, &extracted, Some(app), false)
+        .and_then(|_| dispatch_sayit_package(&extracted, app, allow_unsigned, trust_signing_key));
     let _ = std::fs::remove_dir_all(&extracted);
     result
 }
 
-fn verify_expected_archive_hash(source: &Path, expected: &str) -> Result<(), String> {
-    let actual = sha256_file(source)?;
-    if !actual.eq_ignore_ascii_case(expected.trim()) {
-        return Err("说吧包在预览后已发生变化，请重新打开并确认".into());
-    }
-    Ok(())
+/// 包文件的大小加修改时间。只用来发现「预览确认之后文件被换了」，包的内容由安装时的完整性清单和签名把关。
+fn archive_stamp(source: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(source).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    Ok(format!("{}-{}", metadata.len(), modified.as_nanos()))
 }
 
 pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<PackagePreview, String> {
@@ -370,15 +389,24 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
         return Err(format!("请选择 .{SAYIT_PACKAGE_EXTENSION} 说吧包"));
     }
     let extracted = plugin_staging_dir(app)?.join(format!(".preview-{}", Uuid::new_v4()));
-    let archive_sha256 = sha256_file(&source)?;
+    let archive_stamp = archive_stamp(&source)?;
     let result = (|| {
-        extract_archive(&source, &extracted, None)?;
-        verify_expected_archive_hash(&source, &archive_sha256)?;
+        let skipped_large_files = extract_archive(&source, &extracted, None, true)?;
         let declaration = read_package_declaration(&extracted)?;
-        let manifest = validate_plugin_dir(&extracted)?;
+        let trusted = load_trusted_keys(app)?;
+        // 预览只为了告诉用户「这是什么、谁签的」。带权重的模型包不为此解出几个 GB 再逐个算哈希：
+        // 清单和签名足够回答，文件内容在安装时对照清单校验。
+        let (manifest, trust) = if skipped_large_files {
+            let manifest = super::plugin::read_manifest(&extracted)?;
+            let trust = installed_trust(&manifest, &trusted)?;
+            (manifest, trust)
+        } else {
+            let manifest = validate_plugin_dir(&extracted)?;
+            let trust = verify_installation(&extracted, &manifest, &trusted)?;
+            (manifest, trust)
+        };
         ensure_model_pack_installable(&manifest)?;
         validate_declared_package_kind(&declaration, &manifest)?;
-        let trust = verify_installation(&extracted, &manifest, &load_trusted_keys(app)?)?;
         let mut capabilities = manifest.provider.capabilities.clone();
         capabilities.sort();
         capabilities.dedup();
@@ -395,7 +423,7 @@ pub fn preview_from_path(app: &tauri::AppHandle, source: &Path) -> Result<Packag
                 .collect(),
             trust,
             signing_key_id: manifest.signature.map(|signature| signature.key_id),
-            archive_sha256,
+            archive_stamp,
         })
     })();
     let _ = std::fs::remove_dir_all(&extracted);
@@ -411,7 +439,7 @@ fn dispatch_sayit_package(
     let declaration = read_package_declaration(root)?;
     let manifest = validate_plugin_dir(root)?;
     validate_declared_package_kind(&declaration, &manifest)?;
-    install_from_directory(app, root, allow_unsigned, trust_signing_key)
+    install_from_directory_inner(app, root, allow_unsigned, trust_signing_key, true)
 }
 
 fn read_package_declaration(root: &Path) -> Result<SayItPackageDeclaration, String> {
@@ -453,16 +481,22 @@ fn validate_declared_package_kind(
     Ok(())
 }
 
+/// 预览时超过这个大小的条目不解出来（模型权重）；清单、声明和插件脚本都远小于它。
+const PREVIEW_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 返回是否有条目因 `skip_large_files` 被跳过。
 fn extract_archive(
     archive_path: &Path,
     destination: &Path,
     app: Option<&tauri::AppHandle>,
-) -> Result<(), String> {
+    skip_large_files: bool,
+) -> Result<bool, String> {
     extract_archive_capped(
         archive_path,
         destination,
         app,
         MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        skip_large_files,
     )
 }
 
@@ -473,7 +507,8 @@ fn extract_archive_capped(
     destination: &Path,
     app: Option<&tauri::AppHandle>,
     max_uncompressed_bytes: u64,
-) -> Result<(), String> {
+    skip_large_files: bool,
+) -> Result<bool, String> {
     let file = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("插件包不是有效 ZIP：{error}"))?;
@@ -492,6 +527,7 @@ fn extract_archive_capped(
     std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     let mut paths = std::collections::HashSet::new();
     let mut extracted_bytes = 0_u64;
+    let mut skipped = false;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
         if entry.is_symlink() {
@@ -515,13 +551,20 @@ fn extract_archive_capped(
         let parent = target.parent().ok_or("插件包文件路径无效")?;
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         reject_native_extension(&relative)?;
+        if skip_large_files && entry.size() > PREVIEW_ENTRY_BYTES {
+            skipped = true;
+            continue;
+        }
         let mut prefix = [0_u8; 4];
         let prefix_len = entry.read(&mut prefix).map_err(|error| error.to_string())?;
         reject_native_magic(&prefix[..prefix_len], &key)?;
-        let mut output = std::fs::File::create(target).map_err(|error| error.to_string())?;
+        let mut output = std::fs::File::create(&target).map_err(|error| error.to_string())?;
         output
             .write_all(&prefix[..prefix_len])
             .map_err(|error| error.to_string())?;
+        // 边写边算哈希，写完记下来：之后对照完整性清单时不用把几个 GB 再读一遍。
+        let mut hasher = Sha256::new();
+        hasher.update(&prefix[..prefix_len]);
         // 上面的 4 GB 预检查的是**中央目录里自报的** entry.size()，构造一个 zip
         // 炸弹只要把它填小即可（deflate 压缩比可达 1032:1）。所以真正的写入循环必须
         // 自己数字节：既比对单条目的声明大小，也累计校验整包上限，超出立即中止。
@@ -545,6 +588,7 @@ fn extract_archive_capped(
             output
                 .write_all(&buffer[..count])
                 .map_err(|error| error.to_string())?;
+            hasher.update(&buffer[..count]);
             if let Some(app) = app {
                 let _ = app.emit(
                     "plugin-install-progress",
@@ -557,6 +601,8 @@ fn extract_archive_capped(
             }
         }
         output.flush().map_err(|error| error.to_string())?;
+        drop(output);
+        super::model_download::record_sha256(&target, format!("{:x}", hasher.finalize()));
     }
     if let Some(app) = app {
         let _ = app.emit(
@@ -568,7 +614,7 @@ fn extract_archive_capped(
             }),
         );
     }
-    Ok(())
+    Ok(skipped)
 }
 
 pub fn uninstall(app: &tauri::AppHandle, plugin_id: &str) -> Result<(), String> {
@@ -784,8 +830,7 @@ fn safe_package_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    super::model_download::sha256_of(path)
 }
 
 fn ensure_no_native_files(root: &Path) -> Result<(), String> {
@@ -931,16 +976,16 @@ mod tests {
     }
 
     #[test]
-    fn package_hash_binds_confirmation_to_previewed_bytes() {
-        let root = std::env::temp_dir().join(format!("sayit-package-hash-{}", Uuid::new_v4()));
+    fn archive_stamp_changes_when_the_previewed_package_is_replaced() {
+        let root = std::env::temp_dir().join(format!("sayit-package-stamp-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let package = root.join("plugin.sayit");
         std::fs::write(&package, b"previewed").unwrap();
-        let expected = sha256_file(&package).unwrap();
-        verify_expected_archive_hash(&package, &expected).unwrap();
+        let previewed = archive_stamp(&package).unwrap();
+        assert_eq!(archive_stamp(&package).unwrap(), previewed);
 
         std::fs::write(&package, b"changed").unwrap();
-        assert!(verify_expected_archive_hash(&package, &expected).is_err());
+        assert_ne!(archive_stamp(&package).unwrap(), previewed);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -966,7 +1011,7 @@ mod tests {
         writer.write_all(b"connector").unwrap();
         writer.finish().unwrap();
         let extracted = root.join("extracted");
-        assert!(extract_archive(&archive_path, &extracted, None).is_err());
+        assert!(extract_archive(&archive_path, &extracted, None, false).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1064,7 +1109,7 @@ mod tests {
 
         let extracted = root.join("extracted");
         // 声明大小 1 KiB 远低于上限，预检查放行；必须由写入循环拦下。
-        let error = extract_archive_capped(&archive_path, &extracted, None, 8 * 1024)
+        let error = extract_archive_capped(&archive_path, &extracted, None, 8 * 1024, false)
             .expect_err("实际写入超过声明大小时必须中止解包");
         assert!(error.contains("payload.bin"), "错误信息应指明是哪个条目：{error}");
 
@@ -1090,7 +1135,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"nope").unwrap();
         writer.finish().unwrap();
-        assert!(extract_archive(&archive_path, &root.join("extracted"), None).is_err());
+        assert!(extract_archive(&archive_path, &root.join("extracted"), None, false).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1205,7 +1250,7 @@ mod tests {
     fn builder_archive_matches_host_signature_and_integrity_contract() {
         let archive = PathBuf::from(std::env::var("SAYIT_MODEL_PACK_ARCHIVE").unwrap());
         let root = std::env::temp_dir().join(format!("sayit-built-pack-{}", Uuid::new_v4()));
-        extract_archive(&archive, &root, None).unwrap();
+        extract_archive(&archive, &root, None, false).unwrap();
         let manifest = validate_plugin_dir(&root).unwrap();
         assert_eq!(manifest.runtime.kind, "model-pack");
         assert_eq!(

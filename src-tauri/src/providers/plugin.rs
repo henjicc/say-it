@@ -371,6 +371,10 @@ pub fn cleanup_plugin_staging(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn load_registry(app: &tauri::AppHandle) -> Result<PluginRegistry, String> {
+    super::model_download::remember_hashes_in(crate::application::data_root::data_file(
+        app,
+        "model-file-hashes.json",
+    )?);
     let trusted = super::plugin_package::load_trusted_keys(app)?;
     load_registry_from_with_trust(&plugins_dir(app)?, &trusted)
 }
@@ -513,6 +517,13 @@ fn load_manifest(
         models,
         trust,
     })
+}
+
+/// 只解析清单，不检查包里的文件。预览大模型包时权重还没解出来，完整检查留到安装时做。
+pub(crate) fn read_manifest(root: &Path) -> Result<PluginManifest, String> {
+    let text =
+        std::fs::read_to_string(root.join(MANIFEST_FILE_NAME)).map_err(|error| error.to_string())?;
+    serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
 pub(crate) fn validate_plugin_dir(root: &Path) -> Result<PluginManifest, String> {

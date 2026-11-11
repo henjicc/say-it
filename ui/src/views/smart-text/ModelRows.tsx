@@ -26,7 +26,9 @@ export function SmartLlmRow() {
     .filter((profile) => profile.capabilities.includes("polish"))
     .map((profile) => ({
       value: llmModelValue(profile.id, ""),
-      label: profile.displayName,
+      // 已经列在「本地」分组下，条目里不再重复这两个字。
+      label: profile.displayName.replace(/^本地\s*/u, "") || profile.displayName,
+      triggerLabel: profile.displayName,
       providerId: profile.id,
       providerLabel: "本地",
     }));
