@@ -757,10 +757,12 @@ mod tests {
         let service = ContextCaptureService::default();
         let (_sender, receiver) = oneshot::channel();
         let timeout = ActiveAppContextExtractionMethod::NativeText.timeout();
+        // 两个时刻取自同一个 now：等待上限是二者之差，分开取在慢机器上会多出几毫秒。
+        let now = std::time::Instant::now();
         let result = service
             .resolve(ContextCaptureHandle {
-                started: std::time::Instant::now() - timeout - std::time::Duration::from_millis(1),
-                deadline: std::time::Instant::now() - std::time::Duration::from_millis(1),
+                started: now - timeout - std::time::Duration::from_millis(1),
+                deadline: now - std::time::Duration::from_millis(1),
                 receiver: Some(receiver),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
