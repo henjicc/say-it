@@ -2,11 +2,11 @@
   "manifest": {
     "apiVersion": 5,
     "id": "official.transcribe-qwen3-asr-0.6b",
-    "name": "Qwen3-ASR 0.6B",
+    "name": "Qwen3-ASR-0.6B",
     "version": "1.0.0",
     "provider": {
       "id": "local-qwen3-asr-0.6b",
-      "displayName": "本地 Qwen3-ASR 0.6B",
+      "displayName": "本地 Qwen3-ASR-0.6B",
       "authKind": "none",
       "capabilities": ["asr"],
       "config": {}
@@ -16,7 +16,7 @@
     "models": [
       {
         "id": "local-qwen3-asr-0.6b-sentence-q5",
-        "label": "Qwen3-ASR 0.6B 整句",
+        "label": "Qwen3-ASR-0.6B 整句",
         "providerId": "local-qwen3-asr-0.6b",
         "category": "realtime",
         "protocol": "local-transcribe",
@@ -30,7 +30,7 @@
       },
       {
         "id": "local-qwen3-asr-0.6b-file-q5",
-        "label": "Qwen3-ASR 0.6B 文件识别",
+        "label": "Qwen3-ASR-0.6B 文件识别",
         "providerId": "local-qwen3-asr-0.6b",
         "category": "file",
         "protocol": "local-transcribe",
