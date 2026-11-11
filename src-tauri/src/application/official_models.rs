@@ -113,10 +113,11 @@ pub(crate) async fn install_official_model_pack(
     }
     let path = plugin_staging_dir(&app)?.join(format!(".official-{}.sayit", uuid::Uuid::new_v4()));
     std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+    // 清单字节在写入前已核对过官方目录的哈希，没有「预览后再确认」这一步，不传预览时的文件标记。
     let installed = install_provider_plugin(
         app.clone(),
         path.to_string_lossy().into_owned(),
-        Some(pack.manifest.sha256.clone()),
+        None,
         false,
         false,
         state.clone(),
