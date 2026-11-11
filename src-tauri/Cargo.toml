@@ -142,6 +142,11 @@ ogg = "0.8.0"
 debug = 1
 split-debuginfo = "packed"
 
+# 新版 macOS 工具链在部署版本低于本机系统时，剥离调试信息后的过程宏 dylib 无法加载
+#（dyld 报 mis-aligned LINKEDIT string pool）。过程宏与构建脚本只在编译期运行，不剥离也不进安装包。
+[profile.release.build-override]
+strip = false
+
 [profile.dev.package.nnnoiseless]
 opt-level = 3
 
