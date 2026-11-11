@@ -180,7 +180,11 @@ fn cache() -> &'static Mutex<ResidentCache<Recognizer>> {
 pub fn supports_residency(engine: &str) -> bool {
     matches!(
         engine,
-        "sherpa-onnx-offline" | "transcribe-cpp" | "sherpa-onnx-online" | "sherpa-onnx-punctuation"
+        "sherpa-onnx-offline"
+            | "transcribe-cpp"
+            | "sherpa-onnx-online"
+            | "sherpa-onnx-punctuation"
+            | crate::providers::local_llm::ENGINE
     )
 }
 

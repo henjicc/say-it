@@ -145,6 +145,14 @@ struct Runtime {
     speculation: Mutex<Speculation>,
     next_id: AtomicU64,
     last_used: Mutex<Instant>,
+    resident: Mutex<Resident>,
+}
+
+/// 用户要求常驻的模型包：加载着就不因闲置回收。
+#[derive(Default)]
+struct Resident {
+    plugin_id: Option<String>,
+    load_error: Option<String>,
 }
 
 fn runtime() -> &'static Runtime {
@@ -155,6 +163,7 @@ fn runtime() -> &'static Runtime {
         speculation: Mutex::new(Speculation::default()),
         next_id: AtomicU64::new(1),
         last_used: Mutex::new(Instant::now()),
+        resident: Mutex::default(),
     })
 }
 
@@ -298,7 +307,7 @@ async fn spawn(spec: &LocalModelSpec) -> Result<Process, String> {
     crate::application::diagnostics::event(
         "info",
         "localLlm.loaded",
-        json!({"pluginId":spec.plugin_id,"loadMs":loaded["loadMs"],"gpu":on_gpu}),
+        json!({"pluginId":spec.plugin_id,"loadMs":loaded["loadMs"],"stagesMs":loaded["stagesMs"],"gpu":on_gpu}),
     );
     Ok(Process {
         child,
@@ -346,6 +355,12 @@ async fn release_when_idle() {
             .lock()
             .map_or(true, |last_used| last_used.elapsed() >= LINGER);
         if !still_idle {
+            continue;
+        }
+        let resident = runtime().resident.lock().ok().and_then(|resident| resident.plugin_id.clone());
+        if process.as_ref().is_some_and(|process| resident.as_deref() == Some(&process.plugin_id)) {
+            drop(process);
+            tokio::time::sleep(LINGER).await;
             continue;
         }
         // 丢掉句柄即结束进程，显存随之释放。
@@ -444,6 +459,53 @@ pub(crate) async fn polish(spec: &LocalModelSpec, input: &PolishInput) -> Result
     run(spec, input, false)
         .await?
         .ok_or_else(|| "本地整理被取消".to_string())
+}
+
+/// 设置要常驻的模型包并立即加载；`None` 取消常驻，已加载的进程按闲置时间照常回收。
+pub(crate) fn set_resident(spec: Option<LocalModelSpec>, app: &tauri::AppHandle) {
+    let plugin_id = spec.as_ref().map(|spec| spec.plugin_id.clone());
+    if let Ok(mut resident) = runtime().resident.lock() {
+        if resident.plugin_id == plugin_id {
+            return;
+        }
+        *resident = Resident { plugin_id, load_error: None };
+    }
+    let Some(spec) = spec else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let error = ensure_loaded(&spec).await.err();
+        if let Ok(mut resident) = runtime().resident.lock() {
+            if resident.plugin_id.as_deref() == Some(&spec.plugin_id) {
+                resident.load_error = error;
+            }
+        }
+        use tauri::Emitter;
+        if let Err(error) = app.emit("plugin-registry-changed", ()) {
+            eprintln!("[local-llm] 通知常驻状态失败：{error}");
+        }
+    });
+}
+
+/// 插件面板显示的常驻状态。
+pub(crate) fn residency(spec: &LocalModelSpec) -> super::local_asr::cache::ResidencyStatus {
+    let status = |state: &str, error| super::local_asr::cache::ResidencyStatus { state: state.into(), error };
+    // 进程锁只在加载期间被长时间占着，拿不到就是正在加载。
+    let loaded = runtime()
+        .process
+        .try_lock()
+        .map(|slot| slot.as_ref().is_some_and(|process| process.plugin_id == spec.plugin_id));
+    let Ok(resident) = runtime().resident.lock() else {
+        return status("unloaded", None);
+    };
+    let wanted = resident.plugin_id.as_deref() == Some(&spec.plugin_id);
+    match loaded {
+        Ok(true) => status("loaded", None),
+        _ if !wanted => status("unloaded", None),
+        _ if resident.load_error.is_some() => status("failed", resident.load_error.clone()),
+        _ => status("loading", None),
+    }
 }
 
 /// 听写一开始就把模型加载好，说话的时间正好用来加载。

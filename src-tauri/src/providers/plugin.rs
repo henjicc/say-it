@@ -1175,8 +1175,9 @@ fn merge_missing_config(target: &mut Value, defaults: &Value) {
 
 impl PluginRegistry {
     /// 要常驻内存的模型包：开了常驻、权重就绪，并且正被某个功能选用。
-    /// `models_in_use` 是各功能当前选中的识别模型 ID；没被选用的模型常驻着只是白占内存。
-    /// 标点模型没有可选的模型 ID，有 sherpa 识别模型在用时才算在用。
+    /// `models_in_use` 是各功能当前选中的识别模型 ID，以及智能处理选用的大模型供应商 ID；
+    /// 没被选用的模型常驻着只是白占内存。标点模型没有可选的模型 ID，有 sherpa 识别模型在用时才算在用；
+    /// 整理模型按供应商选用。
     pub fn resident_model_specs(
         &self,
         settings: &ProviderSettings,
@@ -1202,6 +1203,8 @@ impl PluginRegistry {
                 let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
                 let in_use = if spec.engine == "sherpa-onnx-punctuation" {
                     recognizer_in_use(&["sherpa-onnx-offline", "sherpa-onnx-online"])
+                } else if spec.engine == super::local_llm::ENGINE {
+                    models_in_use.contains(&spec.provider_id)
                 } else {
                     plugin
                         .manifest
@@ -1371,6 +1374,9 @@ impl PluginRegistry {
                                     let spec = self
                                         .model_pack_for_plugin(&plugin.manifest.id)
                                         .expect("模型包摘要必有模型规格");
+                                    if spec.engine == super::local_llm::ENGINE {
+                                        return super::local_llm::residency(&spec);
+                                    }
                                     super::local_asr::cache::status(&spec).unwrap_or_else(|error| {
                                         super::local_asr::cache::ResidencyStatus {
                                             state: "failed".into(),
