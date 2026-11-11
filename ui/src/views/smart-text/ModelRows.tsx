@@ -5,25 +5,40 @@ import { Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { defaultOcrOption } from "@/lib/platform";
 import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from "@/features/asr/modelRegistry";
-import { ModelPicker } from "@/features/models/ModelPicker";
+import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
 import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
 import { UsageLinkRow, useInUsagePage, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 
+/** 与后端 `smart_text::LOCAL_POLISH_TEMPLATES` 一致。 */
+const LOCAL_POLISH_TEMPLATES = ["context-aware-polish", "polish"];
+
 /** 听写智能处理用的大模型。 */
 export function SmartLlmRow() {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
-  const profiles = useProviderStore((state) => state.profiles).filter(
-    (profile) => profile.enabled && profile.capabilities.includes("llm"),
-  );
+  const enabledProfiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled);
+  const profiles = enabledProfiles.filter((profile) => profile.capabilities.includes("llm"));
+  // 本地听写整理模型只做整理这一件事，所以只出现在这里，不进其他用途的大模型列表。
+  const localOptions = enabledProfiles
+    .filter((profile) => profile.capabilities.includes("polish"))
+    .map((profile) => ({
+      value: llmModelValue(profile.id, ""),
+      label: profile.displayName,
+      providerId: profile.id,
+      providerLabel: "本地",
+    }));
   const editable = useUsageEditable();
   const inUsagePage = useInUsagePage();
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
-  const options = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selected)];
-  const issue = useUsageIssue(prefs.smartLlmProviderId === "default" ? undefined : prefs.smartLlmProviderId, true, "llm");
+  const options: ModelPickerOption[] = [FOLLOW_DEFAULT_LLM_OPTION, ...localOptions, ...llmModelPickerOptions(profiles, selected)];
+  const local = localOptions.some((option) => option.value === selected);
+  const usageIssue = useUsageIssue(prefs.smartLlmProviderId === "default" ? undefined : prefs.smartLlmProviderId, true, "llm");
+  const issue = local && !LOCAL_POLISH_TEMPLATES.includes(prefs.smartTemplateId)
+    ? <span role="status" className="text-[var(--color-err)]">本地整理模型只支持「场景感知润色」和「通用润色」模板，当前模板请换用大模型。</span>
+    : usageIssue;
   const current = options.find((option) => option.value === selected);
   if (!editable) return <UsageLinkRow label="智能模型" value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
   return (
@@ -46,7 +61,7 @@ export function SmartLlmRow() {
           />
         </div>
       </Row>
-      {inUsagePage && selected !== "default" && <LlmThinkingRow providerId={prefs.smartLlmProviderId} model={prefs.smartLlmModel} />}
+      {inUsagePage && selected !== "default" && !local && <LlmThinkingRow providerId={prefs.smartLlmProviderId} model={prefs.smartLlmModel} />}
     </>
   );
 }

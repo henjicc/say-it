@@ -2129,6 +2129,39 @@ fn publish_recognition_state(app: &AppHandle) {
     }
 }
 
+/// 录音还在继续时，把已经识别出的文字先交给本地整理模型（选的是云端模型时不做任何事）。
+fn speculate_smart_processing(app: &AppHandle) {
+    let state = app.state::<RuntimeState>();
+    let Ok(session) = state.dictation_runtime.session.lock() else {
+        return;
+    };
+    let Some(effective) = session.effective.as_ref() else {
+        return;
+    };
+    let text = format!("{}{}", session.committed, session.segment);
+    if session.phase != DictationPhase::Recording
+        || session.assistant_request.is_some()
+        || !should_run_smart_processing(effective, &text)
+    {
+        return;
+    }
+    let template_id = effective.smart_template_id.clone();
+    let provider_id = session.prefs.smart_llm_provider_id.clone();
+    let app_name = session
+        .app_identity
+        .as_ref()
+        .map(|identity| identity.app_name.clone())
+        .unwrap_or_default();
+    drop(session);
+    crate::application::smart_text::speculate_local_polish(
+        &state,
+        &text,
+        &template_id,
+        &app_name,
+        &provider_id,
+    );
+}
+
 fn commit_current_segment(session: &mut Session) {
     if !session.segment.is_empty() {
         session.committed.push_str(&session.segment);

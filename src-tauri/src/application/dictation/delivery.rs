@@ -182,6 +182,9 @@ pub(super) async fn flush(app: &AppHandle) {
         }
         pending => {
             publish_recognition_state(app);
+            if pending.is_none() {
+                speculate_smart_processing(app);
+            }
             if let Some((epoch, Outcome::Finalize)) = pending {
                 // 保留历史、后处理、注入和清理的原顺序。慢操作期间新会话数据仍直接入状态。
                 finalize(app.clone(), epoch).await;

@@ -539,7 +539,7 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
     if !manifest.provider.capabilities.iter().any(|capability| {
         matches!(
             capability.as_str(),
-            "asr" | "translation" | "customization" | "ocr" | "llm" | "punctuation"
+            "asr" | "translation" | "customization" | "ocr" | "llm" | "punctuation" | "polish"
         )
     }) {
         return Err("插件供应商未声明受支持的能力".into());
@@ -578,9 +578,11 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
                 .provider
                 .capabilities
                 .iter()
-                .any(|capability| !matches!(capability.as_str(), "asr" | "ocr" | "punctuation")))
+                .any(|capability| {
+                    !matches!(capability.as_str(), "asr" | "ocr" | "punctuation" | "polish")
+                }))
     {
-        return Err("模型包能力只允许 asr、ocr 或 punctuation".into());
+        return Err("模型包能力只允许 asr、ocr、punctuation 或 polish".into());
     }
     let is_model_pack = manifest.runtime.kind == "model-pack";
     if !is_model_pack
@@ -588,9 +590,9 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             .provider
             .capabilities
             .iter()
-            .any(|capability| capability == "punctuation")
+            .any(|capability| matches!(capability.as_str(), "punctuation" | "polish"))
     {
-        return Err("punctuation 能力只能由模型包提供".into());
+        return Err("punctuation 和 polish 能力只能由模型包提供".into());
     }
     if !is_model_pack && manifest.runtime.host_api_version != PLUGIN_HOST_API_VERSION {
         return Err(format!(
@@ -709,17 +711,17 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
             return Err("插件入口不能通过符号链接跳出插件目录".into());
         }
     }
-    // OCR 与标点按供应商而非模型选择，只有这两种能力的插件允许不声明模型；其余能力仍要求至少一个模型。
-    let provider_selected_only = manifest
+    // OCR、标点和听写整理按供应商而非模型选择，只有这几种能力的插件允许不声明模型；其余能力仍要求至少一个模型。
+    let provider_selected_only = manifest.provider.capabilities.iter().all(|capability| {
+        matches!(
+            capability.as_str(),
+            "ocr" | "punctuation" | "polish" | "customization"
+        )
+    }) && manifest
         .provider
         .capabilities
         .iter()
-        .all(|capability| matches!(capability.as_str(), "ocr" | "punctuation" | "customization"))
-        && manifest
-            .provider
-            .capabilities
-            .iter()
-            .any(|capability| matches!(capability.as_str(), "ocr" | "punctuation"));
+        .any(|capability| matches!(capability.as_str(), "ocr" | "punctuation" | "polish"));
     if manifest.models.is_empty() && !provider_selected_only {
         return Err("插件至少需要声明一个模型".into());
     }
@@ -877,7 +879,11 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         .ok_or("模型包缺少 modelPack 配置")?;
     if !matches!(
         pack.engine.as_str(),
-        "sherpa-onnx-online" | "sherpa-onnx-offline" | "sherpa-onnx-punctuation" | "transcribe-cpp"
+        "sherpa-onnx-online"
+            | "sherpa-onnx-offline"
+            | "sherpa-onnx-punctuation"
+            | "transcribe-cpp"
+            | super::local_llm::ENGINE
     ) && !is_superseded_ppocr(manifest)
     {
         return Err(format!(
@@ -889,6 +895,13 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
     let punctuation_capability = manifest.provider.capabilities == ["punctuation"];
     if punctuation_engine != punctuation_capability {
         return Err("标点模型包必须且只能声明 punctuation 能力".into());
+    }
+    let polish_engine = pack.engine == super::local_llm::ENGINE;
+    if polish_engine != (manifest.provider.capabilities == ["polish"]) {
+        return Err("听写整理模型包必须且只能声明 polish 能力".into());
+    }
+    if polish_engine && !cfg!(windows) {
+        return Err("本地听写整理模型目前只支持 Windows".into());
     }
     if !pack.params.is_object() {
         return Err("modelPack.params 必须是 JSON 对象".into());
@@ -942,6 +955,7 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
         "sherpa-onnx-offline" => &["model", "tokens", "vadModel"],
         "sherpa-onnx-punctuation" => &["model"],
         "transcribe-cpp" => &["model", "vadModel"],
+        super::local_llm::ENGINE => &["model"],
         "ppocr-mnn" => &["detModel", "recModel", "charset"],
         _ => unreachable!(),
     };
@@ -1174,6 +1188,29 @@ impl PluginRegistry {
         self.plugins.iter().find_map(|plugin| {
             let pack = plugin.manifest.model_pack.as_ref()?;
             if pack.engine != "sherpa-onnx-punctuation" {
+                return None;
+            }
+            let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
+            let enabled = settings.profiles.iter().any(|profile| {
+                profile.id == spec.provider_id
+                    && profile.kind == format!("model-pack:{}", spec.plugin_id)
+                    && profile.enabled
+            });
+            (enabled && super::model_download::inspect_pack(&spec.model_dir, pack).state == "ready")
+                .then_some(spec)
+        })
+    }
+
+    /// 供应商 `provider_id` 对应的听写整理模型包；已启用且权重就绪才返回。
+    pub fn polish_model(
+        &self,
+        settings: &ProviderSettings,
+        provider_id: &str,
+    ) -> Option<LocalModelSpec> {
+        self.plugins.iter().find_map(|plugin| {
+            let pack = plugin.manifest.model_pack.as_ref()?;
+            if pack.engine != super::local_llm::ENGINE || plugin.manifest.provider.id != provider_id
+            {
                 return None;
             }
             let spec = self.model_pack_for_plugin(&plugin.manifest.id)?;
@@ -2103,7 +2140,7 @@ mod tests {
         )
         .unwrap();
         let error = validate_plugin_dir(&root).unwrap_err();
-        assert!(error.contains("模型包能力只允许 asr、ocr 或 punctuation"));
+        assert!(error.contains("模型包能力只允许 asr、ocr、punctuation 或 polish"));
         std::fs::remove_dir_all(root).unwrap();
     }
     fn resident_registry(root: &Path) -> PluginRegistry {
@@ -2334,6 +2371,28 @@ mod tests {
         validate_plugin_dir(&root).unwrap();
         // sherpa 协议的模型会被界面当成没有标点、需要外挂标点模型。
         manifest["models"][0]["protocol"] = "local-sherpa-offline".into();
+        write(&manifest);
+        assert!(validate_plugin_dir(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn polish_descriptor_needs_no_models_but_only_polish_capability() {
+        let value: Value =
+            serde_json::from_str(include_str!("../../../model-packs/polish-4b-q4.json")).unwrap();
+        let mut manifest = value["manifest"].clone();
+        let root =
+            std::env::temp_dir().join(format!("sayit-polish-descriptor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let write = |manifest: &Value| {
+            std::fs::write(root.join("manifest.json"), serde_json::to_vec(manifest).unwrap())
+                .unwrap()
+        };
+        write(&manifest);
+        validate_plugin_dir(&root).unwrap();
+        // 它不是通用大模型，不能混进其他用途的大模型列表。
+        manifest["provider"]["capabilities"] = serde_json::json!(["polish", "llm"]);
         write(&manifest);
         assert!(validate_plugin_dir(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();

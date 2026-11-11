@@ -19,9 +19,10 @@
     "check": "npm run typecheck && npm run test:ui && npm run test:scripts && npm run ui:build && npm run test:rust",
     "context-probe:build": "node scripts/build-context-probe.mjs",
     "context-probe:test": "ctest --test-dir src-tauri/target/context-probe-build -C Release --output-on-failure",
+    "llm-engine:build": "node scripts/build-llm-engine.mjs",
     "macos-speech:build": "node scripts/build-macos-speech.mjs",
-    "tauri:dev": "node scripts/rust-cache-guard.mjs && npm run context-probe:build && node scripts/build-macos-speech.mjs --development && node scripts/run-tauri.mjs dev",
-    "tauri:build": "npm run context-probe:build && npm run macos-speech:build && node scripts/run-tauri.mjs build",
+    "tauri:dev": "node scripts/rust-cache-guard.mjs && npm run context-probe:build && npm run llm-engine:build && node scripts/build-macos-speech.mjs --development && node scripts/run-tauri.mjs dev",
+    "tauri:build": "npm run context-probe:build && npm run llm-engine:build && npm run macos-speech:build && node scripts/run-tauri.mjs build",
     "tauri": "tauri"
   },
   "devDependencies": {

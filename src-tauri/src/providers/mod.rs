@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod credential_store;
 pub(crate) mod credential_vault;
 pub mod local_asr;
+pub(crate) mod local_llm;
 pub mod model_download;
 pub mod plugin;
 pub mod plugin_capability;
