@@ -1498,12 +1498,16 @@ fn spawn_raw_consumer(
                 {
                     break;
                 }
+                let voiced = noise_floor.is_voice(level, s.prefs.dictation_silence_threshold);
+                if voiced {
+                    s.last_voice_at = Some(Instant::now());
+                }
                 if s.mode == Some(DictationMode::File) {
                     s.recorded_samples += samples.len();
                     limit_reached = file_mode_recording_is_full(s.recorded_samples, s.sample_rate);
                     // 文件模式结束后才识别，自动结束会丢掉已录的话；只拦从头到尾没人说话的误触发，
                     // 录到过说话后交给 30 分钟上限。
-                    if noise_floor.is_voice(level, s.prefs.dictation_silence_threshold) {
+                    if voiced {
                         s.last_activity_at = None;
                     }
                 }
@@ -1520,8 +1524,7 @@ fn spawn_raw_consumer(
                 if s.mode == Some(DictationMode::Realtime)
                     && s.prefs.dictation_silence_disconnect_enabled
                 {
-                    if noise_floor.is_voice(level, s.prefs.dictation_silence_threshold) {
-                        s.last_voice_at = Some(Instant::now());
+                    if voiced {
                         if !s.silence_streaming {
                             s.silence_streaming = true;
                             s.phase = DictationPhase::Recording;
@@ -1788,11 +1791,15 @@ fn spawn_smart_prewarm(app: &AppHandle, prefs: &DictationPrefs) {
     });
 }
 
+/// 停止前这么短的时间内还有人声，就认为话音未落。
+const STOP_TAIL_TRIGGER: Duration = Duration::from_millis(200);
+const STOP_TAIL_CAPTURE: Duration = Duration::from_millis(200);
+
 async fn stop(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     let operation = state.dictation_runtime.operation.clone();
     let _guard = operation.lock().await;
-    let (epoch, mode, session_id, prefs, raw_done, audio_generation, inline_follow_up, trigger) = {
+    let (epoch, mode, session_id, prefs, raw_done, audio_generation, inline_follow_up, trigger, mid_speech) = {
         let mut s = state
             .dictation_runtime
             .session
@@ -1804,6 +1811,9 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         ) {
             return Ok(());
         }
+        let mid_speech = s
+            .last_voice_at
+            .is_some_and(|at| at.elapsed() < STOP_TAIL_TRIGGER);
         crate::application::diagnostics::event(
             "info",
             "dictation.stopRequested",
@@ -1832,8 +1842,13 @@ async fn stop(app: AppHandle) -> Result<(), String> {
                 .as_ref()
                 .is_some_and(|request| request.follow_up),
             s.trigger,
+            mid_speech,
         )
     };
+    // 人常常在最后一个字的尾音还没落下时就按停止；这时再多录一小段，免得尾字被截掉。
+    if mid_speech {
+        sleep(STOP_TAIL_CAPTURE).await;
+    }
     pause_backend_mic_inner(&state)?;
     let recording = if mode == Some(DictationMode::File) {
         let result = drain_file_recording(raw_done).await;
