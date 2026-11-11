@@ -152,6 +152,7 @@ unsafe extern "C" {
     fn sayit_macos_context_ocr_permissions(request: bool) -> u32;
     fn sayit_macos_accessibility_permission(request: bool) -> bool;
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
+    fn sayit_macos_microphone_access() -> bool;
     fn sayit_macos_hardware(
         memory: *mut u64,
         gpu_name: *mut *mut c_char,
@@ -514,6 +515,15 @@ pub(crate) fn system_font_families() -> Result<Vec<String>, String> {
     families.sort_by_key(|family| family.to_lowercase());
     families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     Ok(families)
+}
+
+/// 尚未决定时会弹出系统授权并等待作答，调用方不能在主线程或持锁时调用。
+pub(crate) fn ensure_microphone_access() -> Result<(), String> {
+    if unsafe { sayit_macos_microphone_access() } {
+        Ok(())
+    } else {
+        Err("没有麦克风权限：请在「系统设置 → 隐私与安全性 → 麦克风」里允许说吧！，然后重试".into())
+    }
 }
 
 pub(crate) struct MacHardware {

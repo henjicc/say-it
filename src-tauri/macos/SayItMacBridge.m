@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hid/IOHIDKeys.h>
@@ -619,6 +620,22 @@ bool sayit_macos_volume_available_capacity(
     }
     *capacity = (uint64_t)value;
     return true;
+}
+
+/// 麦克风是否已允许；尚未决定时弹出系统授权并等待用户作答，所以不能在主线程调用。
+bool sayit_macos_microphone_access(void) {
+    AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+    if (status != AVAuthorizationStatusNotDetermined) {
+        return status == AVAuthorizationStatusAuthorized;
+    }
+    dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+    __block BOOL allowed = NO;
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+        allowed = granted;
+        dispatch_semaphore_signal(answered);
+    }];
+    dispatch_semaphore_wait(answered, DISPATCH_TIME_FOREVER);
+    return allowed;
 }
 
 /// 没有 Metal 设备时 gpuName 为 NULL、workingSet 为 0。
