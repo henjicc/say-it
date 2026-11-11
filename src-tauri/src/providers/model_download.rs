@@ -15,11 +15,108 @@ const PROGRESS_EVENT: &str = "model-pack-progress";
 static ACTIVE_DOWNLOADS: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-/// 本次运行里已通过完整校验的模型文件，记下当时的大小、修改时间和哈希。三者都没变就不再重读：
-/// 每次加载模型都会校验，1.5 GB 的权重整份读一遍要一秒左右。
-static VERIFIED_FILES: std::sync::Mutex<
-    std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime, String)>,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// 小于这个大小的文件每次直接算，不记录：算得快，而且小文件更容易撞上同样的大小和修改时间。
+const REMEMBER_MIN_BYTES: u64 = 1024 * 1024;
+
+/// 大文件的哈希记录：（大小，修改时间）→ SHA256，存在数据目录里跨启动保留。
+/// 模型权重动辄几个 GB，装好之后每次启动、每次加载都整份重读一遍没有意义：文件没被改写就沿用记录。
+/// 不按路径记，安装过程中文件在暂存目录之间改名移动后记录仍然有效。
+/// 代价：内容坏了但大小和修改时间没变（磁盘坏道、有人刻意改回时间）不会被发现。
+#[derive(Default)]
+struct HashRecords {
+    file: Option<PathBuf>,
+    hashes: std::collections::HashMap<(u64, u128), String>,
+}
+
+static HASH_RECORDS: std::sync::LazyLock<std::sync::Mutex<HashRecords>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// 指定哈希记录存放的文件并读入已有记录。应用启动加载插件前调用一次。
+pub(crate) fn remember_hashes_in(file: PathBuf) {
+    let Ok(mut records) = HASH_RECORDS.lock() else {
+        return;
+    };
+    if records.file.as_ref() == Some(&file) {
+        return;
+    }
+    let saved: Vec<(u64, String, String)> = std::fs::read(&file)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    for (size, modified, hash) in saved {
+        if let Ok(modified) = modified.parse() {
+            records.hashes.insert((size, modified), hash);
+        }
+    }
+    records.file = Some(file);
+}
+
+fn file_stamp(path: &Path) -> Result<(u64, u128), String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    Ok((metadata.len(), modified.as_nanos()))
+}
+
+/// 记下一个大文件的哈希（解包时边写边算出来的，或刚整份读过算出来的），之后校验它不用再读一遍。
+/// 记录只是省事用的：记不下来或存不了盘都不影响校验结论，下次重新算就是了。
+pub(crate) fn record_sha256(path: &Path, sha256: String) {
+    let Ok(stamp) = file_stamp(path) else {
+        return;
+    };
+    if stamp.0 < REMEMBER_MIN_BYTES {
+        return;
+    }
+    let Ok(mut records) = HASH_RECORDS.lock() else {
+        return;
+    };
+    records.hashes.insert(stamp, sha256);
+    let Some(file) = &records.file else {
+        return;
+    };
+    let saved = records
+        .hashes
+        .iter()
+        .map(|((size, modified), hash)| (size, modified.to_string(), hash))
+        .collect::<Vec<_>>();
+    let written = serde_json::to_vec(&saved)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| std::fs::write(file, bytes).map_err(|error| error.to_string()));
+    if let Err(error) = written {
+        crate::application::diagnostics::event(
+            "warn",
+            "modelFiles.hashRecordsNotSaved",
+            serde_json::json!({"error":error}),
+        );
+    }
+}
+
+/// 文件内容的 SHA256（小写十六进制）。大文件优先用记录，没有记录才整份读一遍并记下。
+pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
+    let stamp = file_stamp(path)?;
+    if stamp.0 >= REMEMBER_MIN_BYTES {
+        let records = HASH_RECORDS.lock().map_err(|_| "哈希记录锁失败")?;
+        if let Some(hash) = records.hashes.get(&stamp) {
+            return Ok(hash.clone());
+        }
+    }
+    let mut input = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let hash = format!("{:x}", hasher.finalize());
+    record_sha256(path, hash.clone());
+    Ok(hash)
+}
 
 /// 持有期间该模型包处于「正在下载」，释放时自动解除。
 pub struct DownloadLease(String);
@@ -314,27 +411,9 @@ pub(crate) fn verify_model_file(path: &Path, file: &ModelPackFileManifest) -> Re
     if metadata.len() != file.size_bytes {
         return Err(format!("模型文件大小不匹配：{}", file.path));
     }
-    let modified = metadata.modified().map_err(|error| error.to_string())?;
-    let stamp = (file.size_bytes, modified, file.sha256.to_ascii_lowercase());
-    let verified = || VERIFIED_FILES.lock().map_err(|_| "模型校验记录锁失败");
-    if verified()?.get(path) == Some(&stamp) {
-        return Ok(());
-    }
-    let mut input = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let count = input.read(&mut buffer).map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    let actual = format!("{:x}", hasher.finalize());
-    if !actual.eq_ignore_ascii_case(&file.sha256) {
+    if !sha256_of(path)?.eq_ignore_ascii_case(&file.sha256) {
         return Err(format!("模型文件 SHA256 不匹配：{}", file.path));
     }
-    verified()?.insert(path.to_path_buf(), stamp);
     Ok(())
 }
 
@@ -380,6 +459,26 @@ mod tests {
         std::fs::write(root.join("model.bin.part"), b"").unwrap();
         assert_eq!(inspect_pack(&root, &pack).state, "partial");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn large_file_hash_is_remembered_until_the_file_is_rewritten() {
+        let path = std::env::temp_dir().join(format!("sayit-hash-record-{}", Uuid::new_v4()));
+        std::fs::write(&path, vec![7_u8; REMEMBER_MIN_BYTES as usize]).unwrap();
+        // 记录里的值就是结论：文件没动时不再读内容。
+        record_sha256(&path, "recorded".into());
+        assert_eq!(sha256_of(&path).unwrap(), "recorded");
+        // 移动不改变大小和修改时间，记录跟着走。
+        let moved = path.with_extension("moved");
+        std::fs::rename(&path, &moved).unwrap();
+        assert_eq!(sha256_of(&moved).unwrap(), "recorded");
+        // 改写后修改时间变了，要重新算。
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let file = std::fs::File::options().write(true).open(&moved).unwrap();
+        file.set_modified(later).unwrap();
+        drop(file);
+        assert_eq!(sha256_of(&moved).unwrap().len(), 64);
+        std::fs::remove_file(moved).unwrap();
     }
 
     #[test]

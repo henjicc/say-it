@@ -229,8 +229,14 @@ export function Select({
       if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
     };
 
+    // 窗口失去焦点时收起：浮层的层级高于弹窗，开着的时候外部触发的弹窗会被它盖住。
+    const close = () => setOpen(false);
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("blur", close);
+    };
   }, [open]);
 
   useEffect(() => {

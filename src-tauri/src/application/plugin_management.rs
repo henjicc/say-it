@@ -191,7 +191,7 @@ pub(crate) fn reload_provider_plugins(
 pub(crate) async fn install_provider_plugin(
     app: tauri::AppHandle,
     source_path: String,
-    expected_archive_sha256: Option<String>,
+    expected_archive_stamp: Option<String>,
     allow_unsigned: bool,
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
@@ -203,7 +203,7 @@ pub(crate) async fn install_provider_plugin(
         plugin_package::install_from_path(
             &install_app,
             Path::new(&source_path),
-            expected_archive_sha256.as_deref(),
+            expected_archive_stamp.as_deref(),
             allow_unsigned,
             trust_signing_key,
         )

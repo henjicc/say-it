@@ -113,7 +113,7 @@ export function PluginDropInstaller() {
       await installPluginPackage(sourcePath, {
         allowUnsigned: allowUntrusted,
         trustSigningKey: allowUntrusted,
-        expectedArchiveSha256: preview?.archiveSha256,
+        expectedArchiveStamp: preview?.archiveStamp,
       });
       setInstallState({ status: "success" });
       openModels("plugins");
@@ -280,7 +280,7 @@ interface PackagePreview {
   modelLabels: string[];
   trust: "trusted" | "signed-untrusted" | "integrity-only" | "unsigned";
   signingKeyId?: string;
-  archiveSha256: string;
+  archiveStamp: string;
 }
 
 const TRUST_LABEL: Record<PackagePreview["trust"], string> = {

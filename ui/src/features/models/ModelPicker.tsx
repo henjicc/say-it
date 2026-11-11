@@ -195,8 +195,14 @@ export function ModelPicker({
       const target = event.target as Node;
       if (!buttonRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
     };
+    // 窗口失去焦点时收起：面板的层级高于弹窗，开着的时候双击安装包弹出的确认框会被它盖住。
+    const close = () => setOpen(false);
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("blur", close);
+    };
   }, [open]);
 
   const closeAndFocus = () => {
@@ -326,10 +332,15 @@ export function ModelPicker({
                 <div className="px-3 py-8 text-center text-sm text-[var(--color-fg-subtle)]">没有符合条件的模型</div>
               )}
               {visibleGroups.map((group) => (
-                <div key={group.id} role="group" aria-label={group.label}>
+                <div
+                  key={group.id}
+                  role="group"
+                  aria-label={group.label}
+                  className="border-t border-[var(--color-line)] pb-1 first:border-t-0"
+                >
                   <div
                     aria-hidden
-                    className="flex items-baseline justify-between gap-3 px-3 pb-1 pt-3 text-xs text-[var(--color-fg-subtle)]"
+                    className="flex items-baseline justify-between gap-3 px-3 pb-1.5 pt-3 text-xs font-medium text-[var(--color-fg-subtle)]"
                   >
                     <span className="min-w-0 truncate">{group.label}</span>
                     {group.options.some((option) => option.price?.perMillionTokens) && (
