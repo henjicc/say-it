@@ -65,6 +65,16 @@ export function hardwareFit(
     : { ok: false, text: "这台电脑的显存偏小，能用，但可能比较慢" };
 }
 
+const GPU_ASR_PACK_ID = "official.transcribe-qwen3-asr-1.7b";
+const CPU_ASR_PACK_ID = "official.sherpa-funasr-nano-ctc";
+
+/** 这台电脑首选的本地识别模型包：显卡够用选最准的，否则选只靠处理器的；没读到硬件信息时不推荐。 */
+export function recommendedAsrPack(hardware: HardwareSummary | undefined): string | undefined {
+  const enough = gpuEnough(hardware, LOCAL_MODEL_NEEDS[GPU_ASR_PACK_ID].gpuMemoryMb!);
+  if (enough === undefined) return undefined;
+  return enough ? GPU_ASR_PACK_ID : CPU_ASR_PACK_ID;
+}
+
 /** 这台电脑的硬件信息；读到之前和读不到时为空，界面只是少一句提示。 */
 export function useHardware(): HardwareSummary | undefined {
   const [hardware, setHardware] = useState<HardwareSummary>();

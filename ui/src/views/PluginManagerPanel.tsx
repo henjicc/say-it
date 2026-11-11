@@ -14,7 +14,7 @@ import {
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
-import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
+import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, recommendedAsrPack, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
 
@@ -45,7 +45,9 @@ const MODEL_STATE_LABEL: Record<string, string> = {
 function ModelNeed({ pluginId, hardware }: { pluginId: string; hardware: HardwareSummary | undefined }) {
   const need = LOCAL_MODEL_NEEDS[pluginId];
   if (!need) return null;
-  const fit = hardwareFit(need, hardware);
+  const fit = recommendedAsrPack(hardware) === pluginId
+    ? { ok: true, text: "这台电脑的首选识别模型" }
+    : hardwareFit(need, hardware);
   return (
     <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
       {need.summary}

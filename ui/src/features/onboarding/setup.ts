@@ -53,15 +53,15 @@ export const ASR_CHOICES = [
   {
     key: "local",
     mode: "local",
-    label: "Paraformer 实时",
-    description: "对电脑没有要求，边说边出字",
-    model: "local-paraformer-online-int8",
-    // Paraformer 只出无标点的文字，要同时装标点模型。
-    packs: ["official.sherpa-paraformer-online", "official.sherpa-ct-punct-zh-en"],
+    label: "Fun-ASR-Nano",
+    description: "对电脑没有要求，只用处理器也很快",
+    model: "local-funasr-nano-sentence-int8",
+    // Fun-ASR-Nano 只出无标点的文字，要同时装标点模型。
+    packs: ["official.sherpa-funasr-nano-ctc", "official.sherpa-ct-punct-zh-en"],
   },
 ] as const;
 
-/** 这种方式下默认选哪个识别模型：在线用百炼；本地有合适的显卡用 Qwen3-ASR，否则用对电脑没要求的 Paraformer。 */
+/** 这种方式下默认选哪个识别模型：在线用百炼；本地有合适的显卡用 Qwen3-ASR，否则用只靠处理器的 Fun-ASR-Nano。 */
 export function defaultAsrChoice(mode: UsageMode, hardware: HardwareSummary | undefined): AsrChoiceKey {
   if (mode === "online") return "bailian";
   return gpuEnough(hardware, LOCAL_MODEL_NEEDS[QWEN_ASR_PACK_ID].gpuMemoryMb!) ? "local-qwen" : "local";
