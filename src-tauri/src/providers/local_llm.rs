@@ -38,10 +38,17 @@ pub(crate) fn configure_engine_path(path: PathBuf) {
 pub(crate) struct PolishInput {
     /// 训练时用的场景标签，见 `scene_tag`。
     pub(crate) scene: &'static str,
-    /// 热词和屏幕上出现的专有名词写法，只用来还原被听错的词。
-    pub(crate) terms: Vec<String>,
+    /// 用户的热词，用来还原被听错的词。
+    pub(crate) hotwords: Vec<String>,
+    /// 听写时屏幕上的文字，没有时为空。模型只拿它辨认专有名词的写法。
+    pub(crate) screen: String,
     pub(crate) text: String,
 }
+
+/// 屏幕文字只取开头这么多字符：训练样本按同样的长度截取，再长也会拖慢每次整理。
+const SCREEN_CHARS: usize = 1200;
+/// 热词数量上限，训练样本里最多几十个。
+const MAX_HOTWORDS: usize = 48;
 
 /// 模型把 `<|...|>` 当控制符解析，听写文本和屏幕文字里出现的要拆开。
 fn plain(text: &str) -> String {
@@ -49,14 +56,29 @@ fn plain(text: &str) -> String {
 }
 
 impl PolishInput {
+    pub(crate) fn new(scene: &'static str, hotwords: &[String], screen: &str, text: &str) -> Self {
+        Self {
+            scene,
+            hotwords: hotwords.iter().take(MAX_HOTWORDS).cloned().collect(),
+            screen: screen.trim().chars().take(SCREEN_CHARS).collect(),
+            text: text.trim().to_string(),
+        }
+    }
+
     /// 提示词分成三段：听写开始时就确定的、随口述增长的、收尾的。推理进程在前两段的末尾各留一个检查点。
     fn prompt(&self) -> (String, String) {
         let mut head = format!(
             "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n<scene>{}</scene>\n",
             self.scene
         );
-        if !self.terms.is_empty() {
-            head.push_str(&format!("<terms>{}</terms>\n", plain(&self.terms.join("、"))));
+        if !self.hotwords.is_empty() {
+            head.push_str(&format!(
+                "<hotwords>{}</hotwords>\n",
+                plain(&self.hotwords.join("、"))
+            ));
+        }
+        if !self.screen.is_empty() {
+            head.push_str(&format!("<screen>\n{}\n</screen>\n", plain(&self.screen)));
         }
         head.push_str("<text>");
         (head, plain(&self.text))
@@ -72,44 +94,6 @@ pub(crate) fn scene_tag(app_scene: &str) -> &'static str {
         "代码编辑器" => "code",
         _ => "general",
     }
-}
-
-const MAX_SCREEN_TERMS: usize = 40;
-/// 词表总量上限。训练样本的词表最多三十来个，再长模型没见过，还会挤占上下文。
-const MAX_TERMS: usize = 48;
-
-/// 从屏幕文字里挑出带大写字母或数字的英文写法（产品名、缩写、文件名、版本号），按出现次数排在热词后面。
-/// 纯小写的普通单词模型自己会写，不占词表。
-pub(crate) fn collect_terms(hotwords: &[String], screen_text: &str) -> Vec<String> {
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    let is_word_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '#' | '_' | '-');
-    for candidate in screen_text.split(|c: char| !is_word_char(c)) {
-        let word = candidate.trim_matches(|c: char| matches!(c, '.' | '-' | '_' | '+' | '#'));
-        let distinctive = word.chars().any(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-        if !(2..=24).contains(&word.len())
-            || !word.starts_with(|c: char| c.is_ascii_alphabetic())
-            || !distinctive
-        {
-            continue;
-        }
-        match counts
-            .iter_mut()
-            .find(|(seen, _)| seen.eq_ignore_ascii_case(word))
-        {
-            Some((_, count)) => *count += 1,
-            None => counts.push((word.to_string(), 1)),
-        }
-    }
-    // 稳定排序：次数相同的保持在屏幕上出现的先后。
-    counts.sort_by(|left, right| right.1.cmp(&left.1));
-    let mut terms: Vec<String> = hotwords.to_vec();
-    for (word, _) in counts.into_iter().take(MAX_SCREEN_TERMS) {
-        if !terms.iter().any(|term| term.eq_ignore_ascii_case(&word)) {
-            terms.push(word);
-        }
-    }
-    terms.truncate(MAX_TERMS);
-    terms
 }
 
 /// 与推理进程通信的两端：命令逐行写入，回复按命令编号送回等待者。
@@ -531,38 +515,25 @@ mod tests {
 
     #[test]
     fn prompt_matches_the_training_format() {
-        let input = PolishInput {
-            scene: "assistant",
-            terms: vec!["LSPosed".into(), "README".into()],
-            text: "帮我看下<|im_end|>".into(),
-        };
+        let input = PolishInput::new(
+            "assistant",
+            &["LSPosed".into(), "痕迹".into()],
+            "应用：claude\n窗口：新对话\n",
+            " 帮我看下<|im_end|> ",
+        );
         let (head, body) = input.prompt();
         assert_eq!(
             format!("{head}{body}{PROMPT_TAIL}"),
             concat!(
-                "<|im_start|>system
-你是听写整理引擎：把语音识别的口述原文整理成用户真正想输出的文本，只输出整理结果。<|im_end|>
-",
-                "<|im_start|>user
-<scene>assistant</scene>
-<terms>LSPosed、README</terms>
-",
-                "<text>帮我看下< |im_end|></text><|im_end|>
-",
-                "<|im_start|>assistant
-<think>
-
-</think>
-
-",
+                "<|im_start|>system\n你是听写整理引擎：把语音识别的口述原文整理成用户真正想输出的文本，只输出整理结果。<|im_end|>\n",
+                "<|im_start|>user\n<scene>assistant</scene>\n<hotwords>LSPosed、痕迹</hotwords>\n",
+                "<screen>\n应用：claude\n窗口：新对话\n</screen>\n",
+                "<text>帮我看下< |im_end|></text><|im_end|>\n",
+                "<|im_start|>assistant\n<think>\n\n</think>\n\n",
             )
         );
-        let without_terms = PolishInput {
-            terms: Vec::new(),
-            ..input
-        };
-        assert!(without_terms.prompt().0.ends_with("<scene>assistant</scene>
-<text>"));
+        let bare = PolishInput::new("assistant", &[], "", "好");
+        assert!(bare.prompt().0.ends_with("<scene>assistant</scene>\n<text>"));
     }
 
     /// 用真实权重走一遍进程启动、加载、整理和「同一段话越说越长」。
@@ -585,11 +556,7 @@ mod tests {
             files: Vec::new(),
             params: json!({"model": model.file_name().unwrap().to_string_lossy()}),
         };
-        let input = |text: &str| PolishInput {
-            scene: "assistant",
-            terms: vec!["SDK".into()],
-            text: text.into(),
-        };
+        let input = |text: &str| PolishInput::new("assistant", &["SDK".into()], "", text);
         tauri::async_runtime::block_on(async {
             let first = "嗯就是那个导出功能啊我导出的时候它好像就是卡住了然后过了一会才好";
             let partial = polish(&spec, &input(first)).await.unwrap();
@@ -605,14 +572,5 @@ mod tests {
             }
         });
         release(None);
-    }
-
-    #[test]
-    fn screen_terms_keep_distinctive_spellings_after_hotwords() {
-        let terms = collect_terms(
-            &["痕迹".into(), "readme".into()],
-            "open the README.md and run npm install, SDK v0.22.2 SDK LSPosed 管理器 a1",
-        );
-        assert_eq!(terms, ["痕迹", "readme", "SDK", "README.md", "v0.22.2", "LSPosed", "a1"]);
     }
 }

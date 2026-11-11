@@ -934,11 +934,12 @@ fn local_polish_input(
         .map(|item| item.text.trim().to_string())
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>();
-    crate::providers::local_llm::PolishInput {
-        scene: crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
-        terms: crate::providers::local_llm::collect_terms(&hotwords, active_app_context),
-        text: text.trim().to_string(),
-    }
+    crate::providers::local_llm::PolishInput::new(
+        crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
+        &hotwords,
+        active_app_context,
+        text,
+    )
 }
 
 async fn process_with_local_polish(
@@ -971,7 +972,8 @@ async fn process_with_local_polish(
         "userPromptChars":input.text.chars().count(),
         "outputChars":result.as_deref().map_or(0, |output| output.chars().count()),
         "scene":input.scene,
-        "terms":input.terms,
+        "hotwords":input.hotwords,
+        "screenChars":input.screen.chars().count(),
         "userPrompt":input.text,
         "output":result.as_deref().unwrap_or_default(),
         "error":result.as_ref().err(),
@@ -991,7 +993,7 @@ pub(crate) fn speculate_local_polish(
         return;
     }
     if let Ok(Some(spec)) = local_polish_spec(state, provider_id) {
-        // 屏幕文字此时多半还没识别完，先只带热词；松手后的正式请求带上完整词表，这一版结果给它当草稿。
+        // 屏幕文字此时多半还没识别完，先不带；松手后的正式请求带上它，这一版结果给它当草稿。
         crate::providers::local_llm::speculate(
             spec,
             local_polish_input(state, text, "", active_app_name),
