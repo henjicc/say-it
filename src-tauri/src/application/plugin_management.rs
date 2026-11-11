@@ -121,13 +121,37 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_resident_models(app: &tauri::AppHandle, state: &RuntimeState) -> Result<(), String> {
+/// 按当前的常驻开关和各功能选用的模型，加载该常驻的、卸掉不该常驻的。
+/// 常驻开关、插件增删、听写与字幕的识别模型、转写模型变化后都要调用。
+pub(crate) fn sync_resident_models(
+    app: &tauri::AppHandle,
+    state: &RuntimeState,
+) -> Result<(), String> {
+    let mut models_in_use = {
+        let settings = state.app_settings.lock().map_err(|_| "应用配置锁失败")?;
+        [&settings.dictation_prefs, &settings.subtitle_prefs]
+            .into_iter()
+            .filter_map(|prefs| prefs.get("asrModel")?.as_str().map(str::to_string))
+            .collect::<std::collections::HashSet<_>>()
+    };
     let registry = state
         .plugin_registry
         .lock()
         .map_err(|_| "插件注册表锁失败")?;
     let providers = state.providers.lock().map_err(|_| "供应商配置锁失败")?;
-    local_asr_cache::reconcile(registry.resident_model_specs(&providers), app)
+    // 转写用的模型存在识别供应商的配置里。
+    models_in_use.extend(providers.profiles.iter().filter_map(|profile| {
+        profile
+            .config
+            .get("transcription")?
+            .get("model")?
+            .as_str()
+            .map(str::to_string)
+    }));
+    local_asr_cache::reconcile(
+        registry.resident_model_specs(&providers, &models_in_use),
+        app,
+    )
 }
 
 #[tauri::command]
