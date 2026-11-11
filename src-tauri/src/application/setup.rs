@@ -276,6 +276,58 @@ pub(crate) fn request_setup_permissions(
     Ok(result)
 }
 
+/// 这台电脑跑本地模型的条件。界面据此提示某个本地模型合不合适，只是参考，不拦着用户用。
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HardwareSummary {
+    /// 独立显存最大的那块显卡；没有读到时为空。
+    gpu_name: Option<String>,
+    gpu_memory_mb: u64,
+    memory_mb: u64,
+}
+
+#[cfg(windows)]
+fn hardware_summary() -> HardwareSummary {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut summary = HardwareSummary::default();
+    let mut memory = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GlobalMemoryStatusEx(&mut memory) }.is_ok() {
+        summary.memory_mb = memory.ullTotalPhys / (1024 * 1024);
+    }
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return summary;
+    };
+    let adapters = (0..).map_while(|index| unsafe { factory.EnumAdapters1(index) }.ok());
+    for description in adapters.filter_map(|adapter| unsafe { adapter.GetDesc1() }.ok()) {
+        let dedicated_mb = description.DedicatedVideoMemory as u64 / (1024 * 1024);
+        let software = description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+        if software || dedicated_mb <= summary.gpu_memory_mb {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&description.Description);
+        summary.gpu_name = Some(name.trim_end_matches(char::from(0)).trim().to_string());
+        summary.gpu_memory_mb = dedicated_mb;
+    }
+    summary
+}
+
+#[cfg(not(windows))]
+fn hardware_summary() -> HardwareSummary {
+    HardwareSummary::default()
+}
+
+#[tauri::command]
+pub(crate) fn detect_hardware() -> HardwareSummary {
+    hardware_summary()
+}
+
 #[tauri::command]
 pub(crate) fn complete_onboarding(
     app: AppHandle,

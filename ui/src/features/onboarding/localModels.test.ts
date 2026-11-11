@@ -23,7 +23,7 @@ describe("installLocalPacks", () => {
     // 后端每一步都返回完整快照：标点包只装了清单、权重没下完。
     invoke.mockResolvedValue({ plugins: [pack("official.sherpa-ct-punct-zh-en", "partial")] });
 
-    await installLocalPacks();
+    await installLocalPacks(["official.sherpa-paraformer-online", "official.sherpa-ct-punct-zh-en"]);
 
     expect(invoke.mock.calls.slice(1)).toEqual([
       ["install_official_model_pack", { packId: "official.sherpa-paraformer-online" }],

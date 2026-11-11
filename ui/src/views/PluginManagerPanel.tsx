@@ -14,6 +14,7 @@ import {
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
+import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
 
@@ -40,12 +41,18 @@ const MODEL_STATE_LABEL: Record<string, string> = {
   ready: "模型已就绪",
 };
 
-const RESIDENCY_MEMORY: Record<string, string> = {
-  "official.sherpa-funasr-nano-ctc": "约 400 MB 内存",
-  "official.sherpa-sensevoice-small": "约 350 MB 内存",
-  "official.transcribe-qwen3-asr-1.7b": "约 1.8 GB 显存（没有可用显卡时占内存）",
-  "official.transcribe-qwen3-asr-0.6b": "约 1 GB 显存（没有可用显卡时占内存）",
-};
+/** 本地模型的占用，以及在这台电脑上合不合适。不认识的模型包不显示。 */
+function ModelNeed({ pluginId, hardware }: { pluginId: string; hardware: HardwareSummary | undefined }) {
+  const need = LOCAL_MODEL_NEEDS[pluginId];
+  if (!need) return null;
+  const fit = hardwareFit(need, hardware);
+  return (
+    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
+      {need.summary}
+      {fit && <span className={fit.ok ? "text-[var(--color-ok)]" : "text-[var(--color-warn)]"}> · {fit.text}</span>}
+    </p>
+  );
+}
 
 /** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
 function isNewerVersion(candidate: string, installed: string) {
@@ -65,6 +72,8 @@ function formatBytes(value: number) {
 }
 
 export function PluginManagerPanel() {
+  const hardware = useHardware();
+  const hardwareText = hardwareLabel(hardware);
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
   const [message, setMessage] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
@@ -243,6 +252,7 @@ export function PluginManagerPanel() {
 
   return (
     <InspectorBody>
+      {hardwareText && <p className="text-xs text-[var(--color-fg-subtle)]">这台电脑：{hardwareText}</p>}
       {(!officialPacks || visiblePacks.length > 0) && (
         <Group title="官方模型">
           {visiblePacks.map((pack) => {
@@ -261,6 +271,7 @@ export function PluginManagerPanel() {
                       <span className="text-xs text-[var(--color-fg-subtle)]">{update ? `v${installed!.version} → v${pack.version}` : formatBytes(pack.sizeBytes)}</span>
                     </div>
                     <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
+                    <ModelNeed pluginId={pack.id} hardware={hardware} />
                   </div>
                   {installed?.modelPack?.state === "downloading" && !busy ? (
                     <span role="status" className="text-xs text-[var(--color-fg-subtle)]">下载中…</span>
@@ -318,6 +329,7 @@ export function PluginManagerPanel() {
                       {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state}{plugin.modelPack.state !== "superseded" && ` · ${formatBytes(plugin.modelPack.readyBytes)} / ${formatBytes(plugin.modelPack.totalBytes)}`}
                     </p>
                   )}
+                  <ModelNeed pluginId={plugin.id} hardware={hardware} />
                 </div>
                 <div className="flex items-center gap-2">
                   {plugin.modelPack?.downloadable && !["ready", "downloading"].includes(plugin.modelPack.state) && (
@@ -328,8 +340,8 @@ export function PluginManagerPanel() {
                   )}
                   {plugin.modelPack?.residency && (
                     <Tooltip content={plugin.modelPack.engine === "sherpa-onnx-punctuation"
-                      ? `开启后标点模型一直留在内存里，每次听写不用再等加载。会持续占用约 100 MB 内存。`
-                      : `开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。会持续占用${RESIDENCY_MEMORY[plugin.id] || "数百 MB 内存"}，处理长音频时可能更多。关闭时，模型用过后还会保留几分钟，方便连续听写。`}>
+                      ? "开启后标点模型一直留在内存里，每次听写不用再等加载。"
+                      : "开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。处理长音频时占用会更多。关闭时，模型用过后还会保留几分钟，方便连续听写。"}>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
                         <Switch

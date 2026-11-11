@@ -1,4 +1,5 @@
 import { LLM_PROVIDER_PRESETS } from "@/features/models/llmPresets";
+import { gpuEnough, LOCAL_MODEL_NEEDS, type HardwareSummary } from "@/features/models/localModelNeeds";
 import { providerReady } from "@/features/models/providerModels";
 import { recommendedLlmModels } from "@/features/models/recommendedLlmModels";
 import { ASR_API_KEY_URLS, providerApiKeyUrl } from "@/features/settings/apiKeyLinks";
@@ -9,30 +10,62 @@ import {
   type ProviderProfile,
 } from "@/store/useProviderStore";
 
-/** 引导里推荐的三种识别方式；其余模型在模型页添加。 */
+/** 引导第一个选择：模型在自己电脑上跑，还是用在线服务。之后各步只列这种方式下的选项。 */
+export type UsageMode = "local" | "online";
+
+export const LOCAL_POLISH_PACK_ID = "official.llama-polish-4b";
+const LOCAL_POLISH_PROVIDER_ID = "local-polish-4b";
+const QWEN_ASR_PACK_ID = "official.transcribe-qwen3-asr-1.7b";
+/** 与后端 `smart_text::LOCAL_POLISH_TEMPLATES` 一致。 */
+export const LOCAL_POLISH_TEMPLATES = ["context-aware-polish", "polish"];
+
+/** 本地整理是本地方案里最吃显卡的一环，按它判断这台电脑适不适合全本地。 */
+export function localPolishFits(hardware: HardwareSummary | undefined): boolean {
+  return gpuEnough(hardware, LOCAL_MODEL_NEEDS[LOCAL_POLISH_PACK_ID].gpuMemoryMb!) === true;
+}
+
+/** 引导里推荐的识别方式；其余模型在模型页添加。本地的要先下载 `packs` 里的官方模型包。 */
 export const ASR_CHOICES = [
   {
     key: "bailian",
+    mode: "online",
     label: "阿里云百炼 · Fun-ASR 实时",
     description: "识别准、出字快，同一个密钥也能用于智能整理",
     providerId: "bailian",
     model: "fun-asr-realtime-2026-02-28",
-    recommended: true,
   },
   {
     key: "volcengine",
+    mode: "online",
     label: "火山引擎 · SeedASR 2.0",
     description: "需要火山引擎的语音识别密钥",
     providerId: "volcengine",
     model: "seedasr-2.0-realtime",
   },
   {
+    key: "local-qwen",
+    mode: "local",
+    label: "Qwen3-ASR-1.7B",
+    description: "识别准、自带标点；有独立显卡时很快，没有也能用",
+    model: "local-qwen3-asr-1.7b-sentence-q5",
+    packs: [QWEN_ASR_PACK_ID],
+  },
+  {
     key: "local",
-    label: "本地离线 · Paraformer 实时",
-    description: "完全免费、断网可用",
+    mode: "local",
+    label: "Paraformer 实时",
+    description: "对电脑没有要求，边说边出字",
     model: "local-paraformer-online-int8",
+    // Paraformer 只出无标点的文字，要同时装标点模型。
+    packs: ["official.sherpa-paraformer-online", "official.sherpa-ct-punct-zh-en"],
   },
 ] as const;
+
+/** 这种方式下默认选哪个识别模型：在线用百炼；本地有合适的显卡用 Qwen3-ASR，否则用对电脑没要求的 Paraformer。 */
+export function defaultAsrChoice(mode: UsageMode, hardware: HardwareSummary | undefined): AsrChoiceKey {
+  if (mode === "online") return "bailian";
+  return gpuEnough(hardware, LOCAL_MODEL_NEEDS[QWEN_ASR_PACK_ID].gpuMemoryMb!) ? "local-qwen" : "local";
+}
 
 export type AsrChoice = (typeof ASR_CHOICES)[number];
 export type AsrChoiceKey = AsrChoice["key"];
@@ -122,17 +155,28 @@ export function llmTargetReady(target: LlmTarget, profiles: ProviderProfile[]): 
   return Boolean(profile && providerReady(profile, "llm"));
 }
 
-export type SmartChoice = "smart" | "rules" | "none";
+export type SmartChoice = "smart" | "local" | "rules" | "none";
 
 /**
- * 「智能整理」把所选服务设为通用大模型，听写跟随它；「只用本地规则」关掉大模型、打开本地规则；
- * 「不整理」两者都关。
+ * 「智能整理」把所选服务设为通用大模型，听写跟随它；「本地整理」让听写用本地整理模型，不动通用大模型；
+ * 「只用本地规则」关掉大模型、打开本地规则；「不整理」两者都关。
  */
 export async function applySmartChoice(
   choice: SmartChoice,
   llm: { target: LlmTarget; model: string; apiKey: string },
 ) {
   const patch = useDictPrefs.getState().patch;
+  if (choice === "local") {
+    // 本地整理模型只按内置润色模板的规则整理；重新运行引导时如果之前换过别的模板，换回来。
+    const template = useDictPrefs.getState().prefs.smartTemplateId;
+    await patch({
+      smartProcessingEnabled: true,
+      smartLlmProviderId: LOCAL_POLISH_PROVIDER_ID,
+      smartLlmModel: "",
+      ...(LOCAL_POLISH_TEMPLATES.includes(template) ? {} : { smartTemplateId: LOCAL_POLISH_TEMPLATES[0] }),
+    });
+    return;
+  }
   if (choice !== "smart") {
     await patch({ smartProcessingEnabled: false, localRulesEnabled: choice === "rules" });
     return;

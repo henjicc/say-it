@@ -1,55 +1,35 @@
-import { useEffect, useState } from "react";
-import { CheckCircle2, Download } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Meter } from "@/components/ui/Meter";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { providerReady } from "@/features/models/providerModels";
-import { useLocalModelProgress, useLocalModels } from "@/features/onboarding/localModels";
+import { useLocalModelProgress } from "@/features/onboarding/localModels";
 import {
   ASR_CHOICES,
+  defaultAsrChoice,
   apiKeyLabelFor,
   apiKeyUrlFor,
   saveProviderKey,
   type AsrChoiceKey,
+  type UsageMode,
 } from "@/features/onboarding/setup";
+import type { HardwareSummary } from "@/features/models/localModelNeeds";
 import { ApiKeyLink } from "@/features/settings/apiKeyLinks";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 import { ChoiceList } from "./ChoiceList";
+import { LocalPackDownload } from "./LocalPackDownload";
 import { StepBody, StepError, StepFooter } from "./StepLayout";
 
-const formatMb = (bytes: number) => `${Math.round(bytes / 1024 ** 2)} MB`;
-
-function LocalModelDetail() {
-  const { install, installError, loadError } = useLocalModels();
-  const { ready, downloading, total, done } = useLocalModelProgress();
-  if (ready) {
-    return <p className="flex items-center gap-1.5 text-xs text-[var(--color-ok)]"><CheckCircle2 className="h-3.5 w-3.5" aria-hidden />模型已下载</p>;
-  }
-  if (downloading) {
-    return (
-      <div className="flex items-center gap-3">
-        <Meter value={total ? done / total : 0} label="模型下载进度" className="flex-1" />
-        {total > 0 && <span className="shrink-0 text-xs tabular-nums text-[var(--color-fg-subtle)]">{formatMb(done)} / {formatMb(total)}</span>}
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col items-start gap-2">
-      <Button size="sm" onClick={() => void install()}>
-        <Download className="h-3.5 w-3.5" aria-hidden />{installError ? "重新下载" : "下载模型"}
-      </Button>
-      {(installError || loadError) && <StepError>{installError || loadError}</StepError>}
-    </div>
-  );
-}
-
 export function AsrStep({
+  mode,
+  hardware,
   choice,
   onChoice,
   onBack,
   onNext,
 }: {
+  mode: UsageMode;
+  hardware: HardwareSummary | undefined;
   choice: AsrChoiceKey;
   onChoice: (key: AsrChoiceKey) => void;
   onBack: () => void;
@@ -59,27 +39,24 @@ export function AsrStep({
   const loadProviders = useProviderStore((state) => state.load);
   const providersError = useProviderStore((state) => (state.statusTone === "err" ? state.statusText : ""));
   const patchDictPrefs = useDictPrefs((state) => state.patch);
-  const loadLocal = useLocalModels((state) => state.load);
-  const local = useLocalModelProgress();
   const [drafts, setDrafts] = useState<Partial<Record<AsrChoiceKey, string>>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    void loadLocal();
-  }, [loadLocal]);
-
   const selected = ASR_CHOICES.find((item) => item.key === choice)!;
+  const packs = "packs" in selected ? selected.packs : undefined;
+  const local = useLocalModelProgress(packs ?? []);
   const provider = "providerId" in selected ? profiles.find((profile) => profile.id === selected.providerId) : undefined;
   const draft = drafts[choice]?.trim() ?? "";
   const keyReady = Boolean(provider && providerReady(provider, "asr"));
-  const ready = choice === "local" ? local.ready : Boolean(provider) && (keyReady || Boolean(draft));
+  const ready = packs ? local.ready : Boolean(provider) && (keyReady || Boolean(draft));
 
-  const items = ASR_CHOICES.map((item) => ({
+  const recommended = defaultAsrChoice(mode, hardware);
+  const items = ASR_CHOICES.filter((item) => item.mode === mode).map((item) => ({
     key: item.key,
     title: item.label,
-    description: item.key === "local" && local.total ? `${item.description} · 约 ${formatMb(local.total)}（含标点模型）` : item.description,
-    recommended: "recommended" in item && item.recommended,
+    description: item.description,
+    recommended: item.key === recommended,
   }));
 
   const next = async () => {
@@ -97,7 +74,8 @@ export function AsrStep({
   };
 
   const detail = (key: AsrChoiceKey) => {
-    if (key === "local") return <LocalModelDetail />;
+    const item = ASR_CHOICES.find((entry) => entry.key === key)!;
+    if ("packs" in item) return <LocalPackDownload ids={item.packs} />;
     if (!provider) {
       return providersError ? (
         <div className="flex flex-col items-start gap-2">
@@ -138,7 +116,7 @@ export function AsrStep({
         label="下一步"
         onNext={() => void next()}
         disabled={!ready || saving}
-        reason={ready ? undefined : choice === "local" ? (local.downloading ? "下载完成后继续" : "下载模型后继续") : "填好密钥后继续"}
+        reason={ready ? undefined : packs ? (local.downloading ? "下载完成后继续" : "下载模型后继续") : "填好密钥后继续"}
       />
     </>
   );

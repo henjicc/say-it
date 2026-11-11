@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { AsrStep } from "@/components/onboarding/AsrStep";
+import { ModeStep } from "@/components/onboarding/ModeStep";
 import { PermissionStep } from "@/components/onboarding/PermissionStep";
 import { SmartStep } from "@/components/onboarding/SmartStep";
 import { TriggerStep } from "@/components/onboarding/TriggerStep";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { cn } from "@/lib/cn";
-import type { AsrChoiceKey } from "@/features/onboarding/setup";
+import { useHardware } from "@/features/models/localModelNeeds";
+import { defaultAsrChoice, localPolishFits, type AsrChoiceKey, type UsageMode } from "@/features/onboarding/setup";
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 
-const STEPS = ["权限", "识别模型", "智能整理", "唤起方式"] as const;
+const STEPS = ["权限", "使用方式", "识别模型", "智能整理", "唤起方式"] as const;
 
 /**
  * 使用引导。首次启动（`required`）时没有识别模型就用不了，只能走完，不提供跳过或关闭；
@@ -18,7 +20,17 @@ const STEPS = ["权限", "识别模型", "智能整理", "唤起方式"] as cons
  */
 export function OnboardingWizard({ open, required, onClose }: { open: boolean; required: boolean; onClose: () => void }) {
   const [step, setStep] = useState(0);
-  const [asrChoice, setAsrChoice] = useState<AsrChoiceKey>("bailian");
+  const hardware = useHardware();
+  // 用户没动过时跟着硬件检测的结果走：显卡够用就推荐本地。
+  const [pickedMode, setPickedMode] = useState<UsageMode>();
+  const mode = pickedMode ?? (localPolishFits(hardware) ? "local" : "online");
+  const [pickedAsr, setPickedAsr] = useState<AsrChoiceKey>();
+  const asrChoice = pickedAsr ?? defaultAsrChoice(mode, hardware);
+  const changeMode = (next: UsageMode) => {
+    // 换了方式，之前选的识别模型不在新的列表里。
+    if (next !== mode) setPickedAsr(undefined);
+    setPickedMode(next);
+  };
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
   const loadProviders = useProviderStore((state) => state.load);
@@ -80,16 +92,19 @@ export function OnboardingWizard({ open, required, onClose }: { open: boolean; r
         </ol>
       </div>
       {step === 0 && <PermissionStep onNext={next} />}
-      {step === 1 && (
+      {step === 1 && <ModeStep mode={mode} onMode={changeMode} hardware={hardware} onBack={back} onNext={next} />}
+      {step === 2 && (
         <AsrStep
+          mode={mode}
+          hardware={hardware}
           choice={asrChoice}
-          onChoice={setAsrChoice}
+          onChoice={setPickedAsr}
           onBack={back}
           onNext={next}
         />
       )}
-      {step === 2 && <SmartStep asrChoice={asrChoice} onBack={back} onNext={next} />}
-      {step === 3 && <TriggerStep onBack={back} onFinish={() => void finish()} finishing={finishing} error={error} />}
+      {step === 3 && <SmartStep mode={mode} hardware={hardware} asrChoice={asrChoice} onBack={back} onNext={next} />}
+      {step === 4 && <TriggerStep onBack={back} onFinish={() => void finish()} finishing={finishing} error={error} />}
     </Modal>
   );
 }

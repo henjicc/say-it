@@ -33,6 +33,7 @@ vi.mock("@/lib/tauri", () => ({
     listProviderPlugins: "list_provider_plugins",
     listOfficialModelPacks: "list_official_model_packs",
     completeOnboarding: "complete_onboarding",
+    detectHardware: "detect_hardware",
     openExternalLink: "open_external_link",
   },
   EVT: { modelPackProgress: "model-pack-progress" },
@@ -56,7 +57,7 @@ vi.mock("@/store/useDictationStore", () => ({
 }));
 vi.mock("@/features/plugins/pluginInstaller", () => ({ refreshPluginConsumers: vi.fn() }));
 vi.mock("@/store/useDictPrefs", () => {
-  const state = { prefs: { micDeviceId: "" }, patch: (...args: unknown[]) => patchDictPrefs(...args) };
+  const state = { prefs: { micDeviceId: "", smartTemplateId: "context-aware-polish" }, patch: (...args: unknown[]) => patchDictPrefs(...args) };
   return { useDictPrefs: Object.assign((selector: (s: unknown) => unknown) => selector(state), { getState: () => state }) };
 });
 vi.mock("@/store/useProviderStore", () => ({
@@ -106,6 +107,7 @@ describe("OnboardingWizard", () => {
   it("needs a recognition key before continuing and saves it with the model", async () => {
     render(<OnboardingWizard open required onClose={vi.fn()} />);
     next();
+    next();
     const button = screen.getByRole("button", { name: "下一步" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(screen.getByText("填好密钥后继续")).toBeTruthy();
@@ -123,6 +125,7 @@ describe("OnboardingWizard", () => {
     render(<OnboardingWizard open required onClose={vi.fn()} />);
     next();
     next();
+    next();
     await screen.findByText("沿用识别模型的百炼密钥");
     expect(screen.queryByLabelText("阿里云百炼 API Key")).toBeNull();
     next();
@@ -136,6 +139,36 @@ describe("OnboardingWizard", () => {
     expect(setDefault).toHaveBeenCalledWith("llm", "bailian");
   });
 
+  it("offers local models first on a capable machine and points smart cleanup at the local model", async () => {
+    invoke.mockImplementation(async (name: string) => {
+      if (name === "detect_hardware") return { gpuName: "RTX 4090", gpuMemoryMb: 24564, memoryMb: 65536 };
+      if (name === "list_provider_plugins") {
+        return {
+          apiVersion: 5,
+          errors: [],
+          plugins: ["official.transcribe-qwen3-asr-1.7b", "official.llama-polish-4b"].map((id) => ({ id, modelPack: { state: "ready" } })),
+        };
+      }
+      if (name === "list_official_model_packs") return [];
+    });
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    next();
+    await waitFor(() => expect(screen.getByRole("radio", { name: /本地优先/ }).getAttribute("aria-checked")).toBe("true"));
+    next();
+    expect(screen.getByRole("radio", { name: /Qwen3-ASR-1.7B/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("radio", { name: /阿里云百炼/ })).toBeNull();
+    await screen.findAllByText("模型已下载");
+    next();
+    await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({ asrModel: "local-qwen3-asr-1.7b-sentence-q5" }));
+    await screen.findByRole("radio", { name: /本地整理/ });
+    next();
+    await waitFor(() => expect(patchDictPrefs).toHaveBeenCalledWith({
+      smartProcessingEnabled: true,
+      smartLlmProviderId: "local-polish-4b",
+      smartLlmModel: "",
+    }));
+  });
+
   it("saves completion before closing", async () => {
     bailian.status = { configured: true, hasApiKey: true };
     let save: (() => void) | undefined;
@@ -146,6 +179,7 @@ describe("OnboardingWizard", () => {
     });
     const onClose = vi.fn();
     render(<OnboardingWizard open required onClose={onClose} />);
+    next();
     next();
     next();
     await screen.findByText("沿用识别模型的百炼密钥");

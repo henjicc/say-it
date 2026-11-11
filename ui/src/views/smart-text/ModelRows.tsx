@@ -6,14 +6,12 @@ import { Modal } from "@/components/ui/Modal";
 import { defaultOcrOption } from "@/lib/platform";
 import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from "@/features/asr/modelRegistry";
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
+import { LOCAL_POLISH_TEMPLATES } from "@/features/onboarding/setup";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
 import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
 import { UsageLinkRow, useInUsagePage, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
-
-/** 与后端 `smart_text::LOCAL_POLISH_TEMPLATES` 一致。 */
-const LOCAL_POLISH_TEMPLATES = ["context-aware-polish", "polish"];
 
 /** 听写智能处理用的大模型。 */
 export function SmartLlmRow() {

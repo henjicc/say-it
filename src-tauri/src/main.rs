@@ -81,7 +81,7 @@ use application::plugin_management::{
 };
 use application::settings::{import_legacy_settings, update_app_settings, update_custom_cue};
 use application::setup::{
-    complete_onboarding, get_setup_status, request_setup_permissions, run_setup_check,
+    complete_onboarding, detect_hardware, get_setup_status, request_setup_permissions, run_setup_check,
 };
 use application::smart_text::preview_smart_text;
 use application::subtitles::{
@@ -772,6 +772,7 @@ fn main() {
             run_setup_check,
             request_setup_permissions,
             complete_onboarding,
+            detect_hardware,
             capture_current_selection,
             assistant_start,
             assistant_stop,
