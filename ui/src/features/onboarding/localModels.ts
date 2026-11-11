@@ -6,21 +6,14 @@ import {
 } from "@/features/plugins/pluginInstaller";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 
-/** 本地离线要同时装识别模型和标点模型：Paraformer 只出无标点的文字。 */
-export const LOCAL_PACK_IDS = ["official.sherpa-paraformer-online", "official.sherpa-ct-punct-zh-en"] as const;
-
 function packState(snapshot: PluginSnapshot | undefined, id: string) {
   return snapshot?.plugins.find((plugin) => plugin.id === id)?.modelPack?.state;
 }
 
-export function localPacksReady(snapshot: PluginSnapshot | undefined): boolean {
-  return LOCAL_PACK_IDS.every((id) => packState(snapshot, id) === "ready");
-}
-
-/** 依次装好两个官方包；已装好的跳过，清单已装但权重没下完的续传。 */
-export async function installLocalPacks(): Promise<PluginSnapshot> {
+/** 依次装好这几个官方包；已装好的跳过，清单已装但权重没下完的续传。 */
+export async function installLocalPacks(ids: readonly string[]): Promise<PluginSnapshot> {
   let snapshot = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
-  for (const id of LOCAL_PACK_IDS) {
+  for (const id of ids) {
     const installed = snapshot.plugins.find((plugin) => plugin.id === id);
     if (installed?.modelPack?.state === "ready") continue;
     snapshot = installed?.modelPack
@@ -33,15 +26,18 @@ export async function installLocalPacks(): Promise<PluginSnapshot> {
 
 interface LocalModelsState {
   snapshot?: PluginSnapshot;
+  /** 官方模型目录。 */
   packs?: OfficialModelPack[];
   downloaded: Record<string, number>;
-  installing: boolean;
+  /** 引导里正在安装的那几个包；没有在装时为空。 */
+  installing: readonly string[];
   /** 读插件状态或模型目录失败。 */
   loadError: string;
-  installError: string;
+  /** 最近一次安装失败，以及是哪几个包。 */
+  installError?: { ids: readonly string[]; message: string };
   /** 读插件快照、模型目录并订阅进度；重复调用只刷新快照。 */
   load: () => Promise<void>;
-  install: () => Promise<void>;
+  install: (ids: readonly string[]) => Promise<void>;
 }
 
 let subscribed = false;
@@ -59,15 +55,14 @@ export const useLocalModels = create<LocalModelsState>((set, get) => {
     const snapshot = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
     set({ snapshot, loadError: "" });
     window.clearTimeout(pollTimer);
-    const external = !get().installing
-      && LOCAL_PACK_IDS.some((id) => packState(snapshot, id) === "downloading");
+    const external = get().installing.length === 0
+      && snapshot.plugins.some((plugin) => plugin.modelPack?.state === "downloading");
     if (external) pollTimer = window.setTimeout(() => void refresh().catch(() => undefined), POLL_MS);
   };
   return {
     downloaded: {},
-    installing: false,
+    installing: [],
     loadError: "",
-    installError: "",
     load: async () => {
       if (!subscribed) {
         subscribed = true;
@@ -77,45 +72,45 @@ export const useLocalModels = create<LocalModelsState>((set, get) => {
       }
       try {
         await refresh();
-        if (get().packs) return;
-        const packs = await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks);
-        set({
-          packs: LOCAL_PACK_IDS.map((id) => {
-            const pack = packs.find((item) => item.id === id);
-            if (!pack) throw new Error(`官方模型目录里没有 ${id}`);
-            return pack;
-          }),
-        });
+        if (!get().packs) set({ packs: await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks) });
       } catch (reason) {
         set({ loadError: `读取本地模型失败：${String(reason)}` });
       }
     },
-    install: async () => {
-      if (get().installing) return;
-      set({ installing: true, installError: "" });
+    install: async (ids) => {
+      if (get().installing.length) return;
+      set({ installing: ids, installError: undefined });
       try {
-        set({ snapshot: await installLocalPacks() });
+        set({ snapshot: await installLocalPacks(ids) });
       } catch (reason) {
-        set({ installError: `下载失败：${String(reason)}` });
+        set({ installError: { ids, message: `下载失败：${String(reason)}` } });
       } finally {
-        set({ installing: false });
+        set({ installing: [] });
       }
       await refresh().catch(() => undefined);
     },
   };
 });
 
-/** 两个包合计的下载进度：已就绪的按全量计，其余按最近一次进度事件计。 */
-export function useLocalModelProgress() {
-  const { snapshot, packs, downloaded, installing } = useLocalModels();
-  const total = packs?.reduce((sum, pack) => sum + pack.sizeBytes, 0) ?? 0;
-  const done = (packs ?? []).reduce(
-    (sum, pack) => sum + (packState(snapshot, pack.id) === "ready" ? pack.sizeBytes : downloaded[pack.id] ?? 0),
+/** 这几个包合计的下载进度：已就绪的按全量计，其余按最近一次进度事件计。 */
+export function useLocalModelProgress(ids: readonly string[]) {
+  const { snapshot, packs, downloaded, installing, installError } = useLocalModels();
+  const mine = (others: readonly string[]) => others.some((id) => ids.includes(id));
+  const wanted = ids.map((id) => packs?.find((pack) => pack.id === id));
+  const ready = ids.length > 0 && ids.every((id) => packState(snapshot, id) === "ready");
+  const total = wanted.reduce((sum, pack) => sum + (pack?.sizeBytes ?? 0), 0);
+  const done = wanted.reduce(
+    (sum, pack) => sum + (pack ? (packState(snapshot, pack.id) === "ready" ? pack.sizeBytes : downloaded[pack.id] ?? 0) : 0),
     0,
   );
   return {
-    ready: localPacksReady(snapshot),
-    downloading: installing || LOCAL_PACK_IDS.some((id) => packState(snapshot, id) === "downloading"),
+    ready,
+    downloading: mine(installing) || ids.some((id) => packState(snapshot, id) === "downloading"),
+    /** 引导里别的选项正在下载，这一个要等它下完才能开始。 */
+    busyElsewhere: installing.length > 0 && !mine(installing),
+    /** 目录已读到，但里面没有其中某个还没装过的包；装过清单的不需要目录也能续传。 */
+    unavailable: Boolean(packs) && ids.some((id, index) => !wanted[index] && !packState(snapshot, id)),
+    installError: installError && mine(installError.ids) ? installError.message : "",
     total,
     done,
   };

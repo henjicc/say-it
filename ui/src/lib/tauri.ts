@@ -142,6 +142,7 @@ export const CMD = {
   runSetupCheck: "run_setup_check",
   requestSetupPermissions: "request_setup_permissions",
   completeOnboarding: "complete_onboarding",
+  detectHardware: "detect_hardware",
   captureCurrentSelection: "capture_current_selection",
   assistantStart: "assistant_start",
   assistantStop: "assistant_stop",

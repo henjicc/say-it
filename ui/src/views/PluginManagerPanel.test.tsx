@@ -10,8 +10,10 @@ const { cmd, listeners, officialPacks } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/tauri", async (original) => ({
   ...await original<typeof import("@/lib/tauri")>(),
-  // 官方模型目录单独应答，不占用各用例为插件列表排好的返回顺序。
-  cmd: (name: string, args?: unknown) => name === "list_official_model_packs" ? Promise.resolve(officialPacks) : cmd(name, args),
+  // 官方模型目录和硬件信息单独应答，不占用各用例为插件列表排好的返回顺序。
+  cmd: (name: string, args?: unknown) => name === "list_official_model_packs"
+    ? Promise.resolve(officialPacks)
+    : name === "detect_hardware" ? Promise.resolve(undefined) : cmd(name, args),
   on: vi.fn(async (event: string, listener: (value: unknown) => void) => {
     listeners.set(event, listener);
     return () => listeners.delete(event);

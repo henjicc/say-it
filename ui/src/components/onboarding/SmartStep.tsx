@@ -2,9 +2,13 @@ import { useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { Select } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
+import { LOCAL_MODEL_NEEDS, type HardwareSummary } from "@/features/models/localModelNeeds";
+import { useLocalModelProgress } from "@/features/onboarding/localModels";
 import {
   LLM_TARGETS,
+  LOCAL_POLISH_PACK_ID,
   applySmartChoice,
+  localPolishFits,
   llmTargetDefaultModel,
   llmTargetKeyLabel,
   llmTargetKeyUrl,
@@ -14,21 +18,50 @@ import {
   type AsrChoiceKey,
   type LlmTargetKey,
   type SmartChoice,
+  type UsageMode,
 } from "@/features/onboarding/setup";
 import { ApiKeyLink } from "@/features/settings/apiKeyLinks";
 import { useProviderStore } from "@/store/useProviderStore";
-import { ChoiceList } from "./ChoiceList";
+import { ChoiceList, type ChoiceItem } from "./ChoiceList";
+import { LocalPackDownload } from "./LocalPackDownload";
 import { StepBody, StepError, StepFooter } from "./StepLayout";
 
-const SMART_CHOICES = [
-  { key: "smart", title: "智能整理", description: "用大模型去掉口头禅、理顺句子、补全标点", recommended: true },
-  { key: "rules", title: "只用本地规则", description: "去掉嗯、呃等语气词，不联网、不收费" },
-  { key: "none", title: "不整理", description: "识别出什么就输入什么" },
-] as const satisfies readonly { key: SmartChoice; title: string; description: string; recommended?: boolean }[];
+const RULES = { key: "rules", title: "只用本地规则", description: "去掉嗯、呃等语气词，不联网、不收费" } as const;
+const NONE = { key: "none", title: "不整理", description: "识别出什么就输入什么" } as const;
 
-export function SmartStep({ asrChoice, onBack, onNext }: { asrChoice: AsrChoiceKey; onBack: () => void; onNext: () => void }) {
+export function SmartStep({
+  mode,
+  hardware,
+  asrChoice,
+  onBack,
+  onNext,
+}: {
+  mode: UsageMode;
+  hardware: HardwareSummary | undefined;
+  asrChoice: AsrChoiceKey;
+  onBack: () => void;
+  onNext: () => void;
+}) {
   const profiles = useProviderStore((state) => state.profiles);
-  const [choice, setChoice] = useState<SmartChoice>("smart");
+  const polishFits = localPolishFits(hardware);
+  const choices: readonly ChoiceItem<SmartChoice>[] = mode === "local"
+    ? [
+      {
+        key: "local",
+        title: "本地整理 · Qwen3.5-4B 听写微调",
+        description: `去掉口头禅、理顺句子、补全标点，不联网；${LOCAL_MODEL_NEEDS[LOCAL_POLISH_PACK_ID].summary}`,
+        recommended: polishFits,
+      },
+      { ...RULES, recommended: !polishFits },
+      NONE,
+    ]
+    : [
+      { key: "smart", title: "智能整理", description: "用大模型去掉口头禅、理顺句子、补全标点", recommended: true },
+      RULES,
+      NONE,
+    ];
+  const [choice, setChoice] = useState<SmartChoice>(mode === "online" ? "smart" : polishFits ? "local" : "rules");
+  const polish = useLocalModelProgress([LOCAL_POLISH_PACK_ID]);
   // 识别用的是百炼时它的密钥也能调大模型，直接推荐；其他情况推荐 DeepSeek。
   const [targetKey, setTargetKey] = useState<LlmTargetKey>(asrChoice === "bailian" ? "bailian" : "deepseek");
   const target = LLM_TARGETS.find((item) => item.key === targetKey)!;
@@ -41,7 +74,7 @@ export function SmartStep({ asrChoice, onBack, onNext }: { asrChoice: AsrChoiceK
   const draft = drafts[targetKey]?.trim() ?? "";
   const keyReady = llmTargetReady(target, profiles);
   const reusedBailianKey = targetKey === "bailian" && asrChoice === "bailian" && keyReady;
-  const ready = choice !== "smart" || keyReady || Boolean(draft);
+  const ready = choice === "local" ? polish.ready : choice !== "smart" || keyReady || Boolean(draft);
   const keyUrl = llmTargetKeyUrl(target, profiles);
   const keyLabel = llmTargetKeyLabel(target, profiles);
 
@@ -63,7 +96,7 @@ export function SmartStep({ asrChoice, onBack, onNext }: { asrChoice: AsrChoiceK
     }
   };
 
-  const detail = (key: SmartChoice) => key === "smart" && (
+  const detail = (key: SmartChoice) => key === "local" ? <LocalPackDownload ids={[LOCAL_POLISH_PACK_ID]} /> : key === "smart" && (
     <div className="flex flex-col gap-2">
       <div className="flex gap-2">
         <Select className="min-w-0 flex-1" aria-label="大模型服务" value={targetKey} onChange={(event) => changeTarget(event.target.value as LlmTargetKey)}>
@@ -97,7 +130,7 @@ export function SmartStep({ asrChoice, onBack, onNext }: { asrChoice: AsrChoiceK
   return (
     <>
       <StepBody label="智能整理">
-        <ChoiceList<SmartChoice> label="识别后的文字怎么整理" items={SMART_CHOICES} value={choice} onChange={setChoice} detail={detail} />
+        <ChoiceList<SmartChoice> label="识别后的文字怎么整理" items={choices} value={choice} onChange={setChoice} detail={detail} />
         {error && <StepError>{error}</StepError>}
       </StepBody>
       <StepFooter
@@ -105,7 +138,7 @@ export function SmartStep({ asrChoice, onBack, onNext }: { asrChoice: AsrChoiceK
         label="下一步"
         onNext={() => void next()}
         disabled={!ready || saving}
-        reason={ready ? undefined : "填好密钥后继续，或选择不用大模型"}
+        reason={ready ? undefined : choice === "local" ? (polish.downloading ? "下载完成后继续" : "下载模型后继续，或选择不用模型") : "填好密钥后继续，或选择不用大模型"}
       />
     </>
   );
