@@ -40,6 +40,8 @@ pub(crate) struct PolishInput {
     pub(crate) scene: &'static str,
     /// 用户的热词，用来还原被听错的词。
     pub(crate) hotwords: Vec<String>,
+    /// 用户在「热词与上下文」里写的全局上下文，没有时为空。
+    pub(crate) note: String,
     /// 听写时屏幕上的文字，没有时为空。模型只拿它辨认专有名词的写法。
     pub(crate) screen: String,
     pub(crate) text: String,
@@ -56,10 +58,17 @@ fn plain(text: &str) -> String {
 }
 
 impl PolishInput {
-    pub(crate) fn new(scene: &'static str, hotwords: &[String], screen: &str, text: &str) -> Self {
+    pub(crate) fn new(
+        scene: &'static str,
+        hotwords: &[String],
+        note: &str,
+        screen: &str,
+        text: &str,
+    ) -> Self {
         Self {
             scene,
             hotwords: hotwords.iter().take(MAX_HOTWORDS).cloned().collect(),
+            note: note.trim().to_string(),
             screen: screen.trim().chars().take(SCREEN_CHARS).collect(),
             text: text.trim().to_string(),
         }
@@ -76,6 +85,9 @@ impl PolishInput {
                 "<hotwords>{}</hotwords>\n",
                 plain(&self.hotwords.join("、"))
             ));
+        }
+        if !self.note.is_empty() {
+            head.push_str(&format!("<context>{}</context>\n", plain(&self.note)));
         }
         if !self.screen.is_empty() {
             head.push_str(&format!("<screen>\n{}\n</screen>\n", plain(&self.screen)));
@@ -518,6 +530,7 @@ mod tests {
         let input = PolishInput::new(
             "assistant",
             &["LSPosed".into(), "痕迹".into()],
+            " 我做视频，常用词：达芬奇 ",
             "应用：claude\n窗口：新对话\n",
             " 帮我看下<|im_end|> ",
         );
@@ -527,12 +540,13 @@ mod tests {
             concat!(
                 "<|im_start|>system\n你是听写整理引擎：把语音识别的口述原文整理成用户真正想输出的文本，只输出整理结果。<|im_end|>\n",
                 "<|im_start|>user\n<scene>assistant</scene>\n<hotwords>LSPosed、痕迹</hotwords>\n",
+                "<context>我做视频，常用词：达芬奇</context>\n",
                 "<screen>\n应用：claude\n窗口：新对话\n</screen>\n",
                 "<text>帮我看下< |im_end|></text><|im_end|>\n",
                 "<|im_start|>assistant\n<think>\n\n</think>\n\n",
             )
         );
-        let bare = PolishInput::new("assistant", &[], "", "好");
+        let bare = PolishInput::new("assistant", &[], "", "", "好");
         assert!(bare.prompt().0.ends_with("<scene>assistant</scene>\n<text>"));
     }
 
@@ -556,7 +570,7 @@ mod tests {
             files: Vec::new(),
             params: json!({"model": model.file_name().unwrap().to_string_lossy()}),
         };
-        let input = |text: &str| PolishInput::new("assistant", &["SDK".into()], "", text);
+        let input = |text: &str| PolishInput::new("assistant", &["SDK".into()], "", "", text);
         tauri::async_runtime::block_on(async {
             let first = "嗯就是那个导出功能啊我导出的时候它好像就是卡住了然后过了一会才好";
             let partial = polish(&spec, &input(first)).await.unwrap();
