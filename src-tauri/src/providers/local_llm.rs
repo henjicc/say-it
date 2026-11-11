@@ -38,6 +38,8 @@ pub(crate) fn configure_engine_path(path: PathBuf) {
 pub(crate) struct PolishInput {
     /// 训练时用的场景标签，见 `scene_tag`。
     pub(crate) scene: &'static str,
+    /// 整理程度的标记：`light`、`high`；中档为空，提示词里不出现这一行。
+    pub(crate) level: &'static str,
     /// 用户的热词，用来还原被听错的词。
     pub(crate) hotwords: Vec<String>,
     /// 用户在「热词与上下文」里写的全局上下文，没有时为空。
@@ -60,6 +62,7 @@ fn plain(text: &str) -> String {
 impl PolishInput {
     pub(crate) fn new(
         scene: &'static str,
+        level: &'static str,
         hotwords: &[String],
         note: &str,
         screen: &str,
@@ -67,6 +70,7 @@ impl PolishInput {
     ) -> Self {
         Self {
             scene,
+            level,
             hotwords: hotwords.iter().take(MAX_HOTWORDS).cloned().collect(),
             note: note.trim().to_string(),
             screen: screen.trim().chars().take(SCREEN_CHARS).collect(),
@@ -80,6 +84,9 @@ impl PolishInput {
             "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n<scene>{}</scene>\n",
             self.scene
         );
+        if !self.level.is_empty() {
+            head.push_str(&format!("<level>{}</level>\n", self.level));
+        }
         if !self.hotwords.is_empty() {
             head.push_str(&format!(
                 "<hotwords>{}</hotwords>\n",
@@ -591,6 +598,7 @@ mod tests {
     fn prompt_matches_the_training_format() {
         let input = PolishInput::new(
             "assistant",
+            "",
             &["LSPosed".into(), "痕迹".into()],
             " 我做视频，常用词：达芬奇 ",
             "应用：claude\n窗口：新对话\n",
@@ -608,8 +616,10 @@ mod tests {
                 "<|im_start|>assistant\n<think>\n\n</think>\n\n",
             )
         );
-        let bare = PolishInput::new("assistant", &[], "", "", "好");
+        let bare = PolishInput::new("assistant", "", &[], "", "", "好");
         assert!(bare.prompt().0.ends_with("<scene>assistant</scene>\n<text>"));
+        let light = PolishInput::new("chat", "light", &[], "", "", "好");
+        assert!(light.prompt().0.ends_with("<scene>chat</scene>\n<level>light</level>\n<text>"));
     }
 
     /// 用真实权重走一遍进程启动、加载、整理和「同一段话越说越长」。
@@ -632,7 +642,7 @@ mod tests {
             files: Vec::new(),
             params: json!({"model": model.file_name().unwrap().to_string_lossy()}),
         };
-        let input = |text: &str| PolishInput::new("assistant", &["SDK".into()], "", "", text);
+        let input = |text: &str| PolishInput::new("assistant", "", &["SDK".into()], "", "", text);
         tauri::async_runtime::block_on(async {
             let first = "嗯就是那个导出功能啊我导出的时候它好像就是卡住了然后过了一会才好";
             let partial = polish(&spec, &input(first)).await.unwrap();

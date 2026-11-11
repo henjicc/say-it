@@ -3,7 +3,7 @@
     "apiVersion": 5,
     "id": "official.llama-polish-4b",
     "name": "Qwen3.5-4B 听写微调",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "provider": {
       "id": "local-polish-4b",
       "displayName": "本地 Qwen3.5-4B 听写微调",
@@ -26,7 +26,7 @@
       "files": [
         {
           "path": "sayit-polish-4b-Q4_K_M.gguf",
-          "sha256": "5f2e9252209e43d94e83b0fe3d0470c021d443f86bce5390c1fb65638908d567",
+          "sha256": "751dcd3f0db477753d1e5cc8896209e4809b17d2560591bb9067e56dfa436307",
           "sizeBytes": 2708804000,
           "download": {
             "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.llama-polish-4b/sayit-polish-4b-Q4_K_M.gguf"

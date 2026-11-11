@@ -64,6 +64,21 @@ export const SMART_TEXT_PLACEHOLDER = "{{text}}";
 export const ACTIVE_APP_CONTEXT_PLACEHOLDER = "{{active_app_context}}";
 /** 程序按前台软件判定的使用场景，如“AI 对话”“聊天”。 */
 export const APP_SCENE_PLACEHOLDER = "{{app_scene}}";
+/** 整理程度：轻只做清理，中是模板本来的尺度，高会重新组织语言。 */
+export type PolishLevel = "light" | "medium" | "high";
+/** 可以单独选整理程度的场景，名称与后端 `smart_text::APP_SCENES` 加「通用」一致。 */
+export const POLISH_SCENES = ["AI 对话", "终端", "代码编辑器", "聊天", "写作", "浏览器", "通用"] as const;
+/** 聊天要保留说话习惯，默认轻；其余默认中。 */
+const DEFAULT_POLISH_LEVELS: Record<string, PolishLevel> = { 聊天: "light" };
+
+function normalizePolishLevels(value: unknown): Record<string, PolishLevel> {
+  const stored = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return Object.fromEntries(POLISH_SCENES.map((scene) => {
+    const level = stored[scene];
+    return [scene, level === "light" || level === "medium" || level === "high" ? level : DEFAULT_POLISH_LEVELS[scene] ?? "medium"];
+  }));
+}
+
 export type ActiveAppContextExtractionMethod = "nativeText" | "ocr";
 export type ActiveAppContextOcrEngine = "system" | "ppocr";
 export const MAX_SMART_TEXT_TEMPLATES = 50;
@@ -590,6 +605,8 @@ export interface DictPrefs extends DspParams {
   smartLlmModel: string;
   /** `0` 表示每次听写，正数表示识别文本达到该字符数才执行智能处理。 */
   smartProcessingMinChars: number;
+  /** 各场景的整理程度，键见 `POLISH_SCENES`；只对内置的两个润色模板和本地整理模型生效。 */
+  smartPolishLevels: Record<string, PolishLevel>;
   smartTemplateId: string;
   smartTemplates: SmartTextTemplate[];
   smartTemplateTrash: DeletedSmartTextTemplate[];
@@ -634,6 +651,7 @@ function defaults(): DictPrefs {
     smartLlmProviderId: "default",
     smartLlmModel: "",
     smartProcessingMinChars: DEFAULT_SMART_PROCESSING_MIN_CHARS,
+    smartPolishLevels: normalizePolishLevels(undefined),
     smartTemplateId: DEFAULT_SMART_TEMPLATE_ID,
     smartTemplates: defaultSmartTextTemplates(),
     smartTemplateTrash: [],
@@ -859,6 +877,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     ? normalizeSmartProcessingMinChars(storedSmartProcessingMinChars, 0) ?? 0
     : 0;
   next.localRules = mergeLocalRules(next.localRules);
+  next.smartPolishLevels = normalizePolishLevels(value.smartPolishLevels);
   next.smartTemplates = mergeSmartTextTemplates(next.smartTemplates);
   next.smartTemplates = migrateSmartTemplateCatalog(next.smartTemplates, storedCatalogVersion);
   next.smartTemplateId = migrateSmartTemplateSelection(
@@ -905,6 +924,7 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     storedTemplateId !== next.smartTemplateId ||
     storedCatalogVersion !== next.smartTemplateCatalogVersion ||
     storedSmartProcessingMinChars !== next.smartProcessingMinChars ||
+    JSON.stringify(value.smartPolishLevels) !== JSON.stringify(next.smartPolishLevels) ||
     storedContextMethod !== next.activeAppContextExtractionMethod ||
     storedOcrEngine !== next.activeAppContextOcrEngine ||
     storedOcrModel !== next.activeAppContextOcrModel ||

@@ -22,8 +22,10 @@ import {
   DEFAULT_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_TEXT_TEMPLATES,
+  POLISH_SCENES,
   SMART_TEXT_PLACEHOLDER,
   useDictPrefs,
+  type PolishLevel,
   type DeletedSmartTextTemplate,
   type SmartTextTemplate,
 } from "@/store/useDictPrefs";
@@ -35,6 +37,12 @@ const TABS: TabItem<SmartTextTabKey>[] = [
   { key: "template", label: "处理模板" },
   { key: "context", label: "当前软件上下文" },
   { key: "preview", label: "试运行" },
+];
+
+const POLISH_LEVEL_OPTIONS: TabItem<PolishLevel>[] = [
+  { key: "light", label: "轻" },
+  { key: "medium", label: "中" },
+  { key: "high", label: "高" },
 ];
 
 export function SmartTextPanel() {
@@ -347,6 +355,23 @@ export function SmartTextPanel() {
                 <ListChecks className="h-4 w-4" strokeWidth={1.8} aria-hidden />
               </IconButton>
             </Row>
+          </Group>
+
+          <Group
+            title="整理程度"
+            description="按听写时所在的软件决定改动多少。轻：保留原话，只加标点、去掉“嗯呃”和重复的字。中：再去掉口头禅和改口。高：把想表达的意思重新组织清楚，多件事会分点。只对「场景感知润色」「通用润色」两个模板和本地整理模型生效。"
+          >
+            {POLISH_SCENES.map((scene) => (
+              <Row key={scene} label={scene}>
+                <Tabs<PolishLevel>
+                  variant="view"
+                  ariaLabel={`${scene}的整理程度`}
+                  tabs={POLISH_LEVEL_OPTIONS}
+                  active={prefs.smartPolishLevels[scene]}
+                  onChange={(level) => void patch({ smartPolishLevels: { ...prefs.smartPolishLevels, [scene]: level } })}
+                />
+              </Row>
+            ))}
           </Group>
 
           {active && (
