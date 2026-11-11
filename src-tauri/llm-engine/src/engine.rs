@@ -94,6 +94,8 @@ unsafe extern "C" fn log_warnings(
 
 /// 权重是内存映射读进来的，传到显卡之后这些页还挂在进程名下，任务管理器里看着像占了几个 GB。
 /// 让系统把暂时不用的页收回去；之后真用到的页会再读进来。模型在处理器上时权重就是工作内存，不做。
+/// Apple 芯片的统一内存里，Metal 直接使用这些映射页，不存在拷贝后残留的问题。
+#[cfg(windows)]
 fn release_load_pages() {
     #[link(name = "kernel32")]
     extern "system" {
@@ -176,6 +178,7 @@ impl Engine {
             let warm_started = Instant::now();
             engine.warm_up()?;
             engine.load_stages[2] = warm_started.elapsed().as_millis() as u64;
+            #[cfg(windows)]
             if on_gpu {
                 release_load_pages();
             }

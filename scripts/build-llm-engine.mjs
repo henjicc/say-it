@@ -4,8 +4,18 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
-if (process.platform !== "win32") {
-  console.log("llm-engine: 目前只支持 Windows，已跳过。");
+import { withMacBuildEnv } from "./macos-build-env.mjs";
+
+const targets = {
+  win32: { built: "sayit-llm.exe", sidecar: "sayit-llm-x86_64-pc-windows-msvc.exe" },
+  darwin: {
+    built: "sayit-llm",
+    sidecar: `sayit-llm-${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`,
+  },
+};
+const target = targets[process.platform];
+if (!target) {
+  console.log("llm-engine: 目前只支持 Windows 与 macOS，已跳过。");
   process.exit(0);
 }
 
@@ -14,19 +24,16 @@ const build = () =>
   spawnSync(
     "cargo",
     ["build", "--release", "--manifest-path", "src-tauri/Cargo.toml", "-p", "sayit-llm-engine"],
-    { stdio: "inherit" },
+    { stdio: "inherit", env: withMacBuildEnv(process.env) },
   );
 
 // llama.cpp 的 Vulkan 着色器生成器是嵌套的 CMake 工程，MSBuild 并行时它的构建步骤会抢在配置步骤
 // 之前执行（报 MSB1009 项目文件不存在）。配置步骤其实已完成，原样再来一次即可通过。
 let result = build();
-if (result.status !== 0) result = build();
+if (result.status !== 0 && process.platform === "win32") result = build();
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
 const binaries = path.resolve("src-tauri/binaries");
 mkdirSync(binaries, { recursive: true });
-copyFileSync(
-  path.join(targetRoot, "release", "sayit-llm.exe"),
-  path.join(binaries, "sayit-llm-x86_64-pc-windows-msvc.exe"),
-);
+copyFileSync(path.join(targetRoot, "release", target.built), path.join(binaries, target.sidecar));

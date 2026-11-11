@@ -174,6 +174,10 @@ function validateApp(appPath) {
   if (codeSigningIdentifier(appleSpeechHelper) !== "com.henjicc.sayit") {
     throw new Error("Apple 语音识别助手代码签名没有复用主应用身份");
   }
+  const llmEngine = resolve(appPath, "Contents/MacOS/sayit-llm");
+  if (!existsSync(llmEngine)) {
+    throw new Error(`macOS 应用包缺少本地整理模型推理程序：${llmEngine}`);
+  }
   const binaries = filesUnder(resolve(appPath, "Contents")).filter((path) =>
     command("/usr/bin/file", ["--brief", path]).includes("Mach-O"),
   );

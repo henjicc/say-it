@@ -2,12 +2,12 @@
 //! 独立成进程：推理库与语音识别运行时各带一份 ggml，不能进同一个可执行文件；
 //! 显卡驱动出错也只影响这个进程，退出即释放全部显存。
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod draft;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod engine;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() {
     use serde_json::{json, Value};
     use std::io::{BufRead, Write};
@@ -91,8 +91,8 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
-    eprintln!("本地大模型推理目前只支持 Windows");
+    eprintln!("本地大模型推理目前只支持 Windows 与 macOS");
     std::process::exit(1);
 }

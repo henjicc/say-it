@@ -911,8 +911,8 @@ fn validate_model_pack(root: &Path, manifest: &PluginManifest) -> Result<(), Str
     if polish_engine != (manifest.provider.capabilities == ["polish"]) {
         return Err("听写整理模型包必须且只能声明 polish 能力".into());
     }
-    if polish_engine && !cfg!(windows) {
-        return Err("本地听写整理模型目前只支持 Windows".into());
+    if polish_engine && !cfg!(any(windows, target_os = "macos")) {
+        return Err("本地听写整理模型目前只支持 Windows 与 macOS".into());
     }
     if !pack.params.is_object() {
         return Err("modelPack.params 必须是 JSON 对象".into());
@@ -2435,7 +2435,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn polish_descriptor_needs_no_models_but_only_polish_capability() {
         let value: Value =
