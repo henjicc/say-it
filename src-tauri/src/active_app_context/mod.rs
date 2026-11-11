@@ -564,8 +564,10 @@ impl ContextCaptureService {
         crate::development_debug_log(
             "active-app-context",
             format_args!(
-                "上下文解析结果：状态={:?}，返回耗时 {} ms",
-                result.status, result.elapsed_ms,
+                "上下文解析结果：状态={:?}，返回耗时 {} ms，诊断：{}",
+                result.status,
+                result.elapsed_ms,
+                result.diagnostics.join("；"),
             ),
         );
         result

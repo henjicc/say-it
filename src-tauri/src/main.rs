@@ -684,7 +684,7 @@ fn main() {
             release_backend_system_audio,
             open_external_link,
             microphone_permission_denied,
-            open_microphone_settings,
+            open_privacy_settings,
             get_dictation_settings,
             get_dictation_runtime,
             resolve_application_identity,

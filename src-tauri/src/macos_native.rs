@@ -154,6 +154,9 @@ unsafe extern "C" {
     fn sayit_macos_system_fonts_json(error: *mut *mut c_char) -> *mut c_char;
     fn sayit_macos_microphone_access() -> bool;
     fn sayit_macos_microphone_status() -> i32;
+    fn sayit_macos_input_monitoring_granted() -> bool;
+    fn sayit_macos_request_input_monitoring();
+    fn sayit_macos_request_screen_capture();
     fn sayit_macos_hardware(
         memory: *mut u64,
         gpu_name: *mut *mut c_char,
@@ -535,6 +538,20 @@ pub(crate) enum MicrophoneAuthorization {
     /// 被拒绝后系统不会再弹授权，只能由用户到系统设置里打开。
     Denied,
     Allowed,
+}
+
+/// Caps Lock 快捷键读取原始键盘事件，没有「输入监控」时整个键盘事件过滤器都建不起来。
+pub(crate) fn input_monitoring_granted() -> bool {
+    unsafe { sayit_macos_input_monitoring_granted() }
+}
+
+/// 没申请过的进程不会出现在系统设置的权限列表里，打开设置页前先申请一次。
+pub(crate) fn request_input_monitoring() {
+    unsafe { sayit_macos_request_input_monitoring() }
+}
+
+pub(crate) fn request_screen_capture() {
+    unsafe { sayit_macos_request_screen_capture() }
 }
 
 pub(crate) fn microphone_authorization() -> MicrophoneAuthorization {

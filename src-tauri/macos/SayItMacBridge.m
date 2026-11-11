@@ -468,6 +468,11 @@ uint32_t sayit_macos_context_ocr_permissions(bool request) {
     return SayItContextOcrPermissionBits(request);
 }
 
+/// 申请一次屏幕录制：没申请过的进程不会出现在系统设置的列表里。
+void sayit_macos_request_screen_capture(void) {
+    (void)SayItScreenCaptureAccess(true);
+}
+
 bool sayit_macos_accessibility_permission(bool request) {
     return SayItAccessibilityAccess(request);
 }
@@ -620,6 +625,16 @@ bool sayit_macos_volume_available_capacity(
     }
     *capacity = (uint64_t)value;
     return true;
+}
+
+/// 输入监控（读取原始键盘事件）是否已授权；只查询，不弹授权。
+bool sayit_macos_input_monitoring_granted(void) {
+    return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted;
+}
+
+/// 申请一次输入监控：没申请过的进程不会出现在系统设置的列表里。
+void sayit_macos_request_input_monitoring(void) {
+    (void)IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
 }
 
 /// 麦克风授权状态，取值同 AVAuthorizationStatus；只查询，不弹授权。

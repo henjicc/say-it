@@ -35,7 +35,8 @@ vi.mock("@/lib/tauri", () => ({
     completeOnboarding: "complete_onboarding",
     detectHardware: "detect_hardware",
     openExternalLink: "open_external_link",
-    openMicrophoneSettings: "open_microphone_settings",
+    openPrivacySettings: "open_privacy_settings",
+    getSetupStatus: "get_setup_status",
     microphonePermissionDenied: "microphone_permission_denied",
   },
   EVT: { modelPackProgress: "model-pack-progress" },
@@ -91,13 +92,25 @@ describe("OnboardingWizard", () => {
     Object.assign(mic, { level: 0.2, startError: "" });
   });
 
+  it("asks for screen recording when window screenshots are used for context", async () => {
+    platform.isMacOS = true;
+    invoke.mockImplementation(async (name: string) => name === "get_setup_status"
+      ? { checks: [{ id: "screenRecording", title: "屏幕录制权限", message: "", status: "blocked", action: "privacy:screen-recording" }] }
+      : undefined);
+    render(<OnboardingWizard open required onClose={vi.fn()} />);
+    expect(await screen.findByText("允许后要重启说吧！才生效")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "打开系统设置" }));
+    expect(invoke).toHaveBeenCalledWith("open_privacy_settings", { kind: "screen-recording" });
+    platform.isMacOS = false;
+  });
+
   it("points to system settings when microphone permission was denied", async () => {
     platform.isMacOS = true;
     Object.assign(mic, { level: 0, startError: "没有麦克风权限" });
     invoke.mockImplementation(async (name: string) => name === "microphone_permission_denied" ? true : undefined);
     render(<OnboardingWizard open required onClose={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "打开系统设置" }));
-    expect(invoke).toHaveBeenCalledWith("open_microphone_settings");
+    expect(invoke).toHaveBeenCalledWith("open_privacy_settings", { kind: "microphone" });
     platform.isMacOS = false;
   });
 
