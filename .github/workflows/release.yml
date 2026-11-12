@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  # 手动触发只构建并上传安装包，不核对 tag、不发布，用来提前确认各平台能打出包。
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +23,7 @@ jobs:
           node-version: lts/*
 
       - name: verify tag matches the recorded version
+        if: github.event_name == 'push'
         run: node scripts/verify-release-version.mjs "${{ github.ref_name }}"
 
   build-windows:
@@ -197,6 +200,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'push'
     needs: [build-windows, build-macos]
     permissions:
       contents: write
