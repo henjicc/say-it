@@ -39,7 +39,7 @@ fn is_meaningful(block: &OcrTextBlock) -> bool {
 }
 
 /// 把文字框分栏，只返回正文所在的栏，按从左到右排列：横向有重叠的文字框归为同一栏，
-/// 侧栏、目录、工具栏通常是独立的窄栏。保留字数最多的栏，以及字数不少于它一半的栏
+/// 侧栏、目录、工具栏通常是独立的窄栏。保留字数最多的栏，以及字数和宽度都不少于它一半的栏
 /// （比如文档旁边的对话面板）。各栏分开返回，读完一栏再读下一栏，不按行交错。
 fn main_columns(blocks: Vec<OcrTextBlock>) -> Vec<Vec<OcrTextBlock>> {
     let mut column: Vec<usize> = (0..blocks.len()).collect();
@@ -75,21 +75,31 @@ fn main_columns(blocks: Vec<OcrTextBlock>) -> Vec<Vec<OcrTextBlock>> {
             .map(|block| meaningful_chars(&block.text))
             .sum()
     };
-    let largest = columns
-        .values()
-        .map(|blocks| chars(blocks))
-        .max()
-        .unwrap_or(0);
-    let mut kept = columns
-        .into_values()
-        .filter(|blocks| chars(blocks) * 2 >= largest)
-        .collect::<Vec<_>>();
     let left_edge = |blocks: &[OcrTextBlock]| {
         blocks
             .iter()
             .map(|block| block.bounds.left)
             .fold(f32::INFINITY, f32::min)
     };
+    let width = |blocks: &[OcrTextBlock]| {
+        blocks
+            .iter()
+            .map(|block| block.bounds.right)
+            .fold(f32::NEG_INFINITY, f32::max)
+            - left_edge(blocks)
+    };
+    let Some((main_chars, main_width)) = columns
+        .values()
+        .max_by_key(|blocks| chars(blocks))
+        .map(|blocks| (chars(blocks), width(blocks)))
+    else {
+        return Vec::new();
+    };
+    // 字数之外还要看宽度：统计面板、属性栏满是数字和英文，字数可能接近正文，但都比正文窄得多。
+    let mut kept = columns
+        .into_values()
+        .filter(|blocks| chars(blocks) * 2 >= main_chars && width(blocks) * 2.0 >= main_width)
+        .collect::<Vec<_>>();
     kept.sort_by(|a, b| left_edge(a).total_cmp(&left_edge(b)));
     kept
 }
@@ -198,6 +208,32 @@ mod tests {
                 "左侧文档的第二段正文",
                 "右侧对话里的一段回复",
                 "右侧对话的第二行",
+            ]
+        );
+    }
+
+    /// 右侧窄的统计面板满是数字和英文，字数超过正文一半，但比正文窄得多，不保留。
+    #[test]
+    fn narrow_number_heavy_panel_is_dropped_despite_its_char_count() {
+        let blocks = finalize_blocks(vec![
+            wide(
+                0.25,
+                0.75,
+                0.10,
+                "开发版跟着启动器运行，启动器的终端被关掉后应用随之退出",
+            ),
+            wide(0.25, 0.70, 0.14, "现在端口空闲，我正在重新启动"),
+            wide(0.25, 0.72, 0.18, "这次退出不是代码出了问题"),
+            wide(0.80, 0.98, 0.10, "MCP tools 18.6k"),
+            wide(0.80, 0.98, 0.14, "System prompt 11.3k"),
+            wide(0.80, 0.98, 0.18, "Free space 689.3k"),
+        ]);
+        assert_eq!(
+            texts(&blocks),
+            vec![
+                "开发版跟着启动器运行，启动器的终端被关掉后应用随之退出",
+                "现在端口空闲，我正在重新启动",
+                "这次退出不是代码出了问题",
             ]
         );
     }
