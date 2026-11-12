@@ -45,7 +45,7 @@ export function DictationPage() {
     { key: "orbGesture", label: NODE_TITLES.orbGesture, icon: <MousePointer2 {...iconProps} /> },
     { key: "smart", label: NODE_TITLES.smart, icon: <Sparkles {...iconProps} />, off: !prefs.smartProcessingEnabled, dividerBefore: true },
     { key: "rules", label: NODE_TITLES.rules, icon: <ListChecks {...iconProps} />, off: !prefs.localRulesEnabled },
-    { key: "apps", label: NODE_TITLES.apps, icon: <AppWindow {...iconProps} />, off: !prefs.appProfilesEnabled, dividerBefore: true },
+    { key: "apps", label: NODE_TITLES.apps, icon: <AppWindow {...iconProps} />, dividerBefore: true },
     { key: "shortcuts", label: NODE_TITLES.shortcuts, icon: <Keyboard {...iconProps} /> },
   ];
 
@@ -76,9 +76,7 @@ export function DictationPage() {
         <>
           <InspectorHeader
             title={<HelpLabel content="规则按从上到下的顺序匹配，使用第一条符合的规则；未匹配时使用默认场景。这里只查看软件名和窗口标题。">{NODE_TITLES.apps}</HelpLabel>}
-            right={<Switch checked={prefs.appProfilesEnabled} onChange={(value) => toggle({ appProfilesEnabled: value })} label="启用按软件区分" />}
           />
-          {errorLine}
           <AppProfilesPanel />
         </>
       )}

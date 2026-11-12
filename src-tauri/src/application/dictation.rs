@@ -235,7 +235,6 @@ struct DictationPrefs {
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
-    app_profiles_enabled: bool,
     app_profiles: Vec<AppProfile>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -271,7 +270,6 @@ impl Default for DictationPrefs {
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
-            app_profiles_enabled: false,
             app_profiles: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -284,8 +282,8 @@ impl Default for DictationPrefs {
 }
 
 impl DictationPrefs {
-    /// 解析当前前台软件生效的后处理配置。未启用应用规则、平台不支持、或没有命中
-    /// 规则时，返回全局配置——所有失败路径都回落到「和现在一样」。
+    /// 解析当前前台软件生效的后处理配置。平台不支持、或没有命中启用的规则时，
+    /// 返回全局配置——所有失败路径都回落到「和现在一样」。
     fn resolve_post_processing(
         &self,
         identity: Option<&crate::active_app_context::AppIdentity>,
@@ -298,9 +296,6 @@ impl DictationPrefs {
             matched_profile: None,
             matched_shortcut_profile: None,
         };
-        if !self.app_profiles_enabled {
-            return global;
-        }
         let Some(identity) = identity else {
             return global;
         };
@@ -3768,11 +3763,10 @@ fn profiles_enabling(
     prefs: &DictationPrefs,
     pick: impl Fn(&AppProfile) -> Option<bool>,
 ) -> impl Iterator<Item = &AppProfile> {
-    let enabled = prefs.app_profiles_enabled;
     prefs
         .app_profiles
         .iter()
-        .filter(move |profile| enabled && profile.enabled)
+        .filter(|profile| profile.enabled)
         .filter(move |profile| pick(profile) == Some(true))
 }
 
@@ -4881,7 +4875,6 @@ mod tests {
             smart_processing_enabled: false,
             smart_processing_min_chars: 120,
             smart_template_id: "global".into(),
-            app_profiles_enabled: true,
             app_profiles: profiles,
             ..Default::default()
         }
@@ -5139,7 +5132,7 @@ mod tests {
         }]);
         // 平台拿不到前台软件时回落全局。
         assert!(prefs.resolve_post_processing(None).local_rules_enabled);
-        prefs.app_profiles_enabled = false;
+        prefs.app_profiles[0].enabled = false;
         assert!(
             prefs
                 .resolve_post_processing(Some(&identity("code.exe")))

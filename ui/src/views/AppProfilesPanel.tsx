@@ -134,12 +134,7 @@ export function AppProfilesPanel() {
 
   return (
     <InspectorBody>
-      <Group
-        className={cn(
-          "transition-opacity",
-          !prefs.appProfilesEnabled && "pointer-events-none opacity-40",
-        )}
-      >
+      <Group>
         {profiles.map((profile, index) => {
           const open = editingId === profile.id;
           const matcher = profile.matchers[0] ?? "";
