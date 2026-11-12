@@ -20,6 +20,7 @@ pub(crate) mod native_recorder;
 #[cfg(windows)]
 pub(crate) mod native_win;
 pub(crate) mod native_subtitle;
+pub(crate) mod native_test;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
 

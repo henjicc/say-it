@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
+import { AppWindow, BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, ROW_CONTROL_W, Row } from "@/components/ui/Group";
@@ -11,12 +11,14 @@ import { CMD, cmd } from "@/lib/tauri";
 import { formatMs, formatTime } from "./format";
 import { LocalComparePanel } from "./LocalComparePanel";
 import { BenchResult, ModelBenchPanel, type BenchRow } from "./ModelBenchPanel";
+import { NativeWindowsPanel } from "./NativeWindowsPanel";
 
 const RUNS_REFRESH_MS = 3000;
 const OVERVIEW = "overview";
 const TEST = "test";
 const BENCH = "bench";
 const LOCAL = "local";
+const WINDOWS = "windows";
 
 interface RunSummary {
   id: string;
@@ -391,7 +393,7 @@ export function DeveloperPage() {
 
   useEffect(() => {
     setRecord(null);
-    if (active === OVERVIEW || active === TEST || active === BENCH || active === LOCAL) return;
+    if (active === OVERVIEW || active === TEST || active === BENCH || active === LOCAL || active === WINDOWS) return;
     let stale = false;
     void cmd<RunRecord | null>(CMD.devTraceRun, { id: active })
       .then((value) => {
@@ -407,6 +409,7 @@ export function DeveloperPage() {
     { key: OVERVIEW, label: "统计", icon: <BarChart3 {...iconProps} /> },
     { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} /> },
     { key: BENCH, label: "模型测速", icon: <Gauge {...iconProps} /> },
+    { key: WINDOWS, label: "原生窗口测试", icon: <AppWindow {...iconProps} /> },
     // 本地模型对比依赖仓库工作区里的模型和 llama.cpp，只有开发构建有。
     ...(import.meta.env.DEV ? [{ key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> }] : []),
     ...runs.map((run, index) => ({
@@ -424,7 +427,9 @@ export function DeveloperPage() {
         ? "模型测速"
         : active === LOCAL
           ? "本地模型对比"
-          : record
+          : active === WINDOWS
+            ? "原生窗口测试"
+            : record
             ? formatTime(record.startedAtMs)
             : "";
 
@@ -436,6 +441,7 @@ export function DeveloperPage() {
       {active === TEST && <SmartTestPanel onFinished={refresh} />}
       {active === BENCH && <ModelBenchPanel onFinished={refresh} />}
       {active === LOCAL && <LocalComparePanel />}
+      {active === WINDOWS && <NativeWindowsPanel />}
       {record && <RunDetail record={record} />}
     </MasterDetail>
   );

@@ -671,6 +671,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
     }
     let epoch = state.subtitle_runtime.epochs.fetch_add(1, Ordering::AcqRel) + 1;
     let (source, device) = prefs.source();
+    crate::desktop::native_test::end();
     let lease = state.audio_session.acquire(AudioOwner::Subtitles)?;
     state.audio_session.attach(&lease, "subtitles")?;
     let audio = match source {

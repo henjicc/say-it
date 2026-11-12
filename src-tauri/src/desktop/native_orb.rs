@@ -33,6 +33,13 @@ impl OverlaySpec for OrbWindow {
         Orb::new(dpi, look).with_mirrors(&MIRRORS)
     }
     fn dispatch(action: OrbAction) {
+        if super::native_test::testing(super::native_test::TestWindow::Orb) {
+            // 测试中不触发真实动作。左键激活前指针层已把球切成穿透，这里切回来。
+            if action == OrbAction::Click(OrbClickAction::Activate) {
+                post_if_started::<OrbWindow>(Command::SetInteractive(true));
+            }
+            return;
+        }
         run_action(move || run_orb_action(action));
     }
 }

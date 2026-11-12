@@ -1145,6 +1145,24 @@ fn apply_floating_orb_config(app: &tauri::AppHandle, ui: &OrbUi) -> Result<(), S
     Ok(())
 }
 
+/// 原生悬浮球回到设置里记住的位置和大小。
+pub(crate) fn restore_native_orb_rect(app: &tauri::AppHandle) {
+    let (x, y, size) = native_idle_rect(app, &current_settings(app));
+    crate::desktop::native_orb::native_orb_set_rect(x, y, size);
+}
+
+/// 按当前设置的大小、位置和外观显示悬浮球并恢复可交互；不看「启用」开关。
+pub(crate) fn present_floating_orb(app: &tauri::AppHandle) -> Result<(), String> {
+    let ui = OrbUi::ensure(app)?;
+    if let OrbUi::Webview(window) = &ui {
+        let _ = window.set_always_on_top(true);
+    }
+    apply_floating_orb_config(app, &ui)?;
+    ui.set_interactive(true)
+        .map_err(|error| format!("恢复悬浮球交互失败：{error}"))?;
+    ui.show()
+}
+
 pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), String> {
     let enabled = app
         .state::<RuntimeState>()
@@ -1153,14 +1171,7 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
         .map_err(|_| "悬浮球配置锁失败".to_string())?
         .enabled;
     if enabled {
-        let ui = OrbUi::ensure(app)?;
-        if let OrbUi::Webview(window) = &ui {
-            let _ = window.set_always_on_top(true);
-        }
-        apply_floating_orb_config(app, &ui)?;
-        ui.set_interactive(true)
-            .map_err(|error| format!("恢复悬浮球交互失败：{error}"))?;
-        ui.show()
+        present_floating_orb(app)
     } else {
         if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
             let _ = dismiss_floating_orb_menu_window(&menu);
@@ -2053,6 +2064,7 @@ async fn show_mouse_gesture_armed(
     app: tauri::AppHandle,
     position: (i32, i32),
 ) -> Result<(), String> {
+    crate::desktop::native_test::end();
     if app.state::<RuntimeState>().audio_session.is_busy()
         || crate::application::dictation::is_active(&app)
     {
@@ -2103,6 +2115,7 @@ async fn handle_mouse_gesture(
     position: (i32, i32),
     mode: MouseGestureMode,
 ) -> Result<(), String> {
+    crate::desktop::native_test::end();
     if app
         .state::<RuntimeState>()
         .floating_orb_runtime
