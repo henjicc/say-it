@@ -119,13 +119,19 @@ export function floatingOrbClickAction(
   return null;
 }
 
+/** 用户随时能拖走悬浮球，只有程序正在摆放它（移动、定位）或它只是临时出现时不行。 */
+export function floatingOrbCanDrag(phase: OrbPhase, transient: boolean): boolean {
+  return !transient && phase !== "moving" && phase !== "positioning";
+}
+
 export function floatingOrbContextAction(
   phase: OrbPhase,
   canSubmit: boolean,
   transient: boolean,
 ): OrbContextAction | null {
   if (phase === "error") return "dismissError";
-  if (phase === "recording") return "cancel";
+  // 和 Esc 一样，录音、识别、智能处理中都能立刻取消。
+  if (phase === "recording" || phase === "processing" || phase === "smartProcessing") return "cancel";
   if (phase === "success" && canSubmit) return "dismissSubmit";
   if (phase === "idle" && !transient) return "menu";
   return null;

@@ -56,8 +56,8 @@ button {
  * .hover-tracked 是后端轮询真实指针位置后由前端切换的 class，作为
  * :hover 在这种场景下的替代/补充，两者共用同一套视觉效果。
  */
-.floating-orb:not(:disabled):hover,
-.floating-orb.hover-tracked:not(:disabled) {
+.floating-orb:not(:disabled, [aria-disabled="true"]):hover,
+.floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) {
   border-color: var(--accent-ring);
   background: color-mix(in srgb, var(--color-bg) 78%, var(--color-accent) 22%);
   color: var(--color-accent-text);
@@ -73,10 +73,10 @@ button {
  * 时看起来完全没反应；这里在原有色调基础上叠加一段额外的强调色
  * 比例，让 hover 在毛玻璃模式下也能看出明显变化。
  */
-.floating-orb.glass:not(:disabled):hover,
-.floating-orb.glass.recording:not(:disabled):hover,
-.floating-orb.glass.hover-tracked:not(:disabled),
-.floating-orb.glass.recording.hover-tracked:not(:disabled) {
+.floating-orb.glass:not(:disabled, [aria-disabled="true"]):hover,
+.floating-orb.glass.recording:not(:disabled, [aria-disabled="true"]):hover,
+.floating-orb.glass.hover-tracked:not(:disabled, [aria-disabled="true"]),
+.floating-orb.glass.recording.hover-tracked:not(:disabled, [aria-disabled="true"]) {
   border-color: var(--accent-ring);
   background: color-mix(
     in srgb,
@@ -87,13 +87,13 @@ button {
   color: var(--color-accent-text);
 }
 
-.floating-orb:not(:disabled):hover .orb-icon-shell,
-.floating-orb.hover-tracked:not(:disabled) .orb-icon-shell {
+.floating-orb:not(:disabled, [aria-disabled="true"]):hover .orb-icon-shell,
+.floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-icon-shell {
   transform: scale(1.1);
 }
 
-.floating-orb:not(:disabled):hover .orb-waveform,
-.floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+.floating-orb:not(:disabled, [aria-disabled="true"]):hover .orb-waveform,
+.floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-waveform {
   /* 改变布局尺寸后重新对齐像素，不能再缩放已对齐的细条。 */
   width: 59.4%;
   height: 59.4%;
@@ -103,7 +103,7 @@ button {
   cursor: grabbing;
 }
 
-.floating-orb:not(.recording):active {
+.floating-orb:not(.recording, [aria-disabled="true"]):active {
   transform: scale(0.965);
 }
 
@@ -152,7 +152,7 @@ button {
   border-color: var(--accent-ring);
 }
 
-.floating-orb.success:not(:disabled) {
+.floating-orb.success:not(:disabled, [aria-disabled="true"]) {
   cursor: pointer;
 }
 
@@ -163,8 +163,8 @@ button {
 }
 
 .floating-orb.error,
-.floating-orb.error:not(:disabled):hover,
-.floating-orb.error.hover-tracked:not(:disabled) {
+.floating-orb.error:not(:disabled, [aria-disabled="true"]):hover,
+.floating-orb.error.hover-tracked:not(:disabled, [aria-disabled="true"]) {
   color: var(--color-err);
   border-color: color-mix(in srgb, var(--color-err) 42%, transparent);
   cursor: pointer;
@@ -197,13 +197,13 @@ button {
   transition: opacity 120ms ease-out;
 }
 
-.floating-orb.success:not(:disabled):hover .orb-success-check,
-.floating-orb.success.hover-tracked:not(:disabled) .orb-success-check {
+.floating-orb.success:not(:disabled, [aria-disabled="true"]):hover .orb-success-check,
+.floating-orb.success.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-success-check {
   opacity: 0;
 }
 
-.floating-orb.success:not(:disabled):hover .orb-submit-icon,
-.floating-orb.success.hover-tracked:not(:disabled) .orb-submit-icon {
+.floating-orb.success:not(:disabled, [aria-disabled="true"]):hover .orb-submit-icon,
+.floating-orb.success.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-submit-icon {
   opacity: 1;
 }
 
@@ -287,15 +287,15 @@ button {
     transition: none;
   }
 
-  .floating-orb:not(:disabled):hover .orb-icon-shell,
-  .floating-orb:not(:disabled):hover .orb-waveform,
-  .floating-orb.hover-tracked:not(:disabled) .orb-icon-shell,
-  .floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+  .floating-orb:not(:disabled, [aria-disabled="true"]):hover .orb-icon-shell,
+  .floating-orb:not(:disabled, [aria-disabled="true"]):hover .orb-waveform,
+  .floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-icon-shell,
+  .floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-waveform {
     transform: none;
   }
 
-  .floating-orb:not(:disabled):hover .orb-waveform,
-  .floating-orb.hover-tracked:not(:disabled) .orb-waveform {
+  .floating-orb:not(:disabled, [aria-disabled="true"]):hover .orb-waveform,
+  .floating-orb.hover-tracked:not(:disabled, [aria-disabled="true"]) .orb-waveform {
     width: 54%;
     height: 54%;
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   floatingOrbClickAction,
+  floatingOrbCanDrag,
   floatingOrbContextAction,
   floatingOrbLabel,
   floatingOrbWaveScale,
@@ -48,16 +49,28 @@ describe("floating orb interaction", () => {
     }
   });
 
-  it("preserves recording cancellation, submit dismissal and the idle menu", () => {
-    expect(floatingOrbContextAction("recording", false, true)).toBe("cancel");
+  it("cancels while recording or processing, dismisses submit and opens the idle menu", () => {
+    for (const phase of ["recording", "processing", "smartProcessing"] as const) {
+      expect(floatingOrbContextAction(phase, false, true)).toBe("cancel");
+    }
     expect(floatingOrbContextAction("success", true, false)).toBe("dismissSubmit");
     expect(floatingOrbContextAction("success", false, false)).toBeNull();
     expect(floatingOrbContextAction("idle", false, false)).toBe("menu");
     expect(floatingOrbContextAction("idle", false, true)).toBeNull();
-    for (const phase of ["processing", "smartProcessing", "moving", "submitting"] as const) {
-      expect(floatingOrbClickAction(phase, false)).toBeNull();
+    for (const phase of ["moving", "submitting"] as const) {
       expect(floatingOrbContextAction(phase, false, false)).toBeNull();
     }
+    for (const phase of ["processing", "smartProcessing", "moving", "submitting"] as const) {
+      expect(floatingOrbClickAction(phase, false)).toBeNull();
+    }
+  });
+
+  it("can be dragged in any phase except automatic placement or when only shown temporarily", () => {
+    expect(floatingOrbCanDrag("recording", false)).toBe(true);
+    expect(floatingOrbCanDrag("processing", false)).toBe(true);
+    expect(floatingOrbCanDrag("moving", false)).toBe(false);
+    expect(floatingOrbCanDrag("positioning", false)).toBe(false);
+    expect(floatingOrbCanDrag("idle", true)).toBe(false);
   });
 
   it("amplifies quiet audio while keeping waveform scale bounded", () => {

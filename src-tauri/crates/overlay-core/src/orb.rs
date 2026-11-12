@@ -97,6 +97,10 @@ impl OrbPhase {
         }
     }
 
+    /// 用户随时能拖走悬浮球，只有程序正在摆放它（移动、定位）时不行。
+    pub fn draggable(self) -> bool {
+        !matches!(self, Self::Moving | Self::Positioning)
+    }
     /// floating-orb.tsx 的 loading || busy：这些相位显示旋转弧线。
     pub fn is_spinner(self) -> bool {
         matches!(
@@ -235,7 +239,8 @@ pub fn orb_context_action(
     if phase == "error" {
         return Some(OrbContextAction::DismissError);
     }
-    if phase == "recording" {
+    // 和 Esc 一样，录音、识别、智能处理中都能立刻取消。
+    if matches!(phase, "recording" | "processing" | "smartProcessing") {
         return Some(OrbContextAction::Cancel);
     }
     if phase == "success" && can_submit {
@@ -348,7 +353,10 @@ mod tests {
         );
         // 瞬时球（鼠标手势）的 idle 不打开菜单。
         assert_eq!(orb_context_action("idle", false, true), None);
-        assert_eq!(orb_context_action("processing", false, false), None);
+        assert_eq!(
+            orb_context_action("processing", false, false),
+            Some(OrbContextAction::Cancel)
+        );
     }
 
     #[test]
@@ -406,7 +414,7 @@ impl PointerModel for OrbPointer {
                     steps.push(PointerStep::Model(OrbInput::Hover(true)));
                 }
                 if let Some((x, y)) = self.press {
-                    if !self.dragged && hit.phase == OrbPhase::Idle && !hit.transient {
+                    if !self.dragged && hit.phase.draggable() && !hit.transient {
                         let dpr = f64::from(hit.dpi) / 96.0;
                         let dpr = if dpr > 0.0 { dpr } else { 1.0 };
                         if exceeds_drag_threshold(
@@ -1110,7 +1118,7 @@ mod model_tests {
         );
     }
     #[test]
-    fn pointer_drag_only_allows_idle_nontransient() {
+    fn pointer_drag_allows_every_phase_except_automatic_placement_and_transient() {
         for phase in PHASES {
             for transient in [false, true] {
                 let hit = OrbHit {
@@ -1123,7 +1131,7 @@ mod model_tests {
                 let steps = move_to(&mut pointer, &hit, (500, 500));
                 assert_eq!(
                     !steps.is_empty(),
-                    phase == OrbPhase::Idle && !transient,
+                    !matches!(phase, OrbPhase::Moving | OrbPhase::Positioning) && !transient,
                     "{phase:?}/{transient}"
                 );
             }
@@ -1205,7 +1213,9 @@ mod model_tests {
                     let mut pointer = OrbPointer::default();
                     let expected = match phase {
                         OrbPhase::Error => Some(OrbContextAction::DismissError),
-                        OrbPhase::Recording => Some(OrbContextAction::Cancel),
+                        OrbPhase::Recording | OrbPhase::Processing | OrbPhase::SmartProcessing => {
+                            Some(OrbContextAction::Cancel)
+                        }
                         OrbPhase::Success if can_submit => Some(OrbContextAction::DismissSubmit),
                         OrbPhase::Idle if !transient => Some(OrbContextAction::Menu),
                         _ => None,

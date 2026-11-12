@@ -1709,8 +1709,12 @@ fn submit_enter_is_available(expires_at: Instant, now: Instant) -> bool {
     expires_at > now
 }
 
+/// 识别和智能处理中也接收指针：右键取消、拖走悬浮球。悬浮球不抢焦点，不影响随后的输出。
 fn orb_accepts_pointer_events(phase: &str, can_submit: bool) -> bool {
-    matches!(phase, "idle" | "armed" | "recording" | "error") || (phase == "success" && can_submit)
+    matches!(
+        phase,
+        "idle" | "armed" | "recording" | "processing" | "smartProcessing" | "error"
+    ) || (phase == "success" && can_submit)
 }
 
 async fn cursor_location() -> Option<(i32, i32)> {
@@ -2296,10 +2300,9 @@ pub(crate) async fn floating_orb_activate(app: tauri::AppHandle) -> Result<(), S
 
 #[tauri::command]
 pub(crate) async fn floating_orb_stop(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(ui) = OrbUi::current(&app) else {
+    if OrbUi::current(&app).is_none() {
         return Ok(());
-    };
-    let _ = ui.set_interactive(false);
+    }
     emit_state(&app, "processing", Some("识别中…"));
     crate::application::dictation::stop_from_floating_orb(app).await
 }
@@ -2481,15 +2484,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_feedback_remains_clickable_without_enabling_processing_clicks() {
+    fn orb_takes_pointer_while_dictating_but_not_during_automatic_or_passing_phases() {
         assert!(orb_accepts_pointer_events("error", false));
         assert!(orb_accepts_pointer_events("error", true));
-        for phase in ["idle", "armed", "recording"] {
+        for phase in ["idle", "armed", "recording", "processing", "smartProcessing"] {
             assert!(orb_accepts_pointer_events(phase, false));
         }
         assert!(orb_accepts_pointer_events("success", true));
         assert!(!orb_accepts_pointer_events("success", false));
-        for phase in ["processing", "smartProcessing", "submitting", "moving"] {
+        for phase in ["submitting", "moving", "positioning", "busy"] {
             assert!(!orb_accepts_pointer_events(phase, true));
         }
     }
