@@ -18,15 +18,15 @@
 $env:SAYIT_OVERLAY_SNAPSHOTS='verify'; npm run test:rust -- --bin say-it native_snapshot; Remove-Item Env:SAYIT_OVERLAY_SNAPSHOTS
 ```
 
-- [ ] 字幕条全部用例逐字节一致。出现差异先看 `<case>.diff.png`：字幕条没有有意的视觉变更，任何像素差异都按缺陷处理，不要重录基准。
-- [ ] 胶囊全部用例逐字节一致，出现差异一律按缺陷处理，不要重录基准。胶囊与通知之间新加了过渡动画，但现有快照里的通知用例都从隐藏直接出现，不经过这段过渡。
-- [ ] 悬浮球有意改了外观（改成和胶囊一致的单色风格：深色底、浅色细线、浅色内容，完成和出错改用线条图标），快照必然不一致。先用「原生窗口测试」把各相位逐个看一遍（「定位中」本来就不画任何内容；留意「空闲」和「待命」只差亮度，是否还分得清），确认外观正确后在主检出重录悬浮球基准并单独提交。
-- [ ] 重点看胶囊、文字框、通知面板的底与描边（改用 `ui::paint::panel`）。
-- [ ] 悬浮球基准重录后，再跑一遍 verify，三个窗口全绿。
+- [x] 字幕条全部用例逐字节一致。出现差异先看 `<case>.diff.png`：字幕条没有有意的视觉变更，任何像素差异都按缺陷处理，不要重录基准。
+- [x] 胶囊全部用例逐字节一致，出现差异一律按缺陷处理，不要重录基准。胶囊与通知之间新加了过渡动画，但现有快照里的通知用例都从隐藏直接出现，不经过这段过渡。
+- [x] 悬浮球有意改了外观（改成和胶囊一致的单色风格：深色底、浅色细线、浅色内容，完成和出错改用线条图标），快照必然不一致。先用「原生窗口测试」把各相位逐个看一遍（「定位中」本来就不画任何内容；留意「空闲」和「待命」只差亮度，是否还分得清），确认外观正确后在主检出重录悬浮球基准并单独提交。（已按快照逐相位检查；转圈的底环在 Windows 上因颜色再乘一次透明度几乎看不见，改为不透明混合色后重录。基准不入库。）
+- [x] 重点看胶囊、文字框、通知面板的底与描边（改用 `ui::paint::panel`）。
+- [x] 悬浮球基准重录后，再跑一遍 verify，三个窗口全绿。
 
 ## 2. 全量测试
 
-- [ ] `npm run test:rust` 通过，含 `native_win/host.rs` 的两个宿主回归和 `native_win/orb.rs` 的三个悬浮球回归。
+- [x] `npm run test:rust` 通过，含 `native_win/host.rs` 的两个宿主回归和 `native_win/orb.rs` 的三个悬浮球回归。
 
 ## 3. 听写胶囊
 
@@ -84,6 +84,6 @@ $env:SAYIT_OVERLAY_SNAPSHOTS='verify'; npm run test:rust -- --bin say-it native_
 
 ## 8. 其他遗留
 
-- [ ] 删除已经没人用的 `FontFamily::SymbolGlyphs`（悬浮球不再用符号字体）：`overlay-core/src/canvas.rs` 的枚举项、`overlay-macos/src/ct.rs` 的两处分支和一条测试、`native_win/d2d.rs` 的映射和按格式数量断言的那条测试。在 macOS 上没法验证 `d2d.rs` 的测试，所以留到这里。
+- [x] 删除已经没人用的 `FontFamily::SymbolGlyphs`（悬浮球不再用符号字体）：`overlay-core/src/canvas.rs` 的枚举项、`overlay-macos/src/ct.rs` 的两处分支和一条测试、`native_win/d2d.rs` 的映射和按格式数量断言的那条测试。在 macOS 上没法验证 `d2d.rs` 的测试，所以留到这里。
 
 - [ ] `active_app_context/mod.rs` 里 `DeferredOcrCaptureHandle` 多出的一行已删除（此前 Windows 主程序无法编译）。确认 Windows 上听写带软件上下文、延迟 OCR 截图的功能正常。
