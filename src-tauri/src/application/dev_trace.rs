@@ -779,6 +779,28 @@ pub(super) struct ReplayPrompt {
     /// 智能处理之前的识别原文和所在软件，本地模型对比按训练格式重新拼输入时用。
     pub(super) raw_text: String,
     pub(super) app_name: String,
+    /// 当时送进提示词的软件上下文（屏幕文字），取自听写时记下的调试日志。
+    pub(super) active_app_context: String,
+}
+
+/// 听写记录里那次实际采用的软件上下文；与送进提示词的文字一字不差（见 dictation 的同名日志）。
+fn recorded_app_context(record: &Value) -> String {
+    const START: &str = "--- 上下文开始 ---
+";
+    const END: &str = "
+--- 上下文结束 ---";
+    record["timeline"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["event"] == "legacy.debug" && event["data"]["component"] == "dictation")
+        .filter_map(|event| event["data"]["message"].as_str())
+        .filter(|message| message.starts_with("本次语音输入采用的软件上下文"))
+        .find_map(|message| {
+            let body = &message[message.find(START)? + START.len()..];
+            Some(body[..body.find(END)?].to_string())
+        })
+        .unwrap_or_default()
 }
 
 fn replay_from_record(record: &Value) -> Option<ReplayPrompt> {
@@ -803,6 +825,7 @@ fn replay_from_record(record: &Value) -> Option<ReplayPrompt> {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        active_app_context: recorded_app_context(record),
     })
 }
 
@@ -832,10 +855,15 @@ pub(crate) struct SmartTestRequest {
     model: Option<String>,
 }
 
-pub(super) fn input_from_text(state: &RuntimeState, text: &str, app_name: &str) -> Result<ReplayPrompt, String> {
+pub(super) fn input_from_text(
+    state: &RuntimeState,
+    text: &str,
+    active_app_context: &str,
+    app_name: &str,
+) -> Result<ReplayPrompt, String> {
     let (template, provider_id, model) = crate::application::dictation::smart_test_defaults(state)?;
     let user_prompt =
-        smart_text::build_smart_prompt(state, text, &template, "", app_name, &provider_id)?.text;
+        smart_text::build_smart_prompt(state, text, &template, active_app_context, app_name, &provider_id)?.text;
     Ok(ReplayPrompt {
         system_prompt: smart_text::SYSTEM_PROMPT.to_string(),
         user_prompt,
@@ -844,18 +872,19 @@ pub(super) fn input_from_text(state: &RuntimeState, text: &str, app_name: &str) 
         breakdown: None,
         raw_text: text.to_string(),
         app_name: app_name.to_string(),
+        active_app_context: active_app_context.to_string(),
     })
 }
 
 /// 把一次听写重放给另一家模型。记录里的提示词是当时那家用的：本地整理模型只收原文、
 /// 不带模板，原样发给云端模型它会当成提问来回答。所以换了供应商就按当前模板、用记录的
-/// 原文和软件名重建提示词（屏幕文字没有存，重建的提示词不带它）。
+/// 原文、软件上下文和软件名重建提示词。
 pub(super) fn replay_for(state: &RuntimeState, run: &str, provider_id: &str) -> Result<ReplayPrompt, String> {
     let replay = replay_prompt(run)?;
     if replay.provider_id == provider_id {
         return Ok(replay);
     }
-    input_from_text(state, &replay.raw_text, &replay.app_name)
+    input_from_text(state, &replay.raw_text, &replay.active_app_context, &replay.app_name)
 }
 
 /// 切到下一种请求；测试已被听写顶掉时返回错误，不再发付费请求。
@@ -972,7 +1001,7 @@ async fn run_variants(
 ) -> Result<TestResult, String> {
     let run = request.from_run.as_deref().unwrap_or("latest");
     let mut input = match (&request.text, &request.provider_id) {
-        (Some(text), _) if !text.trim().is_empty() => input_from_text(state, text, "")?,
+        (Some(text), _) if !text.trim().is_empty() => input_from_text(state, text, "", "")?,
         (_, Some(provider_id)) => replay_for(state, run, provider_id)?,
         _ => replay_prompt(run)?,
     };
