@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
-import { startTranscription, transcriptionRunning } from "@/features/transcription/controller";
+import { adoptTranscriptionJob, normalizeParams } from "@/features/transcription/controller";
 import { useFilePick } from "@/features/transcription/filePicker";
 import { CMD, cmd, type MeetingRecordingFile, type MeetingStatus } from "@/lib/tauri";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
@@ -28,13 +28,7 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
   /** 不是错误的提示，例如录音已保存但没有自动识别的原因。 */
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(() => Date.now());
-  const autoStart = useRef(true);
-  const { message: fileMessage, loadFileInfo } = useFilePick((file) => {
-    setSelectedFile(file);
-    if (!autoStart.current) return;
-    setTab("transcribe");
-    void startTranscription();
-  });
+  const { message: fileMessage, loadFileInfo } = useFilePick(setSelectedFile);
 
   const refresh = () => cmd<MeetingStatus>(CMD.getMeetingStatus).then(setStatus);
   useEffect(() => {
@@ -71,17 +65,20 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
     setMessage("");
     setNotice("");
     try {
-      const file = await cmd<MeetingRecordingFile>(CMD.meetingStop);
+      // 识别由后端在保存录音后直接开始，停止后马上关掉主窗口也不会落下。
+      const file = await cmd<MeetingRecordingFile>(CMD.meetingStop, {
+        params: normalizeParams(useTranscriptionStore.getState().params),
+      });
       setStatus({ recording: false, startedAtMs: null, warning: null });
-      if (transcriptionRunning()) {
-        // 不打断正在进行的识别，也不替换它的文件。
-        setNotice(`录音已保存：${file.path}。当前识别结束后，到「文件」里选择它。`);
+      if (!file.jobId) {
+        // 已有识别在进行（不打断它、也不换掉它的文件）或没能开始识别。
+        setNotice(`${file.warning ? `${file.warning}。` : ""}录音已保存：${file.path}。可以稍后在「文件」里选择它识别。`);
         return;
       }
-      // 有一路中途断开时先留在本页说明情况，录音照样放进「文件」等用户决定。
-      autoStart.current = !file.warning;
-      if (file.warning) setNotice(`${file.warning}。录音已放到「文件」里。`);
+      if (file.warning) setNotice(`${file.warning}。`);
       await loadFileInfo(file.path);
+      await adoptTranscriptionJob(file.jobId);
+      if (!file.warning) setTab("transcribe");
     } catch (reason) {
       setMessage(String(reason));
       await refresh().catch(() => {});

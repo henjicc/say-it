@@ -34,6 +34,7 @@ export const CMD = {
   meetingStart: "meeting_start",
   meetingStop: "meeting_stop",
   summarizeTranscript: "summarize_transcript",
+  getTranscriptSummary: "get_transcript_summary",
   openMeetingRecordings: "open_meeting_recordings",
   audioLabStart: "audio_lab_start",
   audioLabStop: "audio_lab_stop",
@@ -264,6 +265,7 @@ export interface DomainEventEnvelope<T = unknown> {
 export const EVT = {
   domainEvent: "domain-event",
   transcriptionEvent: "transcription-event",
+  transcriptSummaryChanged: "transcript-summary-changed",
   dictationShortcutError: "dictation-shortcut-error",
   subtitleCloseRequested: "subtitle-close-requested",
   subtitleShortcutError: "subtitle-shortcut-error",
@@ -455,4 +457,16 @@ export interface MeetingStatus {
 export interface MeetingRecordingFile {
   path: string;
   warning: string | null;
+  /** 后端已开始的识别任务；已有识别在进行或开始失败时为空。 */
+  jobId: string | null;
+}
+
+/** 后端保存的最近一次纪要，属于识别任务 `jobId`。 */
+export interface TranscriptSummary {
+  /** 每次变化递增；晚到的旧状态按它丢弃。 */
+  revision: number;
+  jobId: string;
+  running: boolean;
+  text: string;
+  error: string | null;
 }

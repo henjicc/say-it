@@ -11,7 +11,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { SubtitleEditor } from "@/components/transcription/SubtitleEditor";
 import { copyText } from "@/lib/clipboard";
-import { CMD, cmd } from "@/lib/tauri";
+import { CMD, cmd, type TranscriptSummary } from "@/lib/tauri";
 import {
   cancelTranscription,
   openProviderSettings,
@@ -111,6 +111,7 @@ export function TranscriptionView() {
     resultView,
     saveMessage,
     summary,
+    jobId,
     setSelectedFile,
     setParams,
     replaceParams,
@@ -274,7 +275,7 @@ export function TranscriptionView() {
               )}
             </section>
           )}
-          {result && <SummarySection result={result} summary={summary} onSummary={(next) => setRuntime({ summary: next })} />}
+          {result && jobId && <SummarySection key={jobId} jobId={jobId} result={result} summary={summary} />}
         </>
       ) : tab === "meeting" ? (
         <MeetingPanel />
@@ -324,48 +325,42 @@ export function TranscriptionView() {
   );
 }
 
-/** 用默认大模型把带说话人的识别结果整理成会议纪要。 */
+/** 用默认大模型把带说话人的识别结果整理成会议纪要；生成在后端进行，结果也存在后端。 */
 function SummarySection({
+  jobId,
   result,
   summary,
-  onSummary,
 }: {
+  jobId: string;
   result: TranscriptionResult;
-  summary: string;
-  onSummary: (summary: string) => void;
+  summary: TranscriptSummary | null;
 }) {
-  const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
-  const generate = async () => {
-    setRunning(true);
+  // 纪要属于生成它的识别任务，换了识别结果就不再显示。
+  const mine = summary?.jobId === jobId ? summary : null;
+  const running = mine?.running ?? false;
+  const generate = () => {
     setError("");
-    try {
-      const next = await cmd<string>(CMD.summarizeTranscript, { text: speakerText(result) });
-      // 生成期间开始了新的识别时，旧结果的纪要不能写到新结果下面。
-      if (useTranscriptionStore.getState().result === result) onSummary(next);
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setRunning(false);
-    }
+    cmd(CMD.summarizeTranscript, { jobId, text: speakerText(result) }).catch((reason: unknown) => setError(String(reason)));
   };
+  const shownError = error || mine?.error || "";
   return (
     <section className="flex flex-col gap-2">
       <SectionHeader
         title="纪要"
-        right={<Button size="sm" disabled={running} onClick={() => void generate()}>{running ? "正在生成…" : summary ? "重新生成" : "生成纪要"}</Button>}
+        right={<Button size="sm" disabled={running} onClick={generate}>{running ? "正在生成…" : mine?.text ? "重新生成" : "生成纪要"}</Button>}
       />
-      {error && <p role="alert" className="px-0.5 text-xs text-[var(--color-err)]">{error}</p>}
-      {summary && (
+      {shownError && <p role="alert" className="px-0.5 text-xs text-[var(--color-err)]">{shownError}</p>}
+      {mine?.text && (
         <Group>
           <textarea
             readOnly
             aria-label="会议纪要"
-            value={summary}
+            value={mine.text}
             className="block min-h-48 w-full resize-y bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
           />
           <div className="flex min-h-[var(--row-h)] items-center justify-end px-3.5">
-            <Button size="sm" onClick={() => copyText(summary)}>复制纪要</Button>
+            <Button size="sm" onClick={() => copyText(mine.text)}>复制纪要</Button>
           </div>
         </Group>
       )}
