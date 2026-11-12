@@ -841,10 +841,21 @@ impl Orb {
             |angle: f32| Point::new(center + radius * angle.cos(), center + radius * angle.sin());
         let start = self.spinner_angle.to_radians();
         let sweep = 100.0f32.to_radians();
+        // 底环按不透明的混合色画：WindowsLegacy 的颜色会再乘一次透明度，底环只有 0.2 的不透明度，
+        // 再乘一次在 Windows 上就看不见了。描边与图标沿用与胶囊相同的颜色规则。
+        let amount = 0.2 * style.icon_alpha;
+        let mix = |bg: u8, fg: u8| {
+            (f32::from(bg) + (f32::from(fg) - f32::from(bg)) * amount).round() as u8
+        };
+        let track = (
+            mix(BG.0, style.icon.0),
+            mix(BG.1, style.icon.1),
+            mix(BG.2, style.icon.2),
+        );
         canvas.stroke_circle(
             Point::new(center, center),
             radius,
-            self.color8(style.icon, 0.2 * style.icon_alpha),
+            self.color8(track, 1.0),
             Stroke::plain(stroke),
         );
         let from = point(start);
