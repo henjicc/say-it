@@ -29,7 +29,6 @@ describe("AssistantPage", () => {
         return {
           settings: {
             assistantPrefs: {
-              translationModel: "none",
               sourceLanguage: "auto",
               targetLanguage: "zh",
               llmProviderId: "default",
@@ -45,8 +44,6 @@ describe("AssistantPage", () => {
       if (name === "get_default_assistant_preferences") {
         return {
           templateCatalogVersion: 2,
-          translationEngine: "llm",
-          translationModel: "none",
           sourceLanguage: "auto",
           targetLanguage: "zh",
           translateSpeech: { llmProviderId: "default", llmModel: "", activeTemplateId: "translate-accurate", templates: [], templateTrash: [] },

@@ -15,7 +15,7 @@ import { DEFAULT_HOTWORD_WEIGHT, MAX_HOTWORDS, useCustomizationStore } from "@/s
 const PAGE_SIZE = 30;
 
 function taskLabel(kind: HistoryEntry["taskKind"]) {
-  return ({ dictation: "听写", translateSpeech: "语音翻译", editSelection: "选区编辑", ask: "语音问答" } as const)[kind] || kind;
+  return ({ dictation: "听写", translateSpeech: "翻译输入", editSelection: "选区编辑", ask: "语音问答" } as const)[kind] || kind;
 }
 
 function statusLabel(status: HistoryEntry["status"]) {
@@ -326,7 +326,7 @@ export function HistoryView() {
           <option value="">全部状态</option><option value="recognized">原文已保存</option><option value="processed">结果已保存，待输入</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>
         </Select>
         <Select size="sm" className="min-w-0 flex-1 basis-32 sm:flex-none sm:basis-40" value={taskKind} onChange={(event) => setTaskKind(event.target.value)} aria-label="任务类型">
-          <option value="">全部类型</option><option value="dictation">听写</option><option value="translateSpeech">语音翻译</option><option value="editSelection">选区编辑</option><option value="ask">语音问答</option>
+          <option value="">全部类型</option><option value="dictation">听写</option><option value="translateSpeech">翻译输入</option><option value="editSelection">选区编辑</option><option value="ask">语音问答</option>
         </Select>
       </div>
 

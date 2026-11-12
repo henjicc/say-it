@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
-pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 9;
+pub(crate) const SETTINGS_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +25,9 @@ pub(crate) struct AppSettings {
     pub(crate) customization_prefs: Value,
     #[serde(default = "default_assistant_prefs")]
     pub(crate) assistant_prefs: Value,
+    /// 字幕翻译与助手翻译输入共用的翻译设置，见 `application::translation`。
+    #[serde(default = "empty_object")]
+    pub(crate) translation_prefs: Value,
     #[serde(default = "default_history_prefs")]
     pub(crate) history_prefs: Value,
     #[serde(default = "default_diagnostics_prefs")]
@@ -110,6 +113,9 @@ impl Default for AppSettings {
             compare_prefs: empty_object(),
             customization_prefs: empty_object(),
             assistant_prefs: default_assistant_prefs(),
+            translation_prefs: serde_json::json!({
+                "engine": "llm", "model": "", "llmProviderId": "default", "llmModel": ""
+            }),
             history_prefs: default_history_prefs(),
             diagnostics_prefs: default_diagnostics_prefs(),
             onboarding_version: 0,
@@ -193,8 +199,61 @@ fn migrate_superseded_asr_models(settings: &mut AppSettings) {
     }
 }
 
+/// 设置 v10：翻译模型从字幕和助手各自一份合并为共用的 `translationPrefs`。
+/// 字幕原来只支持专用翻译模型，开着字幕翻译时沿用它；否则沿用助手的翻译方式。
+/// 字幕改为只存开关 `translationEnabled`。
+/// 按旧字段是否还在判断，加载和导入旧版 localStorage 设置时都会调用，重复调用不改变结果；
+/// 全新安装的默认设置自带完整的 `translationPrefs`，不会被旧字段改写。
+fn migrate_shared_translation(settings: &mut AppSettings) {
+    let subtitle_model = settings
+        .subtitle_prefs
+        .get("translationModel")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty() && *model != "none")
+        .map(str::to_owned);
+    if let Some(subtitles) = settings.subtitle_prefs.as_object_mut() {
+        if subtitles.remove("translationModel").is_some() && !subtitles.contains_key("translationEnabled") {
+            subtitles.insert("translationEnabled".into(), Value::Bool(subtitle_model.is_some()));
+        }
+    }
+    if settings.translation_prefs.as_object().is_some_and(|prefs| !prefs.is_empty()) {
+        return;
+    }
+    let assistant = &settings.assistant_prefs;
+    let assistant_model = assistant
+        .get("translationModel")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty() && *model != "none");
+    let assistant_dedicated = assistant.get("translationEngine").and_then(Value::as_str)
+        == Some("dedicated")
+        || (assistant.get("translationEngine").is_none() && assistant_model.is_some());
+    let llm = assistant.get("translateSpeech");
+    let llm_field = |key: &str, fallback: &str| {
+        llm.and_then(|feature| feature.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or(fallback)
+            .to_owned()
+    };
+    let (engine, model) = match (subtitle_model, assistant_dedicated, assistant_model) {
+        (Some(model), _, _) => ("dedicated", model),
+        (None, true, Some(model)) => ("dedicated", model.to_owned()),
+        _ => ("llm", String::new()),
+    };
+    settings.translation_prefs = serde_json::json!({
+        "engine": engine,
+        "model": model,
+        "llmProviderId": llm_field("llmProviderId", "default"),
+        "llmModel": llm_field("llmModel", ""),
+    });
+    if let Some(assistant) = settings.assistant_prefs.as_object_mut() {
+        assistant.remove("translationEngine");
+        assistant.remove("translationModel");
+    }
+}
+
 pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
     migrate_ocr_selection(&mut settings.dictation_prefs);
+    migrate_shared_translation(settings);
     migrate_superseded_asr_models(settings);
     if let Some(history) = settings.history_prefs.as_object_mut() {
         let legacy_learning = history
@@ -315,6 +374,7 @@ pub(crate) fn import_legacy_settings(
     }
     migrate_ocr_selection(&mut current.dictation_prefs);
     migrate_superseded_asr_models(&mut current);
+    migrate_shared_translation(&mut current);
     current.schema_version = SETTINGS_SCHEMA_VERSION;
     current.legacy_imported = true;
     save_settings_then_commit(&app, &state, current.clone())?;
@@ -334,6 +394,9 @@ pub(crate) fn update_app_settings(
     }
     if domain == "customization" {
         crate::application::customization::validate_customization_settings_value(&value)?;
+    }
+    if domain == "translation" {
+        crate::application::translation::validate_prefs_value(&value)?;
     }
     let value = if domain == "assistant" {
         crate::application::assistant::normalized_preferences_value(&value)?
@@ -484,6 +547,7 @@ fn settings_with_domain_value(
         "comparison" => next.compare_prefs = value,
         "customization" => next.customization_prefs = value,
         "assistant" => next.assistant_prefs = value,
+        "translation" => next.translation_prefs = value,
         "history" => next.history_prefs = value,
         // 诊断设置是几个互不相关的开关，按字段合并，改一个不会冲掉另一个。
         "diagnostics" => {
@@ -710,8 +774,9 @@ mod tests {
         assert_eq!(v.theme["accent"], "#2767EA");
         assert_eq!(v.theme["backgroundMode"], "custom");
         assert_eq!(v.theme["background"], "#0F0F0F");
-        assert_eq!(v.assistant_prefs["translationModel"], "none");
-        assert_eq!(v.assistant_prefs["translationEngine"], "llm");
+        assert!(v.assistant_prefs.get("translationModel").is_none());
+        assert!(v.translation_prefs.is_object());
+        assert_eq!(AppSettings::default().translation_prefs["engine"], "llm");
         assert_eq!(
             v.assistant_prefs["editSelection"]["llmProviderId"],
             "default"
@@ -739,6 +804,44 @@ mod tests {
             serde_json::json!({"verboseLogging":true,"developerMode":true})
         );
     }
+    #[test]
+    fn translation_models_merge_into_shared_prefs() {
+        let migrate = |subtitles: Value, assistant: Value| {
+            let mut settings = AppSettings {
+                subtitle_prefs: subtitles,
+                assistant_prefs: assistant,
+                translation_prefs: empty_object(),
+                ..AppSettings::default()
+            };
+            migrate_loaded_settings(&mut settings);
+            settings
+        };
+        let llm = serde_json::json!({"translateSpeech": {"llmProviderId": "llm-groq", "llmModel": "qwen"}});
+
+        // 字幕原来只能用专用翻译模型，开着字幕翻译时以它为准。
+        let settings = migrate(
+            serde_json::json!({"translationModel": "qwen-mt-flash"}),
+            serde_json::json!({"translationEngine": "llm", "translateSpeech": llm["translateSpeech"]}),
+        );
+        assert_eq!(settings.translation_prefs["engine"], "dedicated");
+        assert_eq!(settings.translation_prefs["model"], "qwen-mt-flash");
+        assert_eq!(settings.subtitle_prefs["translationEnabled"], true);
+        assert!(settings.subtitle_prefs.get("translationModel").is_none());
+        assert!(settings.assistant_prefs.get("translationEngine").is_none());
+
+        // 字幕没开翻译时沿用助手的大模型选择。
+        let settings = migrate(serde_json::json!({"translationModel": "none"}), llm);
+        assert_eq!(settings.translation_prefs["engine"], "llm");
+        assert_eq!(settings.translation_prefs["llmProviderId"], "llm-groq");
+        assert_eq!(settings.subtitle_prefs["translationEnabled"], false);
+
+        // 已迁移过的不再改动。
+        let mut settings = settings;
+        settings.translation_prefs["engine"] = serde_json::json!("dedicated");
+        migrate_loaded_settings(&mut settings);
+        assert_eq!(settings.translation_prefs["engine"], "dedicated");
+    }
+
     #[test]
     fn legacy_debug_log_migrates_once_to_diagnostics() {
         let mut settings = AppSettings::default();

@@ -7,47 +7,25 @@ import {
   type SubtitleTranslationLayout,
   type SubtitleTranslationOrder,
 } from "@/store/useSubtitleStore";
-import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
-import { ModelPicker } from "@/features/models/ModelPicker";
-import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { Switch } from "@/components/ui/Switch";
+import { TranslationModelRow } from "@/features/translation/TranslationModelRow";
 import {
   TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
   TRANSLATION_TARGET_LANGUAGE_OPTIONS,
 } from "@/features/translation/languages";
 
 
-/** 字幕翻译模型；选「无」即不翻译。label 是「用途」页里按功能名显示的行名。 */
-export function SubtitleTranslationModelRow({ label = "翻译模型" }: { label?: string } = {}) {
-  const translationModel = useSubtitleStore((state) => state.prefs.translationModel);
-  const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
-  const editable = useUsageEditable();
-  const options = useOfferedTranslationOptions(translationModel);
-  const selected = options.find((option) => option.value === translationModel);
-  const issue = useUsageIssue(selected?.providerId, translationModel === TRANSLATION_MODEL_NONE || Boolean(selected), "translation");
-  if (!editable) return <UsageLinkRow label={label} value={selected?.label ?? "不翻译"} message={issue} />;
-  return (
-    <Row label={label} hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>
-      <div className={ROW_CONTROL_W}>
-        <ModelPicker
-          aria-label={label}
-          value={translationModel}
-          options={[{ value: TRANSLATION_MODEL_NONE, label: "无（不翻译）", providerId: "none", providerLabel: "不翻译" }, ...options]}
-          panelLabel="选择翻译模型"
-          onChange={(value) => void setTranslationModel(value)}
-        />
-      </div>
-    </Row>
-  );
-}
-
 export function SubtitleTranslationPanel() {
   const { prefs, patch } = useSubtitleStore();
-  const enabled = prefs.translationModel !== TRANSLATION_MODEL_NONE;
+  const enabled = prefs.translationEnabled;
 
   return (
     <InspectorBody>
       <Group>
-        <SubtitleTranslationModelRow />
+        <Row label="翻译字幕" hint="每句话识别完成后自动翻译。部分模型会逐步显示译文，让你更早看到结果。">
+          <Switch checked={enabled} onChange={(translationEnabled) => patch({ translationEnabled })} label="翻译字幕" />
+        </Row>
+        {enabled && <TranslationModelRow hint="字幕和助手的翻译输入共用这个模型。大模型的译文会比专用翻译模型晚一些出来。" />}
       </Group>
 
       {enabled && (

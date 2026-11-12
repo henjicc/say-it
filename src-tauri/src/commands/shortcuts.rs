@@ -589,7 +589,7 @@ fn collect_all_shortcut_bindings_with(
     for (action, name, label) in [
         (
             crate::application::assistant::AssistantAction::TranslateSpeech,
-            "智能助手 · 语音翻译",
+            "智能助手 · 翻译输入",
             "说话并翻译到目标语言",
         ),
         (
@@ -674,7 +674,7 @@ fn validate_assistant_shortcuts(
     for (action, label) in [
         (
             crate::application::assistant::AssistantAction::TranslateSpeech,
-            "智能助手 · 语音翻译",
+            "智能助手 · 翻译输入",
         ),
         (
             crate::application::assistant::AssistantAction::EditSelection,

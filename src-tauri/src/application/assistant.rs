@@ -317,14 +317,6 @@ pub(crate) enum AssistantAction {
     Ask,
 }
 
-fn default_translation_model() -> String {
-    "none".into()
-}
-
-fn default_translation_engine() -> String {
-    "llm".into()
-}
-
 fn default_source_language() -> String {
     "auto".into()
 }
@@ -523,10 +515,6 @@ fn upgrade_unmodified_templates(
 pub(crate) struct AssistantPreferences {
     #[serde(default)]
     pub(crate) template_catalog_version: u32,
-    #[serde(default = "default_translation_engine")]
-    pub(crate) translation_engine: String,
-    #[serde(default = "default_translation_model")]
-    pub(crate) translation_model: String,
     #[serde(default = "default_source_language")]
     pub(crate) source_language: String,
     #[serde(default = "default_target_language")]
@@ -543,8 +531,6 @@ impl Default for AssistantPreferences {
     fn default() -> Self {
         Self {
             template_catalog_version: ASSISTANT_TEMPLATE_CATALOG_VERSION,
-            translation_engine: default_translation_engine(),
-            translation_model: default_translation_model(),
             source_language: default_source_language(),
             target_language: default_target_language(),
             translate_speech: default_translate_feature(),
@@ -606,9 +592,6 @@ pub(crate) fn preferences_from_value(
                 _ => {}
             }
         }
-    }
-    if value.get("translationEngine").is_none() && prefs.translation_model != "none" {
-        prefs.translation_engine = "dedicated".into();
     }
     if prefs.template_catalog_version < ASSISTANT_TEMPLATE_CATALOG_VERSION {
         upgrade_unmodified_templates(
@@ -689,10 +672,7 @@ fn validate_feature(feature: &AssistantFeaturePreferences, label: &str) -> Resul
 }
 
 fn validate_preferences(prefs: &AssistantPreferences) -> Result<(), String> {
-    if !matches!(prefs.translation_engine.as_str(), "llm" | "dedicated") {
-        return Err("翻译引擎必须是大语言模型或专用翻译模型".into());
-    }
-    validate_feature(&prefs.translate_speech, "语音翻译")?;
+    validate_feature(&prefs.translate_speech, "翻译输入")?;
     validate_feature(&prefs.edit_selection, "选区编辑")?;
     validate_feature(&prefs.ask, "语音问答")?;
     Ok(())
@@ -703,7 +683,6 @@ pub(crate) fn validate_preferences_value(value: &serde_json::Value) -> Result<()
     let prefs = preferences_from_value(value)?;
     validate_preferences(&prefs)?;
     for (label, value) in [
-        ("翻译模型", &prefs.translation_model),
         ("源语言", &prefs.source_language),
         ("目标语言", &prefs.target_language),
     ] {
@@ -994,20 +973,11 @@ async fn assistant_start_for_target(
         )?;
         match action {
             AssistantAction::TranslateSpeech => {
-                if prefs.translation_engine == "dedicated" {
-                    crate::application::translation::validate_available(
-                        &state,
-                        &prefs.translation_model,
-                    )?;
-                } else {
-                    let feature = feature_preferences(&prefs, action);
-                    active_template(feature, "语音翻译")?;
-                    crate::application::smart_text::validate_available_for(
-                        &state,
-                        Some(&feature.llm_provider_id),
-                        Some(&feature.llm_model),
-                    )?;
+                let shared = crate::application::translation::current(&state)?;
+                if shared.uses_llm() {
+                    active_template(feature_preferences(&prefs, action), "翻译输入")?;
                 }
+                crate::application::translation::validate(&state, &shared)?;
             }
             AssistantAction::EditSelection | AssistantAction::Ask => {
                 let feature = feature_preferences(&prefs, action);
@@ -1105,27 +1075,7 @@ pub(crate) async fn process(
     match request.action {
         AssistantAction::TranslateSpeech => {
             let cancellation = state.assistant_runtime.begin_generation();
-            let output = if prefs.translation_engine == "dedicated" {
-                crate::application::translation::translate_text(
-                    state,
-                    &prefs.translation_model,
-                    spoken_text,
-                    &prefs.source_language,
-                    &prefs.target_language,
-                    cancellation.clone(),
-                )
-                .await?
-            } else {
-                process_llm_action(
-                    state,
-                    AssistantAction::TranslateSpeech,
-                    "",
-                    spoken_text,
-                    "",
-                    &prefs,
-                )
-                .await?
-            };
+            let output = translate_speech(state, &prefs, spoken_text, "", cancellation.clone()).await?;
             if cancellation.is_cancelled() {
                 return Err("翻译请求已取消".into());
             }
@@ -1314,6 +1264,34 @@ fn parse_assistant_output(action: AssistantAction, raw: &str) -> Result<String, 
         return Err("大语言模型没有返回结果文本".into());
     }
     Ok(text.to_string())
+}
+
+/// 翻译输入用共用的翻译设置：专用翻译模型直接翻译；用大模型时沿用本功能的任务模板，
+/// 模型换成共用设置里选的那个。
+async fn translate_speech(
+    state: &RuntimeState,
+    prefs: &AssistantPreferences,
+    spoken_text: &str,
+    app_name: &str,
+    cancellation: CancellationToken,
+) -> Result<String, String> {
+    let shared = crate::application::translation::current(state)?;
+    if !shared.uses_llm() {
+        return crate::application::translation::translate_with(
+            state,
+            &shared,
+            spoken_text,
+            &prefs.source_language,
+            &prefs.target_language,
+            cancellation,
+            |_| {},
+        )
+        .await;
+    }
+    let mut prefs = prefs.clone();
+    prefs.translate_speech.llm_provider_id = shared.llm_provider_id;
+    prefs.translate_speech.llm_model = shared.llm_model;
+    process_llm_action(state, AssistantAction::TranslateSpeech, "", spoken_text, app_name, &prefs).await
 }
 
 async fn process_llm_action(
@@ -1581,16 +1559,8 @@ pub(crate) async fn preview_assistant(
             .map_err(|_| "应用配置锁失败")?
             .assistant_prefs,
     )?;
-    if action == AssistantAction::TranslateSpeech && prefs.translation_engine == "dedicated" {
-        return crate::application::translation::translate_text(
-            &state,
-            &prefs.translation_model,
-            &spoken_text,
-            &prefs.source_language,
-            &prefs.target_language,
-            CancellationToken::new(),
-        )
-        .await;
+    if action == AssistantAction::TranslateSpeech {
+        return translate_speech(&state, &prefs, &spoken_text, "试运行", CancellationToken::new()).await;
     }
     process_llm_action(
         &state,
@@ -2102,14 +2072,12 @@ mod tests {
     #[test]
     fn legacy_preferences_receive_new_safe_defaults() {
         let prefs = preferences_from_value(&serde_json::json!({
-            "translationModel": "qwen-mt-flash",
             "sourceLanguage": "auto",
             "targetLanguage": "en"
         }))
         .unwrap();
         assert_eq!(prefs.edit_selection.llm_provider_id, "default");
         assert!(prefs.ask.llm_model.is_empty());
-        assert_eq!(prefs.translation_engine, "dedicated");
         assert_eq!(prefs.edit_selection.active_template_id, "edit-smart");
     }
 
@@ -2136,11 +2104,6 @@ mod tests {
 
     #[test]
     fn invalid_preferences_are_rejected() {
-        let mut invalid = serde_json::to_value(AssistantPreferences::default()).unwrap();
-        invalid["translationEngine"] = serde_json::json!("invalid");
-        assert!(validate_preferences_value(&invalid)
-            .unwrap_err()
-            .contains("翻译引擎"));
         let mut invalid = serde_json::to_value(AssistantPreferences::default()).unwrap();
         invalid["ask"]["templates"] = serde_json::json!([]);
         assert!(validate_preferences_value(&invalid)

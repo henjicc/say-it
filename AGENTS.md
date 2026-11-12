@@ -212,7 +212,7 @@
 - 使用 `@henjicc/ai-sdk` 的功能升级或排障时，先对照当前精确版本的公共类型并冻结实际送入 SDK 的 DTO，再做同版本 SDK 最小直调：合法输入在 SDK 内失败或供应商请求偏离官方契约才回 Henji-AI 主仓修 SDK；Rust→QuickJS 序列化、凭据、HTTP/WS、媒体引用、取消、超时和资源释放问题在 say-it 修。`field?: T` 表示字段省略或值为 `T`，Rust 的 `None` 必须用 `skip_serializing_if` 等方式省略，不能写成 `null`；不得为掩盖宿主错误而放宽 SDK 校验，也不得在本仓复制 SDK provider/parser。
 - 应用设置、插件与本地模型统一由 `src-tauri/src/application/data_root.rs` 管理；自定义数据目录和迁移不得绕过该入口，模型权重落在数据根的 `models/`。
 - `.sayit` 同时承载 API v5 JavaScript 供应商插件与 API v5 无代码模型包；JavaScript 插件不保留 v3/v4 执行兼容，在线插件适配使用 `.codex/skills/adapt-sayit-provider/`，官方模型包描述和构建入口见 `model-packs/` 与 `src-tauri/src/bin/build_model_pack.rs`。
-- 「模型与密钥」页只分两处：「供应商」每家一页，集中管理密钥、设置、各模型的显示开关（`modelVisibility`）和大模型的思考程度（存在模型上，各功能共用）；「用途」按模型种类分组、行名用功能名，是各功能选用模型的唯一位置，下拉框只列已填密钥且设为显示的模型。功能页的模型行在专业模式只显示当前值并跳转到「用途」，简单模式仍就地选择（`features/models/usage.tsx`）。供应商本身不设默认值；「用途」里的「默认大模型」供没有单独选择模型的功能使用。
+- 「模型与密钥」页只分两处：「供应商」每家一页，集中管理密钥、设置、各模型的显示开关（`modelVisibility`）和大模型的思考程度（存在模型上，各功能共用）；「用途」按模型种类分组（识别类行名写所需能力，如「实时语音识别」；大模型行名写用它的功能），是各功能选用模型的唯一位置，下拉框只列已填密钥且设为显示的模型。功能页的模型行在专业模式只显示当前值并跳转到「用途」，简单模式仍就地选择（`features/models/usage.tsx`）。供应商本身不设默认值；「用途」里的「默认大模型」供没有单独选择模型的功能使用。翻译模型全局只有一份（配置领域 `translation`，权威在 `application/translation.rs`），可选专用翻译模型或大模型，字幕翻译和助手的翻译输入共用；字幕设置里只存是否翻译。
 - 热词与上下文全局唯一一份，存在 `AppSettings.customizationPrefs`（配置领域 `customization`），权威实现在 `src-tauri/src/application/customization.rs`；按模型的 `supportsVocabulary` / `supportsContext` 分别下发，供应商配置里不得再存热词。上下文只由模板决定（模板留空即不下发），要带热词必须在模板里显式插入 `{{hotwords}}`；智能处理提示词用 `{{global_context}}` 引用渲染后的上下文，用 `{{hotwords}}` 引用全局热词列表。热词修改后自动防抖同步到需要云端词表的供应商。
 - 听写后处理顺序固定为「智能处理 → 本地规则」：本地规则是对最终文本的确定性兜底，必须作用在大模型输出之上。
 - 内置供应商的模型 ID 只能来自模型目录并由对应场景选择，禁止在供应商配置中暴露自由填写的模型 ID。供应商密钥和设置字段采用静默自动保存：文本/密钥停止输入或失焦后保存，开关立即保存；不显示保存按钮和成功提示，只在失败时显示错误。

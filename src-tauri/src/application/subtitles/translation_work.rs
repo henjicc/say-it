@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) struct Job {
     text: String,
-    model: String,
+    prefs: crate::application::translation::TranslationPrefs,
     source: String,
     target: String,
 }
@@ -26,12 +26,12 @@ pub(super) fn enqueue(app: AppHandle, epoch: u64, seq: u64, text: String) {
             return Ok(Vec::new());
         }
         session.cancel_obsolete_translations();
-        let model = session.prefs.translation_model.clone();
-        crate::application::translation::validate_available(&state, &model)?;
+        let prefs = crate::application::translation::current(&state)?;
+        crate::application::translation::validate(&state, &prefs)?;
         let bytes = text.len();
         let job = Job {
             text,
-            model,
+            prefs,
             source: session.prefs.translation_source_lang.clone(),
             target: session.prefs.translation_target_lang.clone(),
         };
@@ -94,30 +94,21 @@ fn spawn(app: AppHandle, epoch: u64, task: Ready<Job>) {
         let delta_app = app.clone();
         let delta_cancellation = task.cancellation.clone();
         let seq = task.seq;
-        // 排队期间插件可能被停用/卸载；不能持有旧执行权限越过当前供应商检查。
-        let provider = crate::application::translation::resolve_provider(
+        // 执行时再解析供应商：排队期间插件可能被停用或卸载，不能沿用入队时的执行权限。
+        let result = crate::application::translation::translate_with(
             &app.state::<RuntimeState>(),
-            &task.job.model,
-        );
-        let result = match provider {
-            Ok(provider) => {
-                provider
-                    .translate_streaming(
-                        &task.job.model,
-                        &task.job.text,
-                        &task.job.source,
-                        &task.job.target,
-                        task.cancellation.clone(),
-                        move |partial| {
-                            if !delta_cancellation.is_cancelled() {
-                                handle_translation(&delta_app, epoch, seq, partial, false, None);
-                            }
-                        },
-                    )
-                    .await
-            }
-            Err(error) => Err(error),
-        };
+            &task.job.prefs,
+            &task.job.text,
+            &task.job.source,
+            &task.job.target,
+            task.cancellation.clone(),
+            move |partial| {
+                if !delta_cancellation.is_cancelled() {
+                    handle_translation(&delta_app, epoch, seq, partial, false, None);
+                }
+            },
+        )
+        .await;
         if task.cancellation.is_cancelled() {
             return;
         }

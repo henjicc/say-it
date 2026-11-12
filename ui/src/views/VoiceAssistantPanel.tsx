@@ -8,7 +8,9 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { UsageLinkRow, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { TranslationModelRow } from "@/features/translation/TranslationModelRow";
+import { useTranslationStore } from "@/store/useTranslationStore";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   FOLLOW_DEFAULT_LLM_OPTION,
@@ -35,8 +37,6 @@ export interface AssistantFeaturePreferences {
 }
 export interface AssistantPrefs {
   templateCatalogVersion: number;
-  translationEngine: "llm" | "dedicated";
-  translationModel: string;
   sourceLanguage: string;
   targetLanguage: string;
   translateSpeech: AssistantFeaturePreferences;
@@ -71,7 +71,7 @@ function defaultFeature(action: AssistantActionKey): AssistantFeaturePreferences
 
 const DEFAULT_PREFS: AssistantPrefs = {
   templateCatalogVersion: 2,
-  translationEngine: "llm", translationModel: "none", sourceLanguage: "auto", targetLanguage: "zh",
+  sourceLanguage: "auto", targetLanguage: "zh",
   translateSpeech: defaultFeature("translateSpeech"), editSelection: defaultFeature("editSelection"), ask: defaultFeature("ask"),
 };
 
@@ -111,8 +111,6 @@ export function normalizeAssistantPrefs(value: Record<string, unknown>): Assista
   }
   return {
     templateCatalogVersion: typeof value.templateCatalogVersion === "number" ? value.templateCatalogVersion : 2,
-    translationEngine: value.translationEngine === "dedicated" || (!value.translationEngine && typeof value.translationModel === "string" && value.translationModel !== "none") ? "dedicated" : "llm",
-    translationModel: typeof value.translationModel === "string" ? value.translationModel : "none",
     sourceLanguage: typeof value.sourceLanguage === "string" ? value.sourceLanguage : "auto",
     targetLanguage: typeof value.targetLanguage === "string" ? value.targetLanguage : "zh",
     translateSpeech: normalizeFeature(value.translateSpeech, "translateSpeech"), editSelection: edit, ask,
@@ -125,9 +123,9 @@ function parseModel(value: string) {
   return { llmProviderId: "default", llmModel: "" };
 }
 
-export const ACTION_LABELS: Record<AssistantActionKey, string> = { translateSpeech: "语音翻译", editSelection: "选区编辑", ask: "语音问答" };
+export const ACTION_LABELS: Record<AssistantActionKey, string> = { translateSpeech: "翻译输入", editSelection: "选区编辑", ask: "语音问答" };
 
-/** 某个助手功能用的模型：语音翻译选了专用翻译引擎时是翻译模型，否则是大模型。 */
+/** 某个助手功能用的大模型；翻译输入用的是共用的翻译模型，见 `TranslationModelRow`。 */
 export function AssistantModelRow({ action, label, prefs, save }: {
   action: AssistantActionKey;
   label: string;
@@ -137,30 +135,10 @@ export function AssistantModelRow({ action, label, prefs, save }: {
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const editable = useUsageEditable();
   const feature = prefs[action];
-  const dedicated = action === "translateSpeech" && prefs.translationEngine === "dedicated";
   const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
   const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selectedLlm)];
-  const translationOptions = useOfferedTranslationOptions(prefs.translationModel);
-  const selectedTranslation = translationOptions.find((item) => item.value === prefs.translationModel);
   const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId, true, "llm");
-  const translationIssue = useUsageIssue(selectedTranslation?.providerId, prefs.translationModel === "none" || Boolean(selectedTranslation), "translation");
   const controlId = `assistant-${action}-model`;
-  if (dedicated) {
-    if (!editable) return <UsageLinkRow label={label} value={selectedTranslation?.label ?? "未启用"} message={translationIssue} />;
-    return (
-      <Row label={label} message={translationIssue}>
-        <div className={ROW_CONTROL_W}>
-          <ModelPicker
-            aria-label={label}
-            value={prefs.translationModel}
-            options={[{ value: "none", label: "无（暂不启用）", providerId: "none", providerLabel: "不启用" }, ...translationOptions]}
-            panelLabel="选择翻译模型"
-            onChange={(value) => void save({ ...prefs, translationModel: value })}
-          />
-        </div>
-      </Row>
-    );
-  }
   const current = llmOptions.find((option) => option.value === selectedLlm);
   if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? feature.llmModel} message={llmIssue} />;
   return (
@@ -325,23 +303,23 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     } catch (error) { notify(`试运行失败：${String(error)}`, "err"); } finally { setPreviewing(false); }
   };
 
-  const usesTemplates = !(action === "translateSpeech" && prefs.translationEngine === "dedicated");
+  const translationEngine = useTranslationStore((state) => state.prefs.engine);
+  const usesTemplates = !(action === "translateSpeech" && translationEngine === "dedicated");
 
   return <InspectorBody>
     <Group>
       <AssistantShortcutRow action={action} hint={description} />
       {action === "translateSpeech" && <>
-        <Row label="翻译引擎" hint="智能模型支持任务模板；专用翻译模型延迟更低。">
-          <Tabs variant="view" ariaLabel="翻译引擎" tabs={[{ key: "llm", label: "智能模型" }, { key: "dedicated", label: "专用翻译模型" }]} active={prefs.translationEngine} onChange={(translationEngine) => void save({ ...prefs, translationEngine })} />
-        </Row>
         <Row label="源语言"><Select className={ROW_CONTROL_W} aria-label="源语言" value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
         <Row label="目标语言"><Select className={ROW_CONTROL_W} aria-label="目标语言" value={prefs.targetLanguage} onChange={(event) => void save({ ...prefs, targetLanguage: event.target.value })}>{TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
       </>}
-      <AssistantModelRow action={action} label={usesTemplates ? "智能模型" : "专用翻译模型"} prefs={prefs} save={save} />
+      {action === "translateSpeech"
+        ? <TranslationModelRow />
+        : <AssistantModelRow action={action} label="智能模型" prefs={prefs} save={save} />}
     </Group>
 
     <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>
-      <Row label="当前模板" message={!usesTemplates && "专用翻译模型不使用模板；切回智能模型后，当前模板会继续生效。"}>
+      <Row label="当前模板" message={!usesTemplates && "专用翻译模型不使用模板；翻译模型换成大模型后，当前模板会继续生效。"}>
         <Select className={ROW_CONTROL_W} aria-label="当前模板" value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
         <Button size="sm" variant="dangerText" aria-label="删除当前模板" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除</Button>
       </Row>

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { CMD, EVT, cmd, on, type AppSnapshot, type DomainEventEnvelope } from "@/lib/tauri";
 import { useTauriEvent } from "./useTauriEvent";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { useCuePlayback } from "./useCuePlayback";
 import { useFloatingOrbSync } from "./useFloatingOrbSync";
 import {
@@ -78,15 +77,10 @@ export function useTauriBridge() {
           return;
         }
 
-        // 设置类 loader 一条失败不得拖垮后面的运行时投影恢复。
-        //
-        // 这批里只有 loadTranslationModel 会把错误招出去，而 `Promise.all` 会让它直接跳到
-        // catch：监听各 runtime、revision 对账全部不再执行，界面停在空状态，只留一行
-        // console.error。改成 allSettled：哪条挂了就报哪条，其余恢复照常跑完。
+        // 设置类 loader 一条失败不得拖垮后面的运行时投影恢复：用 allSettled，哪条挂了就报哪条。
         const settingsLoads = await Promise.allSettled([
           loadDictationSettings(),
           loadSubtitleShortcut(),
-          useSubtitleStore.getState().loadTranslationModel(),
           useProviderStore.getState().load(),
         ]);
         for (const result of settingsLoads) {

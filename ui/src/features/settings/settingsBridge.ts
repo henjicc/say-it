@@ -3,6 +3,7 @@ import { hydrateDictPrefs, useDictPrefs } from "@/store/useDictPrefs";
 import { hydrateSubtitlePrefs, useSubtitleStore } from "@/store/useSubtitleStore";
 import { hydrateComparePrefs, useCompareStore } from "@/store/useCompareStore";
 import { hydrateCustomizationPrefs } from "@/store/useCustomizationStore";
+import { hydrateTranslationPrefs } from "@/store/useTranslationStore";
 import { hydrateTheme, useThemeStore } from "@/store/useThemeStore";
 import { hydrateDeveloperMode } from "@/store/useDeveloperStore";
 import { loadModelCatalog } from "@/features/asr/modelRegistry";
@@ -21,6 +22,7 @@ function apply(settings: AppSettings): boolean {
   hydrateSubtitlePrefs(settings.subtitlePrefs);
   hydrateComparePrefs(settings.comparePrefs); hydrateTheme(settings.theme);
   hydrateCustomizationPrefs(settings.customizationPrefs);
+  hydrateTranslationPrefs(settings.translationPrefs);
   hydrateDeveloperMode(settings.diagnosticsPrefs);
   // 旧 Data URL 仅作迁移兼容镜像；运行时和设置页试听均由 Rust 原生播放。
   return dictationNeedsSync;

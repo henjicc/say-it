@@ -18,7 +18,6 @@ pub(crate) struct RuntimeState {
     pub(crate) subtitle_shortcut: Mutex<SubtitleShortcutSettings>,
     pub(crate) assistant_shortcuts: Mutex<crate::application::assistant::AssistantShortcutSettings>,
     pub(crate) shortcut_config_operation: Mutex<()>,
-    pub(crate) subtitle_translation_model: Mutex<String>,
     pub(crate) startup: Mutex<StartupSettings>,
     pub(crate) backend_mic: Arc<Mutex<BackendMicState>>,
     /// 采集设备的启动与释放必须串行：并发启动会各开一条流写进同一份状态，被覆盖的
