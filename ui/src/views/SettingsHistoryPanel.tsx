@@ -172,7 +172,7 @@ export function SettingsHistoryPanel() {
       </Group>
 
       <Group title="个性化学习">
-        <Row label="记录发送前修改" controlId="history-final-draft-observation" hint="仅限本次听写对应输入框，最长观察 120 秒；不会常驻采集键盘或其他文本。">
+        <Row label="记录发送前修改" controlId="history-final-draft-observation" hint="仅限本次语音输入对应输入框，最长观察 120 秒；不会常驻采集键盘或其他文本。">
           <Switch
             id="history-final-draft-observation"
             checked={prefs.finalDraftObservationEnabled}

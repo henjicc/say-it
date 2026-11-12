@@ -536,7 +536,7 @@ impl ContextCaptureService {
             Ok(result) => {
                 crate::development_debug_log(
                     "active-app-context",
-                    "上下文结果已就绪，即使当前已过总截止仍会用于本次听写",
+                    "上下文结果已就绪，即使当前已过总截止仍会用于本次语音输入",
                 );
                 result
             }

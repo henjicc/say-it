@@ -15,7 +15,7 @@ impl AudioOwner {
     /// 占用冲突提示里给用户看的名称。Legacy 是设置页电平预览与首次引导的麦克风检测。
     fn label(self) -> &'static str {
         match self {
-            Self::Dictation => "听写",
+            Self::Dictation => "语音输入",
             Self::Subtitles => "实时字幕",
             Self::Comparison => "模型对比",
             Self::AudioLab => "音频调校",

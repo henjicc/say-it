@@ -21,11 +21,11 @@ export interface SettingsSearchItem {
 }
 
 export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
-  { id: "model-usage", label: "用途", target: { view: "models", section: "usage" }, tabLabel: "模型与密钥", section: "各功能使用的模型", targetText: "通用大模型", keywords: "识别模型 智能模型 大模型 llm 翻译模型 ocr 读屏 字幕 转写 助手 听写 默认模型" },
+  { id: "model-usage", label: "用途", target: { view: "models", section: "usage" }, tabLabel: "模型与密钥", section: "各功能使用的模型", targetText: "通用大模型", keywords: "识别模型 智能模型 大模型 llm 翻译模型 ocr 读屏 字幕 转写 助手 语音输入 默认模型" },
   { id: "bailian-provider", label: "阿里云百炼", target: { view: "models", section: "provider:bailian" }, tabLabel: "模型与密钥", section: "供应商", targetText: "API Key", keywords: "百炼 dashscope qwen api key 密钥 供应商 识别 翻译 大模型" },
   { id: "local-models", label: "本地模型", target: { view: "models", section: "local" }, tabLabel: "模型与密钥", section: "下载、启用与卸载", targetText: "本地模型", keywords: "离线 模型包 下载 常驻内存 启用 卸载" },
   { id: "plugins", label: "插件", target: { view: "models", section: "plugins" }, tabLabel: "模型与密钥", section: "安装、启用与卸载", targetText: "插件", keywords: "sayit 安装 扫描 启用 卸载 连接器" },
-  { id: "input-device", label: "麦克风", target: { view: "dictation", section: "basics" }, tabLabel: "听写", section: "基础", targetText: "麦克风", keywords: "输入设备 录音设备 音频输入" },
+  { id: "input-device", label: "麦克风", target: { view: "dictation", section: "basics" }, tabLabel: "语音输入", section: "基础", targetText: "麦克风", keywords: "输入设备 录音设备 音频输入" },
   { id: "microphone-keepalive", label: "麦克风保活", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "麦克风", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },
   { id: "audio-cues", label: "提示音", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "开始与结束提示", targetText: "提示音", keywords: "声音 开始提示音 结束提示音 自定义音效" },
   { id: "autostart", label: "开机自启", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "启动设置", targetText: "开机自启", keywords: "登录系统 自动启动 开机启动" },

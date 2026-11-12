@@ -467,7 +467,7 @@ fn dictation_record(run: &Run, outcome: &str, error: Option<&str>) -> Value {
         record["analysis"]["hints"]
             .as_array_mut()
             .expect("hints 是数组")
-            .insert(0, json!("这次听写期间有测试或测速在跑，耗时不具代表性，已排除出统计"));
+            .insert(0, json!("这次语音输入期间有测试或测速在跑，耗时不具代表性，已排除出统计"));
     }
     if run.sensitive {
         scrub_content(&mut record);
@@ -817,7 +817,7 @@ pub(super) fn replay_prompt(id: &str) -> Result<ReplayPrompt, String> {
             .find(|record| record["id"] == id)
             .and_then(replay_from_record)
     };
-    found.ok_or_else(|| "没有能重放的听写记录：需要一次走过智能处理、且不是敏感输入框的听写".to_string())
+    found.ok_or_else(|| "没有能重放的语音输入记录：需要一次走过智能处理、且不是敏感输入框的语音输入".to_string())
 }
 
 /// 模型基础延迟、真实提示词、流式三种请求的对比测试。
@@ -853,7 +853,7 @@ fn enter_variant(id: &str, variant: &'static str) -> Result<(), String> {
     let run = active
         .as_mut()
         .filter(|run| run.id == id)
-        .ok_or("测试期间开始了听写，本次测试已中止")?;
+        .ok_or("测试期间开始了语音输入，本次测试已中止")?;
     run.variant = Some(variant);
     Ok(())
 }
@@ -862,7 +862,7 @@ fn busy_message(kind: &str) -> &'static str {
     if kind == SMART_TEST {
         "对比测试正在进行，结束后再试"
     } else {
-        "正在听写，结束后再试"
+        "正在语音输入，结束后再试"
     }
 }
 
@@ -906,7 +906,7 @@ async fn run_smart_test(app: &AppHandle, request: SmartTestRequest) -> Result<Va
         .lock()
         .map_err(|_| "追踪状态锁失败")?
         .take_if(|run| run.id == id)
-        .ok_or("测试期间开始了听写，本次测试已中止")?;
+        .ok_or("测试期间开始了语音输入，本次测试已中止")?;
     let (analysis, breakdown, connection, error) = match outcome {
         Ok(result) => (
             analyze_test(
@@ -1177,8 +1177,8 @@ async fn api_index() -> Json<Value> {
         "endpoints":{
             "GET /runs?limit=50":"运行记录摘要，从新到旧",
             "GET /runs/{id}":"一次运行的完整记录，id 可写 latest",
-            "GET /stats?limit=50":"最近若干次听写的各阶段与各模型耗时分布",
-            "POST /smart-test":"对比测试，会调用 3 次大模型并产生费用。请求体 {text?, fromRun?, providerId?, model?}，text 和 fromRun 都不给时重放最近一次听写",
+            "GET /stats?limit=50":"最近若干次语音输入的各阶段与各模型耗时分布",
+            "POST /smart-test":"对比测试，会调用 3 次大模型并产生费用。请求体 {text?, fromRun?, providerId?, model?}，text 和 fromRun 都不给时重放最近一次语音输入",
             "POST /smart-eval":"模板回归评测，每条样本一次真实请求（并发，有费用）。请求体 {template?, cases:[{text, appName?, context?}]}，template 不给时用当前模板",
             "GET /models":"可以测速的大模型列表",
             "POST /model-bench":"多模型并发测速，每个模型每轮一次真实请求，有费用。请求体 {models?:[{providerId, model}], rounds?, prompt?, fromRun?}，models 不给时测当前智能处理模型，完成后返回结果",

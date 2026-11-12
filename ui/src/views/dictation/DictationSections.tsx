@@ -122,7 +122,7 @@ export function LocalPunctuationRow() {
     );
   }
   return (
-    <Row label="自动加标点" hint="本地模型识别出的文字没有标点，开启后自动补上标点；这次听写会做智能处理时交给大模型整理，不再单独补。" controlId="dictation-local-punctuation">
+    <Row label="自动加标点" hint="本地模型识别出的文字没有标点，开启后自动补上标点；这次语音输入会做智能处理时交给大模型整理，不再单独补。" controlId="dictation-local-punctuation">
       <Switch id="dictation-local-punctuation" checked={enabled} onChange={(checked) => patch({ localPunctuationEnabled: checked })} />
     </Row>
   );

@@ -119,7 +119,7 @@ fn permission_check() -> SetupCheckResult {
             "permissions",
             "ready",
             "系统权限",
-            "Windows 基础听写无需额外辅助功能授权",
+            "Windows 基础语音输入无需额外辅助功能授权",
             None,
         )
     }
@@ -258,7 +258,7 @@ fn shortcut_check(state: &RuntimeState) -> SetupCheckResult {
             "shortcut",
             "blocked",
             "主快捷键",
-            "主听写快捷键尚未设置",
+            "语音输入的主快捷键尚未设置",
             Some("keys"),
         ),
         Err(_) => check(

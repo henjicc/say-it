@@ -402,7 +402,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
             ariaLabel="测试内容"
             tabs={[
               { key: "standard", label: "标准文本" },
-              { key: "replay", label: "重放最近听写" },
+              { key: "replay", label: "重放最近语音输入" },
               { key: "custom", label: "自定义" },
             ]}
             active={source}

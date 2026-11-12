@@ -15,7 +15,7 @@ export const PRIVACY_ROWS = [
     id: "inputMonitoring",
     kind: "input-monitoring",
     label: "Caps Lock 快捷键",
-    hint: "用 Caps Lock 触发听写需要输入监控权限。",
+    hint: "用 Caps Lock 触发语音输入需要输入监控权限。",
     pending: "没有这项权限时 Caps Lock 快捷键无法使用",
   },
 ] as const;

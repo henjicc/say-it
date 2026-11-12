@@ -15,7 +15,7 @@ import { DEFAULT_HOTWORD_WEIGHT, MAX_HOTWORDS, useCustomizationStore } from "@/s
 const PAGE_SIZE = 30;
 
 function taskLabel(kind: HistoryEntry["taskKind"]) {
-  return ({ dictation: "听写", translateSpeech: "翻译输入", editSelection: "选区编辑", ask: "语音问答" } as const)[kind] || kind;
+  return ({ dictation: "语音输入", translateSpeech: "翻译输入", editSelection: "选区编辑", ask: "语音问答" } as const)[kind] || kind;
 }
 
 function statusLabel(status: HistoryEntry["status"]) {
@@ -272,7 +272,7 @@ export function HistoryView() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title="历史"
-        description="默认保留最近 30 天的本地听写与智能助手结果，不保存音频。"
+        description="默认保留最近 30 天的本地语音输入与智能助手结果，不保存音频。"
         actions={<Button size="sm" onClick={openLearningSettings}>学习设置</Button>}
       />
       <UsageSummaryLine />
@@ -288,7 +288,7 @@ export function HistoryView() {
           <span>·</span>
           <span>{overview.pendingCount} 条待处理</span>
           <span>·</span>
-          <span>{overview.eligibleSampleCount} 条有效证据 / {overview.eligibleEntryCount} 次听写</span>
+          <span>{overview.eligibleSampleCount} 条有效证据 / {overview.eligibleEntryCount} 次语音输入</span>
         </div>
         {overview.activeProfile && <p className="px-3.5 py-3 text-[13px] text-[var(--color-fg)]">当前表达偏好：{overview.activeProfile.summaryText}</p>}
         {overview.draftProfile && (
@@ -299,7 +299,7 @@ export function HistoryView() {
         )}
         <Row
           label="表达偏好"
-          message={!overview.summaryAvailable && "需要至少 10 条有效证据，来自 5 次不同听写"}
+          message={!overview.summaryAvailable && "需要至少 10 条有效证据，来自 5 次不同语音输入"}
         >
           <Button size="sm" disabled={!overview.summaryAvailable || generating} onClick={() => void generateSummary()}>{generating ? "正在生成…" : "生成表达偏好"}</Button>
         </Row>
@@ -326,7 +326,7 @@ export function HistoryView() {
           <option value="">全部状态</option><option value="recognized">原文已保存</option><option value="processed">结果已保存，待输入</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>
         </Select>
         <Select size="sm" className="min-w-0 flex-1 basis-32 sm:flex-none sm:basis-40" value={taskKind} onChange={(event) => setTaskKind(event.target.value)} aria-label="任务类型">
-          <option value="">全部类型</option><option value="dictation">听写</option><option value="translateSpeech">翻译输入</option><option value="editSelection">选区编辑</option><option value="ask">语音问答</option>
+          <option value="">全部类型</option><option value="dictation">语音输入</option><option value="translateSpeech">翻译输入</option><option value="editSelection">选区编辑</option><option value="ask">语音问答</option>
         </Select>
       </div>
 

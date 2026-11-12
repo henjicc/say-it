@@ -25,7 +25,7 @@ export function SettingsKeyBindingsPanel() {
   useEffect(load, []);
 
   const groups = useMemo(() => [
-    { title: "听写", items: items?.filter((item) => item.target.kind === "dictationMain" || item.target.kind === "dictationProfile") ?? [] },
+    { title: "语音输入", items: items?.filter((item) => item.target.kind === "dictationMain" || item.target.kind === "dictationProfile") ?? [] },
     { title: "助手", items: items?.filter((item) => item.target.kind === "assistant") ?? [] },
     { title: "字幕", items: items?.filter((item) => item.target.kind === "subtitles") ?? [] },
   ], [items]);
