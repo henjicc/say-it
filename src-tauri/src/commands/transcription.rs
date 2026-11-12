@@ -242,6 +242,71 @@ fn is_cancelled(cancel: &CancelFlag) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
+/// 已保存的「文件」识别参数：存在默认识别供应商配置的 `transcription` 字段里。
+/// 没有主窗口时（会议录制条停止录制）由这里取参数开始识别。
+pub(crate) fn stored_transcription_params(state: &RuntimeState) -> Result<TranscriptionParams, String> {
+    let settings = read_provider_settings(state)?;
+    let provider = crate::providers::default_provider_id(&settings, "asr");
+    let stored = settings
+        .profiles
+        .iter()
+        .find(|profile| profile.id == provider)
+        .and_then(|profile| profile.config.get("transcription"));
+    let registry = state
+        .plugin_registry
+        .lock()
+        .map_err(|_| "插件注册表锁失败".to_string())?;
+    Ok(normalize_stored_params(stored, |model| {
+        crate::providers::registry::model_info(model)
+            .is_some_and(|info| info.scenes.iter().any(|scene| scene == "transcription"))
+            || registry.provider_id_for_model(model).is_some()
+            || registry.local_model_for_model(model).is_some()
+    }))
+}
+
+/// 把存着的识别参数收敛成合法的一份：模型已不能用于文件识别就用默认模型，说话人数取整且只在
+/// 开启说话人分离时生效。这份配置由界面按 JavaScript 的宽松规则写入和读回，这里对
+/// 开关和人数的取值保持同样宽松。
+fn normalize_stored_params(
+    stored: Option<&Value>,
+    model_exists: impl Fn(&str) -> bool,
+) -> TranscriptionParams {
+    let mut params = TranscriptionParams::default();
+    let Some(stored) = stored else {
+        return params;
+    };
+    if let Some(model) = stored["model"].as_str().map(str::trim) {
+        if !model.is_empty() && model_exists(model) {
+            params.model = model.to_string();
+        }
+    }
+    params.language_hints = stored["languageHints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|hint| !hint.is_empty())
+        .map(str::to_string)
+        .collect();
+    let diarization = match &stored["diarizationEnabled"] {
+        Value::Null => false,
+        Value::Bool(enabled) => *enabled,
+        Value::Number(number) => number.as_f64() != Some(0.0),
+        Value::String(text) => !text.is_empty(),
+        _ => true,
+    };
+    params.diarization_enabled = Some(diarization);
+    // 旧版本存过小数，按截断取整。
+    let speaker_count = &stored["speakerCount"];
+    params.speaker_count = speaker_count
+        .as_f64()
+        .or_else(|| speaker_count.as_str()?.trim().parse().ok())
+        .map(f64::trunc)
+        .filter(|count| diarization && *count >= 1.0 && *count <= f64::from(u32::MAX))
+        .map(|count| count as u32);
+    params
+}
+
 fn resolve_file_recognition_provider(
     state: &RuntimeState,
     model: &str,
@@ -324,4 +389,42 @@ fn emit_transcription_event(app: &tauri::AppHandle, job_id: &str, stage: &str, p
             payload: value,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_params_fall_back_to_defaults_and_only_keep_valid_values() {
+        let exists = |model: &str| model == "known-model";
+        let defaults = normalize_stored_params(None, exists);
+        assert_eq!(defaults.model, TranscriptionParams::default().model);
+        assert_eq!(defaults.speaker_count, None);
+
+        let params = normalize_stored_params(
+            Some(&json!({
+                "model": "known-model",
+                "languageHints": ["zh", 5, ""],
+                "diarizationEnabled": true,
+                "speakerCount": 3.7,
+            })),
+            exists,
+        );
+        assert_eq!(params.model, "known-model");
+        assert_eq!(params.language_hints, ["zh"]);
+        assert_eq!(params.diarization_enabled, Some(true));
+        assert_eq!(params.speaker_count, Some(3));
+
+        let params = normalize_stored_params(
+            Some(&json!({ "model": "removed-model", "speakerCount": 4 })),
+            exists,
+        );
+        assert_eq!(params.model, TranscriptionParams::default().model);
+        assert_eq!(params.speaker_count, None, "没开说话人分离时不带人数");
+        for (count, expected) in [(json!(0.4), None), (json!(-1), None), (json!("3"), Some(3))] {
+            let stored = json!({ "diarizationEnabled": true, "speakerCount": count });
+            assert_eq!(normalize_stored_params(Some(&stored), exists).speaker_count, expected);
+        }
+    }
 }

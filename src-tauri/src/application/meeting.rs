@@ -5,11 +5,12 @@
 //! 分轨仍是可播放的录音；停止时再按时间对齐相加成一个文件，成功后删除分轨。
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::application::audio_session::{AudioLease, AudioOwner};
@@ -19,7 +20,6 @@ use crate::asr_input::RawAudioReceiver;
 use crate::audio_prep::{MonoResampler, TARGET_SAMPLE_RATE};
 use crate::audio_storage::BLOCK;
 use crate::audio_wav::{Quantization, RecordedWav, WavRecording};
-use crate::providers::capabilities::TranscriptionParams;
 use crate::desktop::backend_mic::{
     attach_backend_mic_raw_inner, pause_backend_mic_inner, release_backend_mic_inner,
     start_backend_mic_inner,
@@ -40,11 +40,17 @@ const HEADER_SYNC_SAMPLES: usize = TARGET_SAMPLE_RATE as usize * 5;
 /// 停止时等每一路写完尾包的上限；设备卡住也不能让之后再也开始不了录制。
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const WAV_HEADER_BYTES: usize = 44;
+const BAR_FEED_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub(crate) struct MeetingRuntime {
     recording: Mutex<Option<Recording>>,
     operation: tokio::sync::Mutex<()>,
+    /// 已收到停止、正在保存录音。
+    stopping: AtomicBool,
+    /// 最近一次停止的结果：保存下来的录音，或没能保存的原因；下次开始录制时清空。
+    /// 录制可能由屏幕上的录制条停止，主窗口靠它接上随后开始的识别或显示错误。
+    last_stop: Mutex<Option<Result<MeetingRecordingFile, String>>>,
 }
 
 struct Recording {
@@ -60,6 +66,9 @@ struct Track {
     wav: Option<WavRecording>,
     written: usize,
     error: Option<String>,
+    /// 上次取走音量之后写入样本的平方和与个数，供录制条显示。
+    level_sum: f64,
+    level_count: usize,
 }
 
 impl Track {
@@ -67,6 +76,8 @@ impl Track {
         let wav = self.wav.as_mut().ok_or("会议录音已结束")?;
         wav.append(samples)
             .map_err(|error| format!("写入会议录音失败：{error}"))?;
+        self.level_sum += samples.iter().map(|sample| f64::from(sample * sample)).sum::<f64>();
+        self.level_count += samples.len();
         let before = self.written;
         self.written += samples.len();
         if before / HEADER_SYNC_SAMPLES != self.written / HEADER_SYNC_SAMPLES {
@@ -74,6 +85,17 @@ impl Track {
                 .map_err(|error| format!("写入会议录音失败：{error}"))?;
         }
         Ok(())
+    }
+
+    /// 上次调用以来的音量（RMS）；这段时间没有声音送来时为 0。
+    fn take_level(&mut self) -> f32 {
+        let count = std::mem::take(&mut self.level_count);
+        let sum = std::mem::take(&mut self.level_sum);
+        if count == 0 {
+            0.0
+        } else {
+            (sum / count as f64).sqrt() as f32
+        }
     }
 }
 
@@ -84,6 +106,9 @@ pub(crate) struct MeetingStatus {
     started_at_ms: Option<u64>,
     /// 某一路中途断开的原因；之后只剩另一路的声音。
     warning: Option<String>,
+    stopping: bool,
+    last_file: Option<MeetingRecordingFile>,
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -95,7 +120,41 @@ pub(crate) struct MeetingRecordingFile {
     job_id: Option<String>,
 }
 
+impl MeetingRecordingFile {
+    /// 没有主窗口时告诉用户的一句结果。
+    pub(crate) fn notice(&self) -> String {
+        match &self.warning {
+            Some(warning) => format!("会议录音已保存。{warning}"),
+            None => "会议录音已保存，正在识别".into(),
+        }
+    }
+}
+
+/// 录制条每次刷新要的数据：两路（麦克风、系统声音）的音量和是否已断开。
+struct BarFeed {
+    levels: [f32; 2],
+    lost: [bool; 2],
+}
+
 impl MeetingRuntime {
+    /// `started_at_ms` 对应的那次录制已经结束时返回 None。
+    fn bar_feed(&self, started_at_ms: u64) -> Option<BarFeed> {
+        let recording = self.recording.lock().ok()?;
+        let recording = recording
+            .as_ref()
+            .filter(|recording| recording.started_at_ms == started_at_ms)?;
+        let mut feed = BarFeed {
+            levels: [0.0; 2],
+            lost: [false; 2],
+        };
+        for (index, track) in recording.tracks.iter().enumerate() {
+            let mut track = track.lock().ok()?;
+            feed.levels[index] = track.take_level();
+            feed.lost[index] = track.error.is_some();
+        }
+        Some(feed)
+    }
+
     /// 数据目录迁移期间持有：录制中拒绝迁移，迁移中也开始不了录制。
     pub(crate) async fn hold_idle_for_migration(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
         let guard = self.operation.lock().await;
@@ -113,10 +172,18 @@ impl MeetingRuntime {
                 .iter()
                 .find_map(|track| track.lock().ok()?.error.clone())
         });
+        let last_stop = self
+            .last_stop
+            .lock()
+            .map_err(|_| "会议录制状态锁失败")?
+            .clone();
         Ok(MeetingStatus {
             recording: recording.is_some(),
             started_at_ms: recording.as_ref().map(|value| value.started_at_ms),
             warning,
+            stopping: self.stopping.load(Ordering::Acquire),
+            last_file: last_stop.as_ref().and_then(|stop| stop.clone().ok()),
+            last_error: last_stop.and_then(Result::err),
         })
     }
 }
@@ -157,12 +224,46 @@ pub(crate) async fn meeting_start(
             return Err(error);
         }
     };
+    let started_at_ms = recording.started_at_ms;
+    *state
+        .meeting_runtime
+        .last_stop
+        .lock()
+        .map_err(|_| "会议录制状态锁失败")? = None;
     *state
         .meeting_runtime
         .recording
         .lock()
         .map_err(|_| "会议录制状态锁失败")? = Some(recording);
+    crate::desktop::native_recorder::native_recorder_show(&app);
+    spawn_bar_feed(app, started_at_ms);
     state.meeting_runtime.status()
+}
+
+/// 录制期间定时把音量和断开状态送给录制条；条上的计时也靠这个节拍刷新。
+fn spawn_bar_feed(app: AppHandle, started_at_ms: u64) {
+    use crate::desktop::native_recorder::{native_recorder_levels, native_recorder_set_lost};
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(BAR_FEED_INTERVAL);
+        // 系统睡眠或运行时卡顿后不补发错过的节拍。
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut lost = [false; 2];
+        loop {
+            interval.tick().await;
+            let Some(feed) = app
+                .state::<RuntimeState>()
+                .meeting_runtime
+                .bar_feed(started_at_ms)
+            else {
+                break;
+            };
+            native_recorder_levels(feed.levels[0], feed.levels[1]);
+            if feed.lost != lost {
+                lost = feed.lost;
+                native_recorder_set_lost(lost[0], lost[1]);
+            }
+        }
+    });
 }
 
 fn start_capture(state: &RuntimeState, lease: AudioLease, dir: &Path) -> Result<Recording, String> {
@@ -199,6 +300,8 @@ fn start_capture(state: &RuntimeState, lease: AudioLease, dir: &Path) -> Result<
             wav: Some(wav),
             written: 0,
             error: None,
+            level_sum: 0.0,
+            level_count: 0,
         }));
         drains.push(spawn_track(receiver, rate, resampler, track.clone(), started));
         tracks.push(track);
@@ -262,23 +365,45 @@ fn release_devices(state: &RuntimeState) {
     let _ = release_backend_system_audio_inner(state);
 }
 
-/// `params` 是「文件」识别当前的参数，由前端按它的规则整理好传入。
 #[tauri::command]
 pub(crate) async fn meeting_stop(
     app: AppHandle,
     state: tauri::State<'_, RuntimeState>,
-    params: Option<TranscriptionParams>,
 ) -> Result<MeetingRecordingFile, String> {
+    stop(&app, &state).await
+}
+
+/// 主窗口的按钮和录制条的停止按钮共用。识别参数取已保存的「文件」识别设置，
+/// 不依赖主窗口还开着。
+pub(crate) async fn stop(app: &AppHandle, state: &RuntimeState) -> Result<MeetingRecordingFile, String> {
     let _operation = state.meeting_runtime.operation.lock().await;
-    let recording = state
-        .meeting_runtime
-        .recording
-        .lock()
-        .map_err(|_| "会议录制状态锁失败")?
-        .take()
-        .ok_or("没有正在录制的会议")?;
+    let recording = {
+        let mut recording = state
+            .meeting_runtime
+            .recording
+            .lock()
+            .map_err(|_| "会议录制状态锁失败")?;
+        let recording = recording.take().ok_or("没有正在录制的会议")?;
+        // 与取走录制在同一把锁里置位：状态里不会出现「既没在录也没在保存」的瞬间。
+        state.meeting_runtime.stopping.store(true, Ordering::Release);
+        recording
+    };
+    crate::desktop::native_recorder::native_recorder_hide();
+    let result = save_and_transcribe(app, state, recording).await;
+    if let Ok(mut last_stop) = state.meeting_runtime.last_stop.lock() {
+        *last_stop = Some(result.clone());
+    }
+    state.meeting_runtime.stopping.store(false, Ordering::Release);
+    result
+}
+
+async fn save_and_transcribe(
+    app: &AppHandle,
+    state: &RuntimeState,
+    recording: Recording,
+) -> Result<MeetingRecordingFile, String> {
     // 释放设备后发送端关闭，各路写完尾包才退出。
-    release_devices(&state);
+    release_devices(state);
     for drain in recording.drains {
         let _ = tokio::time::timeout(DRAIN_TIMEOUT, drain).await;
     }
@@ -333,15 +458,20 @@ pub(crate) async fn meeting_stop(
         });
         None
     } else {
-        match crate::commands::transcription::transcription_start_inner(
-            app,
-            &state,
-            path.clone(),
-            params,
-            TRANSCRIBE_KIND,
-        )
-        .await
-        {
+        let started = match crate::commands::transcription::stored_transcription_params(state) {
+            Ok(params) => {
+                crate::commands::transcription::transcription_start_inner(
+                    app.clone(),
+                    state,
+                    path.clone(),
+                    Some(params),
+                    TRANSCRIBE_KIND,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match started {
             Ok(response) => Some(response.job_id),
             Err(error) => {
                 let failed = format!("没能开始识别：{error}");

@@ -46,6 +46,8 @@ pub(crate) struct RuntimeState {
     pub(crate) backend_system_audio_lifecycle: Mutex<()>,
     pub(crate) main_window_placement: Mutex<Option<MainWindowPlacement>>,
     pub(crate) floating_orb: Mutex<FloatingOrbSettings>,
+    /// 会议录制条被拖到的位置（左上角，物理像素）；没拖过为空。
+    pub(crate) meeting_bar_position: Mutex<Option<FloatingOrbPosition>>,
     pub(crate) floating_orb_runtime: FloatingOrbRuntime,
     pub(crate) mouse_gesture: Mutex<MouseGestureSettings>,
     pub(crate) mouse_gesture_runtime: MouseGestureRuntime,

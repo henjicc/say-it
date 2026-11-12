@@ -83,6 +83,8 @@ pub(crate) struct PersistedData {
     pub(crate) floating_orb: FloatingOrbSettings,
     #[serde(default)]
     pub(crate) mouse_gesture: MouseGestureSettings,
+    #[serde(default)]
+    pub(crate) meeting_bar_position: Option<crate::state::FloatingOrbPosition>,
 }
 
 fn default_schema_version() -> u32 {
@@ -156,6 +158,10 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .lock()
         .map_err(|_| "Mouse gesture settings lock failed".to_string())?
         .clone();
+    let meeting_bar_position = *state
+        .meeting_bar_position
+        .lock()
+        .map_err(|_| "Meeting bar position lock failed".to_string())?;
     let providers = normalize_settings(providers);
     ensure_no_plaintext_credentials(&providers)?;
     let data = PersistedData {
@@ -177,6 +183,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
         obs_overlay,
         floating_orb,
         mouse_gesture,
+        meeting_bar_position,
     };
     let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
     let file = state_file_path(app)?;

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
-import { adoptTranscriptionJob, normalizeParams } from "@/features/transcription/controller";
+import { adoptTranscriptionJob } from "@/features/transcription/controller";
 import { useFilePick } from "@/features/transcription/filePicker";
 import { CMD, cmd, type MeetingRecordingFile, type MeetingStatus } from "@/lib/tauri";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
@@ -30,21 +30,47 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
   const [now, setNow] = useState(() => Date.now());
   const { message: fileMessage, loadFileInfo } = useFilePick(setSelectedFile);
 
-  const refresh = () => cmd<MeetingStatus>(CMD.getMeetingStatus).then(setStatus);
+  const refresh = () =>
+    cmd<MeetingStatus>(CMD.getMeetingStatus).then((next) => {
+      setStatus(next);
+      return next;
+    });
   useEffect(() => {
     refresh().catch((reason: unknown) => setMessage(String(reason)));
   }, []);
 
+  /** 录音保存之后：没有自动识别就说明原因，否则接上后端已经开始的识别任务。 */
+  const showSaved = async (file: MeetingRecordingFile) => {
+    if (!file.jobId) {
+      // 已有识别在进行（不打断它、也不换掉它的文件）或没能开始识别。
+      setNotice(`${file.warning ? `${file.warning}。` : ""}录音已保存：${file.path}。可以稍后在「文件」里选择它识别。`);
+      return;
+    }
+    if (file.warning) setNotice(`${file.warning}。`);
+    await loadFileInfo(file.path);
+    await adoptTranscriptionJob(file.jobId);
+    if (!file.warning) setTab("transcribe");
+  };
+
   // 录制中每秒刷新计时，同时拉一次状态，一路断开时及时提示。
+  // 录制也可能从屏幕上的录制条停止：等后端保存完，再按它给出的录音和任务接上。
   const recording = status?.recording ?? false;
+  const watching = recording || (status?.stopping ?? false);
+  const stoppingHere = useRef(false);
   useEffect(() => {
-    if (!recording) return;
+    if (!watching) return;
     const timer = window.setInterval(() => {
       setNow(Date.now());
-      refresh().catch(() => {});
+      refresh()
+        .then((next) => {
+          if (next.recording || next.stopping || stoppingHere.current) return;
+          if (next.lastError) setMessage(next.lastError);
+          if (next.lastFile) return showSaved(next.lastFile);
+        })
+        .catch((reason: unknown) => setMessage(String(reason)));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [recording]);
+  }, [watching]);
 
   const start = async () => {
     setBusy(true);
@@ -62,27 +88,19 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
 
   const stop = async () => {
     setBusy(true);
+    stoppingHere.current = true;
     setMessage("");
     setNotice("");
     try {
-      // 识别由后端在保存录音后直接开始，停止后马上关掉主窗口也不会落下。
-      const file = await cmd<MeetingRecordingFile>(CMD.meetingStop, {
-        params: normalizeParams(useTranscriptionStore.getState().params),
-      });
-      setStatus({ recording: false, startedAtMs: null, warning: null });
-      if (!file.jobId) {
-        // 已有识别在进行（不打断它、也不换掉它的文件）或没能开始识别。
-        setNotice(`${file.warning ? `${file.warning}。` : ""}录音已保存：${file.path}。可以稍后在「文件」里选择它识别。`);
-        return;
-      }
-      if (file.warning) setNotice(`${file.warning}。`);
-      await loadFileInfo(file.path);
-      await adoptTranscriptionJob(file.jobId);
-      if (!file.warning) setTab("transcribe");
+      // 识别由后端在保存录音后直接开始，用的是已保存的识别设置，停止后马上关掉主窗口也不会落下。
+      const file = await cmd<MeetingRecordingFile>(CMD.meetingStop);
+      setStatus({ recording: false, startedAtMs: null, warning: null, stopping: false, lastFile: file, lastError: null });
+      await showSaved(file);
     } catch (reason) {
       setMessage(String(reason));
       await refresh().catch(() => {});
     } finally {
+      stoppingHere.current = false;
       setBusy(false);
     }
   };
@@ -109,7 +127,7 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
         {recording ? (
           <Button size="sm" variant="danger" disabled={busy} onClick={() => void stop()}>停止录制</Button>
         ) : (
-          <Button size="sm" variant="primary" disabled={busy || !status} onClick={() => void start()}>开始录制</Button>
+          <Button size="sm" variant="primary" disabled={busy || !status || status.stopping} onClick={() => void start()}>开始录制</Button>
         )}
       </Row>
       {!simple && (
