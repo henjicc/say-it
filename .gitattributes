@@ -1,1 +1,3 @@
-src-tauri/resources/ocr/ppocr_keys_v6_tiny.txt text eol=lf
+# 仓库和工作区里的文本文件一律用 LF。Windows 上 core.autocrlf 会把工作区转成 CRLF，而 Tauri CLI
+# 等工具改写文件时写回 LF，内容没变也会显示为已修改；统一 LF 就没有这种来回转换。
+* text=auto eol=lf
