@@ -64,7 +64,7 @@ describe("theme store", () => {
     for (const tone of ["dark", "light"] as const) {
       applyThemeToDocument({ ...defaultAccentTheme, tone });
       const style = document.documentElement.style;
-      const layers = ["--theme-bg-sidebar", "--theme-bg", "--theme-panel", "--theme-surface"]
+      const layers = ["--theme-bg-sidebar", "--theme-bg", "--theme-surface", "--theme-overlay"]
         .map((name) => style.getPropertyValue(name));
       for (const text of ["--color-fg-subtle", "--color-accent-text"]) {
         for (const layer of layers) {
