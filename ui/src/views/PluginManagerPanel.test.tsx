@@ -4,17 +4,20 @@ import { LocalModelsPanel, PluginsPanel } from "./PluginManagerPanel";
 import type { PluginSnapshot, PluginSummary } from "@/features/plugins/pluginInstaller";
 import { useLocalModels } from "@/features/models/localModels";
 
-const { cmd, listeners, officialPacks } = vi.hoisted(() => ({
+const { cmd, listeners, officialPacks, catalog } = vi.hoisted(() => ({
   cmd: vi.fn(),
   listeners: new Map<string, (value: unknown) => void>(),
   officialPacks: [] as unknown[],
+  /** 本次运行早先读到的目录，和联网刷新失败时的原因。 */
+  catalog: { cached: null as unknown[] | null, error: "" },
 }));
 vi.mock("@/lib/tauri", async (original) => ({
   ...await original<typeof import("@/lib/tauri")>(),
   // 官方模型目录和硬件信息单独应答，不占用各用例为插件列表排好的返回顺序。
   cmd: (name: string, args?: unknown) => name === "list_official_model_packs"
-    ? Promise.resolve(officialPacks)
-    : name === "detect_hardware" ? Promise.resolve(undefined) : cmd(name, args),
+    ? (catalog.error ? Promise.reject(catalog.error) : Promise.resolve(officialPacks))
+    : name === "cached_official_model_packs" ? Promise.resolve(catalog.cached)
+      : name === "detect_hardware" ? Promise.resolve(undefined) : cmd(name, args),
   on: vi.fn(async (event: string, listener: (value: unknown) => void) => {
     listeners.set(event, listener);
     return () => listeners.delete(event);
@@ -35,7 +38,7 @@ function plugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
 
 // 下载状态放在组件之外，各用例之间要清掉。
 function resetDownloads() {
-  useLocalModels.setState({ snapshot: undefined, packs: undefined, downloaded: {}, installing: [], installError: undefined, loadError: "", packsError: "" });
+  useLocalModels.setState({ snapshot: undefined, packs: undefined, packsFresh: false, downloaded: {}, installing: [], installError: undefined, loadError: "", packsError: "" });
 }
 
 function snapshot(item = plugin()): PluginSnapshot {
@@ -138,7 +141,7 @@ describe("被内置取代的模型包", () => {
 
 describe("官方模型", () => {
   beforeEach(() => { cmd.mockReset(); listeners.clear(); resetDownloads(); });
-  afterEach(() => { cleanup(); officialPacks.length = 0; });
+  afterEach(() => { cleanup(); officialPacks.length = 0; catalog.cached = null; catalog.error = ""; });
 
   it("已装的留在目录原位且不再给下载，未装的点下载会安装对应模型包", async () => {
     officialPacks.push(
@@ -176,6 +179,35 @@ describe("官方模型", () => {
     const names = ["停用模型", "本地测试", "标点"].map((name) => screen.getByText(name));
     expect(names[0].compareDocumentPosition(names[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(names[1].compareDocumentPosition(names[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("按推荐顺序排列，每个模型显示一句说明", async () => {
+    officialPacks.push(
+      { id: "official.sherpa-sensevoice-small", name: "SenseVoice", description: "目录说明", version: "1", sizeBytes: 100 },
+      { id: "official.unknown", name: "第三方", description: "第三方模型的说明", version: "1", sizeBytes: 100 },
+      { id: "official.transcribe-qwen3-asr-1.7b", name: "Qwen3-ASR-1.7B", description: "目录说明", version: "1", sizeBytes: 100 },
+    );
+    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [] });
+    render(<LocalModelsPanel />);
+    await screen.findByText("可下载");
+    const names = ["Qwen3-ASR-1.7B", "SenseVoice", "第三方"].map((name) => screen.getByText(name));
+    expect(names[0].compareDocumentPosition(names[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(names[1].compareDocumentPosition(names[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/^准确率最高的本地语音识别/)).toBeInTheDocument();
+    expect(screen.getByText("第三方模型的说明")).toBeInTheDocument();
+  });
+
+  it("先显示本次运行读到过的目录，联网刷新失败时提示并可重试", async () => {
+    catalog.cached = [{ id: "official.punct", name: "标点", description: "加标点", version: "1", sizeBytes: 100 }];
+    catalog.error = "网络不通";
+    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [] });
+    render(<LocalModelsPanel />);
+    expect(await screen.findByRole("button", { name: "下载标点" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("网络不通");
+    catalog.error = "";
+    officialPacks.push({ id: "official.punct", name: "标点", description: "加标点", version: "1", sizeBytes: 100 });
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
   it("切到别的页面再回来，进行中的下载仍显示进度", async () => {

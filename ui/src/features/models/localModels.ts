@@ -31,6 +31,8 @@ interface LocalModelsState {
   snapshot?: PluginSnapshot;
   /** 官方模型目录。 */
   packs?: OfficialModelPack[];
+  /** 这个窗口已经联网刷新过官方目录；之前的 packs 可能是本次运行早先读到的。 */
+  packsFresh: boolean;
   downloaded: Record<string, number>;
   /** 正在安装的那几个包；没有在装时为空。同一时刻只装一批。 */
   installing: readonly string[];
@@ -40,7 +42,7 @@ interface LocalModelsState {
   packsError: string;
   /** 最近一次安装失败，以及是哪几个包。 */
   installError?: { ids: readonly string[]; message: string };
-  /** 读插件快照、模型目录并订阅进度；重复调用只刷新快照。 */
+  /** 读插件快照、模型目录并订阅进度；目录先用本次运行读到过的，再联网刷新一次。重复调用只刷新快照。 */
   load: () => Promise<void>;
   /** 只刷新插件快照。 */
   refresh: () => Promise<void>;
@@ -68,6 +70,7 @@ export const useLocalModels = create<LocalModelsState>((set, get) => {
   };
   return {
     downloaded: {},
+    packsFresh: false,
     installing: [],
     loadError: "",
     packsError: "",
@@ -84,9 +87,13 @@ export const useLocalModels = create<LocalModelsState>((set, get) => {
       } catch (reason) {
         set({ loadError: `读取插件列表失败：${String(reason)}` });
       }
-      if (get().packs) return;
+      if (get().packsFresh) return;
       try {
-        set({ packs: await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks), packsError: "" });
+        if (!get().packs) {
+          const cached = await cmd<OfficialModelPack[] | null>(CMD.cachedOfficialModelPacks);
+          if (cached) set({ packs: cached });
+        }
+        set({ packs: await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks), packsFresh: true, packsError: "" });
       } catch (reason) {
         set({ packsError: `读取官方模型列表失败：${String(reason)}` });
       }

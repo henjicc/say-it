@@ -17,7 +17,16 @@ import {
   type PluginSnapshot,
   type PluginSummary,
 } from "@/features/plugins/pluginInstaller";
-import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, recommendedAsrPack, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
+import {
+  hardwareFit,
+  hardwareLabel,
+  LOCAL_MODEL_NEEDS,
+  localModelDescription,
+  localModelRank,
+  recommendedAsrPack,
+  useHardware,
+  type HardwareSummary,
+} from "@/features/models/localModelNeeds";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import { useLocalModels } from "@/features/models/localModels";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
@@ -214,16 +223,21 @@ function DownloadMeter({ name, progress, totalBytes }: { name: string; progress:
   );
 }
 
+function RowDescription({ text }: { text?: string }) {
+  return text ? <p className="mt-1 text-xs leading-relaxed text-[var(--color-fg-subtle)]">{text}</p> : null;
+}
+
 function RowError({ text }: { text?: string }) {
   return text ? <p role="alert" className="mt-1 break-words text-xs text-[var(--color-err)]">{text}</p> : null;
 }
 
 /** 已安装的一行：模型包或连接器插件。update 是官方目录里更新的版本。 */
-function InstalledRow({ plugin, manager, hardware, update }: {
+function InstalledRow({ plugin, manager, hardware, update, description }: {
   plugin: PluginSummary;
   manager: Manager;
   hardware?: HardwareSummary;
   update?: OfficialModelPack;
+  description?: string;
 }) {
   const busy = manager.busyPluginId === plugin.id;
   const pack = plugin.modelPack;
@@ -235,14 +249,13 @@ function InstalledRow({ plugin, manager, hardware, update }: {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-[13px] font-medium text-[var(--color-fg)]">
-              <HelpLabel content={LOCAL_MODEL_NEEDS[plugin.id]?.summary}>{plugin.name}</HelpLabel>
-            </p>
+            <p className="text-[13px] font-medium text-[var(--color-fg)]">{plugin.name}</p>
             {update && <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version} → v{update.version}</span>}
             {pack?.state === "ready" && <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.totalBytes)}</span>}
             {plugin.trust !== "trusted" && <span className="text-xs text-[var(--color-warn)]">{TRUST_LABEL[plugin.trust]}</span>}
             <ModelFit pluginId={plugin.id} hardware={hardware} />
           </div>
+          <RowDescription text={description} />
           {plugin.permissions.length > 0 && (
             <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
               权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、")}
@@ -319,19 +332,23 @@ function InstalledRow({ plugin, manager, hardware, update }: {
 }
 
 /** 官方目录里还没安装的一行。 */
-function AvailableRow({ pack, manager, hardware }: { pack: OfficialModelPack; manager: Manager; hardware?: HardwareSummary }) {
+function AvailableRow({ pack, manager, hardware, description }: {
+  pack: OfficialModelPack;
+  manager: Manager;
+  hardware?: HardwareSummary;
+  description?: string;
+}) {
   const progress = manager.downloadProgress(pack.id, pack.sizeBytes);
-  const need = LOCAL_MODEL_NEEDS[pack.id]?.summary;
-  const detail = need ? `${pack.description.replace(/[。.]$/, "")}。${need}。` : pack.description;
   return (
     <div className="px-3.5 py-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-          <p className="text-[13px] font-medium text-[var(--color-fg)]">
-            <HelpLabel content={detail}>{pack.name}</HelpLabel>
-          </p>
-          <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
-          <ModelFit pluginId={pack.id} hardware={hardware} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
+            <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
+            <ModelFit pluginId={pack.id} hardware={hardware} />
+          </div>
+          <RowDescription text={description} />
         </div>
         {progress !== undefined
           ? <DownloadMeter name={pack.name} progress={progress} totalBytes={pack.sizeBytes} />
@@ -401,37 +418,37 @@ function ListStatus({ manager, empty }: { manager: Manager; empty: string }) {
 }
 
 /**
- * 本地模型：官方目录与已安装的模型包，分「已下载」和「可下载」两组。
- * 可下载的按这台电脑的推荐在前，其余保持目录顺序；切换启用不改变位置。下载中的条目留在「可下载」原位，下完才移上去。
+ * 本地模型：官方目录与已安装的模型包，分「已下载」和「可下载」两组，组内按推荐程度的固定顺序
+ * （LOCAL_MODEL_NEEDS），不认识的按目录顺序排在后面；切换启用不改变位置。已安装的不等官方目录，
+ * 先列出来；下载中的条目留在「可下载」原位，下完才移上去。
  */
 export function LocalModelsPanel() {
   const manager = usePluginManager(true);
   const hardware = useHardware();
   const hardwareText = hardwareLabel(hardware);
-  const recommended = recommendedAsrPack(hardware);
   const { snapshot, officialPacks } = manager;
   const officialError = manager.packsError;
   const installedPacks = snapshot?.plugins.filter((plugin) => plugin.runtimeKind === "model-pack") ?? [];
   const catalog = officialPacks ?? [];
-  // 目录到齐（或确定读不到）后再列出，已装的模型不会先排在后面再跳回目录里的位置。
-  const listReady = Boolean(snapshot) && (Boolean(officialPacks) || Boolean(officialError));
 
   const entries = [
     ...catalog.map((pack) => ({ id: pack.id, pack, installed: installedPacks.find((plugin) => plugin.id === pack.id) })),
     ...installedPacks
       .filter((plugin) => !catalog.some((pack) => pack.id === plugin.id))
       .map((plugin) => ({ id: plugin.id, pack: undefined, installed: plugin })),
-  ];
+  ].sort((a, b) => localModelRank(a.id) - localModelRank(b.id));
   // 还没装、或装了但权重能继续下载的，算「可下载」；其余（已就绪、被内置取代、下不了的）都在「已下载」。
   const isAvailable = ({ installed }: (typeof entries)[number]) =>
     !installed || (installed.modelPack?.downloadable === true && !["ready", "superseded"].includes(installed.modelPack.state));
   const downloaded = entries.filter((entry) => !isAvailable(entry));
-  const available = entries.filter(isAvailable)
-    .sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended));
+  const available = entries.filter(isAvailable);
 
-  const renderEntry = ({ id, pack, installed }: (typeof entries)[number]) => installed
-    ? <InstalledRow key={id} plugin={installed} manager={manager} hardware={hardware} update={pack && isNewerVersion(pack.version, installed.version) ? pack : undefined} />
-    : <AvailableRow key={id} pack={pack!} manager={manager} hardware={hardware} />;
+  const renderEntry = ({ id, pack, installed }: (typeof entries)[number]) => {
+    const description = localModelDescription(id) ?? pack?.description;
+    return installed
+      ? <InstalledRow key={id} plugin={installed} manager={manager} hardware={hardware} description={description} update={pack && isNewerVersion(pack.version, installed.version) ? pack : undefined} />
+      : <AvailableRow key={id} pack={pack!} manager={manager} hardware={hardware} description={description} />;
+  };
 
   return (
     <>
@@ -440,9 +457,9 @@ export function LocalModelsPanel() {
         right={<PackageActions manager={manager} />}
       />
       <InspectorBody>
-        {listReady && downloaded.length > 0 && <Group title="已下载">{downloaded.map(renderEntry)}</Group>}
-        {listReady && available.length > 0 && <Group title="可下载">{available.map(renderEntry)}</Group>}
-        {snapshot && !officialPacks && (
+        {downloaded.length > 0 && <Group title="已下载">{downloaded.map(renderEntry)}</Group>}
+        {available.length > 0 && <Group title="可下载">{available.map(renderEntry)}</Group>}
+        {snapshot && (!officialPacks || officialError) && (
           <Group>
             <div className="flex items-center justify-between gap-4 px-3.5 py-3">
               <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
