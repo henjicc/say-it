@@ -293,7 +293,10 @@ impl<T: TextEngine> OverlayModel<T> for Recorder {
     fn wants_frames(&self, _: Instant) -> bool {
         self.transition.is_animating()
     }
-    fn prepare_frame(&mut self, _: &Cx<'_, T>) -> Option<FrameSpec> {
+    fn prepare_frame(&mut self, cx: &Cx<'_, T>) -> Option<FrameSpec> {
+        if cx.dpi != 0 {
+            self.dpi = cx.dpi;
+        }
         self.visible.then(|| FrameSpec {
             bounds: self.bounds(),
             dpi: self.dpi,

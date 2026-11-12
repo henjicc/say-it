@@ -137,6 +137,8 @@ struct MainHost {
     view: Retained<OverlayView>,
     slot: Arc<CommitSlot>,
     glass: RefCell<GlassView>,
+    /// 已经为哪个实际缩放请求过改正；帧与实际一致后清零。模型不采用 `cx.dpi` 时不会反复请求。
+    corrected_dpi: std::cell::Cell<u32>,
 }
 
 pub(crate) fn attach(
@@ -152,6 +154,7 @@ pub(crate) fn attach(
             view,
             slot: slot.clone(),
             glass: RefCell::new(GlassView::default()),
+            corrected_dpi: std::cell::Cell::new(0),
         });
         HOSTS.with(|hosts| {
             let previous = hosts.borrow_mut().insert(slot.id, host);
@@ -268,6 +271,17 @@ impl MainHost {
                         .then_some((frame.bounds.width, frame.bounds.height));
                 }
                 self.set_bounds(frame.bounds, frame.screen.map(|s| s.id));
+                // 宿主建立时取的是焦点屏的缩放，窗口可能落在缩放不同的另一块屏上，
+                // 而且不一定触发缩放变化通知：让宿主改用面板的实际缩放重画。
+                let actual = screen::dpi_for_scale(self.panel.backingScaleFactor());
+                if self.slot.placement == Placement::FollowFocus || actual == frame.dpi {
+                    self.corrected_dpi.set(0);
+                } else if self.corrected_dpi.replace(actual) != actual {
+                    crate::render::run_on_host(
+                        self.slot.id,
+                        Box::new(move |host, cx| host.adopt_dpi(actual, cx)),
+                    );
+                }
                 if let Some(layer) = self.view.layer() {
                     // SAFETY: CGImage 的 CALayer contents ABI 接受 CoreFoundation 对象，图像保留到 setContents 返回，layer 会 retain。
                     let image = unsafe {
