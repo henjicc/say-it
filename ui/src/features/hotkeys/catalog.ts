@@ -2,6 +2,7 @@ import { CMD, cmd } from "@/lib/tauri";
 import { loadDictationSettings } from "@/features/dictation/controller";
 import { loadSubtitleShortcut } from "@/features/subtitles/controller";
 import type { ShortcutCombo, ShortcutTriggerMode } from "@/features/dictation/hotkeys";
+import { setQueryData, type Query } from "@/hooks/useCachedQuery";
 
 export type ShortcutTarget =
   | { kind: "dictationMain" }
@@ -30,6 +31,12 @@ export async function loadShortcutBindings(): Promise<ShortcutBindingItem[]> {
   return cmd<ShortcutBindingItem[]>(CMD.getShortcutBindings);
 }
 
+/** 全部快捷键，各页共用一份；改动后用命令返回的列表更新。 */
+export const shortcutBindingsQuery: Query<ShortcutBindingItem[]> = {
+  key: "shortcutBindings",
+  load: loadShortcutBindings,
+};
+
 export async function updateShortcutBinding(
   item: ShortcutBindingItem,
   shortcut: ShortcutCombo,
@@ -46,12 +53,14 @@ export async function updateShortcutBinding(
       triggerMode,
     },
   });
+  setQueryData(shortcutBindingsQuery, items);
   await syncShortcutDomain(item.target);
   return items;
 }
 
 export async function clearShortcutBinding(item: ShortcutBindingItem): Promise<ShortcutBindingItem[]> {
   const items = await cmd<ShortcutBindingItem[]>(CMD.clearShortcutBinding, { target: item.target });
+  setQueryData(shortcutBindingsQuery, items);
   await syncShortcutDomain(item.target);
   return items;
 }

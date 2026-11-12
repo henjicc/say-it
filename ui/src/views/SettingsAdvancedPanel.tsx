@@ -11,7 +11,9 @@ import { RangeInput } from "@/components/ui/RangeInput";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
-import { CMD, cmd, cmdSilent, type AppSnapshot, type DiagnosticStatus } from "@/lib/tauri";
+import { CMD, cmd, cmdSilent, type DiagnosticStatus } from "@/lib/tauri";
+import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
+import { useAppSettings } from "@/store/useAppSettingsStore";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { updateDiagnosticsPrefs } from "@/store/useDeveloperStore";
 import { useAudioStore, type PlaybackTrack } from "@/store/useAudioStore";
@@ -41,40 +43,36 @@ const fmt = {
 const fmtMs = (value: number) => `${(value / 1000).toFixed(1)} 秒`;
 const fmtThreshold = (value: number) => value.toFixed(4);
 
+export const diagnosticStatusQuery: Query<DiagnosticStatus> = {
+  key: "diagnosticStatus",
+  load: () => cmd<DiagnosticStatus>(CMD.getDiagnosticStatus),
+};
+
 export function DiagnosticSection() {
   const { confirm, dialog } = useConfirm();
-  const [verboseLogging, setVerboseLogging] = useState(false);
-  const [status, setStatus] = useState<DiagnosticStatus | null>(null);
+  const verboseLogging = useAppSettings((state) => state.settings?.diagnosticsPrefs.verboseLogging === true);
+  const { data: status, error: statusError } = useCachedQuery(diagnosticStatusQuery);
+  const setStatus = (next: DiagnosticStatus) => setQueryData(diagnosticStatusQuery, next);
   const [includeContent, setIncludeContent] = useState(false);
 
   useEffect(() => {
-    void Promise.all([
-      cmd<AppSnapshot>(CMD.getAppSnapshot),
-      cmd<DiagnosticStatus>(CMD.getDiagnosticStatus),
-    ]).then(([snapshot, nextStatus]) => {
-      setVerboseLogging(snapshot.settings.diagnosticsPrefs.verboseLogging === true);
-      setStatus(nextStatus);
-    }).catch(notifyError);
-  }, []);
+    if (statusError) notifyError(statusError);
+  }, [statusError]);
 
   useEffect(() => {
     if (!status?.contentLoggingEnabled) return;
-    const timer = window.setInterval(() => {
-      setStatus((current) => current ? {
-        ...current,
-        contentLoggingRemainingSeconds: Math.max(0, current.contentLoggingRemainingSeconds - 1),
-        contentLoggingEnabled: current.contentLoggingRemainingSeconds > 1,
-      } : current);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [status?.contentLoggingEnabled]);
+    const timer = window.setTimeout(() => setStatus({
+      ...status,
+      contentLoggingRemainingSeconds: Math.max(0, status.contentLoggingRemainingSeconds - 1),
+      contentLoggingEnabled: status.contentLoggingRemainingSeconds > 1,
+    }), 1000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   async function updateVerbose(enabled: boolean) {
-    setVerboseLogging(enabled);
     try {
       await updateDiagnosticsPrefs({ verboseLogging: enabled });
     } catch (error) {
-      setVerboseLogging(!enabled);
       notifyError(error);
     }
   }

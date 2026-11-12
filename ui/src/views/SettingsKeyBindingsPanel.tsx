@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ArrowRight } from "lucide-react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
 import { shortcutLabel } from "@/features/dictation/hotkeys";
-import { loadShortcutBindings, shortcutTargetKey, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import { shortcutBindingsQuery, shortcutTargetKey, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import { useCachedQuery } from "@/hooks/useCachedQuery";
 import { useUiStore } from "@/store/useUiStore";
 
 /**
@@ -12,17 +13,11 @@ import { useUiStore } from "@/store/useUiStore";
  * 每个快捷键只在用它的功能页里修改，这里点一下跳过去。
  */
 export function SettingsKeyBindingsPanel() {
-  const [items, setItems] = useState<ShortcutBindingItem[]>();
-  const [error, setError] = useState("");
+  const { data: items, error: loadError, refresh: load } = useCachedQuery(shortcutBindingsQuery);
+  const error = loadError && !items ? `读取快捷键失败：${loadError}` : "";
   const openDictation = useUiStore((state) => state.openDictationShortcutSettings);
   const openAssistant = useUiStore((state) => state.openAssistantSettings);
   const openSubtitles = useUiStore((state) => state.openSubtitleShortcutSettings);
-
-  const load = () => {
-    setError("");
-    loadShortcutBindings().then(setItems).catch((reason) => setError(`读取快捷键失败：${String(reason)}`));
-  };
-  useEffect(load, []);
 
   const groups = useMemo(() => [
     { title: "语音输入", items: items?.filter((item) => item.target.kind === "dictationMain" || item.target.kind === "dictationProfile") ?? [] },
@@ -40,7 +35,7 @@ export function SettingsKeyBindingsPanel() {
     return (
       <Group>
         <Row label="读取快捷键失败" message={<span role="alert" className="text-[var(--color-err)]">{error}</span>}>
-          <Button size="sm" onClick={load}>重新读取</Button>
+          <Button size="sm" onClick={() => void load()}>重新读取</Button>
         </Row>
       </Group>
     );

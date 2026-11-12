@@ -7,6 +7,8 @@ import { Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { CMD, cmd } from "@/lib/tauri";
 import { formatMs, formatRate, modelKey } from "./format";
+import { useCachedQuery } from "@/hooks/useCachedQuery";
+import { benchModelsQuery } from "@/views/developer/ModelBenchPanel";
 
 const STATUS_REFRESH_MS = 500;
 const LOCAL_KEY = "local";
@@ -120,8 +122,11 @@ function Result({ result }: { result: CompareResult }) {
 
 /** 同一段听写同时交给本地微调模型和选中的云端模型，并排看效果和速度。本地模型打开页面就开始预加载。 */
 export function LocalComparePanel() {
-  const [options, setOptions] = useState<ModelOption[]>([]);
-  const [selected, setSelected] = useState<string[]>([LOCAL_KEY]);
+  const models = useCachedQuery(benchModelsQuery);
+  const options: ModelOption[] = models.data ?? [];
+  // 默认勾上本地模型和当前在用的模型；列表第一次读到时才设。
+  const [picked, setSelected] = useState<string[]>();
+  const selected = picked ?? [LOCAL_KEY, ...options.filter((option) => option.current).map(modelKey)];
   const [status, setStatus] = useState<LoadStatus | null>(null);
   const [source, setSource] = useState<"replay" | "text">("replay");
   const [text, setText] = useState("");
@@ -132,11 +137,6 @@ export function LocalComparePanel() {
   const [result, setResult] = useState<CompareResult | null>(null);
 
   useEffect(() => {
-    void cmd<ModelOption[]>(CMD.devBenchModels).then((value) => {
-      setOptions(value);
-      // 开发构建的 StrictMode 会把 effect 跑两次，用集合去重。
-      setSelected((current) => [...new Set([...current, ...value.filter((option) => option.current).map(modelKey)])]);
-    }).catch((reason) => setError(String(reason)));
     void cmd(CMD.devLocalPreload).catch((reason) => setError(String(reason)));
   }, []);
 
@@ -150,7 +150,7 @@ export function LocalComparePanel() {
   }, [loading]);
 
   const toggle = (key: string, checked: boolean) => {
-    setSelected((current) => (checked ? [...current, key] : current.filter((item) => item !== key)));
+    setSelected(checked ? [...selected, key] : selected.filter((item) => item !== key));
   };
 
   const start = async () => {
@@ -237,7 +237,7 @@ export function LocalComparePanel() {
         )}
         <Row
           label={`同时请求，云端 ${cloudCount} 次`}
-          message={<>云端按量计费的模型会产生费用；本地模型的加载时间不计入。{error && <span role="alert" className="text-[var(--color-err)]"> {error}</span>}</>}
+          message={<>云端按量计费的模型会产生费用；本地模型的加载时间不计入。{(error || models.error) && <span role="alert" className="text-[var(--color-err)]"> {error || `读取模型列表失败：${models.error}`}</span>}</>}
         >
           <Button
             size="sm"

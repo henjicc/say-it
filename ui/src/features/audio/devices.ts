@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 import { CMD, cmd } from "@/lib/tauri";
 
 export interface AudioDeviceInfo {
@@ -13,23 +13,12 @@ export interface AudioDeviceList {
 
 const EMPTY_LIST: AudioDeviceList = { inputs: [], outputs: [] };
 
-let cachedDevices: AudioDeviceList | null = null;
+export const audioDevicesQuery: Query<AudioDeviceList> = {
+  key: "audioDevices",
+  load: () => cmd<AudioDeviceList>(CMD.listAudioDevices),
+};
 
-/** 枚举系统真实的麦克风/播放设备，结果按模块缓存，多个设置面板共用同一份。 */
+/** 系统真实的麦克风/播放设备，多个设置面板共用；读不到时为空列表，调用方退回默认设备选项。 */
 export function useAudioDevices() {
-  const [devices, setDevices] = useState<AudioDeviceList>(cachedDevices ?? EMPTY_LIST);
-
-  useEffect(() => {
-    if (cachedDevices) return;
-    cmd<AudioDeviceList>(CMD.listAudioDevices)
-      .then((list) => {
-        cachedDevices = list;
-        setDevices(list);
-      })
-      .catch(() => {
-        /* 保留空列表，调用方会退回默认设备选项 */
-      });
-  }, []);
-
-  return devices;
+  return useCachedQuery(audioDevicesQuery).data ?? EMPTY_LIST;
 }

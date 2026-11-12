@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsHistoryPanel } from "./SettingsHistoryPanel";
+import { hydrateAppSettings, useAppSettings } from "@/store/useAppSettingsStore";
+import type { AppSettings } from "@/lib/tauri";
 
 const cmd = vi.fn();
 vi.mock("@/lib/tauri", () => ({
@@ -19,20 +21,20 @@ describe("SettingsHistoryPanel", () => {
     cleanup();
     vi.restoreAllMocks();
   });
+  // 设置在启动时载入；保存时后端返回保存后的整份设置。
+  const loadHistoryPrefs = (historyPrefs: Record<string, unknown>) => hydrateAppSettings({ historyPrefs } as unknown as AppSettings);
   beforeEach(() => {
     cmd.mockReset();
-    cmd.mockResolvedValue({
-      settings: {
-        historyPrefs: {
-          enabled: true,
-          retentionDays: 30,
-          excludedApps: [],
-          finalDraftObservationEnabled: false,
-          correctionLearningEnabled: false,
-          cloudLearningContextEnabled: false,
-          learningMemoryRetentionDays: 180,
-        },
-      },
+    cmd.mockImplementation(async (name: string, args?: { value: Record<string, unknown> }) =>
+      name === "update_app_settings" ? { ...useAppSettings.getState().settings, historyPrefs: args!.value } : undefined);
+    loadHistoryPrefs({
+      enabled: true,
+      retentionDays: 30,
+      excludedApps: [],
+      finalDraftObservationEnabled: false,
+      correctionLearningEnabled: false,
+      cloudLearningContextEnabled: false,
+      learningMemoryRetentionDays: 180,
     });
   });
 
@@ -56,16 +58,14 @@ describe("SettingsHistoryPanel", () => {
   });
 
   it("requires explicit confirmation before sending learning context to cloud models", async () => {
-    cmd.mockResolvedValueOnce({
-      settings: { historyPrefs: {
-        enabled: true,
-        retentionDays: 30,
-        excludedApps: [],
-        finalDraftObservationEnabled: true,
-        correctionLearningEnabled: true,
-        cloudLearningContextEnabled: false,
-        learningMemoryRetentionDays: 180,
-      } },
+    loadHistoryPrefs({
+      enabled: true,
+      retentionDays: 30,
+      excludedApps: [],
+      finalDraftObservationEnabled: true,
+      correctionLearningEnabled: true,
+      cloudLearningContextEnabled: false,
+      learningMemoryRetentionDays: 180,
     });
     render(<SettingsHistoryPanel />);
     const cloud = await screen.findByRole("switch", { name: "云端参考学习记录" });

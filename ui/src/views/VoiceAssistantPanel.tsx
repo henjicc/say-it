@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { notify } from "@/store/useToastStore";
 import { Button } from "@/components/ui/Button";
@@ -18,10 +18,12 @@ import {
   llmModelValue,
 } from "@/features/models/llmModelOptions";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
-import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
+import { CMD, cmd } from "@/lib/tauri";
+import { saveAppSettings, useAppSettings } from "@/store/useAppSettingsStore";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
 import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
-import { clearShortcutBinding, loadShortcutBindings, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import { clearShortcutBinding, shortcutBindingsQuery, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import { useCachedQuery } from "@/hooks/useCachedQuery";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 import { useProviderStore } from "@/store/useProviderStore";
 import type { AssistantActionKey } from "@/store/useUiStore";
@@ -68,12 +70,6 @@ function defaultFeature(action: AssistantActionKey): AssistantFeaturePreferences
   const templates = builtIns[action].map((item) => ({ ...item }));
   return { llmProviderId: "default", llmModel: "", activeTemplateId: templates[0].id, templates, templateTrash: [] };
 }
-
-const DEFAULT_PREFS: AssistantPrefs = {
-  templateCatalogVersion: 2,
-  sourceLanguage: "auto", targetLanguage: "zh",
-  translateSpeech: defaultFeature("translateSpeech"), editSelection: defaultFeature("editSelection"), ask: defaultFeature("ask"),
-};
 
 function normalizeFeature(value: unknown, action: AssistantActionKey): AssistantFeaturePreferences {
   const source = value && typeof value === "object" ? value as Partial<AssistantFeaturePreferences> : {};
@@ -152,52 +148,44 @@ export function AssistantModelRow({ action, label, prefs, save }: {
   );
 }
 
-/**
- * 「用途」页读写助手设置用的一份状态。助手设置整份保存，三个动作的模型行必须共用这一份，
- * 否则各自保存时会互相覆盖；助手页未打开也能改。
- */
+/** 助手设置：启动时载入的那一份，助手页与「用途」页共用；整份保存，失败时抛出。 */
+function useAssistantPrefs() {
+  const raw = useAppSettings((state) => state.settings?.assistantPrefs);
+  const prefs = useMemo(() => normalizeAssistantPrefs(raw ?? {}), [raw]);
+  const save = (next: AssistantPrefs) => saveAppSettings("assistant", next as unknown as Record<string, unknown>);
+  return { prefs, save };
+}
+
+/** 「用途」页的助手模型行；保存失败写在分组下方。 */
 export function useUsageAssistantPrefs() {
-  const [prefs, setPrefs] = useState<AssistantPrefs>();
+  const assistant = useAssistantPrefs();
   const [message, setMessage] = useState("");
-  useEffect(() => {
-    void cmd<AppSnapshot>(CMD.getAppSnapshot)
-      .then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs)))
-      .catch((error) => setMessage(`读取助手设置失败：${String(error)}`));
-  }, []);
   const save = async (next: AssistantPrefs) => {
-    setPrefs(next);
     setMessage("");
-    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); }
+    try { await assistant.save(next); }
     catch (error) { setMessage(`保存失败：${String(error)}`); }
   };
-  return { prefs, save, message };
+  return { prefs: assistant.prefs, save, message };
 }
 
 /** 这个助手动作的快捷键与触发方式，就地修改；冲突由全局弹窗提示，其他保存错误写在快捷键行下方。 */
 function AssistantShortcutRow({ action, hint }: { action: AssistantActionKey; hint: string }) {
-  const [item, setItem] = useState<ShortcutBindingItem>();
-  const [error, setError] = useState("");
+  const bindings = useCachedQuery(shortcutBindingsQuery);
+  const item = bindings.data?.find((entry) => entry.target.kind === "assistant" && entry.target.action === action);
+  const [saveError, setError] = useState("");
+  const error = saveError || (bindings.error && !bindings.data ? `读取快捷键失败：${bindings.error}` : "");
   const [busy, setBusy] = useState(false);
-  const pick = (items: ShortcutBindingItem[]) =>
-    items.find((entry) => entry.target.kind === "assistant" && entry.target.action === action);
 
-  useEffect(() => {
-    let active = true;
-    loadShortcutBindings()
-      .then((items) => { if (active) setItem(pick(items)); })
-      .catch((reason) => { if (active) setError(`读取快捷键失败：${String(reason)}`); });
-    return () => { active = false; };
-  }, [action]);
-
+  // 改动成功后 update/clearShortcutBinding 已把新列表写进共用缓存。
   const run = async (operation: (current: ShortcutBindingItem) => Promise<ShortcutBindingItem[]>) => {
     if (!item) return;
     setBusy(true);
     setError("");
     try {
-      setItem(pick(await operation(item)));
+      await operation(item);
     } catch (reason) {
       if (!reportShortcutConflict(reason)) setError(String(reason));
-      setItem(pick(await loadShortcutBindings().catch(() => [])) ?? item);
+      await bindings.refresh();
     } finally {
       setBusy(false);
     }
@@ -236,7 +224,10 @@ function AssistantShortcutRow({ action, hint }: { action: AssistantActionKey; hi
 
 export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const { confirm, dialog } = useConfirm();
-  const [prefs, setPrefs] = useState(DEFAULT_PREFS);
+  const assistant = useAssistantPrefs();
+  // 模板名称与提示词边输入边改这份草稿，失焦才保存。
+  const [draft, setPrefs] = useState<AssistantPrefs>();
+  const prefs = draft ?? assistant.prefs;
   const [previewSelection, setPreviewSelection] = useState("明天下午把新版方案发给客户，内容要写清楚，但是不要承诺具体上线日期。");
   const [previewInstruction, setPreviewInstruction] = useState(action === "ask" ? "这段话有哪些潜在风险？" : action === "translateSpeech" ? "Please send the updated proposal tomorrow afternoon." : "改成一封简洁、专业的邮件");
   const [previewResult, setPreviewResult] = useState("");
@@ -245,11 +236,15 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
   const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；不选中时修改上一次输入的文字。目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
 
-  useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => notify(`读取设置失败：${String(error)}`, "err")); }, []);
+  // 保存失败时草稿留着，刚输入的内容不会消失。
   const save = async (next: AssistantPrefs) => {
-    setPrefs(next);
-    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); }
-    catch (error) { notify(`保存失败：${String(error)}`, "err"); }
+    try {
+      await assistant.save(next);
+      setPrefs(undefined);
+    } catch (error) {
+      setPrefs(next);
+      notify(`保存失败：${String(error)}`, "err");
+    }
   };
   const updateFeature = (nextFeature: AssistantFeaturePreferences) => save({ ...prefs, [action]: nextFeature });
   const addTemplate = () => {
@@ -298,7 +293,8 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   const runPreview = async () => {
     setPreviewing(true); setPreviewResult("");
     try {
-      await cmd(CMD.updateAppSettings, { domain: "assistant", value: prefs });
+      await assistant.save(prefs);
+      setPrefs(undefined);
       setPreviewResult(await cmd<string>(CMD.previewAssistant, { action, selectedText: action === "translateSpeech" ? "" : previewSelection, spokenText: previewInstruction }));
     } catch (error) { notify(`试运行失败：${String(error)}`, "err"); } finally { setPreviewing(false); }
   };

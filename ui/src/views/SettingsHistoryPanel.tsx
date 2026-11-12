@@ -1,5 +1,5 @@
 import { HelpLabel } from "@/components/ui/Tooltip";
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { notify, notifyError } from "@/store/useToastStore";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
@@ -7,7 +7,8 @@ import { Group, Row } from "@/components/ui/Group";
 import { NumberInput, Textarea } from "@/components/ui/Input";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { Switch } from "@/components/ui/Switch";
-import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
+import { CMD, cmd } from "@/lib/tauri";
+import { saveAppSettings, useAppSettings } from "@/store/useAppSettingsStore";
 
 interface HistoryPrefs {
   enabled: boolean;
@@ -19,17 +20,6 @@ interface HistoryPrefs {
   excludedApps: string[];
   smartInputRecordingEnabled: boolean;
 }
-
-const defaults: HistoryPrefs = {
-  enabled: true,
-  finalDraftObservationEnabled: false,
-  correctionLearningEnabled: false,
-  cloudLearningContextEnabled: false,
-  learningMemoryRetentionDays: 180,
-  retentionDays: 30,
-  excludedApps: [],
-  smartInputRecordingEnabled: false,
-};
 
 function normalize(value: Record<string, unknown>): HistoryPrefs {
   return {
@@ -44,23 +34,14 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
   };
 }
 
-/** 读取并保存历史偏好；设置页与简单模式共用。onLoaded 只在首次读取后调用一次。 */
-export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
-  const [prefs, setPrefs] = useState<HistoryPrefs>(defaults);
-  const onLoadedRef = useRef(onLoaded);
-
-  useEffect(() => {
-    void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => {
-      const next = normalize(snapshot.settings.historyPrefs);
-      setPrefs(next);
-      onLoadedRef.current?.(next);
-    }).catch(notifyError);
-  }, []);
+/** 历史偏好：启动时载入的那一份；设置页与简单模式共用。 */
+export function useHistoryPrefs() {
+  const raw = useAppSettings((state) => state.settings?.historyPrefs);
+  const prefs = useMemo(() => normalize(raw ?? {}), [raw]);
 
   async function save(next: HistoryPrefs) {
-    setPrefs(next);
     try {
-      await cmd(CMD.updateAppSettings, { domain: "history", value: next });
+      await saveAppSettings("history", next as unknown as Record<string, unknown>);
     } catch (error) {
       notifyError(error);
     }
@@ -71,8 +52,8 @@ export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
 
 export function SettingsHistoryPanel() {
   const { confirm, dialog } = useConfirm();
-  const [excludedText, setExcludedText] = useState("");
-  const { prefs, save } = useHistoryPrefs((loaded) => setExcludedText(loaded.excludedApps.join("\n")));
+  const { prefs, save } = useHistoryPrefs();
+  const [excludedText, setExcludedText] = useState(() => prefs.excludedApps.join("\n"));
 
   async function clear() {
     if (

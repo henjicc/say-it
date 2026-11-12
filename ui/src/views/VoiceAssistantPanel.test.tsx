@@ -2,12 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/store/useUiStore";
 import { AssistantPage } from "@/views/assistant/AssistantPage";
+import { hydrateAppSettings, useAppSettings } from "@/store/useAppSettingsStore";
+import type { AppSettings } from "@/lib/tauri";
 
 const cmd = vi.fn();
 
 vi.mock("@/lib/tauri", () => ({
   CMD: {
-    getAppSnapshot: "get_app_snapshot",
     updateAppSettings: "update_app_settings",
     previewAssistant: "preview_assistant",
     getDefaultAssistantPreferences: "get_default_assistant_preferences",
@@ -24,22 +25,20 @@ vi.mock("@/features/asr/modelRegistry", () => ({
 describe("AssistantPage", () => {
   afterEach(cleanup);
   beforeEach(() => {
-    cmd.mockImplementation(async (name: string) => {
-      if (name === "get_app_snapshot") {
-        return {
-          settings: {
-            assistantPrefs: {
-              sourceLanguage: "auto",
-              targetLanguage: "zh",
-              llmProviderId: "default",
-              llmModel: "",
-              preserveStructure: true,
-              answerStyle: "balanced",
-              customInstructions: "",
-            },
-          },
-        };
-      }
+    // 设置在启动时载入；保存时后端返回保存后的整份设置。
+    hydrateAppSettings({
+      assistantPrefs: {
+        sourceLanguage: "auto",
+        targetLanguage: "zh",
+        llmProviderId: "default",
+        llmModel: "",
+        preserveStructure: true,
+        answerStyle: "balanced",
+        customInstructions: "",
+      },
+    } as unknown as AppSettings);
+    cmd.mockImplementation(async (name: string, args?: { value: Record<string, unknown> }) => {
+      if (name === "update_app_settings") return { ...useAppSettings.getState().settings, assistantPrefs: args!.value };
       if (name === "preview_assistant") return "您好：\n请查收新版方案。";
       if (name === "get_default_assistant_preferences") {
         return {
@@ -68,12 +67,10 @@ describe("AssistantPage", () => {
     expect(screen.getAllByRole("heading", { name: "选区编辑" }).length).toBeGreaterThan(0);
     expect(screen.getByText("任务提示词")).toBeInTheDocument();
     expect(screen.getByText("试运行")).toBeInTheDocument();
-    await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
   });
 
   it("runs the configured real model through the safe preview command", async () => {
     render(<AssistantPage />);
-    await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
     fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("preview_assistant", expect.objectContaining({
         action: "editSelection",
@@ -85,7 +82,6 @@ describe("AssistantPage", () => {
 
   it("restores built-in templates from the Rust catalog", async () => {
     render(<AssistantPage />);
-    await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_app_snapshot"));
     fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
     fireEvent.click(await screen.findByRole("button", { name: "恢复" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("get_default_assistant_preferences"));

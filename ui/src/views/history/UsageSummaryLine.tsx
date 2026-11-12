@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
 import { HelpLabel } from "@/components/ui/Tooltip";
-import { CMD, EVT, cmd, on, type UsageSummary } from "@/lib/tauri";
+import { useCachedQuery, type Query } from "@/hooks/useCachedQuery";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { CMD, EVT, cmd, type UsageSummary } from "@/lib/tauri";
 
 function formatDuration(ms: number) {
   const minutes = Math.round(ms / 60_000);
@@ -8,16 +9,15 @@ function formatDuration(ms: number) {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
+export const usageSummaryQuery: Query<UsageSummary> = {
+  key: "usageSummary",
+  load: () => cmd<UsageSummary>(CMD.getUsageSummary),
+};
+
 /** 本地累计使用：只统计次数、字数和时长，不保存正文或音频。 */
 export function UsageSummaryLine() {
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-  useEffect(() => {
-    const refresh = () => cmd<UsageSummary>(CMD.getUsageSummary).then(setUsage).catch(() => {});
-    void refresh();
-    let unlisten: (() => void) | undefined;
-    void on(EVT.historyChanged, refresh).then((value) => { unlisten = value; });
-    return () => unlisten?.();
-  }, []);
+  const { data: usage, refresh } = useCachedQuery(usageSummaryQuery);
+  useTauriEvent(EVT.historyChanged, () => void refresh());
   if (!usage) return null;
   const items = [
     `成功 ${usage.successfulActions.toLocaleString()} 次`,
