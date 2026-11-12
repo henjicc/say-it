@@ -143,10 +143,13 @@ impl IndicatorState {
 pub enum IndicatorAction {
     /// 智能处理中点击胶囊：跳过大模型，直接输出识别原文。
     SkipSmartProcessing,
+    /// 录音、识别、智能处理中右键胶囊：和 Esc 一样立刻取消这次语音输入。
+    Cancel,
 }
 
-/// 命中表里「直接输入」按钮的编号：智能处理中整窗可交互，但只有胶囊本身响应悬停与点击。
-const SKIP_ID: u16 = 0;
+/// 命中表里胶囊本身的编号：录音到智能处理期间只有胶囊响应指针；窗口这时不穿透，
+/// 胶囊外的不透明像素（实时文字）只挡住点击、不响应。
+const PILL_ID: u16 = 0;
 
 /// 临界阻尼附近的弹簧；子步长积分，帧间隔抖动时也稳定。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -295,10 +298,11 @@ impl Indicator {
         self.hovering = false;
         self.hover.snap(0.0);
     }
-    /// 只有智能处理中可以点击跳过；其余状态保持点击穿透。
+    /// 录音、识别、智能处理中胶囊接收指针（右键取消）；只有智能处理中能点击跳过，也只在这时
+    /// 显示悬停。通知等其余状态保持点击穿透。
     fn sync_interactive(&mut self, ops: &mut Ops<IndicatorAction>) {
-        let want = self.clickable && self.state == Some(IndicatorState::SmartProcessing);
-        if !want {
+        let want = self.clickable && self.state.is_some_and(IndicatorState::is_pill);
+        if self.state != Some(IndicatorState::SmartProcessing) {
             self.hovering = false;
         }
         if want != self.interactive {
@@ -627,16 +631,22 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
     fn input(&mut self, input: UiInput, _: &Cx<'_, T>) -> Ops<IndicatorAction> {
         let mut ops = vec![WindowOp::Redraw];
         match input {
-            UiInput::Hover(button) => self.hovering = button.is_some() && self.interactive,
+            UiInput::Hover(button) => {
+                self.hovering = button.is_some()
+                    && self.interactive
+                    && self.state == Some(IndicatorState::SmartProcessing)
+            }
             UiInput::Press(_) => return Vec::new(),
-            // 点击后立刻退出可点击状态给出反馈，不等应用回传。
+            // 点击后立刻回到处理中给出反馈，不等应用回传。
             UiInput::Click(_) => {
-                if self.state == Some(IndicatorState::SmartProcessing) {
-                    self.state = Some(IndicatorState::Processing);
-                    self.sync_interactive(&mut ops);
+                if self.state != Some(IndicatorState::SmartProcessing) {
+                    return Vec::new();
                 }
+                self.state = Some(IndicatorState::Processing);
+                self.sync_interactive(&mut ops);
                 ops.push(WindowOp::Action(IndicatorAction::SkipSmartProcessing));
             }
+            UiInput::RightClick(_) => return vec![WindowOp::Action(IndicatorAction::Cancel)],
         }
         ops
     }
@@ -708,13 +718,13 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         if self.interactive && self.transition.visual() > 0.5 {
             let pill = self.pill_rect();
             map.push(
-                SKIP_ID,
+                PILL_ID,
                 Rect::new(pill.left - 2.0, pill.top - 2.0, pill.right + 2.0, pill.bottom + 2.0),
                 HitKind::Button,
             );
         }
         // 可点区域消失后也要报出模型仍认定的悬停，指针层才会把它清掉。
-        map.set_hover(self.hovering.then_some(SKIP_ID));
+        map.set_hover(self.hovering.then_some(PILL_ID));
         map
     }
     fn glass(&self) -> Vec<Shape> {
@@ -1349,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn only_smart_processing_is_clickable_and_click_skips() {
+    fn pill_takes_right_click_to_cancel_and_only_smart_processing_click_skips() {
         let now = Instant::now();
         let text = FakeText;
         let mut model = Indicator::new(&Look::WINDOWS_LEGACY).clickable();
@@ -1357,16 +1367,10 @@ mod tests {
             Command::SetState(IndicatorState::Recording),
             &cx(now, &text),
         );
-        assert!(!ops.contains(&WindowOp::SetInteractive(true)));
-        let ops = model.apply(
-            Command::SetState(IndicatorState::SmartProcessing),
-            &cx(now, &text),
-        );
         assert!(ops.contains(&WindowOp::SetInteractive(true)));
         settled(&mut model, now, &text);
         model.prepare_frame(&cx(now, &text));
 
-        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
         let pill = model.pill_rect();
         let scale = 144.0 / 96.0;
         let inside = (
@@ -1374,48 +1378,59 @@ mod tests {
             (((pill.top + pill.bottom) / 2.0) * scale) as i32,
         );
         let mut pointer = UiPointer::<IndicatorAction>::default();
+        // 录音中：右键取消；左键和悬停都没有反应。
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
+        assert_eq!(
+            pointer.event(PointerEvent::RightUp { client: inside }, &hit),
+            vec![PointerStep::Model(UiInput::RightClick(PILL_ID))]
+        );
+        assert_eq!(
+            model.input(UiInput::RightClick(PILL_ID), &cx(now, &text)),
+            vec![WindowOp::Action(IndicatorAction::Cancel)]
+        );
+        model.input(UiInput::Hover(Some(PILL_ID)), &cx(now, &text));
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
+        assert_eq!(pointer.cursor(&hit), CursorShape::Arrow);
+        assert!(model.input(UiInput::Click(PILL_ID), &cx(now, &text)).is_empty());
+        // 点在胶囊外不触发。
+        assert!(pointer.event(PointerEvent::RightUp { client: (2, 2) }, &hit).is_empty());
+
+        let ops = model.apply(
+            Command::SetState(IndicatorState::SmartProcessing),
+            &cx(now, &text),
+        );
+        assert!(!ops.contains(&WindowOp::SetInteractive(false)));
+        settled(&mut model, now, &text);
+        model.prepare_frame(&cx(now, &text));
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
         let steps = pointer.event(
             PointerEvent::Move { client: inside, screen: inside },
             &hit,
         );
-        assert!(steps.contains(&PointerStep::Model(UiInput::Hover(Some(SKIP_ID)))));
-        model.input(UiInput::Hover(Some(SKIP_ID)), &cx(now, &text));
+        assert!(steps.contains(&PointerStep::Model(UiInput::Hover(Some(PILL_ID)))));
+        model.input(UiInput::Hover(Some(PILL_ID)), &cx(now, &text));
         assert_eq!(model.pill_target(), PILL_W_HOVER);
         let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
         assert_eq!(pointer.cursor(&hit), CursorShape::Hand);
         pointer.event(PointerEvent::LeftDown { client: inside, screen: inside }, &hit);
         assert!(pointer
             .event(PointerEvent::LeftUp { client: inside }, &hit)
-            .contains(&PointerStep::Model(UiInput::Click(SKIP_ID))));
-        // 点击后立即退出可点击状态，再把跳过交给应用。
-        let ops = model.input(UiInput::Click(SKIP_ID), &cx(now, &text));
+            .contains(&PointerStep::Model(UiInput::Click(PILL_ID))));
+        // 点击后立即回到处理中、收起悬停，再把跳过交给应用。
+        let ops = model.input(UiInput::Click(PILL_ID), &cx(now, &text));
         assert_eq!(
             ops,
             vec![
                 WindowOp::Redraw,
-                WindowOp::SetInteractive(false),
                 WindowOp::Action(IndicatorAction::SkipSmartProcessing),
             ]
         );
         assert_eq!(model.state, Some(IndicatorState::Processing));
         assert_eq!(model.pill_target(), PILL_W_PROCESSING);
-        let ops = model.apply(
-            Command::SetState(IndicatorState::SmartProcessing),
-            &cx(now, &text),
-        );
-        assert!(ops.contains(&WindowOp::SetInteractive(true)));
-        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
-        // 点在胶囊外不触发。
-        pointer.event(PointerEvent::LeftDown { client: (2, 2), screen: (2, 2) }, &hit);
-        assert!(pointer.event(PointerEvent::LeftUp { client: (2, 2) }, &hit).is_empty());
 
-        let ops = model.apply(
-            Command::SetState(IndicatorState::Processing),
-            &cx(now, &text),
-        );
+        // 通知恢复点击穿透。
+        let ops = model.apply(Command::SetState(IndicatorState::Fallback), &cx(now, &text));
         assert!(ops.contains(&WindowOp::SetInteractive(false)));
-        assert_eq!(<Indicator as OverlayModel<FakeText>>::hit(&model).at(inside), None);
-        assert_eq!(model.pill_target(), PILL_W_PROCESSING);
 
         // 宿主没接通指针（macOS）时始终点击穿透。
         let mut passive = Indicator::new(&Look::WINDOWS_LEGACY);

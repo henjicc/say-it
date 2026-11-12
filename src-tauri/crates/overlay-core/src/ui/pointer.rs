@@ -13,6 +13,8 @@ pub enum UiInput {
     Press(Option<u16>),
     /// 在同一个按钮上按下并抬起。
     Click(u16),
+    /// 在按钮上右键抬起。
+    RightClick(u16),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,7 +112,11 @@ impl<A: Send + 'static> PointerModel for UiPointer<A> {
                     }
                 }
             }
-            PointerEvent::RightUp { .. } => {}
+            PointerEvent::RightUp { client } => {
+                if let Some(region) = hit.at(client).filter(|region| region.kind == HitKind::Button) {
+                    steps.push(PointerStep::Model(UiInput::RightClick(region.id)));
+                }
+            }
             PointerEvent::Leave => {
                 self.tracking = false;
                 if hit.hover().is_some() {
