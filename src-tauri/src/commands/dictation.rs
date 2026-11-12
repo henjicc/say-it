@@ -189,13 +189,18 @@ pub(crate) async fn inject_text_inner(text: String, method: Option<String>) -> R
     inject_text_with_policy(text, method, ClipboardDisposition::RestorePrevious).await
 }
 
+/// 实际上屏的文字：结尾换行不输入，免得在聊天框里触发发送。
+pub(crate) fn delivered_text(text: &str) -> &str {
+    text.trim_end_matches(['\r', '\n'])
+}
+
 pub(crate) async fn inject_text_with_policy(
     text: String,
     method: Option<String>,
     clipboard_disposition: ClipboardDisposition,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
-    let text = text.trim_end_matches(['\r', '\n']).to_string();
+    let text = delivered_text(&text).to_string();
     if text.is_empty() {
         return Ok(());
     }

@@ -730,6 +730,7 @@ pub(crate) struct SelectionSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct AssistantRequest {
     pub(crate) action: AssistantAction,
+    /// 选区编辑开始时没有选区则为 `None`，说完话后在 `process` 里改为选中上一次输入。
     pub(crate) selection: Option<SelectionSnapshot>,
     pub(crate) target: Option<ActivationTarget>,
     pub(crate) identity: Option<AppIdentity>,
@@ -759,6 +760,14 @@ pub(crate) struct AssistantRuntime {
     conversation: Mutex<Option<AssistantConversation>>,
     generation: Mutex<Option<CancellationToken>>,
     pinned: AtomicBool,
+    last_delivery: Mutex<Option<LastDelivery>>,
+}
+
+/// 最近一次输入到其他应用的文字。没有选区时，「选区编辑」改的就是它。
+#[derive(Clone, Debug)]
+struct LastDelivery {
+    text: String,
+    target: ActivationTarget,
 }
 
 #[derive(Clone, Debug)]
@@ -997,10 +1006,15 @@ async fn assistant_start_for_target(
         }
         AssistantAction::EditSelection | AssistantAction::Ask => {
             match capture_selection_for_target(&app, initial_target).await {
-                Ok((snapshot, _))
+                Ok((snapshot, target))
                     if action == AssistantAction::EditSelection && snapshot.text.is_empty() =>
                 {
-                    return Err("请先选中需要修改的文本".into())
+                    // 选中上一次输入要按方向键，留到说完话、松开快捷键之后再做（见 `process`）；
+                    // 这里只确认有可改的上一次输入，没有就当场报错。
+                    if snapshot.secure || last_delivery_for(&app, target)?.is_none() {
+                        return Err(NO_SELECTION_ERROR.into());
+                    }
+                    (None, Some(target))
                 }
                 Ok((snapshot, _))
                     if action == AssistantAction::EditSelection && snapshot.truncated =>
@@ -1034,6 +1048,130 @@ async fn assistant_start_for_target(
     .await
 }
 
+const NO_SELECTION_ERROR: &str = "请先选中需要修改的文本";
+/// 往回选中要逐字按键，太长的上一次输入不再自动选中。
+const MAX_LAST_DELIVERY_CHARS: usize = 1000;
+
+/// 记下刚输入到 `target` 的文字，供之后没有选区的「选区编辑」使用。
+pub(crate) fn record_delivery(state: &RuntimeState, target: ActivationTarget, text: &str) {
+    let text = crate::commands::dictation::delivered_text(text);
+    *state
+        .assistant_runtime
+        .last_delivery
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = (!text.is_empty()).then(|| LastDelivery {
+        text: text.to_string(),
+        target,
+    });
+}
+
+/// 上一次输入已经发送出去（例如自动回车），不再能改。
+pub(crate) fn forget_delivery(state: &RuntimeState) {
+    *state
+        .assistant_runtime
+        .last_delivery
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+fn last_delivery_for(app: &AppHandle, target: ActivationTarget) -> Result<Option<String>, String> {
+    Ok(app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .last_delivery
+        .lock()
+        .map_err(|_| "最近输入记录锁失败".to_string())?
+        .as_ref()
+        .filter(|last| crate::active_app_context::same_activation_target(last.target, target))
+        .map(|last| last.text.clone()))
+}
+
+/// 换行统一成 `\n`：输入时的 `\n` 在部分应用里读回来是 `\r\n`。
+fn normalize_line_breaks(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// 在原窗口里从光标处往回选中上一次输入的文字，读回选区逐字核对。
+/// 光标挪动过、中间插入过内容或应用不支持按字符选择时核对不上，收起选区并报错，不改原文。
+async fn select_last_delivery(
+    app: &AppHandle,
+    target: ActivationTarget,
+) -> Result<SelectionSnapshot, String> {
+    let last = last_delivery_for(app, target)?.ok_or_else(|| NO_SELECTION_ERROR.to_string())?;
+    let expected = normalize_line_breaks(&last);
+    let steps = expected.chars().count();
+    if steps > MAX_LAST_DELIVERY_CHARS {
+        return Err(NO_SELECTION_ERROR.into());
+    }
+    wait_modifiers_released().await?;
+    if crate::active_app_context::activation_target()
+        .is_none_or(|current| !crate::active_app_context::same_activation_target(current, target))
+    {
+        crate::active_app_context::activate_target(target)?;
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+    // 焦点不在输入框时，方向键会变成快退、翻页之类的操作。
+    if !crate::active_app_context::focused_target_is_editable(target)? {
+        return Err(NO_SELECTION_ERROR.into());
+    }
+    move_caret(steps, true).await?;
+    // 目标应用要处理完积压的按键，选区才完整。
+    tokio::time::sleep(std::time::Duration::from_millis(60 + steps as u64 / 4)).await;
+    let (snapshot, _) = capture_selection_for_target(app, Some(target)).await?;
+    if !snapshot.truncated && normalize_line_breaks(&snapshot.text) == expected {
+        return Ok(snapshot);
+    }
+    if !snapshot.text.is_empty() {
+        // 有选区时按一次右方向键会收起到选区末尾，也就是原来的光标位置。
+        move_caret(0, false).await?;
+    }
+    Err("上次输入后光标已移动，请先选中需要修改的文本".into())
+}
+
+/// 用户还按着快捷键的修饰键时，Windows 上模拟的方向键会和它叠加（Ctrl 变成按词移动，
+/// Alt+Shift 会切换输入法）。macOS 上模拟按键自带修饰键状态，不受影响。
+async fn wait_modifiers_released() -> Result<(), String> {
+    #[cfg(windows)]
+    for _ in 0..100 {
+        if !crate::hotkey::modifier_held() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    #[cfg(windows)]
+    return Err("请松开快捷键后再试".into());
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+/// `select` 时按住 Shift 按 `steps` 次左方向键往回选，否则按一次右方向键收起选区。
+async fn move_caret(steps: usize, select: bool) -> Result<(), String> {
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut enigo =
+            Enigo::new(&Settings::default()).map_err(|e| format!("初始化输入失败：{e}"))?;
+        if !select {
+            return enigo
+                .key(Key::RightArrow, Direction::Click)
+                .map_err(|e| format!("模拟按键失败：{e}"));
+        }
+        enigo
+            .key(Key::Shift, Direction::Press)
+            .map_err(|e| format!("模拟按键失败：{e}"))?;
+        let clicks = (0..steps).try_for_each(|_| {
+            enigo
+                .key(Key::LeftArrow, Direction::Click)
+                .map_err(|e| format!("模拟按键失败：{e}"))
+        });
+        let release = enigo
+            .key(Key::Shift, Direction::Release)
+            .map_err(|e| format!("释放按键失败：{e}"));
+        clicks.and(release)
+    })
+    .await
+    .map_err(|e| format!("按键任务失败：{e}"))?
+}
+
 #[tauri::command]
 pub(crate) async fn assistant_stop(app: AppHandle) -> Result<(), String> {
     crate::application::dictation::dictation_stop(app).await
@@ -1048,6 +1186,29 @@ pub(crate) async fn assistant_cancel(app: AppHandle) -> Result<(), String> {
 }
 
 pub(crate) async fn process(
+    app: &AppHandle,
+    state: &RuntimeState,
+    request: &mut AssistantRequest,
+    spoken_text: &str,
+) -> Result<ProcessedAssistant, String> {
+    if request.action != AssistantAction::EditSelection || request.selection.is_some() {
+        return process_request(app, state, request, spoken_text).await;
+    }
+    let target = request
+        .target
+        .ok_or_else(|| "原输入窗口已丢失".to_string())?;
+    request.selection = Some(select_last_delivery(app, target).await?);
+    let result = process_request(app, state, request, spoken_text).await;
+    // 选区是程序选的，用户不知道它还高亮着，接着打字会把整段替换掉。
+    let target_in_front = crate::active_app_context::activation_target()
+        .is_some_and(|current| crate::active_app_context::same_activation_target(current, target));
+    if result.is_err() && target_in_front {
+        move_caret(0, false).await?;
+    }
+    result
+}
+
+async fn process_request(
     app: &AppHandle,
     state: &RuntimeState,
     request: &AssistantRequest,
@@ -1942,7 +2103,8 @@ pub(crate) async fn regenerate_assistant_answer(app: AppHandle) -> Result<(), St
             }
         };
     }
-    match process(&app, &state, &context.request, &context.spoken_text).await {
+    let mut context = context;
+    match process(&app, &state, &mut context.request, &context.spoken_text).await {
         Ok(processed) => {
             publish_answer_with_reasoning(
                 &app,

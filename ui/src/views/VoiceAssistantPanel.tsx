@@ -243,7 +243,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   const [previewing, setPreviewing] = useState(false);
   const feature = prefs[action];
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
-  const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
+  const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；不选中时修改上一次输入的文字。目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
 
   useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => notify(`读取设置失败：${String(error)}`, "err")); }, []);
   const save = async (next: AssistantPrefs) => {
