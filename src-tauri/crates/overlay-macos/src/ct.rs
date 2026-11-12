@@ -33,7 +33,6 @@ impl CtText {
         let family = match style.family {
             FontFamily::SystemUi => None,
             FontFamily::Named(name) => Some(name.to_owned()),
-            FontFamily::SymbolGlyphs => return None,
         };
         let key = (family, style.size.to_bits(), style.weight);
         if let Some(font) = self.fonts.borrow().get(&key) {
@@ -86,7 +85,6 @@ fn resolve_font(style: &TextStyle<'_>) -> Option<CFRetained<CTFont>> {
             .map(|font| font.copy_with_attributes(style.size as f64, null(), Some(&descriptor)))
         };
         match style.family {
-            FontFamily::SymbolGlyphs => None,
             FontFamily::SystemUi => system(),
             FontFamily::Named(name) => {
                 for family in [name, "PingFang SC"] {
@@ -511,8 +509,6 @@ mod tests {
             .unwrap();
         assert_eq!(layout.metrics.line_count, 1);
         assert!(layout.metrics.width > 10.0);
-        style.family = FontFamily::SymbolGlyphs;
-        assert!(text.layout("x", &style, 100.0, 50.0).is_none());
     }
 
     #[test]
