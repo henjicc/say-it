@@ -2335,7 +2335,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         app_identity,
         started_at,
         recorded_duration_ms,
-        assistant_request,
+        mut assistant_request,
         history_allowed,
         trigger,
     ) = {
@@ -2601,7 +2601,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     // 也会被改回去，现象是「规则开着但没生效」且没有任何提示。
     // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
-    let assistant_processed = if let Some(request) = assistant_request.as_ref() {
+    let assistant_processed = if let Some(request) = assistant_request.as_mut() {
         let Some(result) = processing::until_cancelled(
             &processing_cancellation,
             crate::application::assistant::process(&app, &state, request, &text),
@@ -2908,6 +2908,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
                             ClipboardDisposition::KeepResult,
                         )
                         .await;
+                        if injection_result.is_ok() {
+                            crate::application::assistant::record_delivery(
+                                &state, target, &processed,
+                            );
+                        }
                         if let Some(observation) = observation {
                             if injection_result.is_ok() {
                                 crate::application::final_draft::mark_injected(&app, observation);
@@ -2942,7 +2947,16 @@ async fn finalize(app: AppHandle, epoch: u64) {
         if assistant.should_inject {
             if let Some(target) = request.target {
                 match prepare_target_for_injection(target).await {
-                    Ok(()) => inject_text_inner(processed.clone(), Some(method.clone())).await,
+                    Ok(()) => {
+                        let result =
+                            inject_text_inner(processed.clone(), Some(method.clone())).await;
+                        if result.is_ok() {
+                            crate::application::assistant::record_delivery(
+                                &state, target, &processed,
+                            );
+                        }
+                        result
+                    }
                     Err(error) => Err(error),
                 }
             } else {
@@ -2980,6 +2994,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     }
                     let injection_result =
                         inject_text_inner(processed.clone(), Some(method.clone())).await;
+                    if injection_result.is_ok() {
+                        crate::application::assistant::record_delivery(
+                            &state, target, &processed,
+                        );
+                    }
                     if let Some(observation) = observation {
                         if injection_result.is_ok() {
                             crate::application::final_draft::mark_injected(&app, observation);

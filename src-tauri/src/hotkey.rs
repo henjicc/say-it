@@ -390,6 +390,13 @@ fn key_down(vk: u16) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
+/// Ctrl、Shift、Alt、Win 是否有任一还按着。
+pub(crate) fn modifier_held() -> bool {
+    [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|vk| key_down(vk.0))
+}
+
 fn modifiers_match(mods: u8) -> bool {
     let ctrl = key_down(VK_CONTROL.0);
     let shift = key_down(VK_SHIFT.0);

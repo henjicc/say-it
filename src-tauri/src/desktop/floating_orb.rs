@@ -2388,7 +2388,10 @@ async fn submit_enter_with_delayed_feedback(
     let work = async {
         // 等待悬浮球的鼠标事件完全结束，再向仍持有焦点的目标发送按键。
         sleep(Duration::from_millis(40)).await;
-        perform_floating_orb_submit_enter(target).await
+        perform_floating_orb_submit_enter(target).await?;
+        // 文字已经发出去，没有选区的「选区编辑」不能再改它。
+        crate::application::assistant::forget_delivery(&app.state::<RuntimeState>());
+        Ok(())
     };
     tokio::pin!(work);
     tokio::select! {
