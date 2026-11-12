@@ -30,6 +30,22 @@ describe("说明提示", () => {
     expect(screen.getByText("热词表")).toHaveAttribute("aria-describedby", tip.id);
   });
 
+  it("在控件上按下后不再弹出提示，直到指针离开；控件展开时也不显示", () => {
+    render(<Tooltip content="按进程名匹配"><button aria-expanded={false}>请选择软件</button></Tooltip>);
+    const trigger = screen.getByText("请选择软件");
+    fireEvent.pointerDown(trigger);
+    focus(trigger);
+    fireEvent.mouseEnter(trigger);
+    advance(600);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    fireEvent.mouseLeave(trigger);
+    trigger.setAttribute("aria-expanded", "true");
+    fireEvent.mouseEnter(trigger);
+    advance(600);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
   it("关闭时保留浮层直到淡出结束，重新打开后不被旧动画卸载", () => {
     render(<HelpLabel content="说明">选项</HelpLabel>);
     const label = screen.getByText("选项");

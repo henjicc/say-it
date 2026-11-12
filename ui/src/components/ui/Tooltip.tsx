@@ -13,16 +13,24 @@ export function Tooltip({ content, children }: {
   const [open, setOpen] = useState(false);
   const [rendered, setRendered] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0 });
+  // 用户已经在这个控件上按下（开始操作了），提示就别再冒出来挡住弹出的列表或输入框，直到指针离开。
+  const interacting = useRef(false);
   const clearTimer = () => { clearTimeout(timer.current); };
   const close = () => { clearTimer(); setOpen(false); };
   const schedule = (element: HTMLElement) => {
-    if (!content) return;
+    if (!content || interacting.current) return;
     setOpen(false);
     anchor.current = element;
     clearTimer();
-    timer.current = setTimeout(() => { setRendered(true); setOpen(true); }, 500);
+    timer.current = setTimeout(() => {
+      // 控件自己的下拉或弹层正开着时不显示。
+      if (element.matches('[aria-expanded="true"]') || element.querySelector('[aria-expanded="true"]')) return;
+      setRendered(true);
+      setOpen(true);
+    }, 500);
   };
   const leave = () => {
+    interacting.current = false;
     clearTimer();
     if (anchor.current?.contains(document.activeElement)) return;
     timer.current = setTimeout(() => setOpen(false), 120);
@@ -89,9 +97,10 @@ export function Tooltip({ content, children }: {
       "aria-describedby": [props["aria-describedby"], open ? id : undefined].filter(Boolean).join(" ") || undefined,
       onMouseEnter: (event) => { props.onMouseEnter?.(event); schedule(event.currentTarget); },
       onMouseLeave: (event) => { props.onMouseLeave?.(event); leave(); },
+      // 鼠标点击带来的聚焦已被按下时的 interacting 挡掉，这里只剩键盘聚焦。
       onFocus: (event) => { props.onFocus?.(event); schedule(event.currentTarget); },
       onBlur: (event) => { props.onBlur?.(event); if (!event.currentTarget.contains(event.relatedTarget)) close(); },
-      onPointerDown: (event) => { props.onPointerDown?.(event); close(); },
+      onPointerDown: (event) => { props.onPointerDown?.(event); interacting.current = true; close(); },
     })}
     {rendered && createPortal(<div ref={popup} id={id} role="tooltip" className="ui-tooltip" style={position}
       data-state={open ? "open" : "closed"} aria-hidden={!open}
