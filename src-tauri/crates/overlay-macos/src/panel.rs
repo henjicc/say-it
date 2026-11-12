@@ -242,6 +242,10 @@ impl OverlayView {
         };
         self.addTrackingArea(&area);
     }
+    /// 系统拖拽进行中：窗口位置由系统跟着指针走。
+    pub fn is_dragging(&self) -> bool {
+        self.ivars().dragging.get()
+    }
     pub fn begin_system_drag(&self) {
         if self.ivars().dragging.get() {
             return;

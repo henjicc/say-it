@@ -211,11 +211,18 @@ impl MainHost {
                 .or(mirror.screen)
         });
         let (quartz, id) = screen::rect_px_to_pts(&snapshot.list, bounds, hint);
-        let Some(frame) =
+        let Some(mut frame) =
             screens::ns_rect(screen::quartz_to_cocoa(snapshot.primary_height, quartz))
         else {
             return;
         };
+        // 拖拽中位置归系统：渲染线程的帧和定位命令带的都是稍早的位置，照它摆会把窗口
+        // 从指针下拽开。只跟随尺寸，左上角保持在系统拖到的地方。
+        if self.view.is_dragging() {
+            let current = self.panel.frame();
+            frame.origin.x = current.origin.x;
+            frame.origin.y = current.origin.y + current.size.height - frame.size.height;
+        }
         if self.panel.frame() != frame {
             self.panel.setFrame_display(frame, false);
         }
