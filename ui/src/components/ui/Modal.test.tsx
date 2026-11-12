@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { Modal } from "./Modal";
 
@@ -19,5 +19,30 @@ describe("Modal body layout", () => {
     view.rerender(<Modal open={false} onClose={() => undefined}><p>已关闭</p></Modal>);
     expect(screen.getByText("固定布局").parentElement).toBe(body);
     expect(body).toHaveClass("overflow-hidden");
+  });
+});
+
+describe("Modal focus", () => {
+  afterEach(cleanup);
+
+  it("moves focus into the dialog, keeps Tab inside, and returns focus on close", () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    const dialog = (open: boolean) => (
+      <Modal open={open} onClose={() => undefined}>
+        <button>第一个</button>
+        <button autoFocus>最后一个</button>
+      </Modal>
+    );
+    const view = render(dialog(true));
+    expect(screen.getByText("最后一个")).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab" });
+    expect(screen.getByText("第一个")).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab", shiftKey: true });
+    expect(screen.getByText("最后一个")).toHaveFocus();
+    view.rerender(dialog(false));
+    expect(opener).toHaveFocus();
+    opener.remove();
   });
 });
