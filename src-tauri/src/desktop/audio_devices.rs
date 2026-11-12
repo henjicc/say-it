@@ -48,6 +48,24 @@ pub(crate) fn list_audio_devices() -> Result<AudioDeviceList, String> {
     Ok(AudioDeviceList { inputs, outputs })
 }
 
+/// 系统「隐私 → 麦克风」里关掉了整机或桌面应用的麦克风访问。关掉后设备照样列得出来，
+/// 录到的却全是静音。「允许应用访问」那个总开关在 Windows 10 上只管应用商店应用，不算在内。
+#[cfg(windows)]
+pub(crate) fn microphone_privacy_denied() -> bool {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+    const STORE: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+    let denied = |hive, path: &str| {
+        RegKey::predef(hive)
+            .open_subkey(path)
+            .and_then(|key| key.get_value::<String, _>("Value"))
+            .is_ok_and(|value| value.eq_ignore_ascii_case("Deny"))
+    };
+    denied(HKEY_LOCAL_MACHINE, STORE)
+        || denied(HKEY_CURRENT_USER, &format!(r"{STORE}\NonPackaged"))
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

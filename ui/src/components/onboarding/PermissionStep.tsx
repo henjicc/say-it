@@ -5,7 +5,6 @@ import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Meter } from "@/components/ui/Meter";
 import { micLevelFraction, useMicLevel } from "@/features/audio/useMicLevel";
 import { PRIVACY_ROWS, useSetupPermissions } from "@/features/onboarding/permissions";
-import { isMacOS } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { MicRow } from "@/views/dictation/DictationSections";
@@ -15,22 +14,28 @@ function ReadyMark({ label }: { label: string }) {
   return <CheckCircle2 role="img" className="h-4 w-4 flex-none text-[var(--color-ok)]" aria-label={label} />;
 }
 
-/** macOS 上麦克风被拒后系统不会再弹授权，只能去系统设置里打开；启动出错时才查询一次。 */
+/**
+ * 麦克风被系统拒绝（macOS 授权、Windows 隐私设置）后只能去系统设置里打开。Windows 上被拒时采集
+ * 照常启动、只是录到静音，所以不能只在启动出错时才查；从系统设置切回来时也要重查。
+ */
 function useMicPermissionDenied(startError: string) {
   const [denied, setDenied] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     setError("");
-    if (!isMacOS || !startError) {
-      setDenied(false);
-      return;
-    }
     let active = true;
-    void cmd<boolean>(CMD.microphonePermissionDenied)
-      .then((value) => active && setDenied(value))
-      .catch((reason) => console.error("读取麦克风权限状态失败", reason));
-    return () => { active = false; };
+    const query = () => {
+      void cmd<boolean>(CMD.microphonePermissionDenied)
+        .then((value) => active && setDenied(value))
+        .catch((reason) => console.error("读取麦克风权限状态失败", reason));
+    };
+    query();
+    window.addEventListener("focus", query);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", query);
+    };
   }, [startError]);
 
   const openSettings = () => {
@@ -57,7 +62,7 @@ export function PermissionStep({ onNext }: { onNext: () => void }) {
           <MicRow />
           <Row
             label="说句话试试"
-            message={startError && (
+            message={(mic.denied || startError) && (
               <span role="alert" className="text-[var(--color-err)]">
                 {mic.denied ? `麦克风权限已被拒绝${mic.error && `：${mic.error}`}` : `无法使用麦克风：${startError}`}
               </span>
