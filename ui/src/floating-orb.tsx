@@ -114,7 +114,7 @@ function FloatingOrbApp() {
   useCuePlayback(EVT.indicatorPlayCue, "floating-orb");
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
-    if (!floatingOrbCanDrag(phase, transient) || event.button !== 0) return;
+    if (!floatingOrbCanDrag(phase) || event.button !== 0) return;
     dragged.current = false;
     pointer.current = {
       id: event.pointerId,
@@ -127,7 +127,7 @@ function FloatingOrbApp() {
 
   const onPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     const current = pointer.current;
-    if (!floatingOrbCanDrag(phase, transient) || current.id !== event.pointerId || current.dragging) return;
+    if (!floatingOrbCanDrag(phase) || current.id !== event.pointerId || current.dragging) return;
     if (!shouldStartOrbDrag(event.screenX - current.x, event.screenY - current.y)) return;
     current.dragging = true;
     dragged.current = true;
@@ -171,7 +171,7 @@ function FloatingOrbApp() {
   const interactive = floatingOrbClickAction(phase, canSubmit) !== null;
   // 左键没有动作时仍要能右键取消、拖动，所以只在三者都没有时才禁用。
   const takesPointer = interactive
-    || floatingOrbCanDrag(phase, transient)
+    || floatingOrbCanDrag(phase)
     || floatingOrbContextAction(phase, canSubmit, transient) !== null;
   const title = phase === "idle"
     ? transient ? label : "点击开始语音输入，拖动调整位置"
