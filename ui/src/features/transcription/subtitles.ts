@@ -394,6 +394,22 @@ export function toSrt(cues: SubtitleCue[]) {
     .join("\r\n\r\n")}\r\n`;
 }
 
+/** 带说话人的文稿：同一说话人连续的句子合成一段，没有说话人信息时同 `plainText`。 */
+export function speakerText(result: TranscriptionResult | null) {
+  const sentences = (result?.transcripts || []).flatMap((transcript) => transcript.sentences);
+  if (!sentences.some((sentence) => speakerIdOf(sentence) !== undefined)) return plainText(result);
+  const paragraphs: { speaker: string | undefined; text: string }[] = [];
+  for (const sentence of sentences) {
+    const speaker = speakerIdOf(sentence);
+    const last = paragraphs[paragraphs.length - 1];
+    if (last && last.speaker === speaker) last.text += sentence.text;
+    else paragraphs.push({ speaker, text: sentence.text });
+  }
+  return paragraphs
+    .map(({ speaker, text }) => (speaker === undefined ? text : `说话人 ${speaker}：${text}`))
+    .join("\n\n");
+}
+
 export function plainText(result: TranscriptionResult | null) {
   return (result?.transcripts || [])
     .map((transcript) => transcript.text || transcript.sentences.map((sentence) => sentence.text).join(""))

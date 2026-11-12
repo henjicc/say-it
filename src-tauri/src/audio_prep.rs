@@ -16,7 +16,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Duration, TimeBase, Timestamp};
 
 mod resampler;
-use resampler::MonoResampler;
+pub(crate) use resampler::MonoResampler;
 
 #[cfg(all(test, windows))]
 mod performance_tests;

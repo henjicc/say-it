@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { EditableCue } from "@/features/transcription/subtitles";
 import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 
-export type TranscriptionTab = "transcribe" | "align" | "settings";
+export type TranscriptionTab = "meeting" | "transcribe" | "align" | "settings";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
 export type AlignStage = TranscriptionStage | "aligning";
 export type TranscriptionResultView = "text" | "subtitles";
@@ -125,6 +125,8 @@ interface TranscriptionState {
   /** 「字幕」视图的可编辑工作副本；识别完成时从派生 cue 初始化。 */
   editorCues: EditableCue[] | null;
   saveMessage: string;
+  /** 根据识别结果生成的会议纪要；重新识别时清空。 */
+  summary: string;
   alignFile: SelectedTranscriptionFile | null;
   scriptText: string;
   alignStage: AlignStage;
@@ -160,6 +162,7 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   result: null,
   editorCues: null,
   saveMessage: "",
+  summary: "",
   alignFile: null,
   scriptText: "",
   alignStage: "idle",
@@ -188,5 +191,6 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
       result: null,
       editorCues: null,
       saveMessage: "",
+      summary: "",
     }),
 }));

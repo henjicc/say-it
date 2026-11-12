@@ -8,6 +8,7 @@ pub(crate) enum AudioOwner {
     Subtitles,
     Comparison,
     AudioLab,
+    Meeting,
     Legacy,
 }
 
@@ -19,6 +20,7 @@ impl AudioOwner {
             Self::Subtitles => "实时字幕",
             Self::Comparison => "模型对比",
             Self::AudioLab => "音频调校",
+            Self::Meeting => "会议记录",
             Self::Legacy => "麦克风测试",
         }
     }

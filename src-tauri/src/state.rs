@@ -33,6 +33,7 @@ pub(crate) struct RuntimeState {
     pub(crate) transcription_runtime: crate::application::transcription::TranscriptionRuntime,
     pub(crate) compare_runtime: crate::application::compare::CompareRuntime,
     pub(crate) audio_lab_runtime: crate::application::audio_lab::AudioLabRuntime,
+    pub(crate) meeting_runtime: crate::application::meeting::MeetingRuntime,
     pub(crate) assistant_runtime: crate::application::assistant::AssistantRuntime,
     pub(crate) learning_rules: Mutex<Vec<crate::application::learning::LearningRule>>,
     pub(crate) preference_profiles: Mutex<Vec<crate::application::learning::PreferenceProfile>>,
