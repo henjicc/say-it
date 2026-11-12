@@ -4,6 +4,7 @@ import { Download, Trash2 } from "lucide-react";
 import { Meter } from "@/components/ui/Meter";
 import { InspectorBody, InspectorHeader } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
+import { CheckField } from "@/components/ui/Field";
 import { Group } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Modal } from "@/components/ui/Modal";
@@ -271,15 +272,17 @@ function InstalledRow({ plugin, manager, hardware, update }: {
             <Tooltip content={pack.engine === "sherpa-onnx-punctuation"
               ? "开启后标点模型一直留在内存里，每次听写不用再等加载。"
               : "开启后模型一直留在内存里，听写和字幕不用再等加载；文件识别单独加载。处理长音频时占用会更多。关闭时，模型用过后还会保留几分钟，方便连续听写。"}>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[var(--color-fg-subtle)]">常驻内存</span>
-                <Switch
+              {/* 用复选框而不是开关：右侧紧挨着的开关是「启用」，两个开关并排分不清各管什么。 */}
+              <span>
+                <CheckField
+                  className="text-xs"
                   checked={pack.keepLoaded}
                   disabled={busy || (!pack.keepLoaded && (!plugin.enabled || pack.state !== "ready"))}
-                  label={`${plugin.name}常驻内存`}
                   onChange={(keepLoaded) => void manager.setKeepLoaded(plugin, keepLoaded)}
-                />
-              </div>
+                >
+                  常驻内存
+                </CheckField>
+              </span>
             </Tooltip>
           )}
           {pack?.state !== "superseded" && (
@@ -306,9 +309,6 @@ function InstalledRow({ plugin, manager, hardware, update }: {
       )}
       {pack?.keepLoaded && plugin.enabled && pack.state === "ready" && pack.residency?.state === "unloaded" && (
         <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">没有功能在用这个模型，暂不加载</p>
-      )}
-      {pack?.residency?.state === "loaded" && (
-        <p role="status" className="mt-1 text-xs text-[var(--color-fg-subtle)]">已常驻内存</p>
       )}
       {pack?.residency?.state === "failed" && (
         <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">常驻加载失败：{pack.residency.error}</p>

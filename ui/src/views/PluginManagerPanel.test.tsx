@@ -51,7 +51,7 @@ describe("插件常驻内存", () => {
     let finish: (value: PluginSnapshot) => void = () => {};
     cmd.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: true }));
@@ -61,7 +61,6 @@ describe("插件常驻内存", () => {
     loaded.modelPack!.residency = { state: "loaded" };
     finish(snapshot(loaded));
     await waitFor(() => expect(toggle).toBeChecked());
-    expect(screen.getByText("已常驻内存")).toBeInTheDocument();
     expect(screen.queryByText(/成功|已保存/)).not.toBeInTheDocument();
   });
 
@@ -71,7 +70,7 @@ describe("插件常驻内存", () => {
     else item.modelPack!.state = "pending";
     cmd.mockResolvedValue(snapshot(item));
     render(<LocalModelsPanel />);
-    expect(await screen.findByRole("switch", { name: "本地测试常驻内存" })).toBeDisabled();
+    expect(await screen.findByRole("checkbox", { name: "常驻内存" })).toBeDisabled();
   });
 
   it.each(["disabled", "pending"])("%s 时已开启仍可关闭", async (state) => {
@@ -83,7 +82,7 @@ describe("插件常驻内存", () => {
     closed.modelPack!.keepLoaded = false;
     cmd.mockResolvedValueOnce(snapshot(item)).mockResolvedValueOnce(snapshot(closed));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
     await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: false }));
@@ -96,13 +95,13 @@ describe("插件常驻内存", () => {
     cmd.mockResolvedValue(snapshot(ocr));
     render(<LocalModelsPanel />);
     await screen.findByText("本地测试");
-    expect(screen.queryByRole("switch", { name: /常驻内存/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /常驻内存/ })).not.toBeInTheDocument();
   });
 
   it("保存失败保留关闭状态，错误可见", async () => {
     cmd.mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(new Error("磁盘只读"));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
     fireEvent.click(toggle);
     expect(await screen.findByText(/更新常驻内存失败：.*磁盘只读/)).toBeInTheDocument();
     expect(toggle).not.toBeChecked();
