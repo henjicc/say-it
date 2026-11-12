@@ -63,8 +63,8 @@ export function ModelsPage() {
       <div id={PANEL_ID}>
         {active === "usage" && <><InspectorHeader title="用途" /><UsagePanel /></>}
         {provider && <ProviderPanel key={provider.id} profile={provider} />}
-        {active === "local" && <><InspectorHeader title="本地模型" /><LocalModelsPanel /></>}
-        {active === "plugins" && <><InspectorHeader title="插件" /><PluginsPanel /></>}
+        {active === "local" && <LocalModelsPanel />}
+        {active === "plugins" && <PluginsPanel />}
         {active === "compare" && <><InspectorHeader title="模型对比" /><SettingsComparePanel /></>}
       </div>
       <AddProviderModal open={adding} onClose={() => setAdding(false)} onAdded={(id) => setSection(`provider:${id}`)} />

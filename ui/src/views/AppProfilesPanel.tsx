@@ -140,11 +140,6 @@ export function AppProfilesPanel() {
           !prefs.appProfilesEnabled && "pointer-events-none opacity-40",
         )}
       >
-        {profiles.length === 0 && (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">
-            暂无软件规则，添加后可为指定软件单独设置本地处理和智能处理。
-          </p>
-        )}
         {profiles.map((profile, index) => {
           const open = editingId === profile.id;
           const matcher = profile.matchers[0] ?? "";

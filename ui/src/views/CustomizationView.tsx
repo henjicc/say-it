@@ -93,9 +93,7 @@ export function HotwordsTab() {
         title="热词表"
         right={<SyncStatus state={syncState} message={syncMessage} />}
         description="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">
-        {prefs.hotwords.length === 0 ? (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">暂无热词</p>
-        ) : (
+        {prefs.hotwords.length > 0 && (
           <div className="max-h-[22rem] overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
             {prefs.hotwords.map((hotword, index) => (
               <div key={index} className="flex items-center gap-2 px-3.5 py-2">
@@ -143,10 +141,7 @@ export function HotwordsTab() {
         </div>
       </Group>
 
-      <Group title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
-        {targets.length === 0 ? (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">当前没有已启用且支持热词的供应商。</p>
-        ) : (
+      {targets.length > 0 && <Group title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
           <Row label="云端词表" message="获取会用云端词表替换当前热词列表，上下文模板不受影响。">
             <Select
               className="w-40"
@@ -176,7 +171,6 @@ export function HotwordsTab() {
               清除
             </Button>
           </Row>
-        )}
         {syncResults.length > 0 && (
           <ul className="flex flex-col gap-1 px-3.5 py-3 text-xs">
             {syncResults.map((result) => (
@@ -189,7 +183,7 @@ export function HotwordsTab() {
             ))}
           </ul>
         )}
-      </Group>
+      </Group>}
 
       <Modal
         open={clearConfirmOpen}
