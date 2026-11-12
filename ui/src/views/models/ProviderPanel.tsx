@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { notify } from "@/store/useToastStore";
 import { InspectorBody, InspectorHeader } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Collapse } from "@/components/ui/Collapse";
@@ -69,7 +70,6 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
   ];
   const [draft, setDraft] = useState<Record<string, unknown>>(() => ({ ...(profile.config ?? {}) }));
   const [error, setError] = useState("");
-  const [actionMessage, setActionMessage] = useState("");
   const draftRef = useRef(draft);
   const timersRef = useRef(new Map<string, number>());
   const configuredSecrets = profile.status?.configuredSecrets ?? [];
@@ -125,9 +125,9 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
     try {
       const result = await cmd<Record<string, unknown>>(CMD.runProviderPluginAction, { providerId: profile.id, action });
       await loadProviders();
-      setActionMessage(String(result.message || result.status || "操作完成。"));
+      notify(String(result.message || result.status || "操作完成"));
     } catch (reason) {
-      setActionMessage(`操作失败：${String(reason)}`);
+      setError(`操作失败：${String(reason)}`);
     }
   };
 
@@ -184,7 +184,6 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
           ))}
         </div>
       )}
-      {actionMessage && <p role="status" className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">{actionMessage}</p>}
       <ErrorLine text={error} />
       {dialog}
     </Group>

@@ -154,7 +154,8 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.ui-tooltip[data-state="open"] {
+.ui-tooltip[data-state="open"],
+.ui-toast {
   animation: tooltip-in var(--dur-fast) ease-out both;
 }
 .ui-tooltip[data-state="closed"] {
@@ -458,6 +459,7 @@ input[type="radio"] {
 
 @media (prefers-reduced-motion: reduce) {
   .ui-tooltip,
+  .ui-toast,
   [class*="modal-overlay-"],
   [class*="modal-panel-"] {
     animation-duration: 1ms !important;

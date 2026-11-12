@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { notify } from "@/store/useToastStore";
 import { Button } from "@/components/ui/Button";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
@@ -198,7 +199,6 @@ export function AssistantModelRows() {
 export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const { confirm, dialog } = useConfirm();
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
-  const [message, setMessage] = useState("");
   const [previewSelection, setPreviewSelection] = useState("明天下午把新版方案发给客户，内容要写清楚，但是不要承诺具体上线日期。");
   const [previewInstruction, setPreviewInstruction] = useState(action === "ask" ? "这段话有哪些潜在风险？" : action === "translateSpeech" ? "Please send the updated proposal tomorrow afternoon." : "改成一封简洁、专业的邮件");
   const [previewResult, setPreviewResult] = useState("");
@@ -207,15 +207,15 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   const active = feature.templates.find((item) => item.id === feature.activeTemplateId) ?? feature.templates[0];
   const description = action === "translateSpeech" ? "说出内容，翻译后自动输入到当前输入框。" : action === "editSelection" ? "选中文本后说出修改指令；目标或选区变化时不会覆盖。" : "选中文字后提问，回答会显示在独立窗口。";
 
-  useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => setMessage(`读取设置失败：${String(error)}`)); }, []);
+  useEffect(() => { void cmd<AppSnapshot>(CMD.getAppSnapshot).then((snapshot) => setPrefs(normalizeAssistantPrefs(snapshot.settings.assistantPrefs))).catch((error) => notify(`读取设置失败：${String(error)}`, "err")); }, []);
   const save = async (next: AssistantPrefs) => {
     setPrefs(next);
-    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); setMessage(""); }
-    catch (error) { setMessage(`保存失败：${String(error)}`); }
+    try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); }
+    catch (error) { notify(`保存失败：${String(error)}`, "err"); }
   };
   const updateFeature = (nextFeature: AssistantFeaturePreferences) => save({ ...prefs, [action]: nextFeature });
   const addTemplate = () => {
-    if (feature.templates.length >= 20) return setMessage("每个功能最多支持 20 个模板");
+    if (feature.templates.length >= 20) return notify("每个功能最多支持 20 个模板");
     const item = { id: crypto.randomUUID(), name: "新模板", prompt: "在这里填写这个功能的处理规则。保留事实，不添加未经提供的信息。" };
     void updateFeature({ ...feature, activeTemplateId: item.id, templates: [...feature.templates, item] });
   };
@@ -248,9 +248,9 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     try {
       const factory = await cmd<AssistantPrefs>(CMD.getDefaultAssistantPreferences);
       const original = factory[action].templates.find((item) => item.id === active.id);
-      if (!original) return setMessage("当前模板不是内置模板，无法恢复默认内容");
+      if (!original) return notify("当前模板不是内置模板，无法恢复默认内容");
       await updateFeature({ ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...original } : item) });
-    } catch (error) { setMessage(`恢复默认模板失败：${String(error)}`); }
+    } catch (error) { notify(`恢复默认模板失败：${String(error)}`, "err"); }
   };
   const restore = (entry: DeletedAssistantPromptTemplate) => {
     if (feature.templates.length >= 20) return;
@@ -262,8 +262,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     try {
       await cmd(CMD.updateAppSettings, { domain: "assistant", value: prefs });
       setPreviewResult(await cmd<string>(CMD.previewAssistant, { action, selectedText: action === "translateSpeech" ? "" : previewSelection, spokenText: previewInstruction }));
-      setMessage("试运行完成，不会输入到其他软件或保存到历史。");
-    } catch (error) { setMessage(`试运行失败：${String(error)}`); } finally { setPreviewing(false); }
+    } catch (error) { notify(`试运行失败：${String(error)}`, "err"); } finally { setPreviewing(false); }
   };
 
   const usesTemplates = !(action === "translateSpeech" && prefs.translationEngine === "dedicated");
@@ -296,7 +295,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
       {feature.templateTrash.map((entry) => <Row key={entry.recoveryId} label={entry.template.name}><Button size="sm" onClick={() => restore(entry)}><ArchiveRestore className="h-3.5 w-3.5" />恢复</Button></Row>)}
     </Group>}
 
-    <Group title="试运行">
+    <Group title="试运行" description="只在这里显示结果，不会输入到其他软件，也不保存到历史。">
       {action !== "translateSpeech" && <TextBlock label={action === "ask" ? "模拟选区（可留空）" : "模拟选中文本"}><Textarea rows={4} value={previewSelection} onChange={(event) => setPreviewSelection(event.target.value)} /></TextBlock>}
       <TextBlock label={action === "translateSpeech" ? "模拟口述内容" : action === "ask" ? "模拟问题" : "模拟语音指令"}><Textarea rows={3} value={previewInstruction} onChange={(event) => setPreviewInstruction(event.target.value)} /></TextBlock>
       <div className="flex min-h-[var(--row-h)] items-center justify-between gap-4 px-3.5">
@@ -305,7 +304,6 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
       </div>
       {previewResult && <TextBlock label="模型结果"><Textarea rows={7} readOnly value={previewResult} /></TextBlock>}
     </Group>
-    {message && <p role="status" className="px-0.5 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
     {dialog}
   </InspectorBody>;
 }

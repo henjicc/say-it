@@ -83,7 +83,7 @@ describe("AssistantPage", () => {
         selectedText: expect.stringContaining("新版方案"),
         spokenText: "改成一封简洁、专业的邮件",
       })));
-    expect(await screen.findByText(/试运行完成/)).toBeInTheDocument();
+    expect(await screen.findByDisplayValue(/请查收新版方案/)).toBeInTheDocument();
   });
 
   it("restores built-in templates from the Rust catalog", async () => {

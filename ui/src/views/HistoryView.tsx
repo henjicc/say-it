@@ -9,6 +9,7 @@ import { useConfirm } from "@/components/ui/useConfirm";
 import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage, type LearningOverview, type LearningRule } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useUiStore } from "@/store/useUiStore";
+import { notify, notifyError } from "@/store/useToastStore";
 import { DEFAULT_HOTWORD_WEIGHT, MAX_HOTWORDS, useCustomizationStore } from "@/store/useCustomizationStore";
 
 const PAGE_SIZE = 30;
@@ -48,7 +49,7 @@ export function HistoryView() {
   const [taskKind, setTaskKind] = useState("");
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [generating, setGenerating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [overview, setOverview] = useState<LearningOverview>({
@@ -83,7 +84,7 @@ export function HistoryView() {
         setRules(nextRules);
       }
     } catch (error) {
-      if (version === loadVersion.current) setMessage(String(error));
+      if (version === loadVersion.current) notifyError(error);
     } finally {
       if (version === loadVersion.current) setLoading(false);
     }
@@ -101,9 +102,9 @@ export function HistoryView() {
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setMessage("已复制到剪贴板");
+      notify("已复制");
     } catch (error) {
-      setMessage(`复制失败：${String(error)}`);
+      notify(`复制失败：${String(error)}`, "err");
     }
   }
 
@@ -111,9 +112,8 @@ export function HistoryView() {
     try {
       await cmd(CMD.confirmHistoryFinalText, { id: entry.id, finalText: draft });
       setEditing(null);
-      setMessage("已保存，并记录为一条显式纠错样本");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -121,36 +121,32 @@ export function HistoryView() {
     if (!entry.finalText) return;
     try {
       await cmd(CMD.confirmHistoryFinalText, { id: entry.id, finalText: entry.finalText });
-      setMessage("已确认最终草稿并加入学习样本");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
   async function discardObserved(entry: HistoryEntry) {
     try {
       await cmd(CMD.discardHistoryFinalText, { id: entry.id });
-      setMessage("已忽略本次观察结果");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
   async function confirmLearning(entry: HistoryEntry) {
     try {
       await cmd(CMD.confirmHistoryLearning, { id: entry.id, scope: "app" });
-      setMessage("已确认为应用内学习规则");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
   async function rejectLearning(entry: HistoryEntry) {
     try {
       await cmd(CMD.rejectHistoryLearning, { id: entry.id });
-      setMessage("最终草稿已保留，本次修改不会参与学习");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -158,9 +154,9 @@ export function HistoryView() {
     try {
       const scope = rule.scope === "global" ? "app" : "global";
       await cmd(CMD.setLearningRuleScope, { id: rule.id, scope });
-      setMessage(scope === "global" ? "规则已改为全局生效" : "规则已限制在来源应用");
+      await load();
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -176,9 +172,9 @@ export function HistoryView() {
     }
     try {
       await cmd(CMD.deleteLearningRule, { id: rule.id });
-      setMessage("学习规则已删除");
+      await load();
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -186,27 +182,27 @@ export function HistoryView() {
     try {
       const enabled = rule.status === "disabled";
       await cmd(CMD.setLearningRuleEnabled, { id: rule.id, enabled });
-      setMessage(enabled ? "学习规则已重新启用" : "学习规则已停用");
+      await load();
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
   async function acceptHotwordSuggestion(rule: LearningRule) {
     const text = rule.afterText.trim();
     if (!text || hotwords.some((item) => item.text.trim().toLocaleLowerCase() === text.toLocaleLowerCase())) {
-      setMessage("该词已经在热词表中");
+      notify("该词已经在热词表中");
       return;
     }
     if (hotwords.length >= MAX_HOTWORDS) {
-      setMessage("热词数量已达到上限");
+      notify("热词数量已达到上限");
       return;
     }
     try {
       await patchCustomization({ hotwords: [...hotwords, { text, weight: DEFAULT_HOTWORD_WEIGHT }] });
-      setMessage(`已将“${text}”加入热词表`);
+      notify(`已将“${text}”加入热词表`);
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -222,13 +218,14 @@ export function HistoryView() {
     ) {
       return;
     }
+    setGenerating(true);
     try {
-      setMessage("正在生成表达偏好草稿…");
       await cmd(CMD.generatePreferenceSummary, { scope: "global", providerId: "default", allowCloud: true });
-      setMessage("表达偏好草稿已生成，请确认后生效");
       await load();
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -236,9 +233,8 @@ export function HistoryView() {
     if (!overview.draftProfile) return;
     try {
       await cmd(CMD.confirmPreferenceSummary, { id: overview.draftProfile.id });
-      setMessage("表达偏好已确认并生效");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -258,19 +254,17 @@ export function HistoryView() {
     }
     try {
       await cmd(CMD.deleteHistoryEntry, { id });
-      setMessage("记录已删除");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
   async function retry(id: string) {
     try {
-      setMessage("正在返回原应用并重试注入…");
       await cmd(CMD.retryHistoryInjection, { id });
-      setMessage("已重新注入");
+      notify("已重新注入");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -311,7 +305,7 @@ export function HistoryView() {
           label="表达偏好"
           message={!overview.summaryAvailable && "需要至少 10 条有效证据，来自 5 次不同听写"}
         >
-          <Button size="sm" disabled={!overview.summaryAvailable} onClick={() => void generateSummary()}>生成表达偏好</Button>
+          <Button size="sm" disabled={!overview.summaryAvailable || generating} onClick={() => void generateSummary()}>{generating ? "正在生成…" : "生成表达偏好"}</Button>
         </Row>
         {rules.map((rule) => (
           <div key={rule.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5 text-[13px]">
@@ -418,7 +412,6 @@ export function HistoryView() {
           <span>{range}</span><div className="flex gap-2"><Button size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>上一页</Button><Button size="sm" disabled={offset + PAGE_SIZE >= page.total} onClick={() => setOffset(offset + PAGE_SIZE)}>下一页</Button></div>
         </div>
       </section>
-      {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       {dialog}
     </div>
   );

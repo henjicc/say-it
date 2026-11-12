@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { CircleCheck, CircleX, LoaderCircle, TriangleAlert } from "lucide-react";
+import { CircleX, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { firstAcceptedPath, PLUGIN_PACKAGE_DROP_ROUTE } from "@/features/fileDrop/routes";
 import { installPluginPackage, requiresExplicitTrust } from "@/features/plugins/pluginInstaller";
 import { CMD, EVT, cmd, emitEvent, on } from "@/lib/tauri";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
+import { notify } from "@/store/useToastStore";
 import { useUiStore } from "@/store/useUiStore";
 
 function fileName(path: string) {
@@ -15,8 +16,8 @@ function fileName(path: string) {
 
 type InstallState =
   | { status: "idle" }
-  | { status: "installing" }
-  | { status: "success" }
+  /** progress 是解包进度（0～1）；大模型包解包以秒计，没有进度会像卡住。 */
+  | { status: "installing"; progress?: number }
   | { status: "error"; message: string; allowUntrusted: boolean };
 
 export function PluginDropInstaller() {
@@ -75,6 +76,24 @@ export function PluginDropInstaller() {
   }, [enqueue]);
 
   useEffect(() => {
+    if (!installing) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void on<{ extractedBytes: number; totalBytes: number }>(EVT.pluginInstallProgress, (event) => {
+      setInstallState((current) => current.status === "installing" && event.totalBytes
+        ? { status: "installing", progress: event.extractedBytes / event.totalBytes }
+        : current);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [installing]);
+
+  useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     getCurrentWebview()
@@ -115,8 +134,10 @@ export function PluginDropInstaller() {
         trustSigningKey: allowUntrusted,
         expectedArchiveStamp: preview?.archiveStamp,
       });
-      setInstallState({ status: "success" });
+      // 装完直接回到插件列表：新装的那一行就是结果。
+      finishCurrent();
       openModels("plugins");
+      notify(`${preview?.name ?? fileName(sourcePath)} 已安装`);
       void emitEvent(EVT.pluginRegistryChanged).catch((error) => {
         console.error("刷新插件目录失败", error);
       });
@@ -132,9 +153,6 @@ export function PluginDropInstaller() {
 
   const packageName = preview?.name || "所选插件";
   const installLabel = preview?.packageKind === "model-pack" ? "安装模型包" : "安装插件";
-  const successDescription = preview?.packageKind === "model-pack"
-    ? `${packageName} 已安装。关闭后可在插件管理中查看模型状态并启用。`
-    : `${packageName} 已安装并加载。关闭后可在插件管理中配置或启用。`;
 
   return (
     <>
@@ -155,15 +173,7 @@ export function PluginDropInstaller() {
           className="max-w-[460px]"
         >
           <div className="p-5">
-            {installState.status === "success" ? (
-              <div role="status" aria-live="polite" className="flex items-start gap-3">
-                <CircleCheck className="mt-0.5 h-8 w-8 flex-none text-[var(--color-ok)]" aria-hidden />
-                <div className="min-w-0">
-                  <h4 className="text-base font-semibold text-[var(--color-fg)]">安装完成</h4>
-                  <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">{successDescription}</p>
-                </div>
-              </div>
-            ) : installState.status === "error" ? (
+            {installState.status === "error" ? (
               <div role="alert">
                 <div className="flex items-start gap-3">
                   <CircleX className="mt-0.5 h-8 w-8 flex-none text-[var(--color-err)]" aria-hidden />
@@ -181,7 +191,9 @@ export function PluginDropInstaller() {
                 <LoaderCircle className="mt-0.5 h-7 w-7 flex-none animate-spin text-[var(--color-accent-text)]" aria-hidden />
                 <div className="min-w-0">
                   <h4 className="text-sm font-semibold text-[var(--color-fg)]">正在安装</h4>
-                  <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">正在校验并安装 {packageName}，请不要关闭窗口。</p>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-[var(--color-fg-muted)]">
+                    {packageName}{installState.progress !== undefined && ` · ${Math.floor(installState.progress * 100)}%`}
+                  </p>
                 </div>
               </div>
             ) : previewError ? (
@@ -239,9 +251,7 @@ export function PluginDropInstaller() {
               </div>
             )}
             <div className="mt-6 flex justify-end gap-2">
-              {installState.status === "success" ? (
-                <Button size="sm" variant="primary" autoFocus onClick={close}>完成</Button>
-              ) : installState.status === "error" ? (
+              {installState.status === "error" ? (
                 <>
                   <Button size="sm" onClick={close}>关闭</Button>
                   <Button size="sm" variant="primary" autoFocus onClick={() => void install(installState.allowUntrusted)}>重新安装</Button>

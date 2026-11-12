@@ -1,5 +1,6 @@
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useMemo, useState } from "react";
+import { notify } from "@/store/useToastStore";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
@@ -33,7 +34,6 @@ export function HotwordsTab() {
   const clearProviders = useCustomizationStore((state) => state.clearProviders);
   const profiles = useProviderStore((state) => state.profiles);
 
-  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [pullProviderId, setPullProviderId] = useState("");
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
@@ -56,8 +56,7 @@ export function HotwordsTab() {
     label: string,
     updater: (current: CustomizationPrefs) => Partial<CustomizationPrefs>,
   ) => {
-    setMessage("");
-    void patch(updater).catch((error) => setMessage(`${label}失败：${String(error)}`));
+    void patch(updater).catch((error) => notify(`${label}失败：${String(error)}`, "err"));
   };
   const updateHotword = (index: number, partial: Partial<Hotword>) => {
     save("保存热词", (current) => ({
@@ -78,12 +77,11 @@ export function HotwordsTab() {
 
   const run = async (label: string, action: () => Promise<void>) => {
     setBusy(true);
-    setMessage("");
     try {
       await action();
-      setMessage(`${label}完成。`);
+      notify(`${label}完成`);
     } catch (error) {
-      setMessage(`${label}失败：${String(error)}`);
+      notify(`${label}失败：${String(error)}`, "err");
     } finally {
       setBusy(false);
     }
@@ -179,22 +177,17 @@ export function HotwordsTab() {
             </Button>
           </Row>
         )}
-        {(message || syncResults.length > 0) && (
-          <div className="flex flex-col gap-1 px-3.5 py-3 text-xs">
-            {message && <p className="text-[var(--color-fg-subtle)]" role="status">{message}</p>}
-            {syncResults.length > 0 && (
-              <ul className="flex flex-col gap-1">
-                {syncResults.map((result) => (
-                  <li
-                    key={result.providerId}
-                    className={result.ok ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-err)]"}
-                  >
-                    {result.displayName}：{result.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+        {syncResults.length > 0 && (
+          <ul className="flex flex-col gap-1 px-3.5 py-3 text-xs">
+            {syncResults.map((result) => (
+              <li
+                key={result.providerId}
+                className={result.ok ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-err)]"}
+              >
+                {result.displayName}：{result.message}
+              </li>
+            ))}
+          </ul>
         )}
       </Group>
 
