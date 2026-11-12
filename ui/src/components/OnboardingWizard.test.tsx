@@ -32,6 +32,7 @@ vi.mock("@/lib/tauri", () => ({
   CMD: {
     listProviderPlugins: "list_provider_plugins",
     listOfficialModelPacks: "list_official_model_packs",
+    cachedOfficialModelPacks: "cached_official_model_packs",
     completeOnboarding: "complete_onboarding",
     detectHardware: "detect_hardware",
     openExternalLink: "open_external_link",

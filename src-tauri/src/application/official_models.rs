@@ -13,6 +13,9 @@ const CATALOG_FORMAT_VERSION: u32 = 1;
 const MAX_CATALOG_BYTES: usize = 256 * 1024;
 const MAX_MANIFEST_PACK_BYTES: u64 = 1024 * 1024;
 
+/// 本次运行最近一次读到的官方目录。主窗口关掉会销毁页面，重开时先拿它显示，再联网刷新。
+static LAST_CATALOG: std::sync::Mutex<Option<Vec<OfficialModelPack>>> = std::sync::Mutex::new(None);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Catalog {
@@ -79,7 +82,15 @@ async fn fetch_catalog(client: &reqwest::Client) -> Result<Vec<OfficialModelPack
 
 #[tauri::command]
 pub(crate) async fn list_official_model_packs() -> Result<Vec<OfficialModelPack>, String> {
-    fetch_catalog(&model_download::https_client()?).await
+    let packs = fetch_catalog(&model_download::https_client()?).await?;
+    *LAST_CATALOG.lock().map_err(|_| "官方模型目录缓存锁失败")? = Some(packs.clone());
+    Ok(packs)
+}
+
+/// 本次运行里读到过的官方目录；还没读过时为空。不联网。
+#[tauri::command]
+pub(crate) fn cached_official_model_packs() -> Result<Option<Vec<OfficialModelPack>>, String> {
+    Ok(LAST_CATALOG.lock().map_err(|_| "官方模型目录缓存锁失败")?.clone())
 }
 
 /// 下载并安装签名清单包（官方密钥已内置信任），再按清单下载权重。

@@ -76,7 +76,9 @@ use application::learning::{
 };
 use application::llm_models::refresh_llm_models;
 use application::performance::get_performance_metrics;
-use application::official_models::{install_official_model_pack, list_official_model_packs};
+use application::official_models::{
+    cached_official_model_packs, install_official_model_pack, list_official_model_packs,
+};
 use application::plugin_management::{
     download_provider_model_pack, install_provider_plugin, list_provider_plugins,
     preview_provider_plugin, reload_provider_plugins, run_provider_plugin_action,
@@ -658,6 +660,7 @@ fn main() {
             take_pending_provider_plugin_imports,
             download_provider_model_pack,
             list_official_model_packs,
+            cached_official_model_packs,
             install_official_model_pack,
             set_provider_model_keep_loaded,
             set_provider_plugin_enabled,
