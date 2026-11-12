@@ -127,7 +127,6 @@ impl DictationContextCaptureHandle {
 pub(crate) struct DeferredOcrCaptureHandle {
     deadline: std::time::Instant,
     receiver: Option<oneshot::Receiver<windows::PreparedOcrCapture>>,
-    ready: None,
     cancelled: Arc<AtomicBool>,
     fallback: CapturedActiveAppContext,
 }
