@@ -131,12 +131,30 @@ pub(crate) fn start() {
     let initial = *look;
     std::thread::Builder::new()
         .name("overlay-render".into())
-        .spawn(move || render_loop(rx, initial, screens::snapshot))
+        .spawn(move || {
+            raise_render_thread_qos();
+            render_loop(rx, initial, screens::snapshot)
+        })
         .expect("start overlay render thread");
     dispatch2::DispatchQueue::main().exec_async(|| {
         screens::observe(objc2::MainThreadMarker::new().expect("main queue"));
         area_changed();
     });
+}
+
+/// 悬浮窗的动画不能排在后台工作后面：听写一开始往往同时在加载模型、截图和识别屏幕文字，
+/// 默认 QoS 的渲染线程会被挤掉几帧，动画就卡一下。这个线程每帧只做很少的工作，调高不影响别处。
+fn raise_render_thread_qos() {
+    // <sys/qos.h> 与 <pthread/qos.h>；libSystem 自带，不为一个调用引入 libc。
+    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    // SAFETY: 只改调用线程自己的 QoS，参数是 SDK 定义的常量。
+    let code = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) };
+    if code != 0 {
+        eprintln!("[native-overlay] 调高渲染线程 QoS 失败：{code}");
+    }
 }
 
 fn wait_duration(deadlines: impl Iterator<Item = Instant>, now: Instant) -> Option<Duration> {
