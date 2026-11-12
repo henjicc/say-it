@@ -94,10 +94,4 @@ describe("AssistantPage", () => {
       }),
     }));
   });
-
-  it("keeps the shortcut deep link on the exact assistant action", () => {
-    useUiStore.getState().openAssistantSettings("ask");
-    expect(useUiStore.getState().view).toBe("assistant");
-    expect(useUiStore.getState().assistantAction).toBe("ask");
-  });
 });

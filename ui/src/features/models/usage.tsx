@@ -1,6 +1,4 @@
 import { createContext, useContext } from "react";
-import { ArrowRight } from "lucide-react";
-import { Row } from "@/components/ui/Group";
 import { optionsForScene, sdkPricing, useModelCatalogRevision, type AsrModelOption } from "@/features/asr/modelRegistry";
 import { TRANSLATION_MODEL_OPTIONS, TRANSLATION_PROVIDER_ID } from "@/features/translation/models";
 import { useProviderStore, type ProviderCapability } from "@/store/useProviderStore";
@@ -10,8 +8,8 @@ import { tokenPrice } from "./pricing";
 import { isManagedProvider, isModelOffered, providerReady } from "./providerModels";
 
 /**
- * 各功能用哪个模型只在模型页「用途」里设置。功能页的同一行在专业模式下只显示当前值并跳转过去；
- * 简单模式没有模型页，仍在功能页直接选择。
+ * 各功能用哪个模型，在模型页「用途」和各功能页都能直接选，写的是同一份设置。
+ * 少数设置只在「用途」页里才直接写回存储（对应功能页没打开时）。
  */
 const UsageEditContext = createContext(false);
 
@@ -19,30 +17,9 @@ export function UsageEditScope({ children }: { children: React.ReactNode }) {
   return <UsageEditContext.Provider value>{children}</UsageEditContext.Provider>;
 }
 
-/** 是否渲染在「用途」页里；功能页没打开时，个别设置要直接写回存储。 */
+/** 是否渲染在「用途」页里。 */
 export function useInUsagePage(): boolean {
   return useContext(UsageEditContext);
-}
-
-export function useUsageEditable(): boolean {
-  const inUsagePage = useInUsagePage();
-  const simple = useUiStore((state) => state.layoutMode === "simple");
-  return inUsagePage || simple;
-}
-
-export function UsageLinkRow({ label, value, message }: { label: string; value: string; message?: React.ReactNode }) {
-  return (
-    <Row label={label} message={message}>
-      <button
-        type="button"
-        onClick={() => useUiStore.getState().openModels("usage")}
-        className="flex max-w-64 items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]"
-      >
-        <span className="truncate">{value}</span>
-        <ArrowRight className="h-3.5 w-3.5 flex-none" aria-hidden />
-      </button>
-    </Row>
-  );
 }
 
 /** 场景下拉框里的识别模型：按供应商密钥与显示开关过滤，当前选中的始终保留。 */

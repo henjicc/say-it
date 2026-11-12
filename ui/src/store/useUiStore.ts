@@ -50,11 +50,6 @@ interface UiState {
   openSettings: (section?: SettingsSectionKey) => void;
   smartTextTab: SmartTextTabKey;
   setSmartTextTab: (tab: SmartTextTabKey) => void;
-  focusedShortcutProfileId: string | null;
-  consumeFocusedShortcutProfile: () => void;
-  openDictationShortcutSettings: (profileId?: string) => void;
-  openAssistantSettings: (action?: AssistantActionKey) => void;
-  openSubtitleShortcutSettings: () => void;
   aboutOpen: boolean;
   openAbout: () => void;
   closeAbout: () => void;
@@ -90,23 +85,6 @@ export const useUiStore = create<UiState>((set) => ({
   clearSearchHit: (id) => set((state) => (state.searchHit?.id === id ? { searchHit: null } : {})),
   smartTextTab: "template",
   setSmartTextTab: (smartTextTab) => set({ smartTextTab }),
-  focusedShortcutProfileId: null,
-  consumeFocusedShortcutProfile: () => set({ focusedShortcutProfileId: null }),
-  openDictationShortcutSettings: (profileId) => set({
-    view: "dictation",
-    dictationNode: profileId ? "shortcuts" : "basics",
-    focusedShortcutProfileId: profileId ?? null,
-  }),
-  openAssistantSettings: (action) => set((state) => ({
-    view: "assistant",
-    assistantAction: action ?? state.assistantAction,
-    focusedShortcutProfileId: null,
-  })),
-  openSubtitleShortcutSettings: () => set({
-    view: "subtitles",
-    subtitleNode: "basics",
-    focusedShortcutProfileId: null,
-  }),
   aboutOpen: false,
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),

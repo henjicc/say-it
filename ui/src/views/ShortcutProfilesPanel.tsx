@@ -24,7 +24,6 @@ import {
   useDictPrefs,
 } from "@/store/useDictPrefs";
 import { useDictationStore } from "@/store/useDictationStore";
-import { useUiStore } from "@/store/useUiStore";
 
 /** 展开的方案详情与列表行的名称对齐（让过复选框）。 */
 const DETAIL_INDENT = "pl-[42px]";
@@ -78,28 +77,9 @@ export function ShortcutProfilesPanel() {
   const { confirm, dialog } = useConfirm();
   const prefs = useDictPrefs((state) => state.prefs);
   const profiles = useDictationStore((state) => state.shortcutProfiles);
-  const focusedProfileId = useUiStore((state) => state.focusedShortcutProfileId);
-  const consumeFocusedProfile = useUiStore((state) => state.consumeFocusedShortcutProfile);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
   const untouchedDraftIds = useRef(new Set<string>());
-
-  useEffect(() => {
-    if (!focusedProfileId) return undefined;
-    if (!profiles.some((profile) => profile.id === focusedProfileId)) {
-      consumeFocusedProfile();
-      return undefined;
-    }
-    setEditingId(focusedProfileId);
-    const frame = window.requestAnimationFrame(() => {
-      document.getElementById(`shortcut-profile-${focusedProfileId}`)?.scrollIntoView({
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-        block: "center",
-      });
-      consumeFocusedProfile();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeFocusedProfile, focusedProfileId, profiles]);
 
   useEffect(() => () => {
     const draftIds = new Set(untouchedDraftIds.current);

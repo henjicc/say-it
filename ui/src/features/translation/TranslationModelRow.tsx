@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
-import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { useOfferedTranslationOptions, useUsageIssue } from "@/features/models/usage";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useTranslationStore, type TranslationPrefs } from "@/store/useTranslationStore";
 
@@ -29,7 +29,6 @@ export function TranslationModelRow({ label = "翻译模型", hint }: { label?: 
   const prefs = useTranslationStore((state) => state.prefs);
   const save = useTranslationStore((state) => state.save);
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
-  const editable = useUsageEditable();
   const [error, setError] = useState("");
   const value = choiceValue(prefs);
   const dedicated = useOfferedTranslationOptions(prefs.engine === "dedicated" ? prefs.model : "");
@@ -45,7 +44,6 @@ export function TranslationModelRow({ label = "翻译模型", hint }: { label?: 
     prefs.engine === "dedicated" ? "translation" : "llm",
   );
   const message = error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue;
-  if (!editable) return <UsageLinkRow label={label} value={selected?.triggerLabel ?? selected?.label ?? "未选择"} message={message} />;
   return (
     <Row label={label} hint={hint} message={message}>
       <div className={ROW_CONTROL_W}>

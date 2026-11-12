@@ -10,7 +10,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
-import { UsageLinkRow, useAsrUsageIssue, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
+import { useAsrUsageIssue, useOfferedAsrOptions } from "@/features/models/usage";
 import { useAudioDevices } from "@/features/audio/devices";
 import { setInjectMethod, setMainShortcut, setPressHoldMode } from "@/features/dictation/controller";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
@@ -84,12 +84,8 @@ export function AsrModelRow({ label = "识别模型", hint }: { label?: string; 
   useModelCatalogRevision();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const patch = useDictPrefs((s) => s.patch);
-  const editable = useUsageEditable();
   const options = useOfferedAsrOptions(DICTATION_ASR_MODEL_OPTIONS, asrModel);
   const issue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
-  if (!editable) {
-    return <UsageLinkRow label={label} value={options.find((option) => option.value === asrModel)?.label ?? asrModel} message={issue} />;
-  }
   return (
     <Row label={label} hint={hint} controlId="dictation-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>

@@ -8,7 +8,7 @@ import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { LOCAL_POLISH_TEMPLATES } from "@/features/onboarding/setup";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
-import { UsageLinkRow, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 
@@ -29,7 +29,6 @@ export function SmartLlmRow({ label = "智能模型" }: { label?: string } = {})
       providerId: profile.id,
       providerLabel: "本地",
     }));
-  const editable = useUsageEditable();
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
   const options: ModelPickerOption[] = [FOLLOW_DEFAULT_LLM_OPTION, ...localOptions, ...llmModelPickerOptions(profiles, selected)];
   const local = localOptions.some((option) => option.value === selected);
@@ -38,7 +37,6 @@ export function SmartLlmRow({ label = "智能模型" }: { label?: string } = {})
     ? <span role="status" className="text-[var(--color-err)]">本地整理模型只支持「场景感知润色」和「通用润色」模板，当前模板请换用大模型。</span>
     : usageIssue;
   const current = options.find((option) => option.value === selected);
-  if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
   return (
     <>
       <Row label={label} controlId="smart-text-llm-model" message={issue}>
@@ -68,12 +66,10 @@ export function OcrModelRow({ label = "OCR 模型" }: { label?: string } = {}) {
   useModelCatalogRevision();
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
-  const editable = useUsageEditable();
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<OcrModelOption>();
   const models = ocrOptionsForScene("activeAppContext");
   const selected = models.find((option) => option.value === prefs.activeAppContextOcrModel);
-  if (!editable) return <UsageLinkRow label={label} value={selected?.label ?? "当前模型不可用"} />;
 
   const select = async (model: OcrModelOption) => {
     setMessage("");

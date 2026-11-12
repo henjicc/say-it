@@ -1,35 +1,81 @@
-import { useMemo } from "react";
-import { ArrowRight } from "lucide-react";
+import { useMemo, useState } from "react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
-import { Group, Row } from "@/components/ui/Group";
-import { shortcutLabel } from "@/features/dictation/hotkeys";
-import { shortcutBindingsQuery, shortcutTargetKey, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
-import { useCachedQuery } from "@/hooks/useCachedQuery";
-import { useUiStore } from "@/store/useUiStore";
+import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
+import { Select } from "@/components/ui/Input";
+import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
+import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
+import {
+  clearShortcutBinding,
+  shortcutBindingsQuery,
+  shortcutTargetKey,
+  updateShortcutBinding,
+  type ShortcutBindingItem,
+} from "@/features/hotkeys/catalog";
+import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
+import { fetchQuery, useCachedQuery } from "@/hooks/useCachedQuery";
 
-/**
- * 全部快捷键的总览：一眼看清哪些键被占用、哪些没生效。
- * 每个快捷键只在用它的功能页里修改，这里点一下跳过去。
- */
+/** 一个快捷键：这里改和在功能页里改是同一份，改完各处一起更新。 */
+function BindingRow({ item }: { item: ShortcutBindingItem }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const run = async (operation: (current: ShortcutBindingItem) => Promise<ShortcutBindingItem[]>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await operation(item);
+    } catch (reason) {
+      if (!reportShortcutConflict(reason)) setError(String(reason));
+      await fetchQuery(shortcutBindingsQuery, true).catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 注册失败时必须说出来：否则这里照样显示成已绑定，用户按了没反应也无从得知。
+  const message = error || (item.registrationError && `当前未生效：${item.registrationError}`);
+  return (
+    <Row
+      // 名称带着「语音输入 · 」这类前缀，分组标题已经说明了属于哪个功能。
+      label={item.name.split(" · ").pop()}
+      message={message && <span role="alert" className="text-[var(--color-err)]">{message}</span>}
+    >
+      <div className="flex items-center gap-2">
+        {item.keyCode && (
+          <Select
+            className="w-24"
+            aria-label={`${item.name}的触发方式`}
+            value={item.triggerMode}
+            disabled={busy}
+            onChange={(event) => void run((current) => updateShortcutBinding(current, current, event.target.value as ShortcutTriggerMode))}
+          >
+            <option value="toggle">按一下</option>
+            <option value="pressHold">按住</option>
+          </Select>
+        )}
+        <div className={ROW_CONTROL_W}>
+          <ShortcutRecorder
+            value={item}
+            disabled={busy}
+            ariaLabel={`${item.name}的快捷键`}
+            onChange={(shortcut) => void run((current) => updateShortcutBinding(current, shortcut, current.triggerMode))}
+            onClear={() => void run(clearShortcutBinding)}
+          />
+        </div>
+      </div>
+    </Row>
+  );
+}
+
+/** 全部快捷键的总览：一眼看清哪些键被占用、哪些没生效，也可以直接在这里改。 */
 export function SettingsKeyBindingsPanel() {
   const { data: items, error: loadError, refresh: load } = useCachedQuery(shortcutBindingsQuery);
   const error = loadError && !items ? `读取快捷键失败：${loadError}` : "";
-  const openDictation = useUiStore((state) => state.openDictationShortcutSettings);
-  const openAssistant = useUiStore((state) => state.openAssistantSettings);
-  const openSubtitles = useUiStore((state) => state.openSubtitleShortcutSettings);
 
   const groups = useMemo(() => [
     { title: "语音输入", items: items?.filter((item) => item.target.kind === "dictationMain" || item.target.kind === "dictationProfile") ?? [] },
     { title: "助手", items: items?.filter((item) => item.target.kind === "assistant") ?? [] },
     { title: "字幕", items: items?.filter((item) => item.target.kind === "subtitles") ?? [] },
   ], [items]);
-
-  const goToSource = (item: ShortcutBindingItem) => {
-    if (item.target.kind === "subtitles") openSubtitles();
-    else if (item.target.kind === "assistant") openAssistant(item.target.action);
-    else openDictation(item.target.kind === "dictationProfile" ? item.target.profileId : undefined);
-  };
 
   if (error) {
     return (
@@ -45,30 +91,7 @@ export function SettingsKeyBindingsPanel() {
     <InspectorBody>
       {groups.filter((group) => group.items.length > 0).map((group) => (
         <Group key={group.title} title={group.title}>
-          {group.items.map((item) => {
-            const keys = shortcutLabel(item);
-            return (
-              <Row
-                key={shortcutTargetKey(item.target)}
-                // 名称带着「语音输入 · 」这类前缀，分组标题已经说明了属于哪个功能。
-                label={item.name.split(" · ").pop()}
-                // 注册失败时必须说出来：否则这里照样显示成已绑定，用户按了没反应也无从得知。
-                message={item.registrationError && <span role="alert" className="text-[var(--color-err)]">当前未生效：{item.registrationError}</span>}
-              >
-                <button
-                  type="button"
-                  aria-label={`修改${item.name}的快捷键`}
-                  onClick={() => goToSource(item)}
-                  className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]"
-                >
-                  <span className={keys ? undefined : "text-[var(--color-fg-subtle)]"}>
-                    {keys ? `${keys} · ${item.triggerMode === "pressHold" ? "按住" : "按一下"}` : "未设置"}
-                  </span>
-                  <ArrowRight className="h-3.5 w-3.5 flex-none" aria-hidden />
-                </button>
-              </Row>
-            );
-          })}
+          {group.items.map((item) => <BindingRow key={shortcutTargetKey(item.target)} item={item} />)}
         </Group>
       ))}
     </InspectorBody>
