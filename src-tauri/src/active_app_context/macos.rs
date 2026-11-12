@@ -222,7 +222,7 @@ fn capture_ocr(
     let ocr_started = Instant::now();
     let provider_description = options.ocr_provider.description();
     let is_system = matches!(&options.ocr_provider, OcrProvider::System);
-    let mut blocks =
+    let blocks =
         match recognize_with_deadline(&options.ocr_provider, &capture.png, options.deadline) {
             Ok(blocks) => blocks,
             Err(error) if !is_system => {
@@ -253,7 +253,7 @@ fn capture_ocr(
     if cancelled.load(Ordering::Acquire) || Instant::now() >= options.deadline {
         return CaptureStatus::TimedOut;
     }
-    sort_blocks(&mut blocks);
+    let blocks = super::ocr_layout::finalize_blocks(blocks);
     context.ocr_text = blocks.iter().map(|block| block.text.clone()).collect();
     context.ocr_blocks = blocks;
     if context.ocr_text.is_empty() {
@@ -281,13 +281,4 @@ fn recognize_with_deadline(
             .await
             .map_err(|_| "OCR 任务已超时".to_string())?
     })
-}
-
-fn sort_blocks(blocks: &mut [OcrTextBlock]) {
-    blocks.sort_by(|left, right| {
-        left.bounds
-            .top
-            .total_cmp(&right.bounds.top)
-            .then_with(|| left.bounds.left.total_cmp(&right.bounds.left))
-    });
 }
