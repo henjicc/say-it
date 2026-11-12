@@ -658,6 +658,16 @@ fn app_monitor_rects(app: &tauri::AppHandle) -> Vec<MonitorRect> {
         .collect()
 }
 
+/// 原生小窗口记住的左上角是否仍落在某块显示器上（至少露出一小块）。
+pub(crate) fn origin_is_on_a_monitor(app: &tauri::AppHandle, x: i32, y: i32) -> bool {
+    let edge = MIN_VISIBLE_EDGE as u32;
+    position_is_on_a_monitor(
+        tauri::PhysicalPosition::new(x, y),
+        tauri::PhysicalSize::new(edge, edge),
+        &app_monitor_rects(app),
+    )
+}
+
 /// 包含指定点的显示器；不在任何显示器内时取中心距离最近的一块。
 fn monitor_at_point(monitors: &[tauri::Monitor], x: i32, y: i32) -> Option<&tauri::Monitor> {
     monitors

@@ -7,10 +7,12 @@ pub mod indicator;
 pub mod look;
 pub mod orb;
 pub mod present;
+pub mod recorder;
 pub mod screen;
 pub mod spec;
 pub mod subtitle;
 pub mod svg;
 #[cfg(test)]
 mod testing;
+pub mod ui;
 pub mod window;

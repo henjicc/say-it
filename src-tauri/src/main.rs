@@ -411,6 +411,12 @@ fn main() {
                     })?;
                     *mouse_gesture = persisted.mouse_gesture.normalized();
                 }
+                {
+                    let mut position = state.meeting_bar_position.lock().map_err(|_| {
+                        std::io::Error::other("meeting bar position lock failed while loading persisted data")
+                    })?;
+                    *position = persisted.meeting_bar_position;
+                }
             }
 
             let verbose_logging = app

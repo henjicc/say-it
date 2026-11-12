@@ -16,6 +16,7 @@ pub(crate) mod mouse_gesture;
 pub(crate) mod native_common;
 pub(crate) mod native_indicator;
 pub(crate) mod native_orb;
+pub(crate) mod native_recorder;
 #[cfg(windows)]
 pub(crate) mod native_win;
 pub(crate) mod native_subtitle;

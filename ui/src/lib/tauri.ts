@@ -451,6 +451,12 @@ export interface MeetingStatus {
   startedAtMs: number | null;
   /** 某一路中途断开的原因；之后只剩另一路的声音。 */
   warning: string | null;
+  /** 已收到停止、正在保存录音。 */
+  stopping: boolean;
+  /** 最近一次停止保存下来的录音；下次开始录制时清空。 */
+  lastFile: MeetingRecordingFile | null;
+  /** 最近一次停止没能保存录音的原因。 */
+  lastError: string | null;
 }
 
 /** 停止录制后保存的录音；某一路中途断开时带 `warning`。 */
