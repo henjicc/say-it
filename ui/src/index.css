@@ -143,6 +143,8 @@
  */
 [data-row-controls] .ui-value-control {
   /* 宽度跟着值走，靠右；外层仍是固定宽度的槽位，长值在槽内截断，下拉弹层按槽位宽度展开。 */
+  /* 按钮组件默认是 inline-flex，行内元素的 margin-left: auto 不生效，这里统一成块级才能靠右。 */
+  display: flex;
   width: fit-content;
   max-width: 100%;
   margin-left: auto;
