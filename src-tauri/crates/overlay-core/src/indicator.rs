@@ -203,8 +203,11 @@ pub struct Indicator {
     /// 处理中扫描动画的时间轴。
     scan_t: f32,
     pill_w: Spring,
+    pill_h: Spring,
     /// 0 = 录音波形，1 = 处理中点阵。
     morph: Spring,
+    /// 0 = 胶囊内容（波形、点阵），1 = 通知内容（图标和一句话）；两者在同一块面板里交叉淡化。
+    notice: Spring,
     hover: Spring,
     hovering: bool,
     /// 宿主能把指针事件交给胶囊时才允许点击跳过（Windows）；否则始终点击穿透。
@@ -218,8 +221,9 @@ pub struct Indicator {
     text_h: Spring,
     text_scroll: Spring,
     text_alpha: Spring,
-    /// Notice 态的自定义文案。
+    /// 通知内容：一句话，以及是警告（红色三角）还是提示（灰色对勾）。切走后保留到淡出结束。
     notice_text: String,
+    notice_warn: bool,
     /// 通知面板的宽高，在显示时按文字量好。
     notice_size: (f32, f32),
     dpi: u32,
@@ -242,7 +246,9 @@ impl Indicator {
             wave_scroll: 0.0,
             scan_t: 0.0,
             pill_w: Spring::at(PILL_W_RECORDING),
+            pill_h: Spring::at(PILL_H),
             morph: Spring::at(0.0),
+            notice: Spring::at(0.0),
             hover: Spring::at(0.0),
             hovering: false,
             clickable: false,
@@ -255,6 +261,7 @@ impl Indicator {
             text_scroll: Spring::at(0.0),
             text_alpha: Spring::at(0.0),
             notice_text: String::new(),
+            notice_warn: false,
             notice_size: (PILL_H, PILL_H),
             dpi: 96,
             transition: Transition::new(false),
@@ -313,8 +320,29 @@ impl Indicator {
         }
         ops
     }
+    fn shows_notice(&self) -> bool {
+        matches!(
+            self.state,
+            Some(IndicatorState::Fallback | IndicatorState::Notice)
+        )
+    }
+    fn notice_target(&self) -> f32 {
+        if self.shows_notice() {
+            1.0
+        } else {
+            0.0
+        }
+    }
+    fn pill_h_target(&self) -> f32 {
+        if self.shows_notice() {
+            self.notice_size.1
+        } else {
+            PILL_H
+        }
+    }
     fn pill_target(&self) -> f32 {
         match self.state {
+            Some(IndicatorState::Fallback | IndicatorState::Notice) => self.notice_size.0,
             Some(IndicatorState::Recording) | None => PILL_W_RECORDING,
             _ if self.hovering => PILL_W_HOVER,
             _ => PILL_W_PROCESSING,
@@ -333,7 +361,9 @@ impl Indicator {
     /// 隐藏后重新出现时不从旧尺寸动画过来，直接落在目标上。
     fn snap_geometry(&mut self) {
         self.pill_w.snap(self.pill_target());
+        self.pill_h.snap(self.pill_h_target());
         self.morph.snap(self.morph_target());
+        self.notice.snap(self.notice_target());
         self.hover.snap(0.0);
     }
     fn measure_text<T: TextEngine>(&mut self, text: &T, now: Instant) {
@@ -431,7 +461,9 @@ impl Indicator {
             self.scan_t += dt;
         }
         self.pill_w.step(self.pill_target(), dt, 260.0, 28.0);
+        self.pill_h.step(self.pill_h_target(), dt, 260.0, 28.0);
         self.morph.step(self.morph_target(), dt, 150.0, 22.0);
+        self.notice.step(self.notice_target(), dt, 220.0, 28.0);
         let hover = if self.hovering { 1.0 } else { 0.0 };
         self.hover.step(hover, dt, 320.0, 30.0);
         let alpha = if self.text_visible() { 1.0 } else { 0.0 };
@@ -449,7 +481,9 @@ impl Indicator {
         let text_alpha = if self.text_visible() { 1.0 } else { 0.0 };
         let hover = if self.hovering { 1.0 } else { 0.0 };
         self.pill_w.settled(self.pill_target(), 0.05)
+            && self.pill_h.settled(self.pill_h_target(), 0.05)
             && self.morph.settled(self.morph_target(), 0.002)
+            && self.notice.settled(self.notice_target(), 0.002)
             && self.hover.settled(hover, 0.002)
             && self.text_alpha.settled(text_alpha, 0.002)
             && self.text_w.settled(self.text_target.width, 0.05)
@@ -476,10 +510,13 @@ impl Indicator {
         let bottom = Self::content_bottom();
         Rect::new(
             (LOGICAL_WIDTH - width) / 2.0,
-            bottom - PILL_H,
+            bottom - self.pill_h.x,
             (LOGICAL_WIDTH + width) / 2.0,
             bottom,
         )
+    }
+    fn pill_radius(&self) -> f32 {
+        PILL_RADIUS.min(self.pill_h.x / 2.0)
     }
     fn text_rect(&self) -> Rect {
         let width = self.text_w.x;
@@ -516,8 +553,10 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 let reappearing = self.transition.is_fully_hidden() || self.state.is_none();
                 self.state = Some(state);
                 if state == IndicatorState::Fallback {
-                    self.text.clear();
+                    // 实时文字留着，随文字框一起淡出；下一次听写开始前由 Prepare 清掉。
                     self.reset_wave();
+                    self.notice_text = FALLBACK_TEXT.into();
+                    self.notice_warn = false;
                     self.notice_size = notice_size(cx.text, FALLBACK_TEXT);
                 }
                 if reappearing {
@@ -564,13 +603,17 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 Vec::new()
             }
             Command::ShowNotice(text) => {
-                self.text.clear();
                 self.fresh_from = 0;
                 self.fresh_started = None;
                 self.reset_wave();
                 self.notice_text = text;
+                self.notice_warn = true;
                 self.notice_size = notice_size(cx.text, &self.notice_text);
+                let reappearing = self.transition.is_fully_hidden() || self.state.is_none();
                 self.state = Some(IndicatorState::Notice);
+                if reappearing {
+                    self.snap_geometry();
+                }
                 self.transition.show();
                 self.notice_deadline =
                     Some(cx.now + Duration::from_millis(NOTICE_AUTO_HIDE_MS as u64));
@@ -678,18 +721,12 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
         if self.look.profile != Profile::Css || self.look.glass.is_none() {
             return Vec::new();
         }
-        let Some(state) = self.state else {
+        if self.state.is_none() {
             return Vec::new();
-        };
-        if matches!(state, IndicatorState::Fallback | IndicatorState::Notice) {
-            return vec![Shape::RoundedRect {
-                rect: self.notice_rect(),
-                radius: PILL_RADIUS,
-            }];
         }
         let mut shapes = vec![Shape::RoundedRect {
             rect: self.pill_rect(),
-            radius: PILL_RADIUS,
+            radius: self.pill_radius(),
         }];
         if self.text_alpha.x > 0.01 {
             shapes.push(Shape::RoundedRect {
@@ -702,32 +739,18 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
 }
 
 impl Indicator {
-    fn notice_rect(&self) -> Rect {
-        let bottom = Self::content_bottom();
-        let (width, height) = self.notice_size;
-        Rect::new(
-            (LOGICAL_WIDTH - width) / 2.0,
-            bottom - height,
-            (LOGICAL_WIDTH + width) / 2.0,
-            bottom,
-        )
-    }
+    /// 一块面板承载全部状态：宽高用弹簧过渡，胶囊内容与通知内容交叉淡化。
     fn draw_content<C: Canvas>(&self, canvas: &mut C, now: Instant) {
-        let Some(state) = self.state else { return };
-        if state == IndicatorState::Fallback {
-            self.draw_notice_panel(canvas, FALLBACK_TEXT, false);
-            return;
-        }
-        if state == IndicatorState::Notice {
-            self.draw_notice_panel(canvas, &self.notice_text, true);
+        if self.state.is_none() {
             return;
         }
         if self.text_alpha.x > 0.01 {
             self.draw_text_box(canvas, now);
         }
         let pill = self.pill_rect();
-        paint::panel(canvas, &self.look, pill, PILL_RADIUS, 1.0, self.hover.x);
-        let content = 1.0 - self.hover.x.clamp(0.0, 1.0);
+        paint::panel(canvas, &self.look, pill, self.pill_radius(), 1.0, self.hover.x);
+        let notice = self.notice.x.clamp(0.0, 1.0);
+        let content = (1.0 - self.hover.x.clamp(0.0, 1.0)) * (1.0 - notice);
         let morph = self.morph.x.clamp(0.0, 1.0);
         if morph < 0.999 {
             self.draw_waveform(canvas, pill, (1.0 - morph) * content, 1.0 - morph);
@@ -736,7 +759,10 @@ impl Indicator {
             self.draw_scan(canvas, pill, morph * content);
         }
         if self.hover.x > 0.01 {
-            self.draw_skip_hint(canvas, pill, self.hover.x.clamp(0.0, 1.0));
+            self.draw_skip_hint(canvas, pill, self.hover.x.clamp(0.0, 1.0) * (1.0 - notice));
+        }
+        if notice > 0.01 {
+            self.draw_notice(canvas, pill, notice);
         }
     }
     fn draw_text_box<C: Canvas>(&self, canvas: &mut C, now: Instant) {
@@ -907,13 +933,27 @@ impl Indicator {
             );
         }
     }
-    fn draw_notice_panel<C: Canvas>(&self, canvas: &mut C, text: &str, warn: bool) {
-        let rect = self.notice_rect();
-        paint::panel(canvas, &self.look, rect, PILL_RADIUS.min(rect.height() / 2.0), 1.0, 0.0);
+    /// 通知内容按最终尺寸排好并居中；面板比它小时用面板自身裁掉露在外面的部分。
+    fn draw_notice<C: Canvas>(&self, canvas: &mut C, pill: Rect, alpha: f32) {
+        let (width, height) = self.notice_size;
+        let bottom = Self::content_bottom();
+        let rect = Rect::new(
+            (LOGICAL_WIDTH - width) / 2.0,
+            bottom - height,
+            (LOGICAL_WIDTH + width) / 2.0,
+            bottom,
+        );
+        let warn = self.notice_warn;
+        // 面板还没长到通知的尺寸（从胶囊展开，或换成更长的一句话）时才需要裁。
+        let clipped = pill.width() < width - 0.1 || pill.height() < height - 0.1;
+        if clipped {
+            canvas.save();
+            canvas.clip_rect(pill);
+        }
         let color = if warn {
-            self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, 1.0)
+            self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, alpha)
         } else {
-            self.look.color(163.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, 1.0)
+            self.look.color(163.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, alpha)
         };
         let icon_cx = rect.left + NOTICE_PAD_X + NOTICE_ICON / 2.0;
         let icon_cy = (rect.top + rect.bottom) / 2.0;
@@ -964,7 +1004,7 @@ impl Indicator {
             rect.bottom,
         );
         if let Some(layout) = canvas.text().layout(
-            text,
+            &self.notice_text,
             &text_style(NOTICE_TEXT_SIZE, true),
             bounds.width(),
             bounds.height(),
@@ -972,9 +1012,12 @@ impl Indicator {
             canvas.draw_text(
                 &layout,
                 Point::new(bounds.left, bounds.top),
-                fg(&self.look, 1.0),
+                fg(&self.look, alpha),
                 None,
             );
+        }
+        if clipped {
+            canvas.restore();
         }
     }
 }
@@ -1381,6 +1424,71 @@ mod tests {
             &cx(now, &text),
         );
         assert!(!ops.contains(&WindowOp::SetInteractive(true)));
+    }
+
+    /// 胶囊与通知是同一块面板：切换时宽度逐帧过渡、两种内容交叉淡化，不是瞬间换成另一块。
+    #[test]
+    fn switching_between_pill_and_notice_animates_the_same_panel() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::MACOS_DEFAULT);
+        model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
+        settled(&mut model, now, &text);
+        let pill_w = model.pill_rect().width();
+        assert_eq!(pill_w, PILL_W_RECORDING);
+
+        let later = now + Duration::from_secs(1);
+        model.apply(Command::SetState(IndicatorState::Fallback), &cx(later, &text));
+        let target = model.notice_size.0;
+        assert!(target > pill_w + 20.0);
+        assert!(<Indicator as OverlayModel<FakeText>>::wants_frames(&model, later));
+        model.on_frame(0.016, &cx(later + Duration::from_millis(16), &text));
+        let mid = model.pill_rect().width();
+        assert!(mid > pill_w && mid < target, "宽度应在过渡中：{mid}");
+        let mut canvas = RecordingCanvas::new(96);
+        model.draw(&mut canvas, later);
+        // 过渡中通知内容被当时的面板裁住，文字半透明地开始出现。
+        let pill = model.pill_rect();
+        assert!(canvas
+            .calls
+            .iter()
+            .any(|call| matches!(call, Draw::Clip(rect) if *rect == pill)));
+        assert!(canvas.calls.iter().any(|call| matches!(
+            call,
+            Draw::Text(text, _, color, _) if text == FALLBACK_TEXT && color.a > 0.0 && color.a < 1.0
+        )));
+
+        let mut at = later;
+        for _ in 0..120 {
+            at += Duration::from_millis(16);
+            model.on_frame(0.016, &cx(at, &text));
+        }
+        assert!((model.pill_rect().width() - target).abs() < 0.1);
+        // 落定后不再裁剪，静止画面与单独的通知面板一致。
+        let mut canvas = RecordingCanvas::new(96);
+        model.draw(&mut canvas, at);
+        assert!(!canvas.calls.iter().any(|call| matches!(call, Draw::Clip(_))));
+
+        // 换成更长的一句话：面板从旧宽度长过去，期间新内容同样被面板裁住。
+        model.apply(
+            Command::ShowNotice("没能连接到识别服务，请检查网络后再试一次".into()),
+            &cx(at, &text),
+        );
+        assert!(model.notice_size.0 > target + 20.0);
+        model.on_frame(0.016, &cx(at + Duration::from_millis(16), &text));
+        let pill = model.pill_rect();
+        assert!(pill.width() > target && pill.width() < model.notice_size.0);
+        let mut canvas = RecordingCanvas::new(96);
+        model.draw(&mut canvas, at);
+        assert!(canvas
+            .calls
+            .iter()
+            .any(|call| matches!(call, Draw::Clip(rect) if *rect == pill)));
+
+        // 从隐藏直接弹出通知时不从旧尺寸动画过来。
+        let mut fresh = Indicator::new(&Look::MACOS_DEFAULT);
+        fresh.apply(Command::ShowNotice("出错了".into()), &cx(now, &text));
+        assert!((fresh.pill_rect().width() - fresh.notice_size.0).abs() < 0.001);
     }
 
     /// 波形按帧连续左移，固定周期出一根柱，周期内的音频块取平均。
