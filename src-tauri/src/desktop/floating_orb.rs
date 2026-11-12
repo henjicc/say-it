@@ -34,6 +34,10 @@ pub(crate) const ORB_SUBMIT_ENTER_WINDOW_MS: u64 = 5000;
 /// 发送回车的耗时超过这个阈值才展示"正在发送"loading 态，绝大多数
 /// 几十毫秒内完成的情况不会再强制闪一下加载动画。
 const ORB_SUBMIT_ENTER_SPINNER_DELAY_MS: u64 = 150;
+/// 手势唤出、等待点击的悬浮球：指针停在球上（含拖动中）一直保留，
+/// 离开超过这个时长才收起。
+const ORB_ARMED_LEAVE_DISMISS_MS: u64 = 2000;
+const ORB_ARMED_POLL_MS: u64 = 100;
 const ORB_MOVE_DURATION_MS: u64 = 200;
 const ORB_MOVE_FRAME_MS: u64 = 16;
 const ORB_REPOSITION_SETTLE_MS: u64 = 16;
@@ -2101,19 +2105,26 @@ async fn show_mouse_gesture_armed(
     let _ = ui.set_interactive(true);
     emit_state(&app, "armed", Some("点击开始语音输入"));
     tauri::async_runtime::spawn(async move {
-        sleep(Duration::from_millis(3000)).await;
-        let state = app.state::<RuntimeState>();
-        if state
-            .floating_orb_runtime
-            .armed_generation
-            .load(Ordering::Acquire)
-            == generation
-            && state
-                .floating_orb_runtime
-                .armed
-                .swap(false, Ordering::AcqRel)
-        {
-            complete_floating_orb(app, "idle", String::new(), 0);
+        let mut last_engaged = Instant::now();
+        loop {
+            sleep(Duration::from_millis(ORB_ARMED_POLL_MS)).await;
+            let state = app.state::<RuntimeState>();
+            let runtime = &state.floating_orb_runtime;
+            if runtime.armed_generation.load(Ordering::Acquire) != generation
+                || !runtime.armed.load(Ordering::Acquire)
+            {
+                return;
+            }
+            // 拖动期间原生悬浮球的矩形要到松手才更新，指针判定会落空，单独算作停留。
+            if is_cursor_over_floating_orb(&app) || runtime.dragged_by_user.load(Ordering::Acquire)
+            {
+                last_engaged = Instant::now();
+            } else if last_engaged.elapsed() >= Duration::from_millis(ORB_ARMED_LEAVE_DISMISS_MS) {
+                if runtime.armed.swap(false, Ordering::AcqRel) {
+                    complete_floating_orb(app, "idle", String::new(), 0);
+                }
+                return;
+            }
         }
     });
     Ok(())
