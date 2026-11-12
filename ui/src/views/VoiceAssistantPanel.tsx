@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ArchiveRestore, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { notify } from "@/store/useToastStore";
 import { Button } from "@/components/ui/Button";
 import { InspectorBody } from "@/components/layout/MasterDetail";
@@ -18,8 +18,12 @@ import {
 } from "@/features/models/llmModelOptions";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
 import { CMD, cmd, type AppSnapshot } from "@/lib/tauri";
+import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
+import type { ShortcutTriggerMode } from "@/features/dictation/hotkeys";
+import { clearShortcutBinding, loadShortcutBindings, updateShortcutBinding, type ShortcutBindingItem } from "@/features/hotkeys/catalog";
+import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
 import { useProviderStore } from "@/store/useProviderStore";
-import { useUiStore, type AssistantActionKey } from "@/store/useUiStore";
+import type { AssistantActionKey } from "@/store/useUiStore";
 
 export interface AssistantPromptTemplate { id: string; name: string; prompt: string }
 export interface DeletedAssistantPromptTemplate { recoveryId: string; template: AssistantPromptTemplate; deletedAt: number }
@@ -196,6 +200,67 @@ export function AssistantModelRows() {
   </>;
 }
 
+/** 这个助手动作的快捷键与触发方式，就地修改；冲突由全局弹窗提示，其他保存错误写在快捷键行下方。 */
+function AssistantShortcutRow({ action, hint }: { action: AssistantActionKey; hint: string }) {
+  const [item, setItem] = useState<ShortcutBindingItem>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pick = (items: ShortcutBindingItem[]) =>
+    items.find((entry) => entry.target.kind === "assistant" && entry.target.action === action);
+
+  useEffect(() => {
+    let active = true;
+    loadShortcutBindings()
+      .then((items) => { if (active) setItem(pick(items)); })
+      .catch((reason) => { if (active) setError(`读取快捷键失败：${String(reason)}`); });
+    return () => { active = false; };
+  }, [action]);
+
+  const run = async (operation: (current: ShortcutBindingItem) => Promise<ShortcutBindingItem[]>) => {
+    if (!item) return;
+    setBusy(true);
+    setError("");
+    try {
+      setItem(pick(await operation(item)));
+    } catch (reason) {
+      if (!reportShortcutConflict(reason)) setError(String(reason));
+      setItem(pick(await loadShortcutBindings().catch(() => [])) ?? item);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const message = (item?.registrationError || error) && (
+    <span role="alert" className="text-[var(--color-err)]">{item?.registrationError ? `当前未生效：${item.registrationError}` : error}</span>
+  );
+  return (
+    <>
+      <Row label="快捷键" hint={hint} message={message}>
+        <div className={ROW_CONTROL_W}>
+          <ShortcutRecorder
+            value={item ?? { keyCode: "", ctrl: false, alt: false, shift: false, meta: false }}
+            disabled={!item || busy}
+            ariaLabel="快捷键"
+            onChange={(shortcut) => run((current) => updateShortcutBinding(current, shortcut, current.triggerMode))}
+            onClear={() => run(clearShortcutBinding)}
+          />
+        </div>
+      </Row>
+      {item?.keyCode && (
+        <Row label="触发方式" hint="按一下：按一次开始，再按一次结束；按住：按住说话，松开结束。">
+          <Tabs
+            variant="view"
+            ariaLabel="触发方式"
+            tabs={[{ key: "toggle", label: "按一下" }, { key: "pressHold", label: "按住" }]}
+            active={item.triggerMode}
+            onChange={(triggerMode) => void run((current) => updateShortcutBinding(current, current, triggerMode as ShortcutTriggerMode))}
+          />
+        </Row>
+      )}
+    </>
+  );
+}
+
 export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
   const { confirm, dialog } = useConfirm();
   const [prefs, setPrefs] = useState(DEFAULT_PREFS);
@@ -269,9 +334,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
 
   return <InspectorBody>
     <Group>
-      <Row label="快捷键" hint={description}>
-        <Button size="sm" onClick={() => useUiStore.getState().openSettings("keys")}>配置快捷键<ArrowRight className="h-3.5 w-3.5" /></Button>
-      </Row>
+      <AssistantShortcutRow action={action} hint={description} />
       {action === "translateSpeech" && <>
         <Row label="翻译引擎" hint="智能模型支持任务模板；专用翻译模型延迟更低。">
           <Tabs variant="view" ariaLabel="翻译引擎" tabs={[{ key: "llm", label: "智能模型" }, { key: "dedicated", label: "专用翻译模型" }]} active={prefs.translationEngine} onChange={(translationEngine) => void save({ ...prefs, translationEngine })} />
