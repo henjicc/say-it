@@ -657,19 +657,20 @@ fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
     }
     let is_deepseek = profile.kind == "llm:deepseek";
     let reasoning = match effective_reasoning(&model.reasoning_effort, model_name) {
-        // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
-        // reasoning_effort="none"，但 DeepSeek V4 关闭思考必须使用 thinking.type=disabled。
-        "zero" if is_deepseek => {
-            options = options.with_extra_body(serde_json::json!({
-                "thinking": { "type": "disabled" }
-            }));
-            None
-        }
         // genai 的 Responses 适配器把 ReasoningEffort::Zero 原样写成 reasoning.effort="zero"，
-        // 百炼、火山方舟都会以 400 拒绝；两家的 Responses 接口关闭思考的取值是 "none"。
+        // 百炼、火山方舟都会以 400 拒绝；Responses 接口关闭思考的取值是 "none"。DeepSeek 走
+        // Responses 时同样只认这个，Chat 写法的 thinking 字段会被忽略、照常思考，所以要先判断。
         "zero" if uses_responses => {
             options = options.with_extra_body(serde_json::json!({
                 "reasoning": { "effort": "none" }
+            }));
+            None
+        }
+        // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
+        // reasoning_effort="none"，但 DeepSeek V4 的 Chat 接口关闭思考必须使用 thinking.type=disabled。
+        "zero" if is_deepseek => {
+            options = options.with_extra_body(serde_json::json!({
+                "thinking": { "type": "disabled" }
             }));
             None
         }
@@ -2033,10 +2034,15 @@ mod tests {
         assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
     }
 
-    /// 回归：百炼选「关闭」时曾发出 reasoning.effort="zero"，接口返回 400。
+    /// 回归：百炼选「关闭」时曾发出 reasoning.effort="zero"，接口返回 400；
+    /// DeepSeek 走 Responses 时曾发 Chat 写法的 thinking 字段，被忽略后照常思考。
     #[test]
     fn responses_adapters_turn_thinking_off_with_effort_none() {
-        for (kind, model) in [("llm:bailian", "qwen3.8-flash"), ("llm:volcengine", "doubao-seed-evolving")] {
+        for (kind, model) in [
+            ("llm:bailian", "qwen3.8-flash"),
+            ("llm:volcengine", "doubao-seed-evolving"),
+            ("llm:deepseek", "deepseek-flash"),
+        ] {
             let options = chat_options(&llm_model_profile(kind, "zero", model)).unwrap();
             assert!(options.reasoning_effort.is_none(), "{kind}");
             assert_eq!(
