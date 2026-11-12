@@ -4,6 +4,9 @@ import { Button } from "./Button";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]';
 
+/** 已打开的弹窗按打开顺序排列；Esc 只交给最上面那个，它关不掉时也不往下传。 */
+const openModals: object[] = [];
+
 function focusableIn(dialog: HTMLElement) {
   return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((element) => element.tabIndex >= 0);
 }
@@ -60,10 +63,20 @@ export function Modal({
     if (open) lastOpenVisualState.current = visualState;
   }, [ariaLabel, bodyClassName, children, className, open, overlayClassName, scope, showCloseButton, showHeader, title]);
 
+  const stackToken = useRef({});
+  useEffect(() => {
+    if (!open) return;
+    const token = stackToken.current;
+    openModals.push(token);
+    return () => {
+      openModals.splice(openModals.indexOf(token), 1);
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open || !onClose) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && openModals.at(-1) === stackToken.current) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

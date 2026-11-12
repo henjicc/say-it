@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Modal } from "./Modal";
 
 describe("Modal body layout", () => {
@@ -44,5 +44,23 @@ describe("Modal focus", () => {
     view.rerender(dialog(false));
     expect(opener).toHaveFocus();
     opener.remove();
+  });
+});
+
+describe("Modal Escape", () => {
+  afterEach(cleanup);
+
+  it("closes only the topmost dialog", () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    render(
+      <>
+        <Modal open onClose={outer}>外层</Modal>
+        <Modal open onClose={inner}>内层</Modal>
+      </>,
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
   });
 });
