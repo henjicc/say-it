@@ -785,10 +785,8 @@ pub(super) struct ReplayPrompt {
 
 /// 听写记录里那次实际采用的软件上下文；与送进提示词的文字一字不差（见 dictation 的同名日志）。
 fn recorded_app_context(record: &Value) -> String {
-    const START: &str = "--- 上下文开始 ---
-";
-    const END: &str = "
---- 上下文结束 ---";
+    const START: &str = "--- 上下文开始 ---\n";
+    const END: &str = "\n--- 上下文结束 ---";
     record["timeline"]
         .as_array()
         .into_iter()
