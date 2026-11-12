@@ -12,7 +12,7 @@ import { SUBTITLE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { isMacOS, isWindows } from "@/lib/platform";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
-import { UsageLinkRow, useAsrUsageIssue, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
+import { useAsrUsageIssue, useOfferedAsrOptions } from "@/features/models/usage";
 
 const systemAudioSupported = isWindows || isMacOS;
 const SUBTITLE_SCENES = ["subtitles"];
@@ -82,12 +82,8 @@ export function SubtitleSourceRow() {
 export function SubtitleAsrRow({ label = "识别模型", hint }: { label?: string; hint?: string } = {}) {
   useModelCatalogRevision();
   const { prefs, running, patch } = useSubtitleStore();
-  const editable = useUsageEditable();
   const options = useOfferedAsrOptions(SUBTITLE_ASR_MODEL_OPTIONS, prefs.asrModel);
   const issue = useAsrUsageIssue(prefs.asrModel, SUBTITLE_SCENES);
-  if (!editable) {
-    return <UsageLinkRow label={label} value={options.find((option) => option.value === prefs.asrModel)?.label ?? prefs.asrModel} message={issue} />;
-  }
   return (
     <Row label={label} hint={hint} controlId="subtitle-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>
