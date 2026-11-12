@@ -14,13 +14,17 @@ vi.stubEnv("DEV", false);
 
 const { AboutDialog } = await import("./AboutView");
 const { useDeveloperStore } = await import("@/store/useDeveloperStore");
+const { useAppSettings } = await import("@/store/useAppSettingsStore");
 
 afterEach(cleanup);
 
 describe("关于", () => {
   it("连点图标 7 次打开开发者模式，中途提示还差几次", async () => {
     useDeveloperStore.setState({ enabled: false });
-    cmd.mockResolvedValue(undefined);
+    // 设置在启动时已载入。
+    const settings = { assistantPrefs: {}, historyPrefs: {}, diagnosticsPrefs: {} };
+    useAppSettings.setState({ settings });
+    cmd.mockResolvedValue(settings);
     render(<AboutDialog open onClose={() => {}} />);
     const icon = screen.getByRole("button", { name: /图标/ });
 

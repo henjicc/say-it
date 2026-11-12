@@ -4,10 +4,17 @@ import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
 import { Modal } from "@/components/ui/Modal";
 import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
+import { fetchQuery, useQueryData, type Query } from "@/hooks/useCachedQuery";
+
+export const setupStatusQuery: Query<SetupStatus> = {
+  key: "setupStatus",
+  load: () => cmd<SetupStatus>(CMD.getSetupStatus),
+};
 
 /** 各项关键能力（麦克风、权限、识别服务、快捷键）的检查结果与处理入口。 */
 export function EnvironmentStatus() {
-  const [status, setStatus] = useState<SetupStatus | null>(null);
+  // 每次打开都重新检查；检查期间先列出上一次的结果。
+  const status = useQueryData<SetupStatus>(setupStatusQuery);
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);
   const [revision, setRevision] = useState(0);
@@ -16,9 +23,7 @@ export function EnvironmentStatus() {
     let active = true;
     setChecking(true);
     setError("");
-    setStatus(null);
-    void cmd<SetupStatus>(CMD.getSetupStatus)
-      .then((next) => { if (active) setStatus(next); })
+    void fetchQuery(setupStatusQuery, true)
       .catch((cause) => { if (active) setError(String(cause)); })
       .finally(() => { if (active) setChecking(false); });
     return () => { active = false; };

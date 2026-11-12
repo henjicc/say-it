@@ -8,6 +8,7 @@ import { Group, Row } from "@/components/ui/Group";
 import { useConfirm } from "@/components/ui/useConfirm";
 import { CMD, EVT, cmd, type HistoryEntry, type HistoryPage, type LearningOverview, type LearningRule } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { fetchQuery, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 import { useUiStore } from "@/store/useUiStore";
 import { notify, notifyError } from "@/store/useToastStore";
 import { DEFAULT_HOTWORD_WEIGHT, MAX_HOTWORDS, useCustomizationStore } from "@/store/useCustomizationStore";
@@ -41,63 +42,102 @@ function primaryText(entry: HistoryEntry) {
   return entry.finalText || entry.outputText || entry.sourceText;
 }
 
+interface HistoryQueryParams {
+  search: string;
+  status: string;
+  taskKind: string;
+  offset: number;
+}
+
+interface HistoryResult {
+  params: string;
+  page: HistoryPage;
+}
+
+const FIRST_PAGE: HistoryQueryParams = { search: "", status: "", taskKind: "", offset: 0 };
+
+/** 只缓存首页（启动时预取）和最近一次筛选或翻页的结果，不按每个搜索词各存一份。 */
+function historyPageQuery(params: HistoryQueryParams): Query<HistoryResult> {
+  const key = JSON.stringify(params);
+  return {
+    key: key === JSON.stringify(FIRST_PAGE) ? "historyPage:first" : "historyPage:filtered",
+    load: async () => ({ params: key, page: await cmd<HistoryPage>(CMD.queryHistory, { query: { ...params, limit: PAGE_SIZE } }) }),
+  };
+}
+
+export const historyFirstPageQuery = historyPageQuery(FIRST_PAGE);
+
+export const historyLearningQuery: Query<{ overview: LearningOverview; rules: LearningRule[] }> = {
+  key: "historyLearning",
+  load: async () => {
+    const [overview, rules] = await Promise.all([
+      cmd<LearningOverview>(CMD.getLearningOverview),
+      cmd<LearningRule[]>(CMD.queryLearningRules, { query: { search: "", status: "" } }),
+    ]);
+    return { overview, rules };
+  },
+};
+
+const EMPTY_OVERVIEW: LearningOverview = {
+  observationEnabled: false,
+  learningEnabled: false,
+  cloudContextEnabled: false,
+  pendingCount: 0,
+  activeRuleCount: 0,
+  eligibleSampleCount: 0,
+  eligibleEntryCount: 0,
+  summaryAvailable: false,
+  structuredStatistics: {},
+};
+
 export function HistoryView() {
   const { confirm, dialog } = useConfirm();
-  const [page, setPage] = useState<HistoryPage>({ items: [], total: 0, recoveryNotice: null });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [taskKind, setTaskKind] = useState("");
   const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [overview, setOverview] = useState<LearningOverview>({
-    observationEnabled: false,
-    learningEnabled: false,
-    cloudContextEnabled: false,
-    pendingCount: 0,
-    activeRuleCount: 0,
-    eligibleSampleCount: 0,
-    eligibleEntryCount: 0,
-    summaryAvailable: false,
-    structuredStatistics: {},
-  });
-  const [rules, setRules] = useState<LearningRule[]>([]);
-  const loadVersion = useRef(0);
   const openSettings = useUiStore((state) => state.openSettings);
   const hotwords = useCustomizationStore((state) => state.prefs.hotwords);
   const patchCustomization = useCustomizationStore((state) => state.patch);
 
-  const load = useCallback(async () => {
-    const version = ++loadVersion.current;
-    setLoading(true);
-    try {
-      const [next, nextOverview, nextRules] = await Promise.all([
-        cmd<HistoryPage>(CMD.queryHistory, { query: { search, status, taskKind, offset, limit: PAGE_SIZE } }),
-        cmd<LearningOverview>(CMD.getLearningOverview),
-        cmd<LearningRule[]>(CMD.queryLearningRules, { query: { search: "", status: "" } }),
-      ]);
-      if (version === loadVersion.current) {
-        setPage(next);
-        setOverview(nextOverview);
-        setRules(nextRules);
-      }
-    } catch (error) {
-      if (version === loadVersion.current) notifyError(error);
-    } finally {
-      if (version === loadVersion.current) setLoading(false);
-    }
-  }, [offset, search, status, taskKind]);
+  const params = { search, status, taskKind, offset };
+  const pageQuery = useCachedQuery(historyPageQuery(params));
+  // 「筛选结果」那一份可能是上一个搜索词的；对得上当前条件才算读到了。
+  const current = pageQuery.data?.params === JSON.stringify(params) ? pageQuery.data.page : undefined;
+  const learningQuery = useCachedQuery(historyLearningQuery);
+  // 换筛选条件或翻页时，新结果到之前继续显示上一页，不闪成空列表。
+  const shownPage = useRef<HistoryPage | undefined>(undefined);
+  if (current) shownPage.current = current;
+  const page = current ?? shownPage.current ?? { items: [], total: 0, recoveryNotice: null };
+  const loaded = Boolean(current);
+  const overview = learningQuery.data?.overview ?? EMPTY_OVERVIEW;
+  const rules = learningQuery.data?.rules ?? [];
+  const loadError = pageQuery.error || learningQuery.error;
+  useEffect(() => {
+    if (loadError) notifyError(loadError);
+  }, [loadError]);
 
-  useEffect(() => { void load(); }, [load]);
+  // 记录变了：当前这页、学习概况都重读；正在看筛选结果时首页也作废，回到首页不会先露出旧内容。
+  const filtered = pageQuery.data !== undefined && historyPageQuery(params).key !== historyFirstPageQuery.key;
+  const load = useCallback(async () => {
+    await Promise.all([
+      pageQuery.refresh(),
+      learningQuery.refresh(),
+      filtered ? fetchQuery(historyFirstPageQuery, true).then(() => undefined) : undefined,
+    ]);
+  }, [pageQuery.refresh, learningQuery.refresh, filtered]);
+
   useTauriEvent(EVT.historyChanged, () => void load());
   useEffect(() => setOffset(0), [search, status, taskKind]);
 
   const range = useMemo(() => {
+    if (!loaded && !shownPage.current) return "";
     if (!page.total) return "暂无记录";
     return `${offset + 1}–${Math.min(offset + PAGE_SIZE, page.total)} / ${page.total}`;
-  }, [offset, page.total]);
+  }, [loaded, offset, page.total]);
 
   async function copy(text: string) {
     try {
@@ -330,7 +370,7 @@ export function HistoryView() {
         </Select>
       </div>
 
-      <section aria-busy={loading} className="flex flex-col gap-3">
+      <section aria-busy={!loaded} className="flex flex-col gap-3">
         {page.items.length > 0 && (
           <Group>
             {page.items.map((entry) => (
@@ -403,7 +443,7 @@ export function HistoryView() {
             ))}
           </Group>
         )}
-        {!loading && page.items.length === 0 && <div className="py-16 text-center text-[13px] text-[var(--color-fg-subtle)]">没有符合条件的记录</div>}
+        {loaded && page.items.length === 0 && <div className="py-16 text-center text-[13px] text-[var(--color-fg-subtle)]">没有符合条件的记录</div>}
         <div className="flex items-center justify-between text-xs text-[var(--color-fg-subtle)]">
           <span>{range}</span><div className="flex gap-2"><Button size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>上一页</Button><Button size="sm" disabled={offset + PAGE_SIZE >= page.total} onClick={() => setOffset(offset + PAGE_SIZE)}>下一页</Button></div>
         </div>

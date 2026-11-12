@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
+import { PageErrorBoundary } from "@/components/shell/PageErrorBoundary";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { Button } from "@/components/ui/Button";
 import { ToastHost } from "@/components/ui/Toast";
@@ -11,6 +12,9 @@ import { useTauriBridge } from "@/hooks/useTauriBridge";
 import { applySystemGlassToDocument, applyThemeToDocument, useThemeStore } from "@/store/useThemeStore";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { initializeSettings } from "@/features/settings/settingsBridge";
+import { prefetchPageData } from "@/features/app/prefetchPages";
+import { fetchQuery } from "@/hooks/useCachedQuery";
+import { setupStatusQuery } from "@/views/SettingsSetupPanel";
 
 import { DictationPage } from "@/views/dictation/DictationPage";
 import { AssistantPage } from "@/views/assistant/AssistantPage";
@@ -27,7 +31,6 @@ import { AboutDialog } from "@/views/AboutView";
 import { PluginDropInstaller } from "@/components/PluginDropInstaller";
 import { ShortcutConflictDialog } from "@/features/hotkeys/ShortcutConflictDialog";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
-import type { SetupStatus } from "@/lib/tauri";
 import { isMacOS } from "@/lib/platform";
 
 const PRO_VIEWS: Record<ViewKey, React.ReactNode> = {
@@ -103,8 +106,9 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsReady) return;
+    void prefetchPageData();
     // 引导版本升级不能撤销用户已关闭的选择；后续只通过设置页手动打开。
-    void cmd<SetupStatus>(CMD.getSetupStatus).then((status) => { if (status.onboardingVersion === 0) setSetup("required"); }).catch(() => {});
+    void fetchQuery(setupStatusQuery).then((status) => { if (status.onboardingVersion === 0) setSetup("required"); }).catch(() => {});
     const open = () => setSetup((current) => current === "required" ? current : "optional");
     window.addEventListener("sayit-open-setup", open);
     return () => window.removeEventListener("sayit-open-setup", open);
@@ -142,7 +146,9 @@ export default function App() {
           // macOS 专业模式各栏直通窗口顶部，内容层只靠左侧细线与导航分开。
           macPro ? "border-t-0 border-l" : layoutMode === "pro" ? "rounded-tl-[10px] border-l" : "flex-col rounded-t-[10px]",
         )}>
-          {layoutMode === "pro" ? PRO_VIEWS[view] : SIMPLE_VIEWS[view] ?? SIMPLE_VIEWS.dictation}
+          <PageErrorBoundary key={`${layoutMode}:${view}`}>
+            {layoutMode === "pro" ? PRO_VIEWS[view] : SIMPLE_VIEWS[view] ?? SIMPLE_VIEWS.dictation}
+          </PageErrorBoundary>
         </div>
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
         <PluginDropInstaller />

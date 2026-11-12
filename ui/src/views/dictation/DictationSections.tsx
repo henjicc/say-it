@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CircleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W, SliderRow } from "@/components/ui/Group";
@@ -23,7 +23,8 @@ import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
 import { FLOATING_ORB_OPACITY_RANGE, FLOATING_ORB_SIZE_PERCENT_RANGE } from "@/floating-orb/interaction";
 import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
-import { EnvironmentStatus } from "@/views/SettingsSetupPanel";
+import { EnvironmentStatus, setupStatusQuery } from "@/views/SettingsSetupPanel";
+import { useCachedQuery } from "@/hooks/useCachedQuery";
 
 const DEFAULT_INPUT_VALUE = "";
 const DICTATION_SCENES = ["dictationRealtime", "dictationFile"];
@@ -175,28 +176,24 @@ export function BasicsSection() {
  * 已启用悬浮球或鼠标手势时，没设主快捷键不算待处理。
  */
 function ReadinessGroup() {
-  const [pending, setPending] = useState<number | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { data: setupStatus, error, refresh } = useCachedQuery(setupStatusQuery);
   const [detailOpen, setDetailOpen] = useState(false);
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const modelIssue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
   const orbEnabled = useFloatingOrbStore((state) => state.settings.enabled);
   const gestureEnabled = useMouseGestureStore((state) => state.settings.enabled);
   const hasOtherTrigger = orbEnabled || gestureEnabled;
+  const failed = Boolean(error) && !setupStatus;
+  const pending = setupStatus
+    ? setupStatus.checks.filter((check) => check.status !== "ready" && !(check.id === "shortcut" && hasOtherTrigger)).length
+    : null;
 
-  // 权限在系统设置里改；进入本页和关掉详情后各检查一次。
+  // 权限在系统设置里改；关掉详情后再检查一次（进入本页时 useCachedQuery 已经检查过）。
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (detailOpen) return;
-    let active = true;
-    void cmd<SetupStatus>(CMD.getSetupStatus)
-      .then((status) => {
-        if (!active) return;
-        setFailed(false);
-        setPending(status.checks.filter((check) => check.status !== "ready" && !(check.id === "shortcut" && hasOtherTrigger)).length);
-      })
-      .catch(() => { if (active) setFailed(true); });
-    return () => { active = false; };
-  }, [detailOpen, hasOtherTrigger]);
+    if (wasOpen.current && !detailOpen) void refresh();
+    wasOpen.current = detailOpen;
+  }, [detailOpen, refresh]);
 
   const ready = pending === 0 && !failed && !modelIssue;
   if ((pending === null && !failed) || ready) return null;

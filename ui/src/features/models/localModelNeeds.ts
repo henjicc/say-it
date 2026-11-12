@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 import { isMacOS } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 
@@ -140,15 +141,16 @@ export function recommendedAsrPack(hardware: HardwareSummary | undefined): strin
   return enough ? GPU_ASR_PACK_ID : CPU_ASR_PACK_ID;
 }
 
+export const hardwareQuery: Query<HardwareSummary> = {
+  key: "hardware",
+  load: () => cmd<HardwareSummary>(CMD.detectHardware),
+};
+
 /** 这台电脑的硬件信息；读到之前和读不到时为空，界面只是少一句提示。 */
 export function useHardware(): HardwareSummary | undefined {
-  const [hardware, setHardware] = useState<HardwareSummary>();
+  const { data, error } = useCachedQuery(hardwareQuery);
   useEffect(() => {
-    let active = true;
-    cmd<HardwareSummary>(CMD.detectHardware)
-      .then((value) => active && setHardware(value))
-      .catch((reason) => console.error("读取硬件信息失败", reason));
-    return () => { active = false; };
-  }, []);
-  return hardware;
+    if (error) console.error("读取硬件信息失败", error);
+  }, [error]);
+  return data;
 }

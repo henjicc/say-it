@@ -12,12 +12,14 @@ import { useProviderStore } from "@/store/useProviderStore";
 import { useTranscriptionStore } from "@/store/useTranscriptionStore";
 import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { useMouseGestureStore } from "@/store/useMouseGestureStore";
+import { hydrateAppSettings } from "@/store/useAppSettingsStore";
 
 function json(key: string): Record<string, unknown> | undefined {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
 }
 
 function apply(settings: AppSettings): boolean {
+  hydrateAppSettings(settings);
   const dictationNeedsSync = hydrateDictPrefs(settings.dictationPrefs);
   hydrateSubtitlePrefs(settings.subtitlePrefs);
   hydrateComparePrefs(settings.comparePrefs); hydrateTheme(settings.theme);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppWindow, BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
@@ -12,6 +12,7 @@ import { formatMs, formatTime } from "./format";
 import { LocalComparePanel } from "./LocalComparePanel";
 import { BenchResult, ModelBenchPanel, type BenchRow } from "./ModelBenchPanel";
 import { NativeWindowsPanel } from "./NativeWindowsPanel";
+import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const RUNS_REFRESH_MS = 3000;
 const OVERVIEW = "overview";
@@ -247,17 +248,22 @@ interface AudioRecording {
 }
 
 /** 每次听写保存原始麦克风声音和送去识别的声音，用真实录音排查识别问题。 */
-function AudioRecordingRow() {
-  const [state, setState] = useState<AudioRecording | null>(null);
-  const [error, setError] = useState("");
+export const audioRecordingQuery: Query<AudioRecording> = {
+  key: "devAudioRecording",
+  load: () => cmd<AudioRecording>(CMD.devAudioRecording),
+};
 
-  useEffect(() => {
-    void cmd<AudioRecording>(CMD.devAudioRecording).then(setState).catch((reason) => setError(String(reason)));
-  }, []);
+function AudioRecordingRow() {
+  const recording = useCachedQuery(audioRecordingQuery);
+  const state = recording.data;
+  const [saveError, setError] = useState("");
+  const error = saveError || recording.error;
 
   const toggle = (enabled: boolean) => {
     setError("");
-    void cmd<AudioRecording>(CMD.devAudioRecording, { enabled }).then(setState).catch((reason) => setError(String(reason)));
+    void cmd<AudioRecording>(CMD.devAudioRecording, { enabled })
+      .then((next) => setQueryData(audioRecordingQuery, next))
+      .catch((reason) => setError(String(reason)));
   };
 
   return (
@@ -273,15 +279,15 @@ function AudioRecordingRow() {
   );
 }
 
-function OverviewPanel() {
-  const [stats, setStats] = useState<TraceStats | null>(null);
-  const [status, setStatus] = useState<TraceStatus | null>(null);
-  const [error, setError] = useState("");
+export const traceStatsQuery: Query<TraceStats> = { key: "devTraceStats", load: () => cmd<TraceStats>(CMD.devTraceStats) };
+export const traceStatusQuery: Query<TraceStatus> = { key: "devTraceStatus", load: () => cmd<TraceStatus>(CMD.devTraceStatus) };
 
-  useEffect(() => {
-    void cmd<TraceStats>(CMD.devTraceStats).then(setStats).catch((reason) => setError(String(reason)));
-    void cmd<TraceStatus>(CMD.devTraceStatus).then(setStatus).catch((reason) => setError(String(reason)));
-  }, []);
+function OverviewPanel() {
+  const statsQuery = useCachedQuery(traceStatsQuery);
+  const statusQuery = useCachedQuery(traceStatusQuery);
+  const stats = statsQuery.data;
+  const status = statusQuery.data;
+  const error = statsQuery.error || statusQuery.error;
 
   return (
     <InspectorBody>
@@ -369,41 +375,29 @@ function SmartTestPanel({ onFinished }: { onFinished: () => void }) {
   );
 }
 
+export const traceRunsQuery: Query<RunSummary[]> = { key: "devTraceRuns", load: () => cmd<RunSummary[]>(CMD.devTraceRuns) };
+
+/** 一次运行的完整记录；记录写完就不再变，切回来直接用上次读到的。 */
+function traceRunQuery(id: string): Query<RunRecord | null> {
+  return { key: `devTraceRun:${id}`, load: async () => (id ? cmd<RunRecord | null>(CMD.devTraceRun, { id }) : null) };
+}
+
 /** 开发者模式：查看每次听写的耗时记录，并对比测试智能处理。 */
 export function DeveloperPage() {
-  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const runsQuery = useCachedQuery(traceRunsQuery);
+  const runs = runsQuery.data ?? [];
   const [active, setActive] = useState<string>(OVERVIEW);
-  const [record, setRecord] = useState<RunRecord | null>(null);
-  const [error, setError] = useState("");
-
-  const refresh = useCallback(() => {
-    void cmd<RunSummary[]>(CMD.devTraceRuns)
-      .then((value) => {
-        setRuns(value);
-        setError("");
-      })
-      .catch((reason) => setError(String(reason)));
-  }, []);
+  const isRun = ![OVERVIEW, TEST, BENCH, LOCAL, WINDOWS].includes(active);
+  const recordQuery = useCachedQuery(traceRunQuery(isRun ? active : ""));
+  const record = isRun ? recordQuery.data ?? null : null;
+  const error = runsQuery.error || (isRun ? recordQuery.error : "");
+  const refresh = runsQuery.refresh;
 
   useEffect(() => {
-    refresh();
-    const timer = window.setInterval(refresh, RUNS_REFRESH_MS);
+    const timer = window.setInterval(() => void refresh(), RUNS_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  useEffect(() => {
-    setRecord(null);
-    if (active === OVERVIEW || active === TEST || active === BENCH || active === LOCAL || active === WINDOWS) return;
-    let stale = false;
-    void cmd<RunRecord | null>(CMD.devTraceRun, { id: active })
-      .then((value) => {
-        if (!stale) setRecord(value);
-      })
-      .catch((reason) => setError(String(reason)));
-    return () => {
-      stale = true;
-    };
-  }, [active]);
 
   const items: NodeItem<string>[] = [
     { key: OVERVIEW, label: "统计", icon: <BarChart3 {...iconProps} /> },

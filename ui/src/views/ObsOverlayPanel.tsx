@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy } from "lucide-react";
 import { notify } from "@/store/useToastStore";
 import { Button } from "@/components/ui/Button";
@@ -6,6 +6,7 @@ import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { CMD, cmd } from "@/lib/tauri";
+import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
@@ -29,13 +30,26 @@ interface ObsConnectionStatus {
 
 const defaultStatus: ObsOverlayStatus = { ready: false, connected: false, url: "", installed: false };
 
+const overlayStatusQuery: Query<ObsOverlayStatus> = {
+  key: "obsOverlayStatus",
+  load: () => cmd<ObsOverlayStatus>(CMD.getObsOverlayStatus),
+};
+
+const connectionSettingsQuery: Query<{ host: string; port: number; hasPassword: boolean }> = {
+  key: "obsConnectionSettings",
+  load: () => cmd(CMD.getObsConnectionSettings),
+};
+
 export function ObsOverlayPanel() {
-  const [host, setHost] = useState("127.0.0.1");
-  const [port, setPort] = useState("4455");
+  const overlayQuery = useCachedQuery(overlayStatusQuery);
+  const overlay = overlayQuery.data ?? defaultStatus;
+  const setOverlay = (next: ObsOverlayStatus) => setQueryData(overlayStatusQuery, next);
+  const saved = useCachedQuery(connectionSettingsQuery);
+  const [host, setHost] = useState(saved.data?.host || "127.0.0.1");
+  const [port, setPort] = useState(String(saved.data?.port || 4455));
   const [password, setPassword] = useState("");
-  const [hasSavedPassword, setHasSavedPassword] = useState(false);
+  const [hasSavedPassword, setHasSavedPassword] = useState(saved.data?.hasPassword ?? false);
   const [passwordDirty, setPasswordDirty] = useState(false);
-  const [overlay, setOverlay] = useState<ObsOverlayStatus>(defaultStatus);
   const [connection, setConnection] = useState<ObsConnectionStatus | null>(null);
   const [sceneName, setSceneName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -48,28 +62,30 @@ export function ObsOverlayPanel() {
     ...(passwordDirty ? { password } : {}),
   });
 
+  // 连接、安装或移除成功后后端已保存这组连接设置，下次打开直接显示它。
   const commitSavedPassword = () => {
+    const hasPassword = passwordDirty ? !!password : hasSavedPassword;
+    setQueryData(connectionSettingsQuery, { host: connectionArgs().host, port: connectionArgs().port, hasPassword });
     if (passwordDirty) setHasSavedPassword(!!password);
     setPassword("");
     setPasswordDirty(false);
   };
 
-  const refreshOverlay = async () => {
-    const status = await cmd<ObsOverlayStatus>(CMD.getObsOverlayStatus);
-    setOverlay(status);
-    if (status.error) setError(status.error);
-  };
-
   useEffect(() => {
-    refreshOverlay().catch((reason) => setError(`读取 OBS 字幕服务状态失败：${String(reason)}`));
-    cmd<{ host: string; port: number; hasPassword: boolean }>(CMD.getObsConnectionSettings)
-      .then((settings) => {
-        setHost(settings.host || "127.0.0.1");
-        setPort(String(settings.port || 4455));
-        setHasSavedPassword(settings.hasPassword);
-      })
-      .catch((reason) => setError(`读取 OBS 连接设置失败：${String(reason)}`));
-  }, []);
+    if (overlayQuery.error) setError(`读取 OBS 字幕服务状态失败：${overlayQuery.error}`);
+    else if (overlay.error) setError(overlay.error);
+  }, [overlayQuery.error, overlay.error]);
+
+  // 第一次读到保存的连接设置时填进输入框；之后的后台刷新不覆盖正在编辑的内容。
+  const filled = useRef(Boolean(saved.data));
+  useEffect(() => {
+    if (saved.error) setError(`读取 OBS 连接设置失败：${saved.error}`);
+    if (!saved.data || filled.current) return;
+    filled.current = true;
+    setHost(saved.data.host || "127.0.0.1");
+    setPort(String(saved.data.port || 4455));
+    setHasSavedPassword(saved.data.hasPassword);
+  }, [saved.data, saved.error]);
 
   // 明文只在用户点「显示」时按需取一次，不在组件里缓存。
   const revealSavedPassword = async () => {

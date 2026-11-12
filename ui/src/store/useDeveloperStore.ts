@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { CMD, cmd } from "@/lib/tauri";
+import { saveAppSettings } from "@/store/useAppSettingsStore";
 import { useUiStore } from "@/store/useUiStore";
 
 /** 开发构建始终开启；发布构建按 `diagnosticsPrefs.developerMode`，在「关于」里连点图标打开。 */
@@ -10,7 +10,7 @@ interface DeveloperState {
 
 /** 后端按字段合并诊断设置，只传要改的开关。 */
 export async function updateDiagnosticsPrefs(patch: Record<string, unknown>): Promise<void> {
-  await cmd(CMD.updateAppSettings, { domain: "diagnostics", value: patch });
+  await saveAppSettings("diagnostics", patch);
 }
 
 function applyEnabled(enabled: boolean) {

@@ -10,6 +10,7 @@ import { adapterOf, llmModelLabel } from "@/features/models/recommendedLlmModels
 import { CMD, cmd } from "@/lib/tauri";
 import { useProviderStore } from "@/store/useProviderStore";
 import { formatMs, formatRate, modelKey } from "./format";
+import { useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const LIVE_REFRESH_MS = 250;
 
@@ -267,10 +268,18 @@ function useBenchChoices(options: BenchModelOption[]): BenchChoice[] {
   }, [options, profiles]);
 }
 
+/** 可以测速的大模型，模型测速与本地模型对比共用。 */
+export const benchModelsQuery: Query<BenchModelOption[]> = {
+  key: "devBenchModels",
+  load: () => cmd<BenchModelOption[]>(CMD.devBenchModels),
+};
+
 export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
-  const [rawOptions, setRawOptions] = useState<BenchModelOption[]>([]);
-  const options = useBenchChoices(rawOptions);
-  const [selected, setSelected] = useState<string[]>([]);
+  const models = useCachedQuery(benchModelsQuery);
+  const options = useBenchChoices(models.data ?? []);
+  // 默认勾上当前在用的模型，拿它和其他模型比；列表第一次读到时才设。
+  const [picked, setSelected] = useState<string[]>();
+  const selected = picked ?? (models.data ?? []).filter((model) => model.current).map(modelKey);
   const [source, setSource] = useState<PromptSource>("standard");
   const [prompt, setPrompt] = useState("");
   const [rounds, setRounds] = useState("3");
@@ -283,11 +292,6 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   const awaitingResult = useRef(false);
 
   useEffect(() => {
-    void cmd<BenchModelOption[]>(CMD.devBenchModels).then((models) => {
-      setRawOptions(models);
-      // 默认勾上当前在用的模型，拿它和其他模型比。
-      setSelected(models.filter((model) => model.current).map(modelKey));
-    }).catch((reason) => setError(String(reason)));
     // 离开页面再回来时测速可能还在跑，接着显示进度。
     void cmd<BenchState | null>(CMD.devBenchState).then((state) => {
       if (state?.running) {
@@ -342,7 +346,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
   };
 
   const toggle = (key: string, checked: boolean) => {
-    setSelected((current) => (checked ? [...current, key] : current.filter((item) => item !== key)));
+    setSelected(checked ? [...selected, key] : selected.filter((item) => item !== key));
   };
   const chosen = options.filter((option) => selected.includes(option.key));
   const requests = chosen.length * Number(rounds);
@@ -360,7 +364,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
           </Button>
         )}
       >
-        {options.length === 0 && (
+        {models.data && options.length === 0 && (
           <p className="px-3.5 py-3 text-[13px] text-[var(--color-fg-muted)]">没有可测的大模型。在「模型」页填好密钥并打开要测的模型后再来。</p>
         )}
         {providers.map((provider) => (
@@ -434,7 +438,7 @@ export function ModelBenchPanel({ onFinished }: { onFinished: () => void }) {
         </Row>
         <Row
           label={chosen.length ? `${chosen.length} 个模型同时测速，共 ${requests} 次真实请求` : "先勾选要测的模型"}
-          message={<>按量计费的模型会产生费用。{error && <span role="alert" className="text-[var(--color-err)]"> {error}</span>}</>}
+          message={<>按量计费的模型会产生费用。{(error || models.error) && <span role="alert" className="text-[var(--color-err)]"> {error || `读取模型列表失败：${models.error}`}</span>}</>}
         >
           <Button size="sm" variant="primary" disabled={running || chosen.length === 0 || missingPrompt} onClick={() => void start()}>
             {running ? "测速中…" : "开始测速"}

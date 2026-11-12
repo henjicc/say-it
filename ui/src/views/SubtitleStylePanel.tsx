@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Group, Row, SliderRow, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
 import { ColorInput } from "@/components/ui/ColorInput";
@@ -14,31 +14,22 @@ import {
   type SubtitleAnchor,
   type SubtitleAnimationEasing,
 } from "@/store/useSubtitleStore";
+import { useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const FALLBACK_FONTS = isMacOS
   ? [defaultSubtitleFontFamily, "Hiragino Sans GB", "Heiti SC"]
   : [defaultSubtitleFontFamily, "SimHei", "KaiTi", "Segoe UI"];
 
 
-let cachedSystemFonts: string[] | null = null;
+const systemFontsQuery: Query<string[]> = {
+  key: "systemFonts",
+  load: () => cmd<string[]>(CMD.listSystemFonts),
+};
 
+/** 系统字体；读到之前或读不到时用内置常用字体。 */
 function useSystemFonts() {
-  const [fonts, setFonts] = useState<string[]>(cachedSystemFonts ?? FALLBACK_FONTS);
-
-  useEffect(() => {
-    if (cachedSystemFonts) return;
-    cmd<string[]>(CMD.listSystemFonts)
-      .then((names) => {
-        if (!names || names.length === 0) return;
-        cachedSystemFonts = names;
-        setFonts(names);
-      })
-      .catch(() => {
-        /* 保留内置常用字体兜底 */
-      });
-  }, []);
-
-  return fonts;
+  const { data } = useCachedQuery(systemFontsQuery);
+  return data?.length ? data : FALLBACK_FONTS;
 }
 
 const anchorLabel: Record<SubtitleAnchor, string> = {

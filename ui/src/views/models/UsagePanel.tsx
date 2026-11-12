@@ -66,7 +66,7 @@ function DefaultLlmRow() {
  */
 export function UsagePanel() {
   const assistant = useUsageAssistantPrefs();
-  const assistantRow = (action: AssistantActionKey) => assistant.prefs && (
+  const assistantRow = (action: AssistantActionKey) => (
     <AssistantModelRow action={action} label={ACTION_LABELS[action]} prefs={assistant.prefs} save={assistant.save} />
   );
   return (

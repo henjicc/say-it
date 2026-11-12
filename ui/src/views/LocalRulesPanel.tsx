@@ -60,10 +60,13 @@ export function LocalRulesPanel() {
   const [saveError, setSaveError] = useState("");
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 试运行：防抖后在 worker 里跑当前规则，展示处理结果。
+  // 试运行：在 worker 里跑当前规则，展示处理结果。打开页面时立即跑，之后的修改防抖。
+  const previewed = useRef(false);
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
+    const delay = previewed.current ? 250 : 0;
     debounce.current = setTimeout(async () => {
+      previewed.current = true;
       const res = await runLocalRules(previewIn, rules);
       setPreviewOut(res.text);
       setPreviewNote(
@@ -73,7 +76,7 @@ export function LocalRulesPanel() {
             ? `出错：${res.error}`
             : "",
       );
-    }, 250);
+    }, delay);
     return () => {
       if (debounce.current) clearTimeout(debounce.current);
     };

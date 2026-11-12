@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
 import { Switch } from "@/components/ui/Switch";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 import {
   CMD,
@@ -19,24 +20,29 @@ interface StartupStatus {
   silentStart?: boolean;
 }
 
+export const dataRootQuery: Query<DataRootStatus> = {
+  key: "dataRootStatus",
+  load: () => cmd<DataRootStatus>(CMD.getDataRootStatus),
+};
+
+export const startupSettingsQuery: Query<StartupStatus> = {
+  key: "startupSettings",
+  load: () => cmd<StartupStatus>(CMD.getStartupSettings),
+};
+
 function DataRootSection() {
-  const [status, setStatus] = useState<DataRootStatus | null>(null);
+  const { data: status, error: statusError, refresh } = useCachedQuery(dataRootQuery);
+  const setStatus = (next: DataRootStatus) => setQueryData(dataRootQuery, next);
   const [migrating, setMigrating] = useState(false);
   const [progress, setProgress] = useState<DataRootMigrationEvent | null>(null);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"info" | "error">("info");
 
-  const refresh = () =>
-    cmd<DataRootStatus>(CMD.getDataRootStatus)
-      .then(setStatus)
-      .catch((e) => {
-        setMessage(`读取数据目录状态失败：${String(e)}`);
-        setMessageTone("error");
-      });
-
   useEffect(() => {
-    void refresh();
-  }, []);
+    if (!statusError) return;
+    setMessage(`读取数据目录状态失败：${statusError}`);
+    setMessageTone("error");
+  }, [statusError]);
 
   useTauriEvent<DataRootMigrationEvent>(
     EVT.dataRootMigration,
@@ -137,14 +143,11 @@ function DataRootSection() {
 
 /** 读取并保存开机自启与静默启动；设置页与简单模式共用。 */
 export function useStartupSettings() {
-  const [startup, setStartup] = useState<StartupStatus>({});
-  const [startupMsg, setStartupMsg] = useState("");
-
-  useEffect(() => {
-    cmd<StartupStatus>(CMD.getStartupSettings)
-      .then(setStartup)
-      .catch((e) => setStartupMsg(`读取启动设置失败：${String(e)}`));
-  }, []);
+  const { data, error, refresh } = useCachedQuery(startupSettingsQuery);
+  const startup = data ?? {};
+  const setStartup = (next: StartupStatus) => setQueryData(startupSettingsQuery, next);
+  const [saveMsg, setStartupMsg] = useState("");
+  const startupMsg = saveMsg || (error && `读取启动设置失败：${error}`);
 
   const saveStartup = async (next: StartupStatus) => {
     try {
@@ -156,7 +159,7 @@ export function useStartupSettings() {
       setStartupMsg("");
     } catch (e) {
       setStartupMsg(`保存启动设置失败：${String(e)}`);
-      cmd<StartupStatus>(CMD.getStartupSettings).then(setStartup).catch(() => {});
+      void refresh();
     }
   };
 
