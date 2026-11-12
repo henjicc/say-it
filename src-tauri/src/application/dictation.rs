@@ -845,6 +845,7 @@ async fn toggle_from_shortcut(
     activation_target: Option<crate::active_app_context::ActivationTarget>,
     shortcut_profile_id: Option<String>,
 ) -> Result<(), String> {
+    crate::desktop::native_test::end();
     let phase = app
         .state::<RuntimeState>()
         .dictation_runtime
@@ -1199,6 +1200,7 @@ async fn start_session(
         )
         .await?;
     }
+    crate::desktop::native_test::end();
     let lease = state.audio_session.acquire(AudioOwner::Dictation)?;
     state.audio_session.attach(&lease, "dictation")?;
     let mic = match start_backend_mic_inner(prefs.mic_device(), &state) {

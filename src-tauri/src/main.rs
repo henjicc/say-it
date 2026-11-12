@@ -817,6 +817,8 @@ fn main() {
             get_performance_metrics,
             dev_show_indicator_notice,
             dev_indicator_waveform,
+            desktop::native_test::dev_native_window_test,
+            desktop::native_test::dev_native_window_test_stop,
             application::dev_trace::dev_trace_status,
             application::dev_trace::dev_audio_recording,
             application::dev_trace::dev_trace_runs,

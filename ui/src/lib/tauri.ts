@@ -172,6 +172,8 @@ export const CMD = {
   openDiagnosticDirectory: "open_diagnostic_directory",
   exportDiagnosticBundle: "export_diagnostic_bundle",
   // 以下命令只在开发构建注册，由开发者页面调用
+  devNativeWindowTest: "dev_native_window_test",
+  devNativeWindowTestStop: "dev_native_window_test_stop",
   devTraceStatus: "dev_trace_status",
   devAudioRecording: "dev_audio_recording",
   devTraceRuns: "dev_trace_runs",

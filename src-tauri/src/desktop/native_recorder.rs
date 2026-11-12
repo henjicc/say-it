@@ -26,6 +26,13 @@ impl OverlaySpec for RecorderWindow {
         Recorder::new(dpi, look)
     }
     fn dispatch(action: RecorderAction) {
+        if super::native_test::testing(super::native_test::TestWindow::Recorder) {
+            // 测试中停止按钮只收起录制条，拖动后的位置也不保存。
+            if action == RecorderAction::Stop {
+                super::native_test::closed_by_button(super::native_test::TestWindow::Recorder);
+            }
+            return;
+        }
         run_action(move || run_recorder_action(action));
     }
 }

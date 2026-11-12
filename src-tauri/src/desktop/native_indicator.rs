@@ -37,7 +37,10 @@ impl OverlaySpec for IndicatorWindow {
         }
     }
     fn dispatch(action: IndicatorAction) {
-        run_action(move || run_indicator_action(action));
+        // 测试中点击只有胶囊自己的反馈，不跳过真实的智能处理。
+        if !super::native_test::testing(super::native_test::TestWindow::Indicator) {
+            run_action(move || run_indicator_action(action));
+        }
     }
 }
 

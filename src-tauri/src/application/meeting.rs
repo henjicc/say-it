@@ -215,6 +215,7 @@ pub(crate) async fn meeting_start(
         return Err("会议正在录制".into());
     }
     let dir = crate::application::data_root::data_subdir(&app, RECORDINGS_DIR)?;
+    crate::desktop::native_test::end();
     let lease = state.audio_session.acquire(AudioOwner::Meeting)?;
     let recording = match start_capture(&state, lease.clone(), &dir) {
         Ok(recording) => recording,

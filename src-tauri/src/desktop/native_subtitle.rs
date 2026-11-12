@@ -30,6 +30,12 @@ impl OverlaySpec for SubtitleWindow {
         Subtitle::new(dpi, look)
     }
     fn dispatch(action: SubtitleAction) {
+        if super::native_test::testing(super::native_test::TestWindow::Subtitle) {
+            // 测试中关闭按钮只收起字幕条，不去停字幕会话。
+            let SubtitleAction::Close = action;
+            super::native_test::closed_by_button(super::native_test::TestWindow::Subtitle);
+            return;
+        }
         run_action(move || run_subtitle_action(action));
     }
 }
