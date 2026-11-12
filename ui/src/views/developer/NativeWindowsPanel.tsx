@@ -1,20 +1,17 @@
 import { useEffect, useState } from "react";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
-import { Group, Row } from "@/components/ui/Group";
-import { Select } from "@/components/ui/Input";
+import { SectionHeader } from "@/components/ui/SectionHeader";
 import { CMD, cmd } from "@/lib/tauri";
 
-const HIDDEN = "hidden";
-
-/** 每个原生窗口可以摆出来的状态；键是后端认识的窗口名和状态名。 */
+/** 每个原生窗口可以摆出来的状态；键是后端认识的窗口名和状态名。测试用假数据，不录音、不识别。 */
 const WINDOWS: { key: string; label: string; hint: string; scenes: [string, string][] }[] = [
   {
     key: "indicator",
     label: "语音输入胶囊",
     hint: "在 Windows 上，智能处理中可以把鼠标移到胶囊上、点一下，看悬停和点击的反馈；Mac 上胶囊不响应鼠标。",
     scenes: [
-      ["recording", "录音（波形和逐字文字）"],
+      ["recording", "录音"],
       ["processing", "处理中"],
       ["smartProcessing", "智能处理"],
       ["fallback", "已复制，请手动粘贴"],
@@ -30,7 +27,7 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
       ["armed", "待命"],
       ["positioning", "定位中"],
       ["moving", "移动中"],
-      ["recording", "录音（音量柱）"],
+      ["recording", "录音"],
       ["processing", "处理中"],
       ["smartProcessing", "智能处理"],
       ["success", "完成"],
@@ -47,14 +44,14 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
     label: "实时字幕条",
     hint: "可以悬停看控制条、点锁定和重置、拖动；点关闭只收起字幕条。译文只在字幕设置里开了翻译时显示。",
     scenes: [
-      ["original", "原文逐字出现"],
+      ["original", "原文"],
       ["translated", "原文和译文"],
     ],
   },
   {
     key: "recorder",
     label: "会议录制条",
-    hint: "可以拖动、悬停和点停止；点停止只收起录制条，拖到的位置不会保存。再选一次同一项可以重新显示。",
+    hint: "可以拖动、悬停和点停止；点停止只收起录制条，拖到的位置不会保存。",
     scenes: [
       ["recording", "录制中"],
       ["micLost", "麦克风断开"],
@@ -63,52 +60,59 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
   },
 ];
 
-/** 用假数据把原生窗口摆到屏幕上看外观和手感；窗口上的操作不触发真实动作。 */
+/** 用假数据把原生窗口摆到屏幕上看外观和手感；窗口上的操作不触发真实动作。一次只摆出一个。 */
 export function NativeWindowsPanel() {
-  const [scenes, setScenes] = useState<Record<string, string>>({});
+  const [shown, setShown] = useState<{ window: string; scene: string } | null>(null);
   const [message, setMessage] = useState("");
 
-  // 离开这一页就收起全部测试窗口，交还给真实状态。
+  // 离开这一页就收起测试窗口，交还给真实状态。
   useEffect(() => () => void cmd(CMD.devNativeWindowTestStop).catch(() => {}), []);
 
-  const show = (window: string, scene: string) => {
+  const hide = () => {
     setMessage("");
-    cmd(CMD.devNativeWindowTest, { window, scene })
-      .then(() => setScenes((current) => ({ ...current, [window]: scene })))
+    cmd(CMD.devNativeWindowTestStop)
+      .then(() => setShown(null))
       .catch((reason: unknown) => setMessage(String(reason)));
   };
 
-  const hideAll = () => {
+  // 点已选中的一项会重新摆一次：通知会自己消失，字幕条和录制条也可能被它们自己的按钮收起。
+  const show = (window: string, scene: string) => {
     setMessage("");
-    cmd(CMD.devNativeWindowTestStop)
-      .then(() => setScenes({}))
-      .catch((reason: unknown) => setMessage(String(reason)));
+    cmd(CMD.devNativeWindowTest, { window, scene })
+      .then(() => setShown({ window, scene }))
+      .catch((reason: unknown) => {
+        setShown(null);
+        setMessage(String(reason));
+      });
   };
 
   return (
     <InspectorBody>
-      <Group>
-        {WINDOWS.map((item) => (
-          <Row key={item.key} label={item.label} hint={item.hint}>
-            <Select
-              className="w-64"
-              aria-label={`${item.label}的状态`}
-              value={scenes[item.key] ?? HIDDEN}
-              onChange={(event) => show(item.key, event.target.value)}
-            >
-              <option value={HIDDEN}>不显示</option>
-              {item.scenes.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-            </Select>
-          </Row>
-        ))}
-        <Row
-          label="测试窗口"
-          hint="测试用的是假数据，不录音、不识别，窗口上的操作不会触发真实功能。开始真实的语音输入、字幕或会议录制时测试自动结束。"
-          message={message ? <span role="alert" className="text-[var(--color-err)]">{message}</span> : undefined}
-        >
-          <Button size="sm" onClick={hideAll}>全部收起</Button>
-        </Row>
-      </Group>
+      {WINDOWS.map((item) => (
+        <section key={item.key} className="flex flex-col gap-2">
+          <SectionHeader title={item.label} description={item.hint} />
+          <div className="flex flex-wrap gap-2">
+            {item.scenes.map(([scene, label]) => {
+              const active = shown?.window === item.key && shown.scene === scene;
+              return (
+                <Button
+                  key={scene}
+                  size="sm"
+                  variant={active ? "primary" : "ghost"}
+                  aria-pressed={active}
+                  onClick={() => show(item.key, scene)}
+                >
+                  {label}
+                </Button>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+      <div className="flex items-center gap-3">
+        <Button size="sm" variant="text" onClick={hide}>收起</Button>
+        {message && <span role="alert" className="text-[13px] text-[var(--color-err)]">{message}</span>}
+      </div>
     </InspectorBody>
   );
 }

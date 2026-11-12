@@ -80,7 +80,8 @@ fn scenes() -> Result<std::sync::MutexGuard<'static, Scenes>, String> {
     SCENES.lock().map_err(|_| "原生窗口测试状态锁失败".to_string())
 }
 
-/// window: indicator | orb | subtitle | recorder；scene 是该窗口的一种状态，`hidden` 收起它。
+/// window: indicator | orb | subtitle | recorder；scene 是该窗口的一种状态。
+/// 一次只摆出一个窗口：显示这一个之前先收起其他正在测试的。
 // 悬浮球的窗口操作不能在 WebView2 同步 IPC 回调里做，Windows 上换到异步线程派发。
 #[cfg_attr(windows, tauri::command(async))]
 #[cfg_attr(not(windows), tauri::command)]
@@ -97,12 +98,28 @@ pub(crate) fn dev_native_window_test(
     let _ = APP.set(app.clone());
     let mut scenes = scenes()?;
     let was_testing = any_testing();
-    match window.as_str() {
-        "indicator" => show_indicator(&mut scenes, &scene),
-        "orb" => show_orb(&app, &mut scenes, &scene),
-        "subtitle" => show_subtitle(&mut scenes, &scene),
-        "recorder" => show_recorder(&app, &mut scenes, &scene),
-        _ => Err(format!("未知的原生窗口：{window}")),
+    let target = match window.as_str() {
+        "indicator" => TestWindow::Indicator,
+        "orb" => TestWindow::Orb,
+        "subtitle" => TestWindow::Subtitle,
+        "recorder" => TestWindow::Recorder,
+        _ => return Err(format!("未知的原生窗口：{window}")),
+    };
+    for other in [
+        TestWindow::Indicator,
+        TestWindow::Orb,
+        TestWindow::Subtitle,
+        TestWindow::Recorder,
+    ] {
+        if other != target {
+            hide(&app, &mut scenes, other);
+        }
+    }
+    match target {
+        TestWindow::Indicator => show_indicator(&mut scenes, &scene),
+        TestWindow::Orb => show_orb(&app, &mut scenes, &scene),
+        TestWindow::Subtitle => show_subtitle(&mut scenes, &scene),
+        TestWindow::Recorder => show_recorder(&app, &mut scenes, &scene),
     }?;
     if !was_testing && any_testing() {
         spawn_feed(app, ROUND.fetch_add(1, Ordering::AcqRel) + 1);
@@ -138,7 +155,6 @@ fn show_indicator(scenes: &mut Scenes, scene: &str) -> Result<(), String> {
         return Err("原生听写胶囊已用环境变量关闭".into());
     }
     match scene {
-        "hidden" => crate::desktop::native_indicator_hide(),
         "notice" => crate::desktop::native_indicator_notice(NOTICE_TEXT.into()),
         "recording" | "processing" | "smartProcessing" | "fallback" => {
             crate::desktop::native_indicator_prepare();
@@ -149,17 +165,13 @@ fn show_indicator(scenes: &mut Scenes, scene: &str) -> Result<(), String> {
     }
     scenes.indicator_recording = scene == "recording";
     scenes.indicator_since = scenes.tick;
-    set_testing(TestWindow::Indicator, scene != "hidden");
+    set_testing(TestWindow::Indicator, true);
     Ok(())
 }
 
 fn show_orb(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Result<(), String> {
     if !native_orb::native_orb_enabled() {
         return Err("原生悬浮球已用环境变量关闭".into());
-    }
-    if scene == "hidden" {
-        restore_orb(app, scenes);
-        return Ok(());
     }
     if sayit_overlay_core::orb::OrbPhase::from_str(scene).is_none() {
         return Err(format!("未知的悬浮球状态：{scene}"));
@@ -196,10 +208,6 @@ fn show_subtitle(scenes: &mut Scenes, scene: &str) -> Result<(), String> {
         return Err("原生字幕条已用环境变量关闭".into());
     }
     let translated = match scene {
-        "hidden" => {
-            closed_by_button_locked(scenes, TestWindow::Subtitle);
-            return Ok(());
-        }
         "original" => false,
         "translated" => true,
         _ => return Err(format!("未知的字幕状态：{scene}")),
@@ -234,10 +242,6 @@ fn show_subtitle(scenes: &mut Scenes, scene: &str) -> Result<(), String> {
 
 fn show_recorder(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Result<(), String> {
     let lost = match scene {
-        "hidden" => {
-            closed_by_button_locked(scenes, TestWindow::Recorder);
-            return Ok(());
-        }
         "recording" => (false, false),
         "micLost" => (true, false),
         "systemLost" => (false, true),
@@ -266,7 +270,7 @@ fn spawn_feed(app: tauri::AppHandle, round: u32) {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if ROUND.load(Ordering::Acquire) != round || !any_testing() {
+            if ROUND.load(Ordering::Acquire) != round {
                 break;
             }
             if app.get_webview_window("main").is_none() {
@@ -274,6 +278,10 @@ fn spawn_feed(app: tauri::AppHandle, round: u32) {
                 break;
             }
             let Ok(mut scenes) = scenes() else { break };
+            // 拿到锁之后再看：切换窗口的命令在持锁期间会先收起旧的再显示新的。
+            if !any_testing() {
+                break;
+            }
             scenes.tick += 1;
             let time = scenes.tick as f32 * 0.1;
             let wave = |phase: f32| {
@@ -324,15 +332,32 @@ fn spawn_feed(app: tauri::AppHandle, round: u32) {
     });
 }
 
+/// 收起一个正在测试的窗口；没在测试的不动，免得碰到真实状态。
+fn hide(app: &tauri::AppHandle, scenes: &mut Scenes, window: TestWindow) {
+    match window {
+        TestWindow::Indicator => {
+            if testing(window) {
+                crate::desktop::native_indicator_hide();
+            }
+            scenes.indicator_recording = false;
+            set_testing(window, false);
+        }
+        TestWindow::Orb => restore_orb(app, scenes),
+        TestWindow::Subtitle | TestWindow::Recorder => closed_by_button_locked(scenes, window),
+    }
+}
+
 fn closed_by_button_locked(scenes: &mut Scenes, window: TestWindow) {
     match window {
         TestWindow::Subtitle => {
-            scenes.subtitle = None;
-            post_if_started::<SubtitleWindow>(SubtitleCommand::Hide);
+            if scenes.subtitle.take().is_some() {
+                post_if_started::<SubtitleWindow>(SubtitleCommand::Hide);
+            }
         }
         TestWindow::Recorder => {
-            scenes.recorder = false;
-            native_recorder::native_recorder_hide();
+            if std::mem::take(&mut scenes.recorder) {
+                native_recorder::native_recorder_hide();
+            }
         }
         TestWindow::Indicator | TestWindow::Orb => {}
     }
@@ -346,15 +371,16 @@ pub(crate) fn end() {
         return;
     }
     ROUND.fetch_add(1, Ordering::AcqRel);
-    let Ok(mut scenes) = scenes() else { return };
-    if testing(TestWindow::Indicator) {
-        crate::desktop::native_indicator_hide();
-        set_testing(TestWindow::Indicator, false);
-    }
-    closed_by_button_locked(&mut scenes, TestWindow::Subtitle);
-    closed_by_button_locked(&mut scenes, TestWindow::Recorder);
-    if let Some(app) = APP.get() {
-        restore_orb(app, &mut scenes);
+    let (Ok(mut scenes), Some(app)) = (scenes(), APP.get()) else {
+        return;
+    };
+    for window in [
+        TestWindow::Indicator,
+        TestWindow::Orb,
+        TestWindow::Subtitle,
+        TestWindow::Recorder,
+    ] {
+        hide(app, &mut scenes, window);
     }
     *scenes = Scenes::IDLE;
 }
