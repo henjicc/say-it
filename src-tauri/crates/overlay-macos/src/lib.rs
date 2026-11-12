@@ -12,41 +12,99 @@ pub use sayit_overlay_core as core;
 
 mod commit;
 mod glass;
-mod hosts;
 mod input;
 mod panel;
 mod render;
 mod screens;
+#[cfg(test)]
+mod indicator_tests;
 
-pub use hosts::{indicator, orb, subtitle};
+use crate::core::spec::OverlaySpec;
+use crate::ct::CtText;
+use crate::render::{Host, WindowId};
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::sync::{Mutex, Once, OnceLock};
 
-/// 可能在主线程或渲染线程调用，接收方必须立即返回，只投递异步任务。
-pub type EventSink = Box<dyn Fn(OverlayEvent) + Send + Sync + 'static>;
+static START: Once = Once::new();
+static LOOK: Mutex<core::look::Look> = Mutex::new(core::look::Look::MACOS_DEFAULT);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverlayEvent {
-    Indicator(core::indicator::IndicatorAction),
-    Orb(core::orb::OrbAction),
-    Subtitle(core::subtitle::SubtitleAction),
+fn windows() -> &'static Mutex<HashMap<TypeId, WindowId>> {
+    static WINDOWS: OnceLock<Mutex<HashMap<TypeId, WindowId>>> = OnceLock::new();
+    WINDOWS.get_or_init(Default::default)
 }
 
-static SINK: std::sync::OnceLock<EventSink> = std::sync::OnceLock::new();
-static START: std::sync::Once = std::sync::Once::new();
-static LOOK: std::sync::Mutex<core::look::Look> =
-    std::sync::Mutex::new(core::look::Look::MACOS_DEFAULT);
-
-pub fn start(sink: EventSink) {
-    SINK.get_or_init(|| sink);
-    start_passive();
-}
-
-/// 无应用动作的胶囊可独立启动；交互窗口随后通过 start 绑定事件出口。
-pub fn start_passive() {
+/// 提前启动渲染服务并开始采集屏幕信息，之后注册的窗口建模型时就有正确的缩放；可重复调用。
+pub fn start() {
     START.call_once(render::start);
 }
 
-pub fn started() -> bool {
-    START.is_completed()
+/// 首次调用启动渲染服务并注册宿主；模型、CoreText 与面板都在各自线程创建。
+fn register<S: OverlaySpec>() -> WindowId {
+    let mut windows = windows().lock().expect("overlay registry poisoned");
+    if let Some(id) = windows.get(&TypeId::of::<S>()) {
+        return *id;
+    }
+    start();
+    let id = WindowId(windows.len() as u32);
+    render::install_host(
+        id,
+        Box::new(move |cx| {
+            let dpi = cx
+                .screens
+                .area_screen()
+                .map_or(96, |s| core::screen::dpi_for_scale(s.scale));
+            let host = Host::new(
+                id,
+                S::PLACEMENT,
+                S::model::<CtText>(dpi, &cx.look),
+                dpi,
+                S::dispatch,
+            );
+            host.attach();
+            Box::new(host)
+        }),
+    );
+    // 持锁到登记完成：其他线程拿到编号时，注册消息已经排在它的命令之前。
+    windows.insert(TypeId::of::<S>(), id);
+    id
+}
+
+fn send<S: OverlaySpec>(id: WindowId, command: S::Command) {
+    render::run_on_host(
+        id,
+        Box::new(move |host, cx| {
+            host.as_any_mut()
+                .downcast_mut::<Host<S::Model<CtText>>>()
+                .expect("overlay host type")
+                .apply(command, cx);
+        }),
+    );
+}
+
+/// 窗口是否已经注册。
+pub fn started<S: OverlaySpec>() -> bool {
+    windows()
+        .lock()
+        .expect("overlay registry poisoned")
+        .contains_key(&TypeId::of::<S>())
+}
+
+/// 可在任意线程调用；第一条命令创建窗口。
+pub fn post<S: OverlaySpec>(command: S::Command) {
+    send::<S>(register::<S>(), command);
+}
+
+/// 只在窗口已注册时投递，不因为这条命令创建窗口。
+pub fn post_if_started<S: OverlaySpec>(command: S::Command) {
+    let id = windows()
+        .lock()
+        .expect("overlay registry poisoned")
+        .get(&TypeId::of::<S>())
+        .copied();
+    if let Some(id) = id {
+        send::<S>(id, command);
+    }
 }
 
 /// 启动前也保留最新外观。存储与发送共用锁，防止并发更新倒序。
@@ -56,8 +114,4 @@ pub fn set_look(look: core::look::Look) {
     render::set_look(look);
 }
 
-pub(crate) fn emit(event: OverlayEvent) {
-    if let Some(sink) = SINK.get() {
-        sink(event);
-    }
-}
+pub use screens::{cursor_px, reference_size};

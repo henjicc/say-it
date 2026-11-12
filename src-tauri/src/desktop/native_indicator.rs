@@ -7,19 +7,46 @@
 //! error 与 subtitle 两种状态仍由原 WebView 路径承载。
 //!
 //! 视觉规格以 ui/src/indicator/indicator.css 的 dictation-mode 为准。
-//! 分层窗口/D2D 渲染目标/DIB/命令队列/UI 线程等基础设施见 native_win/；状态与绘制位于 sayit-overlay-core::indicator。
+//! 状态与绘制位于 sayit-overlay-core::indicator；两个平台的宿主由 native_common 分发。
 
-use sayit_overlay_core::indicator::IndicatorAction;
+use super::native_common::{post, post_if_started, run_action};
+use sayit_overlay_core::canvas::TextEngine;
+use sayit_overlay_core::indicator::{Command, Indicator, IndicatorAction, IndicatorState};
+use sayit_overlay_core::look::Look;
+use sayit_overlay_core::spec::{OverlaySpec, Placement};
 use std::sync::OnceLock;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub(crate) struct IndicatorWindow;
+impl OverlaySpec for IndicatorWindow {
+    const NAME: &'static str = "sayit-native-indicator";
+    const TITLE: &'static str = "说吧！语音输入";
+    const PLACEMENT: Placement = Placement::FollowFocus;
+    const CLICK_THROUGH: bool = true;
+    type Command = Command;
+    type Action = IndicatorAction;
+    type Model<T: TextEngine + 'static> = Indicator;
+    fn model<T: TextEngine + 'static>(_: u32, look: &Look) -> Indicator {
+        let model = Indicator::new(look);
+        // Mac 胶囊始终点击穿透，不提供智能处理中的点击跳过。
+        if cfg!(windows) {
+            model.clickable()
+        } else {
+            model
+        }
+    }
+    fn dispatch(action: IndicatorAction) {
+        run_action(move || run_indicator_action(action));
+    }
+}
 
 pub(crate) fn native_indicator_attach(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
 }
 
-/// 胶囊动作在原生窗口线程触发；只取消令牌，不阻塞窗口线程。
-pub(crate) fn run_indicator_action(action: IndicatorAction) {
+/// 只取消令牌，不阻塞调用线程。
+fn run_indicator_action(action: IndicatorAction) {
     let Some(app) = APP.get() else { return };
     match action {
         IndicatorAction::SkipSmartProcessing => {
@@ -28,65 +55,36 @@ pub(crate) fn run_indicator_action(action: IndicatorAction) {
     }
 }
 
-/// Windows 上默认启用原生听写指示器；`SAYIT_NATIVE_INDICATOR=0` 回退 WebView。
+/// 默认启用原生听写指示器；`SAYIT_NATIVE_INDICATOR=0` 回退 WebView。
 pub(crate) fn native_dictation_indicator_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| super::native_common::native_window_enabled("SAYIT_NATIVE_INDICATOR"))
 }
 
 pub(crate) fn native_indicator_prepare() {
-    #[cfg(windows)]
-    imp::post(imp::Command::Prepare);
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::prepare();
+    post::<IndicatorWindow>(Command::Prepare);
 }
 
 /// 仅接受 recording/processing/smartProcessing/fallback；其余状态不在原生接管范围。
 pub(crate) fn native_indicator_set_state(state: &str) {
-    #[cfg(windows)]
-    if let Some(state) = imp::NativeState::from_str(state) {
-        imp::post(imp::Command::SetState(state));
+    if let Some(state) = IndicatorState::from_str(state) {
+        post::<IndicatorWindow>(Command::SetState(state));
     }
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::set_state(state);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = state;
 }
 
 pub(crate) fn native_indicator_set_text(text: String, fade: bool) {
-    #[cfg(windows)]
-    imp::post(imp::Command::SetText { text, fade });
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::set_text(text, fade);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (text, fade);
+    post::<IndicatorWindow>(Command::SetText { text, fade });
 }
 
 pub(crate) fn native_indicator_set_waveform(level: f32, peaks: Vec<f32>) {
-    #[cfg(windows)]
-    imp::post(imp::Command::SetWaveform { level, peaks });
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::set_waveform(level, peaks);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (level, peaks);
+    post::<IndicatorWindow>(Command::SetWaveform { level, peaks });
 }
 
 pub(crate) fn native_indicator_hide() {
-    #[cfg(windows)]
-    imp::post(imp::Command::Hide);
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::hide();
+    post_if_started::<IndicatorWindow>(Command::Hide);
 }
 
 /// 原生错误/结果通知：显示自定义短文案的面板，几秒后自动消失。
 pub(crate) fn native_indicator_notice(text: String) {
-    #[cfg(windows)]
-    imp::post(imp::Command::ShowNotice(text));
-    #[cfg(target_os = "macos")]
-    super::native_mac::indicator::notice(text);
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = text;
+    post::<IndicatorWindow>(Command::ShowNotice(text));
 }
-
-#[cfg(windows)]
-use super::native_win::indicator as imp;

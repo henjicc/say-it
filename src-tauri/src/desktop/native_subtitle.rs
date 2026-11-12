@@ -8,15 +8,31 @@
 //! 共用字幕模型见 overlay-core，Windows 宿主与 D2D 后端见 native_win，macOS 宿主见 overlay-macos；
 //! 与原生胶囊之间的「当前谁拥有指示窗通道」路由见 indicator.rs。
 
-#[cfg(windows)]
-use super::native_win::subtitle as imp;
-#[cfg(target_os = "macos")]
-use super::native_mac::subtitle as imp;
-#[cfg(any(windows, target_os = "macos"))]
-use sayit_overlay_core::subtitle::SubtitleConfig;
+use super::native_common::{post, post_if_started, run_action};
+use sayit_overlay_core::canvas::TextEngine;
+use sayit_overlay_core::look::Look;
+use sayit_overlay_core::spec::{OverlaySpec, Placement};
+use sayit_overlay_core::subtitle::{Command, Subtitle, SubtitleAction, SubtitleConfig};
 use std::sync::OnceLock;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub(crate) struct SubtitleWindow;
+impl OverlaySpec for SubtitleWindow {
+    const NAME: &'static str = "sayit-native-subtitle";
+    const TITLE: &'static str = "说吧！实时字幕";
+    const PLACEMENT: Placement = Placement::Screen;
+    const CLICK_THROUGH: bool = false;
+    type Command = Command;
+    type Action = SubtitleAction;
+    type Model<T: TextEngine + 'static> = Subtitle<T::Layout>;
+    fn model<T: TextEngine + 'static>(dpi: u32, look: &Look) -> Subtitle<T::Layout> {
+        Subtitle::new(dpi, look)
+    }
+    fn dispatch(action: SubtitleAction) {
+        run_action(move || run_subtitle_action(action));
+    }
+}
 
 /// 未设置 `SAYIT_NATIVE_SUBTITLE` 时取平台默认；`0` 回退 WebView。
 pub(crate) fn native_subtitle_enabled() -> bool {
@@ -26,62 +42,48 @@ pub(crate) fn native_subtitle_enabled() -> bool {
 
 pub(crate) fn native_subtitle_attach(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
-    #[cfg(target_os = "macos")]
-    super::native_mac::ensure_started(app);
+    super::native_common::native_overlay_start();
 }
 
 /// 送字幕配置（dictation-indicator-config.subtitle 的 json 结构）。
 pub(crate) fn native_subtitle_set_config(config: serde_json::Value) {
-    #[cfg(any(windows, target_os = "macos"))]
     if let Ok(config) = serde_json::from_value::<SubtitleConfig>(config) {
-        imp::post(imp::Command::SetConfig(Box::new(config)));
+        post::<SubtitleWindow>(Command::SetConfig(Box::new(config)));
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = config;
 }
 
 /// 窗口几何（逻辑像素）：尺寸 + 锚点。调用方已完成取值裁剪（见 set_indicator_layout）。
 pub(crate) fn native_subtitle_set_layout(width: f64, height: f64, anchor: &str, offset_y: f64) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post(imp::Command::SetLayout {
+    post::<SubtitleWindow>(Command::SetLayout {
         width: width as f32,
         height: height as f32,
         anchor: anchor.to_string(),
         offset_y: offset_y as f32,
     });
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (width, height, anchor, offset_y);
 }
 
 pub(crate) fn native_subtitle_show() {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post(imp::Command::Show);
+    post::<SubtitleWindow>(Command::Show);
 }
 
+/// 隐藏、文本与译文只在配置、布局或显示建好窗口之后投递。
 pub(crate) fn native_subtitle_hide() {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::Hide);
+    post_if_started::<SubtitleWindow>(Command::Hide);
 }
 
 pub(crate) fn native_subtitle_set_text(text: String, fade: bool) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetText { text, fade });
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (text, fade);
+    post_if_started::<SubtitleWindow>(Command::SetText { text, fade });
 }
 
 pub(crate) fn native_subtitle_set_translation(text: String) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetTranslation(text));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = text;
+    post_if_started::<SubtitleWindow>(Command::SetTranslation(text));
 }
 
 /// 字幕百分比字号、宽度与偏移的逻辑参考区；None 表示沿用主显示器测量。
 pub(crate) fn native_subtitle_reference_size() -> Option<(f64, f64)> {
     #[cfg(target_os = "macos")]
     {
-        imp::reference_size()
+        sayit_overlay_macos::reference_size()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -89,10 +91,9 @@ pub(crate) fn native_subtitle_reference_size() -> Option<(f64, f64)> {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
-pub(super) fn run_subtitle_action(action: sayit_overlay_core::subtitle::SubtitleAction) {
+fn run_subtitle_action(action: SubtitleAction) {
     match action {
-        sayit_overlay_core::subtitle::SubtitleAction::Close => {
+        SubtitleAction::Close => {
             if let Some(app) = APP.get() {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -104,4 +105,4 @@ pub(super) fn run_subtitle_action(action: sayit_overlay_core::subtitle::Subtitle
 }
 
 #[cfg(all(test, windows))]
-pub(crate) use imp::snapshot_driver;
+pub(crate) use super::native_win::subtitle::snapshot_driver;

@@ -1,126 +1,8 @@
-use super::d2d::DWriteText;
-use super::host::{self, WinWindow};
-use super::OverlayThread;
-use sayit_overlay_core::canvas::Canvas;
-use sayit_overlay_core::geom::PxRect;
-use sayit_overlay_core::look::Look;
-use sayit_overlay_core::orb::{Orb, OrbAction};
-use sayit_overlay_core::window::*;
-use std::sync::OnceLock;
-use std::time::Instant;
-use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, WINDOW_EX_STYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-};
-
-pub(crate) use sayit_overlay_core::orb::{Command, OrbPhase};
-static UI: OnceLock<Option<OverlayThread<Command>>> = OnceLock::new();
-/// 测试需要在每批副作用后读到悬停状态，其余行为直接转交平台无关模型。
-pub(crate) struct WindowModel {
-    orb: Orb,
-}
-impl WindowModel {
-    fn new(dpi: u32) -> Self {
-        Self {
-            orb: Orb::new(dpi, &Look::WINDOWS_LEGACY)
-                .with_mirrors(&super::super::native_orb::MIRRORS),
-        }
-    }
-    fn after_ops(&self) {
-        #[cfg(test)]
-        HOVERING.with(|slot| slot.set(self.orb.hovering()));
-    }
-}
-impl OverlayModel<DWriteText> for WindowModel {
-    type Command = Command;
-    type Action = OrbAction;
-    type Pointer = sayit_overlay_core::orb::OrbPointer;
-    fn apply(&mut self, command: Command, cx: &Cx<'_, DWriteText>) -> Ops<OrbAction> {
-        self.orb.apply(command, cx)
-    }
-    fn input(
-        &mut self,
-        input: sayit_overlay_core::orb::OrbInput,
-        cx: &Cx<'_, DWriteText>,
-    ) -> Ops<OrbAction> {
-        self.orb.input(input, cx)
-    }
-    fn window_event(&mut self, event: WindowEvent, cx: &Cx<'_, DWriteText>) -> Ops<OrbAction> {
-        self.orb.window_event(event, cx)
-    }
-    fn set_look(&mut self, look: &Look) -> Ops<OrbAction> {
-        <Orb as OverlayModel<DWriteText>>::set_look(&mut self.orb, look)
-    }
-    fn on_frame(&mut self, dt: f32, cx: &Cx<'_, DWriteText>) -> Ops<OrbAction> {
-        self.orb.on_frame(dt, cx)
-    }
-    fn wants_frames(&self, now: Instant) -> bool {
-        <Orb as OverlayModel<DWriteText>>::wants_frames(&self.orb, now)
-    }
-    fn prepare_frame(&mut self, cx: &Cx<'_, DWriteText>) -> Option<FrameSpec> {
-        self.orb.prepare_frame(cx)
-    }
-    fn draw<C: Canvas<Text = DWriteText>>(&self, canvas: &mut C, now: Instant) {
-        self.orb.draw(canvas, now);
-    }
-    fn hit(&self) -> sayit_overlay_core::orb::OrbHit {
-        <Orb as OverlayModel<DWriteText>>::hit(&self.orb)
-    }
-}
-pub(crate) struct Window;
-impl WinWindow for Window {
-    type Model = WindowModel;
-    const CLASS_NAME: PCWSTR = w!("SayItNativeFloatingOrb");
-    const EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(
-        WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0,
-    );
-    const THREAD_NAME: &'static str = "sayit-native-orb";
-    const TITLE: PCWSTR = w!("说吧！语音输入悬浮球");
-    fn create_model(dpi: u32) -> Self::Model {
-        WindowModel::new(dpi)
-    }
-    fn area(_: u32) -> PxRect {
-        PxRect::default()
-    }
-    fn after_ops(model: &Self::Model) {
-        model.after_ops();
-    }
-    fn dispatch(action: OrbAction) {
-        super::super::native_orb::run_orb_action(action);
-    }
-}
-pub(crate) fn started() -> bool {
-    UI.get().is_some_and(Option::is_some)
-}
-pub(crate) fn post(command: Command) {
-    if let Some(thread) = UI.get_or_init(|| {
-        OverlayThread::start(
-            Window::THREAD_NAME,
-            host::create_window::<Window>,
-            host::apply::<Window>,
-        )
-        .ok()
-    }) {
-        thread.post(command);
-    }
-}
-pub(crate) fn post_if_started(command: Command) {
-    if let Some(Some(thread)) = UI.get() {
-        thread.post(command);
-    }
-}
-pub(crate) fn cursor_px() -> Option<(i32, i32)> {
-    let mut cursor = POINT::default();
-    unsafe { GetCursorPos(&mut cursor) }.ok()?;
-    Some((cursor.x, cursor.y))
-}
-#[cfg(test)]
-thread_local! { static HOVERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-#[cfg(test)]
+//! 悬浮球的快照测试驱动与 Win32 回归；窗口声明在 `desktop/native_orb.rs`。
 pub(crate) mod snapshot_driver {
-    use super::{host, Window};
-    pub(crate) use super::{Command, OrbPhase};
+    use crate::desktop::native_orb::OrbWindow as Window;
+    use crate::desktop::native_win::host;
+    pub(crate) use sayit_overlay_core::orb::{Command, OrbPhase};
     use windows::Win32::Foundation::HWND;
     pub(crate) const FRAME_TIMER: usize = host::FRAME_TIMER;
     pub(crate) fn create_window() -> HWND {
@@ -132,19 +14,23 @@ pub(crate) mod snapshot_driver {
     pub(crate) fn frame_timer_active(hwnd: HWND) -> bool {
         host::frame_timer_active::<Window>(hwnd)
     }
-    pub(crate) fn hovering(_: HWND) -> bool {
-        super::HOVERING.with(std::cell::Cell::get)
+    pub(crate) fn hovering(hwnd: HWND) -> bool {
+        host::with_model::<Window, _>(hwnd, |model| model.hovering()).unwrap_or(false)
     }
-    pub(crate) fn capture(hwnd: HWND) -> Option<super::super::test_seams::Capture> {
+    pub(crate) fn capture(hwnd: HWND) -> Option<crate::desktop::native_win::test_seams::Capture> {
         host::capture::<Window>(hwnd)
     }
 }
 
-#[cfg(test)]
 mod tests {
-    use super::super::test_seams::OffscreenGuard;
-    use super::*;
-    use sayit_overlay_core::orb::OrbMirrors;
+    use super::snapshot_driver::{self, Command};
+    use crate::desktop::native_win::d2d::DWriteText;
+    use crate::desktop::native_win::test_seams::OffscreenGuard;
+    use sayit_overlay_core::geom::PxRect;
+    use sayit_overlay_core::look::Look;
+    use sayit_overlay_core::orb::{Orb, OrbAction, OrbMirrors};
+    use sayit_overlay_core::window::*;
+    use std::time::Instant;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         DestroyWindow, GetWindowRect, SendMessageW, WM_DPICHANGED,
@@ -229,10 +115,8 @@ mod tests {
     fn leaked_mirrors() -> &'static OrbMirrors {
         Box::leak(Box::new(OrbMirrors::new()))
     }
-    fn model_with(mirrors: &'static OrbMirrors) -> WindowModel {
-        WindowModel {
-            orb: Orb::new(96, &Look::WINDOWS_LEGACY).with_mirrors(mirrors),
-        }
+    fn model_with(mirrors: &'static OrbMirrors) -> Orb {
+        Orb::new(96, &Look::WINDOWS_LEGACY).with_mirrors(mirrors)
     }
     fn cx(now: Instant, text: &DWriteText) -> Cx<'_, DWriteText> {
         Cx {
@@ -274,14 +158,13 @@ mod tests {
                 let context = cx(now + Duration::from_millis(offset), &text);
                 model.on_frame(0.016, &context);
                 model.prepare_frame(&context);
-                clock.sync(model.wants_frames(context.now));
-                model.after_ops();
+                clock.sync(<Orb as OverlayModel<DWriteText>>::wants_frames(&model, context.now));
                 let steps = pointer.event(
                     PointerEvent::Move {
                         client: (32, 32),
                         screen: (42, 52),
                     },
-                    &model.hit(),
+                    &<Orb as OverlayModel<DWriteText>>::hit(&model),
                 );
                 for step in steps {
                     if let PointerStep::Model(input) = step {
@@ -290,17 +173,12 @@ mod tests {
                         model.prepare_frame(&context);
                     }
                 }
-                clock.sync(model.wants_frames(context.now));
-                model.after_ops();
-                assert_eq!(model.orb.rect(), PxRect::new(10, 20, 64, 64));
-                assert_eq!(model.orb.is_visible(), !requested_visible);
+                clock.sync(<Orb as OverlayModel<DWriteText>>::wants_frames(&model, context.now));
+                assert_eq!(model.rect(), PxRect::new(10, 20, 64, 64));
+                assert_eq!(model.is_visible(), !requested_visible);
                 assert_eq!(mirrors.is_visible(), requested_visible);
                 assert_eq!(mirrors.rect(), Some((200, 300, 64)));
             }
-            // 后续 SetRect 已写入新边长，旧模型的完成钩子也不能回退它。
-            mirrors.set_rect(-500, 600, 96);
-            model.after_ops();
-            assert_eq!(mirrors.rect(), Some((-500, 600, 96)));
         }
     }
     #[test]

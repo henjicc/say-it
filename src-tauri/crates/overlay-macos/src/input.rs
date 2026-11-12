@@ -43,13 +43,13 @@ pub(crate) struct PointerBridge<P: PointerModel> {
     hit: Arc<Mutex<P::Hit>>,
     id: WindowId,
     input: fn(P::Input) -> render::HostJob,
-    action: fn(P::Action) -> crate::OverlayEvent,
+    action: fn(P::Action),
 }
 
 impl<P: PointerModel + 'static> PointerBridge<P> {
     pub fn factory<M: OverlayModel<CtText, Pointer = P> + 'static>(
         host: &Host<M>,
-        action: fn(P::Action) -> crate::OverlayEvent,
+        action: fn(P::Action),
     ) -> impl FnOnce() -> Option<Box<dyn ViewInput>> + Send {
         let hit = host.hit.clone();
         let id = host.slot.id;
@@ -91,7 +91,7 @@ impl<P: PointerModel + 'static> ViewInput for PointerBridge<P> {
                         }
                     }
                     PointerStep::Op(WindowOp::BeginSystemDrag) => cx.view.begin_system_drag(),
-                    PointerStep::Op(WindowOp::Action(value)) => crate::emit(action(value)),
+                    PointerStep::Op(WindowOp::Action(value)) => action(value),
                     PointerStep::Op(WindowOp::TrackMouseLeave) => {}
                     PointerStep::Op(op) => {
                         // 指针副作用在此事件当场执行，模型输入才跨线程。

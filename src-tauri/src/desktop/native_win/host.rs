@@ -4,6 +4,8 @@ use super::{
     create_d2d_factory, overlay_now, system_dpi, window_dpi, LayeredSurface, OverlayThread,
 };
 use sayit_overlay_core::geom::PxRect;
+use sayit_overlay_core::look::Look;
+use sayit_overlay_core::spec::{OverlaySpec, Placement};
 use sayit_overlay_core::window::*;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -11,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use windows::core::{w, PCWSTR};
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
@@ -31,7 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, IDC_HAND, IDC_SIZEALL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SW_HIDE, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCLBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER,
-    WNDCLASSW, WS_EX_TRANSPARENT, WS_POPUP,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const FRAME_TIMER: usize = 1;
@@ -40,23 +43,13 @@ const FALLBACK_FRAME: std::time::Duration = std::time::Duration::from_millis(16)
 // windows crate 将此常量放在未启用的 UI_Controls 特性中，值来自 winuser.h。
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 
-pub(crate) trait WinWindow: 'static {
-    type Model: OverlayModel<DWriteText>;
-    const CLASS_NAME: PCWSTR;
-    const EX_STYLE: WINDOW_EX_STYLE;
-    const THREAD_NAME: &'static str = "sayit-native-overlay";
-    const TITLE: PCWSTR = w!("说吧！");
-    fn create_model(dpi: u32) -> Self::Model;
-    fn area(dpi: u32) -> PxRect;
-    fn after_ops(_model: &Self::Model) {}
-    fn dispatch(action: <Self::Model as OverlayModel<DWriteText>>::Action);
-}
-type Command<W> = <<W as WinWindow>::Model as OverlayModel<DWriteText>>::Command;
-type Action<W> = <<W as WinWindow>::Model as OverlayModel<DWriteText>>::Action;
-type Pointer<W> = <<W as WinWindow>::Model as OverlayModel<DWriteText>>::Pointer;
+type Model<W> = <W as OverlaySpec>::Model<DWriteText>;
+type Command<W> = <W as OverlaySpec>::Command;
+type Action<W> = <W as OverlaySpec>::Action;
+type Pointer<W> = <Model<W> as OverlayModel<DWriteText>>::Pointer;
 
-struct Host<W: WinWindow> {
-    model: W::Model,
+struct Host<W: OverlaySpec> {
+    model: Model<W>,
     pointer: Pointer<W>,
     text: DWriteText,
     d2d: ID2D1Factory,
@@ -140,7 +133,7 @@ impl Drop for FramePacer {
 }
 
 /// 仅用于不调用窗口系统的闭包；返回值必须拥有全部数据，不能把借用带到副作用中。
-fn with_state<W: WinWindow, R>(hwnd: HWND, f: impl FnOnce(&mut Host<W>) -> R) -> Option<R> {
+fn with_state<W: OverlaySpec, R>(hwnd: HWND, f: impl FnOnce(&mut Host<W>) -> R) -> Option<R> {
     let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const RefCell<Host<W>>;
     if ptr.is_null() {
         None
@@ -149,18 +142,13 @@ fn with_state<W: WinWindow, R>(hwnd: HWND, f: impl FnOnce(&mut Host<W>) -> R) ->
     }
 }
 
-pub(crate) fn post<W: WinWindow>(command: Command<W>) {
-    static THREADS: OnceLock<Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>> = OnceLock::new();
-    let mut threads = THREADS
-        .get_or_init(Default::default)
-        .lock()
-        .expect("overlay thread registry poisoned");
-    let entry = threads.entry(TypeId::of::<W>()).or_insert_with(|| {
-        let thread = OverlayThread::start(W::THREAD_NAME, create_window::<W>, apply::<W>)
-            .map_err(|error| eprintln!("[{}] {error}", W::THREAD_NAME))
-            .ok();
-        Box::new(thread)
-    });
+type Threads = Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>;
+/// 每个窗口声明一条窗口线程；条目为 None 表示线程启动失败，之后的命令静默丢弃。
+fn threads() -> &'static Threads {
+    static THREADS: OnceLock<Threads> = OnceLock::new();
+    THREADS.get_or_init(Default::default)
+}
+fn send<W: OverlaySpec>(entry: &(dyn Any + Send + Sync), command: Command<W>) {
     if let Some(thread) = entry
         .downcast_ref::<Option<OverlayThread<Command<W>>>>()
         .and_then(Option::as_ref)
@@ -168,14 +156,40 @@ pub(crate) fn post<W: WinWindow>(command: Command<W>) {
         thread.post(command);
     }
 }
+/// 第一条命令创建窗口线程与窗口。
+pub(crate) fn post<W: OverlaySpec>(command: Command<W>) {
+    let mut threads = threads().lock().expect("overlay thread registry poisoned");
+    let entry = threads.entry(TypeId::of::<W>()).or_insert_with(|| {
+        let thread = OverlayThread::start(W::NAME, create_window::<W>, apply::<W>)
+            .map_err(|error| eprintln!("[{}] {error}", W::NAME))
+            .ok();
+        Box::new(thread)
+    });
+    send::<W>(entry.as_ref(), command);
+}
+/// 只在窗口线程已经存在时投递。
+pub(crate) fn post_if_started<W: OverlaySpec>(command: Command<W>) {
+    let threads = threads().lock().expect("overlay thread registry poisoned");
+    if let Some(entry) = threads.get(&TypeId::of::<W>()) {
+        send::<W>(entry.as_ref(), command);
+    }
+}
+pub(crate) fn started<W: OverlaySpec>() -> bool {
+    threads()
+        .lock()
+        .expect("overlay thread registry poisoned")
+        .get(&TypeId::of::<W>())
+        .and_then(|entry| entry.downcast_ref::<Option<OverlayThread<Command<W>>>>())
+        .is_some_and(Option::is_some)
+}
 
-fn update<W: WinWindow>(
+fn update<W: OverlaySpec>(
     hwnd: HWND,
     now: Instant,
-    f: impl FnOnce(&mut W::Model, &Cx<'_, DWriteText>) -> Ops<Action<W>>,
+    f: impl FnOnce(&mut Model<W>, &Cx<'_, DWriteText>) -> Ops<Action<W>>,
 ) {
     let dpi = window_dpi(hwnd);
-    let area = W::area(dpi);
+    let area = placement_area(W::PLACEMENT);
     let ops = with_state::<W, _>(hwnd, |state| {
         f(
             &mut state.model,
@@ -191,32 +205,31 @@ fn update<W: WinWindow>(
     execute::<W>(hwnd, ops, now);
     finish::<W>(hwnd, now);
 }
-pub(crate) fn apply<W: WinWindow>(hwnd: HWND, command: Command<W>) {
+pub(crate) fn apply<W: OverlaySpec>(hwnd: HWND, command: Command<W>) {
     update::<W>(hwnd, overlay_now(), |model, cx| model.apply(command, cx));
 }
-fn window_event<W: WinWindow>(hwnd: HWND, event: WindowEvent, now: Instant) {
+fn window_event<W: OverlaySpec>(hwnd: HWND, event: WindowEvent, now: Instant) {
     update::<W>(hwnd, now, |model, cx| model.window_event(event, cx));
 }
-fn sync_timer<W: WinWindow>(hwnd: HWND, now: Instant) {
+fn sync_timer<W: OverlaySpec>(hwnd: HWND, now: Instant) {
     with_state::<W, _>(hwnd, |state| {
         let Some(active) = state.clock.sync(state.model.wants_frames(now)) else {
             return;
         };
         if active && state.pacer.is_none() {
-            state.pacer = FramePacer::start(hwnd, W::THREAD_NAME);
+            state.pacer = FramePacer::start(hwnd, W::NAME);
         }
         if let Some(pacer) = &state.pacer {
             pacer.set_active(active);
         }
     });
 }
-fn finish<W: WinWindow>(hwnd: HWND, now: Instant) {
+fn finish<W: OverlaySpec>(hwnd: HWND, now: Instant) {
     sync_timer::<W>(hwnd, now);
-    with_state::<W, _>(hwnd, |state| W::after_ops(&state.model));
 }
-fn redraw<W: WinWindow>(hwnd: HWND, now: Instant) {
+fn redraw<W: OverlaySpec>(hwnd: HWND, now: Instant) {
     let dpi = window_dpi(hwnd);
-    let area = W::area(dpi);
+    let area = placement_area(W::PLACEMENT);
     let presentation = with_state::<W, _>(hwnd, |state| {
         let cx = Cx {
             now,
@@ -233,7 +246,7 @@ fn redraw<W: WinWindow>(hwnd: HWND, now: Instant) {
             frame.bounds.width,
             frame.bounds.height,
             (frame.alpha * 255.0).round() as u8,
-            W::THREAD_NAME,
+            W::NAME,
             |target, brush| {
                 let mut canvas = D2dCanvas::new(
                     target,
@@ -250,10 +263,10 @@ fn redraw<W: WinWindow>(hwnd: HWND, now: Instant) {
     .flatten();
     // Presentation 拥有当帧缓冲；ShowWindow/ULW 重入时窗口状态已可重新借用。
     if let Some(presentation) = presentation {
-        presentation.present(W::THREAD_NAME);
+        presentation.present(W::NAME);
     }
 }
-fn execute<W: WinWindow>(hwnd: HWND, ops: Ops<Action<W>>, now: Instant) {
+fn execute<W: OverlaySpec>(hwnd: HWND, ops: Ops<Action<W>>, now: Instant) {
     for op in ops {
         match op {
             WindowOp::Redraw => redraw::<W>(hwnd, now),
@@ -343,7 +356,7 @@ fn execute<W: WinWindow>(hwnd: HWND, ops: Ops<Action<W>>, now: Instant) {
         }
     }
 }
-fn pointer_event<W: WinWindow>(hwnd: HWND, event: PointerEvent, now: Instant) {
+fn pointer_event<W: OverlaySpec>(hwnd: HWND, event: PointerEvent, now: Instant) {
     let steps = with_state::<W, _>(hwnd, |state| state.pointer.event(event, &state.model.hit()))
         .unwrap_or_default();
     unsafe {
@@ -383,7 +396,14 @@ fn px_rect(rect: RECT) -> PxRect {
         rect.bottom - rect.top,
     )
 }
-pub(crate) fn primary_area(work: bool) -> PxRect {
+fn placement_area(placement: Placement) -> PxRect {
+    match placement {
+        Placement::FollowFocus => primary_area(true),
+        Placement::Screen => primary_area(false),
+        Placement::Free => PxRect::default(),
+    }
+}
+fn primary_area(work: bool) -> PxRect {
     let mut area = RECT {
         left: 0,
         top: 0,
@@ -402,7 +422,7 @@ pub(crate) fn primary_area(work: bool) -> PxRect {
     }
     px_rect(area)
 }
-unsafe extern "system" fn window_proc<W: WinWindow>(
+unsafe extern "system" fn window_proc<W: OverlaySpec>(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
@@ -488,13 +508,13 @@ unsafe extern "system" fn window_proc<W: WinWindow>(
     }
     LRESULT(0)
 }
-pub(crate) fn create_window<W: WinWindow>() -> Option<HWND> {
+pub(crate) fn create_window<W: OverlaySpec>() -> Option<HWND> {
     let result = (|| -> Result<_, String> {
         let d2d = create_d2d_factory()?;
         let text = DWriteText::new()?;
         let dpi = system_dpi();
-        let mut model = W::create_model(dpi);
-        let area = W::area(dpi);
+        let mut model = W::model::<DWriteText>(dpi, &Look::WINDOWS_LEGACY);
+        let area = placement_area(W::PLACEMENT);
         let bounds = model
             .prepare_frame(&Cx {
                 now: overlay_now(),
@@ -504,21 +524,27 @@ pub(crate) fn create_window<W: WinWindow>() -> Option<HWND> {
             })
             .map(|frame| frame.bounds)
             .unwrap_or_default();
+        let class_name = HSTRING::from(W::NAME);
+        let title = HSTRING::from(W::TITLE);
+        let mut ex_style = WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+        if W::CLICK_THROUGH {
+            ex_style |= WS_EX_TRANSPARENT.0;
+        }
         unsafe {
             let instance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
             let class = WNDCLASSW {
                 lpfnWndProc: Some(window_proc::<W>),
                 hInstance: instance.into(),
-                lpszClassName: W::CLASS_NAME,
+                lpszClassName: PCWSTR(class_name.as_ptr()),
                 ..Default::default()
             };
             if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                 return Err(format!("注册窗口类失败：{:?}", GetLastError()));
             }
             let hwnd = CreateWindowExW(
-                W::EX_STYLE,
-                W::CLASS_NAME,
-                W::TITLE,
+                WINDOW_EX_STYLE(ex_style),
+                &class_name,
+                &title,
                 WS_POPUP,
                 bounds.x,
                 bounds.y,
@@ -545,16 +571,20 @@ pub(crate) fn create_window<W: WinWindow>() -> Option<HWND> {
         }
     })();
     result
-        .map_err(|error| eprintln!("[{}] {error}", W::THREAD_NAME))
+        .map_err(|error| eprintln!("[{}] {error}", W::NAME))
         .ok()
 }
 
 #[cfg(test)]
-pub(crate) fn frame_timer_active<W: WinWindow>(hwnd: HWND) -> bool {
+pub(crate) fn frame_timer_active<W: OverlaySpec>(hwnd: HWND) -> bool {
     with_state::<W, _>(hwnd, |state| state.clock.is_active()).unwrap_or(false)
 }
 #[cfg(test)]
-pub(crate) fn capture<W: WinWindow>(hwnd: HWND) -> Option<super::test_seams::Capture> {
+pub(crate) fn with_model<W: OverlaySpec, R>(hwnd: HWND, f: impl FnOnce(&Model<W>) -> R) -> Option<R> {
+    with_state::<W, _>(hwnd, |state| f(&state.model))
+}
+#[cfg(test)]
+pub(crate) fn capture<W: OverlaySpec>(hwnd: HWND) -> Option<super::test_seams::Capture> {
     with_state::<W, _>(hwnd, |state| state.surface.capture()).flatten()
 }
 
@@ -562,10 +592,7 @@ pub(crate) fn capture<W: WinWindow>(hwnd: HWND) -> Option<super::test_seams::Cap
 mod tests {
     use super::*;
     use sayit_overlay_core::canvas::{Canvas, TextEngine};
-    use sayit_overlay_core::look::Look;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        DestroyWindow, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
 
     #[derive(Default)]
     struct TestPointer;
@@ -628,16 +655,16 @@ mod tests {
         }
     }
     struct TestWindow;
-    impl WinWindow for TestWindow {
-        type Model = TestModel;
-        const CLASS_NAME: PCWSTR = w!("SayItOverlayHostRegression");
-        const EX_STYLE: WINDOW_EX_STYLE =
-            WINDOW_EX_STYLE(WS_EX_LAYERED.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0);
-        fn create_model(_: u32) -> TestModel {
+    impl OverlaySpec for TestWindow {
+        const NAME: &'static str = "SayItOverlayHostRegression";
+        const TITLE: &'static str = "";
+        const PLACEMENT: Placement = Placement::Free;
+        const CLICK_THROUGH: bool = false;
+        type Command = usize;
+        type Action = usize;
+        type Model<T: TextEngine + 'static> = TestModel;
+        fn model<T: TextEngine + 'static>(_: u32, _: &Look) -> TestModel {
             TestModel::default()
-        }
-        fn area(_: u32) -> PxRect {
-            PxRect::default()
         }
         fn dispatch(hwnd: usize) {
             // 动作回调同步重入窗口过程，必须能重新借用模型。

@@ -2,15 +2,18 @@
 //!
 //! 听写指示器、悬浮球与实时字幕条共用同一套
 //! 「独立 UI 线程 + 命令队列 + UpdateLayeredWindow + Direct2D/DirectWrite」
-//! 骨架；本模块只承载与业务无关的部分，窗口样式、绘制内容与鼠标交互
-//! 由各自的窗口模块实现。
+//! 骨架；本模块只承载与业务无关的部分，窗口样式取自各窗口的 `OverlaySpec`，
+//! 绘制内容与鼠标交互在 overlay-core 的模型里。
 
 #![cfg(windows)]
 
 pub(crate) mod d2d;
 pub(crate) mod host;
+#[cfg(test)]
 pub(crate) mod indicator;
+#[cfg(test)]
 pub(crate) mod orb;
+#[cfg(test)]
 pub(crate) mod subtitle;
 mod surface;
 pub(crate) use surface::LayeredSurface;
