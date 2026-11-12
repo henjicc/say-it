@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { verifyReleaseVersion, versionFromTag } from "./verify-release-version.mjs";
+import { cargoPackageVersion, verifyReleaseVersion, versionFromTag } from "./verify-release-version.mjs";
 
-test("tag 与两处版本号一致时通过", () => {
+test("tag 与各处版本号一致时通过", () => {
   assert.equal(
     verifyReleaseVersion("v0.4.0", {
       "package.json": "0.4.0",
       "src-tauri/tauri.conf.json": "0.4.0",
+      "src-tauri/Cargo.toml": "0.4.0",
     }),
     "0.4.0",
   );
@@ -41,4 +42,9 @@ test("tag 形状不对时直接拒绝", () => {
   assert.throws(() => versionFromTag("0.4.0"), /必须形如 v1\.2\.3/);
   assert.throws(() => versionFromTag("v0.4"), /必须形如 v1\.2\.3/);
   assert.equal(versionFromTag("v1.2.3-beta.1"), "1.2.3-beta.1");
+});
+
+test("只读 Cargo.toml 中 [package] 小节的版本号", () => {
+  const toml = '[workspace]\nmembers = ["a"]\n\n[package]\nname = "say-it"\nauthors = [\n  "x",\n]\nversion = "0.5.0-beta.4"\n\n[dependencies]\nfoo = { version = "1.0.0" }\n';
+  assert.equal(cargoPackageVersion(toml), "0.5.0-beta.4");
 });
