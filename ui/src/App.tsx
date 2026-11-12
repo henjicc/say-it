@@ -3,6 +3,7 @@ import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
 import { Button } from "@/components/ui/Button";
+import { ToastHost } from "@/components/ui/Toast";
 import { cn } from "@/lib/cn";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import type { SessionStatus } from "@/store/useUiStore";
@@ -146,6 +147,7 @@ export default function App() {
         <AboutDialog open={aboutOpen} onClose={closeAbout} />
         <PluginDropInstaller />
         <ShortcutConflictDialog />
+        <ToastHost />
         <OnboardingWizard open={setup !== "closed"} required={setup === "required"} onClose={() => setSetup("closed")} />
       </div>
       </>}

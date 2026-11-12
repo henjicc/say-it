@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { notify, notifyError } from "@/store/useToastStore";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { CheckField } from "@/components/ui/Field";
@@ -45,7 +46,6 @@ export function DiagnosticSection() {
   const [verboseLogging, setVerboseLogging] = useState(false);
   const [status, setStatus] = useState<DiagnosticStatus | null>(null);
   const [includeContent, setIncludeContent] = useState(false);
-  const [message, setMessage] = useState("");
 
   useEffect(() => {
     void Promise.all([
@@ -54,7 +54,7 @@ export function DiagnosticSection() {
     ]).then(([snapshot, nextStatus]) => {
       setVerboseLogging(snapshot.settings.diagnosticsPrefs.verboseLogging === true);
       setStatus(nextStatus);
-    }).catch((error) => setMessage(String(error)));
+    }).catch(notifyError);
   }, []);
 
   useEffect(() => {
@@ -75,7 +75,7 @@ export function DiagnosticSection() {
       await updateDiagnosticsPrefs({ verboseLogging: enabled });
     } catch (error) {
       setVerboseLogging(!enabled);
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -93,9 +93,8 @@ export function DiagnosticSection() {
     }
     try {
       setStatus(await cmd<DiagnosticStatus>(CMD.setContentDiagnostics, { enabled }));
-      setMessage("");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -113,9 +112,9 @@ export function DiagnosticSection() {
       await cmd(CMD.clearDiagnosticLogs);
       setIncludeContent(false);
       setStatus(await cmd<DiagnosticStatus>(CMD.getDiagnosticStatus));
-      setMessage("诊断日志已清空");
+      notify("诊断日志已清空");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -127,9 +126,9 @@ export function DiagnosticSection() {
     if (!destination) return;
     try {
       await cmd(CMD.exportDiagnosticBundle, { destination, includeContent });
-      setMessage(includeContent ? "诊断包已导出，其中包含输入文本" : "诊断包已导出（不含正文）");
+      notify(includeContent ? "诊断包已导出，其中包含输入文本" : "诊断包已导出");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -150,7 +149,7 @@ export function DiagnosticSection() {
           <Switch id="diagnostic-content-logging" checked={status?.contentLoggingEnabled === true} onChange={(enabled) => void updateContent(enabled)} label="临时正文日志" />
         </Row>
         <Row label="日志目录" controlId="diagnostic-open-directory">
-          <Button id="diagnostic-open-directory" size="sm" onClick={() => void cmd(CMD.openDiagnosticDirectory).catch((error) => setMessage(String(error)))}>打开日志目录</Button>
+          <Button id="diagnostic-open-directory" size="sm" onClick={() => void cmd(CMD.openDiagnosticDirectory).catch(notifyError)}>打开日志目录</Button>
         </Row>
         <Row label="清空日志" controlId="diagnostic-clear-logs">
           <Button id="diagnostic-clear-logs" size="sm" variant="danger" onClick={() => void clearLogs()}>清空诊断日志</Button>
@@ -164,7 +163,6 @@ export function DiagnosticSection() {
           <CheckField checked={includeContent} onChange={setIncludeContent}>包含正文日志</CheckField>
           <Button id="diagnostic-export-bundle" size="sm" onClick={() => void exportBundle()}>导出诊断包</Button>
         </Row>
-        {message && <p role="status" className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       </Group>
       {dialog}
     </>

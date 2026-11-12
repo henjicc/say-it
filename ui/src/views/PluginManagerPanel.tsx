@@ -17,6 +17,7 @@ import {
 import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, recommendedAsrPack, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
+import { notify } from "@/store/useToastStore";
 
 const TRUST_LABEL: Record<PluginSummary["trust"], string> = {
   trusted: "签名可信",
@@ -38,7 +39,6 @@ const MODEL_STATE_LABEL: Record<string, string> = {
   partial: "下载未完成",
   corrupt: "模型校验失败",
   downloading: "正在下载",
-  ready: "模型已就绪",
 };
 
 /** 本地模型的占用，以及在这台电脑上合不合适。不认识的模型包不显示。 */
@@ -55,6 +55,8 @@ function ModelNeed({ pluginId, hardware }: { pluginId: string; hardware: Hardwar
     </p>
   );
 }
+
+const officialKey = (packId: string) => `official:${packId}`;
 
 /** 按点分数字段比较版本号，只有目录版本更高才算有更新。官方模型包只用纯数字版本。 */
 function isNewerVersion(candidate: string, installed: string) {
@@ -77,20 +79,24 @@ export function PluginManagerPanel() {
   const hardware = useHardware();
   const hardwareText = hardwareLabel(hardware);
   const [snapshot, setSnapshot] = useState<PluginSnapshot>();
-  const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [busyPluginId, setBusyPluginId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
   const [officialPacks, setOfficialPacks] = useState<OfficialModelPack[]>();
   const [officialError, setOfficialError] = useState("");
   const [packProgress, setPackProgress] = useState<Record<string, number>>({});
-  const [packErrors, setPackErrors] = useState<Record<string, string>>({});
+  /** 上一次操作失败的原因，显示在对应那一行下面；官方模型一行的键是 `officialKey(id)`，已装插件一行的键是插件 ID。 */
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
 
   const loadSnapshot = async () => {
     const next = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
     setSnapshot(next);
   };
+
+  const clearRowError = (id: string) => setRowErrors(({ [id]: _, ...rest }) => rest);
+  const failRow = (id: string, error: unknown) => setRowErrors((current) => ({ ...current, [id]: String(error) }));
 
   const loadOfficialPacks = async () => {
     setOfficialError("");
@@ -102,7 +108,7 @@ export function PluginManagerPanel() {
   };
 
   useEffect(() => {
-    void loadSnapshot().catch((error) => setMessage(`读取插件失败：${String(error)}`));
+    void loadSnapshot().catch((error) => setLoadError(String(error)));
     void loadOfficialPacks();
     let disposed = false;
     const unlisteners: Array<() => void> = [];
@@ -124,14 +130,8 @@ export function PluginManagerPanel() {
           : plugin),
       }));
     }).then(keepListener);
-    // 解包进度只在解包过程中显示；解包完成后安装结果由各入口自己的提示给出。
-    void on<{ extractedBytes: number; totalBytes: number }>(EVT.pluginInstallProgress, (event) => {
-      setMessage(event.extractedBytes >= event.totalBytes
-        ? ""
-        : `正在安装：${formatBytes(event.extractedBytes)} / ${formatBytes(event.totalBytes)}`);
-    }).then(keepListener);
     void on(EVT.pluginRegistryChanged, () => {
-      void loadSnapshot().catch((error) => setMessage(`刷新插件列表失败：${String(error)}`));
+      void loadSnapshot().catch((error) => notify(`刷新插件列表失败：${String(error)}`, "err"));
     }).then(keepListener);
     return () => {
       disposed = true;
@@ -140,19 +140,18 @@ export function PluginManagerPanel() {
   }, []);
 
   const reload = async () => {
-    // 重新扫描会对已安装文件逐个复核 SHA256，模型包动辄数百 MB，耗时以秒计。
-    // 没有进行中状态时界面完全无反馈，用户会以为软件卡死。
+    // 重新扫描会对已安装文件逐个复核 SHA256，模型包动辄数百 MB，耗时以秒计，按钮在此期间显示进行中。
     if (scanning) return;
     setScanning(true);
-    setMessage("正在扫描插件目录并校验文件完整性…");
+    setRowErrors({});
     try {
       const next = await cmd<PluginSnapshot>(CMD.reloadProviderPlugins);
       setSnapshot(next);
       await refreshPluginConsumers();
       await loadSnapshot();
-      setMessage("插件目录已重新扫描。");
+      notify("已重新扫描");
     } catch (error) {
-      setMessage(`重新扫描失败：${String(error)}`);
+      notify(`重新扫描失败：${String(error)}`, "err");
     } finally {
       setScanning(false);
     }
@@ -169,13 +168,13 @@ export function PluginManagerPanel() {
 
   const setEnabled = async (plugin: PluginSummary, enabled: boolean) => {
     setBusyPluginId(plugin.id);
-    setMessage("");
+    clearRowError(plugin.id);
     try {
       const next = await cmd<PluginSnapshot>(CMD.setProviderPluginEnabled, { pluginId: plugin.id, enabled });
       setSnapshot(next);
       await refreshPluginConsumers();
     } catch (error) {
-      setMessage(`更新插件状态失败：${String(error)}`);
+      failRow(plugin.id, `更新插件状态失败：${String(error)}`);
     } finally {
       setBusyPluginId("");
     }
@@ -183,11 +182,11 @@ export function PluginManagerPanel() {
 
   const setKeepLoaded = async (plugin: PluginSummary, keepLoaded: boolean) => {
     setBusyPluginId(plugin.id);
-    setMessage("");
+    clearRowError(plugin.id);
     try {
       setSnapshot(await cmd<PluginSnapshot>(CMD.setProviderModelKeepLoaded, { pluginId: plugin.id, keepLoaded }));
     } catch (error) {
-      setMessage(`更新常驻内存失败：${String(error)}`);
+      failRow(plugin.id, `更新常驻内存失败：${String(error)}`);
     } finally {
       setBusyPluginId("");
     }
@@ -195,14 +194,13 @@ export function PluginManagerPanel() {
 
   const downloadModel = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
-    setMessage("");
+    clearRowError(plugin.id);
     try {
       const next = await cmd<PluginSnapshot>(CMD.downloadProviderModelPack, { pluginId: plugin.id });
       setSnapshot(next);
       await refreshPluginConsumers();
-      setMessage(`${plugin.name}模型已下载并校验。`);
     } catch (error) {
-      setMessage(`模型下载失败：${String(error)}`);
+      failRow(plugin.id, `模型下载失败：${String(error)}`);
       await loadSnapshot();
     } finally {
       setBusyPluginId("");
@@ -212,7 +210,7 @@ export function PluginManagerPanel() {
   /** 清单已装好但权重没下完时走继续下载，其余情况重新安装官方清单包。 */
   const installOfficial = async (pack: OfficialModelPack, resume: boolean) => {
     setBusyPluginId(pack.id);
-    setPackErrors(({ [pack.id]: _, ...rest }) => rest);
+    clearRowError(officialKey(pack.id));
     setPackProgress(({ [pack.id]: _, ...rest }) => rest);
     try {
       setSnapshot(await cmd<PluginSnapshot>(
@@ -221,7 +219,7 @@ export function PluginManagerPanel() {
       ));
       await refreshPluginConsumers();
     } catch (error) {
-      setPackErrors((current) => ({ ...current, [pack.id]: String(error) }));
+      failRow(officialKey(pack.id), error);
       await loadSnapshot();
     } finally {
       setBusyPluginId("");
@@ -230,18 +228,18 @@ export function PluginManagerPanel() {
 
   const uninstall = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
-    setMessage("");
+    clearRowError(plugin.id);
     try {
       const next = await cmd<PluginSnapshot>(CMD.uninstallProviderPlugin, { pluginId: plugin.id });
       setSnapshot(next);
       await refreshPluginConsumers();
       await loadSnapshot();
-      setMessage("插件已卸载。");
-      setPendingUninstall(undefined);
     } catch (error) {
-      setMessage(`卸载失败：${String(error)}`);
+      failRow(plugin.id, `卸载失败：${String(error)}`);
+      await loadSnapshot();
     } finally {
       setBusyPluginId("");
+      setPendingUninstall(undefined);
     }
   };
 
@@ -252,7 +250,7 @@ export function PluginManagerPanel() {
       || isNewerVersion(pack.version, installed.version)
       || installed.modelPack?.state !== "ready"
       || busyPluginId === pack.id
-      || Boolean(packErrors[pack.id]);
+      || Boolean(rowErrors[officialKey(pack.id)]);
   });
 
   return (
@@ -287,7 +285,7 @@ export function PluginManagerPanel() {
                     </Button>
                   )}
                 </div>
-                {packErrors[pack.id] && <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">{packErrors[pack.id]}</p>}
+                {rowErrors[officialKey(pack.id)] && <p role="alert" className="mt-1 break-words text-xs text-[var(--color-err)]">{rowErrors[officialKey(pack.id)]}</p>}
               </div>
             );
           })}
@@ -324,12 +322,15 @@ export function PluginManagerPanel() {
                     <p className="text-[13px] font-medium text-[var(--color-fg)]">{plugin.name}</p>
                     <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version}</span>
                     <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.runtimeKind === "model-pack" ? "模型包" : "连接器"}</span>
-                    <span className="text-xs text-[var(--color-fg-subtle)]">{TRUST_LABEL[plugin.trust]}</span>
+                    {plugin.modelPack?.state === "ready" && <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(plugin.modelPack.totalBytes)}</span>}
+                    {plugin.trust !== "trusted" && <span className="text-xs text-[var(--color-warn)]">{TRUST_LABEL[plugin.trust]}</span>}
                   </div>
-                  <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                    权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、") || "无"}
-                  </p>
-                  {plugin.modelPack && (
+                  {plugin.permissions.length > 0 && (
+                    <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
+                      权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、")}
+                    </p>
+                  )}
+                  {plugin.modelPack && plugin.modelPack.state !== "ready" && (
                     <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
                       {MODEL_STATE_LABEL[plugin.modelPack.state] || plugin.modelPack.state}{plugin.modelPack.state !== "superseded" && ` · ${formatBytes(plugin.modelPack.readyBytes)} / ${formatBytes(plugin.modelPack.totalBytes)}`}
                     </p>
@@ -359,15 +360,12 @@ export function PluginManagerPanel() {
                     </Tooltip>
                   )}
                   {plugin.modelPack?.state !== "superseded" && (
-                    <>
-                      <span className="text-xs text-[var(--color-fg-subtle)]">{plugin.enabled ? "已启用" : "已停用"}</span>
-                      <Switch
-                        checked={plugin.enabled}
-                        disabled={busy}
-                        label={`${plugin.name}${plugin.enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
-                        onChange={(enabled) => void setEnabled(plugin, enabled)}
-                      />
-                    </>
+                    <Switch
+                      checked={plugin.enabled}
+                      disabled={busy}
+                      label={`启用${plugin.name}`}
+                      onChange={(enabled) => void setEnabled(plugin, enabled)}
+                    />
                   )}
                   <IconButton
                     size="sm"
@@ -392,12 +390,13 @@ export function PluginManagerPanel() {
               {plugin.modelPack?.residency?.state === "failed" && (
                 <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">常驻加载失败：{plugin.modelPack.residency.error}</p>
               )}
+              {rowErrors[plugin.id] && <p role="alert" className="mt-1 break-words text-xs text-[var(--color-err)]">{rowErrors[plugin.id]}</p>}
             </div>
           );
         })}
         {(!snapshot || snapshot.plugins.length === 0) && (
-          <p className="px-3.5 py-7 text-center text-[13px] text-[var(--color-fg-subtle)]">
-            {snapshot ? "尚未安装插件。可点击上方按钮，或将 .sayit 文件拖入应用安装。" : message ? "插件列表读取失败" : "正在读取插件…"}
+          <p role={loadError ? "alert" : undefined} className={`px-3.5 py-7 text-center text-[13px] break-words ${loadError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+            {snapshot ? "把 .sayit 文件拖进窗口也能安装" : loadError ? `插件列表读取失败：${loadError}` : "正在读取插件…"}
           </p>
         )}
       </Group>
@@ -405,7 +404,6 @@ export function PluginManagerPanel() {
       {snapshot?.errors.map((error) => (
         <p key={error.path} className="text-xs text-[var(--color-err)]">{error.path}：{error.message}</p>
       ))}
-      {message && <p className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       <Modal
         open={Boolean(pendingUninstall)}
         onClose={() => !busyPluginId && setPendingUninstall(undefined)}

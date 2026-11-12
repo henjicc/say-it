@@ -1,5 +1,6 @@
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useEffect, useRef, useState } from "react";
+import { notify, notifyError } from "@/store/useToastStore";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
@@ -46,7 +47,6 @@ function normalize(value: Record<string, unknown>): HistoryPrefs {
 /** 读取并保存历史偏好；设置页与简单模式共用。onLoaded 只在首次读取后调用一次。 */
 export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
   const [prefs, setPrefs] = useState<HistoryPrefs>(defaults);
-  const [message, setMessage] = useState("");
   const onLoadedRef = useRef(onLoaded);
 
   useEffect(() => {
@@ -54,26 +54,25 @@ export function useHistoryPrefs(onLoaded?: (prefs: HistoryPrefs) => void) {
       const next = normalize(snapshot.settings.historyPrefs);
       setPrefs(next);
       onLoadedRef.current?.(next);
-    }).catch((error) => setMessage(String(error)));
+    }).catch(notifyError);
   }, []);
 
   async function save(next: HistoryPrefs) {
     setPrefs(next);
     try {
       await cmd(CMD.updateAppSettings, { domain: "history", value: next });
-      setMessage("");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
-  return { prefs, save, message, setMessage };
+  return { prefs, save };
 }
 
 export function SettingsHistoryPanel() {
   const { confirm, dialog } = useConfirm();
   const [excludedText, setExcludedText] = useState("");
-  const { prefs, save, message, setMessage } = useHistoryPrefs((loaded) => setExcludedText(loaded.excludedApps.join("\n")));
+  const { prefs, save } = useHistoryPrefs((loaded) => setExcludedText(loaded.excludedApps.join("\n")));
 
   async function clear() {
     if (
@@ -87,9 +86,9 @@ export function SettingsHistoryPanel() {
     }
     try {
       await cmd(CMD.clearHistory);
-      setMessage("本地历史和纠错样本已清空");
+      notify("历史已清空");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -105,9 +104,9 @@ export function SettingsHistoryPanel() {
     }
     try {
       await cmd(CMD.clearUsageSummary);
-      setMessage("本地累计使用统计已清空");
+      notify("使用统计已清空");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -123,9 +122,9 @@ export function SettingsHistoryPanel() {
     }
     try {
       await cmd(CMD.clearLearningMemory);
-      setMessage("个性化学习记忆已清空");
+      notify("学习记忆已清空");
     } catch (error) {
-      setMessage(String(error));
+      notifyError(error);
     }
   }
 
@@ -225,7 +224,6 @@ export function SettingsHistoryPanel() {
           <Button size="sm" variant="danger" onClick={() => void clearLearning()}>清空学习记忆</Button>
         </Row>
       </Group>
-      {message && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">{message}</p>}
       {dialog}
     </InspectorBody>
   );

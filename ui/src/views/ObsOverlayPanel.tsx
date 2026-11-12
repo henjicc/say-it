@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Copy } from "lucide-react";
+import { notify } from "@/store/useToastStore";
 import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
@@ -39,7 +40,6 @@ export function ObsOverlayPanel() {
   const [connection, setConnection] = useState<ObsConnectionStatus | null>(null);
   const [sceneName, setSceneName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const subtitlePrefs = useSubtitleStore((state) => state.prefs);
 
@@ -85,7 +85,6 @@ export function ObsOverlayPanel() {
   const connect = async () => {
     setBusy(true);
     setError("");
-    setMessage("");
     try {
       const status = await cmd<ObsConnectionStatus>(CMD.connectObs, {
         request: connectionArgs(),
@@ -96,7 +95,7 @@ export function ObsOverlayPanel() {
       if (!status.browserSourceAvailable) {
         setError("OBS 已连接，但未检测到 Browser Source，无法自动安装字幕源。");
       } else {
-        setMessage(`已连接 OBS ${status.obsVersion}（obs-websocket ${status.websocketVersion}）。`);
+        notify(`已连接 OBS ${status.obsVersion}`);
       }
     } catch (reason) {
       setConnection(null);
@@ -113,7 +112,6 @@ export function ObsOverlayPanel() {
     }
     setBusy(true);
     setError("");
-    setMessage("");
     try {
       const canvasWidth = connection?.canvasWidth || 1920;
       const canvasHeight = connection?.canvasHeight || 1080;
@@ -137,7 +135,7 @@ export function ObsOverlayPanel() {
       });
       setOverlay(next);
       commitSavedPassword();
-      setMessage("OBS 字幕源已按当前字幕框尺寸更新，并放置在画布底部。 ");
+      notify("字幕源已放到画布底部");
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -148,14 +146,12 @@ export function ObsOverlayPanel() {
   const uninstall = async () => {
     setBusy(true);
     setError("");
-    setMessage("");
     try {
       const next = await cmd<ObsOverlayStatus>(CMD.uninstallObsOverlay, {
         request: connectionArgs(),
       });
       setOverlay(next);
       commitSavedPassword();
-      setMessage("已删除说吧！创建的 OBS 字幕源。 ");
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -166,7 +162,7 @@ export function ObsOverlayPanel() {
   const copyUrl = async () => {
     try {
       await navigator.clipboard.writeText(overlay.url);
-      setMessage("字幕源 URL 已复制。 ");
+      notify("已复制");
     } catch {
       setError("复制失败，请手动复制下方 URL。 ");
     }
@@ -226,11 +222,7 @@ export function ObsOverlayPanel() {
         </Row>
       </Group>
 
-      {(message || error) && (
-        <p className={error ? "whitespace-pre-line px-0.5 text-xs text-[var(--color-err)]" : "px-0.5 text-xs text-[var(--color-ok)]"} role={error ? "alert" : "status"}>
-          {error || message}
-        </p>
-      )}
+      {error && <p role="alert" className="whitespace-pre-line px-0.5 text-xs text-[var(--color-err)]">{error}</p>}
     </>
   );
 }
