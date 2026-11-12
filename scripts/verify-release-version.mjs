@@ -20,7 +20,8 @@ export function versionFromTag(tag) {
  * 从不看 tag 本身。版本号漏改一处就会静默发出「tag 是新版、资产是旧版」的 Release，
  * 而 CHANGELOG 取的也是旧版那一节——没有任何一步会失败。
  *
- * `tauri.conf.json` 一并校验：CLAUDE.md 要求两处版本同步更新，而安装包内的版本号来自它。
+ * `tauri.conf.json` 一并校验：安装包内的版本号来自它；`src-tauri/Cargo.toml` 的包版本进入可执行文件元数据，
+ * 同样要一致。
  */
 export function verifyReleaseVersion(tag, versions) {
   const expected = versionFromTag(tag);
@@ -33,6 +34,12 @@ export function verifyReleaseVersion(tag, versions) {
   return expected;
 }
 
+/** `Cargo.toml` 里 `[package]` 小节的 `version`。 */
+export function cargoPackageVersion(toml) {
+  const section = toml.split(/^\[/m).find((part) => part.startsWith("package]"));
+  return section && /^version\s*=\s*"([^"]+)"/m.exec(section)?.[1];
+}
+
 function main() {
   const root = process.cwd();
   const read = (file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8")).version;
@@ -41,6 +48,9 @@ function main() {
   const version = verifyReleaseVersion(tag, {
     "package.json": read("package.json"),
     "src-tauri/tauri.conf.json": read("src-tauri/tauri.conf.json"),
+    "src-tauri/Cargo.toml": cargoPackageVersion(
+      fs.readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8"),
+    ),
   });
   process.stdout.write(`版本一致：${version}\n`);
 }
