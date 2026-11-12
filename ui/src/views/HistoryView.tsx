@@ -284,10 +284,6 @@ export function HistoryView() {
       <Group title="个性化学习">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">
           <Brain className="h-3.5 w-3.5" aria-hidden />
-          <span>发送前修改记录：{overview.observationEnabled ? "已开启" : "未开启"}</span>
-          <span>·</span>
-          <span>个性化纠错：{overview.learningEnabled ? "已开启" : "未开启"}</span>
-          <span>·</span>
           <span>{overview.activeRuleCount} 条生效规则</span>
           <span>·</span>
           <span>{overview.pendingCount} 条待处理</span>
