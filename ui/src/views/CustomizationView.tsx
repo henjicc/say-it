@@ -279,7 +279,7 @@ export function ContextTab() {
       <Group
         title="模板"
         description="在这里写下录音中可能出现的人名、术语和背景信息，帮助支持此功能的模型识别。请写出具体人名或术语，只有笼统描述无法帮助纠正这些词。留空则不使用；点击“插入热词”可带上热词表。"
-        right={<Button size="sm" onClick={insertHotwordsVariable}>插入热词</Button>}
+        right={<Button size="sm" variant="text" onClick={insertHotwordsVariable}>插入热词</Button>}
       >
         <div className="p-3.5">
           <Textarea

@@ -8,7 +8,7 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { UsageLinkRow, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { useUsageIssue } from "@/features/models/usage";
 import { TranslationModelRow } from "@/features/translation/TranslationModelRow";
 import { useTranslationStore } from "@/store/useTranslationStore";
 import { ModelPicker } from "@/features/models/ModelPicker";
@@ -129,14 +129,12 @@ export function AssistantModelRow({ action, label, prefs, save }: {
   save: (next: AssistantPrefs) => Promise<void>;
 }) {
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
-  const editable = useUsageEditable();
   const feature = prefs[action];
   const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
   const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selectedLlm)];
   const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId, true, "llm");
   const controlId = `assistant-${action}-model`;
   const current = llmOptions.find((option) => option.value === selectedLlm);
-  if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? feature.llmModel} message={llmIssue} />;
   return (
     <>
       <Row label={label} controlId={controlId} message={llmIssue}>
@@ -314,12 +312,12 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
         : <AssistantModelRow action={action} label="智能模型" prefs={prefs} save={save} />}
     </Group>
 
-    <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>
+    <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" variant="text" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" variant="text" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>
       <Row label="当前模板" message={!usesTemplates && "专用翻译模型不使用模板；翻译模型换成大模型后，当前模板会继续生效。"}>
         <Select className={ROW_CONTROL_W} aria-label="当前模板" value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
         <Button size="sm" variant="dangerText" aria-label="删除当前模板" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除</Button>
       </Row>
-      <Row label="模板名称"><Input className={ROW_CONTROL_W} aria-label="模板名称" value={active?.name ?? ""} maxLength={80} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.currentTarget.value } : item) } })} /></Row>
+      <Row label="模板名称"><Input className={`${ROW_CONTROL_W} ui-inline-field text-right text-ellipsis`} aria-label="模板名称" value={active?.name ?? ""} maxLength={80} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.currentTarget.value } : item) } })} /></Row>
       <TextBlock label="任务提示词" hint="写下你希望如何处理文字，例如语气、语言和篇幅。"><Textarea rows={8} value={active?.prompt ?? ""} maxLength={12000} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.currentTarget.value } : item) } })} /></TextBlock>
     </Group>
 

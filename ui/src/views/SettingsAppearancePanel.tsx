@@ -93,7 +93,7 @@ export function SettingsAppearancePanel() {
 
   return (
     <InspectorBody>
-      <Group title="外观" right={<Button size="sm" onClick={reset}>恢复默认</Button>}>
+      <Group title="外观" right={<Button size="sm" variant="text" onClick={reset}>恢复默认</Button>}>
         <Row label="整体色调" hint="选择深色或浅色界面。">
           <Tabs
             variant="view"

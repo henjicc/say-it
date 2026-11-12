@@ -187,7 +187,7 @@ export function BenchResult({ state, analysis }: { state: BenchState; analysis?:
       )}
       <Group
         title={state.running ? "测速中" : "对比"}
-        right={!state.running && <Button size="sm" onClick={() => void copy()}>{copied ? "已复制" : "复制表格"}</Button>}
+        right={!state.running && <Button size="sm" variant="text" onClick={() => void copy()}>{copied ? "已复制" : "复制表格"}</Button>}
       >
         <div className="overflow-x-auto">
           <table className="w-full min-w-[560px] table-fixed text-[13px]">
