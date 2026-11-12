@@ -329,21 +329,37 @@ fn finish(outcome: &str, error: Option<&str>) {
 
 pub(super) fn append_record(directory: &Path, record: &Value) {
     let day = diagnostics::date_key(diagnostics::now_seconds());
-    let path = directory.join(format!("runs-{day}.jsonl"));
+    append_line(&directory.join(format!("runs-{day}.jsonl")), record);
+}
+
+/// 给以后微调本地整理模型攒的原始素材，开发者模式下每次语音输入成功后追加一行。
+/// 文件名不带 `runs-` 前缀，不随运行记录按天数和大小清理。`traceId` 对应同一次听写的运行记录。
+pub(crate) fn append_training_sample(mut sample: Value) {
+    if cfg!(test) {
+        return;
+    }
+    sample["traceId"] = json!(ACTIVE
+        .lock()
+        .ok()
+        .and_then(|active| active.as_ref().map(|run| run.id.clone())));
+    append_line(&traces_dir().join("training-samples.jsonl"), &sample);
+}
+
+fn append_line(path: &Path, record: &Value) {
     let written = serde_json::to_vec(record)
         .map_err(|error| error.to_string())
         .and_then(|line| {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&path)
+                .open(path)
                 .map_err(|error| error.to_string())?;
             file.write_all(&line)
                 .and_then(|()| file.write_all(b"\n"))
                 .map_err(|error| error.to_string())
         });
     if let Err(error) = written {
-        eprintln!("[dev-trace] 写入运行记录失败：{error}");
+        eprintln!("[dev-trace] 写入 {} 失败：{error}", path.display());
     }
 }
 
