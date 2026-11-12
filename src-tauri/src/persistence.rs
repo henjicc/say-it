@@ -72,8 +72,9 @@ pub(crate) struct PersistedData {
     pub(crate) subtitle_shortcut: SubtitleShortcutSettings,
     #[serde(default)]
     pub(crate) assistant_shortcuts: crate::application::assistant::AssistantShortcutSettings,
-    #[serde(default = "default_subtitle_translation_model")]
-    pub(crate) subtitle_translation_model: String,
+    /// 旧版单独保存的字幕翻译模型，只在加载时读出并交给设置 v10 迁移，不再写回。
+    #[serde(default, skip_serializing)]
+    pub(crate) subtitle_translation_model: Option<String>,
     #[serde(default)]
     pub(crate) startup: StartupSettings,
     #[serde(default)]
@@ -86,10 +87,6 @@ pub(crate) struct PersistedData {
 
 fn default_schema_version() -> u32 {
     1
-}
-
-fn default_subtitle_translation_model() -> String {
-    "none".to_string()
 }
 
 pub(crate) fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -139,11 +136,6 @@ pub(crate) fn save_persisted_state_with_app_settings(
         .lock()
         .map_err(|_| "智能助手快捷键配置锁失败".to_string())?
         .clone();
-    let subtitle_translation_model = state
-        .subtitle_translation_model
-        .lock()
-        .map_err(|_| "Subtitle translation model lock failed".to_string())?
-        .clone();
     let startup = state
         .startup
         .lock()
@@ -180,11 +172,7 @@ pub(crate) fn save_persisted_state_with_app_settings(
         dictation,
         subtitle_shortcut,
         assistant_shortcuts,
-        subtitle_translation_model: if subtitle_translation_model.trim().is_empty() {
-            default_subtitle_translation_model()
-        } else {
-            subtitle_translation_model
-        },
+        subtitle_translation_model: None,
         startup,
         obs_overlay,
         floating_orb,
@@ -222,6 +210,17 @@ pub(crate) fn legacy_state_files_to_reset(app: &tauri::AppHandle) -> Result<Vec<
 }
 
 fn migrate_persisted_data(data: &mut PersistedData) {
+    // 字幕翻译模型原来另存一份在这里；还没迁移过的字幕设置先把它放回去，交给
+    // `migrate_loaded_settings` 合并进共用的翻译设置。字幕设置为空时还要等前端导入旧版
+    // localStorage 设置，不能往里写，否则会挡住那次导入。
+    if let (Some(model), Some(subtitles)) = (
+        data.subtitle_translation_model.take(),
+        data.app_settings.subtitle_prefs.as_object_mut(),
+    ) {
+        if !subtitles.is_empty() && !subtitles.contains_key("translationEnabled") {
+            subtitles.insert("translationModel".into(), serde_json::Value::String(model));
+        }
+    }
     if data.schema_version < FOUR_CLICK_DEFAULT_SCHEMA_VERSION
         && data.mouse_gesture.rapid_click_count == 3
     {
@@ -791,9 +790,29 @@ mod tests {
     }
 
     #[test]
-    fn legacy_state_defaults_subtitle_translation_to_none() {
+    fn legacy_subtitle_translation_model_merges_into_shared_prefs() {
+        let load = |subtitle_prefs: serde_json::Value| {
+            let mut data: PersistedData = serde_json::from_value(serde_json::json!({
+                "app_settings": { "subtitlePrefs": subtitle_prefs },
+                "subtitle_translation_model": "qwen-mt-flash",
+            }))
+            .unwrap();
+            migrate_persisted_data(&mut data);
+            crate::application::settings::migrate_loaded_settings(&mut data.app_settings);
+            data.app_settings
+        };
+        let settings = load(serde_json::json!({ "asrModel": "fun-asr-realtime" }));
+        assert_eq!(settings.translation_prefs["engine"], "dedicated");
+        assert_eq!(settings.translation_prefs["model"], "qwen-mt-flash");
+        assert_eq!(settings.subtitle_prefs["translationEnabled"], true);
+        // 字幕设置还是空的：要留给前端导入旧版 localStorage 设置，不能先写进去。
+        assert_eq!(load(serde_json::json!({})).subtitle_prefs, serde_json::json!({}));
+    }
+
+    #[test]
+    fn legacy_state_defaults() {
         let data: PersistedData = serde_json::from_str("{}").unwrap();
-        assert_eq!(data.subtitle_translation_model, "none");
+        assert!(data.subtitle_translation_model.is_none());
         assert_eq!(data.schema_version, 1);
         assert!(!data.floating_orb.enabled);
         assert!(data.floating_orb.position.is_none());

@@ -1539,8 +1539,8 @@ fn log_prompt_completion(scope: &str, started: StdInstant, result: &Result<Strin
     }
 }
 
-/// 智能问答专用流式调用。结构化 JSON 只适合机器解析，问答则直接以 Markdown 正文
-/// 输出，思考与正文分别通过增量回调投影到回答窗，翻译/编辑/听写链路仍走上面的整包请求。
+/// 流式调用：思考与正文分别通过累计回调投影出去。问答以 Markdown 正文输出；
+/// 结构化 JSON 只适合机器解析，编辑与听写链路仍走上面的整包请求。
 pub(crate) async fn process_prompt_stream<F>(
     state: &RuntimeState,
     system_prompt: &str,

@@ -78,7 +78,8 @@ pub(crate) struct SubtitlePrefs {
     fade_enabled: bool,
     fade_duration_ms: u32,
     fade_easing: String,
-    translation_model: String,
+    /// 是否翻译字幕；用哪个模型翻译由共用的翻译设置决定。
+    translation_enabled: bool,
     translation_source_lang: String,
     translation_target_lang: String,
     translation_layout: String,
@@ -108,7 +109,7 @@ impl Default for SubtitlePrefs {
             fade_enabled: false,
             fade_duration_ms: 180,
             fade_easing: "ease-out".into(),
-            translation_model: "none".into(),
+            translation_enabled: false,
             translation_source_lang: "auto".into(),
             translation_target_lang: "zh".into(),
             translation_layout: "bilingual".into(),
@@ -141,7 +142,7 @@ impl SubtitlePrefs {
     }
 
     fn translation_enabled(&self) -> bool {
-        !self.translation_model.trim().is_empty() && self.translation_model != "none"
+        self.translation_enabled
     }
 }
 
@@ -666,7 +667,7 @@ async fn start(app: AppHandle) -> Result<(), String> {
     // 拦下来。否则字幕会正常滚动、译文永远空白，而每个 clause 都在后台静默失败
     // ——用户看不到任何线索，只会以为翻译模型不行。
     if prefs.translation_enabled() {
-        crate::application::translation::validate_available(&state, &prefs.translation_model)?;
+        crate::application::translation::validate(&state, &crate::application::translation::current(&state)?)?;
     }
     let epoch = state.subtitle_runtime.epochs.fetch_add(1, Ordering::AcqRel) + 1;
     let (source, device) = prefs.source();
@@ -1750,10 +1751,10 @@ mod tests {
     fn disabling_translation_settles_cancelled_placeholders_across_repeated_toggles() {
         let mut session = Session::default();
         for _ in 0..1_000 {
-            session.prefs.translation_model = "test-model".into();
+            session.prefs.translation_enabled = true;
             session.translation.dispatch("尚未返回的分句", true);
             session.translation.commit("replace", true);
-            session.prefs.translation_model = "none".into();
+            session.prefs.translation_enabled = false;
             session.cancel_obsolete_translations();
             assert!(session.translation.values.is_empty());
             assert!(session.translation.replace_groups.is_empty());

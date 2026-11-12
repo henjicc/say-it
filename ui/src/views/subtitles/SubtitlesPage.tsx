@@ -3,7 +3,6 @@ import { Languages, RadioTower, SlidersHorizontal, Type } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
-import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import { cn } from "@/lib/cn";
 import { hideSubtitlePreview, showSubtitlePreview, syncSubtitleIndicator, toggleSubtitles } from "@/features/subtitles/controller";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
@@ -50,7 +49,7 @@ export function SubtitlesPage() {
 
   const items: NodeItem<SubtitleNodeKey>[] = [
     { key: "basics", label: TITLES.basics, icon: <SlidersHorizontal {...iconProps} /> },
-    { key: "translation", label: TITLES.translation, icon: <Languages {...iconProps} />, off: prefs.translationModel === TRANSLATION_MODEL_NONE },
+    { key: "translation", label: TITLES.translation, icon: <Languages {...iconProps} />, off: !prefs.translationEnabled },
     { key: "style", label: TITLES.style, icon: <Type {...iconProps} /> },
     { key: "output", label: TITLES.output, icon: <RadioTower {...iconProps} /> },
   ];

@@ -6,7 +6,6 @@ import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input, Select } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { CMD, cmd } from "@/lib/tauri";
-import { TRANSLATION_MODEL_NONE } from "@/features/translation/models";
 import { useSubtitleStore } from "@/store/useSubtitleStore";
 import { InputAffixButton } from "@/components/ui/InputAffixButton";
 
@@ -118,7 +117,7 @@ export function ObsOverlayPanel() {
       const fontSize = canvasHeight * (subtitlePrefs.fontSizePercent / 100) * 1.8;
       const effectiveLines = subtitlePrefs.mode === "replace" ? 1 : subtitlePrefs.lineCount;
       const translationRows =
-        subtitlePrefs.translationModel !== TRANSLATION_MODEL_NONE && subtitlePrefs.translationLayout === "bilingual"
+        subtitlePrefs.translationEnabled && subtitlePrefs.translationLayout === "bilingual"
           ? 2
           : 1;
       const sourceWidth = Math.round(canvasWidth * (subtitlePrefs.widthPercent / 100));

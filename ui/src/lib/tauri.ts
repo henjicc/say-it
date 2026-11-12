@@ -47,8 +47,6 @@ export const CMD = {
   previewDictationCue: "preview_dictation_cue",
   getSubtitleShortcut: "get_subtitle_shortcut",
   setSubtitleShortcut: "set_subtitle_shortcut",
-  getSubtitleTranslationModel: "get_subtitle_translation_model",
-  setSubtitleTranslationModel: "set_subtitle_translation_model",
   getSubtitleRuntime: "get_subtitle_runtime",
   subtitleToggle: "subtitle_toggle",
   subtitleStop: "subtitle_stop",
@@ -240,6 +238,7 @@ export interface AppSettings {
   comparePrefs: Record<string, unknown>;
   customizationPrefs: Record<string, unknown>;
   assistantPrefs: Record<string, unknown>;
+  translationPrefs: Record<string, unknown>;
   historyPrefs: Record<string, unknown>;
   diagnosticsPrefs: Record<string, unknown>;
   onboardingVersion: number;

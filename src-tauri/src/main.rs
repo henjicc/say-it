@@ -381,12 +381,6 @@ fn main() {
                     *assistant_shortcuts = persisted.assistant_shortcuts;
                 }
                 {
-                    let mut translation_model = state.subtitle_translation_model.lock().map_err(|_| {
-                        std::io::Error::other("subtitle translation model lock failed while loading persisted data")
-                    })?;
-                    *translation_model = persisted.subtitle_translation_model;
-                }
-                {
                     let mut startup = state.startup.lock().map_err(|_| {
                         std::io::Error::other("startup lock failed while loading persisted data")
                     })?;
@@ -711,8 +705,6 @@ fn main() {
             clear_shortcut_binding,
             get_subtitle_shortcut,
             set_subtitle_shortcut,
-            get_subtitle_translation_model,
-            set_subtitle_translation_model,
             get_startup_settings,
             set_startup_settings,
             set_indicator_state,

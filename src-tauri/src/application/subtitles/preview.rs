@@ -258,7 +258,7 @@ mod tests {
         let mut prefs = SubtitlePrefs {
             mode: "scroll".into(),
             line_count: 2,
-            translation_model: "fixture-only".into(),
+            translation_enabled: true,
             ..Default::default()
         };
         let elapsed =

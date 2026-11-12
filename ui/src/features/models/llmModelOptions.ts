@@ -15,7 +15,7 @@ export const FOLLOW_DEFAULT_LLM_OPTION: ModelPickerOption = {
   value: "default",
   label: "跟随默认大模型",
   providerId: "default",
-  providerLabel: "通用",
+  providerLabel: "默认",
 };
 
 export type ThinkingLevel = "zero" | "low" | "high";

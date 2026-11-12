@@ -26,7 +26,7 @@ fn configure_input(app: &AppHandle, model: &str) -> Result<(), String> {
         "dictationSilenceDisconnectEnabled":false,"subtitleSilenceDisconnectEnabled":false
     });
     settings.subtitle_prefs = json!({
-        "asrModel":LIVE,"source":"mic:__sayit_acceptance__","translationModel":"none","obsOutputEnabled":false
+        "asrModel":LIVE,"source":"mic:__sayit_acceptance__","translationEnabled":false,"obsOutputEnabled":false
     });
     Ok(())
 }

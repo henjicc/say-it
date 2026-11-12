@@ -5,8 +5,6 @@ vi.mock("@/lib/tauri", () => ({
   CMD: {
     updateAppSettings: "update_app_settings",
     syncSubtitlePresentation: "sync_subtitle_presentation",
-    getSubtitleTranslationModel: "get_subtitle_translation_model",
-    setSubtitleTranslationModel: "set_subtitle_translation_model",
   },
   cmd: (...args: unknown[]) => cmd(...args),
 }));

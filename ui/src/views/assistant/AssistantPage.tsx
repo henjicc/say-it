@@ -6,7 +6,7 @@ import { AssistantFeaturePanel } from "@/views/VoiceAssistantPanel";
 const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
 
 const ITEMS: NodeItem<AssistantActionKey>[] = [
-  { key: "translateSpeech", label: "语音翻译", icon: <Languages {...iconProps} /> },
+  { key: "translateSpeech", label: "翻译输入", icon: <Languages {...iconProps} /> },
   { key: "editSelection", label: "选区编辑", icon: <PencilLine {...iconProps} /> },
   { key: "ask", label: "语音问答", icon: <MessageCircleQuestion {...iconProps} /> },
 ];

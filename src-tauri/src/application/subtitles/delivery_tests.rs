@@ -7,7 +7,7 @@ fn runtime() -> SubtitleRuntime {
         let mut session = runtime.session.lock().unwrap();
         session.epoch = 7;
         session.phase = SubtitlePhase::Running;
-        session.prefs.translation_model = "test-model".into();
+        session.prefs.translation_enabled = true;
     }
     runtime
 }

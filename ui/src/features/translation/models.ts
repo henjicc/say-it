@@ -8,24 +8,8 @@ export interface TranslationModelOption {
 /** 内置 Qwen-MT 翻译模型使用阿里云百炼的密钥。 */
 export const TRANSLATION_PROVIDER_ID = "bailian";
 
-/** 关闭字幕翻译时 SubtitlePrefs.translationModel 的取值。 */
-export const TRANSLATION_MODEL_NONE = "none";
-
 export const TRANSLATION_MODEL_OPTIONS: TranslationModelOption[] = [
   { value: "qwen-mt-flash", label: "Qwen-MT-Flash（推荐，速度快）", supportsIncremental: true },
   { value: "qwen-mt-plus", label: "Qwen-MT-Plus（质量最高）", supportsIncremental: false },
   { value: "qwen-mt-lite", label: "Qwen-MT-Lite（延迟最低）", supportsIncremental: true },
 ];
-
-const TRANSLATION_MODEL_SET = new Set(TRANSLATION_MODEL_OPTIONS.map((option) => option.value));
-
-export function normalizeTranslationModel(model: string | undefined) {
-  if (!model || model === TRANSLATION_MODEL_NONE) return TRANSLATION_MODEL_NONE;
-  const normalized = model.trim();
-  const pluginModel = modelInfo(normalized);
-  return TRANSLATION_MODEL_SET.has(normalized) ||
-    (pluginModel?.category === "translation" && pluginModel.scenes.includes("subtitleTranslation"))
-    ? normalized
-    : TRANSLATION_MODEL_NONE;
-}
-import { modelInfo } from "@/features/asr/modelRegistry";

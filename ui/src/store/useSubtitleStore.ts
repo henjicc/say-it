@@ -4,7 +4,6 @@ import {
   DEFAULT_REALTIME_ASR_MODEL,
   isSupportedRealtimeModel,
 } from "@/features/asr/modelOptions";
-import { TRANSLATION_MODEL_NONE, normalizeTranslationModel } from "@/features/translation/models";
 import { defaultSubtitleFontFamily } from "@/lib/platform";
 import {
   DEFAULT_TRANSLATION_SOURCE_LANG,
@@ -66,8 +65,8 @@ export interface SubtitlePrefs {
   fadeEnabled: boolean;
   fadeDurationMs: number;
   fadeEasing: SubtitleAnimationEasing;
-  /** 字幕翻译所用的 Qwen-MT 模型；空串表示关闭翻译。 */
-  translationModel: string;
+  /** 是否翻译字幕；用哪个模型由共用的翻译设置（`useTranslationStore`）决定。 */
+  translationEnabled: boolean;
   translationSourceLang: string;
   translationTargetLang: string;
   translationLayout: SubtitleTranslationLayout;
@@ -90,8 +89,6 @@ interface SubtitleState {
   /** 字幕当前是否实际输出到 OBS（连接就绪且"输出到 OBS"开关打开），用于界面隐藏不适用的样式项。 */
   obsOutputActive: boolean;
   patch: (partial: Partial<SubtitlePrefs>) => void;
-  loadTranslationModel: () => Promise<void>;
-  setTranslationModel: (model: string) => Promise<void>;
   setRuntime: (
     partial: Partial<
       Pick<
@@ -124,7 +121,7 @@ const defaults = (): SubtitlePrefs => ({
   fadeEnabled: false,
   fadeDurationMs: 180,
   fadeEasing: "ease-out",
-  translationModel: TRANSLATION_MODEL_NONE,
+  translationEnabled: false,
   translationSourceLang: DEFAULT_TRANSLATION_SOURCE_LANG,
   translationTargetLang: DEFAULT_TRANSLATION_TARGET_LANG,
   translationLayout: "bilingual",
@@ -163,8 +160,10 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 }
 
 function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
+  // 旧版的 translationModel 可能还留在 localStorage 回退镜像里，不能随字幕设置写回后端。
+  const { translationModel: _legacy, ...current } = prefs as SubtitlePrefs & { translationModel?: unknown };
   return {
-    ...prefs,
+    ...current,
     asrModel: isSupportedRealtimeModel(prefs.asrModel) ? prefs.asrModel : DEFAULT_REALTIME_ASR_MODEL,
     source: migrateLegacySource(prefs.source),
     fontSizePercent: clampNumber(prefs.fontSizePercent, 1.5, 6, 2.6),
@@ -179,7 +178,7 @@ function clampPrefs(prefs: SubtitlePrefs): SubtitlePrefs {
     fadeEnabled: prefs.fadeEnabled !== false,
     fadeDurationMs: clampNumber(prefs.fadeDurationMs, 60, 500, 180),
     fadeEasing: clampEasing(prefs.fadeEasing, "ease-out"),
-    translationModel: normalizeTranslationModel(prefs.translationModel),
+    translationEnabled: prefs.translationEnabled === true,
     translationSourceLang: prefs.translationSourceLang || DEFAULT_TRANSLATION_SOURCE_LANG,
     translationTargetLang: prefs.translationTargetLang || DEFAULT_TRANSLATION_TARGET_LANG,
     translationLayout: prefs.translationLayout === "translationOnly" ? "translationOnly" : "bilingual",
@@ -224,21 +223,6 @@ export const useSubtitleStore = create<SubtitleState>((set, get) => ({
     void cmd(CMD.updateAppSettings, { domain: "subtitles", value: next }).then(async () => {
       if (get().running) await cmd(CMD.syncSubtitlePresentation).catch(() => undefined);
     });
-  },
-  loadTranslationModel: async () => {
-    const model = await cmd<string>(CMD.getSubtitleTranslationModel);
-    const prefs = clampPrefs({ ...get().prefs, translationModel: model });
-    persist(prefs);
-    set({ prefs });
-  },
-  setTranslationModel: async (model) => {
-    const normalized = normalizeTranslationModel(model);
-    await cmd(CMD.setSubtitleTranslationModel, { model: normalized });
-    const prefs = clampPrefs({ ...get().prefs, translationModel: normalized });
-    await cmd(CMD.updateAppSettings, { domain: "subtitles", value: prefs });
-    persist(prefs);
-    set({ prefs });
-    if (get().running) await cmd(CMD.syncSubtitlePresentation).catch(() => undefined);
   },
   setRuntime: (partial) => set(partial),
 }));

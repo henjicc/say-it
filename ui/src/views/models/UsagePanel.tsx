@@ -8,7 +8,7 @@ import { useProviderStore } from "@/store/useProviderStore";
 import { AsrModelRow } from "@/views/dictation/DictationSections";
 import { OcrModelRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
 import { SubtitleAsrRow } from "@/views/subtitles/SubtitleSections";
-import { SubtitleTranslationModelRow } from "@/views/SubtitleTranslationPanel";
+import { TranslationModelRow } from "@/features/translation/TranslationModelRow";
 import { TranscriptionModelRow } from "@/views/TranscriptionView";
 import { ACTION_LABELS, AssistantModelRow, useUsageAssistantPrefs } from "@/views/VoiceAssistantPanel";
 import type { AssistantActionKey } from "@/store/useUiStore";
@@ -40,7 +40,7 @@ function DefaultLlmRow() {
   return (
     <>
       <Row
-        label="默认"
+        label="默认大模型"
         controlId="usage-general-llm"
         hint="没有单独选择模型的功能会使用它，例如选了「跟随默认大模型」的听写整理和助手。"
         message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
@@ -61,12 +61,11 @@ function DefaultLlmRow() {
 
 /**
  * 各功能用哪个模型，只在这里设置；下拉框里只列已填密钥、并在供应商里设为显示的模型。
- * 按模型种类分组，行名是功能名：同一类模型排在一起，方便一次换完。
- * 助手的语音翻译选了专用翻译引擎时用的是翻译模型，归到「翻译」组。
+ * 按模型种类分组。识别类的行名写所需能力（用在哪个功能放进悬停说明），大模型的行名写用它的功能。
+ * 翻译只有一个，字幕翻译和助手的翻译输入共用。
  */
 export function UsagePanel() {
   const assistant = useUsageAssistantPrefs();
-  const dedicatedTranslation = assistant.prefs?.translationEngine === "dedicated";
   const assistantRow = (action: AssistantActionKey) => assistant.prefs && (
     <AssistantModelRow action={action} label={ACTION_LABELS[action]} prefs={assistant.prefs} save={assistant.save} />
   );
@@ -74,23 +73,21 @@ export function UsagePanel() {
     <UsageEditScope>
       <InspectorBody>
         <Group title="语音识别">
-          <AsrModelRow label="听写" />
-          <SubtitleAsrRow label="字幕" />
-          <TranscriptionModelRow label="转写" />
+          <AsrModelRow label="语音识别" hint="用于听写，准确优先。" />
+          <SubtitleAsrRow label="实时语音识别" hint="用于字幕，边说边出字。" />
+          <TranscriptionModelRow label="带时间戳的语音识别" />
         </Group>
         <Group title="大模型">
           <DefaultLlmRow />
           <SmartLlmRow label="听写整理" />
-          {!dedicatedTranslation && assistantRow("translateSpeech")}
           {assistantRow("editSelection")}
           {assistantRow("ask")}
           {assistant.message && <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{assistant.message}</p>}
         </Group>
         <Group title="翻译">
-          <SubtitleTranslationModelRow label="字幕翻译" />
-          {dedicatedTranslation && assistantRow("translateSpeech")}
+          <TranslationModelRow label="翻译" hint="字幕翻译和助手的翻译输入共用。可以选专用翻译模型，也可以选大模型。" />
         </Group>
-        <Group title="文字识别"><OcrModelRow label="读屏" /></Group>
+        <Group title="文字识别"><OcrModelRow label="文字识别" /></Group>
       </InspectorBody>
     </UsageEditScope>
   );
