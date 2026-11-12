@@ -65,12 +65,11 @@ describe("floating orb interaction", () => {
     }
   });
 
-  it("can be dragged in any phase except automatic placement or when only shown temporarily", () => {
-    expect(floatingOrbCanDrag("recording", false)).toBe(true);
-    expect(floatingOrbCanDrag("processing", false)).toBe(true);
-    expect(floatingOrbCanDrag("moving", false)).toBe(false);
-    expect(floatingOrbCanDrag("positioning", false)).toBe(false);
-    expect(floatingOrbCanDrag("idle", true)).toBe(false);
+  it("can be dragged in any phase except automatic placement", () => {
+    expect(floatingOrbCanDrag("recording")).toBe(true);
+    expect(floatingOrbCanDrag("processing")).toBe(true);
+    expect(floatingOrbCanDrag("moving")).toBe(false);
+    expect(floatingOrbCanDrag("positioning")).toBe(false);
   });
 
   it("amplifies quiet audio while keeping waveform scale bounded", () => {

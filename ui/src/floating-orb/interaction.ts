@@ -119,9 +119,9 @@ export function floatingOrbClickAction(
   return null;
 }
 
-/** 用户随时能拖走悬浮球，只有程序正在摆放它（移动、定位）或它只是临时出现时不行。 */
-export function floatingOrbCanDrag(phase: OrbPhase, transient: boolean): boolean {
-  return !transient && phase !== "moving" && phase !== "positioning";
+/** 用户随时能拖走悬浮球，只有程序正在摆放它（移动、定位）时不行。 */
+export function floatingOrbCanDrag(phase: OrbPhase): boolean {
+  return phase !== "moving" && phase !== "positioning";
 }
 
 export function floatingOrbContextAction(

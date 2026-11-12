@@ -414,7 +414,7 @@ impl PointerModel for OrbPointer {
                     steps.push(PointerStep::Model(OrbInput::Hover(true)));
                 }
                 if let Some((x, y)) = self.press {
-                    if !self.dragged && hit.phase.draggable() && !hit.transient {
+                    if !self.dragged && hit.phase.draggable() {
                         let dpr = f64::from(hit.dpi) / 96.0;
                         let dpr = if dpr > 0.0 { dpr } else { 1.0 };
                         if exceeds_drag_threshold(
@@ -1118,23 +1118,22 @@ mod model_tests {
         );
     }
     #[test]
-    fn pointer_drag_allows_every_phase_except_automatic_placement_and_transient() {
+    fn pointer_drag_allows_every_phase_except_automatic_placement() {
         for phase in PHASES {
-            for transient in [false, true] {
-                let hit = OrbHit {
-                    transient,
-                    ..hit(phase, 96)
-                };
-                let mut pointer = OrbPointer::default();
-                move_to(&mut pointer, &hit, (0, 0));
-                down(&mut pointer, &hit);
-                let steps = move_to(&mut pointer, &hit, (500, 500));
-                assert_eq!(
-                    !steps.is_empty(),
-                    !matches!(phase, OrbPhase::Moving | OrbPhase::Positioning) && !transient,
-                    "{phase:?}/{transient}"
-                );
-            }
+            // 手势唤出的临时悬浮球也能拖，否则按住拖动会被当成点击。
+            let hit = OrbHit {
+                transient: true,
+                ..hit(phase, 96)
+            };
+            let mut pointer = OrbPointer::default();
+            move_to(&mut pointer, &hit, (0, 0));
+            down(&mut pointer, &hit);
+            let steps = move_to(&mut pointer, &hit, (500, 500));
+            assert_eq!(
+                !steps.is_empty(),
+                !matches!(phase, OrbPhase::Moving | OrbPhase::Positioning),
+                "{phase:?}"
+            );
         }
     }
     #[test]

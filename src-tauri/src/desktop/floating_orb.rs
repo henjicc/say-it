@@ -1611,7 +1611,12 @@ fn persist_orb_position(
 pub(crate) fn schedule_remember_floating_orb_position(app: tauri::AppHandle) {
     mark_floating_orb_interaction(&app);
     let state = app.state::<RuntimeState>();
+    // 手势唤出的临时悬浮球用完会回到常驻位置，拖它只是临时挪开，不记成常驻位置。
     if state.floating_orb_runtime.transient.load(Ordering::Acquire) {
+        state
+            .floating_orb_runtime
+            .dragged_by_user
+            .store(false, Ordering::Release);
         return;
     }
     let generation = state
