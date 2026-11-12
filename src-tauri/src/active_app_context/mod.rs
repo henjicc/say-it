@@ -8,6 +8,8 @@ mod native_probe;
 mod normalize;
 #[cfg(windows)]
 mod ocr;
+#[cfg(any(windows, target_os = "macos"))]
+mod ocr_layout;
 #[cfg(windows)]
 mod screen_capture;
 #[cfg(not(any(windows, target_os = "macos")))]
