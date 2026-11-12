@@ -12,6 +12,7 @@ import { applySystemGlassToDocument } from "@/store/useThemeStore";
 import { useEntryTheme } from "@/hooks/useEntryTheme";
 import {
   DEFAULT_FLOATING_ORB_APPEARANCE,
+  floatingOrbCanDrag,
   floatingOrbClickAction,
   floatingOrbContextAction,
   floatingOrbLabel,
@@ -113,7 +114,7 @@ function FloatingOrbApp() {
   useCuePlayback(EVT.indicatorPlayCue, "floating-orb");
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
-    if (phase !== "idle" || transient || event.button !== 0) return;
+    if (!floatingOrbCanDrag(phase, transient) || event.button !== 0) return;
     dragged.current = false;
     pointer.current = {
       id: event.pointerId,
@@ -126,7 +127,7 @@ function FloatingOrbApp() {
 
   const onPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     const current = pointer.current;
-    if (phase !== "idle" || transient || current.id !== event.pointerId || current.dragging) return;
+    if (!floatingOrbCanDrag(phase, transient) || current.id !== event.pointerId || current.dragging) return;
     if (!shouldStartOrbDrag(event.screenX - current.x, event.screenY - current.y)) return;
     current.dragging = true;
     dragged.current = true;
@@ -168,6 +169,10 @@ function FloatingOrbApp() {
     || phase === "smartProcessing"
     || phase === "submitting";
   const interactive = floatingOrbClickAction(phase, canSubmit) !== null;
+  // 左键没有动作时仍要能右键取消、拖动，所以只在三者都没有时才禁用。
+  const takesPointer = interactive
+    || floatingOrbCanDrag(phase, transient)
+    || floatingOrbContextAction(phase, canSubmit, transient) !== null;
   const title = phase === "idle"
     ? transient ? label : "点击开始语音输入，拖动调整位置"
     : phase === "success" && canSubmit
@@ -187,7 +192,8 @@ function FloatingOrbApp() {
         "--orb-glass-tint": `${appearance.glassTint}%`,
         "--orb-glass-border": `${appearance.glassBorder}%`,
       } as CSSProperties}
-      disabled={!interactive}
+      disabled={!takesPointer}
+      aria-disabled={!interactive}
       aria-label={phase === "recording" ? "点击停止识别" : phase === "error" ? title : phase === "success" && canSubmit ? "点击发送回车" : label}
       aria-haspopup={phase === "error" ? "dialog" : undefined}
       title={title}
