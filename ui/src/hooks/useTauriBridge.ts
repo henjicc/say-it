@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CMD, EVT, cmd, on, type AppSnapshot, type DomainEventEnvelope } from "@/lib/tauri";
+import { CMD, EVT, cmd, on, type AppSnapshot, type DomainEventEnvelope, type TranscriptSummary } from "@/lib/tauri";
 import { useTauriEvent } from "./useTauriEvent";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useCuePlayback } from "./useCuePlayback";
@@ -22,7 +22,7 @@ import {
   handleForwardedSubtitleKeyup,
   handleSubtitleCaptureLockKey,
 } from "@/features/subtitles/controller";
-import { applyTranscriptionRuntime, loadTranscriptionRuntime } from "@/features/transcription/controller";
+import { applyTranscriptionRuntime, applyTranscriptSummary, loadTranscriptionRuntime } from "@/features/transcription/controller";
 import { applyCompareRuntime, loadCompareRuntime } from "@/features/compare/controller";
 import { applyAudioLabRuntime, loadAudioLabRuntime } from "@/features/audio/lab";
 
@@ -41,6 +41,7 @@ export function useTauriBridge() {
   useCuePlayback(EVT.dictationPlayCue, "main");
   useFloatingOrbSync();
 
+  useTauriEvent<TranscriptSummary>(EVT.transcriptSummaryChanged, applyTranscriptSummary);
   useTauriEvent(EVT.indicatorKeydown, (payload) => {
     if (!isSubtitleCapturing()) handleForwardedSubtitleKeydown((payload || {}) as never);
   });

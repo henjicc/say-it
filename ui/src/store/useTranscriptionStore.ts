@@ -1,3 +1,4 @@
+import type { TranscriptSummary } from "@/lib/tauri";
 import { create } from "zustand";
 import type { EditableCue } from "@/features/transcription/subtitles";
 import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
@@ -125,8 +126,8 @@ interface TranscriptionState {
   /** 「字幕」视图的可编辑工作副本；识别完成时从派生 cue 初始化。 */
   editorCues: EditableCue[] | null;
   saveMessage: string;
-  /** 根据识别结果生成的会议纪要；重新识别时清空。 */
-  summary: string;
+  /** 后端保存的最近一次纪要；只在属于当前识别任务时显示。 */
+  summary: TranscriptSummary | null;
   alignFile: SelectedTranscriptionFile | null;
   scriptText: string;
   alignStage: AlignStage;
@@ -162,7 +163,7 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   result: null,
   editorCues: null,
   saveMessage: "",
-  summary: "",
+  summary: null,
   alignFile: null,
   scriptText: "",
   alignStage: "idle",
@@ -191,6 +192,6 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
       result: null,
       editorCues: null,
       saveMessage: "",
-      summary: "",
+      summary: null,
     }),
 }));

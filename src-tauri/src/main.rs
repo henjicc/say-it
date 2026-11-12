@@ -49,7 +49,7 @@ use application::audio_lab::{
 };
 use application::catalog::get_model_catalog;
 use application::meeting::{
-    get_meeting_status, meeting_start, meeting_stop, open_meeting_recordings, summarize_transcript,
+    get_meeting_status, meeting_start, meeting_stop, open_meeting_recordings,
 };
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
@@ -91,7 +91,9 @@ use application::subtitles::{
     apply_subtitle_obs_routing, get_subtitle_runtime, hide_subtitle_preview,
     show_subtitle_preview, subtitle_stop, subtitle_toggle, sync_subtitle_presentation,
 };
-use application::transcription::get_transcription_runtime;
+use application::transcription::{
+    get_transcript_summary, get_transcription_runtime, summarize_transcript,
+};
 use commands::*;
 use desktop::*;
 use obs_overlay::*;
@@ -701,6 +703,7 @@ fn main() {
             compare_cancel,
             get_compare_runtime,
             get_transcription_runtime,
+            get_transcript_summary,
             dictation_toggle,
             dictation_start,
             dictation_stop,

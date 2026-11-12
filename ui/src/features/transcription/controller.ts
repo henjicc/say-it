@@ -1,6 +1,6 @@
 import { providerReady } from "@/features/models/providerModels";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { CMD, EVT, cmd, on } from "@/lib/tauri";
+import { CMD, EVT, cmd, on, type TranscriptSummary } from "@/lib/tauri";
 import {
   DEFAULT_FILE_ASR_MODEL,
   supportsAlignmentTimestamps,
@@ -40,7 +40,7 @@ export function providerHasApiKey() {
   return Boolean(profile && providerReady(profile, "asr"));
 }
 
-function normalizeParams(params: TranscriptionParams) {
+export function normalizeParams(params: TranscriptionParams) {
   const model = params.model || DEFAULT_FILE_ASR_MODEL;
   return {
     model,
@@ -73,7 +73,10 @@ async function listenForJob(target: JobTarget) {
   });
 }
 
+let transcribeEventCount = 0;
+
 function handleTranscribeEvent(payload: TranscriptionEventPayload) {
+  transcribeEventCount += 1;
   const store = useTranscriptionStore.getState();
 
   if (payload.stage === "uploading") {
@@ -144,6 +147,37 @@ export function applyTranscriptionRuntime(payload: TranscriptionEventPayload) {
   }
 }
 
+/** 只接受比当前更新的纪要状态：命令响应可能晚于事件到达。 */
+export function applyTranscriptSummary(summary: TranscriptSummary | null) {
+  const current = useTranscriptionStore.getState().summary;
+  if (!summary || (current && summary.revision < current.revision)) return;
+  useTranscriptionStore.getState().setRuntime({ summary });
+}
+
+/** 接上后端已经开始的识别任务（例如会议录音停止后），之后的进度照常经事件投影。 */
+export async function adoptTranscriptionJob(jobId: string) {
+  await listenForJob("transcribe");
+  activeJobId = jobId;
+  useTranscriptionStore.getState().setRuntime({
+    stage: "uploading",
+    jobId,
+    taskId: "",
+    result: null,
+    editorCues: null,
+    summary: null,
+    errorMessage: "",
+    saveMessage: "",
+    statusText: "正在准备识别任务…",
+  });
+  // 监听建立前已经发出的进度由后端快照补上；快照取回期间若已收到新事件，快照就是旧的。
+  const seen = transcribeEventCount;
+  const jobs = await cmd<Array<{ jobId: string; stage: string; payload: TranscriptionEventPayload }>>(CMD.getTranscriptionRuntime);
+  const job = jobs.find((item) => item.jobId === jobId);
+  if (job && transcribeEventCount === seen) {
+    applyTranscriptionRuntime({ ...job.payload, jobId, kind: "transcribe", stage: job.stage });
+  }
+}
+
 export async function loadTranscriptionRuntime() {
   const jobs = await cmd<Array<{ jobId: string; kind?: string; stage: string; active: boolean; payload: TranscriptionEventPayload }>>(CMD.getTranscriptionRuntime);
   // 两个页面各自恢复自己的任务：运行中的优先，若仅有已结束任务则恢复最近一项，
@@ -155,6 +189,7 @@ export async function loadTranscriptionRuntime() {
       applyTranscriptionRuntime({ ...current.payload, jobId: current.jobId, kind, stage: current.stage });
     }
   }
+  applyTranscriptSummary(await cmd<TranscriptSummary | null>(CMD.getTranscriptSummary));
 }
 
 function handleAlignEvent(payload: TranscriptionEventPayload) {
@@ -290,7 +325,7 @@ export async function startTranscription() {
     taskId: "",
     result: null,
     editorCues: null,
-    summary: "",
+    summary: null,
     errorMessage: "",
     saveMessage: "",
     statusText: "正在准备识别任务…",
