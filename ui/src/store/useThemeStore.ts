@@ -220,7 +220,6 @@ export function accentLight(hex: string) {
 interface ThemeLayers {
   frame: string;
   background: string;
-  panel: string;
   overlay: string;
   surface: string;
   surfaceHover: string;
@@ -228,7 +227,7 @@ interface ThemeLayers {
 }
 
 /**
- * 明度层级都从背景色推导：外框比内容层更沉，检查器、分组面、浮层依次抬起；悬停与按下
+ * 明度层级都从背景色推导：外框比内容层更沉，分组面、浮层依次抬起；悬停与按下
  * 在暗色里更亮、在亮色里更深。用户换背景色时层级关系保持不变。
  */
 function themeLayers(background: string, tone: Tone): ThemeLayers {
@@ -236,7 +235,6 @@ function themeLayers(background: string, tone: Tone): ThemeLayers {
     return {
       frame: mix(background, "#000000", 0.045),
       background,
-      panel: mix(background, "#FFFFFF", 0.55),
       overlay: mix(background, "#FFFFFF", 0.95),
       surface: mix(background, "#FFFFFF", 0.9),
       surfaceHover: mix(background, "#000000", 0.025),
@@ -246,8 +244,8 @@ function themeLayers(background: string, tone: Tone): ThemeLayers {
   return {
     frame: mix(background, "#000000", 0.22),
     background,
-    panel: mix(background, "#FFFFFF", 0.03),
-    overlay: mix(background, "#FFFFFF", 0.09),
+    // 浮层要明显亮过分组面，叠在分组上的下拉和弹层才分得出来。
+    overlay: mix(background, "#FFFFFF", 0.13),
     surface: mix(background, "#FFFFFF", 0.08),
     surfaceHover: mix(background, "#FFFFFF", 0.11),
     surfaceStrong: mix(background, "#FFFFFF", 0.15),
@@ -276,7 +274,7 @@ export function backgroundSupportsText(background: string, tone: Tone) {
  */
 function accentTextColor(accent: string, tone: Tone, layers: ThemeLayers) {
   const toward = tone === "light" ? "#000000" : "#FFFFFF";
-  const plain = [layers.frame, layers.background, layers.panel, layers.surface, layers.overlay];
+  const plain = [layers.frame, layers.background, layers.surface, layers.overlay];
   return [...plain, ...plain.map((layer) => mix(layer, accent, ACCENT_SOFT_STRONG / 100))]
     .reduce((color, against) => ensureContrast(color, against, toward), accent);
 }
@@ -315,7 +313,6 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   set("--theme-bg", layers.background);
   set("--theme-bg-sidebar", layers.frame);
   set("--theme-bg-titlebar", layers.frame);
-  set("--theme-panel", layers.panel);
   set("--theme-overlay", layers.overlay);
   set("--theme-surface", layers.surface);
   set("--theme-surface-hover", layers.surfaceHover);

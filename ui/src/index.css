@@ -5,15 +5,14 @@
  * @theme 内为可生成 Tailwind 工具类的令牌；布局尺寸/层级等见其后的 :root。
  */
 @theme {
-  /* 明度层级：外框（标题栏/导航）→ 内容层 → 检查器 → 分组面 → 浮层 */
+  /* 明度层级：外框（标题栏/导航）→ 内容层（中栏与检查器同色）→ 分组面 → 浮层 */
   --color-bg: #0f0f0f;
   --color-bg-sidebar: #0c0c0c;
   --color-bg-titlebar: #0c0c0c;
-  --color-panel: #161616;
   --color-surface: #222222;
   --color-surface-hover: #292929;
   --color-surface-strong: #333333;
-  --color-overlay: #252525;
+  --color-overlay: #2c2c2c;
 
   /* 边框/分割线 */
   --color-line: rgba(255, 255, 255, 0.11);
@@ -79,7 +78,6 @@
   --theme-bg: #131417;
   --theme-bg-sidebar: #0e0f11;
   --theme-bg-titlebar: #0e0f11;
-  --theme-panel: #17181b;
   --theme-overlay: #1e1f23;
   --theme-surface: #1e1f23;
   --theme-surface-hover: #24262a;
@@ -90,7 +88,6 @@
   --color-bg: var(--theme-bg);
   --color-bg-sidebar: var(--theme-bg-sidebar);
   --color-bg-titlebar: var(--theme-bg-titlebar);
-  --color-panel: var(--theme-panel);
   --color-overlay: var(--theme-overlay);
   --color-surface: var(--theme-surface);
   --color-surface-hover: var(--theme-surface-hover);
@@ -240,7 +237,6 @@
   --color-bg: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-sidebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
   --color-bg-titlebar: color-mix(in srgb, var(--system-glass-color) var(--system-glass-tint), transparent);
-  --color-panel: color-mix(in srgb, var(--theme-panel) 40%, transparent);
   --color-overlay: color-mix(in srgb, var(--theme-overlay) 58%, transparent);
   --color-surface: color-mix(in srgb, var(--theme-overlay) 24%, transparent);
   --color-surface-hover: color-mix(in srgb, var(--theme-overlay) 34%, transparent);
