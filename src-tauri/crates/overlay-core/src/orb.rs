@@ -5,6 +5,8 @@ use crate::canvas::{
 use crate::geom::{Color, Point, PxRect, Rect, Stroke, Transform};
 use crate::look::Look;
 use crate::svg::SvgSeg;
+use crate::ui::gesture::exceeds_drag_threshold;
+use crate::ui::paint::LevelBars;
 use crate::window::*;
 use std::time::Instant;
 
@@ -16,8 +18,6 @@ const ICON_RATIO: f32 = 0.43;
 const GLYPH_RATIO: f32 = 0.46;
 const WAVE_AREA_RATIO: f32 = 0.54;
 const WAVE_AREA_RATIO_HOVER: f32 = 0.594;
-const WAVE_BAR_RATIO: f32 = 0.1;
-const WAVE_GAP_RATIO: f32 = 0.08;
 const SPINNER_STEP_DEG: f32 = 6.0; // 60fps 下约 0.9s 一圈，与 CSS orb-spin 一致
 /// 相位颜色过渡时长（非高亮 ↔ 高亮不跳变）。
 const STYLE_BLEND_S: f32 = 0.15;
@@ -223,14 +223,6 @@ fn phase_style(phase: OrbPhase, hovering: bool) -> OrbStyle {
     }
 }
 
-/// 拖拽阈值（CSS 像素），与 interaction.ts 的 ORB_DRAG_THRESHOLD 一致。
-pub const ORB_DRAG_THRESHOLD: f64 = 5.0;
-
-/// 移植自 interaction.ts 的 shouldStartOrbDrag。
-pub fn should_start_orb_drag(delta_x: f64, delta_y: f64) -> bool {
-    delta_x.hypot(delta_y) >= ORB_DRAG_THRESHOLD
-}
-
 /// 左键动作，与 interaction.ts 的 OrbClickAction 一致。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrbClickAction {
@@ -302,6 +294,13 @@ pub fn orb_wave_levels(level: f32, peaks: &[f32]) -> [f32; ORB_WAVE_BAR_COUNT] {
     }
     levels_out
 }
+
+const WAVE_BARS: LevelBars = LevelBars {
+    bar_ratio: 0.1,
+    gap_ratio: 0.08,
+    heights: &ORB_WAVE_BAR_HEIGHTS,
+    min_scale: ORB_WAVE_BAR_MIN_SCALE,
+};
 
 /// 悬浮球交给主应用的动作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,14 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn drag_threshold_uses_pointer_distance() {
-        assert!(!should_start_orb_drag(3.0, 3.0));
-        assert!(should_start_orb_drag(3.0, 4.0));
-        assert!(should_start_orb_drag(5.0, 0.0));
-        assert!(!should_start_orb_drag(4.9, 0.0));
-    }
-
-    #[test]
     fn wave_levels_take_the_last_peaks_and_fill_with_level() {
         use crate::indicator::wave_scale;
         assert_eq!(orb_wave_levels(0.25, &[]), [0.9; ORB_WAVE_BAR_COUNT]);
@@ -444,7 +435,7 @@ impl PointerModel for OrbPointer {
                     if !self.dragged && hit.phase == OrbPhase::Idle && !hit.transient {
                         let dpr = f64::from(hit.dpi) / 96.0;
                         let dpr = if dpr > 0.0 { dpr } else { 1.0 };
-                        if should_start_orb_drag(
+                        if exceeds_drag_threshold(
                             f64::from(screen.0 - x) / dpr,
                             f64::from(screen.1 - y) / dpr,
                         ) {
@@ -863,26 +854,15 @@ impl Orb {
             } else {
                 WAVE_AREA_RATIO
             };
-        let area_left = (logical - area) / 2.0;
-        let area_top = (logical - area) / 2.0;
-        let dpr = self.dpi as f32 / 96.0;
-        let dpr = if dpr > 0.0 { dpr } else { 1.0 };
-        let bar = ((area * dpr * WAVE_BAR_RATIO).round() as i32).max(1) as f32 / dpr;
-        let gap = ((area * dpr * WAVE_GAP_RATIO).round() as i32).max(1) as f32 / dpr;
-        let total = ORB_WAVE_BAR_COUNT as f32 * bar + (ORB_WAVE_BAR_COUNT - 1) as f32 * gap;
-        let start = area_left + ((area * dpr - total * dpr) / 2.0).round() / dpr;
-        for (index, level) in self.wave_display.iter().enumerate() {
-            let scale = level.max(ORB_WAVE_BAR_MIN_SCALE);
-            let mut height = area * ORB_WAVE_BAR_HEIGHTS[index] * scale;
-            height = height.max(bar);
-            let left = start + index as f32 * (bar + gap);
-            let top = area_top + (area - height) / 2.0;
-            canvas.fill_rounded_rect(
-                Rect::new(left, top, left + bar, top + height),
-                bar / 2.0,
-                self.color8(ACCENT, 1.0),
-            );
-        }
+        let origin = (logical - area) / 2.0;
+        WAVE_BARS.draw(
+            canvas,
+            self.dpi,
+            Point::new(origin, origin),
+            area,
+            &self.wave_display,
+            self.color8(ACCENT, 1.0),
+        );
     }
     fn draw_spinner<C: Canvas>(&self, canvas: &mut C, logical: f32, style: OrbStyle) {
         let side = logical * ICON_RATIO;

@@ -1,5 +1,5 @@
 use crate::geom::{Point, Rect};
-use crate::orb::should_start_orb_drag;
+use crate::ui::gesture::{client_to_dip, exceeds_drag_threshold};
 use crate::subtitle::SubtitleAction;
 use crate::window::*;
 
@@ -47,12 +47,7 @@ pub struct SubtitleHit {
 }
 impl SubtitleHit {
     fn point(&self, client: (i32, i32)) -> Point {
-        let scale = if self.dpi == 0 {
-            1.0
-        } else {
-            self.dpi as f32 / 96.0
-        };
-        Point::new(client.0 as f32 / scale, client.1 as f32 / scale)
+        client_to_dip(client, self.dpi)
     }
     fn button_at(&self, point: Point) -> Option<SubtitleButton> {
         self.buttons?
@@ -112,7 +107,7 @@ impl PointerModel for SubtitlePointer {
                     let dpr = f64::from(hit.dpi.max(96)) / 96.0;
                     if !self.dragging
                         && press.draggable
-                        && should_start_orb_drag(
+                        && exceeds_drag_threshold(
                             f64::from(screen.0 - press.screen.0) / dpr,
                             f64::from(screen.1 - press.screen.1) / dpr,
                         )
