@@ -6,17 +6,17 @@ export type LayoutMode = "simple" | "pro";
 export type DictationNodeKey = "basics" | "smart" | "rules" | "apps" | "shortcuts" | "orbGesture";
 export type SubtitleNodeKey = "basics" | "translation" | "style" | "output";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
-/** 模型页中栏：用途、某个供应商（`provider:<id>`）、本地模型与插件、模型对比。 */
-export type ModelsSectionKey = "usage" | "plugins" | "compare" | `provider:${string}`;
+/** 模型页中栏：用途、本地模型、某个供应商（`provider:<id>`）、插件、模型对比。 */
+export type ModelsSectionKey = "usage" | "local" | "plugins" | "compare" | `provider:${string}`;
 export type LexiconSectionKey = "hotwords" | "context";
-export type SettingsSectionKey = "general" | "sound" | "processing" | "keys" | "history" | "diagnostics";
+export type SettingsSectionKey = "general" | "audio" | "keys" | "history" | "diagnostics";
 export type SmartTextTabKey = "template" | "context" | "preview";
 
 /** 设置搜索命中：跳到对应页面分区后，按 targetText 定位并短暂高亮。 */
 export interface SearchHit {
   id: string;
-  view: "models" | "settings";
-  section: ModelsSectionKey | SettingsSectionKey;
+  view: "models" | "settings" | "dictation";
+  section: ModelsSectionKey | SettingsSectionKey | DictationNodeKey;
   targetText: string;
 }
 
@@ -84,7 +84,9 @@ export const useUiStore = create<UiState>((set) => ({
   searchHit: null,
   goToSearchHit: (hit) => set(hit.view === "models"
     ? { view: "models", modelsSection: hit.section as ModelsSectionKey, searchHit: hit }
-    : { view: "settings", settingsSection: hit.section as SettingsSectionKey, searchHit: hit }),
+    : hit.view === "dictation"
+      ? { view: "dictation", dictationNode: hit.section as DictationNodeKey, searchHit: hit }
+      : { view: "settings", settingsSection: hit.section as SettingsSectionKey, searchHit: hit }),
   clearSearchHit: (id) => set((state) => (state.searchHit?.id === id ? { searchHit: null } : {})),
   smartTextTab: "template",
   setSmartTextTab: (smartTextTab) => set({ smartTextTab }),

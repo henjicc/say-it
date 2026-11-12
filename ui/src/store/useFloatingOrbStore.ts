@@ -8,11 +8,28 @@ interface FloatingOrbState {
   error: string;
   hydrate: (settings: FloatingOrbSettings) => void;
   setEnabled: (enabled: boolean) => Promise<void>;
+  setAutoEnter: (enabled: boolean) => Promise<void>;
   updateAppearance: (patch: Partial<FloatingOrbAppearance>) => Promise<void>;
 }
 
 let appearanceRevision = 0;
 let settingsRevision = 0;
+
+/** 开关类设置：后端返回完整设置，期间有新的快照到达时以快照为准。 */
+async function toggle(command: string, enabled: boolean) {
+  const { setState } = useFloatingOrbStore;
+  const revision = settingsRevision;
+  setState({ busy: true, error: "" });
+  try {
+    const settings = await cmd<FloatingOrbSettings>(command, { enabled });
+    if (revision === settingsRevision) setState({ settings });
+  } catch (error) {
+    setState({ error: String(error) });
+    throw error;
+  } finally {
+    setState({ busy: false });
+  }
+}
 
 export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
   settings: {
@@ -32,19 +49,8 @@ export const useFloatingOrbStore = create<FloatingOrbState>((set, get) => ({
     settingsRevision += 1;
     set({ settings, error: "" });
   },
-  setEnabled: async (enabled) => {
-    const revision = settingsRevision;
-    set({ busy: true, error: "" });
-    try {
-      const settings = await cmd<FloatingOrbSettings>(CMD.setFloatingOrbEnabled, { enabled });
-      if (revision === settingsRevision) set({ settings });
-    } catch (error) {
-      set({ error: String(error) });
-      throw error;
-    } finally {
-      set({ busy: false });
-    }
-  },
+  setEnabled: (enabled) => toggle(CMD.setFloatingOrbEnabled, enabled),
+  setAutoEnter: (enabled) => toggle(CMD.setFloatingOrbAutoEnter, enabled),
   updateAppearance: async (patch) => {
     const revision = ++appearanceRevision;
     const snapshotRevision = settingsRevision;

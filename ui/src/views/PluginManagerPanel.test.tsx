@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PluginManagerPanel } from "./PluginManagerPanel";
+import { LocalModelsPanel, PluginsPanel } from "./PluginManagerPanel";
 import type { PluginSnapshot, PluginSummary } from "@/features/plugins/pluginInstaller";
 
 const { cmd, listeners, officialPacks } = vi.hoisted(() => ({
@@ -44,7 +44,7 @@ describe("插件常驻内存", () => {
     cmd.mockResolvedValueOnce(snapshot());
     let finish: (value: PluginSnapshot) => void = () => {};
     cmd.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
@@ -64,7 +64,7 @@ describe("插件常驻内存", () => {
     if (state === "disabled") item.enabled = false;
     else item.modelPack!.state = "pending";
     cmd.mockResolvedValue(snapshot(item));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     expect(await screen.findByRole("switch", { name: "本地测试常驻内存" })).toBeDisabled();
   });
 
@@ -76,7 +76,7 @@ describe("插件常驻内存", () => {
     const closed = structuredClone(item);
     closed.modelPack!.keepLoaded = false;
     cmd.mockResolvedValueOnce(snapshot(item)).mockResolvedValueOnce(snapshot(closed));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
@@ -85,17 +85,17 @@ describe("插件常驻内存", () => {
     expect(toggle).toBeDisabled();
   });
 
-  it("OCR 与连接器没有常驻开关", async () => {
+  it("OCR 模型没有常驻开关", async () => {
     const ocr = plugin({ modelPack: { engine: "ppocr-mnn", state: "ready", totalBytes: 1, readyBytes: 1, downloadable: false, keepLoaded: false } });
-    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [ocr, plugin({ id: "connector", name: "连接器", runtimeKind: "javascript", modelPack: undefined })] });
-    render(<PluginManagerPanel />);
+    cmd.mockResolvedValue(snapshot(ocr));
+    render(<LocalModelsPanel />);
     await screen.findByText("本地测试");
     expect(screen.queryByRole("switch", { name: /常驻内存/ })).not.toBeInTheDocument();
   });
 
   it("保存失败保留关闭状态，错误可见", async () => {
     cmd.mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(new Error("磁盘只读"));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     const toggle = await screen.findByRole("switch", { name: "本地测试常驻内存" });
     fireEvent.click(toggle);
     expect(await screen.findByText(/更新常驻内存失败：.*磁盘只读/)).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe("插件常驻内存", () => {
     item.modelPack!.keepLoaded = true;
     item.modelPack!.residency = { state: "failed", error: "文件 SHA256 不匹配" };
     cmd.mockResolvedValue(snapshot(item));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     expect(await screen.findByRole("alert")).toHaveTextContent("常驻加载失败：文件 SHA256 不匹配");
   });
 });
@@ -123,7 +123,7 @@ describe("被内置取代的模型包", () => {
       models: ["local-ppocr-v6-tiny"], trust: "unsigned", enabled: false,
       modelPack: { engine: "ppocr-mnn", state: "superseded", totalBytes: 3180668, readyBytes: 0, downloadable: false, keepLoaded: false },
     })));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     expect(await screen.findByText("已内置，可卸载")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "下载模型" })).not.toBeInTheDocument();
@@ -135,16 +135,17 @@ describe("官方模型", () => {
   beforeEach(() => { cmd.mockReset(); listeners.clear(); });
   afterEach(() => { cleanup(); officialPacks.length = 0; });
 
-  it("已装且没有更新的不列出，未装的点下载会安装对应模型包", async () => {
+  it("已装的留在目录原位且不再给下载，未装的点下载会安装对应模型包", async () => {
     officialPacks.push(
       { id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 },
       { id: "official.punct", name: "标点", description: "加标点", version: "1.0.0", sizeBytes: 100 },
     );
     cmd.mockResolvedValue(snapshot());
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "下载标点" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("install_official_model_pack", { packId: "official.punct" }));
     expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)本地测试$/ })).toBeNull();
+    expect(screen.getByRole("switch", { name: "启用本地测试" })).toBeInTheDocument();
   });
 
   it("目录版本更高才显示更新", async () => {
@@ -153,7 +154,7 @@ describe("官方模型", () => {
       { id: "official.old", name: "旧目录", description: "测试", version: "1.0.0", sizeBytes: 100 },
     );
     cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [plugin({ version: "1.0.9" }), plugin({ id: "official.old", name: "旧目录", version: "1.0.1" })] });
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     expect(await screen.findByRole("button", { name: "更新本地测试" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)旧目录$/ })).toBeNull();
   });
@@ -163,9 +164,21 @@ describe("官方模型", () => {
     const partial = plugin();
     partial.modelPack!.state = "partial";
     cmd.mockResolvedValue(snapshot(partial));
-    render(<PluginManagerPanel />);
+    render(<LocalModelsPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "继续下载本地测试" }));
     await waitFor(() => expect(cmd).toHaveBeenCalledWith("download_provider_model_pack", { pluginId: "official.test" }));
     expect(cmd).not.toHaveBeenCalledWith("install_official_model_pack", expect.anything());
+  });
+});
+
+describe("插件页", () => {
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  afterEach(cleanup);
+
+  it("只列连接器插件，模型包归本地模型页", async () => {
+    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [plugin(), plugin({ id: "connector", name: "连接器", runtimeKind: "javascript", modelPack: undefined })] });
+    render(<PluginsPanel />);
+    expect(await screen.findByText("连接器")).toBeInTheDocument();
+    expect(screen.queryByText("本地测试")).not.toBeInTheDocument();
   });
 });

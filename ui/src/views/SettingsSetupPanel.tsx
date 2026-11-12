@@ -5,7 +5,8 @@ import { Group, Row } from "@/components/ui/Group";
 import { Modal } from "@/components/ui/Modal";
 import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
 
-function EnvironmentStatus() {
+/** 各项关键能力（麦克风、权限、识别服务、快捷键）的检查结果与处理入口。 */
+export function EnvironmentStatus() {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [error, setError] = useState("");
   const [checking, setChecking] = useState(true);

@@ -2,12 +2,13 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
-import { useUiStore, type ModelsSectionKey, type SettingsSectionKey } from "@/store/useUiStore";
+import { useUiStore, type DictationNodeKey, type ModelsSectionKey, type SettingsSectionKey } from "@/store/useUiStore";
 
-/** 搜索结果落到的页面分区：模型与密钥页或设置页的某一类。 */
+/** 搜索结果落到的页面分区：模型与密钥页、设置页或听写页的某一类。 */
 export type SettingsSearchTarget =
   | { view: "models"; section: ModelsSectionKey }
-  | { view: "settings"; section: SettingsSectionKey };
+  | { view: "settings"; section: SettingsSectionKey }
+  | { view: "dictation"; section: DictationNodeKey };
 
 export interface SettingsSearchItem {
   id: string;
@@ -22,10 +23,11 @@ export interface SettingsSearchItem {
 export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
   { id: "model-usage", label: "用途", target: { view: "models", section: "usage" }, tabLabel: "模型与密钥", section: "各功能使用的模型", targetText: "通用大模型", keywords: "识别模型 智能模型 大模型 llm 翻译模型 ocr 读屏 字幕 转写 助手 听写 默认模型" },
   { id: "bailian-provider", label: "阿里云百炼", target: { view: "models", section: "provider:bailian" }, tabLabel: "模型与密钥", section: "供应商", targetText: "API Key", keywords: "百炼 dashscope qwen api key 密钥 供应商 识别 翻译 大模型" },
-  { id: "plugins", label: "插件管理", target: { view: "models", section: "plugins" }, tabLabel: "模型与密钥", section: "安装、启用与卸载", targetText: "插件管理", keywords: "sayit 模型包 安装 扫描 启用 卸载" },
-  { id: "input-device", label: "输入设备", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "麦克风保活", targetText: "输入设备", keywords: "麦克风 录音设备 音频输入" },
-  { id: "microphone-keepalive", label: "麦克风保活", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "输入设备", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },
-  { id: "audio-cues", label: "提示音", target: { view: "settings", section: "sound" }, tabLabel: "声音", section: "开始与结束提示", targetText: "提示音", keywords: "声音 开始提示音 结束提示音 自定义音效" },
+  { id: "local-models", label: "本地模型", target: { view: "models", section: "local" }, tabLabel: "模型与密钥", section: "下载、启用与卸载", targetText: "本地模型", keywords: "离线 模型包 下载 常驻内存 启用 卸载" },
+  { id: "plugins", label: "插件", target: { view: "models", section: "plugins" }, tabLabel: "模型与密钥", section: "安装、启用与卸载", targetText: "插件", keywords: "sayit 安装 扫描 启用 卸载 连接器" },
+  { id: "input-device", label: "麦克风", target: { view: "dictation", section: "basics" }, tabLabel: "听写", section: "基础", targetText: "麦克风", keywords: "输入设备 录音设备 音频输入" },
+  { id: "microphone-keepalive", label: "麦克风保活", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "麦克风", targetText: "麦克风保活", keywords: "麦克风 设备 关闭 延迟 秒" },
+  { id: "audio-cues", label: "提示音", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "开始与结束提示", targetText: "提示音", keywords: "声音 开始提示音 结束提示音 自定义音效" },
   { id: "autostart", label: "开机自启", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "启动设置", targetText: "开机自启", keywords: "登录系统 自动启动 开机启动" },
   { id: "silent-start", label: "静默启动", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "启动设置", targetText: "静默启动", keywords: "托盘 不弹窗口 后台启动" },
   { id: "data-root", label: "数据目录", target: { view: "settings", section: "general" }, tabLabel: "通用", section: "存储位置", targetText: "数据目录", keywords: "存储位置 迁移 恢复默认 模型目录 插件目录" },
@@ -38,10 +40,10 @@ export const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
   { id: "key-bindings", label: "快捷键集中管理", target: { view: "settings", section: "keys" }, tabLabel: "快捷键", section: "全部快捷键", targetText: "语音输入", keywords: "按键 热键 绑定 单击 长按 清除" },
   { id: "model-compare", label: "模型对比", target: { view: "models", section: "compare" }, tabLabel: "模型对比", section: "录音或音频文件", targetText: "开始对比", keywords: "识别效果 多模型 并排比较 上传音频 录音" },
   { id: "diagnostics", label: "诊断日志", target: { view: "settings", section: "diagnostics" }, tabLabel: "诊断与数据", section: "日志与诊断包", targetText: "诊断日志", keywords: "详细元数据 正文日志 日志目录 清空 导出诊断包" },
-  { id: "silence-disconnect", label: "静音断流", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "连接与阈值", targetText: "静音断流", keywords: "静音 阈值 断开 api 实时字幕 语音输入" },
-  { id: "loudness-denoise", label: "响度与降噪", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "响度与降噪", keywords: "lufs rnnoise vad 峰值 目标响度 降噪强度" },
-  { id: "equalizer", label: "均衡器（高低频）", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "均衡器（高低频）", keywords: "eq 低频 高频 增益 厚度 亮度" },
-  { id: "audio-lab", label: "录音试听与波形", target: { view: "settings", section: "processing" }, tabLabel: "音频处理", section: "音频调校", targetText: "录音试听与波形", keywords: "ab 试听 原始 处理后 波形 音频" },
+  { id: "silence-disconnect", label: "静音断流", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "连接与阈值", targetText: "静音断流", keywords: "静音 阈值 断开 api 实时字幕 语音输入" },
+  { id: "loudness-denoise", label: "响度与降噪", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "音频调校", targetText: "响度与降噪", keywords: "lufs rnnoise vad 峰值 目标响度 降噪强度" },
+  { id: "equalizer", label: "均衡器（高低频）", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "音频调校", targetText: "均衡器（高低频）", keywords: "eq 低频 高频 增益 厚度 亮度" },
+  { id: "audio-lab", label: "录音试听与波形", target: { view: "settings", section: "audio" }, tabLabel: "音频", section: "音频调校", targetText: "录音试听与波形", keywords: "ab 试听 原始 处理后 波形 音频" },
 ];
 
 function normalize(value: string) {
