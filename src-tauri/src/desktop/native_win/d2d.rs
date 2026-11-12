@@ -39,7 +39,6 @@ impl DWriteText {
     fn format(&self, style: &TextStyle<'_>) -> Option<IDWriteTextFormat> {
         let family = match style.family {
             FontFamily::SystemUi => "Microsoft YaHei UI",
-            FontFamily::SymbolGlyphs => "Segoe MDL2 Assets",
             FontFamily::Named(name) => name,
         };
         let key = FormatKey {
@@ -629,14 +628,10 @@ mod tests {
                 family: FontFamily::Named("Segoe UI"),
                 ..base
             },
-            TextStyle {
-                family: FontFamily::SymbolGlyphs,
-                ..base
-            },
         ] {
             assert!(text.layout("x", &other, 100.0, 100.0).is_some());
         }
-        assert_eq!(text.formats.borrow().len(), 7);
+        assert_eq!(text.formats.borrow().len(), 6);
     }
     #[test]
     fn native_d2d_tint_is_removed_from_cached_layout_after_drawing() {

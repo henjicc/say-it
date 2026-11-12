@@ -26,7 +26,7 @@ pub fn parse_hex_rgb(hex: &str) -> Option<Rgb8> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
-    /// Windows 现行像素：胶囊/悬浮球颜色 rgb×a、悬浮球 ✓/⚠ 用 Segoe MDL2、悬浮球固定暗色令牌、无玻璃。
+    /// Windows 现行像素：胶囊/悬浮球颜色 rgb×a、悬浮球固定暗色令牌、无玻璃。
     WindowsLegacy,
     /// 按 CSS 与主题：straight alpha、状态图标用 lucide 路径、悬浮球随主题与强调色、可选玻璃。
     Css,

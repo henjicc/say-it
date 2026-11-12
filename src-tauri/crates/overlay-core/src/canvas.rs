@@ -12,9 +12,6 @@ pub struct SvgIcon {
 pub enum FontFamily<'a> {
     /// 系统界面字体。Windows："Microsoft YaHei UI"；macOS：CTFontCreateUIFontForLanguage(System, "zh-Hans")。
     SystemUi,
-    /// 状态字形字体。Windows："Segoe MDL2 Assets"；macOS 无此字体，layout 返回 None
-    /// （Profile::Css 下模型改画路径图标，不会请求它）。
-    SymbolGlyphs,
     /// 用户配置的族名（字幕）。找不到时 Windows 由 DirectWrite 回退；macOS 依次回退
     /// PingFang SC → 系统界面字体，并以 zh-Hans 作语言属性。
     Named(&'a str),

@@ -35,12 +35,7 @@ const MANIFEST: &str = "manifest.txt";
 /// 三个窗口都用 16ms 的帧定时器。
 const FRAME: Duration = Duration::from_millis(16);
 /// 场景用到的全部字体；缺失时 DirectWrite 会静默回退，录下的就不是真实效果。
-const REQUIRED_FONTS: [&str; 4] = [
-    "Microsoft YaHei UI",
-    "Microsoft YaHei",
-    "Segoe MDL2 Assets",
-    "Segoe UI",
-];
+const REQUIRED_FONTS: [&str; 3] = ["Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"];
 const MK_LBUTTON: usize = 0x0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
