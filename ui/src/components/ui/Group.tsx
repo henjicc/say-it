@@ -8,7 +8,7 @@ export const ROW_CONTROL_W = "w-64";
 
 /**
  * 设置分组：可选的小号标题 + 一块抬起的分组面，组内各行之间自动加分隔线。
- * 组内只放 Row，或与 Row 同样左右分布的整行内容。
+ * 组内只放 Row，或与 Row 同样左右分布的整行内容。分组面是这里唯一的一层框，组内控件尽量不再画框。
  */
 export function Group({
   title,
@@ -67,7 +67,8 @@ export function Row({
           )}
           {labelAside && <span className="flex-none text-[13px]">{labelAside}</span>}
         </div>
-        {children && <div className="flex min-w-0 flex-none items-center justify-end gap-2">{children}</div>}
+        {/* data-row-controls：行内的下拉框与快捷键录制按「值」显示，不画框，见 index.css。 */}
+        {children && <div data-row-controls className="flex min-w-0 flex-none items-center justify-end gap-2">{children}</div>}
       </div>
       {message && <div className="pb-3 text-xs text-[var(--color-fg-subtle)]">{message}</div>}
     </div>

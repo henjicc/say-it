@@ -429,7 +429,7 @@ export function DeveloperPage() {
             : "";
 
   return (
-    <MasterDetail title="开发者" list={<NodeList ariaLabel="运行记录" items={items} active={active} onSelect={setActive} />}>
+    <MasterDetail wide title="开发者" list={<NodeList ariaLabel="运行记录" items={items} active={active} onSelect={setActive} />}>
       <InspectorHeader title={title} />
       {error && <p role="alert" className="-mt-2 mb-4 text-xs text-[var(--color-err)]">{error}</p>}
       {active === OVERVIEW && <OverviewPanel />}

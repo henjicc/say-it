@@ -142,6 +142,7 @@ export function RunningAppPicker({
             {supportsApplicationBrowse && (
               <IconButton
                 label={isMacOS ? "从本地选择 macOS 应用" : "从本地选择 EXE"}
+                variant="ghost"
                 disabled={disabled || picking}
                 onClick={() => void browseApplication()}
               >
@@ -150,6 +151,7 @@ export function RunningAppPicker({
             )}
             <IconButton
               label="刷新软件列表"
+                variant="ghost"
               disabled={disabled || loading}
               onClick={() => void loadRunningApps()}
             >

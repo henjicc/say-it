@@ -7,7 +7,7 @@ import { Group, Row } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { Input, NumberInput, Select, Textarea } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { InspectorBody } from "@/components/layout/MasterDetail";
+import { InspectorBody, InspectorHeader } from "@/components/layout/MasterDetail";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   DEFAULT_HOTWORD_WEIGHT,
@@ -68,11 +68,18 @@ export function HotwordsTab() {
       hotwords: current.hotwords.filter((_, i) => i !== index),
     }));
   };
+  const [newWord, setNewWord] = useState("");
   const addHotword = () => {
-    if (prefs.hotwords.length >= MAX_HOTWORDS) return;
-    save("新增热词", (current) => ({
-      hotwords: [...current.hotwords, { text: "", weight: DEFAULT_HOTWORD_WEIGHT }],
-    }));
+    const text = newWord.trim();
+    if (!text || prefs.hotwords.length >= MAX_HOTWORDS) return;
+    if (prefs.hotwords.some((item) => item.text.trim().toLocaleLowerCase() === text.toLocaleLowerCase())) {
+      notify("该词已经在热词表中");
+      return;
+    }
+    // 保存成功后才清空输入框，后端拒绝时（例如超长）原文还在，改一改就能再试。
+    void patch((current) => ({ hotwords: [{ text, weight: DEFAULT_HOTWORD_WEIGHT }, ...current.hotwords] }))
+      .then(() => setNewWord(""))
+      .catch((error) => notify(`新增热词失败：${String(error)}`, "err"));
   };
 
   const run = async (label: string, action: () => Promise<void>) => {
@@ -88,24 +95,47 @@ export function HotwordsTab() {
   };
 
   return (
+    <>
+    <InspectorHeader
+      title={<HelpLabel content="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">热词</HelpLabel>}
+      right={<>
+        <SyncStatus state={syncState} message={syncMessage} />
+        <span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{prefs.hotwords.length} / {MAX_HOTWORDS}</span>
+      </>}
+    />
     <InspectorBody>
-      <Group
-        title="热词表"
-        right={<SyncStatus state={syncState} message={syncMessage} />}
-        description="添加容易听错的人名、产品名或专业词，帮助提高识别准确率。修改后会自动保存并同步。">
+      <Group>
+        <label className="flex min-h-[var(--row-h)] items-center gap-2 px-3.5">
+          <Plus className="h-4 w-4 flex-none text-[var(--color-fg-subtle)]" strokeWidth={1.8} aria-hidden />
+          <Input
+            value={newWord}
+            placeholder="输入新热词，回车添加"
+            spellCheck={false}
+            aria-label="新热词"
+            maxLength={64}
+            disabled={prefs.hotwords.length >= MAX_HOTWORDS}
+            onChange={(event) => setNewWord(event.target.value)}
+            onKeyDown={(event) => {
+              // macOS 的 WebView 用回车确认输入法候选时 isComposing 已为 false，只能靠 keyCode 229 认出来。
+              if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) addHotword();
+            }}
+            className="ui-inline-field flex-1"
+          />
+        </label>
         {prefs.hotwords.length > 0 && (
-          <div className="max-h-[22rem] overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
+          <div className="max-h-[26rem] overflow-y-auto [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
             {prefs.hotwords.map((hotword, index) => (
-              <div key={index} className="flex items-center gap-2 px-3.5 py-2">
+              <div key={index} className="group flex min-h-10 items-center gap-2 px-3.5 py-1">
                 <Input
                   value={hotword.text}
-                  placeholder="热词，例如 说吧"
+                  placeholder="热词"
                   spellCheck={false}
                   aria-label={`第 ${index + 1} 个热词`}
                   onChange={(event) => updateHotword(index, { text: event.target.value })}
-                  size="sm" className="flex-1"
+                  size="sm"
+                  className="ui-inline-field flex-1 -ml-2.5"
                 />
-                <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-fg-subtle)]">
+                <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--color-fg-subtle)]">
                   <HelpLabel content="数值越高，发音相近时越优先识别成这个词。部分识别服务不支持此设置。">权重</HelpLabel>
                   <NumberInput
                     value={hotword.weight}
@@ -113,14 +143,16 @@ export function HotwordsTab() {
                     max={MAX_HOTWORD_WEIGHT}
                     aria-label={`第 ${index + 1} 个热词的权重`}
                     onValueChange={(weight) => updateHotword(index, { weight })}
-                    className="w-16"
+                    className="w-14"
+                    inputClassName="ui-inline-field"
                     size="sm"
                   />
                 </label>
+                {/* 删除只在悬停或键盘聚焦这一行时出现，几十个热词不会排出一整列垃圾桶。 */}
                 <IconButton
                   size="sm"
-                  variant="dangerHover"
-                  className="h-7 w-7 shrink-0"
+                  variant="dangerText"
+                  className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                   label={`删除热词 ${hotword.text || index + 1}`}
                   onClick={() => removeHotword(index)}
                 >
@@ -130,15 +162,6 @@ export function HotwordsTab() {
             ))}
           </div>
         )}
-        <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
-          <span className="text-xs text-[var(--color-fg-subtle)]">
-            {prefs.hotwords.length} / {MAX_HOTWORDS}
-          </span>
-          <Button size="sm" disabled={prefs.hotwords.length >= MAX_HOTWORDS} onClick={addHotword}>
-            <Plus className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-            添加热词
-          </Button>
-        </div>
       </Group>
 
       {targets.length > 0 && <Group title="供应商同步" description="需要云端热词表的服务会自动同步，你无需手动上传。">
@@ -157,6 +180,7 @@ export function HotwordsTab() {
             </Select>
             <Button
               size="sm"
+              variant="link"
               disabled={busy || !pullProviderId}
               onClick={() => void run("获取热词", () => pullFromProvider(pullProviderId))}
             >
@@ -164,7 +188,7 @@ export function HotwordsTab() {
             </Button>
             <Button
               size="sm"
-              variant="dangerHover"
+              variant="dangerText"
               disabled={busy}
               onClick={() => setClearConfirmOpen(true)}
             >
@@ -215,6 +239,7 @@ export function HotwordsTab() {
         </div>
       </Modal>
     </InspectorBody>
+    </>
   );
 }
 
@@ -248,6 +273,8 @@ export function ContextTab() {
   };
 
   return (
+    <>
+    <InspectorHeader title="上下文" />
     <InspectorBody>
       <Group
         title="模板"
@@ -276,5 +303,6 @@ export function ContextTab() {
         </pre>
       </Group>
     </InspectorBody>
+    </>
   );
 }

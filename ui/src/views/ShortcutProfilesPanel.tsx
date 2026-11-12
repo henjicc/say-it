@@ -177,7 +177,7 @@ export function ShortcutProfilesPanel() {
                 </IconButton>
                 <IconButton
                   size="sm"
-                  variant="dangerHover"
+                  variant="dangerText"
                   className="shrink-0"
                   label="删除快捷键方案"
                   onClick={() => void remove(profile)}

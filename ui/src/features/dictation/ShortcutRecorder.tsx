@@ -70,10 +70,11 @@ export function ShortcutRecorder({ value, onChange, onClear, disabled, ariaLabel
         disabled={disabled}
         aria-label={`${ariaLabel}：${capturing ? "请按下按键，Esc 取消" : label || "点击设置"}`}
         aria-pressed={capturing}
+        data-empty={!capturing && !label ? "" : undefined}
         onClick={() => { if (!capturing) toggleCapture(); }}
         className={cn(
-          "w-full justify-start text-left",
-          (label || capturing) && "pr-12",
+          "ui-value-control w-full justify-start text-left",
+          (label || capturing) && "pr-10",
           capturing && "border-[var(--accent-ring)]",
           !capturing && !label && "text-[var(--color-fg-subtle)]",
         )}

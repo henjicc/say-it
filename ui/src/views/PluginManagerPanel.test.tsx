@@ -51,7 +51,7 @@ describe("插件常驻内存", () => {
     let finish: (value: PluginSnapshot) => void = () => {};
     cmd.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻" });
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: true }));
@@ -70,7 +70,7 @@ describe("插件常驻内存", () => {
     else item.modelPack!.state = "pending";
     cmd.mockResolvedValue(snapshot(item));
     render(<LocalModelsPanel />);
-    expect(await screen.findByRole("checkbox", { name: "常驻内存" })).toBeDisabled();
+    expect(await screen.findByRole("checkbox", { name: "常驻" })).toBeDisabled();
   });
 
   it.each(["disabled", "pending"])("%s 时已开启仍可关闭", async (state) => {
@@ -82,7 +82,7 @@ describe("插件常驻内存", () => {
     closed.modelPack!.keepLoaded = false;
     cmd.mockResolvedValueOnce(snapshot(item)).mockResolvedValueOnce(snapshot(closed));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻" });
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
     await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: false }));
@@ -101,7 +101,7 @@ describe("插件常驻内存", () => {
   it("保存失败保留关闭状态，错误可见", async () => {
     cmd.mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(new Error("磁盘只读"));
     render(<LocalModelsPanel />);
-    const toggle = await screen.findByRole("checkbox", { name: "常驻内存" });
+    const toggle = await screen.findByRole("checkbox", { name: "常驻" });
     fireEvent.click(toggle);
     expect(await screen.findByText(/更新常驻内存失败：.*磁盘只读/)).toBeInTheDocument();
     expect(toggle).not.toBeChecked();
@@ -162,6 +162,20 @@ describe("官方模型", () => {
     render(<LocalModelsPanel />);
     expect(await screen.findByRole("button", { name: "更新本地测试" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)旧目录$/ })).toBeNull();
+  });
+
+  it("已下载的排在可下载之前", async () => {
+    officialPacks.push(
+      { id: "official.punct", name: "标点", description: "加标点", version: "1", sizeBytes: 100 },
+      { id: "official.off", name: "停用模型", description: "测试", version: "1", sizeBytes: 100 },
+      { id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 },
+    );
+    cmd.mockResolvedValue({ apiVersion: 5, errors: [], plugins: [plugin({ id: "official.off", name: "停用模型", enabled: false }), plugin()] });
+    render(<LocalModelsPanel />);
+    await screen.findByText("已下载");
+    const names = ["停用模型", "本地测试", "标点"].map((name) => screen.getByText(name));
+    expect(names[0].compareDocumentPosition(names[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(names[1].compareDocumentPosition(names[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("切到别的页面再回来，进行中的下载仍显示进度", async () => {

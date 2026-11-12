@@ -99,6 +99,8 @@
   --titlebar-h: 40px;
   --rail-w: 68px;
   --list-col-w: 288px;
+  /** 检查器内容的最大宽度：窗口再宽，名称与右侧控件也不会被拉开。 */
+  --inspector-max-w: 720px;
   --row-h: 48px;
   --control-h: 32px;
   --control-h-sm: 28px;
@@ -135,6 +137,49 @@
   outline: 2px solid var(--accent-ring);
   outline-offset: 3px;
 }
+/*
+ * 设置行右侧的下拉框和快捷键录制按「值」显示：不画框、文字靠右，悬停、展开或键盘聚焦时才出底色。
+ * 只认 Row 的控件区，弹窗、筛选栏里的同一个组件仍是带框的表单控件。
+ */
+[data-row-controls] .ui-value-control {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  justify-content: flex-end;
+  color: var(--color-fg-muted);
+}
+[data-row-controls] .ui-value-control:hover:not(:disabled),
+[data-row-controls] .ui-value-control[aria-expanded="true"],
+[data-row-controls] .ui-value-control[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--color-surface-hover);
+  color: var(--color-fg);
+}
+[data-row-controls] .ui-value-control[aria-pressed="true"] {
+  border-color: var(--accent-ring);
+}
+[data-row-controls] .ui-value-control[data-empty] {
+  color: var(--color-fg-subtle);
+}
+[data-row-controls] .ui-value-control:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 0;
+}
+
+/* 列表里可直接编辑的文字（热词等）：平时像普通文字，悬停出底色，聚焦时才显示输入框。 */
+.ui-inline-field {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.ui-inline-field:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+.ui-inline-field:focus {
+  border-color: var(--accent-ring);
+  background: var(--color-surface);
+}
+
 .ui-tooltip {
   position: fixed;
   z-index: var(--z-tooltip);

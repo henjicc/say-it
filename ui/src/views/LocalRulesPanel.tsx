@@ -179,7 +179,7 @@ export function LocalRulesPanel() {
             </label>
             <IconButton
               size="sm"
-              variant="dangerHover"
+              variant="dangerText"
               className="shrink-0"
               label="删除查找替换规则"
               onClick={() => deleteRule(rule.id)}
@@ -299,7 +299,7 @@ export function LocalRulesPanel() {
                       </Button>
                       <IconButton
                         size="sm"
-                        variant="dangerHover"
+                        variant="dangerText"
                         label={rule.builtin ? "内置规则不可删除（可停用）" : "删除正则规则"}
                         disabled={rule.builtin}
                         onClick={() => deleteRule(rule.id)}

@@ -305,7 +305,7 @@ const SortableTemplateRow = memo(function SortableTemplateRow({
       </IconButton>
       <IconButton
         size="sm"
-        variant="dangerHover"
+        variant="dangerText"
         label={`删除“${template.name}”`}
         title={canDelete ? undefined : "至少需要保留一个模板"}
         disabled={busy || sortingDisabled || !canDelete}

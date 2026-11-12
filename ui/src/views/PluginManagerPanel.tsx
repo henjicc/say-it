@@ -238,7 +238,7 @@ function InstalledRow({ plugin, manager, hardware, update }: {
             <p className="text-[13px] font-medium text-[var(--color-fg)]">
               <HelpLabel content={LOCAL_MODEL_NEEDS[plugin.id]?.summary}>{plugin.name}</HelpLabel>
             </p>
-            <span className="text-xs text-[var(--color-fg-subtle)]">{update ? `v${plugin.version} → v${update.version}` : `v${plugin.version}`}</span>
+            {update && <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version} → v{update.version}</span>}
             {pack?.state === "ready" && <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.totalBytes)}</span>}
             {plugin.trust !== "trusted" && <span className="text-xs text-[var(--color-warn)]">{TRUST_LABEL[plugin.trust]}</span>}
             <ModelFit pluginId={plugin.id} hardware={hardware} />
@@ -257,13 +257,13 @@ function InstalledRow({ plugin, manager, hardware, update }: {
         <div className="flex items-center gap-2">
           {progress !== undefined && <DownloadMeter name={plugin.name} progress={progress} totalBytes={totalBytes} />}
           {progress === undefined && update && (
-            <Button size="sm" aria-label={`更新${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id, true)}>
+            <Button size="sm" variant="link" aria-label={`更新${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id, true)}>
               <Download className="h-3.5 w-3.5" aria-hidden />
               更新
             </Button>
           )}
           {progress === undefined && !update && pack?.downloadable && pack.state !== "ready" && (
-            <Button size="sm" aria-label={`${downloadLabel}${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id)}>
+            <Button size="sm" variant="link" aria-label={`${downloadLabel}${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id)}>
               <Download className="h-3.5 w-3.5" aria-hidden />
               {downloadLabel}
             </Button>
@@ -280,7 +280,7 @@ function InstalledRow({ plugin, manager, hardware, update }: {
                   disabled={busy || (!pack.keepLoaded && (!plugin.enabled || pack.state !== "ready"))}
                   onChange={(keepLoaded) => void manager.setKeepLoaded(plugin, keepLoaded)}
                 >
-                  常驻内存
+                  常驻
                 </CheckField>
               </span>
             </Tooltip>
@@ -295,7 +295,7 @@ function InstalledRow({ plugin, manager, hardware, update }: {
           )}
           <IconButton
             size="sm"
-            variant="dangerHover"
+            variant="dangerText"
             disabled={busy}
             label={`卸载${plugin.name}`}
             onClick={() => manager.setPendingUninstall(plugin)}
@@ -322,21 +322,21 @@ function InstalledRow({ plugin, manager, hardware, update }: {
 function AvailableRow({ pack, manager, hardware }: { pack: OfficialModelPack; manager: Manager; hardware?: HardwareSummary }) {
   const progress = manager.downloadProgress(pack.id, pack.sizeBytes);
   const need = LOCAL_MODEL_NEEDS[pack.id]?.summary;
+  const detail = need ? `${pack.description.replace(/[。.]$/, "")}。${need}。` : pack.description;
   return (
     <div className="px-3.5 py-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
           <p className="text-[13px] font-medium text-[var(--color-fg)]">
-            <HelpLabel content={need}>{pack.name}</HelpLabel>
+            <HelpLabel content={detail}>{pack.name}</HelpLabel>
           </p>
           <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
           <ModelFit pluginId={pack.id} hardware={hardware} />
-          <p className="basis-full text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
         </div>
         {progress !== undefined
           ? <DownloadMeter name={pack.name} progress={progress} totalBytes={pack.sizeBytes} />
           : (
-            <Button size="sm" aria-label={`下载${pack.name}`} disabled={manager.downloadBusy} onClick={() => manager.download(pack.id)}>
+            <Button size="sm" variant="link" aria-label={`下载${pack.name}`} disabled={manager.downloadBusy} onClick={() => manager.download(pack.id)}>
               <Download className="h-3.5 w-3.5" aria-hidden />
               下载
             </Button>
@@ -383,7 +383,7 @@ function ManagerFooter({ manager }: { manager: Manager }) {
 function PackageActions({ manager, primary }: { manager: Manager; primary?: boolean }) {
   return (
     <>
-      <Button size="sm" disabled={manager.scanning} onClick={() => void manager.reload()}>
+      <Button size="sm" variant="text" disabled={manager.scanning} onClick={() => void manager.reload()}>
         {manager.scanning ? "扫描中…" : "重新扫描"}
       </Button>
       <Button size="sm" variant={primary ? "primary" : undefined} disabled={manager.scanning} onClick={() => void manager.install()}>安装 .sayit 包</Button>
@@ -400,19 +400,38 @@ function ListStatus({ manager, empty }: { manager: Manager; empty: string }) {
   );
 }
 
-/** 本地模型：官方目录与已安装的模型包合成一份列表，条目位置固定，只变状态。 */
+/**
+ * 本地模型：官方目录与已安装的模型包，分「已下载」和「可下载」两组。
+ * 可下载的按这台电脑的推荐在前，其余保持目录顺序；切换启用不改变位置。下载中的条目留在「可下载」原位，下完才移上去。
+ */
 export function LocalModelsPanel() {
   const manager = usePluginManager(true);
   const hardware = useHardware();
   const hardwareText = hardwareLabel(hardware);
+  const recommended = recommendedAsrPack(hardware);
   const { snapshot, officialPacks } = manager;
   const officialError = manager.packsError;
   const installedPacks = snapshot?.plugins.filter((plugin) => plugin.runtimeKind === "model-pack") ?? [];
   const catalog = officialPacks ?? [];
-  const outsideCatalog = installedPacks.filter((plugin) => !catalog.some((pack) => pack.id === plugin.id));
-  const empty = catalog.length === 0 && outsideCatalog.length === 0;
   // 目录到齐（或确定读不到）后再列出，已装的模型不会先排在后面再跳回目录里的位置。
   const listReady = Boolean(snapshot) && (Boolean(officialPacks) || Boolean(officialError));
+
+  const entries = [
+    ...catalog.map((pack) => ({ id: pack.id, pack, installed: installedPacks.find((plugin) => plugin.id === pack.id) })),
+    ...installedPacks
+      .filter((plugin) => !catalog.some((pack) => pack.id === plugin.id))
+      .map((plugin) => ({ id: plugin.id, pack: undefined, installed: plugin })),
+  ];
+  // 还没装、或装了但权重能继续下载的，算「可下载」；其余（已就绪、被内置取代、下不了的）都在「已下载」。
+  const isAvailable = ({ installed }: (typeof entries)[number]) =>
+    !installed || (installed.modelPack?.downloadable === true && !["ready", "superseded"].includes(installed.modelPack.state));
+  const downloaded = entries.filter((entry) => !isAvailable(entry));
+  const available = entries.filter(isAvailable)
+    .sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended));
+
+  const renderEntry = ({ id, pack, installed }: (typeof entries)[number]) => installed
+    ? <InstalledRow key={id} plugin={installed} manager={manager} hardware={hardware} update={pack && isNewerVersion(pack.version, installed.version) ? pack : undefined} />
+    : <AvailableRow key={id} pack={pack!} manager={manager} hardware={hardware} />;
 
   return (
     <>
@@ -421,25 +440,20 @@ export function LocalModelsPanel() {
         right={<PackageActions manager={manager} />}
       />
       <InspectorBody>
-      <Group>
-        {listReady && catalog.map((pack) => {
-          const installed = installedPacks.find((plugin) => plugin.id === pack.id);
-          return installed
-            ? <InstalledRow key={pack.id} plugin={installed} manager={manager} hardware={hardware} update={isNewerVersion(pack.version, installed.version) ? pack : undefined} />
-            : <AvailableRow key={pack.id} pack={pack} manager={manager} hardware={hardware} />;
-        })}
-        {listReady && outsideCatalog.map((plugin) => <InstalledRow key={plugin.id} plugin={plugin} manager={manager} hardware={hardware} />)}
+        {listReady && downloaded.length > 0 && <Group title="已下载">{downloaded.map(renderEntry)}</Group>}
+        {listReady && available.length > 0 && <Group title="可下载">{available.map(renderEntry)}</Group>}
         {snapshot && !officialPacks && (
-          <div className="flex items-center justify-between gap-4 px-3.5 py-3">
-            <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-              {officialError || "正在读取官方模型列表…"}
-            </p>
-            {officialError && <Button size="sm" onClick={() => void manager.retryLoad()}>重试</Button>}
-          </div>
+          <Group>
+            <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+              <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
+                {officialError || "正在读取官方模型列表…"}
+              </p>
+              {officialError && <Button size="sm" onClick={() => void manager.retryLoad()}>重试</Button>}
+            </div>
+          </Group>
         )}
-        {(!snapshot || (officialPacks && empty)) && <ListStatus manager={manager} empty="还没有本地模型" />}
-      </Group>
-      <ManagerFooter manager={manager} />
+        {(!snapshot || (officialPacks && entries.length === 0)) && <Group><ListStatus manager={manager} empty="还没有本地模型" /></Group>}
+        <ManagerFooter manager={manager} />
       </InspectorBody>
     </>
   );

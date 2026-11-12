@@ -234,7 +234,7 @@ export function ModelPicker({
           } else if (event.key === "Escape") closeAndFocus();
         }}
         className={cn(
-          "flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
+          "ui-value-control flex h-[var(--control-h)] w-full items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] px-4 py-2.5 text-left text-sm text-[var(--color-fg)] transition-colors duration-[var(--dur-fast)]",
           "hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-hover)] focus:outline-none focus:border-[var(--accent-ring)]",
           open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
           disabled && "cursor-not-allowed opacity-50",
