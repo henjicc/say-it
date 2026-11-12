@@ -8,6 +8,7 @@ pub mod look;
 pub mod orb;
 pub mod present;
 pub mod screen;
+pub mod spec;
 pub mod subtitle;
 pub mod svg;
 #[cfg(test)]

@@ -42,7 +42,7 @@
 - **不要在 CDP 同步 invoke 里触发会创建 WebView 窗口的命令**（如 `error` 态回退
   路径）：`set_indicator_state` 不是 async command，Windows 上在 WebView2 同步
   IPC 回调里建窗会重入死锁，整个渲染进程卡死。真实听写流程从 Rust 侧调用，无此问题。
-- 原生窗口验证：EnumWindows 按 PID + 类名（`SayItNativeDictationIndicator`）确认
+- 原生窗口验证：EnumWindows 按 PID + 类名（`sayit-native-indicator`）确认
   存在性与可见性；屏幕截图用 `Graphics.CopyFromScreen` 截主屏底部居中区域。
 - 内存测量脚本 `scripts/测量进程内存.ps1` 是 UTF-8 无 BOM，必须用 **pwsh 7**
   运行；Windows PowerShell 5.1 会按 ANSI 解析直接报语法错误。

@@ -5,9 +5,11 @@ use sayit_overlay_core::{
     geom::{snap_out_px, PxRect, Rect, Transform},
     look::Look,
     present::MainOp,
+    spec::Placement,
     window::{Cx, FrameClock, Ops, OverlayModel, PointerModel, WindowEvent, WindowOp},
 };
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::sync::{
     mpsc::{self, Receiver, Sender},
     Arc, Mutex, OnceLock,
@@ -22,17 +24,9 @@ use crate::{
     screens,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WindowId {
-    Indicator,
-    Orb,
-    Subtitle,
-}
-impl WindowId {
-    pub fn index(self) -> usize {
-        self as usize
-    }
-}
+/// 注册顺序分配的窗口编号；渲染线程与主线程各自按它索引自己的宿主表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct WindowId(pub u32);
 
 pub(crate) struct RenderCx {
     pub now: Instant,
@@ -41,8 +35,8 @@ pub(crate) struct RenderCx {
     pub screens: Arc<screens::Screens>,
 }
 impl RenderCx {
-    fn model(&self, id: WindowId, dpi: u32, fallback: Option<u32>) -> Cx<'_, CtText> {
-        let screen = (id == WindowId::Indicator)
+    fn model(&self, placement: Placement, dpi: u32, fallback: Option<u32>) -> Cx<'_, CtText> {
+        let screen = (placement == Placement::FollowFocus)
             .then(|| self.screens.indicator_screen(fallback))
             .flatten();
         Cx {
@@ -149,8 +143,8 @@ fn wait_duration(deadlines: impl Iterator<Item = Instant>, now: Instant) -> Opti
 }
 
 fn render_loop(rx: Receiver<Message>, look: Look) {
-    let mut hosts: [Option<Box<dyn AnyHost>>; 3] = std::array::from_fn(|_| None);
-    let mut pending: [Vec<HostJob>; 3] = std::array::from_fn(|_| Vec::new());
+    let mut hosts: BTreeMap<WindowId, Box<dyn AnyHost>> = BTreeMap::new();
+    let mut pending: BTreeMap<WindowId, Vec<HostJob>> = BTreeMap::new();
     let mut cx = RenderCx {
         now: Instant::now(),
         text: CtText::default(),
@@ -159,7 +153,7 @@ fn render_loop(rx: Receiver<Message>, look: Look) {
     };
     loop {
         let wait = wait_duration(
-            hosts.iter().flatten().filter_map(|h| h.deadline()),
+            hosts.values().filter_map(|h| h.deadline()),
             Instant::now(),
         );
         let message = match wait {
@@ -177,34 +171,34 @@ fn render_loop(rx: Receiver<Message>, look: Look) {
             cx.now = Instant::now();
             cx.screens = screens::snapshot();
             match message {
-                Some(Message::Host(id, f)) => match &mut hosts[id.index()] {
+                Some(Message::Host(id, f)) => match hosts.get_mut(&id) {
                     Some(host) => f(host.as_mut(), &cx),
-                    None => pending[id.index()].push(f),
+                    None => pending.entry(id).or_default().push(f),
                 },
                 Some(Message::Install(id, factory)) => {
-                    assert!(hosts[id.index()].is_none(), "overlay host registered twice");
+                    assert!(!hosts.contains_key(&id), "overlay host registered twice");
                     let mut host = factory(&cx);
                     host.look(&cx);
-                    for f in pending[id.index()].drain(..) {
+                    for f in pending.remove(&id).unwrap_or_default() {
                         f(host.as_mut(), &cx);
                     }
-                    hosts[id.index()] = Some(host);
+                    hosts.insert(id, host);
                 }
                 Some(Message::Look(look)) => {
                     cx.look = look;
-                    for host in hosts.iter_mut().flatten() {
+                    for host in hosts.values_mut() {
                         host.look(&cx);
                     }
                 }
                 Some(Message::AreaChanged) => {
-                    for host in hosts.iter_mut().flatten() {
+                    for host in hosts.values_mut() {
                         host.window_event(WindowEvent::AreaChanged, &cx);
                     }
                 }
                 None => {}
             }
             // 即使消息一直到达，已到期的帧仍须执行，不能等通道空闲。
-            for host in hosts.iter_mut().flatten() {
+            for host in hosts.values_mut() {
                 if host.deadline().is_some_and(|d| d <= cx.now) {
                     host.frame(&cx);
                 }
@@ -220,20 +214,21 @@ pub(crate) struct Host<M: OverlayModel<CtText>> {
     clock: FrameClock,
     dpi: u32,
     mask: MaskCache,
-    action: fn(M::Action) -> crate::OverlayEvent,
+    action: fn(M::Action),
 }
 
 impl<M: OverlayModel<CtText> + 'static> Host<M> {
     pub fn new(
         id: WindowId,
+        placement: Placement,
         model: M,
         dpi: u32,
-        action: fn(M::Action) -> crate::OverlayEvent,
+        action: fn(M::Action),
     ) -> Self {
         Self {
             hit: Arc::new(Mutex::new(model.hit())),
             model,
-            slot: Arc::new(CommitSlot::new(id)),
+            slot: Arc::new(CommitSlot::new(id, placement)),
             clock: FrameClock::new(),
             dpi: dpi.clamp(24, 768),
             mask: MaskCache::default(),
@@ -244,7 +239,7 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
     pub fn apply(&mut self, command: M::Command, cx: &RenderCx) {
         let ops = self.model.apply(
             command,
-            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
         );
         self.execute(ops, cx);
     }
@@ -258,7 +253,7 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
     pub fn input(&mut self, input: <M::Pointer as PointerModel>::Input, cx: &RenderCx) {
         let ops = self.model.input(
             input,
-            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
         );
         self.execute(ops, cx);
     }
@@ -271,7 +266,7 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
                 WindowOp::SetBounds(r) => self.slot.push(MainOp::SetBounds(r)),
                 WindowOp::MoveTo { x, y } => self.slot.push(MainOp::MoveTo { x, y }),
                 WindowOp::SetInteractive(value) => self.slot.push(MainOp::SetInteractive(value)),
-                WindowOp::Action(action) => crate::emit((self.action)(action)),
+                WindowOp::Action(action) => (self.action)(action),
                 WindowOp::TrackMouseLeave => {}
                 WindowOp::BeginSystemDrag => {
                     panic!("system drag belongs to the main-thread pointer bridge")
@@ -285,14 +280,15 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
         let fallback = self.slot.snapshot().screen;
         let Some(mut spec) = self
             .model
-            .prepare_frame(&cx.model(self.slot.id, self.dpi, fallback))
+            .prepare_frame(&cx.model(self.slot.placement, self.dpi, fallback))
         else {
             return;
         };
-        let screen = (self.slot.id == WindowId::Indicator)
+        let follow = self.slot.placement == Placement::FollowFocus;
+        let screen = follow
             .then(|| cx.screens.indicator_screen(fallback).copied())
             .flatten();
-        if self.slot.id == WindowId::Indicator {
+        if follow {
             let Some(screen) = screen else { return };
             spec.bounds = screens::indicator_placement(&screen, spec.bounds);
         }
@@ -381,7 +377,7 @@ impl<M: OverlayModel<CtText> + 'static> AnyHost for Host<M> {
         let dt = self.clock.delta(cx.now);
         let ops = self.model.on_frame(
             dt,
-            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
         );
         self.execute(ops, cx);
     }
@@ -398,7 +394,7 @@ impl<M: OverlayModel<CtText> + 'static> AnyHost for Host<M> {
         }
         let ops = self.model.window_event(
             event,
-            &cx.model(self.slot.id, self.dpi, self.slot.snapshot().screen),
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
         );
         self.execute(ops, cx);
     }
@@ -475,7 +471,8 @@ mod tests {
         let _guard = crate::cg::cg_test_lock();
         let trace = Rc::new(RefCell::new(Vec::new()));
         let mut host = Host::new(
-            WindowId::Orb,
+            WindowId(0),
+            Placement::Free,
             TestModel {
                 hit: 0,
                 trace: trace.clone(),
@@ -600,7 +597,7 @@ mod tests {
         let trace = Arc::new(Mutex::new(Vec::new()));
         for label in ["first", "second"] {
             tx.send(Message::Host(
-                WindowId::Orb,
+                WindowId(0),
                 Box::new(move |host, _| {
                     let host = host.as_any_mut().downcast_mut::<ScheduledHost>().unwrap();
                     host.trace.lock().unwrap().push(label);
@@ -611,7 +608,7 @@ mod tests {
         }
         let host_trace = trace.clone();
         tx.send(Message::Install(
-            WindowId::Orb,
+            WindowId(0),
             Box::new(move |cx| {
                 host_trace.lock().unwrap().push("install");
                 Box::new(ScheduledHost {

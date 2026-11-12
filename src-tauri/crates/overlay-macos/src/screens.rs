@@ -47,6 +47,35 @@ impl Screens {
     }
 }
 
+/// 指针的 DesktopPx 坐标；屏幕快照尚未采集时为 None。
+pub fn cursor_px() -> Option<(i32, i32)> {
+    let snapshot = snapshot();
+    if snapshot.list.is_empty() {
+        return None;
+    }
+    // Quartz 全局坐标（左上原点、点为单位）；CGEvent 读取可在任意线程进行。
+    let event = objc2_core_graphics::CGEvent::new(None)?;
+    let point = objc2_core_graphics::CGEvent::location(Some(&event));
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return None;
+    }
+    Some(screen::pts_to_px(
+        &snapshot.list,
+        screen::QPoint {
+            x: point.x,
+            y: point.y,
+        },
+        None,
+    ))
+}
+
+/// 百分比布局的逻辑参考尺寸，与 `Placement::Screen` 的布局区同屏；屏幕快照尚未采集时为 None。
+pub fn reference_size() -> Option<(f64, f64)> {
+    snapshot()
+        .area_screen()
+        .map(|s| (s.visible.width, s.visible.height))
+}
+
 /// 输入是模型相对 visibleFrame 排好的帧（含入退场位移），只修正底部 Dock 锚点。
 pub(crate) fn indicator_placement(screen: &ScreenInfo, requested: PxRect) -> PxRect {
     let visible = screen::rect_pts_to_px(&[*screen], screen.visible, Some(screen.id));

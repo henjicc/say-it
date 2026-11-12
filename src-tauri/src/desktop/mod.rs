@@ -15,8 +15,6 @@ pub(crate) mod indicator;
 pub(crate) mod mouse_gesture;
 pub(crate) mod native_common;
 pub(crate) mod native_indicator;
-#[cfg(target_os = "macos")]
-pub(crate) mod native_mac;
 pub(crate) mod native_orb;
 #[cfg(windows)]
 pub(crate) mod native_win;

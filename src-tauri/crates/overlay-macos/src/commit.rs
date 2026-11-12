@@ -15,9 +15,11 @@ use sayit_overlay_core::{
     geom::PxRect,
     look::Look,
     present::{CommitQueue, MainOp},
+    spec::Placement,
     screen::{self, QRect, ScreenInfo},
 };
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Frame {
@@ -50,13 +52,15 @@ struct Pending {
 }
 pub(crate) struct CommitSlot {
     pub id: WindowId,
+    pub placement: Placement,
     pending: Mutex<Pending>,
     pub mirror: Mutex<Mirror>,
 }
 impl CommitSlot {
-    pub fn new(id: WindowId) -> Self {
+    pub fn new(id: WindowId, placement: Placement) -> Self {
         Self {
             id,
+            placement,
             pending: Mutex::new(Pending {
                 queue: CommitQueue::new(),
                 scheduled: false,
@@ -90,7 +94,7 @@ impl CommitSlot {
                 pending.scheduled = false;
                 pending.queue.take()
             };
-            let host = HOSTS.with(|hosts| hosts.borrow()[slot.id.index()].clone());
+            let host = HOSTS.with(|hosts| hosts.borrow().get(&slot.id).cloned());
             if let Some(host) = host {
                 // 取出主线程状态，AppKit 通知重入时不持 TLS RefCell 借用。
                 for op in ops {
@@ -124,7 +128,7 @@ impl CommitSlot {
 
 // Rc 和 Retained<AppKit> 只保存在主线程 TLS 内，跨线程仅传 CommitSlot。
 thread_local! {
-    static HOSTS: RefCell<[Option<std::rc::Rc<MainHost>>; 3]> = RefCell::new(std::array::from_fn(|_| None));
+    static HOSTS: RefCell<BTreeMap<WindowId, std::rc::Rc<MainHost>>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 struct MainHost {
@@ -150,19 +154,15 @@ pub(crate) fn attach(
             glass: RefCell::new(GlassView::default()),
         });
         HOSTS.with(|hosts| {
-            let mut hosts = hosts.borrow_mut();
-            assert!(
-                hosts[slot.id.index()].is_none(),
-                "overlay panel registered twice"
-            );
-            hosts[slot.id.index()] = Some(host);
+            let previous = hosts.borrow_mut().insert(slot.id, host);
+            assert!(previous.is_none(), "overlay panel registered twice");
         });
         slot.ready();
     });
 }
 
 pub(crate) fn with_view(id: WindowId, f: impl FnOnce(&OverlayView)) {
-    let view = HOSTS.with(|hosts| hosts.borrow()[id.index()].as_ref().map(|h| h.view.clone()));
+    let view = HOSTS.with(|hosts| hosts.borrow().get(&id).map(|h| h.view.clone()));
     if let Some(view) = view {
         f(&view);
     }
@@ -173,8 +173,7 @@ pub(crate) fn refresh_accessibility() {
     let shown = HOSTS.with(|hosts| {
         hosts
             .borrow()
-            .iter()
-            .flatten()
+            .values()
             .filter(|host| host.slot.snapshot().visible)
             .map(|host| host.slot.id)
             .collect::<Vec<_>>()
@@ -189,7 +188,7 @@ pub(crate) fn apply_immediate(id: WindowId, op: MainOp<Frame>) {
         MainThreadMarker::new().is_some(),
         "pointer op must run on main thread"
     );
-    let host = HOSTS.with(|hosts| hosts.borrow()[id.index()].clone());
+    let host = HOSTS.with(|hosts| hosts.borrow().get(&id).cloned());
     if let Some(host) = host {
         host.apply(op);
     }
@@ -244,7 +243,7 @@ impl MainHost {
                     CATransaction::commit();
                     return;
                 }
-                if self.slot.id == WindowId::Indicator && !self.panel.isVisible() {
+                if self.slot.placement == Placement::FollowFocus && !self.panel.isVisible() {
                     // 全局快捷键可能先于激活/屏幕通知；显示前只在主线程复核，不等待渲染线程。
                     screens::refresh(mtm);
                     let snapshot = screens::snapshot();
@@ -313,9 +312,7 @@ impl MainHost {
                     self.panel.orderFrontRegardless();
                 }
             }
-            MainOp::SetInteractive(value) => self
-                .panel
-                .setIgnoresMouseEvents(self.slot.id == WindowId::Indicator || !value),
+            MainOp::SetInteractive(value) => self.panel.setIgnoresMouseEvents(!value),
             MainOp::SetBounds(bounds) => {
                 let mirror = self.slot.snapshot();
                 if let (Some(x), Some(y)) = (

@@ -8,15 +8,34 @@
 //! 移植自 ui/src/floating-orb/interaction.ts；波形柱布局来自 OrbWaveform.tsx。
 //! 模型与指针层在 overlay-core，Windows 宿主在 native_win，macOS 宿主在 overlay-macos。
 
-#[cfg(windows)]
-use super::native_win::orb as imp;
-#[cfg(target_os = "macos")]
-use super::native_mac::orb as imp;
-use sayit_overlay_core::orb::{OrbAction, OrbClickAction, OrbContextAction, OrbMirrors};
+use super::native_common::{post, post_if_started, run_action, started};
+use sayit_overlay_core::canvas::TextEngine;
+use sayit_overlay_core::look::Look;
+use sayit_overlay_core::orb::{
+    Command, Orb, OrbAction, OrbClickAction, OrbContextAction, OrbMirrors, OrbPhase,
+};
+use sayit_overlay_core::spec::{OverlaySpec, Placement};
 use std::sync::OnceLock;
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 /// 投递侧写入请求，窗口的移动、DPI 与拖拽结束由模型回写；任意线程同步读取。
-pub(super) static MIRRORS: OrbMirrors = OrbMirrors::new();
+static MIRRORS: OrbMirrors = OrbMirrors::new();
+
+pub(crate) struct OrbWindow;
+impl OverlaySpec for OrbWindow {
+    const NAME: &'static str = "sayit-native-orb";
+    const TITLE: &'static str = "说吧！语音输入悬浮球";
+    const PLACEMENT: Placement = Placement::Free;
+    const CLICK_THROUGH: bool = false;
+    type Command = Command;
+    type Action = OrbAction;
+    type Model<T: TextEngine + 'static> = Orb;
+    fn model<T: TextEngine + 'static>(dpi: u32, look: &Look) -> Orb {
+        Orb::new(dpi, look).with_mirrors(&MIRRORS)
+    }
+    fn dispatch(action: OrbAction) {
+        run_action(move || run_orb_action(action));
+    }
+}
 
 /// 未设置 `SAYIT_NATIVE_ORB` 时取平台默认；`0` 回退 WebView。
 pub(crate) fn native_orb_enabled() -> bool {
@@ -26,92 +45,63 @@ pub(crate) fn native_orb_enabled() -> bool {
 
 pub(crate) fn native_orb_attach(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
-    #[cfg(target_os = "macos")]
-    super::native_mac::ensure_started(app);
+    super::native_common::native_overlay_start();
 }
 
 /// 原生悬浮球窗口是否已经创建。
 pub(crate) fn native_orb_started() -> bool {
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        imp::started()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        false
-    }
+    started::<OrbWindow>()
 }
 
 /// 首次创建原生悬浮球窗口并设置矩形与整体透明度（物理像素 / 百分比）。
 pub(crate) fn native_orb_configure(x: i32, y: i32, size: i32, opacity_percent: u8) {
     MIRRORS.set_rect(x, y, size);
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        imp::post(imp::Command::SetRect { x, y, size });
-        imp::post(imp::Command::SetOpacity(f32::from(opacity_percent) / 100.0));
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = opacity_percent;
+    post::<OrbWindow>(Command::SetRect { x, y, size });
+    post::<OrbWindow>(Command::SetOpacity(f32::from(opacity_percent) / 100.0));
 }
 
 pub(crate) fn native_orb_set_rect(x: i32, y: i32, size: i32) {
     MIRRORS.set_rect(x, y, size);
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetRect { x, y, size });
+    post_if_started::<OrbWindow>(Command::SetRect { x, y, size });
 }
 
 pub(crate) fn native_orb_move_to(x: i32, y: i32) {
     MIRRORS.move_to(x, y);
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::MoveTo { x, y });
+    post_if_started::<OrbWindow>(Command::MoveTo { x, y });
 }
 
 pub(crate) fn native_orb_set_opacity(percent: u8) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetOpacity(f32::from(percent) / 100.0));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = percent;
+    post_if_started::<OrbWindow>(Command::SetOpacity(f32::from(percent) / 100.0));
 }
 
 pub(crate) fn native_orb_show() {
     MIRRORS.set_visible(true);
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::Show);
+    post_if_started::<OrbWindow>(Command::Show);
 }
 
 pub(crate) fn native_orb_hide() {
     MIRRORS.set_visible(false);
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::Hide);
+    post_if_started::<OrbWindow>(Command::Hide);
 }
 
 /// 等价于 WebView 的 `set_ignore_cursor_events(!interactive)`。
 pub(crate) fn native_orb_set_interactive(interactive: bool) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetInteractive(interactive));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = interactive;
+    post_if_started::<OrbWindow>(Command::SetInteractive(interactive));
 }
 
 /// 未知 phase 静默丢弃，与 native_indicator 的状态过滤一致。
 pub(crate) fn native_orb_set_state(phase: &str, transient: bool, can_submit: bool) {
-    #[cfg(any(windows, target_os = "macos"))]
-    if let Some(phase) = sayit_overlay_core::orb::OrbPhase::from_str(phase) {
-        imp::post_if_started(imp::Command::SetState {
+    if let Some(phase) = OrbPhase::from_str(phase) {
+        post_if_started::<OrbWindow>(Command::SetState {
             phase,
             transient,
             can_submit,
         });
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (phase, transient, can_submit);
 }
 
 pub(crate) fn native_orb_set_waveform(level: f32, peaks: Vec<f32>) {
-    #[cfg(any(windows, target_os = "macos"))]
-    imp::post_if_started(imp::Command::SetWaveform { level, peaks });
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let _ = (level, peaks);
+    post_if_started::<OrbWindow>(Command::SetWaveform { level, peaks });
 }
 
 /// 最近一次已知的窗口矩形（物理像素 x/y/边长）。
@@ -126,22 +116,35 @@ pub(crate) fn native_orb_is_visible() -> bool {
 /// 与 WebView 路径的 is_cursor_over_floating_orb 同语义：真实指针位置
 /// 是否落在当前可见的悬浮球矩形内。
 pub(crate) fn native_orb_cursor_over() -> bool {
-    #[cfg(any(windows, target_os = "macos"))]
+    let (Some((x, y, size)), true, Some((cx, cy))) =
+        (MIRRORS.rect(), MIRRORS.is_visible(), cursor_px())
+    else {
+        return false;
+    };
+    cx >= x && cx < x + size && cy >= y && cy < y + size
+}
+
+/// 指针的 DesktopPx 坐标。
+fn cursor_px() -> Option<(i32, i32)> {
+    #[cfg(windows)]
     {
-        let (Some((x, y, size)), true, Some((cx, cy))) =
-            (MIRRORS.rect(), MIRRORS.is_visible(), imp::cursor_px())
-        else {
-            return false;
-        };
-        cx >= x && cx < x + size && cy >= y && cy < y + size
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut cursor = POINT::default();
+        unsafe { GetCursorPos(&mut cursor) }.ok()?;
+        Some((cursor.x, cursor.y))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        sayit_overlay_macos::cursor_px()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        false
+        None
     }
 }
 
-pub(crate) fn run_orb_action(action: OrbAction) {
+fn run_orb_action(action: OrbAction) {
     match action {
         OrbAction::Click(action) => run_click_action(action),
         OrbAction::Context(action) => run_context_action(action),
