@@ -34,7 +34,7 @@ fn windows() -> &'static Mutex<HashMap<TypeId, WindowId>> {
     WINDOWS.get_or_init(Default::default)
 }
 
-/// 提前启动渲染服务并开始采集屏幕信息，之后注册的窗口建模型时就有正确的缩放；可重复调用。
+/// 提前启动渲染服务并开始采集屏幕信息；可重复调用。
 pub fn start() {
     START.call_once(render::start);
 }
@@ -50,10 +50,9 @@ fn register<S: OverlaySpec>() -> WindowId {
     render::install_host(
         id,
         Box::new(move |cx| {
-            let dpi = cx
-                .screens
-                .area_screen()
-                .map_or(96, |s| core::screen::dpi_for_scale(s.scale));
+            // 宿主在屏幕信息到位后才建，这里一定取得到焦点屏；窗口落在别的屏上时由上屏那一步改正。
+            let screen = cx.screens.area_screen().expect("hosts wait for screens");
+            let dpi = core::screen::dpi_for_scale(screen.scale);
             let host = Host::new(
                 id,
                 S::PLACEMENT,

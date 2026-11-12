@@ -56,6 +56,9 @@ pub(crate) trait AnyHost {
     fn deadline(&self) -> Option<Instant>;
     fn frame(&mut self, cx: &RenderCx);
     fn redraw(&mut self, cx: &RenderCx);
+    /// 主线程发现上屏的帧与面板实际缩放不符：改用实际缩放重画，不经过模型的 `DpiChanged`
+    /// （窗口矩形已经是物理像素，按新旧缩放之比再换算一次会把尺寸改错）。
+    fn adopt_dpi(&mut self, dpi: u32, cx: &RenderCx);
     fn look(&mut self, cx: &RenderCx);
     fn window_event(&mut self, event: WindowEvent, cx: &RenderCx);
 }
@@ -128,7 +131,7 @@ pub(crate) fn start() {
     let initial = *look;
     std::thread::Builder::new()
         .name("overlay-render".into())
-        .spawn(move || render_loop(rx, initial))
+        .spawn(move || render_loop(rx, initial, screens::snapshot))
         .expect("start overlay render thread");
     dispatch2::DispatchQueue::main().exec_async(|| {
         screens::observe(objc2::MainThreadMarker::new().expect("main queue"));
@@ -142,14 +145,17 @@ fn wait_duration(deadlines: impl Iterator<Item = Instant>, now: Instant) -> Opti
         .map(|deadline| deadline.saturating_duration_since(now))
 }
 
-fn render_loop(rx: Receiver<Message>, look: Look) {
+fn render_loop(rx: Receiver<Message>, look: Look, screens: fn() -> Arc<screens::Screens>) {
     let mut hosts: BTreeMap<WindowId, Box<dyn AnyHost>> = BTreeMap::new();
     let mut pending: BTreeMap<WindowId, Vec<HostJob>> = BTreeMap::new();
+    // 屏幕信息在主线程采集，可能晚于第一个窗口的注册（例如注册发生在主线程的一次调用里）。
+    // 等它到了再建宿主：模型一开始就拿到所在屏的缩放，而不是按 96 建好之后再也没人纠正。
+    let mut waiting: Vec<(WindowId, Factory)> = Vec::new();
     let mut cx = RenderCx {
         now: Instant::now(),
         text: CtText::default(),
         look,
-        screens: screens::snapshot(),
+        screens: screens(),
     };
     loop {
         let wait = wait_duration(
@@ -169,21 +175,13 @@ fn render_loop(rx: Receiver<Message>, look: Look) {
         };
         autoreleasepool(|_| {
             cx.now = Instant::now();
-            cx.screens = screens::snapshot();
+            cx.screens = screens();
             match message {
                 Some(Message::Host(id, f)) => match hosts.get_mut(&id) {
                     Some(host) => f(host.as_mut(), &cx),
                     None => pending.entry(id).or_default().push(f),
                 },
-                Some(Message::Install(id, factory)) => {
-                    assert!(!hosts.contains_key(&id), "overlay host registered twice");
-                    let mut host = factory(&cx);
-                    host.look(&cx);
-                    for f in pending.remove(&id).unwrap_or_default() {
-                        f(host.as_mut(), &cx);
-                    }
-                    hosts.insert(id, host);
-                }
+                Some(Message::Install(id, factory)) => waiting.push((id, factory)),
                 Some(Message::Look(look)) => {
                     cx.look = look;
                     for host in hosts.values_mut() {
@@ -196,6 +194,17 @@ fn render_loop(rx: Receiver<Message>, look: Look) {
                     }
                 }
                 None => {}
+            }
+            if !cx.screens.list.is_empty() {
+                for (id, factory) in waiting.drain(..) {
+                    assert!(!hosts.contains_key(&id), "overlay host registered twice");
+                    let mut host = factory(&cx);
+                    host.look(&cx);
+                    for f in pending.remove(&id).unwrap_or_default() {
+                        f(host.as_mut(), &cx);
+                    }
+                    hosts.insert(id, host);
+                }
             }
             // 即使消息一直到达，已到期的帧仍须执行，不能等通道空闲。
             for host in hosts.values_mut() {
@@ -382,6 +391,10 @@ impl<M: OverlayModel<CtText> + 'static> AnyHost for Host<M> {
         self.execute(ops, cx);
     }
     fn redraw(&mut self, cx: &RenderCx) {
+        self.execute(vec![WindowOp::Redraw], cx);
+    }
+    fn adopt_dpi(&mut self, dpi: u32, cx: &RenderCx) {
+        self.dpi = dpi.clamp(24, 768);
         self.execute(vec![WindowOp::Redraw], cx);
     }
     fn look(&mut self, cx: &RenderCx) {
@@ -588,6 +601,7 @@ mod tests {
                 self.next = None;
             }
             fn redraw(&mut self, _: &RenderCx) {}
+            fn adopt_dpi(&mut self, _: u32, _: &RenderCx) {}
             fn look(&mut self, _: &RenderCx) {
                 self.trace.lock().unwrap().push("look");
             }
@@ -621,13 +635,73 @@ mod tests {
         .unwrap();
         tx.send(Message::Look(Look::MACOS_DEFAULT)).ok().unwrap();
         drop(tx);
-        std::thread::spawn(move || render_loop(rx, Look::MACOS_DEFAULT))
+        std::thread::spawn(move || render_loop(rx, Look::MACOS_DEFAULT, one_screen))
             .join()
             .unwrap();
         assert_eq!(
             &*trace.lock().unwrap(),
             &["install", "look", "first", "second", "frame", "look"]
         );
+    }
+
+    fn one_screen() -> Arc<screens::Screens> {
+        Arc::new(screens::Screens {
+            list: vec![sayit_overlay_core::screen::ScreenInfo {
+                id: 1,
+                frame: Default::default(),
+                visible: Default::default(),
+                scale: 2.0,
+            }],
+            main: Some(1),
+            primary_height: 0.0,
+        })
+    }
+
+    #[test]
+    fn hosts_are_built_only_after_screen_info_arrives() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        struct IdleHost;
+        impl AnyHost for IdleHost {
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+            fn deadline(&self) -> Option<Instant> {
+                None
+            }
+            fn frame(&mut self, _: &RenderCx) {}
+            fn redraw(&mut self, _: &RenderCx) {}
+            fn adopt_dpi(&mut self, _: u32, _: &RenderCx) {}
+            fn look(&mut self, _: &RenderCx) {}
+            fn window_event(&mut self, _: WindowEvent, _: &RenderCx) {}
+        }
+        // 循环启动时和处理注册那一轮都还没有屏幕信息，之后才有。
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        fn screens_after_two_calls() -> Arc<screens::Screens> {
+            if CALLS.fetch_add(1, Ordering::AcqRel) < 2 {
+                Arc::new(screens::Screens::default())
+            } else {
+                one_screen()
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        // 注册早于屏幕信息：此时建宿主只能按 96 dpi，Retina 上尺寸会算错。
+        tx.send(Message::Install(
+            WindowId(0),
+            Box::new(move |cx| {
+                record.lock().unwrap().push(cx.screens.list.len());
+                Box::new(IdleHost)
+            }),
+        ))
+        .ok()
+        .unwrap();
+        tx.send(Message::AreaChanged).ok().unwrap();
+        drop(tx);
+        std::thread::spawn(move || render_loop(rx, Look::MACOS_DEFAULT, screens_after_two_calls))
+            .join()
+            .unwrap();
+        assert_eq!(&*seen.lock().unwrap(), &[1]);
     }
     #[test]
     fn content_fit_preserves_layout_origin_and_pixel_alignment() {
