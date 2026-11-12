@@ -417,7 +417,7 @@ function AudioLabSections() {
       <Group
         title="响度与降噪"
         description="在这里调整降噪和音量，设置会自动用于之后的语音输入。"
-        right={<Button size="sm" onClick={reset}>恢复默认</Button>}
+        right={<Button size="sm" variant="text" onClick={reset}>恢复默认</Button>}
       >
         <SliderRow
           label="目标响度"

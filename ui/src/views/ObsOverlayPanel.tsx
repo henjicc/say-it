@@ -199,7 +199,7 @@ export function ObsOverlayPanel() {
       <Group
         title="连接 OBS"
         description="安装后，字幕样式会自动同步到 OBS，无需反复更新字幕源。你在 OBS 中调整的位置、缩放和裁切会保留，也可以随时切回桌面字幕。"
-        right={<Button size="sm" onClick={connect} disabled={busy}>连接 OBS</Button>}
+        right={<Button size="sm" variant="text" onClick={connect} disabled={busy}>连接 OBS</Button>}
       >
         <Row label="地址">
           <Input className={ROW_CONTROL_W} aria-label="OBS 地址" value={host} onChange={(event) => setHost(event.target.value)} placeholder="127.0.0.1" disabled={busy} />

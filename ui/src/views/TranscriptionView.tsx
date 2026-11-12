@@ -29,7 +29,7 @@ import { normalizeStoredParams, parseSpeakerCount, useTranscriptionParamsSync } 
 import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
-import { UsageLinkRow, useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
+import { useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions } from "@/features/models/usage";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { MeetingPanel } from "@/views/transcription/MeetingPanel";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -56,18 +56,14 @@ export function TranscriptionModelRow({ label = "识别模型" }: { label?: stri
   const asrProvider = useProviderStore((s) => s.profiles.find((profile) => profile.id === s.effective("asr")));
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const inUsagePage = useInUsagePage();
-  const editable = useUsageEditable();
   const [error, setError] = useState("");
   const stored = normalizeStoredParams(asrProvider?.config?.transcription);
   const model = inUsagePage ? stored.model : params.model;
   const options = useOfferedAsrOptions(FILE_ASR_MODEL_OPTIONS, model);
   const issue = useAsrUsageIssue(model, TRANSCRIPTION_SCENES);
-  if (!editable) {
-    return <UsageLinkRow label={label} value={options.find((option) => option.value === model)?.label ?? model} message={issue} />;
-  }
   const change = (value: string) => {
+    // 在这里选和在「用途」里选是同一项设置，两边都写回默认值。
     setParams({ model: value });
-    if (!inUsagePage) return;
     if (!asrProvider) {
       setError("没有可用的识别供应商，暂时无法保存。");
       return;
@@ -348,7 +344,7 @@ function SummarySection({
     <section className="flex flex-col gap-2">
       <SectionHeader
         title="纪要"
-        right={<Button size="sm" disabled={running} onClick={generate}>{running ? "正在生成…" : mine?.text ? "重新生成" : "生成纪要"}</Button>}
+        right={<Button size="sm" variant="text" disabled={running} onClick={generate}>{running ? "正在生成…" : mine?.text ? "重新生成" : "生成纪要"}</Button>}
       />
       {shownError && <p role="alert" className="px-0.5 text-xs text-[var(--color-err)]">{shownError}</p>}
       {mine?.text && (

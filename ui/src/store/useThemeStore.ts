@@ -295,6 +295,8 @@ export function applyThemeToDocument(themeValue: Partial<AccentTheme>, target = 
   const root = target.documentElement;
   const set = (name: string, value: string) => root.style.setProperty(name, value);
   root.dataset.uiTone = theme.tone;
+  // 原生部件（文本框拖拽角、日期选择等）跟随色调，否则深色界面里会画成浅色。
+  root.style.colorScheme = light ? "light" : "dark";
   for (const [name, value] of Object.entries(TONE_PALETTE[theme.tone])) set(name, value);
 
   set("--color-accent", theme.accent);
