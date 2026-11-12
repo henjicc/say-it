@@ -84,6 +84,7 @@ impl FramePacer {
         let handle = std::thread::Builder::new()
             .name(format!("{name}-pacer"))
             .spawn(move || {
+                super::raise_overlay_thread_priority();
                 let hwnd = HWND(target as *mut _);
                 while worker.alive.load(Ordering::Acquire) {
                     if !worker.active.load(Ordering::Acquire) {
