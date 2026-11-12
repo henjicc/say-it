@@ -21,7 +21,7 @@ const NODE_TITLES: Record<DictationNodeKey, string> = {
   smart: "智能处理",
   rules: "本地规则",
   apps: "按软件区分",
-  shortcuts: "快捷键方案",
+  shortcuts: "按快捷键区分",
   orbGesture: "悬浮球与手势",
 };
 
@@ -39,13 +39,14 @@ export function DictationPage() {
   const errorLine = saveError && <p role="alert" className="-mt-2 mb-4 text-xs text-[var(--color-err)]">{saveError}</p>;
 
   const items: NodeItem<DictationNodeKey>[] = [
-    // 顺序即流程：怎么开始说话 → 说完怎么处理 → 不同软件里怎么区分。
+    // 顺序即流程：怎么开始说话 → 说完默认怎么处理 → 哪些情况换一种处理。
+    // 后两项都是对默认处理的例外：快捷键方案选「跟随场景」时用按软件区分的规则，否则以快捷键方案为准。
     { key: "basics", label: NODE_TITLES.basics, icon: <SlidersHorizontal {...iconProps} /> },
     { key: "orbGesture", label: NODE_TITLES.orbGesture, icon: <MousePointer2 {...iconProps} /> },
-    { key: "shortcuts", label: NODE_TITLES.shortcuts, icon: <Keyboard {...iconProps} /> },
     { key: "smart", label: NODE_TITLES.smart, icon: <Sparkles {...iconProps} />, off: !prefs.smartProcessingEnabled, dividerBefore: true },
     { key: "rules", label: NODE_TITLES.rules, icon: <ListChecks {...iconProps} />, off: !prefs.localRulesEnabled },
     { key: "apps", label: NODE_TITLES.apps, icon: <AppWindow {...iconProps} />, off: !prefs.appProfilesEnabled, dividerBefore: true },
+    { key: "shortcuts", label: NODE_TITLES.shortcuts, icon: <Keyboard {...iconProps} /> },
   ];
 
   return (

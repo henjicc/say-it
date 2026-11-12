@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W, SliderRow } from "@/components/ui/Group";
 import { Modal } from "@/components/ui/Modal";
@@ -170,7 +170,7 @@ export function BasicsSection() {
 }
 
 /**
- * 听写现在能不能用：环境检查加上听写所选识别模型的可用性，有待处理项时给出查看入口。
+ * 听写现在用不了时的提示：环境检查加上听写所选识别模型的可用性，给出查看入口；一切正常时不占位置。
  * 已启用悬浮球或鼠标手势时，没设主快捷键不算待处理。
  */
 function ReadinessGroup() {
@@ -197,17 +197,15 @@ function ReadinessGroup() {
     return () => { active = false; };
   }, [detailOpen, hasOtherTrigger]);
 
-  if (pending === null && !failed) return null;
   const ready = pending === 0 && !failed && !modelIssue;
+  if ((pending === null && !failed) || ready) return null;
   return (
     <>
       <Group>
         <div className="flex min-h-[var(--row-h)] items-center gap-2.5 px-3.5">
-          {ready
-            ? <CheckCircle2 aria-hidden className="h-4 w-4 flex-none text-[var(--color-ok)]" />
-            : <CircleAlert aria-hidden className="h-4 w-4 flex-none text-[var(--color-warn)]" />}
+          <CircleAlert aria-hidden className="h-4 w-4 flex-none text-[var(--color-warn)]" />
           <p role="status" className="min-w-0 flex-1 text-[13px] text-[var(--color-fg)]">
-            {ready ? "可以开始说话" : failed ? "环境检查失败" : pending ? `${pending} 项需要处理` : "识别模型还不能用"}
+            {failed ? "环境检查失败" : pending ? `${pending} 项需要处理` : modelIssue}
           </p>
           {(failed || Boolean(pending)) && <Button size="sm" aria-haspopup="dialog" aria-label="查看环境状态" onClick={() => setDetailOpen(true)}>查看</Button>}
         </div>

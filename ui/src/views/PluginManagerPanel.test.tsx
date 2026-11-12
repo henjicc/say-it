@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalModelsPanel, PluginsPanel } from "./PluginManagerPanel";
 import type { PluginSnapshot, PluginSummary } from "@/features/plugins/pluginInstaller";
+import { useLocalModels } from "@/features/models/localModels";
 
 const { cmd, listeners, officialPacks } = vi.hoisted(() => ({
   cmd: vi.fn(),
@@ -32,12 +33,17 @@ function plugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
   };
 }
 
+// 下载状态放在组件之外，各用例之间要清掉。
+function resetDownloads() {
+  useLocalModels.setState({ snapshot: undefined, packs: undefined, downloaded: {}, installing: [], installError: undefined, loadError: "", packsError: "" });
+}
+
 function snapshot(item = plugin()): PluginSnapshot {
   return { apiVersion: 5, plugins: [item], errors: [] };
 }
 
 describe("插件常驻内存", () => {
-  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); resetDownloads(); });
   afterEach(cleanup);
 
   it("立即保存，等待期间禁用开关，完成后无成功提示", async () => {
@@ -114,7 +120,7 @@ describe("插件常驻内存", () => {
 });
 
 describe("被内置取代的模型包", () => {
-  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); resetDownloads(); });
   afterEach(cleanup);
 
   it("只提供卸载，不显示启用开关或下载操作", async () => {
@@ -132,7 +138,7 @@ describe("被内置取代的模型包", () => {
 });
 
 describe("官方模型", () => {
-  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); resetDownloads(); });
   afterEach(() => { cleanup(); officialPacks.length = 0; });
 
   it("已装的留在目录原位且不再给下载，未装的点下载会安装对应模型包", async () => {
@@ -159,6 +165,15 @@ describe("官方模型", () => {
     expect(screen.queryByRole("button", { name: /^(下载|更新|继续下载)旧目录$/ })).toBeNull();
   });
 
+  it("切到别的页面再回来，进行中的下载仍显示进度", async () => {
+    officialPacks.push({ id: "official.punct", name: "标点", description: "加标点", version: "1", sizeBytes: 200 });
+    cmd.mockResolvedValue(snapshot());
+    useLocalModels.setState({ installing: ["official.punct"], downloaded: { "official.punct": 50 } });
+    render(<LocalModelsPanel />);
+    expect(await screen.findByRole("progressbar", { name: "标点下载进度" })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.queryByRole("button", { name: "下载标点" })).toBeNull();
+  });
+
   it("清单已装但权重没下完时继续下载，不重装清单", async () => {
     officialPacks.push({ id: "official.test", name: "本地测试", description: "测试", version: "1", sizeBytes: 100 });
     const partial = plugin();
@@ -172,7 +187,7 @@ describe("官方模型", () => {
 });
 
 describe("插件页", () => {
-  beforeEach(() => { cmd.mockReset(); listeners.clear(); });
+  beforeEach(() => { cmd.mockReset(); listeners.clear(); resetDownloads(); });
   afterEach(cleanup);
 
   it("只列连接器插件，模型包归本地模型页", async () => {

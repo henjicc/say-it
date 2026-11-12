@@ -3,7 +3,7 @@ import { CheckCircle2 } from "lucide-react";
 import { Select } from "@/components/ui/Input";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { LOCAL_MODEL_NEEDS, type HardwareSummary } from "@/features/models/localModelNeeds";
-import { useLocalModelProgress } from "@/features/onboarding/localModels";
+import { useLocalModelProgress } from "@/features/models/localModels";
 import {
   LLM_TARGETS,
   LOCAL_POLISH_PACK_ID,

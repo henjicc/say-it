@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { SecretInput } from "@/components/ui/SecretInput";
 import { providerReady } from "@/features/models/providerModels";
-import { useLocalModelProgress } from "@/features/onboarding/localModels";
+import { useLocalModelProgress } from "@/features/models/localModels";
 import {
   ASR_CHOICES,
   defaultAsrChoice,
