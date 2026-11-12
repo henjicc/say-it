@@ -72,10 +72,10 @@ fn build_macos_native_bridge() {
 
 /// sherpa-onnx-sys 与 transcribe-cpp（都是直接依赖且声明了 `links`，构建脚本先于本脚本运行）各自产出
 /// 共享运行库：前者复制到当前 profile 的输出目录，后者经 `DEP_TRANSCRIBE_CPP_RUNTIME_DIR` 给出所在目录
-/// （只有 Windows 以共享库加运行时后端模块的形态构建，macOS 静态链接，没有这个变量）。这里再分发两处：
-/// - `target/runtime-libs/`：打包配置引用的固定位置。tauri-build 在每个 profile 都会复制打包
-///   资源与 frameworks，配置若引用 `target/release`，dev、测试和 cargo check 都得先打过一次包。
-/// - Windows 的 `deps/`：cargo test 的测试程序在这里运行，需要旁边就有 DLL。
+/// （只有 Windows 以共享库加运行时后端模块的形态构建，macOS 静态链接，没有这个变量）。这里集中放到
+/// `target/runtime-libs/`：打包配置引用的固定位置。tauri-build 在每个 profile 都会复制打包
+/// 资源与 frameworks，配置若引用 `target/release`，dev、测试和 cargo check 都得先打过一次包。
+/// Windows 测试程序旁边的 DLL 由 `scripts/run-rust-tests.mjs` 从这里复制过去。
 fn distribute_runtime_libs() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let sherpa_names: &[&str] = match target_os.as_str() {
@@ -128,18 +128,11 @@ fn distribute_runtime_libs() {
                 .unwrap_or_else(|error| panic!("无法删除 {}：{error}", entry.path().display()));
         }
     }
-    let deps_dir = (target_os == "windows").then(|| profile_dir.join("deps"));
-    if let Some(deps_dir) = &deps_dir {
-        std::fs::create_dir_all(deps_dir).expect("无法创建 deps 目录");
-    }
     for (source, name) in sources.iter().zip(&names) {
         if !source.is_file() {
             panic!("缺少运行库 {}，无法准备打包", source.display());
         }
         copy_if_changed(source, &stage_dir.join(name));
-        if let Some(deps_dir) = &deps_dir {
-            copy_if_changed(source, &deps_dir.join(name));
-        }
     }
 }
 
