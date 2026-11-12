@@ -2538,6 +2538,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     crate::application::dev_trace::mark("trace.historySaved", serde_json::json!({}));
     // 历史里保留识别原文，标点只加在交给后续处理和输出的文本上；
     // 是否做智能处理已在上面按原文字数判断。这次真会做智能处理时由大模型整理标点，不再先补。
+    let asr_text = text.clone();
     let text = if assistant_request.is_none() && should_process_smart_text {
         text
     } else {
@@ -3167,6 +3168,28 @@ async fn finalize(app: AppHandle, epoch: u64) {
         .and_then(|request| request.identity.clone())
         .or(app_identity)
         .unwrap_or_default();
+    // 敏感输入框和助手指令不进训练样本；处理结果只是当时实际插入的文字，供参考。
+    if crate::application::diagnostics::developer_mode()
+        && history_allowed
+        && assistant_request.is_none()
+        && !asr_text.is_empty()
+    {
+        crate::application::dev_trace::append_training_sample(serde_json::json!({
+            "time":crate::application::diagnostics::now_millis() as u64,
+            "rawText":&asr_text,
+            "outputText":&processed,
+            "appContext":&active_app_context,
+            "appName":&identity.app_name,
+            "processName":&identity.process_name,
+            "settings":crate::application::smart_text::training_sample_settings(
+                &state,
+                &identity.app_name,
+            ),
+            "asrModel":&prefs.asr_model,
+            "smartApplied":smart_applied,
+            "smartTemplateId":&effective.smart_template_id,
+        }));
+    }
     let task_kind = assistant_request
         .as_ref()
         .map(|request| request.action.task_kind())

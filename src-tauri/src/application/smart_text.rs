@@ -969,6 +969,15 @@ fn local_polish_spec(
         .ok_or_else(|| "本地听写整理模型没有启用或还没有下载好，请到扩展里检查".to_string())
 }
 
+fn hotword_texts(prefs: &crate::application::customization::CustomizationPrefs) -> Vec<String> {
+    prefs
+        .hotwords
+        .iter()
+        .map(|item| item.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
 fn local_polish_input(
     state: &RuntimeState,
     text: &str,
@@ -976,20 +985,32 @@ fn local_polish_input(
     active_app_name: &str,
 ) -> crate::providers::local_llm::PolishInput {
     let prefs = crate::application::customization::prefs(state);
-    let hotwords = prefs
-        .hotwords
-        .iter()
-        .map(|item| item.text.trim().to_string())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>();
     crate::providers::local_llm::PolishInput::new(
         crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
         polish_level(state, active_app_name).tag(),
-        &hotwords,
+        &hotword_texts(&prefs),
         &crate::application::customization::render_context(&prefs),
         active_app_context,
         text,
     )
+}
+
+/// 训练样本里与本地整理模型输入对应的设置：场景、整理程度、热词与全局上下文。
+/// 与 `local_polish_input` 同源，但不截断，留给生成标准答案的模型自己取舍。
+pub(crate) fn training_sample_settings(state: &RuntimeState, app_name: &str) -> Value {
+    let prefs = crate::application::customization::prefs(state);
+    let scene = app_scene(app_name);
+    json!({
+        "scene":scene,
+        "sceneTag":crate::providers::local_llm::scene_tag(scene),
+        "polishLevel":match polish_level(state, app_name) {
+            PolishLevel::Light => "light",
+            PolishLevel::Medium => "medium",
+            PolishLevel::High => "high",
+        },
+        "hotwords":hotword_texts(&prefs),
+        "globalContext":crate::application::customization::render_context(&prefs),
+    })
 }
 
 async fn process_with_local_polish(
