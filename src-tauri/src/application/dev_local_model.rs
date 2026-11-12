@@ -336,7 +336,7 @@ pub(crate) async fn compare(
             if !SCENES.contains(&scene.as_str()) {
                 return Err(format!("未知场景：{scene}"));
             }
-            (dev_trace::input_from_text(state.inner(), text)?, scene)
+            (dev_trace::input_from_text(state.inner(), text, "")?, scene)
         }
         _ => {
             let input = dev_trace::replay_prompt("latest")?;

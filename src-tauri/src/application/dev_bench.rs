@@ -516,7 +516,11 @@ async fn run_detached(app: &AppHandle, request: BenchRequest) -> Result<Value, S
             (STANDARD_SYSTEM_PROMPT.to_string(), prompt.clone(), "custom")
         }
         (_, Some(run)) => {
-            let replay = dev_trace::replay_prompt(run)?;
+            // 被测模型和原记录不是同一家时按当前模板重建，见 replay_for。
+            let replay = match models.first() {
+                Some(model) => dev_trace::replay_for(state, run, &model.provider_id)?,
+                None => dev_trace::replay_prompt(run)?,
+            };
             (replay.system_prompt, replay.user_prompt, "replay")
         }
         _ => (
