@@ -24,17 +24,19 @@ import {
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
-import { editablePlainText, plainText } from "@/features/transcription/subtitles";
+import { editablePlainText, plainText, speakerText } from "@/features/transcription/subtitles";
 import { normalizeStoredParams, parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
 import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { UsageLinkRow, useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions, useUsageEditable } from "@/features/models/usage";
 import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
+import { MeetingPanel } from "@/views/transcription/MeetingPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
   type TranscriptionParams,
+  type TranscriptionResult,
   type TranscriptionTab,
 } from "@/store/useTranscriptionStore";
 
@@ -108,6 +110,7 @@ export function TranscriptionView() {
     editorCues,
     resultView,
     saveMessage,
+    summary,
     setSelectedFile,
     setParams,
     replaceParams,
@@ -271,7 +274,10 @@ export function TranscriptionView() {
               )}
             </section>
           )}
+          {result && <SummarySection result={result} summary={summary} onSummary={(next) => setRuntime({ summary: next })} />}
         </>
+      ) : tab === "meeting" ? (
+        <MeetingPanel />
       ) : tab === "align" ? (
         <TranscriptAlignPanel />
       ) : (
@@ -315,5 +321,54 @@ export function TranscriptionView() {
         </>
       )}
     </InspectorBody>
+  );
+}
+
+/** 用默认大模型把带说话人的识别结果整理成会议纪要。 */
+function SummarySection({
+  result,
+  summary,
+  onSummary,
+}: {
+  result: TranscriptionResult;
+  summary: string;
+  onSummary: (summary: string) => void;
+}) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+  const generate = async () => {
+    setRunning(true);
+    setError("");
+    try {
+      const next = await cmd<string>(CMD.summarizeTranscript, { text: speakerText(result) });
+      // 生成期间开始了新的识别时，旧结果的纪要不能写到新结果下面。
+      if (useTranscriptionStore.getState().result === result) onSummary(next);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <section className="flex flex-col gap-2">
+      <SectionHeader
+        title="纪要"
+        right={<Button size="sm" disabled={running} onClick={() => void generate()}>{running ? "正在生成…" : summary ? "重新生成" : "生成纪要"}</Button>}
+      />
+      {error && <p role="alert" className="px-0.5 text-xs text-[var(--color-err)]">{error}</p>}
+      {summary && (
+        <Group>
+          <textarea
+            readOnly
+            aria-label="会议纪要"
+            value={summary}
+            className="block min-h-48 w-full resize-y bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
+          />
+          <div className="flex min-h-[var(--row-h)] items-center justify-end px-3.5">
+            <Button size="sm" onClick={() => copyText(summary)}>复制纪要</Button>
+          </div>
+        </Group>
+      )}
+    </section>
   );
 }

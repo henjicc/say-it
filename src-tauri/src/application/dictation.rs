@@ -725,6 +725,17 @@ pub(crate) fn preview_dictation_cue(app: AppHandle, kind: String, which: String)
     Ok(())
 }
 
+/// 用户在语音输入里选的麦克风；没选时为 `None`，用系统默认设备。其他录音功能沿用它。
+pub(crate) fn preferred_mic_device(state: &RuntimeState) -> Result<Option<String>, String> {
+    Ok(current_prefs(state)?.mic_device())
+}
+
+impl DictationPrefs {
+    fn mic_device(&self) -> Option<String> {
+        Some(self.mic_device_id.clone()).filter(|id| !id.trim().is_empty())
+    }
+}
+
 fn current_prefs(state: &RuntimeState) -> Result<DictationPrefs, String> {
     serde_json::from_value(
         state
@@ -1190,14 +1201,7 @@ async fn start_session(
     }
     let lease = state.audio_session.acquire(AudioOwner::Dictation)?;
     state.audio_session.attach(&lease, "dictation")?;
-    let mic = match start_backend_mic_inner(
-        if prefs.mic_device_id.trim().is_empty() {
-            None
-        } else {
-            Some(prefs.mic_device_id.clone())
-        },
-        &state,
-    ) {
+    let mic = match start_backend_mic_inner(prefs.mic_device(), &state) {
         Ok(mic) => mic,
         Err(error) => {
             let _ = state.audio_session.release(&lease);

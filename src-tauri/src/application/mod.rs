@@ -18,6 +18,7 @@ pub(crate) mod history;
 pub(crate) mod idle_reclaim;
 pub(crate) mod learning;
 pub(crate) mod llm_models;
+pub(crate) mod meeting;
 pub(crate) mod performance;
 #[cfg(feature = "performance-acceptance")]
 pub(crate) mod performance_acceptance;

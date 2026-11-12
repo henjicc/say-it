@@ -48,6 +48,9 @@ use application::audio_lab::{
     get_audio_lab_runtime,
 };
 use application::catalog::get_model_catalog;
+use application::meeting::{
+    get_meeting_status, meeting_start, meeting_stop, open_meeting_recordings, summarize_transcript,
+};
 use application::compare::{compare_cancel, compare_start, compare_stop, get_compare_runtime};
 use application::contract::get_app_snapshot;
 use application::data_root::{
@@ -688,6 +691,11 @@ fn main() {
             audio_lab_reprocess,
             audio_lab_audio_path,
             get_audio_lab_runtime,
+            get_meeting_status,
+            meeting_start,
+            meeting_stop,
+            open_meeting_recordings,
+            summarize_transcript,
             compare_start,
             compare_stop,
             compare_cancel,

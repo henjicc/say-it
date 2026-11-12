@@ -13,6 +13,7 @@ import { AsrModelRow, MicRow, ShortcutRows } from "@/views/dictation/DictationSe
 import { SubtitleAsrRow, SubtitleOutputRow, SubtitleSourceRow } from "@/views/subtitles/SubtitleSections";
 import { SubtitleRunButton, useSubtitlePreviewLifecycle } from "@/views/subtitles/SubtitlesPage";
 import { TranscriptionView } from "@/views/TranscriptionView";
+import { MeetingPanel } from "@/views/transcription/MeetingPanel";
 import { HistoryView } from "@/views/HistoryView";
 import { useStartupSettings } from "@/views/SettingsStartupPanel";
 import { useHistoryPrefs } from "@/views/SettingsHistoryPanel";
@@ -52,7 +53,7 @@ export function SimpleSubtitles() {
 export function SimpleTranscription() {
   const setTab = useTranscriptionStore((s) => s.setTab);
   useEffect(() => setTab("transcribe"), [setTab]);
-  return <SimpleBody><TranscriptionView /></SimpleBody>;
+  return <SimpleBody><MeetingPanel simple /><TranscriptionView /></SimpleBody>;
 }
 
 export function SimpleHistory() {

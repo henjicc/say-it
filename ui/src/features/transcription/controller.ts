@@ -252,8 +252,15 @@ export async function ensureProviderReady() {
   return providerHasApiKey();
 }
 
+export function transcriptionRunning() {
+  const { stage } = useTranscriptionStore.getState();
+  return stage === "uploading" || stage === "recognizing";
+}
+
 export async function startTranscription() {
   const store = useTranscriptionStore.getState();
+  // 再开一个会覆盖正在跟踪的任务，原任务仍在运行和计费，结果却被丢掉。
+  if (transcriptionRunning()) return;
   if (!store.selectedFile) {
     store.setRuntime({ stage: "error", statusText: "未选择文件。", errorMessage: "请先选择一个音视频文件。" });
     return;
@@ -283,6 +290,7 @@ export async function startTranscription() {
     taskId: "",
     result: null,
     editorCues: null,
+    summary: "",
     errorMessage: "",
     saveMessage: "",
     statusText: "正在准备识别任务…",

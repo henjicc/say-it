@@ -36,6 +36,8 @@ const MIGRATABLE_DIRS: &[&str] = &[
     "models",
     // 开发者模式的听写追踪与录音：含原文和提示词，重置数据时要一起清掉。
     "dev-traces",
+    // 会议录音。
+    "meetings",
 ];
 
 pub(crate) const MIGRATION_EVENT: &str = "data-root-migration";
@@ -257,6 +259,9 @@ pub(crate) async fn migrate_data_root(
         }
     }
     let _guard = Guard;
+    // 会议分轨正在写进 `meetings/`，迁移会把它们复制成半截文件并删掉原文件。
+    let state = app.state::<crate::state::RuntimeState>();
+    let _meeting = state.meeting_runtime.hold_idle_for_migration().await?;
 
     let worker_app = app.clone();
     let result =
@@ -414,6 +419,15 @@ struct MigrationPlan {
 /// 两者不一致意味着上一次迁移已经改了指针但还没重启，此时 `current` 是那个已经被
 /// 搬空的旧目录——再迁一次会收集到空计划、复制 0 个文件并「校验通过」，然后把指针
 /// 改写到新的空目录，重启后应用变成全新安装状态。
+/// 迁移进行中、或已迁移但还没重启时，新写进数据目录的文件会留在旧目录里。
+pub(crate) fn ensure_writable(app: &AppHandle) -> Result<(), String> {
+    if MIGRATING.load(Ordering::Acquire) {
+        return Err("正在迁移数据目录，完成后再试".into());
+    }
+    ensure_previous_migration_applied(&default_root(app)?, &data_root(app)?)
+        .map_err(|_| "数据目录已迁移，重启应用后再试".to_string())
+}
+
 fn ensure_previous_migration_applied(default: &Path, current: &Path) -> Result<(), String> {
     if same_path(&resolve_root_from(default), current) {
         Ok(())

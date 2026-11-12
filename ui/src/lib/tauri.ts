@@ -30,6 +30,11 @@ export const CMD = {
   clearShortcutBinding: "clear_shortcut_binding",
   getDictationRuntime: "get_dictation_runtime",
   getTranscriptionRuntime: "get_transcription_runtime",
+  getMeetingStatus: "get_meeting_status",
+  meetingStart: "meeting_start",
+  meetingStop: "meeting_stop",
+  summarizeTranscript: "summarize_transcript",
+  openMeetingRecordings: "open_meeting_recordings",
   audioLabStart: "audio_lab_start",
   audioLabStop: "audio_lab_stop",
   audioLabReprocess: "audio_lab_reprocess",
@@ -436,4 +441,18 @@ export function emitEvent(event: string, payload?: unknown): Promise<void> {
 export interface ModelResidencyStatus {
   state: "unloaded" | "loading" | "loaded" | "failed";
   error?: string;
+}
+
+/** 会议录制状态；`startedAtMs` 只在录制中有值。 */
+export interface MeetingStatus {
+  recording: boolean;
+  startedAtMs: number | null;
+  /** 某一路中途断开的原因；之后只剩另一路的声音。 */
+  warning: string | null;
+}
+
+/** 停止录制后保存的录音；某一路中途断开时带 `warning`。 */
+export interface MeetingRecordingFile {
+  path: string;
+  warning: string | null;
 }

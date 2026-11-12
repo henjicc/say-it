@@ -3,7 +3,7 @@ use super::TARGET_SAMPLE_RATE;
 
 const OUTPUT_CHUNK: usize = 4096;
 
-pub(super) struct MonoResampler {
+pub(crate) struct MonoResampler {
     ratio: f64,
     input_count: usize,
     output_count: usize,
