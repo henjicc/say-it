@@ -129,10 +129,11 @@ interface SelectOption {
 }
 
 interface SelectPopoverLayout {
-  left: number;
+  right: number;
   top?: number;
   bottom?: number;
-  width: number;
+  minWidth: number;
+  maxWidth: number;
   maxHeight: number;
   openUpward: boolean;
 }
@@ -224,9 +225,10 @@ export function Select({
   useEffect(() => {
     if (!open) return;
 
+    // 只有触发按钮和列表本身算「里面」：设置行里按钮只有值那么宽，点同一行的空白处也要能收起。
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
+      if (!buttonRef.current?.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
     };
 
     // 窗口失去焦点时收起：浮层的层级高于弹窗，开着的时候外部触发的弹窗会被它盖住。
@@ -250,8 +252,8 @@ export function Select({
   }, [open, rendered, searchable]);
 
   const measurePopover = useCallback(() => {
-    // 按外层槽位定位：设置行里的触发按钮只有值那么宽，弹层仍要有槽位的宽度。
-    const rect = rootRef.current?.getBoundingClientRect();
+    // 宽度贴合最长的选项，至少和触发按钮一样宽；右边与按钮对齐（设置行里的值靠右）。
+    const rect = buttonRef.current?.getBoundingClientRect();
     if (!rect) return;
 
     const viewportMargin = 8;
@@ -266,10 +268,11 @@ export function Select({
     const maxHeight = Math.min(preferredHeight, availableHeight);
 
     setPopoverLayout({
-      left: rect.left,
+      right: window.innerWidth - rect.right,
       top: openUpward ? undefined : rect.bottom + triggerGap,
       bottom: openUpward ? window.innerHeight - rect.top + triggerGap : undefined,
-      width: rect.width,
+      minWidth: rect.width,
+      maxWidth: Math.max(rect.width, rect.right - viewportMargin),
       maxHeight,
       openUpward,
     });
@@ -383,10 +386,12 @@ export function Select({
             if (!open) setRendered(false);
           }}
           style={{
-            left: popoverLayout.left,
+            right: popoverLayout.right,
             top: popoverLayout.top,
             bottom: popoverLayout.bottom,
-            width: popoverLayout.width,
+            width: "max-content",
+            minWidth: popoverLayout.minWidth,
+            maxWidth: popoverLayout.maxWidth,
             maxHeight: popoverLayout.maxHeight,
             transformOrigin: popoverLayout.openUpward ? "bottom" : "top",
           }}
