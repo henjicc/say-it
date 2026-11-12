@@ -7,7 +7,7 @@ import { Collapse } from "@/components/ui/Collapse";
 import { CheckField, Field } from "@/components/ui/Field";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
-import { Input } from "@/components/ui/Input";
+import { Input, Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { RangeInput } from "@/components/ui/RangeInput";
 import { SecretInput } from "@/components/ui/SecretInput";
@@ -23,7 +23,7 @@ import {
   useModelCatalogRevision,
   type AsrModelMode,
 } from "@/features/asr/modelRegistry";
-import { llmPrice } from "@/features/models/llmModelOptions";
+import { llmPrice, thinkingLevel, type ThinkingLevel } from "@/features/models/llmModelOptions";
 import { audioPrice, type ModelPrice } from "@/features/models/pricing";
 import { adapterOf } from "@/features/models/recommendedLlmModels";
 import { translationPrice } from "@/features/models/usage";
@@ -192,6 +192,12 @@ function CredentialsGroup({ profile }: { profile: ProviderProfile }) {
 
 const PER_MILLION_TOKENS = "每百万 token 输入 / 输出";
 
+const THINKING_CHOICES: { key: ThinkingLevel; label: string }[] = [
+  { key: "zero", label: "不思考" },
+  { key: "low", label: "思考：低" },
+  { key: "high", label: "思考：高" },
+];
+
 /** 模型名称或 ID 包含搜索词；搜索词为空时都算匹配。 */
 function matchesQuery(query: string, ...texts: string[]): boolean {
   const normalized = query.trim().toLocaleLowerCase();
@@ -331,11 +337,16 @@ function LlmModelsGroup({ profile, query }: { profile: ProviderProfile; query: s
 
   const removeManual = (name: string) => {
     if (defaults.llm === profile.id && String(profile.config?.model ?? "") === name) {
-      setError("这个模型正被用作通用大模型，请先在「用途」里换掉。");
+      setError("这个模型正被用作默认大模型，请先在「用途」里换掉。");
       return;
     }
     void saveModels((current) => current.filter((model) => model.name !== name));
   };
+
+  // 思考程度存在模型上，所有用这个模型的功能共用，所以只在这里设。派欧云的思考不可配置。
+  const thinkingConfigurable = adapterOf(profile.kind) !== "ppio";
+  const setThinking = (name: string, reasoningEffort: ThinkingLevel) =>
+    void saveModels((current) => current.map((item) => item.name === name ? { ...item, reasoningEffort } : item));
 
   const renderRow = (model: LlmModelConfig, shown: boolean) => {
     const label = llmModelLabel(profile, model.name);
@@ -349,6 +360,17 @@ function LlmModelsGroup({ profile, query }: { profile: ProviderProfile; query: s
         message={shown && model.availability === "missing" && <span className="text-[var(--color-warn)]">最新列表里没有这个模型，能否调用取决于供应商。</span>}
       >
         <ModelMeta price={llmPrice(adapterOf(profile.kind), model.name)} />
+        {shown && thinkingConfigurable && (
+          <Select
+            className="w-28"
+            aria-label={`${label} 思考程度`}
+            disabled={!ready}
+            value={thinkingLevel(model.reasoningEffort)}
+            onChange={(event) => setThinking(model.name, event.target.value as ThinkingLevel)}
+          >
+            {THINKING_CHOICES.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
+          </Select>
+        )}
         {userAdded && !isPlugin && (
           <IconButton size="sm" variant="dangerText" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
             <Trash2 className="h-3.5 w-3.5" aria-hidden />

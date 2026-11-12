@@ -78,7 +78,8 @@ export function MicRow({ label = "麦克风" }: { label?: string }) {
   );
 }
 
-export function AsrModelRow() {
+/** label 是「用途」页里按功能名显示的行名，功能页里用默认名。 */
+export function AsrModelRow({ label = "识别模型" }: { label?: string } = {}) {
   useModelCatalogRevision();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const patch = useDictPrefs((s) => s.patch);
@@ -86,10 +87,10 @@ export function AsrModelRow() {
   const options = useOfferedAsrOptions(DICTATION_ASR_MODEL_OPTIONS, asrModel);
   const issue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
   if (!editable) {
-    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === asrModel)?.label ?? asrModel} message={issue} />;
+    return <UsageLinkRow label={label} value={options.find((option) => option.value === asrModel)?.label ?? asrModel} message={issue} />;
   }
   return (
-    <Row label="识别模型" controlId="dictation-asr-model" message={issue}>
+    <Row label={label} controlId="dictation-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="dictation-asr-model"

@@ -158,7 +158,7 @@ export function llmTargetReady(target: LlmTarget, profiles: ProviderProfile[]): 
 export type SmartChoice = "smart" | "local" | "rules" | "none";
 
 /**
- * 「智能整理」把所选服务设为通用大模型，听写跟随它；「本地整理」让听写用本地整理模型，不动通用大模型；
+ * 「智能整理」把所选服务设为默认大模型，听写跟随它；「本地整理」让听写用本地整理模型，不动通用大模型；
  * 「只用本地规则」关掉大模型、打开本地规则；「不整理」两者都关。
  */
 export async function applySmartChoice(

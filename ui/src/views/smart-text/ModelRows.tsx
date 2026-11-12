@@ -8,13 +8,12 @@ import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { LOCAL_POLISH_TEMPLATES } from "@/features/onboarding/setup";
 import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
-import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
-import { UsageLinkRow, useInUsagePage, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { UsageLinkRow, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
 
-/** 听写智能处理用的大模型。 */
-export function SmartLlmRow() {
+/** 听写智能处理用的大模型。label 是「用途」页里按功能名显示的行名。 */
+export function SmartLlmRow({ label = "智能模型" }: { label?: string } = {}) {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
   const enabledProfiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled);
@@ -31,7 +30,6 @@ export function SmartLlmRow() {
       providerLabel: "本地",
     }));
   const editable = useUsageEditable();
-  const inUsagePage = useInUsagePage();
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
   const options: ModelPickerOption[] = [FOLLOW_DEFAULT_LLM_OPTION, ...localOptions, ...llmModelPickerOptions(profiles, selected)];
   const local = localOptions.some((option) => option.value === selected);
@@ -40,10 +38,10 @@ export function SmartLlmRow() {
     ? <span role="status" className="text-[var(--color-err)]">本地整理模型只支持「场景感知润色」和「通用润色」模板，当前模板请换用大模型。</span>
     : usageIssue;
   const current = options.find((option) => option.value === selected);
-  if (!editable) return <UsageLinkRow label="智能模型" value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
+  if (!editable) return <UsageLinkRow label={label} value={current?.triggerLabel ?? current?.label ?? prefs.smartLlmModel} message={issue} />;
   return (
     <>
-      <Row label="智能模型" controlId="smart-text-llm-model" message={issue}>
+      <Row label={label} controlId="smart-text-llm-model" message={issue}>
         <div className={ROW_CONTROL_W}>
           <ModelPicker
             id="smart-text-llm-model"
@@ -61,13 +59,12 @@ export function SmartLlmRow() {
           />
         </div>
       </Row>
-      {inUsagePage && selected !== "default" && !local && <LlmThinkingRow providerId={prefs.smartLlmProviderId} model={prefs.smartLlmModel} />}
     </>
   );
 }
 
-/** 听写读取当前窗口文字时用的 OCR 模型；第三方 OCR 首次选择需要确认会发送截图。 */
-export function OcrModelRow() {
+/** 听写读取当前窗口文字时用的 OCR 模型；第三方 OCR 首次选择需要确认会发送截图。label 是「用途」页里按功能名显示的行名。 */
+export function OcrModelRow({ label = "OCR 模型" }: { label?: string } = {}) {
   useModelCatalogRevision();
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
@@ -76,7 +73,7 @@ export function OcrModelRow() {
   const [pending, setPending] = useState<OcrModelOption>();
   const models = ocrOptionsForScene("activeAppContext");
   const selected = models.find((option) => option.value === prefs.activeAppContextOcrModel);
-  if (!editable) return <UsageLinkRow label="OCR 模型" value={selected?.label ?? "当前模型不可用"} />;
+  if (!editable) return <UsageLinkRow label={label} value={selected?.label ?? "当前模型不可用"} />;
 
   const select = async (model: OcrModelOption) => {
     setMessage("");
@@ -115,7 +112,7 @@ export function OcrModelRow() {
   return (
     <>
       <Row
-        label="OCR 模型"
+        label={label}
         hint={selected?.remote
           ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
           : selected?.value === "local-ppocr-v6-tiny"
@@ -125,7 +122,7 @@ export function OcrModelRow() {
       >
         <Select
           className={ROW_CONTROL_W}
-          aria-label="OCR 模型"
+          aria-label={label}
           value={prefs.activeAppContextOcrModel}
           onChange={(event) => {
             const model = models.find((option) => option.value === event.target.value);

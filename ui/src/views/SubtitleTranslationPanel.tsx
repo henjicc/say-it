@@ -16,20 +16,20 @@ import {
 } from "@/features/translation/languages";
 
 
-/** 字幕翻译模型；选「无」即不翻译。 */
-export function SubtitleTranslationModelRow() {
+/** 字幕翻译模型；选「无」即不翻译。label 是「用途」页里按功能名显示的行名。 */
+export function SubtitleTranslationModelRow({ label = "翻译模型" }: { label?: string } = {}) {
   const translationModel = useSubtitleStore((state) => state.prefs.translationModel);
   const setTranslationModel = useSubtitleStore((state) => state.setTranslationModel);
   const editable = useUsageEditable();
   const options = useOfferedTranslationOptions(translationModel);
   const selected = options.find((option) => option.value === translationModel);
   const issue = useUsageIssue(selected?.providerId, translationModel === TRANSLATION_MODEL_NONE || Boolean(selected), "translation");
-  if (!editable) return <UsageLinkRow label="翻译模型" value={selected?.label ?? "不翻译"} message={issue} />;
+  if (!editable) return <UsageLinkRow label={label} value={selected?.label ?? "不翻译"} message={issue} />;
   return (
-    <Row label="翻译模型" hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>
+    <Row label={label} hint="每句话识别完成后会自动翻译。部分模型会逐步显示译文，让你更早看到结果。" message={issue}>
       <div className={ROW_CONTROL_W}>
         <ModelPicker
-          aria-label="翻译模型"
+          aria-label={label}
           value={translationModel}
           options={[{ value: TRANSLATION_MODEL_NONE, label: "无（不翻译）", providerId: "none", providerLabel: "不翻译" }, ...options]}
           panelLabel="选择翻译模型"

@@ -13,7 +13,7 @@ import { adapterOf, isRecommendedLlmModel, llmModelLabel } from "./recommendedLl
 
 export const FOLLOW_DEFAULT_LLM_OPTION: ModelPickerOption = {
   value: "default",
-  label: "跟随通用大模型",
+  label: "跟随默认大模型",
   providerId: "default",
   providerLabel: "通用",
 };

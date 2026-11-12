@@ -4,7 +4,6 @@ import type { ProviderProfile } from "@/store/useProviderStore";
 import { llmModelPickerOptions } from "@/features/models/llmModelOptions";
 import { ProviderPanel } from "./ProviderPanel";
 import { AddProviderModal } from "./AddProviderModal";
-import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
 
 const invoke = vi.fn();
 const updateConfig = vi.fn();
@@ -142,16 +141,18 @@ describe("ProviderPanel", () => {
   });
 });
 
-describe("LlmThinkingRow", () => {
+describe("大模型思考程度", () => {
   afterEach(cleanup);
 
-  it("旧的「自动」显示为关闭，切到高时只改这个模型的思考程度", async () => {
-    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote")] })];
-    updateConfig.mockResolvedValue(profiles[0]);
-    render(<LlmThinkingRow providerId="bailian" model="qwen3.8-max" />);
+  it("在供应商的模型列表里设置，旧的「自动」显示为不思考，只改这个模型", async () => {
+    profiles = [bailian({ model: "qwen3.8-max", models: [llmModel("qwen3.8-max", "remote"), llmModel("qwen3.8-flash", "remote")], modelVisibility: { "qwen3.8-max": true, "qwen3.8-flash": true } })];
+    updateConfig.mockReset().mockResolvedValue(profiles[0]);
+    render(<ProviderPanel profile={profiles[0]} />);
 
-    expect(screen.getByRole("radio", { name: "关闭" })).toHaveAttribute("aria-checked", "true");
-    fireEvent.click(screen.getByRole("radio", { name: "高" }));
+    const picker = screen.getByRole("combobox", { name: /Qwen3.8 Max 思考程度/ });
+    expect(picker).toHaveTextContent("不思考");
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: "思考：高" }));
     await waitFor(() => expect(updateConfig).toHaveBeenCalledWith("bailian", {
       models: [
         expect.objectContaining({ name: "qwen3.8-flash", reasoningEffort: "zero" }),
