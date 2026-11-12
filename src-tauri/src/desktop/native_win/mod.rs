@@ -220,6 +220,7 @@ impl<C: Send + 'static> OverlayThread<C> {
                     let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
                     let _ = ready_tx.send(GetCurrentThreadId());
                 }
+                raise_overlay_thread_priority();
                 let Some(hwnd) = create_window() else {
                     return;
                 };
@@ -242,6 +243,15 @@ impl<C: Send + 'static> OverlayThread<C> {
         unsafe {
             let _ = PostThreadMessageW(self.thread_id, WM_COMMAND_QUEUED, WPARAM(0), LPARAM(0));
         }
+    }
+}
+
+/// 悬浮窗的动画不能排在后台工作后面：听写一开始往往同时在加载模型、截图和识别屏幕文字，
+/// 普通优先级的绘制线程会被挤掉几帧，动画就卡一下。这些线程每帧只做很少的工作，调高不影响别处。
+pub(crate) fn raise_overlay_thread_priority() {
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL};
+    if let Err(error) = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) } {
+        eprintln!("[native-overlay] 调高绘制线程优先级失败：{error}");
     }
 }
 
