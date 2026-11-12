@@ -76,6 +76,16 @@ fn microphone_check() -> SetupCheckResult {
                     ),
                 };
             }
+            #[cfg(windows)]
+            if crate::desktop::microphone_privacy_denied() {
+                return check(
+                    "microphone",
+                    "blocked",
+                    "麦克风",
+                    "麦克风访问已在系统隐私设置里关闭，需要打开",
+                    Some("privacy:microphone"),
+                );
+            }
             #[cfg(not(target_os = "macos"))]
             check("microphone", "ready", "麦克风", ready, None)
         }

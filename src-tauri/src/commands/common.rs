@@ -19,7 +19,11 @@ pub(crate) fn microphone_permission_denied() -> bool {
         crate::macos_native::microphone_authorization()
             == crate::macos_native::MicrophoneAuthorization::Denied
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        crate::desktop::microphone_privacy_denied()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         false
     }
@@ -49,7 +53,16 @@ pub(crate) fn open_privacy_settings(app: tauri::AppHandle, kind: String) -> Resu
             )
             .map_err(|err| format!("打开系统设置失败：{err}"))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        if kind != "microphone" {
+            return Err(format!("未知的隐私设置：{kind}"));
+        }
+        app.opener()
+            .open_url("ms-settings:privacy-microphone", None::<&str>)
+            .map_err(|err| format!("打开系统设置失败：{err}"))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (app, kind);
         Err("当前平台没有单独的隐私设置页".into())

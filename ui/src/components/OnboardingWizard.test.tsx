@@ -105,13 +105,15 @@ describe("OnboardingWizard", () => {
   });
 
   it("points to system settings when microphone permission was denied", async () => {
-    platform.isMacOS = true;
-    Object.assign(mic, { level: 0, startError: "没有麦克风权限" });
+    // Windows 隐私设置关掉麦克风时采集照常启动，只是没有声音。
+    Object.assign(mic, { level: 0, startError: "" });
     invoke.mockImplementation(async (name: string) => name === "microphone_permission_denied" ? true : undefined);
     render(<OnboardingWizard open required onClose={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "打开系统设置" }));
     expect(invoke).toHaveBeenCalledWith("open_privacy_settings", { kind: "microphone" });
-    platform.isMacOS = false;
+    invoke.mockImplementation(async () => false);
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "打开系统设置" })).toBeNull());
   });
 
   it("can only be finished, and the first step has no way back", () => {
