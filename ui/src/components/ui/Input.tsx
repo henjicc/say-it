@@ -250,7 +250,8 @@ export function Select({
   }, [open, rendered, searchable]);
 
   const measurePopover = useCallback(() => {
-    const rect = buttonRef.current?.getBoundingClientRect();
+    // 按外层槽位定位：设置行里的触发按钮只有值那么宽，弹层仍要有槽位的宽度。
+    const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return;
 
     const viewportMargin = 8;

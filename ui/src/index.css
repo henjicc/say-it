@@ -138,10 +138,14 @@
   outline-offset: 3px;
 }
 /*
- * 设置行右侧的下拉框和快捷键录制按「值」显示：不画框、文字靠右，悬停、展开或键盘聚焦时才出底色。
+ * 设置行右侧的下拉框和快捷键录制按「值」显示：不画框、文字靠右，悬停、展开或键盘聚焦时才出底色，底色只包住值本身。
  * 只认 Row 的控件区，弹窗、筛选栏里的同一个组件仍是带框的表单控件。
  */
 [data-row-controls] .ui-value-control {
+  /* 宽度跟着值走，靠右；外层仍是固定宽度的槽位，长值在槽内截断，下拉弹层按槽位宽度展开。 */
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
   border-color: transparent;
   background: transparent;
   box-shadow: none;
