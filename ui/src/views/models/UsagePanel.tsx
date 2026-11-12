@@ -42,7 +42,7 @@ function DefaultLlmRow() {
       <Row
         label="默认大模型"
         controlId="usage-general-llm"
-        hint="没有单独选择模型的功能会使用它，例如选了「跟随默认大模型」的听写整理和助手。"
+        hint="没有单独选择模型的功能会使用它，例如选了「跟随默认大模型」的语音输入整理和助手。"
         message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
       >
         <div className={ROW_CONTROL_W}>
@@ -61,8 +61,8 @@ function DefaultLlmRow() {
 
 /**
  * 各功能用哪个模型，只在这里设置；下拉框里只列已填密钥、并在供应商里设为显示的模型。
- * 按模型种类分组。识别类的行名写所需能力（用在哪个功能放进悬停说明），大模型的行名写用它的功能。
- * 翻译只有一个，字幕翻译和助手的翻译输入共用。
+ * 分「识别」「文本处理」两组，行名写用在什么场景，对模型的要求放进悬停说明。
+ * 翻译只有一个，字幕翻译和助手的翻译输入共用；它可以用大模型，所以归在文本处理。
  */
 export function UsagePanel() {
   const assistant = useUsageAssistantPrefs();
@@ -72,22 +72,20 @@ export function UsagePanel() {
   return (
     <UsageEditScope>
       <InspectorBody>
-        <Group title="语音识别">
-          <AsrModelRow label="语音识别" hint="用于听写，准确优先。" />
-          <SubtitleAsrRow label="实时语音识别" hint="用于字幕，边说边出字。" />
-          <TranscriptionModelRow label="带时间戳的语音识别" />
+        <Group title="识别">
+          <AsrModelRow label="语音输入" hint="说完一段识别一段，准确优先。" />
+          <SubtitleAsrRow label="实时字幕" hint="边说边出字，要求速度快。" />
+          <TranscriptionModelRow label="录音转写" />
+          <OcrModelRow label="屏幕文字" />
         </Group>
-        <Group title="大模型">
+        <Group title="文本处理">
           <DefaultLlmRow />
-          <SmartLlmRow label="听写整理" />
+          <SmartLlmRow label="语音输入整理" />
           {assistantRow("editSelection")}
           {assistantRow("ask")}
+          <TranslationModelRow label="翻译" hint="字幕翻译和助手的翻译输入共用。可以选专用翻译模型，也可以选大模型。" />
           {assistant.message && <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{assistant.message}</p>}
         </Group>
-        <Group title="翻译">
-          <TranslationModelRow label="翻译" hint="字幕翻译和助手的翻译输入共用。可以选专用翻译模型，也可以选大模型。" />
-        </Group>
-        <Group title="文字识别"><OcrModelRow label="文字识别" /></Group>
       </InspectorBody>
     </UsageEditScope>
   );

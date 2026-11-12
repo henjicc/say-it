@@ -18,7 +18,7 @@ const DEVELOPER_NAV: NavItem = { view: "developer", label: "开发者", icon: <B
 
 const PRO_NAV_GROUPS: NavItem[][] = [
   [
-    { view: "dictation", label: "听写", icon: <Mic {...iconProps} /> },
+    { view: "dictation", label: "语音输入", icon: <Mic {...iconProps} /> },
     { view: "assistant", label: "助手", icon: <Sparkles {...iconProps} /> },
     { view: "subtitles", label: "字幕", icon: <Captions {...iconProps} /> },
     { view: "transcription", label: "转写", icon: <FileAudio {...iconProps} /> },
@@ -34,7 +34,7 @@ export const SETTINGS_NAV: NavItem = { view: "settings", label: "设置", icon: 
 
 /** 简单模式标题栏里的功能切换。 */
 export const SIMPLE_NAV: NavItem[] = [
-  { view: "dictation", label: "听写", icon: null },
+  { view: "dictation", label: "语音输入", icon: null },
   { view: "subtitles", label: "字幕", icon: null },
   { view: "transcription", label: "转写", icon: null },
   { view: "history", label: "历史", icon: null },

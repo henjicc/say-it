@@ -78,7 +78,7 @@ export function TranscriptionModelRow({ label = "识别模型" }: { label?: stri
     <Row
       label={label}
       controlId="transcription-asr-model"
-      hint="同时用于字幕转写和文稿对齐。"
+      hint="识别结果带时间戳，同时用于文稿对齐。"
       message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
     >
       <div className={ROW_CONTROL_W}>

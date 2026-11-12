@@ -261,11 +261,11 @@ function AudioRecordingRow() {
   return (
     <Group title="录音">
       <Row
-        label="保存听写录音"
+        label="保存语音输入录音"
         hint={`每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "数据目录的 dev-traces/audio"}`}
         message={error && <span role="alert" className="text-[var(--color-err)]">{error}</span>}
       >
-        <Switch label="保存听写录音" checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
+        <Switch label="保存语音输入录音" checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
       </Row>
     </Group>
   );
@@ -287,7 +287,7 @@ function OverviewPanel() {
       <AudioRecordingRow />
       {stats && (
         <>
-          <Group title={`最近 ${stats.runs} 次成功的听写`}>
+          <Group title={`最近 ${stats.runs} 次成功的语音输入`}>
             <Row label="松开到出字：中位 / 较慢"><Value>{formatMs(stats.wait.p50Ms)} / {formatMs(stats.wait.p90Ms)}</Value></Row>
             {stats.phases.map((phase) => (
               <Row key={phase.name} label={phase.name}><Value>{formatMs(phase.p50Ms)} / {formatMs(phase.p90Ms)}</Value></Row>
@@ -343,7 +343,7 @@ function SmartTestPanel({ onFinished }: { onFinished: () => void }) {
           <Tabs
             variant="view"
             ariaLabel="测试内容"
-            tabs={[{ key: "replay", label: "重放最近一次听写" }, { key: "text", label: "自定义文本" }]}
+            tabs={[{ key: "replay", label: "重放最近一次语音输入" }, { key: "text", label: "自定义文本" }]}
             active={source}
             onChange={(key) => setSource(key as "replay" | "text")}
           />

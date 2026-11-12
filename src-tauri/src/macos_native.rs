@@ -390,7 +390,7 @@ pub(crate) fn activate_application(process_id: u32) -> Result<(), String> {
         Ok(())
     } else {
         Err(unsafe {
-            take_string(error).unwrap_or_else(|| "无法重新激活听写开始时的应用".into())
+            take_string(error).unwrap_or_else(|| "无法重新激活语音输入开始时的应用".into())
         })
     }
 }

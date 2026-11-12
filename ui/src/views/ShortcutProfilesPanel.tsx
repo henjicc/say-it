@@ -288,7 +288,7 @@ export function ShortcutProfilesPanel() {
                           }}
                         >
                           <option value="inherit">跟随场景</option>
-                          <option value="always">每次听写</option>
+                          <option value="always">每次语音输入</option>
                           <option value="minimum">达到指定长度</option>
                         </Select>
                       </Row>

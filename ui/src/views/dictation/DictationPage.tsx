@@ -50,7 +50,7 @@ export function DictationPage() {
   ];
 
   return (
-    <MasterDetail title="听写" list={<NodeList ariaLabel="听写设置" items={items} active={node} onSelect={setNode} />}>
+    <MasterDetail title="语音输入" list={<NodeList ariaLabel="语音输入设置" items={items} active={node} onSelect={setNode} />}>
       {node === "basics" && <><InspectorHeader title={NODE_TITLES.basics} /><InspectorBody><div id={PANEL_ID} className="contents"><BasicsSection /></div></InspectorBody></>}
       {node === "smart" && (
         <>

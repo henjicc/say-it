@@ -1773,7 +1773,7 @@ pub(crate) async fn generate_preference_summary(
         )
         .map_err(|error| format!("统计偏好总结样本失败：{error}"))?;
     if sample_count < SUMMARY_MIN_SAMPLES as i64 || entry_count < SUMMARY_MIN_ENTRIES as i64 {
-        return Err("至少需要 10 条有效证据且来自 5 次不同听写，才能生成表达偏好".into());
+        return Err("至少需要 10 条有效证据且来自 5 次不同语音输入，才能生成表达偏好".into());
     }
     let samples = {
         let mut statement = connection

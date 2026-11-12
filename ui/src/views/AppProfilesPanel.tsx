@@ -276,10 +276,10 @@ export function AppProfilesPanel() {
                     >
                       <option value="inherit">
                         跟随全局（{prefs.smartProcessingMinChars === 0
-                          ? "每次听写"
+                          ? "每次语音输入"
                           : `达到 ${prefs.smartProcessingMinChars} 字符`}）
                       </option>
-                      <option value="always">每次听写</option>
+                      <option value="always">每次语音输入</option>
                       <option value="minimum">达到指定长度</option>
                     </Select>
                   </Row>

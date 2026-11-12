@@ -91,7 +91,7 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     if unsafe { SetForegroundWindow(window) }.as_bool() {
         Ok(())
     } else {
-        Err("无法重新激活听写开始时的目标窗口".into())
+        Err("无法重新激活语音输入开始时的目标窗口".into())
     }
 }
 

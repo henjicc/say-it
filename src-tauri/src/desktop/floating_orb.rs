@@ -1196,7 +1196,7 @@ pub(crate) fn set_floating_orb_enabled(
     enabled: bool,
 ) -> Result<FloatingOrbSettings, String> {
     if !enabled && crate::application::dictation::is_floating_orb_active(&app) {
-        return Err("请先结束当前悬浮球听写".into());
+        return Err("请先结束当前悬浮球语音输入".into());
     }
     let state = app.state::<RuntimeState>();
     let previous = {

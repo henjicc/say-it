@@ -272,7 +272,7 @@ export function SmartTextPanel() {
                     : prefs.smartProcessingMinChars || DEFAULT_SMART_PROCESSING_MIN_CHARS,
                 })}
               >
-                <option value="always">每次听写</option>
+                <option value="always">每次语音输入</option>
                 <option value="minimum">达到指定长度</option>
               </Select>
             </Row>
@@ -359,7 +359,7 @@ export function SmartTextPanel() {
 
           <Group
             title="整理程度"
-            description="按听写时所在的软件决定改动多少。轻：保留原话，只加标点、去掉“嗯呃”和重复的字。中：再去掉口头禅和改口。高：把想表达的意思重新组织清楚，多件事会分点。只对「场景感知润色」「通用润色」两个模板和本地整理模型生效。"
+            description="按语音输入时所在的软件决定改动多少。轻：保留原话，只加标点、去掉“嗯呃”和重复的字。中：再去掉口头禅和改口。高：把想表达的意思重新组织清楚，多件事会分点。只对「场景感知润色」「通用润色」两个模板和本地整理模型生效。"
           >
             {POLISH_SCENES.map((scene) => (
               <Row key={scene} label={scene}>

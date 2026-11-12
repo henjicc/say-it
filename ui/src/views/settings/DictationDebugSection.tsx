@@ -38,7 +38,7 @@ export function DictationDebugSection() {
   };
 
   return (
-    <Group title="听写调试">
+    <Group title="语音输入调试">
       <Row
         label="当前软件上下文"
         hint={`打开预览窗口，切换到要查看的软件，再按 ${contextDebugShortcutLabel}${contextDebugShortcutHint}，即可查看能读取到的文字。预览不会录音、调用智能模型或保存内容。`}
@@ -46,7 +46,7 @@ export function DictationDebugSection() {
       >
         <Button size="sm" disabled={opening} onClick={() => void openContextDebug()}>{opening ? "正在打开…" : "打开调试窗口"}</Button>
       </Row>
-      <Row label="手动听写" message={<span role="status" className={cn(toneClass[statusTone])}>{statusText}</span>}>
+      <Row label="手动语音输入" message={<span role="status" className={cn(toneClass[statusTone])}>{statusText}</span>}>
         <Button size="sm" variant={recording ? "danger" : "primary"} onClick={toggleDictation}>{recording ? "停止并输入" : "手动开始"}</Button>
       </Row>
       <div className="flex flex-col gap-2 p-3.5">

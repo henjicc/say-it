@@ -205,7 +205,7 @@ export function SettingsMicCuePanel() {
         <Row label="启用音频提示" hint="开始和结束语音输入时播放提示音。">
           <Switch checked={prefs.cueEnabled} onChange={(v) => patch({ cueEnabled: v })} label="启用音频提示" />
         </Row>
-        <Row label="提示音" hint="听写开始和结束时各播放哪种声音。">
+        <Row label="提示音" hint="语音输入开始和结束时各播放哪种声音。">
           <span className="text-[13px] text-[var(--color-fg-muted)]">
             {cueLabel(prefs.cueStart)} / {cueLabel(prefs.cueEnd)}
           </span>
@@ -215,7 +215,7 @@ export function SettingsMicCuePanel() {
         </Row>
         <Row
           label="保持音频输出"
-          hint="两次听写之间不关闭音频输出，部分音箱就不会在提示音前后发出呲啦声。保持期间系统会认为一直在播放声音。"
+          hint="两次语音输入之间不关闭音频输出，部分音箱就不会在提示音前后发出呲啦声。保持期间系统会认为一直在播放声音。"
         >
           <Switch checked={prefs.cueHoldEnabled} onChange={(v) => patch({ cueHoldEnabled: v })} label="保持音频输出" />
         </Row>

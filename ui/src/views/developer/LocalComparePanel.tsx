@@ -218,7 +218,7 @@ export function LocalComparePanel() {
           <Tabs
             variant="view"
             ariaLabel="测试内容"
-            tabs={[{ key: "replay", label: "重放最近一次听写" }, { key: "text", label: "自定义文本" }]}
+            tabs={[{ key: "replay", label: "重放最近一次语音输入" }, { key: "text", label: "自定义文本" }]}
             active={source}
             onChange={(key) => setSource(key as "replay" | "text")}
           />

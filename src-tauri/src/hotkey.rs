@@ -285,7 +285,7 @@ pub fn set_context_debug_active(active: bool) -> Result<(), String> {
 /// 原子替换全部听写快捷键。低级钩子只读固定槽位，不获取任何锁。
 pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
     if bindings.len() > MAX_DICTATION_BINDINGS {
-        return Err(format!("听写快捷键不能超过 {MAX_DICTATION_BINDINGS} 个"));
+        return Err(format!("语音输入快捷键不能超过 {MAX_DICTATION_BINDINGS} 个"));
     }
     let generation = HOTKEY_GENERATION
         .fetch_add(1, Ordering::SeqCst)

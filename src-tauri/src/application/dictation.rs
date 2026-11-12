@@ -491,7 +491,7 @@ impl Session {
 
     fn begin_pending_fallback(&mut self) -> Result<PendingFallback, String> {
         if self.phase != DictationPhase::Failed {
-            return Err("当前没有可恢复的失败听写".into());
+            return Err("当前没有可恢复的失败语音输入".into());
         }
         let pending = self
             .pending_fallback
@@ -734,7 +734,7 @@ fn current_prefs(state: &RuntimeState) -> Result<DictationPrefs, String> {
             .dictation_prefs
             .clone(),
     )
-    .map_err(|e| format!("听写配置无效：{e}"))
+    .map_err(|e| format!("语音输入配置无效：{e}"))
 }
 
 /// 开发者页标出当前模型用：智能处理选的供应商和模型，模型为空表示用供应商配置里的模型。
@@ -931,7 +931,7 @@ pub(crate) async fn stop_from_floating_orb(app: AppHandle) -> Result<(), String>
         .trigger
         .is_floating_orb();
     if !floating {
-        return Err("当前听写不是由悬浮球启动".into());
+        return Err("当前语音输入不是由悬浮球启动".into());
     }
     stop(app).await
 }
@@ -1062,7 +1062,7 @@ async fn start_session(
         .dictation_prefs
         .clone();
     let mut prefs: DictationPrefs =
-        serde_json::from_value(prefs_value).map_err(|e| format!("听写配置无效：{e}"))?;
+        serde_json::from_value(prefs_value).map_err(|e| format!("语音输入配置无效：{e}"))?;
     if prefs.asr_model.trim().is_empty() {
         prefs.asr_model = crate::providers::registry::default_realtime_model().into();
         dlog!("[dictation] 检测到空的听写模型配置，已回退到默认实时模型");
@@ -1174,7 +1174,7 @@ async fn start_session(
                 .ok()
                 .and_then(|plugins| plugins.model(&prefs.asr_model).cloned())
         })
-        .ok_or_else(|| format!("听写模型未登记：{}", prefs.asr_model))?;
+        .ok_or_else(|| format!("语音输入模型未登记：{}", prefs.asr_model))?;
     let mode = if info.scenes.iter().any(|s| s == "dictationFile") {
         DictationMode::File
     } else {
@@ -1347,7 +1347,7 @@ fn cleanup_failed_start(state: &RuntimeState, epoch: u64) {
 
 /// 保留 file 模式现有的 30 分钟自动收尾行为；PCM 已改为边录边写。
 const FILE_MODE_MAX_RECORDING: Duration = Duration::from_secs(30 * 60);
-const FILE_MODE_LIMIT_NOTICE: &str = "单次听写录音已达 30 分钟上限，已自动停止并开始识别。";
+const FILE_MODE_LIMIT_NOTICE: &str = "单次语音输入录音已达 30 分钟上限，已自动停止并开始识别。";
 
 /// 误触发或忘了结束时，不让听写一直占着麦克风、持续消耗识别额度：
 /// 这么久没有新的识别文字就自动结束。实时模式不以“检测到声音”为准——背景音乐、
@@ -1447,7 +1447,7 @@ fn spawn_raw_consumer(
             ) {
                 Ok(recording) => Some(recording),
                 Err(error) => {
-                    let error = format!("创建听写录音失败：{error}");
+                    let error = format!("创建语音输入录音失败：{error}");
                     let _ = done.send(Err(error.clone()));
                     let _ = tauri::async_runtime::block_on(fail(app, epoch, error));
                     return;
@@ -1559,7 +1559,7 @@ fn spawn_raw_consumer(
             // 不持有会话状态锁执行磁盘 I/O，查询状态与取消不必等写入。
             if let Some(recording) = recording.as_mut() {
                 if let Err(error) = recording.append(&samples) {
-                    write_error = Some(format!("写入听写录音失败：{error}"));
+                    write_error = Some(format!("写入语音输入录音失败：{error}"));
                     break;
                 }
             }
@@ -1625,7 +1625,7 @@ fn spawn_raw_consumer(
             recording
                 .map(|recording| recording.finish())
                 .transpose()
-                .map_err(|error| format!("完成听写录音失败：{error}"))
+                .map_err(|error| format!("完成语音输入录音失败：{error}"))
         };
         let recording_error = result.as_ref().err().cloned();
         // 成功结果连同文件所有权一起交给 stop；取消后接收端不存在会自动清理文件。
@@ -1955,7 +1955,7 @@ async fn start_file_job(
                 .lock()
                 .map_err(|_| "听写状态锁失败")?;
             if session.epoch != epoch {
-                return Err("听写会话已结束".into());
+                return Err("语音输入会话已结束".into());
             }
             session.file_job_id = Some(job_id.into());
             Ok(())
@@ -1968,12 +1968,12 @@ async fn start_file_job(
 async fn drain_file_recording(
     done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
 ) -> Result<crate::audio_wav::RecordedWav, String> {
-    let done = done.ok_or("听写录音任务不存在")?;
+    let done = done.ok_or("语音输入录音任务不存在")?;
     tokio::time::timeout(Duration::from_secs(10), done)
         .await
-        .map_err(|_| "听写尾部音频或文件写入超时".to_string())?
-        .map_err(|_| "听写录音任务提前结束".to_string())??
-        .ok_or_else(|| "听写录音文件不存在".into())
+        .map_err(|_| "语音输入尾部音频或文件写入超时".to_string())?
+        .map_err(|_| "语音输入录音任务提前结束".to_string())??
+        .ok_or_else(|| "语音输入录音文件不存在".into())
 }
 
 async fn cancel(app: AppHandle) -> Result<(), String> {
@@ -2571,7 +2571,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 crate::development_debug_log(
                     "dictation",
                     format_args!(
-                        "本次听写采用的软件上下文：状态={:?}，字符数={}\n--- 上下文开始 ---\n{}\n--- 上下文结束 ---",
+                        "本次语音输入采用的软件上下文：状态={:?}，字符数={}\n--- 上下文开始 ---\n{}\n--- 上下文结束 ---",
                         captured.status,
                         captured.format_for_prompt().chars().count(),
                         captured.format_for_prompt(),
@@ -2923,7 +2923,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                     }
                     Err(error) => Err(error),
                 },
-                None => Err("听写开始时的目标窗口已丢失，结果已复制到剪贴板".into()),
+                None => Err("语音输入开始时的目标窗口已丢失，结果已复制到剪贴板".into()),
             },
         }
     } else if let (Some(request), Some(assistant)) =
@@ -2995,7 +2995,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 }
                 Err(error) => Err(error),
             },
-            None => Err("听写开始时的目标窗口已丢失".into()),
+            None => Err("语音输入开始时的目标窗口已丢失".into()),
         }
     };
     let delivery_outcome = match injection_result {
@@ -3271,7 +3271,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
     let result = async {
         let target = pending
             .activation_target
-            .ok_or_else(|| "无法定位听写开始时的目标窗口，请重新聚焦输入框后再听写".to_string())?;
+            .ok_or_else(|| "无法定位语音输入开始时的目标窗口，请重新聚焦输入框后再语音输入".to_string())?;
         crate::active_app_context::activate_target(target)?;
         sleep(Duration::from_millis(120)).await;
         inject_text_inner(pending.text.clone(), Some(pending.method.clone())).await
@@ -3890,9 +3890,9 @@ fn validate_ocr_preferences(prefs: &DictationPrefs) -> Result<(), String> {
 }
 pub(crate) fn validate_dictation_settings_value(value: &Value) -> Result<(), String> {
     let prefs: DictationPrefs =
-        serde_json::from_value(value.clone()).map_err(|e| format!("听写配置无效：{e}"))?;
+        serde_json::from_value(value.clone()).map_err(|e| format!("语音输入配置无效：{e}"))?;
     if prefs.asr_model.trim().is_empty() {
-        return Err("听写模型不能为空".into());
+        return Err("语音输入模型不能为空".into());
     }
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
