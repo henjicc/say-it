@@ -1,7 +1,5 @@
 use crate::anim::Transition;
-use crate::canvas::{
-    Canvas, FontFamily, ParagraphAlign, SvgIcon, TextAlign, TextEngine, TextStyle,
-};
+use crate::canvas::{Canvas, SvgIcon, TextEngine};
 use crate::geom::{Color, Point, PxRect, Rect, Stroke, Transform};
 use crate::look::Look;
 use crate::svg::SvgSeg;
@@ -12,31 +10,32 @@ use std::time::Instant;
 
 /// 创建时的占位边长；首次 configure 会立刻改成真实尺寸。
 const DEFAULT_SIZE: i32 = 64;
-/// 图标区占球边长的比例，与 .orb-icon-shell / .orb-waveform 的 43% / 54% 一致。
+/// 图标区占球边长的比例。
 const ICON_RATIO: f32 = 0.43;
-/// MDL2 字形的 em 方框留有内边距，字号略放大以接近 43% 的 SVG 视觉尺寸。
-const GLYPH_RATIO: f32 = 0.46;
+/// 麦克风图标的路径四周留白较多，略放大以接近其他图标的视觉尺寸。
+const MIC_RATIO: f32 = 0.46;
 const WAVE_AREA_RATIO: f32 = 0.54;
 const WAVE_AREA_RATIO_HOVER: f32 = 0.594;
-const SPINNER_STEP_DEG: f32 = 6.0; // 60fps 下约 0.9s 一圈，与 CSS orb-spin 一致
+const SPINNER_STEP_DEG: f32 = 6.0; // 60fps 下约 0.9s 一圈
 /// 相位颜色过渡时长（非高亮 ↔ 高亮不跳变）。
 const STYLE_BLEND_S: f32 = 0.15;
-/// 波形柱平滑时间常数，与 CSS 的 70ms ease-out height 过渡等效。
+/// 波形柱平滑时间常数。
 const WAVE_SMOOTH_S: f32 = 0.070;
 
-// Segoe MDL2 Assets 字形。
-/// 麦克风图标（SVG path，24x24 viewBox），替代字体字形，线条更细腻。
+/// 麦克风图标（SVG path，24x24 viewBox）。
 const MIC_SVG_PATH: &str = "M12 15c1.66 0 2.99-1.34 2.99-3L15 6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3m6.08-3c-.42 0-.77.3-.83.71c-.37 2.61-2.72 4.39-5.25 4.39s-4.88-1.77-5.25-4.39a.84.84 0 0 0-.83-.71c-.52 0-.92.46-.85.97c.46 2.97 2.96 5.3 5.93 5.75V21c0 .55.45 1 1 1s1-.45 1-1v-2.28c2.96-.43 5.47-2.78 5.93-5.75a.857.857 0 0 0-.85-.97";
-const GLYPH_CHECK: u16 = 0xE73E;
-const GLYPH_WARNING: u16 = 0xE7BA;
 
-// 颜色取自 ui/src/index.css 的暗色令牌与 floating-orb.css 的 color-mix 结果。
-const BG: (u8, u8, u8) = (25, 25, 25); // #0f0f0f 96% + 白 4%
-const BG_HOVER: (u8, u8, u8) = (20, 34, 63); // bg 78% + accent 22%
-const BG_RECORDING_HOVER: (u8, u8, u8) = (20, 33, 59); // bg 80% + accent 20%
-const FG: (u8, u8, u8) = (255, 255, 255);
-const ACCENT: (u8, u8, u8) = (39, 103, 234); // --color-accent #2767ea
-const ACCENT_LIGHT: (u8, u8, u8) = (112, 155, 241); // --color-accent-light #709bf1
+// 与听写胶囊同一套单色风格：深色底、一圈浅色细线、浅色内容；只有警告和错误的图标带颜色。
+const BG: (u8, u8, u8) = (23, 24, 27);
+const BG_ALPHA: f32 = 0.96;
+const FG: (u8, u8, u8) = (236, 237, 239); // --color-fg
+const OUTLINE: (u8, u8, u8) = (255, 255, 255);
+/// 描边的不透明度：平时与胶囊相同，悬停、待命时提亮（胶囊悬停的强调）。
+const OUTLINE_ALPHA: f32 = 0.34;
+const OUTLINE_ALPHA_STRONG: f32 = 0.48;
+/// 空闲时图标略暗，悬停或有事发生时提到全亮。
+const ICON_ALPHA_IDLE: f32 = 0.78;
+const ICON_ALPHA_CANCELLED: f32 = 0.6;
 const WARN: (u8, u8, u8) = (217, 164, 65); // fallback/busy，--color-warn #d9a441
 const ERROR_RGB: (u8, u8, u8) = (229, 114, 108); // --color-err #e5726c
 
@@ -141,9 +140,7 @@ pub enum Command {
 struct OrbStyle {
     icon: (u8, u8, u8),
     icon_alpha: f32,
-    border: (u8, u8, u8),
     border_alpha: f32,
-    background: (u8, u8, u8),
 }
 
 impl OrbStyle {
@@ -158,68 +155,45 @@ impl OrbStyle {
         OrbStyle {
             icon: mix(self.icon, other.icon),
             icon_alpha: self.icon_alpha + (other.icon_alpha - self.icon_alpha) * t,
-            border: mix(self.border, other.border),
             border_alpha: self.border_alpha + (other.border_alpha - self.border_alpha) * t,
-            background: mix(self.background, other.background),
         }
     }
 }
 
-/// 各相位的颜色，与 floating-orb.css 的类规则一一对应。
+/// 各相位的图标颜色与描边强弱。
 fn phase_style(phase: OrbPhase, hovering: bool) -> OrbStyle {
-    let base = OrbStyle {
+    let lit = OrbStyle {
         icon: FG,
         icon_alpha: 1.0,
-        border: FG,
-        border_alpha: 0.24, // 比 CSS 的 0.16 略强：没有 box-shadow 的深色小窗需要描边分辨
-        background: BG,
+        border_alpha: OUTLINE_ALPHA,
     };
     match phase {
         OrbPhase::Idle if hovering => OrbStyle {
-            icon: ACCENT_LIGHT,
-            border: ACCENT,
-            border_alpha: 0.55, // --accent-ring
-            background: BG_HOVER,
-            ..base
+            border_alpha: OUTLINE_ALPHA_STRONG,
+            ..lit
         },
-        OrbPhase::Armed | OrbPhase::Success | OrbPhase::Submitted => OrbStyle {
-            icon: ACCENT_LIGHT,
-            border: ACCENT,
-            border_alpha: 0.55,
-            ..base
+        OrbPhase::Idle => OrbStyle {
+            icon_alpha: ICON_ALPHA_IDLE,
+            ..lit
         },
-        OrbPhase::Moving
-        | OrbPhase::Processing
-        | OrbPhase::SmartProcessing
-        | OrbPhase::Submitting => OrbStyle {
-            icon: ACCENT_LIGHT,
-            ..base
+        OrbPhase::Armed => OrbStyle {
+            border_alpha: OUTLINE_ALPHA_STRONG,
+            ..lit
         },
-        OrbPhase::Recording => OrbStyle {
-            icon: ACCENT_LIGHT,
-            border: ACCENT,
-            border_alpha: if hovering { 1.0 } else { 0.55 },
-            background: if hovering { BG_RECORDING_HOVER } else { BG },
-            ..base
+        OrbPhase::Recording if hovering => OrbStyle {
+            border_alpha: OUTLINE_ALPHA_STRONG,
+            ..lit
         },
-        OrbPhase::Busy | OrbPhase::Fallback => OrbStyle {
-            icon: WARN,
-            border: WARN,
-            border_alpha: 0.38,
-            ..base
-        },
+        OrbPhase::Busy | OrbPhase::Fallback => OrbStyle { icon: WARN, ..lit },
         OrbPhase::Error => OrbStyle {
             icon: ERROR_RGB,
-            border: ERROR_RGB,
-            border_alpha: 0.42,
-            ..base
+            ..lit
         },
         OrbPhase::Cancelled => OrbStyle {
-            icon: FG,
-            icon_alpha: 0.78, // --color-fg-muted
-            ..base
+            icon_alpha: ICON_ALPHA_CANCELLED,
+            ..lit
         },
-        _ => base,
+        _ => lit,
     }
 }
 
@@ -766,20 +740,19 @@ impl Orb {
             return;
         }
         let logical = self.bounds.width as f32 * 96.0 / (self.dpi.max(1) as f32);
-        let stroke = (logical * 0.03).clamp(1.25, 2.0);
         let style = self.blended_style(now);
         let center = logical / 2.0;
-        let radius = center - stroke / 2.0;
+        // 与 ui::paint::panel 相同的画法：整圆铺底，再向内半个像素画一圈 1 像素的细线。
         canvas.fill_circle(
             Point::new(center, center),
-            radius,
-            self.color8(style.background, 1.0),
+            center,
+            self.color8(BG, BG_ALPHA),
         );
         canvas.stroke_circle(
             Point::new(center, center),
-            radius,
-            self.color8(style.border, style.border_alpha),
-            Stroke::plain(stroke),
+            center - 0.5,
+            self.color8(OUTLINE, style.border_alpha),
+            Stroke::plain(1.0),
         );
         let area = (
             (logical - logical * ICON_RATIO) / 2.0,
@@ -787,13 +760,13 @@ impl Orb {
             logical * ICON_RATIO,
         );
         match self.phase {
-            OrbPhase::Recording => self.draw_waveform(canvas, logical),
+            OrbPhase::Recording => self.draw_waveform(canvas, logical, style),
             phase if phase.is_spinner() => self.draw_spinner(canvas, logical, style),
             OrbPhase::Success => {
                 if self.can_submit && self.hovering {
                     self.draw_enter_arrow(canvas, area, style);
                 } else {
-                    self.draw_glyph(canvas, GLYPH_CHECK, logical, style);
+                    self.stroke_polyline(canvas, area, &[(20.0, 6.0), (9.0, 17.0), (4.0, 12.0)], style);
                     if self.can_submit {
                         self.draw_submit_badge(canvas, logical);
                     }
@@ -805,9 +778,9 @@ impl Orb {
                 self.stroke_polyline(canvas, area, &[(6.0, 6.0), (18.0, 18.0)], style);
                 self.stroke_polyline(canvas, area, &[(18.0, 6.0), (6.0, 18.0)], style);
             }
-            OrbPhase::Error => self.draw_glyph(canvas, GLYPH_WARNING, logical, style),
+            OrbPhase::Error => self.draw_warning(canvas, area, style),
             _ => {
-                let area = logical * GLYPH_RATIO;
+                let area = logical * MIC_RATIO;
                 let offset = (logical - area) / 2.0;
                 let scale = area / 24.0;
                 canvas.save();
@@ -827,27 +800,22 @@ impl Orb {
             }
         }
     }
-    fn draw_glyph<C: Canvas>(&self, canvas: &mut C, glyph: u16, logical: f32, style: OrbStyle) {
-        let text = char::from_u32(u32::from(glyph)).unwrap().to_string();
-        let text_style = TextStyle {
-            family: FontFamily::SymbolGlyphs,
-            size: logical * GLYPH_RATIO,
-            weight: 400,
-            align: TextAlign::Center,
-            paragraph: ParagraphAlign::Center,
-            wrap: true,
-            line_spacing: None,
-        };
-        if let Some(layout) = canvas.text().layout(&text, &text_style, logical, logical) {
-            canvas.draw_text(
-                &layout,
-                Point::new(0.0, 0.0),
-                self.color8(style.icon, style.icon_alpha),
-                None,
-            );
-        }
+    /// 警告三角形与叹号。
+    fn draw_warning<C: Canvas>(&self, canvas: &mut C, area: (f32, f32, f32), style: OrbStyle) {
+        self.stroke_polyline(
+            canvas,
+            area,
+            &[(12.0, 3.5), (21.5, 20.0), (2.5, 20.0), (12.0, 3.5)],
+            style,
+        );
+        self.stroke_polyline(canvas, area, &[(12.0, 9.5), (12.0, 14.0)], style);
+        canvas.fill_circle(
+            lucide(area, 12.0, 17.0),
+            1.1 / 24.0 * area.2,
+            self.color8(style.icon, style.icon_alpha),
+        );
     }
-    fn draw_waveform<C: Canvas>(&self, canvas: &mut C, logical: f32) {
+    fn draw_waveform<C: Canvas>(&self, canvas: &mut C, logical: f32, style: OrbStyle) {
         let area = logical
             * if self.hovering {
                 WAVE_AREA_RATIO_HOVER
@@ -861,7 +829,7 @@ impl Orb {
             Point::new(origin, origin),
             area,
             &self.wave_display,
-            self.color8(ACCENT, 1.0),
+            self.color8(style.icon, style.icon_alpha),
         );
     }
     fn draw_spinner<C: Canvas>(&self, canvas: &mut C, logical: f32, style: OrbStyle) {
@@ -911,7 +879,7 @@ impl Orb {
                 lucide(area, pair[0].0, pair[0].1),
                 lucide(area, pair[1].0, pair[1].1),
                 self.color8(style.icon, style.icon_alpha),
-                Stroke::plain(width),
+                Stroke::round(width),
             );
         }
     }
@@ -938,7 +906,7 @@ impl Orb {
         let tl = lucide(area, 8.0, 1.5);
         let br = lucide(area, 16.0, 5.5);
         let tab = Rect::new(tl.x, tl.y, br.x, br.y);
-        canvas.fill_rounded_rect(tab, radius / 2.0, self.color8(style.background, 1.0));
+        canvas.fill_rounded_rect(tab, radius / 2.0, self.color8(BG, 1.0));
         let color = self.color8(style.icon, style.icon_alpha);
         canvas.stroke_rounded_rect(outer, radius, color, Stroke::plain(width));
         canvas.stroke_rounded_rect(tab, radius / 2.0, color, Stroke::plain(width));
@@ -949,18 +917,17 @@ impl Orb {
             logical - radius - logical * 0.01,
             logical - radius - logical * 0.01,
         );
-        canvas.fill_circle(center, radius, self.color8(ACCENT, 1.0));
+        // 浅色实心圆里放深色箭头，与球面反色。
+        canvas.fill_circle(center, radius, self.color8(FG, 1.0));
         let side = radius * 1.2;
         let area = (center.x - side / 2.0, center.y - side / 2.0, side);
         self.draw_enter_arrow(
             canvas,
             area,
             OrbStyle {
-                icon: FG,
+                icon: BG,
                 icon_alpha: 1.0,
-                border: FG,
                 border_alpha: 1.0,
-                background: ACCENT,
             },
         );
     }
@@ -1443,31 +1410,33 @@ mod model_tests {
         assert!(<Orb as OverlayModel<FakeText>>::wants_frames(&model, now));
     }
     #[test]
-    fn legacy_draw_uses_mic_transform_mdl2_glyphs_and_clipboard_fill_first() {
+    fn draw_uses_the_panel_face_mic_transform_line_icons_and_clipboard_fill_first() {
         let now = Instant::now();
         let mut model = Orb::new(96, &Look::WINDOWS_LEGACY);
         settle(&mut model, now);
         let mut canvas = RecordingCanvas::new(96);
         model.draw(&mut canvas, now);
         assert!(
-            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==Look::WINDOWS_LEGACY.color(25.0/255.0,25.0/255.0,25.0/255.0,1.0))
+            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==model.color8(BG, BG_ALPHA))
         );
         assert!(
-            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==Look::WINDOWS_LEGACY.color(1.0,1.0,1.0,0.24))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(OUTLINE, OUTLINE_ALPHA))
         );
         assert!(matches!(canvas.calls[2], Draw::Save));
         assert!(matches!(canvas.calls[3], Draw::Transform(_)));
         assert!(matches!(canvas.calls[4], Draw::Icon("orb-mic", _, None)));
         assert!(matches!(canvas.calls[5], Draw::Restore));
-        for (phase, glyph) in [
-            (OrbPhase::Success, "\u{E73E}"),
-            (OrbPhase::Error, "\u{E7BA}"),
-        ] {
+        // 完成和出错用线条图标，两个平台都不依赖符号字体。
+        for phase in [OrbPhase::Success, OrbPhase::Error] {
             state(&mut model, phase, &cx(now, 96));
             model.prepare_frame(&cx(now, 96));
             canvas.calls.clear();
             model.draw(&mut canvas, now);
-            assert!(matches!(&canvas.calls[2],Draw::Text(text,_,_,None) if text==glyph));
+            assert!(matches!(canvas.calls[2], Draw::Line(..)));
+            assert!(!canvas.calls.iter().any(|call| matches!(call, Draw::Text(..))));
+            // 出错的警告三角末尾多一个叹号的点；完成的对勾只有线段。
+            let dot = matches!(canvas.calls.last(), Some(Draw::FillCircle(..)));
+            assert_eq!(dot, phase == OrbPhase::Error);
         }
         state(&mut model, OrbPhase::Fallback, &cx(now, 96));
         model.prepare_frame(&cx(now, 96));
@@ -1509,7 +1478,7 @@ mod model_tests {
         let mut canvas = RecordingCanvas::new(96);
         model.draw(&mut canvas, middle);
         assert!(
-            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color!=model.color8(BG_HOVER,1.0))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color!=model.color8(OUTLINE, OUTLINE_ALPHA_STRONG))
         );
         let end = start + Duration::from_millis(151);
         // 已悬停的 Move 没有模型输入，宿主仍会查询 wants_frames 来同步定时器。
@@ -1532,7 +1501,7 @@ mod model_tests {
         canvas.calls.clear();
         model.draw(&mut canvas, end);
         assert!(
-            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==model.color8(BG_HOVER,1.0))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(OUTLINE, OUTLINE_ALPHA_STRONG))
         );
         assert_eq!(model.style_blend_start, None);
         assert_eq!(
