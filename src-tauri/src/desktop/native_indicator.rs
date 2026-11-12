@@ -55,6 +55,7 @@ fn run_indicator_action(action: IndicatorAction) {
         IndicatorAction::SkipSmartProcessing => {
             crate::application::dictation::skip_smart_processing(app)
         }
+        IndicatorAction::Cancel => crate::application::dictation::request_cancel(app.clone()),
     }
 }
 

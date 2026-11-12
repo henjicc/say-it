@@ -241,6 +241,7 @@ impl<T: TextEngine> OverlayModel<T> for Recorder {
         match input {
             UiInput::Hover(id) => self.hover = id == Some(STOP_ID),
             UiInput::Press(id) => self.pressed = id == Some(STOP_ID),
+            UiInput::RightClick(_) => return Vec::new(),
             UiInput::Click(_) => {
                 self.stopping = true;
                 self.hover = false;
