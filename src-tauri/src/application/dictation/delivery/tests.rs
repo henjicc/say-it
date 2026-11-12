@@ -344,3 +344,57 @@ fn stalled_dictation_profile() {
         })
     );
 }
+
+/// 识别会话早已建立、正在收尾的状态。
+fn finishing_after_open() -> RuntimeState {
+    let state = configured(DictationPhase::Finishing);
+    state.dictation_runtime.session.lock().unwrap().delivery.opened_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+    state
+}
+
+#[test]
+fn finish_timeout_with_nothing_recognized_fails_visibly() {
+    let state = finishing_after_open();
+    assert!(state.dictation_runtime.record_finish_timeout(7, false).unwrap());
+    assert!(matches!(
+        state.dictation_runtime.take_pending().unwrap(),
+        Some((7, Outcome::Fail(_)))
+    ));
+}
+
+#[test]
+fn plugin_finish_timeout_with_nothing_recognized_fails_visibly() {
+    let state = finishing_after_open();
+    asr(&state, "finish_timeout", json!({}));
+    assert!(matches!(
+        state.dictation_runtime.take_pending().unwrap(),
+        Some((7, Outcome::Fail(_)))
+    ));
+}
+
+#[test]
+fn finish_timeout_delivers_partial_text() {
+    let state = finishing_after_open();
+    asr(&state, "result", json!({"text":"说了一半", "final":false}));
+    assert!(state.dictation_runtime.record_finish_timeout(7, false).unwrap());
+    assert_eq!(
+        state.dictation_runtime.take_pending().unwrap(),
+        Some((7, Outcome::Finalize))
+    );
+}
+
+#[test]
+fn finish_timeout_waits_while_the_model_loads_and_after_it_opens() {
+    let state = configured(DictationPhase::Finishing);
+    assert!(!state.dictation_runtime.record_finish_timeout(7, false).unwrap());
+    // 刚加载完：排队的音频才开始识别，还要再给一个收尾超时。
+    asr(&state, "opened", json!({}));
+    assert!(!state.dictation_runtime.record_finish_timeout(7, false).unwrap());
+    assert_eq!(state.dictation_runtime.take_pending().unwrap(), None);
+    assert!(state.dictation_runtime.record_finish_timeout(7, true).unwrap());
+    assert!(matches!(
+        state.dictation_runtime.take_pending().unwrap(),
+        Some((7, Outcome::Fail(_)))
+    ));
+}
