@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/store/useUiStore";
 
-vi.mock("@/views/PluginManagerPanel", () => ({ PluginManagerPanel: () => <section><h2>插件管理</h2><button>安装插件</button></section> }));
+vi.mock("@/views/PluginManagerPanel", () => ({ LocalModelsPanel: () => <section><h2>本地模型</h2></section>, PluginsPanel: () => <section><h2>插件</h2><button>安装插件</button></section> }));
 vi.mock("@/views/SettingsMicCuePanel", () => ({ SettingsMicCuePanel: () => <section><h2>提示音</h2><button>启用音频提示</button></section> }));
 vi.mock("@/views/SettingsStartupPanel", () => ({ useStartupSettings: () => ({ startup: {}, startupMsg: "", saveStartup: vi.fn() }), SettingsStartupPanel: () => <section><h2>启动设置</h2><div><p>开机自启</p><button>切换开机自启</button></div></section> }));
 vi.mock("@/views/SettingsSetupPanel", () => ({ SettingsSetupPanel: () => <section><h2>使用引导</h2><button>重新运行</button></section> }));

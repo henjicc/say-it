@@ -134,9 +134,9 @@ export function PluginDropInstaller() {
         trustSigningKey: allowUntrusted,
         expectedArchiveStamp: preview?.archiveStamp,
       });
-      // 装完直接回到插件列表：新装的那一行就是结果。
+      // 装完直接回到对应列表：新装的那一行就是结果。
       finishCurrent();
-      openModels("plugins");
+      openModels(preview?.packageKind === "model-pack" ? "local" : "plugins");
       notify(`${preview?.name ?? fileName(sourcePath)} 已安装`);
       void emitEvent(EVT.pluginRegistryChanged).catch((error) => {
         console.error("刷新插件目录失败", error);

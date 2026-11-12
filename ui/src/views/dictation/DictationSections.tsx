@@ -1,4 +1,8 @@
+import { useEffect, useState } from "react";
+import { CheckCircle2, CircleAlert } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { Group, Row, ROW_CONTROL_W, SliderRow } from "@/components/ui/Group";
+import { Modal } from "@/components/ui/Modal";
 import { Select } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 
@@ -17,6 +21,9 @@ import { useFloatingOrbStore } from "@/store/useFloatingOrbStore";
 import { useMouseGestureStore } from "@/store/useMouseGestureStore";
 import { useProviderStore } from "@/store/useProviderStore";
 import { useUiStore } from "@/store/useUiStore";
+import { FLOATING_ORB_OPACITY_RANGE, FLOATING_ORB_SIZE_PERCENT_RANGE } from "@/floating-orb/interaction";
+import { CMD, cmd, type SetupStatus } from "@/lib/tauri";
+import { EnvironmentStatus } from "@/views/SettingsSetupPanel";
 
 const DEFAULT_INPUT_VALUE = "";
 const DICTATION_SCENES = ["dictationRealtime", "dictationFile"];
@@ -107,7 +114,7 @@ export function LocalPunctuationRow() {
   if (!pack?.enabled) {
     return (
       <Row label="自动加标点" hint="本地模型识别出的文字没有标点。安装并启用标点模型包后会自动补上。">
-        <button type="button" onClick={() => useUiStore.getState().openModels("plugins")} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-text)] hover:bg-[var(--color-surface-hover)]">
+        <button type="button" onClick={() => useUiStore.getState().openModels("local")} className="rounded-[var(--radius-sm)] px-2 py-1 text-[13px] text-[var(--color-accent-text)] hover:bg-[var(--color-surface-hover)]">
           {pack ? "启用标点模型包" : "安装标点模型包"}
         </button>
       </Row>
@@ -141,6 +148,7 @@ export function BasicsSection() {
   const openLexicon = () => useUiStore.setState({ view: "lexicon", lexiconSection: "hotwords" });
   return (
     <>
+      <ReadinessGroup />
       <Group title="触发">
         <ShortcutRows />
       </Group>
@@ -161,11 +169,65 @@ export function BasicsSection() {
   );
 }
 
-export function OrbGestureSection() {
+/**
+ * 听写现在能不能用：环境检查加上听写所选识别模型的可用性，有待处理项时给出查看入口。
+ * 已启用悬浮球或鼠标手势时，没设主快捷键不算待处理。
+ */
+function ReadinessGroup() {
+  const [pending, setPending] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const asrModel = useDictPrefs((s) => s.prefs.asrModel);
+  const modelIssue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
+  const orbEnabled = useFloatingOrbStore((state) => state.settings.enabled);
+  const gestureEnabled = useMouseGestureStore((state) => state.settings.enabled);
+  const hasOtherTrigger = orbEnabled || gestureEnabled;
+
+  // 权限在系统设置里改；进入本页和关掉详情后各检查一次。
+  useEffect(() => {
+    if (detailOpen) return;
+    let active = true;
+    void cmd<SetupStatus>(CMD.getSetupStatus)
+      .then((status) => {
+        if (!active) return;
+        setFailed(false);
+        setPending(status.checks.filter((check) => check.status !== "ready" && !(check.id === "shortcut" && hasOtherTrigger)).length);
+      })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [detailOpen, hasOtherTrigger]);
+
+  if (pending === null && !failed) return null;
+  const ready = pending === 0 && !failed && !modelIssue;
+  return (
+    <>
+      <Group>
+        <div className="flex min-h-[var(--row-h)] items-center gap-2.5 px-3.5">
+          {ready
+            ? <CheckCircle2 aria-hidden className="h-4 w-4 flex-none text-[var(--color-ok)]" />
+            : <CircleAlert aria-hidden className="h-4 w-4 flex-none text-[var(--color-warn)]" />}
+          <p role="status" className="min-w-0 flex-1 text-[13px] text-[var(--color-fg)]">
+            {ready ? "可以开始说话" : failed ? "环境检查失败" : pending ? `${pending} 项需要处理` : "识别模型还不能用"}
+          </p>
+          {(failed || Boolean(pending)) && <Button size="sm" aria-haspopup="dialog" aria-label="查看环境状态" onClick={() => setDetailOpen(true)}>查看</Button>}
+        </div>
+      </Group>
+      <Modal open={detailOpen} onClose={() => setDetailOpen(false)} title="环境状态" className="max-w-xl" bodyClassName="py-1">
+        <EnvironmentStatus />
+      </Modal>
+    </>
+  );
+}
+
+/** withAppearance：同时列出悬浮球的大小、不透明度和自动回车；首次引导只要开关。 */
+export function OrbGestureSection({ withAppearance = false }: { withAppearance?: boolean }) {
   const floatingOrb = useFloatingOrbStore((state) => state.settings);
   const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
   const floatingOrbError = useFloatingOrbStore((state) => state.error);
   const setFloatingOrbEnabled = useFloatingOrbStore((state) => state.setEnabled);
+  const setFloatingOrbAutoEnter = useFloatingOrbStore((state) => state.setAutoEnter);
+  const updateFloatingOrbAppearance = useFloatingOrbStore((state) => state.updateAppearance);
+  const orbOff = !floatingOrb.enabled;
   const mouseGesture = useMouseGestureStore((state) => state.settings);
   const mouseGestureBusy = useMouseGestureStore((state) => state.busy);
   const mouseGestureError = useMouseGestureStore((state) => state.error);
@@ -177,7 +239,7 @@ export function OrbGestureSection() {
       <Group title="悬浮球">
         <Row
           label="启用悬浮球"
-          hint="点击悬浮球开始或停止语音输入，右键可调整外观。识别结果会保留在剪贴板。"
+          hint="点击悬浮球开始或停止语音输入，右键也能调整这些设置。识别结果会保留在剪贴板。"
           message={floatingOrbError && <span role="alert" className="text-[var(--color-err)]">保存悬浮球设置失败：{floatingOrbError}</span>}
         >
           <Switch
@@ -187,6 +249,36 @@ export function OrbGestureSection() {
             label="启用悬浮球"
           />
         </Row>
+        {withAppearance && <>
+        <SliderRow
+          label="大小"
+          min={FLOATING_ORB_SIZE_PERCENT_RANGE.min}
+          max={FLOATING_ORB_SIZE_PERCENT_RANGE.max}
+          step={1}
+          value={floatingOrb.sizePercent}
+          disabled={orbOff}
+          format={(value) => `${(value / 10).toFixed(1)}%`}
+          onChange={(sizePercent) => void updateFloatingOrbAppearance({ sizePercent }).catch(() => undefined)}
+        />
+        <SliderRow
+          label="不透明度"
+          min={FLOATING_ORB_OPACITY_RANGE.min}
+          max={FLOATING_ORB_OPACITY_RANGE.max}
+          step={1}
+          value={floatingOrb.opacity}
+          disabled={orbOff}
+          format={(value) => `${value}%`}
+          onChange={(opacity) => void updateFloatingOrbAppearance({ opacity }).catch(() => undefined)}
+        />
+        <Row label="自动回车" hint="识别完成后自动发送，悬浮球上不再显示回车图标。" disabled={orbOff}>
+          <Switch
+            checked={floatingOrb.autoEnter}
+            disabled={orbOff || floatingOrbBusy}
+            onChange={(enabled) => void setFloatingOrbAutoEnter(enabled).catch(() => undefined)}
+            label="自动回车"
+          />
+        </Row>
+        </>}
       </Group>
       <Group title="鼠标手势">
         <Row

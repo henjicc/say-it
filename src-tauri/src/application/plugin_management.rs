@@ -480,7 +480,7 @@ pub(crate) async fn run_provider_plugin_action(
         return Err(format!("插件未声明操作：{action}"));
     }
     if spec.trust == "signed-untrusted" {
-        return Err("插件签名密钥尚未受信任，请先在插件管理中确认发布者".into());
+        return Err("插件签名密钥尚未受信任，请先在「模型 › 插件」中确认发布者".into());
     }
     match action.as_str() {
         "openLogin" => {

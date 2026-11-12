@@ -217,7 +217,7 @@ fn canonical_json_value(value: Value) -> Value {
 pub(crate) fn ensure_model_pack_installable(manifest: &PluginManifest) -> Result<(), String> {
     if super::plugin::is_superseded_ppocr(manifest) {
         return Err(
-            "PP-OCRv6 Tiny 已随应用内置，无需安装此模型包；已安装的旧包可在插件管理卸载。".into(),
+            "PP-OCRv6 Tiny 已随应用内置，无需安装此模型包；已安装的旧包可在「模型 › 本地模型」卸载。".into(),
         );
     }
     Ok(())

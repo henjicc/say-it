@@ -10,10 +10,8 @@ import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 import { useDictPrefs, type CueKind } from "@/store/useDictPrefs";
 import { CUE_DESIGNS, cueLabel, previewCue, type CueSlot } from "@/lib/cues";
-import { useAudioDevices } from "@/features/audio/devices";
 import { CMD, cmd } from "@/lib/tauri";
 
-const DEFAULT_INPUT_VALUE = "";
 const SLOT_LABEL: Record<CueSlot, string> = { start: "开始", end: "结束" };
 const HOLD_OPTIONS = [
   { value: 1, label: "1 分钟" },
@@ -146,7 +144,6 @@ function CuePicker({
 export function SettingsMicCuePanel() {
   const prefs = useDictPrefs((s) => s.prefs);
   const patch = useDictPrefs((s) => s.patch);
-  const { inputs } = useAudioDevices();
   const cueTargetRef = useRef<"start" | "end" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -185,24 +182,7 @@ export function SettingsMicCuePanel() {
 
   return (
     <InspectorBody>
-      <Group title="麦克风保活">
-        <Row label="输入设备">
-          <Select
-            className={ROW_CONTROL_W}
-            aria-label="输入设备"
-            searchable={inputs.length > 5}
-            searchPlaceholder="搜索麦克风…"
-            value={prefs.micDeviceId || DEFAULT_INPUT_VALUE}
-            onChange={(e) => patch({ micDeviceId: e.target.value })}
-          >
-            <option value={DEFAULT_INPUT_VALUE}>默认输入</option>
-            {inputs.map((device) => (
-              <option key={device.name} value={device.name}>
-                {device.name}
-              </option>
-            ))}
-          </Select>
-        </Row>
+      <Group title="麦克风">
         <Row label="麦克风保活" hint="单位为秒；0 表示用完即关。" controlId="mic-keep-alive">
           <Input
             id="mic-keep-alive"

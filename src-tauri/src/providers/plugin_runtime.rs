@@ -1537,7 +1537,7 @@ impl JsProviderRuntime {
     ) -> Result<Self, String> {
         if spec.trust == "signed-untrusted" {
             return Err(format!(
-                "插件 {} 的签名密钥尚未受信任，请从插件管理重新安装并确认发布者",
+                "插件 {} 的签名密钥尚未受信任，请从「模型 › 插件」重新安装并确认发布者",
                 spec.plugin_id
             ));
         }

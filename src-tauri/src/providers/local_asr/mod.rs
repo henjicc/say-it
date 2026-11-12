@@ -494,7 +494,7 @@ fn ensure_ready(spec: &LocalModelSpec) -> Result<(), String> {
         params: spec.params.clone(),
     };
     model_download::verify_pack(&spec.model_dir, &pack)
-        .map_err(|error| format!("本地模型尚未就绪，请在插件管理中下载或重新安装：{error}"))
+        .map_err(|error| format!("本地模型尚未就绪，请在「模型 › 本地模型」中下载或重新安装：{error}"))
 }
 
 fn param_path(spec: &LocalModelSpec, key: &str) -> Result<String, String> {
