@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Download, Trash2 } from "lucide-react";
+import { Meter } from "@/components/ui/Meter";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
@@ -17,6 +18,7 @@ import {
 } from "@/features/plugins/pluginInstaller";
 import { hardwareFit, hardwareLabel, LOCAL_MODEL_NEEDS, recommendedAsrPack, useHardware, type HardwareSummary } from "@/features/models/localModelNeeds";
 import { CMD, EVT, cmd, on } from "@/lib/tauri";
+import { useLocalModels } from "@/features/models/localModels";
 import { usePluginImportStore } from "@/store/usePluginImportStore";
 import { notify } from "@/store/useToastStore";
 
@@ -59,66 +61,45 @@ function formatBytes(value: number) {
   return `${Math.max(0, value / 1024).toFixed(1)} KB`;
 }
 
-/** 插件与模型包的列表和各项操作；「本地模型」与「插件」两页各用一份，只有前者读取官方模型目录。 */
+/**
+ * 插件与模型包的各项操作；快照和模型下载状态在 useLocalModels 里，与引导共用，
+ * 下载期间切走再回来也能接上进度。withOfficialCatalog 时同时读取官方模型目录。
+ */
 function usePluginManager(withOfficialCatalog: boolean) {
-  const [snapshot, setSnapshot] = useState<PluginSnapshot>();
-  const [loadError, setLoadError] = useState("");
+  const snapshot = useLocalModels((state) => state.snapshot);
+  const loadError = useLocalModels((state) => state.loadError);
+  const packsError = useLocalModels((state) => state.packsError);
+  const officialPacks = useLocalModels((state) => state.packs);
+  const downloaded = useLocalModels((state) => state.downloaded);
+  const installing = useLocalModels((state) => state.installing);
+  const installError = useLocalModels((state) => state.installError);
+  const installPacks = useLocalModels((state) => state.install);
   const [busyPluginId, setBusyPluginId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
-  const [officialPacks, setOfficialPacks] = useState<OfficialModelPack[]>();
-  const [officialError, setOfficialError] = useState("");
-  const [packProgress, setPackProgress] = useState<Record<string, number>>({});
-  /** 上一次操作失败的原因，按插件或模型包 ID 记，显示在对应那一行下面。 */
+  /** 启用、常驻、卸载失败的原因，显示在对应那一行下面；下载失败在 installError 里。 */
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
-
-  const loadSnapshot = async () => {
-    const next = await cmd<PluginSnapshot>(CMD.listProviderPlugins);
-    setSnapshot(next);
-  };
+  const setSnapshot = (next: PluginSnapshot) => useLocalModels.setState({ snapshot: next });
+  const { refresh, load } = useLocalModels.getState();
+  const loadSnapshot = withOfficialCatalog ? load : refresh;
 
   const clearRowError = (id: string) => setRowErrors(({ [id]: _, ...rest }) => rest);
   const failRow = (id: string, error: unknown) => setRowErrors((current) => ({ ...current, [id]: String(error) }));
 
-  const loadOfficialPacks = async () => {
-    setOfficialError("");
-    try {
-      setOfficialPacks(await cmd<OfficialModelPack[]>(CMD.listOfficialModelPacks));
-    } catch (error) {
-      setOfficialError(String(error));
-    }
-  };
-
   useEffect(() => {
-    void loadSnapshot().catch((error) => setLoadError(String(error)));
-    if (withOfficialCatalog) void loadOfficialPacks();
+    void loadSnapshot().catch((error) => useLocalModels.setState({ loadError: `读取插件列表失败：${String(error)}` }));
     let disposed = false;
-    const unlisteners: Array<() => void> = [];
-    const keepListener = (stop: () => void) => {
-      if (disposed) stop();
-      else unlisteners.push(stop);
-    };
-    void on<{
-      pluginId: string;
-      packDownloadedBytes: number;
-      packTotalBytes: number;
-      state: string;
-    }>(EVT.modelPackProgress, (event) => {
-      setPackProgress((current) => ({ ...current, [event.pluginId]: event.packTotalBytes ? event.packDownloadedBytes / event.packTotalBytes : 0 }));
-      setSnapshot((current) => current && ({
-        ...current,
-        plugins: current.plugins.map((plugin) => plugin.id === event.pluginId && plugin.modelPack
-          ? { ...plugin, modelPack: { ...plugin.modelPack, state: event.state as "downloading" | "ready", readyBytes: event.packDownloadedBytes, totalBytes: event.packTotalBytes } }
-          : plugin),
-      }));
-    }).then(keepListener);
+    let unlisten: (() => void) | undefined;
     void on(EVT.pluginRegistryChanged, () => {
-      void loadSnapshot().catch((error) => notify(`刷新插件列表失败：${String(error)}`, "err"));
-    }).then(keepListener);
+      void refresh().catch((error) => notify(`刷新插件列表失败：${String(error)}`, "err"));
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
     return () => {
       disposed = true;
-      unlisteners.forEach((stop) => stop());
+      unlisten?.();
     };
   }, []);
 
@@ -127,17 +108,26 @@ function usePluginManager(withOfficialCatalog: boolean) {
     if (scanning) return;
     setScanning(true);
     setRowErrors({});
+    useLocalModels.setState({ installError: undefined });
     try {
-      const next = await cmd<PluginSnapshot>(CMD.reloadProviderPlugins);
-      setSnapshot(next);
+      setSnapshot(await cmd<PluginSnapshot>(CMD.reloadProviderPlugins));
       await refreshPluginConsumers();
-      await loadSnapshot();
+      await refresh();
       notify("已重新扫描");
     } catch (error) {
       notify(`重新扫描失败：${String(error)}`, "err");
     } finally {
       setScanning(false);
     }
+  };
+
+  /** 这一行的下载进度（0～1）；没有在下载时为空。 */
+  const downloadProgress = (id: string, totalBytes: number): number | undefined => {
+    const pack = snapshot?.plugins.find((plugin) => plugin.id === id)?.modelPack;
+    if (!installing.includes(id) && pack?.state !== "downloading") return undefined;
+    // 窗口重建后还没收到进度事件时，先用快照里已就绪的字节数。
+    const done = downloaded[id] ?? pack?.readyBytes ?? 0;
+    return totalBytes ? Math.min(1, done / totalBytes) : 0;
   };
 
   const install = async () => {
@@ -175,48 +165,16 @@ function usePluginManager(withOfficialCatalog: boolean) {
     }
   };
 
-  const downloadModel = async (plugin: PluginSummary) => {
-    setBusyPluginId(plugin.id);
-    clearRowError(plugin.id);
-    try {
-      const next = await cmd<PluginSnapshot>(CMD.downloadProviderModelPack, { pluginId: plugin.id });
-      setSnapshot(next);
-      await refreshPluginConsumers();
-    } catch (error) {
-      failRow(plugin.id, `模型下载失败：${String(error)}`);
-      await loadSnapshot();
-    } finally {
-      setBusyPluginId("");
-    }
-  };
-
-  /** 安装或更新官方清单包；清单已装好但权重没下完的走 downloadModel。 */
-  const installOfficial = async (pack: OfficialModelPack) => {
-    setBusyPluginId(pack.id);
-    clearRowError(pack.id);
-    setPackProgress(({ [pack.id]: _, ...rest }) => rest);
-    try {
-      setSnapshot(await cmd<PluginSnapshot>(CMD.installOfficialModelPack, { packId: pack.id }));
-      await refreshPluginConsumers();
-    } catch (error) {
-      failRow(pack.id, error);
-      await loadSnapshot();
-    } finally {
-      setBusyPluginId("");
-    }
-  };
-
   const uninstall = async (plugin: PluginSummary) => {
     setBusyPluginId(plugin.id);
     clearRowError(plugin.id);
     try {
-      const next = await cmd<PluginSnapshot>(CMD.uninstallProviderPlugin, { pluginId: plugin.id });
-      setSnapshot(next);
+      setSnapshot(await cmd<PluginSnapshot>(CMD.uninstallProviderPlugin, { pluginId: plugin.id }));
       await refreshPluginConsumers();
-      await loadSnapshot();
+      await refresh();
     } catch (error) {
       failRow(plugin.id, `卸载失败：${String(error)}`);
-      await loadSnapshot();
+      await refresh();
     } finally {
       setBusyPluginId("");
       setPendingUninstall(undefined);
@@ -224,9 +182,13 @@ function usePluginManager(withOfficialCatalog: boolean) {
   };
 
   return {
-    snapshot, loadError, busyPluginId, scanning, rowErrors, officialPacks, officialError, packProgress,
-    pendingUninstall, setPendingUninstall, loadOfficialPacks, reload, install, setEnabled, setKeepLoaded,
-    downloadModel, installOfficial, uninstall,
+    snapshot, loadError, packsError, busyPluginId, scanning, rowErrors, officialPacks, pendingUninstall, setPendingUninstall,
+    reload, install, setEnabled, setKeepLoaded, uninstall, downloadProgress,
+    /** 同一时刻只下载一批；下载期间其他下载按钮不可用。 */
+    downloadBusy: installing.length > 0 || scanning,
+    downloadError: (id: string) => (installError?.ids.includes(id) ? installError.message : undefined),
+    download: (id: string, update = false) => void installPacks([id], update),
+    retryLoad: load,
   };
 }
 
@@ -237,6 +199,18 @@ function ModelFit({ pluginId, hardware }: { pluginId: string; hardware: Hardware
   if (recommendedAsrPack(hardware) === pluginId) return <Pill className="px-2 py-px text-[11px]">推荐</Pill>;
   const fit = hardwareFit(LOCAL_MODEL_NEEDS[pluginId], hardware);
   return fit && !fit.ok ? <span className="text-xs text-[var(--color-warn)]">{fit.text}</span> : null;
+}
+
+/** 下载中的进度条，切到别的页面再回来也接得上。 */
+function DownloadMeter({ name, progress, totalBytes }: { name: string; progress: number; totalBytes: number }) {
+  return (
+    <div className="flex w-56 items-center gap-2.5">
+      <Meter value={progress} label={`${name}下载进度`} className="flex-1" />
+      <span className="flex-none text-xs tabular-nums text-[var(--color-fg-subtle)]">
+        {totalBytes ? `${formatBytes(progress * totalBytes)} / ${formatBytes(totalBytes)}` : "准备中…"}
+      </span>
+    </div>
+  );
 }
 
 function RowError({ text }: { text?: string }) {
@@ -252,7 +226,8 @@ function InstalledRow({ plugin, manager, hardware, update }: {
 }) {
   const busy = manager.busyPluginId === plugin.id;
   const pack = plugin.modelPack;
-  const progress = manager.packProgress[plugin.id];
+  const totalBytes = update?.sizeBytes ?? pack?.totalBytes ?? 0;
+  const progress = pack && manager.downloadProgress(plugin.id, totalBytes);
   const downloadLabel = pack?.state === "partial" ? "继续下载" : "下载模型";
   return (
     <div className="px-3.5 py-3">
@@ -272,23 +247,24 @@ function InstalledRow({ plugin, manager, hardware, update }: {
               权限：{plugin.permissions.map((permission) => PERMISSION_LABEL[permission] || permission).join("、")}
             </p>
           )}
-          {pack && pack.state !== "ready" && (
+          {pack && pack.state !== "ready" && progress === undefined && (
             <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
               {MODEL_STATE_LABEL[pack.state] || pack.state}{pack.state !== "superseded" && ` · ${formatBytes(pack.readyBytes)} / ${formatBytes(pack.totalBytes)}`}
             </p>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {update && pack?.state !== "downloading" && (
-            <Button size="sm" aria-label={`更新${plugin.name}`} disabled={Boolean(manager.busyPluginId) || manager.scanning} onClick={() => void manager.installOfficial(update)}>
+          {progress !== undefined && <DownloadMeter name={plugin.name} progress={progress} totalBytes={totalBytes} />}
+          {progress === undefined && update && (
+            <Button size="sm" aria-label={`更新${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id, true)}>
               <Download className="h-3.5 w-3.5" aria-hidden />
-              {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : "更新"}
+              更新
             </Button>
           )}
-          {!update && pack?.downloadable && !["ready", "downloading"].includes(pack.state) && (
-            <Button size="sm" aria-label={`${downloadLabel}${plugin.name}`} disabled={Boolean(manager.busyPluginId) || manager.scanning} onClick={() => void manager.downloadModel(plugin)}>
+          {progress === undefined && !update && pack?.downloadable && pack.state !== "ready" && (
+            <Button size="sm" aria-label={`${downloadLabel}${plugin.name}`} disabled={manager.downloadBusy || busy} onClick={() => manager.download(plugin.id)}>
               <Download className="h-3.5 w-3.5" aria-hidden />
-              {busy ? "下载中…" : downloadLabel}
+              {downloadLabel}
             </Button>
           )}
           {pack?.residency && (
@@ -337,15 +313,14 @@ function InstalledRow({ plugin, manager, hardware, update }: {
       {pack?.residency?.state === "failed" && (
         <p role="alert" className="mt-1 text-xs text-[var(--color-err)]">常驻加载失败：{pack.residency.error}</p>
       )}
-      <RowError text={manager.rowErrors[plugin.id]} />
+      <RowError text={manager.rowErrors[plugin.id] ?? manager.downloadError(plugin.id)} />
     </div>
   );
 }
 
 /** 官方目录里还没安装的一行。 */
 function AvailableRow({ pack, manager, hardware }: { pack: OfficialModelPack; manager: Manager; hardware?: HardwareSummary }) {
-  const busy = manager.busyPluginId === pack.id;
-  const progress = manager.packProgress[pack.id];
+  const progress = manager.downloadProgress(pack.id, pack.sizeBytes);
   const need = LOCAL_MODEL_NEEDS[pack.id]?.summary;
   return (
     <div className="px-3.5 py-3">
@@ -358,12 +333,16 @@ function AvailableRow({ pack, manager, hardware }: { pack: OfficialModelPack; ma
           <ModelFit pluginId={pack.id} hardware={hardware} />
           <p className="basis-full text-xs text-[var(--color-fg-subtle)]">{pack.description}</p>
         </div>
-        <Button size="sm" aria-label={`下载${pack.name}`} disabled={Boolean(manager.busyPluginId) || manager.scanning} onClick={() => void manager.installOfficial(pack)}>
-          <Download className="h-3.5 w-3.5" aria-hidden />
-          {busy ? (progress === undefined ? "准备中…" : `下载中 ${Math.floor(progress * 100)}%`) : "下载"}
-        </Button>
+        {progress !== undefined
+          ? <DownloadMeter name={pack.name} progress={progress} totalBytes={pack.sizeBytes} />
+          : (
+            <Button size="sm" aria-label={`下载${pack.name}`} disabled={manager.downloadBusy} onClick={() => manager.download(pack.id)}>
+              <Download className="h-3.5 w-3.5" aria-hidden />
+              下载
+            </Button>
+          )}
       </div>
-      <RowError text={manager.rowErrors[pack.id]} />
+      <RowError text={manager.downloadError(pack.id)} />
     </div>
   );
 }
@@ -416,7 +395,7 @@ function ListStatus({ manager, empty }: { manager: Manager; empty: string }) {
   const { snapshot, loadError } = manager;
   return (
     <p role={loadError ? "alert" : undefined} className={`px-3.5 py-7 text-center text-[13px] break-words ${loadError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-      {snapshot ? empty : loadError ? `列表读取失败：${loadError}` : "正在读取…"}
+      {snapshot ? empty : loadError || "正在读取…"}
     </p>
   );
 }
@@ -426,7 +405,8 @@ export function LocalModelsPanel() {
   const manager = usePluginManager(true);
   const hardware = useHardware();
   const hardwareText = hardwareLabel(hardware);
-  const { snapshot, officialPacks, officialError } = manager;
+  const { snapshot, officialPacks } = manager;
+  const officialError = manager.packsError;
   const installedPacks = snapshot?.plugins.filter((plugin) => plugin.runtimeKind === "model-pack") ?? [];
   const catalog = officialPacks ?? [];
   const outsideCatalog = installedPacks.filter((plugin) => !catalog.some((pack) => pack.id === plugin.id));
@@ -451,9 +431,9 @@ export function LocalModelsPanel() {
         {snapshot && !officialPacks && (
           <div className="flex items-center justify-between gap-4 px-3.5 py-3">
             <p role={officialError ? "alert" : "status"} className={`text-xs ${officialError ? "text-[var(--color-err)]" : "text-[var(--color-fg-subtle)]"}`}>
-              {officialError ? `读取官方模型列表失败：${officialError}` : "正在读取官方模型列表…"}
+              {officialError || "正在读取官方模型列表…"}
             </p>
-            {officialError && <Button size="sm" onClick={() => void manager.loadOfficialPacks()}>重试</Button>}
+            {officialError && <Button size="sm" onClick={() => void manager.retryLoad()}>重试</Button>}
           </div>
         )}
         {(!snapshot || (officialPacks && empty)) && <ListStatus manager={manager} empty="还没有本地模型" />}

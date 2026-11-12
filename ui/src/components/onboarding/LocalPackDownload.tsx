@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { CheckCircle2, Download } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Meter } from "@/components/ui/Meter";
-import { useLocalModelProgress, useLocalModels } from "@/features/onboarding/localModels";
+import { useLocalModelProgress, useLocalModels } from "@/features/models/localModels";
 import { StepError } from "./StepLayout";
 
 export const formatSize = (bytes: number) =>
@@ -10,7 +10,7 @@ export const formatSize = (bytes: number) =>
 
 /** 下载这一步要用的官方模型包，并显示进度。 */
 export function LocalPackDownload({ ids }: { ids: readonly string[] }) {
-  const { load, install, loadError } = useLocalModels();
+  const { load, install, loadError, packsError } = useLocalModels();
   const { ready, downloading, busyElsewhere, unavailable, installError, total, done } = useLocalModelProgress(ids);
 
   useEffect(() => {
@@ -36,7 +36,7 @@ export function LocalPackDownload({ ids }: { ids: readonly string[] }) {
         {installError ? "重新下载" : total ? `下载模型（${formatSize(total)}）` : "下载模型"}
       </Button>
       {busyElsewhere && <p role="status" className="text-xs text-[var(--color-fg-subtle)]">另一个模型正在下载，下完后才能开始</p>}
-      {(installError || loadError) && <StepError>{installError || loadError}</StepError>}
+      {(installError || loadError || packsError) && <StepError>{installError || loadError || packsError}</StepError>}
     </div>
   );
 }
