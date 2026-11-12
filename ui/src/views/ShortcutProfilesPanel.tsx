@@ -140,15 +140,7 @@ export function ShortcutProfilesPanel() {
 
   return (
     <InspectorBody>
-      <Group
-        title="快捷键方案"
-        description="为不同用途设置专用快捷键。一次录音开始后会一直使用当时的方案。同一个按键可以分别设置单击和长按；相同的按键与触发方式不能重复。"
-      >
-        {profiles.length === 0 && (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">
-            暂无快捷键方案。主快捷键仍会按当前软件的场景规则处理。
-          </p>
-        )}
+      <Group>
         {profiles.map((profile) => {
           const open = editingId === profile.id;
           const smartRelevant = profile.processingMode === "followScene"

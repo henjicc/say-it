@@ -144,9 +144,6 @@ export function LocalRulesPanel() {
       )}
     >
       <Group title="查找替换" description="查找完整单词时，英文紧贴中文或两侧有空格、标点都能匹配。">
-        {findRules.length === 0 && (
-          <p className="px-3.5 py-3 text-xs text-[var(--color-fg-subtle)]">暂无查找替换规则</p>
-        )}
         {findRules.map((rule) => (
           <div key={rule.id} className="flex min-h-[var(--row-h)] items-center gap-2 px-3.5">
             <Checkbox

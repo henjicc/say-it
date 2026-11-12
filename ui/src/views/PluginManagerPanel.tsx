@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Download, Trash2 } from "lucide-react";
 import { Meter } from "@/components/ui/Meter";
-import { InspectorBody } from "@/components/layout/MasterDetail";
+import { InspectorBody, InspectorHeader } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
@@ -415,12 +415,13 @@ export function LocalModelsPanel() {
   const listReady = Boolean(snapshot) && (Boolean(officialPacks) || Boolean(officialError));
 
   return (
-    <InspectorBody>
-      <Group
-        title="本地模型"
-        description={hardwareText ? `这台电脑：${hardwareText}` : undefined}
+    <>
+      <InspectorHeader
+        title={<HelpLabel content={hardwareText ? `这台电脑：${hardwareText}` : undefined}>本地模型</HelpLabel>}
         right={<PackageActions manager={manager} />}
-      >
+      />
+      <InspectorBody>
+      <Group>
         {listReady && catalog.map((pack) => {
           const installed = installedPacks.find((plugin) => plugin.id === pack.id);
           return installed
@@ -439,7 +440,8 @@ export function LocalModelsPanel() {
         {(!snapshot || (officialPacks && empty)) && <ListStatus manager={manager} empty="还没有本地模型" />}
       </Group>
       <ManagerFooter manager={manager} />
-    </InspectorBody>
+      </InspectorBody>
+    </>
   );
 }
 
@@ -448,12 +450,13 @@ export function PluginsPanel() {
   const manager = usePluginManager(false);
   const plugins = manager.snapshot?.plugins.filter((plugin) => plugin.runtimeKind !== "model-pack") ?? [];
   return (
-    <InspectorBody>
-      <Group title="插件" right={<PackageActions manager={manager} primary />}>
-        {plugins.map((plugin) => <InstalledRow key={plugin.id} plugin={plugin} manager={manager} />)}
-        {plugins.length === 0 && <ListStatus manager={manager} empty="把 .sayit 文件拖进窗口也能安装" />}
-      </Group>
-      <ManagerFooter manager={manager} />
-    </InspectorBody>
+    <>
+      <InspectorHeader title="插件" right={<PackageActions manager={manager} primary />} />
+      <InspectorBody>
+        {plugins.length > 0 && <Group>{plugins.map((plugin) => <InstalledRow key={plugin.id} plugin={plugin} manager={manager} />)}</Group>}
+        {plugins.length === 0 && <Group><ListStatus manager={manager} empty="把 .sayit 文件拖进窗口也能安装" /></Group>}
+        <ManagerFooter manager={manager} />
+      </InspectorBody>
+    </>
   );
 }

@@ -82,7 +82,12 @@ export function DictationPage() {
           <AppProfilesPanel />
         </>
       )}
-      {node === "shortcuts" && <><InspectorHeader title={NODE_TITLES.shortcuts} /><ShortcutProfilesPanel /></>}
+      {node === "shortcuts" && (
+        <>
+          <InspectorHeader title={<HelpLabel content="按下方案的快捷键时，用这里设定的处理方式代替默认处理；一次录音开始后会一直使用当时的方案。同一个按键可以分别设置单击和长按。">{NODE_TITLES.shortcuts}</HelpLabel>} />
+          <ShortcutProfilesPanel />
+        </>
+      )}
       {node === "orbGesture" && <><InspectorHeader title={NODE_TITLES.orbGesture} /><InspectorBody><OrbGestureSection withAppearance /></InspectorBody></>}
     </MasterDetail>
   );
