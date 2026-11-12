@@ -24,6 +24,8 @@ const DOMAIN_EVENT: &str = "domain-event";
 mod processing;
 mod delivery;
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
+/// 停止时识别模型还在加载：音频在排队，最多再等这么久让它加载完。
+const MODEL_LOAD_WAIT: Duration = Duration::from_secs(60);
 const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
 const MAX_APP_PROFILES: usize = 100;
@@ -2195,7 +2197,22 @@ fn commit_current_segment(session: &mut Session) {
 fn spawn_finalize_timeout(app: AppHandle, epoch: u64) {
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_millis(FINALIZE_TIMEOUT_MS)).await;
-        finalize(app, epoch).await;
+        let waiting_since = std::time::Instant::now();
+        let runtime = &app.state::<RuntimeState>().dictation_runtime;
+        loop {
+            match runtime.record_finish_timeout(epoch, waiting_since.elapsed() >= MODEL_LOAD_WAIT) {
+                Ok(true) => break,
+                Ok(false) => sleep(Duration::from_millis(500)).await,
+                Err(error) => {
+                    crate::application::diagnostics::event(
+                        "error",
+                        "dictation.deliveryFailed",
+                        json!({ "error": error }),
+                    );
+                    break;
+                }
+            }
+        }
     });
 }
 

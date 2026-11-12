@@ -137,6 +137,22 @@ impl<T> ResidentCache<T> {
         Some((lingering.value.clone(), lingering.turn))
     }
 
+    /// 会话自己加载好的模型：这个模型已开常驻但预载还没轮到或失败了时直接当作常驻那一份，
+    /// 否则按没开常驻处理，留一小段时间。
+    fn adopt(&mut self, spec: &LocalModelSpec, value: Arc<T>) -> Result<Option<u64>, String> {
+        if self.blocked(&spec.plugin_id) {
+            return Ok(None);
+        }
+        let Some(entry) = self.entries.get(&ModelKey::from(spec)) else {
+            return Ok(self.linger(spec, value));
+        };
+        let mut state = entry.state.lock().map_err(|_| "本地模型加载状态锁失败")?;
+        if matches!(*state, LoadState::Loading | LoadState::Failed(_)) {
+            *state = LoadState::Ready(value);
+        }
+        Ok(None)
+    }
+
     /// 包正在替换、数据根已迁移，或这个模型已开常驻（预载还没完成）时不留，返回 `None`：
     /// 前两种情况不能再占着文件，后一种等预载完成就会有两份。
     fn linger(&mut self, spec: &LocalModelSpec, value: Arc<T>) -> Option<u64> {
@@ -177,6 +193,24 @@ fn cache() -> &'static Mutex<ResidentCache<Recognizer>> {
     CACHE.get_or_init(|| Mutex::new(ResidentCache::default()))
 }
 
+/// 同一个模型同一时间只加载一份：几次会话接连开始、或常驻预载还没完成时，后来的等先开始的那次
+/// 加载完再取用，不各自再加载一份。多份大模型同时加载会把显存挤满，谁都加载不完。
+fn load_gate(key: &ModelKey) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<ModelKey, Arc<Mutex<()>>>>> = OnceLock::new();
+    GATES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key.clone())
+        .or_default()
+        .clone()
+}
+
+/// 加载失败时持锁线程会带着 panic 退出；门本身不保护数据，照常放行。
+fn pass_gate(gate: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn supports_residency(engine: &str) -> bool {
     matches!(
         engine,
@@ -205,18 +239,27 @@ pub(super) fn acquire(spec: &LocalModelSpec) -> Result<Arc<Recognizer>, String> 
     // 全局锁只查询和登记缓存，不覆盖模型加载或实时解码。
     let lock = || cache().lock().map_err(|_| "本地模型缓存锁失败");
     let key = ModelKey::from(spec);
-    let (value, turn) = {
+    let cached = || -> Result<Option<(Arc<Recognizer>, Option<u64>)>, String> {
         let mut cache = lock()?;
         if let Some(value) = cache.get(spec)? {
-            return Ok(value);
+            return Ok(Some((value, None)));
         }
-        match cache.reuse_lingering(&key) {
-            Some((value, turn)) => (value, Some(turn)),
-            None => {
-                drop(cache);
-                let value = Arc::new(load(spec)?);
-                let turn = lock()?.linger(spec, value.clone());
-                (value, turn)
+        Ok(cache
+            .reuse_lingering(&key)
+            .map(|(value, turn)| (value, Some(turn))))
+    };
+    let (value, turn) = match cached()? {
+        Some(found) => found,
+        None => {
+            let gate = load_gate(&key);
+            let _loading = pass_gate(&gate);
+            match cached()? {
+                Some(found) => found,
+                None => {
+                    let value = Arc::new(load(spec)?);
+                    let turn = lock()?.adopt(spec, value.clone())?;
+                    (value, turn)
+                }
             }
         }
     };
@@ -265,22 +308,31 @@ pub fn reconcile(specs: Vec<LocalModelSpec>, app: &tauri::AppHandle) -> Result<(
     for (spec, entry) in jobs {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let result = load(&spec);
-            if let Err(error) = &result {
-                crate::application::diagnostics::event(
-                    "error",
-                    "localAsr.preloadFailed",
-                    serde_json::json!({ "pluginId": spec.plugin_id, "message": error }),
-                );
-            }
-            match entry.state.lock() {
-                Ok(mut state) => {
-                    *state = match result {
-                        Ok(value) => LoadState::Ready(Arc::new(value)),
-                        Err(error) => LoadState::Failed(error),
-                    }
+            let gate = load_gate(&ModelKey::from(&spec));
+            let _loading = pass_gate(&gate);
+            // 排队期间会话已经加载好并交给了这个条目，不再加载第二份。
+            let ready = entry
+                .state
+                .lock()
+                .is_ok_and(|state| matches!(*state, LoadState::Ready(_)));
+            if !ready {
+                let result = load(&spec);
+                if let Err(error) = &result {
+                    crate::application::diagnostics::event(
+                        "error",
+                        "localAsr.preloadFailed",
+                        serde_json::json!({ "pluginId": spec.plugin_id, "message": error }),
+                    );
                 }
-                Err(error) => eprintln!("[local-asr] 写入加载状态失败：{error}"),
+                match entry.state.lock() {
+                    Ok(mut state) => {
+                        *state = match result {
+                            Ok(value) => LoadState::Ready(Arc::new(value)),
+                            Err(error) => LoadState::Failed(error),
+                        }
+                    }
+                    Err(error) => eprintln!("[local-asr] 写入加载状态失败：{error}"),
+                }
             }
             use tauri::Emitter;
             if let Err(error) = app.emit("plugin-registry-changed", ()) {
