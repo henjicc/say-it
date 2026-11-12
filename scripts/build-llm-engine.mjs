@@ -28,9 +28,10 @@ const build = () =>
   );
 
 // llama.cpp 的 Vulkan 着色器生成器是嵌套的 CMake 工程，MSBuild 并行时它的构建步骤会抢在配置步骤
-// 之前执行（报 MSB1009 项目文件不存在）。配置步骤其实已完成，原样再来一次即可通过。
+// 之前执行（报 MSB1009 项目文件不存在），安装步骤也会抢在编译完成前执行（报 file INSTALL cannot find
+// vulkan-shaders-gen.exe）。已完成的步骤会保留，原样重来通常一两次就能通过。
 let result = build();
-if (result.status !== 0 && process.platform === "win32") result = build();
+for (let retry = 0; retry < 3 && result.status !== 0 && process.platform === "win32"; retry += 1) result = build();
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
