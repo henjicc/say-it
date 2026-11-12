@@ -4,19 +4,21 @@ import { WindowDragStrip } from "./WindowDragStrip";
 
 /**
  * 专业模式页面骨架：中间一栏是本页的分类列表，右侧检查器展示
- * 选中条目的设置。两栏各自滚动。
+ * 选中条目的设置。两栏各自滚动。检查器内容默认限宽居中；wide 用于字幕编辑器这类需要铺满的内容。
  */
 export function MasterDetail({
   title,
   titleRight,
   list,
   listFooter,
+  wide = false,
   children,
 }: {
   title: React.ReactNode;
   titleRight?: React.ReactNode;
   list: React.ReactNode;
   listFooter?: React.ReactNode;
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -34,7 +36,9 @@ export function MasterDetail({
       </section>
       <div className="flex min-w-0 flex-1 flex-col bg-[var(--color-panel)]">
         <WindowDragStrip />
-        <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-8">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-8">
+          <div className={cn("w-full", !wide && "mx-auto max-w-[var(--inspector-max-w)]")}>{children}</div>
+        </main>
       </div>
     </div>
   );

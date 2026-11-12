@@ -187,7 +187,7 @@ export function AppProfilesPanel() {
                 </IconButton>
                 <IconButton
                   size="sm"
-                  variant="dangerHover"
+                  variant="dangerText"
                   className="shrink-0"
                   label="删除软件规则"
                   onClick={() => void deleteProfile(profile)}

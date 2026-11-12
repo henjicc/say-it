@@ -348,14 +348,14 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>
       <Row label="当前模板" message={!usesTemplates && "专用翻译模型不使用模板；切回智能模型后，当前模板会继续生效。"}>
         <Select className={ROW_CONTROL_W} aria-label="当前模板" value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
-        <Button size="sm" variant="danger" aria-label="删除当前模板" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除</Button>
+        <Button size="sm" variant="dangerText" aria-label="删除当前模板" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除</Button>
       </Row>
       <Row label="模板名称"><Input className={ROW_CONTROL_W} aria-label="模板名称" value={active?.name ?? ""} maxLength={80} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, name: event.currentTarget.value } : item) } })} /></Row>
       <TextBlock label="任务提示词" hint="写下你希望如何处理文字，例如语气、语言和篇幅。"><Textarea rows={8} value={active?.prompt ?? ""} maxLength={12000} onChange={(event) => setPrefs({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.target.value } : item) } })} onBlur={(event) => void save({ ...prefs, [action]: { ...feature, templates: feature.templates.map((item) => item.id === active.id ? { ...item, prompt: event.currentTarget.value } : item) } })} /></TextBlock>
     </Group>
 
     {feature.templateTrash.length > 0 && <Group title="模板回收站">
-      {feature.templateTrash.map((entry) => <Row key={entry.recoveryId} label={entry.template.name}><Button size="sm" onClick={() => restore(entry)}><ArchiveRestore className="h-3.5 w-3.5" />恢复</Button></Row>)}
+      {feature.templateTrash.map((entry) => <Row key={entry.recoveryId} label={entry.template.name}><Button size="sm" variant="text" onClick={() => restore(entry)}><ArchiveRestore className="h-3.5 w-3.5" />恢复</Button></Row>)}
     </Group>}
 
     <Group title="试运行" description="只在这里显示结果，不会输入到其他软件，也不保存到历史。">

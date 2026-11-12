@@ -92,7 +92,7 @@ export function AboutDialog({
       className="max-w-[340px]"
     >
       <div className="relative flex flex-col items-center px-6 pt-7 pb-6">
-        <IconButton size="sm" variant="ghost" label="关闭" onClick={onClose} className="absolute top-3 right-3">
+        <IconButton size="sm" label="关闭" onClick={onClose} className="absolute top-3 right-3">
           <ClearIcon />
         </IconButton>
         {/* 图标是可点的：连点打开开发者模式。源图（1024）四周各留 100 的透明边，按 1024/824 放大，

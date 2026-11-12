@@ -1,5 +1,5 @@
 import { Hash, TextQuote } from "lucide-react";
-import { InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
+import { MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { useUiStore, type LexiconSectionKey } from "@/store/useUiStore";
 import { ContextTab, HotwordsTab } from "@/views/CustomizationView";
 
@@ -16,7 +16,6 @@ export function LexiconPage() {
 
   return (
     <MasterDetail title="词库" list={<NodeList ariaLabel="词库分类" items={ITEMS} active={section} onSelect={setSection} />}>
-      <InspectorHeader title={section === "hotwords" ? "热词" : "上下文"} />
       {section === "hotwords" ? <HotwordsTab /> : <ContextTab />}
     </MasterDetail>
   );

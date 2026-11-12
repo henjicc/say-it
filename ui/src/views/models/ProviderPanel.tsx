@@ -350,7 +350,7 @@ function LlmModelsGroup({ profile, query }: { profile: ProviderProfile; query: s
       >
         <ModelMeta price={llmPrice(adapterOf(profile.kind), model.name)} />
         {userAdded && !isPlugin && (
-          <IconButton size="sm" variant="dangerHover" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
+          <IconButton size="sm" variant="dangerText" label={`删除手动模型 ${label}`} onClick={() => removeManual(model.name)}>
             <Trash2 className="h-3.5 w-3.5" aria-hidden />
           </IconButton>
         )}

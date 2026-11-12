@@ -1,7 +1,7 @@
 import { forwardRef } from "react";
 import { cn } from "@/lib/cn";
 
-type Variant = "primary" | "ghost" | "text" | "danger" | "dangerHover";
+type Variant = "primary" | "ghost" | "text" | "link" | "danger" | "dangerHover" | "dangerText";
 type Size = "sm" | "md";
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -17,10 +17,16 @@ const variants: Record<Variant, string> = {
   /** 无底无框的次要操作，例如分步弹窗的「上一步」。 */
   text:
     "bg-transparent text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] active:bg-[var(--color-surface-strong)] disabled:opacity-40",
+  /** 列表行里的正向操作（下载、获取）：强调色文字，不画框。 */
+  link:
+    "bg-transparent text-[var(--color-accent-text)] hover:bg-[var(--color-surface-hover)] active:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
   danger:
     "bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] text-[var(--color-err)] border border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
   dangerHover:
     "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line-strong)] hover:border-[color-mix(in_srgb,var(--color-rec)_32%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] hover:text-[var(--color-err)] active:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
+  /** 列表行里的删除、清除：平时灰色，悬停才变红，不画框。 */
+  dangerText:
+    "bg-transparent text-[var(--color-fg-subtle)] hover:bg-[color-mix(in_srgb,var(--color-rec)_15%,transparent)] hover:text-[var(--color-err)] active:bg-[color-mix(in_srgb,var(--color-rec)_25%,transparent)] disabled:opacity-40",
 };
 
 const sizes: Record<Size, string> = {

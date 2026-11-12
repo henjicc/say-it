@@ -353,7 +353,7 @@ export function Select({
         type="button"
         className={cn(
           fieldClass(size),
-          "flex items-center justify-between gap-3 pr-3 text-left",
+          "ui-value-control flex items-center justify-between gap-3 pr-3 text-left",
           "hover:border-[var(--color-fg-faint)] hover:bg-[var(--color-surface-hover)]",
           open && "border-[var(--accent-ring)] bg-[var(--color-surface-hover)]",
           disabled && "cursor-not-allowed opacity-50",

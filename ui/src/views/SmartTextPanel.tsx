@@ -341,7 +341,7 @@ export function SmartTextPanel() {
               </IconButton>
               <IconButton
                 label="删除当前模板"
-                variant="dangerHover"
+                variant="dangerText"
                 disabled={templates.length <= 1 || templateActionBusy}
                 onClick={() => active && setPendingDelete(active)}
               >
@@ -444,7 +444,7 @@ export function SmartTextPanel() {
               <Row key={appName} label={<span className="block truncate text-[var(--color-fg-muted)]">{appName}</span>}>
                 <IconButton
                   size="sm"
-                  variant="dangerHover"
+                  variant="dangerText"
                   label={`移除 ${appName}`}
                   onClick={() => void removeBlockedApp(appName)}
                 >

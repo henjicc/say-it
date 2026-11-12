@@ -308,10 +308,10 @@ export function HistoryView() {
             <span className="min-w-0 flex-1 basis-40 break-words text-[var(--color-fg)]"><span className="text-[var(--color-fg-subtle)]">{rule.beforeText}</span> → {rule.afterText}</span>
             <span className="text-xs text-[var(--color-fg-subtle)]">{rule.scope === "global" ? "全局" : rule.appName || "当前应用"} · {rule.evidenceCount} 次证据 · {rule.status === "active" ? "生效中" : rule.status === "disabled" ? "已停用" : "候选"}</span>
             <div className="flex flex-wrap gap-1.5">
-              {rule.hotwordSuggested && <Button size="sm" onClick={() => void acceptHotwordSuggestion(rule)}>加入热词</Button>}
-              {rule.status === "active" && <Button size="sm" onClick={() => void changeRuleScope(rule)}><Globe2 className="h-3.5 w-3.5" aria-hidden />{rule.scope === "global" ? "限制应用" : "设为全局"}</Button>}
-              {rule.status !== "candidate" && <Button size="sm" onClick={() => void toggleRule(rule)}>{rule.status === "disabled" ? "启用" : "停用"}</Button>}
-              <Button size="sm" variant="dangerHover" onClick={() => void removeRule(rule)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
+              {rule.hotwordSuggested && <Button size="sm" variant="text" onClick={() => void acceptHotwordSuggestion(rule)}>加入热词</Button>}
+              {rule.status === "active" && <Button size="sm" variant="text" onClick={() => void changeRuleScope(rule)}><Globe2 className="h-3.5 w-3.5" aria-hidden />{rule.scope === "global" ? "限制应用" : "设为全局"}</Button>}
+              {rule.status !== "candidate" && <Button size="sm" variant="text" onClick={() => void toggleRule(rule)}>{rule.status === "disabled" ? "启用" : "停用"}</Button>}
+              <Button size="sm" variant="dangerText" onClick={() => void removeRule(rule)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
             </div>
           </div>
         ))}
@@ -375,29 +375,29 @@ export function HistoryView() {
                   <details className="mt-2 text-[13px] text-[var(--color-fg-subtle)]">
                     <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">{entry.taskKind === "dictation" ? "识别原文" : "原始内容"}</summary>
                     <p className="mt-2 whitespace-pre-wrap break-words leading-6">{entry.sourceText}</p>
-                    <Button size="sm" className="mt-2" onClick={() => void copy(entry.sourceText)}>复制原文</Button>
+                    <Button size="sm" variant="text" className="mt-2" onClick={() => void copy(entry.sourceText)}>复制原文</Button>
                   </details>
                 )}
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  <Button size="sm" disabled={!primaryText(entry)} onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
-                  {entry.error && <Button size="sm" onClick={() => void copy(entry.error!)}>复制错误</Button>}
-                  <Button size="sm" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
+                  <Button size="sm" variant="text" disabled={!primaryText(entry)} onClick={() => void copy(primaryText(entry))}><Clipboard className="h-3.5 w-3.5" aria-hidden />复制</Button>
+                  {entry.error && <Button size="sm" variant="text" onClick={() => void copy(entry.error!)}>复制错误</Button>}
+                  <Button size="sm" variant="text" disabled={!entry.outputText || entry.status === "recognized" || entry.status === "processed"} onClick={() => void retry(entry.id)}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试注入</Button>
                   {editing === entry.id ? <>
                     <Button size="sm" variant="primary" onClick={() => void save(entry)}><Check className="h-3.5 w-3.5" aria-hidden />保存</Button>
-                    <Button size="sm" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
-                  </> : <Button size="sm" disabled={!primaryText(entry) || entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
+                    <Button size="sm" variant="text" onClick={() => setEditing(null)}><X className="h-3.5 w-3.5" aria-hidden />取消</Button>
+                  </> : <Button size="sm" variant="text" disabled={!primaryText(entry) || entry.status === "recognized" || entry.status === "processed"} onClick={() => { setEditing(entry.id); setDraft(primaryText(entry)); }}><Pencil className="h-3.5 w-3.5" aria-hidden />修正</Button>}
                   {entry.finalTextConfidence === "medium" && <>
                     <Button size="sm" variant="primary" onClick={() => void confirmObserved(entry)}><Check className="h-3.5 w-3.5" aria-hidden />确认并学习</Button>
-                    <Button size="sm" onClick={() => void discardObserved(entry)}><X className="h-3.5 w-3.5" aria-hidden />忽略</Button>
+                    <Button size="sm" variant="text" onClick={() => void discardObserved(entry)}><X className="h-3.5 w-3.5" aria-hidden />忽略</Button>
                   </>}
                   {entry.finalText && entry.learningStatus === "candidate" && <>
                     <Button size="sm" variant="primary" onClick={() => void confirmLearning(entry)}><Check className="h-3.5 w-3.5" aria-hidden />确认学习</Button>
-                    <Button size="sm" onClick={() => void rejectLearning(entry)}><X className="h-3.5 w-3.5" aria-hidden />仅保留记录</Button>
+                    <Button size="sm" variant="text" onClick={() => void rejectLearning(entry)}><X className="h-3.5 w-3.5" aria-hidden />仅保留记录</Button>
                   </>}
                   {entry.finalText && entry.learningStatus === "pending" && entry.finalTextConfidence !== "medium" && (
-                    <Button size="sm" onClick={() => void rejectLearning(entry)}><X className="h-3.5 w-3.5" aria-hidden />不参与学习</Button>
+                    <Button size="sm" variant="text" onClick={() => void rejectLearning(entry)}><X className="h-3.5 w-3.5" aria-hidden />不参与学习</Button>
                   )}
-                  <Button size="sm" variant="dangerHover" onClick={() => void remove(entry.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
+                  <Button size="sm" variant="dangerText" onClick={() => void remove(entry.id)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</Button>
                 </div>
               </article>
             ))}

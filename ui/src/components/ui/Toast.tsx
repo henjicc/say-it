@@ -33,7 +33,7 @@ export function ToastHost() {
         >
           <span className="min-w-0 max-h-32 overflow-y-auto break-words">{toast.text}</span>
           {toast.tone === "err" && (
-            <IconButton size="sm" variant="ghost" label="关闭提示" className="flex-none" onClick={() => dismiss(toast.id)}>
+            <IconButton size="sm" label="关闭提示" className="flex-none" onClick={() => dismiss(toast.id)}>
               <ClearIcon />
             </IconButton>
           )}

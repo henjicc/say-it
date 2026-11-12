@@ -16,7 +16,7 @@ const ITEMS: NodeItem<TranscriptionTab>[] = [
 export function TranscriptionPage() {
   const { tab, setTab } = useTranscriptionStore();
   return (
-    <MasterDetail title="转写" list={<NodeList ariaLabel="转写分类" items={ITEMS} active={tab} onSelect={setTab} />}>
+    <MasterDetail wide={tab !== "settings"} title="转写" list={<NodeList ariaLabel="转写分类" items={ITEMS} active={tab} onSelect={setTab} />}>
       <InspectorHeader title={TITLES[tab]} />
       <TranscriptionView />
     </MasterDetail>
