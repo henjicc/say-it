@@ -5,12 +5,11 @@ use crate::anim::{ease_out_cubic, Transition};
 use crate::canvas::{
     Canvas, FontFamily, ParagraphAlign, TextAlign, TextEngine, TextStyle, TextTint,
 };
-use crate::geom::{Color, Point, PxRect, Rect, Shape, Stroke};
+use crate::geom::{Point, PxRect, Rect, Shape, Stroke};
 use crate::look::{Look, Profile};
-use crate::window::{
-    CursorShape, Cx, FrameSpec, Ops, OverlayModel, PointerEvent, PointerModel, PointerStep,
-    WindowEvent, WindowOp,
-};
+use crate::ui::paint::{self, fg};
+use crate::ui::{HitKind, HitMap, UiInput, UiPointer};
+use crate::window::{Cx, FrameSpec, Ops, OverlayModel, WindowEvent, WindowOp};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -146,91 +145,8 @@ pub enum IndicatorAction {
     SkipSmartProcessing,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IndicatorInput {
-    Hover(bool),
-    /// 已点击跳过：立刻退出可点击状态，给出反馈。
-    Skip,
-}
-
-/// 指针层的命中快照：只有智能处理中才有可点击区域（布局坐标，DIP）。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct IndicatorHit {
-    skip: Option<Rect>,
-    dpi: u32,
-}
-
-/// 胶囊平时点击穿透；智能处理中整窗可交互，但只有胶囊本身响应悬停与点击。
-#[derive(Debug, Default)]
-pub struct IndicatorPointer {
-    hovering: bool,
-    pressed: bool,
-}
-
-impl IndicatorPointer {
-    fn inside(hit: &IndicatorHit, client: (i32, i32)) -> bool {
-        let scale = if hit.dpi == 0 { 1.0 } else { hit.dpi as f32 / 96.0 };
-        let point = Point::new(client.0 as f32 / scale, client.1 as f32 / scale);
-        hit.skip.is_some_and(|rect| rect.contains(point))
-    }
-    fn set_hover(
-        &mut self,
-        hovering: bool,
-        steps: &mut Vec<PointerStep<IndicatorAction, IndicatorInput>>,
-    ) {
-        if hovering == self.hovering {
-            return;
-        }
-        self.hovering = hovering;
-        if hovering {
-            steps.push(PointerStep::Op(WindowOp::TrackMouseLeave));
-        }
-        steps.push(PointerStep::Model(IndicatorInput::Hover(hovering)));
-    }
-}
-
-impl PointerModel for IndicatorPointer {
-    type Hit = IndicatorHit;
-    type Input = IndicatorInput;
-    type Action = IndicatorAction;
-    fn event(
-        &mut self,
-        event: PointerEvent,
-        hit: &IndicatorHit,
-    ) -> Vec<PointerStep<IndicatorAction, IndicatorInput>> {
-        let mut steps = Vec::new();
-        match event {
-            PointerEvent::Move { client, .. } => {
-                self.set_hover(Self::inside(hit, client), &mut steps);
-            }
-            PointerEvent::LeftDown { client, .. } => {
-                self.pressed = Self::inside(hit, client);
-            }
-            PointerEvent::LeftUp { client } => {
-                if std::mem::take(&mut self.pressed) && Self::inside(hit, client) {
-                    self.hovering = false;
-                    steps.push(PointerStep::Model(IndicatorInput::Skip));
-                    steps.push(PointerStep::Op(WindowOp::Action(
-                        IndicatorAction::SkipSmartProcessing,
-                    )));
-                }
-            }
-            PointerEvent::RightUp { .. } => {}
-            PointerEvent::Leave | PointerEvent::CaptureLost => {
-                self.pressed = false;
-                self.set_hover(false, &mut steps);
-            }
-        }
-        steps
-    }
-    fn cursor(&self, hit: &IndicatorHit) -> CursorShape {
-        if self.hovering && hit.skip.is_some() {
-            CursorShape::Hand
-        } else {
-            CursorShape::Arrow
-        }
-    }
-}
+/// 命中表里「直接输入」按钮的编号：智能处理中整窗可交互，但只有胶囊本身响应悬停与点击。
+const SKIP_ID: u16 = 0;
 
 /// 临界阻尼附近的弹簧；子步长积分，帧间隔抖动时也稳定。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -581,7 +497,7 @@ impl Indicator {
 impl<T: TextEngine> OverlayModel<T> for Indicator {
     type Command = Command;
     type Action = IndicatorAction;
-    type Pointer = IndicatorPointer;
+    type Pointer = UiPointer<IndicatorAction>;
 
     fn apply(&mut self, command: Command, cx: &Cx<'_, T>) -> Ops<IndicatorAction> {
         match command {
@@ -665,15 +581,18 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
             Command::Hide => self.begin_exit(),
         }
     }
-    fn input(&mut self, input: IndicatorInput, _: &Cx<'_, T>) -> Ops<IndicatorAction> {
+    fn input(&mut self, input: UiInput, _: &Cx<'_, T>) -> Ops<IndicatorAction> {
         let mut ops = vec![WindowOp::Redraw];
         match input {
-            IndicatorInput::Hover(hovering) => self.hovering = hovering && self.interactive,
-            IndicatorInput::Skip => {
+            UiInput::Hover(button) => self.hovering = button.is_some() && self.interactive,
+            UiInput::Press(_) => return Vec::new(),
+            // 点击后立刻退出可点击状态给出反馈，不等应用回传。
+            UiInput::Click(_) => {
                 if self.state == Some(IndicatorState::SmartProcessing) {
                     self.state = Some(IndicatorState::Processing);
                     self.sync_interactive(&mut ops);
                 }
+                ops.push(WindowOp::Action(IndicatorAction::SkipSmartProcessing));
             }
         }
         ops
@@ -741,15 +660,19 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
     fn draw<C: Canvas<Text = T>>(&self, canvas: &mut C, now: Instant) {
         self.draw_content(canvas, now);
     }
-    fn hit(&self) -> IndicatorHit {
-        let skip = (self.interactive && self.transition.visual() > 0.5).then(|| {
+    fn hit(&self) -> HitMap {
+        let mut map = HitMap::new(self.dpi);
+        if self.interactive && self.transition.visual() > 0.5 {
             let pill = self.pill_rect();
-            Rect::new(pill.left - 2.0, pill.top - 2.0, pill.right + 2.0, pill.bottom + 2.0)
-        });
-        IndicatorHit {
-            skip,
-            dpi: self.dpi,
+            map.push(
+                SKIP_ID,
+                Rect::new(pill.left - 2.0, pill.top - 2.0, pill.right + 2.0, pill.bottom + 2.0),
+                HitKind::Button,
+            );
         }
+        // 可点区域消失后也要报出模型仍认定的悬停，指针层才会把它清掉。
+        map.set_hover(self.hovering.then_some(SKIP_ID));
+        map
     }
     fn glass(&self) -> Vec<Shape> {
         if self.look.profile != Profile::Css || self.look.glass.is_none() {
@@ -789,34 +712,6 @@ impl Indicator {
             bottom,
         )
     }
-    /// 胶囊、文字框与通知面板共用：深色底加一圈内侧浅色细线；深色桌面靠亮线、浅色桌面靠深底看清轮廓。
-    fn draw_panel<C: Canvas>(
-        &self,
-        canvas: &mut C,
-        rect: Rect,
-        radius: f32,
-        alpha: f32,
-        emphasis: f32,
-    ) {
-        canvas.fill_rounded_rect(
-            rect,
-            radius,
-            self.look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96 * alpha),
-        );
-        let inner = Rect::new(
-            rect.left + 0.5,
-            rect.top + 0.5,
-            rect.right - 0.5,
-            rect.bottom - 0.5,
-        );
-        canvas.stroke_rounded_rect(
-            inner,
-            radius - 0.5,
-            self.look
-                .color(1.0, 1.0, 1.0, (0.34 + 0.14 * emphasis) * alpha),
-            Stroke::plain(1.0),
-        );
-    }
     fn draw_content<C: Canvas>(&self, canvas: &mut C, now: Instant) {
         let Some(state) = self.state else { return };
         if state == IndicatorState::Fallback {
@@ -831,7 +726,7 @@ impl Indicator {
             self.draw_text_box(canvas, now);
         }
         let pill = self.pill_rect();
-        self.draw_panel(canvas, pill, PILL_RADIUS, 1.0, self.hover.x);
+        paint::panel(canvas, &self.look, pill, PILL_RADIUS, 1.0, self.hover.x);
         let content = 1.0 - self.hover.x.clamp(0.0, 1.0);
         let morph = self.morph.x.clamp(0.0, 1.0);
         if morph < 0.999 {
@@ -847,7 +742,7 @@ impl Indicator {
     fn draw_text_box<C: Canvas>(&self, canvas: &mut C, now: Instant) {
         let alpha = self.text_alpha.x.clamp(0.0, 1.0);
         let rect = self.text_rect();
-        self.draw_panel(canvas, rect, TEXT_RADIUS, alpha, 0.0);
+        paint::panel(canvas, &self.look, rect, TEXT_RADIUS, alpha, 0.0);
         if self.text.is_empty() {
             return;
         }
@@ -1014,7 +909,7 @@ impl Indicator {
     }
     fn draw_notice_panel<C: Canvas>(&self, canvas: &mut C, text: &str, warn: bool) {
         let rect = self.notice_rect();
-        self.draw_panel(canvas, rect, PILL_RADIUS.min(rect.height() / 2.0), 1.0, 0.0);
+        paint::panel(canvas, &self.look, rect, PILL_RADIUS.min(rect.height() / 2.0), 1.0, 0.0);
         let color = if warn {
             self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, 1.0)
         } else {
@@ -1119,11 +1014,6 @@ fn text_style(size: f32, centered: bool) -> TextStyle<'static> {
     }
 }
 
-/// 主前景色（与主窗口 --color-fg 一致）。
-fn fg(look: &Look, alpha: f32) -> Color {
-    look.color(236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0, alpha)
-}
-
 /// 感知响度曲线，移植自 ui/src/floating-orb/interaction.ts 的 floatingOrbWaveScale。
 pub fn wave_scale(value: f32) -> f32 {
     // JS 侧 `Number(value) || 0` 会把 NaN 归 0。
@@ -1138,6 +1028,8 @@ pub fn wave_scale(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::Color;
+    use crate::window::{CursorShape, PointerEvent, PointerModel, PointerStep};
     use crate::testing::{Draw, FakeText, RecordingCanvas};
 
     fn cx(now: Instant, text: &FakeText) -> Cx<'_, FakeText> {
@@ -1438,27 +1330,32 @@ mod tests {
             (((pill.left + pill.right) / 2.0) * scale) as i32,
             (((pill.top + pill.bottom) / 2.0) * scale) as i32,
         );
-        let mut pointer = IndicatorPointer::default();
+        let mut pointer = UiPointer::<IndicatorAction>::default();
         let steps = pointer.event(
             PointerEvent::Move { client: inside, screen: inside },
             &hit,
         );
-        assert!(steps.contains(&PointerStep::Model(IndicatorInput::Hover(true))));
-        assert_eq!(pointer.cursor(&hit), CursorShape::Hand);
-        model.input(IndicatorInput::Hover(true), &cx(now, &text));
+        assert!(steps.contains(&PointerStep::Model(UiInput::Hover(Some(SKIP_ID)))));
+        model.input(UiInput::Hover(Some(SKIP_ID)), &cx(now, &text));
         assert_eq!(model.pill_target(), PILL_W_HOVER);
+        let hit = <Indicator as OverlayModel<FakeText>>::hit(&model);
+        assert_eq!(pointer.cursor(&hit), CursorShape::Hand);
         pointer.event(PointerEvent::LeftDown { client: inside, screen: inside }, &hit);
+        assert!(pointer
+            .event(PointerEvent::LeftUp { client: inside }, &hit)
+            .contains(&PointerStep::Model(UiInput::Click(SKIP_ID))));
+        // 点击后立即退出可点击状态，再把跳过交给应用。
+        let ops = model.input(UiInput::Click(SKIP_ID), &cx(now, &text));
         assert_eq!(
-            pointer.event(PointerEvent::LeftUp { client: inside }, &hit),
+            ops,
             vec![
-                PointerStep::Model(IndicatorInput::Skip),
-                PointerStep::Op(WindowOp::Action(IndicatorAction::SkipSmartProcessing)),
+                WindowOp::Redraw,
+                WindowOp::SetInteractive(false),
+                WindowOp::Action(IndicatorAction::SkipSmartProcessing),
             ]
         );
-        // 点击后立即退出可点击状态，不必等应用回传。
-        let ops = model.input(IndicatorInput::Skip, &cx(now, &text));
-        assert!(ops.contains(&WindowOp::SetInteractive(false)));
         assert_eq!(model.state, Some(IndicatorState::Processing));
+        assert_eq!(model.pill_target(), PILL_W_PROCESSING);
         let ops = model.apply(
             Command::SetState(IndicatorState::SmartProcessing),
             &cx(now, &text),
@@ -1474,7 +1371,7 @@ mod tests {
             &cx(now, &text),
         );
         assert!(ops.contains(&WindowOp::SetInteractive(false)));
-        assert!(<Indicator as OverlayModel<FakeText>>::hit(&model).skip.is_none());
+        assert_eq!(<Indicator as OverlayModel<FakeText>>::hit(&model).at(inside), None);
         assert_eq!(model.pill_target(), PILL_W_PROCESSING);
 
         // 宿主没接通指针（macOS）时始终点击穿透。
