@@ -78,17 +78,18 @@ export function SubtitleSourceRow() {
   );
 }
 
-export function SubtitleAsrRow() {
+/** label 是「用途」页里按功能名显示的行名，功能页里用默认名。 */
+export function SubtitleAsrRow({ label = "识别模型" }: { label?: string } = {}) {
   useModelCatalogRevision();
   const { prefs, running, patch } = useSubtitleStore();
   const editable = useUsageEditable();
   const options = useOfferedAsrOptions(SUBTITLE_ASR_MODEL_OPTIONS, prefs.asrModel);
   const issue = useAsrUsageIssue(prefs.asrModel, SUBTITLE_SCENES);
   if (!editable) {
-    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === prefs.asrModel)?.label ?? prefs.asrModel} message={issue} />;
+    return <UsageLinkRow label={label} value={options.find((option) => option.value === prefs.asrModel)?.label ?? prefs.asrModel} message={issue} />;
   }
   return (
-    <Row label="识别模型" controlId="subtitle-asr-model" message={issue}>
+    <Row label={label} controlId="subtitle-asr-model" message={issue}>
       <div className={ROW_CONTROL_W}>
         <ModelPicker
           id="subtitle-asr-model"

@@ -46,8 +46,8 @@ const LANGUAGE_OPTIONS = [
 
 const TRANSCRIPTION_SCENES = ["transcription"];
 
-/** 转写识别模型。参数存在默认识别供应商的配置里；在「用途」页修改时转写页未打开，直接写回那里。 */
-export function TranscriptionModelRow() {
+/** 转写识别模型。参数存在默认识别供应商的配置里；在「用途」页修改时转写页未打开，直接写回那里。label 是「用途」页里按功能名显示的行名。 */
+export function TranscriptionModelRow({ label = "识别模型" }: { label?: string } = {}) {
   useModelCatalogRevision();
   const params = useTranscriptionStore((s) => s.params);
   const setParams = useTranscriptionStore((s) => s.setParams);
@@ -61,7 +61,7 @@ export function TranscriptionModelRow() {
   const options = useOfferedAsrOptions(FILE_ASR_MODEL_OPTIONS, model);
   const issue = useAsrUsageIssue(model, TRANSCRIPTION_SCENES);
   if (!editable) {
-    return <UsageLinkRow label="识别模型" value={options.find((option) => option.value === model)?.label ?? model} message={issue} />;
+    return <UsageLinkRow label={label} value={options.find((option) => option.value === model)?.label ?? model} message={issue} />;
   }
   const change = (value: string) => {
     setParams({ model: value });
@@ -76,7 +76,7 @@ export function TranscriptionModelRow() {
   };
   return (
     <Row
-      label="识别模型"
+      label={label}
       controlId="transcription-asr-model"
       hint="同时用于字幕转写和文稿对齐。"
       message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}

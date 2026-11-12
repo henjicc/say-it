@@ -8,8 +8,7 @@ import { Input, Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { useConfirm } from "@/components/ui/useConfirm";
-import { LlmThinkingRow } from "@/features/models/LlmThinkingRow";
-import { UsageLinkRow, useInUsagePage, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
+import { UsageLinkRow, useOfferedTranslationOptions, useUsageEditable, useUsageIssue } from "@/features/models/usage";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import {
   FOLLOW_DEFAULT_LLM_OPTION,
@@ -126,10 +125,10 @@ function parseModel(value: string) {
   return { llmProviderId: "default", llmModel: "" };
 }
 
-const ACTION_LABELS: Record<AssistantActionKey, string> = { translateSpeech: "语音翻译", editSelection: "选区编辑", ask: "语音问答" };
+export const ACTION_LABELS: Record<AssistantActionKey, string> = { translateSpeech: "语音翻译", editSelection: "选区编辑", ask: "语音问答" };
 
 /** 某个助手功能用的模型：语音翻译选了专用翻译引擎时是翻译模型，否则是大模型。 */
-function AssistantModelRow({ action, label, prefs, save }: {
+export function AssistantModelRow({ action, label, prefs, save }: {
   action: AssistantActionKey;
   label: string;
   prefs: AssistantPrefs;
@@ -137,7 +136,6 @@ function AssistantModelRow({ action, label, prefs, save }: {
 }) {
   const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const editable = useUsageEditable();
-  const inUsagePage = useInUsagePage();
   const feature = prefs[action];
   const dedicated = action === "translateSpeech" && prefs.translationEngine === "dedicated";
   const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
@@ -172,13 +170,15 @@ function AssistantModelRow({ action, label, prefs, save }: {
           <ModelPicker id={controlId} value={selectedLlm} options={llmOptions} panelLabel="选择智能模型" onChange={(value) => void save({ ...prefs, [action]: { ...feature, ...parseModel(value) } })} />
         </div>
       </Row>
-      {inUsagePage && selectedLlm !== "default" && <LlmThinkingRow providerId={feature.llmProviderId} model={feature.llmModel} />}
     </>
   );
 }
 
-/** 「用途」页里的助手三项。助手设置整份保存，这里单独读取一份，助手页未打开也能改。 */
-export function AssistantModelRows() {
+/**
+ * 「用途」页读写助手设置用的一份状态。助手设置整份保存，三个动作的模型行必须共用这一份，
+ * 否则各自保存时会互相覆盖；助手页未打开也能改。
+ */
+export function useUsageAssistantPrefs() {
   const [prefs, setPrefs] = useState<AssistantPrefs>();
   const [message, setMessage] = useState("");
   useEffect(() => {
@@ -192,12 +192,7 @@ export function AssistantModelRows() {
     try { await cmd(CMD.updateAppSettings, { domain: "assistant", value: next }); }
     catch (error) { setMessage(`保存失败：${String(error)}`); }
   };
-  return <>
-    {prefs && (Object.keys(ACTION_LABELS) as AssistantActionKey[]).map((action) => (
-      <AssistantModelRow key={action} action={action} label={ACTION_LABELS[action]} prefs={prefs} save={save} />
-    ))}
-    {message && <p role="alert" className="px-3.5 py-3 text-xs text-[var(--color-err)]">{message}</p>}
-  </>;
+  return { prefs, save, message };
 }
 
 /** 这个助手动作的快捷键与触发方式，就地修改；冲突由全局弹窗提示，其他保存错误写在快捷键行下方。 */
