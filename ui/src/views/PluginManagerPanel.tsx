@@ -249,7 +249,9 @@ function InstalledRow({ plugin, manager, hardware, update, description }: {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-[13px] font-medium text-[var(--color-fg)]">{plugin.name}</p>
+            <p className="text-[13px] font-medium text-[var(--color-fg)]">
+              <HelpLabel content={LOCAL_MODEL_NEEDS[plugin.id]?.summary}>{plugin.name}</HelpLabel>
+            </p>
             {update && <span className="text-xs text-[var(--color-fg-subtle)]">v{plugin.version} → v{update.version}</span>}
             {pack?.state === "ready" && <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.totalBytes)}</span>}
             {plugin.trust !== "trusted" && <span className="text-xs text-[var(--color-warn)]">{TRUST_LABEL[plugin.trust]}</span>}
@@ -344,7 +346,9 @@ function AvailableRow({ pack, manager, hardware, description }: {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-[13px] font-medium text-[var(--color-fg)]">{pack.name}</p>
+            <p className="text-[13px] font-medium text-[var(--color-fg)]">
+              <HelpLabel content={LOCAL_MODEL_NEEDS[pack.id]?.summary}>{pack.name}</HelpLabel>
+            </p>
             <span className="text-xs text-[var(--color-fg-subtle)]">{formatBytes(pack.sizeBytes)}</span>
             <ModelFit pluginId={pack.id} hardware={hardware} />
           </div>

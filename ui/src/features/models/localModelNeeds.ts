@@ -14,7 +14,7 @@ export interface HardwareSummary {
 
 /** 本地模型的说明与对电脑的要求。数字来自实测，见 docs/experience 里本地模型的实测记录。 */
 export interface LocalModelNeed {
-  /** 一句话说明这个模型做什么、适合谁，以句号结尾。 */
+  /** 一句短话说明这个模型做什么，以句号结尾。 */
   description: string;
   /** 一句话的占用说明。 */
   summary: string;
@@ -27,45 +27,44 @@ export interface LocalModelNeed {
 // Mac 上这些模型都用芯片自带的显卡跑，占的是共用的内存。
 export const LOCAL_MODEL_NEEDS: Record<string, LocalModelNeed> = {
   "official.transcribe-qwen3-asr-1.7b": {
-    description: "准确率最高的本地语音识别，自带标点，能用上热词和上下文，语音输入和录音转写都适合。",
+    description: "最准的本地识别，自带标点，支持热词和上下文。",
     summary: isMacOS ? "占约 1.8 GB 内存，用显卡运行" : "占约 1.8 GB 显存；没有显卡时用处理器，占约 2.5 GB 内存",
     gpuMemoryMb: 4 * 1024,
     gpu: "preferred",
   },
   "official.llama-polish-4b": {
-    description: "专为语音输入训练的整理模型，去掉口头禅、重复和口误，把说的话整理成通顺的文字，不联网也不花钱。",
+    description: "把口语整理成通顺的文字，去掉口头禅和口误。",
     summary: isMacOS ? "占约 3.5 GB 内存，用显卡运行" : "占约 3.5 GB 显存，需要独立显卡",
     gpuMemoryMb: 6 * 1024,
     gpu: "required",
   },
   "official.transcribe-qwen3-asr-0.6b": {
-    description: "Qwen3-ASR 的轻量版，同样自带标点、能用热词和上下文，准确率稍低，显存小的电脑也跑得动。",
+    description: "1.7B 的轻量版，稍不准，显存小也能跑。",
     summary: isMacOS ? "占约 1 GB 内存，用显卡运行" : "占约 1 GB 显存；没有显卡时用处理器，占约 1.5 GB 内存",
     gpuMemoryMb: 2 * 1024,
     gpu: "preferred",
   },
   "official.sherpa-funasr-nano-ctc": {
-    description: "没有独立显卡时的首选：只靠处理器也很快，准确率在只用处理器的模型里最高；结果不带标点，配合标点模型使用。",
+    description: "没有显卡时的首选，速度快，不带标点。",
     summary: "只用处理器，占约 550 MB 内存",
   },
   "official.sherpa-sensevoice-small": {
-    description: "多语种识别，除了中英文还能听粤语、日语和韩语，只靠处理器；结果不带标点，配合标点模型使用。",
+    description: "多语种识别，还能听粤语、日语和韩语，不带标点。",
     summary: "只用处理器，占约 450 MB 内存",
   },
   "official.sherpa-paraformer-online": {
-    description: "真正边说边出字的流式识别，中英双语，适合实时字幕；准确率是这几个里最低的，结果不带标点。",
+    description: "边说边出字，适合实时字幕，准确率较低。",
     summary: "只用处理器，占约 300 MB 内存",
   },
   "official.sherpa-ct-punct-zh-en": {
-    description: "给 Fun-ASR-Nano、SenseVoice、Paraformer 这类不带标点的识别结果补上标点，装好后自动生效，不出现在模型选择里。",
+    description: "给不带标点的识别结果自动补标点。",
     summary: "只用处理器，占约 100 MB 内存",
   },
 };
 
-/** 模型页上那一行的说明：做什么，再加占用。不认识的模型为空。 */
+/** 模型页上那一行的说明；不认识的模型为空。占用放在名称的悬停提示里。 */
 export function localModelDescription(id: string): string | undefined {
-  const model = LOCAL_MODEL_NEEDS[id];
-  return model && `${model.description}${model.summary}。`;
+  return LOCAL_MODEL_NEEDS[id]?.description;
 }
 
 /** 「本地模型」页的显示顺序，按推荐程度手动排。 */
