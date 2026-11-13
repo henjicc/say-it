@@ -51,7 +51,7 @@ export function TranscriptAlignPanel() {
   const { pickState, message, loadFileInfo, pickFile } = useFilePick(setAlignFile);
   const running = alignStage === "uploading" || alignStage === "recognizing" || alignStage === "aligning";
   const cancellable = alignStage === "uploading" || alignStage === "recognizing";
-  // 本面板仅在文稿对齐页签挂载，拖放天然只作用于当前页签
+  // 本面板只在选中「按文稿对齐」时挂载，拖放只作用于它
   const dragActive = useFileDrop(loadFileInfo);
 
   const lineCount = useMemo(() => splitScriptLines(scriptText).length, [scriptText]);

@@ -1,17 +1,16 @@
-import { AlignLeft, FileAudio, SlidersHorizontal, Users } from "lucide-react";
+import { FileAudio, SlidersHorizontal, Users } from "lucide-react";
 import { InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { useTranscriptionStore, type TranscriptionTab } from "@/store/useTranscriptionStore";
 import { TranscriptionView } from "@/views/TranscriptionView";
 
 const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
 
-const TITLES: Record<TranscriptionTab, string> = { meeting: "会议", transcribe: "文件", settings: "识别", align: "文稿对齐" };
+const TITLES: Record<TranscriptionTab, string> = { meeting: "会议", transcribe: "文件", settings: "识别" };
 
 const ITEMS: NodeItem<TranscriptionTab>[] = [
   { key: "meeting", label: TITLES.meeting, icon: <Users {...iconProps} /> },
   { key: "transcribe", label: TITLES.transcribe, icon: <FileAudio {...iconProps} /> },
   { key: "settings", label: TITLES.settings, icon: <SlidersHorizontal {...iconProps} /> },
-  { key: "align", label: TITLES.align, icon: <AlignLeft {...iconProps} /> },
 ];
 
 export function TranscriptionPage() {

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Languages, RadioTower, SlidersHorizontal, Type } from "lucide-react";
+import { AlignLeft, FileAudio, Languages, RadioTower, SlidersHorizontal, Type } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Group } from "@/components/ui/Group";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
@@ -10,6 +10,8 @@ import { useUiStore, type SubtitleNodeKey } from "@/store/useUiStore";
 import { SubtitleStylePanel } from "@/views/SubtitleStylePanel";
 import { SubtitleTranslationPanel } from "@/views/SubtitleTranslationPanel";
 import { ObsOverlayPanel } from "@/views/ObsOverlayPanel";
+import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
+import { FileRecognitionPanel, TranscriptionModelRow, useTranscriptionSettings } from "@/views/TranscriptionView";
 import { SubtitleAsrRow, SubtitleModeRow, SubtitleOutputRow, SubtitleShortcutRow, SubtitleSourceRow } from "./SubtitleSections";
 
 const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
@@ -19,7 +21,17 @@ const TITLES: Record<SubtitleNodeKey, string> = {
   translation: "翻译",
   style: "样式",
   output: "输出",
+  fromRecording: "从录音识别",
+  align: "按文稿对齐",
 };
+
+/** 生成字幕文件的两项：选文件识别，或按已有文稿对齐。 */
+const FILE_NODES: SubtitleNodeKey[] = ["fromRecording", "align"];
+
+function AlignNode() {
+  useTranscriptionSettings();
+  return <><Group><TranscriptionModelRow /></Group><TranscriptAlignPanel /></>;
+}
 
 /** 字幕运行与预览的生命周期由 Rust 持有；本页只负责样式草稿的即时同步和离开时关闭预览。 */
 export function useSubtitlePreviewLifecycle() {
@@ -47,19 +59,23 @@ export function SubtitlesPage() {
   const setNode = useUiStore((s) => s.setSubtitleNode);
   const { prefs, running, previewActive } = useSubtitleStore();
 
+  const fileNode = FILE_NODES.includes(node);
   const items: NodeItem<SubtitleNodeKey>[] = [
-    { key: "basics", label: TITLES.basics, icon: <SlidersHorizontal {...iconProps} /> },
+    { key: "basics", label: TITLES.basics, icon: <SlidersHorizontal {...iconProps} />, headingBefore: { label: "实时字幕" } },
     { key: "translation", label: TITLES.translation, icon: <Languages {...iconProps} />, off: !prefs.translationEnabled },
     { key: "style", label: TITLES.style, icon: <Type {...iconProps} /> },
     { key: "output", label: TITLES.output, icon: <RadioTower {...iconProps} /> },
+    { key: "fromRecording", label: TITLES.fromRecording, icon: <FileAudio {...iconProps} />, headingBefore: { label: "生成字幕" } },
+    { key: "align", label: TITLES.align, icon: <AlignLeft {...iconProps} /> },
   ];
 
   return (
     <MasterDetail
+      wide={fileNode}
       title="字幕"
       titleRight={<span className={cn("text-xs", running ? "text-[var(--color-accent-text)]" : "text-[var(--color-fg-subtle)]")}>{running ? "运行中" : "未运行"}</span>}
       list={<NodeList ariaLabel="字幕设置" items={items} active={node} onSelect={setNode} />}
-      listFooter={<>
+      listFooter={!fileNode && <>
         <Button
           aria-pressed={previewActive}
           disabled={running}
@@ -80,6 +96,8 @@ export function SubtitlesPage() {
       {node === "translation" && <SubtitleTranslationPanel />}
       {node === "style" && <InspectorBody><Group><SubtitleModeRow /></Group><SubtitleStylePanel /></InspectorBody>}
       {node === "output" && <InspectorBody><Group><SubtitleOutputRow /></Group><ObsOverlayPanel /></InspectorBody>}
+      {node === "fromRecording" && <InspectorBody><FileRecognitionPanel output="subtitles" /></InspectorBody>}
+      {node === "align" && <InspectorBody><AlignNode /></InspectorBody>}
     </MasterDetail>
   );
 }

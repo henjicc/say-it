@@ -57,20 +57,40 @@ export function splitScriptLines(text: string) {
     .filter(Boolean);
 }
 
+// 启动命令返回任务 ID 之前，后端可能已经发出事件（复用缓存时直接完成、启动即失败），先存起来。
+let earlyEvents: TranscriptionEventPayload[] = [];
+
 function stopListening() {
   activeUnlisten?.();
   activeUnlisten = null;
   activeJobId = "";
+  earlyEvents = [];
+}
+
+function dispatchJobEvent(payload: TranscriptionEventPayload) {
+  if (activeTarget === "transcribe") handleTranscribeEvent(payload);
+  else handleAlignEvent(payload);
 }
 
 async function listenForJob(target: JobTarget) {
   stopListening();
   activeTarget = target;
   activeUnlisten = await on<TranscriptionEventPayload>(EVT.transcriptionEvent, (payload) => {
-    if (!payload.jobId || payload.jobId !== activeJobId) return;
-    if (activeTarget === "transcribe") handleTranscribeEvent(payload);
-    else handleAlignEvent(payload);
+    if (!payload.jobId) return;
+    if (!activeJobId) {
+      earlyEvents.push(payload);
+      return;
+    }
+    if (payload.jobId === activeJobId) dispatchJobEvent(payload);
   });
+}
+
+/** 启动命令返回后认领任务，补上在这之前到达的事件。 */
+function adoptStartedJob(jobId: string) {
+  activeJobId = jobId;
+  const early = earlyEvents.filter((payload) => payload.jobId === jobId);
+  earlyEvents = [];
+  early.forEach(dispatchJobEvent);
 }
 
 let transcribeEventCount = 0;
@@ -104,11 +124,10 @@ function handleTranscribeEvent(payload: TranscriptionEventPayload) {
     store.setRuntime({
       stage: "completed",
       taskId: payload.taskId || store.taskId,
-      statusText: "识别完成。",
+      statusText: payload.cached ? "这个文件识别过，已直接使用上次的结果。" : "识别完成。",
       errorMessage: "",
       result,
       editorCues: editableFromCues(buildCues(result)),
-      resultView: "text",
     });
     stopListening();
     return;
@@ -337,11 +356,11 @@ export async function startTranscription() {
       params: normalizeParams(store.params),
       kind: "transcribe",
     });
-    activeJobId = response.jobId;
     useTranscriptionStore.getState().setRuntime({
       jobId: response.jobId,
       statusText: "正在上传音视频文件…",
     });
+    adoptStartedJob(response.jobId);
   } catch (error) {
     stopListening();
     useTranscriptionStore.getState().setRuntime({
@@ -446,11 +465,11 @@ export async function startAlignment() {
       params: normalizeParams(store.params),
       kind: "align",
     });
-    activeJobId = response.jobId;
     useTranscriptionStore.getState().setRuntime({
       alignJobId: response.jobId,
       alignStatusText: "正在上传音视频文件…",
     });
+    adoptStartedJob(response.jobId);
   } catch (error) {
     stopListening();
     useTranscriptionStore.getState().setRuntime({
