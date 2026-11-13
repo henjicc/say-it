@@ -62,8 +62,8 @@ export function SmartStep({
     ];
   const [choice, setChoice] = useState<SmartChoice>(mode === "online" ? "smart" : polishFits ? "local" : "rules");
   const polish = useLocalModelProgress([LOCAL_POLISH_PACK_ID]);
-  // 识别用的是百炼时它的密钥也能调大模型，直接推荐；其他情况推荐 DeepSeek。
-  const [targetKey, setTargetKey] = useState<LlmTargetKey>(asrChoice === "bailian" ? "bailian" : "deepseek");
+  // 默认与识别用同一家：百炼的密钥直接沿用；火山引擎的大模型要另填方舟密钥。
+  const [targetKey, setTargetKey] = useState<LlmTargetKey>(asrChoice === "volcengine" ? "volcengine" : "bailian");
   const target = LLM_TARGETS.find((item) => item.key === targetKey)!;
   const models = llmTargetModels(target, profiles);
   const [model, setModel] = useState(() => llmTargetDefaultModel(target, profiles));
