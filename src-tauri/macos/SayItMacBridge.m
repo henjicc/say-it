@@ -1873,7 +1873,6 @@ void sayit_macos_final_draft_observer_stop(void *handle) {
 @property(nonatomic) bool monitorEscape;
 @property(nonatomic) io_connect_t hidConnection;
 @property(nonatomic) IOHIDManagerRef hidManager;
-@property(nonatomic) bool preservedCapsLockState;
 @property(nonatomic) CFAbsoluteTime lastCapsLockEventAt;
 @property(nonatomic) bool rawCapsLockPressed;
 @property(nonatomic) bool rawCapsLockActive;
@@ -1927,9 +1926,9 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
     }
     if (!owner.monitorCapsLock || type != kCGEventFlagsChanged || keyCode != 57) return event;
     // Session 级事件过滤器收到 Caps Lock 时，系统锁定状态已经发生变化；仅返回 NULL
-    // 只能阻止事件继续投递，不能把大小写和键盘灯恢复。这里显式写回绑定前的状态。
+    // 只能阻止事件继续投递，不能把大小写和键盘灯恢复。这里显式写回关闭。
     if (owner.hidConnection != IO_OBJECT_NULL) {
-        IOHIDSetModifierLockState(owner.hidConnection, kIOHIDCapsLockState, owner.preservedCapsLockState);
+        IOHIDSetModifierLockState(owner.hidConnection, kIOHIDCapsLockState, false);
     }
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     bool duplicated = owner.lastCapsLockEventAt > 0 && now - owner.lastCapsLockEventAt < 0.12;
@@ -2038,7 +2037,9 @@ static CGEventRef SayItKeyboardEventCallback(CGEventTapProxy proxy, CGEventType 
 }
 @end
 
-static bool SayItOpenHIDSystem(io_connect_t *connection, bool *capsLockState, NSString **message) {
+// Caps Lock 用作快捷键时大小写始终保持关闭，与 Windows 一致：打开键盘状态服务时就关掉，
+// 之后每次按下都写回关闭。若保持绑定时的状态，启动时恰好开着就永远关不掉，想关只会触发听写。
+static bool SayItOpenHIDSystem(io_connect_t *connection, NSString **message) {
     // IOKit 明确约定 NULL 表示默认 main port；这样可同时支持 macOS 11，
     // 避免引用仅在 macOS 12 引入的同义常量 kIOMainPortDefault。
     io_service_t service = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching(kIOHIDSystemClass));
@@ -2052,26 +2053,13 @@ static bool SayItOpenHIDSystem(io_connect_t *connection, bool *capsLockState, NS
         *message = @"无法打开 macOS 键盘状态服务";
         return false;
     }
-    bool current = false;
-    kern_return_t read = IOHIDGetModifierLockState(*connection, kIOHIDCapsLockState, &current);
-    if (read != KERN_SUCCESS) {
-        IOServiceClose(*connection);
-        *connection = IO_OBJECT_NULL;
-        *message = @"无法读取 macOS 大写锁定状态";
-        return false;
-    }
-    kern_return_t writable = IOHIDSetModifierLockState(
-        *connection,
-        kIOHIDCapsLockState,
-        current
-    );
+    kern_return_t writable = IOHIDSetModifierLockState(*connection, kIOHIDCapsLockState, false);
     if (writable != KERN_SUCCESS) {
         IOServiceClose(*connection);
         *connection = IO_OBJECT_NULL;
         *message = @"无法控制 macOS 大写锁定状态";
         return false;
     }
-    *capsLockState = current;
     return true;
 }
 
@@ -2107,13 +2095,11 @@ void *sayit_macos_keyboard_tap_start(
     if (monitorCapsLock) {
         NSString *hidError = nil;
         io_connect_t hidConnection = IO_OBJECT_NULL;
-        bool preservedCapsLockState = false;
-        if (!SayItOpenHIDSystem(&hidConnection, &preservedCapsLockState, &hidError)) {
+        if (!SayItOpenHIDSystem(&hidConnection, &hidError)) {
             SayItSetError(error, hidError);
             return NULL;
         }
         owner.hidConnection = hidConnection;
-        owner.preservedCapsLockState = preservedCapsLockState;
     }
     [NSThread detachNewThreadSelector:@selector(startOnThread) toTarget:owner withObject:nil];
     if (dispatch_semaphore_wait(owner.ready, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
