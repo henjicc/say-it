@@ -273,6 +273,11 @@ pub(crate) fn destroy_main_window(app: &tauri::AppHandle) -> Result<(), String> 
     }
     match window.destroy() {
         Ok(()) => {
+            // 主窗口关掉后只留菜单栏图标；`ensure_main_window` 重新打开时恢复 Dock 图标。
+            #[cfg(target_os = "macos")]
+            if let Err(error) = app.set_dock_visibility(false) {
+                dlog!("[window] 隐藏 macOS Dock 图标失败: {error}");
+            }
             let reopen_requested = app
                 .state::<RuntimeState>()
                 .main_window_lifecycle
