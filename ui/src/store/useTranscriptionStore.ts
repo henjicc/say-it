@@ -3,10 +3,9 @@ import { create } from "zustand";
 import type { EditableCue } from "@/features/transcription/subtitles";
 import { DEFAULT_FILE_ASR_MODEL } from "@/features/asr/modelOptions";
 
-export type TranscriptionTab = "meeting" | "transcribe" | "align" | "settings";
+export type TranscriptionTab = "meeting" | "transcribe" | "settings";
 export type TranscriptionStage = "idle" | "uploading" | "recognizing" | "completed" | "error";
 export type AlignStage = TranscriptionStage | "aligning";
-export type TranscriptionResultView = "text" | "subtitles";
 
 export interface SelectedTranscriptionFile {
   path: string;
@@ -103,6 +102,8 @@ export interface TranscriptionEventPayload {
   result?: TranscriptionResult;
   message?: string;
   cancelled?: boolean;
+  /** 同一文件与识别设置识别过，后端直接用了缓存的结果。 */
+  cached?: boolean;
 }
 
 export const DEFAULT_TRANSCRIPTION_PARAMS: TranscriptionParams = {
@@ -117,7 +118,6 @@ interface TranscriptionState {
   selectedFile: SelectedTranscriptionFile | null;
   params: TranscriptionParams;
   stage: TranscriptionStage;
-  resultView: TranscriptionResultView;
   jobId: string;
   taskId: string;
   statusText: string;
@@ -155,7 +155,6 @@ export const useTranscriptionStore = create<TranscriptionState>((set) => ({
   selectedFile: null,
   params: DEFAULT_TRANSCRIPTION_PARAMS,
   stage: "idle",
-  resultView: "text",
   jobId: "",
   taskId: "",
   statusText: "",

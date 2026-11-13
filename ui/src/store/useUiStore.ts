@@ -4,7 +4,7 @@ export type ViewKey = "dictation" | "assistant" | "subtitles" | "transcription" 
 /** 窗口宽度决定的界面形态：窄窗口为简单模式，宽窗口为专业模式。 */
 export type LayoutMode = "simple" | "pro";
 export type DictationNodeKey = "basics" | "smart" | "rules" | "apps" | "shortcuts" | "orbGesture";
-export type SubtitleNodeKey = "basics" | "translation" | "style" | "output";
+export type SubtitleNodeKey = "basics" | "translation" | "style" | "output" | "fromRecording" | "align";
 export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
 /** 模型页中栏：用途、本地模型、某个供应商（`provider:<id>`）、插件、模型对比。 */
 export type ModelsSectionKey = "usage" | "local" | "plugins" | "compare" | `provider:${string}`;

@@ -7,7 +7,6 @@ import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Input } from "@/components/ui/Input";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Switch } from "@/components/ui/Switch";
-import { Tabs } from "@/components/ui/Tabs";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { SubtitleEditor } from "@/components/transcription/SubtitleEditor";
 import { copyText } from "@/lib/clipboard";
@@ -30,14 +29,12 @@ import { FILE_ASR_MODEL_OPTIONS, supportsAlignmentTimestamps } from "@/features/
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions } from "@/features/models/usage";
-import { TranscriptAlignPanel } from "@/views/TranscriptAlignPanel";
 import { MeetingPanel } from "@/views/transcription/MeetingPanel";
 import { useProviderStore } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
   type TranscriptionParams,
   type TranscriptionResult,
-  type TranscriptionTab,
 } from "@/store/useTranscriptionStore";
 
 const LANGUAGE_OPTIONS = [
@@ -96,62 +93,18 @@ export function TranscriptionModelRow({ label = "识别模型" }: { label?: stri
   );
 }
 
-/** 转写内容区；当前显示哪一部分由转写 store 的 tab 决定。 */
-export function TranscriptionView() {
-  useModelCatalogRevision();
-  const {
-    tab,
-    selectedFile,
-    params,
-    stage,
-    statusText,
-    errorMessage,
-    result,
-    editorCues,
-    resultView,
-    saveMessage,
-    summary,
-    jobId,
-    setSelectedFile,
-    setParams,
-    replaceParams,
-    setRuntime,
-  } = useTranscriptionStore();
+/**
+ * 识别设置的读取与回写：参数存在默认识别供应商的配置里。用到识别参数的页面（转写、生成字幕）各自调用。
+ */
+export function useTranscriptionSettings() {
+  const params = useTranscriptionStore((s) => s.params);
+  const replaceParams = useTranscriptionStore((s) => s.replaceParams);
+  const setRuntime = useTranscriptionStore((s) => s.setRuntime);
   const providers = useProviderStore((s) => s.profiles);
   const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
   const loadProviders = useProviderStore((s) => s.load);
   const updateProviderConfig = useProviderStore((s) => s.updateConfig);
   const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
-  const hasApiKey = Boolean(asrProvider && providerReady(asrProvider, "asr"));
-  const running = stage === "uploading" || stage === "recognizing";
-  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile);
-  const dragActive = useFileDrop(loadFileInfo, tab === "transcribe");
-  const textResult = useMemo(() => plainText(result), [result]);
-
-  const toggleLanguageHint = (value: string) => {
-    const next = params.languageHints.includes(value)
-      ? params.languageHints.filter((item) => item !== value)
-      : [...params.languageHints, value];
-    setParams({ languageHints: next });
-  };
-
-  const exportSrt = async () => {
-    if (!editorCues || editorCues.length === 0) {
-      setRuntime({ saveMessage: "当前没有可导出的字幕。" });
-      return;
-    }
-    try {
-      const path = await save({
-        defaultPath: defaultSrtName(selectedFile),
-        filters: [{ name: "SRT 字幕", extensions: ["srt"] }],
-      });
-      if (!path) return;
-      await cmd(CMD.saveSubtitleSrt, { path, cues: editorCues });
-      setRuntime({ saveMessage: `已导出：${path}` });
-    } catch (error) {
-      setRuntime({ saveMessage: `导出失败：${String(error)}` });
-    }
-  };
 
   useEffect(() => {
     loadProviders();
@@ -178,109 +131,157 @@ export function TranscriptionView() {
     onMessage: reportSave,
   });
 
+  return { hasApiKey: Boolean(asrProvider && providerReady(asrProvider, "asr")) };
+}
+
+/**
+ * 选文件并识别。转写出文字稿，生成字幕出可编辑的字幕；两处共用同一个文件与识别结果，
+ * 在一处识别过，另一处直接看到结果。
+ */
+export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" }) {
+  useModelCatalogRevision();
+  const {
+    selectedFile,
+    stage,
+    statusText,
+    errorMessage,
+    result,
+    editorCues,
+    saveMessage,
+    summary,
+    jobId,
+    setSelectedFile,
+    setRuntime,
+  } = useTranscriptionStore();
+  const { hasApiKey } = useTranscriptionSettings();
+  const running = stage === "uploading" || stage === "recognizing";
+  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile);
+  const dragActive = useFileDrop(loadFileInfo);
+  const textResult = useMemo(() => plainText(result), [result]);
+
+  const exportSrt = async () => {
+    if (!editorCues || editorCues.length === 0) {
+      setRuntime({ saveMessage: "当前没有可导出的字幕。" });
+      return;
+    }
+    try {
+      const path = await save({
+        defaultPath: defaultSrtName(selectedFile),
+        filters: [{ name: "SRT 字幕", extensions: ["srt"] }],
+      });
+      if (!path) return;
+      await cmd(CMD.saveSubtitleSrt, { path, cues: editorCues });
+      setRuntime({ saveMessage: `已导出：${path}` });
+    } catch (error) {
+      setRuntime({ saveMessage: `导出失败：${String(error)}` });
+    }
+  };
+
   const statusTone: FileCardStatusTone =
     stage === "completed" ? "ok" : stage === "error" ? "err" : running ? "running" : "idle";
   const cardStatusText =
     statusText || (selectedFile ? "已就绪，可以开始识别。" : "等待选择文件。");
 
   return (
-    <InspectorBody>
-      {tab === "transcribe" ? (
-        <>
-          <FileCard
-            file={selectedFile}
-            dragActive={dragActive}
-            disabled={pickState === "loading" || running}
-            pickState={pickState}
-            message={message}
-            onPick={pickFile}
-            statusTone={statusTone}
-            statusText={cardStatusText}
-            errorMessage={errorMessage}
-            hint={stage !== "completed" ? saveMessage : undefined}
-            actions={
+    <>
+      {output === "subtitles" && <Group><TranscriptionModelRow /></Group>}
+      <FileCard
+        file={selectedFile}
+        dragActive={dragActive}
+        disabled={pickState === "loading" || running}
+        pickState={pickState}
+        message={message}
+        onPick={pickFile}
+        statusTone={statusTone}
+        statusText={cardStatusText}
+        errorMessage={errorMessage}
+        hint={stage !== "completed" ? saveMessage : undefined}
+        actions={
+          <>
+            <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
+              重新选择
+            </Button>
+            {!hasApiKey && (
+              <Button size="sm" onClick={openProviderSettings}>
+                去设置 API Key
+              </Button>
+            )}
+            {running ? (
+              <Button size="sm" variant="danger" onClick={cancelTranscription}>
+                取消
+              </Button>
+            ) : (
+              <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile}>
+                开始识别
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      {result && output === "text" && (
+        <section className="flex flex-col gap-2">
+          <SectionHeader title="识别结果" />
+          <Group>
+            <textarea
+              readOnly
+              aria-label="识别文本"
+              value={textResult}
+              className="block min-h-72 w-full resize-y bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
+            />
+            <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
+              <span className="min-w-0 truncate text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</span>
+              <Button size="sm" onClick={() => copyText(textResult)}>
+                复制文本
+              </Button>
+            </div>
+          </Group>
+        </section>
+      )}
+      {result && output === "subtitles" && (
+        <section className="flex flex-col gap-2">
+          <SectionHeader title="字幕" />
+          <SubtitleEditor
+            mediaPath={selectedFile?.path ?? null}
+            cues={editorCues ?? []}
+            onCuesChange={(next) => setRuntime({ editorCues: next })}
+            footer={
               <>
-                <Button size="sm" onClick={pickFile} disabled={pickState === "loading" || running}>
-                  重新选择
+                <Button size="sm" onClick={() => copyText(editablePlainText(editorCues ?? []))}>
+                  复制文本
                 </Button>
-                {!hasApiKey && (
-                  <Button size="sm" onClick={openProviderSettings}>
-                    去设置 API Key
-                  </Button>
-                )}
-                {running ? (
-                  <Button size="sm" variant="danger" onClick={cancelTranscription}>
-                    取消
-                  </Button>
-                ) : (
-                  <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile}>
-                    开始识别
-                  </Button>
-                )}
+                <Button size="sm" variant="primary" onClick={exportSrt} disabled={!editorCues || editorCues.length === 0}>
+                  导出 SRT
+                </Button>
               </>
             }
           />
+          {saveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</p>}
+        </section>
+      )}
+      {result && output === "text" && jobId && <SummarySection key={jobId} jobId={jobId} result={result} summary={summary} />}
+    </>
+  );
+}
 
-          {result && (
-            <section className="flex flex-col gap-2">
-              <SectionHeader
-                title="识别结果"
-                right={
-                  <Tabs
-                    variant="view"
-                    ariaLabel="识别结果视图"
-                    tabs={[
-                      { key: "text", label: "纯文本" },
-                      { key: "subtitles", label: "字幕编辑" },
-                    ]}
-                    active={resultView}
-                    onChange={(value) => setRuntime({ resultView: value })}
-                  />
-                }
-              />
-              {resultView === "text" ? (
-                <Group>
-                  <textarea
-                    readOnly
-                    aria-label="识别文本"
-                    value={textResult}
-                    className="block min-h-72 w-full resize-y bg-transparent px-3.5 py-3 text-sm leading-7 text-[var(--color-fg-muted)] outline-none"
-                  />
-                  <div className="flex min-h-[var(--row-h)] items-center justify-between gap-3 px-3.5">
-                    <span className="min-w-0 truncate text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</span>
-                    <Button size="sm" onClick={() => copyText(textResult)}>
-                      复制文本
-                    </Button>
-                  </div>
-                </Group>
-              ) : (
-                <>
-                  <SubtitleEditor
-                    mediaPath={selectedFile?.path ?? null}
-                    cues={editorCues ?? []}
-                    onCuesChange={(next) => setRuntime({ editorCues: next })}
-                    footer={
-                      <>
-                        <Button size="sm" onClick={() => copyText(editablePlainText(editorCues ?? []))}>
-                          复制文本
-                        </Button>
-                        <Button size="sm" variant="primary" onClick={exportSrt} disabled={!editorCues || editorCues.length === 0}>
-                          导出 SRT
-                        </Button>
-                      </>
-                    }
-                  />
-                  {saveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</p>}
-                </>
-              )}
-            </section>
-          )}
-          {result && jobId && <SummarySection key={jobId} jobId={jobId} result={result} summary={summary} />}
-        </>
+/** 转写页内容区；当前显示哪一部分由转写 store 的 tab 决定。 */
+export function TranscriptionView() {
+  const { tab, params, saveMessage, setParams } = useTranscriptionStore();
+  useTranscriptionSettings();
+
+  const toggleLanguageHint = (value: string) => {
+    const next = params.languageHints.includes(value)
+      ? params.languageHints.filter((item) => item !== value)
+      : [...params.languageHints, value];
+    setParams({ languageHints: next });
+  };
+
+  return (
+    <InspectorBody>
+      {tab === "transcribe" ? (
+        <FileRecognitionPanel output="text" />
       ) : tab === "meeting" ? (
         <MeetingPanel />
-      ) : tab === "align" ? (
-        <TranscriptAlignPanel />
       ) : (
         <>
           <Group>

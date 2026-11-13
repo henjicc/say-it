@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const cmd = vi.fn();
+let emit: (payload: Record<string, unknown>) => void = () => undefined;
 vi.mock("@/lib/tauri", () => ({
   CMD: new Proxy({}, { get: (_target, key) => String(key) }),
   EVT: new Proxy({}, { get: (_target, key) => String(key) }),
   cmd: (...args: unknown[]) => cmd(...args),
   cmdSilent: (...args: unknown[]) => cmd(...args),
-  on: async () => () => undefined,
+  on: async (_event: string, handler: (payload: Record<string, unknown>) => void) => {
+    emit = handler;
+    return () => undefined;
+  },
 }));
 
-const { loadTranscriptionRuntime } = await import("./controller");
+const { loadTranscriptionRuntime, startTranscription } = await import("./controller");
 const { useTranscriptionStore } = await import("@/store/useTranscriptionStore");
+const { useProviderStore } = await import("@/store/useProviderStore");
 
 const initial = useTranscriptionStore.getState();
 
@@ -37,6 +42,24 @@ beforeEach(() => {
     alignStage: initial.alignStage,
     alignJobId: "",
     alignStatusText: "",
+  });
+});
+
+describe("启动识别", () => {
+  it("复用缓存时完成事件比启动命令先到，结果照样显示", async () => {
+    useProviderStore.setState({
+      profiles: [{ id: "local", kind: "model-pack", displayName: "本地", authKind: "none", capabilities: ["asr"], effectiveCapabilities: ["asr"], enabled: true }],
+    } as never);
+    useTranscriptionStore.setState({ selectedFile: { path: "/tmp/talk.wav", name: "talk.wav" } as never });
+    cmd.mockImplementation(async (name: string) => {
+      if (name !== "transcriptionStart") return undefined;
+      emit({ jobId: "cached-job", stage: "completed", cached: true, result: { transcripts: [{ text: "上次的结果", sentences: [] }] } });
+      return { jobId: "cached-job" };
+    });
+    await startTranscription();
+    const state = useTranscriptionStore.getState();
+    expect(state.stage).toBe("completed");
+    expect(state.result?.transcripts[0]?.text).toBe("上次的结果");
   });
 });
 
