@@ -327,13 +327,13 @@ fn record_live_result(results: &mut Vec<LiveCaseResult>, result: LiveCaseResult)
 }
 
 #[test]
-fn live_catalog_maps_all_twelve_bailian_asr_models() {
+fn live_catalog_maps_all_nine_bailian_asr_models() {
     let catalog: Vec<Value> = serde_json::from_str(ASR_CATALOG).expect("ASR catalog");
     let online = catalog
         .iter()
         .filter(|model| model.get("providerId").and_then(Value::as_str) == Some("bailian"))
         .collect::<Vec<_>>();
-    assert_eq!(online.len(), 12);
+    assert_eq!(online.len(), 9);
     let mut protocols = BTreeMap::<String, usize>::new();
     for model in online {
         let protocol = model
@@ -342,11 +342,11 @@ fn live_catalog_maps_all_twelve_bailian_asr_models() {
             .expect("online ASR protocol");
         *protocols.entry(protocol.into()).or_default() += 1;
     }
-    assert_eq!(protocols.get("dashscope-duplex"), Some(&3));
+    assert_eq!(protocols.get("dashscope-duplex"), Some(&2));
     assert_eq!(protocols.get("qwen-realtime"), Some(&1));
-    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&3));
+    assert_eq!(protocols.get("file-sync-funasr-flash"), Some(&2));
     assert_eq!(protocols.get("file-sync-qwen"), Some(&1));
-    assert_eq!(protocols.get("file-async-oss"), Some(&4));
+    assert_eq!(protocols.get("file-async-oss"), Some(&3));
 }
 
 #[test]

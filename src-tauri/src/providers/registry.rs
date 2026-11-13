@@ -192,10 +192,14 @@ pub fn file_transcription_route(model: &str) -> FileTranscriptionRoute {
 }
 
 /// 百炼同一模型只提供最新快照；旧设置里选中的稳定版 ID 读入时换成对应的最新快照。
+/// Qwen-Audio 3.0 与 3.1 接口相同，3.1 更便宜且多了方言保留与说话人分离，只保留 3.1。
 const SUPERSEDED_ASR_MODELS: &[(&str, &str)] = &[
     ("fun-asr-realtime", "fun-asr-realtime-2026-02-28"),
     ("qwen3-asr-flash-realtime", "qwen3-asr-flash-realtime-2026-02-10"),
     ("qwen3-asr-flash", "qwen3-asr-flash-2026-02-10"),
+    ("qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming"),
+    ("qwen-audio-3.0-asr-flash", "qwen-audio-3.1-asr-flash"),
+    ("qwen-audio-3.0-asr-flash-filetrans", "qwen-audio-3.1-asr-flash-filetrans"),
 ];
 
 /// 已下架模型 ID 对应的当前模型；其他 ID 原样返回。
@@ -270,8 +274,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 12 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
-        assert_eq!(REGISTRY.len(), 18, "当前应有 18 个模型");
+        // 9 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
+        assert_eq!(REGISTRY.len(), 15, "当前应有 15 个模型");
     }
 
     #[test]
@@ -395,6 +399,11 @@ mod tests {
             "fun-asr-realtime-2026-02-28"
         );
         assert_eq!(current_asr_model_id("fun-asr"), "fun-asr");
+        assert!(model_info("qwen-audio-3.0-asr-flash-streaming").is_none());
+        assert_eq!(
+            current_asr_model_id("qwen-audio-3.0-asr-flash-streaming"),
+            "qwen-audio-3.1-asr-flash-streaming"
+        );
     }
 
     #[test]

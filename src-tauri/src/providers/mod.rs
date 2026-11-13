@@ -763,6 +763,17 @@ fn migrate_previous_groq_default_model(profile: &mut ProviderProfile) {
     );
 }
 
+/// 录音转写的模型存在识别供应商配置的 `transcription.model` 里，已下架的换成对应的当前模型。
+fn migrate_superseded_transcription_model(profile: &mut ProviderProfile) {
+    let Some(stored) = profile.config.pointer("/transcription/model").and_then(Value::as_str) else {
+        return;
+    };
+    let current = registry::current_asr_model_id(stored);
+    if current != stored {
+        profile.config["transcription"]["model"] = json!(current.to_string());
+    }
+}
+
 /// id 是 profile 的唯一标识。保留首项的完整配置与顺序，与 find_profile 和配置更新一致；
 /// 不把后续副本的字段补回首项，避免恢复已被用户清空的旧设置。凭据由独立凭据库管理。
 pub(crate) fn deduplicate_profiles(settings: &mut ProviderSettings) {
@@ -809,6 +820,7 @@ pub fn normalize_settings(mut settings: ProviderSettings) -> ProviderSettings {
     }
     for profile in &mut settings.profiles {
         normalize_llm_profile_config(profile);
+        migrate_superseded_transcription_model(profile);
     }
     // 未知 id 的 profile（用户手工配置或未来供应商）原样保留，不再删除。
 
@@ -1371,6 +1383,18 @@ mod tests {
         let normalized = normalize_settings(settings);
         assert!(find_profile(&normalized, "future-llm").is_some());
         assert!(find_profile(&normalized, BAILIAN_PROVIDER_ID).is_some());
+    }
+
+    #[test]
+    fn superseded_transcription_model_moves_to_current_model() {
+        let mut settings = ProviderSettings::default();
+        let bailian = settings.profiles.iter_mut().find(|p| p.id == BAILIAN_PROVIDER_ID).unwrap();
+        bailian.config["transcription"] =
+            json!({"model": "qwen-audio-3.0-asr-flash-filetrans", "diarizationEnabled": true});
+        let normalized = normalize_settings(settings);
+        let transcription = &find_profile(&normalized, BAILIAN_PROVIDER_ID).unwrap().config["transcription"];
+        assert_eq!(transcription["model"], "qwen-audio-3.1-asr-flash-filetrans");
+        assert_eq!(transcription["diarizationEnabled"], true);
     }
 
     #[test]

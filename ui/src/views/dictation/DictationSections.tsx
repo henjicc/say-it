@@ -7,7 +7,7 @@ import { Select } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 
 import { Tabs } from "@/components/ui/Tabs";
-import { DICTATION_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { DICTATION_FILE_ASR_MODEL_OPTIONS, REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAsrUsageIssue, useOfferedAsrOptions } from "@/features/models/usage";
@@ -84,7 +84,11 @@ export function AsrModelRow({ label = "识别模型", hint }: { label?: string; 
   useModelCatalogRevision();
   const asrModel = useDictPrefs((s) => s.prefs.asrModel);
   const patch = useDictPrefs((s) => s.patch);
-  const options = useOfferedAsrOptions(DICTATION_ASR_MODEL_OPTIONS, asrModel);
+  // 整段识别的模型也能用于语音输入，但下拉框只列实时模型，免得列表过长；已选的整段识别模型照常保留。
+  const options = useOfferedAsrOptions([
+    ...REALTIME_ASR_MODEL_OPTIONS,
+    ...DICTATION_FILE_ASR_MODEL_OPTIONS.filter((option) => option.value === asrModel),
+  ], asrModel);
   const issue = useAsrUsageIssue(asrModel, DICTATION_SCENES);
   return (
     <Row label={label} hint={hint} controlId="dictation-asr-model" message={issue}>
