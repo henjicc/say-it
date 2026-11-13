@@ -46,7 +46,8 @@ const LANGUAGE_OPTIONS = [
 const TRANSCRIPTION_SCENES = ["transcription"];
 
 /** 转写识别模型。参数存在默认识别供应商的配置里；在「用途」页修改时转写页未打开，直接写回那里。label 是「用途」页里按功能名显示的行名。 */
-export function TranscriptionModelRow({ label = "识别模型" }: { label?: string } = {}) {
+/** `forSubtitles` 用于生成字幕与文稿对齐：只列有逐字时间的模型，当前选中的始终保留并提示。 */
+export function TranscriptionModelRow({ label = "识别模型", forSubtitles = false }: { label?: string; forSubtitles?: boolean } = {}) {
   useModelCatalogRevision();
   const params = useTranscriptionStore((s) => s.params);
   const setParams = useTranscriptionStore((s) => s.setParams);
@@ -56,7 +57,12 @@ export function TranscriptionModelRow({ label = "识别模型" }: { label?: stri
   const [error, setError] = useState("");
   const stored = normalizeStoredParams(asrProvider?.config?.transcription);
   const model = inUsagePage ? stored.model : params.model;
-  const options = useOfferedAsrOptions(FILE_ASR_MODEL_OPTIONS, model);
+  const options = useOfferedAsrOptions(
+    forSubtitles
+      ? FILE_ASR_MODEL_OPTIONS.filter((option) => option.value === model || supportsAlignmentTimestamps(option.value))
+      : FILE_ASR_MODEL_OPTIONS,
+    model,
+  );
   const issue = useAsrUsageIssue(model, TRANSCRIPTION_SCENES);
   const change = (value: string) => {
     // 在这里选和在「用途」里选是同一项设置，两边都写回默认值。
@@ -184,7 +190,7 @@ export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" 
 
   return (
     <>
-      {output === "subtitles" && <Group><TranscriptionModelRow /></Group>}
+      {output === "subtitles" && <Group><TranscriptionModelRow forSubtitles /></Group>}
       <FileCard
         file={selectedFile}
         dragActive={dragActive}

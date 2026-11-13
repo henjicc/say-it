@@ -30,7 +30,7 @@ const FILE_NODES: SubtitleNodeKey[] = ["fromRecording", "align"];
 
 function AlignNode() {
   useTranscriptionSettings();
-  return <><Group><TranscriptionModelRow /></Group><TranscriptAlignPanel /></>;
+  return <><Group><TranscriptionModelRow forSubtitles /></Group><TranscriptAlignPanel /></>;
 }
 
 /** 字幕运行与预览的生命周期由 Rust 持有；本页只负责样式草稿的即时同步和离开时关闭预览。 */
