@@ -554,6 +554,9 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    if matches!(event, TrayIconEvent::Enter { .. }) {
+                        crate::desktop::tray_icon::refresh(tray);
+                    }
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
@@ -565,9 +568,7 @@ fn main() {
                         }
                     }
                 });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
+            tray = crate::desktop::tray_icon::apply(tray)?;
             tray.build(app)?;
 
             let launched_via_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);

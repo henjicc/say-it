@@ -51,7 +51,7 @@ sherpa-onnx = { version = "1.13.5", default-features = false, features = ["share
 # build.rs 要读取它复制到 profile 输出目录的运行库。
 sherpa-onnx-sys = { version = "1.13.5", default-features = false, features = ["shared"] }
 rustls = { version = "0.23.37", features = ["ring"] }
-tauri = { version = "2.10.3", features = ["tray-icon", "protocol-asset", "macos-private-api"] }
+tauri = { version = "2.10.3", features = ["tray-icon", "image-png", "protocol-asset", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
