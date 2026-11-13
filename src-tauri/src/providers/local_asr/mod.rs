@@ -355,7 +355,8 @@ impl Preview {
 /// 实时听写与字幕里，停顿这么久就算一句说完。模型包为整段文件识别配的停顿（1.2 秒）在实时场景下太长：
 /// 一口气说二三十秒都只算一段，预览每次要把整段重识别、越来越慢，松手后还要再整段识别一遍（实测 2～3 秒），
 /// 边说边整理的草稿也跟不上。按句断开后，前面的句子说话时就定稿，松手后只剩最后一句。
-const REALTIME_MIN_SILENCE_SECONDS: f32 = 0.5;
+/// 0.5 秒会把「嗯…」「就是…」这类犹豫也切成单独一段，识别模型在每段末尾加句号、上下文变短，所以取 0.7 秒。
+const REALTIME_MIN_SILENCE_SECONDS: f32 = 0.7;
 
 impl OfflineVadSession {
     pub fn create_realtime(
