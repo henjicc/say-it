@@ -159,18 +159,17 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.14.0");
+    assert_eq!(manifest["sdk"]["version"], "0.15.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-QkPi8kNlfbitWZeuhF2uQ72BpfeauIPkdC5n2bfeU75vzGI/vQLtBtnggbrofvJERG6/Z2+Ds7EEoSbhTLztAg=="
+        "sha512-6+L0+oNhGm04qtrjnfrNJOL2HJa6eD4ooumIvPf8yCYo8+2rtp4N9eBDrpFds7BpWSqEbZxdC4+liP30TwJgVA=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0));
-    assert!(manifest["bundles"]["groq"]["bytes"]
+    assert!(manifest["bundles"]["llm"]["bytes"]
         .as_u64()
-        .is_some_and(|bytes| bytes > 0));
-    assert_eq!(manifest["bundles"]["groq"]["modules"], 103);
+        .is_some_and(|bytes| bytes > 0 && bytes < 128 * 1024));
     assert!(manifest["bundles"]["llmModules"]["bytes"]
         .as_u64()
         .is_some_and(|bytes| bytes > 0 && bytes < 32 * 1024));
@@ -223,7 +222,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.14.0");
+    assert_eq!(result["version"], "0.15.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 23);
     assert_eq!(
@@ -386,44 +385,63 @@ export default () => ({
 }
 
 #[test]
-fn executes_groq_stream_through_host_transport_without_loading_capabilities() {
-    let sse = concat!(
-        "data: {\"choices\":[{\"delta\":{\"content\":\"scripted groq\"},\"finish_reason\":\"stop\"}],",
+fn executes_chat_and_responses_streams_through_host_transport_without_loading_capabilities() {
+    let chat_sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"scripted chat\"},\"finish_reason\":\"stop\"}],",
         "\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4}}\n\n",
         "data: [DONE]\n\n"
     );
-    let (groq_base, groq_server) =
-        spawn_http_response("text/event-stream", sse.as_bytes().to_vec());
+    let responses_sse = concat!(
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"想\"}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+    );
+    let (chat_base, chat_server) =
+        spawn_http_response("text/event-stream", chat_sse.as_bytes().to_vec());
+    let (responses_base, responses_server) =
+        spawn_http_response("text/event-stream", responses_sse.as_bytes().to_vec());
     let source = r#"
 export default () => ({
   async invoke(request) {
-    const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['groq-llm'] });
+    const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['llm'] });
     const events = [];
+    const base = { providerId: 'deepseek', modelId: 'deepseek-flash' };
     try {
       let mediaRejected = '';
       try {
-        await sdk.groq.run(
+        await sdk.llm.run(
           {
-            baseUrl: request.payload.baseUrl,
+            ...base,
+            baseUrl: request.payload.chatBase,
             messages: [{ role: 'user', content: [{ type: 'image', imageUrl: 'https://example.invalid/x.png' }] }],
           },
-          'scripted-groq-media',
+          'scripted-media',
         );
       } catch (error) {
         mediaRejected = String(error);
       }
-      const output = await sdk.groq.run(
-        { baseUrl: request.payload.baseUrl, messages: [{ role: 'user', content: 'fixture' }] },
-        'scripted-groq',
+      const chat = await sdk.llm.run(
+        { ...base, baseUrl: request.payload.chatBase, messages: [{ role: 'user', content: 'fixture' }] },
+        'scripted-chat',
         { onEvent: event => events.push(event) },
       );
+      const responses = await sdk.llm.run(
+        {
+          ...base,
+          baseUrl: request.payload.responsesBase,
+          apiProtocol: 'openai-responses',
+          messages: [{ role: 'user', content: 'fixture' }],
+        },
+        'scripted-responses',
+      );
       return {
-        output: output.output,
-        usage: output.usage,
+        chat: chat.output,
+        chatUsage: chat.usage,
         events,
+        responses: responses.output,
+        responsesReasoning: responses.reasoningOutput,
+        responsesUsage: responses.usage,
         capabilitiesLoaded: sdk.capabilities !== undefined,
-        providerId: sdk.groq.providerId,
-        modelId: sdk.groq.defaultModelId,
         mediaRejected,
       };
     } finally {
@@ -433,23 +451,24 @@ export default () => ({
   }
 });
 "#;
-    let (root, runtime) = create_runtime(source, "groq", &["llm"]);
+    let (root, runtime) = create_runtime(source, "deepseek", &["llm"]);
     let result = runtime
         .call(
             "invoke",
-            &json!({"payload":{"baseUrl":groq_base}}),
+            &json!({"payload":{"chatBase":chat_base,"responsesBase":responses_base}}),
             Duration::from_secs(3),
         )
         .unwrap();
-    assert_eq!(result["output"], "scripted groq");
-    assert_eq!(result["usage"]["totalTokens"], 4);
+    assert_eq!(result["chat"], "scripted chat");
+    assert_eq!(result["chatUsage"]["totalTokens"], 4);
     assert_eq!(
         result["events"][0],
-        json!({"type":"Token","data":"scripted groq"})
+        json!({"type":"Token","data":"scripted chat"})
     );
+    assert_eq!(result["responses"], "你好");
+    assert_eq!(result["responsesReasoning"], "想");
+    assert_eq!(result["responsesUsage"]["outputTokens"], 2);
     assert_eq!(result["capabilitiesLoaded"], false);
-    assert_eq!(result["providerId"], "groq");
-    assert_eq!(result["modelId"], "openai/gpt-oss-20b");
     assert!(
         result["mediaRejected"]
             .as_str()
@@ -457,7 +476,8 @@ export default () => ({
         "{result}"
     );
     assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
-    groq_server.join().unwrap();
+    chat_server.join().unwrap();
+    responses_server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
 

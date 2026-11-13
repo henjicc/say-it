@@ -260,26 +260,16 @@ fn sum_ms(entries: &[&Value], event: &str) -> Option<u64> {
         .reduce(|total, ms| total + ms)
 }
 
-/// genai 和 AI SDK 的用量字段不一样，统一成页面和分析用的一种。
+/// 开发者页和分析只用这三项用量；SDK 与插件都返回 `LlmUsageDto` 的字段名。
 pub(super) fn normalize_usage(usage: Option<&Value>) -> Value {
     let Some(usage) = usage else {
         return Value::Null;
     };
-    let pick = |camel: &str, snake: &str| {
-        usage
-            .get(camel)
-            .or_else(|| usage.get(snake))
-            .cloned()
-            .unwrap_or(Value::Null)
-    };
+    let pick = |key: &str| usage.get(key).cloned().unwrap_or(Value::Null);
     json!({
-        "inputTokens":pick("inputTokens", "prompt_tokens"),
-        "outputTokens":pick("outputTokens", "completion_tokens"),
-        "reasoningTokens":usage
-            .get("reasoningTokens")
-            .or_else(|| usage.pointer("/completion_tokens_details/reasoning_tokens"))
-            .cloned()
-            .unwrap_or(Value::Null),
+        "inputTokens":pick("inputTokens"),
+        "outputTokens":pick("outputTokens"),
+        "reasoningTokens":pick("reasoningTokens"),
     })
 }
 
@@ -1133,7 +1123,6 @@ async fn run_stream_variant(state: &RuntimeState, input: &ReplayPrompt) -> Resul
         false,
         &[],
         CancellationToken::new(),
-        false,
         |output, reasoning| {
             let elapsed = started.elapsed().as_millis() as u64;
             if !reasoning.is_empty() && first_reasoning_ms.is_none() {
@@ -1535,7 +1524,7 @@ mod tests {
         assert_eq!(call["runtimeStartMs"], 400);
         assert_eq!(call["httpMs"], 1800);
         assert_eq!(call["origin"], "https://llm.example");
-        // genai 直连不经过宿主：请求期间没有事件时不能显示别人的耗时，也不能覆盖自己的主机。
+        // 请求期间没有宿主事件时不能显示别人的耗时，也不能覆盖自己的主机。
         let mut direct = json!({"durationMs":50,"origin":"https://direct.example"});
         attribute_host_timing(&mut direct, &entries, 7300);
         assert_eq!(direct["httpMs"], Value::Null);
@@ -1543,11 +1532,9 @@ mod tests {
     }
 
     #[test]
-    fn usage_from_either_sdk_normalizes_to_the_same_fields() {
-        let genai = json!({"prompt_tokens":12,"completion_tokens":34,"completion_tokens_details":{"reasoning_tokens":5}});
-        let sdk = json!({"inputTokens":12,"outputTokens":34,"reasoningTokens":5});
+    fn usage_keeps_only_the_three_token_counts() {
+        let sdk = json!({"inputTokens":12,"outputTokens":34,"reasoningTokens":5,"totalTokens":46});
         let expected = json!({"inputTokens":12,"outputTokens":34,"reasoningTokens":5});
-        assert_eq!(normalize_usage(Some(&genai)), expected);
         assert_eq!(normalize_usage(Some(&sdk)), expected);
         assert_eq!(normalize_usage(None), Value::Null);
     }

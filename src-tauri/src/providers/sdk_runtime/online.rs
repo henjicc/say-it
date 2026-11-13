@@ -18,63 +18,73 @@ use crate::providers::ProviderProfile;
 const BUILTIN_SOURCE: &str = include_str!("../../../../sdk-runtime/builtin-online-entry.js");
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(45);
 const FILE_ASR_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const HOST_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 一个内置 SDK 运行时能用的密钥与能访问的主机。密钥按供应商配置 ID（`profile_id`）存放。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltinSdkScope {
-    profile_id: &'static str,
-    provider_id: &'static str,
-    credential_owner: &'static str,
+    profile_id: String,
+    provider_id: String,
+    credential_field: String,
     credential_scope: &'static str,
-    allowed_hosts: &'static [&'static str],
+    allowed_hosts: Vec<String>,
+    /// 预连接的地址（协议、主机、端口）；通配主机事先不知道具体域名，不在其中。
+    prewarm_origins: Vec<String>,
+    /// 用户自己填的本机 http 地址（如本地模型服务）。
+    local_network: bool,
 }
 
 impl BuiltinSdkScope {
-    pub const BAILIAN_SPEECH_RECOGNITION: Self = Self {
-        profile_id: "bailian",
-        provider_id: "bailian",
-        credential_owner: "bailian",
-        credential_scope: "speech-recognition",
-        allowed_hosts: &["*.aliyuncs.com"],
-    };
-    pub const BAILIAN_TRANSLATION: Self = Self {
-        profile_id: "bailian",
-        provider_id: "bailian",
-        credential_owner: "bailian",
-        credential_scope: "translation",
-        allowed_hosts: &["*.aliyuncs.com"],
-    };
-    pub const GROQ_LLM: Self = Self {
-        profile_id: "llm-groq",
-        provider_id: "groq",
-        credential_owner: "llm-groq",
-        credential_scope: "llm",
-        allowed_hosts: &["api.groq.com"],
-    };
+    fn new(
+        profile_id: &str,
+        provider_id: &str,
+        credential_field: &str,
+        credential_scope: &'static str,
+        allowed_hosts: &[&str],
+    ) -> Self {
+        Self {
+            profile_id: profile_id.into(),
+            provider_id: provider_id.into(),
+            credential_field: credential_field.into(),
+            credential_scope,
+            allowed_hosts: allowed_hosts.iter().map(|host| (*host).into()).collect(),
+            prewarm_origins: allowed_hosts
+                .iter()
+                .filter(|host| !host.contains('*'))
+                .map(|host| format!("https://{host}/"))
+                .collect(),
+            local_network: false,
+        }
+    }
+
+    pub fn bailian_translation() -> Self {
+        Self::new("bailian", "bailian", "apiKey", "translation", &["*.aliyuncs.com"])
+    }
 
     pub fn speech_recognition(profile: &ProviderProfile) -> Result<Self, String> {
         match profile.kind.as_str() {
-            "sdk:bailian" => Ok(Self::BAILIAN_SPEECH_RECOGNITION),
-            "sdk:volcengine" => Ok(Self {
-                profile_id: "volcengine",
-                provider_id: "volcengine",
-                credential_owner: "volcengine",
-                credential_scope: "speech-recognition",
-                allowed_hosts: &["openspeech.bytedance.com"],
-            }),
-            "sdk:siliconflow" => Ok(Self {
-                profile_id: "siliconflow",
-                provider_id: "siliconflow",
-                credential_owner: "siliconflow",
-                credential_scope: "speech-recognition",
-                allowed_hosts: &["api.siliconflow.cn"],
-            }),
-            "llm:groq" => Ok(Self {
-                profile_id: "llm-groq",
-                provider_id: "groq",
-                credential_owner: "llm-groq",
-                credential_scope: "speech-recognition",
-                allowed_hosts: &["api.groq.com"],
-            }),
+            "sdk:bailian" => Ok(Self::new("bailian", "bailian", "apiKey", "speech-recognition", &["*.aliyuncs.com"])),
+            "sdk:volcengine" => Ok(Self::new(
+                "volcengine",
+                "volcengine",
+                "apiKey",
+                "speech-recognition",
+                &["openspeech.bytedance.com"],
+            )),
+            "sdk:siliconflow" => Ok(Self::new(
+                "siliconflow",
+                "siliconflow",
+                "apiKey",
+                "speech-recognition",
+                &["api.siliconflow.cn"],
+            )),
+            "llm:groq" => Ok(Self::new(
+                crate::providers::GROQ_LLM_PROVIDER_ID,
+                "groq",
+                "apiKey",
+                "speech-recognition",
+                &["api.groq.com"],
+            )),
             _ => Err(format!(
                 "供应商 {} 没有内置 SDK 语音识别运行时",
                 profile.display_name
@@ -82,32 +92,48 @@ impl BuiltinSdkScope {
         }
     }
 
-    fn provider_id(self) -> &'static str {
-        self.provider_id
+    /// 大模型请求：`provider_id` 是 SDK 供应商 ID。SDK 登记过的供应商只能访问 SDK 为它解析出的主机；
+    /// 给了地址的（自定义地址等）只能访问这个地址的主机，明文 http 只放行本机。
+    pub fn llm(
+        profile: &ProviderProfile,
+        provider_id: &str,
+        base_url: Option<&str>,
+    ) -> Result<Self, String> {
+        let mut scope = Self::new(&profile.id, provider_id, "", "llm", &[]);
+        scope.credential_field = crate::providers::llm_api_key_field(profile);
+        match (base_url, super::SDK_LLM_HOSTS.get(provider_id)) {
+            (Some(base_url), _) => {
+                let url = url::Url::parse(base_url)
+                    .ok()
+                    .filter(|url| url.host_str().is_some())
+                    .ok_or_else(|| format!("{} 的接口地址无效", profile.display_name))?;
+                scope.allowed_hosts = vec![url.host_str().unwrap_or_default().to_string()];
+                scope.prewarm_origins = vec![format!("{}/", url.origin().ascii_serialization())];
+                scope.local_network = url.scheme() == "http";
+            }
+            (None, Some(hosts)) => {
+                scope.prewarm_origins = hosts.iter().map(|host| format!("https://{host}/")).collect();
+                scope.allowed_hosts = hosts.clone();
+            }
+            (None, None) => return Err(format!("{} 需要填写接口地址", profile.display_name)),
+        }
+        Ok(scope)
     }
 
-    fn credential_owner(self) -> &'static str {
-        self.credential_owner
+    fn provider_id(&self) -> &str {
+        &self.provider_id
     }
 
-    fn credential_scope(self) -> &'static str {
-        self.credential_scope
-    }
-
-    /// 预连接这个运行时会访问的主机；通配主机事先不知道具体域名，跳过。
-    pub async fn prewarm(self) -> Result<(), String> {
-        for host in self.allowed_hosts.iter().filter(|host| !host.contains('*')) {
-            crate::providers::plugin_runtime::prewarm_connection(&format!("https://{host}/"))
-                .await?;
+    /// 预连接这个运行时会访问的地址，正式请求复用连接。
+    pub async fn prewarm(&self) -> Result<(), String> {
+        for origin in &self.prewarm_origins {
+            crate::providers::plugin_runtime::prewarm_connection(origin).await?;
         }
         Ok(())
     }
 
-    fn allowed_hosts(self) -> Vec<String> {
-        self.allowed_hosts
-            .iter()
-            .map(|host| (*host).into())
-            .collect()
+    fn allowed_hosts(&self) -> Vec<String> {
+        self.allowed_hosts.clone()
     }
 }
 
@@ -286,19 +312,18 @@ impl BuiltinSdkRuntime {
             ));
         }
         let request_id = request_id.into();
-        let spec = runtime_spec(scope)?;
-        let credential_key = CredentialKey::provider(scope.credential_owner(), "apiKey")?;
+        let credential_key = CredentialKey::provider(&scope.profile_id, &scope.credential_field)?;
         let bindings = SdkHostBindings {
             owner_id: format!("builtin:{}", scope.provider_id()),
             provider_id: scope.provider_id().into(),
             request_id,
-            credential_scopes: HashSet::from([scope.credential_scope().into()]),
+            credential_scopes: HashSet::from([scope.credential_scope.into()]),
             credential_key,
             credentials,
             recorder,
         };
         let runtime = JsProviderRuntime::create_with_sdk_bindings_and_event_sender(
-            spec,
+            runtime_spec(&scope)?,
             profile,
             DEFAULT_TIMEOUT,
             cancelled,
@@ -366,34 +391,47 @@ impl BuiltinSdkRuntime {
         )
     }
 
-    pub fn run_groq(
+    /// 执行一次大模型对话；`request` 是 SDK 的 `LlmChatRequestDto`。`emit_events` 时逐段推送正文与思考。
+    /// 超时由 SDK 计时并报错，宿主多等一会儿只兜住 SDK 本身卡住的情况。
+    pub fn run_llm(
         &self,
-        input: Value,
+        request: Value,
         request_id: &str,
         emit_events: bool,
+        timeout: Duration,
     ) -> Result<Value, String> {
         self.runtime.call(
             "invoke",
             &json!({
-                "operation": "groq.run",
-                "input": input,
+                "operation": "llm.run",
+                "input": request,
                 "requestId": request_id,
-                "timeoutMs": self.timeout.as_millis(),
+                "timeoutMs": timeout.as_millis(),
                 "emitEvents": emit_events,
+                // SDK 目录里没有的模型（手动添加、自定义地址）能力未知；用户给它选了思考程度，
+                // 按支持思考声明，SDK 才会按供应商写法发出开启或关闭。
+                "fallbackCapabilities": { "reasoning": true },
             }),
-            self.timeout,
+            timeout + HOST_TIMEOUT_MARGIN,
         )
     }
 
-    pub fn discover_groq(&self) -> Result<Value, String> {
-        self.runtime.call(
-            "invoke",
-            &json!({
-                "operation": "groq.discover",
-                "timeoutMs": self.timeout.as_millis(),
-            }),
-            self.timeout,
-        )
+    /// 列出供应商可用模型；`base_url` 为空时按 SDK 预设地址。
+    pub fn discover_llm(
+        &self,
+        provider_id: &str,
+        base_url: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let mut request = json!({
+            "operation": "llm.discover",
+            "providerId": provider_id,
+            "timeoutMs": timeout.as_millis(),
+        });
+        if let Some(base_url) = base_url {
+            request["baseUrl"] = json!(base_url);
+        }
+        self.runtime.call("invoke", &request, timeout + HOST_TIMEOUT_MARGIN)
     }
 
     pub fn realtime_start(
@@ -536,7 +574,7 @@ where
             let runtime = BuiltinSdkRuntime::create_with_event_sender(
                 &profile,
                 credentials,
-                BuiltinSdkScope::BAILIAN_TRANSLATION,
+                BuiltinSdkScope::bailian_translation(),
                 task_request_id.clone(),
                 task_cancelled,
                 HashMap::new(),
@@ -650,17 +688,21 @@ fn sdk_asr_to_legacy(
     .map_err(|error| format!("内置 SDK 识别结果映射失败：{error}"))
 }
 
-fn runtime_spec(scope: BuiltinSdkScope) -> Result<PluginRuntimeSpec, String> {
+fn runtime_spec(scope: &BuiltinSdkScope) -> Result<PluginRuntimeSpec, String> {
     let root = builtin_root()?;
     Ok(PluginRuntimeSpec {
         plugin_id: format!("builtin-sdk-{}", scope.provider_id()),
         source_namespace: "@henjicc/ai-sdk".into(),
         capabilities: vec![],
-        secret_fields: vec!["apiKey".into()],
+        secret_fields: vec![scope.credential_field.clone()],
         credentials: None,
         root: root.clone(),
         entrypoint: root.join("connector/index.js"),
-        permissions: vec!["network".into()],
+        permissions: if scope.local_network {
+            vec!["network".into(), "localNetwork".into()]
+        } else {
+            vec!["network".into()]
+        },
         allowed_hosts: scope.allowed_hosts(),
         browser_session: None,
         data_dir: root.join("data").join(scope.provider_id()),
@@ -673,7 +715,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.14.0");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.15.0");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -694,7 +736,7 @@ mod tests {
         let volcengine =
             BuiltinSdkScope::speech_recognition(&crate::providers::volcengine_profile()).unwrap();
         assert_eq!(volcengine.provider_id(), "volcengine");
-        assert_eq!(volcengine.credential_owner(), "volcengine");
+        assert_eq!(volcengine.profile_id, "volcengine");
         assert_eq!(volcengine.allowed_hosts(), ["openspeech.bytedance.com"]);
 
         let siliconflow =
@@ -705,12 +747,30 @@ mod tests {
         let groq =
             BuiltinSdkScope::speech_recognition(&crate::providers::groq_llm_profile()).unwrap();
         assert_eq!(groq.provider_id(), "groq");
-        assert_eq!(
-            groq.credential_owner(),
-            crate::providers::GROQ_LLM_PROVIDER_ID
-        );
-        assert_eq!(groq.credential_scope(), "speech-recognition");
+        assert_eq!(groq.profile_id, crate::providers::GROQ_LLM_PROVIDER_ID);
+        assert_eq!(groq.credential_scope, "speech-recognition");
         assert_eq!(groq.allowed_hosts(), ["api.groq.com"]);
+    }
+
+    /// 大模型运行时只能访问 SDK 为该供应商解析出的主机；自定义地址只能访问它自己。
+    #[test]
+    fn llm_scopes_use_sdk_hosts_and_the_llm_key_field() {
+        let volcengine = crate::providers::volcengine_profile();
+        let scope = BuiltinSdkScope::llm(&volcengine, "volcengine", None).unwrap();
+        assert_eq!(scope.allowed_hosts(), ["ark.cn-beijing.volces.com"]);
+        assert_eq!(scope.credential_field, crate::providers::llm_api_key_field(&volcengine));
+        assert_ne!(scope.credential_field, "apiKey", "火山引擎的大模型用方舟密钥");
+
+        let groq = crate::providers::groq_llm_profile();
+        let scope =
+            BuiltinSdkScope::llm(&groq, "custom", Some("https://llm.example.com:8443/v1")).unwrap();
+        assert_eq!(scope.allowed_hosts(), ["llm.example.com"]);
+        assert_eq!(scope.prewarm_origins, ["https://llm.example.com:8443/"]);
+        assert!(!scope.local_network);
+        assert!(BuiltinSdkScope::llm(&groq, "custom", None).is_err());
+
+        let local = BuiltinSdkScope::llm(&groq, "custom", Some("http://127.0.0.1:11434/v1")).unwrap();
+        assert!(local.local_network, "本机模型服务用明文 http");
     }
 
     #[test]

@@ -10,23 +10,23 @@
     'siliconflow-speech-recognition',
     'groq-speech-recognition',
   ] as const
-  const GROQ_SOURCE = 'groq-llm' as const
+  const LLM_SOURCE = 'llm' as const
   type CapabilitySource = typeof CAPABILITY_SOURCES[number]
-  type ModuleSource = CapabilitySource | typeof GROQ_SOURCE
+  type ModuleSource = CapabilitySource | typeof LLM_SOURCE
 
   interface DisposableRuntime { dispose(): Promise<void> }
   interface CapabilityBundle {
     SAYIT_AI_SDK_SOURCE_NAMESPACE: string
     createSayItCapabilityRuntime(runtime: unknown, options: Record<string, unknown>): DisposableRuntime
   }
-  interface GroqBundle {
-    createSayItGroqRuntime(runtime: unknown): DisposableRuntime
+  interface LlmBundle {
+    createSayItLlmRuntime(runtime: unknown): DisposableRuntime
   }
   interface RuntimeHandle {
     readonly version: string
     readonly sourceNamespace: string
     readonly capabilities?: DisposableRuntime
-    readonly groq?: DisposableRuntime
+    readonly llm?: DisposableRuntime
     dispose(): Promise<void>
   }
   interface CreateOptions {
@@ -37,7 +37,7 @@
   const target = globalThis as typeof globalThis & {
     __sayitCreateRuntimeContext?: () => unknown
     __sayitAiSdkCapabilities?: CapabilityBundle
-    __sayitAiSdkGroq?: GroqBundle
+    __sayitAiSdkLlm?: LlmBundle
     __sayitCreateSdkRuntime?: (options: CreateOptions) => RuntimeHandle
     __sayitDisposeAllSdkRuntimes?: () => Promise<void>
     __sayitAiSdkManifest?: Readonly<Record<string, unknown>>
@@ -51,11 +51,11 @@
   ) {
     throw new Error('AI SDK capability bundle source namespace 不匹配')
   }
-  if (typeof target.__sayitAiSdkGroq?.createSayItGroqRuntime !== 'function') {
-    throw new Error('AI SDK Groq bundle 未加载')
+  if (typeof target.__sayitAiSdkLlm?.createSayItLlmRuntime !== 'function') {
+    throw new Error('AI SDK LLM bundle 未加载')
   }
 
-  const allowed = new Set<string>([...CAPABILITY_SOURCES, GROQ_SOURCE])
+  const allowed = new Set<string>([...CAPABILITY_SOURCES, LLM_SOURCE])
   const active = new Set<RuntimeHandle>()
 
   target.__sayitAiSdkManifest = Object.freeze({
@@ -71,7 +71,7 @@
     }
     const runtime = target.__sayitCreateRuntimeContext!()
     const capabilitySources = sources.filter(
-      (source): source is CapabilitySource => source !== GROQ_SOURCE
+      (source): source is CapabilitySource => source !== LLM_SOURCE
     )
     const capabilities = capabilitySources.length > 0
       ? target.__sayitAiSdkCapabilities!.createSayItCapabilityRuntime(runtime, {
@@ -79,20 +79,20 @@
           sources: capabilitySources,
         })
       : undefined
-    const groq = sources.includes(GROQ_SOURCE)
-      ? target.__sayitAiSdkGroq!.createSayItGroqRuntime(runtime)
+    const llm = sources.includes(LLM_SOURCE)
+      ? target.__sayitAiSdkLlm!.createSayItLlmRuntime(runtime)
       : undefined
     let disposed = false
     const handle: RuntimeHandle = {
       version: SDK_VERSION,
       sourceNamespace: SDK_SOURCE_NAMESPACE,
       capabilities,
-      groq,
+      llm,
       dispose: async () => {
         if (disposed) return
         disposed = true
         await capabilities?.dispose()
-        await groq?.dispose()
+        await llm?.dispose()
         active.delete(handle)
       },
     }

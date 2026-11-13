@@ -282,7 +282,7 @@ fn analyze(rows: &[ModelRow]) -> Value {
         parts.join("，")
     };
     let mut hints = vec![
-        "首字包含建立连接的时间，现在每次请求都会重新握手；Groq 和插件模型还包含启动 JS 运行时的时间，开发构建里这部分偏大".to_string(),
+        "首字包含建立连接的时间，现在每次请求都会重新握手；云端模型还包含启动 JS 运行时的时间，开发构建里这部分偏大".to_string(),
     ];
     if rows
         .iter()
@@ -387,7 +387,6 @@ pub(super) async fn measure_stream(
         false,
         &[],
         CancellationToken::new(),
-        true,
         |output, reasoning| {
             sample.record_progress(started.elapsed().as_millis() as u64, output, reasoning);
             on_update(&sample);
@@ -458,7 +457,7 @@ pub(super) fn model_labels(state: &RuntimeState, model: &BenchModel) -> (String,
     (
         text("providerName").unwrap_or_else(|| model.provider_id.clone()),
         text("modelId").unwrap_or_else(|| model.model.clone()),
-        text("reasoningEffective").unwrap_or_default(),
+        text("reasoningConfigured").unwrap_or_default(),
     )
 }
 

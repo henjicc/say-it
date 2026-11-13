@@ -133,17 +133,17 @@ pub fn validate_registry_with_sdk(
                 CaughtError::from_error(&ctx, error)
             )
         })?;
-        ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_GROQ_BUNDLE)
+        ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_LLM_BUNDLE)
             .map_err(|error| error.to_string())?;
         ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_LLM_MODULES_BUNDLE)
             .map_err(|error| error.to_string())?;
-        let groq: rquickjs::Object = ctx
+        let llm: rquickjs::Object = ctx
             .globals()
-            .get("__sayitAiSdkGroq")
+            .get("__sayitAiSdkLlm")
             .map_err(|error| error.to_string())?;
-        let builtin_descriptors: Function = groq
-            .get("sayItGroqModuleDescriptorJson")
-            .map_err(|_| "AI SDK Groq bundle 缺少 module descriptor".to_string())?;
+        let builtin_descriptors: Function = llm
+            .get("sayItBuiltinLlmModuleDescriptorJson")
+            .map_err(|_| "AI SDK LLM bundle 缺少内置 module descriptor".to_string())?;
         let builtin_json: String = builtin_descriptors
             .call(())
             .map_err(|error| error.to_string())?;

@@ -1,20 +1,17 @@
 use crate::commands::common::{provider_profile_for_execution, provider_settings_response};
 use crate::persistence::save_persisted_state;
+use crate::providers::sdk_runtime::online::{BuiltinSdkRuntime, BuiltinSdkScope};
 use crate::providers::{
-    llm_default_endpoint, llm_models_from_config, normalize_llm_endpoint,
-    normalize_settings, set_llm_models, LlmModelAvailability, LlmModelConfig, LlmModelSource,
-    ProviderProfile, ProviderSettingsResponse,
+    llm_models_from_config, normalize_settings, set_llm_models, LlmModelAvailability,
+    LlmModelConfig, LlmModelSource, ProviderProfile, ProviderSettingsResponse,
 };
 use crate::state::RuntimeState;
-use genai::adapter::AdapterKind;
-use genai::resolver::{AuthData, Endpoint, ProviderConfig};
 use serde_json::Value;
 use std::collections::HashMap;
 use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::State;
-use tokio::time::timeout;
 
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -36,47 +33,16 @@ fn profile_value<'a>(profile: &'a ProviderProfile, key: &str) -> &'a str {
         .trim()
 }
 
-fn adapter_kind(profile: &ProviderProfile) -> Result<AdapterKind, String> {
-    match crate::providers::llm_adapter(profile) {
-        Some("openai") => Ok(AdapterKind::OpenAI),
-        Some("anthropic") => Ok(AdapterKind::Anthropic),
-        Some("gemini") => Ok(AdapterKind::Gemini),
-        Some("kimi") => Ok(AdapterKind::Kimi),
-        Some("bigmodel") => Ok(AdapterKind::BigModel),
-        Some("mimo") => Ok(AdapterKind::Mimo),
-        Some("minimax") => Ok(AdapterKind::MiniMax),
-        Some("open_router") => Ok(AdapterKind::OpenRouter),
-        // 只用于列模型：OpenAI 兼容的几家都在 {endpoint}models 列出，与对话走哪个协议无关。
-        Some("custom" | "siliconflow" | "ppio" | "deepseek" | "volcengine" | "bailian") => {
-            Ok(AdapterKind::OpenAI)
-        }
-        Some(other) => Err(format!("不支持的大语言模型适配器：{other}")),
-        None => Err("供应商不是大语言模型配置".to_string()),
-    }
-}
-
-fn provider_config(profile: &ProviderProfile) -> Result<ProviderConfig, String> {
-    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile));
-    if api_key.is_empty() {
+/// 内置供应商的模型列表由 SDK 获取：地址按 SDK 预设，硅基流动只列对话模型。
+fn sdk_discovery_target(
+    profile: &ProviderProfile,
+) -> Result<(BuiltinSdkScope, String, Option<String>), String> {
+    if profile_value(profile, &crate::providers::llm_api_key_field(profile)).is_empty() {
         return Err(crate::providers::missing_llm_api_key_message(profile));
     }
-    let auth = AuthData::from_single(api_key.to_string());
-    let adapter = crate::providers::llm_adapter(profile)
-        .ok_or_else(|| "供应商不是大语言模型配置".to_string())?;
-    if profile.kind == "llm:custom" || llm_default_endpoint(adapter).is_some() {
-        let endpoint = match profile_value(profile, "endpoint") {
-            "" => llm_default_endpoint(adapter).unwrap_or("").to_string(),
-            endpoint => endpoint.to_string(),
-        };
-        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(format!("{} 的接口地址无效", profile.display_name));
-        }
-        return Ok(ProviderConfig::from((
-            Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
-            auth,
-        )));
-    }
-    Ok(ProviderConfig::from(auth))
+    let (provider_id, base_url) = crate::providers::sdk_llm_endpoint(profile)?;
+    let scope = BuiltinSdkScope::llm(profile, &provider_id, base_url.as_deref())?;
+    Ok((scope, provider_id, base_url))
 }
 
 fn same_connection(left: &ProviderProfile, right: &ProviderProfile) -> bool {
@@ -133,34 +99,6 @@ async fn fetch_model_names(
     state: &RuntimeState,
     profile: &ProviderProfile,
 ) -> Result<Vec<String>, String> {
-    if profile.kind == "llm:groq" {
-        let profile = profile.clone();
-        let credentials = state.credentials.clone();
-        let request_id = format!("groq-discovery-{}", uuid::Uuid::new_v4());
-        let value = crate::providers::plugin_runtime::spawn_js_worker(
-            "builtin-llm-discovery",
-            move || {
-                let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
-                    &profile,
-                    credentials,
-                    crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
-                    request_id,
-                    Arc::new(CancellationFlag::new(false)),
-                    HashMap::new(),
-                )?;
-                runtime.discover_groq()
-            },
-        )?
-        .await
-        .map_err(|error| format!("Groq 模型发现工作线程失败：{error}"))??;
-        return Ok(value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.get("modelId").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect());
-    }
     if profile.kind.starts_with("plugin:")
         && profile.capabilities.iter().any(|value| value == "llm")
     {
@@ -215,43 +153,29 @@ async fn fetch_model_names(
         }
         return Ok(names);
     }
-    if crate::providers::llm_adapter(profile) == Some("siliconflow") {
-        return siliconflow_chat_model_names(profile).await;
-    }
-    let adapter_kind = adapter_kind(profile)?;
-    let provider_config = provider_config(profile)?;
-    timeout(
-        MODEL_LIST_TIMEOUT,
-        super::smart_text::genai_builder().build().all_model_names(adapter_kind, provider_config),
-    )
+    let (scope, provider_id, base_url) = sdk_discovery_target(profile)?;
+    let profile = profile.clone();
+    let credentials = state.credentials.clone();
+    let request_id = format!("llm-discovery-{}", uuid::Uuid::new_v4());
+    let value = crate::providers::plugin_runtime::spawn_js_worker("builtin-llm-discovery", move || {
+        let runtime = BuiltinSdkRuntime::create(
+            &profile,
+            credentials,
+            scope,
+            request_id,
+            Arc::new(CancellationFlag::new(false)),
+            HashMap::new(),
+        )?;
+        runtime.discover_llm(&provider_id, base_url.as_deref(), MODEL_LIST_TIMEOUT)
+    })?
     .await
-    .map_err(|_| "获取模型列表超时（20 秒）".to_string())?
-    .map_err(|error| format!("获取模型列表失败：{error}"))
-}
-
-/// 硅基流动的 /models 默认连识别、生图、向量模型一起返回，只取对话模型。
-async fn siliconflow_chat_model_names(profile: &ProviderProfile) -> Result<Vec<String>, String> {
-    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile));
-    let endpoint = llm_default_endpoint("siliconflow").expect("硅基流动有固定接口地址");
-    let response = reqwest::Client::new()
-        .get(format!("{endpoint}models"))
-        .query(&[("sub_type", "chat")])
-        .bearer_auth(api_key)
-        .timeout(MODEL_LIST_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| format!("获取模型列表失败：{error}"))?
-        .error_for_status()
-        .map_err(|error| format!("获取模型列表失败：{error}"))?;
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("获取模型列表失败：{error}"))?;
-    Ok(body["data"]
+    .map_err(|error| format!("模型发现工作线程失败：{error}"))?
+    .map_err(|error| format!("获取模型列表失败：{error}"))?;
+    Ok(value
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|model| model["id"].as_str())
+        .filter_map(|item| item.get("modelId").and_then(Value::as_str))
         .map(str::to_string)
         .collect())
 }
@@ -264,13 +188,7 @@ pub(crate) async fn refresh_llm_models(
 ) -> Result<ProviderSettingsResponse, String> {
     let attempted_at = now_millis();
     let requested_profile = provider_profile_for_execution(&state, &provider_id)?;
-    if requested_profile.kind == "llm:groq" {
-        let key =
-            crate::providers::credential_store::CredentialKey::provider("llm-groq", "apiKey")?;
-        if state.credentials.get(&key)?.is_none() {
-            return Err("请先为 Groq 设置 API Key".into());
-        }
-    } else if requested_profile.kind.starts_with("plugin:")
+    if requested_profile.kind.starts_with("plugin:")
         && requested_profile
             .capabilities
             .iter()
@@ -287,8 +205,7 @@ pub(crate) async fn refresh_llm_models(
             return Err("插件 LLM runtime 不可用".into());
         }
     } else {
-        adapter_kind(&requested_profile)?;
-        provider_config(&requested_profile)?;
+        sdk_discovery_target(&requested_profile)?;
     }
     {
         let mut guard = state
@@ -381,85 +298,35 @@ mod tests {
     }
 
     #[test]
-    fn custom_provider_uses_openai_adapter_and_normalized_endpoint() {
-        let profile = custom_profile("secret", "https://example.com/v1");
-        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAI);
-        let config = provider_config(&profile).unwrap();
-        assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://example.com/v1/")
-        );
-    }
-
-    #[test]
-    fn deepseek_lists_models_on_its_v1_endpoint() {
-        let mut profile = custom_profile("secret", "");
-        profile.kind = "llm:deepseek".into();
-        profile.display_name = "DeepSeek".into();
-        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAI);
-        let config = provider_config(&profile).unwrap();
-        assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://api.deepseek.com/v1/")
-        );
-    }
-
-    #[test]
-    fn builtin_bailian_lists_models_on_its_compatible_endpoint() {
+    fn registered_providers_list_models_on_sdk_preset_addresses() {
         let mut profile = custom_profile("secret", "");
         profile.kind = "sdk:bailian".into();
-        profile.display_name = "阿里云百炼".into();
-        assert_eq!(adapter_kind(&profile).unwrap(), AdapterKind::OpenAI);
-        let config = provider_config(&profile).unwrap();
+        let (_, provider_id, base_url) = sdk_discovery_target(&profile).unwrap();
+        assert_eq!((provider_id.as_str(), base_url), ("bailian", None));
+
+        let (_, provider_id, base_url) =
+            sdk_discovery_target(&custom_profile("secret", "https://example.com/v1")).unwrap();
         assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://dashscope.aliyuncs.com/compatible-mode/v1/")
+            (provider_id.as_str(), base_url.as_deref()),
+            ("custom", Some("https://example.com/v1"))
         );
     }
 
     #[test]
-    fn builtin_volcengine_chats_with_the_ark_key() {
+    fn builtin_volcengine_lists_models_with_the_ark_key() {
         let mut profile = crate::providers::volcengine_profile();
         profile.config = serde_json::json!({"apiKey": "speech-key"});
         assert_eq!(
-            provider_config(&profile).unwrap_err(),
+            sdk_discovery_target(&profile).unwrap_err(),
             "请先为 火山引擎 设置 方舟 API Key"
         );
         profile.config["arkApiKey"] = "ark-key".into();
-        let config = provider_config(&profile).unwrap();
-        assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://ark.cn-beijing.volces.com/api/v3/")
-        );
-    }
-
-    #[test]
-    fn builtin_siliconflow_chats_with_its_speech_key_on_its_own_endpoint() {
-        let mut profile = crate::providers::siliconflow_profile();
-        profile.config = serde_json::json!({"apiKey": "sf-key"});
-        assert!(matches!(adapter_kind(&profile), Ok(AdapterKind::OpenAI)));
-        let config = provider_config(&profile).unwrap();
-        assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://api.siliconflow.cn/v1/")
-        );
-    }
-
-    #[test]
-    fn ppio_chats_on_its_v1_endpoint() {
-        let mut profile = crate::providers::siliconflow_profile();
-        profile.kind = "llm:ppio".into();
-        profile.config = serde_json::json!({"apiKey": "ppio-key"});
-        let config = provider_config(&profile).unwrap();
-        assert_eq!(
-            config.endpoint.as_ref().map(Endpoint::base_url),
-            Some("https://api.ppio.com/openai/v1/")
-        );
+        assert!(sdk_discovery_target(&profile).is_ok());
     }
 
     #[test]
     fn model_refresh_requires_api_key() {
-        let error = provider_config(&custom_profile("", "https://example.com/v1")).unwrap_err();
+        let error = sdk_discovery_target(&custom_profile("", "https://example.com/v1")).unwrap_err();
         assert!(error.contains("API Key"));
     }
 
