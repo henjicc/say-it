@@ -76,8 +76,8 @@ pub(crate) fn native_indicator_set_state(state: &str) {
     }
 }
 
-pub(crate) fn native_indicator_set_text(text: String, fade: bool) {
-    post::<IndicatorWindow>(Command::SetText { text, fade });
+pub(crate) fn native_indicator_set_text(text: String, fade: bool, preview_from: Option<usize>) {
+    post::<IndicatorWindow>(Command::SetText { text, fade, preview_from });
 }
 
 pub(crate) fn native_indicator_set_waveform(level: f32, peaks: Vec<f32>) {

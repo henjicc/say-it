@@ -90,6 +90,8 @@ const TEXT_FRESH_FADE_MAX_CHARS: usize = 10;
 /// 实时识别的中间结果常把末尾改短一行又马上长回来；文字框变大立即跟上，
 /// 变小要持续这么久才收，避免框和文字上下来回跳。
 const TEXT_SHRINK_HOLD_S: f32 = 0.6;
+/// 还在变的预览文字相对正常文字的不透明度。
+const PREVIEW_TEXT_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -98,6 +100,9 @@ pub enum Command {
     SetText {
         text: String,
         fade: bool,
+        /// 从第几个字起是还会变的预览（正在说的这一句）；`None` 表示整段已定稿。
+        /// 预览用浅色画，说完一句、定稿后变成正常颜色，用户能看出在哪里断了句。
+        preview_from: Option<usize>,
     },
     SetWaveform {
         level: f32,
@@ -195,6 +200,8 @@ pub struct Indicator {
     seen_text: String,
     /// 文本中「新增内容」的起始字符索引，配合 fresh_started 做淡入。
     fresh_from: usize,
+    /// 见 `Command::SetText::preview_from`。
+    preview_from: Option<usize>,
     fresh_started: Option<Instant>,
     /// 屏幕上的波形柱（最旧在前），比可见数量多一根用于滚入。
     wave_bars: VecDeque<f32>,
@@ -242,6 +249,7 @@ impl Indicator {
             text: String::new(),
             seen_text: String::new(),
             fresh_from: 0,
+            preview_from: None,
             fresh_started: None,
             wave_bars: VecDeque::from(vec![0.0; WAVE_BARS + 1]),
             wave_acc_sum: 0.0,
@@ -571,7 +579,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 self.sync_interactive(&mut ops);
                 ops
             }
-            Command::SetText { text, fade } => {
+            Command::SetText { text, fade, preview_from } => {
                 // 只有短追加或显式换新才淡入；修订已有内容直接替换。追加按本段显示过的最长文本算，
                 // 末尾先被改短、再长回原样的字不算新字。
                 let fresh_from = if fade {
@@ -594,6 +602,7 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                 self.fresh_from = fresh_from;
                 self.fresh_started =
                     (fresh_len > 0 && fresh_len <= TEXT_FRESH_FADE_MAX_CHARS).then_some(cx.now);
+                self.preview_from = preview_from.filter(|from| *from < text.chars().count());
                 self.text = text;
                 self.measure_text(cx.text, cx.now);
                 if self.state.is_some() {
@@ -792,7 +801,19 @@ impl Indicator {
             return;
         };
         let fade = self.fresh_alpha(now);
-        let tint = if fade < 1.0 && self.fresh_from < self.text.chars().count() {
+        let utf16_from = |chars: usize| -> u32 {
+            self.text.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
+        };
+        // 绘制只支持一段换色：有预览时预览整段浅色、不再淡入，否则预览每次更新都会整段闪一下。
+        let tint = if let Some(preview_from) = self.preview_from {
+            let utf16_start = utf16_from(preview_from);
+            let total = self.text.encode_utf16().count() as u32;
+            Some(TextTint {
+                utf16_start,
+                utf16_len: total - utf16_start,
+                color: fg(&self.look, PREVIEW_TEXT_ALPHA * alpha),
+            })
+        } else if fade < 1.0 && self.fresh_from < self.text.chars().count() {
             let utf16_start: u32 = self
                 .text
                 .chars()
@@ -1169,7 +1190,7 @@ mod tests {
         model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
         let set = |model: &mut Indicator, chars: usize, at: Instant| {
             model.apply(
-                Command::SetText { text: "字".repeat(chars), fade: false },
+                Command::SetText { text: "字".repeat(chars), fade: false, preview_from: None },
                 &cx(at, &text),
             );
         };
@@ -1201,7 +1222,7 @@ mod tests {
         let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
         model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
         for value in ["今天天气", "今天天", "今天天气很好"] {
-            model.apply(Command::SetText { text: value.into(), fade: false }, &cx(now, &text));
+            model.apply(Command::SetText { text: value.into(), fade: false, preview_from: None }, &cx(now, &text));
         }
         assert_eq!(model.fresh_from, 4);
         assert!(model.fresh_started.is_some());
@@ -1226,6 +1247,7 @@ mod tests {
                 Command::SetText {
                     text: old.into(),
                     fade: false,
+                    preview_from: None,
                 },
                 &cx(now, &text),
             );
@@ -1237,6 +1259,7 @@ mod tests {
                 Command::SetText {
                     text: new.into(),
                     fade,
+                    preview_from: None,
                 },
                 &cx(now, &text),
             );
@@ -1265,6 +1288,31 @@ mod tests {
             }
         }
     }
+    /// 正在说的这一句（预览）用浅色画，定稿后整段恢复正常颜色。
+    #[test]
+    fn preview_sentence_is_drawn_lighter_until_it_is_committed() {
+        let now = Instant::now();
+        let text = FakeText;
+        let mut model = Indicator::new(&Look::WINDOWS_LEGACY);
+        model.apply(Command::SetState(IndicatorState::Recording), &cx(now, &text));
+        let mut tint_after = |preview_from: Option<usize>| {
+            model.apply(
+                Command::SetText { text: "说完了。还在说😀".into(), fade: false, preview_from },
+                &cx(now, &text),
+            );
+            settled(&mut model, now, &text);
+            let mut canvas = RecordingCanvas::new(144);
+            model.draw(&mut canvas, now + Duration::from_secs(5));
+            canvas.calls.iter().find_map(|call| match call {
+                Draw::Text(_, _, _, tint) => Some(*tint),
+                _ => None,
+            })
+        };
+        let tint = tint_after(Some(4)).unwrap().unwrap();
+        assert_eq!((tint.utf16_start, tint.utf16_len), (4, 5), "预览从第 5 个字起，「还在说」加占两个 UTF-16 单元的表情");
+        assert_eq!(tint_after(None), Some(None), "整段定稿后不再换色");
+    }
+
     #[test]
     fn legacy_draw_keeps_premultiplied_panel_and_work_area_placement() {
         let now = Instant::now();
@@ -1587,6 +1635,7 @@ mod tests {
                     Command::SetText {
                         text: value.into(),
                         fade: false,
+                        preview_from: None,
                     },
                     &cx(now, &text),
                 );
@@ -1621,6 +1670,7 @@ mod tests {
             Command::SetText {
                 text: String::new(),
                 fade: false,
+                preview_from: None,
             },
             &cx(now, &text),
         );

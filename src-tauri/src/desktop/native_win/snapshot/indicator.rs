@@ -126,6 +126,7 @@ fn set_text(s: &Session, text: &str) {
         Command::SetText {
             text: text.into(),
             fade: false,
+            preview_from: None,
         },
     );
 }

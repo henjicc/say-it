@@ -3306,6 +3306,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         &app,
         None,
         processed,
+        None,
         !trigger.is_floating_orb()
             && !used_clipboard_fallback
             && should_show_final_text_in_indicator(mode)
@@ -3381,6 +3382,7 @@ async fn use_pending_fallback(app: AppHandle) -> Result<(), String> {
         &app,
         None,
         pending.text,
+        None,
         should_show_final_text_in_indicator(mode),
     );
     Ok(())
@@ -3724,25 +3726,27 @@ fn schedule_release(app: AppHandle, epoch: u64, generation: u64, delay: u64) {
 }
 
 fn publish_state(app: &AppHandle, error: Option<String>) {
-    let (text, show_in_indicator, error) = app
+    let ((text, preview_from), show_in_indicator, error) = app
         .state::<RuntimeState>()
         .dictation_runtime
         .session
         .lock()
         .map(|s| {
             (
-                format!("{}{}", s.committed, s.segment),
+                (format!("{}{}", s.committed, s.segment), Some(s.committed.chars().count())),
                 !s.trigger.is_floating_orb() && should_show_final_text_in_indicator(s.mode),
                 error.or_else(|| s.error.clone()),
             )
         })
         .unwrap_or_default();
-    publish_state_with_text(app, error, text, show_in_indicator);
+    publish_state_with_text(app, error, text, preview_from, show_in_indicator);
 }
+/// `preview_from` 见 `desktop::show_indicator_text`；最终结果传 `None`。
 fn publish_state_with_text(
     app: &AppHandle,
     error: Option<String>,
     text: String,
+    preview_from: Option<usize>,
     show_in_indicator: bool,
 ) {
     let state = app.state::<RuntimeState>();
@@ -3763,7 +3767,7 @@ fn publish_state_with_text(
     ));
     let _ = app.emit(DOMAIN_EVENT, event);
     if show_in_indicator && !text.is_empty() {
-        let _ = crate::desktop::set_indicator_text(app.clone(), text, Some(false));
+        let _ = crate::desktop::show_indicator_text(app, text, false, preview_from);
     }
     if matches!(s.phase, DictationPhase::Idle | DictationPhase::Failed) {
         super::idle_reclaim::request(app);

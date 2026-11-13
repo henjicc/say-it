@@ -36,6 +36,7 @@ fn render(command: Command, value: &str, scale: u32) -> Vec<u8> {
         Command::SetText {
             text: value.into(),
             fade: false,
+            preview_from: None,
         },
         &cx,
     );
