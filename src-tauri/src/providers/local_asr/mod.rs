@@ -437,6 +437,7 @@ impl OfflineVadSession {
         let started = std::time::Instant::now();
         let text = self.engine.recognize(&preview.speech, cancel)?;
         preview.last_cost = started.elapsed();
+        trace_recognition("localAsr.preview", preview.speech.len(), preview.last_cost);
         preview.previewed_samples = preview.speech.len();
         // 模型把每次输入都当成完整的话来收尾，而这句话其实还在说。
         let text = text.trim_end_matches(['。', '.']);
@@ -470,7 +471,9 @@ impl OfflineVadSession {
     fn drain(&mut self, cancel: Option<&CancellationFlag>) -> Result<Vec<LocalSegment>, String> {
         let mut results = Vec::new();
         while let Some(segment) = self.vad.front() {
+            let started = std::time::Instant::now();
             let Recognized { text, tokens } = self.engine.recognize_timed(segment.samples(), cancel)?;
+            trace_recognition("localAsr.segment", segment.samples().len(), started.elapsed());
             if let Some(preview) = &mut self.preview {
                 preview.sentence_finished(!text.is_empty());
             }
@@ -494,6 +497,15 @@ impl OfflineVadSession {
         // 文件模式的缓冲增长由 file 模块的周期性 flush_and_reset 收口。
         Ok(results)
     }
+}
+
+/// 本地识别一次用了多久、识别了多长的音频；开发者追踪靠它区分「句末重识别慢」和「模型加载慢」。
+fn trace_recognition(event: &str, samples: usize, cost: std::time::Duration) {
+    crate::application::diagnostics::event(
+        "debug",
+        event,
+        serde_json::json!({ "audioMs": samples_to_ms(samples as u64), "recognizeMs": cost.as_millis() as u64 }),
+    );
 }
 
 // 保留原整段算法作识别质量与时间轴的独立回归参照。

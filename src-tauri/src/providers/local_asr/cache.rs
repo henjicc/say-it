@@ -223,6 +223,17 @@ pub fn supports_residency(engine: &str) -> bool {
 }
 
 fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
+    let started = std::time::Instant::now();
+    let recognizer = load_engine(spec)?;
+    crate::application::diagnostics::event(
+        "debug",
+        "localAsr.loaded",
+        serde_json::json!({ "pluginId": spec.plugin_id, "engine": spec.engine, "loadMs": started.elapsed().as_millis() as u64 }),
+    );
+    Ok(recognizer)
+}
+
+fn load_engine(spec: &LocalModelSpec) -> Result<Recognizer, String> {
     match spec.engine.as_str() {
         "sherpa-onnx-offline" | "transcribe-cpp" => {
             super::create_segment_recognizer(spec).map(Recognizer::Segment)
