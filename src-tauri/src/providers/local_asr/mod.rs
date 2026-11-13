@@ -340,9 +340,13 @@ impl Preview {
 
     /// 最终结果为空（咳嗽、噪声被预览误认成了字）时不会有 final 去替换已显示的预览，
     /// 要用一条空预览把它清掉。
+    ///
+    /// 预览耗时随这句话的长度增长，新的一句从短音频重新开始，上一句的耗时不再适用；
+    /// 留着它的话，一次被显卡争用拖慢的预览会把之后每句的预览间隔都拉长到几秒，说话时一直不出字。
     fn sentence_finished(&mut self, recognized: bool) {
         self.speech.clear();
         self.previewed_samples = 0;
+        self.last_cost = std::time::Duration::ZERO;
         self.text = (self.shown && !recognized).then(String::new);
         self.shown = false;
     }
@@ -603,6 +607,18 @@ fn float_param(value: &Value, key: &str, fallback: f32) -> f32 {
 mod tests {
     use super::super::plugin::ModelPackFileManifest;
     use super::*;
+
+    /// 一次慢预览只拉长它所在这句话的预览间隔，下一句照常每 0.8 秒出字。
+    #[test]
+    fn slow_preview_does_not_slow_down_the_next_sentence() {
+        let mut preview = Preview { last_cost: std::time::Duration::from_millis(2400), ..Default::default() };
+        let second = vec![0.0; SAMPLE_RATE as usize];
+        preview.push(&second, true);
+        assert!(!preview.due(true), "同一句里按上次耗时拉长间隔");
+        preview.sentence_finished(true);
+        preview.push(&second, true);
+        assert!(preview.due(true), "新的一句不受上一句的慢预览影响");
+    }
 
     #[test]
     fn cancellation_while_waiting_for_recognizer_skips_decode_after_lock() {
