@@ -30,5 +30,6 @@ pub(crate) mod smart_text;
 pub(crate) mod subtitle_document;
 pub(crate) mod subtitles;
 pub(crate) mod transcription;
+pub(crate) mod transcription_cache;
 pub(crate) mod translation;
 pub(crate) mod window_lifecycle;

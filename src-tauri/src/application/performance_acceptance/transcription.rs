@@ -21,6 +21,7 @@ pub(super) async fn run(app: &AppHandle, recorder: &mut Recorder) -> Result<(), 
                     ..Default::default()
                 }),
                 "transcribe",
+                false,
             )
             .await?;
             let mut cancel_started = None;

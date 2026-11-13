@@ -95,7 +95,10 @@ pub(crate) async fn transcription_start(
     kind: Option<String>,
 ) -> Result<TranscriptionStartResponse, String> {
     let kind = kind.unwrap_or_else(|| DEFAULT_TRANSCRIPTION_JOB_KIND.to_string());
-    transcription_start_inner(app, &state, file_path, params, &kind).await
+    // 用户在转写、生成字幕、文稿对齐里选的文件可能反复识别，复用上次的结果；
+    // 听写、模型对比、会议录音每次都是新录音，对比本身也要求真的再识别一次。
+    let reuse_cached = matches!(kind.as_str(), "transcribe" | "align");
+    transcription_start_inner(app, &state, file_path, params, &kind, reuse_cached).await
 }
 
 pub(crate) async fn transcription_start_inner(
@@ -104,8 +107,10 @@ pub(crate) async fn transcription_start_inner(
     file_path: String,
     params: Option<TranscriptionParams>,
     kind: &str,
+    reuse_cached: bool,
 ) -> Result<TranscriptionStartResponse, String> {
-    transcription_start_with_recording(app, state, file_path, params, kind, None, |_| Ok(())).await
+    transcription_start_with_recording(app, state, file_path, params, kind, reuse_cached, None, |_| Ok(()))
+        .await
 }
 
 pub(crate) async fn transcription_start_with_recording(
@@ -114,6 +119,7 @@ pub(crate) async fn transcription_start_with_recording(
     file_path: String,
     params: Option<TranscriptionParams>,
     kind: &str,
+    reuse_cached: bool,
     recording: Option<Arc<crate::audio_wav::RecordedWav>>,
     register_owner: impl FnOnce(&str) -> Result<(), String> + Send,
 ) -> Result<TranscriptionStartResponse, String> {
@@ -138,6 +144,7 @@ pub(crate) async fn transcription_start_with_recording(
                     provider,
                     file_path,
                     params,
+                    reuse_cached,
                     cancel,
                 )
                 .await
@@ -202,9 +209,34 @@ async fn run_transcription_job(
     provider: FileRecognitionProvider,
     file_path: String,
     params: TranscriptionParams,
+    reuse_cached: bool,
     cancel: CancelFlag,
 ) -> Result<(), String> {
     let model = params.model_id();
+    let cache = if reuse_cached {
+        let key = crate::application::transcription_cache::key(
+            &file_path,
+            &params,
+            provider.customization(),
+            &provider.implementation_revision(),
+        )?;
+        let dir = crate::application::data_root::data_subdir(
+            &app,
+            crate::application::transcription_cache::DIR,
+        )?;
+        if let Some(result) = crate::application::transcription_cache::load(&dir, &key) {
+            emit_transcription_event(
+                &app,
+                &job_id,
+                "completed",
+                json!({ "taskId": "", "result": result, "cached": true }),
+            );
+            return Ok(());
+        }
+        Some((dir, key))
+    } else {
+        None
+    };
     emit_transcription_event(
         &app,
         &job_id,
@@ -228,6 +260,15 @@ async fn run_transcription_job(
         .await?;
     if is_cancelled(&cancel) {
         return Ok(());
+    }
+    if let Some((dir, key)) = &cache {
+        if let Err(error) = crate::application::transcription_cache::store(dir, key, &result) {
+            crate::application::diagnostics::event(
+                "warn",
+                "transcription.cacheStoreFailed",
+                json!({ "error": error }),
+            );
+        }
     }
     emit_transcription_event(
         &app,

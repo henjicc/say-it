@@ -38,6 +38,8 @@ const MIGRATABLE_DIRS: &[&str] = &[
     "dev-traces",
     // 会议录音。
     "meetings",
+    // 录音识别结果缓存，含识别出的文字。
+    "transcription-cache",
 ];
 
 pub(crate) const MIGRATION_EVENT: &str = "data-root-migration";
