@@ -505,19 +505,23 @@ pub(crate) fn set_indicator_text(
     text: String,
     fade: Option<bool>,
 ) -> Result<(), String> {
-    if route_text_to_subtitle(&app) {
-        crate::desktop::native_subtitle::native_subtitle_set_text(
-            text.clone(),
-            fade.unwrap_or(false),
-        );
+    show_indicator_text(&app, text, fade.unwrap_or(false), None)
+}
+
+/// `preview_from`：从第几个字起是正在说、还会变的一句（原生胶囊用浅色画）；`None` 表示整段已定稿。
+pub(crate) fn show_indicator_text(
+    app: &tauri::AppHandle,
+    text: String,
+    fade: bool,
+    preview_from: Option<usize>,
+) -> Result<(), String> {
+    if route_text_to_subtitle(app) {
+        crate::desktop::native_subtitle::native_subtitle_set_text(text.clone(), fade);
     } else if crate::desktop::native_dictation_indicator_enabled() {
-        crate::desktop::native_indicator_set_text(text.clone(), fade.unwrap_or(false));
+        crate::desktop::native_indicator_set_text(text.clone(), fade, preview_from);
     }
     if let Some(window) = app.get_webview_window(DICTATION_INDICATOR_LABEL) {
-        let _ = window.emit(
-            "dictation-indicator-text",
-            json!({ "text": text, "fade": fade.unwrap_or(false) }),
-        );
+        let _ = window.emit("dictation-indicator-text", json!({ "text": text, "fade": fade }));
     }
     Ok(())
 }

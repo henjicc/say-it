@@ -158,7 +158,7 @@ fn show_indicator(scenes: &mut Scenes, scene: &str) -> Result<(), String> {
         "notice" => crate::desktop::native_indicator_notice(NOTICE_TEXT.into()),
         "recording" | "processing" | "smartProcessing" | "fallback" => {
             crate::desktop::native_indicator_prepare();
-            crate::desktop::native_indicator_set_text(String::new(), false);
+            crate::desktop::native_indicator_set_text(String::new(), false, None);
             crate::desktop::native_indicator_set_state(scene);
         }
         _ => return Err(format!("未知的胶囊状态：{scene}")),
@@ -301,7 +301,11 @@ fn spawn_feed(app: tauri::AppHandle, round: u32) {
                         // 和真实流程一样，每一遍开始前清掉「已经显示过的字」，新字才会淡入。
                         crate::desktop::native_indicator_prepare();
                     }
-                    crate::desktop::native_indicator_set_text(head(DICTATION_TEXT, shown), false);
+                    let text = head(DICTATION_TEXT, shown);
+                    // 逗号前的分句当作已定稿，正在「说」的这一句用预览的浅色画。
+                    let preview_from = text.rfind('，').map(|at| text[..at].chars().count() + 1).unwrap_or(0);
+                    let preview_from = (shown < total).then_some(preview_from);
+                    crate::desktop::native_indicator_set_text(text, false, preview_from);
                 }
             }
             if scenes.orb_recording {
