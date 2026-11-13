@@ -398,8 +398,25 @@ async fn release_when_idle() {
     }
 }
 
-fn shared_prefix_chars(left: &str, right: &str) -> usize {
-    left.chars().zip(right.chars()).take_while(|(a, b)| a == b).count()
+/// 上一版原文里有多少成还留在这一版里（按相邻两字计）。不看位置：本地识别松手后会把最后一段整段重识别，
+/// 开头常常改掉一个字或标点，只比开头会把几乎相同的上一版结果整份丢掉，最后一遍只能逐字重写。
+fn retained_ratio(previous: &str, current: &str) -> f64 {
+    let pairs = |text: &str| {
+        let chars: Vec<char> = text.chars().collect();
+        let mut counts = std::collections::HashMap::<(char, char), usize>::new();
+        for pair in chars.windows(2) {
+            *counts.entry((pair[0], pair[1])).or_default() += 1;
+        }
+        counts
+    };
+    let old = pairs(previous);
+    let total: usize = old.values().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let new = pairs(current);
+    let kept: usize = old.iter().map(|(pair, count)| (*count).min(new.get(pair).copied().unwrap_or(0))).sum();
+    kept as f64 / total as f64
 }
 
 /// 返回 `None` 表示这次整理被推理进程中途放弃（预先整理遇到正式请求）。
@@ -416,10 +433,8 @@ async fn run(
             Some(memo) if memo.head == head && memo.body == body => {
                 return Ok(Some(memo.output.clone()));
             }
-            // 上一版原文有一半以上还在开头，才值得拿它的结果当草稿。
-            Some(memo)
-                if shared_prefix_chars(&memo.body, &body) * 2 >= memo.body.chars().count() =>
-            {
+            // 上一版原文有一半以上还在，才值得拿它的结果当草稿；不是同一段话时不用。
+            Some(memo) if retained_ratio(&memo.body, &body) >= 0.5 => {
                 memo.output.clone()
             }
             _ => String::new(),
@@ -466,6 +481,7 @@ async fn run(
             "forwardPasses":reply["forwardPasses"],
             "promptMs":reply["promptMs"],
             "generateMs":reply["generateMs"],
+            "previousChars":previous.chars().count(),
         }),
     );
     if let Ok(mut memo) = runtime().memo.lock() {
@@ -615,6 +631,15 @@ pub(crate) fn release(plugin_id: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 松手后的整段重识别常在开头改字，上一版结果仍要能当草稿；换成另一段话时不用。
+    #[test]
+    fn previous_polish_is_reused_when_most_of_the_old_text_survives_anywhere() {
+        let draft = "确实有这样的疑惑，既然你说他们俩是一起加载的话，那我刚刚那句话其实说的挺久的";
+        let early_edit = "确实有这样的疑惑。既然你说它们俩是一起加载的话，那我刚刚那句话其实说得挺久的。那按理来说";
+        assert!(retained_ratio(draft, early_edit) >= 0.5);
+        assert!(retained_ratio(draft, "帮我把下午三点的会议改到明天上午") < 0.5);
+    }
 
     #[test]
     fn prompt_matches_the_training_format() {
