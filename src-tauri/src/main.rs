@@ -861,30 +861,30 @@ fn main() {
                     }
                 }
             }
-            _ => {}
+            event => handle_exit_events(event),
         });
         active_app_context::shutdown();
         std::process::exit(exit_code);
     }
     #[cfg(not(target_os = "macos"))]
     {
-        app.run(|_, event| {
-            // 主窗口「关闭即销毁」后，应用可能不再有任何存活窗口，运行时会自动
-            // 请求退出（code 为 None）——阻止它以保持托盘驻留。托盘「退出」和
-            // app.restart() 都带退出码，不受影响。
-            match event {
-                tauri::RunEvent::ExitRequested {
-                    code: None, api, ..
-                } => api.prevent_exit(),
-                tauri::RunEvent::Exit => {
-                    providers::local_llm::release(None);
-                    #[cfg(debug_assertions)]
-                    application::dev_local_model::shutdown();
-                }
-                _ => {}
-            }
-        });
+        app.run(|_, event| handle_exit_events(event));
         active_app_context::shutdown();
+    }
+}
+
+/// 主窗口「关闭即销毁」，原生悬浮窗又不是 Tauri 窗口，关掉主窗口后应用可能一个窗口都不剩，运行时会请求退出
+/// （`code` 为 None，只在最后一个窗口销毁时发出）——阻止它，应用留在托盘 / 菜单栏。托盘「退出」、
+/// `app.restart()` 带退出码，macOS 的 Cmd+Q 走系统的终止流程，都不受影响。
+fn handle_exit_events(event: tauri::RunEvent) {
+    match event {
+        tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+        tauri::RunEvent::Exit => {
+            providers::local_llm::release(None);
+            #[cfg(debug_assertions)]
+            application::dev_local_model::shutdown();
+        }
+        _ => {}
     }
 }
 
