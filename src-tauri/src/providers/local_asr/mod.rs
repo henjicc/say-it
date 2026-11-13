@@ -348,6 +348,11 @@ impl Preview {
     }
 }
 
+/// 实时听写与字幕里，停顿这么久就算一句说完。模型包为整段文件识别配的停顿（1.2 秒）在实时场景下太长：
+/// 一口气说二三十秒都只算一段，预览每次要把整段重识别、越来越慢，松手后还要再整段识别一遍（实测 2～3 秒），
+/// 边说边整理的草稿也跟不上。按句断开后，前面的句子说话时就定稿，松手后只剩最后一句。
+const REALTIME_MIN_SILENCE_SECONDS: f32 = 0.5;
+
 impl OfflineVadSession {
     pub fn create_realtime(
         spec: &LocalModelSpec,
@@ -355,7 +360,7 @@ impl OfflineVadSession {
     ) -> Result<Self, String> {
         let engine = OfflineEngine::create_realtime(spec, customization)?;
         let preview = engine.fast_enough_for_preview().then(Preview::default);
-        let mut session = Self::with_engine(spec, engine)?;
+        let mut session = Self::with_engine(spec, engine, Some(REALTIME_MIN_SILENCE_SECONDS))?;
         session.preview = preview;
         Ok(session)
     }
@@ -364,16 +369,22 @@ impl OfflineVadSession {
         spec: &LocalModelSpec,
         customization: RequestCustomization,
     ) -> Result<Self, String> {
-        Self::with_engine(spec, OfflineEngine::create_temporary(spec, customization)?)
+        Self::with_engine(spec, OfflineEngine::create_temporary(spec, customization)?, None)
     }
 
-    fn with_engine(spec: &LocalModelSpec, engine: OfflineEngine) -> Result<Self, String> {
+    /// `max_silence`：断句停顿不超过它（实时场景用）；模型包配得更短时照模型包。
+    fn with_engine(
+        spec: &LocalModelSpec,
+        engine: OfflineEngine,
+        max_silence: Option<f32>,
+    ) -> Result<Self, String> {
+        let packed_silence = float_param(&spec.params, "vadMinSilenceDuration", 0.6);
         let window_size = int_param(&spec.params, "vadWindowSize", 512).max(1);
         let mut config = VadModelConfig::default();
         config.silero_vad = SileroVadModelConfig {
             model: Some(param_path(spec, "vadModel")?),
             threshold: float_param(&spec.params, "vadThreshold", 0.5),
-            min_silence_duration: float_param(&spec.params, "vadMinSilenceDuration", 0.6),
+            min_silence_duration: max_silence.map_or(packed_silence, |limit| packed_silence.min(limit)),
             min_speech_duration: float_param(&spec.params, "vadMinSpeechDuration", 0.25),
             window_size,
             max_speech_duration: float_param(&spec.params, "vadMaxSpeechDuration", 30.0),
