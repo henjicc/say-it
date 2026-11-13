@@ -159,10 +159,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.13.0");
+    assert_eq!(manifest["sdk"]["version"], "0.14.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-8Q+/kheBhOblID0ECztrjyFBcCZhCLmwXO1TcpoFH0bMZr3iL7ktQykkHnuezszjWfXJoQDWNEUe9e7n/65LyA=="
+        "sha512-QkPi8kNlfbitWZeuhF2uQ72BpfeauIPkdC5n2bfeU75vzGI/vQLtBtnggbrofvJERG6/Z2+Ds7EEoSbhTLztAg=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -223,7 +223,7 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.13.0");
+    assert_eq!(result["version"], "0.14.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
     assert_eq!(result["count"], 23);
     assert_eq!(
