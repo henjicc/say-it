@@ -21,6 +21,7 @@ pub mod cache;
 mod file;
 mod punctuation;
 mod transcribe;
+mod words;
 pub(crate) use file::recognize_audio_file;
 pub use punctuation::add_punctuation;
 
@@ -36,6 +37,23 @@ pub struct LocalSegment {
     pub text: String,
     pub begin_ms: u64,
     pub end_ms: u64,
+    /// 逐字时间；引擎给不出时（transcribe.cpp 的 Qwen3-ASR）为空。
+    pub words: Vec<LocalWord>,
+}
+
+/// 句段内的一个字（英文为一个词），时间是整段音频里的毫秒。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalWord {
+    pub text: String,
+    pub begin_ms: u64,
+    pub end_ms: u64,
+    pub punctuation: Option<String>,
+}
+
+/// 整句识别的文字，以及 token 与它在输入里的起始秒数（引擎给不出时为空）。
+struct Recognized {
+    text: String,
+    tokens: Vec<(String, f32)>,
 }
 
 pub struct OnlineSession {
@@ -211,8 +229,16 @@ impl OfflineEngine {
         samples: &[f32],
         cancel: Option<&CancellationFlag>,
     ) -> Result<String, String> {
+        self.recognize_timed(samples, cancel).map(|result| result.text)
+    }
+
+    fn recognize_timed(
+        &self,
+        samples: &[f32],
+        cancel: Option<&CancellationFlag>,
+    ) -> Result<Recognized, String> {
         if samples.is_empty() {
-            return Ok(String::new());
+            return Ok(Recognized { text: String::new(), tokens: Vec::new() });
         }
         match &self.recognizer {
             SegmentRecognizer::Sherpa(recognizer) => {
@@ -222,14 +248,19 @@ impl OfflineEngine {
                 stream.accept_waveform(SAMPLE_RATE, samples);
                 check_cancel(cancel)?;
                 recognizer.decode(&stream);
-                stream
-                    .get_result()
-                    .map(|result| result.text.trim().to_string())
-                    .ok_or("离线模型未返回识别结果".into())
+                let result = stream.get_result().ok_or("离线模型未返回识别结果")?;
+                let tokens = match result.timestamps {
+                    Some(starts) if starts.len() == result.tokens.len() => {
+                        result.tokens.into_iter().zip(starts).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                Ok(Recognized { text: result.text.trim().to_string(), tokens })
             }
-            SegmentRecognizer::Transcribe(recognizer) => {
-                recognizer.recognize(samples, &self.customization, cancel)
-            }
+            SegmentRecognizer::Transcribe(recognizer) => Ok(Recognized {
+                text: recognizer.recognize(samples, &self.customization, cancel)?,
+                tokens: Vec::new(),
+            }),
         }
     }
 }
@@ -439,17 +470,19 @@ impl OfflineVadSession {
     fn drain(&mut self, cancel: Option<&CancellationFlag>) -> Result<Vec<LocalSegment>, String> {
         let mut results = Vec::new();
         while let Some(segment) = self.vad.front() {
-            let text = self.engine.recognize(segment.samples(), cancel)?;
+            let Recognized { text, tokens } = self.engine.recognize_timed(segment.samples(), cancel)?;
             if let Some(preview) = &mut self.preview {
                 preview.sentence_finished(!text.is_empty());
             }
             if !text.is_empty() {
                 let start = self.base_samples + segment.start().max(0) as u64;
                 let end = start + segment.n().max(0) as u64;
+                let (begin_ms, end_ms) = (samples_to_ms(start), samples_to_ms(end));
                 results.push(LocalSegment {
                     text,
-                    begin_ms: samples_to_ms(start),
-                    end_ms: samples_to_ms(end),
+                    begin_ms,
+                    end_ms,
+                    words: words::words_from_tokens(&tokens, begin_ms, end_ms),
                 });
             }
             drop(segment);
@@ -737,6 +770,7 @@ mod tests {
         );
         let wave_ms = samples_to_ms(wave.samples().len() as u64);
         assert_timeline(&segments, wave_ms);
+        assert_word_timeline(&segments);
 
         // 实时听写按小块喂入，是 VAD 状态最容易被破坏的路径（drain 里误加 reset 会
         // 让这里一个句段都切不出来），必须与文件模式分开回归。
@@ -872,6 +906,23 @@ mod tests {
                 "句段超出音频时长 {total_ms}ms：{segment:?}"
             );
             previous_end = segment.end_ms;
+        }
+    }
+
+    /// sherpa 句段带逐字时间，且每个字落在句段内、按时间先后排列。
+    fn assert_word_timeline(segments: &[LocalSegment]) {
+        for segment in segments {
+            assert!(!segment.words.is_empty(), "句段缺逐字时间：{segment:?}");
+            let mut previous = segment.begin_ms;
+            for word in &segment.words {
+                assert!(
+                    word.begin_ms >= previous && word.begin_ms <= word.end_ms && word.end_ms <= segment.end_ms,
+                    "逐字时间越界或回退：{word:?} 所在句段 {}..{}",
+                    segment.begin_ms,
+                    segment.end_ms
+                );
+                previous = word.begin_ms;
+            }
         }
     }
 }

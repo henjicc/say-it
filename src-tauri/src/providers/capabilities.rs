@@ -180,7 +180,7 @@ impl FileRecognitionProvider {
                         &customization,
                         worker_cancel.as_deref(),
                     )?;
-                    // VAD 句段边界即字幕时间轴，逐句透传，文稿对齐与字幕转写才能用上本地模型。
+                    // 句段是 VAD 切出的一段话；字幕拆句与文稿对齐靠其中的逐字时间。
                     let text = segments
                         .iter()
                         .map(|item| item.text.as_str())
@@ -189,10 +189,23 @@ impl FileRecognitionProvider {
                     let sentences = segments
                         .iter()
                         .map(|item| {
+                            let words = item
+                                .words
+                                .iter()
+                                .map(|word| {
+                                    serde_json::json!({
+                                        "beginTime": word.begin_ms,
+                                        "endTime": word.end_ms,
+                                        "text": word.text,
+                                        "punctuation": word.punctuation,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
                             serde_json::json!({
                                 "beginTime": item.begin_ms,
                                 "endTime": item.end_ms,
                                 "text": item.text,
+                                "words": words,
                             })
                         })
                         .collect::<Vec<_>>();
