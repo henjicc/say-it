@@ -128,6 +128,7 @@ impl Default for AppSettings {
 }
 
 // 设置 v8：Windows 系统 OCR 选择指向内置 PP-OCR；macOS 的 Vision 默认值保持不变。
+// 2.0：未选择 OCR 时两个平台都默认内置 PP-OCR；macOS 上明确选了系统 OCR 的保持不变。
 fn migrate_ocr_selection(prefs: &mut Value) {
     let Some(prefs) = prefs.as_object_mut() else {
         return;
@@ -139,16 +140,8 @@ fn migrate_ocr_selection(prefs: &mut Value) {
         .get("activeAppContextOcrModel")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let legacy_ppocr = prefs
-        .get("activeAppContextOcrEngine")
-        .and_then(Value::as_str)
-        == Some("ppocr");
     let model = if selected.is_empty() {
-        Some(if legacy_ppocr {
-            crate::providers::PPOCR_MODEL_ID
-        } else {
-            crate::providers::default_ocr_model_id()
-        })
+        Some(crate::providers::PPOCR_MODEL_ID)
     } else if cfg!(windows) && matches!(selected, "system-ocr" | "system" | "builtin-windows-ocr") {
         Some(crate::providers::PPOCR_MODEL_ID)
     } else if selected == "ppocr" || selected == crate::providers::PPOCR_PROVIDER_ID {
@@ -162,7 +155,6 @@ fn migrate_ocr_selection(prefs: &mut Value) {
             Value::String(model.into()),
         );
     }
-    #[cfg(windows)]
     if prefs
         .get("activeAppContextOcrModel")
         .and_then(Value::as_str)
@@ -742,10 +734,12 @@ mod tests {
                     crate::providers::PPOCR_MODEL_ID
                 );
                 assert_eq!(prefs["activeAppContextOcrEngine"], "ppocr");
-            } else if old == "system-ocr" || old.is_empty() {
+            } else if old == "system-ocr" {
+                assert_eq!(prefs["activeAppContextOcrModel"], "system-ocr");
+            } else if old.is_empty() {
                 assert_eq!(
                     prefs["activeAppContextOcrModel"],
-                    crate::providers::default_ocr_model_id()
+                    crate::providers::PPOCR_MODEL_ID
                 );
             }
             let once = prefs.clone();

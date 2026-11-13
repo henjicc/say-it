@@ -233,7 +233,6 @@ struct DictationPrefs {
     smart_templates: Vec<SmartTemplate>,
     active_app_context_extraction_method:
         crate::active_app_context::ActiveAppContextExtractionMethod,
-    active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind,
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
@@ -268,7 +267,6 @@ impl Default for DictationPrefs {
             smart_templates: vec![],
             active_app_context_extraction_method:
                 crate::active_app_context::ActiveAppContextExtractionMethod::NativeText,
-            active_app_context_ocr_engine: crate::active_app_context::OcrEngineKind::default(),
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
@@ -1166,7 +1164,6 @@ async fn start_session(
                 let ocr_provider = resolve_active_app_context_ocr_provider(
                     &state,
                     &prefs.active_app_context_ocr_model,
-                    prefs.active_app_context_ocr_engine,
                     &prefs.active_app_context_ocr_approved_providers,
                 );
                 let defer_ocr = should_defer_active_app_context_ocr(
@@ -3987,15 +3984,6 @@ pub(crate) fn active_app_context_extraction_method_from_value(
 }
 
 #[cfg(any(windows, target_os = "macos"))]
-pub(crate) fn active_app_context_ocr_engine_from_value(
-    value: &Value,
-) -> crate::active_app_context::OcrEngineKind {
-    serde_json::from_value::<DictationPrefs>(value.clone())
-        .map(|prefs| prefs.active_app_context_ocr_engine)
-        .unwrap_or_default()
-}
-
-#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_model)
@@ -4012,20 +4000,16 @@ pub(crate) fn active_app_context_ocr_approved_providers_from_value(value: &Value
 pub(crate) fn resolve_active_app_context_ocr_provider(
     state: &RuntimeState,
     selected_model: &str,
-    legacy_engine: crate::active_app_context::OcrEngineKind,
     approved_providers: &[String],
 ) -> crate::providers::capabilities::OcrProvider {
     use crate::providers::capabilities::OcrProvider;
 
     let selected = selected_model.trim();
     if selected.is_empty() {
-        return match legacy_engine {
-            crate::active_app_context::OcrEngineKind::System => OcrProvider::default_local(),
-            crate::active_app_context::OcrEngineKind::PpOcr => OcrProvider::PpOcr,
-        };
+        return OcrProvider::default_local();
     }
     if matches!(selected, "system-ocr" | "system" | "builtin-windows-ocr") {
-        return OcrProvider::default_local();
+        return OcrProvider::system();
     }
     if selected == crate::providers::PPOCR_MODEL_ID
         || selected == crate::providers::PPOCR_PROVIDER_ID
@@ -5330,7 +5314,6 @@ mod tests {
                 resolve_active_app_context_ocr_provider(
                     &state,
                     selected,
-                    crate::active_app_context::OcrEngineKind::PpOcr,
                     &[],
                 ),
                 crate::providers::capabilities::OcrProvider::PpOcr
@@ -5341,11 +5324,10 @@ mod tests {
     #[test]
     fn legacy_system_selection_uses_platform_default() {
         let state = RuntimeState::default();
-        for selected in ["", "system-ocr", "system", "builtin-windows-ocr"] {
+        for selected in ["system-ocr", "system", "builtin-windows-ocr"] {
             let provider = resolve_active_app_context_ocr_provider(
                 &state,
                 selected,
-                crate::active_app_context::OcrEngineKind::System,
                 &[],
             );
             #[cfg(windows)]
@@ -5408,7 +5390,6 @@ mod tests {
             resolve_active_app_context_ocr_provider(
                 &state,
                 "remote-ocr",
-                crate::active_app_context::OcrEngineKind::System,
                 &[],
             ),
             crate::providers::capabilities::OcrProvider::Unavailable { .. }
@@ -5417,7 +5398,6 @@ mod tests {
             resolve_active_app_context_ocr_provider(
                 &state,
                 "remote-ocr",
-                crate::active_app_context::OcrEngineKind::System,
                 &["remote-ocr".into()],
             ),
             crate::providers::capabilities::OcrProvider::Plugin { .. }

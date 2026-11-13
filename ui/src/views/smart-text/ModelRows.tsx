@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/Button";
 import { Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { defaultOcrOption } from "@/lib/platform";
 import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from "@/features/asr/modelRegistry";
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { LOCAL_POLISH_TEMPLATES } from "@/features/onboarding/setup";
@@ -113,7 +112,7 @@ export function OcrModelRow({ label = "OCR 模型" }: { label?: string } = {}) {
           ? "场景感知截图会发送给该第三方 OCR 供应商；首次选择需要确认。"
           : selected?.value === "local-ppocr-v6-tiny"
             ? "使用内置 PP-OCRv6 Tiny 本地模型，模型仅在识别期间加载。"
-            : `使用${defaultOcrOption.label}，不会向第三方发送截图。`}
+            : "使用系统自带的文字识别，不会向第三方发送截图。"}
         message={message && <span role="alert" className="text-[var(--color-err)]">{message}</span>}
       >
         <Select

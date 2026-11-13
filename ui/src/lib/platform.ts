@@ -11,11 +11,11 @@ export function subtitleFontStack(fontFamily?: string) {
   return `"${selected}", "PingFang SC", "Microsoft YaHei", sans-serif`;
 }
 
-export const defaultOcrModelId = isMacOS ? "system-ocr" : "local-ppocr-v6-tiny";
+export const defaultOcrModelId = "local-ppocr-v6-tiny";
 export const defaultOcrOption = {
   value: defaultOcrModelId,
-  label: isMacOS ? "macOS 系统 OCR" : "PP-OCRv6 Tiny（内置）",
-  providerId: isMacOS ? "system-ocr" : "local-ppocr",
+  label: "PP-OCRv6 Tiny（内置）",
+  providerId: "local-ppocr",
   remote: false,
 };
 export const contextDebugShortcutLabel = isMacOS ? "⌃ + ⇧ + F8" : "Ctrl + Shift + F8";

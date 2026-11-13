@@ -60,21 +60,6 @@ pub const PPOCR_PROVIDER_ID: &str = "local-ppocr";
 pub const PPOCR_MODEL_ID: &str = "local-ppocr-v6-tiny";
 pub const LEGACY_PPOCR_PACK_ID: &str = "official.ppocr-v6-tiny";
 
-pub const fn default_ocr_provider_id() -> &'static str {
-    if cfg!(target_os = "macos") {
-        SYSTEM_OCR_PROVIDER_ID
-    } else {
-        PPOCR_PROVIDER_ID
-    }
-}
-
-pub const fn default_ocr_model_id() -> &'static str {
-    if cfg!(target_os = "macos") {
-        SYSTEM_OCR_PROVIDER_ID
-    } else {
-        PPOCR_MODEL_ID
-    }
-}
 pub const DEFAULT_LLM_TEMPERATURE: f64 = 0.1;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -197,7 +182,7 @@ impl Default for ProviderSettings {
                 asr: BAILIAN_PROVIDER_ID.to_string(),
                 llm: GROQ_LLM_PROVIDER_ID.to_string(),
                 translation: BAILIAN_PROVIDER_ID.to_string(),
-                ocr: default_ocr_provider_id().to_string(),
+                ocr: PPOCR_PROVIDER_ID.to_string(),
             },
         }
     }
@@ -845,8 +830,8 @@ fn valid_or_fallback(settings: &ProviderSettings, provider_id: &str, capability:
 }
 
 fn fallback_provider_for(settings: &ProviderSettings, capability: &str) -> String {
-    if capability == "ocr" && has_capability(settings, default_ocr_provider_id(), capability) {
-        return default_ocr_provider_id().into();
+    if capability == "ocr" && has_capability(settings, PPOCR_PROVIDER_ID, capability) {
+        return PPOCR_PROVIDER_ID.into();
     }
     if capability == "llm" && has_capability(settings, GROQ_LLM_PROVIDER_ID, capability) {
         return GROQ_LLM_PROVIDER_ID.to_string();
@@ -1011,7 +996,7 @@ mod tests {
             has_capability(&settings, SYSTEM_OCR_PROVIDER_ID, "ocr"),
             cfg!(target_os = "macos")
         );
-        assert_eq!(settings.defaults.ocr, default_ocr_provider_id());
+        assert_eq!(settings.defaults.ocr, PPOCR_PROVIDER_ID);
     }
 
     #[cfg(windows)]
@@ -1065,7 +1050,7 @@ mod tests {
         // 旧版本没有通用 LLM 配置；升级后统一迁移到内置 Groq 默认项。
         assert_eq!(normalized.defaults.llm, GROQ_LLM_PROVIDER_ID);
         // 旧 JSON 没有 ocr 默认值：normalize 后自动落到当前平台默认 OCR。
-        assert_eq!(normalized.defaults.ocr, default_ocr_provider_id());
+        assert_eq!(normalized.defaults.ocr, PPOCR_PROVIDER_ID);
     }
 
     #[test]
@@ -1113,9 +1098,9 @@ mod tests {
         let mut settings = normalize_settings(ProviderSettings::default());
         assert_eq!(
             default_provider_id(&settings, "ocr"),
-            default_ocr_provider_id()
+            PPOCR_PROVIDER_ID
         );
-        assert!(has_capability(&settings, default_ocr_provider_id(), "ocr"));
+        assert!(has_capability(&settings, PPOCR_PROVIDER_ID, "ocr"));
 
         settings.profiles.push(ProviderProfile {
             keep_loaded: false,

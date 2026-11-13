@@ -88,7 +88,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         let state = app.state::<RuntimeState>();
-        let (blocked_apps, method, ocr_model, legacy_engine, approved_providers) = state
+        let (blocked_apps, method, ocr_model, approved_providers) = state
             .app_settings
             .lock()
             .ok()
@@ -106,10 +106,6 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                     crate::application::dictation::active_app_context_extraction_method_from_value(
                         &settings.dictation_prefs,
                     );
-                let legacy_engine =
-                    crate::application::dictation::active_app_context_ocr_engine_from_value(
-                        &settings.dictation_prefs,
-                    );
                 let ocr_model =
                     crate::application::dictation::active_app_context_ocr_model_from_value(
                         &settings.dictation_prefs,
@@ -117,25 +113,19 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                 let approved_providers = crate::application::dictation::active_app_context_ocr_approved_providers_from_value(
                     &settings.dictation_prefs,
                 );
-                (blocked_apps, method, ocr_model, legacy_engine, approved_providers)
+                (blocked_apps, method, ocr_model, approved_providers)
             })
             .unwrap_or_default();
         let overrides = debug_capture_overrides();
         let ocr_model = overrides.ocr_model.unwrap_or(ocr_model);
         let displayed_model = if ocr_model.trim().is_empty() {
-            if legacy_engine == crate::active_app_context::OcrEngineKind::PpOcr {
-                crate::providers::PPOCR_MODEL_ID
-            } else {
-                crate::providers::default_ocr_model_id()
-            }
-            .to_string()
+            crate::providers::PPOCR_MODEL_ID.to_string()
         } else {
             ocr_model.clone()
         };
         let ocr_provider = crate::application::dictation::resolve_active_app_context_ocr_provider(
             &state,
             &ocr_model,
-            legacy_engine,
             &approved_providers,
         );
         let handle = state.active_app_context.begin_debug_capture(
