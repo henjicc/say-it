@@ -193,7 +193,7 @@ describe("官方模型", () => {
     const names = ["Qwen3-ASR-1.7B", "SenseVoice", "第三方"].map((name) => screen.getByText(name));
     expect(names[0].compareDocumentPosition(names[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(names[1].compareDocumentPosition(names[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("最准的本地识别，自带标点，支持热词和上下文。")).toBeInTheDocument();
+    expect(screen.getByText("最准的本地识别，自带标点，支持热词和上下文；没有逐字时间，不能生成字幕。")).toBeInTheDocument();
     expect(screen.getByText("第三方模型的说明")).toBeInTheDocument();
   });
 
