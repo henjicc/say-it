@@ -22,7 +22,6 @@ pub(crate) use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSetting
 pub(crate) use serde::{Deserialize, Serialize};
 pub(crate) use serde_json::{json, Value};
 pub(crate) use tauri::{
-    menu::MenuBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };

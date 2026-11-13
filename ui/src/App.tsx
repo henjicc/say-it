@@ -3,6 +3,7 @@ import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { PageErrorBoundary } from "@/components/shell/PageErrorBoundary";
 import { useUiStore, type ViewKey } from "@/store/useUiStore";
+import { applyExternalDictPrefs, type DictPrefs } from "@/store/useDictPrefs";
 import { Button } from "@/components/ui/Button";
 import { ToastHost } from "@/components/ui/Toast";
 import { cn } from "@/lib/cn";
@@ -114,10 +115,16 @@ export default function App() {
     return () => window.removeEventListener("sayit-open-setup", open);
   }, [settingsReady]);
 
+  // 托盘、指示窗等窗口外入口要打开的页面：窗口新建时请求先记在后端，加载后取走；已打开时收到通知再取。
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void on(EVT.openHistory, () => setView("history")).then((value) => { unlisten = value; });
-    return () => unlisten?.();
+    const unlisteners: Array<() => void> = [];
+    const openRequested = () => {
+      void cmd<ViewKey | null>(CMD.takePendingMainView).then((requested) => { if (requested) setView(requested); });
+    };
+    openRequested();
+    void on(EVT.openMainView, openRequested).then((value) => { unlisteners.push(value); });
+    void on<Partial<DictPrefs>>(EVT.dictationPrefsChangedExternally, applyExternalDictPrefs).then((value) => { unlisteners.push(value); });
+    return () => unlisteners.forEach((unlisten) => unlisten());
   }, [setView]);
 
   return (

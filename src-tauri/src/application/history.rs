@@ -11,7 +11,6 @@ const RECOVERY_NOTICE_FILE: &str = "history-recovery.json";
 const DEFAULT_RETENTION_DAYS: u32 = 30;
 const MAX_PAGE_SIZE: u32 = 100;
 pub(crate) const HISTORY_EVENT: &str = "history-changed";
-pub(crate) const OPEN_HISTORY_EVENT: &str = "open-history";
 
 static WRITES_PAUSED: AtomicBool = AtomicBool::new(false);
 
@@ -1253,9 +1252,7 @@ pub(crate) fn clear_history(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) fn open_history_window(app: AppHandle) -> Result<(), String> {
-    crate::desktop::ensure_main_window(&app)?;
-    app.emit(OPEN_HISTORY_EVENT, ())
-        .map_err(|error| error.to_string())
+    crate::desktop::open_main_view(&app, "history")
 }
 
 pub(crate) fn cleanup_expired(app: &AppHandle, retention_days: u32) -> Result<usize, String> {

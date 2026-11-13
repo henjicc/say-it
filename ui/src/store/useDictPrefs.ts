@@ -844,6 +844,14 @@ export const useDictPrefs = create<DictPrefsState>((set, get) => ({
   dspParams: () => dspParamsFromPrefs(get().prefs),
 }));
 
+/** 托盘等窗口外入口改了听写设置并已落盘：并入当前值，之后的保存不会把它覆盖回去。 */
+export function applyExternalDictPrefs(changes: Partial<DictPrefs>) {
+  savedPrefs = { ...(savedPrefs ?? useDictPrefs.getState().prefs), ...changes };
+  const next = { ...useDictPrefs.getState().prefs, ...changes };
+  useDictPrefs.setState({ prefs: next });
+  persist(next);
+}
+
 export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   const storedAsrModel = value.asrModel;
   const storedTemplates = value.smartTemplates;

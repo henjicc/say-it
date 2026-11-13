@@ -535,27 +535,16 @@ fn main() {
                 eprintln!("[floating-orb] 启动悬浮球失败: {error}");
             }
 
-            let tray_menu = MenuBuilder::new(app)
-                .text("show", "打开说吧！")
-                .separator()
-                .text("quit", "退出")
-                .build()?;
-            let mut tray = TrayIconBuilder::new()
+            let tray_menu = crate::desktop::tray_menu::initial_menu(app.handle())?;
+            let mut tray = TrayIconBuilder::with_id(crate::desktop::tray_menu::TRAY_ID)
                 .tooltip("说吧！")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Err(error) = ensure_main_window(app) {
-                            eprintln!("[window] 托盘打开主窗口失败: {error}");
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
+                .on_menu_event(|app, event| crate::desktop::tray_menu::handle(app, event.id().as_ref()))
                 .on_tray_icon_event(|tray, event| {
                     if matches!(event, TrayIconEvent::Enter { .. }) {
                         crate::desktop::tray_icon::refresh(tray);
+                        crate::desktop::tray_menu::refresh(tray.app_handle());
                     }
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -570,6 +559,7 @@ fn main() {
                 });
             tray = crate::desktop::tray_icon::apply(tray)?;
             tray.build(app)?;
+            crate::desktop::tray_menu::refresh(app.handle());
 
             let launched_via_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
             let silent_start = {
@@ -789,6 +779,7 @@ fn main() {
             get_usage_summary,
             clear_usage_summary,
             open_history_window,
+            crate::desktop::take_pending_main_view,
             get_learning_overview,
             query_learning_rules,
             confirm_history_learning,
