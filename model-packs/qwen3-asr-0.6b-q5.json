@@ -36,7 +36,7 @@
         "protocol": "local-transcribe",
         "supportsVocabulary": true,
         "supportsContext": true,
-        "supportsAlignmentTimestamps": true,
+        "supportsAlignmentTimestamps": false,
         "emitsPartialResults": false,
         "scenes": ["dictationFile", "transcription"],
         "isDefaultRealtime": false,

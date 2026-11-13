@@ -26,7 +26,7 @@ import {
 } from "@/features/transcription/filePicker";
 import { editablePlainText, plainText, speakerText } from "@/features/transcription/subtitles";
 import { normalizeStoredParams, parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
-import { FILE_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
+import { FILE_ASR_MODEL_OPTIONS, supportsAlignmentTimestamps } from "@/features/asr/modelOptions";
 import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions } from "@/features/models/usage";
@@ -77,7 +77,11 @@ export function TranscriptionModelRow({ label = "识别模型" }: { label?: stri
       label={label}
       controlId="transcription-asr-model"
       hint="识别结果带时间戳，同时用于文稿对齐。"
-      message={error ? <span role="alert" className="text-[var(--color-err)]">{error}</span> : issue}
+      message={error
+        ? <span role="alert" className="text-[var(--color-err)]">{error}</span>
+        : issue ?? (model && !supportsAlignmentTimestamps(model) && (
+          <span role="status">这个模型没有逐字时间，字幕整段一条、不能做文稿对齐，只适合转出文字。</span>
+        ))}
     >
       <div className={ROW_CONTROL_W}>
         <ModelPicker

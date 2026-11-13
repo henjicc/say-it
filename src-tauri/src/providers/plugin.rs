@@ -858,11 +858,21 @@ fn validate_manifest(root: &Path, manifest: &PluginManifest) -> Result<(), Strin
 
 fn project_manifest_models(manifest: &PluginManifest) -> Result<Vec<ModelInfo>, String> {
     if manifest.runtime.kind == "model-pack" {
+        // 逐字时间由宿主的引擎产出，能不能给出看引擎，不看清单声明：transcribe.cpp 的
+        // Qwen3-ASR 只出文字，句段起止时间撑不起字幕拆句与文稿对齐。
+        let word_timestamps = manifest
+            .model_pack
+            .as_ref()
+            .is_some_and(|pack| pack.engine == "sherpa-onnx-offline");
         return manifest
             .models
             .iter()
             .map(|model| match model {
-                PluginModelDeclaration::Local(model) => Ok(model.clone()),
+                PluginModelDeclaration::Local(model) => Ok(ModelInfo {
+                    supports_alignment_timestamps: model.supports_alignment_timestamps
+                        && word_timestamps,
+                    ..model.clone()
+                }),
                 PluginModelDeclaration::Capability(_) => {
                     Err("模型包 models 必须声明本地模型目录字段".into())
                 }
@@ -2433,6 +2443,30 @@ mod tests {
         write(&manifest);
         assert!(validate_plugin_dir(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn word_timestamps_follow_the_engine_not_the_manifest_claim() {
+        let project = |json: &str, claim: bool| {
+            let value: Value = serde_json::from_str(json).unwrap();
+            let mut manifest: PluginManifest = serde_json::from_value(value["manifest"].clone()).unwrap();
+            for model in &mut manifest.models {
+                if let PluginModelDeclaration::Local(model) = model {
+                    model.supports_alignment_timestamps = claim;
+                }
+            }
+            project_manifest_models(&manifest)
+                .unwrap()
+                .into_iter()
+                .find(|model| model.category == "file")
+                .unwrap()
+                .supports_alignment_timestamps
+        };
+        let qwen = include_str!("../../../model-packs/qwen3-asr-1.7b-q5.json");
+        let sensevoice = include_str!("../../../model-packs/sensevoice-small-int8.json");
+        assert!(!project(qwen, true));
+        assert!(project(sensevoice, true));
+        assert!(!project(sensevoice, false));
     }
 
     #[cfg(any(windows, target_os = "macos"))]
