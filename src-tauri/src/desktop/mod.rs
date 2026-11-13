@@ -22,6 +22,7 @@ pub(crate) mod native_win;
 pub(crate) mod native_subtitle;
 pub(crate) mod native_test;
 pub(crate) mod system_fonts;
+pub(crate) mod tray_icon;
 pub(crate) mod window;
 
 pub(crate) use audio_devices::*;
