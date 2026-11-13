@@ -30,7 +30,7 @@ use super::plugin::PluginRuntimeSpec;
 use super::plugin_secrets;
 use super::sdk_runtime::{
     HostRuntimeRecorder, SdkHostBindings, AI_SDK_BOOTSTRAP, AI_SDK_CAPABILITIES_BUNDLE,
-    AI_SDK_GROQ_BUNDLE, AI_SDK_LLM_MODULES_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
+    AI_SDK_LLM_BUNDLE, AI_SDK_LLM_MODULES_BUNDLE, QUICKJS_RUNTIME_BOOTSTRAP,
 };
 use super::shared_http::SharedHttpClient;
 use super::ProviderProfile;
@@ -1670,7 +1670,7 @@ impl JsProviderRuntime {
             if load_ai_sdk {
                 ctx.eval::<(), _>(AI_SDK_CAPABILITIES_BUNDLE)
                     .map_err(js_error)?;
-                ctx.eval::<(), _>(AI_SDK_GROQ_BUNDLE).map_err(js_error)?;
+                ctx.eval::<(), _>(AI_SDK_LLM_BUNDLE).map_err(js_error)?;
                 ctx.eval::<(), _>(AI_SDK_LLM_MODULES_BUNDLE)
                     .map_err(js_error)?;
                 ctx.eval::<(), _>(AI_SDK_BOOTSTRAP).map_err(js_error)?;

@@ -1,17 +1,6 @@
-use crate::providers::{
-    default_provider_id, find_profile, llm_default_endpoint, llm_models_from_config,
-    llm_uses_responses, normalize_llm_endpoint, ProviderProfile,
-};
-use crate::providers::shared_http::SharedHttpClient;
+use crate::providers::sdk_runtime::online::{BuiltinSdkRuntime, BuiltinSdkScope};
+use crate::providers::{default_provider_id, find_profile, llm_models_from_config, ProviderProfile};
 use crate::state::RuntimeState;
-use futures_util::StreamExt;
-use genai::adapter::AdapterKind;
-use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatResponseFormat, ChatStreamEvent, ReasoningEffort,
-    Tool,
-};
-use genai::resolver::{AuthData, AuthResolver, Endpoint, ServiceTargetResolver};
-use genai::{Client, ModelIden, ServiceTarget};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -20,7 +9,7 @@ use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
 use std::time::Instant as StdInstant;
 use tauri::State;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const TEXT_PLACEHOLDER: &str = "{{text}}";
@@ -286,80 +275,54 @@ fn override_model_reasoning(profile: &mut ProviderProfile, effort: &str) {
     profile.config["models"] = serde_json::to_value(models).expect("模型配置可序列化");
 }
 
-/// genai 直连的大语言模型请求共用一个连接池，连接参数沿用 genai 的默认调优。
-static LLM_HTTP: SharedHttpClient<reqwest_genai::Client> = SharedHttpClient::new(|| {
-    genai::WebConfig::default()
-        .apply_to_builder(reqwest_genai::Client::builder())
-        .build()
-        .expect("大语言模型 HTTP 客户端初始化失败")
-});
-
-pub(crate) fn genai_builder() -> genai::ClientBuilder {
-    Client::builder().with_reqwest(LLM_HTTP.get())
-}
-
-fn client_and_model(profile: &ProviderProfile) -> Result<(Client, String), String> {
-    let adapter = crate::providers::llm_adapter(profile)
-        .ok_or_else(|| "大语言模型供应商类型无效".to_string())?;
-    if adapter == "groq" {
-        return Err("内置 Groq 必须通过 @henjicc/ai-sdk 执行".into());
-    }
-    let model = profile_value(profile, "model");
-    if model.is_empty() {
+/// 交给 SDK 的一次对话请求（`LlmChatRequestDto`）。协议、接口地址、思考与采样字段的写法、联网工具
+/// 都由 SDK 按供应商与模型决定，这里只传用户的设置。
+///
+/// 要求 JSON 的调用方不请求 JSON 输出模式：SDK 目录里很多模型没有声明支持（或思考时不支持），
+/// 请求会被拒绝；这些调用方靠提示词要求 JSON，解析也兼容代码围栏和前后多余文字。
+fn sdk_llm_request(
+    profile: &ProviderProfile,
+    messages: Vec<Value>,
+    web_search: bool,
+) -> Result<Value, String> {
+    let (provider_id, base_url) = crate::providers::sdk_llm_endpoint(profile)?;
+    let model_name = profile_value(profile, "model");
+    if model_name.is_empty() {
         return Err(format!("请先为 {} 设置模型", profile.display_name));
     }
-    let api_key = profile_value(profile, &crate::providers::llm_api_key_field(profile)).to_string();
-    if api_key.is_empty() {
+    if profile_value(profile, &crate::providers::llm_api_key_field(profile)).is_empty() {
         return Err(crate::providers::missing_llm_api_key_message(profile));
     }
-
-    let endpoint = match adapter {
-        "custom" => Some(profile_value(profile, "endpoint").to_string()),
-        adapter => llm_default_endpoint(adapter).map(|default| match profile_value(profile, "endpoint") {
-            "" => default.to_string(),
-            endpoint => endpoint.to_string(),
-        }),
-    };
-    if let Some(endpoint) = endpoint {
-        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err(format!("{} 的接口地址无效", profile.display_name));
-        }
-        let (kind, namespace) = if llm_uses_responses(adapter, model) {
-            (AdapterKind::OpenAIResp, "openai_resp")
-        } else {
-            (AdapterKind::OpenAI, "openai")
-        };
-        let target_resolver = ServiceTargetResolver::from_resolver_fn(
-            move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
-                Ok(ServiceTarget {
-                    endpoint: Endpoint::from_owned(normalize_llm_endpoint(&endpoint)),
-                    auth: AuthData::from_single(api_key.clone()),
-                    model: ModelIden::new(kind, target.model.model_name),
-                })
-            },
-        );
-        return Ok((
-            genai_builder()
-                .with_service_target_resolver(target_resolver)
-                .build(),
-            format!("{namespace}::{model}"),
-        ));
+    let model = llm_models_from_config(&profile.config)
+        .into_iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
+    let mut request = json!({
+        "providerId": provider_id,
+        "modelId": model_name,
+        "messages": messages,
+    });
+    if let Some(base_url) = &base_url {
+        request["baseUrl"] = json!(base_url);
     }
+    if let Some(reasoning) = sdk_reasoning(&model.reasoning_effort) {
+        request["reasoning"] = reasoning;
+    }
+    if let Some(max_tokens) = model.max_tokens {
+        request["maxOutputTokens"] = json!(max_tokens);
+    }
+    if let Some(temperature) = model.temperature {
+        request["temperature"] = json!(temperature);
+    }
+    if web_search {
+        request["webSearch"] = json!(true);
+    }
+    Ok(request)
+}
 
-    let auth_resolver = AuthResolver::from_resolver_fn(
-        move |_model| -> Result<Option<AuthData>, genai::resolver::Error> {
-            Ok(Some(AuthData::from_single(api_key.clone())))
-        },
-    );
-    let resolved_model = if model.contains("::") {
-        model.to_string()
-    } else {
-        format!("{adapter}::{model}")
-    };
-    Ok((
-        genai_builder().with_auth_resolver(auth_resolver).build(),
-        resolved_model,
-    ))
+fn sdk_llm_scope(profile: &ProviderProfile) -> Result<BuiltinSdkScope, String> {
+    let (provider_id, base_url) = crate::providers::sdk_llm_endpoint(profile)?;
+    BuiltinSdkScope::llm(profile, &provider_id, base_url.as_deref())
 }
 
 pub(crate) fn validate_available_for(
@@ -368,20 +331,11 @@ pub(crate) fn validate_available_for(
     model: Option<&str>,
 ) -> Result<(), String> {
     let profile = selected_profile(state, provider_id, model)?;
-    if profile.kind == "llm:groq" {
-        groq_sdk_request(&profile, Vec::new())?;
-        let key =
-            crate::providers::credential_store::CredentialKey::provider("llm-groq", "apiKey")?;
-        if state.credentials.get(&key)?.is_none() {
-            return Err("请先为 Groq 设置 API Key".into());
-        }
-        return Ok(());
-    }
     if is_plugin_llm(&profile) {
         resolve_plugin_llm(state, &profile).map(|_| ())?;
         return Ok(());
     }
-    client_and_model(&profile).map(|_| ())
+    sdk_llm_request(&profile, Vec::new(), false).map(|_| ())
 }
 
 fn is_plugin_llm(profile: &ProviderProfile) -> bool {
@@ -578,118 +532,6 @@ where
     }
 }
 
-/// Kimi K3、GLM-5 系列、MiniMax M3 系列始终思考，没有关闭的协议值（传关闭会被接口拒绝），
-/// 选「关闭」时按最低档 low 发送。按模型 ID 判断，同样覆盖百炼、火山方舟等平台上的同款模型；
-/// 同一家的其他模型（例如手动添加的旧版本）仍可正常关闭。
-fn thinking_can_be_disabled(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    !["kimi-k3", "glm-5", "minimax-m3"]
-        .iter()
-        .any(|family| model.contains(family))
-}
-
-/// 真正发给 genai 直连的思考档位：始终思考的模型把「关闭」换成最低档。
-fn effective_reasoning<'a>(configured: &'a str, model: &str) -> &'a str {
-    if configured == "zero" && !thinking_can_be_disabled(model) {
-        "low"
-    } else {
-        configured
-    }
-}
-
-/// 硅基流动接口文档列出的、接受 reasoning_effort 的模型。
-const SILICONFLOW_EFFORT_MODELS: [&str; 3] = [
-    "deepseek-ai/deepseek-v4-flash",
-    "pro/deepseek-ai/deepseek-v4",
-    "pro/zai-org/glm-5.2",
-];
-
-fn chat_options(profile: &ProviderProfile) -> Result<ChatOptions, String> {
-    let model_name = profile_value(profile, "model");
-    let model = llm_models_from_config(&profile.config)
-        .into_iter()
-        .find(|model| model.name == model_name)
-        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
-    let mut options = ChatOptions::default();
-    if let Some(temperature) = model.temperature {
-        if !(0.0..=2.0).contains(&temperature) {
-            return Err("模型温度必须在 0 到 2 之间".to_string());
-        }
-        options = options.with_temperature(temperature);
-    }
-    if let Some(max_tokens) = model.max_tokens {
-        if max_tokens == 0 {
-            return Err("最大输出 Token 必须是正整数".to_string());
-        }
-        options = options.with_max_tokens(max_tokens);
-    }
-    let adapter = crate::providers::llm_adapter(profile).unwrap_or_default();
-    let uses_responses = llm_uses_responses(adapter, model_name);
-    // Chat Completions 上各家的思考字段写法不同，genai 统一编码的 reasoning_effort（含 none）
-    // 会被拒绝；写法与 SDK 的 providerReasoningRequest 一致。
-    if !uses_responses {
-        let enabled = model.reasoning_effort != "zero";
-        match adapter {
-            // 派欧云的思考不可配置，不发任何思考字段。
-            "ppio" => return Ok(options),
-            // reasoning_effort 只有少数模型接受，且只有 high / max 两档。
-            "siliconflow" => {
-                let mut body = serde_json::json!({ "enable_thinking": enabled });
-                if enabled && SILICONFLOW_EFFORT_MODELS.contains(&model_name.to_ascii_lowercase().as_str()) {
-                    body["reasoning_effort"] = "high".into();
-                }
-                return Ok(options.with_extra_body(body));
-            }
-            // 两家托管的 GLM、Kimi K3、MiniMax 关不掉思考，「关闭」同样按最低档。
-            "bailian" => {
-                let effective = effective_reasoning(&model.reasoning_effort, model_name);
-                return Ok(options.with_extra_body(serde_json::json!({ "enable_thinking": effective != "zero" })));
-            }
-            "volcengine" => {
-                let body = match effective_reasoning(&model.reasoning_effort, model_name) {
-                    "zero" => serde_json::json!({ "thinking": { "type": "disabled" } }),
-                    effort => serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": effort }),
-                };
-                return Ok(options.with_extra_body(body));
-            }
-            _ => {}
-        }
-    }
-    let is_deepseek = profile.kind == "llm:deepseek";
-    let reasoning = match effective_reasoning(&model.reasoning_effort, model_name) {
-        // genai 的 Responses 适配器把 ReasoningEffort::Zero 原样写成 reasoning.effort="zero"，
-        // 百炼、火山方舟都会以 400 拒绝；Responses 接口关闭思考的取值是 "none"。DeepSeek 走
-        // Responses 时同样只认这个，Chat 写法的 thinking 字段会被忽略、照常思考，所以要先判断。
-        "zero" if uses_responses => {
-            options = options.with_extra_body(serde_json::json!({
-                "reasoning": { "effort": "none" }
-            }));
-            None
-        }
-        // genai 的 DeepSeek 适配器委托给 OpenAI 协议；ReasoningEffort::Zero 会被编码为
-        // reasoning_effort="none"，但 DeepSeek V4 的 Chat 接口关闭思考必须使用 thinking.type=disabled。
-        "zero" if is_deepseek => {
-            options = options.with_extra_body(serde_json::json!({
-                "thinking": { "type": "disabled" }
-            }));
-            None
-        }
-        "zero" => Some(ReasoningEffort::Zero),
-        "low" => Some(ReasoningEffort::Low),
-        "high" => Some(ReasoningEffort::High),
-        value => return Err(format!("不支持的推理强度：{value}")),
-    };
-    if let Some(reasoning) = reasoning {
-        if is_deepseek {
-            options = options.with_extra_body(serde_json::json!({
-                "thinking": { "type": "enabled" }
-            }));
-        }
-        options = options.with_reasoning_effort(reasoning);
-    }
-    Ok(options)
-}
-
 fn request_timeout(profile: &ProviderProfile) -> Duration {
     if profile.kind != "llm:deepseek" {
         return DEFAULT_REQUEST_TIMEOUT;
@@ -704,14 +546,6 @@ fn request_timeout(profile: &ProviderProfile) -> Duration {
     } else {
         DEEPSEEK_REQUEST_TIMEOUT
     }
-}
-
-fn final_output_options(_profile: &ProviderProfile, options: ChatOptions) -> ChatOptions {
-    options
-}
-
-fn structured_output_options(profile: &ProviderProfile, options: ChatOptions) -> ChatOptions {
-    final_output_options(profile, options).with_response_format(ChatResponseFormat::JsonMode)
 }
 
 /// 部分 OpenAI 兼容接口会把模型推理过程塞进 message.content。提示词无法可靠阻止
@@ -751,64 +585,39 @@ fn sdk_reasoning(reasoning: &str) -> Option<Value> {
     }
 }
 
-fn groq_sdk_request(
-    profile: &ProviderProfile,
-    messages: Vec<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let model_name = profile_value(profile, "model");
-    if model_name.is_empty() {
-        return Err("请先为 Groq 设置模型".into());
-    }
-    let model = llm_models_from_config(&profile.config)
-        .into_iter()
-        .find(|model| model.name == model_name)
-        .ok_or_else(|| format!("当前模型 {model_name} 的配置不存在"))?;
-    let reasoning = model.reasoning_effort.as_str();
-    let mut request = json!({
-        "modelId": model_name,
-        "messages": messages,
-        "policy": { "maxTokens": model.max_tokens.unwrap_or(4096) },
-    });
-    if let Some(reasoning) = sdk_reasoning(reasoning) {
-        request["capabilities"] = json!({ "reasoning": true });
-        request["reasoning"] = reasoning;
-    }
-    Ok(request)
-}
-
-async fn run_groq_sdk(
+async fn run_sdk_llm(
     state: &RuntimeState,
     profile: ProviderProfile,
-    messages: Vec<serde_json::Value>,
+    request: Value,
     request_id: String,
 ) -> Result<LlmOutput, String> {
-    let request = groq_sdk_request(&profile, messages)?;
+    let scope = sdk_llm_scope(&profile)?;
+    let request_timeout = request_timeout(&profile);
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
     let _cancel_on_drop = cancelled.cancel_on_drop();
     crate::providers::plugin_runtime::spawn_js_worker("builtin-llm", move || {
         let runtime_started = StdInstant::now();
-        let runtime = crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create(
+        let runtime = BuiltinSdkRuntime::create(
             &profile,
             credentials,
-            crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
+            scope,
             request_id.clone(),
             cancelled,
             HashMap::new(),
         )?;
         trace_runtime_ready(runtime_started);
-        let output = runtime.run_groq(request, &request_id, false)?;
+        let output = runtime.run_llm(request, &request_id, false, request_timeout)?;
         Ok::<_, String>(LlmOutput::from_runtime(&output))
     })?
     .await
-    .map_err(|error| format!("Groq SDK 工作线程失败：{error}"))?
+    .map_err(|error| format!("大语言模型工作线程失败：{error}"))?
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_groq_sdk_stream<F>(
+async fn run_sdk_llm_stream<F>(
     state: &RuntimeState,
     profile: ProviderProfile,
-    messages: Vec<serde_json::Value>,
+    request: Value,
     request_id: String,
     cancellation: CancellationToken,
     mut on_update: F,
@@ -816,7 +625,9 @@ async fn run_groq_sdk_stream<F>(
 where
     F: FnMut(&str, &str),
 {
-    let request = groq_sdk_request(&profile, messages)?;
+    let scope = sdk_llm_scope(&profile)?;
+    // 流式回答可能很长：等首个响应与读完整段各给一份 `request_timeout`。
+    let request_timeout = request_timeout(&profile) * 2;
     let credentials = state.credentials.clone();
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
@@ -826,18 +637,17 @@ where
     let mut task =
         crate::providers::plugin_runtime::spawn_js_worker("builtin-llm-stream", move || {
             let runtime_started = StdInstant::now();
-            let runtime =
-                crate::providers::sdk_runtime::online::BuiltinSdkRuntime::create_with_event_sender(
-                    &profile,
-                    credentials,
-                    crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM,
-                    task_request_id.clone(),
-                    task_cancelled,
-                    HashMap::new(),
-                    Some(event_tx),
-                )?;
+            let runtime = BuiltinSdkRuntime::create_with_event_sender(
+                &profile,
+                credentials,
+                scope,
+                task_request_id.clone(),
+                task_cancelled,
+                HashMap::new(),
+                Some(event_tx),
+            )?;
             trace_runtime_ready(runtime_started);
-            runtime.run_groq(request, &task_request_id, true)
+            runtime.run_llm(request, &task_request_id, true, request_timeout)
         })?;
     let mut output = String::new();
     let mut reasoning = String::new();
@@ -861,7 +671,7 @@ where
             }
             result = &mut task => {
                 let value = result
-                    .map_err(|error| format!("Groq SDK 工作线程失败：{error}"))??;
+                    .map_err(|error| format!("大语言模型工作线程失败：{error}"))??;
                 let last = LlmOutput::from_runtime(&value);
                 if output.is_empty() {
                     output = last.output;
@@ -876,12 +686,6 @@ where
     }
 }
 
-/// 联网搜索是 Responses API 的内置工具，只有走 Responses 的模型能用。
-fn supports_web_search(profile: &ProviderProfile) -> bool {
-    crate::providers::llm_adapter(profile)
-        .is_some_and(|adapter| llm_uses_responses(adapter, profile_value(profile, "model")))
-}
-
 /// 先连上智能处理的服务器，TLS 握手和说话、等识别结果同时进行，之后的正式请求直接复用这条连接。
 /// 开始录音与松手时各调一次：录音超过连接的空闲回收时间（客户端 90 秒，服务端常更短）时，
 /// 松手这一次会重新连上。只建连接、不调用模型，不产生费用；失败不影响之后的正式请求。
@@ -893,23 +697,10 @@ pub(crate) async fn prewarm_connection(state: &RuntimeState, provider_id: &str, 
             return crate::providers::local_llm::prewarm(&spec).await;
         }
         let profile = selected_profile(state, Some(provider_id), Some(model_override))?;
-        if profile.kind == "llm:groq" {
-            return crate::providers::sdk_runtime::online::BuiltinSdkScope::GROQ_LLM
-                .prewarm()
-                .await;
-        }
         if is_plugin_llm(&profile) {
             return Ok(());
         }
-        let (client, model) = client_and_model(&profile)?;
-        let origin = genai_origin(&client, &model).await?;
-        LLM_HTTP
-            .get()
-            .head(origin)
-            .send()
-            .await
-            .map(drop)
-            .map_err(|error| error.to_string())
+        sdk_llm_scope(&profile)?.prewarm().await
     }
     .await;
     if let Err(error) = result {
@@ -1280,147 +1071,29 @@ async fn process_prompt_with_profile(
         "smartText.requested",
         json!({"scope":log_scope,"systemPrompt":system_prompt,"userPrompt":user_prompt}),
     );
-    if profile.kind == "llm:groq" {
-        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
-        let messages = vec![
-            json!({ "role": "system", "content": system_prompt }),
-            json!({ "role": "user", "content": user_prompt }),
-        ];
+    let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+    let messages = vec![
+        json!({ "role": "system", "content": system_prompt }),
+        json!({ "role": "user", "content": user_prompt }),
+    ];
+    let trace_settings = llm_trace_settings(&profile);
+    let response = if is_plugin_llm(&profile) {
+        run_plugin_llm(state, profile, messages, structured_json, request_id).await
+    } else {
+        let request = sdk_llm_request(&profile, messages, enable_web_search)?;
         crate::development_debug_log(
             log_scope,
             format_args!(
-                "通过 AI SDK 调用 Groq：requestId={request_id} model={}",
-                profile_value(&profile, "model")
+                "准备调用大语言模型：供应商={}，requestId={request_id}\n--- 请求开始 ---\n{request}\n--- 请求结束 ---",
+                profile.display_name,
             ),
         );
-        let trace_settings = llm_trace_settings(&profile);
-        let response = run_groq_sdk(state, profile, messages, request_id).await;
-        let result = response
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|response| final_text_from_output(&response.output));
-        log_prompt_completion(log_scope, started, &result);
-        trace_llm_call(
-            trace_settings,
-            log_scope,
-            system_prompt,
-            user_prompt,
-            started,
-            &result,
-            response.as_ref().ok(),
-        );
-        return result;
-    }
-    if is_plugin_llm(&profile) {
-        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
-        let messages = vec![
-            json!({ "role": "system", "content": system_prompt }),
-            json!({ "role": "user", "content": user_prompt }),
-        ];
-        let trace_settings = llm_trace_settings(&profile);
-        let response = run_plugin_llm(
-            state,
-            profile,
-            messages,
-            structured_json,
-            request_id,
-        )
-        .await;
-        let result = response
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|response| final_text_from_output(&response.output));
-        log_prompt_completion(log_scope, started, &result);
-        trace_llm_call(
-            trace_settings,
-            log_scope,
-            system_prompt,
-            user_prompt,
-            started,
-            &result,
-            response.as_ref().ok(),
-        );
-        return result;
-    }
-    let (client, model) = client_and_model(&profile)?;
-    crate::development_debug_log(
-        log_scope,
-        format_args!(
-            "准备调用大语言模型：供应商={}，模型={}\n--- 系统提示词开始 ---\n{}\n--- 系统提示词结束 ---\n--- 用户提示词开始 ---\n{}\n--- 用户提示词结束 ---",
-            profile.display_name,
-            model,
-            system_prompt,
-            user_prompt,
-        ),
-    );
-    let mut request = ChatRequest::default()
-        .with_system(system_prompt)
-        .append_message(ChatMessage::user(user_prompt));
-    if enable_web_search && supports_web_search(&profile) {
-        request = request.with_tools([Tool::new_web_search()]);
-    }
-    let options = if structured_json {
-        structured_output_options(
-            &profile,
-            chat_options(&profile)?,
-        )
-    } else {
-        final_output_options(
-            &profile,
-            chat_options(&profile)?,
-        )
+        run_sdk_llm(state, profile, request, request_id).await
     };
-    let request_timeout = request_timeout(&profile);
-    let trace_settings = llm_trace_settings_with_origin(&profile, &client, &model).await;
-    let response = timeout(
-        request_timeout,
-        client.exec_chat(&model, request, Some(&options)),
-    )
-    .await
-    .map_err(|_| format!("大语言模型处理超时（{} 秒）", request_timeout.as_secs()))
-    .and_then(|result| result.map_err(|error| format!("大语言模型调用失败：{error}")));
-    if let Err(error) = &response {
-        trace_llm_call(
-            trace_settings.clone(),
-            log_scope,
-            system_prompt,
-            user_prompt,
-            started,
-            &Err(error.clone()),
-            None,
-        );
-    }
-    let response = response?;
-    let trace_output = LlmOutput {
-        output: String::new(),
-        reasoning: response.reasoning_content.clone().unwrap_or_default(),
-        usage: serde_json::to_value(&response.usage).ok(),
-    };
-    let output = response
-        .first_text()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "大语言模型没有返回文本".to_string());
-    if let Err(error) = &output {
-        trace_llm_call(
-            trace_settings.clone(),
-            log_scope,
-            system_prompt,
-            user_prompt,
-            started,
-            &Err(error.clone()),
-            Some(&trace_output),
-        );
-    }
-    let output = output?;
-    crate::development_debug_log(
-        log_scope,
-        format_args!(
-            "大语言模型返回文本：\n--- 返回开始 ---\n{}\n--- 返回结束 ---",
-            output
-        ),
-    );
-    let result = final_text_from_output(output);
+    let result = response
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|response| final_text_from_output(&response.output));
     log_prompt_completion(log_scope, started, &result);
     trace_llm_call(
         trace_settings,
@@ -1429,7 +1102,7 @@ async fn process_prompt_with_profile(
         user_prompt,
         started,
         &result,
-        Some(&trace_output),
+        response.as_ref().ok(),
     );
     result
 }
@@ -1444,12 +1117,6 @@ fn llm_trace_settings(profile: &ProviderProfile) -> Value {
         .as_ref()
         .map(|model| model.reasoning_effort.as_str())
         .unwrap_or_default();
-    // Groq 与插件把「关闭」交给 SDK/插件处理，只有 genai 直连会换成最低档。
-    let effective = if profile.kind == "llm:groq" || is_plugin_llm(profile) {
-        configured
-    } else {
-        effective_reasoning(configured, &model_name)
-    };
     json!({
         "providerId":profile.id,
         "providerName":profile.display_name,
@@ -1460,40 +1127,10 @@ fn llm_trace_settings(profile: &ProviderProfile) -> Value {
             .map(|url| url.origin().ascii_serialization()),
         "modelId":model_name,
         "reasoningConfigured":configured,
-        "reasoningEffective":effective,
         "temperature":model.as_ref().and_then(|model| model.temperature),
         "maxTokens":model.as_ref().and_then(|model| model.max_tokens),
         "timeoutSecs":request_timeout(profile).as_secs(),
     })
-}
-
-/// genai 直连的请求不经过宿主 HTTP，主机要从它解析出的目标地址拿，连接探测才有地方可连。
-async fn llm_trace_settings_with_origin(
-    profile: &ProviderProfile,
-    client: &Client,
-    model: &str,
-) -> Value {
-    // 解析请求地址要走一遍 genai 的服务解析，没开开发者模式时不做。
-    if !crate::application::diagnostics::developer_mode() {
-        return Value::Null;
-    }
-    let mut settings = llm_trace_settings(profile);
-    if let Ok(origin) = genai_origin(client, model).await {
-        settings["origin"] = json!(origin);
-    }
-    settings
-}
-
-/// genai 实际请求的协议加主机。
-async fn genai_origin(client: &Client, model: &str) -> Result<String, String> {
-    let target = client
-        .resolve_service_target(model)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(url::Url::parse(target.endpoint.base_url())
-        .map_err(|error| error.to_string())?
-        .origin()
-        .ascii_serialization())
 }
 
 fn trace_runtime_ready(started: StdInstant) {
@@ -1589,14 +1226,12 @@ where
         enable_web_search,
         history,
         cancellation,
-        false,
         on_update,
     )
     .await?;
     Ok((response.output, response.reasoning))
 }
 
-/// capture_usage 会让 genai 直连的请求多带 stream_options，线上问答不需要，只给测速用。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_prompt<F>(
     state: &RuntimeState,
@@ -1609,8 +1244,7 @@ pub(crate) async fn stream_prompt<F>(
     enable_web_search: bool,
     history: &[PromptConversationTurn],
     cancellation: CancellationToken,
-    capture_usage: bool,
-    mut on_update: F,
+    on_update: F,
 ) -> Result<LlmOutput, String>
 where
     F: FnMut(&str, &str),
@@ -1619,142 +1253,31 @@ where
     if let Some(effort) = reasoning_override {
         override_model_reasoning(&mut profile, effort);
     }
-    if profile.kind == "llm:groq" {
-        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
-        let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
-        for turn in history {
-            messages.push(json!({ "role": "user", "content": turn.user }));
-            messages.push(json!({ "role": "assistant", "content": turn.assistant }));
-        }
-        messages.push(json!({ "role": "user", "content": user_prompt }));
-        let response = run_groq_sdk_stream(
-            state,
-            profile,
-            messages,
-            request_id,
-            cancellation,
-            on_update,
-        )
-        .await?;
-        return Ok(LlmOutput {
-            output: final_text_from_output(&response.output)?,
-            reasoning: response.reasoning.trim().to_string(),
-            usage: response.usage,
-        });
-    }
-    if is_plugin_llm(&profile) {
-        let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
-        let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
-        for turn in history {
-            messages.push(json!({ "role": "user", "content": turn.user }));
-            messages.push(json!({ "role": "assistant", "content": turn.assistant }));
-        }
-        messages.push(json!({ "role": "user", "content": user_prompt }));
-        let response = run_plugin_llm_stream(
-            state,
-            profile,
-            messages,
-            request_id,
-            cancellation,
-            on_update,
-        )
-        .await?;
-        return Ok(LlmOutput {
-            output: final_text_from_output(&response.output)?,
-            reasoning: response.reasoning.trim().to_string(),
-            usage: response.usage,
-        });
-    }
-    let (client, model) = client_and_model(&profile)?;
-    crate::development_debug_log(
-        log_scope,
-        format_args!(
-            "准备流式调用大语言模型：供应商={}，模型={}，联网搜索={}",
-            profile.display_name,
-            model,
-            enable_web_search && supports_web_search(&profile),
-        ),
-    );
-    let mut request = ChatRequest::default().with_system(system_prompt);
-    // Chat Completions 需要每次显式重发 messages；Responses 也接受等价的
-    // message Items。在本地组裁历史能同时兼容多供应商，且不依赖远端持久会话。
+    let request_id = format!("{log_scope}-{}", uuid::Uuid::new_v4());
+    // 两种协议都是无状态请求，每次带上完整历史。
+    let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
     for turn in history {
-        request = request
-            .append_message(ChatMessage::user(&turn.user))
-            .append_message(ChatMessage::assistant(&turn.assistant));
+        messages.push(json!({ "role": "user", "content": turn.user }));
+        messages.push(json!({ "role": "assistant", "content": turn.assistant }));
     }
-    request = request.append_message(ChatMessage::user(user_prompt));
-    if enable_web_search && supports_web_search(&profile) {
-        request = request.with_tools([Tool::new_web_search()]);
-    }
-    let options = final_output_options(
-        &profile,
-        chat_options(&profile)?
-            .with_capture_content(true)
-            .with_capture_reasoning_content(true)
-            .with_normalize_reasoning_content(true)
-            .with_capture_usage(capture_usage),
-    );
-    let request_timeout = request_timeout(&profile);
-    let stream_result = tokio::select! {
-        _ = cancellation.cancelled() => return Err("大语言模型请求已取消".into()),
-        result = timeout(
-            request_timeout,
-            client.exec_chat_stream(&model, request, Some(&options)),
-        ) => result,
+    messages.push(json!({ "role": "user", "content": user_prompt }));
+    let response = if is_plugin_llm(&profile) {
+        run_plugin_llm_stream(state, profile, messages, request_id, cancellation, on_update).await?
+    } else {
+        let request = sdk_llm_request(&profile, messages, enable_web_search)?;
+        crate::development_debug_log(
+            log_scope,
+            format_args!(
+                "准备流式调用大语言模型：供应商={}，联网搜索={enable_web_search}",
+                profile.display_name,
+            ),
+        );
+        run_sdk_llm_stream(state, profile, request, request_id, cancellation, on_update).await?
     };
-    let mut stream = stream_result
-        .map_err(|_| format!("大语言模型处理超时（{} 秒）", request_timeout.as_secs()))?
-        .map_err(|error| format!("大语言模型调用失败：{error}"))?
-        .stream;
-
-    let consume = async {
-        let mut output = String::new();
-        let mut reasoning = String::new();
-        let mut usage = None;
-        while let Some(event) = stream.next().await {
-            let event = event.map_err(|error| format!("大语言模型流式输出失败：{error}"))?;
-            match event {
-                ChatStreamEvent::Chunk(chunk) => output.push_str(&chunk.content),
-                ChatStreamEvent::ReasoningChunk(chunk) => reasoning.push_str(&chunk.content),
-                ChatStreamEvent::End(end) => {
-                    usage = end
-                        .captured_usage
-                        .as_ref()
-                        .and_then(|usage| serde_json::to_value(usage).ok());
-                    if output.is_empty() {
-                        if let Some(captured) = end.captured_first_text() {
-                            output.push_str(captured);
-                        }
-                    }
-                    if reasoning.is_empty() {
-                        if let Some(captured) = end.captured_reasoning_content.as_deref() {
-                            reasoning.push_str(captured);
-                        }
-                    }
-                }
-                ChatStreamEvent::Start
-                | ChatStreamEvent::ThoughtSignatureChunk(_)
-                | ChatStreamEvent::ToolCallChunk(_) => {}
-            }
-            on_update(&output, &reasoning);
-        }
-        Ok::<(String, String, Option<Value>), String>((output, reasoning, usage))
-    };
-    let consume_result = tokio::select! {
-        _ = cancellation.cancelled() => return Err("大语言模型请求已取消".into()),
-        result = timeout(request_timeout, consume) => result,
-    };
-    let (output, reasoning, usage) = consume_result
-        .map_err(|_| format!("大语言模型流式处理超时（{} 秒）", request_timeout.as_secs()))??;
-    let output = final_text_from_output(&output)?;
-    if output.is_empty() {
-        return Err("大语言模型没有返回可用的最终文本".to_string());
-    }
     Ok(LlmOutput {
-        output,
-        reasoning: reasoning.trim().to_string(),
-        usage,
+        output: final_text_from_output(&response.output)?,
+        reasoning: response.reasoning.trim().to_string(),
+        usage: response.usage,
     })
 }
 
@@ -1918,74 +1441,60 @@ mod tests {
         );
     }
 
+    /// SDK 只收用户的设置，思考与采样字段怎么写、走哪种协议由它决定。
     #[test]
-    fn legacy_model_uses_existing_temperature_default() {
-        let profile = ProviderProfile {
-            keep_loaded: false,
-            id: "test".into(),
-            kind: "llm:groq".into(),
-            display_name: "Test".into(),
-            auth_kind: "api-key".into(),
-            capabilities: vec!["llm".into()],
-            enabled: true,
-            config: serde_json::json!({"model": "demo"}),
-            config_fields: vec![],
-            actions: vec![],
-        };
-        let options = chat_options(&profile).unwrap();
-        assert_eq!(options.temperature, Some(0.1));
-        // 没写过思考程度的旧配置按默认关闭思考。
-        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
+    fn sdk_request_carries_user_settings_only() {
+        let mut profile = llm_model_profile("llm:deepseek", "high", "deepseek-flash");
+        profile.config["models"][0]["maxTokens"] = json!(512);
+        let request = sdk_llm_request(&profile, messages(), true).unwrap();
+        assert_eq!(
+            request,
+            json!({
+                "providerId": "deepseek",
+                "modelId": "deepseek-flash",
+                "messages": messages(),
+                "reasoning": { "enabled": true, "effort": "high" },
+                "maxOutputTokens": 512,
+                "temperature": 0.1,
+                "webSearch": true,
+            })
+        );
+        assert!(!request.to_string().contains("sk-test"));
     }
 
+    /// 旧配置没写过思考程度时按关闭处理，并且显式告诉 SDK：不发时 SDK 按供应商默认开启思考。
     #[test]
-    fn model_options_apply_reasoning_temperature_and_max_tokens() {
-        let profile = ProviderProfile {
-            keep_loaded: false,
-            id: "test".into(),
-            kind: "llm:groq".into(),
-            display_name: "Test".into(),
-            auth_kind: "api-key".into(),
-            capabilities: vec!["llm".into()],
-            enabled: true,
-            config: serde_json::json!({
-                "model": "demo",
-                "models": [{
-                    "name": "demo",
-                    "source": "remote",
-                    "availability": "available",
-                    "reasoningEffort": "high",
-                    "temperature": null,
-                    "maxTokens": 512
-                }]
-            }),
-            config_fields: vec![],
-            actions: vec![],
-        };
-        let options = chat_options(&profile).unwrap();
-        assert_eq!(options.temperature, None);
-        assert_eq!(options.max_tokens, Some(512));
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::High)
-        ));
-    }
-
-    #[test]
-    fn web_search_is_limited_to_models_on_the_responses_api() {
-        assert!(supports_web_search(&llm_model_profile("llm:deepseek", "zero", "deepseek-flash")));
-        assert!(supports_web_search(&llm_model_profile("llm:bailian", "zero", "qwen3.8-flash")));
-        // 百炼托管的第三方模型走 Chat Completions，没有联网搜索工具。
-        assert!(!supports_web_search(&llm_model_profile("llm:bailian", "zero", "stepfun/step-5-preview")));
-        assert!(!supports_web_search(&llm_profile("llm:kimi", "zero")));
-        assert!(!supports_web_search(&llm_profile("llm:custom", "zero")));
-    }
-
-    #[test]
-    fn invalid_model_options_are_rejected() {
+    fn legacy_model_turns_thinking_off_explicitly() {
         let mut profile = crate::providers::groq_llm_profile();
-        profile.config["models"][0]["temperature"] = serde_json::json!(2.5);
-        assert!(chat_options(&profile).unwrap_err().contains("0 到 2"));
+        profile.config = json!({ "model": "demo", "apiKey": "sk-test" });
+        let request = sdk_llm_request(&profile, messages(), false).unwrap();
+        assert_eq!(request["providerId"], "groq");
+        assert_eq!(request["reasoning"], json!({ "enabled": false }));
+    }
+
+    #[test]
+    fn custom_endpoint_is_passed_to_sdk_as_is() {
+        let mut profile = llm_profile("llm:custom", "low");
+        profile.config["endpoint"] = "https://llm.example.com/v1".into();
+        let request = sdk_llm_request(&profile, messages(), false).unwrap();
+        assert_eq!(request["baseUrl"], "https://llm.example.com/v1");
+
+        profile.config["endpoint"] = "llm.example.com".into();
+        assert!(sdk_llm_request(&profile, messages(), false).unwrap_err().contains("接口地址无效"));
+    }
+
+    #[test]
+    fn missing_api_key_is_reported_before_any_request() {
+        let mut profile = llm_profile("llm:deepseek", "zero");
+        profile.config.as_object_mut().unwrap().remove("apiKey");
+        assert_eq!(
+            sdk_llm_request(&profile, messages(), false).unwrap_err(),
+            crate::providers::missing_llm_api_key_message(&profile)
+        );
+    }
+
+    fn messages() -> Vec<Value> {
+        vec![json!({ "role": "user", "content": "hello" })]
     }
 
     fn llm_model_profile(kind: &str, reasoning_effort: &str, model: &str) -> ProviderProfile {
@@ -2006,6 +1515,7 @@ mod tests {
             enabled: true,
             config: serde_json::json!({
                 "model": "demo",
+                "apiKey": "sk-test",
                 "models": [{
                     "name": "demo",
                     "reasoningEffort": reasoning_effort,
@@ -2023,8 +1533,8 @@ mod tests {
     fn reasoning_override_applies_to_current_model_only() {
         let mut profile = llm_profile("llm:openai", "zero");
         override_model_reasoning(&mut profile, "high");
-        let options = chat_options(&profile).unwrap();
-        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::High)));
+        let request = sdk_llm_request(&profile, messages(), false).unwrap();
+        assert_eq!(request["reasoning"], json!({ "enabled": true, "effort": "high" }));
 
         profile.config["model"] = "unlisted".into();
         override_model_reasoning(&mut profile, "low");
@@ -2032,128 +1542,6 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[1].name, "unlisted");
         assert_eq!(models[1].reasoning_effort, "low");
-    }
-
-    #[test]
-    fn always_thinking_models_send_the_lowest_level_when_thinking_is_off() {
-        let bailian = chat_options(&llm_model_profile("llm:bailian", "zero", "MiniMax/MiniMax-M3.1-Flash")).unwrap();
-        assert_eq!(bailian.extra_body, Some(serde_json::json!({ "enable_thinking": true })));
-        let volcengine = chat_options(&llm_model_profile("llm:volcengine", "zero", "glm-5-2-260617")).unwrap();
-        assert_eq!(
-            volcengine.extra_body,
-            Some(serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }))
-        );
-
-        let mut kimi = llm_profile("llm:kimi", "zero");
-        kimi.config["model"] = "kimi-k3.1-pro".into();
-        kimi.config["models"][0]["name"] = "kimi-k3.1-pro".into();
-        let options = chat_options(&kimi).unwrap();
-        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Low)));
-
-        // 同一家能关闭思考的其他模型照常关闭。
-        let options = chat_options(&llm_profile("llm:kimi", "zero")).unwrap();
-        assert!(matches!(options.reasoning_effort, Some(ReasoningEffort::Zero)));
-    }
-
-    /// 回归：百炼选「关闭」时曾发出 reasoning.effort="zero"，接口返回 400；
-    /// DeepSeek 走 Responses 时曾发 Chat 写法的 thinking 字段，被忽略后照常思考。
-    #[test]
-    fn responses_adapters_turn_thinking_off_with_effort_none() {
-        for (kind, model) in [
-            ("llm:bailian", "qwen3.8-flash"),
-            ("llm:volcengine", "doubao-seed-evolving"),
-            ("llm:deepseek", "deepseek-flash"),
-        ] {
-            let options = chat_options(&llm_model_profile(kind, "zero", model)).unwrap();
-            assert!(options.reasoning_effort.is_none(), "{kind}");
-            assert_eq!(
-                options.extra_body,
-                Some(serde_json::json!({ "reasoning": { "effort": "none" } })),
-                "{kind}"
-            );
-        }
-    }
-
-    /// 百炼、火山托管的第三方模型走 Chat Completions，思考开关按各家 Chat 写法发送。
-    #[test]
-    fn chat_models_on_responses_providers_use_each_providers_chat_thinking_fields() {
-        let bailian = chat_options(&llm_model_profile("llm:bailian", "zero", "stepfun/step-5-preview")).unwrap();
-        assert!(bailian.reasoning_effort.is_none());
-        assert_eq!(bailian.extra_body, Some(serde_json::json!({ "enable_thinking": false })));
-
-        let volcengine = chat_options(&llm_model_profile("llm:volcengine", "low", "glm-5-2-260617")).unwrap();
-        assert!(volcengine.reasoning_effort.is_none());
-        assert_eq!(
-            volcengine.extra_body,
-            Some(serde_json::json!({ "thinking": { "type": "enabled" }, "reasoning_effort": "low" }))
-        );
-    }
-
-    #[test]
-    fn ppio_sends_no_thinking_fields() {
-        let options = chat_options(&llm_profile("llm:ppio", "high")).unwrap();
-        assert!(options.reasoning_effort.is_none());
-        assert!(options.extra_body.is_none());
-    }
-
-    #[test]
-    fn siliconflow_switches_thinking_with_enable_thinking_and_effort_only_where_listed() {
-        let mut glm = llm_profile("sdk:siliconflow", "zero");
-        glm.config["model"] = "zai-org/GLM-5.3".into();
-        glm.config["models"][0]["name"] = "zai-org/GLM-5.3".into();
-        let options = chat_options(&glm).unwrap();
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(options.extra_body, Some(serde_json::json!({ "enable_thinking": false })));
-
-        glm.config["models"][0]["reasoningEffort"] = "low".into();
-        let options = chat_options(&glm).unwrap();
-        assert_eq!(options.extra_body, Some(serde_json::json!({ "enable_thinking": true })));
-
-        let mut flash = llm_profile("sdk:siliconflow", "low");
-        flash.config["model"] = "deepseek-ai/DeepSeek-V4-Flash".into();
-        flash.config["models"][0]["name"] = "deepseek-ai/DeepSeek-V4-Flash".into();
-        let options = chat_options(&flash).unwrap();
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({ "enable_thinking": true, "reasoning_effort": "high" }))
-        );
-    }
-
-    #[test]
-    fn deepseek_zero_uses_thinking_switch_without_openai_reasoning_effort() {
-        let options = chat_options(&llm_profile("llm:deepseek", "zero")).unwrap();
-
-        assert!(options.reasoning_effort.is_none());
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({"thinking": {"type": "disabled"}}))
-        );
-    }
-
-    #[test]
-    fn deepseek_explicit_reasoning_enables_thinking() {
-        let options = chat_options(&llm_profile("llm:deepseek", "high")).unwrap();
-
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::High)
-        ));
-        assert_eq!(
-            options.extra_body,
-            Some(serde_json::json!({"thinking": {"type": "enabled"}}))
-        );
-    }
-
-    #[test]
-    fn non_deepseek_zero_keeps_generic_reasoning_option() {
-        let options = chat_options(&llm_profile("llm:openai", "zero")).unwrap();
-
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::Zero)
-        ));
-        assert!(options.extra_body.is_none());
     }
 
     #[test]
@@ -2170,16 +1558,6 @@ mod tests {
             request_timeout(&llm_profile("llm:openai", "high")),
             Duration::from_secs(30)
         );
-    }
-
-    #[test]
-    fn assistant_json_mode_does_not_override_other_models_reasoning() {
-        let profile = llm_profile("llm:openai", "high");
-        let options = structured_output_options(&profile, chat_options(&profile).unwrap());
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(ReasoningEffort::High)
-        ));
     }
 
     #[test]
@@ -2202,29 +1580,9 @@ mod tests {
         assert!(error.contains("没有返回可用的最终文本"));
     }
 
+    /// 「关闭」只发给声明了思考能力的插件。
     #[test]
-    fn groq_sdk_request_uses_stable_provider_contract() {
-        let profile = llm_profile("llm:groq", "high");
-        let request = groq_sdk_request(
-            &profile,
-            vec![json!({ "role": "user", "content": "hello" })],
-        )
-        .unwrap();
-        assert_eq!(request["modelId"], "demo");
-        assert_eq!(request["policy"]["maxTokens"], 4096);
-        assert_eq!(request["capabilities"]["reasoning"], true);
-        assert_eq!(request["reasoning"]["effort"], "high");
-        assert!(request.get("providerId").is_none());
-        assert!(request.to_string().find("apiKey").is_none());
-    }
-
-    /// 不发思考参数时 SDK 按供应商默认开启思考，「关闭」必须显式告诉 SDK。
-    #[test]
-    fn thinking_off_is_sent_explicitly_to_sdk_and_reasoning_plugins_only() {
-        let messages = || vec![json!({ "role": "user", "content": "hello" })];
-        let groq = groq_sdk_request(&llm_profile("llm:groq", "zero"), messages()).unwrap();
-        assert_eq!(groq["reasoning"], json!({ "enabled": false }));
-
+    fn thinking_off_is_sent_to_reasoning_plugins_only() {
         let plugin = llm_profile("plugin:test", "zero");
         let request = plugin_llm_request(&plugin, messages(), false, true).unwrap();
         assert_eq!(request["reasoning"], json!({ "enabled": false }));

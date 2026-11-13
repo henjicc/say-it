@@ -106,7 +106,6 @@ where
         false,
         &[],
         cancellation,
-        false,
         |output, _| {
             if !output.is_empty() {
                 on_delta(output);

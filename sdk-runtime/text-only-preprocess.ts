@@ -23,24 +23,24 @@ function invalidTextOnlyRequest(message: string): Error {
 }
 
 /**
- * Say-It 的内置 Groq 会话当前只接受文本。SDK 0.2.2 的通用 LLM chat 入口会静态带入
- * 全部 generation 媒体上传策略；在构建期把那层替换为这个明确拒绝多媒体的边界，既不
- * 复制 SSE/LLM 执行内核，也不让不相关供应商上传和 generation credential 进入 bundle。
+ * Say-It 的内置大模型请求只有文本。SDK 的轻量 LLM 入口会静态带入全部 generation 媒体上传
+ * 策略；在构建期把那层替换为这个明确拒绝多媒体的边界，既不复制 SDK 的请求实现，也不让
+ * 媒体上传和 generation credential 进入 bundle。
  */
 export async function preprocessRequestBody(
-  providerId: string,
+  _providerId: string,
   route: string,
   body: unknown,
 ): Promise<unknown> {
-  if (providerId.trim().toLowerCase() !== 'groq' || route !== '/v1/chat/completions') {
-    throw invalidTextOnlyRequest('Say-It Groq 文本预处理器只允许 Groq chat/completions')
+  if (route !== '/v1/chat/completions') {
+    throw invalidTextOnlyRequest(`Say-It 文本预处理器不处理 ${route}`)
   }
   if (!isRecord(body) || !Array.isArray(body.messages)) {
-    throw invalidTextOnlyRequest('Say-It Groq 请求缺少 messages')
+    throw invalidTextOnlyRequest('Say-It 大模型请求缺少 messages')
   }
   for (const message of body.messages) {
     if (!isRecord(message) || !isTextOnlyContent(message.content)) {
-      throw invalidTextOnlyRequest('Say-It 内置 Groq 当前只接受文本消息')
+      throw invalidTextOnlyRequest('Say-It 内置大模型当前只接受文本消息')
     }
   }
   return body

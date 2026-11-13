@@ -14,10 +14,10 @@ const packageManifest = readJson(path.join(projectRoot, 'package.json'))
 const packageLock = readJson(path.join(projectRoot, 'package-lock.json'))
 const sdkVersion = packageManifest.dependencies?.['@henjicc/ai-sdk']
 const sdkLock = packageLock.packages?.['node_modules/@henjicc/ai-sdk']
-const expectedSdkVersion = '0.14.0'
-const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.14.0.tgz'
-const expectedSdkShasum = '5911b74ecf3742dcec45e626f7cc819f58075866'
-const expectedSdkIntegrity = 'sha512-QkPi8kNlfbitWZeuhF2uQ72BpfeauIPkdC5n2bfeU75vzGI/vQLtBtnggbrofvJERG6/Z2+Ds7EEoSbhTLztAg=='
+const expectedSdkVersion = '0.15.0'
+const expectedSdkTarball = 'https://registry.npmjs.org/@henjicc/ai-sdk/-/ai-sdk-0.15.0.tgz'
+const expectedSdkShasum = 'bbc46b0d1db83e4ba2fb6d125b735c00fda28bed'
+const expectedSdkIntegrity = 'sha512-6+L0+oNhGm04qtrjnfrNJOL2HJa6eD4ooumIvPf8yCYo8+2rtp4N9eBDrpFds7BpWSqEbZxdC4+liP30TwJgVA=='
 if (sdkVersion !== expectedSdkVersion || sdkLock?.version !== sdkVersion) {
   throw new Error(`Say-It 必须精确锁定 @henjicc/ai-sdk@${expectedSdkVersion}`)
 }
@@ -48,10 +48,10 @@ const capabilities = await bundleSdkEntry({
   output: 'sayit-ai-sdk-capabilities.js',
   forbiddenInputs: ['/dist/generation', '/dist/catalog/', '/dist/llm/'],
 })
-const groq = await bundleSdkEntry({
-  entry: 'groq-entry.ts',
-  globalName: '__sayitAiSdkGroq',
-  output: 'sayit-ai-sdk-groq.js',
+const llm = await bundleSdkEntry({
+  entry: 'llm-entry.ts',
+  globalName: '__sayitAiSdkLlm',
+  output: 'sayit-ai-sdk-llm.js',
   forbiddenInputs: [
     '/dist/generation',
     '/dist/catalog/',
@@ -59,9 +59,8 @@ const groq = await bundleSdkEntry({
     '/dist/upload/',
     '/dist/providers/endpoints/',
     '/dist/providers/ppio-media',
-    '/dist/llm/bigmodel/',
   ],
-  plugins: [groqBundleBoundaryPlugin()],
+  plugins: [textOnlyPreprocessPlugin()],
 })
 const llmModules = await bundleSdkEntry({
   entry: 'llm-modules-entry.ts',
@@ -82,12 +81,7 @@ const llmModules = await bundleSdkEntry({
 
 const { LLM_PROVIDER_PRESETS } = await import('@henjicc/ai-sdk/llm')
 const pricing = await collectPricing()
-// 供应商预设里走 Responses API 的模型；不在表里的模型走 Chat Completions。
-const llmResponsesModels = Object.fromEntries(
-  LLM_PROVIDER_PRESETS
-    .filter(preset => preset.responsesModelIds)
-    .map(preset => [preset.providerId, preset.responsesModelIds])
-)
+const llmHosts = await collectLlmHosts()
 
 const manifest = {
   sdk: {
@@ -108,18 +102,18 @@ const manifest = {
       'siliconflow-speech-recognition',
       'groq-speech-recognition',
     ],
-    groq: ['groq-llm'],
+    llm: ['llm'],
     llmModules: ['plugin-llm'],
   },
   bundles: {
     bridge: describeFile(bridgePath, 2),
     capabilities,
-    groq,
+    llm,
     llmModules,
     bootstrap: describeFile(sdkBootstrapPath, 1),
   },
   pricing,
-  llmResponsesModels,
+  llmHosts,
 }
 fs.writeFileSync(
   path.join(outputRoot, 'sayit-ai-sdk-manifest.json'),
@@ -222,21 +216,39 @@ async function collectPricing() {
   return { capabilities, llm }
 }
 
-function groqBundleBoundaryPlugin() {
-  const preprocessReplacement = path.join(projectRoot, 'sdk-runtime', 'groq-text-only-preprocess.ts')
-  const endpointIdentityReplacement = path.join(projectRoot, 'sdk-runtime', 'groq-endpoint-identity.ts')
+/**
+ * 内置大模型运行时访问的主机，按 SDK 供应商预设 ID，作为 QuickJS 网络白名单。用 SDK 自己的地址解析
+ * 函数算出默认配置下 Chat 与 Responses 的实际地址；SDK 只在包内导出这两个函数，构建时按文件路径导入。
+ * 预设之外再加 OpenAI：SDK 对它有默认地址但没有预设。
+ */
+async function collectLlmHosts() {
+  const endpoints = await import(pathToFileURL(path.join(
+    projectRoot, 'node_modules', '@henjicc', 'ai-sdk', 'dist', 'llm', 'protocolEndpoints.js'
+  )).href)
+  const providerIds = [...LLM_PROVIDER_PRESETS.map(preset => preset.providerId), 'openai']
+  return Object.fromEntries(providerIds.map(providerId => {
+    const input = { providerId, modelId: 'host-probe', messages: [] }
+    const urls = [
+      endpoints.resolveLlmChatCompletionsEndpoint(input),
+      endpoints.resolveLlmResponsesEndpoint(input),
+    ]
+    return [providerId, [...new Set(urls.map(url => new URL(url).host))]]
+  }))
+}
+
+/**
+ * 内置大模型只发文本。SDK 轻量入口会静态带入 generation 媒体上传策略，构建时换成只放行文本的
+ * 预处理（`text-only-preprocess.ts`），不让媒体上传与 generation 凭据进入 QuickJS。
+ */
+function textOnlyPreprocessPlugin() {
+  const preprocessReplacement = path.join(projectRoot, 'sdk-runtime', 'text-only-preprocess.ts')
   return {
-    name: 'sayit-groq-bundle-boundary',
+    name: 'sayit-llm-text-only-preprocess',
     setup(buildContext) {
       buildContext.onResolve({ filter: /^\.\.\/upload\/preprocess\.js$/ }, args => {
         const importer = args.importer.replaceAll('\\', '/')
         if (!importer.endsWith('/dist/llm/chat.js')) return undefined
         return { path: preprocessReplacement }
-      })
-      buildContext.onResolve({ filter: /^\.\/endpointProfiles\.js$/ }, args => {
-        const importer = args.importer.replaceAll('\\', '/')
-        if (!importer.includes('/dist/llm/')) return undefined
-        return { path: endpointIdentityReplacement }
       })
     },
   }

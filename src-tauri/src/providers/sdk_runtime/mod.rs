@@ -14,9 +14,9 @@ pub const AI_SDK_CAPABILITIES_BUNDLE: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/sayit-ai-sdk-runtime/sayit-ai-sdk-capabilities.js"
 ));
-pub const AI_SDK_GROQ_BUNDLE: &str = include_str!(concat!(
+pub const AI_SDK_LLM_BUNDLE: &str = include_str!(concat!(
     env!("OUT_DIR"),
-    "/sayit-ai-sdk-runtime/sayit-ai-sdk-groq.js"
+    "/sayit-ai-sdk-runtime/sayit-ai-sdk-llm.js"
 ));
 pub const AI_SDK_LLM_MODULES_BUNDLE: &str = include_str!(concat!(
     env!("OUT_DIR"),
@@ -38,15 +38,14 @@ pub static SDK_PRICING: std::sync::LazyLock<Value> = std::sync::LazyLock::new(||
     manifest["pricing"].take()
 });
 
-/// 构建时从 SDK 供应商预设导出的、走 Responses API 的模型，按供应商预设 ID。
-pub static SDK_LLM_RESPONSES_MODELS: std::sync::LazyLock<
-    std::collections::HashMap<String, Vec<String>>,
-> = std::sync::LazyLock::new(|| {
-    let mut manifest: Value =
-        serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
-    serde_json::from_value(manifest["llmResponsesModels"].take())
-        .expect("SDK 清单的 llmResponsesModels 是按供应商的模型列表")
-});
+/// 构建时按 SDK 地址解析算出的、内置大模型会访问的主机，按 SDK 供应商 ID。
+pub static SDK_LLM_HOSTS: std::sync::LazyLock<std::collections::HashMap<String, Vec<String>>> =
+    std::sync::LazyLock::new(|| {
+        let mut manifest: Value =
+            serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
+        serde_json::from_value(manifest["llmHosts"].take())
+            .expect("SDK 清单的 llmHosts 是按供应商的主机列表")
+    });
 
 pub trait HostRuntimeRecorder: Send + Sync {
     fn record(&self, event: Value);

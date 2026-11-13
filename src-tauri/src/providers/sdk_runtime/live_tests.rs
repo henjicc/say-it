@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use crate::cancellation::CancellationFlag;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -99,7 +99,7 @@ fn run_asr(recorder: &AuditRecorder, model: &str, protocol: &str, audio: &Path) 
             "options": {},
         }),
         HashMap::from([("input-audio".into(), audio.to_path_buf())]),
-        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
+        BuiltinSdkScope::speech_recognition(&crate::providers::bailian_profile()).unwrap(),
     )
 }
 
@@ -116,7 +116,7 @@ fn run_translation(recorder: &AuditRecorder, model: &str) -> LiveCaseResult {
             "options": { "stream": true },
         }),
         HashMap::new(),
-        BuiltinSdkScope::BAILIAN_TRANSLATION,
+        BuiltinSdkScope::bailian_translation(),
     )
 }
 
@@ -132,7 +132,7 @@ fn run_realtime(
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &profile,
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
+        BuiltinSdkScope::speech_recognition(&crate::providers::bailian_profile()).unwrap(),
         request_id.clone(),
         Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
@@ -194,7 +194,7 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &profile,
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::GROQ_LLM,
+        BuiltinSdkScope::llm(&groq_llm_profile(), "groq", None).unwrap(),
         request_id.clone(),
         Arc::new(CancellationFlag::new(false)),
         HashMap::new(),
@@ -211,7 +211,7 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
             (0, 0, 0),
         );
     };
-    let discovery = runtime.discover_groq();
+    let discovery = runtime.discover_llm("groq", None, Duration::from_secs(20));
     let has_model = discovery.as_ref().is_ok_and(|models| {
         models.as_array().is_some_and(|models| {
             models.iter().any(|model| {
@@ -220,16 +220,17 @@ fn run_groq(recorder: &AuditRecorder) -> LiveCaseResult {
         })
     });
     let result = if has_model {
-        runtime.run_groq(
+        runtime.run_llm(
             json!({
+                "providerId": "groq",
                 "modelId": "openai/gpt-oss-20b",
                 "messages": [{ "role": "user", "content": "只回答一个字：好" }],
-                "capabilities": { "reasoning": true },
                 "reasoning": { "enabled": true, "effort": "low" },
-                "policy": { "maxTokens": 32 },
+                "maxOutputTokens": 32,
             }),
             &request_id,
             true,
+            Duration::from_secs(45),
         )
     } else {
         Err(discovery
@@ -256,7 +257,7 @@ fn run_pre_cancel(recorder: &AuditRecorder) -> LiveCaseResult {
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &groq_llm_profile(),
         CredentialStoreHandle::default(),
-        BuiltinSdkScope::GROQ_LLM,
+        BuiltinSdkScope::llm(&groq_llm_profile(), "groq", None).unwrap(),
         request_id.clone(),
         cancelled.clone(),
         HashMap::new(),
@@ -274,7 +275,7 @@ fn run_pre_cancel(recorder: &AuditRecorder) -> LiveCaseResult {
         );
     };
     cancelled.store(true, Ordering::Relaxed);
-    let result = runtime.run_groq(json!({}), &request_id, true);
+    let result = runtime.run_llm(json!({}), &request_id, true, Duration::from_secs(45));
     let was_cancelled = result.is_err();
     let events = runtime.take_events();
     let counts = runtime.resource_counts();
@@ -378,7 +379,7 @@ fn classifies_missing_bailian_credential_without_network() {
     let runtime = BuiltinSdkRuntime::create_for_live_test(
         &bailian_profile(),
         CredentialStoreHandle::from_store(Arc::new(MissingCredentials)),
-        BuiltinSdkScope::BAILIAN_SPEECH_RECOGNITION,
+        BuiltinSdkScope::speech_recognition(&crate::providers::bailian_profile()).unwrap(),
         request_id,
         Arc::new(CancellationFlag::new(false)),
         HashMap::new(),

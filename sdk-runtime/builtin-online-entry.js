@@ -50,25 +50,30 @@ export default host => {
           globalThis.__sayitDisposeRuntimeContext()
         }
       }
-      if (operation === 'groq.run') {
-        const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['groq-llm'] })
+      if (operation === 'llm.run') {
+        const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['llm'] })
         try {
           const options = {
             timeoutMs: request.timeoutMs,
+            fallbackCapabilities: request.fallbackCapabilities,
           }
           if (request.emitEvents) {
-            options.onEvent = event => host.emit({ type: 'sdk.groq', event })
+            options.onEvent = event => host.emit({ type: 'sdk.llm', event })
           }
-          return await sdk.groq.run(request.input, request.requestId, options)
+          return await sdk.llm.run(request.input, request.requestId, options)
         } finally {
           await sdk.dispose()
           globalThis.__sayitDisposeRuntimeContext()
         }
       }
-      if (operation === 'groq.discover') {
-        const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['groq-llm'] })
+      if (operation === 'llm.discover') {
+        const sdk = globalThis.__sayitCreateSdkRuntime({ sources: ['llm'] })
         try {
-          return await sdk.groq.discover({ timeoutMs: request.timeoutMs })
+          return await sdk.llm.discover({
+            providerId: request.providerId,
+            baseUrl: request.baseUrl,
+            timeoutMs: request.timeoutMs,
+          })
         } finally {
           await sdk.dispose()
           globalThis.__sayitDisposeRuntimeContext()

@@ -586,38 +586,39 @@ pub fn set_llm_models(config: &mut Value, models: &[LlmModelConfig]) -> Result<(
     Ok(())
 }
 
-pub fn normalize_llm_endpoint(endpoint: &str) -> String {
-    let endpoint = endpoint.trim();
-    if endpoint.ends_with('/') {
-        endpoint.to_string()
-    } else {
-        format!("{endpoint}/")
-    }
-}
-
-/// 走 OpenAI 兼容协议（Responses 或 Chat Completions）、不能复用 genai 默认端点的供应商。
-/// 用户在配置中填写的 endpoint 仍优先。
-pub fn llm_default_endpoint(adapter: &str) -> Option<&'static str> {
+/// SDK 还没有登记、界面里可以添加的供应商，经它们的 OpenAI 兼容接口请求。
+fn unregistered_llm_base_url(adapter: &str) -> Option<&'static str> {
     match adapter {
-        "volcengine" => Some("https://ark.cn-beijing.volces.com/api/v3/"),
-        "deepseek" => Some("https://api.deepseek.com/v1/"),
-        "bailian" => Some("https://dashscope.aliyuncs.com/compatible-mode/v1/"),
-        "siliconflow" => Some("https://api.siliconflow.cn/v1/"),
-        "ppio" => Some("https://api.ppio.com/openai/v1/"),
+        "anthropic" => Some("https://api.anthropic.com/v1"),
+        "gemini" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+        "open_router" => Some("https://openrouter.ai/api/v1"),
         _ => None,
     }
 }
 
-/// 只有 SDK 预设登记为 Responses 的模型才走 Responses API，其余在同一端点走 Chat Completions；
-/// 托管的第三方模型多数只支持 Chat。
-pub fn llm_uses_responses(adapter: &str, model: &str) -> bool {
-    llm_default_endpoint(adapter).is_some()
-        && crate::providers::sdk_runtime::SDK_LLM_RESPONSES_MODELS
-            .get(adapter)
-            .is_some_and(|models| models.iter().any(|item| item == model))
+/// 交给 SDK 的供应商 ID，以及 SDK 不认识时需要给出的接口地址。SDK 登记过的供应商不传地址，
+/// 由 SDK 按模型选 Chat Completions 或 Responses 的官方地址。
+pub fn sdk_llm_endpoint(profile: &ProviderProfile) -> Result<(String, Option<String>), String> {
+    let adapter = llm_adapter(profile).ok_or_else(|| "大语言模型供应商类型无效".to_string())?;
+    let base_url = match adapter {
+        "custom" => {
+            let endpoint = profile
+                .config
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+                return Err(format!("{} 的接口地址无效", profile.display_name));
+            }
+            Some(endpoint.to_string())
+        }
+        adapter => unregistered_llm_base_url(adapter).map(str::to_string),
+    };
+    Ok((adapter.to_string(), base_url))
 }
 
-/// 走 genai 直连时使用的大语言模型适配器。内置阿里云百炼的 Key 同时用于识别、翻译与对话，
+/// 大语言模型的供应商类型，即 SDK 供应商 ID。内置阿里云百炼的 Key 同时用于识别、翻译与对话，
 /// 内置火山引擎同时带方舟大模型，都不必再单独添加大模型供应商。
 pub fn llm_adapter(profile: &ProviderProfile) -> Option<&str> {
     match profile.kind.as_str() {

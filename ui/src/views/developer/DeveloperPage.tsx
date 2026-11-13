@@ -41,7 +41,7 @@ interface LlmCall {
   scope: string;
   providerName?: string;
   modelId?: string;
-  reasoningEffective?: string;
+  reasoningConfigured?: string;
   temperature?: number | null;
   maxTokens?: number | null;
   durationMs?: number;
@@ -162,7 +162,7 @@ function LlmGroup({ call }: { call: LlmCall }) {
   return (
     <Group title={call.variant ? VARIANT_LABELS[call.variant] ?? call.variant : "大模型请求"}>
       <Row label="模型"><Value>{call.providerName} / {call.modelId}</Value></Row>
-      <Row label="推理强度"><Value>{call.reasoningEffective || "默认"}</Value></Row>
+      <Row label="推理强度"><Value>{call.reasoningConfigured || "默认"}</Value></Row>
       <Row label="温度与最大输出"><Value>{call.temperature ?? "默认"} · {call.maxTokens ?? "默认"}</Value></Row>
       <Row label="请求耗时" message={call.error && <span role="alert" className="text-[var(--color-err)]">{call.error}</span>}>
         <Value>{formatMs(call.durationMs)}</Value>

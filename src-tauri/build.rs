@@ -30,9 +30,8 @@ fn build_sdk_runtime_bridge() {
     println!("cargo:rerun-if-changed=../sdk-runtime/web-compat.ts");
     println!("cargo:rerun-if-changed=../sdk-runtime/host-adapter.ts");
     println!("cargo:rerun-if-changed=../sdk-runtime/capability-entry.ts");
-    println!("cargo:rerun-if-changed=../sdk-runtime/groq-entry.ts");
-    println!("cargo:rerun-if-changed=../sdk-runtime/groq-text-only-preprocess.ts");
-    println!("cargo:rerun-if-changed=../sdk-runtime/groq-endpoint-identity.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/llm-entry.ts");
+    println!("cargo:rerun-if-changed=../sdk-runtime/text-only-preprocess.ts");
     println!("cargo:rerun-if-changed=../sdk-runtime/llm-modules-entry.ts");
     println!("cargo:rerun-if-changed=../sdk-runtime/sdk-bootstrap.ts");
     println!("cargo:rerun-if-changed=../scripts/build-ai-sdk-runtime.mjs");
