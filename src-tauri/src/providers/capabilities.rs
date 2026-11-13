@@ -236,7 +236,13 @@ pub enum OcrProvider {
     },
 }
 impl OcrProvider {
+    /// 没有选择时使用内置 PP-OCR，各平台一致。
     pub fn default_local() -> Self {
+        Self::PpOcr
+    }
+
+    /// 选了「系统 OCR」：macOS 用 Vision；Windows 系统 OCR 由内置 PP-OCR 取代。
+    pub fn system() -> Self {
         #[cfg(target_os = "macos")]
         {
             Self::System

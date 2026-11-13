@@ -655,7 +655,7 @@ function defaults(): DictPrefs {
     smartTemplateTrash: [],
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
     activeAppContextExtractionMethod: normalizeExtractionMethod(undefined),
-    activeAppContextOcrEngine: "system",
+    activeAppContextOcrEngine: "ppocr",
     activeAppContextOcrModel: defaultOcrModelId,
     activeAppContextOcrApprovedProviders: [],
     activeAppContextBlockedApps: [],

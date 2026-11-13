@@ -33,7 +33,7 @@ pub(crate) use debug::{
 };
 pub(crate) use model::{
     ActivationTarget, ActiveAppContextExtractionMethod, ActiveAppContextSummary, AppIdentity,
-    CaptureOptions, CaptureStatus, CapturedActiveAppContext, ContextBounds, OcrEngineKind,
+    CaptureOptions, CaptureStatus, CapturedActiveAppContext, ContextBounds,
 };
 
 pub(crate) fn truncate_selection_text(value: &str) -> (String, bool) {

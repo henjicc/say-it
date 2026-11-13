@@ -49,27 +49,6 @@ impl ActiveAppContextExtractionMethod {
     }
 }
 
-/// 旧设置读取兼容；运行时以 OCR 模型选择为准。
-#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum OcrEngineKind {
-    #[default]
-    System,
-    PpOcr,
-}
-
-impl<'de> Deserialize<'de> for OcrEngineKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        Ok(match value.as_str() {
-            Some("ppocr") => Self::PpOcr,
-            _ => Self::System,
-        })
-    }
-}
 
 /// 前台软件的轻量标识。只读取本进程可直接取得的窗口元信息，不涉及正文提取、
 /// UIA 或 OCR，因此可以在每次听写启动时无条件调用。
