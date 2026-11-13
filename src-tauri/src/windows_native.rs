@@ -1,22 +1,34 @@
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
 use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
-use windows::Win32::Foundation::HANDLE;
+use windows::core::w;
+use windows::Win32::Foundation::{
+    GlobalFree, SetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, WIN32_ERROR, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{HBITMAP, HENHMETAFILE};
 use windows::Win32::System::Com::{
     STGMEDIUM, STGMEDIUM_0, TYMED_ENHMF, TYMED_GDI, TYMED_HGLOBAL, TYMED_MFPICT,
 };
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-    GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
+    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::GMEM_MOVEABLE;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::{
     OleDuplicateData, OleInitialize, OleUninitialize, ReleaseStgMedium, CF_BITMAP, CF_DSPBITMAP,
     CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_ENHMETAFILE, CF_GDIOBJFIRST, CF_GDIOBJLAST,
-    CF_METAFILEPICT, CF_PALETTE, CLIPBOARD_FORMAT,
+    CF_METAFILEPICT, CF_PALETTE, CF_UNICODETEXT, CLIPBOARD_FORMAT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW,
+    RegisterClassW, HMENU, HWND_MESSAGE, MSG, PM_REMOVE, QS_ALLINPUT, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WNDCLASSW,
 };
 
 const CLIPBOARD_OPEN_ATTEMPTS: usize = 10;
-const CLIPBOARD_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 struct OleGuard;
 impl Drop for OleGuard {
@@ -28,14 +40,16 @@ impl Drop for OleGuard {
 struct ClipboardGuard;
 
 impl ClipboardGuard {
-    fn open() -> Result<Self, String> {
+    /// `owner` 为空时清空后的剪贴板没有所有者；粘贴时传入粘贴窗口，读取请求才会发给它。
+    fn open(owner: HWND) -> Result<Self, String> {
         let mut last_error = None;
         for _ in 0..CLIPBOARD_OPEN_ATTEMPTS {
-            match unsafe { OpenClipboard(None) } {
+            match unsafe { OpenClipboard(owner) } {
                 Ok(()) => return Ok(Self),
                 Err(error) => {
                     last_error = Some(error);
-                    std::thread::sleep(CLIPBOARD_OPEN_RETRY_DELAY);
+                    // 占着剪贴板的程序可能正等粘贴窗口交出数据，等待时要照常处理消息。
+                    pump_messages_until(Instant::now() + CLIPBOARD_OPEN_RETRY_DELAY, || false);
                 }
             }
         }
@@ -183,7 +197,7 @@ fn transfer_all<T>(
 
 impl ClipboardSnapshot {
     fn capture() -> Result<Self, String> {
-        let _clipboard = ClipboardGuard::open()?;
+        let _clipboard = ClipboardGuard::open(HWND::default())?;
         let mut available = Vec::new();
         let mut format = 0;
         loop {
@@ -202,23 +216,168 @@ impl ClipboardSnapshot {
     }
 
     fn restore(mut self) -> Result<(), String> {
-        let _clipboard = ClipboardGuard::open()?;
+        let _clipboard = ClipboardGuard::open(HWND::default())?;
         unsafe { EmptyClipboard() }
             .map_err(|error| format!("清空临时 Windows 剪贴板失败：{error}"))?;
         transfer_all(&mut self.formats, |format| format.transfer_to_clipboard())
     }
 }
 
-/// 粘贴后要等目标软件读完剪贴板（约 180ms）才能还原。这段等待和还原放在专用线程上做，
-/// 调用方在按下粘贴键后就返回，胶囊与结束音不必再等它。所有粘贴在这条线程上排队，
-/// 下一次粘贴备份剪贴板时，上一次的还原一定已经做完。
-///
 /// 粘贴线程从备份到还原完成一直持有这把锁；其他要读写剪贴板的地方先调用
 /// `wait_clipboard_restored`，免得读到注入的文字，或被随后的还原覆盖。
+/// 所有粘贴在专用线程上排队，下一次粘贴备份剪贴板时，上一次的还原一定已经做完；
+/// 调用方在按下粘贴键后就返回，胶囊与结束音不必等还原。
 static CLIPBOARD_RESTORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn wait_clipboard_restored() {
     drop(CLIPBOARD_RESTORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+}
+
+/// 目标软件读到文字之前不能还原，否则它读到的是用户原来的内容，听写结果丢失。目标软件繁忙或
+/// 刚启动时，读取可能远晚于按键，没有可靠的固定等待时长。所以文字用延迟渲染交出：剪贴板上先只
+/// 登记格式，谁来读，系统才向粘贴窗口要数据（`WM_RENDERFORMAT`），借此知道目标软件读过了。
+/// 一直没人读时最多等这么久再还原。
+const PASTE_READ_TIMEOUT: Duration = Duration::from_millis(1500);
+/// 读取请求到达后再等一会儿，让目标软件读完并关闭剪贴板，还原时才打得开。
+const PASTE_SETTLE: Duration = Duration::from_millis(100);
+/// 写好剪贴板后稍等再按粘贴键，部分软件在剪贴板刚变化时还在处理通知。
+const PASTE_KEY_DELAY: Duration = Duration::from_millis(60);
+
+/// 这次粘贴交出的文字。按键之前的读取来自剪贴板监视程序，不算目标软件读过。
+struct OfferedText {
+    utf16: Vec<u16>,
+    keys_sent: bool,
+    read: bool,
+}
+
+thread_local! {
+    static OFFERED: RefCell<Option<OfferedText>> = const { RefCell::new(None) };
+}
+
+/// 告诉剪贴板历史与剪贴板管理器不要记录这段临时文字（Windows 剪贴板历史、云剪贴板与
+/// 遵守 `ExcludeClipboardContentFromMonitorProcessing` 约定的第三方工具）。
+const TRANSIENT_MARKERS: [(windows::core::PCWSTR, &[u8]); 3] = [
+    (w!("ExcludeClipboardContentFromMonitorProcessing"), &[0]),
+    (w!("CanIncludeInClipboardHistory"), &[0, 0, 0, 0]),
+    (w!("CanUploadToCloudClipboard"), &[0, 0, 0, 0]),
+];
+
+unsafe extern "system" fn paste_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_RENDERFORMAT && wparam.0 == CF_UNICODETEXT.0 as usize {
+        render_offered_text();
+        return LRESULT(0);
+    }
+    if message == WM_RENDERALLFORMATS {
+        // 粘贴窗口销毁时文字还没交出：放上剪贴板，免得留下读不出的格式。
+        hand_over_offered_text(hwnd);
+        return LRESULT(0);
+    }
+    DefWindowProcW(hwnd, message, wparam, lparam)
+}
+
+fn render_offered_text() {
+    let utf16 = OFFERED.with_borrow_mut(|offered| {
+        offered.as_mut().map(|offered| {
+            offered.read |= offered.keys_sent;
+            offered.utf16.clone()
+        })
+    });
+    let Some(utf16) = utf16 else { return };
+    let bytes: Vec<u8> = utf16.iter().flat_map(|unit| unit.to_ne_bytes()).collect();
+    // 处理 WM_RENDERFORMAT 时剪贴板已由读取方打开，直接放入数据。
+    if let Err(error) = set_clipboard_bytes(CF_UNICODETEXT.0.into(), &bytes) {
+        crate::application::diagnostics::event(
+            "warn",
+            "clipboard.renderFailed",
+            serde_json::json!({ "error": error }),
+        );
+    }
+}
+
+/// 把还没交出的文字真正放上剪贴板。粘贴线程不处理消息时，剪贴板上不能留着要等它交出数据的格式，
+/// 否则其他程序一读剪贴板就卡住，读到的还是空的。
+fn hand_over_offered_text(window: HWND) {
+    let Ok(_clipboard) = ClipboardGuard::open(window) else { return };
+    if unsafe { GetClipboardOwner() }.ok() == Some(window) {
+        render_offered_text();
+    }
+}
+
+fn offered_text_read() -> bool {
+    OFFERED.with_borrow(|offered| offered.as_ref().is_some_and(|offered| offered.read))
+}
+
+fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> Result<(), String> {
+    unsafe {
+        let global = GlobalAlloc(GMEM_MOVEABLE, bytes.len())
+            .map_err(|error| format!("分配剪贴板内存失败：{error}"))?;
+        let target = GlobalLock(global).cast::<u8>();
+        if target.is_null() {
+            let _ = GlobalFree(global);
+            return Err("锁定剪贴板内存失败".into());
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+        // 解锁到计数为零时也返回「失败」，错误码为成功，不必处理。
+        let _ = GlobalUnlock(global);
+        if let Err(error) = SetClipboardData(format, HANDLE(global.0)) {
+            let _ = GlobalFree(global);
+            return Err(format!("写入 Windows 剪贴板格式 {format} 失败：{error}"));
+        }
+    }
+    Ok(())
+}
+
+/// 只接收剪贴板消息的隐藏窗口，属于粘贴线程。
+fn create_paste_window() -> Result<HWND, String> {
+    unsafe {
+        let instance = GetModuleHandleW(None).map_err(|error| format!("创建粘贴窗口失败：{error}"))?;
+        let class = w!("SayItClipboardPaste");
+        let window_class = WNDCLASSW {
+            lpfnWndProc: Some(paste_window_proc),
+            hInstance: instance.into(),
+            lpszClassName: class,
+            ..Default::default()
+        };
+        if RegisterClassW(&window_class) == 0 {
+            return Err(format!("创建粘贴窗口失败：{}", windows::core::Error::from_win32()));
+        }
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class,
+            w!(""),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            HMENU::default(),
+            instance,
+            None,
+        )
+        .map_err(|error| format!("创建粘贴窗口失败：{error}"))
+    }
+}
+
+/// 处理本线程的消息（包括其他进程同步发来的读取请求），直到 `done` 成立或到期。
+fn pump_messages_until(deadline: Instant, done: impl Fn() -> bool) {
+    loop {
+        let mut message = MSG::default();
+        while unsafe { PeekMessageW(&mut message, HWND::default(), 0, 0, PM_REMOVE) }.as_bool() {
+            unsafe { DispatchMessageW(&message) };
+        }
+        let now = Instant::now();
+        if done() || now >= deadline {
+            return;
+        }
+        let wait = (deadline - now).as_millis().try_into().unwrap_or(u32::MAX);
+        unsafe { MsgWaitForMultipleObjects(None, BOOL(0), wait, QS_ALLINPUT) };
+    }
 }
 
 struct PasteJob {
@@ -248,24 +407,37 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
 }
 
 fn run_paste_worker(jobs: std::sync::mpsc::Receiver<PasteJob>) {
+    let window = create_paste_window();
     for job in jobs {
         let _restoring = CLIPBOARD_RESTORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // 每次粘贴各自初始化、还原后释放 OLE：线程在两次粘贴之间不处理窗口消息，不常驻单线程套间。
+        // 每次粘贴各自初始化、还原后释放 OLE，不常驻单线程套间。
         let ole = unsafe { OleInitialize(None) }
             .map(|()| OleGuard)
             .map_err(|error| format!("初始化 Windows OLE 剪贴板失败：{error}"));
-        let pending_restore = match &ole {
-            Ok(_) => paste_once(&job.text),
-            Err(error) => Err(error.clone()),
+        let pasted = match (&ole, &window) {
+            (Ok(_), Ok(window)) => paste_once(*window, &job.text).map(|backup| (*window, backup)),
+            (Err(error), _) | (_, Err(error)) => Err(error.clone()),
         };
-        let (result, pending_restore) = match pending_restore {
+        let (result, pending_restore) = match pasted {
             Ok(pending) => (Ok(()), Some(pending)),
             Err(error) => (Err(error), None),
         };
         let _ = job.pasted.send(result);
-        if let Some((backup, clipboard, injected_sequence)) = pending_restore {
-            std::thread::sleep(std::time::Duration::from_millis(180));
-            if let Err(error) = restore_if_unchanged(backup, clipboard, injected_sequence) {
+        if let Some((window, backup)) = pending_restore {
+            pump_messages_until(Instant::now() + PASTE_READ_TIMEOUT, offered_text_read);
+            let read = offered_text_read();
+            if read {
+                pump_messages_until(Instant::now() + PASTE_SETTLE, || false);
+            } else {
+                // 一直没等到读取：可能是剪贴板监视程序在按键前读走了数据，真机上据此判断出现频率。
+                crate::application::diagnostics::event(
+                    "info",
+                    "clipboard.pasteReadTimeout",
+                    serde_json::json!({}),
+                );
+            }
+            if let Err(error) = restore_if_owned(backup, window) {
+                hand_over_offered_text(window);
                 crate::application::diagnostics::event(
                     "warn",
                     "clipboard.restoreFailed",
@@ -273,22 +445,39 @@ fn run_paste_worker(jobs: std::sync::mpsc::Receiver<PasteJob>) {
                 );
             }
         }
+        OFFERED.set(None);
     }
 }
 
 /// 写入文本并按下粘贴键。成功时返回还原所需的备份，由调用方等目标软件读完后还原；
-/// 按键失败时当场还原并返回错误。
-fn paste_once(text: &str) -> Result<(ClipboardSnapshot, arboard::Clipboard, u32), String> {
+/// 写入或按键失败时当场还原并返回错误。
+fn paste_once(window: HWND, text: &str) -> Result<ClipboardSnapshot, String> {
     let backup = ClipboardSnapshot::capture()?;
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("打开剪贴板失败：{error}"))?;
-    clipboard
-        .set_text(text.to_string())
-        .map_err(|error| format!("写入剪贴板失败：{error}"))?;
-    let injected_sequence = unsafe { GetClipboardSequenceNumber() };
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    let mut enigo = Enigo::new(&EnigoSettings::default())
-        .map_err(|error| format!("初始化输入失败：{error}"))?;
+    let pasted = offer_text(window, text).and_then(|()| {
+        // 等待期间照常处理消息：剪贴板监视程序这时来读，不能让它卡住。
+        pump_messages_until(Instant::now() + PASTE_KEY_DELAY, || false);
+        OFFERED.with_borrow_mut(|offered| {
+            if let Some(offered) = offered {
+                offered.keys_sent = true;
+            }
+        });
+        press_paste_keys()
+    });
+    match pasted {
+        Ok(()) => Ok(backup),
+        Err(error) => Err(match restore_if_owned(backup, window) {
+            Ok(()) => error,
+            Err(restore) => {
+                hand_over_offered_text(window);
+                format!("{error}；{restore}")
+            }
+        }),
+    }
+}
+
+fn press_paste_keys() -> Result<(), String> {
+    let mut enigo =
+        Enigo::new(&EnigoSettings::default()).map_err(|error| format!("初始化输入失败：{error}"))?;
     enigo
         .key(Key::Control, Direction::Press)
         .map_err(|error| format!("模拟粘贴失败：{error}"))?;
@@ -298,25 +487,35 @@ fn paste_once(text: &str) -> Result<(ClipboardSnapshot, arboard::Clipboard, u32)
     let release = enigo
         .key(Key::Control, Direction::Release)
         .map_err(|error| format!("释放粘贴按键失败：{error}"));
-    match click.and(release) {
-        Ok(()) => Ok((backup, clipboard, injected_sequence)),
-        Err(error) => Err(match restore_if_unchanged(backup, clipboard, injected_sequence) {
-            Ok(()) => error,
-            Err(restore) => format!("{error}；{restore}"),
-        }),
-    }
+    click.and(release)
 }
 
-/// 剪贴板在粘贴之后被别的程序改过时不还原，以免覆盖用户新复制的内容。
-fn restore_if_unchanged(
-    backup: ClipboardSnapshot,
-    clipboard: arboard::Clipboard,
-    injected_sequence: u32,
-) -> Result<(), String> {
-    if unsafe { GetClipboardSequenceNumber() } != injected_sequence {
+/// 剪贴板上只登记文字格式，数据等读取时再交出；临时标记直接写入。
+fn offer_text(window: HWND, text: &str) -> Result<(), String> {
+    let utf16 = text.encode_utf16().chain(std::iter::once(0)).collect();
+    OFFERED.set(Some(OfferedText { utf16, keys_sent: false, read: false }));
+    let _clipboard = ClipboardGuard::open(window)?;
+    unsafe {
+        EmptyClipboard().map_err(|error| format!("清空 Windows 剪贴板失败：{error}"))?;
+        // 延迟渲染成功时返回空句柄，windows 库会把它当作失败，所以按错误码判断。
+        SetLastError(WIN32_ERROR(0));
+        if let Err(error) = SetClipboardData(CF_UNICODETEXT.0.into(), HANDLE::default()) {
+            if error.code().is_err() {
+                return Err(format!("写入 Windows 剪贴板失败：{error}"));
+            }
+        }
+        for (name, data) in TRANSIENT_MARKERS {
+            set_clipboard_bytes(RegisterClipboardFormatW(name), data)?;
+        }
+    }
+    Ok(())
+}
+
+/// 粘贴窗口不再是剪贴板所有者，说明之后有程序写过剪贴板，不还原，以免覆盖用户新复制的内容。
+fn restore_if_owned(backup: ClipboardSnapshot, window: HWND) -> Result<(), String> {
+    if unsafe { GetClipboardOwner() }.ok() != Some(window) {
         return Ok(());
     }
-    drop(clipboard);
     backup.restore()
 }
 
