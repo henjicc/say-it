@@ -73,7 +73,7 @@ export function UsagePanel() {
     <UsageEditScope>
       <InspectorBody>
         <Group title="识别">
-          <AsrModelRow label="语音输入" hint="说完一段识别一段，准确优先。" />
+          <AsrModelRow label="语音输入" hint="边说边识别，说完很快出字，准确优先。" />
           <SubtitleAsrRow label="实时字幕" hint="边说边出字，要求速度快。" />
           <TranscriptionModelRow label="录音转写" />
           <OcrModelRow label="屏幕文字" />

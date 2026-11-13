@@ -187,8 +187,6 @@ pub(crate) fn sdk_inline_vocabulary(
         "qwen-audio-3.1-asr-flash"
         | "qwen-audio-3.1-asr-flash-filetrans"
         | "qwen-audio-3.1-asr-flash-streaming"
-        | "qwen-audio-3.0-asr-flash"
-        | "qwen-audio-3.0-asr-flash-filetrans"
     ) {
         return Default::default();
     }
@@ -817,7 +815,7 @@ mod tests {
             hotwords: vec![crate::providers::alibabacloud::HotwordEntry { text: " 说吧 ".into(), weight: 3 }],
             ..Default::default()
         };
-        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans", "qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-filetrans"] {
+        for model in ["qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-filetrans"] {
             let params = crate::providers::alibabacloud::TranscriptionParams { model: model.into(), ..Default::default() };
             let input = sdk_file_asr_input(&params, &customization, None);
             assert_eq!(input["options"]["vocabulary"], json!({"说吧":3}));

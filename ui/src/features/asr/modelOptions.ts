@@ -25,7 +25,7 @@ export const REALTIME_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
 export const SUBTITLE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
 export const FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
 export const DICTATION_FILE_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
-export const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
+const DICTATION_ASR_MODEL_OPTIONS: AsrModelOption[] = [];
 
 // 场景支持判断
 const REALTIME_MODEL_SET = new Set<string>();
