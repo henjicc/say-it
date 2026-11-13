@@ -215,6 +215,28 @@ pub(crate) fn ensure_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+pub(crate) const OPEN_MAIN_VIEW_EVENT: &str = "open-main-view";
+
+/// 打开主窗口并切到指定页面（前端页面键，如 `history`）。主窗口已在时直接通知它；
+/// 正在新建时页面还没开始监听，所以先记下来，由前端加载后通过 `take_pending_main_view` 取走。
+pub(crate) fn open_main_view(app: &tauri::AppHandle, view: &str) -> Result<(), String> {
+    *app.state::<RuntimeState>()
+        .pending_main_view
+        .lock()
+        .map_err(|_| "主窗口页面请求锁已损坏".to_string())? = Some(view.to_string());
+    ensure_main_window(app)?;
+    app.emit(OPEN_MAIN_VIEW_EVENT, view).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn take_pending_main_view(state: tauri::State<'_, RuntimeState>) -> Result<Option<String>, String> {
+    Ok(state
+        .pending_main_view
+        .lock()
+        .map_err(|_| "主窗口页面请求锁已损坏".to_string())?
+        .take())
+}
+
 #[tauri::command]
 pub(crate) fn main_window_ready(window: tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != MAIN_WINDOW_LABEL {

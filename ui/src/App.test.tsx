@@ -12,8 +12,8 @@ const { invoke, initializeSettings, state } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/tauri", () => ({
-  CMD: { getSetupStatus: "get_setup_status", getSessionStatus: "get_session_status", mainWindowReady: "main_window_ready" },
-  EVT: { openHistory: "open_history" },
+  CMD: { getSetupStatus: "get_setup_status", getSessionStatus: "get_session_status", mainWindowReady: "main_window_ready", takePendingMainView: "take_pending_main_view" },
+  EVT: { openMainView: "open-main-view", dictationPrefsChangedExternally: "dictation-prefs-changed-externally" },
   cmd: invoke,
   on: vi.fn().mockResolvedValue(() => {}),
 }));
@@ -46,6 +46,22 @@ vi.mock("@/components/OnboardingWizard", () => ({
   OnboardingWizard: ({ open, onClose }: { open: boolean; onClose: () => void }) => open
     ? <div role="dialog"><button onClick={onClose}>关闭引导</button></div> : null,
 }));
+
+describe("窗口外入口要打开的页面", () => {
+  afterEach(cleanup);
+
+  it("主窗口新建时切到托盘请求的页面", async () => {
+    initializeSettings.mockReset().mockResolvedValue(undefined);
+    state.setView.mockReset();
+    invoke.mockReset().mockImplementation(async (name: string) => {
+      if (name === "take_pending_main_view") return "history";
+      if (name === "get_setup_status") return { onboardingVersion: 1, requiredVersion: 1, complete: true, checks: [] };
+      return {};
+    });
+    render(<App />);
+    await waitFor(() => expect(state.setView).toHaveBeenCalledWith("history"));
+  });
+});
 
 describe("startup onboarding", () => {
   afterEach(cleanup);

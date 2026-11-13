@@ -536,6 +536,15 @@ pub(crate) fn initialize(app: AppHandle) {
     });
 }
 
+/// 实时字幕是否在运行（含等待说话、重连与停止中）。
+pub(crate) fn is_running(state: &RuntimeState) -> bool {
+    state
+        .subtitle_runtime
+        .session
+        .lock()
+        .is_ok_and(|session| !matches!(session.phase, SubtitlePhase::Idle))
+}
+
 pub(crate) fn request_toggle(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = toggle(app.clone()).await {

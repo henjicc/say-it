@@ -135,6 +135,7 @@ export const CMD = {
   deleteHistoryEntry: "delete_history_entry",
   clearHistory: "clear_history",
   openHistoryWindow: "open_history_window",
+  takePendingMainView: "take_pending_main_view",
   getLearningOverview: "get_learning_overview",
   queryLearningRules: "query_learning_rules",
   confirmHistoryLearning: "confirm_history_learning",
@@ -291,7 +292,8 @@ export const EVT = {
   providerPluginImportRequested: "provider-plugin-import-requested",
   pluginRegistryChanged: "plugin-registry-changed",
   historyChanged: "history-changed",
-  openHistory: "open-history",
+  openMainView: "open-main-view",
+  dictationPrefsChangedExternally: "dictation-prefs-changed-externally",
   themeChanged: "app-theme-changed",
   floatingOrbConfig: "floating-orb-config",
 } as const;

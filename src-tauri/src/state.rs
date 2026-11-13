@@ -40,6 +40,8 @@ pub(crate) struct RuntimeState {
     pub(crate) audio_lab_lease: Mutex<Option<crate::application::audio_session::AudioLease>>,
     pub(crate) main_window_lifecycle:
         Mutex<crate::application::window_lifecycle::MainWindowLifecycle>,
+    /// 托盘等窗口外入口要主窗口打开的页面；主窗口可能还没建好，由它加载后取走。
+    pub(crate) pending_main_view: Mutex<Option<String>>,
     /// 实时字幕"系统音频"来源用的 loopback 采集状态，和麦克风共用同一套结构体但各自独立。
     pub(crate) backend_system_audio: Arc<Mutex<BackendMicState>>,
     /// 同 `backend_mic_lifecycle`。
