@@ -44,10 +44,10 @@ export function useSubtitlePreviewLifecycle() {
   useEffect(() => () => { void hideSubtitlePreview(); }, []);
 }
 
-export function SubtitleRunButton({ className }: { className?: string }) {
+export function SubtitleRunButton({ className, size }: { className?: string; size?: "sm" }) {
   const running = useSubtitleStore((s) => s.running);
   return (
-    <Button variant={running ? "danger" : "primary"} className={className} onClick={toggleSubtitles}>
+    <Button variant={running ? "danger" : "primary"} size={size} className={className} onClick={toggleSubtitles}>
       {running ? "停止字幕" : "开始字幕"}
     </Button>
   );
@@ -61,7 +61,15 @@ export function SubtitlesPage() {
 
   const fileNode = FILE_NODES.includes(node);
   const items: NodeItem<SubtitleNodeKey>[] = [
-    { key: "basics", label: TITLES.basics, icon: <SlidersHorizontal {...iconProps} />, headingBefore: { label: "实时字幕" } },
+    {
+      key: "basics",
+      label: TITLES.basics,
+      icon: <SlidersHorizontal {...iconProps} />,
+      headingBefore: {
+        label: "实时字幕",
+        action: <span className={cn("text-xs", running ? "text-[var(--color-accent-text)]" : "text-[var(--color-fg-faint)]")}>{running ? "运行中" : "未运行"}</span>,
+      },
+    },
     { key: "translation", label: TITLES.translation, icon: <Languages {...iconProps} />, off: !prefs.translationEnabled },
     { key: "style", label: TITLES.style, icon: <Type {...iconProps} /> },
     { key: "output", label: TITLES.output, icon: <RadioTower {...iconProps} /> },
@@ -73,20 +81,22 @@ export function SubtitlesPage() {
     <MasterDetail
       wide={fileNode}
       title="字幕"
-      titleRight={<span className={cn("text-xs", running ? "text-[var(--color-accent-text)]" : "text-[var(--color-fg-subtle)]")}>{running ? "运行中" : "未运行"}</span>}
       list={<NodeList ariaLabel="字幕设置" items={items} active={node} onSelect={setNode} />}
-      listFooter={!fileNode && <>
-        <Button
-          aria-pressed={previewActive}
-          disabled={running}
-          onClick={() => { void (previewActive ? hideSubtitlePreview() : showSubtitlePreview(prefs)); }}
-        >
-          {previewActive ? "关闭预览" : "预览"}
-        </Button>
-        <SubtitleRunButton />
-      </>}
     >
-      <InspectorHeader title={TITLES[node]} />
+      <InspectorHeader
+        title={TITLES[node]}
+        right={!fileNode && <>
+          <Button
+            size="sm"
+            aria-pressed={previewActive}
+            disabled={running}
+            onClick={() => { void (previewActive ? hideSubtitlePreview() : showSubtitlePreview(prefs)); }}
+          >
+            {previewActive ? "关闭预览" : "预览"}
+          </Button>
+          <SubtitleRunButton size="sm" />
+        </>}
+      />
       {node === "basics" && (
         <InspectorBody>
           <Group title="触发"><SubtitleShortcutRow /></Group>
