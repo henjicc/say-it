@@ -28,7 +28,7 @@ export interface LocalModelNeed {
 // Mac 上这些模型都用芯片自带的显卡跑，占的是共用的内存。
 export const LOCAL_MODEL_NEEDS: Record<string, LocalModelNeed> = {
   "official.transcribe-qwen3-asr-1.7b": {
-    description: "最准的本地识别，自带标点，支持热词和上下文。",
+    description: "最准的本地识别，自带标点，支持热词和上下文；没有逐字时间，不能生成字幕。",
     summary: isMacOS ? "占约 1.8 GB 内存，用显卡运行" : "占约 1.8 GB 显存；没有显卡时用处理器，占约 2.5 GB 内存",
     gpuMemoryMb: 4 * 1024,
     gpu: "preferred",
@@ -40,17 +40,17 @@ export const LOCAL_MODEL_NEEDS: Record<string, LocalModelNeed> = {
     gpu: "required",
   },
   "official.transcribe-qwen3-asr-0.6b": {
-    description: "1.7B 的轻量版，稍不准，显存小也能跑。",
+    description: "1.7B 的轻量版，稍不准，显存小也能跑；同样不能生成字幕。",
     summary: isMacOS ? "占约 1 GB 内存，用显卡运行" : "占约 1 GB 显存；没有显卡时用处理器，占约 1.5 GB 内存",
     gpuMemoryMb: 2 * 1024,
     gpu: "preferred",
   },
   "official.sherpa-funasr-nano-ctc": {
-    description: "没有显卡时的首选，速度快，不带标点。",
+    description: "没有显卡时的首选，速度快，带逐字时间、能生成字幕，不带标点。",
     summary: "只用处理器，占约 550 MB 内存",
   },
   "official.sherpa-sensevoice-small": {
-    description: "多语种识别，还能听粤语、日语和韩语，不带标点。",
+    description: "多语种识别，还能听粤语、日语和韩语，带逐字时间、能生成字幕，不带标点。",
     summary: "只用处理器，占约 450 MB 内存",
   },
   "official.sherpa-paraformer-online": {
