@@ -110,6 +110,31 @@ pub fn file_recognition_for_with_extensions(
 }
 
 impl FileRecognitionProvider {
+    /// 这次识别下发的热词与上下文；它们会改变结果，识别结果缓存要按它区分。
+    pub fn customization(&self) -> &RequestCustomization {
+        match self {
+            Self::BuiltinSdk { customization, .. }
+            | Self::Plugin { customization, .. }
+            | Self::Local { customization, .. } => customization,
+        }
+    }
+
+    /// 识别实现的版本：插件或模型包升级后，同一文件的旧结果不再复用。内置供应商随应用版本变化。
+    pub fn implementation_revision(&self) -> String {
+        match self {
+            Self::BuiltinSdk { .. } => String::new(),
+            Self::Plugin { spec, .. } => std::fs::metadata(&spec.entrypoint)
+                .ok()
+                .and_then(|meta| Some(format!("{}:{:?}", meta.len(), meta.modified().ok()?)))
+                .unwrap_or_default(),
+            Self::Local { spec, .. } => format!(
+                "{}:{}",
+                spec.manifest_version,
+                spec.files.iter().map(|file| file.sha256.as_str()).collect::<Vec<_>>().join(",")
+            ),
+        }
+    }
+
     pub async fn recognize_short(
         &self,
         path: &str,

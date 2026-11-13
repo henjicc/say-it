@@ -467,6 +467,7 @@ async fn save_and_transcribe(
                     path.clone(),
                     Some(params),
                     TRANSCRIBE_KIND,
+                    false,
                 )
                 .await
             }

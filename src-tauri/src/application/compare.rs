@@ -1012,6 +1012,7 @@ async fn start_file_jobs(
             path.clone(),
             Some(params),
             "compare",
+            false,
             recording.clone(),
             |job_id| state.compare_runtime.register_file_job(epoch, job_id, index),
         )

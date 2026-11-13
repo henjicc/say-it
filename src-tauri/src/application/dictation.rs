@@ -1952,6 +1952,7 @@ async fn start_file_job(
         path,
         Some(params),
         "dictation",
+        false,
         None,
         |job_id| {
             let mut session = state
