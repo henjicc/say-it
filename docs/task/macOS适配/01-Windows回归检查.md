@@ -39,6 +39,7 @@ npm run check
 | Windows 粘贴改为延迟渲染：剪贴板先只登记文字格式，目标软件来读（`WM_RENDERFORMAT`）后再等 100ms 还原，没人读最多等 1.5 秒；按键前被剪贴板监视程序读走的不算；加了不进剪贴板历史与云剪贴板的标记。本机只在 macOS 上按 Windows 目标做过类型检查，从未在 Windows 运行过 | 本次 | 同上一行的场景；另外打开 Win+V 剪贴板历史，听写后历史里不出现听写的文字；在记事本、浏览器、微信、Office 各听写一次都能插入；开着 Ditto 等剪贴板工具时也能插入 |
 | 托盘图标改为只有「声推成字」主体的单色图标，按任务栏深浅（`SystemUsesLightTheme`）选白或黑，指针移到图标上时跟随切换。本机只在 macOS 上编译过，Windows 分支没编译过 | 本次 | 深色任务栏下图标为白色、浅色下为黑色，大小与旁边图标相近、不模糊；在「设置 → 个性化 → 颜色」切换 Windows 模式后，把指针移到托盘图标上，图标换成对应颜色 |
 | 听写胶囊里正在说的这一句（预览）用半透明浅色画，断句定稿后恢复正常颜色；`indicator::Command::SetText` 新增 `preview_from`，Windows 快照驱动已补 `None`，像素快照未在 Windows 跑过 | `5c310de` | `npm run test:rust` 的胶囊像素快照不变；开发者页「原生窗口测试」的听写胶囊，逗号后正在出字的部分是浅色；真实听写时正在说的句子浅色、停顿后变正常颜色 |
+| 本地整理模型的草稿改为「输出末尾在参考里重新对齐」，对不上时只算一个 token；Windows 草稿上限仍是 7（`local_llm::DRAFT_TOKENS`），只在 macOS 上用 15。改动在 `llm-engine`，只在 Apple 芯片上测过 | 本次 | `npm run llm-engine:build` 能编过；智能处理选本地整理模型听写几句长话，结果与改前一样，开发者追踪 `localLlm.run` 的 `forwardPasses` 不比改前多 |
 
 ## 3. 审查时提出、留给 Windows 处理的小项
 

@@ -1,7 +1,7 @@
 //! llama.cpp 上的单会话文本改写：静态提示词与已口述的文字留检查点，每次只算新增部分；
 //! 生成时用草稿批量验证（见 `draft`）。贪心解码；批量与逐个计算有浮点误差，极少数势均力敌的位置可能选到另一个 token。
 
-use crate::draft::{propose, Pointer};
+use crate::draft::{propose, Reference};
 use llama_cpp_sys_2 as sys;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
@@ -12,6 +12,9 @@ const WORK: i32 = 0;
 /// 两个检查点：提示词里听写开始就确定的部分算完时，和已口述文字算完时。
 const HEAD: usize = 0;
 const BODY: usize = 1;
+/// 平常一次前向验证的草稿 token 数。加载参数里的 `draft_tokens` 更长时，只在照抄上一版结果
+/// 连续全中时用它：批量越大每个 token 越便宜，但猜不中的话整批白算。
+const SHORT_DRAFT: usize = 7;
 /// 检查点离字符串末尾留出的 token 数：拼上后续文字时，交界处的分词可能变化。
 const HEAD_MARGIN: usize = 2;
 const BODY_MARGIN: usize = 3;
@@ -23,7 +26,7 @@ pub(crate) struct LoadRequest {
     pub(crate) gpu: bool,
     pub(crate) threads: i32,
     pub(crate) context_tokens: u32,
-    /// 一次前向最多验证的草稿 token 数。
+    /// 一次前向最多验证的草稿 token 数，见 `SHORT_DRAFT`。
     pub(crate) draft_tokens: u32,
 }
 
@@ -188,12 +191,18 @@ impl Engine {
 
     fn warm_up(&mut self) -> Result<(), String> {
         let filler = self.tokenize("。");
-        // 后端第一次遇到某个输出位置数要花几百毫秒做准备，生成阶段只用这两种，加载时各跑一遍。
-        for size in [1, 1 + self.draft_tokens] {
+        // 后端第一次遇到某个输出位置数要花几百毫秒做准备，生成阶段只用这几种，加载时各跑一遍。
+        let mut sizes = vec![1, 1 + self.short_draft(), 1 + self.draft_tokens];
+        sizes.dedup();
+        for size in sizes {
             self.decode(&vec![filler[0]; size], 0, true)?;
             unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.context), true) };
         }
         Ok(())
+    }
+
+    fn short_draft(&self) -> usize {
+        SHORT_DRAFT.min(self.draft_tokens)
     }
 
     fn tokenize(&self, text: &str) -> Vec<i32> {
@@ -360,12 +369,14 @@ impl Engine {
         let generation_started = Instant::now();
         let source_tokens = self.tokenize(&request.source);
         let previous_tokens = self.tokenize(&request.previous);
-        let mut source = Pointer::new(&source_tokens);
-        let mut previous = Pointer::new(&previous_tokens);
+        let mut source = Reference::new(&source_tokens);
+        let mut previous = Reference::new(&previous_tokens);
         let mut output: Vec<i32> = Vec::new();
         // 检查点都留了余量，提示词的最后几个 token 每次都会重新计算，这里一定有输出可读。
         let mut next = self.argmax(-1);
         let mut step: Vec<i32> = Vec::with_capacity(self.draft_tokens + 1);
+        // 上一次前向用的是上一版结果的草稿，并且全中。
+        let mut previous_streak = false;
         loop {
             let finished = unsafe { sys::llama_vocab_is_eog(self.vocab, next) };
             if finished || output.len() >= request.max_tokens {
@@ -376,24 +387,26 @@ impl Engine {
                 break;
             }
             output.push(next);
-            source.follow(next);
-            previous.follow(next);
             let room = request.max_tokens - output.len();
-            let proposal = propose(&previous, &source);
-            // 照抄原文的草稿平均三四个 token 就被标点或改字打断。显卡上多验证几个位置几乎不要钱；
+            // 照抄原文的草稿平均两三个 token 就被标点或改字打断。显卡上多验证几个位置只比算一个贵一点；
             // 处理器上每个位置都要实打实地算，猜不中就是白算，所以只在照抄上一版结果时才猜。
-            let limit = if proposal.from_previous || self.on_gpu {
-                self.draft_tokens
-            } else {
-                0
+            let proposal = propose(&mut previous, &mut source, &output)
+                .filter(|proposal| proposal.from_previous || self.on_gpu);
+            let size = match &proposal {
+                Some(proposal) if proposal.from_previous && proposal.matched >= 2 && previous_streak => {
+                    self.draft_tokens
+                }
+                _ => self.short_draft(),
             };
-            let draft = &proposal.tokens[..proposal.tokens.len().min(limit).min(room)];
+            let draft = proposal.as_ref().map_or(&[][..], |proposal| {
+                &proposal.tokens[..proposal.tokens.len().min(size).min(room)]
+            });
             step.clear();
             step.push(next);
             step.extend_from_slice(draft);
-            // 有草稿就补齐到固定长度，多出的位置算完一并回滚：输出位置数只有两种，见 `warm_up`。
+            // 有草稿就补齐到固定长度，多出的位置算完一并回滚：输出位置数只有几种，见 `warm_up`。
             if step.len() > 1 {
-                step.resize(1 + self.draft_tokens, next);
+                step.resize(1 + size, next);
             }
             let step_position = prompt.len() + output.len() - 1;
             self.decode(&step, step_position, true)?;
@@ -403,11 +416,12 @@ impl Engine {
             next = self.argmax(0);
             while accepted < draft.len() && draft[accepted] == next {
                 output.push(next);
-                source.follow(next);
-                previous.follow(next);
                 accepted += 1;
                 next = self.argmax(accepted as i32);
             }
+            previous_streak = proposal.as_ref().is_some_and(|proposal| proposal.from_previous)
+                && !draft.is_empty()
+                && accepted == draft.len();
             if 1 + accepted < step.len() {
                 let keep = (step_position + 1 + accepted) as i32;
                 let memory = unsafe { sys::llama_get_memory(self.context) };
