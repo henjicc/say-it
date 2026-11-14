@@ -328,9 +328,15 @@ def judge(sample, effort):
     return chat(JUDGE_SYSTEM, user, effort=effort)
 
 
-def cjk_ratio(text):
+def main_script(text):
+    """按文字判断主要语言：有假名为日文、有韩文字母为韩文；否则比较汉字数与拉丁字母单词数（中英混排里英文术语不该压过中文）。"""
     letters = [c for c in text if c.isalpha()]
-    return sum("一" <= c <= "鿿" for c in letters) / max(1, len(letters))
+    if sum("぀" <= c <= "ヿ" for c in letters) > len(letters) * 0.05:
+        return "ja"
+    if sum("가" <= c <= "힯" for c in letters) > len(letters) * 0.05:
+        return "ko"
+    han = sum("一" <= c <= "鿿" for c in letters)
+    return "zh" if han >= len(re.findall(r"[A-Za-zÀ-ɏ]+", text)) else "latin"
 
 
 def hard_checks(sample):
@@ -352,7 +358,7 @@ def hard_checks(sample):
             problems.append("释义带屏幕说明")
     if label == "translate" and out:
         source = sample["selection"] or sample["spoken"]
-        if (cjk_ratio(source) > 0.5) == (cjk_ratio(out) > 0.5):
+        if main_script(source) == main_script(out):
             problems.append("译文语言未变")
     return problems
 
