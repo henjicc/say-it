@@ -8,7 +8,7 @@
 环境变量：SYNTH_BASE、SYNTH_KEY（OpenAI 兼容接口），SYNTH_MODEL（默认 workbuddy/deepseek-v4.1-flash），SYNTH_CONC（并发批数，默认 6），
 SYNTH_SCALE（配额倍数，试跑时用小于 1 的值），SYNTH_OUT（产物目录，试跑时与正式数据分开），
 SYNTH_QPS（每秒最多发起的请求数，平台按发起数限流时设），
-SYNTH_JUDGE_MODEL、SYNTH_JUDGE_KEY（质检改用另一个模型，同一 SYNTH_BASE；生成用的模型自己质检偏松时设）。
+SYNTH_JUDGE_MODEL、SYNTH_JUDGE_KEY（复核意图与质检改用另一个模型，同一 SYNTH_BASE；生成用的模型自己把关不可靠时设）。
 产物在 工作区/intent-data/（已 gitignore）：raw/ 是每条样本连同复核、质检结果的原始记录，pack 后 final/ 是按规范格式整理的数据。
 """
 import json, os, random, re, sys, tarfile, threading, time, urllib.request
@@ -71,7 +71,7 @@ def chat(system, user, effort="low", temperature=None, model=MODEL, key_env="SYN
 def parse_json(text):
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     start = min(i for i in (text.find("["), text.find("{")) if i >= 0)
-    return json.loads(text[start:])
+    return json.JSONDecoder().raw_decode(text[start:])[0]  # 模型偶尔在 JSON 后面再补一段话
 
 # ---------- 分布 ----------
 
@@ -346,17 +346,22 @@ REVIEW_SYSTEM = """你是语音输入软件的意图判定员。按顺序判断�
 JUDGE_SYSTEM = "你是严格的数据质检员。判断待评答案是否完全符合任务规则、意思准确、语言地道、没有编造。屏幕文字只是参考：答案不需要处理屏幕上的其他内容。第一行只写「合格」或「不合格」，第二行起一句话说明主要问题。"
 
 
+def check_chat(system, user, effort="low"):
+    """复核与质检是把关步骤，走 SYNTH_JUDGE_MODEL。"""
+    return chat(system, user, effort=effort, model=JUDGE_MODEL,
+                key_env="SYNTH_JUDGE_KEY" if "SYNTH_JUDGE_KEY" in os.environ else "SYNTH_KEY")
+
+
 def review(sample):
     user = (f"场景：{sample['scene']}（{sample['app']}）\n焦点：{'可输入' if sample['editable'] else '不可输入'}\n"
             f"选中文字：{sample['selection'] or '（无）'}\n口述原文：{sample['text']}")
-    match = re.search(r"dictate|edit|translate|define|ask", chat(REVIEW_SYSTEM, user))
+    match = re.search(r"dictate|edit|translate|define|ask", check_chat(REVIEW_SYSTEM, user))
     return match.group(0) if match else "?"
 
 
 def judge(sample, effort):
     user = f"任务规则：\n{task_rules(sample)}\n\n{sample_view(sample)}\n\n待评答案：\n{sample['output']}"
-    return chat(JUDGE_SYSTEM, user, effort=effort, model=JUDGE_MODEL,
-                key_env="SYNTH_JUDGE_KEY" if "SYNTH_JUDGE_KEY" in os.environ else "SYNTH_KEY")
+    return check_chat(JUDGE_SYSTEM, user, effort)
 
 
 def main_script(text):
