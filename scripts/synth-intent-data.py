@@ -7,7 +7,8 @@
 
 环境变量：SYNTH_BASE、SYNTH_KEY（OpenAI 兼容接口），SYNTH_MODEL（默认 workbuddy/deepseek-v4.1-flash），SYNTH_CONC（并发批数，默认 6），
 SYNTH_SCALE（配额倍数，试跑时用小于 1 的值），SYNTH_OUT（产物目录，试跑时与正式数据分开），
-SYNTH_QPS（每秒最多发起的请求数，平台按发起数限流时设）。
+SYNTH_QPS（每秒最多发起的请求数，平台按发起数限流时设），
+SYNTH_JUDGE_MODEL、SYNTH_JUDGE_KEY（质检改用另一个模型，同一 SYNTH_BASE；生成用的模型自己质检偏松时设）。
 产物在 工作区/intent-data/（已 gitignore）：raw/ 是每条样本连同复核、质检结果的原始记录，pack 后 final/ 是按规范格式整理的数据。
 """
 import json, os, random, re, sys, tarfile, threading, time, urllib.request
@@ -19,6 +20,7 @@ OUT = Path(os.environ.get("SYNTH_OUT", ROOT / "工作区" / "intent-data"))
 MODEL = os.environ.get("SYNTH_MODEL", "workbuddy/deepseek-v4.1-flash")
 CONC = int(os.environ.get("SYNTH_CONC", "6"))
 QPS = float(os.environ.get("SYNTH_QPS", "0"))
+JUDGE_MODEL = os.environ.get("SYNTH_JUDGE_MODEL", MODEL)
 PER_CALL = 6
 
 # ---------- 接口 ----------
@@ -46,9 +48,9 @@ def pace():
         time.sleep(wait)
 
 
-def chat(system, user, effort="low", temperature=None):
+def chat(system, user, effort="low", temperature=None, model=MODEL, key_env="SYNTH_KEY"):
     # 用流式：长思考在部分平台的非流式接口上会超时
-    payload = {"model": MODEL, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], "stream": True, "reasoning_effort": effort}
+    payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], "stream": True, "reasoning_effort": effort}
     if temperature is not None:
         payload["temperature"] = temperature
     body = json.dumps(payload).encode()
@@ -57,7 +59,7 @@ def chat(system, user, effort="low", temperature=None):
             if QPS:
                 pace()
             request = urllib.request.Request(os.environ["SYNTH_BASE"].rstrip("/") + "/v1/chat/completions", body,
-                                             {"Authorization": "Bearer " + os.environ["SYNTH_KEY"], "Content-Type": "application/json"})
+                                             {"Authorization": "Bearer " + os.environ[key_env], "Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=300) as response:
                 return read_stream(response)
         except Exception as error:  # 网关偶发超时或限流，退避重试
@@ -353,7 +355,8 @@ def review(sample):
 
 def judge(sample, effort):
     user = f"任务规则：\n{task_rules(sample)}\n\n{sample_view(sample)}\n\n待评答案：\n{sample['output']}"
-    return chat(JUDGE_SYSTEM, user, effort=effort)
+    return chat(JUDGE_SYSTEM, user, effort=effort, model=JUDGE_MODEL,
+                key_env="SYNTH_JUDGE_KEY" if "SYNTH_JUDGE_KEY" in os.environ else "SYNTH_KEY")
 
 
 def main_script(text):
