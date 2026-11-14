@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "apiVersion": 5,
+    "id": "official.llama-polish-2b",
+    "name": "Qwen3.5-2B 听写微调",
+    "version": "1.0.0",
+    "provider": {
+      "id": "local-polish-2b",
+      "displayName": "本地 Qwen3.5-2B 听写微调",
+      "authKind": "none",
+      "capabilities": [
+        "polish"
+      ],
+      "config": {}
+    },
+    "source": {
+      "namespace": "official.llama-polish-2b"
+    },
+    "capabilities": [],
+    "models": [],
+    "runtime": {
+      "kind": "model-pack"
+    },
+    "modelPack": {
+      "engine": "llama-cpp",
+      "files": [
+        {
+          "path": "sayit-polish-2b-Q4_K_M.gguf",
+          "sha256": "d20586df22c48fe456b918c9e6e0bf09270136a7f8046dccbb5a64e1c07d02bc",
+          "sizeBytes": 1274396192,
+          "download": {
+            "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.llama-polish-2b/sayit-polish-2b-Q4_K_M.gguf"
+          }
+        },
+        {
+          "path": "LICENSE-Qwen3.5.txt",
+          "sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+          "sizeBytes": 11343,
+          "download": {
+            "url": "https://modelscope.cn/models/henjicc/sayit-models/resolve/master/official.llama-polish-2b/LICENSE-Qwen3.5.txt"
+          }
+        }
+      ],
+      "params": {
+        "model": "sayit-polish-2b-Q4_K_M.gguf"
+      }
+    }
+  },
+  "sources": {
+    "sayit-polish-2b-Q4_K_M.gguf": "files/polish-2b/sayit-polish-2b-Q4_K_M.gguf",
+    "LICENSE-Qwen3.5.txt": "files/polish-2b/LICENSE-Qwen3.5.txt"
+  }
+}
