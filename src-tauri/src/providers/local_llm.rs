@@ -24,8 +24,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const PROMPT_TAIL: &str = "</text><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
 /// 提示词加输出的 token 上限，够整理两三千字的一段话。
 const CONTEXT_TOKENS: u64 = 8192;
-/// 一次前向验证的草稿 token 数。每多一个，显卡上要多留一份循环状态快照（4B 约 54 MB）；
-/// 超过 7 个单次前向明显变贵，实测见 `docs/experience/本地听写整理模型的选型提速与显存实测.md`。
+/// 一次前向最多验证的草稿 token 数（照抄上一版结果连续全中时才用满，平常 7 个）。每多一个，
+/// 要多留一份循环状态快照（4B 约 50 MB）。Apple 芯片上批量 16 每个 token 比批量 8 便宜约四分之一；
+/// Vulkan 上超过 8 个单次前向明显变贵。实测见 `docs/experience/本地听写整理模型的选型提速与显存实测.md`。
+#[cfg(target_os = "macos")]
+const DRAFT_TOKENS: u64 = 15;
+#[cfg(not(target_os = "macos"))]
 const DRAFT_TOKENS: u64 = 7;
 
 static ENGINE_PATH: OnceLock<PathBuf> = OnceLock::new();
