@@ -242,7 +242,7 @@ export function AssistantAnswerApp() {
       </button>
     </header>
     <main className="min-h-0 flex-1 overflow-y-auto p-5">
-      {answer.sourceText && <blockquote className="mb-4 line-clamp-3 border-l-2 border-[var(--color-accent)] pl-3 text-xs text-[var(--color-fg-subtle)]">{answer.sourceText}</blockquote>}
+      {answer.sourceText && <blockquote className="mb-4 line-clamp-3 whitespace-pre-line border-l-2 border-[var(--color-accent)] pl-3 text-xs text-[var(--color-fg-subtle)]">{answer.sourceText}</blockquote>}
       {answer.reasoning && <details className="assistant-reasoning mb-4" open={answer.streaming}>
         <summary>思考过程{answer.streaming ? "（进行中）" : ""}</summary>
         <div className="mt-2 whitespace-pre-wrap break-words">{answer.reasoning}</div>

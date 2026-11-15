@@ -199,6 +199,11 @@ body,
   padding-left: 1.35rem;
 }
 
+/* Markdown 把段内单个换行当空格；翻译、改写的结果要照原文分行，所以段内换行照样换行。 */
+.assistant-markdown p {
+  white-space: pre-line;
+}
+
 .assistant-markdown ul { list-style: disc; }
 .assistant-markdown ol { list-style: decimal; }
 .assistant-markdown li + li { margin-top: 0.25rem; }
