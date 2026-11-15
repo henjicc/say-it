@@ -58,6 +58,18 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
       ["systemLost", "电脑声音断开"],
     ],
   },
+  {
+    key: "answer",
+    label: "智能助手回答窗",
+    hint: "出现在指针附近。可以滚动、拖选和复制正文，在输入框打字，点展开前几轮和关闭；其余按钮在测试中不发请求。",
+    scenes: [
+      ["short", "短结果"],
+      ["thread", "多轮追问"],
+      ["streaming", "生成中"],
+      ["voice", "语音追问"],
+      ["error", "出错"],
+    ],
+  },
 ];
 
 /** 用假数据把原生窗口摆到屏幕上看外观和手感；窗口上的操作不触发真实动作。一次只摆出一个。 */

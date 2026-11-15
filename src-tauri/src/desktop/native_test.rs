@@ -6,7 +6,7 @@
 
 use crate::desktop::native_common::{post, post_if_started, started};
 use crate::desktop::native_subtitle::SubtitleWindow;
-use crate::desktop::{native_orb, native_recorder};
+use crate::desktop::{native_answer, native_orb, native_recorder};
 use crate::state::RuntimeState;
 use sayit_overlay_core::subtitle::{Command as SubtitleCommand, SubtitleConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -19,6 +19,9 @@ const DICTATION_TEXT: &str = "今天下午三点开会，讨论下个季度的�
 const SUBTITLE_TEXT: &str = "欢迎来到今天的分享。我们先看一下过去一年的整体情况，然后再讨论接下来的计划，最后留十分钟回答大家的问题。";
 const SUBTITLE_TRANSLATION: &str = "Welcome to today's session. We'll first look at the past year, then discuss what comes next, and leave ten minutes for questions.";
 const NOTICE_TEXT: &str = "这是一条测试通知，几秒后自动消失";
+const ANSWER_SHORT: &str = "使用边界框作为 MiniMax H3 图像的放置位置。\n这个周末试试看，把你做出来的东西分享出来。";
+const ANSWER_LONG: &str = "比如要生成「今天天气很好」：\n\n1. 小模型一口气猜出「今天 / 天气 / 很 / 好」四个词\n2. 大模型跑**一次**，发现前三个对、第四个该是「不错」\n3. 保留前三个，从第四个接着生成\n\n```text\ndraft:  今天 天气 很 好\nverify: ✓    ✓    ✓  ✗ → 不错\n```\n\n| 模型 | 作用 |\n|---|---|\n| 小模型 | 先猜，便宜又快 |\n| 大模型 | 一次核对多个字 |\n\n> 猜对得越多，提速越明显。详细说明见[这篇文章](https://example.com)。";
+const VOICE_TEXT: &str = "那这个小模型一般选多大的比较合适";
 
 /// 被测试的窗口。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,10 +30,19 @@ pub(crate) enum TestWindow {
     Orb,
     Subtitle,
     Recorder,
+    Answer,
 }
 
+const ALL: [TestWindow; 5] = [
+    TestWindow::Indicator,
+    TestWindow::Orb,
+    TestWindow::Subtitle,
+    TestWindow::Recorder,
+    TestWindow::Answer,
+];
+
 /// 各窗口是否正在测试，下标同 `TestWindow`。窗口线程在 `dispatch` 里读取。
-static TESTING: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
+static TESTING: [AtomicBool; 5] = [const { AtomicBool::new(false) }; 5];
 /// 每开始或结束一轮测试加一；推送任务只在自己那一轮里运行。
 static ROUND: AtomicU32 = AtomicU32::new(0);
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
@@ -44,6 +56,8 @@ struct Scenes {
     /// Some(是否带译文)。
     subtitle: Option<bool>,
     recorder: bool,
+    /// 回答窗的语音条在出字。
+    answer_voice: bool,
     tick: u32,
     /// 胶囊、字幕条各自从哪一拍开始出字，互不打断。
     indicator_since: u32,
@@ -57,6 +71,7 @@ impl Scenes {
         orb_touched: false,
         subtitle: None,
         recorder: false,
+        answer_voice: false,
         tick: 0,
         indicator_since: 0,
         subtitle_since: 0,
@@ -80,7 +95,7 @@ fn scenes() -> Result<std::sync::MutexGuard<'static, Scenes>, String> {
     SCENES.lock().map_err(|_| "原生窗口测试状态锁失败".to_string())
 }
 
-/// window: indicator | orb | subtitle | recorder；scene 是该窗口的一种状态。
+/// window: indicator | orb | subtitle | recorder | answer；scene 是该窗口的一种状态。
 /// 一次只摆出一个窗口：显示这一个之前先收起其他正在测试的。
 // 悬浮球的窗口操作不能在 WebView2 同步 IPC 回调里做，Windows 上换到异步线程派发。
 #[cfg_attr(windows, tauri::command(async))]
@@ -103,14 +118,10 @@ pub(crate) fn dev_native_window_test(
         "orb" => TestWindow::Orb,
         "subtitle" => TestWindow::Subtitle,
         "recorder" => TestWindow::Recorder,
+        "answer" => TestWindow::Answer,
         _ => return Err(format!("未知的原生窗口：{window}")),
     };
-    for other in [
-        TestWindow::Indicator,
-        TestWindow::Orb,
-        TestWindow::Subtitle,
-        TestWindow::Recorder,
-    ] {
+    for other in ALL {
         if other != target {
             hide(&app, &mut scenes, other);
         }
@@ -120,6 +131,7 @@ pub(crate) fn dev_native_window_test(
         TestWindow::Orb => show_orb(&app, &mut scenes, &scene),
         TestWindow::Subtitle => show_subtitle(&mut scenes, &scene),
         TestWindow::Recorder => show_recorder(&app, &mut scenes, &scene),
+        TestWindow::Answer => show_answer(&app, &mut scenes, &scene),
     }?;
     if !was_testing && any_testing() {
         spawn_feed(app, ROUND.fetch_add(1, Ordering::AcqRel) + 1);
@@ -258,6 +270,89 @@ fn show_recorder(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Re
     Ok(())
 }
 
+fn show_answer(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Result<(), String> {
+    use sayit_overlay_core::answer::{AnswerView, Turn};
+    use sayit_overlay_core::geom::PxRect;
+    if !native_answer::native_answer_enabled() {
+        return Err("原生回答窗已用环境变量关闭".into());
+    }
+    let state = app.state::<RuntimeState>();
+    let hotkey = state.dictation.lock().ok().and_then(|settings| {
+        native_answer::hotkey_label(
+            &settings.key_code,
+            settings.ctrl,
+            settings.alt,
+            settings.shift,
+            settings.meta,
+        )
+    });
+    let thread = || AnswerView {
+        label: "问答 · 第 2 轮".into(),
+        earlier: vec![Turn {
+            question: "解释一下这段".into(),
+            answer: "投机解码：小模型先猜几个字，大模型一次核对。".into(),
+        }],
+        question: Some("能举个具体的例子吗？".into()),
+        text: ANSWER_LONG.into(),
+        can_follow_up: true,
+        hotkey: hotkey.clone(),
+        ..AnswerView::default()
+    };
+    let view = match scene {
+        "short" => AnswerView {
+            label: "翻译".into(),
+            text: ANSWER_SHORT.into(),
+            can_follow_up: true,
+            hotkey: hotkey.clone(),
+            ..AnswerView::default()
+        },
+        "thread" | "voice" => thread(),
+        "streaming" => AnswerView {
+            reasoning: "用户想知道投机解码的具体例子，先举一个短句……".into(),
+            text: head(ANSWER_LONG, 40),
+            streaming: true,
+            ..thread()
+        },
+        "error" => AnswerView {
+            label: "问答".into(),
+            error: Some("大语言模型请求失败：网络连接超时".into()),
+            can_follow_up: true,
+            hotkey: hotkey.clone(),
+            ..AnswerView::default()
+        },
+        _ => return Err(format!("未知的回答窗状态：{scene}")),
+    };
+    prepare_look(app);
+    // 摆在指针附近，和没有选区时的真实回答一样。
+    let anchor = app
+        .cursor_position()
+        .map(|point| PxRect::new(point.x.round() as i32, point.y.round() as i32, 0, 0))
+        .unwrap_or_default();
+    let work = app
+        .monitor_from_point(f64::from(anchor.x), f64::from(anchor.y))
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            PxRect::new(
+                area.position.x,
+                area.position.y,
+                area.size.width as i32,
+                area.size.height as i32,
+            )
+        })
+        .unwrap_or_default();
+    if native_answer::native_answer_visible() {
+        native_answer::native_answer_update(view);
+    } else {
+        native_answer::native_answer_show(app, view, anchor, work, false);
+    }
+    scenes.answer_voice = scene == "voice";
+    native_answer::native_answer_voice(scenes.answer_voice, "", Some(true));
+    set_testing(TestWindow::Answer, true);
+    Ok(())
+}
+
 /// 前 `count` 个字符。
 fn head(text: &str, count: usize) -> String {
     text.chars().take(count).collect()
@@ -332,6 +427,14 @@ fn spawn_feed(app: tauri::AppHandle, round: u32) {
             if scenes.recorder {
                 native_recorder::native_recorder_levels(wave(0.0), wave(2.0));
             }
+            if scenes.answer_voice {
+                native_answer::native_answer_level(wave(0.0));
+                let total = VOICE_TEXT.chars().count();
+                let shown = (scenes.tick as usize / 2) % (total + 20);
+                if scenes.tick % 2 == 0 && shown <= total {
+                    native_answer::native_answer_voice(true, &head(VOICE_TEXT, shown), None);
+                }
+            }
         }
     });
 }
@@ -347,7 +450,9 @@ fn hide(app: &tauri::AppHandle, scenes: &mut Scenes, window: TestWindow) {
             set_testing(window, false);
         }
         TestWindow::Orb => restore_orb(app, scenes),
-        TestWindow::Subtitle | TestWindow::Recorder => closed_by_button_locked(scenes, window),
+        TestWindow::Subtitle | TestWindow::Recorder | TestWindow::Answer => {
+            closed_by_button_locked(scenes, window)
+        }
     }
 }
 
@@ -361,6 +466,12 @@ fn closed_by_button_locked(scenes: &mut Scenes, window: TestWindow) {
         TestWindow::Recorder => {
             if std::mem::take(&mut scenes.recorder) {
                 native_recorder::native_recorder_hide();
+            }
+        }
+        TestWindow::Answer => {
+            scenes.answer_voice = false;
+            if testing(window) {
+                native_answer::native_answer_hide();
             }
         }
         TestWindow::Indicator | TestWindow::Orb => {}
@@ -378,12 +489,7 @@ pub(crate) fn end() {
     let (Ok(mut scenes), Some(app)) = (scenes(), APP.get()) else {
         return;
     };
-    for window in [
-        TestWindow::Indicator,
-        TestWindow::Orb,
-        TestWindow::Subtitle,
-        TestWindow::Recorder,
-    ] {
+    for window in ALL {
         hide(app, &mut scenes, window);
     }
     *scenes = Scenes::IDLE;

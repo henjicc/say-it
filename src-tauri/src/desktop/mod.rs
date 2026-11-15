@@ -13,6 +13,7 @@ pub(crate) mod cue_player;
 pub(crate) mod floating_orb;
 pub(crate) mod indicator;
 pub(crate) mod mouse_gesture;
+pub(crate) mod native_answer;
 pub(crate) mod native_common;
 pub(crate) mod native_indicator;
 pub(crate) mod native_orb;

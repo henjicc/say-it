@@ -292,6 +292,7 @@ fn request_shortcut(app: AppHandle, action: AssistantAction, target: Option<Acti
                     identity: None,
                     started_at: Instant::now(),
                     follow_up: false,
+                    intent: None,
                 },
                 String::new(),
                 Some(error),
@@ -737,6 +738,8 @@ pub(crate) struct AssistantRequest {
     pub(crate) started_at: Instant,
     /// 来自回答窗内的语音追问，复用听写 ASR 链路但不展示全局指示窗。
     pub(crate) follow_up: bool,
+    /// 由听写意图分派而来时的意图；回答窗据此显示任务名（选区翻译走的也是选区编辑）。
+    pub(crate) intent: Option<crate::providers::local_llm::Intent>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -761,6 +764,10 @@ pub(crate) struct AssistantRuntime {
     generation: Mutex<Option<CancellationToken>>,
     pinned: AtomicBool,
     last_delivery: Mutex<Option<LastDelivery>>,
+    /// 正在回答的追问原文；回答窗把它显示成问题气泡。
+    question: Mutex<Option<String>>,
+    /// 最近一次发布回答所属的请求；置顶变化时据此重建回答窗快照。
+    answer_request: Mutex<Option<AssistantRequest>>,
 }
 
 /// 最近一次输入到其他应用的文字。没有选区时，「选区编辑」改的就是它。
@@ -1040,6 +1047,7 @@ pub(crate) async fn dispatch_intent(
         identity,
         started_at: Instant::now(),
         follow_up: false,
+        intent: Some(intent),
     };
     if selection_cut && action == AssistantAction::EditSelection {
         return Some((request, Err("选中文本过长，为避免只处理部分内容，已停止选区编辑".into())));
@@ -1158,6 +1166,7 @@ async fn assistant_start_for_target(
             identity,
             started_at: Instant::now(),
             follow_up: false,
+            intent: None,
         },
     )
     .await
@@ -1306,6 +1315,9 @@ pub(crate) async fn process(
     request: &mut AssistantRequest,
     spoken_text: &str,
 ) -> Result<ProcessedAssistant, String> {
+    if request.follow_up {
+        set_question(state, spoken_text);
+    }
     if request.action != AssistantAction::EditSelection || request.selection.is_some() {
         return process_request(app, state, request, spoken_text).await;
     }
@@ -1743,6 +1755,7 @@ pub(crate) async fn continue_assistant_answer(
             .map_err(|_| "应用配置锁失败")?
             .assistant_prefs,
     )?;
+    set_question(&state, prompt);
     let cancellation = state.assistant_runtime.begin_generation();
     publish_answer_progress(&app, &request, String::new(), String::new());
     let result = process_ask_action(
@@ -1781,6 +1794,11 @@ pub(crate) async fn continue_assistant_answer(
 
 #[tauri::command]
 pub(crate) async fn start_assistant_follow_up_voice(app: AppHandle) -> Result<(), String> {
+    start_follow_up_voice(app, false).await
+}
+
+/// hotkey：按住听写快捷键开始（松开即发送），否则是点了回答窗里的麦克风。
+pub(crate) async fn start_follow_up_voice(app: AppHandle, hotkey: bool) -> Result<(), String> {
     let state = app.state::<RuntimeState>();
     if state
         .assistant_runtime
@@ -1797,7 +1815,15 @@ pub(crate) async fn start_assistant_follow_up_voice(app: AppHandle) -> Result<()
     request.started_at = Instant::now();
     drop(state);
     crate::application::dictation::start_assistant(app.clone(), request).await?;
+    crate::desktop::native_answer::native_answer_voice(true, "", Some(hotkey));
     publish_follow_up_voice_input(&app, true, "");
+    Ok(())
+}
+
+/// 放弃这次语音追问（回答窗里按 Esc）。
+pub(crate) async fn cancel_follow_up_voice(app: AppHandle) -> Result<(), String> {
+    crate::application::dictation::cancel_assistant_if_active(app.clone()).await?;
+    publish_follow_up_voice_input(&app, false, "");
     Ok(())
 }
 
@@ -1809,6 +1835,10 @@ pub(crate) async fn stop_assistant_follow_up_voice(app: AppHandle) -> Result<(),
 }
 
 pub(crate) fn publish_follow_up_voice_input(app: &AppHandle, active: bool, text: &str) {
+    if crate::desktop::native_answer::native_answer_enabled() {
+        crate::desktop::native_answer::native_answer_voice(active, text, None);
+        return;
+    }
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let _ = window.emit(
             ANSWER_VOICE_EVENT,
@@ -1818,6 +1848,10 @@ pub(crate) fn publish_follow_up_voice_input(app: &AppHandle, active: bool, text:
 }
 
 pub(crate) fn publish_follow_up_waveform(app: &AppHandle, level: f32, peaks: Vec<f32>) {
+    if crate::desktop::native_answer::native_answer_enabled() {
+        crate::desktop::native_answer::native_answer_level(level);
+        return;
+    }
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let _ = window.emit(
             ANSWER_WAVEFORM_EVENT,
@@ -1978,6 +2012,18 @@ fn publish_answer_details(
     {
         *target = request.target;
     }
+    if let Ok(mut current) = app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .answer_request
+        .lock()
+    {
+        *current = Some(request.clone());
+    }
+    if crate::desktop::native_answer::native_answer_enabled() {
+        publish_native_answer(app, request, &answer);
+        return;
+    }
     let _ = ensure_answer_window(app);
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let should_focus =
@@ -1998,6 +2044,162 @@ fn publish_answer_details(
         }
         let _ = window.emit(ANSWER_EVENT, answer);
     }
+}
+
+fn current_request(state: &RuntimeState) -> Option<AssistantRequest> {
+    state
+        .assistant_runtime
+        .answer_request
+        .lock()
+        .ok()
+        .and_then(|request| request.clone())
+}
+
+fn set_question(state: &RuntimeState, question: &str) {
+    if let Ok(mut current) = state.assistant_runtime.question.lock() {
+        *current = Some(question.trim().to_owned());
+    }
+}
+
+/// 对话记录里存的是送给模型的 JSON；问题气泡只显示其中用户说的那句。
+fn spoken_instruction(user_payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(user_payload)
+        .ok()
+        .and_then(|value| value.get("spokenInstruction")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| user_payload.to_owned())
+}
+
+fn answer_label(request: &AssistantRequest, round: usize) -> String {
+    use crate::providers::local_llm::Intent;
+    let task = match (request.intent, request.action) {
+        (Some(Intent::Translate), _) | (None, AssistantAction::TranslateSpeech) => "翻译",
+        (Some(Intent::Define), _) => "查词",
+        (Some(Intent::Edit), _) | (None, AssistantAction::EditSelection) => "改写",
+        _ => "问答",
+    };
+    if round > 1 {
+        format!("{task} · 第 {round} 轮")
+    } else {
+        task.to_owned()
+    }
+}
+
+fn native_answer_view(
+    app: &AppHandle,
+    request: &AssistantRequest,
+    answer: &AssistantAnswer,
+) -> sayit_overlay_core::answer::AnswerView {
+    use sayit_overlay_core::answer::{AnswerView, Turn};
+    let state = app.state::<RuntimeState>();
+    let runtime = &state.assistant_runtime;
+    let conversation = runtime.conversation.lock().ok().and_then(|value| value.clone());
+    let mut earlier: Vec<Turn> = match (&conversation, request.follow_up) {
+        (Some(conversation), true) => conversation
+            .turns
+            .iter()
+            .map(|turn| Turn {
+                question: spoken_instruction(&turn.user),
+                answer: turn.assistant.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // 本轮回答完成后会先记进对话，再发布；它已经显示在正文里。
+    if earlier
+        .last()
+        .is_some_and(|turn| request.follow_up && turn.answer == answer.text)
+    {
+        earlier.pop();
+    }
+    let question = request
+        .follow_up
+        .then(|| runtime.question.lock().ok().and_then(|value| value.clone()))
+        .flatten();
+    let hotkey = state.dictation.lock().ok().and_then(|settings| {
+        crate::desktop::native_answer::hotkey_label(
+            &settings.key_code,
+            settings.ctrl,
+            settings.alt,
+            settings.shift,
+            settings.meta,
+        )
+    });
+    AnswerView {
+        label: answer_label(request, earlier.len() + 1),
+        earlier,
+        question,
+        text: answer.text.clone(),
+        reasoning: answer.reasoning.clone(),
+        error: answer.error.clone(),
+        streaming: answer.streaming,
+        can_insert: answer.can_insert,
+        pinned: answer.pinned,
+        can_follow_up: conversation.is_some(),
+        hotkey,
+    }
+}
+
+fn publish_native_answer(app: &AppHandle, request: &AssistantRequest, answer: &AssistantAnswer) {
+    use crate::desktop::native_answer as native;
+    use sayit_overlay_core::geom::PxRect;
+    crate::desktop::native_test::end();
+    let view = native_answer_view(app, request, answer);
+    if native::native_answer_visible() {
+        native::native_answer_update(view);
+        return;
+    }
+    // 选区矩形与指针位置都是物理像素；新回答贴着选区出现，没有选区时贴着指针。
+    let anchor = request
+        .selection
+        .as_ref()
+        .and_then(|selection| selection.bounds.as_ref())
+        .map(|bounds| {
+            PxRect::new(
+                bounds.x.round() as i32,
+                bounds.y.round() as i32,
+                bounds.width.round() as i32,
+                bounds.height.round() as i32,
+            )
+        })
+        .or_else(|| {
+            app.cursor_position()
+                .ok()
+                .map(|point| PxRect::new(point.x.round() as i32, point.y.round() as i32, 0, 0))
+        })
+        .unwrap_or_default();
+    let work = app
+        .monitor_from_point(f64::from(anchor.x), f64::from(anchor.y))
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            PxRect::new(
+                area.position.x,
+                area.position.y,
+                area.size.width as i32,
+                area.size.height as i32,
+            )
+        })
+        .unwrap_or_default();
+    // 正常回答从出现起就取得焦点，失焦才能可靠触发关闭；启动阶段的错误只提示，不抢焦点。
+    let focus = answer.error.is_none() || answer.can_insert;
+    native::native_answer_show(app, view, anchor, work, focus);
+}
+
+/// 原生回答窗失去焦点：没置顶就关掉，和 WebView 回答窗的失焦关闭一致。
+pub(crate) fn answer_window_blurred(app: &AppHandle) {
+    let pinned = app
+        .state::<RuntimeState>()
+        .assistant_runtime
+        .pinned
+        .load(Ordering::Acquire);
+    if pinned || !crate::desktop::native_answer::native_answer_visible() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = close_assistant_answer_inner(app).await;
+    });
 }
 
 fn position_answer_window(
@@ -2099,7 +2301,8 @@ pub(crate) fn set_assistant_answer_pinned(
     pinned: bool,
 ) -> Result<AssistantAnswer, String> {
     let state = app.state::<RuntimeState>();
-    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+    let native = crate::desktop::native_answer::native_answer_enabled();
+    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL).filter(|_| !native) {
         window
             .set_always_on_top(pinned)
             .map_err(|error| format!("设置回答窗置顶状态失败：{error}"))?;
@@ -2117,7 +2320,13 @@ pub(crate) fn set_assistant_answer_pinned(
         answer.pinned = pinned;
         answer.clone()
     };
-    if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
+    if native {
+        if let Some(request) = current_request(&state) {
+            crate::desktop::native_answer::native_answer_update(native_answer_view(
+                &app, &request, &answer,
+            ));
+        }
+    } else if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let _ = window.emit(ANSWER_EVENT, answer.clone());
     }
     Ok(answer)
@@ -2141,6 +2350,7 @@ pub(crate) async fn insert_assistant_answer(app: AppHandle) -> Result<(), String
     if text.trim().is_empty() {
         return Err("没有可插入的回答".into());
     }
+    crate::desktop::native_answer::native_answer_hide();
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let _ = window.hide();
     }
@@ -2256,6 +2466,10 @@ async fn close_assistant_answer_inner(app: AppHandle) -> Result<(), String> {
     if let Ok(mut regeneration) = state.assistant_runtime.regeneration.lock() {
         *regeneration = None;
     }
+    if let Ok(mut question) = state.assistant_runtime.question.lock() {
+        *question = None;
+    }
+    crate::desktop::native_answer::native_answer_hide();
     if let Some(window) = app.get_webview_window(ANSWER_WINDOW_LABEL) {
         let _ = window.set_always_on_top(false);
         window.hide().map_err(|error| error.to_string())?;

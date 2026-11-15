@@ -857,6 +857,12 @@ async fn toggle_from_shortcut(
         .lock()
         .map_err(|_| "听写状态锁失败")?
         .phase;
+    // 回答窗拿着焦点时，听写快捷键用来语音追问；结束仍走下面的 toggle 与松开停止。
+    if matches!(phase, DictationPhase::Idle | DictationPhase::Failed)
+        && crate::desktop::native_answer::hotkey_follows_up()
+    {
+        return crate::application::assistant::start_follow_up_voice(app, true).await;
+    }
     if !shortcut_uses_floating_orb(&app, phase) {
         return toggle(app, activation_target, shortcut_profile_id).await;
     }

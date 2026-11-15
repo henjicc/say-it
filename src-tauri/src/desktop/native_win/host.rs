@@ -23,6 +23,12 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::Ime::{
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+    ImmSetCompositionWindow, CANDIDATEFORM, CFS_EXCLUDE, CFS_POINT, COMPOSITIONFORM,
+    GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, IME_COMPOSITION_STRING,
+    ISC_SHOWUICOMPOSITIONWINDOW,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
     TRACKMOUSEEVENT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
@@ -35,7 +41,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, HTCAPTION, HTCLIENT, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL,
     SPI_GETWHEELSCROLLLINES, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SW_HIDE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA, WINDOW_EX_STYLE,
-    WM_CAPTURECHANGED, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_CAPTURECHANGED, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_IME_COMPOSITION,
+    WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCLBUTTONDOWN,
     WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
@@ -371,6 +378,91 @@ fn execute<W: OverlaySpec>(hwnd: HWND, ops: Ops<Action<W>>, now: Instant) {
 }
 fn key_input<W: OverlaySpec>(hwnd: HWND, input: KeyInput, now: Instant) {
     update::<W>(hwnd, now, |model, cx| model.key(input, cx));
+    place_ime::<W>(hwnd);
+}
+
+/// 模型当前的输入框光标（DIP）；没有获得焦点的输入框时为 None，此时输入法用系统默认窗口。
+fn ime_caret<W: OverlaySpec>(hwnd: HWND) -> Option<sayit_overlay_core::geom::Rect> {
+    with_state::<W, _>(hwnd, |state| state.pointer.ime_rect(&state.model.hit())).flatten()
+}
+
+/// 把输入法的组字与候选窗口贴到输入框光标下方，候选窗不遮住光标所在行。
+fn place_ime<W: OverlaySpec>(hwnd: HWND) {
+    let Some(caret) = ime_caret::<W>(hwnd) else {
+        return;
+    };
+    let scale = window_dpi(hwnd) as f32 / 96.0;
+    let px = |value: f32| (value * scale).round() as i32;
+    let area = RECT {
+        left: px(caret.left),
+        top: px(caret.top),
+        right: px(caret.right),
+        bottom: px(caret.bottom),
+    };
+    unsafe {
+        let context = ImmGetContext(hwnd);
+        if context.is_invalid() {
+            return;
+        }
+        let _ = ImmSetCompositionWindow(
+            context,
+            &COMPOSITIONFORM {
+                dwStyle: CFS_POINT,
+                ptCurrentPos: POINT {
+                    x: area.left,
+                    y: area.top,
+                },
+                rcArea: area,
+            },
+        );
+        let _ = ImmSetCandidateWindow(
+            context,
+            &CANDIDATEFORM {
+                dwIndex: 0,
+                dwStyle: CFS_EXCLUDE,
+                ptCurrentPos: POINT {
+                    x: area.left,
+                    y: area.bottom,
+                },
+                rcArea: area,
+            },
+        );
+        let _ = ImmReleaseContext(hwnd, context);
+    }
+}
+
+fn composition_string(hwnd: HWND, kind: IME_COMPOSITION_STRING) -> Option<String> {
+    unsafe {
+        let context = ImmGetContext(hwnd);
+        if context.is_invalid() {
+            return None;
+        }
+        let bytes = ImmGetCompositionStringW(context, kind, None, 0);
+        let text = (bytes >= 0).then(|| {
+            let mut buffer = vec![0u16; bytes as usize / 2];
+            ImmGetCompositionStringW(
+                context,
+                kind,
+                Some(buffer.as_mut_ptr().cast()),
+                bytes as u32,
+            );
+            String::from_utf16_lossy(&buffer)
+        });
+        let _ = ImmReleaseContext(hwnd, context);
+        text
+    }
+}
+
+fn composition_cursor(hwnd: HWND) -> u32 {
+    unsafe {
+        let context = ImmGetContext(hwnd);
+        if context.is_invalid() {
+            return 0;
+        }
+        let cursor = ImmGetCompositionStringW(context, GCS_CURSORPOS, None, 0);
+        let _ = ImmReleaseContext(hwnd, context);
+        cursor.max(0) as u32
+    }
 }
 fn modifiers() -> Modifiers {
     let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(i32::from(key.0)) } < 0;
@@ -542,6 +634,33 @@ unsafe extern "system" fn window_proc<W: OverlaySpec>(
             let lines = wheel_lines(wparam);
             update::<W>(hwnd, now, |model, cx| model.wheel(dip, lines, cx));
         }
+        // 输入框获得焦点时自己画组字串：隐藏系统的组字窗口，只留候选窗。
+        WM_IME_SETCONTEXT if ime_caret::<W>(hwnd).is_some() => {
+            let lparam = LPARAM(lparam.0 & !(ISC_SHOWUICOMPOSITIONWINDOW as isize));
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        WM_IME_STARTCOMPOSITION if ime_caret::<W>(hwnd).is_some() => place_ime::<W>(hwnd),
+        WM_IME_COMPOSITION if ime_caret::<W>(hwnd).is_some() => {
+            let flags = lparam.0 as u32;
+            if flags & GCS_RESULTSTR.0 != 0 {
+                if let Some(text) = composition_string(hwnd, GCS_RESULTSTR) {
+                    key_input::<W>(hwnd, KeyInput::Text(text), now);
+                }
+            }
+            if flags & GCS_COMPSTR.0 != 0 {
+                let text = composition_string(hwnd, GCS_COMPSTR).unwrap_or_default();
+                let caret = composition_cursor(hwnd);
+                key_input::<W>(hwnd, KeyInput::Compose { text, caret }, now);
+            }
+        }
+        WM_IME_ENDCOMPOSITION if ime_caret::<W>(hwnd).is_some() => key_input::<W>(
+            hwnd,
+            KeyInput::Compose {
+                text: String::new(),
+                caret: 0,
+            },
+            now,
+        ),
         WM_SETFOCUS => window_event::<W>(hwnd, WindowEvent::Focus(true), now),
         WM_KILLFOCUS => window_event::<W>(hwnd, WindowEvent::Focus(false), now),
         WM_KEYDOWN => {

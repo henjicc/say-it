@@ -7,6 +7,8 @@
 
 #![cfg(windows)]
 
+#[cfg(test)]
+pub(crate) mod answer;
 pub(crate) mod d2d;
 pub(crate) mod host;
 #[cfg(test)]

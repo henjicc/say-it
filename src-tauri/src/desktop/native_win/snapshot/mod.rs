@@ -13,6 +13,7 @@
 //! `SAYIT_OVERLAY_SNAPSHOT_DIR` 可改指其他目录（worktree 指向主检出的基准）。
 //! 场景测试函数名一律以 `native_snapshot_` 开头，过滤器 `native_snapshot` 即可选中全部。
 
+mod answer;
 mod indicator;
 mod orb;
 mod subtitle;
