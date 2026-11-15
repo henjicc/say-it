@@ -727,6 +727,22 @@ pub(crate) struct SmartTextRun {
     pub(crate) active_app_context: String,
     pub(crate) learning_context: crate::application::learning::LearningContext,
     pub(crate) output: String,
+    /// 本地模型判断的意图与当时的输入；不支持意图的模型和大模型没有。含选中文字，
+    /// 不随历史保存，只在开发者模式下写进训练样本。
+    #[serde(skip)]
+    pub(crate) intent: Option<IntentRun>,
+}
+
+/// 本地模型的意图判断。`output` 是它给出的结果（已去掉标签）；判成指令、最后却按听写插入时，
+/// 听写结果另算，这里保留模型原本的结果，供以后标注。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IntentRun {
+    pub(crate) intent: crate::providers::local_llm::Intent,
+    pub(crate) output: String,
+    pub(crate) selection: String,
+    pub(crate) editable: bool,
+    pub(crate) target_lang: &'static str,
 }
 
 pub(crate) struct SmartPrompt {
@@ -769,20 +785,42 @@ fn hotword_texts(prefs: &crate::application::customization::CustomizationPrefs) 
         .collect()
 }
 
+/// 智能处理选的是支持意图标签的本地模型、模板也是它支持的润色模板时为真：听写开始时据此读取选区。
+pub(crate) fn local_intent_enabled(state: &RuntimeState, provider_id: &str, template_id: &str) -> bool {
+    LOCAL_POLISH_TEMPLATES.contains(&template_id)
+        && local_polish_spec(state, provider_id)
+            .ok()
+            .flatten()
+            .is_some_and(|spec| crate::providers::local_llm::supports_intent(&spec))
+}
+
+/// 支持意图的模型每次都带意图输入（训练时每条都有）：没读到选区时按焦点可输入、没有选中处理。
 fn local_polish_input(
     state: &RuntimeState,
+    spec: &crate::providers::plugin::LocalModelSpec,
     text: &str,
     active_app_context: &str,
     active_app_name: &str,
+    intent: Option<&crate::application::assistant::IntentContext>,
 ) -> crate::providers::local_llm::PolishInput {
     let prefs = crate::application::customization::prefs(state);
-    crate::providers::local_llm::PolishInput::new(
+    let input = crate::providers::local_llm::PolishInput::new(
         crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
         polish_level(state, active_app_name).tag(),
         &hotword_texts(&prefs),
         &crate::application::customization::render_context(&prefs),
         active_app_context,
         text,
+    );
+    if !crate::providers::local_llm::supports_intent(spec) {
+        return input;
+    }
+    input.with_intent(
+        intent.is_none_or(|intent| intent.editable),
+        intent
+            .and_then(|intent| intent.selection.as_ref())
+            .map_or("", |selection| selection.text.as_str()),
+        crate::application::assistant::intent_target_lang(state),
     )
 }
 
@@ -811,18 +849,32 @@ async fn process_with_local_polish(
     text: &str,
     active_app_context: &str,
     active_app_name: &str,
-) -> Result<String, String> {
+    intent: Option<&crate::application::assistant::IntentContext>,
+) -> Result<(String, Option<IntentRun>), String> {
     if !LOCAL_POLISH_TEMPLATES.contains(&template_id) {
         return Err("本地听写整理模型只支持内置的润色模板，其他模板请换用大模型".into());
     }
-    let input = local_polish_input(state, text, active_app_context, active_app_name);
+    let input = local_polish_input(state, spec, text, active_app_context, active_app_name, intent);
     let started = StdInstant::now();
+    // 判成指令时只出标签、没有正文是正常的，交给助手功能执行。
     let result = crate::providers::local_llm::polish(spec, &input)
         .await
-        .and_then(|output| match output.is_empty() {
-            true => Err("本地听写整理模型没有返回内容".to_string()),
-            false => Ok(output),
+        .and_then(|polished| {
+            match polished.text.is_empty() && polished.intent == crate::providers::local_llm::Intent::Dictate {
+                true => Err("本地听写整理模型没有返回内容".to_string()),
+                false => Ok(polished),
+            }
         });
+    let intent_run = match (&result, &input.intent) {
+        (Ok(polished), Some(intent)) => Some(IntentRun {
+            intent: polished.intent,
+            output: polished.text.clone(),
+            selection: intent.selection.clone(),
+            editable: intent.editable,
+            target_lang: intent.target_lang,
+        }),
+        _ => None,
+    };
     crate::application::dev_trace::llm_call(json!({
         "providerId":spec.provider_id,
         "providerName":"本地",
@@ -832,16 +884,31 @@ async fn process_with_local_polish(
         "stream":false,
         "durationMs":started.elapsed().as_millis() as u64,
         "userPromptChars":input.text.chars().count(),
-        "outputChars":result.as_deref().map_or(0, |output| output.chars().count()),
+        "outputChars":result.as_ref().map_or(0, |polished| polished.text.chars().count()),
         "scene":input.scene,
         "hotwords":input.hotwords,
         "context":input.note,
         "screenChars":input.screen.chars().count(),
         "userPrompt":input.text,
-        "output":result.as_deref().unwrap_or_default(),
+        "output":result.as_ref().map_or("", |polished| polished.text.as_str()),
+        "intent":&intent_run,
         "error":result.as_ref().err(),
     }));
-    result
+    result.map(|polished| (polished.text, intent_run))
+}
+
+/// 模型判成了指令，这次却只能按听写插入（悬浮球、要改选中却没选中）：指定按听写再整理一遍。
+pub(crate) async fn local_polish_as_dictation(
+    state: &RuntimeState,
+    provider_id: &str,
+    text: &str,
+    active_app_context: &str,
+    active_app_name: &str,
+    intent: Option<&crate::application::assistant::IntentContext>,
+) -> Result<String, String> {
+    let spec = local_polish_spec(state, provider_id)?.ok_or("智能处理没有选用本地听写整理模型")?;
+    let input = local_polish_input(state, &spec, text, active_app_context, active_app_name, intent);
+    crate::providers::local_llm::polish_as(&spec, &input, crate::providers::local_llm::Intent::Dictate).await
 }
 
 /// 边说边用本地模型整理已识别的文字，见 `local_llm::speculate`。选的不是本地模型时什么也不做。
@@ -852,16 +919,15 @@ pub(crate) fn speculate_local_polish(
     active_app_context: &str,
     active_app_name: &str,
     provider_id: &str,
+    intent: Option<&crate::application::assistant::IntentContext>,
 ) {
     if !LOCAL_POLISH_TEMPLATES.contains(&template_id) {
         return;
     }
     if let Ok(Some(spec)) = local_polish_spec(state, provider_id) {
         // 屏幕文字还没识别完时先不带，松手后的正式请求带上它，这一版结果给它当草稿。
-        crate::providers::local_llm::speculate(
-            spec,
-            local_polish_input(state, text, active_app_context, active_app_name),
-        );
+        let input = local_polish_input(state, &spec, text, active_app_context, active_app_name, intent);
+        crate::providers::local_llm::speculate(spec, input);
     }
 }
 
@@ -875,6 +941,7 @@ pub(crate) async fn process_smart_text(
     active_app_name: &str,
     provider_id: &str,
     model_override: &str,
+    intent: Option<&crate::application::assistant::IntentContext>,
 ) -> Result<SmartTextRun, String> {
     let mut run = SmartTextRun {
         template_id: template_id.to_string(),
@@ -887,6 +954,7 @@ pub(crate) async fn process_smart_text(
         active_app_context: String::new(),
         learning_context: Default::default(),
         output: String::new(),
+        intent: None,
     };
     if text.trim().is_empty() {
         return Ok(run);
@@ -894,13 +962,14 @@ pub(crate) async fn process_smart_text(
     if let Some(spec) = local_polish_spec(state, provider_id)? {
         run.provider_id = spec.provider_id.clone();
         run.model = spec.plugin_id.clone();
-        run.output = process_with_local_polish(
+        (run.output, run.intent) = process_with_local_polish(
             state,
             &spec,
             template_id,
             text,
             active_app_context,
             active_app_name,
+            intent,
         )
         .await?;
         return Ok(run);
@@ -1299,6 +1368,7 @@ pub(crate) async fn preview_smart_text(
         "",
         provider_id.as_deref().unwrap_or("default"),
         model.as_deref().unwrap_or_default(),
+        None,
     )
     .await
     .map(|run| run.output)

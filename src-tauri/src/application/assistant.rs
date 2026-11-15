@@ -875,12 +875,14 @@ pub(crate) struct ProcessedAssistant {
 pub(crate) async fn capture_selection_internal(
     app: &AppHandle,
 ) -> Result<(SelectionSnapshot, ActivationTarget), String> {
-    capture_selection_for_target(app, None).await
+    capture_selection_for_target(app, None, true).await
 }
 
+/// `clipboard_fallback`：macOS 上辅助功能读不到选区时，是否改用模拟复制来读（会清空剪贴板、发送 Cmd+C）。
 async fn capture_selection_for_target(
     app: &AppHandle,
     target: Option<ActivationTarget>,
+    clipboard_fallback: bool,
 ) -> Result<(SelectionSnapshot, ActivationTarget), String> {
     let started = Instant::now();
     let target_was_frozen = target.is_some();
@@ -920,8 +922,10 @@ async fn capture_selection_for_target(
         .source
         .map(|source| format!("{source:?}"))
         .unwrap_or_else(|| "unavailable".into());
+    #[cfg(not(target_os = "macos"))]
+    let _ = clipboard_fallback;
     #[cfg(target_os = "macos")]
-    if text.is_empty() && !secure {
+    if text.is_empty() && !secure && clipboard_fallback {
         if let Ok(value) = crate::macos_native::copy_selection_text(target.process_id) {
             let (value, was_truncated) = crate::active_app_context::truncate_selection_text(&value);
             truncated |= was_truncated;
@@ -952,6 +956,117 @@ async fn capture_selection_for_target(
             truncated,
         },
         target,
+    ))
+}
+
+/// 意图分发要的按键时状态：选中的文字和焦点能否输入。
+#[derive(Clone, Debug)]
+pub(crate) struct IntentContext {
+    pub(crate) selection: Option<SelectionSnapshot>,
+    pub(crate) editable: bool,
+}
+
+/// 听写开始时读取选区和焦点。读不到时按没有选中、可以输入处理，等同于普通听写。
+/// 每次听写都会读，所以不用模拟复制：那会动剪贴板，还可能和用户仍按着的快捷键组合成别的按键。
+pub(crate) async fn capture_intent_context(app: &AppHandle, target: ActivationTarget) -> IntentContext {
+    let selection = match capture_selection_for_target(app, Some(target), false).await {
+        Ok((snapshot, _)) => (!snapshot.text.is_empty() && !snapshot.secure).then_some(snapshot),
+        Err(error) => {
+            crate::application::diagnostics::event("warn", "intent.selectionFailed", serde_json::json!({"error":error}));
+            None
+        }
+    };
+    let editable = match &selection {
+        Some(selection) => selection.editable,
+        None => crate::active_app_context::focused_target_is_editable(target).unwrap_or_else(|error| {
+            crate::application::diagnostics::event("warn", "intent.editableFailed", serde_json::json!({"error":error}));
+            true
+        }),
+    };
+    IntentContext { selection, editable }
+}
+
+/// 本地意图模型的 `<target_lang>`：中文内容默认译成翻译输入的目标语言。目标是中文、
+/// 或是训练时没有的语言时用英文。
+pub(crate) fn intent_target_lang(state: &RuntimeState) -> &'static str {
+    let target = state
+        .app_settings
+        .lock()
+        .ok()
+        .and_then(|settings| preferences_from_value(&settings.assistant_prefs).ok())
+        .map(|prefs| prefs.target_language);
+    match target.as_deref() {
+        Some("ja") => "日文",
+        Some("ko") => "韩文",
+        Some("fr") => "法文",
+        Some("de") => "德文",
+        Some("es") => "西班牙文",
+        _ => "英文",
+    }
+}
+
+/// 本地模型判成指令后执行它：本地给出了结果的直接用，只给标签的（以及所有提问）交给对应的
+/// 助手功能走云端，口述和选区沿用这次听写的。返回 `None` 表示这条指令执行不了（要改选中却没有选中），
+/// 调用方按听写处理。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dispatch_intent(
+    app: &AppHandle,
+    state: &RuntimeState,
+    intent: crate::providers::local_llm::Intent,
+    local_output: &str,
+    context: IntentContext,
+    target: Option<ActivationTarget>,
+    identity: Option<AppIdentity>,
+    spoken_text: &str,
+) -> Option<(AssistantRequest, Result<ProcessedAssistant, String>)> {
+    use crate::providers::local_llm::Intent;
+    let has_selection = context.selection.is_some();
+    let action = match intent {
+        Intent::Dictate => return None,
+        Intent::Edit if !has_selection => return None,
+        Intent::Edit => AssistantAction::EditSelection,
+        Intent::Translate if has_selection => AssistantAction::EditSelection,
+        Intent::Translate => AssistantAction::TranslateSpeech,
+        Intent::Define | Intent::Ask => AssistantAction::Ask,
+    };
+    // 本地模型只看到选区的前一段；改写、译文拿去替换整段选区会丢掉后面的内容。
+    let selection_cut = context.selection.as_ref().is_some_and(|selection| {
+        selection.truncated || selection.text.chars().count() > crate::providers::local_llm::SELECTION_CHARS
+    });
+    let mut request = AssistantRequest {
+        action,
+        selection: context.selection,
+        target,
+        identity,
+        started_at: Instant::now(),
+        follow_up: false,
+    };
+    if selection_cut && action == AssistantAction::EditSelection {
+        return Some((request, Err("选中文本过长，为避免只处理部分内容，已停止选区编辑".into())));
+    }
+    // 问答始终交云端：本地模型不教知识。
+    if local_output.is_empty() || intent == Intent::Ask {
+        let result = process(app, state, &mut request, spoken_text).await;
+        return Some((request, result));
+    }
+    // 查词只显示在回答窗；改写和译文能上屏就直接替换选区或插入，焦点不可输入、选区已变时显示在回答窗。
+    let should_inject = match intent {
+        Intent::Define => false,
+        _ if !context.editable => false,
+        _ if has_selection => verify_selection(app, &request).await.unwrap_or(false),
+        _ => true,
+    };
+    if action != AssistantAction::Ask {
+        remember_regeneration(state, &request, spoken_text);
+    }
+    Some((
+        request,
+        Ok(ProcessedAssistant {
+            output: local_output.to_string(),
+            reasoning: String::new(),
+            should_inject,
+            show_answer: !should_inject,
+        }),
     ))
 }
 
@@ -1005,7 +1120,7 @@ async fn assistant_start_for_target(
             (None, Some(target))
         }
         AssistantAction::EditSelection | AssistantAction::Ask => {
-            match capture_selection_for_target(&app, initial_target).await {
+            match capture_selection_for_target(&app, initial_target, true).await {
                 Ok((snapshot, target))
                     if action == AssistantAction::EditSelection && snapshot.text.is_empty() =>
                 {
@@ -1117,7 +1232,7 @@ async fn select_last_delivery(
     move_caret(steps, true).await?;
     // 目标应用要处理完积压的按键，选区才完整。
     tokio::time::sleep(std::time::Duration::from_millis(60 + steps as u64 / 4)).await;
-    let (snapshot, _) = capture_selection_for_target(app, Some(target)).await?;
+    let (snapshot, _) = capture_selection_for_target(app, Some(target), true).await?;
     if !snapshot.truncated && normalize_line_breaks(&snapshot.text) == expected {
         return Ok(snapshot);
     }
@@ -1208,6 +1323,17 @@ pub(crate) async fn process(
     result
 }
 
+/// 回答窗里「重新生成」用的输入。
+fn remember_regeneration(state: &RuntimeState, request: &AssistantRequest, spoken_text: &str) {
+    if let Ok(mut current) = state.assistant_runtime.regeneration.lock() {
+        *current = Some(RegenerationContext {
+            request: request.clone(),
+            spoken_text: spoken_text.to_string(),
+            prior_turns: Vec::new(),
+        });
+    }
+}
+
 async fn process_request(
     app: &AppHandle,
     state: &RuntimeState,
@@ -1225,13 +1351,7 @@ async fn process_request(
             .assistant_prefs,
     )?;
     if request.action != AssistantAction::Ask {
-        if let Ok(mut current) = state.assistant_runtime.regeneration.lock() {
-            *current = Some(RegenerationContext {
-                request: request.clone(),
-                spoken_text: spoken_text.to_string(),
-                prior_turns: Vec::new(),
-            });
-        }
+        remember_regeneration(state, request, spoken_text);
     }
     match request.action {
         AssistantAction::TranslateSpeech => {

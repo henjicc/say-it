@@ -26,6 +26,8 @@ mod delivery;
 const FINALIZE_TIMEOUT_MS: u64 = 8_000;
 /// 停止时识别模型还在加载：音频在排队，最多再等这么久让它加载完。
 const MODEL_LOAD_WAIT: Duration = Duration::from_secs(60);
+/// 松手后等选区读完的上限。选区在开始录音时就开始读，通常早已读完。
+const INTENT_CONTEXT_WAIT: Duration = Duration::from_secs(2);
 const CLIPBOARD_FALLBACK_NOTICE_MS: u64 = 3_200;
 const MAX_SMART_TEMPLATES: usize = 50;
 const MAX_APP_PROFILES: usize = 100;
@@ -458,6 +460,8 @@ struct Session {
     active_app_context_cancellation: Option<crate::active_app_context::ContextCaptureCancellation>,
     /// 智能处理进行中时存在；用户点胶囊跳过时取消它，改为直接输出识别原文。
     smart_skip: Option<tokio_util::sync::CancellationToken>,
+    /// 智能处理用支持意图的本地模型时，开始录音后读取的选区与焦点；读完前为 `None`。
+    intent_context: Option<tokio::sync::watch::Receiver<Option<crate::application::assistant::IntentContext>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1176,6 +1180,17 @@ async fn start_session(
     } else {
         None
     };
+    // 悬浮球的结果总是按听写插入，不读选区。
+    let intent_target = activation_target.filter(|_| {
+        effective.smart_processing_enabled
+            && assistant_request.is_none()
+            && !trigger.is_floating_orb()
+            && crate::application::smart_text::local_intent_enabled(
+                &state,
+                &prefs.smart_llm_provider_id,
+                &effective.smart_template_id,
+            )
+    });
     let info = crate::providers::registry::model_info(&prefs.asr_model)
         .cloned()
         .or_else(|| {
@@ -1318,6 +1333,19 @@ async fn start_session(
             }
             _ => cancellation.cancel(),
         }
+    }
+    if let Some(target) = intent_target {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        if let Ok(mut session) = state.dictation_runtime.session.lock() {
+            if session.epoch == epoch {
+                session.intent_context = Some(receiver);
+            }
+        }
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let context = crate::application::assistant::capture_intent_context(&app, target).await;
+            let _ = sender.send(Some(context));
+        });
     }
     publish_state(&app, None);
     Ok(())
@@ -2174,6 +2202,14 @@ fn speculate_smart_processing(app: &AppHandle) {
         .as_mut()
         .and_then(|handle| handle.ready_for_prompt())
         .unwrap_or_default();
+    // 选区还没读完时先不整理：选区在提示词开头，带不带它的两版结果互相用不上。
+    let intent = match &session.intent_context {
+        Some(receiver) => match receiver.borrow().clone() {
+            Some(context) => Some(context),
+            None => return,
+        },
+        None => None,
+    };
     drop(session);
     crate::application::smart_text::speculate_local_polish(
         &state,
@@ -2182,6 +2218,7 @@ fn speculate_smart_processing(app: &AppHandle) {
         &active_app_context,
         &app_name,
         &provider_id,
+        intent.as_ref(),
     );
 }
 
@@ -2359,6 +2396,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         mut assistant_request,
         history_allowed,
         trigger,
+        intent_receiver,
     ) = {
         let state = app.state::<RuntimeState>();
         let Ok(mut s) = state.dictation_runtime.session.lock() else {
@@ -2406,6 +2444,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             s.assistant_request.clone(),
             s.history_allowed,
             s.trigger,
+            s.intent_context.take(),
         )
     };
     let should_process_smart_text = should_run_smart_processing(&effective, &text);
@@ -2623,7 +2662,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     // 也会被改回去，现象是「规则开着但没生效」且没有任何提示。
     // 语音助手有独立任务语义，不参与这条个性化纠错流水线。
     let raw_text = text.clone();
-    let assistant_processed = if let Some(request) = assistant_request.as_mut() {
+    let mut assistant_processed = if let Some(request) = assistant_request.as_mut() {
         let Some(result) = processing::until_cancelled(
             &processing_cancellation,
             crate::application::assistant::process(&app, &state, request, &text),
@@ -2696,6 +2735,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
     };
     let mut smart_run = None;
     let mut smart_skipped = false;
+    // 本地模型把这句话判成了指令，并交给了助手功能执行。
+    let mut intent_dispatched = false;
     let smart_processed = if let Some(result) = &assistant_processed {
         result.output.clone()
     } else if should_process_smart_text {
@@ -2726,6 +2767,17 @@ async fn finalize(app: AppHandle, epoch: u64) {
             cleanup_stale_finalize(&state, lease, temp_path);
             return;
         }
+        let intent_context = match intent_receiver {
+            Some(mut receiver) => tokio::time::timeout(
+                INTENT_CONTEXT_WAIT,
+                receiver.wait_for(Option::is_some),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|context| context.clone()),
+            None => None,
+        };
         let smart_result = processing::until_cancelled(&processing_cancellation, async {
             tokio::select! {
                 biased;
@@ -2742,6 +2794,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
                         .unwrap_or_default(),
                     &prefs.smart_llm_provider_id,
                     &prefs.smart_llm_model,
+                    intent_context.as_ref(),
                 ) => Some(result),
             }
         })
@@ -2766,8 +2819,116 @@ async fn finalize(app: AppHandle, epoch: u64) {
                 punctuate_local_asr_text(&state, &prefs, text.clone()).await
             }
             Some(Ok(run)) => {
-                let output = run.output.clone();
+                let mut output = run.output.clone();
+                let command = run
+                    .intent
+                    .as_ref()
+                    .filter(|intent| intent.intent != crate::providers::local_llm::Intent::Dictate)
+                    .map(|intent| (intent.intent, intent.output.clone()));
                 smart_run = Some(run);
+                if let Some((intent, local_output)) = command {
+                    let dispatched = match intent_context.clone() {
+                        Some(context) => {
+                            let Some(dispatched) = processing::until_cancelled(
+                                &processing_cancellation,
+                                crate::application::assistant::dispatch_intent(
+                                    &app,
+                                    &state,
+                                    intent,
+                                    &local_output,
+                                    context,
+                                    activation_target,
+                                    app_identity.clone(),
+                                    &text,
+                                ),
+                            )
+                            .await
+                            else {
+                                cleanup_stale_finalize(&state, lease, temp_path);
+                                return;
+                            };
+                            dispatched
+                        }
+                        None => None,
+                    };
+                    let as_dictation = match dispatched {
+                        Some((request, Ok(processed))) => {
+                            output = processed.output.clone();
+                            assistant_processed = Some(processed);
+                            assistant_request = Some(request);
+                            intent_dispatched = true;
+                            false
+                        }
+                        // 有选中时按听写插入会覆盖选区，只报错；没有选中时插入不会弄丢任何内容，
+                        // 而判成指令却执行失败的多半本来就是听写，按听写插入。
+                        Some((request, Err(error))) if request.selection.is_some() => {
+                            if let Some(lease) = &lease {
+                                let _ = state.audio_session.release(lease);
+                            }
+                            remove_temp(temp_path.clone());
+                            crate::application::assistant::publish_answer(
+                                &app,
+                                &request,
+                                String::new(),
+                                Some(error.clone()),
+                                false,
+                            );
+                            let _ = fail(app, epoch, error).await;
+                            return;
+                        }
+                        Some((request, Err(error))) => {
+                            crate::application::assistant::publish_answer(
+                                &app,
+                                &request,
+                                String::new(),
+                                Some(format!("{error}（已按听写插入）")),
+                                false,
+                            );
+                            true
+                        }
+                        None => true,
+                    };
+                    if as_dictation {
+                        let Some(result) = processing::until_cancelled(
+                            &processing_cancellation,
+                            crate::application::smart_text::local_polish_as_dictation(
+                                &state,
+                                &prefs.smart_llm_provider_id,
+                                &text,
+                                &active_app_context,
+                                app_identity
+                                    .as_ref()
+                                    .map(|identity| identity.app_name.as_str())
+                                    .unwrap_or_default(),
+                                intent_context.as_ref(),
+                            ),
+                        )
+                        .await
+                        else {
+                            cleanup_stale_finalize(&state, lease, temp_path);
+                            return;
+                        };
+                        match result {
+                            Ok(value) => output = value,
+                            Err(error) => {
+                                if let Some(lease) = &lease {
+                                    let _ = state.audio_session.release(lease);
+                                }
+                                remove_temp(temp_path.clone());
+                                let _ = fail_with_raw_fallback(
+                                    app,
+                                    epoch,
+                                    error,
+                                    text.clone(),
+                                    method.clone(),
+                                    FloatingFallbackKind::Processing,
+                                )
+                                .await;
+                                return;
+                            }
+                        }
+                    }
+                }
                 output
             }
             Some(Err(error)) => {
@@ -3169,7 +3330,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     // 敏感输入框和助手指令不进训练样本；处理结果只是当时实际插入的文字，供参考。
     if crate::application::diagnostics::developer_mode()
         && history_allowed
-        && assistant_request.is_none()
+        && (assistant_request.is_none() || intent_dispatched)
         && !asr_text.is_empty()
     {
         crate::application::dev_trace::append_training_sample(serde_json::json!({
@@ -3186,6 +3347,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             "asrModel":&prefs.asr_model,
             "smartApplied":smart_applied,
             "smartTemplateId":&effective.smart_template_id,
+            "intent":smart_run.as_ref().and_then(|run| run.intent.as_ref()),
         }));
     }
     let task_kind = assistant_request

@@ -72,8 +72,76 @@ pub(crate) struct PolishInput {
     pub(crate) note: String,
     /// 听写时屏幕上的文字，没有时为空。模型只拿它辨认专有名词的写法。
     pub(crate) screen: String,
+    /// 模型包支持意图标签时才有，见 `IntentInput`。
+    pub(crate) intent: Option<IntentInput>,
     pub(crate) text: String,
 }
+
+/// 意图分发要的三项输入（`docs/task/本地模型多任务微调/01-训练数据规范.md`），按下快捷键时就确定。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IntentInput {
+    /// 焦点是不是输入框；不是时提示词里写 `<editable>no</editable>`。
+    pub(crate) editable: bool,
+    /// 选中的文字，没有时为空。
+    pub(crate) selection: String,
+    /// 中文内容默认译成的语言，用训练时的中文名（英文、日文……）。
+    pub(crate) target_lang: &'static str,
+}
+
+/// 模型在输出开头给出的意图标签。不支持意图的模型包一律是听写。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Intent {
+    Dictate,
+    Edit,
+    Translate,
+    Define,
+    Ask,
+}
+
+const INTENT_TAGS: [(Intent, &str); 5] = [
+    (Intent::Dictate, "<dictate>"),
+    (Intent::Edit, "<edit>"),
+    (Intent::Translate, "<translate>"),
+    (Intent::Define, "<define>"),
+    (Intent::Ask, "<ask>"),
+];
+
+impl Intent {
+    fn tag(self) -> &'static str {
+        INTENT_TAGS
+            .iter()
+            .find(|(intent, _)| *intent == self)
+            .map(|(_, tag)| *tag)
+            .expect("每个意图都有标签")
+    }
+}
+
+/// 一次整理的结果。`text` 已去掉标签；只给出标签、要交云端执行时为空。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Polished {
+    pub(crate) intent: Intent,
+    pub(crate) text: String,
+}
+
+fn parse_output(output: &str, with_intent: bool) -> Polished {
+    if with_intent {
+        for (intent, tag) in INTENT_TAGS {
+            if let Some(text) = output.strip_prefix(tag) {
+                return Polished { intent, text: text.trim().to_string() };
+            }
+        }
+    }
+    Polished { intent: Intent::Dictate, text: output.to_string() }
+}
+
+/// 模型包在 `modelPack.params.intentTags` 里声明输出带意图标签；1.0.2 及以前的包没有，照旧只做听写。
+pub(crate) fn supports_intent(spec: &LocalModelSpec) -> bool {
+    spec.params.get("intentTags").and_then(Value::as_bool) == Some(true)
+}
+
+/// 选中文字只取开头这么多字符，与训练样本一致；超出时以 … 结尾。
+pub(crate) const SELECTION_CHARS: usize = 2000;
 
 /// 屏幕文字只取开头这么多字符：训练样本按同样的长度截取，再长也会拖慢每次整理。
 const SCREEN_CHARS: usize = 1200;
@@ -100,7 +168,28 @@ impl PolishInput {
             hotwords: hotwords.iter().take(MAX_HOTWORDS).cloned().collect(),
             note: note.trim().to_string(),
             screen: screen.trim().chars().take(SCREEN_CHARS).collect(),
+            intent: None,
             text: text.trim().to_string(),
+        }
+    }
+
+    pub(crate) fn with_intent(mut self, editable: bool, selection: &str, target_lang: &'static str) -> Self {
+        let selection = selection.trim();
+        let mut kept: String = selection.chars().take(SELECTION_CHARS).collect();
+        if kept.len() < selection.len() {
+            kept.push('…');
+        }
+        self.intent = Some(IntentInput { editable, selection: kept, target_lang });
+        self
+    }
+
+    /// 输出上限：整理结果不会比原文长多少，留出编号和标点的余量。带意图时结果可能是选中文字的改写、
+    /// 译文或释义，按两者中较长的算，再多留一段给查词的释义。
+    fn max_tokens(&self) -> usize {
+        let chars = self.text.chars().count();
+        match &self.intent {
+            Some(intent) => chars.max(intent.selection.chars().count()) * 2 + 192,
+            None => chars * 2 + 64,
         }
     }
 
@@ -124,6 +213,15 @@ impl PolishInput {
         }
         if !self.screen.is_empty() {
             head.push_str(&format!("<screen>\n{}\n</screen>\n", plain(&self.screen)));
+        }
+        if let Some(intent) = &self.intent {
+            if !intent.editable {
+                head.push_str("<editable>no</editable>\n");
+            }
+            if !intent.selection.is_empty() {
+                head.push_str(&format!("<selection>{}</selection>\n", plain(&intent.selection)));
+            }
+            head.push_str(&format!("<target_lang>{}</target_lang>\n", intent.target_lang));
         }
         head.push_str("<text>");
         (head, plain(&self.text))
@@ -161,6 +259,7 @@ struct Memo {
     model: PathBuf,
     head: String,
     body: String,
+    tail: String,
     output: String,
 }
 
@@ -424,17 +523,20 @@ fn retained_ratio(previous: &str, current: &str) -> f64 {
 }
 
 /// 返回 `None` 表示这次整理被推理进程中途放弃（预先整理遇到正式请求）。
+/// `forced` 给出时把这个标签接在提示词末尾，模型从标签之后续写，输出里不再有标签。
 async fn run(
     spec: &LocalModelSpec,
     input: &PolishInput,
     speculative: bool,
+    forced: Option<Intent>,
 ) -> Result<Option<String>, String> {
     let (head, body) = input.prompt();
+    let tail = format!("{PROMPT_TAIL}{}", forced.map_or("", Intent::tag));
     let model = model_path(spec)?;
     let previous = {
         let memo = runtime().memo.lock().map_err(|_| "本地整理模型状态锁失败")?;
         match memo.as_ref().filter(|memo| memo.model == model) {
-            Some(memo) if memo.head == head && memo.body == body => {
+            Some(memo) if memo.head == head && memo.body == body && memo.tail == tail => {
                 return Ok(Some(memo.output.clone()));
             }
             // 上一版原文有一半以上还在，才值得拿它的结果当草稿；不是同一段话时不用。
@@ -453,11 +555,15 @@ async fn run(
                 "op": "run",
                 "head": head,
                 "body": body,
-                "tail": PROMPT_TAIL,
-                "source": body,
+                "tail": tail,
+                // 有选中文字时结果多半照抄它（改写、加标点），否则照抄口述原文。
+                "source": input
+                    .intent
+                    .as_ref()
+                    .filter(|intent| !intent.selection.is_empty())
+                    .map_or(&body, |intent| &intent.selection),
                 "previous": previous,
-                // 整理结果不会比原文长多少；留出编号和标点的余量。
-                "maxTokens": input.text.chars().count() * 2 + 64,
+                "maxTokens": input.max_tokens(),
                 "speculative": speculative,
             }),
         ),
@@ -493,21 +599,34 @@ async fn run(
             model,
             head,
             body,
+            tail,
             output: output.clone(),
         });
     }
     Ok(Some(output))
 }
 
-/// 整理一段听写原文。
-pub(crate) async fn polish(spec: &LocalModelSpec, input: &PolishInput) -> Result<String, String> {
+/// 整理一段听写原文。输入带意图时，结果里是模型判断的意图。
+pub(crate) async fn polish(spec: &LocalModelSpec, input: &PolishInput) -> Result<Polished, String> {
     // 正式请求到了，排队等着的预先整理不用再跑；正在跑的那次，推理进程收到这条命令就会停下。
     if let Ok(mut speculation) = runtime().speculation.lock() {
         speculation.latest = None;
     }
-    run(spec, input, false)
+    let output = run(spec, input, false, None)
         .await?
-        .ok_or_else(|| "本地整理被取消".to_string())
+        .ok_or_else(|| "本地整理被取消".to_string())?;
+    Ok(parse_output(&output, input.intent.is_some()))
+}
+
+/// 指定意图再整理一遍：模型判成了指令，这次却只能按听写插入时用。
+pub(crate) async fn polish_as(spec: &LocalModelSpec, input: &PolishInput, intent: Intent) -> Result<String, String> {
+    let output = run(spec, input, false, Some(intent))
+        .await?
+        .ok_or_else(|| "本地整理被取消".to_string())?;
+    match output.is_empty() {
+        true => Err("本地听写整理模型没有返回内容".into()),
+        false => Ok(output),
+    }
 }
 
 /// 设置要常驻的模型包并立即加载；`None` 取消常驻，已加载的进程按闲置时间照常回收。
@@ -599,7 +718,7 @@ pub(crate) fn speculate(spec: LocalModelSpec, input: PolishInput) {
                 break;
             }
             // 预先整理失败不影响松手后的正式请求，那一次会报出真正的错误。
-            let _ = run(&spec, &input, true).await;
+            let _ = run(&spec, &input, true, None).await;
         }
     });
 }
@@ -671,6 +790,28 @@ mod tests {
         assert!(bare.prompt().0.ends_with("<scene>assistant</scene>\n<text>"));
         let light = PolishInput::new("chat", "light", &[], "", "", "好");
         assert!(light.prompt().0.ends_with("<scene>chat</scene>\n<level>light</level>\n<text>"));
+        let define = PolishInput::new("general", "", &[], "", "Safari", "翻译一下").with_intent(false, " serendipity ", "英文");
+        assert!(define.prompt().0.ends_with(concat!(
+            "<screen>\nSafari\n</screen>\n<editable>no</editable>\n",
+            "<selection>serendipity</selection>\n<target_lang>英文</target_lang>\n<text>"
+        )));
+        let editable = PolishInput::new("chat", "", &[], "", "", "好").with_intent(true, "", "日文");
+        assert!(editable.prompt().0.ends_with("<scene>chat</scene>\n<target_lang>日文</target_lang>\n<text>"));
+        let long = PolishInput::new("chat", "", &[], "", "", "好").with_intent(true, &"字".repeat(2001), "英文");
+        assert_eq!(long.intent.unwrap().selection, format!("{}…", "字".repeat(2000)));
+    }
+
+    #[test]
+    fn output_tag_is_parsed_only_for_intent_models() {
+        assert_eq!(
+            parse_output("<edit>改好的文字", true),
+            Polished { intent: Intent::Edit, text: "改好的文字".into() }
+        );
+        assert_eq!(parse_output("<ask>", true), Polished { intent: Intent::Ask, text: String::new() });
+        assert_eq!(
+            parse_output("<edit>原样", false),
+            Polished { intent: Intent::Dictate, text: "<edit>原样".into() }
+        );
     }
 
     /// 用真实权重走一遍进程启动、加载、整理和「同一段话越说越长」。
@@ -692,13 +833,13 @@ mod tests {
         let input = |text: &str| PolishInput::new("assistant", "", &["SDK".into()], "", "", text);
         tauri::async_runtime::block_on(async {
             let first = "嗯就是那个导出功能啊我导出的时候它好像就是卡住了然后过了一会才好";
-            let partial = polish(&spec, &input(first)).await.unwrap();
+            let partial = polish(&spec, &input(first)).await.unwrap().text;
             assert!(partial.contains("导出功能") && !partial.contains("嗯就是"), "{partial}");
             let full = format!("{first}这个是不是因为文件太大了啊我不太确定你帮我看看 sdk 里有没有限制");
-            let output = polish(&spec, &input(&full)).await.unwrap();
+            let output = polish(&spec, &input(&full)).await.unwrap().text;
             assert!(output.contains("SDK") && output.contains('？'), "{output}");
             // 同样的输入直接返回上一次的结果。
-            assert_eq!(polish(&spec, &input(&full)).await.unwrap(), output);
+            assert_eq!(polish(&spec, &input(&full)).await.unwrap().text, output);
             // 原文末尾的分词随后续文字变化（「人工」→「人工智能」）时，前缀检查点仍然可用。
             for text in ["我们聊聊人工", "我们聊聊人工智能", "我们聊聊人工智能很厉害这件事"] {
                 polish(&spec, &input(text)).await.unwrap();
