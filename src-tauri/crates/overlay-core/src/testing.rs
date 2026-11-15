@@ -9,6 +9,40 @@ pub(crate) struct FakeText;
 pub(crate) struct FakeLayout {
     pub text: String,
     pub metrics: TextMetrics,
+    /// 每行的 UTF-16 区间 [start, end)；按固定字宽逐字折行，换行符结束一行。
+    pub lines: Vec<(u32, u32)>,
+    pub char_width: f32,
+    pub line_height: f32,
+}
+
+/// 固定字宽折行：每字宽 0.6 × 字号，「\n」单独结束一行（不占宽度）。
+fn fake_lines(text: &str, char_width: f32, max_width: f32, wrap: bool) -> Vec<(u32, u32)> {
+    let per_line = if wrap {
+        ((max_width / char_width).floor() as u32).max(1)
+    } else {
+        u32::MAX
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut lines = Vec::new();
+    let mut start = 0u32;
+    let mut count = 0u32;
+    for (i, unit) in units.iter().enumerate() {
+        let i = i as u32;
+        if *unit == u16::from(b'\n') {
+            lines.push((start, i + 1));
+            start = i + 1;
+            count = 0;
+            continue;
+        }
+        if count == per_line {
+            lines.push((start, i));
+            start = i;
+            count = 0;
+        }
+        count += 1;
+    }
+    lines.push((start, units.len() as u32));
+    lines
 }
 impl TextEngine for FakeText {
     type Layout = Rc<FakeLayout>;
@@ -35,7 +69,15 @@ impl TextEngine for FakeText {
                 .line_spacing
                 .map(|s| s.height)
                 .unwrap_or(style.size * 1.5);
+        let char_width = 0.6 * style.size;
+        let line_height = style
+            .line_spacing
+            .map(|s| s.height)
+            .unwrap_or(style.size * 1.5);
         Some(Rc::new(FakeLayout {
+            lines: fake_lines(text, char_width, max_width, style.wrap),
+            char_width,
+            line_height,
             text: text.into(),
             metrics: TextMetrics {
                 left: if style.align == TextAlign::Center {
@@ -57,6 +99,78 @@ impl TextEngine for FakeText {
     fn metrics(&self, layout: &Self::Layout) -> TextMetrics {
         layout.metrics
     }
+    /// 富文本按逐字折行重新计算度量，使命中测试与行数一致；样式不影响字宽。
+    fn layout_rich(
+        &self,
+        text: &str,
+        style: &TextStyle<'_>,
+        _runs: &[TextRun],
+        max_width: f32,
+        max_height: f32,
+    ) -> Option<Self::Layout> {
+        let base = self.layout(text, style, max_width, max_height)?;
+        let mut layout = (*base).clone();
+        let widest = layout
+            .lines
+            .iter()
+            .map(|&(a, b)| {
+                let visible = layout.text.encode_utf16().skip(a as usize).take((b - a) as usize);
+                visible.filter(|u| *u != u16::from(b'\n')).count() as f32
+            })
+            .fold(0.0, f32::max);
+        layout.metrics = TextMetrics {
+            left: 0.0,
+            top: 0.0,
+            width: widest * layout.char_width,
+            height: layout.lines.len() as f32 * layout.line_height,
+            line_count: layout.lines.len() as u32,
+        };
+        Some(Rc::new(layout))
+    }
+    fn hit_test(&self, layout: &Self::Layout, point: Point) -> u32 {
+        let row = ((point.y / layout.line_height).floor().max(0.0) as usize)
+            .min(layout.lines.len() - 1);
+        let (start, end) = layout.lines[row];
+        let text_end = if end > start && layout.text.encode_utf16().nth(end as usize - 1)
+            == Some(u16::from(b'\n'))
+        {
+            end - 1
+        } else {
+            end
+        };
+        let column = (point.x / layout.char_width).round().max(0.0) as u32;
+        (start + column).min(text_end)
+    }
+    fn caret_rect(&self, layout: &Self::Layout, index: u32) -> Rect {
+        let row = layout
+            .lines
+            .iter()
+            .rposition(|&(start, _)| start <= index)
+            .unwrap_or(0);
+        let x = (index - layout.lines[row].0) as f32 * layout.char_width;
+        let top = row as f32 * layout.line_height;
+        Rect::new(x, top, x, top + layout.line_height)
+    }
+    fn range_rects(&self, layout: &Self::Layout, start: u32, len: u32) -> Vec<Rect> {
+        let end = start + len;
+        layout
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &(a, b))| {
+                let (from, to) = (start.max(a), end.min(b));
+                (from < to).then(|| {
+                    let top = row as f32 * layout.line_height;
+                    Rect::new(
+                        (from - a) as f32 * layout.char_width,
+                        top,
+                        (to - a) as f32 * layout.char_width,
+                        top + layout.line_height,
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -73,6 +187,7 @@ pub(crate) enum Draw {
     Icon(&'static str, Color, Option<Stroke>),
     Path(Vec<SvgSeg>, Color, Stroke),
     Text(String, Point, Color, Option<TextTint>),
+    Tinted(String, Point, Color, Vec<TextTint>),
     Blurred(String, Rect, Point, Color, f32),
 }
 pub(crate) struct RecordingCanvas {
@@ -135,6 +250,9 @@ impl Canvas for RecordingCanvas {
     }
     fn draw_text(&mut self, l: &Rc<FakeLayout>, p: Point, c: Color, t: Option<TextTint>) {
         self.calls.push(Draw::Text(l.text.clone(), p, c, t));
+    }
+    fn draw_text_tinted(&mut self, l: &Rc<FakeLayout>, p: Point, c: Color, t: &[TextTint]) {
+        self.calls.push(Draw::Tinted(l.text.clone(), p, c, t.to_vec()));
     }
     fn draw_text_blurred(
         &mut self,

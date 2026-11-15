@@ -5,6 +5,7 @@ pub mod canvas;
 pub mod geom;
 pub mod indicator;
 pub mod look;
+pub mod markdown;
 pub mod orb;
 pub mod present;
 pub mod recorder;

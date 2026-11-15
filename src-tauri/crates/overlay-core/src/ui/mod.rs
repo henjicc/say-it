@@ -7,6 +7,8 @@ pub mod hit;
 pub mod layout;
 pub mod paint;
 pub mod pointer;
+pub mod rich_text;
+pub mod scroll;
 
 pub use hit::{HitKind, HitMap};
 pub use pointer::{UiInput, UiPointer};

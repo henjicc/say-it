@@ -15,9 +15,45 @@ pub fn client_to_dip(client: (i32, i32), dpi: u32) -> Point {
     Point::new(client.0 as f32 / scale, client.1 as f32 / scale)
 }
 
+/// 连击计数：间隔与位移都在系统常见阈值内的按下算同一串连击（双击选词、三击选段）。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClickCounter {
+    last: Option<(std::time::Instant, Point)>,
+    count: u8,
+}
+
+impl ClickCounter {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+    const SLOP: f32 = 4.0;
+    /// 记录一次按下，返回这是连击中的第几下（1 起，三击后从 1 重新开始）。
+    pub fn press(&mut self, now: std::time::Instant, point: Point) -> u8 {
+        let continues = self.last.is_some_and(|(at, from)| {
+            now.saturating_duration_since(at) <= Self::INTERVAL
+                && (point.x - from.x).abs() <= Self::SLOP
+                && (point.y - from.y).abs() <= Self::SLOP
+        });
+        self.count = if continues && self.count < 3 { self.count + 1 } else { 1 };
+        self.last = Some((now, point));
+        self.count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presses_count_as_multi_clicks_only_when_close_in_time_and_place() {
+        let start = std::time::Instant::now();
+        let at = |ms| start + std::time::Duration::from_millis(ms);
+        let mut clicks = ClickCounter::default();
+        assert_eq!(clicks.press(at(0), Point::new(10.0, 10.0)), 1);
+        assert_eq!(clicks.press(at(200), Point::new(12.0, 11.0)), 2);
+        assert_eq!(clicks.press(at(400), Point::new(12.0, 11.0)), 3);
+        assert_eq!(clicks.press(at(500), Point::new(12.0, 11.0)), 1);
+        assert_eq!(clicks.press(at(1200), Point::new(12.0, 11.0)), 1);
+        assert_eq!(clicks.press(at(1300), Point::new(30.0, 11.0)), 1);
+    }
 
     #[test]
     fn drag_starts_at_five_logical_pixels_of_pointer_distance() {
