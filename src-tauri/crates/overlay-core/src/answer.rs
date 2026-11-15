@@ -34,8 +34,7 @@ const FIELD_LINES: u32 = 4;
 const STRIP_HEIGHT: f32 = 92.0;
 const ROW: f32 = 32.0;
 const GAP: f32 = 12.0;
-/// 离选区或指针、离工作区边缘的距离（DIP）。
-const ANCHOR_GAP: f32 = 8.0;
+/// 窗口放不下需要挪开时，离工作区边缘的距离（DIP）。
 const EDGE: f32 = 12.0;
 const WAVE_BARS: usize = 19;
 pub const MAX_PROMPT_CHARS: usize = 8000;
@@ -125,11 +124,11 @@ pub struct AnswerView {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// 显示新回答。anchor 为选区或指针的矩形，work 为所在屏的工作区（都是 DesktopPx）；
-    /// focus 时取得键盘焦点。
+    /// 显示新回答。pointer 为鼠标位置，窗口左上角尽量与它对齐；work 为所在屏的工作区
+    /// （都是 DesktopPx）；focus 时取得键盘焦点。
     Show {
         view: AnswerView,
-        anchor: PxRect,
+        pointer: (i32, i32),
         work: PxRect,
         focus: bool,
     },
@@ -213,14 +212,6 @@ impl<L> Default for Content<L> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Anchor {
-    /// 窗口顶边固定（放在选区下方，或拖动过）。
-    Top(i32),
-    /// 窗口底边固定（放在选区上方）：内容变多时向上长。
-    Bottom(i32),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Area {
     Body,
     Field,
@@ -242,8 +233,10 @@ pub struct Answer<L> {
     body: Rect,
     composer: Rect,
     field_text: Rect,
+    /// 希望的窗口左上角（DesktopPx）：出现时是鼠标位置，拖动后是拖到的位置。
+    /// 实际位置在工作区里放不下时才挪开，内容变多时先向下长，碰到工作区底边再整体上移。
     x: i32,
-    anchor: Anchor,
+    y: i32,
     work: PxRect,
     earlier_open: bool,
     reasoning_open: bool,
@@ -334,7 +327,7 @@ impl<L: Clone> Answer<L> {
             composer: Rect::ZERO,
             field_text: Rect::ZERO,
             x: 0,
-            anchor: Anchor::Top(0),
+            y: 0,
             work: PxRect::default(),
             earlier_open: false,
             reasoning_open: false,
@@ -364,40 +357,20 @@ impl<L: Clone> Answer<L> {
         let edge = (EDGE * scale).round() as i32;
         let work = self.work;
         let clamp = |value: i32, low: i32, high: i32| value.min(high).max(low);
-        let x = if work.width > 0 {
-            clamp(self.x, work.x + edge, work.right() - width - edge)
+        let (x, y) = if work.width > 0 && work.height > 0 {
+            (
+                clamp(self.x, work.x + edge, work.right() - width - edge),
+                clamp(self.y, work.y + edge, work.bottom() - height - edge),
+            )
         } else {
-            self.x
-        };
-        let y = match self.anchor {
-            Anchor::Top(top) if work.height > 0 => {
-                clamp(top, work.y + edge, work.bottom() - height - edge)
-            }
-            Anchor::Bottom(bottom) if work.height > 0 => {
-                clamp(bottom - height, work.y + edge, work.bottom() - height - edge)
-            }
-            Anchor::Top(top) => top,
-            Anchor::Bottom(bottom) => bottom - height,
+            (self.x, self.y)
         };
         PxRect::new(x, y, width, height)
     }
-    fn place(&mut self, anchor: PxRect, work: PxRect) {
-        let scale = self.scale();
-        let gap = (ANCHOR_GAP * scale).round() as i32;
-        let height = (self.height * scale).round() as i32;
+    /// 左上角对齐鼠标；工作区里放不下时由 `bounds` 挪开。
+    fn place(&mut self, pointer: (i32, i32), work: PxRect) {
         self.work = work;
-        self.x = anchor.x;
-        let below = anchor.bottom() + gap;
-        let max_height = (MAX_HEIGHT * scale).round() as i32;
-        // 下方放得下当前高度就放下方；若上方空间更大，以后变高时向上长。
-        self.anchor = if work.height == 0
-            || below + height <= work.bottom()
-                && (below + max_height <= work.bottom() || anchor.y - work.y < work.bottom() - below)
-        {
-            Anchor::Top(below)
-        } else {
-            Anchor::Bottom(anchor.y - gap)
-        };
+        (self.x, self.y) = pointer;
     }
 
     fn rich_theme(&self, dim: f32) -> RichTheme {
@@ -963,7 +936,7 @@ where
         match command {
             Command::Show {
                 view,
-                anchor,
+                pointer,
                 work,
                 focus,
             } => {
@@ -981,7 +954,7 @@ where
                 let mut sink = Vec::new();
                 self.refresh(cx.text, &mut sink);
                 if first {
-                    self.place(anchor, work);
+                    self.place(pointer, work);
                 }
                 self.visible = true;
                 self.transition.show();
@@ -1173,7 +1146,7 @@ where
             WindowEvent::Moved { .. } => Vec::new(),
             WindowEvent::SystemDragEnded { bounds } => {
                 self.x = bounds.x;
-                self.anchor = Anchor::Top(bounds.y);
+                self.y = bounds.y;
                 Vec::new()
             }
             WindowEvent::DpiChanged { dpi, suggested } => {
@@ -1182,7 +1155,7 @@ where
                 }
                 self.dpi = dpi;
                 self.x = suggested.x;
-                self.anchor = Anchor::Top(suggested.y);
+                self.y = suggested.y;
                 self.relayout(cx.text);
                 vec![WindowOp::SetBounds(self.bounds()), WindowOp::Redraw]
             }
@@ -1320,12 +1293,12 @@ mod tests {
             ..AnswerView::default()
         }
     }
-    fn shown(text: &str, anchor: PxRect) -> (Answer<Rc<FakeLayout>>, Ops<AnswerAction>) {
+    fn shown(text: &str, pointer: (i32, i32)) -> (Answer<Rc<FakeLayout>>, Ops<AnswerAction>) {
         let mut model = Answer::new(96, &Look::WINDOWS_LEGACY);
         let ops = model.apply(
             Command::Show {
                 view: view(text),
-                anchor,
+                pointer,
                 work: WORK,
                 focus: true,
             },
@@ -1361,34 +1334,35 @@ mod tests {
     }
 
     #[test]
-    fn appears_below_the_selection_takes_focus_and_grows_with_the_answer_up_to_a_limit() {
-        let (mut model, ops) = shown("短", PxRect::new(300, 200, 100, 20));
+    fn top_left_follows_the_pointer_takes_focus_and_grows_downwards_up_to_a_limit() {
+        let (mut model, ops) = shown("短", (300, 200));
         let first = bounds(&ops).unwrap();
-        assert_eq!((first.x, first.y, first.width), (300, 228, 520));
+        assert_eq!((first.x, first.y, first.width), (300, 200, 520));
         assert!(ops.contains(&WindowOp::Focus));
         let ops = model.apply(Command::Update(view(&"很长的回答。".repeat(400))), &cx(&FakeText));
         let grown = bounds(&ops).unwrap();
-        assert_eq!((grown.y, grown.height), (228, MAX_HEIGHT as i32));
+        assert_eq!((grown.y, grown.height), (200, MAX_HEIGHT as i32));
         assert!(model.scroll.overflows());
     }
 
     #[test]
-    fn near_the_bottom_it_sits_above_the_selection_and_grows_upwards() {
-        let (mut model, ops) = shown("短", PxRect::new(300, 900, 100, 20));
+    fn near_the_edges_it_moves_only_as_far_as_needed_to_stay_on_screen() {
+        let (mut model, ops) = shown("短", (1800, 900));
         let first = bounds(&ops).unwrap();
-        assert_eq!(first.y + first.height, 892);
+        assert_eq!(first.x + first.width, 1920 - 12);
+        assert_eq!(first.y, 900.min(1040 - 12 - first.height));
         let grown = bounds(&model.apply(
             Command::Update(view(&"回答。".repeat(200))),
             &cx(&FakeText),
         ))
         .unwrap();
-        assert_eq!(grown.y + grown.height, 892);
+        assert_eq!(grown.y + grown.height, 1040 - 12);
         assert!(grown.height > first.height);
     }
 
     #[test]
     fn enter_sends_the_trimmed_prompt_and_clears_the_field_but_not_while_streaming() {
-        let (mut model, _) = shown("答", PxRect::new(0, 0, 0, 0));
+        let (mut model, _) = shown("答", (0, 0));
         key(&mut model, KeyInput::Text(" 再详细点 ".into()));
         assert_eq!(
             key(&mut model, down(Key::Enter, false)),
@@ -1410,7 +1384,7 @@ mod tests {
 
     #[test]
     fn escape_cancels_voice_first_then_closes() {
-        let (mut model, _) = shown("答", PxRect::new(0, 0, 0, 0));
+        let (mut model, _) = shown("答", (0, 0));
         model.apply(
             Command::Voice {
                 active: true,
@@ -1433,7 +1407,7 @@ mod tests {
 
     #[test]
     fn copy_shortcut_takes_the_answer_selection_after_selecting_in_the_body() {
-        let (mut model, _) = shown("可以复制的回答", PxRect::new(0, 0, 0, 0));
+        let (mut model, _) = shown("可以复制的回答", (0, 0));
         let body = Point::new(PAD_X + 1.0, HEADER + 5.0);
         model.input(UiInput::TextPress { id: ID_BODY, point: body }, &cx(&FakeText));
         key(&mut model, down(Key::Letter('A'), true));
@@ -1445,7 +1419,7 @@ mod tests {
 
     #[test]
     fn focus_changes_are_reported_and_the_ime_caret_is_published_only_while_focused() {
-        let (mut model, _) = shown("答", PxRect::new(0, 0, 0, 0));
+        let (mut model, _) = shown("答", (0, 0));
         assert_eq!(
             actions(model.window_event(WindowEvent::Focus(true), &cx(&FakeText))),
             vec![AnswerAction::Focused(true)]

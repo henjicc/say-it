@@ -7,7 +7,7 @@ macOS 后端只在 Windows 上做过类型检查（`npm run check:mac-overlay`�
 - [ ] CI 的 `verify (macos-15)` 里 overlay 测试通过（含 `overlay_classes_register_with_valid_appkit_signatures`，它会校验 NSTextInputClient 方法签名）。
 - [ ] 回答窗出现后直接打字能进输入框，说吧本身没有被激活（菜单栏仍是原来的应用）；点回答窗里任意位置后也能打字。
 - [ ] 回答窗失去焦点（点别的应用）且没置顶时关闭；置顶后不关闭。
-- [ ] 选区、指针与工作区坐标在 Retina 屏和外接非 Retina 屏上都对得上：回答窗贴着选区下方，不跑到别的屏或偏移一段距离（`publish_native_answer` 把选区矩形、指针位置和 `work_area` 都当作 DesktopPx）。
+- [ ] 指针与工作区坐标在 Retina 屏和外接非 Retina 屏上都对得上：回答窗左上角对齐鼠标，不跑到别的屏或偏移一段距离（`native_answer_show` 把 `cursor_position` 和 `work_area` 都当作 DesktopPx）。
 
 ## 文字
 

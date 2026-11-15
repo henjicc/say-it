@@ -272,7 +272,6 @@ fn show_recorder(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Re
 
 fn show_answer(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Result<(), String> {
     use sayit_overlay_core::answer::{AnswerView, Turn};
-    use sayit_overlay_core::geom::PxRect;
     if !native_answer::native_answer_enabled() {
         return Err("原生回答窗已用环境变量关闭".into());
     }
@@ -323,29 +322,10 @@ fn show_answer(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Resu
         _ => return Err(format!("未知的回答窗状态：{scene}")),
     };
     prepare_look(app);
-    // 摆在指针附近，和没有选区时的真实回答一样。
-    let anchor = app
-        .cursor_position()
-        .map(|point| PxRect::new(point.x.round() as i32, point.y.round() as i32, 0, 0))
-        .unwrap_or_default();
-    let work = app
-        .monitor_from_point(f64::from(anchor.x), f64::from(anchor.y))
-        .ok()
-        .flatten()
-        .map(|monitor| {
-            let area = monitor.work_area();
-            PxRect::new(
-                area.position.x,
-                area.position.y,
-                area.size.width as i32,
-                area.size.height as i32,
-            )
-        })
-        .unwrap_or_default();
     if native_answer::native_answer_visible() {
         native_answer::native_answer_update(view);
     } else {
-        native_answer::native_answer_show(app, view, anchor, work, false);
+        native_answer::native_answer_show(app, view, false);
     }
     scenes.answer_voice = scene == "voice";
     native_answer::native_answer_voice(scenes.answer_voice, "", Some(true));

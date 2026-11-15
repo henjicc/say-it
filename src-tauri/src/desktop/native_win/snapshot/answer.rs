@@ -17,7 +17,7 @@ const DRIVER: Driver = Driver {
 
 /// 入场过渡落定后的时刻。
 const SETTLE_MS: u64 = 320;
-const ANCHOR: PxRect = PxRect::new(200, 160, 300, 24);
+const POINTER: (i32, i32) = (200, 160);
 const WORK: PxRect = PxRect::new(0, 0, 1920, 1040);
 const SHORT: &str = "使用边界框作为 MiniMax H3 图像的放置位置。\n这个周末试试看，把你做出来的东西分享出来。";
 const RICH: &str = "比如要生成「今天天气很好」：\n\n1. 小模型一口气猜出「今天 / 天气 / 很 / 好」四个词\n2. 大模型跑**一次**，发现前三个对、第四个该是「不错」\n   - 猜错的位置从这里重新生成\n3. 保留前三个，从第四个接着生成，参数 `draft_tokens = 4`\n\n```text\ndraft:  今天 天气 很 好\nverify: ✓    ✓    ✓  ✗ → 不错\n```\n\n| 模型 | 作用 |\n|---|---|\n| 小模型 | 先猜，便宜又快 |\n| 大模型 | 一次核对多个字 |\n\n> 猜对得越多，提速越明显。详见[这篇文章](https://example.com)。";
@@ -59,7 +59,7 @@ fn shown(snaps: &mut Snapshots, dpi: u32, view: AnswerView) -> Session<'_> {
         &s,
         Command::Show {
             view,
-            anchor: ANCHOR,
+            pointer: POINTER,
             work: WORK,
             focus: false,
         },

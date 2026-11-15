@@ -64,13 +64,27 @@ pub(crate) fn hotkey_follows_up() -> bool {
         && CAN_FOLLOW_UP.load(Ordering::Acquire)
 }
 
-pub(crate) fn native_answer_show(
-    app: &AppHandle,
-    view: AnswerView,
-    anchor: PxRect,
-    work: PxRect,
-    focus: bool,
-) {
+/// 显示新回答：左上角对齐此刻的鼠标位置，放不下时由模型在鼠标所在屏的工作区里挪开。
+pub(crate) fn native_answer_show(app: &AppHandle, view: AnswerView, focus: bool) {
+    // 指针位置与工作区都是物理像素（DesktopPx）。
+    let pointer = app
+        .cursor_position()
+        .map(|point| (point.x.round() as i32, point.y.round() as i32))
+        .unwrap_or_default();
+    let work = app
+        .monitor_from_point(f64::from(pointer.0), f64::from(pointer.1))
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let area = monitor.work_area();
+            PxRect::new(
+                area.position.x,
+                area.position.y,
+                area.size.width as i32,
+                area.size.height as i32,
+            )
+        })
+        .unwrap_or_default();
     let _ = APP.set(app.clone());
     super::native_common::native_overlay_start();
     super::native_common::native_overlay_set_look(super::floating_orb::native_look(app));
@@ -78,7 +92,7 @@ pub(crate) fn native_answer_show(
     CAN_FOLLOW_UP.store(view.can_follow_up, Ordering::Release);
     post::<AnswerWindow>(Command::Show {
         view,
-        anchor,
+        pointer,
         work,
         focus,
     });
