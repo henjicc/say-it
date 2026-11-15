@@ -178,6 +178,7 @@ export const CMD = {
   devNativeWindowTestStop: "dev_native_window_test_stop",
   devTraceStatus: "dev_trace_status",
   devAudioRecording: "dev_audio_recording",
+  devTrainingSamples: "dev_training_samples",
   devTraceRuns: "dev_trace_runs",
   devTraceRun: "dev_trace_run",
   devTraceStats: "dev_trace_stats",

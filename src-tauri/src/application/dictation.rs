@@ -3328,7 +3328,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
         .or(app_identity)
         .unwrap_or_default();
     // 敏感输入框和助手指令不进训练样本；处理结果只是当时实际插入的文字，供参考。
-    if crate::application::diagnostics::developer_mode()
+    if crate::application::dev_trace::training_samples_enabled()
         && history_allowed
         && (assistant_request.is_none() || intent_dispatched)
         && !asr_text.is_empty()

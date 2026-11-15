@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { AppWindow, BarChart3, Cpu, FlaskConical, Gauge, Mic, Sparkles } from "lucide-react";
+import { AppWindow, BarChart3, Cpu, Database, FlaskConical, Gauge, History } from "lucide-react";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, ROW_CONTROL_W, Row } from "@/components/ui/Group";
 import { Switch } from "@/components/ui/Switch";
-import { Textarea } from "@/components/ui/Input";
+import { Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
@@ -15,7 +15,9 @@ import { NativeWindowsPanel } from "./NativeWindowsPanel";
 import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const RUNS_REFRESH_MS = 3000;
+const COLLECT = "collect";
 const OVERVIEW = "overview";
+const RUNS = "runs";
 const TEST = "test";
 const BENCH = "bench";
 const LOCAL = "local";
@@ -115,17 +117,17 @@ const PROMPT_SOURCES: [string, string][] = [
 
 const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
 
-const RUN_ICONS: Record<RunSummary["kind"], React.ReactNode> = {
-  dictation: <Mic {...iconProps} />,
-  assistant: <Sparkles {...iconProps} />,
-  "smart-test": <FlaskConical {...iconProps} />,
-  "model-bench": <Gauge {...iconProps} />,
+const KIND_LABELS: Record<RunSummary["kind"], string> = {
+  dictation: "听写",
+  assistant: "助手",
+  "smart-test": "智能处理测试",
+  "model-bench": "模型测速",
 };
 
 function runLabel(run: RunSummary) {
   const duration = formatMs(run.waitMs ?? run.totalMs);
   const outcome = OUTCOME_LABELS[run.outcome];
-  return `${formatTime(run.startedAtMs)} · ${outcome || duration}`;
+  return `${formatTime(run.startedAtMs)} · ${KIND_LABELS[run.kind]} · ${outcome || duration}`;
 }
 
 function Value({ children }: { children: React.ReactNode }) {
@@ -242,40 +244,78 @@ function RunDetail({ record }: { record: RunRecord }) {
   );
 }
 
-interface AudioRecording {
+interface CollectSwitch {
   enabled: boolean;
-  dir: string;
 }
 
 /** 每次听写保存原始麦克风声音和送去识别的声音，用真实录音排查识别问题。 */
-export const audioRecordingQuery: Query<AudioRecording> = {
+export const audioRecordingQuery: Query<CollectSwitch & { dir: string }> = {
   key: "devAudioRecording",
-  load: () => cmd<AudioRecording>(CMD.devAudioRecording),
+  load: () => cmd(CMD.devAudioRecording),
 };
 
-function AudioRecordingRow() {
-  const recording = useCachedQuery(audioRecordingQuery);
-  const state = recording.data;
+/** 每次语音输入成功后保存一条训练样本，供以后微调本地整理模型。 */
+export const trainingSamplesQuery: Query<CollectSwitch & { path: string }> = {
+  key: "devTrainingSamples",
+  load: () => cmd(CMD.devTrainingSamples),
+};
+
+function CollectSwitchRow<T extends CollectSwitch>({ query, command, label, hint }: {
+  query: Query<T>;
+  command: string;
+  label: string;
+  hint: (state: T | undefined) => string;
+}) {
+  const current = useCachedQuery(query);
+  const state = current.data;
   const [saveError, setError] = useState("");
-  const error = saveError || recording.error;
+  const error = saveError || current.error;
 
   const toggle = (enabled: boolean) => {
     setError("");
-    void cmd<AudioRecording>(CMD.devAudioRecording, { enabled })
-      .then((next) => setQueryData(audioRecordingQuery, next))
+    void cmd<T>(command, { enabled })
+      .then((next) => setQueryData(query, next))
       .catch((reason) => setError(String(reason)));
   };
 
   return (
-    <Group title="录音">
-      <Row
-        label="保存语音输入录音"
-        hint={`每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "数据目录的 dev-traces/audio"}`}
-        message={error && <span role="alert" className="text-[var(--color-err)]">{error}</span>}
-      >
-        <Switch label="保存语音输入录音" checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
-      </Row>
-    </Group>
+    <Row
+      label={label}
+      hint={hint(state)}
+      message={error && <span role="alert" className="text-[var(--color-err)]">{error}</span>}
+    >
+      <Switch label={label} checked={state?.enabled ?? false} disabled={!state} onChange={toggle} />
+    </Row>
+  );
+}
+
+function CollectPanel() {
+  const statusQuery = useCachedQuery(traceStatusQuery);
+  const status = statusQuery.data;
+  return (
+    <InspectorBody>
+      {statusQuery.error && <p role="alert" className="text-xs text-[var(--color-err)]">{statusQuery.error}</p>}
+      <Group>
+        <CollectSwitchRow
+          query={trainingSamplesQuery}
+          command={CMD.devTrainingSamples}
+          label="保存训练样本"
+          hint={(state) => `每次语音输入成功后记下识别原文、插入的文字和软件上下文，供以后微调本地整理模型。不会自动清理，保存在 ${state?.path ?? "数据目录的 dev-traces/training-samples.jsonl"}`}
+        />
+        <CollectSwitchRow
+          query={audioRecordingQuery}
+          command={CMD.devAudioRecording}
+          label="保存语音输入录音"
+          hint={(state) => `每次识别保存两份录音：麦克风原始声音和处理后送去识别的声音，只保留最近 40 次。保存在 ${state?.dir ?? "数据目录的 dev-traces/audio"}`}
+        />
+      </Group>
+      {status && (
+        <Group title="数据位置">
+          <Row label="记录目录"><span className="select-text font-mono text-xs text-[var(--color-fg-muted)]">{status.tracesDir}</span></Row>
+          <Row label="本地接口"><span className="select-text font-mono text-xs text-[var(--color-fg-muted)]">{status.apiUrl}</span></Row>
+        </Group>
+      )}
+    </InspectorBody>
   );
 }
 
@@ -284,15 +324,11 @@ export const traceStatusQuery: Query<TraceStatus> = { key: "devTraceStatus", loa
 
 function OverviewPanel() {
   const statsQuery = useCachedQuery(traceStatsQuery);
-  const statusQuery = useCachedQuery(traceStatusQuery);
   const stats = statsQuery.data;
-  const status = statusQuery.data;
-  const error = statsQuery.error || statusQuery.error;
 
   return (
     <InspectorBody>
-      {error && <p role="alert" className="text-xs text-[var(--color-err)]">{error}</p>}
-      <AudioRecordingRow />
+      {statsQuery.error && <p role="alert" className="text-xs text-[var(--color-err)]">{statsQuery.error}</p>}
       {stats && (
         <>
           <Group title={`最近 ${stats.runs} 次成功的语音输入`}>
@@ -311,12 +347,6 @@ function OverviewPanel() {
             </Group>
           )}
         </>
-      )}
-      {status && (
-        <Group title="数据位置">
-          <Row label="记录目录"><span className="select-text font-mono text-xs text-[var(--color-fg-muted)]">{status.tracesDir}</span></Row>
-          <Row label="本地接口"><span className="select-text font-mono text-xs text-[var(--color-fg-muted)]">{status.apiUrl}</span></Row>
-        </Group>
       )}
     </InspectorBody>
   );
@@ -382,15 +412,17 @@ function traceRunQuery(id: string): Query<RunRecord | null> {
   return { key: `devTraceRun:${id}`, load: async () => (id ? cmd<RunRecord | null>(CMD.devTraceRun, { id }) : null) };
 }
 
-/** 开发者模式：查看每次听写的耗时记录，并对比测试智能处理。 */
+/** 开发者模式：采集训练数据、查看每次听写的耗时记录，并测试智能处理和模型速度。 */
 export function DeveloperPage() {
   const runsQuery = useCachedQuery(traceRunsQuery);
   const runs = runsQuery.data ?? [];
-  const [active, setActive] = useState<string>(OVERVIEW);
-  const isRun = ![OVERVIEW, TEST, BENCH, LOCAL, WINDOWS].includes(active);
-  const recordQuery = useCachedQuery(traceRunQuery(isRun ? active : ""));
-  const record = isRun ? recordQuery.data ?? null : null;
-  const error = runsQuery.error || (isRun ? recordQuery.error : "");
+  const [active, setActive] = useState<string>(COLLECT);
+  // 没选过时跟着最新一次走；选过就停在那一次，新记录进来也不跳。
+  const [pickedRun, setPickedRun] = useState("");
+  const runId = active === RUNS ? pickedRun || runs[0]?.id || "" : "";
+  const recordQuery = useCachedQuery(traceRunQuery(runId));
+  const record = runId ? recordQuery.data ?? null : null;
+  const error = runsQuery.error || (runId ? recordQuery.error : "");
   const refresh = runsQuery.refresh;
 
   useEffect(() => {
@@ -398,40 +430,32 @@ export function DeveloperPage() {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-
   const items: NodeItem<string>[] = [
+    { key: COLLECT, label: "数据采集", icon: <Database {...iconProps} /> },
     { key: OVERVIEW, label: "统计", icon: <BarChart3 {...iconProps} /> },
-    { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} /> },
+    { key: RUNS, label: "运行记录", icon: <History {...iconProps} /> },
+    { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} />, dividerBefore: true },
     { key: BENCH, label: "模型测速", icon: <Gauge {...iconProps} /> },
     { key: WINDOWS, label: "原生窗口测试", icon: <AppWindow {...iconProps} /> },
     // 本地模型对比依赖仓库工作区里的模型和 llama.cpp，只有开发构建有。
     ...(import.meta.env.DEV ? [{ key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> }] : []),
-    ...runs.map((run, index) => ({
-      key: run.id,
-      label: runLabel(run),
-      icon: RUN_ICONS[run.kind],
-      dividerBefore: index === 0,
-    })),
   ];
-  const title = active === OVERVIEW
-    ? "统计"
-    : active === TEST
-      ? "智能处理测试"
-      : active === BENCH
-        ? "模型测速"
-        : active === LOCAL
-          ? "本地模型对比"
-          : active === WINDOWS
-            ? "原生窗口测试"
-            : record
-            ? formatTime(record.startedAtMs)
-            : "";
+  const activeItem = items.find((item) => item.key === active);
+  const runPicker = active === RUNS && runs.length > 0 && (
+    <Select aria-label="选择运行记录" className="w-80" size="sm" value={runId} onChange={(event) => setPickedRun(event.target.value)}>
+      {runs.map((run) => <option key={run.id} value={run.id}>{runLabel(run)}</option>)}
+    </Select>
+  );
 
   return (
-    <MasterDetail wide title="开发者" list={<NodeList ariaLabel="运行记录" items={items} active={active} onSelect={setActive} />}>
-      <InspectorHeader title={title} />
+    <MasterDetail wide title="开发者" list={<NodeList ariaLabel="开发者工具" items={items} active={active} onSelect={setActive} />}>
+      <InspectorHeader title={activeItem?.label ?? ""} right={runPicker} />
       {error && <p role="alert" className="-mt-2 mb-4 text-xs text-[var(--color-err)]">{error}</p>}
+      {active === COLLECT && <CollectPanel />}
       {active === OVERVIEW && <OverviewPanel />}
+      {active === RUNS && runsQuery.data && runs.length === 0 && (
+        <p className="text-[13px] text-[var(--color-fg-muted)]">还没有记录，开发者模式下语音输入一次就会出现。</p>
+      )}
       {active === TEST && <SmartTestPanel onFinished={refresh} />}
       {active === BENCH && <ModelBenchPanel onFinished={refresh} />}
       {active === LOCAL && <LocalComparePanel />}

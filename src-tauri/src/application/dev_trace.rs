@@ -322,7 +322,29 @@ pub(super) fn append_record(directory: &Path, record: &Value) {
     append_line(&directory.join(format!("runs-{day}.jsonl")), record);
 }
 
-/// 给以后微调本地整理模型攒的原始素材，开发者模式下每次语音输入成功后追加一行。
+const TRAINING_SAMPLES: &str = "training-samples.jsonl";
+/// 默认保存；关掉时在追踪目录留这个标记文件，重启后仍然有效。
+const TRAINING_SAMPLES_OFF_MARKER: &str = "training-samples.off";
+
+/// 开发者模式下是否保存训练样本。
+pub(crate) fn training_samples_enabled() -> bool {
+    diagnostics::developer_mode() && !traces_dir().join(TRAINING_SAMPLES_OFF_MARKER).exists()
+}
+
+fn set_training_samples_enabled(enabled: bool) -> Result<(), String> {
+    let marker = traces_dir().join(TRAINING_SAMPLES_OFF_MARKER);
+    let result = if enabled {
+        std::fs::remove_file(&marker).or_else(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        })
+    } else {
+        std::fs::write(&marker, b"")
+    };
+    result.map_err(|error| format!("保存训练样本开关失败：{error}"))
+}
+
+/// 给以后微调本地整理模型攒的原始素材，开关打开时每次语音输入成功后追加一行。
 /// 文件名不带 `runs-` 前缀，不随运行记录按天数和大小清理。`traceId` 对应同一次听写的运行记录。
 pub(crate) fn append_training_sample(mut sample: Value) {
     if cfg!(test) {
@@ -332,7 +354,7 @@ pub(crate) fn append_training_sample(mut sample: Value) {
         .lock()
         .ok()
         .and_then(|active| active.as_ref().map(|run| run.id.clone())));
-    append_line(&traces_dir().join("training-samples.jsonl"), &sample);
+    append_line(&traces_dir().join(TRAINING_SAMPLES), &sample);
 }
 
 fn append_line(path: &Path, record: &Value) {
@@ -1169,6 +1191,19 @@ pub(crate) fn dev_audio_recording(enabled: Option<bool>) -> Result<Value, String
     Ok(json!({
         "enabled":crate::audio_dsp::dev_record::enabled(),
         "dir":crate::audio_dsp::dev_record::dir().display().to_string(),
+    }))
+}
+
+/// 读写「保存训练样本」开关；`enabled` 不给时只读。
+#[tauri::command]
+pub(crate) fn dev_training_samples(enabled: Option<bool>) -> Result<Value, String> {
+    diagnostics::require_developer_mode()?;
+    if let Some(enabled) = enabled {
+        set_training_samples_enabled(enabled)?;
+    }
+    Ok(json!({
+        "enabled":training_samples_enabled(),
+        "path":traces_dir().join(TRAINING_SAMPLES).display().to_string(),
     }))
 }
 

@@ -9,7 +9,7 @@ import { diagnosticStatusQuery } from "@/views/SettingsAdvancedPanel";
 import { setupStatusQuery } from "@/views/SettingsSetupPanel";
 import { dataRootQuery, startupSettingsQuery } from "@/views/SettingsStartupPanel";
 import { useDeveloperStore } from "@/store/useDeveloperStore";
-import { audioRecordingQuery, traceRunsQuery, traceStatsQuery, traceStatusQuery } from "@/views/developer/DeveloperPage";
+import { audioRecordingQuery, traceRunsQuery, traceStatsQuery, traceStatusQuery, trainingSamplesQuery } from "@/views/developer/DeveloperPage";
 import { benchModelsQuery } from "@/views/developer/ModelBenchPanel";
 
 const PAGE_QUERIES: Query<unknown>[] = [
@@ -30,6 +30,7 @@ const DEVELOPER_QUERIES: Query<unknown>[] = [
   traceStatusQuery,
   traceRunsQuery,
   audioRecordingQuery,
+  trainingSamplesQuery,
   benchModelsQuery,
 ];
 

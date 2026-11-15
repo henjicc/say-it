@@ -816,6 +816,7 @@ fn main() {
             desktop::native_test::dev_native_window_test_stop,
             application::dev_trace::dev_trace_status,
             application::dev_trace::dev_audio_recording,
+            application::dev_trace::dev_training_samples,
             application::dev_trace::dev_trace_runs,
             application::dev_trace::dev_trace_run,
             application::dev_trace::dev_trace_stats,

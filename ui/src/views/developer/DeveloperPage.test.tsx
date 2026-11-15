@@ -35,14 +35,28 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("开发者页面", () => {
-  it("选中一次运行后显示结论、各阶段耗时和模型请求", async () => {
+  it("打开运行记录默认显示最近一次的结论、各阶段耗时和模型请求", async () => {
     render(<DeveloperPage />);
-    fireEvent.click(await screen.findByText(/3\.20 秒/));
+    fireEvent.click(await screen.findByText("运行记录"));
     expect(await screen.findByText("最慢的是智能处理")).toBeTruthy();
     expect(screen.getByText("模型做了思考")).toBeTruthy();
     expect(screen.getByText("3.00 秒")).toBeTruthy();
     expect(screen.getByText(/模型甲/)).toBeTruthy();
     expect(cmd).toHaveBeenCalledWith("devTraceRun", { id: "1" });
+  });
+
+  it("数据采集页可以关掉训练样本", async () => {
+    cmd.mockImplementation(async (name: string, args?: { enabled?: boolean }) => {
+      if (name === "devTraceRuns") return [];
+      if (name === "devTrainingSamples") return { enabled: args?.enabled ?? true, path: "样本文件" };
+      if (name === "devAudioRecording") return { enabled: false, dir: "录音目录" };
+      return { tracesDir: "目录", apiUrl: "http://127.0.0.1:5156" };
+    });
+    render(<DeveloperPage />);
+    const toggle = await screen.findByRole("switch", { name: "保存训练样本" });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    fireEvent.click(toggle);
+    await waitFor(() => expect(cmd).toHaveBeenCalledWith("devTrainingSamples", { enabled: false }));
   });
 
   it("测试按钮明确告知会产生费用，并把请求发给后端", async () => {
