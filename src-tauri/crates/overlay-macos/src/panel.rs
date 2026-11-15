@@ -6,20 +6,25 @@ use crate::{
 };
 use dispatch2::{DispatchQueue, DispatchTime};
 use objc2::{
-    define_class, msg_send, rc::Retained, runtime::ProtocolObject, AnyThread, DefinedClass,
-    MainThreadMarker, MainThreadOnly, Message,
+    define_class, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, ProtocolObject, Sel},
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSEvent, NSEventModifierFlags, NSFloatingWindowLevel, NSPanel,
-    NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView, NSViewLayerContentsRedrawPolicy,
-    NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSResponder, NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSViewLayerContentsRedrawPolicy, NSWindow, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask,
 };
-use objc2_foundation::{NSNotification, NSObjectProtocol};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSNotification,
+    NSObjectProtocol, NSPoint, NSRange, NSRangePointer, NSRect, NSSize, NSString, NSUInteger,
+};
 use sayit_overlay_core::{
-    geom::PxRect,
+    geom::{Point, PxRect},
     screen::{self, QPoint, QRect},
-    window::{PointerEvent, WindowEvent},
+    window::{Key, KeyInput, Modifiers, PointerEvent, WindowEvent},
 };
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -31,15 +36,21 @@ const COLLECTION: NSWindowCollectionBehavior = NSWindowCollectionBehavior(
         | NSWindowCollectionBehavior::IgnoresCycle.0,
 );
 
+pub(crate) struct PanelIvars {
+    /// 对应 `OverlaySpec::FOCUSABLE`；不可取焦点的面板永远不成为 key window。
+    focusable: bool,
+}
+
 define_class!(
     // SAFETY: NSPanel 无额外子类化要求，实例只在主线程创建和访问。
     #[unsafe(super(NSPanel, NSWindow, NSResponder, objc2::runtime::NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "SayItOverlayPanel"]
+    #[ivars = PanelIvars]
     pub(crate) struct OverlayPanel;
     impl OverlayPanel {
         #[unsafe(method(canBecomeKeyWindow))]
-        fn can_become_key(&self) -> bool { false }
+        fn can_become_key(&self) -> bool { self.ivars().focusable }
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main(&self) -> bool { false }
     }
@@ -50,6 +61,8 @@ pub(crate) struct ViewIvars {
     down: RefCell<Option<Retained<NSEvent>>>,
     control_down: Cell<bool>,
     dragging: Cell<bool>,
+    /// 输入法组字中（setMarkedText 之后、上屏或取消之前）。
+    marked: Cell<bool>,
     slot: Arc<CommitSlot>,
 }
 
@@ -62,6 +75,18 @@ define_class!(
     pub(crate) struct OverlayView;
     unsafe impl NSObjectProtocol for OverlayView {}
     unsafe impl NSWindowDelegate for OverlayView {
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            if self.ivars().slot.focusable {
+                render::window_event(self.ivars().slot.id, WindowEvent::Focus(true));
+            }
+        }
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            if self.ivars().slot.focusable {
+                render::window_event(self.ivars().slot.id, WindowEvent::Focus(false));
+            }
+        }
         #[unsafe(method(windowDidMove:))]
         fn window_did_move(&self, _notification: &NSNotification) {
             if self.ivars().dragging.get() {
@@ -71,7 +96,111 @@ define_class!(
             }
         }
     }
+    // SAFETY: 方法签名与 NSTextInputClient 协议一致；只在主线程由 AppKit 调用。
+    unsafe impl NSTextInputClient for OverlayView {
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text(&self, string: &AnyObject, _replacement: NSRange) {
+            self.ivars().marked.set(false);
+            self.key(KeyInput::Text(plain_text(string)));
+        }
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command(&self, _selector: Sel) {
+            // 功能键已在 keyDown: 里直接处理；这里吞掉其余命令，避免系统提示音。
+        }
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(&self, string: &AnyObject, selected: NSRange, _replacement: NSRange) {
+            let text = plain_text(string);
+            self.ivars().marked.set(!text.is_empty());
+            let caret = (selected.location as u64).min(u32::MAX as u64) as u32;
+            self.key(KeyInput::Compose { text, caret });
+        }
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            self.ivars().marked.set(false);
+            self.key(KeyInput::Compose { text: String::new(), caret: 0 });
+        }
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            NSRange { location: 0, length: 0 }
+        }
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            if self.ivars().marked.get() {
+                NSRange { location: 0, length: 0 }
+            } else {
+                NSRange { location: NSNotFound as NSUInteger, length: 0 }
+            }
+        }
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            self.ivars().marked.get()
+        }
+        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring(&self, _range: NSRange, _actual: NSRangePointer) -> Option<Retained<NSAttributedString>> {
+            None
+        }
+        #[unsafe(method_id(validAttributesForMarkedText))]
+        fn valid_attributes(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+            NSArray::new()
+        }
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect(&self, _range: NSRange, _actual: NSRangePointer) -> NSRect {
+            self.ime_screen_rect().unwrap_or(NSRect::ZERO)
+        }
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index(&self, _point: NSPoint) -> NSUInteger {
+            NSNotFound as NSUInteger
+        }
+    }
     impl OverlayView {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool { self.ivars().slot.focusable }
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if !self.ivars().slot.focusable {
+                return;
+            }
+            let flags = event.modifierFlags();
+            let modifiers = Modifiers {
+                command: flags.contains(NSEventModifierFlags::Command),
+                shift: flags.contains(NSEventModifierFlags::Shift),
+                alt: flags.contains(NSEventModifierFlags::Option),
+            };
+            // 组字期间所有键都交给输入法；否则功能键和 Command 组合键直接交给模型。
+            if !self.ivars().marked.get() {
+                if let Some(key) = function_key(event.keyCode()) {
+                    self.key(KeyInput::Down { key, modifiers });
+                    return;
+                }
+                if modifiers.command {
+                    let letter = event
+                        .charactersIgnoringModifiers()
+                        .and_then(|chars| chars.to_string().chars().next())
+                        .filter(char::is_ascii_alphabetic)
+                        .map(|c| c.to_ascii_uppercase());
+                    if let Some(letter) = letter {
+                        self.key(KeyInput::Down { key: Key::Letter(letter), modifiers });
+                    }
+                    return;
+                }
+            }
+            self.interpretKeyEvents(&NSArray::from_slice(&[event]));
+        }
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let Some((client, _)) = self.coordinates(event) else { return };
+            let Some(window) = self.window() else { return };
+            let scale = window.backingScaleFactor() as f32;
+            let delta = event.scrollingDeltaY() as f32;
+            // 触控板给的是点，换算成「行」：一行约 20 点。
+            let lines = if event.hasPreciseScrollingDeltas() { delta / 20.0 } else { delta };
+            if lines != 0.0 && lines.is_finite() {
+                let point = Point::new(client.0 as f32 / scale, client.1 as f32 / scale);
+                if let Some(input) = self.ivars().input.borrow().as_ref() {
+                    input.wheel(point, lines);
+                }
+            }
+        }
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool { true }
         #[unsafe(method(acceptsFirstMouse:))]
@@ -159,6 +288,7 @@ impl OverlayView {
             down: RefCell::new(None),
             control_down: Cell::new(false),
             dragging: Cell::new(false),
+            marked: Cell::new(false),
             slot,
         });
         let frame = screens::ns_rect(QRect {
@@ -168,6 +298,34 @@ impl OverlayView {
         })
         .unwrap();
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+    fn key(&self, input: KeyInput) {
+        if let Some(view_input) = self.ivars().input.borrow().as_ref() {
+            view_input.key(input);
+        }
+    }
+    /// 输入框光标在屏幕上的矩形（Cocoa 屏幕坐标），给输入法候选窗定位。
+    fn ime_screen_rect(&self) -> Option<NSRect> {
+        let caret = self.ivars().input.borrow().as_ref()?.ime_rect()?;
+        let window = self.window()?;
+        let scale = window.backingScaleFactor();
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        // 布局坐标（DIP）就是视图的点；视图按内容裁剪时减去裁掉的物理像素偏移。
+        let offset = self.ivars().slot.snapshot().offset;
+        let local = NSRect::new(
+            NSPoint::new(
+                caret.left as f64 - offset.0 as f64 / scale,
+                caret.top as f64 - offset.1 as f64 / scale,
+            ),
+            NSSize::new(
+                (caret.right - caret.left).max(1.0) as f64,
+                (caret.bottom - caret.top) as f64,
+            ),
+        );
+        let in_window = self.convertRect_toView(local, None);
+        Some(window.convertRectToScreen(in_window))
     }
     pub fn dispatch(&self, event: PointerEvent) {
         let cx = MainCx::new(self);
@@ -338,13 +496,16 @@ pub(crate) fn create(
         ..QRect::default()
     })
     .unwrap();
+    let focusable = slot.focusable;
+    let panel = OverlayPanel::alloc(mtm).set_ivars(PanelIvars { focusable });
     let panel: Retained<OverlayPanel> = unsafe {
-        msg_send![OverlayPanel::alloc(mtm),
+        msg_send![super(panel),
         initWithContentRect: frame, styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
         backing: NSBackingStoreType::Buffered, defer: false]
     };
     panel.setFloatingPanel(true);
-    panel.setBecomesKeyOnlyIfNeeded(true);
+    // 可取焦点的面板（回答窗）点一下就成为 key window，不激活应用本身。
+    panel.setBecomesKeyOnlyIfNeeded(!focusable);
     panel.setHidesOnDeactivate(false);
     panel.setOpaque(false);
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -367,8 +528,42 @@ pub(crate) fn create(
     root.addSubview(&view);
     panel.setContentView(Some(&root));
     panel.setDelegate(Some(ProtocolObject::from_ref(&*view)));
+    if focusable {
+        panel.makeFirstResponder(Some(&view));
+    }
     view.update_tracking();
     (panel, root, view)
+}
+
+/// 输入法传来的是 NSString 或 NSAttributedString。
+fn plain_text(string: &AnyObject) -> String {
+    if let Some(attributed) = string.downcast_ref::<NSAttributedString>() {
+        attributed.string().to_string()
+    } else if let Some(text) = string.downcast_ref::<NSString>() {
+        text.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// macOS 虚拟键码（kVK_*）里模型关心的功能键。
+fn function_key(code: u16) -> Option<Key> {
+    Some(match code {
+        36 | 76 => Key::Enter,
+        48 => Key::Tab,
+        51 => Key::Backspace,
+        117 => Key::Delete,
+        53 => Key::Escape,
+        123 => Key::Left,
+        124 => Key::Right,
+        125 => Key::Down,
+        126 => Key::Up,
+        115 => Key::Home,
+        119 => Key::End,
+        116 => Key::PageUp,
+        121 => Key::PageDown,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -2,11 +2,11 @@
 use objc2::rc::autoreleasepool;
 use sayit_overlay_core::{
     canvas::Canvas,
-    geom::{snap_out_px, PxRect, Rect, Transform},
+    geom::{snap_out_px, Point, PxRect, Rect, Transform},
     look::Look,
     present::MainOp,
     spec::Placement,
-    window::{Cx, FrameClock, Ops, OverlayModel, PointerModel, WindowEvent, WindowOp},
+    window::{Cx, FrameClock, KeyInput, Ops, OverlayModel, PointerModel, WindowEvent, WindowOp},
 };
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -270,6 +270,28 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
         );
         self.execute(ops, cx);
     }
+    /// 声明可取得键盘焦点；只在 `attach` 之前调用，此时提交槽还没有共享出去。
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        Arc::get_mut(&mut self.slot)
+            .expect("commit slot shared before attach")
+            .focusable = focusable;
+        self
+    }
+    pub fn key(&mut self, input: KeyInput, cx: &RenderCx) {
+        let ops = self.model.key(
+            input,
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
+        );
+        self.execute(ops, cx);
+    }
+    pub fn wheel(&mut self, point: Point, lines: f32, cx: &RenderCx) {
+        let ops = self.model.wheel(
+            point,
+            lines,
+            &cx.model(self.slot.placement, self.dpi, self.slot.snapshot().screen),
+        );
+        self.execute(ops, cx);
+    }
     /// AppKit 与 PointerModel 在主线程创建，模型与命中快照先在渲染线程创建。
     pub fn attach(&self) {
         crate::commit::attach(
@@ -294,7 +316,8 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
                 WindowOp::MoveTo { x, y } => self.slot.push(MainOp::MoveTo { x, y }),
                 WindowOp::SetInteractive(value) => self.slot.push(MainOp::SetInteractive(value)),
                 WindowOp::Action(action) => (self.action)(action),
-                WindowOp::TrackMouseLeave | WindowOp::Focus => {}
+                WindowOp::Focus => self.slot.push(MainOp::Focus),
+                WindowOp::TrackMouseLeave => {}
                 WindowOp::BeginSystemDrag => {
                     panic!("system drag belongs to the main-thread pointer bridge")
                 }

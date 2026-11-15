@@ -59,7 +59,8 @@ fn register<S: OverlaySpec>() -> WindowId {
                 S::model::<CtText>(dpi, &cx.look),
                 dpi,
                 S::dispatch,
-            );
+            )
+            .focusable(S::FOCUSABLE);
             host.attach();
             Box::new(host)
         }),

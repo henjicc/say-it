@@ -6,17 +6,17 @@ use std::rc::Rc;
 
 use objc2_core_foundation::{
     CFAttributedString, CFBoolean, CFDictionary, CFMutableAttributedString, CFNumber, CFRange,
-    CFRetained, CFString, CFType, CGAffineTransform,
+    CFRetained, CFString, CFType, CGAffineTransform, CGPoint,
 };
 use objc2_core_graphics::{CGColor, CGContext};
 use objc2_core_text::{
     kCTFontAttributeName, kCTFontFamilyNameAttribute, kCTFontTraitsAttribute, kCTFontWeightTrait,
     kCTForegroundColorAttributeName, kCTForegroundColorFromContextAttributeName,
-    kCTLanguageAttributeName, CTFont, CTFontDescriptor, CTFontUIFontType, CTLine, CTRun,
-    CTTypesetter,
+    kCTLanguageAttributeName, kCTUnderlineStyleAttributeName, CTFont, CTFontDescriptor,
+    CTFontSymbolicTraits, CTFontUIFontType, CTLine, CTRun, CTTypesetter,
 };
 use sayit_overlay_core::canvas::{
-    FontFamily, ParagraphAlign, TextAlign, TextEngine, TextMetrics, TextStyle, TextTint,
+    FontFamily, ParagraphAlign, TextAlign, TextEngine, TextMetrics, TextRun, TextStyle, TextTint,
 };
 use sayit_overlay_core::geom::{Color, Point};
 
@@ -54,10 +54,27 @@ struct Line {
     range: CFRange,
     x: f64,
     baseline: f64,
+    /// 行顶与行高（布局坐标），供命中测试、光标与选区。
+    top: f64,
+    height: f64,
+}
+
+impl Line {
+    /// 行内可放光标的末端：行尾的换行符不算。
+    fn caret_end(&self, units: &[u16]) -> isize {
+        let mut end = self.range.location + self.range.length;
+        while end > self.range.location
+            && matches!(units.get(end as usize - 1), Some(0x0A | 0x0D))
+        {
+            end -= 1;
+        }
+        end
+    }
 }
 
 pub struct CtLayout {
     attributed: CFRetained<CFAttributedString>,
+    units: Vec<u16>,
     lines: Vec<Line>,
     metrics: TextMetrics,
 }
@@ -155,6 +172,170 @@ impl TextEngine for CtText {
         }
         let font = self.font(style)?;
         let attributed = attributed(text, &font)?;
+        self.typeset(text, attributed, &font, style, max_width, max_height)
+    }
+
+    fn metrics(&self, layout: &Self::Layout) -> TextMetrics {
+        layout.metrics
+    }
+
+    fn layout_rich(
+        &self,
+        text: &str,
+        style: &TextStyle<'_>,
+        runs: &[TextRun],
+        max_width: f32,
+        max_height: f32,
+    ) -> Option<Self::Layout> {
+        if runs.is_empty() {
+            return self.layout(text, style, max_width, max_height);
+        }
+        if !style.size.is_finite() || style.size <= 0.0 {
+            return None;
+        }
+        let font = self.font(style)?;
+        let base = attributed(text, &font)?;
+        let total = base.length();
+        // SAFETY: 属性键与值类型符合 CoreText 约定；区间先夹到串长。
+        let attributed = unsafe {
+            let rich = CFMutableAttributedString::new_copy(None, 0, Some(&base))?;
+            for run in runs {
+                let start = (run.utf16_start as isize).min(total);
+                let end = ((run.utf16_start + run.utf16_len) as isize).min(total);
+                if end <= start {
+                    continue;
+                }
+                let range = CFRange {
+                    location: start,
+                    length: end - start,
+                };
+                if run.bold || run.mono || run.italic {
+                    let mut variant = *style;
+                    if run.bold {
+                        variant.weight = 600;
+                    }
+                    if run.mono {
+                        variant.family = FontFamily::Monospace;
+                    }
+                    let mut run_font = self.font(&variant)?;
+                    if run.italic {
+                        if let Some(italic) = run_font.copy_with_symbolic_traits(
+                            0.0,
+                            null(),
+                            CTFontSymbolicTraits::ItalicTrait,
+                            CTFontSymbolicTraits::ItalicTrait,
+                        ) {
+                            run_font = italic;
+                        }
+                    }
+                    CFMutableAttributedString::set_attribute(
+                        Some(&rich),
+                        range,
+                        Some(kCTFontAttributeName),
+                        Some(run_font.as_ref()),
+                    );
+                }
+                if run.underline {
+                    // kCTUnderlineStyleSingle。删除线 CoreText 没有对应属性，不画。
+                    let single = CFNumber::new_i32(1);
+                    CFMutableAttributedString::set_attribute(
+                        Some(&rich),
+                        range,
+                        Some(kCTUnderlineStyleAttributeName),
+                        Some(single.as_ref()),
+                    );
+                }
+            }
+            CFRetained::cast_unchecked::<CFAttributedString>(rich)
+        };
+        self.typeset(text, attributed, &font, style, max_width, max_height)
+    }
+
+    fn hit_test(&self, layout: &Self::Layout, point: sayit_overlay_core::geom::Point) -> u32 {
+        let Some(line) = layout.line_at(point.y as f64) else {
+            return 0;
+        };
+        // SAFETY: CTLine 归本线程；返回的索引夹在该行可放光标的范围内。
+        let index = unsafe {
+            line.native.string_index_for_position(CGPoint {
+                x: point.x as f64 - line.x,
+                y: 0.0,
+            })
+        };
+        index
+            .clamp(line.range.location, line.caret_end(&layout.units))
+            .max(0) as u32
+    }
+
+    fn caret_rect(&self, layout: &Self::Layout, index: u32) -> sayit_overlay_core::geom::Rect {
+        let index = index as isize;
+        let Some(line) = layout
+            .lines
+            .iter()
+            .rev()
+            .find(|line| line.range.location <= index)
+        else {
+            return sayit_overlay_core::geom::Rect::ZERO;
+        };
+        let index = index.min(line.caret_end(&layout.units));
+        // SAFETY: CTLine 归本线程，索引已夹在该行范围内。
+        let x = line.x + unsafe { line.native.offset_for_string_index(index, std::ptr::null_mut()) };
+        sayit_overlay_core::geom::Rect::new(
+            x as f32,
+            line.top as f32,
+            x as f32,
+            (line.top + line.height) as f32,
+        )
+    }
+
+    fn range_rects(
+        &self,
+        layout: &Self::Layout,
+        start: u32,
+        len: u32,
+    ) -> Vec<sayit_overlay_core::geom::Rect> {
+        let (start, end) = (start as isize, (start + len) as isize);
+        layout
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let from = start.max(line.range.location);
+                let to = end.min(line.caret_end(&layout.units));
+                // 选区跨过行尾时，换行处留一点宽度，看得出这一行也选上了。
+                let past_end = end > line.caret_end(&layout.units)
+                    && start <= line.caret_end(&layout.units);
+                if to < from || (to == from && !past_end) {
+                    return None;
+                }
+                // SAFETY: CTLine 归本线程，索引已夹在该行范围内。
+                let (x0, x1) = unsafe {
+                    (
+                        line.native.offset_for_string_index(from, std::ptr::null_mut()),
+                        line.native.offset_for_string_index(to, std::ptr::null_mut()),
+                    )
+                };
+                let x1 = if past_end { x1 + 4.0 } else { x1 };
+                Some(sayit_overlay_core::geom::Rect::new(
+                    (line.x + x0) as f32,
+                    line.top as f32,
+                    (line.x + x1) as f32,
+                    (line.top + line.height) as f32,
+                ))
+            })
+            .collect()
+    }
+}
+
+impl CtText {
+    fn typeset(
+        &self,
+        text: &str,
+        attributed: CFRetained<CFAttributedString>,
+        font: &CTFont,
+        style: &TextStyle<'_>,
+        max_width: f32,
+        max_height: f32,
+    ) -> Option<Rc<CtLayout>> {
         // SAFETY: CoreText 句柄留在本线程，范围不超过属性串的 UTF-16 长度。
         unsafe {
             let setter = CTTypesetter::with_attributed_string(&attributed);
@@ -234,6 +415,8 @@ impl TextEngine for CtText {
                     range,
                     x,
                     baseline: height + baseline,
+                    top: height,
+                    height: line_height,
                 });
                 height += line_height;
                 widest = widest.max(width);
@@ -244,6 +427,7 @@ impl TextEngine for CtText {
             };
             for line in &mut lines {
                 line.baseline += top;
+                line.top += top;
             }
             let left = lines
                 .iter()
@@ -258,14 +442,11 @@ impl TextEngine for CtText {
             };
             Some(Rc::new(CtLayout {
                 attributed,
+                units: text.encode_utf16().collect(),
                 lines,
                 metrics,
             }))
         }
-    }
-
-    fn metrics(&self, layout: &Self::Layout) -> TextMetrics {
-        layout.metrics
     }
 }
 
@@ -280,12 +461,20 @@ pub(crate) fn set_fill(ctx: &CGContext, color: Color) {
 }
 
 impl CtLayout {
+    /// y 处所在的行；在首行之上取首行，末行之下取末行。
+    fn line_at(&self, y: f64) -> Option<&Line> {
+        self.lines
+            .iter()
+            .find(|line| y < line.top + line.height)
+            .or(self.lines.last())
+    }
+
     pub(crate) fn draw(
         &self,
         ctx: &CGContext,
         origin: Point,
         color: Color,
-        tint: Option<TextTint>,
+        tints: &[TextTint],
     ) {
         if !origin.x.is_finite() || !origin.y.is_finite() {
             return;
@@ -293,29 +482,35 @@ impl CtLayout {
         CGContext::save_g_state(Some(ctx));
         // SAFETY: 布局、属性串与绘图上下文都归当前渲染线程所有；区间先夹到串长。
         unsafe {
-            let tint = tint.and_then(|t| {
-                let start = (t.utf16_start as isize).min(self.attributed.length());
-                let end = (u64::from(t.utf16_start) + u64::from(t.utf16_len))
-                    .min(self.attributed.length() as u64) as isize;
-                (end > start).then_some((
-                    t.color,
-                    CFRange {
-                        location: start,
-                        length: end - start,
-                    },
-                ))
-            });
-            let tinted = tint.map(|(_, range)| {
+            let tints: Vec<(Color, CFRange)> = tints
+                .iter()
+                .filter_map(|t| {
+                    let start = (t.utf16_start as isize).min(self.attributed.length());
+                    let end = (u64::from(t.utf16_start) + u64::from(t.utf16_len))
+                        .min(self.attributed.length() as u64) as isize;
+                    (end > start).then_some((
+                        t.color,
+                        CFRange {
+                            location: start,
+                            length: end - start,
+                        },
+                    ))
+                })
+                .collect();
+            let tinted = (!tints.is_empty()).then(|| {
                 let attr = CFMutableAttributedString::new_copy(None, 0, Some(&self.attributed))
                     .expect("CoreText tint attribute allocation failed");
-                // 颜色属性用于划分 CTRun；实际颜色仍从 CGContext 读取，不改变缓存的布局。
-                let marker = CGColor::new_srgb(1.0, 0.0, 0.0, 1.0);
-                CFMutableAttributedString::set_attribute(
-                    Some(&attr),
-                    range,
-                    Some(kCTForegroundColorAttributeName),
-                    Some(marker.as_ref()),
-                );
+                // 颜色属性只用于划分 CTRun（每段一个不同的标记色，相邻段不会合并）；
+                // 实际颜色仍从 CGContext 读取，不改变缓存的布局。
+                for (index, (_, range)) in tints.iter().enumerate() {
+                    let marker = CGColor::new_srgb(1.0, 0.0, (index % 255) as f64 / 255.0, 1.0);
+                    CFMutableAttributedString::set_attribute(
+                        Some(&attr),
+                        *range,
+                        Some(kCTForegroundColorAttributeName),
+                        Some(marker.as_ref()),
+                    );
+                }
                 CTTypesetter::with_attributed_string(&attr)
             });
             for line in &self.lines {
@@ -342,15 +537,20 @@ impl CtLayout {
                     );
                     CGContext::set_text_position(Some(ctx), 0.0, 0.0);
                 };
-                if let (Some(setter), Some((tint_color, range))) = (&tinted, tint) {
+                if let Some(setter) = &tinted {
                     let native = setter.line(line.range);
                     let runs = native.glyph_runs();
                     // CTLineGetGlyphRuns 的数组元素类型由 CoreText 保证为 CTRun。
                     for run in runs.cast_unchecked::<CTRun>().iter() {
                         let run_range = run.string_range();
-                        let in_tint = run_range.location < range.location + range.length
-                            && range.location < run_range.location + run_range.length;
-                        set_fill(ctx, if in_tint { tint_color } else { color });
+                        let run_color = tints
+                            .iter()
+                            .find(|(_, range)| {
+                                run_range.location < range.location + range.length
+                                    && range.location < run_range.location + run_range.length
+                            })
+                            .map_or(color, |(tint_color, _)| *tint_color);
+                        set_fill(ctx, run_color);
                         position();
                         run.draw(
                             ctx,

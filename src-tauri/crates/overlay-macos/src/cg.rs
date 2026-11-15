@@ -463,7 +463,16 @@ impl Canvas for CgCanvas {
         color: Color,
         tint: Option<TextTint>,
     ) {
-        layout.draw(&self.ctx, origin, color, tint);
+        layout.draw(&self.ctx, origin, color, tint.as_slice());
+    }
+    fn draw_text_tinted(
+        &mut self,
+        layout: &LayoutOf<Self>,
+        origin: Point,
+        color: Color,
+        tints: &[TextTint],
+    ) {
+        layout.draw(&self.ctx, origin, color, tints);
     }
     fn draw_text_blurred(
         &mut self,

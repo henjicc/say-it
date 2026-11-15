@@ -53,6 +53,8 @@ struct Pending {
 pub(crate) struct CommitSlot {
     pub id: WindowId,
     pub placement: Placement,
+    /// 对应 `OverlaySpec::FOCUSABLE`：面板能成为 key window、视图接收键盘与输入法。
+    pub focusable: bool,
     pending: Mutex<Pending>,
     pub mirror: Mutex<Mirror>,
 }
@@ -61,6 +63,7 @@ impl CommitSlot {
         Self {
             id,
             placement,
+            focusable: false,
             pending: Mutex::new(Pending {
                 queue: CommitQueue::new(),
                 scheduled: false,
@@ -334,6 +337,12 @@ impl MainHost {
                 }
             }
             MainOp::SetInteractive(value) => self.panel.setIgnoresMouseEvents(!value),
+            MainOp::Focus => {
+                if self.slot.focusable && self.panel.isVisible() {
+                    self.panel.makeKeyWindow();
+                    self.panel.makeFirstResponder(Some(&self.view));
+                }
+            }
             MainOp::SetBounds(bounds) => {
                 let mirror = self.slot.snapshot();
                 if let (Some(x), Some(y)) = (

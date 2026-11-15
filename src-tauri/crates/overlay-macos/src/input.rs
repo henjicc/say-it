@@ -4,8 +4,9 @@ use crate::{
     panel::OverlayView,
     render::{self, Host, WindowId},
 };
+use sayit_overlay_core::geom::{Point, Rect};
 use sayit_overlay_core::window::{
-    CursorShape, OverlayModel, PointerEvent, PointerModel, PointerStep, WindowOp,
+    CursorShape, KeyInput, OverlayModel, PointerEvent, PointerModel, PointerStep, WindowOp,
 };
 use std::{
     cell::RefCell,
@@ -36,6 +37,12 @@ pub(crate) type MainTask = Box<dyn FnOnce(&MainCx<'_>)>;
 pub(crate) trait ViewInput {
     fn event(&mut self, event: PointerEvent, cx: &MainCx<'_>);
     fn cursor(&self) -> CursorShape;
+    /// 键盘与输入法输入，转给渲染线程的模型。
+    fn key(&self, input: KeyInput);
+    /// 滚轮：point 为布局坐标（DIP），lines 向上为正。
+    fn wheel(&self, point: Point, lines: f32);
+    /// 输入框光标（DIP，布局坐标），供输入法候选窗定位。
+    fn ime_rect(&self) -> Option<Rect>;
 }
 
 pub(crate) struct PointerBridge<P: PointerModel> {
@@ -43,6 +50,8 @@ pub(crate) struct PointerBridge<P: PointerModel> {
     hit: Arc<Mutex<P::Hit>>,
     id: WindowId,
     input: fn(P::Input) -> render::HostJob,
+    key: fn(KeyInput) -> render::HostJob,
+    wheel: fn(Point, f32) -> render::HostJob,
     action: fn(P::Action),
 }
 
@@ -65,6 +74,22 @@ impl<P: PointerModel + 'static> PointerBridge<P> {
                             .downcast_mut::<Host<M>>()
                             .expect("overlay host type")
                             .input(input, cx);
+                    })
+                },
+                key: |input| {
+                    Box::new(move |host, cx| {
+                        host.as_any_mut()
+                            .downcast_mut::<Host<M>>()
+                            .expect("overlay host type")
+                            .key(input, cx);
+                    })
+                },
+                wheel: |point, lines| {
+                    Box::new(move |host, cx| {
+                        host.as_any_mut()
+                            .downcast_mut::<Host<M>>()
+                            .expect("overlay host type")
+                            .wheel(point, lines, cx);
                     })
                 },
             }))
@@ -126,5 +151,15 @@ impl<P: PointerModel + 'static> ViewInput for PointerBridge<P> {
     fn cursor(&self) -> CursorShape {
         let hit = *self.hit.lock().expect("overlay hit poisoned");
         self.pointer.cursor(&hit)
+    }
+    fn key(&self, input: KeyInput) {
+        render::run_on_host(self.id, (self.key)(input));
+    }
+    fn wheel(&self, point: Point, lines: f32) {
+        render::run_on_host(self.id, (self.wheel)(point, lines));
+    }
+    fn ime_rect(&self) -> Option<Rect> {
+        let hit = *self.hit.lock().expect("overlay hit poisoned");
+        self.pointer.ime_rect(&hit)
     }
 }

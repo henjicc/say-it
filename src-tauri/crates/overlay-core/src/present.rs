@@ -9,6 +9,8 @@ pub enum MainOp<F> {
     SetBounds(PxRect),
     MoveTo { x: i32, y: i32 },
     SetInteractive(bool),
+    /// 面板成为 key window（只对可取得焦点的窗口有效）。
+    Focus,
 }
 
 pub struct CommitQueue<F> {
