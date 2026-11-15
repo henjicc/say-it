@@ -406,7 +406,9 @@ bool readSelectionBounds(IUIAutomationTextRange* range, Result& result) {
     return true;
 }
 
-void readSelectionEditable(IUIAutomationElement* element, Result& result) {
+// 先看控件：禁用或 ValuePattern 只读。控件不回答时（浏览器网页正文、Word 文档都没有 ValuePattern）
+// 再看选区本身的只读属性：网页正文报只读，Word 和网页里的可编辑区报可写。都不回答时留空，交给调用方。
+void readSelectionEditable(IUIAutomationElement* element, IUIAutomationTextRange* range, Result& result) {
     if (!element) return;
     BOOL enabled = TRUE;
     if (SUCCEEDED(element->get_CurrentIsEnabled(&enabled)) && enabled == FALSE) {
@@ -423,8 +425,18 @@ void readSelectionEditable(IUIAutomationElement* element, Result& result) {
         if (SUCCEEDED(valuePattern->get_CurrentIsReadOnly(&readOnly))) {
             result.selectionEditable = readOnly == FALSE;
             result.hasSelectionEditable = true;
+            return;
         }
     }
+    VARIANT readOnly;
+    VariantInit(&readOnly);
+    // 选区跨可写与只读内容时返回混合值（VT_UNKNOWN），不当成任一种。
+    if (range && SUCCEEDED(range->GetAttributeValue(UIA_IsReadOnlyAttributeId, &readOnly))
+        && readOnly.vt == VT_BOOL) {
+        result.selectionEditable = readOnly.boolVal == VARIANT_FALSE;
+        result.hasSelectionEditable = true;
+    }
+    VariantClear(&readOnly);
 }
 
 bool readSelectionRanges(
@@ -457,7 +469,7 @@ bool readSelectionRanges(
         }
         result.selectedText = std::move(selected);
         readSelectionBounds(range.get(), result);
-        readSelectionEditable(element, result);
+        readSelectionEditable(element, range.get(), result);
         result.source = "uiaTextPattern";
         return true;
     }
