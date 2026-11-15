@@ -1384,6 +1384,12 @@ async fn process_request(
                 .selection
                 .as_ref()
                 .ok_or_else(|| "选区快照不存在".to_string())?;
+            // 网页正文这类不可编辑的选区没法替换，结果一定显示在回答窗：先弹窗，边生成边显示。
+            let shown = !selection.editable;
+            let cancellation = state.assistant_runtime.begin_generation();
+            if shown {
+                publish_answer_progress(app, request, String::new(), String::new());
+            }
             let output = process_llm_action(
                 state,
                 AssistantAction::EditSelection,
@@ -1391,9 +1397,17 @@ async fn process_request(
                 spoken_text,
                 &selection.app_name,
                 &prefs,
+                shown.then_some(LlmStream {
+                    app,
+                    request,
+                    cancellation: cancellation.clone(),
+                }),
             )
             .await?;
-            let verified = verify_selection(app, request).await.unwrap_or(false);
+            if cancellation.is_cancelled() {
+                return Err("大语言模型请求已取消".into());
+            }
+            let verified = !shown && verify_selection(app, request).await.unwrap_or(false);
             Ok(ProcessedAssistant {
                 output,
                 reasoning: String::new(),
@@ -1414,6 +1428,8 @@ async fn process_request(
                 .unwrap_or("");
             let prior_turns = conversation_turns(state, request);
             let cancellation = state.assistant_runtime.begin_generation();
+            // 问答一定显示在回答窗：发出请求就弹窗显示「正在生成」，首字到了接着流式显示。
+            publish_answer_progress(app, request, String::new(), String::new());
             let (output, reasoning, user_payload) = process_ask_action(
                 app,
                 state,
@@ -1584,7 +1600,47 @@ async fn translate_speech(
     let mut prefs = prefs.clone();
     prefs.translate_speech.llm_provider_id = shared.llm_provider_id;
     prefs.translate_speech.llm_model = shared.llm_model;
-    process_llm_action(state, AssistantAction::TranslateSpeech, "", spoken_text, app_name, &prefs).await
+    process_llm_action(state, AssistantAction::TranslateSpeech, "", spoken_text, app_name, &prefs, None).await
+}
+
+/// 结果要显示在回答窗时，边生成边把已经出来的部分发布出去。
+struct LlmStream<'a> {
+    app: &'a AppHandle,
+    request: &'a AssistantRequest,
+    cancellation: CancellationToken,
+}
+
+/// 流式输出还没结束时，从按输出协议生成的半截 JSON 里取出 `text` 已生成的部分。
+/// 末尾不完整的转义序列先不取，等下一段到了再显示。
+fn partial_output_text(raw: &str) -> Option<String> {
+    let key = raw.find("\"text\"")?;
+    let rest = raw[key + 6..].trim_start().strip_prefix(':')?.trim_start();
+    let mut chars = rest.strip_prefix('"')?.chars();
+    let mut text = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                let decoded = match chars.next() {
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('r') => '\r',
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        match u32::from_str_radix(&hex, 16).ok().filter(|_| hex.len() == 4) {
+                            Some(code) => char::from_u32(code).unwrap_or('\u{fffd}'),
+                            None => break,
+                        }
+                    }
+                    Some(other) => other,
+                    None => break,
+                };
+                text.push(decoded);
+            }
+            c => text.push(c),
+        }
+    }
+    Some(text)
 }
 
 async fn process_llm_action(
@@ -1594,6 +1650,7 @@ async fn process_llm_action(
     spoken_text: &str,
     app_name: &str,
     prefs: &AssistantPreferences,
+    stream: Option<LlmStream<'_>>,
 ) -> Result<String, String> {
     if spoken_text.trim().is_empty() {
         return Err("没有识别到语音指令".into());
@@ -1627,16 +1684,45 @@ async fn process_llm_action(
         .await?;
         return parse_assistant_answer_output(&raw);
     }
-    let raw = crate::application::smart_text::process_prompt(
-        state,
-        &assistant_system_prompt(action, &selected_template.prompt),
-        &serde_json::to_string(&payload).map_err(|error| error.to_string())?,
-        Some(&feature.llm_provider_id),
-        Some(&feature.llm_model),
-        "assistant",
-        true,
-    )
-    .await?;
+    let system_prompt = assistant_system_prompt(action, &selected_template.prompt);
+    let user_prompt = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    let raw = match stream {
+        Some(stream) => {
+            crate::application::smart_text::process_prompt_stream(
+                state,
+                &system_prompt,
+                &user_prompt,
+                Some(&feature.llm_provider_id),
+                Some(&feature.llm_model),
+                "assistant",
+                false,
+                &[],
+                stream.cancellation.clone(),
+                |partial, _| {
+                    if stream.cancellation.is_cancelled() {
+                        return;
+                    }
+                    if let Some(text) = partial_output_text(partial).filter(|t| !t.is_empty()) {
+                        publish_answer_progress(stream.app, stream.request, text, String::new());
+                    }
+                },
+            )
+            .await?
+            .0
+        }
+        None => {
+            crate::application::smart_text::process_prompt(
+                state,
+                &system_prompt,
+                &user_prompt,
+                Some(&feature.llm_provider_id),
+                Some(&feature.llm_model),
+                "assistant",
+                true,
+            )
+            .await?
+        }
+    };
     parse_assistant_output(action, &raw)
 }
 
@@ -1884,6 +1970,7 @@ pub(crate) async fn preview_assistant(
         &spoken_text,
         "试运行",
         &prefs,
+        None,
     )
     .await
 }
@@ -2141,49 +2228,15 @@ fn native_answer_view(
 
 fn publish_native_answer(app: &AppHandle, request: &AssistantRequest, answer: &AssistantAnswer) {
     use crate::desktop::native_answer as native;
-    use sayit_overlay_core::geom::PxRect;
     crate::desktop::native_test::end();
     let view = native_answer_view(app, request, answer);
     if native::native_answer_visible() {
         native::native_answer_update(view);
         return;
     }
-    // 选区矩形与指针位置都是物理像素；新回答贴着选区出现，没有选区时贴着指针。
-    let anchor = request
-        .selection
-        .as_ref()
-        .and_then(|selection| selection.bounds.as_ref())
-        .map(|bounds| {
-            PxRect::new(
-                bounds.x.round() as i32,
-                bounds.y.round() as i32,
-                bounds.width.round() as i32,
-                bounds.height.round() as i32,
-            )
-        })
-        .or_else(|| {
-            app.cursor_position()
-                .ok()
-                .map(|point| PxRect::new(point.x.round() as i32, point.y.round() as i32, 0, 0))
-        })
-        .unwrap_or_default();
-    let work = app
-        .monitor_from_point(f64::from(anchor.x), f64::from(anchor.y))
-        .ok()
-        .flatten()
-        .map(|monitor| {
-            let area = monitor.work_area();
-            PxRect::new(
-                area.position.x,
-                area.position.y,
-                area.size.width as i32,
-                area.size.height as i32,
-            )
-        })
-        .unwrap_or_default();
     // 正常回答从出现起就取得焦点，失焦才能可靠触发关闭；启动阶段的错误只提示，不抢焦点。
     let focus = answer.error.is_none() || answer.can_insert;
-    native::native_answer_show(app, view, anchor, work, focus);
+    native::native_answer_show(app, view, focus);
 }
 
 /// 原生回答窗失去焦点：没置顶就关掉，和 WebView 回答窗的失焦关闭一致。
@@ -2487,6 +2540,24 @@ pub(crate) async fn close_assistant_answer(app: AppHandle) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_output_text_shows_what_has_been_generated_so_far() {
+        assert_eq!(partial_output_text(r#"{"intent":"rewrite","te"#), None);
+        assert_eq!(partial_output_text(r#"{"intent":"rewrite","text":"#), None);
+        assert_eq!(
+            partial_output_text(r#"{"intent":"rewrite","text": "第一行\n第二"#).as_deref(),
+            Some("第一行\n第二")
+        );
+        // 末尾半截转义先不显示。
+        assert_eq!(partial_output_text(r#"{"text":"说\"#).as_deref(), Some("说"));
+        assert_eq!(partial_output_text(r#"{"text":"你\u59"#).as_deref(), Some("你"));
+        assert_eq!(
+            partial_output_text("```json\n{\"text\":\"完\\\"整\\\"\",\"intent\":\"rewrite\"}")
+                .as_deref(),
+            Some("完\"整\"")
+        );
+    }
 
     fn shortcut(key_code: &str) -> AssistantShortcut {
         AssistantShortcut {
