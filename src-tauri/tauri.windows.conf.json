@@ -35,7 +35,8 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
-        "installerHooks": "nsis-hooks.nsh"
+        "installerHooks": "nsis-hooks.nsh",
+        "template": "nsis-installer.nsi"
       }
     }
   }
