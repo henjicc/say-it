@@ -9,6 +9,7 @@ pub mod paint;
 pub mod pointer;
 pub mod rich_text;
 pub mod scroll;
+pub mod text_field;
 
 pub use hit::{HitKind, HitMap};
 pub use pointer::{UiInput, UiPointer};

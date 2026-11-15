@@ -446,7 +446,7 @@ fn lay_table<T: TextEngine>(
 }
 
 /// 双击选词的边界：连续的字母数字、连续的汉字各算一个词，其余字符单独成词。
-fn word_bounds(text: &str, index: u32) -> (u32, u32) {
+pub(crate) fn word_bounds(text: &str, index: u32) -> (u32, u32) {
     #[derive(PartialEq)]
     enum Class {
         Word,
