@@ -13,6 +13,8 @@ pub enum HitKind {
     Drag,
     /// 可选中的文字或输入框：按下、拖动、抬起的位置原样交给模型，指针显示为文本光标。
     Text,
+    /// 滑块：按下、拖动、抬起的位置原样交给模型，指针保持箭头。
+    Slider,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

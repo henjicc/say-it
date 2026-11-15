@@ -6,7 +6,7 @@
 
 use crate::desktop::native_common::{post, post_if_started, started};
 use crate::desktop::native_subtitle::SubtitleWindow;
-use crate::desktop::{native_answer, native_orb, native_recorder};
+use crate::desktop::{native_answer, native_orb, native_orb_menu, native_recorder};
 use crate::state::RuntimeState;
 use sayit_overlay_core::subtitle::{Command as SubtitleCommand, SubtitleConfig};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -31,18 +31,20 @@ pub(crate) enum TestWindow {
     Subtitle,
     Recorder,
     Answer,
+    OrbMenu,
 }
 
-const ALL: [TestWindow; 5] = [
+const ALL: [TestWindow; 6] = [
     TestWindow::Indicator,
     TestWindow::Orb,
     TestWindow::Subtitle,
     TestWindow::Recorder,
     TestWindow::Answer,
+    TestWindow::OrbMenu,
 ];
 
 /// 各窗口是否正在测试，下标同 `TestWindow`。窗口线程在 `dispatch` 里读取。
-static TESTING: [AtomicBool; 5] = [const { AtomicBool::new(false) }; 5];
+static TESTING: [AtomicBool; 6] = [const { AtomicBool::new(false) }; 6];
 /// 每开始或结束一轮测试加一；推送任务只在自己那一轮里运行。
 static ROUND: AtomicU32 = AtomicU32::new(0);
 static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
@@ -95,7 +97,7 @@ fn scenes() -> Result<std::sync::MutexGuard<'static, Scenes>, String> {
     SCENES.lock().map_err(|_| "原生窗口测试状态锁失败".to_string())
 }
 
-/// window: indicator | orb | subtitle | recorder | answer；scene 是该窗口的一种状态。
+/// window: indicator | orb | subtitle | recorder | answer | orbMenu；scene 是该窗口的一种状态。
 /// 一次只摆出一个窗口：显示这一个之前先收起其他正在测试的。
 // 悬浮球的窗口操作不能在 WebView2 同步 IPC 回调里做，Windows 上换到异步线程派发。
 #[cfg_attr(windows, tauri::command(async))]
@@ -119,6 +121,7 @@ pub(crate) fn dev_native_window_test(
         "subtitle" => TestWindow::Subtitle,
         "recorder" => TestWindow::Recorder,
         "answer" => TestWindow::Answer,
+        "orbMenu" => TestWindow::OrbMenu,
         _ => return Err(format!("未知的原生窗口：{window}")),
     };
     for other in ALL {
@@ -132,6 +135,7 @@ pub(crate) fn dev_native_window_test(
         TestWindow::Subtitle => show_subtitle(&mut scenes, &scene),
         TestWindow::Recorder => show_recorder(&app, &mut scenes, &scene),
         TestWindow::Answer => show_answer(&app, &mut scenes, &scene),
+        TestWindow::OrbMenu => show_orb_menu(&app, &scene),
     }?;
     if !was_testing && any_testing() {
         spawn_feed(app, ROUND.fetch_add(1, Ordering::AcqRel) + 1);
@@ -333,6 +337,46 @@ fn show_answer(app: &tauri::AppHandle, scenes: &mut Scenes, scene: &str) -> Resu
     Ok(())
 }
 
+/// 设置面板贴着屏幕左侧中间一个假想的悬浮球出现；测试中的操作只改面板自己的显示。
+fn show_orb_menu(app: &tauri::AppHandle, scene: &str) -> Result<(), String> {
+    if !native_orb::native_orb_enabled() {
+        return Err("原生悬浮球已用环境变量关闭".into());
+    }
+    let settings = crate::desktop::floating_orb::floating_orb_settings(app);
+    let error = match scene {
+        "default" => None,
+        "error" => Some("请先结束当前悬浮球语音输入".to_string()),
+        _ => return Err(format!("未知的设置面板状态：{scene}")),
+    };
+    let monitor = app
+        .primary_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "找不到主显示器".to_string())?;
+    let area = monitor.work_area();
+    let work = sayit_overlay_core::geom::PxRect::new(
+        area.position.x,
+        area.position.y,
+        area.size.width as i32,
+        area.size.height as i32,
+    );
+    let size = (56.0 * monitor.scale_factor()).round() as i32;
+    let orb = sayit_overlay_core::geom::PxRect::new(
+        work.x + size,
+        work.y + work.height / 2 - size / 2,
+        size,
+        size,
+    );
+    prepare_look(app);
+    native_orb_menu::native_orb_menu_show(
+        app,
+        crate::desktop::floating_orb::orb_menu_view(&settings, error),
+        orb,
+        work,
+    );
+    set_testing(TestWindow::OrbMenu, true);
+    Ok(())
+}
+
 /// 前 `count` 个字符。
 fn head(text: &str, count: usize) -> String {
     text.chars().take(count).collect()
@@ -430,7 +474,7 @@ fn hide(app: &tauri::AppHandle, scenes: &mut Scenes, window: TestWindow) {
             set_testing(window, false);
         }
         TestWindow::Orb => restore_orb(app, scenes),
-        TestWindow::Subtitle | TestWindow::Recorder | TestWindow::Answer => {
+        TestWindow::Subtitle | TestWindow::Recorder | TestWindow::Answer | TestWindow::OrbMenu => {
             closed_by_button_locked(scenes, window)
         }
     }
@@ -452,6 +496,11 @@ fn closed_by_button_locked(scenes: &mut Scenes, window: TestWindow) {
             scenes.answer_voice = false;
             if testing(window) {
                 native_answer::native_answer_hide();
+            }
+        }
+        TestWindow::OrbMenu => {
+            if testing(window) {
+                native_orb_menu::native_orb_menu_hide();
             }
         }
         TestWindow::Indicator | TestWindow::Orb => {}

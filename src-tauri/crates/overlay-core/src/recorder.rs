@@ -242,9 +242,9 @@ impl<T: TextEngine> OverlayModel<T> for Recorder {
             UiInput::Hover(id) => self.hover = id == Some(STOP_ID),
             UiInput::Press(id) => self.pressed = id == Some(STOP_ID),
             UiInput::RightClick(_)
-            | UiInput::TextPress { .. }
-            | UiInput::TextDrag { .. }
-            | UiInput::TextRelease { .. } => return Vec::new(),
+            | UiInput::PointPress { .. }
+            | UiInput::PointDrag { .. }
+            | UiInput::PointRelease { .. } => return Vec::new(),
             UiInput::Click(_) => {
                 self.stopping = true;
                 self.hover = false;

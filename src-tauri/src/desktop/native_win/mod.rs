@@ -16,6 +16,8 @@ pub(crate) mod indicator;
 #[cfg(test)]
 pub(crate) mod orb;
 #[cfg(test)]
+pub(crate) mod orb_menu;
+#[cfg(test)]
 pub(crate) mod subtitle;
 mod surface;
 pub(crate) use surface::LayeredSurface;

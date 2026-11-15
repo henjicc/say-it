@@ -16,6 +16,7 @@
 mod answer;
 mod indicator;
 mod orb;
+mod orb_menu;
 mod subtitle;
 
 use super::create_dwrite_factory;

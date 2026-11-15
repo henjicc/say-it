@@ -1025,7 +1025,7 @@ where
             UiInput::Press(id) => self.pressed = id,
             UiInput::Click(id) => self.click(id, &mut ops),
             UiInput::RightClick(_) => return ops,
-            UiInput::TextPress { id, point } => {
+            UiInput::PointPress { id, point } => {
                 let clicks = self.clicks.press(cx.now, point);
                 match id {
                     ID_BODY => {
@@ -1048,7 +1048,7 @@ where
                     _ => {}
                 }
             }
-            UiInput::TextDrag { id, point } => match id {
+            UiInput::PointDrag { id, point } => match id {
                 ID_BODY => {
                     // 拖到可视区外时跟着滚动。
                     if point.y < self.body.top {
@@ -1067,7 +1067,7 @@ where
                 }
                 _ => return ops,
             },
-            UiInput::TextRelease { id, point } => {
+            UiInput::PointRelease { id, point } => {
                 if id == ID_BODY {
                     if let Some(url) = self.rich.release(cx.text, self.answer_point(point)) {
                         ops.push(WindowOp::Action(AnswerAction::OpenLink(url)));
@@ -1409,7 +1409,7 @@ mod tests {
     fn copy_shortcut_takes_the_answer_selection_after_selecting_in_the_body() {
         let (mut model, _) = shown("可以复制的回答", (0, 0));
         let body = Point::new(PAD_X + 1.0, HEADER + 5.0);
-        model.input(UiInput::TextPress { id: ID_BODY, point: body }, &cx(&FakeText));
+        model.input(UiInput::PointPress { id: ID_BODY, point: body }, &cx(&FakeText));
         key(&mut model, down(Key::Letter('A'), true));
         assert_eq!(
             key(&mut model, down(Key::Letter('C'), true)),

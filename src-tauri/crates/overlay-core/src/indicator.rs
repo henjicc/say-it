@@ -646,9 +646,9 @@ impl<T: TextEngine> OverlayModel<T> for Indicator {
                     && self.state == Some(IndicatorState::SmartProcessing)
             }
             UiInput::Press(_)
-            | UiInput::TextPress { .. }
-            | UiInput::TextDrag { .. }
-            | UiInput::TextRelease { .. } => return Vec::new(),
+            | UiInput::PointPress { .. }
+            | UiInput::PointDrag { .. }
+            | UiInput::PointRelease { .. } => return Vec::new(),
             // 点击后立刻回到处理中给出反馈，不等应用回传。
             UiInput::Click(_) => {
                 if self.state != Some(IndicatorState::SmartProcessing) {

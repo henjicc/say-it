@@ -16,12 +16,12 @@ pub enum UiInput {
     Click(u16),
     /// 在按钮上右键抬起。
     RightClick(u16),
-    /// 在文字区域按下；point 为布局坐标（DIP）。连击由模型按时间判断。
-    TextPress { id: u16, point: Point },
-    /// 文字区域按下后移动；指针可能已离开该区域（选中时拖到外面要继续滚动）。
-    TextDrag { id: u16, point: Point },
-    /// 文字区域按下后抬起，或捕获丢失。
-    TextRelease { id: u16, point: Point },
+    /// 在文字区域或滑块上按下；point 为布局坐标（DIP）。连击由模型按时间判断。
+    PointPress { id: u16, point: Point },
+    /// 按下后移动；指针可能已离开该区域（选中时拖到外面要继续滚动，滑块拖到外面停在端点）。
+    PointDrag { id: u16, point: Point },
+    /// 按下后抬起，或捕获丢失。
+    PointRelease { id: u16, point: Point },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,9 +57,9 @@ impl<A> UiPointer<A> {
         let region = self.press?.region?;
         (region.kind == HitKind::Button).then_some(region.id)
     }
-    fn pressed_text(&self) -> Option<u16> {
+    fn pressed_point(&self) -> Option<u16> {
         let region = self.press?.region?;
-        (region.kind == HitKind::Text).then_some(region.id)
+        matches!(region.kind, HitKind::Text | HitKind::Slider).then_some(region.id)
     }
     fn cancel_press(&mut self, steps: &mut Vec<PointerStep<A, UiInput>>) {
         if self.pressed_button().is_some() {
@@ -79,9 +79,9 @@ impl<A: Send + 'static> PointerModel for UiPointer<A> {
         match event {
             PointerEvent::Move { client, screen } => {
                 self.last = Some(client);
-                if let Some(id) = self.pressed_text() {
+                if let Some(id) = self.pressed_point() {
                     let point = client_to_dip(client, hit.dpi());
-                    steps.push(PointerStep::Model(UiInput::TextDrag { id, point }));
+                    steps.push(PointerStep::Model(UiInput::PointDrag { id, point }));
                 }
                 let region = hit.at(client);
                 if !self.tracking {
@@ -120,15 +120,15 @@ impl<A: Send + 'static> PointerModel for UiPointer<A> {
                 if let Some(id) = self.pressed_button() {
                     steps.push(PointerStep::Model(UiInput::Press(Some(id))));
                 }
-                if let Some(id) = self.pressed_text() {
+                if let Some(id) = self.pressed_point() {
                     let point = client_to_dip(client, hit.dpi());
-                    steps.push(PointerStep::Model(UiInput::TextPress { id, point }));
+                    steps.push(PointerStep::Model(UiInput::PointPress { id, point }));
                 }
             }
             PointerEvent::LeftUp { client } => {
-                if let Some(id) = self.pressed_text() {
+                if let Some(id) = self.pressed_point() {
                     let point = client_to_dip(client, hit.dpi());
-                    steps.push(PointerStep::Model(UiInput::TextRelease { id, point }));
+                    steps.push(PointerStep::Model(UiInput::PointRelease { id, point }));
                 }
                 let pressed = self.pressed_button();
                 self.cancel_press(&mut steps);
@@ -152,9 +152,9 @@ impl<A: Send + 'static> PointerModel for UiPointer<A> {
             }
             // 系统拖拽接管指针后不会再收到抬起；被其他窗口抢走捕获时同样放弃这次按下。
             PointerEvent::CaptureLost => {
-                if let Some(id) = self.pressed_text() {
+                if let Some(id) = self.pressed_point() {
                     let point = client_to_dip(self.last.unwrap_or_default(), hit.dpi());
-                    steps.push(PointerStep::Model(UiInput::TextRelease { id, point }));
+                    steps.push(PointerStep::Model(UiInput::PointRelease { id, point }));
                 }
                 self.cancel_press(&mut steps);
             }
@@ -169,7 +169,11 @@ impl<A: Send + 'static> PointerModel for UiPointer<A> {
             .last
             .and_then(|client| hit.at(client))
             .is_some_and(|region| region.kind == HitKind::Text);
-        if over_text || self.pressed_text().is_some() {
+        let pressing_text = self
+            .press
+            .and_then(|press| press.region)
+            .is_some_and(|region| region.kind == HitKind::Text);
+        if over_text || pressing_text {
             CursorShape::Text
         } else {
             CursorShape::Arrow
@@ -298,7 +302,7 @@ mod tests {
                 },
                 &map
             ),
-            vec![PointerStep::Model(UiInput::TextPress {
+            vec![PointerStep::Model(UiInput::PointPress {
                 id: TEXT,
                 point: Point::new(10.0, 50.0)
             })]
@@ -306,7 +310,7 @@ mod tests {
         // 拖出区域仍算选中拖动，不会进入窗口拖拽。
         assert_eq!(
             pointer.event(at(20, 400), &map),
-            vec![PointerStep::Model(UiInput::TextDrag {
+            vec![PointerStep::Model(UiInput::PointDrag {
                 id: TEXT,
                 point: Point::new(10.0, 200.0)
             })]
@@ -314,7 +318,7 @@ mod tests {
         assert_eq!(pointer.cursor(&map), CursorShape::Text);
         assert_eq!(
             pointer.event(PointerEvent::LeftUp { client: (20, 400) }, &map),
-            vec![PointerStep::Model(UiInput::TextRelease {
+            vec![PointerStep::Model(UiInput::PointRelease {
                 id: TEXT,
                 point: Point::new(10.0, 200.0)
             })]

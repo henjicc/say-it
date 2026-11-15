@@ -17,6 +17,7 @@ pub(crate) mod native_answer;
 pub(crate) mod native_common;
 pub(crate) mod native_indicator;
 pub(crate) mod native_orb;
+pub(crate) mod native_orb_menu;
 pub(crate) mod native_recorder;
 #[cfg(windows)]
 pub(crate) mod native_win;

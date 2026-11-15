@@ -70,6 +70,15 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
       ["error", "出错"],
     ],
   },
+  {
+    key: "orbMenu",
+    label: "悬浮球设置面板",
+    hint: "贴着屏幕左侧中间出现。可以拖滑块、滚轮微调、点开关和按钮，用 Tab 和方向键操作；测试中不改真实设置，点别处或按 Esc 收起。",
+    scenes: [
+      ["default", "默认"],
+      ["error", "出错"],
+    ],
+  },
 ];
 
 /** 用假数据把原生窗口摆到屏幕上看外观和手感；窗口上的操作不触发真实动作。一次只摆出一个。 */

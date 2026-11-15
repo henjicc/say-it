@@ -4,7 +4,9 @@ use crate::state::{
     FloatingOrbSettings, MouseGestureMode, RuntimeState,
 };
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings as EnigoSettings};
+use sayit_overlay_core::geom::PxRect;
 use sayit_overlay_core::look::Look;
+use sayit_overlay_core::orb_menu::{self, OrbMenuView};
 #[cfg(any(windows, target_os = "macos", test))]
 use sayit_overlay_core::look::{Theme, Tone};
 use std::sync::atomic::Ordering;
@@ -323,6 +325,10 @@ impl MonitorRect {
         }
     }
 
+    fn px_rect(self) -> PxRect {
+        PxRect::new(self.x, self.y, self.width as i32, self.height as i32)
+    }
+
     fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.x
             && y >= self.y
@@ -447,44 +453,22 @@ fn resolve_menu_position(
     gap: i32,
     monitors: &[MonitorRect],
 ) -> tauri::PhysicalPosition<i32> {
-    let Some(monitor) = monitor_for_window(orb_position, orb_size, monitors) else {
-        return tauri::PhysicalPosition::new(
-            orb_position
-                .x
-                .saturating_add_unsigned(orb_size.width)
-                .saturating_add(gap),
-            orb_position.y,
-        );
-    };
-    let monitor_right = monitor.x.saturating_add_unsigned(monitor.width);
-    let monitor_bottom = monitor.y.saturating_add_unsigned(monitor.height);
-    let right_x = orb_position
-        .x
-        .saturating_add_unsigned(orb_size.width)
-        .saturating_add(gap);
-    let left_x = orb_position
-        .x
-        .saturating_sub(menu_size.width as i32)
-        .saturating_sub(gap);
-    let preferred_x = if right_x.saturating_add_unsigned(menu_size.width) <= monitor_right {
-        right_x
-    } else {
-        left_x
-    };
-    let max_x = monitor_right
-        .saturating_sub(menu_size.width as i32)
-        .max(monitor.x);
-    let centered_y = orb_position
-        .y
-        .saturating_add((orb_size.height / 2) as i32)
-        .saturating_sub((menu_size.height / 2) as i32);
-    let max_y = monitor_bottom
-        .saturating_sub(menu_size.height as i32)
-        .max(monitor.y);
-    tauri::PhysicalPosition::new(
-        preferred_x.clamp(monitor.x, max_x),
-        centered_y.clamp(monitor.y, max_y),
-    )
+    let work = monitor_for_window(orb_position, orb_size, monitors)
+        .map(MonitorRect::px_rect)
+        .unwrap_or_default();
+    let orb = PxRect::new(
+        orb_position.x,
+        orb_position.y,
+        orb_size.width as i32,
+        orb_size.height as i32,
+    );
+    let (x, y) = orb_menu::place(
+        orb,
+        (menu_size.width as i32, menu_size.height as i32),
+        gap,
+        work,
+    );
+    tauri::PhysicalPosition::new(x, y)
 }
 
 fn point_is_inside_window(
@@ -1124,6 +1108,23 @@ fn config_payload(settings: &FloatingOrbSettings) -> serde_json::Value {
 fn emit_config(app: &tauri::AppHandle, settings: &FloatingOrbSettings) {
     // 配置是跨窗口状态：只广播一次，主窗口也必须同步菜单中的修改。
     let _ = app.emit("floating-orb-config", config_payload(settings));
+    crate::desktop::native_orb_menu::native_orb_menu_update(orb_menu_view(settings, None));
+}
+
+/// 原生设置面板的快照；取值范围只在这里给出。
+pub(crate) fn orb_menu_view(settings: &FloatingOrbSettings, error: Option<String>) -> OrbMenuView {
+    OrbMenuView {
+        size_percent: normalized_orb_size_percent(settings.size_percent),
+        size_range: (ORB_SIZE_PERCENT_MIN, ORB_SIZE_PERCENT_MAX),
+        opacity: normalized_orb_opacity(settings.opacity),
+        opacity_range: (ORB_OPACITY_MIN, ORB_OPACITY_MAX),
+        auto_enter: settings.auto_enter,
+        error,
+    }
+}
+
+pub(crate) fn floating_orb_settings(app: &tauri::AppHandle) -> FloatingOrbSettings {
+    current_settings(app)
 }
 
 fn apply_floating_orb_config(app: &tauri::AppHandle, ui: &OrbUi) -> Result<(), String> {
@@ -1180,6 +1181,7 @@ pub(crate) fn sync_floating_orb_window(app: &tauri::AppHandle) -> Result<(), Str
         if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
             let _ = dismiss_floating_orb_menu_window(&menu);
         }
+        crate::desktop::native_orb_menu::native_orb_menu_hide();
         if use_native_orb() {
             if !app
                 .state::<RuntimeState>()
@@ -1482,6 +1484,9 @@ fn resize_and_position_floating_orb_menu(
 #[cfg_attr(windows, tauri::command(async))]
 #[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
+    if use_native_orb() {
+        return show_native_orb_menu(&app);
+    }
     let menu = ensure_floating_orb_menu_window(&app)?;
     let settings = current_settings(&app);
     apply_native_glass(
@@ -1497,6 +1502,26 @@ pub(crate) fn show_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String
     menu.set_focus()
         .map_err(|error| format!("激活悬浮球设置面板失败：{error}"))?;
     emit_config(&app, &settings);
+    Ok(())
+}
+
+/// 原生悬浮球配原生设置面板：贴在球旁边，放在球所在屏的工作区里。
+fn show_native_orb_menu(app: &tauri::AppHandle) -> Result<(), String> {
+    let (x, y, size) = crate::desktop::native_orb::native_orb_rect()
+        .ok_or_else(|| "悬浮球窗口不存在".to_string())?;
+    let work = monitor_for_window(
+        tauri::PhysicalPosition::new(x, y),
+        tauri::PhysicalSize::new(size as u32, size as u32),
+        &app_monitor_rects(app),
+    )
+    .map(MonitorRect::px_rect)
+    .unwrap_or_default();
+    crate::desktop::native_orb_menu::native_orb_menu_show(
+        app,
+        orb_menu_view(&current_settings(app), None),
+        PxRect::new(x, y, size, size),
+        work,
+    );
     Ok(())
 }
 
@@ -1522,6 +1547,7 @@ fn dismiss_floating_orb_menu_window(menu: &tauri::WebviewWindow) -> Result<(), S
 #[cfg_attr(windows, tauri::command(async))]
 #[cfg_attr(not(windows), tauri::command)]
 pub(crate) fn hide_floating_orb_menu(app: tauri::AppHandle) -> Result<(), String> {
+    crate::desktop::native_orb_menu::native_orb_menu_hide();
     if let Some(menu) = app.get_webview_window(FLOATING_ORB_MENU_LABEL) {
         dismiss_floating_orb_menu_window(&menu)?;
     }

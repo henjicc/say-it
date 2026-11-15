@@ -8,6 +8,7 @@ pub mod indicator;
 pub mod look;
 pub mod markdown;
 pub mod orb;
+pub mod orb_menu;
 pub mod present;
 pub mod recorder;
 pub mod screen;
