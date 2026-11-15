@@ -1,5 +1,5 @@
 use crate::canvas::{Canvas, TextEngine};
-use crate::geom::{PxRect, Rect, Shape};
+use crate::geom::{Point, PxRect, Rect, Shape};
 use crate::look::Look;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,9 @@ pub enum WindowOp<A> {
     /// Mac: performWindowDragWithEvent: 立即返回，宿主随即补发 CaptureLost，会话结束补发 SystemDragEnded）。
     /// 只会出现在指针层输出里。
     BeginSystemDrag,
+    /// 取得键盘焦点并激活窗口（只对 `OverlaySpec::FOCUSABLE` 的窗口有效）。
+    /// Win: SetForegroundWindow + SetFocus；Mac: makeKeyAndOrderFront。
+    Focus,
     /// 应用级动作，宿主交给主 crate（不得阻塞）。
     Action(A),
 }
@@ -54,6 +57,45 @@ pub enum WindowEvent {
     SystemDragEnded { bounds: PxRect },
     /// 放置参考区（Cx.area）变化：显示器插拔、Dock 变化。Windows 宿主不发送。
     AreaChanged,
+    /// 键盘焦点得失；只有 `OverlaySpec::FOCUSABLE` 的窗口会收到。
+    Focus(bool),
+}
+
+/// 键盘修饰键。`command` 在 Windows 是 Ctrl，在 macOS 是 Command：快捷键按它判断。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub command: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Escape,
+    Enter,
+    Tab,
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// 与修饰键组合的字母键，大写 ASCII（快捷键用；文字输入走 `KeyInput::Text`）。
+    Letter(char),
+}
+
+/// 有焦点窗口收到的键盘与输入法输入。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyInput {
+    Down { key: Key, modifiers: Modifiers },
+    /// 确定输入的文字（键入字符或输入法上屏）。
+    Text(String),
+    /// 输入法组字中的文字；空串表示组字结束。caret 为组字串内的 UTF-16 光标位置。
+    Compose { text: String, caret: u32 },
 }
 
 /// 指针输入。client 为相对布局原点的物理像素；screen 为 DesktopPx。
@@ -93,6 +135,8 @@ pub enum CursorShape {
     Move,
     /// 可点击（胶囊智能处理中的「直接输入」）。
     Hand,
+    /// 可选中的文字或输入框。
+    Text,
 }
 
 /// 模型调用上下文：宿主每次处理消息取一次 now。
@@ -166,6 +210,11 @@ pub trait PointerModel: Default {
         let _ = hit;
         CursorShape::Arrow
     }
+    /// 输入法候选窗要贴着的光标矩形（DIP，布局坐标）；None = 当前没有输入框获得焦点。
+    fn ime_rect(&self, hit: &Self::Hit) -> Option<Rect> {
+        let _ = hit;
+        None
+    }
 }
 
 /// 一个悬浮窗的渲染状态机。T 为平台文本引擎；只在单线程使用。
@@ -181,6 +230,16 @@ pub trait OverlayModel<T: TextEngine> {
         cx: &Cx<'_, T>,
     ) -> Ops<Self::Action>;
     fn window_event(&mut self, event: WindowEvent, cx: &Cx<'_, T>) -> Ops<Self::Action>;
+    /// 键盘输入；只有 `OverlaySpec::FOCUSABLE` 且有焦点的窗口会收到。
+    fn key(&mut self, input: KeyInput, cx: &Cx<'_, T>) -> Ops<Self::Action> {
+        let _ = (input, cx);
+        Vec::new()
+    }
+    /// 滚轮：point 为指针处的布局坐标（DIP），lines 为滚动的行数，向上为正。
+    fn wheel(&mut self, point: Point, lines: f32, cx: &Cx<'_, T>) -> Ops<Self::Action> {
+        let _ = (point, lines, cx);
+        Vec::new()
+    }
     /// 外观变化；通常返回 [Redraw]。Windows 宿主从不调用（模型以构造时的 Look 为准）。
     fn set_look(&mut self, look: &Look) -> Ops<Self::Action>;
     /// 一帧推进；dt 来自宿主 FrameClock。

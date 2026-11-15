@@ -3,7 +3,7 @@ use super::gesture::client_to_dip;
 use crate::geom::Rect;
 
 /// 一个窗口最多登记的可交互区域数。
-pub const MAX_REGIONS: usize = 8;
+pub const MAX_REGIONS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitKind {
@@ -11,6 +11,8 @@ pub enum HitKind {
     Button,
     /// 按住并移动超过阈值后拖动整个窗口。
     Drag,
+    /// 可选中的文字或输入框：按下、拖动、抬起的位置原样交给模型，指针显示为文本光标。
+    Text,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +29,8 @@ pub struct HitMap {
     /// 模型当前认定的悬停按钮。指针层拿它和实际指针位置比较，不自己记悬停：
     /// 窗口在悬停中被隐藏或切成穿透时收不到离开事件，以模型为准才不会留下过期状态。
     hover: Option<u16>,
+    /// 获得焦点的输入框的光标矩形（DIP），供输入法候选窗定位。
+    caret: Option<Rect>,
     len: usize,
     regions: [Region; MAX_REGIONS],
 }
@@ -36,6 +40,7 @@ impl HitMap {
         Self {
             dpi,
             hover: None,
+            caret: None,
             len: 0,
             regions: [Region {
                 id: 0,
@@ -55,6 +60,12 @@ impl HitMap {
     }
     pub fn hover(&self) -> Option<u16> {
         self.hover
+    }
+    pub fn set_caret(&mut self, caret: Option<Rect>) {
+        self.caret = caret;
+    }
+    pub fn caret(&self) -> Option<Rect> {
+        self.caret
     }
     pub fn dpi(&self) -> u32 {
         self.dpi

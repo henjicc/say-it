@@ -241,7 +241,10 @@ impl<T: TextEngine> OverlayModel<T> for Recorder {
         match input {
             UiInput::Hover(id) => self.hover = id == Some(STOP_ID),
             UiInput::Press(id) => self.pressed = id == Some(STOP_ID),
-            UiInput::RightClick(_) => return Vec::new(),
+            UiInput::RightClick(_)
+            | UiInput::TextPress { .. }
+            | UiInput::TextDrag { .. }
+            | UiInput::TextRelease { .. } => return Vec::new(),
             UiInput::Click(_) => {
                 self.stopping = true;
                 self.hover = false;
@@ -274,7 +277,7 @@ impl<T: TextEngine> OverlayModel<T> for Recorder {
                 self.origin = (suggested.x, suggested.y);
                 vec![WindowOp::SetBounds(self.bounds()), WindowOp::Redraw]
             }
-            WindowEvent::AreaChanged => Vec::new(),
+            WindowEvent::AreaChanged | WindowEvent::Focus(_) => Vec::new(),
         }
     }
     fn set_look(&mut self, look: &Look) -> Ops<RecorderAction> {

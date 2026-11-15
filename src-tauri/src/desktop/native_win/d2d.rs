@@ -8,13 +8,23 @@ use sayit_overlay_core::geom::{Color, LineCap, LineJoin, Point, Rect, Stroke, Tr
 use sayit_overlay_core::svg::SvgSeg;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use windows::core::IUnknown;
+use windows::core::{IUnknown, HSTRING};
+use windows::Win32::Foundation::BOOL;
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+
+const MONOSPACE: &str = "Consolas";
+
+fn text_range(start: u32, len: u32) -> DWRITE_TEXT_RANGE {
+    DWRITE_TEXT_RANGE {
+        startPosition: start,
+        length: len,
+    }
+}
 
 #[derive(Hash, PartialEq, Eq)]
 struct FormatKey {
@@ -40,6 +50,7 @@ impl DWriteText {
         let family = match style.family {
             FontFamily::SystemUi => "Microsoft YaHei UI",
             FontFamily::Named(name) => name,
+            FontFamily::Monospace => MONOSPACE,
         };
         let key = FormatKey {
             family: family.to_owned(),
@@ -118,6 +129,90 @@ impl TextEngine for DWriteText {
             height: metrics.height,
             line_count: metrics.lineCount,
         }
+    }
+    fn layout_rich(
+        &self,
+        text: &str,
+        style: &TextStyle<'_>,
+        runs: &[TextRun],
+        max_width: f32,
+        max_height: f32,
+    ) -> Option<Self::Layout> {
+        let layout = self.layout(text, style, max_width, max_height)?;
+        let monospace = HSTRING::from(MONOSPACE);
+        let result = unsafe {
+            (|| -> windows::core::Result<()> {
+                for run in runs {
+                    let range = text_range(run.utf16_start, run.utf16_len);
+                    if run.bold {
+                        layout.SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, range)?;
+                    }
+                    if run.italic {
+                        layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range)?;
+                    }
+                    if run.mono {
+                        layout.SetFontFamilyName(&monospace, range)?;
+                    }
+                    if run.underline {
+                        layout.SetUnderline(true, range)?;
+                    }
+                    if run.strikethrough {
+                        layout.SetStrikethrough(true, range)?;
+                    }
+                }
+                Ok(())
+            })()
+        };
+        if let Err(error) = result {
+            eprintln!("[native-overlay] 设置富文本样式失败：{error}");
+        }
+        Some(layout)
+    }
+    fn hit_test(&self, layout: &Self::Layout, point: Point) -> u32 {
+        let mut trailing = BOOL::default();
+        let mut inside = BOOL::default();
+        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+        match unsafe {
+            layout.HitTestPoint(point.x, point.y, &mut trailing, &mut inside, &mut metrics)
+        } {
+            Ok(()) if trailing.as_bool() => metrics.textPosition + metrics.length,
+            Ok(()) => metrics.textPosition,
+            Err(error) => {
+                eprintln!("[native-overlay] 文字命中测试失败：{error}");
+                0
+            }
+        }
+    }
+    fn caret_rect(&self, layout: &Self::Layout, index: u32) -> Rect {
+        let (mut x, mut y) = (0.0, 0.0);
+        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+        match unsafe { layout.HitTestTextPosition(index, false, &mut x, &mut y, &mut metrics) } {
+            Ok(()) => Rect::new(x, metrics.top, x, metrics.top + metrics.height),
+            Err(error) => {
+                eprintln!("[native-overlay] 读取光标位置失败：{error}");
+                Rect::ZERO
+            }
+        }
+    }
+    fn range_rects(&self, layout: &Self::Layout, start: u32, len: u32) -> Vec<Rect> {
+        if len == 0 {
+            return Vec::new();
+        }
+        let mut count = 0;
+        // 第一次只取所需条数：缓冲不够时返回 E_NOT_SUFFICIENT_BUFFER，属预期。
+        let _ = unsafe { layout.HitTestTextRange(start, len, 0.0, 0.0, None, &mut count) };
+        let mut metrics = vec![DWRITE_HIT_TEST_METRICS::default(); count as usize];
+        if let Err(error) = unsafe {
+            layout.HitTestTextRange(start, len, 0.0, 0.0, Some(&mut metrics), &mut count)
+        } {
+            eprintln!("[native-overlay] 读取选中范围失败：{error}");
+            return Vec::new();
+        }
+        metrics.truncate(count as usize);
+        metrics
+            .iter()
+            .map(|m| Rect::new(m.left, m.top, m.left + m.width, m.top + m.height))
+            .collect()
     }
 }
 
@@ -432,6 +527,43 @@ impl Canvas for D2dCanvas<'_> {
             if let Some(range) = range {
                 if let Err(error) = layout.SetDrawingEffect(None::<&IUnknown>, range) {
                     eprintln!("[native-overlay] 清除文字淡入失败：{error}");
+                }
+            }
+        }
+    }
+    fn draw_text_tinted(
+        &mut self,
+        layout: &IDWriteTextLayout,
+        origin: Point,
+        color: Color,
+        tints: &[TextTint],
+    ) {
+        self.color(color);
+        let mut transform = Matrix3x2::default();
+        unsafe { self.target.GetTransform(&mut transform) };
+        let origin = align_baseline_to_device(origin, &transform, self.dpi);
+        unsafe {
+            for tint in tints {
+                match self.target.CreateSolidColorBrush(&color_f(tint.color), None) {
+                    Ok(brush) => {
+                        let range = text_range(tint.utf16_start, tint.utf16_len);
+                        if let Err(error) = layout.SetDrawingEffect(&brush, range) {
+                            eprintln!("[native-overlay] 设置文字颜色失败：{error}");
+                        }
+                    }
+                    Err(error) => eprintln!("[native-overlay] 创建文字画刷失败：{error}"),
+                }
+            }
+            self.target.DrawTextLayout(
+                point_f(origin),
+                layout,
+                self.brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            for tint in tints {
+                let range = text_range(tint.utf16_start, tint.utf16_len);
+                if let Err(error) = layout.SetDrawingEffect(None::<&IUnknown>, range) {
+                    eprintln!("[native-overlay] 清除文字颜色失败：{error}");
                 }
             }
         }

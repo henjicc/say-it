@@ -294,7 +294,7 @@ impl<M: OverlayModel<CtText> + 'static> Host<M> {
                 WindowOp::MoveTo { x, y } => self.slot.push(MainOp::MoveTo { x, y }),
                 WindowOp::SetInteractive(value) => self.slot.push(MainOp::SetInteractive(value)),
                 WindowOp::Action(action) => (self.action)(action),
-                WindowOp::TrackMouseLeave => {}
+                WindowOp::TrackMouseLeave | WindowOp::Focus => {}
                 WindowOp::BeginSystemDrag => {
                     panic!("system drag belongs to the main-thread pointer bridge")
                 }

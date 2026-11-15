@@ -20,21 +20,25 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Direct2D::ID2D1Factory;
 use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
+    TRACKMOUSEEVENT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
+    VK_HOME, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, LoadCursorW,
-    PostMessageW, RegisterClassW, SendMessageW, SetCursor, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, GWLP_USERDATA, GWL_EXSTYLE, HTCAPTION, HTCLIENT, HWND_TOPMOST,
-    IDC_ARROW, IDC_HAND, IDC_SIZEALL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, WINDOW_EX_STYLE, WM_CAPTURECHANGED, WM_DESTROY, WM_DPICHANGED, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCLBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    PostMessageW, RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, GWLP_USERDATA,
+    GWL_EXSTYLE, HTCAPTION, HTCLIENT, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL,
+    SPI_GETWHEELSCROLLLINES, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA, WINDOW_EX_STYLE,
+    WM_CAPTURECHANGED, WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCLBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const FRAME_TIMER: usize = 1;
@@ -50,6 +54,8 @@ type Pointer<W> = <Model<W> as OverlayModel<DWriteText>>::Pointer;
 
 struct Host<W: OverlaySpec> {
     model: Model<W>,
+    /// WM_CHAR 逐个送来 UTF-16 码元；高代理项先存着，等低代理项到了再拼成一个字。
+    high_surrogate: Option<u16>,
     pointer: Pointer<W>,
     text: DWriteText,
     d2d: ID2D1Factory,
@@ -353,9 +359,61 @@ fn execute<W: OverlaySpec>(hwnd: HWND, ops: Ops<Action<W>>, now: Instant) {
                     }
                 }
             }
+            WindowOp::Focus => unsafe {
+                if W::FOCUSABLE {
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = SetFocus(hwnd);
+                }
+            },
             WindowOp::Action(action) => W::dispatch(action),
         }
     }
+}
+fn key_input<W: OverlaySpec>(hwnd: HWND, input: KeyInput, now: Instant) {
+    update::<W>(hwnd, now, |model, cx| model.key(input, cx));
+}
+fn modifiers() -> Modifiers {
+    let down = |key: VIRTUAL_KEY| unsafe { GetKeyState(i32::from(key.0)) } < 0;
+    Modifiers {
+        command: down(VK_CONTROL),
+        shift: down(VK_SHIFT),
+        alt: down(VK_MENU),
+    }
+}
+fn key_of(code: u16, modifiers: Modifiers) -> Option<Key> {
+    Some(match VIRTUAL_KEY(code) {
+        VK_ESCAPE => Key::Escape,
+        VK_RETURN => Key::Enter,
+        VK_TAB => Key::Tab,
+        VK_BACK => Key::Backspace,
+        VK_DELETE => Key::Delete,
+        VK_LEFT => Key::Left,
+        VK_RIGHT => Key::Right,
+        VK_UP => Key::Up,
+        VK_DOWN => Key::Down,
+        VK_HOME => Key::Home,
+        VK_END => Key::End,
+        VK_PRIOR => Key::PageUp,
+        VK_NEXT => Key::PageDown,
+        // 字母键的虚拟键码就是大写 ASCII；只在组合键时上报，单独按下走 WM_CHAR。
+        _ if modifiers.command && (b'A' as u16..=b'Z' as u16).contains(&code) => {
+            Key::Letter(char::from(code as u8))
+        }
+        _ => return None,
+    })
+}
+fn wheel_lines(wparam: WPARAM) -> f32 {
+    let notches = f32::from((wparam.0 >> 16) as i16) / WHEEL_DELTA as f32;
+    let mut lines: u32 = 3;
+    unsafe {
+        let _ = SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            Some(&mut lines as *mut u32 as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+    }
+    notches * lines as f32
 }
 fn pointer_event<W: OverlaySpec>(hwnd: HWND, event: PointerEvent, now: Instant) {
     let steps = with_state::<W, _>(hwnd, |state| state.pointer.event(event, &state.model.hit()))
@@ -472,6 +530,46 @@ unsafe extern "system" fn window_proc<W: OverlaySpec>(
             now,
         ),
         WM_MOUSELEAVE_MSG => pointer_event::<W>(hwnd, PointerEvent::Leave, now),
+        WM_MOUSEWHEEL => {
+            // 滚轮消息带的是屏幕坐标。
+            let (x, y) = client_point(lparam);
+            let mut point = POINT { x, y };
+            let _ = ScreenToClient(hwnd, &mut point);
+            let dip = sayit_overlay_core::ui::gesture::client_to_dip(
+                (point.x, point.y),
+                window_dpi(hwnd),
+            );
+            let lines = wheel_lines(wparam);
+            update::<W>(hwnd, now, |model, cx| model.wheel(dip, lines, cx));
+        }
+        WM_SETFOCUS => window_event::<W>(hwnd, WindowEvent::Focus(true), now),
+        WM_KILLFOCUS => window_event::<W>(hwnd, WindowEvent::Focus(false), now),
+        WM_KEYDOWN => {
+            let modifiers = modifiers();
+            match key_of(wparam.0 as u16, modifiers) {
+                Some(key) => key_input::<W>(hwnd, KeyInput::Down { key, modifiers }, now),
+                None => return DefWindowProcW(hwnd, message, wparam, lparam),
+            }
+        }
+        WM_CHAR => {
+            let unit = wparam.0 as u16;
+            let text = if (0xD800..0xDC00).contains(&unit) {
+                with_state::<W, _>(hwnd, |state| state.high_surrogate = Some(unit));
+                None
+            } else if (0xDC00..0xE000).contains(&unit) {
+                with_state::<W, _>(hwnd, |state| state.high_surrogate.take())
+                    .flatten()
+                    .and_then(|high| String::from_utf16(&[high, unit]).ok())
+            } else {
+                // 控制字符（回车、退格、Ctrl 组合）已由 WM_KEYDOWN 处理。
+                char::from_u32(u32::from(unit))
+                    .filter(|c| !c.is_control())
+                    .map(String::from)
+            };
+            if let Some(text) = text {
+                key_input::<W>(hwnd, KeyInput::Text(text), now);
+            }
+        }
         WM_CAPTURECHANGED => pointer_event::<W>(hwnd, PointerEvent::CaptureLost, now),
         WM_MOVE => {
             let (x, y) = client_point(lparam);
@@ -492,6 +590,7 @@ unsafe extern "system" fn window_proc<W: OverlaySpec>(
             let id = match cursor {
                 Some(CursorShape::Move) => IDC_SIZEALL,
                 Some(CursorShape::Hand) => IDC_HAND,
+                Some(CursorShape::Text) => IDC_IBEAM,
                 _ => IDC_ARROW,
             };
             if let Ok(cursor) = LoadCursorW(None, id) {
@@ -527,7 +626,10 @@ pub(crate) fn create_window<W: OverlaySpec>() -> Option<HWND> {
             .unwrap_or_default();
         let class_name = HSTRING::from(W::NAME);
         let title = HSTRING::from(W::TITLE);
-        let mut ex_style = WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+        let mut ex_style = WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0;
+        if !W::FOCUSABLE {
+            ex_style |= WS_EX_NOACTIVATE.0;
+        }
         if W::CLICK_THROUGH {
             ex_style |= WS_EX_TRANSPARENT.0;
         }
@@ -559,6 +661,7 @@ pub(crate) fn create_window<W: OverlaySpec>() -> Option<HWND> {
             .map_err(|e| format!("创建窗口失败：{e}"))?;
             let state = Box::new(RefCell::new(Host::<W> {
                 model,
+                high_surrogate: None,
                 pointer: Default::default(),
                 text,
                 d2d,

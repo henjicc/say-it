@@ -15,6 +15,8 @@ pub enum FontFamily<'a> {
     /// 用户配置的族名（字幕）。找不到时 Windows 由 DirectWrite 回退；macOS 依次回退
     /// PingFang SC → 系统界面字体，并以 zh-Hans 作语言属性。
     Named(&'a str),
+    /// 等宽字体（代码）。Windows："Consolas"；macOS：Menlo。中文由系统字体回退补齐。
+    Monospace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -69,6 +71,19 @@ pub struct TextTint {
     pub color: Color,
 }
 
+/// 富文本里一段字符的字形样式，区间为 UTF-16；颜色不在这里，绘制时用 `TextTint` 指定。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextRun {
+    pub utf16_start: u32,
+    pub utf16_len: u32,
+    pub bold: bool,
+    pub italic: bool,
+    /// 换成 `FontFamily::Monospace`，字号不变。
+    pub mono: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+}
+
 /// 排版与测量。与 Canvas 分开：字幕在 apply 阶段（没有画布）就要测量。
 /// 实现只在一个线程使用（Windows 窗口线程 / Mac 渲染线程），不要求 Send。
 pub trait TextEngine {
@@ -83,6 +98,34 @@ pub trait TextEngine {
         max_height: f32,
     ) -> Option<Self::Layout>;
     fn metrics(&self, layout: &Self::Layout) -> TextMetrics;
+
+    /// 带分段字形样式的布局；其余参数同 `layout`。
+    fn layout_rich(
+        &self,
+        text: &str,
+        style: &TextStyle<'_>,
+        runs: &[TextRun],
+        max_width: f32,
+        max_height: f32,
+    ) -> Option<Self::Layout> {
+        let _ = runs;
+        self.layout(text, style, max_width, max_height)
+    }
+    /// 布局坐标处最近的字符边界（UTF-16 索引）：点在某个字后半时落在它之后。
+    fn hit_test(&self, layout: &Self::Layout, point: Point) -> u32 {
+        let _ = (layout, point);
+        0
+    }
+    /// 字符边界 index 处的光标矩形（布局坐标）：宽 0，高为所在行高。
+    fn caret_rect(&self, layout: &Self::Layout, index: u32) -> Rect {
+        let _ = (layout, index);
+        Rect::ZERO
+    }
+    /// [start, start + len) 覆盖的矩形，每行一个（布局坐标），供画选中底色。
+    fn range_rects(&self, layout: &Self::Layout, start: u32, len: u32) -> Vec<Rect> {
+        let _ = (layout, start, len);
+        Vec::new()
+    }
 }
 
 pub type LayoutOf<C> = <<C as Canvas>::Text as TextEngine>::Layout;
@@ -120,6 +163,16 @@ pub trait Canvas {
         color: Color,
         tint: Option<TextTint>,
     );
+    /// 多段着色（富文本的链接、行内代码）；区间互不重叠。
+    fn draw_text_tinted(
+        &mut self,
+        layout: &LayoutOf<Self>,
+        origin: Point,
+        color: Color,
+        tints: &[TextTint],
+    ) {
+        self.draw_text(layout, origin, color, tints.first().copied());
+    }
     /// 整段换新的模糊入场：布局以 bounds 左上 + offset 绘制，bounds 四周留 18 DIP 后
     /// 用 `blur::fast_blur_premultiplied` 模糊再贴回；参数形状与现有 blurred_text_bitmap 一致，保证浮点顺序。
     fn draw_text_blurred(

@@ -677,7 +677,7 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
                 }
                 vec![WindowOp::SetBounds(self.bounds), WindowOp::Redraw]
             }
-            WindowEvent::AreaChanged => Vec::new(),
+            WindowEvent::AreaChanged | WindowEvent::Focus(_) => Vec::new(),
         }
     }
     fn set_look(&mut self, look: &Look) -> Ops<OrbAction> {

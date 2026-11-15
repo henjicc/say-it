@@ -33,6 +33,7 @@ impl CtText {
         let family = match style.family {
             FontFamily::SystemUi => None,
             FontFamily::Named(name) => Some(name.to_owned()),
+            FontFamily::Monospace => Some(MONOSPACE.to_owned()),
         };
         let key = (family, style.size.to_bits(), style.weight);
         if let Some(font) = self.fonts.borrow().get(&key) {
@@ -45,6 +46,8 @@ impl CtText {
         Some(font)
     }
 }
+
+const MONOSPACE: &str = "Menlo";
 
 struct Line {
     native: CFRetained<CTLine>,
@@ -84,9 +87,14 @@ fn resolve_font(style: &TextStyle<'_>) -> Option<CFRetained<CTFont>> {
             )
             .map(|font| font.copy_with_attributes(style.size as f64, null(), Some(&descriptor)))
         };
-        match style.family {
-            FontFamily::SystemUi => system(),
-            FontFamily::Named(name) => {
+        let named = match style.family {
+            FontFamily::SystemUi => None,
+            FontFamily::Named(name) => Some(name),
+            FontFamily::Monospace => Some(MONOSPACE),
+        };
+        match named {
+            None => system(),
+            Some(name) => {
                 for family in [name, "PingFang SC"] {
                     let requested = CFString::from_str(family);
                     let attrs = CFDictionary::<CFString, CFType>::from_slices(

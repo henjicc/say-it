@@ -24,6 +24,9 @@ pub trait OverlaySpec: 'static {
     /// 建窗时是否点击穿透（Windows 的扩展样式）。macOS 面板建好时一律穿透，
     /// 由模型输出 `SetInteractive(true)` 打开。
     const CLICK_THROUGH: bool;
+    /// 能否取得键盘焦点。false：Windows 加 WS_EX_NOACTIVATE，macOS 面板不成为 key；
+    /// true：点击会激活窗口，模型可收到键盘输入并用 `WindowOp::Focus` 主动取得焦点。
+    const FOCUSABLE: bool = false;
 
     type Command: Send + 'static;
     type Action: Send + 'static;
