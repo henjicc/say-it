@@ -452,6 +452,8 @@ struct Session {
     last_voice_at: Option<Instant>,
     /// 最近一次出现新识别文字（文件模式为检测到说话）的时间，见 `IDLE_AUTO_STOP`。
     last_activity_at: Option<Instant>,
+    /// 智能处理的开头预热已经发起过；无人声时断开会让识别会话重连多次，预热只在第一次时做。
+    smart_prewarmed: bool,
     silence_streaming: bool,
     raw_done: Option<tokio::sync::oneshot::Receiver<RawRecordingResult>>,
     temp_audio_path: Option<PathBuf>,
@@ -1157,7 +1159,7 @@ async fn start_session(
             ),
         );
     }
-    let smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
+    let effective_smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
     let context_capture = if effective.smart_processing_enabled {
         prefs
@@ -1281,15 +1283,15 @@ async fn start_session(
         }
     }
     spawn_raw_consumer(app.clone(), epoch, raw_rx, raw_done, mode, mic.sample_rate);
+    // 实时模式的预热在识别会话第一次建立时发起（见 `open_asr`）；文件模式录音期间没有识别会话。
+    if mode == DictationMode::File && effective_smart_prewarm {
+        spawn_smart_prewarm(&app, &prefs);
+    }
     if mode == DictationMode::Realtime && !prefs.dictation_silence_disconnect_enabled {
         if let Err(error) = open_asr(app.clone(), epoch).await {
             cleanup_failed_start(&state, epoch);
             return Err(error);
         }
-    }
-    // 排在识别会话开始建立之后：本地整理模型的预载要等识别模型加载完。
-    if smart_prewarm {
-        spawn_smart_prewarm(&app, &prefs);
     }
     if !trigger.is_floating_orb() {
         let _ = prepare_dictation_indicator(&app);
@@ -1782,8 +1784,17 @@ async fn open_asr(app: AppHandle, epoch: u64) -> Result<(), String> {
         return Ok(());
     }
     s.asr_session_id = Some(response.session_id.clone());
+    let prewarm = (!s.smart_prewarmed
+        && s.assistant_request.is_none()
+        && s.effective.as_ref().is_some_and(|effective| effective.smart_processing_enabled))
+    .then(|| s.prefs.clone());
+    s.smart_prewarmed |= prewarm.is_some();
     drop(s);
     response.start()?;
+    // 排在识别会话开始建立之后：本地整理模型的预载要等识别模型加载完。
+    if let Some(prefs) = prewarm {
+        spawn_smart_prewarm(&app, &prefs);
+    }
     publish_state(&app, None);
     Ok(())
 }
@@ -1811,7 +1822,7 @@ fn disconnect_silent_asr(app: AppHandle, epoch: u64) {
     publish_state(&app, None);
 }
 
-/// 后台连上智能处理的服务器（不调用模型）。开始录音时连一次；录音较长时连接可能已被服务端
+/// 后台连上智能处理的服务器（不调用模型）。识别会话第一次建立时连一次；录音较长时连接可能已被服务端
 /// 回收，松手时再连一次，与等待识别结果并行，松手后的请求直接复用。
 fn spawn_smart_prewarm(app: &AppHandle, prefs: &DictationPrefs) {
     let app = app.clone();
