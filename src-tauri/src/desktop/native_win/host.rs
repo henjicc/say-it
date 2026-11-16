@@ -589,6 +589,14 @@ unsafe extern "system" fn window_proc<W: OverlaySpec>(
                 state.clock.delta(now)
             })
             .unwrap_or(FIRST_FRAME_DT);
+            // 开发者追踪靠它区分卡顿出在窗口出帧（这里），还是波形数据没送到（dictation.audioStall）。
+            if dt >= crate::application::diagnostics::STALL_SECONDS {
+                crate::application::diagnostics::event(
+                    "debug",
+                    "overlay.frameStall",
+                    serde_json::json!({ "window": W::NAME, "gapMs": (dt * 1000.0) as u64 }),
+                );
+            }
             update::<W>(hwnd, now, |model, cx| model.on_frame(dt, cx));
         }
         WM_MOUSEMOVE => pointer_event::<W>(

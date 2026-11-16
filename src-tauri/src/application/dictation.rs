@@ -1508,6 +1508,7 @@ fn spawn_raw_consumer(
         let mut waveform_dsp: Option<StreamDsp> = None;
         let mut noise_floor = NoiseFloor::new();
         let mut stop_requested = false;
+        let mut last_chunk_at: Option<Instant> = None;
         loop {
             if done.is_closed() {
                 return;
@@ -1520,6 +1521,18 @@ fn spawn_raw_consumer(
                     break;
                 }
             };
+            // 波形数据由本线程推送；与 overlay.frameStall 对照，区分卡顿出在数据还是出帧。
+            let received_at = Instant::now();
+            if let Some(gap) = last_chunk_at.map(|at| received_at - at) {
+                if gap.as_secs_f32() >= crate::application::diagnostics::STALL_SECONDS {
+                    crate::application::diagnostics::event(
+                        "debug",
+                        "dictation.audioStall",
+                        json!({ "gapMs": gap.as_millis() as u64 }),
+                    );
+                }
+            }
+            last_chunk_at = Some(received_at);
             let mut limit_reached = false;
             let mut idle_expired = false;
             let level = rms(&samples);

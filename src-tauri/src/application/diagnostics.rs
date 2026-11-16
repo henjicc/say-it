@@ -248,6 +248,9 @@ pub(crate) fn fingerprint(text: &str) -> String {
         .collect()
 }
 
+/// 界面帧或波形数据的间隔超过它算一次卡顿（`overlay.frameStall` / `dictation.audioStall`）。
+pub(crate) const STALL_SECONDS: f32 = 0.2;
+
 pub(crate) fn event(level: &str, name: &str, metadata: Value) {
     if developer_mode() {
         super::dev_trace::on_event(name, &metadata);
