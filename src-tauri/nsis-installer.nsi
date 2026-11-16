@@ -1,10 +1,9 @@
 ; 说吧！的 Windows 安装器模板：复制自 tauri-cli v2.11.4（tauri-bundler 2.9.4）的
 ; crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi，与官方模板只差「已安装旧版本」的处理：
 ; - 不显示「重新安装 / 安装前先卸载」的选择页；
-; - 检测到已安装的版本（同版本、升级、降级都一样）时，在安装段开头先以 /UPDATE /P 静默卸载旧版本
-;   再安装，保留用户数据、快捷方式和开机自启。放在安装段里，用户在目录页取消时旧版本还在；
-; - 应用自己的更新程序带 /UPDATE 启动时直接覆盖安装，与官方模板相同；
-; - 卸载失败时提示并中止安装。
+; - 检测到本安装器装过的版本（同版本、升级、降级都一样）时，跳过目录页，直接覆盖安装到原目录，
+;   与应用自己的更新程序（/UPDATE）一样不运行旧版卸载器，用户只看到一次普通安装；
+; - 只有旧版是 WiX（MSI）安装的才在安装段开头卸载它，卸载失败时提示并中止安装。
 ; 升级 @tauri-apps/cli 时要拿新版本的模板重做这几处修改，否则会用旧模板打包。
 ; 其余钩子在 nsis-hooks.nsh。
 
@@ -275,45 +274,37 @@ Function PageReinstall
   ; we are downgrading or not.
   Call PageLeaveReinstall
 FunctionEnd
-; 检测到旧版本时由 PageLeaveReinstall 记下，安装段开头再卸载。
-Var UninstallPrevious
+; 检测到旧版本时由 PageLeaveReinstall 记下：本安装器装的覆盖升级，WiX 装的在安装段开头卸载。
+Var UpgradeInPlace
+Var UninstallWix
 Var WixUninstallKey
 Function PageLeaveReinstall
-  ; 应用自己的更新程序带 /UPDATE 启动：直接覆盖安装。
-  ${If} $UpdateMode = 1
-  ${AndIf} $WixMode <> 1
-    Return
+  ${If} $WixMode = 1
+    StrCpy $UninstallWix 1
+    StrCpy $WixUninstallKey $R6
+  ${Else}
+    ; .onInit 已把 $INSTDIR 恢复为旧版本的目录。
+    StrCpy $UpgradeInPlace 1
   ${EndIf}
-  StrCpy $UninstallPrevious 1
-  StrCpy $WixUninstallKey $R6
 FunctionEnd
 
-; 安装段开头调用：静默卸载旧版本。
-Function UninstallPreviousVersion
-  ${If} $UninstallPrevious <> 1
+; 安装段开头调用：卸载 WiX 装的旧版本。
+Function UninstallWixVersion
+  ${If} $UninstallWix <> 1
     Return
   ${EndIf}
   ClearErrors
-  ${If} $WixMode = 1
-    ReadRegStr $R1 HKLM "$WixUninstallKey" "UninstallString"
-    ExecWait '$R1' $0
-    StrCpy $4 $INSTDIR
-  ${Else}
-    ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-    ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-    ; 以更新方式静默卸载：不删数据、快捷方式和开机自启
-    ExecWait '$R1 /UPDATE /P _?=$4' $0
-  ${EndIf}
+  ReadRegStr $R1 HKLM "$WixUninstallKey" "UninstallString"
+  ExecWait '$R1' $0
   ${IfThen} ${Errors} ${|} StrCpy $0 2 ${|} ; ExecWait failed, set fake exit code
   ${If} $0 <> 0
-  ${OrIf} ${FileExists} "$4\${MAINBINARYNAME}.exe"
     MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
     Abort
   ${EndIf}
 FunctionEnd
 
-; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; 5. Choose install directory page：覆盖升级时沿用旧目录，不再询问。
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpgrading
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -572,8 +563,8 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; 先确认应用已退出再卸载旧版本：被动模式的卸载器会直接结束进程，不先询问。卸载会删掉旧目录，再建一次。
-  Call UninstallPreviousVersion
+  ; 先确认应用已退出再卸载 WiX 旧版本：它的卸载器会直接结束进程，不先询问。卸载会删掉旧目录，再建一次。
+  Call UninstallWixVersion
   SetOutPath $INSTDIR
 
   ; Copy main executable
@@ -838,6 +829,10 @@ FunctionEnd
 
 Function SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
+FunctionEnd
+Function SkipIfPassiveOrUpgrading
+  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
+  ${IfThen} $UpgradeInPlace = 1  ${|} Abort ${|}
 FunctionEnd
 Function un.SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
