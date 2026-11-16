@@ -295,7 +295,7 @@ function SilenceDisconnectSection() {
 
   return (
     <>
-      <Group title="静音断流" description="开启后，有声音时才连接识别服务；持续安静达到设定时间后会暂停上传。再次有声音时自动恢复。">
+      <Group title="静音断流" description="开启后，有声音时才连接识别服务；持续安静达到设定时间后会暂停上传。再次有声音时自动恢复。本地识别模型不断开。">
         <Row label="语音输入">
           <Switch
             checked={dictPrefs.dictationSilenceDisconnectEnabled}

@@ -671,7 +671,10 @@ async fn toggle(app: AppHandle) -> Result<(), String> {
 async fn start(app: AppHandle) -> Result<(), String> {
     preview::stop_locked(&app)?;
     let state = app.state::<RuntimeState>();
-    let (prefs, audio_prefs) = read_prefs(&state)?;
+    let (prefs, mut audio_prefs) = read_prefs(&state)?;
+    if crate::commands::asr::is_local_asr_model(&state, &prefs.asr_model) {
+        audio_prefs.subtitle_silence_disconnect_enabled = false;
+    }
     // 翻译模型的配置性错误（供应商未启用、没填 Key、插件被停用）必须在开始时就
     // 拦下来。否则字幕会正常滚动、译文永远空白，而每个 clause 都在后台静默失败
     // ——用户看不到任何线索，只会以为翻译模型不行。

@@ -1094,6 +1094,9 @@ async fn start_session(
     if prefs.cue_enabled {
         crate::desktop::warm_cue_output();
     }
+    if crate::commands::asr::is_local_asr_model(&state, &prefs.asr_model) {
+        prefs.dictation_silence_disconnect_enabled = false;
+    }
     validate_rules(&prefs)?;
     validate_smart_processing(&prefs)?;
     let dictation_settings = state

@@ -18,6 +18,15 @@ fn stream_dsp(params: Option<DspParams>, input_sample_rate: u32) -> StreamDsp {
     dsp
 }
 
+/// 模型是否在本机识别（模型包）。静音断流对它没有省流省钱的意义，断开只会让
+/// 仍在加载或积压的会话被取消，已录的话随之丢失，因此调用方对本地模型不断流。
+pub(crate) fn is_local_asr_model(state: &RuntimeState, model: &str) -> bool {
+    state
+        .plugin_registry
+        .lock()
+        .is_ok_and(|plugins| plugins.local_model_for_model(model).is_some())
+}
+
 pub(crate) async fn prepare_asr_stream_inner(
     app: tauri::AppHandle,
     state: &RuntimeState,
