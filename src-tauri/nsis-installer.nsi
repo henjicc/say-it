@@ -3,7 +3,10 @@
 ; - 不显示「重新安装 / 安装前先卸载」的选择页；
 ; - 检测到本安装器装过的版本（同版本、升级、降级都一样）时，跳过目录页，直接覆盖安装到原目录，
 ;   与应用自己的更新程序（/UPDATE）一样不运行旧版卸载器，用户只看到一次普通安装；
-; - 只有旧版是 WiX（MSI）安装的才在安装段开头卸载它，卸载失败时提示并中止安装。
+; - 只有旧版是 WiX（MSI）安装的才在安装段开头卸载它，卸载失败时提示并中止安装；
+; - 安装时把本版本装下的文件记进 installed-files.txt，下次覆盖升级前先按它删掉旧版本的文件，
+;   新版本去掉的文件不会留在安装目录里；
+; - 先确认应用已退出，再执行会删除运行库的 PREINSTALL 钩子。
 ; 升级 @tauri-apps/cli 时要拿新版本的模板重做这几处修改，否则会用旧模板打包。
 ; 其余钩子在 nsis-hooks.nsh。
 
@@ -32,6 +35,7 @@ ManifestDPIAwareness PerMonitorV2
 !include FileFunc.nsh
 !include x64.nsh
 !include WordFunc.nsh
+!include TextFunc.nsh
 !include "utils.nsh"
 !include "FileAssociation.nsh"
 !include "Win\COM.nsh"
@@ -78,6 +82,8 @@ ${StrLoc}
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
+; 本版本装下的文件清单，相对安装目录，一行一个。
+!define INSTALLEDFILES "installed-files.txt"
 
 Var PassiveMode
 Var UpdateMode
@@ -557,14 +563,16 @@ SectionEnd
 Section Install
   SetOutPath $INSTDIR
 
+  ; 先确认应用已退出：钩子和清理要删除运行库，应用还开着时删不掉。
+  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-
-  ; 先确认应用已退出再卸载 WiX 旧版本：它的卸载器会直接结束进程，不先询问。卸载会删掉旧目录，再建一次。
+  ; WiX 旧版本的卸载器会直接结束进程，不先询问。卸载会删掉旧目录，再建一次。
   Call UninstallWixVersion
+  Call RemovePreviousFiles
   SetOutPath $INSTDIR
 
   ; Copy main executable
@@ -657,6 +665,18 @@ Section Install
     !insertmacro NSIS_HOOK_POSTINSTALL
   !endif
 
+  ; 记下本版本装下的文件，供下次升级清理。运行库按资源路径记在 target\release\ 下，
+  ; 实际已被 POSTINSTALL 钩子移到安装目录根部，清理时按文件名处理。
+  FileOpen $R9 "$INSTDIR\${INSTALLEDFILES}" w
+  FileWrite $R9 "${MAINBINARYNAME}.exe$\r$\n"
+  {{#each resources}}
+    FileWrite $R9 "{{this.[1]}}$\r$\n"
+  {{/each}}
+  {{#each binaries}}
+    FileWrite $R9 "{{this}}$\r$\n"
+  {{/each}}
+  FileClose $R9
+
   ; Auto close this page for passive mode
   ${If} $PassiveMode = 1
     SetAutoClose true
@@ -736,6 +756,7 @@ Section Uninstall
 
   ; Delete uninstaller
   Delete "$INSTDIR\uninstall.exe"
+  Delete "$INSTDIR\${INSTALLEDFILES}"
 
   {{#each resources_ancestors}}
   RMDir /REBOOTOK "$INSTDIR\\{{this}}"
@@ -830,6 +851,35 @@ FunctionEnd
 Function SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
 FunctionEnd
+; 覆盖安装前删掉上一版本按清单装下的文件和因此变空的目录，新版本随后重新写入。
+; 没有清单（第一次安装或旧版安装器装的）时不删。
+Function RemovePreviousFiles
+  ClearErrors
+  FileOpen $R9 "$INSTDIR\${INSTALLEDFILES}" r
+  ${If} ${Errors}
+    Return
+  ${EndIf}
+  ${Do}
+    ClearErrors
+    FileRead $R9 $R8
+    ${IfThen} ${Errors} ${|} ${ExitDo} ${|}
+    ${TrimNewLines} $R8 $R8
+    ${If} $R8 != ""
+      StrCpy $R7 $R8 15
+      ${If} $R7 == "target\release\"
+        StrCpy $R8 $R8 "" 15
+      ${EndIf}
+      Delete "$INSTDIR\$R8"
+      ${GetParent} "$INSTDIR\$R8" $R7
+      ${If} $R7 != $INSTDIR
+        RMDir $R7
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  FileClose $R9
+  Delete "$INSTDIR\${INSTALLEDFILES}"
+FunctionEnd
+
 Function SkipIfPassiveOrUpgrading
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
   ${IfThen} $UpgradeInPlace = 1  ${|} Abort ${|}
