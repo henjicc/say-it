@@ -676,11 +676,12 @@ pub(crate) fn residency(spec: &LocalModelSpec) -> super::local_asr::cache::Resid
     }
 }
 
-/// 听写一开始就把模型加载好，说话的时间正好用来加载。
+/// 听写一开始就把模型加载好，说话的时间正好用来加载。识别模型在关键路径上，先等它加载完。
 pub(crate) async fn prewarm(spec: &LocalModelSpec) -> Result<(), String> {
     if let Ok(mut speculation) = runtime().speculation.lock() {
         speculation.load_failed = false;
     }
+    super::local_asr::opening::settled().await;
     ensure_loaded(spec).await.map(drop)
 }
 

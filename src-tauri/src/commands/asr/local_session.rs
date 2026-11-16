@@ -30,6 +30,8 @@ pub(super) async fn start_local_asr_stream(
         session_id,
         streams.clone(),
         move || {
+            // 在调用方线程上登记，调用方紧接着发起的其他模型预载才一定排在它后面。
+            let opening = crate::providers::local_asr::opening::begin();
             tauri::async_runtime::spawn_blocking(move || {
                 run_local_session(
                     app,
@@ -40,6 +42,7 @@ pub(super) async fn start_local_asr_stream(
                     model,
                     spec,
                     customization,
+                    opening,
                 );
             });
             Ok(())
@@ -61,6 +64,7 @@ fn run_local_session(
     model: String,
     spec: LocalModelSpec,
     customization: crate::providers::RequestCustomization,
+    opening: crate::providers::local_asr::opening::Opening,
 ) {
     if rx.is_cancelled() {
         if let Some(error) = rx.take_failure() {
@@ -83,6 +87,7 @@ fn run_local_session(
         }
         engine => Err(format!("模型引擎 {engine} 不支持本地 ASR 会话")),
     };
+    drop(opening);
     let mut session = match session {
         Ok(session) => session,
         Err(error) => {

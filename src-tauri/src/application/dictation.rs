@@ -1157,9 +1157,7 @@ async fn start_session(
             ),
         );
     }
-    if effective.smart_processing_enabled && assistant_request.is_none() {
-        spawn_smart_prewarm(&app, &prefs);
-    }
+    let smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
     let context_capture = if effective.smart_processing_enabled {
         prefs
@@ -1288,6 +1286,10 @@ async fn start_session(
             cleanup_failed_start(&state, epoch);
             return Err(error);
         }
+    }
+    // 排在识别会话开始建立之后：本地整理模型的预载要等识别模型加载完。
+    if smart_prewarm {
+        spawn_smart_prewarm(&app, &prefs);
     }
     if !trigger.is_floating_orb() {
         let _ = prepare_dictation_indicator(&app);

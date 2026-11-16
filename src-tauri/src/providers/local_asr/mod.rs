@@ -19,6 +19,7 @@ const SAMPLE_RATE: i32 = 16_000;
 
 pub mod cache;
 mod file;
+pub(crate) mod opening;
 mod punctuation;
 mod transcribe;
 mod words;
