@@ -13,8 +13,15 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, UIA_EditControlTypeId,
-    UIA_ValuePatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, UIA_ButtonControlTypeId,
+    UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_DataItemControlTypeId,
+    UIA_EditControlTypeId, UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId,
+    UIA_ImageControlTypeId, UIA_ListControlTypeId, UIA_ListItemControlTypeId,
+    UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId,
+    UIA_ScrollBarControlTypeId, UIA_SliderControlTypeId, UIA_SplitButtonControlTypeId,
+    UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
+    UIA_ToolBarControlTypeId, UIA_TreeControlTypeId, UIA_TreeItemControlTypeId,
+    UIA_CONTROLTYPE_ID, UIA_ValuePatternId,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
@@ -95,7 +102,32 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     }
 }
 
-pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
+/// 能确定不是输入框的控件；窗口、面板、文档、分组、自定义控件里可能自绘着输入框，不在其中。
+const NON_INPUT_CONTROL_TYPES: [UIA_CONTROLTYPE_ID; 21] = [
+    UIA_ButtonControlTypeId,
+    UIA_CheckBoxControlTypeId,
+    UIA_ComboBoxControlTypeId,
+    UIA_DataItemControlTypeId,
+    UIA_HeaderItemControlTypeId,
+    UIA_HyperlinkControlTypeId,
+    UIA_ImageControlTypeId,
+    UIA_ListControlTypeId,
+    UIA_ListItemControlTypeId,
+    UIA_MenuControlTypeId,
+    UIA_MenuItemControlTypeId,
+    UIA_RadioButtonControlTypeId,
+    UIA_ScrollBarControlTypeId,
+    UIA_SliderControlTypeId,
+    UIA_SplitButtonControlTypeId,
+    UIA_TabItemControlTypeId,
+    UIA_TableControlTypeId,
+    UIA_TextControlTypeId,
+    UIA_ToolBarControlTypeId,
+    UIA_TreeControlTypeId,
+    UIA_TreeItemControlTypeId,
+];
+
+pub(crate) fn focused_target_editability(target: ActivationTarget) -> Result<Option<bool>, String> {
     unsafe {
         let initialized_here = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
         let result = (|| {
@@ -114,20 +146,26 @@ pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<boo
                     .map(|value| value.as_bool())
                     .unwrap_or(false)
             {
-                return Ok(false);
+                return Ok(Some(false));
             }
             if let Ok(pattern) =
                 focused.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
             {
                 return pattern
                     .CurrentIsReadOnly()
-                    .map(|value| !value.as_bool())
+                    .map(|value| Some(!value.as_bool()))
                     .map_err(|error| format!("无法确认输入控件是否只读：{error}"));
             }
-            focused
+            let control_type = focused
                 .CurrentControlType()
-                .map(|control_type| control_type == UIA_EditControlTypeId)
-                .map_err(|error| format!("无法读取焦点控件类型：{error}"))
+                .map_err(|error| format!("无法读取焦点控件类型：{error}"))?;
+            Ok(if control_type == UIA_EditControlTypeId {
+                Some(true)
+            } else if NON_INPUT_CONTROL_TYPES.contains(&control_type) {
+                Some(false)
+            } else {
+                None
+            })
         })();
         if initialized_here {
             CoUninitialize();

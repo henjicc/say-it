@@ -26,8 +26,8 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     crate::macos_native::activate_application(target.process_id)
 }
 
-pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
-    crate::macos_native::focused_input_is_editable(target.process_id)
+pub(crate) fn focused_target_editability(target: ActivationTarget) -> Result<Option<bool>, String> {
+    crate::macos_native::focused_input_is_editable(target.process_id).map(Some)
 }
 
 pub(crate) fn app_identity(target: ActivationTarget) -> Option<AppIdentity> {

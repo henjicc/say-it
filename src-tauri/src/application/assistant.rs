@@ -985,10 +985,13 @@ pub(crate) async fn capture_intent_context(app: &AppHandle, target: ActivationTa
     };
     let editable = match &selection {
         Some(selection) => selection.editable,
-        None => crate::active_app_context::focused_target_is_editable(target).unwrap_or_else(|error| {
-            crate::application::diagnostics::event("warn", "intent.editableFailed", serde_json::json!({"error":error}));
-            true
-        }),
+        // 判断不了时按能输入处理：误当听写只是原样显示，误当提问会把要发给别人的话拿去回答。
+        None => crate::active_app_context::focused_target_editability(target)
+            .unwrap_or_else(|error| {
+                crate::application::diagnostics::event("warn", "intent.editableFailed", serde_json::json!({"error":error}));
+                None
+            })
+            .unwrap_or(true),
     };
     IntentContext { selection, editable }
 }
@@ -1235,7 +1238,7 @@ async fn select_last_delivery(
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     }
     // 焦点不在输入框时，方向键会变成快退、翻页之类的操作。
-    if !crate::active_app_context::focused_target_is_editable(target)? {
+    if crate::active_app_context::focused_target_editability(target)? != Some(true) {
         return Err(NO_SELECTION_ERROR.into());
     }
     move_caret(steps, true).await?;

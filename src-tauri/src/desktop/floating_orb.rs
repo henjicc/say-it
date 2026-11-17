@@ -1781,10 +1781,10 @@ async fn forward_click(position: (i32, i32)) -> Result<(), String> {
 async fn focused_editable_target() -> Option<crate::active_app_context::ActivationTarget> {
     let target = crate::active_app_context::activation_target()?;
     let task = tauri::async_runtime::spawn_blocking(move || {
-        crate::active_app_context::focused_target_is_editable(target)
+        crate::active_app_context::focused_target_editability(target)
     });
     match tokio::time::timeout(Duration::from_millis(180), task).await {
-        Ok(Ok(Ok(true))) => Some(target),
+        Ok(Ok(Ok(Some(true)))) => Some(target),
         _ => None,
     }
 }

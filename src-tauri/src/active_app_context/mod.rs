@@ -695,19 +695,22 @@ pub(crate) fn activate_target(target: ActivationTarget) -> Result<(), String> {
     }
 }
 
-pub(crate) fn focused_target_is_editable(target: ActivationTarget) -> Result<bool, String> {
+/// 焦点能否输入文字：`Some(true)` 能，`Some(false)` 确定不能，`None` 判断不了。
+/// 不暴露无障碍控件的软件（如 Qt 写的微信）焦点永远是整个窗口，只能判为 `None`；
+/// 调用方按误判的代价自己决定把 `None` 当成哪一边。
+pub(crate) fn focused_target_editability(target: ActivationTarget) -> Result<Option<bool>, String> {
     #[cfg(windows)]
     {
-        return windows::focused_target_is_editable(target);
+        return windows::focused_target_editability(target);
     }
     #[cfg(target_os = "macos")]
     {
-        return macos::focused_target_is_editable(target);
+        return macos::focused_target_editability(target);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = target;
-        Ok(false)
+        Ok(Some(false))
     }
 }
 
