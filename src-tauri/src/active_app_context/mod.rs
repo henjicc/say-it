@@ -1,6 +1,7 @@
 #[cfg(any(windows, target_os = "macos"))]
 mod debug;
 mod dynamic;
+mod references;
 #[cfg(windows)]
 mod dynamic_monitor;
 #[cfg(target_os = "macos")]
@@ -131,6 +132,16 @@ impl DictationContextCaptureHandle {
             return Some(context.format_with_dynamic(&monitor.entries()));
         }
         Some(context.format_for_prompt())
+    }
+
+    /// 识别文字更新时记下已识别的字数，用来估计每个字是什么时候说的。没开动态上下文时什么也不做。
+    pub(crate) fn note_transcript(&self, chars: usize) {
+        #[cfg(windows)]
+        if let Some(monitor) = &self.monitor {
+            monitor.note_transcript(chars);
+        }
+        #[cfg(not(windows))]
+        let _ = chars;
     }
 
     /// 录音停了就不再观察用户的操作：收尾这段时间里切换窗口、移动鼠标不是说话时做的。
@@ -453,9 +464,9 @@ impl ContextCaptureService {
         handle: DictationContextCaptureHandle,
     ) -> CapturedActiveAppContext {
         #[cfg(windows)]
-        let entries = match handle.monitor {
+        let (entries, spoken) = match handle.monitor {
             Some(monitor) => monitor.finish().await,
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut context = match handle.initial {
@@ -468,6 +479,7 @@ impl ContextCaptureService {
         #[cfg(windows)]
         {
             context.dynamic = entries;
+            context.spoken = spoken;
         }
         context
     }

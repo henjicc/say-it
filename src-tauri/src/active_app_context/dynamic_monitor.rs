@@ -60,6 +60,8 @@ struct Shared {
     /// 不再收新结果，正在读的也中止。
     closed: Arc<AtomicBool>,
     entries: Mutex<Vec<DynamicEntry>>,
+    /// 识别文字的进度：（毫秒数，已识别的字数）。
+    spoken: Mutex<Vec<(u64, usize)>>,
     busy: AtomicUsize,
     blocked_apps: Vec<String>,
     method: ActiveAppContextExtractionMethod,
@@ -171,6 +173,7 @@ impl DynamicMonitor {
             stop: AtomicBool::new(false),
             closed: Arc::new(AtomicBool::new(false)),
             entries: Mutex::new(Vec::new()),
+            spoken: Mutex::new(Vec::new()),
             busy: AtomicUsize::new(0),
             blocked_apps,
             method,
@@ -204,20 +207,34 @@ impl DynamicMonitor {
         Arc::clone(&self.shared.closed)
     }
 
+    /// 停止观察后的字数不再记：那是收尾时的重新识别，时间不是说话的时间。
+    pub(crate) fn note_transcript(&self, chars: usize) {
+        if !self.shared.watching() {
+            return;
+        }
+        let at_ms = self.shared.elapsed_ms();
+        if let Ok(mut spoken) = self.shared.spoken.lock() {
+            if spoken.last().is_none_or(|(_, last)| *last != chars) {
+                spoken.push((at_ms, chars));
+            }
+        }
+    }
+
     /// 到目前为止记下的操作。
     pub(crate) fn entries(&self) -> Vec<DynamicEntry> {
         self.shared.entries.lock().map(|entries| entries.clone()).unwrap_or_default()
     }
 
-    /// 停止观察，给正在读的那一次一点时间赶上，再返回全部记录。
-    pub(crate) async fn finish(self) -> Vec<DynamicEntry> {
+    /// 停止观察，给正在读的那一次一点时间赶上，再返回全部记录和识别进度。
+    pub(crate) async fn finish(self) -> (Vec<DynamicEntry>, Vec<(u64, usize)>) {
         self.shared.stop.store(true, Ordering::Release);
         let deadline = Instant::now() + FINISH_WAIT;
         while self.shared.busy.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         self.shared.closed.store(true, Ordering::Release);
-        self.entries()
+        let spoken = self.shared.spoken.lock().map(|spoken| spoken.clone()).unwrap_or_default();
+        (self.entries(), spoken)
     }
 }
 

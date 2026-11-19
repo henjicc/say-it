@@ -86,6 +86,12 @@ impl DictationRuntime {
                     }
                     session.segment.clear();
                     session.segment.push_str(text);
+                    if changed {
+                        let chars = session.committed.chars().count() + text.chars().count();
+                        if let Some(context) = session.active_app_context.as_ref() {
+                            context.note_transcript(chars);
+                        }
+                    }
                     if is_final {
                         commit_current_segment(&mut session);
                     }

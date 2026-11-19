@@ -432,7 +432,7 @@ export function SmartTextPanel() {
               <Row
                 label="动态上下文"
                 controlId="smart-text-dynamic-context"
-                hint="说话时切换窗口、滚动页面、选中文字，或用鼠标停住、绕圈指着某处，都会补充进上下文，方便说“这个”“这里”。语音问答也会带上这些内容，一起发给它选用的大模型。文字在本机识别，会多占用一些处理器。"
+                hint="说话时切换窗口、滚动页面、选中文字，或用鼠标停住、绕圈指着某处，都会补充进上下文，方便说“这个”“这里”。对 AI 说话或语音问答时，还会在“这个”“这里”后面补上当时指着或选中的内容。语音问答会把这些内容一起发给它选用的大模型。文字在本机识别，会多占用一些处理器。"
               >
                 <Switch id="smart-text-dynamic-context" checked={prefs.activeAppContextDynamic} onChange={(checked) => void patch({ activeAppContextDynamic: checked })} />
               </Row>

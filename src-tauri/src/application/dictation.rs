@@ -2643,6 +2643,8 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let asks_with_screen = assistant_request.as_ref().is_some_and(|request| {
         request.action == crate::application::assistant::AssistantAction::Ask
     });
+    // 开了动态上下文时留着这次的记录，整理之后给“这个”“这里”补注。
+    let mut referents: Option<crate::active_app_context::CapturedActiveAppContext> = None;
     let mut active_app_context = if assistant_request.is_some() && !asks_with_screen {
         drop(active_app_context);
         String::new()
@@ -2700,7 +2702,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
                         captured.format_for_prompt(),
                     ),
                 );
-                captured.format_for_prompt()
+                let prompt = captured.format_for_prompt();
+                referents = Some(captured);
+                prompt
             } else {
                 String::new()
             }
@@ -2715,6 +2719,11 @@ async fn finalize(app: AppHandle, epoch: u64) {
     if let Some(request) = assistant_request.as_mut() {
         request.screen = std::mem::take(&mut active_app_context);
     }
+    // 回答问题的大模型看不到用户的屏幕：问题里的“这个”“这里”补上说话时指着或选中的内容。
+    let text = match &referents {
+        Some(context) if asks_with_screen => context.annotate_references(&text, &text),
+        _ => text,
+    };
     // 延迟 OCR 最长会等待新的 5 秒截止。等待期间若用户取消或开始了新会话，
     // 旧会话不得继续调用智能处理，更不能注入文本。
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {
@@ -3023,6 +3032,17 @@ async fn finalize(app: AppHandle, epoch: u64) {
         "trace.smartDone",
         serde_json::json!({"smartTextChars":smart_processed.chars().count()}),
     );
+    // 对 AI 说话时对面看不到用户的屏幕，给“这个”“这里”补上说话时选中或鼠标指着的内容；
+    // 发给人的话不动。补注在本地规则之前，规则仍作用在最终文本上。
+    let talks_to_ai = app_identity.as_ref().is_some_and(|identity| {
+        matches!(crate::application::smart_text::app_scene(&identity.app_name), "AI 对话" | "终端")
+    });
+    let smart_processed = match &referents {
+        Some(context) if assistant_request.is_none() && talks_to_ai => {
+            context.annotate_references(&text, &smart_processed)
+        }
+        _ => smart_processed,
+    };
     // 本地规则在这里才执行：作用对象是智能处理之后的最终文本。
     let locally_processed = if assistant_request.is_some() {
         smart_processed

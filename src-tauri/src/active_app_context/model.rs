@@ -189,6 +189,9 @@ pub(crate) struct CapturedActiveAppContext {
     pub(crate) truncated: bool,
     /// 开了动态上下文时，说话过程中补充的内容。
     pub(crate) dynamic: Vec<super::dynamic::DynamicEntry>,
+    /// 开了动态上下文时，一串（开口后的毫秒数，当时已识别的字数），见 `annotate_references`。
+    #[serde(skip)]
+    pub(crate) spoken: Vec<(u64, usize)>,
 }
 
 impl CapturedActiveAppContext {
@@ -198,6 +201,11 @@ impl CapturedActiveAppContext {
             status,
             ..Self::default()
         }
+    }
+
+    /// 给整理结果里的“这个”“这里”补上说话时选中或鼠标指着的内容，见 `references.rs`。
+    pub(crate) fn annotate_references(&self, raw: &str, output: &str) -> String {
+        super::references::annotate_references(raw, output, &self.dynamic, &self.spoken)
     }
 
     /// 窗口里读到的大段文字：原生读取的可见文字、文档文字和 OCR 文字。
