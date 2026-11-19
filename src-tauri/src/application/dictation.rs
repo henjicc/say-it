@@ -238,6 +238,8 @@ struct DictationPrefs {
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
+    /// 说话过程中跟着切换窗口、滚动、选中文字和鼠标指向补充上下文；只用本地 OCR，仅 Windows。
+    active_app_context_dynamic: bool,
     app_profiles: Vec<AppProfile>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -275,6 +277,7 @@ impl Default for DictationPrefs {
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
+            active_app_context_dynamic: false,
             app_profiles: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -1168,26 +1171,38 @@ async fn start_session(
     }
     let effective_smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
-    let context_capture = if effective.smart_processing_enabled {
-        prefs
-            .smart_templates
-            .iter()
-            .find(|template| template.id == effective.smart_template_id)
-            .filter(|template| {
-                crate::application::smart_text::requires_active_app_context(&template.prompt)
-            })
-            .and_then(|_| activation_target)
+    // 开了动态上下文时，语音问答也带上说话时屏幕上的内容，「这里」「这个」才有着落。
+    let needs_context = match &assistant_request {
+        None => {
+            effective.smart_processing_enabled
+                && prefs
+                    .smart_templates
+                    .iter()
+                    .find(|template| template.id == effective.smart_template_id)
+                    .is_some_and(|template| {
+                        crate::application::smart_text::requires_active_app_context(&template.prompt)
+                    })
+        }
+        Some(request) => {
+            prefs.active_app_context_dynamic
+                && request.action == crate::application::assistant::AssistantAction::Ask
+                && !request.follow_up
+        }
+    };
+    let context_capture = if needs_context {
+        activation_target
             .map(|target| {
                 let ocr_provider = resolve_active_app_context_ocr_provider(
                     &state,
                     &prefs.active_app_context_ocr_model,
                     &prefs.active_app_context_ocr_approved_providers,
                 );
-                let defer_ocr = should_defer_active_app_context_ocr(
-                    &prefs,
-                    &effective,
-                    matches!(ocr_provider, crate::providers::capabilities::OcrProvider::Plugin { .. }),
-                );
+                let defer_ocr = assistant_request.is_none()
+                    && should_defer_active_app_context_ocr(
+                        &prefs,
+                        &effective,
+                        matches!(ocr_provider, crate::providers::capabilities::OcrProvider::Plugin { .. }),
+                    );
                 (target, ocr_provider, defer_ocr)
             })
     } else {
@@ -1342,6 +1357,7 @@ async fn start_session(
             platform_context_method(prefs.active_app_context_extraction_method),
             ocr_provider,
             defer_ocr,
+            prefs.active_app_context_dynamic,
         );
         let cancellation = handle.cancellation();
         match state.dictation_runtime.session.lock() {
@@ -1892,6 +1908,9 @@ async fn stop(app: AppHandle) -> Result<(), String> {
         } else {
             DictationPhase::Finishing
         };
+        if let Some(context) = s.active_app_context.as_ref() {
+            context.stop_watching();
+        }
         if s.assistant_request.is_none()
             && s.effective
                 .as_ref()
@@ -2621,10 +2640,13 @@ async fn finalize(app: AppHandle, epoch: u64) {
     } else {
         punctuate_local_asr_text(&state, &prefs, text).await
     };
-    let active_app_context = if assistant_request.is_some() {
+    let asks_with_screen = assistant_request.as_ref().is_some_and(|request| {
+        request.action == crate::application::assistant::AssistantAction::Ask
+    });
+    let mut active_app_context = if assistant_request.is_some() && !asks_with_screen {
         drop(active_app_context);
         String::new()
-    } else if !should_process_smart_text {
+    } else if assistant_request.is_none() && !should_process_smart_text {
         // 延迟截图不会自行进入 OCR；尽早释放句柄与截图，短文本不占用后续资源。
         drop(active_app_context);
         if effective.smart_processing_enabled && !text.is_empty() {
@@ -2690,6 +2712,9 @@ async fn finalize(app: AppHandle, epoch: u64) {
         "trace.contextReady",
         serde_json::json!({"activeAppContextChars":active_app_context.chars().count()}),
     );
+    if let Some(request) = assistant_request.as_mut() {
+        request.screen = std::mem::take(&mut active_app_context);
+    }
     // 延迟 OCR 最长会等待新的 5 秒截止。等待期间若用户取消或开始了新会话，
     // 旧会话不得继续调用智能处理，更不能注入文本。
     if !finalize_session_is_current(&state, epoch, active_app_context_cancellation.as_ref()) {

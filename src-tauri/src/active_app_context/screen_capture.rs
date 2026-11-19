@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Dwm::{DwmFlush, DwmGetWindowAttribute, DWMWA_EXTEN
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
     SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
-    DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
+    COLORONCOLOR, DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IsIconic, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
@@ -86,6 +86,7 @@ pub(crate) fn capture_window(
         height,
         capture_width as i32,
         capture_height as i32,
+        Quality::Ocr,
     )?;
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.swap(0, 2);
@@ -99,6 +100,59 @@ pub(crate) fn capture_window(
         image,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+/// 窗口的灰度缩略图，长边这么多像素，只用来判断窗口内容有没有明显变化。
+const THUMBNAIL_SIDE: u32 = 48;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Quality {
+    /// 截给 OCR：平滑缩放，带上分层窗口。
+    Ocr,
+    /// 缩略图和局部截取：最近邻缩放；不带 CAPTUREBLT，它在部分系统上会让鼠标指针闪一下，
+    /// 每隔几百毫秒截一次时很明显。
+    Quick,
+}
+
+pub(crate) fn window_thumbnail(window_handle: isize) -> Result<Vec<u8>, String> {
+    let window = HWND(window_handle as *mut c_void);
+    if window.0.is_null() || unsafe { IsIconic(window).as_bool() } {
+        return Err("目标窗口已最小化或已经关闭".into());
+    }
+    let bounds = window_bounds(window)?;
+    let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+    if width <= 0 || height <= 0 {
+        return Err("目标窗口截图尺寸无效".into());
+    }
+    let (target_width, target_height) = scaled_dimensions(width as u32, height as u32, THUMBNAIL_SIDE);
+    let pixels = capture_screen_rect(bounds, width, height, target_width as i32, target_height as i32, Quality::Quick)?;
+    // 只比较明暗：BGRA 里取绿色通道就够了。
+    Ok(pixels.chunks_exact(4).map(|pixel| pixel[1]).collect())
+}
+
+/// 按原始像素截取屏幕上的一块区域（屏幕坐标），只截落在这个窗口里的部分；返回截图和实际截取的区域。
+pub(crate) fn capture_window_region(window_handle: isize, region: RECT) -> Result<(DynamicImage, RECT), String> {
+    let window = window_bounds(HWND(window_handle as *mut c_void))?;
+    let bounds = RECT {
+        left: region.left.max(window.left),
+        top: region.top.max(window.top),
+        right: region.right.min(window.right),
+        bottom: region.bottom.min(window.bottom),
+    };
+    let width = bounds.right - bounds.left;
+    let height = bounds.bottom - bounds.top;
+    if width <= 0 || height <= 0 {
+        return Err("截取区域尺寸无效".into());
+    }
+    let mut pixels = capture_screen_rect(bounds, width, height, width, height, Quality::Quick)?;
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        pixel[3] = 255;
+    }
+    let image = RgbaImage::from_raw(width as u32, height as u32, pixels)
+        .map(DynamicImage::ImageRgba8)
+        .ok_or_else(|| "无法构造区域截图".to_string())?;
+    Ok((image, bounds))
 }
 
 fn scaled_dimensions(width: u32, height: u32, max_side: u32) -> (u32, u32) {
@@ -136,7 +190,12 @@ fn capture_screen_rect(
     source_height: i32,
     target_width: i32,
     target_height: i32,
+    quality: Quality,
 ) -> Result<Vec<u8>, String> {
+    let rop = match quality {
+        Quality::Ocr => SRCCOPY | CAPTUREBLT,
+        Quality::Quick => SRCCOPY,
+    };
     let screen_dc = unsafe { GetDC(HWND::default()) };
     if screen_dc.is_invalid() {
         return Err("获取屏幕设备上下文失败".into());
@@ -203,10 +262,10 @@ fn capture_screen_rect(
                 screen_dc,
                 bounds.left,
                 bounds.top,
-                SRCCOPY | CAPTUREBLT,
+                rop,
             )
         } else {
-            SetStretchBltMode(memory_dc, HALFTONE);
+            SetStretchBltMode(memory_dc, if quality == Quality::Ocr { HALFTONE } else { COLORONCOLOR });
             StretchBlt(
                 memory_dc,
                 0,
@@ -218,7 +277,7 @@ fn capture_screen_rect(
                 bounds.top,
                 source_width,
                 source_height,
-                SRCCOPY | CAPTUREBLT,
+                rop,
             )
             .ok()
         }

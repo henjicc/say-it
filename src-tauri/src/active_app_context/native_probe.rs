@@ -241,6 +241,7 @@ pub(crate) fn capture(
     max_chars: usize,
     cancelled: &Arc<AtomicBool>,
     selection_only: bool,
+    copy_selection: bool,
 ) -> Result<CaptureStatus, String> {
     if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Ok(CaptureStatus::TimedOut);
@@ -257,7 +258,7 @@ pub(crate) fn capture(
         hwnd: target.window_handle as i64,
         pid: target.process_id,
         max_chars,
-        deep_clipboard: true,
+        deep_clipboard: copy_selection,
         selection_only,
         // 给管道回传和 Rust 的终止/重启留出余量，避免末尾的深度读取挤占整个 800ms 硬截止。
         reader_budget_ms: 650,

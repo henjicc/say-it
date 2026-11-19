@@ -82,6 +82,9 @@ pub(crate) struct CaptureOptions {
     pub(crate) method: ActiveAppContextExtractionMethod,
     pub(crate) ocr_provider: crate::providers::capabilities::OcrProvider,
     pub(crate) selection_only: bool,
+    /// 读不到选区时能否按复制键从剪贴板读。说话过程中不能按：用户可能还按着快捷键。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) copy_selection: bool,
     /// 仅调试窗口会设置：覆盖截图长边像素上限（默认见 `screen_capture::MAX_CAPTURE_SIDE`）。
     pub(crate) max_capture_side_override: Option<u32>,
 }
@@ -99,6 +102,7 @@ impl CaptureOptions {
             method,
             ocr_provider,
             selection_only: false,
+            copy_selection: true,
             max_capture_side_override: None,
         }
     }
@@ -183,6 +187,8 @@ pub(crate) struct CapturedActiveAppContext {
     pub(crate) diagnostics: Vec<String>,
     pub(crate) elapsed_ms: u64,
     pub(crate) truncated: bool,
+    /// 开了动态上下文时，说话过程中补充的内容。
+    pub(crate) dynamic: Vec<super::dynamic::DynamicEntry>,
 }
 
 impl CapturedActiveAppContext {
@@ -194,9 +200,31 @@ impl CapturedActiveAppContext {
         }
     }
 
+    /// 窗口里读到的大段文字：原生读取的可见文字、文档文字和 OCR 文字。
+    pub(crate) fn text_lines(&self) -> Vec<String> {
+        [&self.visible_text, &self.document_text, &self.ocr_text]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// 说话过程中的操作排在应用、窗口、选区之后，大段窗口文字之前：本地整理模型只看开头一段。
+    /// 有这一段时整体仍守住默认字数上限，超出的从窗口文字末尾截掉。
     pub(crate) fn format_for_prompt(&self) -> String {
-        if self.status != CaptureStatus::Captured {
-            return String::new();
+        self.format_with_dynamic(&self.dynamic)
+    }
+
+    /// 带上另给的动态记录排版：听写过程中记录还在增加，不必为此复制整份上下文。
+    pub(crate) fn format_with_dynamic(&self, entries: &[super::dynamic::DynamicEntry]) -> String {
+        let captured = self.status == CaptureStatus::Captured;
+        let seen = match captured {
+            true => self.selected_text.iter().cloned().chain(self.text_lines()).collect(),
+            false => Vec::new(),
+        };
+        let dynamic = super::dynamic::format_entries(entries, &seen);
+        if !captured {
+            return dynamic;
         }
         let mut lines = Vec::new();
         if !self.app_name.is_empty() {
@@ -230,6 +258,9 @@ impl CapturedActiveAppContext {
         {
             lines.push(format!("光标附近内容：{value}"));
         }
+        if !dynamic.is_empty() {
+            lines.push(dynamic.clone());
+        }
         if !self.visible_text.is_empty() {
             lines.push(format!("当前可见文字：{}", self.visible_text.join("\n")));
         }
@@ -239,7 +270,11 @@ impl CapturedActiveAppContext {
         if !self.ocr_text.is_empty() {
             lines.push(format!("窗口可见文字：{}", self.ocr_text.join("\n")));
         }
-        lines.join("\n")
+        let text = lines.join("\n");
+        match dynamic.is_empty() {
+            true => text,
+            false => super::normalize::truncate_chars(&text, DEFAULT_MAX_CHARS).0,
+        }
     }
 
     #[cfg(windows)]
@@ -415,6 +450,26 @@ mod tests {
             context.format_for_prompt(),
             "应用：Code\n窗口：main.rs\n选中文本：选区\n当前输入区域：输入\n光标附近内容：光标\n当前可见文字：可见\n当前文档文字：文档\n窗口可见文字：OCR"
         );
+    }
+
+    /// 本地整理模型只看上下文开头一段，说话时的操作要排在大段窗口文字前面，总长仍守住上限。
+    #[test]
+    fn dynamic_entries_come_before_window_text_and_keep_the_budget() {
+        use super::super::dynamic::{DynamicEntry, DynamicKind};
+        let context = CapturedActiveAppContext {
+            status: CaptureStatus::Captured,
+            app_name: "Code".into(),
+            ocr_text: vec!["字".repeat(DEFAULT_MAX_CHARS)],
+            dynamic: vec![DynamicEntry { at_ms: 1500, kind: DynamicKind::Pointer { text: "导出".into() } }],
+            ..Default::default()
+        };
+        let text = context.format_for_prompt();
+        assert!(text.starts_with("应用：Code\n说话时的操作"));
+        assert!(text.contains("[1.5秒] 鼠标指着：导出\n窗口可见文字：字"));
+        assert_eq!(text.chars().count(), DEFAULT_MAX_CHARS);
+        // 开头那次没读到时，说话中读到的仍然有用。
+        let failed = CapturedActiveAppContext { status: CaptureStatus::TimedOut, ..context };
+        assert!(failed.format_for_prompt().ends_with("[1.5秒] 鼠标指着：导出"));
     }
 
     #[test]

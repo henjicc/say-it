@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Switch } from "@/components/ui/Switch";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { NumberInput, Select, Textarea } from "@/components/ui/Input";
@@ -427,6 +428,15 @@ export function SmartTextPanel() {
             </Row>
 
             {prefs.activeAppContextExtractionMethod === "ocr" && <OcrModelRow />}
+            {!isMacOS && (
+              <Row
+                label="动态上下文"
+                controlId="smart-text-dynamic-context"
+                hint="说话时切换窗口、滚动页面、选中文字，或用鼠标停住、绕圈指着某处，都会补充进上下文，方便说“这个”“这里”。语音问答也会带上这些内容，一起发给它选用的大模型。文字在本机识别，会多占用一些处理器。"
+              >
+                <Switch id="smart-text-dynamic-context" checked={prefs.activeAppContextDynamic} onChange={(checked) => void patch({ activeAppContextDynamic: checked })} />
+              </Row>
+            )}
           </Group>
 
           <Group>

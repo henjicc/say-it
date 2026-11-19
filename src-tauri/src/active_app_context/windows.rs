@@ -250,6 +250,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                 options.max_chars,
                 cancelled,
                 options.selection_only,
+                options.copy_selection,
             ) {
                 Ok(status) => status,
                 Err(error) => {

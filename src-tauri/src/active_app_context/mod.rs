@@ -1,5 +1,8 @@
 #[cfg(any(windows, target_os = "macos"))]
 mod debug;
+mod dynamic;
+#[cfg(windows)]
+mod dynamic_monitor;
 #[cfg(target_os = "macos")]
 mod macos;
 mod model;
@@ -82,6 +85,8 @@ impl ContextCaptureHandle {
 #[derive(Clone)]
 pub(crate) struct ContextCaptureCancellation {
     capture_cancelled: Arc<AtomicBool>,
+    /// 动态上下文的采集，开了才有。
+    monitor_closed: Option<Arc<AtomicBool>>,
     session_cancelled: Arc<AtomicBool>,
 }
 
@@ -89,6 +94,9 @@ impl ContextCaptureCancellation {
     pub(crate) fn cancel(&self) {
         self.session_cancelled.store(true, Ordering::Release);
         self.capture_cancelled.store(true, Ordering::Release);
+        if let Some(closed) = &self.monitor_closed {
+            closed.store(true, Ordering::Release);
+        }
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -96,7 +104,15 @@ impl ContextCaptureCancellation {
     }
 }
 
-pub(crate) enum DictationContextCaptureHandle {
+pub(crate) struct DictationContextCaptureHandle {
+    initial: InitialCapture,
+    /// 开了动态上下文时，说话过程中跟着用户的操作补充，见 `dynamic.rs`。
+    #[cfg(windows)]
+    monitor: Option<dynamic_monitor::DynamicMonitor>,
+}
+
+/// 听写开头那一次读取。
+enum InitialCapture {
     Eager(ContextCaptureHandle),
     #[cfg(windows)]
     DeferredOcr(DeferredOcrCaptureHandle),
@@ -105,21 +121,39 @@ pub(crate) enum DictationContextCaptureHandle {
 impl DictationContextCaptureHandle {
     /// 已经读到的上下文，按正式整理时的格式给出；还没读到，或要到听写结束才识别（延迟 OCR）时为 `None`。
     pub(crate) fn ready_for_prompt(&mut self) -> Option<String> {
-        match self {
-            Self::Eager(handle) => handle.ready().map(CapturedActiveAppContext::format_for_prompt),
+        let context = match &mut self.initial {
+            InitialCapture::Eager(handle) => handle.ready()?,
             #[cfg(windows)]
-            Self::DeferredOcr(_) => None,
+            InitialCapture::DeferredOcr(_) => return None,
+        };
+        #[cfg(windows)]
+        if let Some(monitor) = &self.monitor {
+            return Some(context.format_with_dynamic(&monitor.entries()));
+        }
+        Some(context.format_for_prompt())
+    }
+
+    /// 录音停了就不再观察用户的操作：收尾这段时间里切换窗口、移动鼠标不是说话时做的。
+    pub(crate) fn stop_watching(&self) {
+        #[cfg(windows)]
+        if let Some(monitor) = &self.monitor {
+            monitor.stop();
         }
     }
 
     pub(crate) fn cancellation(&self) -> ContextCaptureCancellation {
-        let cancelled = match self {
-            Self::Eager(handle) => Arc::clone(&handle.cancelled),
+        let cancelled = match &self.initial {
+            InitialCapture::Eager(handle) => Arc::clone(&handle.cancelled),
             #[cfg(windows)]
-            Self::DeferredOcr(handle) => Arc::clone(&handle.cancelled),
+            InitialCapture::DeferredOcr(handle) => Arc::clone(&handle.cancelled),
         };
+        #[cfg(windows)]
+        let monitor_closed = self.monitor.as_ref().map(dynamic_monitor::DynamicMonitor::closed);
+        #[cfg(not(windows))]
+        let monitor_closed = None;
         ContextCaptureCancellation {
             capture_cancelled: cancelled,
+            monitor_closed,
             session_cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -189,23 +223,32 @@ impl ContextCaptureService {
         method: ActiveAppContextExtractionMethod,
         ocr_provider: crate::providers::capabilities::OcrProvider,
         defer_ocr: bool,
+        dynamic: bool,
     ) -> DictationContextCaptureHandle {
         #[cfg(windows)]
-        if defer_ocr && method == ActiveAppContextExtractionMethod::Ocr {
-            return DictationContextCaptureHandle::DeferredOcr(self.begin_deferred_ocr_capture(
+        let monitor = dynamic.then(|| {
+            dynamic_monitor::DynamicMonitor::start(target, blocked_apps.clone(), method)
+        });
+        #[cfg(windows)]
+        let initial = if defer_ocr && method == ActiveAppContextExtractionMethod::Ocr {
+            InitialCapture::DeferredOcr(self.begin_deferred_ocr_capture(
                 target,
                 blocked_apps,
                 ocr_provider,
-            ));
-        }
+            ))
+        } else {
+            InitialCapture::Eager(self.begin_capture(target, blocked_apps, method, ocr_provider))
+        };
         #[cfg(not(windows))]
-        let _ = defer_ocr;
-        DictationContextCaptureHandle::Eager(self.begin_capture(
-            target,
-            blocked_apps,
-            method,
-            ocr_provider,
-        ))
+        let initial = {
+            let _ = (defer_ocr, dynamic);
+            InitialCapture::Eager(self.begin_capture(target, blocked_apps, method, ocr_provider))
+        };
+        DictationContextCaptureHandle {
+            initial,
+            #[cfg(windows)]
+            monitor,
+        }
     }
 
     pub(crate) fn begin_capture(
@@ -409,15 +452,24 @@ impl ContextCaptureService {
         &self,
         handle: DictationContextCaptureHandle,
     ) -> CapturedActiveAppContext {
-        match handle {
-            DictationContextCaptureHandle::Eager(handle) => {
-                self.resolve_for_dictation(handle).await
-            }
+        #[cfg(windows)]
+        let entries = match handle.monitor {
+            Some(monitor) => monitor.finish().await,
+            None => Vec::new(),
+        };
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut context = match handle.initial {
+            InitialCapture::Eager(handle) => self.resolve_for_dictation(handle).await,
             #[cfg(windows)]
-            DictationContextCaptureHandle::DeferredOcr(handle) => {
+            InitialCapture::DeferredOcr(handle) => {
                 self.resolve_deferred_ocr_for_dictation(handle).await
             }
+        };
+        #[cfg(windows)]
+        {
+            context.dynamic = entries;
         }
+        context
     }
 
     #[cfg(windows)]
@@ -913,11 +965,19 @@ mod tests {
         );
     }
 
+    fn eager_dictation_handle(handle: ContextCaptureHandle) -> DictationContextCaptureHandle {
+        DictationContextCaptureHandle {
+            initial: InitialCapture::Eager(handle),
+            #[cfg(windows)]
+            monitor: None,
+        }
+    }
+
     #[tokio::test]
     async fn context_read_during_dictation_is_reused_by_the_final_resolve() {
         let service = ContextCaptureService::default();
         let (sender, receiver) = oneshot::channel();
-        let mut handle = DictationContextCaptureHandle::Eager(ContextCaptureHandle {
+        let mut handle = eager_dictation_handle(ContextCaptureHandle {
             started: std::time::Instant::now(),
             deadline: std::time::Instant::now()
                 + ActiveAppContextExtractionMethod::Ocr.timeout(),
@@ -965,7 +1025,7 @@ mod tests {
     fn dictation_cancellation_survives_after_the_capture_handle_is_moved() {
         let capture_cancelled = Arc::new(AtomicBool::new(false));
         let (_sender, receiver) = oneshot::channel();
-        let handle = DictationContextCaptureHandle::Eager(ContextCaptureHandle {
+        let handle = eager_dictation_handle(ContextCaptureHandle {
             started: std::time::Instant::now(),
             deadline: std::time::Instant::now()
                 + ActiveAppContextExtractionMethod::NativeText.timeout(),
