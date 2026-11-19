@@ -51,7 +51,6 @@
 </div>
 
 <div align="center">
-  <img src="docs/images/03字幕转写.jpg" width="49%" alt="字幕转写界面">
   <img src="docs/images/04设置.jpg" width="49%" alt="设置界面">
 </div>
 

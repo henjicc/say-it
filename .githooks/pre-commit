@@ -1,0 +1,3 @@
+#!/bin/sh
+# 由 package.json 的 prepare 在 npm install 时设为 core.hooksPath。
+exec node scripts/check-private-content.mjs --staged

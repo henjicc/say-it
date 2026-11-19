@@ -23,3 +23,20 @@ src-tauri/gen/schemas/macOS-schema.json
 *.pem
 __pycache__/
 *.pyc
+# 私人内容检查的本机配置：素材目录、私人路径和词，只在本机存在
+private-guard.local.json
+# 文档目录下的草稿图、截图、录屏、录音与验收证据不入库（README 用图在 docs/images/，由
+# scripts/check-private-content.mjs 按白名单把关）。
+docs/**/*.png
+docs/**/*.jpg
+docs/**/*.jpeg
+docs/**/*.gif
+docs/**/*.webp
+docs/**/*.mp4
+docs/**/*.mov
+docs/**/*.webm
+docs/**/*.wav
+docs/**/*.mp3
+docs/**/*.m4a
+!docs/images/*
+docs/images/03字幕转写.jpg

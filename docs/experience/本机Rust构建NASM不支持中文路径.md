@@ -10,7 +10,7 @@
 `aws-lc-sys` 只要在 PATH 上找到 `nasm` 就用它汇编，找不到才改用随包附带的预编译对象
 （本项目经 `aws-lc-rs` 已启用 `prebuilt-nasm` 特性）。本机 PATH 上的 `nasm` 来自 Strawberry Perl
 （`C:\Strawberry\c\bin\nasm.exe`，2.16.01），在 Windows 上走 ANSI 文件 API，
-**输出路径含非 ASCII 字符时无法创建文件**。本仓库路径 `<仓库目录>\` 含中文，
+**输出路径含非 ASCII 字符时无法创建文件**。本仓库所在路径含中文，
 `OUT_DIR` 在 `src-tauri/target/` 下，所以 NASM 写不出 .obj。
 
 debug 构建看似不受影响，只是因为 `aws-lc-sys` 的旧构建产物还在缓存里；工具链升级、
