@@ -794,7 +794,25 @@ pub(crate) fn local_intent_enabled(state: &RuntimeState, provider_id: &str, temp
             .is_some_and(|spec| crate::providers::local_llm::supports_intent(&spec))
 }
 
-/// 支持意图的模型每次都带意图输入（训练时每条都有）：没读到选区时按焦点可输入、没有选中处理。
+fn local_polish_base(
+    state: &RuntimeState,
+    text: &str,
+    active_app_context: &str,
+    active_app_name: &str,
+) -> crate::providers::local_llm::PolishInput {
+    let prefs = crate::application::customization::prefs(state);
+    crate::providers::local_llm::PolishInput::new(
+        crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
+        polish_level(state, active_app_name).tag(),
+        &hotword_texts(&prefs),
+        &crate::application::customization::render_context(&prefs),
+        active_app_context,
+        text,
+    )
+}
+
+/// 支持意图的模型每次都带意图输入（训练时每条都有）。没有意图上下文（没开自动识别意图、
+/// 悬浮球触发、选区没及时读到）时按焦点可输入、没有选中，并指定按听写整理。
 fn local_polish_input(
     state: &RuntimeState,
     spec: &crate::providers::plugin::LocalModelSpec,
@@ -803,25 +821,21 @@ fn local_polish_input(
     active_app_name: &str,
     intent: Option<&crate::application::assistant::IntentContext>,
 ) -> crate::providers::local_llm::PolishInput {
-    let prefs = crate::application::customization::prefs(state);
-    let input = crate::providers::local_llm::PolishInput::new(
-        crate::providers::local_llm::scene_tag(app_scene(active_app_name)),
-        polish_level(state, active_app_name).tag(),
-        &hotword_texts(&prefs),
-        &crate::application::customization::render_context(&prefs),
-        active_app_context,
-        text,
-    );
+    let input = local_polish_base(state, text, active_app_context, active_app_name);
     if !crate::providers::local_llm::supports_intent(spec) {
         return input;
     }
-    input.with_intent(
-        intent.is_none_or(|intent| intent.editable),
-        intent
-            .and_then(|intent| intent.selection.as_ref())
-            .map_or("", |selection| selection.text.as_str()),
-        crate::application::assistant::intent_target_lang(state),
-    )
+    let target_lang = crate::application::assistant::intent_target_lang(state);
+    match intent {
+        Some(intent) => input.with_intent(
+            intent.editable,
+            intent.selection.as_ref().map_or("", |selection| selection.text.as_str()),
+            target_lang,
+        ),
+        None => input
+            .with_intent(true, "", target_lang)
+            .forcing(crate::providers::local_llm::Intent::Dictate),
+    }
 }
 
 /// 训练样本里与本地整理模型输入对应的设置：场景、整理程度、热词与全局上下文。
@@ -866,7 +880,7 @@ async fn process_with_local_polish(
             }
         });
     let intent_run = match (&result, &input.intent) {
-        (Ok(polished), Some(intent)) => Some(IntentRun {
+        (Ok(polished), Some(intent)) if intent.forced.is_none() => Some(IntentRun {
             intent: polished.intent,
             output: polished.text.clone(),
             selection: intent.selection.clone(),
@@ -907,8 +921,57 @@ pub(crate) async fn local_polish_as_dictation(
     intent: Option<&crate::application::assistant::IntentContext>,
 ) -> Result<String, String> {
     let spec = local_polish_spec(state, provider_id)?.ok_or("智能处理没有选用本地听写整理模型")?;
-    let input = local_polish_input(state, &spec, text, active_app_context, active_app_name, intent);
-    crate::providers::local_llm::polish_as(&spec, &input, crate::providers::local_llm::Intent::Dictate).await
+    let input = local_polish_input(state, &spec, text, active_app_context, active_app_name, intent)
+        .forcing(crate::providers::local_llm::Intent::Dictate);
+    let polished = crate::providers::local_llm::polish(&spec, &input).await?;
+    match polished.text.is_empty() {
+        true => Err("本地听写整理模型没有返回内容".into()),
+        false => Ok(polished.text),
+    }
+}
+
+/// 助手功能选的是本地听写整理模型时返回它的规格，选的是大模型时返回 `None`。
+/// 改写选中文字要靠意图标签，不支持意图的旧模型包报错。
+pub(crate) fn local_edit_spec(
+    state: &RuntimeState,
+    provider_id: &str,
+) -> Result<Option<crate::providers::plugin::LocalModelSpec>, String> {
+    match local_polish_spec(state, provider_id)? {
+        Some(spec) if !crate::providers::local_llm::supports_intent(&spec) => {
+            Err("当前本地听写整理模型不支持改写选中文字，请到扩展里更新模型包".into())
+        }
+        spec => Ok(spec),
+    }
+}
+
+/// 用本地整理模型按语音指令处理选中文字。模型自己分辨改写和翻译；判成听写、查词或提问时
+/// 指定按改写再来一遍，结果总是用来替换选区的文字。
+pub(crate) async fn local_edit_selection(
+    state: &RuntimeState,
+    spec: &crate::providers::plugin::LocalModelSpec,
+    selection: &str,
+    spoken_text: &str,
+    app_name: &str,
+) -> Result<String, String> {
+    use crate::providers::local_llm::Intent;
+    // 本地模型只看到选区的前一段，拿结果替换整段会丢掉后面的内容。
+    if selection.chars().count() > crate::providers::local_llm::SELECTION_CHARS {
+        return Err("选中文本过长，为避免只处理部分内容，已停止选区编辑".into());
+    }
+    let input = local_polish_base(state, spoken_text, "", app_name).with_intent(
+        true,
+        selection,
+        crate::application::assistant::intent_target_lang(state),
+    );
+    let polished = crate::providers::local_llm::polish(spec, &input).await?;
+    let text = match polished.intent {
+        Intent::Edit | Intent::Translate if !polished.text.is_empty() => polished.text,
+        _ => crate::providers::local_llm::polish(spec, &input.forcing(Intent::Edit)).await?.text,
+    };
+    match text.is_empty() {
+        true => Err("本地听写整理模型没有返回内容".into()),
+        false => Ok(text),
+    }
 }
 
 /// 边说边用本地模型整理已识别的文字，见 `local_llm::speculate`。选的不是本地模型时什么也不做。

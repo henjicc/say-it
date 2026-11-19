@@ -1106,15 +1106,28 @@ async fn assistant_start_for_target(
                 .map_err(|_| "应用配置锁失败")?
                 .assistant_prefs,
         )?;
-        match action {
-            AssistantAction::TranslateSpeech => {
+        let local_edit = match action {
+            AssistantAction::EditSelection => crate::application::smart_text::local_edit_spec(
+                &state,
+                &feature_preferences(&prefs, action).llm_provider_id,
+            )?,
+            _ => None,
+        };
+        match (action, local_edit) {
+            // 说话的同时加载本地模型，松手后不用再等；加载失败时正式整理会报出原因。
+            (_, Some(spec)) => {
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::providers::local_llm::prewarm(&spec).await;
+                });
+            }
+            (AssistantAction::TranslateSpeech, None) => {
                 let shared = crate::application::translation::current(&state)?;
                 if shared.uses_llm() {
                     active_template(feature_preferences(&prefs, action), "翻译输入")?;
                 }
                 crate::application::translation::validate(&state, &shared)?;
             }
-            AssistantAction::EditSelection | AssistantAction::Ask => {
+            (AssistantAction::EditSelection | AssistantAction::Ask, None) => {
                 let feature = feature_preferences(&prefs, action);
                 active_template(feature, action.task_kind())?;
                 crate::application::smart_text::validate_available_for(
@@ -1662,6 +1675,18 @@ async fn process_llm_action(
         return Err("选中文本不能为空".into());
     }
     let feature = feature_preferences(prefs, action);
+    if action == AssistantAction::EditSelection {
+        if let Some(spec) = crate::application::smart_text::local_edit_spec(state, &feature.llm_provider_id)? {
+            return crate::application::smart_text::local_edit_selection(
+                state,
+                &spec,
+                selected_text,
+                spoken_text,
+                app_name,
+            )
+            .await;
+        }
+    }
     let selected_template = active_template(feature, action.task_kind())?;
     let corrections = String::new();
     let payload = serde_json::json!({

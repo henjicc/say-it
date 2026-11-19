@@ -11,7 +11,7 @@ import { CMD, cmd } from "@/lib/tauri";
 import { isMacOS } from "@/lib/platform";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
-import { OcrModelRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
+import { AutoIntentRow, OcrModelRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
 import {
   GLOBAL_CONTEXT_PLACEHOLDER,
   HOTWORDS_PLACEHOLDER,
@@ -261,6 +261,7 @@ export function SmartTextPanel() {
         <>
           <Group>
             <SmartLlmRow />
+            <AutoIntentRow />
             <Row label="处理时机">
               <Select
                 className={ROW_CONTROL_W}

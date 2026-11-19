@@ -245,6 +245,9 @@ struct DictationPrefs {
     dictation_silence_threshold: f32,
     /// 本地模型包识别结果是否用标点模型补标点；未装标点模型包时不生效。
     local_punctuation_enabled: bool,
+    /// 听写快捷键是否让本地整理模型自动识别改写、翻译、查词和提问。关闭时只做听写，
+    /// 这些操作走助手各自的快捷键。
+    smart_auto_intent: bool,
     #[serde(flatten)]
     dsp: DspParams,
 }
@@ -278,6 +281,7 @@ impl Default for DictationPrefs {
             dictation_silence_disconnect_ms: 5_000,
             dictation_silence_threshold: 0.0001,
             local_punctuation_enabled: true,
+            smart_auto_intent: false,
             dsp: DspParams::default(),
         }
     }
@@ -1191,7 +1195,8 @@ async fn start_session(
     };
     // 悬浮球的结果总是按听写插入，不读选区。
     let intent_target = activation_target.filter(|_| {
-        effective.smart_processing_enabled
+        prefs.smart_auto_intent
+            && effective.smart_processing_enabled
             && assistant_request.is_none()
             && !trigger.is_floating_orb()
             && crate::application::smart_text::local_intent_enabled(

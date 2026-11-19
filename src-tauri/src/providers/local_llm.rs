@@ -86,6 +86,9 @@ pub(crate) struct IntentInput {
     pub(crate) selection: String,
     /// 中文内容默认译成的语言，用训练时的中文名（英文、日文……）。
     pub(crate) target_lang: &'static str,
+    /// 给出时把这个标签接在提示词末尾，模型从标签之后续写，不再自己判断意图。
+    /// 没开自动识别意图时固定为听写；快捷键已经指定了要做什么时为对应的意图。
+    pub(crate) forced: Option<Intent>,
 }
 
 /// 模型在输出开头给出的意图标签。不支持意图的模型包一律是听写。
@@ -124,8 +127,11 @@ pub(crate) struct Polished {
     pub(crate) text: String,
 }
 
-fn parse_output(output: &str, with_intent: bool) -> Polished {
-    if with_intent {
+fn parse_output(output: &str, intent: Option<&IntentInput>) -> Polished {
+    if let Some(forced) = intent.and_then(|intent| intent.forced) {
+        return Polished { intent: forced, text: output.trim().to_string() };
+    }
+    if intent.is_some() {
         for (intent, tag) in INTENT_TAGS {
             if let Some(text) = output.strip_prefix(tag) {
                 return Polished { intent, text: text.trim().to_string() };
@@ -179,7 +185,15 @@ impl PolishInput {
         if kept.len() < selection.len() {
             kept.push('…');
         }
-        self.intent = Some(IntentInput { editable, selection: kept, target_lang });
+        self.intent = Some(IntentInput { editable, selection: kept, target_lang, forced: None });
+        self
+    }
+
+    /// 指定意图，不让模型判断。只对带意图输入的整理有效。
+    pub(crate) fn forcing(mut self, intent: Intent) -> Self {
+        if let Some(input) = self.intent.as_mut() {
+            input.forced = Some(intent);
+        }
         self
     }
 
@@ -523,14 +537,14 @@ fn retained_ratio(previous: &str, current: &str) -> f64 {
 }
 
 /// 返回 `None` 表示这次整理被推理进程中途放弃（预先整理遇到正式请求）。
-/// `forced` 给出时把这个标签接在提示词末尾，模型从标签之后续写，输出里不再有标签。
+/// 指定了意图时标签接在提示词末尾，输出里不再有标签。
 async fn run(
     spec: &LocalModelSpec,
     input: &PolishInput,
     speculative: bool,
-    forced: Option<Intent>,
 ) -> Result<Option<String>, String> {
     let (head, body) = input.prompt();
+    let forced = input.intent.as_ref().and_then(|intent| intent.forced);
     let tail = format!("{PROMPT_TAIL}{}", forced.map_or("", Intent::tag));
     let model = model_path(spec)?;
     let previous = {
@@ -612,21 +626,10 @@ pub(crate) async fn polish(spec: &LocalModelSpec, input: &PolishInput) -> Result
     if let Ok(mut speculation) = runtime().speculation.lock() {
         speculation.latest = None;
     }
-    let output = run(spec, input, false, None)
+    let output = run(spec, input, false)
         .await?
         .ok_or_else(|| "本地整理被取消".to_string())?;
-    Ok(parse_output(&output, input.intent.is_some()))
-}
-
-/// 指定意图再整理一遍：模型判成了指令，这次却只能按听写插入时用。
-pub(crate) async fn polish_as(spec: &LocalModelSpec, input: &PolishInput, intent: Intent) -> Result<String, String> {
-    let output = run(spec, input, false, Some(intent))
-        .await?
-        .ok_or_else(|| "本地整理被取消".to_string())?;
-    match output.is_empty() {
-        true => Err("本地听写整理模型没有返回内容".into()),
-        false => Ok(output),
-    }
+    Ok(parse_output(&output, input.intent.as_ref()))
 }
 
 /// 设置要常驻的模型包并立即加载；`None` 取消常驻，已加载的进程按闲置时间照常回收。
@@ -719,7 +722,7 @@ pub(crate) fn speculate(spec: LocalModelSpec, input: PolishInput) {
                 break;
             }
             // 预先整理失败不影响松手后的正式请求，那一次会报出真正的错误。
-            let _ = run(&spec, &input, true, None).await;
+            let _ = run(&spec, &input, true).await;
         }
     });
 }
@@ -804,13 +807,20 @@ mod tests {
 
     #[test]
     fn output_tag_is_parsed_only_for_intent_models() {
+        let auto = PolishInput::new("chat", "", &[], "", "", "好").with_intent(true, "", "英文");
         assert_eq!(
-            parse_output("<edit>改好的文字", true),
+            parse_output("<edit>改好的文字", auto.intent.as_ref()),
             Polished { intent: Intent::Edit, text: "改好的文字".into() }
         );
-        assert_eq!(parse_output("<ask>", true), Polished { intent: Intent::Ask, text: String::new() });
+        assert_eq!(parse_output("<ask>", auto.intent.as_ref()), Polished { intent: Intent::Ask, text: String::new() });
         assert_eq!(
-            parse_output("<edit>原样", false),
+            parse_output("<edit>原样", None),
+            Polished { intent: Intent::Dictate, text: "<edit>原样".into() }
+        );
+        // 指定了意图时输出里没有标签，开头像标签的文字也照原样保留。
+        let forced = auto.forcing(Intent::Dictate);
+        assert_eq!(
+            parse_output("<edit>原样", forced.intent.as_ref()),
             Polished { intent: Intent::Dictate, text: "<edit>原样".into() }
         );
     }

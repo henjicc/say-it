@@ -18,6 +18,23 @@ export const FOLLOW_DEFAULT_LLM_OPTION: ModelPickerOption = {
   providerLabel: "默认",
 };
 
+/**
+ * 本地听写整理模型的选项。它只会整理听写和改写选中文字，所以只出现在听写智能处理和
+ * 助手「选区编辑」里，不进其他用途的大模型列表。
+ */
+export function localPolishModelOptions(profiles: ProviderProfile[]): ModelPickerOption[] {
+  return profiles
+    .filter((profile) => profile.enabled && profile.capabilities.includes("polish"))
+    .map((profile) => ({
+      value: llmModelValue(profile.id, ""),
+      // 已经列在「本地」分组下，条目里不再重复这两个字。
+      label: profile.displayName.replace(/^本地\s*/u, "") || profile.displayName,
+      triggerLabel: profile.displayName,
+      providerId: profile.id,
+      providerLabel: "本地",
+    }));
+}
+
 export type ThinkingLevel = "zero" | "low" | "high";
 
 export const THINKING_OPTIONS: { key: ThinkingLevel; label: string }[] = [

@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { Select } from "@/components/ui/Input";
+import { Switch } from "@/components/ui/Switch";
 import { Modal } from "@/components/ui/Modal";
 import { ocrOptionsForScene, useModelCatalogRevision, type OcrModelOption } from "@/features/asr/modelRegistry";
 import { ModelPicker, type ModelPickerOption } from "@/features/models/ModelPicker";
 import { LOCAL_POLISH_TEMPLATES } from "@/features/onboarding/setup";
-import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue } from "@/features/models/llmModelOptions";
+import { FOLLOW_DEFAULT_LLM_OPTION, llmModelPickerOptions, llmModelValue, localPolishModelOptions } from "@/features/models/llmModelOptions";
 import { useUsageIssue } from "@/features/models/usage";
 import { useDictPrefs } from "@/store/useDictPrefs";
 import { useProviderStore } from "@/store/useProviderStore";
@@ -15,19 +16,9 @@ import { useProviderStore } from "@/store/useProviderStore";
 export function SmartLlmRow({ label = "智能模型" }: { label?: string } = {}) {
   const prefs = useDictPrefs((state) => state.prefs);
   const patch = useDictPrefs((state) => state.patch);
-  const enabledProfiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled);
-  const profiles = enabledProfiles.filter((profile) => profile.capabilities.includes("llm"));
-  // 本地听写整理模型只做整理这一件事，所以只出现在这里，不进其他用途的大模型列表。
-  const localOptions = enabledProfiles
-    .filter((profile) => profile.capabilities.includes("polish"))
-    .map((profile) => ({
-      value: llmModelValue(profile.id, ""),
-      // 已经列在「本地」分组下，条目里不再重复这两个字。
-      label: profile.displayName.replace(/^本地\s*/u, "") || profile.displayName,
-      triggerLabel: profile.displayName,
-      providerId: profile.id,
-      providerLabel: "本地",
-    }));
+  const allProfiles = useProviderStore((state) => state.profiles);
+  const profiles = allProfiles.filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
+  const localOptions = localPolishModelOptions(allProfiles);
   const selected = prefs.smartLlmProviderId === "default" ? "default" : llmModelValue(prefs.smartLlmProviderId, prefs.smartLlmModel);
   const options: ModelPickerOption[] = [FOLLOW_DEFAULT_LLM_OPTION, ...localOptions, ...llmModelPickerOptions(profiles, selected)];
   const local = localOptions.some((option) => option.value === selected);
@@ -57,6 +48,25 @@ export function SmartLlmRow({ label = "智能模型" }: { label?: string } = {})
         </div>
       </Row>
     </>
+  );
+}
+
+/** 本地整理模型自动识别意图的开关；智能模型不是本地整理模型时不显示。 */
+export function AutoIntentRow() {
+  const prefs = useDictPrefs((state) => state.prefs);
+  const patch = useDictPrefs((state) => state.patch);
+  const local = useProviderStore((state) => state.profiles).some(
+    (profile) => profile.enabled && profile.id === prefs.smartLlmProviderId && profile.capabilities.includes("polish"),
+  );
+  if (!local || !LOCAL_POLISH_TEMPLATES.includes(prefs.smartTemplateId)) return null;
+  return (
+    <Row
+      label="自动识别意图"
+      controlId="smart-text-auto-intent"
+      hint="开启后，语音输入快捷键会按你说的话自动判断是听写、改写选中文字、翻译、查词还是提问。关闭时只做听写，改写、翻译和提问用「助手」里各自的快捷键。"
+    >
+      <Switch id="smart-text-auto-intent" checked={prefs.smartAutoIntent} onChange={(checked) => void patch({ smartAutoIntent: checked })} />
+    </Row>
   );
 }
 

@@ -16,6 +16,7 @@ import {
   FOLLOW_DEFAULT_LLM_OPTION,
   llmModelPickerOptions,
   llmModelValue,
+  localPolishModelOptions,
 } from "@/features/models/llmModelOptions";
 import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
 import { CMD, cmd } from "@/lib/tauri";
@@ -128,10 +129,12 @@ export function AssistantModelRow({ action, label, prefs, save }: {
   prefs: AssistantPrefs;
   save: (next: AssistantPrefs) => Promise<void>;
 }) {
-  const profiles = useProviderStore((state) => state.profiles).filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
+  const allProfiles = useProviderStore((state) => state.profiles);
+  const profiles = allProfiles.filter((profile) => profile.enabled && profile.capabilities.includes("llm"));
   const feature = prefs[action];
   const selectedLlm = feature.llmProviderId === "default" ? "default" : llmModelValue(feature.llmProviderId, feature.llmModel);
-  const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...llmModelPickerOptions(profiles, selectedLlm)];
+  const localOptions = action === "editSelection" ? localPolishModelOptions(allProfiles) : [];
+  const llmOptions = [FOLLOW_DEFAULT_LLM_OPTION, ...localOptions, ...llmModelPickerOptions(profiles, selectedLlm)];
   const llmIssue = useUsageIssue(feature.llmProviderId === "default" ? undefined : feature.llmProviderId, true, "llm");
   const controlId = `assistant-${action}-model`;
   const current = llmOptions.find((option) => option.value === selectedLlm);
@@ -298,7 +301,14 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
   };
 
   const translationEngine = useTranslationStore((state) => state.prefs.engine);
-  const usesTemplates = !(action === "translateSpeech" && translationEngine === "dedicated");
+  const localPolish = useProviderStore((state) => state.profiles).some(
+    (profile) => profile.id === feature.llmProviderId && profile.capabilities.includes("polish"),
+  );
+  const templateNotice = action === "translateSpeech" && translationEngine === "dedicated"
+    ? "专用翻译模型不使用模板；翻译模型换成大模型后，当前模板会继续生效。"
+    : action === "editSelection" && localPolish
+      ? "本地整理模型不使用模板；换成大模型后，当前模板会继续生效。"
+      : "";
 
   return <InspectorBody>
     <Group>
@@ -313,7 +323,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
     </Group>
 
     <Group title="任务模板" right={<><span className="text-xs tabular-nums text-[var(--color-fg-subtle)]">{feature.templates.length} / 20</span><Button size="sm" variant="text" onClick={addTemplate}><Plus className="h-3.5 w-3.5" />新建</Button><Button size="sm" variant="text" disabled={!builtIns[action].some((item) => item.id === active?.id)} onClick={() => void resetTemplate()}><RotateCcw className="h-3.5 w-3.5" />恢复默认</Button></>}>
-      <Row label="当前模板" message={!usesTemplates && "专用翻译模型不使用模板；翻译模型换成大模型后，当前模板会继续生效。"}>
+      <Row label="当前模板" message={templateNotice}>
         <Select className={ROW_CONTROL_W} aria-label="当前模板" value={feature.activeTemplateId} onChange={(event) => void updateFeature({ ...feature, activeTemplateId: event.target.value })}>{feature.templates.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
         <Button size="sm" variant="dangerText" aria-label="删除当前模板" disabled={feature.templates.length <= 1} onClick={() => void deleteTemplate()}><Trash2 className="h-3.5 w-3.5" />删除</Button>
       </Row>

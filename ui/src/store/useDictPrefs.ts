@@ -626,6 +626,8 @@ export interface DictPrefs extends DspParams {
   dictationSilenceThreshold: number;
   /** 本地模型包的识别结果用标点模型补标点；未装标点模型包时不生效。 */
   localPunctuationEnabled: boolean;
+  /** 听写快捷键让本地整理模型自动识别改写、翻译、查词和提问；关闭时只做听写。 */
+  smartAutoIntent: boolean;
   subtitleSilenceDisconnectEnabled: boolean;
   subtitleSilenceDisconnectMs: number;
   subtitleSilenceThreshold: number;
@@ -665,6 +667,7 @@ function defaults(): DictPrefs {
     dictationSilenceDisconnectMs: 5000,
     dictationSilenceThreshold: 0.0001,
     localPunctuationEnabled: true,
+    smartAutoIntent: false,
     subtitleSilenceDisconnectEnabled: true,
     subtitleSilenceDisconnectMs: 5000,
     subtitleSilenceThreshold: 0.0001,
