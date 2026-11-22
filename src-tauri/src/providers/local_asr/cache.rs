@@ -224,43 +224,13 @@ pub fn supports_residency(engine: &str) -> bool {
 
 fn load(spec: &LocalModelSpec) -> Result<Recognizer, String> {
     let started = std::time::Instant::now();
-    let recognizer = {
-        let _background = BackgroundMode::enter();
-        load_engine(spec)?
-    };
+    let recognizer = load_engine(spec)?;
     crate::application::diagnostics::event(
         "debug",
         "localAsr.loaded",
         serde_json::json!({ "pluginId": spec.plugin_id, "engine": spec.engine, "loadMs": started.elapsed().as_millis() as u64 }),
     );
     Ok(recognizer)
-}
-
-/// 加载期间把当前线程切到后台模式：读几个 GB 权重时，读盘与内存换页让给界面和录音，
-/// 否则悬浮窗和录音线程会一起停顿几百毫秒。加载线程来自共用的阻塞线程池，离开时必须切回。
-struct BackgroundMode;
-
-impl BackgroundMode {
-    fn enter() -> Self {
-        #[cfg(windows)]
-        set_background_mode(windows::Win32::System::Threading::THREAD_MODE_BACKGROUND_BEGIN);
-        Self
-    }
-}
-
-impl Drop for BackgroundMode {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        set_background_mode(windows::Win32::System::Threading::THREAD_MODE_BACKGROUND_END);
-    }
-}
-
-#[cfg(windows)]
-fn set_background_mode(mode: windows::Win32::System::Threading::THREAD_PRIORITY) {
-    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
-    if let Err(error) = unsafe { SetThreadPriority(GetCurrentThread(), mode) } {
-        eprintln!("[local-asr] 切换模型加载线程的后台模式失败：{error}");
-    }
 }
 
 fn load_engine(spec: &LocalModelSpec) -> Result<Recognizer, String> {

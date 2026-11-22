@@ -125,7 +125,6 @@ impl Engine {
     }
 
     pub(crate) fn load(request: &LoadRequest) -> Result<Self, String> {
-        let _background = BackgroundMode::enter();
         let path = CString::new(request.model.as_str()).map_err(|_| "模型路径含空字符")?;
         unsafe {
             sys::llama_log_set(Some(log_warnings), std::ptr::null_mut());
@@ -450,40 +449,5 @@ impl Drop for Engine {
             sys::llama_sampler_free(self.sampler);
             sys::llama_model_free(self.model);
         }
-    }
-}
-
-/// 加载期间把当前线程切到后台模式：读几个 GB 权重时，读盘与内存换页让给主程序的界面和录音，
-/// 否则悬浮窗和录音线程会一起停顿几百毫秒。推理也在这个线程上跑，加载完必须切回。
-struct BackgroundMode;
-
-#[cfg(windows)]
-mod background {
-    pub(super) const BEGIN: i32 = 0x0001_0000;
-    pub(super) const END: i32 = 0x0002_0000;
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentThread() -> *mut std::ffi::c_void;
-        fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
-    }
-    pub(super) fn set(mode: i32) {
-        if unsafe { SetThreadPriority(GetCurrentThread(), mode) } == 0 {
-            eprintln!("切换模型加载线程的后台模式失败：{}", std::io::Error::last_os_error());
-        }
-    }
-}
-
-impl BackgroundMode {
-    fn enter() -> Self {
-        #[cfg(windows)]
-        background::set(background::BEGIN);
-        Self
-    }
-}
-
-impl Drop for BackgroundMode {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        background::set(background::END);
     }
 }
