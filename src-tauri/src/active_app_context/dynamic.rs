@@ -186,25 +186,66 @@ fn distance(a: (i32, i32), b: (i32, i32)) -> f64 {
 }
 
 /// 鼠标指向时截取光标周围这么大的区域（宽、高，像素），超出光标所在窗口的部分不截。
-pub(crate) const POINTER_REGION: (i32, i32) = (480, 120);
+/// 截得宽一些，光标所在的那一小段才不容易被截断。
+pub(crate) const POINTER_REGION: (i32, i32) = (720, 100);
 /// 离光标超过这么多像素的文字不算指着的。
 const POINTER_REACH: f32 = 40.0;
+/// 指文字时光标多停在字的下方一点，免得挡住字：按光标往上挪这么多像素来选行。
+const POINTER_LIFT: f32 = 10.0;
+/// 光标所在那一小段两边没有标点时，最多取光标左右各这么多字。
+const PHRASE_HALF_CHARS: usize = 10;
+/// 一小段的分界：标点。英文单词之间的空格不算，「segment-map 免费」要整段取。
+const PHRASE_BREAKS: &str = "，,。；;：:、！!？?（）()【】[]「」“”\"|";
 
-/// 从光标周围那块区域识别出的文字里，取光标所在或离它最近的一段。`at` 是光标在截图里的
-/// 相对位置，`size` 是截图的像素尺寸。
+/// 从光标周围那块区域识别出的文字里，取光标所在的那一行，再取行里光标所在的那一小段
+/// （两边到标点为止）。`at` 是光标在截图里的相对位置，`size` 是截图的像素尺寸。
 pub(crate) fn pointed_block(blocks: &[OcrTextBlock], at: (f32, f32), size: (f32, f32)) -> Option<String> {
+    let lifted = at.1 - POINTER_LIFT / size.1;
     let gap = |block: &OcrTextBlock| {
         let b = &block.bounds;
         let dx = (b.left - at.0).max(at.0 - b.right).max(0.0) * size.0;
-        let dy = (b.top - at.1).max(at.1 - b.bottom).max(0.0) * size.1;
+        let dy = (b.top - lifted).max(lifted - b.bottom).max(0.0) * size.1;
         (dx * dx + dy * dy).sqrt()
     };
-    blocks
+    let (_, block) = blocks
         .iter()
         .map(|block| (gap(block), block))
         .filter(|(gap, block)| *gap <= POINTER_REACH && !block.text.trim().is_empty())
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, block)| block.text.trim().to_string())
+        .min_by(|a, b| a.0.total_cmp(&b.0))?;
+    let width = block.bounds.right - block.bounds.left;
+    let ratio = if width > 0.0 { ((at.0 - block.bounds.left) / width).clamp(0.0, 1.0) } else { 0.5 };
+    phrase_at(block.text.trim(), ratio)
+}
+
+/// 行里横向位置 `ratio`（0～1）处的那一小段。按字宽估计位置：汉字等全角字按两个半角宽算。
+fn phrase_at(line: &str, ratio: f32) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let widths: Vec<f32> = chars.iter().map(|c| if c.is_ascii() { 1.0 } else { 2.0 }).collect();
+    let target = widths.iter().sum::<f32>() * ratio;
+    let mut covered = 0.0;
+    let center = widths
+        .iter()
+        .position(|width| {
+            covered += width;
+            covered > target
+        })
+        .unwrap_or(chars.len().saturating_sub(1));
+    let is_break = |index: usize| PHRASE_BREAKS.contains(chars[index]);
+    // 光标正好落在标点上时，取它左边那一段。
+    let center = (0..=center).rev().find(|&index| !is_break(index))?;
+    let start = (0..center)
+        .rev()
+        .take_while(|&index| !is_break(index))
+        .take(PHRASE_HALF_CHARS)
+        .last()
+        .unwrap_or(center);
+    let end = (center + 1..chars.len())
+        .take_while(|&index| !is_break(index))
+        .take(PHRASE_HALF_CHARS)
+        .last()
+        .unwrap_or(center);
+    let phrase: String = chars[start..=end].iter().collect::<String>().trim().to_string();
+    (!phrase.is_empty()).then_some(phrase)
 }
 
 /// 缩略图（灰度）里明显变了的像素占比超过这个值才算窗口内容变了：输入框里多几个字、
@@ -310,6 +351,27 @@ mod tests {
         // 光标落在两段之间时取近的；都太远时不算指着。
         assert_eq!(pointed_block(&[block("近", 0.52, 0.4, 0.6, 0.6), block("远", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size).as_deref(), Some("近"));
         assert_eq!(pointed_block(&[block("远", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size), None);
+    }
+
+    #[test]
+    fn pointer_takes_the_phrase_under_the_cursor_in_the_line_above() {
+        let block = |text: &str, top: f32, bottom: f32| OcrTextBlock {
+            text: text.into(),
+            confidence: 0.9,
+            bounds: super::super::model::NormalizedRegion { left: 0.0, top, right: 1.0, bottom },
+        };
+        let lines = [
+            block("核实:segment-map 免费，segment-edit 每张", 0.2, 0.45),
+            block("型，并把区域名与平台任务号存入续接引用。", 0.55, 0.8),
+        ];
+        let size = (POINTER_REGION.0 as f32, POINTER_REGION.1 as f32);
+        // 光标停在两行之间、略靠下一行：人指字时光标常在字下方，取上一行。
+        assert_eq!(pointed_block(&lines, (0.3, 0.52), size).as_deref(), Some("segment-map 免费"));
+        assert_eq!(pointed_block(&lines, (0.75, 0.52), size).as_deref(), Some("segment-edit 每张"));
+        // 两边没有标点时只取光标左右各一段。
+        assert_eq!(phrase_at(&"字".repeat(40), 0.5).map(|text| text.chars().count()), Some(PHRASE_HALF_CHARS * 2 + 1));
+        // 光标落在标点上取它左边那段。
+        assert_eq!(phrase_at("甲乙，丙丁", 0.5).as_deref(), Some("甲乙"));
     }
 
     #[test]

@@ -19,9 +19,11 @@ const PRONOUN_FOLLOWERS: &str = "是怎么什么呢吗啊吧的有能要和跟�
 
 /// 口述说出后，识别文字大约晚这么久才出现。
 const RECOGNITION_LAG_MS: i64 = 600;
-/// 操作发生在说出指代词之前这么久以内、之后这么久以内，才算指的是它：人常常先指再说。
+/// 操作发生在说出指代词之前这么久以内、之后这么久以内，才算指的是它。
 const POINT_BEFORE_MS: i64 = 2_500;
 const POINT_AFTER_MS: i64 = 1_000;
+/// 人多是先指再说：说出之后的操作，时间差按这个倍数算，同样远时优先取之前的。
+const AFTER_PENALTY: i64 = 2;
 /// 补注最多这么多字，超出以 … 结尾。
 const NOTE_CHARS: usize = 24;
 
@@ -84,7 +86,8 @@ fn note_for(entries: &[DynamicEntry], at: i64) -> Option<String> {
                 DynamicKind::Window { .. } => return None,
             };
             let gap = entry.at_ms as i64 - at;
-            (-POINT_BEFORE_MS..=POINT_AFTER_MS).contains(&gap).then_some((gap.abs(), text))
+            let score = if gap > 0 { gap * AFTER_PENALTY } else { -gap };
+            (-POINT_BEFORE_MS..=POINT_AFTER_MS).contains(&gap).then_some((score, text))
         })
         .min_by_key(|(gap, _)| *gap)
         .map(|(_, text)| {
