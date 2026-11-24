@@ -381,38 +381,44 @@ fn read_selection(shared: &Shared, target: ActivationTarget) {
     }
 }
 
-/// 截取光标周围一块区域识别文字，取光标所在或离它最近的那一段。区域限制在光标所在的窗口里，
+fn read_pointer(shared: &Shared, at_ms: u64, point: (i32, i32)) {
+    if let Some(text) = pointed_text(point, &shared.blocked_apps, shared.method, &shared.closed) {
+        shared.record_new(at_ms, DynamicKind::Pointer { text });
+    }
+}
+
+/// 截取光标周围一块区域识别文字，取光标所在那一小段。区域限制在光标所在的窗口里，
 /// 不截到旁边的窗口；那个窗口在黑名单里、或焦点在密码框时不截。
-fn read_pointer(shared: &Shared, at_ms: u64, (x, y): (i32, i32)) {
-    let Some(target) = window_at(x, y) else { return };
-    let baseline = super::windows::baseline_context(target, &shared.blocked_apps, shared.method);
+pub(crate) fn pointed_text(
+    (x, y): (i32, i32),
+    blocked_apps: &[String],
+    method: ActiveAppContextExtractionMethod,
+    closed: &Arc<AtomicBool>,
+) -> Option<String> {
+    let target = window_at(x, y)?;
+    let baseline = super::windows::baseline_context(target, blocked_apps, method);
     if baseline.status == CaptureStatus::Blocked
         || super::windows::focused_target_is_password(target).unwrap_or(true)
-        || shared.closed.load(Ordering::Acquire)
+        || closed.load(Ordering::Acquire)
     {
-        return;
+        return None;
     }
     let (width, height) = POINTER_REGION;
     let region = RECT { left: x - width / 2, top: y - height / 2, right: x + width / 2, bottom: y + height / 2 };
-    let Ok((image, region)) = screen_capture::capture_window_region(target.window_handle, region) else {
-        return;
-    };
+    let (image, region) = screen_capture::capture_window_region(target.window_handle, region).ok()?;
     let at = (
         (x - region.left) as f32 / (region.right - region.left) as f32,
         (y - region.top) as f32 / (region.bottom - region.top) as f32,
     );
     let size = ((region.right - region.left) as f32, (region.bottom - region.top) as f32);
-    let Ok(output) = ocr::run_full_window(
+    let output = ocr::run_full_window(
         OcrProvider::default_local(),
         image,
         Instant::now() + POINTER_OCR_TIMEOUT,
-        Arc::clone(&shared.closed),
-    ) else {
-        return;
-    };
-    if let Some(text) = pointed_block(&output.blocks, at, size) {
-        shared.record_new(at_ms, DynamicKind::Pointer { text });
-    }
+        Arc::clone(closed),
+    )
+    .ok()?;
+    pointed_block(&output.blocks, at, size)
 }
 
 fn window_at(x: i32, y: i32) -> Option<ActivationTarget> {

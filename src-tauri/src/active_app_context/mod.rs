@@ -9,6 +9,8 @@ mod macos;
 mod model;
 #[cfg(windows)]
 mod native_probe;
+#[cfg(windows)]
+pub(crate) mod pointer_probe;
 mod normalize;
 #[cfg(windows)]
 mod ocr;

@@ -1262,6 +1262,8 @@ async fn api_index() -> Json<Value> {
             "GET /models":"可以测速的大模型列表",
             "POST /model-bench":"多模型并发测速，每个模型每轮一次真实请求，有费用。请求体 {models?:[{providerId, model}], rounds?, prompt?, fromRun?}，models 不给时测当前智能处理模型，完成后返回结果",
             "GET /model-bench":"测速进度：进行中返回实时数据，结束后返回最近一次结果",
+            "POST /pointer-probe":"指向测试：等 3 秒后沿光标轨迹取控件并对比截图取词，请求体 {seconds?}，默认 15 秒",
+            "GET /pointer-probe":"指向测试的进度和最近一次结果",
         },
     }))
 }
@@ -1374,6 +1376,20 @@ async fn api_models(RouteState(app): RouteState<AppHandle>) -> ApiResult {
     api_result(crate::application::dev_bench::list_models(app.state::<RuntimeState>().inner()))
 }
 
+#[derive(Deserialize, Default)]
+struct PointerProbeRequest {
+    seconds: Option<u64>,
+}
+
+async fn api_pointer_probe_state() -> Json<Value> {
+    Json(crate::application::dev_pointer::current())
+}
+
+async fn api_pointer_probe_start(request: Option<Json<PointerProbeRequest>>) -> ApiResult {
+    let seconds = request.and_then(|Json(request)| request.seconds).unwrap_or(15);
+    api_result(crate::application::dev_pointer::start(seconds))
+}
+
 async fn api_bench_state() -> Json<Value> {
     Json(crate::application::dev_bench::current_state())
 }
@@ -1424,6 +1440,7 @@ fn start_api(app: AppHandle) {
         .route("/smart-eval", post(api_smart_eval))
         .route("/models", get(api_models))
         .route("/model-bench", get(api_bench_state).post(api_bench_run))
+        .route("/pointer-probe", get(api_pointer_probe_state).post(api_pointer_probe_start))
         .layer(middleware::from_fn(guard_request))
         .with_state(app);
     tauri::async_runtime::spawn(async move {

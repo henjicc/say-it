@@ -7,6 +7,7 @@ pub(crate) mod contract;
 pub(crate) mod customization;
 pub(crate) mod data_root;
 pub(crate) mod dev_bench;
+pub(crate) mod dev_pointer;
 #[cfg(debug_assertions)]
 pub(crate) mod dev_local_model;
 pub(crate) mod dev_trace;

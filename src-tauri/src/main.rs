@@ -824,6 +824,9 @@ fn main() {
             application::dev_bench::dev_bench_models,
             application::dev_bench::dev_bench_state,
             application::dev_bench::dev_bench_run,
+            application::dev_pointer::dev_pointer_probe_start,
+            application::dev_pointer::dev_pointer_probe_state,
+            application::dev_pointer::dev_pointer_probe_cancel,
             #[cfg(debug_assertions)]
             application::dev_local_model::dev_local_compare,
             #[cfg(debug_assertions)]

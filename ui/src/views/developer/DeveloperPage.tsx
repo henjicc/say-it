@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AppWindow, BarChart3, Cpu, Database, FlaskConical, Gauge, History } from "lucide-react";
+import { AppWindow, BarChart3, Cpu, Database, FlaskConical, Gauge, History, MousePointer2 } from "lucide-react";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
 import { Button } from "@/components/ui/Button";
 import { Group, ROW_CONTROL_W, Row } from "@/components/ui/Group";
@@ -7,11 +7,13 @@ import { Switch } from "@/components/ui/Switch";
 import { Select, Textarea } from "@/components/ui/Input";
 import { Tabs } from "@/components/ui/Tabs";
 import { cn } from "@/lib/cn";
+import { isMacOS } from "@/lib/platform";
 import { CMD, cmd } from "@/lib/tauri";
 import { formatMs, formatTime } from "./format";
 import { LocalComparePanel } from "./LocalComparePanel";
 import { BenchResult, ModelBenchPanel, type BenchRow } from "./ModelBenchPanel";
 import { NativeWindowsPanel } from "./NativeWindowsPanel";
+import { PointerProbePanel } from "./PointerProbePanel";
 import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const RUNS_REFRESH_MS = 3000;
@@ -22,6 +24,7 @@ const TEST = "test";
 const BENCH = "bench";
 const LOCAL = "local";
 const WINDOWS = "windows";
+const POINTER = "pointer";
 
 interface RunSummary {
   id: string;
@@ -437,6 +440,7 @@ export function DeveloperPage() {
     { key: TEST, label: "智能处理测试", icon: <FlaskConical {...iconProps} />, dividerBefore: true },
     { key: BENCH, label: "模型测速", icon: <Gauge {...iconProps} /> },
     { key: WINDOWS, label: "原生窗口测试", icon: <AppWindow {...iconProps} /> },
+    ...(isMacOS ? [] : [{ key: POINTER, label: "指向测试", icon: <MousePointer2 {...iconProps} /> }]),
     // 本地模型对比依赖仓库工作区里的模型和 llama.cpp，只有开发构建有。
     ...(import.meta.env.DEV ? [{ key: LOCAL, label: "本地模型对比", icon: <Cpu {...iconProps} /> }] : []),
   ];
@@ -460,6 +464,7 @@ export function DeveloperPage() {
       {active === BENCH && <ModelBenchPanel onFinished={refresh} />}
       {active === LOCAL && <LocalComparePanel />}
       {active === WINDOWS && <NativeWindowsPanel />}
+      {active === POINTER && <PointerProbePanel />}
       {record && <RunDetail record={record} />}
     </MasterDetail>
   );
