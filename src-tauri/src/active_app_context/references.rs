@@ -22,9 +22,11 @@ const PRONOUN_FOLLOWERS: &str = "是呢吗啊吧的和跟或";
 
 /// 口述说出后，识别文字大约晚这么久才出现。
 const RECOGNITION_LAG_MS: i64 = 600;
-/// 操作发生在说出指代词之前这么久以内、之后这么久以内，才算指的是它。
-const POINT_BEFORE_MS: i64 = 1_000;
-const POINT_AFTER_MS: i64 = 500;
+/// 鼠标指向发生在说出指代词之前这么久以内、之后这么久以内，才算指的是它。识别文字约每秒更新一次，
+/// 由它倒推的说出时间本身就有一秒左右的误差，不能卡得太紧。选中文字是有意的动作，说话过程中任何时候
+/// 选的都算，而且优先于鼠标指向。
+const POINT_BEFORE_MS: i64 = 2_000;
+const POINT_AFTER_MS: i64 = 1_500;
 /// 人多是先指再说：说出之后的操作，时间差按这个倍数算，同样远时优先取之前的。
 const AFTER_PENALTY: i64 = 2;
 /// 补注最多这么多字，超出以 … 结尾。
@@ -80,27 +82,39 @@ fn spoken_at(spoken: &[(u64, usize)], index: usize) -> Option<i64> {
         .map(|(at, _)| *at as i64 - RECOGNITION_LAG_MS)
 }
 
-fn note_for(entries: &[DynamicEntry], at: i64) -> Option<String> {
+/// 给说出时间为 `at` 的指代词挑一条记录：选中的文字优先，其次时间合适的鼠标指向（只用读得准的）；
+/// 每条记录只用一次，`used` 记下已经用掉的。返回记录的位置。
+fn pick_entry(entries: &[DynamicEntry], used: &[bool], at: i64) -> Option<usize> {
     entries
         .iter()
-        .filter_map(|entry| {
-            let text = match &entry.kind {
-                DynamicKind::Selection { text } | DynamicKind::Pointer { text, exact: true } => text,
-                DynamicKind::Pointer { exact: false, .. } | DynamicKind::Window { .. } => return None,
-            };
+        .enumerate()
+        .filter(|(index, _)| !used[*index])
+        .filter_map(|(index, entry)| {
             let gap = entry.at_ms as i64 - at;
             let score = if gap > 0 { gap * AFTER_PENALTY } else { -gap };
-            (-POINT_BEFORE_MS..=POINT_AFTER_MS).contains(&gap).then_some((score, text))
-        })
-        .min_by_key(|(gap, _)| *gap)
-        .map(|(_, text)| {
-            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            let mut note: String = text.chars().take(NOTE_CHARS).collect();
-            if note.chars().count() < text.chars().count() {
-                note.push('…');
+            match &entry.kind {
+                DynamicKind::Selection { .. } => Some(((0, score), index)),
+                DynamicKind::Pointer { exact: true, .. } if (-POINT_BEFORE_MS..=POINT_AFTER_MS).contains(&gap) => {
+                    Some(((1, score), index))
+                }
+                _ => None,
             }
-            note
         })
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, index)| index)
+}
+
+fn note_text(entry: &DynamicEntry) -> String {
+    let text = match &entry.kind {
+        DynamicKind::Selection { text } | DynamicKind::Pointer { text, .. } => text.as_str(),
+        DynamicKind::Window { .. } => "",
+    };
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut note: String = text.chars().take(NOTE_CHARS).collect();
+    if note.chars().count() < text.chars().count() {
+        note.push('…');
+    }
+    note
 }
 
 /// `raw` 是识别原文，`output` 是整理后要输出的文字。两边认出的指代词个数不同时（整理删掉或改写了
@@ -116,15 +130,18 @@ pub(crate) fn annotate_references(
     if in_raw.is_empty() || in_raw.len() != in_output.len() {
         return output.to_string();
     }
-    let mut notes: Vec<(usize, String)> = in_raw
-        .iter()
-        .zip(&in_output)
-        .filter_map(|(spoken_ref, output_ref)| {
-            let note = note_for(entries, spoken_at(spoken, spoken_ref.at)?)?;
-            // 用户已经把所指的内容说出来了，不用再补。
-            (!output.contains(&note)).then_some((output_ref.insert, note))
-        })
-        .collect();
+    let mut used = vec![false; entries.len()];
+    let mut notes: Vec<(usize, String)> = Vec::new();
+    for (spoken_ref, output_ref) in in_raw.iter().zip(&in_output) {
+        let Some(at) = spoken_at(spoken, spoken_ref.at) else { continue };
+        let Some(index) = pick_entry(entries, &used, at) else { continue };
+        used[index] = true;
+        let note = note_text(&entries[index]);
+        // 用户已经把所指的内容说出来了，不用再补。
+        if !note.is_empty() && !output.contains(&note) {
+            notes.push((output_ref.insert, note));
+        }
+    }
     let mut chars: Vec<char> = output.chars().collect();
     notes.sort_by(|a, b| b.0.cmp(&a.0));
     for (insert, note) in notes {
@@ -185,9 +202,19 @@ mod tests {
         for sentence in ["DeepSeek 这个不应该啊", "不要那些东西", "你这个怎么回事啊"] {
             assert_eq!(annotate_references(sentence, sentence, &near("提示词"), &spoken), sentence);
         }
-        // 选中的文字读得准，照样补。
-        let selected = [DynamicEntry { at_ms: 500, kind: DynamicKind::Selection { text: "导出设置".into() } }];
-        assert_eq!(annotate_references("这个是什么", "这个是什么？", &selected, &spoken), "这个（导出设置）是什么？");
+        // 选中的文字是有意的动作：先说「这个东西」、过了几秒才选中也补，而且优先于鼠标指向；一次选中只补一处。
+        let selected = [
+            pointer(400, "代价"),
+            DynamicEntry { at_ms: 3_700, kind: DynamicKind::Selection { text: "补注会明显变少".into() } },
+        ];
+        assert_eq!(
+            annotate_references("那么这个东西怎么办呢", "那么这个东西怎么办呢？", &selected, &spoken),
+            "那么这个东西（补注会明显变少）怎么办呢？"
+        );
+        assert_eq!(
+            annotate_references("这个和那个，哪个好", "这个和那个，哪个好？", &selected[1..], &spoken),
+            "这个（补注会明显变少）和那个，哪个好？"
+        );
     }
 
     #[test]
