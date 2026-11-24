@@ -391,7 +391,7 @@ fn read_selection(shared: &Shared, target: ActivationTarget) {
 fn read_pointer(shared: &Shared, at_ms: u64, point: (i32, i32)) {
     if let Some((text, source)) = pointed_text(point, &shared.blocked_apps, &shared.closed) {
         crate::development_debug_log("dynamic-context", format_args!("鼠标指向（{source:?}）：{text}"));
-        shared.record_new(at_ms, DynamicKind::Pointer { text });
+        shared.record_new(at_ms, DynamicKind::Pointer { text, exact: source != PointSource::Ocr });
     }
 }
 

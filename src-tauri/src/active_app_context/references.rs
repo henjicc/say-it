@@ -1,12 +1,14 @@
 //! 给“这个”“这里”补上所指的内容：口述里的指代词说出那一刻前后，用户正好选中了文字或用鼠标
 //! 指着某处时，在整理结果里同一个指代词后面加上「（所指的文字）」。原话一字不删，只补注。
 //! 对面看不到用户的屏幕时（对 AI 说话、语音问答）才有用，是否启用由调用方决定。
+//! 补错了会改坏用户要发出的话，所以宁可少补：只用读得准的指向（按坐标读到的原文、控件名称、选中的
+//! 文字，不用截图识别的），时间要贴得很近，指代词也只认明确当代词用的。
 use super::dynamic::{DynamicEntry, DynamicKind};
 
 /// 指代词，长的排前面：先认「这一段」再认「这」开头的短词。
 const DEICTICS: &[&str] = &[
     "这一段", "这一行", "这一句", "这个", "那个", "这里", "那里", "这儿", "那儿", "这块", "这段", "这行",
-    "这句", "这张", "这些", "那些",
+    "这句", "这张",
 ];
 /// 跟在指代词后面、本身说不清是哪一个的名词：「这个按钮」仍要补注，所以补在名词后面。
 const GENERIC_NOUNS: &[&str] = &[
@@ -14,14 +16,15 @@ const GENERIC_NOUNS: &[&str] = &[
     "窗口", "文件", "代码", "表格", "数字", "颜色", "图片", "地方", "位置", "东西", "内容", "部分", "单词",
     "句子", "段落", "词", "字", "图", "段", "句", "行", "块", "处",
 ];
-/// 指代词后面紧跟这些字时，它是单独当代词用的（「这个是什么」「这里的」）。
-const PRONOUN_FOLLOWERS: &str = "是怎么什么呢吗啊吧的有能要和跟对在里上下就也还都会该可不哪";
+/// 指代词后面紧跟这些字时，它是单独当代词用的（「这个是什么」「这里的」「这个和那个」）。「这个怎么回事」
+/// 「这个不应该」这类说的多半是前面提过的事，不算。
+const PRONOUN_FOLLOWERS: &str = "是呢吗啊吧的和跟或";
 
 /// 口述说出后，识别文字大约晚这么久才出现。
 const RECOGNITION_LAG_MS: i64 = 600;
 /// 操作发生在说出指代词之前这么久以内、之后这么久以内，才算指的是它。
-const POINT_BEFORE_MS: i64 = 2_500;
-const POINT_AFTER_MS: i64 = 1_000;
+const POINT_BEFORE_MS: i64 = 1_000;
+const POINT_AFTER_MS: i64 = 500;
 /// 人多是先指再说：说出之后的操作，时间差按这个倍数算，同样远时优先取之前的。
 const AFTER_PENALTY: i64 = 2;
 /// 补注最多这么多字，超出以 … 结尾。
@@ -82,8 +85,8 @@ fn note_for(entries: &[DynamicEntry], at: i64) -> Option<String> {
         .iter()
         .filter_map(|entry| {
             let text = match &entry.kind {
-                DynamicKind::Selection { text } | DynamicKind::Pointer { text } => text,
-                DynamicKind::Window { .. } => return None,
+                DynamicKind::Selection { text } | DynamicKind::Pointer { text, exact: true } => text,
+                DynamicKind::Pointer { exact: false, .. } | DynamicKind::Window { .. } => return None,
             };
             let gap = entry.at_ms as i64 - at;
             let score = if gap > 0 { gap * AFTER_PENALTY } else { -gap };
@@ -135,7 +138,7 @@ mod tests {
     use super::*;
 
     fn pointer(at_ms: u64, text: &str) -> DynamicEntry {
-        DynamicEntry { at_ms, kind: DynamicKind::Pointer { text: text.into() } }
+        DynamicEntry { at_ms, kind: DynamicKind::Pointer { text: text.into(), exact: true } }
     }
 
     #[test]
@@ -164,9 +167,27 @@ mod tests {
         let spoken = [(1_500, 2), (4_500, 12)];
         let entries = [pointer(900, "方案甲"), pointer(4_000, "方案乙")];
         assert_eq!(
-            annotate_references("这个和那个哪个好", "这个和那个哪个好？", &entries, &spoken),
-            "这个（方案甲）和那个（方案乙）哪个好？"
+            annotate_references("这个和那个，哪个好", "这个和那个，哪个好？", &entries, &spoken),
+            "这个（方案甲）和那个（方案乙），哪个好？"
         );
+    }
+
+    /// 实测补错过的句子：截图识别出的乱码、前面提过的事、复数指代，都不该补注。
+    #[test]
+    fn does_not_note_from_ocr_or_non_pointing_phrases() {
+        let spoken = [(1_000, 4), (2_000, 40)];
+        let ocr = DynamicEntry { at_ms: 1_000, kind: DynamicKind::Pointer { text: "ane.".into(), exact: false } };
+        let near = |text: &str| [pointer(1_000, text)];
+        assert_eq!(
+            annotate_references("箭头所指的这个位置", "箭头所指的这个位置", &[ocr], &spoken),
+            "箭头所指的这个位置"
+        );
+        for sentence in ["DeepSeek 这个不应该啊", "不要那些东西", "你这个怎么回事啊"] {
+            assert_eq!(annotate_references(sentence, sentence, &near("提示词"), &spoken), sentence);
+        }
+        // 选中的文字读得准，照样补。
+        let selected = [DynamicEntry { at_ms: 500, kind: DynamicKind::Selection { text: "导出设置".into() } }];
+        assert_eq!(annotate_references("这个是什么", "这个是什么？", &selected, &spoken), "这个（导出设置）是什么？");
     }
 
     #[test]

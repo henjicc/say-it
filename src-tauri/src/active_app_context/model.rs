@@ -565,7 +565,7 @@ mod tests {
             status: CaptureStatus::Captured,
             app_name: "Code".into(),
             ocr_text: vec!["字".repeat(DEFAULT_MAX_CHARS)],
-            dynamic: vec![DynamicEntry { at_ms: 1500, kind: DynamicKind::Pointer { text: "导出".into() } }],
+            dynamic: vec![DynamicEntry { at_ms: 1500, kind: DynamicKind::Pointer { text: "导出".into(), exact: true } }],
             ..Default::default()
         };
         let text = context.format_for_prompt();

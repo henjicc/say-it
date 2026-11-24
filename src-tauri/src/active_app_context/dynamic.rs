@@ -28,8 +28,8 @@ pub(crate) enum DynamicKind {
     },
     /// 用户手动选中的文字。
     Selection { text: String },
-    /// 鼠标停留或绕圈处的文字。
-    Pointer { text: String },
+    /// 鼠标停留或绕圈处的文字。`exact` 为真表示按坐标直接读到的原文或控件名称，为假是截图识别的。
+    Pointer { text: String, exact: bool },
 }
 
 /// 整段动态上下文的字数上限。选中和指着的文字排在前面，超出时先丢最早的窗口文字。
@@ -79,7 +79,7 @@ pub(crate) fn format_entries(entries: &[DynamicEntry], seen: &[String]) -> Strin
                 (false, format!("{at} 选中：{}", truncate_chars(text.trim(), SNIPPET_CHARS).0))
             }
             // 同一处停住几次，每次截到的字常差一两个：几乎相同的合成一行，列出每次的时间。
-            DynamicKind::Pointer { text } => {
+            DynamicKind::Pointer { text, .. } => {
                 let text = text.trim();
                 match pointers.iter_mut().find(|(_, known, _)| similar(known, text)) {
                     Some((times, known, _)) => {
@@ -244,6 +244,8 @@ fn distance(a: (i32, i32), b: (i32, i32)) -> f64 {
 pub(crate) const POINTER_REGION: (i32, i32) = (720, 100);
 /// 离光标超过这么多像素的文字不算指着的。
 const POINTER_REACH: f32 = 40.0;
+/// 截图识别可信度低于这个的文字块不算：截图、动画示意图上常识别出乱码。
+const POINTER_MIN_CONFIDENCE: f32 = 0.85;
 /// 指文字时光标多停在字的下方一点，免得挡住字：按光标往上挪这么多像素来选行。
 const POINTER_LIFT: f32 = 10.0;
 /// 光标所在那一小段两边没有标点时，最多取光标左右各这么多字。
@@ -267,7 +269,9 @@ pub(crate) fn pointed_block(blocks: &[OcrTextBlock], at: (f32, f32), size: (f32,
     let (_, block) = blocks
         .iter()
         .map(|block| (gap(block), block))
-        .filter(|(gap, block)| *gap <= POINTER_REACH && !block.text.trim().is_empty())
+        .filter(|(gap, block)| {
+            *gap <= POINTER_REACH && block.confidence >= POINTER_MIN_CONFIDENCE && !block.text.trim().is_empty()
+        })
         .min_by(|a, b| a.0.total_cmp(&b.0))?;
     let width = block.bounds.right - block.bounds.left;
     let ratio = if width > 0.0 { ((at.0 - block.bounds.left) / width).clamp(0.0, 1.0) } else { 0.5 };
@@ -361,7 +365,7 @@ mod tests {
                 window(1200, true, &["标题", "新段落"]),
                 window(2500, false, &["新段落"]),
                 DynamicEntry { at_ms: 3000, kind: DynamicKind::Selection { text: " 选中的字 ".into() } },
-                DynamicEntry { at_ms: 4100, kind: DynamicKind::Pointer { text: "导出设置".into() } },
+                DynamicEntry { at_ms: 4100, kind: DynamicKind::Pointer { text: "导出设置".into(), exact: true } },
             ],
             &["标题".into()],
         );
@@ -466,7 +470,7 @@ mod tests {
 
     #[test]
     fn nearly_identical_pointings_merge_into_one_line_with_every_time() {
-        let pointer = |at_ms: u64, text: &str| DynamicEntry { at_ms, kind: DynamicKind::Pointer { text: text.into() } };
+        let pointer = |at_ms: u64, text: &str| DynamicEntry { at_ms, kind: DynamicKind::Pointer { text: text.into(), exact: false } };
         let text = format_entries(
             &[
                 pointer(3_600, "费，segment-edit 每张 $0.02；我接下来写这"),
