@@ -1,0 +1,146 @@
+/* 功能示意：静止时显示「说话中」的代表帧，.fd-play 时按 8 秒循环演示。
+   统一时间轴：0–16% 触发，18–54% 说话（胶囊 + 上方实时文字），56–64% 识别中（点阵），66% 起出结果。
+   胶囊、波形和上方文字的尺寸取自原生听写胶囊（overlay-core/src/indicator.rs）。 */
+.fd {
+  position: relative;
+  height: 210px;
+  overflow: hidden;
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  container-type: inline-size;
+}
+.fd-scene { position: absolute; left: 50%; top: 10px; width: 440px; height: 160px; margin-left: -220px; transform-origin: 50% 0; }
+@container (max-width: 470px) { .fd-scene { transform: scale(0.84); } }
+@container (max-width: 400px) { .fd-scene { transform: scale(0.72); } }
+.fd-steps { position: absolute; inset: auto 0 12px; display: flex; justify-content: center; gap: 24px; font-size: 12px; color: var(--color-fg-subtle); white-space: nowrap; }
+.fd-steps span { display: flex; align-items: center; gap: 6px; }
+.fd-steps b { display: inline-flex; width: 16px; height: 16px; border-radius: 8px; align-items: center; justify-content: center; font-weight: 500; font-size: 11px; background: var(--color-line); color: var(--color-fg-muted); }
+
+.fd-key { position: absolute; left: 20px; top: 121px; height: 28px; padding: 0 10px; display: flex; align-items: center; border: 1px solid var(--color-line-strong); border-bottom-width: 3px; border-radius: 6px; background: var(--color-surface-strong); font-size: 12px; white-space: nowrap; box-sizing: border-box; }
+.fd-win { position: absolute; left: 20px; top: 6px; width: 400px; height: 62px; padding: 12px 14px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--color-line); border-radius: 8px; background: var(--color-surface); }
+.fd-ph { flex: none; height: 6px; border-radius: 3px; background: var(--color-line); }
+.fd-txt { display: flex; align-items: center; font-size: 13px; line-height: 20px; white-space: nowrap; }
+.fd-ty { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; max-width: 420px; }
+.fd-caret { display: inline-block; width: 2px; height: 15px; margin-left: 1px; background: var(--color-accent); }
+
+.fd-cap { position: absolute; left: 182px; top: 118px; width: 96px; height: 34px; border-radius: 17px; overflow: hidden; box-sizing: border-box; border: 1px solid var(--color-line-strong); background: var(--color-bg-titlebar); }
+.fd-wave, .fd-dots { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.fd-wave { gap: 4px; }
+.fd-wave i { display: block; width: 2px; border-radius: 1px; background: var(--color-fg); }
+.fd-dots { gap: 5px; opacity: 0; }
+.fd-dots i { display: block; width: 3px; height: 3px; border-radius: 50%; background: var(--color-fg); opacity: 0.3; }
+.fd-bub { position: absolute; left: 0; right: 0; top: 74px; display: flex; justify-content: center; }
+.fd-bub > div { padding: 6px 12px; border: 1px solid var(--color-line-strong); border-radius: 12px; background: var(--color-bg-titlebar); font-size: 14px; line-height: 20px; white-space: nowrap; }
+
+.fd-cur { position: absolute; width: 18px; height: 22px; }
+.fd-cur path { fill: var(--color-fg); stroke: var(--color-bg-titlebar); }
+.fd-rp { position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; border: 2px solid var(--color-accent); opacity: 0; box-sizing: border-box; }
+.fd-orb { position: absolute; width: 40px; height: 40px; border-radius: 50%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border: 1px solid var(--color-line-strong); background: var(--color-surface-strong); color: var(--color-fg); }
+.fd-orb-mic, .fd-orb-wave { position: absolute; display: flex; align-items: center; gap: 2px; }
+.fd-orb-mic svg { width: 16px; height: 16px; }
+.fd-orb-wave { opacity: 0; }
+.fd-orb-wave i { display: block; width: 2px; border-radius: 1px; background: var(--color-accent-control-contrast); }
+.fd-sel { position: relative; display: inline-block; width: 236px; height: 20px; }
+.fd-sel-bg { position: absolute; left: -2px; top: 0; bottom: 0; width: 100%; border-radius: 3px; background: color-mix(in srgb, var(--color-accent) 35%, transparent); }
+.fd-sel-old, .fd-sel-new { position: absolute; left: 0; top: 0; }
+.fd-sel-new { opacity: 0; }
+.fd-ans { position: absolute; left: 244px; top: 10px; width: 176px; padding: 8px 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--color-line-strong); border-radius: 8px; background: var(--color-overlay); box-shadow: var(--shadow-popover); }
+.fd-ans-label { font-size: 12px; color: var(--color-fg-subtle); }
+.fd-badge { position: absolute; height: 20px; padding: 0 7px; border-radius: 10px; display: flex; align-items: center; font-size: 12px; opacity: 0; background: var(--color-accent-control); color: var(--color-accent-control-contrast); }
+.fd-trail { position: absolute; width: 14px; height: 2px; border-radius: 1px; background: var(--color-fg-muted); opacity: 0; }
+
+/* ---------- 动画 ---------- */
+.fd-play .fd-wave i, .fd-play .fd-orb-wave i { animation: fd-wave 0.42s ease-in-out infinite alternate; }
+.fd-play .fd-wave i:nth-child(3n), .fd-play .fd-orb-wave i:nth-child(2n) { animation-delay: 0.14s; }
+.fd-play .fd-wave i:nth-child(3n + 1) { animation-delay: 0.28s; }
+.fd-play .fd-wave i:nth-child(4n) { animation-duration: 0.36s; }
+@keyframes fd-wave { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
+.fd-play .fd-dots i { animation: fd-dot 0.8s ease-in-out infinite; }
+@keyframes fd-dot { 0%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
+.fd-play .fd-caret { animation: fd-blink 1s steps(1) infinite; }
+@keyframes fd-blink { 50% { opacity: 0; } }
+
+.fd-play .fd-s1 { animation: fd-hl1 8s infinite; }
+.fd-play .fd-s2 { animation: fd-hl2 8s infinite; }
+.fd-play .fd-s3 { animation: fd-hl3 8s infinite; }
+.fd-play .fd-s1 b { animation: fd-hb1 8s infinite; }
+.fd-play .fd-s2 b { animation: fd-hb2 8s infinite; }
+.fd-play .fd-s3 b { animation: fd-hb3 8s infinite; }
+@keyframes fd-hl1 { 0%, 16% { color: var(--color-fg); } 17%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hl2 { 0%, 16% { color: var(--color-fg-faint); } 17%, 64% { color: var(--color-fg); } 65%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hl3 { 0%, 64% { color: var(--color-fg-faint); } 65%, 100% { color: var(--color-fg); } }
+@keyframes fd-hb1 { 0%, 16% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 17%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hb2 { 0%, 16% { background: var(--color-line); color: var(--color-fg-faint); } 17%, 64% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 65%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hb3 { 0%, 64% { background: var(--color-line); color: var(--color-fg-faint); } 65%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
+
+/* 快捷键：按一下开始、再按一下结束；按住模式下从开始一直按到说完 */
+.fd-play .fd-key { animation: fd-key 8s infinite; }
+.fd-play.fd-hold .fd-key { animation-name: fd-key-hold; }
+@keyframes fd-key {
+  0%, 8%, 13%, 52%, 57%, 100% { transform: translateY(0); background: var(--color-surface-strong); border-color: var(--color-line-strong); color: var(--color-fg); }
+  10%, 12%, 54%, 56% { transform: translateY(2px); background: var(--color-accent-control); border-color: var(--color-accent-control); color: var(--color-accent-control-contrast); }
+}
+@keyframes fd-key-hold {
+  0%, 8%, 56%, 100% { transform: translateY(0); background: var(--color-surface-strong); border-color: var(--color-line-strong); color: var(--color-fg); }
+  10%, 54% { transform: translateY(2px); background: var(--color-accent-control); border-color: var(--color-accent-control); color: var(--color-accent-control-contrast); }
+}
+
+.fd-play .fd-cap { animation: fd-cap 8s infinite; }
+@keyframes fd-cap { 0%, 15% { opacity: 0; transform: translateY(6px); } 18%, 64% { opacity: 1; transform: translateY(0); } 67%, 100% { opacity: 0; transform: translateY(6px); } }
+.fd-play .fd-wave { animation: fd-wave-on 8s infinite; }
+@keyframes fd-wave-on { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+.fd-play .fd-dots { animation: fd-dots-on 8s infinite; }
+@keyframes fd-dots-on { 0%, 55% { opacity: 0; } 56%, 64% { opacity: 1; } 66%, 100% { opacity: 0; } }
+.fd-play .fd-bub > div { animation: fd-bub 8s infinite; }
+@keyframes fd-bub { 0%, 19% { opacity: 0; transform: translateY(6px); } 22%, 54% { opacity: 1; transform: translateY(0); } 57%, 100% { opacity: 0; } }
+.fd-play .fd-bub .fd-ty { animation: fd-say 8s steps(12) infinite; }
+@keyframes fd-say { 0%, 22% { max-width: 0; } 50%, 100% { max-width: 180px; } }
+.fd-play .fd-out { animation: fd-out 8s steps(20) infinite; }
+@keyframes fd-out { 0%, 66% { max-width: 0; } 86%, 100% { max-width: 420px; } }
+
+.fd-play .fd-sel-bg { animation: fd-sel-bg 8s infinite; }
+@keyframes fd-sel-bg { 0%, 2% { width: 0; opacity: 1; } 9%, 64% { width: 100%; opacity: 1; } 70%, 100% { width: 100%; opacity: 0; } }
+.fd-play .fd-sel-old { animation: fd-sel-old 8s infinite; }
+@keyframes fd-sel-old { 0%, 64% { opacity: 1; } 67%, 100% { opacity: 0; } }
+.fd-play .fd-sel-new { animation: fd-sel-new 8s infinite; }
+@keyframes fd-sel-new { 0%, 66% { opacity: 0; transform: translateY(4px); } 72%, 100% { opacity: 1; transform: translateY(0); } }
+
+.fd-play .fd-ans { animation: fd-ans 8s infinite; }
+@keyframes fd-ans { 0%, 64% { opacity: 0; transform: translateY(8px); } 68%, 100% { opacity: 1; transform: translateY(0); } }
+.fd-play .fd-ans .fd-ty { animation: fd-ans-ty 8s steps(12) infinite; }
+@keyframes fd-ans-ty { 0%, 68% { max-width: 0; } 86%, 100% { max-width: 300px; } }
+
+.fd-play .fd-rp { animation: fd-rip 8s ease-out infinite; }
+@keyframes fd-rip { 0% { opacity: 0; transform: scale(0.4); } 0.5% { opacity: 1; transform: scale(0.4); } 6%, 100% { opacity: 0; transform: scale(1.8); } }
+.fd-play .fd-rp-start { animation-delay: 1.28s; }
+.fd-play .fd-rp-stop { animation-delay: 4.32s; }
+.fd-play .fd-rp-c1 { animation-delay: 0.24s; }
+.fd-play .fd-rp-c2 { animation-delay: 0.52s; }
+.fd-play .fd-rp-c3 { animation-delay: 0.8s; }
+
+.fd-play .fd-orb { animation: fd-orb-rec 8s infinite; }
+@keyframes fd-orb-rec { 0%, 16% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } 18%, 55% { background: var(--color-accent-control); border-color: var(--color-accent-control); } 57%, 100% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } }
+.fd-play .fd-orb-wave { animation: fd-on-rec 8s infinite; }
+@keyframes fd-on-rec { 0%, 16% { opacity: 0; } 18%, 55% { opacity: 1; } 57%, 100% { opacity: 0; } }
+.fd-play .fd-orb-mic { animation: fd-off-rec 8s infinite; }
+@keyframes fd-off-rec { 0%, 16% { opacity: 1; } 18%, 55% { opacity: 0; } 57%, 100% { opacity: 1; } }
+
+.fd-play.fd-orb-click .fd-cur { animation: fd-cur-orb 8s ease-in-out infinite; }
+@keyframes fd-cur-orb { 0% { transform: translate(-180px, -60px); } 14%, 100% { transform: translate(0, 0); } }
+
+.fd-play.fd-shake .fd-cur { animation: fd-cur-shake-move 8s ease-in-out infinite; }
+.fd-play.fd-shakeDirect .fd-cur { animation: fd-cur-shake 8s ease-in-out infinite; }
+@keyframes fd-cur-shake { 0%, 10%, 100% { transform: translate(0, 0); } 2.5%, 7.5% { transform: translate(-22px, 0); } 5% { transform: translate(22px, 0); } }
+@keyframes fd-cur-shake-move { 0%, 10%, 12% { transform: translate(0, 0); } 2.5%, 7.5% { transform: translate(-22px, 0); } 5% { transform: translate(22px, 0); } 15%, 100% { transform: translate(54px, 4px); } }
+.fd-play .fd-trail { animation: fd-trail 8s infinite; }
+@keyframes fd-trail { 0%, 1% { opacity: 0; } 2%, 9% { opacity: 0.8; } 11%, 100% { opacity: 0; } }
+.fd-play.fd-shake .fd-orb { animation: fd-orb-pop 8s infinite, fd-orb-rec 8s infinite; }
+@keyframes fd-orb-pop { 0%, 10% { transform: scale(0); opacity: 0; } 12.5% { transform: scale(1.12); opacity: 1; } 14%, 100% { transform: scale(1); opacity: 1; } }
+
+.fd-play .fd-badge { animation: fd-badge 8s infinite; }
+@keyframes fd-badge { 0%, 10% { opacity: 0; transform: scale(0.6); } 12%, 17% { opacity: 1; transform: scale(1); } 20%, 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .fd-play, .fd-play * { animation: none !important; }
+}

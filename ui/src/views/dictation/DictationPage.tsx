@@ -86,7 +86,7 @@ export function DictationPage() {
           <ShortcutProfilesPanel />
         </>
       )}
-      {node === "orbGesture" && <><InspectorHeader title={NODE_TITLES.orbGesture} /><InspectorBody><OrbGestureSection withAppearance /></InspectorBody></>}
+      {node === "orbGesture" && <><InspectorHeader title={NODE_TITLES.orbGesture} /><InspectorBody><OrbGestureSection withAppearance withDemo /></InspectorBody></>}
     </MasterDetail>
   );
 }

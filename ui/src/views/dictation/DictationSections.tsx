@@ -7,6 +7,7 @@ import { Select } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 
 import { Tabs } from "@/components/ui/Tabs";
+import { FeatureDemo } from "@/components/FeatureDemo";
 import { DICTATION_FILE_ASR_MODEL_OPTIONS, REALTIME_ASR_MODEL_OPTIONS } from "@/features/asr/modelOptions";
 import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
@@ -216,7 +217,9 @@ function ReadinessGroup() {
 }
 
 /** withAppearance：同时列出悬浮球的大小、不透明度和自动回车；首次引导只要开关。 */
-export function OrbGestureSection({ withAppearance = false }: { withAppearance?: boolean }) {
+/** withDemo：分组顶部放功能示意，鼠标停在分组上时播放；停在「左键快速连击」行上时示意换成连击。 */
+export function OrbGestureSection({ withAppearance = false, withDemo = false }: { withAppearance?: boolean; withDemo?: boolean }) {
+  const [demoHover, setDemoHover] = useState<"orb" | "gesture" | "clicks" | null>(null);
   const floatingOrb = useFloatingOrbStore((state) => state.settings);
   const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
   const floatingOrbError = useFloatingOrbStore((state) => state.error);
@@ -232,7 +235,9 @@ export function OrbGestureSection({ withAppearance = false }: { withAppearance?:
 
   return (
     <>
+      <div onMouseEnter={() => setDemoHover("orb")} onMouseLeave={() => setDemoHover(null)} className="contents">
       <Group title="悬浮球">
+        {withDemo && <FeatureDemo kind="orb" play={demoHover === "orb"} />}
         <Row
           label="启用悬浮球"
           hint="点击悬浮球开始或停止语音输入，右键也能调整这些设置。识别结果会保留在剪贴板。"
@@ -276,7 +281,16 @@ export function OrbGestureSection({ withAppearance = false }: { withAppearance?:
         </Row>
         </>}
       </Group>
+      </div>
+      <div onMouseEnter={() => setDemoHover("gesture")} onMouseLeave={() => setDemoHover(null)} className="contents">
       <Group title="鼠标手势">
+        {withDemo && (
+          <FeatureDemo
+            kind={demoHover === "clicks" ? "clicks" : mouseGesture.mode === "direct" ? "shakeDirect" : "shake"}
+            play={demoHover === "gesture" || demoHover === "clicks"}
+            clickCount={mouseGesture.rapidClickCount}
+          />
+        )}
         <Row
           label="启用鼠标手势"
           message={mouseGestureError && <span role="alert" className="text-[var(--color-err)]">鼠标手势不可用：{mouseGestureError}</span>}
@@ -311,6 +325,7 @@ export function OrbGestureSection({ withAppearance = false }: { withAppearance?:
           format={(value) => `${value}%`}
           onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
         />
+        <div onMouseEnter={() => setDemoHover("clicks")} onMouseLeave={() => setDemoHover("gesture")}>
         <Row label="左键快速连击" disabled={gestureOff}>
           <Select
             className="w-32"
@@ -328,7 +343,9 @@ export function OrbGestureSection({ withAppearance = false }: { withAppearance?:
             label="启用左键快速连击"
           />
         </Row>
+        </div>
       </Group>
+      </div>
     </>
   );
 }

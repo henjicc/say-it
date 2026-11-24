@@ -223,7 +223,8 @@ function AssistantShortcutRow({ action, hint }: { action: AssistantActionKey; hi
   );
 }
 
-export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }) {
+/** demo 放在主分组顶部，示意这个功能怎么用。 */
+export function AssistantFeaturePanel({ action, demo }: { action: AssistantActionKey; demo: React.ReactNode }) {
   const { confirm, dialog } = useConfirm();
   const assistant = useAssistantPrefs();
   // 模板名称与提示词边输入边改这份草稿，失焦才保存。
@@ -312,6 +313,7 @@ export function AssistantFeaturePanel({ action }: { action: AssistantActionKey }
 
   return <InspectorBody>
     <Group>
+      {demo}
       <AssistantShortcutRow action={action} hint={description} />
       {action === "translateSpeech" && <>
         <Row label="源语言"><Select className={ROW_CONTROL_W} aria-label="源语言" value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>

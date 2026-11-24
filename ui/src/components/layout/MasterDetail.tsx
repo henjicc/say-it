@@ -83,11 +83,14 @@ export function NodeList<K extends string>({
   items,
   active,
   onSelect,
+  onHover,
   ariaLabel,
 }: {
   items: NodeItem<K>[];
   active: K;
   onSelect: (key: K) => void;
+  /** 鼠标停在或键盘聚焦到某条时传入它，离开时传入 null；用于预览该条的功能示意。 */
+  onHover?: (key: K | null) => void;
   ariaLabel: string;
 }) {
   return (
@@ -108,6 +111,10 @@ export function NodeList<K extends string>({
               role="listitem"
               aria-current={selected ? "true" : undefined}
               onClick={() => onSelect(item.key)}
+              onMouseEnter={onHover && (() => onHover(item.key))}
+              onMouseLeave={onHover && (() => onHover(null))}
+              onFocus={onHover && (() => onHover(item.key))}
+              onBlur={onHover && (() => onHover(null))}
               className={cn(
                 "flex h-11 w-full items-center gap-3 rounded-[var(--radius-md)] border px-4 text-left transition-colors duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
