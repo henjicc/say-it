@@ -577,8 +577,12 @@ bool readTextPattern(IUIAutomationElement* element, Result& result, size_t maxCh
         }
     }
 
+    // 网页文档和链接的值是网址，不当作输入框里的文字。
+    CONTROLTYPEID controlType = 0;
+    element->get_CurrentControlType(&controlType);
+    const bool valueIsAddress = controlType == UIA_DocumentControlTypeId || controlType == UIA_HyperlinkControlTypeId;
     ComPtr<IUIAutomationValuePattern> valuePattern;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), reinterpret_cast<void**>(valuePattern.put()))) && valuePattern) {
+    if (!valueIsAddress && SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), reinterpret_cast<void**>(valuePattern.put()))) && valuePattern) {
         BSTR value = nullptr;
         if (SUCCEEDED(valuePattern->get_CurrentValue(&value)) && value) {
             result.focusedText = trim(std::wstring(value, SysStringLen(value)));
@@ -929,8 +933,33 @@ std::wstring accessibleString(IAccessible* accessible, bool value) {
     return trim(output);
 }
 
+// 网页文档和链接在 MSAA 里的「值」是网址，不是用户能输入的文字；文档的名称是页面标题，窗口标题里已经有了。
+// 焦点落在网页文档本身时（Chromium、Electron 里没点进输入框）不读它，交给后面的读取方式。
+enum class AddressRole { None, Document, Link };
+
+AddressRole addressRole(LONG role) {
+    if (role == ROLE_SYSTEM_DOCUMENT) return AddressRole::Document;
+    if (role == ROLE_SYSTEM_LINK) return AddressRole::Link;
+    return AddressRole::None;
+}
+
+AddressRole accessibleAddressRole(IAccessible* accessible) {
+    VARIANT self;
+    VariantInit(&self);
+    self.vt = VT_I4;
+    self.lVal = CHILDID_SELF;
+    VARIANT role;
+    VariantInit(&role);
+    AddressRole result = AddressRole::None;
+    if (SUCCEEDED(accessible->get_accRole(self, &role)) && role.vt == VT_I4) result = addressRole(role.lVal);
+    VariantClear(&role);
+    return result;
+}
+
 bool readMsaaAccessible(IAccessible* accessible, Result& result) {
-    result.focusedText = accessibleString(accessible, true);
+    const AddressRole role = accessibleAddressRole(accessible);
+    if (role == AddressRole::Document) return false;
+    if (role == AddressRole::None) result.focusedText = accessibleString(accessible, true);
     if (result.focusedText.empty()) result.focusedText = accessibleString(accessible, false);
     if (!result.focusedText.empty()) result.source = "msaa";
     return !result.focusedText.empty();
@@ -1603,6 +1632,8 @@ int runSelfTests() {
         || response.find("\"status\":\"captured\"") == std::string::npos
         || response.find("\"selectionBounds\":{\"x\":-120.5") == std::string::npos
         || response.find("\"selectionEditable\":false") == std::string::npos) return 13;
+    if (addressRole(ROLE_SYSTEM_DOCUMENT) != AddressRole::Document || addressRole(ROLE_SYSTEM_LINK) != AddressRole::Link
+        || addressRole(ROLE_SYSTEM_TEXT) != AddressRole::None) return 14;
     return 0;
 }
 
