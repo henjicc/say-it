@@ -8,6 +8,8 @@ const WAVE = [6, 10, 14, 8, 18, 12, 22, 16, 10, 20, 12, 8, 4];
 const WAVE_FADE = [0.35, 0.48, 0.61, 0.74, 0.87];
 const ORB_WAVE = [6, 12, 16, 10, 5];
 const LOOP_S = 8;
+/** 只有输入框和悬浮球的画面内容少，输入框下移，让整组在示意区里上下居中。 */
+const LOW_INPUT_TOP = 30;
 /** 实时文字逐字出现的时段（占一轮的百分比），与 CSS 的说话阶段对齐。 */
 const SAY_SPAN: [number, number] = [22, 46];
 const ANSWER_SPAN: [number, number] = [68, 82];
@@ -109,19 +111,19 @@ function Scene({ kind, keyLabel }: { kind: FeatureDemoKind; keyLabel: string }) 
       </>;
     case "orb":
       return <>
-        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
-        <Orb x={356} y={104} />
-        <div className="fd-rp fd-rp-start" style={{ left: 376, top: 124 }} />
-        <div className="fd-rp fd-rp-stop" style={{ left: 376, top: 124 }} />
-        <Cursor x={376} y={124} />
+        <InputBox top={LOW_INPUT_TOP}><Output text="下午三点开会，记得带周报" /></InputBox>
+        <Orb x={230} y={92} />
+        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 112 }} />
+        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 112 }} />
+        <Cursor x={250} y={112} />
       </>;
     case "shake":
       return <>
-        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
-        <Orb x={180} y={90} />
-        <div className="fd-rp fd-rp-start" style={{ left: 200, top: 110 }} />
-        <div className="fd-rp fd-rp-stop" style={{ left: 200, top: 110 }} />
-        <Cursor x={200} y={110} className="fd-shake-cur" />
+        <InputBox top={LOW_INPUT_TOP}><Output text="下午三点开会，记得带周报" /></InputBox>
+        <Orb x={230} y={92} />
+        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 112 }} />
+        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 112 }} />
+        <Cursor x={250} y={112} className="fd-shake-cur" />
       </>;
     case "shakeDirect":
       return <>
@@ -133,9 +135,9 @@ function Scene({ kind, keyLabel }: { kind: FeatureDemoKind; keyLabel: string }) 
 }
 
 /** 单行输入框，右侧是发送按钮；有文字时按钮亮起。 */
-function InputBox({ children }: { children: React.ReactNode }) {
+function InputBox({ top, children }: { top?: number; children: React.ReactNode }) {
   return (
-    <div className="fd-input">
+    <div className="fd-input" style={{ top }}>
       <div className="fd-txt">{children}</div>
       <span className="fd-send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5" /><path d="m6 11 6-6 6 6" /></svg>
