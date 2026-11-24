@@ -70,8 +70,8 @@ export type PolishLevel = "light" | "medium" | "high";
 export const POLISH_SCENES = ["AI 对话", "终端", "代码编辑器", "聊天", "写作", "浏览器", "通用"] as const;
 /** 设置页把场景合成三类显示，改一类就同时改它包含的场景；存储和模型仍按上面的场景区分。 */
 export const POLISH_SCENE_GROUPS: { label: string; scenes: (typeof POLISH_SCENES)[number][] }[] = [
+  { label: "开发", scenes: ["AI 对话", "终端", "代码编辑器"] },
   { label: "聊天", scenes: ["聊天"] },
-  { label: "AI 编程", scenes: ["AI 对话", "终端", "代码编辑器"] },
   { label: "通用", scenes: ["写作", "浏览器", "通用"] },
 ];
 /** 聊天要保留说话习惯，默认轻；其余默认中。 */
