@@ -1,7 +1,7 @@
 import { cn } from "@/lib/cn";
 import "./FeatureDemo.css";
 
-export type FeatureDemoKind = "translate" | "edit" | "ask" | "polish" | "orb" | "shake" | "shakeDirect";
+export type FeatureDemoKind = "dictate" | "translate" | "edit" | "ask" | "polish" | "orb" | "shake" | "shakeDirect";
 
 /** 波形条高度：左侧几根渐隐，与原生胶囊一致。 */
 const WAVE = [6, 10, 14, 8, 18, 12, 22, 16, 10, 20, 12, 8, 4];
@@ -30,11 +30,13 @@ const POLISH: Edit[] = [
 ];
 
 function stepsOf(kind: FeatureDemoKind, keyLabel: string, hold: boolean): [string, string, string] {
-  const press = `${hold ? "按住" : "按"} ${keyLabel}`;
+  const press = `${hold ? "按住" : "按一下"} ${keyLabel}`;
+  const end = hold ? "松开结束" : "再按一下结束";
   switch (kind) {
-    case "translate": return [press, "说话", "译文出现在输入框"];
-    case "edit": return [`选中文字，${press}`, "说出修改要求", "原文被替换"];
-    case "ask": return [press, "说出问题", "回答浮在旁边"];
+    case "dictate": return [press, `说话，${end}`, "文字出现在输入框"];
+    case "translate": return [press, `说话，${end}`, "译文出现在输入框"];
+    case "edit": return [`选中文字，${press}`, `说出修改要求，${end}`, "原文被替换"];
+    case "ask": return [press, `说出问题，${end}`, "回答浮在旁边"];
     case "polish": return ["口语原话", "删掉口头语、改写措辞", "整理好的文字"];
     case "orb": return ["点悬浮球", "说话，再点一下", "文字出现在输入框"];
     case "shake": return ["晃动鼠标，点出现的悬浮球", "说话，再点一下", "文字出现在输入框"];
@@ -70,6 +72,12 @@ export function FeatureDemo({
 
 function Scene({ kind, keyLabel }: { kind: FeatureDemoKind; keyLabel: string }) {
   switch (kind) {
+    case "dictate":
+      return <>
+        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
+        <div className="fd-key">{keyLabel}</div>
+        <Capsule say="下午三点开会，记得带周报" />
+      </>;
     case "translate":
       return <>
         <InputBox><Output text="I'll send you the proposal tomorrow afternoon." /></InputBox>

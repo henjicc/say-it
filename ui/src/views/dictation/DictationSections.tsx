@@ -146,6 +146,13 @@ export function InjectMethodRow() {
 }
 
 /** 基础设置按听写的先后顺序分组：触发 → 识别 → 输出。 */
+/** 主快捷键的听写示意，按一下与按住两种触发方式演示不同。 */
+function DictateDemo() {
+  const shortcutLabel = useDictationStore((s) => s.shortcutLabel);
+  const pressHoldMode = useDictationStore((s) => s.pressHoldMode);
+  return <FeatureDemo kind="dictate" keyLabel={shortcutLabel || undefined} hold={pressHoldMode} />;
+}
+
 export function BasicsSection() {
   const hotwordCount = useCustomizationStore((s) => s.prefs.hotwords.length);
   const openLexicon = () => useUiStore.setState({ view: "lexicon", lexiconSection: "hotwords" });
@@ -153,6 +160,7 @@ export function BasicsSection() {
     <>
       <ReadinessGroup />
       <Group title="触发">
+        <DictateDemo />
         <ShortcutRows />
       </Group>
       <Group title="识别">
