@@ -363,6 +363,7 @@ pub(crate) fn set_provider_model_keep_loaded(
     app: tauri::AppHandle,
     plugin_id: String,
     keep_loaded: bool,
+    release_now: Option<bool>,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
     let previous = {
@@ -393,6 +394,11 @@ pub(crate) fn set_provider_model_keep_loaded(
         return Err(error);
     }
     sync_resident_models(&app, &state)?;
+    if !keep_loaded && release_now == Some(true) {
+        crate::providers::local_llm::release(Some(&plugin_id));
+        // 清掉常驻与短期缓存；进行中的识别仍持有自己的引用，结束后自然释放。
+        drop(local_asr_cache::suspend(&plugin_id)?);
+    }
     list_provider_plugins(state)
 }
 

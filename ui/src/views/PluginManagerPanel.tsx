@@ -87,6 +87,7 @@ function usePluginManager(withOfficialCatalog: boolean) {
   const [busyPluginId, setBusyPluginId] = useState("");
   const [scanning, setScanning] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<PluginSummary>();
+  const [pendingRelease, setPendingRelease] = useState<PluginSummary>();
   /** 启用、常驻、卸载失败的原因，显示在对应那一行下面；下载失败在 installError 里。 */
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const enqueueImport = usePluginImportStore((state) => state.enqueue);
@@ -163,11 +164,12 @@ function usePluginManager(withOfficialCatalog: boolean) {
     }
   };
 
-  const setKeepLoaded = async (plugin: PluginSummary, keepLoaded: boolean) => {
+  const setKeepLoaded = async (plugin: PluginSummary, keepLoaded: boolean, releaseNow = false) => {
     setBusyPluginId(plugin.id);
     clearRowError(plugin.id);
     try {
-      setSnapshot(await cmd<PluginSnapshot>(CMD.setProviderModelKeepLoaded, { pluginId: plugin.id, keepLoaded }));
+      setSnapshot(await cmd<PluginSnapshot>(CMD.setProviderModelKeepLoaded, { pluginId: plugin.id, keepLoaded, releaseNow }));
+      setPendingRelease(undefined);
     } catch (error) {
       failRow(plugin.id, `更新常驻内存失败：${String(error)}`);
     } finally {
@@ -192,7 +194,7 @@ function usePluginManager(withOfficialCatalog: boolean) {
   };
 
   return {
-    snapshot, loadError, packsError, busyPluginId, scanning, rowErrors, officialPacks, pendingUninstall, setPendingUninstall,
+    snapshot, loadError, packsError, busyPluginId, scanning, rowErrors, officialPacks, pendingUninstall, setPendingUninstall, pendingRelease, setPendingRelease,
     reload, install, setEnabled, setKeepLoaded, uninstall, downloadProgress,
     /** 同一时刻只下载一批；下载期间其他下载按钮不可用。 */
     downloadBusy: installing.length > 0 || scanning,
@@ -293,7 +295,7 @@ function InstalledRow({ plugin, manager, hardware, update, description }: {
                   className="text-xs"
                   checked={pack.keepLoaded}
                   disabled={busy || (!pack.keepLoaded && (!plugin.enabled || pack.state !== "ready"))}
-                  onChange={(keepLoaded) => void manager.setKeepLoaded(plugin, keepLoaded)}
+                  onChange={(keepLoaded) => keepLoaded ? void manager.setKeepLoaded(plugin, true) : manager.setPendingRelease(plugin)}
                 >
                   常驻
                 </CheckField>
@@ -370,12 +372,34 @@ function AvailableRow({ pack, manager, hardware, description }: {
 
 /** 两页共用的收尾：扫描时发现的坏包，以及卸载确认。 */
 function ManagerFooter({ manager }: { manager: Manager }) {
-  const { pendingUninstall, busyPluginId, snapshot } = manager;
+  const { pendingUninstall, pendingRelease, busyPluginId, snapshot } = manager;
   return (
     <>
       {snapshot?.errors.map((error) => (
         <p key={error.path} role="alert" className="break-words text-xs text-[var(--color-err)]">{error.path}：{error.message}</p>
       ))}
+      <Modal
+        open={Boolean(pendingRelease)}
+        onClose={() => !busyPluginId && manager.setPendingRelease(undefined)}
+        title="取消常驻"
+        ariaLabel="取消常驻"
+        showCloseButton={false}
+        className="max-w-[430px]"
+      >
+        <div className="p-5">
+          <p className="text-sm leading-relaxed text-[var(--color-fg-subtle)]">
+            要立即释放“{pendingRelease?.name}”占用的内存和显存吗？模型文件会保留，下次使用时重新加载。正在使用的识别模型会在任务结束后释放。
+          </p>
+          <RowError text={pendingRelease && manager.rowErrors[pendingRelease.id]} />
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <Button size="sm" disabled={Boolean(busyPluginId)} onClick={() => manager.setPendingRelease(undefined)}>取消</Button>
+            <Button size="sm" disabled={Boolean(busyPluginId)} onClick={() => pendingRelease && void manager.setKeepLoaded(pendingRelease, false)}>仅取消常驻</Button>
+            <Button size="sm" variant="primary" disabled={Boolean(busyPluginId)} onClick={() => pendingRelease && void manager.setKeepLoaded(pendingRelease, false, true)}>
+              {busyPluginId ? "正在处理…" : "立即释放"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={Boolean(pendingUninstall)}
         onClose={() => !busyPluginId && manager.setPendingUninstall(undefined)}

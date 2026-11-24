@@ -57,7 +57,7 @@ describe("插件常驻内存", () => {
     const toggle = await screen.findByRole("checkbox", { name: "常驻" });
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
-    await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: true }));
+    await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: true, releaseNow: false }));
     expect(toggle).toBeDisabled();
     const loaded = plugin();
     loaded.modelPack!.keepLoaded = true;
@@ -88,7 +88,8 @@ describe("插件常驻内存", () => {
     const toggle = await screen.findByRole("checkbox", { name: "常驻" });
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
-    await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: false }));
+    fireEvent.click(await screen.findByRole("button", { name: "仅取消常驻" }));
+    await waitFor(() => expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: false, releaseNow: false }));
     await waitFor(() => expect(toggle).not.toBeChecked());
     expect(toggle).toBeDisabled();
   });
@@ -99,6 +100,47 @@ describe("插件常驻内存", () => {
     render(<LocalModelsPanel />);
     await screen.findByText("本地测试");
     expect(screen.queryByRole("checkbox", { name: /常驻内存/ })).not.toBeInTheDocument();
+  });
+
+  it("取消常驻先确认，取消弹窗保留常驻且不发请求", async () => {
+    const item = plugin();
+    item.modelPack!.keepLoaded = true;
+    cmd.mockResolvedValue(snapshot(item));
+    render(<LocalModelsPanel />);
+    const toggle = await screen.findByRole("checkbox", { name: "常驻" });
+    fireEvent.click(toggle);
+    expect(await screen.findByRole("dialog", { name: "取消常驻" })).toHaveTextContent("模型文件会保留");
+    expect(cmd).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(toggle).toBeChecked();
+    expect(cmd).toHaveBeenCalledTimes(1);
+  });
+
+  it("立即释放在同一次请求里取消常驻，等待期间禁用操作", async () => {
+    const item = plugin();
+    item.modelPack!.keepLoaded = true;
+    cmd.mockResolvedValueOnce(snapshot(item));
+    let finish!: (value: PluginSnapshot) => void;
+    cmd.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    render(<LocalModelsPanel />);
+    const toggle = await screen.findByRole("checkbox", { name: "常驻" });
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole("button", { name: "立即释放" }));
+    expect(cmd).toHaveBeenLastCalledWith("set_provider_model_keep_loaded", { pluginId: "official.test", keepLoaded: false, releaseNow: true });
+    expect(screen.getByRole("button", { name: "正在处理…" })).toBeDisabled();
+    finish(snapshot());
+    await waitFor(() => expect(toggle).not.toBeChecked());
+  });
+
+  it("释放失败时弹窗保留并显示错误，允许重试", async () => {
+    const item = plugin();
+    item.modelPack!.keepLoaded = true;
+    cmd.mockResolvedValueOnce(snapshot(item)).mockRejectedValueOnce(new Error("缓存锁失败"));
+    render(<LocalModelsPanel />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "常驻" }));
+    fireEvent.click(await screen.findByRole("button", { name: "立即释放" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("缓存锁失败"));
+    expect(screen.getByRole("button", { name: "立即释放" })).toBeEnabled();
   });
 
   it("保存失败保留关闭状态，错误可见", async () => {
