@@ -44,6 +44,8 @@ const HEADER: &str = "说话时的操作（秒数从开始说话算起；说“�
 pub(crate) fn format_entries(entries: &[DynamicEntry], seen: &[String]) -> String {
     let mut seen: HashSet<String> = seen.iter().map(|line| line.trim().to_string()).collect();
     let mut lines: Vec<(bool, String)> = Vec::new();
+    // 每处指向：（各次时间，最完整的那次文字，在 lines 里的位置）。
+    let mut pointers: Vec<(Vec<u64>, String, usize)> = Vec::new();
     for entry in entries {
         let at = format!("[{:.1}秒]", entry.at_ms as f64 / 1000.0);
         let line = match &entry.kind {
@@ -76,12 +78,28 @@ pub(crate) fn format_entries(entries: &[DynamicEntry], seen: &[String]) -> Strin
             DynamicKind::Selection { text } => {
                 (false, format!("{at} 选中：{}", truncate_chars(text.trim(), SNIPPET_CHARS).0))
             }
+            // 同一处停住几次，每次截到的字常差一两个：几乎相同的合成一行，列出每次的时间。
             DynamicKind::Pointer { text } => {
-                (false, format!("{at} 鼠标指着：{}", truncate_chars(text.trim(), SNIPPET_CHARS).0))
+                let text = text.trim();
+                match pointers.iter_mut().find(|(_, known, _)| similar(known, text)) {
+                    Some((times, known, _)) => {
+                        times.push(entry.at_ms);
+                        if meaningful_chars(text) > meaningful_chars(known) {
+                            *known = text.to_string();
+                        }
+                    }
+                    None => pointers.push((vec![entry.at_ms], text.to_string(), lines.len())),
+                }
+                (false, String::new())
             }
         };
         lines.push(line);
     }
+    for (times, text, index) in pointers {
+        let times = times.iter().map(|at| format!("{:.1}秒", *at as f64 / 1000.0)).collect::<Vec<_>>();
+        lines[index].1 = format!("[{}] 鼠标指着：{}", times.join("、"), truncate_chars(&text, SNIPPET_CHARS).0);
+    }
+    lines.retain(|(_, line)| !line.is_empty());
     if lines.is_empty() {
         return String::new();
     }
@@ -98,6 +116,42 @@ pub(crate) fn format_entries(entries: &[DynamicEntry], seen: &[String]) -> Strin
     }
     let body = lines.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n");
     truncate_chars(&format!("{HEADER}\n{body}"), DYNAMIC_MAX_CHARS).0
+}
+
+fn meaningful_chars(text: &str) -> usize {
+    text.chars().filter(|c| c.is_alphanumeric()).count()
+}
+
+/// 两段指向文字几乎相同：去掉空白和标点后一段包含另一段，或相邻两字的组合有六成以上相同。
+fn similar(a: &str, b: &str) -> bool {
+    let normalize = |text: &str| -> Vec<char> {
+        text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    };
+    let (a, b) = (normalize(a), normalize(b));
+    if a.is_empty() || b.is_empty() {
+        return a == b;
+    }
+    let (shorter, longer) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    if longer.windows(shorter.len()).any(|window| window == shorter.as_slice()) {
+        return true;
+    }
+    let pairs = |chars: &[char]| chars.windows(2).map(|pair| (pair[0], pair[1])).collect::<Vec<_>>();
+    let (left, mut right) = (pairs(&a), pairs(&b));
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    let total = left.len() + right.len();
+    let shared = left
+        .iter()
+        .filter(|pair| match right.iter().position(|other| other == *pair) {
+            Some(index) => {
+                right.swap_remove(index);
+                true
+            }
+            None => false,
+        })
+        .count();
+    shared * 2 * 10 >= total * 6
 }
 
 /// 光标停在半径这么多像素内才算停留。
@@ -194,6 +248,7 @@ const POINTER_REACH: f32 = 40.0;
 const POINTER_LIFT: f32 = 10.0;
 /// 光标所在那一小段两边没有标点时，最多取光标左右各这么多字。
 const PHRASE_HALF_CHARS: usize = 10;
+const WORD_EXTEND_CHARS: usize = 20;
 /// 一小段的分界：标点。英文单词之间的空格不算，「segment-map 免费」要整段取。
 const PHRASE_BREAKS: &str = "，,。；;：:、！!？?（）()【】[]「」“”\"|";
 
@@ -244,6 +299,19 @@ fn phrase_at(line: &str, ratio: f32) -> Option<String> {
         .take(PHRASE_HALF_CHARS)
         .last()
         .unwrap_or(center);
+    // 英文按字数截会断在单词中间，两头各补到单词边界（最多再补这么多个字母）。
+    let in_word = |index: usize| chars[index].is_ascii_alphanumeric() || matches!(chars[index], '-' | '_' | '.' | '$');
+    let start = (0..start)
+        .rev()
+        .take(WORD_EXTEND_CHARS)
+        .take_while(|&index| in_word(index) && in_word(index + 1))
+        .last()
+        .unwrap_or(start);
+    let end = (end + 1..chars.len())
+        .take(WORD_EXTEND_CHARS)
+        .take_while(|&index| in_word(index) && in_word(index - 1))
+        .last()
+        .unwrap_or(end);
     let phrase: String = chars[start..=end].iter().collect::<String>().trim().to_string();
     (!phrase.is_empty()).then_some(phrase)
 }
@@ -372,6 +440,28 @@ mod tests {
         assert_eq!(phrase_at(&"字".repeat(40), 0.5).map(|text| text.chars().count()), Some(PHRASE_HALF_CHARS * 2 + 1));
         // 光标落在标点上取它左边那段。
         assert_eq!(phrase_at("甲乙，丙丁", 0.5).as_deref(), Some("甲乙"));
+        // 英文不断在单词中间。
+        let phrase = phrase_at("The quick brown fox jumps over the lazy dog near the riverbank today", 0.5).unwrap();
+        let words: Vec<&str> = "The quick brown fox jumps over the lazy dog near the riverbank today".split(' ').collect();
+        assert!(phrase.split(' ').all(|word| words.contains(&word)), "{phrase}");
+    }
+
+    #[test]
+    fn nearly_identical_pointings_merge_into_one_line_with_every_time() {
+        let pointer = |at_ms: u64, text: &str| DynamicEntry { at_ms, kind: DynamicKind::Pointer { text: text.into() } };
+        let text = format_entries(
+            &[
+                pointer(3_600, "费，segment-edit 每张 $0.02；我接下来写这"),
+                pointer(5_800, "segment-map 免费"),
+                pointer(7_000, "费，segment-edit 每张$0.02；我接下来写这两"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            text,
+            format!("{HEADER}\n[3.6秒、7.0秒] 鼠标指着：费，segment-edit 每张$0.02；我接下来写这两\n[5.8秒] 鼠标指着：segment-map 免费")
+        );
+        assert!(!similar("segment-map 免费", "segment-edit 每张"));
     }
 
     #[test]

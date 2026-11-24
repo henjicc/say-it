@@ -24,6 +24,8 @@ interface Pointing {
   region: { element: ElementInfo; coverage: number } | null;
   trailRect: [number, number, number, number] | null;
   samplesUsed: number;
+  textAt: { word: string; line: string; paragraph: string; ms: number } | null;
+  textError?: string;
 }
 
 interface ProbeState {
@@ -94,7 +96,7 @@ export function PointerProbePanel() {
         </Row>
         <Row
           label="指向测试"
-          hint="点开始后有 3 秒切到别的软件。之后在要测的地方停住鼠标、绕圈或来回晃，每认出一次指向，就把截图取词、光标下的控件和晃动覆盖的区域记成一条。"
+          hint="点开始后有 3 秒切到别的软件。之后在要测的地方停住鼠标、绕圈或来回晃，每认出一次指向，就把截图取词、按坐标取词、光标下的控件和晃动覆盖的区域记成一条。"
           message={(status || message) && (
             <span role={state.status === "failed" || message ? "alert" : "status"} className={state.status === "failed" || message ? "text-[var(--color-err)]" : undefined}>
               {message || status}
@@ -110,6 +112,11 @@ export function PointerProbePanel() {
       {report?.pointings.map((pointing, index) => (
         <Group key={`${pointing.tMs}-${index}`} title={`第 ${index + 1} 次 · ${(pointing.tMs / 1000).toFixed(1)} 秒`}>
           <Row label="截图取词"><span className="truncate text-right" title={pointing.ocrText ?? ""}>{pointing.ocrText ?? "没取到"}（{pointing.ocrMs} ms）</span></Row>
+          <Row label="按坐标取词">
+            <span className="truncate text-right" title={pointing.textAt ? `行：${pointing.textAt.line}\n段：${pointing.textAt.paragraph}` : pointing.textError ?? ""}>
+              {pointing.textAt ? `${pointing.textAt.word || "（空）"} ｜ ${pointing.textAt.line || "（空）"}（${pointing.textAt.ms} ms）` : `取不到：${pointing.textError ?? ""}`}
+            </span>
+          </Row>
           <Row label="光标下的控件"><span className="truncate text-right" title={describe(pointing.element)}>{describe(pointing.element)}</span></Row>
           <Row label="晃动覆盖的区域">
             <span className="truncate text-right" title={describe(pointing.region?.element)}>

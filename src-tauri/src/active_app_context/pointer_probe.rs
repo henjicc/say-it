@@ -10,7 +10,10 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
-use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationElement};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern, TextUnit,
+    TextUnit_Line, TextUnit_Paragraph, TextUnit_Word, UIA_TextPatternId,
+};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use super::dynamic::PointerTracker;
@@ -25,6 +28,11 @@ const NAME_CHARS: usize = 80;
 const REGION_WINDOW_MS: u64 = 1_500;
 /// 覆盖这一段里至少这么多采样的元素才算这次晃动的区域。
 const REGION_COVERAGE: f64 = 0.7;
+/// 只用离指向点这么近的采样算区域：从别处移过来的那段路不算。绕圈的外框最大约 240 像素。
+const SETTLED_RADIUS: f64 = 130.0;
+/// 往上找能按坐标取文字（文本模式）的元素，最多找这么多层。
+const TEXT_PATTERN_DEPTH: usize = 10;
+const TEXT_CHARS: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,9 +83,24 @@ pub(crate) struct Pointing {
     pub(crate) element: Option<ElementInfo>,
     /// 前 1.5 秒轨迹覆盖的最小区域。
     pub(crate) region: Option<Region>,
-    /// 前 1.5 秒轨迹的外框。
+    /// 前 1.5 秒里停下来那段轨迹的外框。
     pub(crate) trail_rect: Option<[i32; 4]>,
     pub(crate) samples_used: usize,
+    /// 按坐标从文本模式取到的词、行、段，取不到时为空，`text_error` 写原因。
+    pub(crate) text_at: Option<TextAt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) text_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TextAt {
+    pub(crate) word: String,
+    pub(crate) line: String,
+    pub(crate) paragraph: String,
+    /// 提供文本模式的元素。
+    pub(crate) source: ElementInfo,
+    pub(crate) ms: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -133,8 +156,16 @@ fn sample_for(automation: &IUIAutomation, duration: Duration, cancelled: &Atomic
             let recent: Vec<&Sample> = report
                 .samples
                 .iter()
-                .filter(|sample| sample.t_ms + REGION_WINDOW_MS >= t_ms && !sample.chain.is_empty())
+                .filter(|sample| {
+                    sample.t_ms + REGION_WINDOW_MS >= t_ms
+                        && !sample.chain.is_empty()
+                        && (((sample.x - px) as f64).powi(2) + ((sample.y - py) as f64).powi(2)).sqrt() <= SETTLED_RADIUS
+                })
                 .collect();
+            let (text_at, text_error) = match text_at(automation, px, py) {
+                Ok(text) => (Some(text), None),
+                Err(error) => (None, Some(error)),
+            };
             report.pointings.push(Pointing {
                 t_ms,
                 x: px,
@@ -145,6 +176,8 @@ fn sample_for(automation: &IUIAutomation, duration: Duration, cancelled: &Atomic
                 region: covering_region(&recent),
                 trail_rect: trail_rect(&recent),
                 samples_used: recent.len(),
+                text_at,
+                text_error,
             });
         }
     }
@@ -177,6 +210,45 @@ fn element_chain(automation: &IUIAutomation, x: i32, y: i32) -> Result<Vec<Eleme
             current = parent;
         }
         Ok(chain)
+    }
+}
+
+/// 光标下那个字所在的词、行和段：从光标下的元素往上找第一个支持文本模式的元素，按坐标取文字范围。
+fn text_at(automation: &IUIAutomation, x: i32, y: i32) -> Result<TextAt, String> {
+    let started = Instant::now();
+    unsafe {
+        let walker = automation.ControlViewWalker().map_err(|error| format!("取控件树失败：{error}"))?;
+        let mut element = automation
+            .ElementFromPoint(POINT { x, y })
+            .map_err(|error| format!("ElementFromPoint 失败：{error}"))?;
+        for _ in 0..TEXT_PATTERN_DEPTH {
+            if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+                let range = pattern
+                    .RangeFromPoint(POINT { x, y })
+                    .map_err(|error| format!("RangeFromPoint 失败：{error}"))?;
+                let unit = |unit: TextUnit| -> String {
+                    range
+                        .Clone()
+                        .and_then(|copy| {
+                            copy.ExpandToEnclosingUnit(unit)?;
+                            copy.GetText(TEXT_CHARS as i32)
+                        })
+                        .map(|text| text.to_string().trim().to_string())
+                        .unwrap_or_default()
+                };
+                return Ok(TextAt {
+                    word: unit(TextUnit_Word),
+                    line: unit(TextUnit_Line),
+                    paragraph: unit(TextUnit_Paragraph),
+                    source: info(&element)?,
+                    ms: started.elapsed().as_millis() as u64,
+                });
+            }
+            element = walker
+                .GetParentElement(&element)
+                .map_err(|_| "往上没有支持文本模式的元素".to_string())?;
+        }
+        Err(format!("往上 {TEXT_PATTERN_DEPTH} 层都没有支持文本模式的元素"))
     }
 }
 
