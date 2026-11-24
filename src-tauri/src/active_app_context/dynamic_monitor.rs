@@ -65,7 +65,6 @@ struct Shared {
     spoken: Mutex<Vec<(u64, usize)>>,
     busy: AtomicUsize,
     blocked_apps: Vec<String>,
-    method: ActiveAppContextExtractionMethod,
     /// 当前前台窗口，两个观察线程共用。
     window: AtomicIsize,
     snapshots: AtomicUsize,
@@ -167,7 +166,6 @@ impl DynamicMonitor {
     pub(crate) fn start(
         target: ActivationTarget,
         blocked_apps: Vec<String>,
-        method: ActiveAppContextExtractionMethod,
     ) -> Self {
         let shared = Arc::new(Shared {
             started: Instant::now(),
@@ -177,7 +175,6 @@ impl DynamicMonitor {
             spoken: Mutex::new(Vec::new()),
             busy: AtomicUsize::new(0),
             blocked_apps,
-            method,
             window: AtomicIsize::new(target.window_handle),
             snapshots: AtomicUsize::new(0),
             pointers: AtomicUsize::new(0),
@@ -348,9 +345,18 @@ fn watch_content(shared: Arc<Shared>, initial: ActivationTarget) {
 
 fn read_window(shared: &Shared, target: ActivationTarget, switched: bool) {
     let at_ms = shared.elapsed_ms();
-    let mut options = CaptureOptions::for_method(shared.method, OcrProvider::default_local());
+    let mut options = CaptureOptions::for_context(OcrProvider::default_local());
     options.copy_selection = false;
+    let ocr_options = options.as_ocr(OcrProvider::default_local());
     let context = WindowsActiveAppContextProvider.capture(target, &shared.blocked_apps, options, &shared.closed);
+    // 软件文字不够时截图识别补上，和听写开头那次一样。
+    let context = match context.needs_ocr_supplement() {
+        true => {
+            let ocr = WindowsActiveAppContextProvider.capture(target, &shared.blocked_apps, ocr_options, &shared.closed);
+            context.with_ocr(&ocr)
+        }
+        false => context,
+    };
     if context.status != CaptureStatus::Captured {
         return;
     }
@@ -383,7 +389,7 @@ fn read_selection(shared: &Shared, target: ActivationTarget) {
 }
 
 fn read_pointer(shared: &Shared, at_ms: u64, point: (i32, i32)) {
-    if let Some((text, source)) = pointed_text(point, &shared.blocked_apps, shared.method, &shared.closed) {
+    if let Some((text, source)) = pointed_text(point, &shared.blocked_apps, &shared.closed) {
         crate::development_debug_log("dynamic-context", format_args!("鼠标指向（{source:?}）：{text}"));
         shared.record_new(at_ms, DynamicKind::Pointer { text });
     }
@@ -394,11 +400,10 @@ fn read_pointer(shared: &Shared, at_ms: u64, point: (i32, i32)) {
 pub(crate) fn pointed_text(
     (x, y): (i32, i32),
     blocked_apps: &[String],
-    method: ActiveAppContextExtractionMethod,
     closed: &Arc<AtomicBool>,
 ) -> Option<(String, PointSource)> {
     let target = window_at(x, y)?;
-    let baseline = super::windows::baseline_context(target, blocked_apps, method);
+    let baseline = super::windows::baseline_context(target, blocked_apps, ActiveAppContextExtractionMethod::default());
     if baseline.status == CaptureStatus::Blocked
         || super::windows::focused_target_is_password(target).unwrap_or(true)
         || closed.load(Ordering::Acquire)

@@ -102,10 +102,7 @@ pub(crate) fn request_debug_capture(app: AppHandle) {
                     .into_iter()
                     .filter_map(|value| value.as_str().map(str::to_owned))
                     .collect();
-                let method =
-                    crate::application::dictation::active_app_context_extraction_method_from_value(
-                        &settings.dictation_prefs,
-                    );
+                let method = crate::active_app_context::ActiveAppContextExtractionMethod::default();
                 let ocr_model =
                     crate::application::dictation::active_app_context_ocr_model_from_value(
                         &settings.dictation_prefs,

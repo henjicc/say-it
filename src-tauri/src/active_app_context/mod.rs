@@ -64,6 +64,18 @@ struct CaptureRequest {
     options: CaptureOptions,
     cancelled: Arc<AtomicBool>,
     reply: oneshot::Sender<CapturedActiveAppContext>,
+    supplement: Supplement,
+}
+
+/// 软件提供的文字不够时，读完之后要不要接着截图识别补上（见 `needs_ocr_supplement`）。
+enum Supplement {
+    No,
+    /// 补完合在一起再交出结果（调试窗口：要看到和听写一样的内容，不赶时间）。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Merged(crate::providers::capabilities::OcrProvider),
+    /// 先交出软件文字，截图识别的结果另走一个通道：听写结束时识别还没完也不耽误已读到的文字。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Separate(crate::providers::capabilities::OcrProvider, oneshot::Sender<CapturedActiveAppContext>),
 }
 
 pub(crate) struct ContextCaptureHandle {
@@ -75,15 +87,25 @@ pub(crate) struct ContextCaptureHandle {
     cancelled: Arc<AtomicBool>,
     /// 正文读取在独立线程/进程中执行，超时不能抹去已同步获得的窗口元信息。
     fallback: CapturedActiveAppContext,
+    /// 软件文字不够时另行截图识别的结果（`Supplement::Separate`）。
+    ocr: Option<oneshot::Receiver<CapturedActiveAppContext>>,
+    ocr_ready: Option<CapturedActiveAppContext>,
 }
 
 impl ContextCaptureHandle {
-    /// 结果已经到达时取出并留在句柄里；还没到时返回 `None`，不等待。
-    fn ready(&mut self) -> Option<&CapturedActiveAppContext> {
+    /// 结果已经到达时取出并留在句柄里；还没到时返回 `None`，不等待。截图识别的补充已经到了就合进去。
+    fn ready(&mut self) -> Option<CapturedActiveAppContext> {
         if self.ready.is_none() {
             self.ready = self.receiver.as_mut().and_then(|receiver| receiver.try_recv().ok());
         }
-        self.ready.as_ref()
+        if self.ocr_ready.is_none() {
+            self.ocr_ready = self.ocr.as_mut().and_then(|receiver| receiver.try_recv().ok());
+        }
+        let ready = self.ready.clone()?;
+        Some(match &self.ocr_ready {
+            Some(ocr) => ready.with_ocr(ocr),
+            None => ready,
+        })
     }
 }
 
@@ -119,8 +141,9 @@ pub(crate) struct DictationContextCaptureHandle {
 /// 听写开头那一次读取。
 enum InitialCapture {
     Eager(ContextCaptureHandle),
+    /// 插件 OCR 可能按次收费：先读软件文字，不够时才在听写结束、确定要做智能处理后提交识别。
     #[cfg(windows)]
-    DeferredOcr(DeferredOcrCaptureHandle),
+    DeferredOcr(ContextCaptureHandle, DeferredOcrCaptureHandle),
 }
 
 impl DictationContextCaptureHandle {
@@ -129,7 +152,7 @@ impl DictationContextCaptureHandle {
         let context = match &mut self.initial {
             InitialCapture::Eager(handle) => handle.ready()?,
             #[cfg(windows)]
-            InitialCapture::DeferredOcr(_) => return None,
+            InitialCapture::DeferredOcr(handle, _) => handle.ready()?,
         };
         #[cfg(windows)]
         if let Some(monitor) = &self.monitor {
@@ -160,7 +183,7 @@ impl DictationContextCaptureHandle {
         let cancelled = match &self.initial {
             InitialCapture::Eager(handle) => Arc::clone(&handle.cancelled),
             #[cfg(windows)]
-            InitialCapture::DeferredOcr(handle) => Arc::clone(&handle.cancelled),
+            InitialCapture::DeferredOcr(_, handle) => Arc::clone(&handle.cancelled),
         };
         #[cfg(windows)]
         let monitor_closed = self.monitor.as_ref().map(dynamic_monitor::DynamicMonitor::closed);
@@ -235,29 +258,41 @@ impl ContextCaptureService {
         &self,
         target: ActivationTarget,
         blocked_apps: Vec<String>,
-        method: ActiveAppContextExtractionMethod,
         ocr_provider: crate::providers::capabilities::OcrProvider,
         defer_ocr: bool,
-        dynamic: bool,
     ) -> DictationContextCaptureHandle {
+        // 说话过程中跟着用户的操作补充上下文，Windows 上始终开着。
         #[cfg(windows)]
-        let monitor = dynamic.then(|| {
-            dynamic_monitor::DynamicMonitor::start(target, blocked_apps.clone(), method)
-        });
+        let monitor = Some(dynamic_monitor::DynamicMonitor::start(target, blocked_apps.clone()));
         #[cfg(windows)]
-        let initial = if defer_ocr && method == ActiveAppContextExtractionMethod::Ocr {
-            InitialCapture::DeferredOcr(self.begin_deferred_ocr_capture(
+        let initial = if defer_ocr {
+            let native = self.begin_capture_inner(
+                target,
+                blocked_apps.clone(),
+                CaptureOptions::for_context(ocr_provider.clone()),
+                Supplement::No,
+            );
+            InitialCapture::DeferredOcr(native, self.begin_deferred_ocr_capture(target, blocked_apps, ocr_provider))
+        } else {
+            let (reply, receiver) = oneshot::channel();
+            let mut native = self.begin_capture_inner(
                 target,
                 blocked_apps,
-                ocr_provider,
-            ))
-        } else {
-            InitialCapture::Eager(self.begin_capture(target, blocked_apps, method, ocr_provider))
+                CaptureOptions::for_context(ocr_provider.clone()),
+                Supplement::Separate(ocr_provider, reply),
+            );
+            native.ocr = Some(receiver);
+            InitialCapture::Eager(native)
         };
         #[cfg(not(windows))]
         let initial = {
-            let _ = (defer_ocr, dynamic);
-            InitialCapture::Eager(self.begin_capture(target, blocked_apps, method, ocr_provider))
+            let _ = defer_ocr;
+            InitialCapture::Eager(self.begin_capture_inner(
+                target,
+                blocked_apps,
+                CaptureOptions::for_context(ocr_provider),
+                Supplement::No,
+            ))
         };
         DictationContextCaptureHandle {
             initial,
@@ -266,27 +301,13 @@ impl ContextCaptureService {
         }
     }
 
-    pub(crate) fn begin_capture(
-        &self,
-        target: ActivationTarget,
-        blocked_apps: Vec<String>,
-        method: ActiveAppContextExtractionMethod,
-        ocr_provider: crate::providers::capabilities::OcrProvider,
-    ) -> ContextCaptureHandle {
-        self.begin_capture_inner(
-            target,
-            blocked_apps,
-            CaptureOptions::for_method(method, ocr_provider),
-        )
-    }
-
     pub(crate) fn begin_selection_capture(&self, target: ActivationTarget) -> ContextCaptureHandle {
         let mut options = CaptureOptions::for_method(
             ActiveAppContextExtractionMethod::NativeText,
             crate::providers::capabilities::OcrProvider::default_local(),
         );
         options.selection_only = true;
-        self.begin_capture_inner(target, Vec::new(), options)
+        self.begin_capture_inner(target, Vec::new(), options, Supplement::No)
     }
 
     #[cfg(windows)]
@@ -355,7 +376,14 @@ impl ContextCaptureService {
         options.debug = true;
         options.occluding_window_handle = debug_window_handle;
         options.max_capture_side_override = max_capture_side_override;
-        self.begin_capture_inner(target, blocked_apps, options)
+        // 和听写一样：Windows 先读软件文字，不够再截图识别补上。
+        let supplement = match options.method {
+            ActiveAppContextExtractionMethod::NativeText if cfg!(windows) => {
+                Supplement::Merged(options.ocr_provider.clone())
+            }
+            _ => Supplement::No,
+        };
+        self.begin_capture_inner(target, blocked_apps, options, supplement)
     }
 
     fn begin_capture_inner(
@@ -363,6 +391,7 @@ impl ContextCaptureService {
         target: ActivationTarget,
         blocked_apps: Vec<String>,
         options: CaptureOptions,
+        supplement: Supplement,
     ) -> ContextCaptureHandle {
         let timeout = options.method.timeout();
         let started = options.deadline - timeout;
@@ -390,6 +419,8 @@ impl ContextCaptureService {
                 ready: None,
                 cancelled,
                 fallback: CapturedActiveAppContext::default(),
+                ocr: None,
+                ocr_ready: None,
             };
         };
         let request = CaptureRequest {
@@ -398,6 +429,7 @@ impl ContextCaptureService {
             options,
             cancelled: Arc::clone(&cancelled),
             reply,
+            supplement,
         };
         let _ = std::thread::Builder::new()
             .name("active-app-context".into())
@@ -415,14 +447,37 @@ impl ContextCaptureService {
                 let provider = macos::MacActiveAppContextProvider;
                 #[cfg(not(any(windows, target_os = "macos")))]
                 let provider = unsupported::UnsupportedActiveAppContextProvider;
+                let ocr_options = |ocr_provider| request.options.as_ocr(ocr_provider);
                 let result = provider.capture(
                     request.target,
                     &request.blocked_apps,
-                    request.options,
+                    request.options.clone(),
                     &request.cancelled,
                 );
+                let wants_ocr = result.needs_ocr_supplement() && !request.cancelled.load(Ordering::Acquire);
+                match request.supplement {
+                    Supplement::No => {
+                        let _ = request.reply.send(result);
+                    }
+                    Supplement::Merged(ocr_provider) => {
+                        let result = match wants_ocr {
+                            true => {
+                                let ocr = provider.capture(request.target, &request.blocked_apps, ocr_options(ocr_provider), &request.cancelled);
+                                result.with_ocr(&ocr)
+                            }
+                            false => result,
+                        };
+                        let _ = request.reply.send(result);
+                    }
+                    Supplement::Separate(ocr_provider, ocr_reply) => {
+                        let _ = request.reply.send(result);
+                        if wants_ocr {
+                            let ocr = provider.capture(request.target, &request.blocked_apps, ocr_options(ocr_provider), &request.cancelled);
+                            let _ = ocr_reply.send(ocr);
+                        }
+                    }
+                }
                 drop(permit);
-                let _ = request.reply.send(result);
             });
         ContextCaptureHandle {
             started,
@@ -431,6 +486,8 @@ impl ContextCaptureService {
             ready: None,
             cancelled,
             fallback,
+            ocr: None,
+            ocr_ready: None,
         }
     }
 
@@ -476,8 +533,15 @@ impl ContextCaptureService {
         let mut context = match handle.initial {
             InitialCapture::Eager(handle) => self.resolve_for_dictation(handle).await,
             #[cfg(windows)]
-            InitialCapture::DeferredOcr(handle) => {
-                self.resolve_deferred_ocr_for_dictation(handle).await
+            InitialCapture::DeferredOcr(native, deferred) => {
+                let native = self.resolve_for_dictation(native).await;
+                match native.needs_ocr_supplement() {
+                    true => {
+                        let ocr = self.resolve_deferred_ocr_for_dictation(deferred).await;
+                        native.with_ocr(&ocr)
+                    }
+                    false => native,
+                }
             }
         };
         #[cfg(windows)]
@@ -581,6 +645,8 @@ impl ContextCaptureService {
         let deadline = handle.deadline;
         let fallback = handle.fallback.clone();
         let ready = handle.ready.take();
+        let ocr_ready = handle.ocr_ready.take();
+        let ocr_receiver = handle.ocr.take();
         let mut receiver = handle
             .receiver
             .take()
@@ -654,6 +720,22 @@ impl ContextCaptureService {
         };
         if result.status == CaptureStatus::TimedOut {
             result.elapsed_ms = deadline.saturating_duration_since(started).as_millis() as u64;
+        }
+        // 截图识别的补充：已经到了就合进去，没到最多再等一会儿，等不到就只用已读到的软件文字。
+        let ocr = match (ocr_ready, ocr_receiver) {
+            (Some(ocr), _) => Some(ocr),
+            (None, Some(mut receiver)) => match receiver.try_recv() {
+                Ok(ocr) => Some(ocr),
+                Err(TryRecvError::Closed) => None,
+                Err(TryRecvError::Empty) => tokio::time::timeout(max_wait.min(DICTATION_RESOLVE_WAIT), receiver)
+                    .await
+                    .ok()
+                    .and_then(Result::ok),
+            },
+            (None, None) => None,
+        };
+        if let Some(ocr) = ocr {
+            result = result.with_ocr(&ocr);
         }
         crate::development_debug_log(
             "active-app-context",
@@ -866,6 +948,8 @@ mod tests {
                 ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
+                ocr: None,
+                ocr_ready: None,
             })
             .await;
         assert_eq!(result.status, CaptureStatus::TimedOut);
@@ -896,6 +980,8 @@ mod tests {
                 ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
+                ocr: None,
+                ocr_ready: None,
             })
             .await;
 
@@ -932,6 +1018,8 @@ mod tests {
                 ready: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 fallback: CapturedActiveAppContext::default(),
+                ocr: None,
+                ocr_ready: None,
             }
         };
 
@@ -971,6 +1059,8 @@ mod tests {
                     window_title: Some("文档 - Microsoft Edge".into()),
                     ..Default::default()
                 },
+                ocr: None,
+                ocr_ready: None,
             })
             .await;
 
@@ -1001,6 +1091,8 @@ mod tests {
             ready: None,
             cancelled: Arc::new(AtomicBool::new(false)),
             fallback: CapturedActiveAppContext::default(),
+            ocr: None,
+            ocr_ready: None,
         });
         assert_eq!(handle.ready_for_prompt(), None);
         sender
@@ -1030,6 +1122,8 @@ mod tests {
             ready: None,
             cancelled: Arc::clone(&cancelled),
             fallback: CapturedActiveAppContext::default(),
+            ocr: None,
+            ocr_ready: None,
         };
 
         drop(handle);
@@ -1049,6 +1143,8 @@ mod tests {
             ready: None,
             cancelled: Arc::clone(&capture_cancelled),
             fallback: CapturedActiveAppContext::default(),
+            ocr: None,
+            ocr_ready: None,
         });
         let cancellation = handle.cancellation();
 

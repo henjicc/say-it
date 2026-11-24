@@ -145,17 +145,9 @@ fn permission_check() -> SetupCheckResult {
     }
 }
 
-/// 用截图读取当前软件上下文时才需要屏幕录制；只读焦点文字的方式不需要，不检查。
+/// macOS 上用截图读取当前软件上下文，需要屏幕录制权限。
 #[cfg(target_os = "macos")]
-fn screen_recording_check(state: &RuntimeState) -> Option<SetupCheckResult> {
-    let method = state.app_settings.lock().ok().map(|settings| {
-        crate::application::dictation::active_app_context_extraction_method_from_value(
-            &settings.dictation_prefs,
-        )
-    })?;
-    if method != crate::active_app_context::ActiveAppContextExtractionMethod::Ocr {
-        return None;
-    }
+fn screen_recording_check(_state: &RuntimeState) -> Option<SetupCheckResult> {
     Some(if crate::macos_native::context_ocr_permissions(false).screen_recording {
         check("screenRecording", "ready", "屏幕录制权限", "截图读取软件上下文所需的权限已授予", None)
     } else {

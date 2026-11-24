@@ -276,7 +276,7 @@ impl ActiveAppContextProvider for WindowsActiveAppContextProvider {
                     options.occluding_window_handle,
                     options.deadline,
                     cancelled,
-                    options.ocr_provider,
+                    options.ocr_provider.clone(),
                     options.max_capture_side_override,
                 ) {
                     Ok(()) if context.ocr_text.is_empty() => {

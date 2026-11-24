@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ListChecks, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Switch } from "@/components/ui/Switch";
 import { Group, Row, ROW_CONTROL_W } from "@/components/ui/Group";
 import { IconButton } from "@/components/ui/IconButton";
 import { NumberInput, Select, Textarea } from "@/components/ui/Input";
@@ -12,7 +11,7 @@ import { CMD, cmd } from "@/lib/tauri";
 import { isMacOS } from "@/lib/platform";
 import { RunningAppPicker } from "@/features/dictation/RunningAppPicker";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
-import { AutoIntentRow, OcrModelRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
+import { AutoIntentRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
 import {
   GLOBAL_CONTEXT_PLACEHOLDER,
   HOTWORDS_PLACEHOLDER,
@@ -405,40 +404,6 @@ export function SmartTextPanel() {
 
       {tab === "context" && (
         <>
-          <Group>
-            <Row
-              label="提取方式"
-              hint={prefs.activeAppContextExtractionMethod === "ocr"
-                ? isMacOS
-                  ? "识别当前窗口截图中的文字，需要允许辅助功能和屏幕录制。"
-                  : "识别当前窗口内的可见文字，覆盖率更高，但会占用更多内存。"
-                : isMacOS
-                  ? "读取当前输入框和选中的文字，需要辅助功能权限，无需屏幕录制权限。"
-                  : "直接读取软件提供的文字，不识别截图，占用内存更少。"}
-            >
-              <Select
-                className={ROW_CONTROL_W}
-                aria-label="提取方式"
-                value={prefs.activeAppContextExtractionMethod}
-                onChange={(event) => void patch({ activeAppContextExtractionMethod: event.target.value === "ocr" ? "ocr" : "nativeText" })}
-              >
-                <option value="nativeText">文本提取（低内存）</option>
-                <option value="ocr">窗口 OCR</option>
-              </Select>
-            </Row>
-
-            {prefs.activeAppContextExtractionMethod === "ocr" && <OcrModelRow />}
-            {!isMacOS && (
-              <Row
-                label="动态上下文"
-                controlId="smart-text-dynamic-context"
-                hint="说话时切换窗口、滚动页面、选中文字，或用鼠标停住、绕圈指着某处，都会补充进上下文，方便说“这个”“这里”。对 AI 说话或语音问答时，还会在“这个”“这里”后面补上当时指着或选中的内容。语音问答会把这些内容一起发给它选用的大模型。文字在本机识别，会多占用一些处理器。"
-              >
-                <Switch id="smart-text-dynamic-context" checked={prefs.activeAppContextDynamic} onChange={(checked) => void patch({ activeAppContextDynamic: checked })} />
-              </Row>
-            )}
-          </Group>
-
           <Group>
             <div className="p-3.5">
               <RunningAppPicker

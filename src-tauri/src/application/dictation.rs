@@ -233,13 +233,9 @@ struct DictationPrefs {
     smart_processing_min_chars: u32,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
-    active_app_context_extraction_method:
-        crate::active_app_context::ActiveAppContextExtractionMethod,
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
-    /// 说话过程中跟着切换窗口、滚动、选中文字和鼠标指向补充上下文；只用本地 OCR，仅 Windows。
-    active_app_context_dynamic: bool,
     app_profiles: Vec<AppProfile>,
     mic_device_id: String,
     dictation_silence_disconnect_enabled: bool,
@@ -272,12 +268,9 @@ impl Default for DictationPrefs {
             smart_processing_min_chars: 0,
             smart_template_id: String::new(),
             smart_templates: vec![],
-            active_app_context_extraction_method:
-                crate::active_app_context::ActiveAppContextExtractionMethod::NativeText,
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
-            active_app_context_dynamic: false,
             app_profiles: vec![],
             mic_device_id: String::new(),
             dictation_silence_disconnect_enabled: true,
@@ -390,23 +383,11 @@ fn should_run_smart_processing(effective: &EffectivePostProcessing, text: &str) 
 
 /// 本地 OCR 不花钱，按下时就和录音并行识别，松开后不用再等；插件 OCR 可能按次计费，
 /// 等识别出的文字达到智能处理的最少长度才提交。
-fn should_defer_active_app_context_ocr(
-    prefs: &DictationPrefs,
-    effective: &EffectivePostProcessing,
-    ocr_is_plugin: bool,
-) -> bool {
+fn should_defer_active_app_context_ocr(effective: &EffectivePostProcessing, ocr_is_plugin: bool) -> bool {
     cfg!(windows)
         && ocr_is_plugin
         && effective.smart_processing_enabled
-        && platform_context_method(prefs.active_app_context_extraction_method)
-            == crate::active_app_context::ActiveAppContextExtractionMethod::Ocr
         && effective.smart_processing_min_chars > 0
-}
-
-fn platform_context_method(
-    method: crate::active_app_context::ActiveAppContextExtractionMethod,
-) -> crate::active_app_context::ActiveAppContextExtractionMethod {
-    method
 }
 
 fn resolve_inject_method(
@@ -1171,7 +1152,7 @@ async fn start_session(
     }
     let effective_smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
-    // 开了动态上下文时，语音问答也带上说话时屏幕上的内容，「这里」「这个」才有着落。
+    // Windows 上语音问答也带上说话时屏幕上的内容和动态上下文，「这里」「这个」才有着落。
     let needs_context = match &assistant_request {
         None => {
             effective.smart_processing_enabled
@@ -1184,7 +1165,7 @@ async fn start_session(
                     })
         }
         Some(request) => {
-            prefs.active_app_context_dynamic
+            cfg!(windows)
                 && request.action == crate::application::assistant::AssistantAction::Ask
                 && !request.follow_up
         }
@@ -1199,7 +1180,6 @@ async fn start_session(
                 );
                 let defer_ocr = assistant_request.is_none()
                     && should_defer_active_app_context_ocr(
-                        &prefs,
                         &effective,
                         matches!(ocr_provider, crate::providers::capabilities::OcrProvider::Plugin { .. }),
                     );
@@ -1354,10 +1334,8 @@ async fn start_session(
         let handle = state.active_app_context.begin_dictation_capture(
             target,
             prefs.active_app_context_blocked_apps.clone(),
-            platform_context_method(prefs.active_app_context_extraction_method),
             ocr_provider,
             defer_ocr,
-            prefs.active_app_context_dynamic,
         );
         let cancellation = handle.cancellation();
         match state.dictation_runtime.session.lock() {
@@ -2643,7 +2621,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
     let asks_with_screen = assistant_request.as_ref().is_some_and(|request| {
         request.action == crate::application::assistant::AssistantAction::Ask
     });
-    // 开了动态上下文时留着这次的记录，整理之后给“这个”“这里”补注。
+    // 留着这次的上下文记录（含动态上下文），整理之后给“这个”“这里”补注。
     let mut referents: Option<crate::active_app_context::CapturedActiveAppContext> = None;
     let mut active_app_context = if assistant_request.is_some() && !asks_with_screen {
         drop(active_app_context);
@@ -4227,15 +4205,6 @@ pub(crate) fn repair_empty_asr_model(value: &mut Value) -> bool {
 }
 
 #[cfg(any(windows, target_os = "macos"))]
-pub(crate) fn active_app_context_extraction_method_from_value(
-    value: &Value,
-) -> crate::active_app_context::ActiveAppContextExtractionMethod {
-    serde_json::from_value::<DictationPrefs>(value.clone())
-        .map(|prefs| platform_context_method(prefs.active_app_context_extraction_method))
-        .unwrap_or_default()
-}
-
-#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn active_app_context_ocr_model_from_value(value: &Value) -> String {
     serde_json::from_value::<DictationPrefs>(value.clone())
         .map(|prefs| prefs.active_app_context_ocr_model)
@@ -4771,32 +4740,16 @@ mod tests {
             matched_profile: None,
             matched_shortcut_profile: None,
         };
-        let mut prefs = DictationPrefs {
-            active_app_context_extraction_method:
-                crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
-            ..Default::default()
-        };
         assert_eq!(
-            should_defer_active_app_context_ocr(&prefs, &effective, true),
+            should_defer_active_app_context_ocr(&effective, true),
             cfg!(windows)
         );
         // 本地 OCR 按下时就识别。
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, false));
+        assert!(!should_defer_active_app_context_ocr(&effective, false));
 
         let mut immediate = effective.clone();
         immediate.smart_processing_min_chars = 0;
-        assert!(!should_defer_active_app_context_ocr(&prefs, &immediate, true));
-        prefs.active_app_context_extraction_method =
-            crate::active_app_context::ActiveAppContextExtractionMethod::NativeText;
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
-    }
-
-    #[test]
-    fn platform_context_method_keeps_the_selected_strategy() {
-        use crate::active_app_context::ActiveAppContextExtractionMethod::{NativeText, Ocr};
-
-        assert_eq!(platform_context_method(NativeText), NativeText);
-        assert_eq!(platform_context_method(Ocr), Ocr);
+        assert!(!should_defer_active_app_context_ocr(&immediate, true));
     }
 
     #[test]
@@ -5221,12 +5174,10 @@ mod tests {
             smart_processing_min_chars: Some(0),
             ..Default::default()
         }]);
-        prefs.active_app_context_extraction_method =
-            crate::active_app_context::ActiveAppContextExtractionMethod::Ocr;
         let effective = prefs.resolve_post_processing(Some(&identity("code.exe")));
         assert_eq!(effective.smart_processing_min_chars, 0);
         assert!(should_run_smart_processing(&effective, "短句"));
-        assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
+        assert!(!should_defer_active_app_context_ocr(&effective, true));
     }
 
     fn shortcut_profile(mode: ShortcutProcessingMode) -> DictationShortcutProfile {
@@ -5317,8 +5268,6 @@ mod tests {
     #[test]
     fn raw_and_local_shortcuts_never_defer_or_submit_ocr() {
         let prefs = DictationPrefs {
-            active_app_context_extraction_method:
-                crate::active_app_context::ActiveAppContextExtractionMethod::Ocr,
             smart_processing_enabled: true,
             smart_processing_min_chars: 100,
             ..Default::default()
@@ -5332,7 +5281,7 @@ mod tests {
                 .resolve_post_processing(None)
                 .apply_shortcut_profile(Some(&profile));
             assert!(!effective.smart_processing_enabled);
-            assert!(!should_defer_active_app_context_ocr(&prefs, &effective, true));
+            assert!(!should_defer_active_app_context_ocr(&effective, true));
         }
     }
 

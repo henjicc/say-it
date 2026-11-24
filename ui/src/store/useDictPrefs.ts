@@ -6,7 +6,7 @@ import {
   isSupportedDictationModel,
 } from "@/features/asr/modelOptions";
 import { ocrOptionsForScene } from "@/features/asr/modelRegistry";
-import { isMacOS, defaultOcrOption, defaultOcrModelId } from "@/lib/platform";
+import { defaultOcrOption, defaultOcrModelId } from "@/lib/platform";
 import {
   defaultLocalRules,
   mergeLocalRules,
@@ -79,7 +79,6 @@ function normalizePolishLevels(value: unknown): Record<string, PolishLevel> {
   }));
 }
 
-export type ActiveAppContextExtractionMethod = "nativeText" | "ocr";
 export type ActiveAppContextOcrEngine = "system" | "ppocr";
 export const MAX_SMART_TEXT_TEMPLATES = 50;
 export const SMART_TEMPLATE_CATALOG_VERSION = 6;
@@ -91,11 +90,6 @@ function availableOcrOptions() {
   } catch {
     return [defaultOcrOption];
   }
-}
-
-function normalizeExtractionMethod(value: unknown): ActiveAppContextExtractionMethod {
-  if (value === "ocr" || value === "nativeText") return value;
-  return isMacOS ? "ocr" : "nativeText";
 }
 
 const LEGACY_DEFAULT_SMART_TEXT_TEMPLATES: SmartTextTemplate[] = [
@@ -611,14 +605,11 @@ export interface DictPrefs extends DspParams {
   smartTemplates: SmartTextTemplate[];
   smartTemplateTrash: DeletedSmartTextTemplate[];
   smartTemplateCatalogVersion: number;
-  activeAppContextExtractionMethod: ActiveAppContextExtractionMethod;
   activeAppContextOcrEngine: ActiveAppContextOcrEngine;
   activeAppContextOcrModel: string;
   activeAppContextOcrApprovedProviders: string[];
   /** OCR 是否复用命中软件规则后的智能处理最少文本长度。 */
   activeAppContextBlockedApps: string[];
-  /** 说话过程中跟着切换窗口、滚动、选中文字和鼠标指向补充上下文（仅 Windows，只用本地 OCR）。 */
-  activeAppContextDynamic: boolean;
   /** 按软件覆盖后处理配置；顺序即优先级，取第一条命中的启用规则，没有命中时走全局配置。 */
   appProfiles: AppProfile[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
@@ -658,12 +649,10 @@ function defaults(): DictPrefs {
     smartTemplates: defaultSmartTextTemplates(),
     smartTemplateTrash: [],
     smartTemplateCatalogVersion: SMART_TEMPLATE_CATALOG_VERSION,
-    activeAppContextExtractionMethod: normalizeExtractionMethod(undefined),
     activeAppContextOcrEngine: "ppocr",
     activeAppContextOcrModel: defaultOcrModelId,
     activeAppContextOcrApprovedProviders: [],
     activeAppContextBlockedApps: [],
-    activeAppContextDynamic: false,
     appProfiles: [],
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,
@@ -735,7 +724,6 @@ function readStored(): DictPrefs {
   );
   base.smartTemplateTrash = normalizeSmartTemplateTrash(base.smartTemplateTrash);
   base.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
-  base.activeAppContextExtractionMethod = normalizeExtractionMethod(base.activeAppContextExtractionMethod);
   base.activeAppContextOcrEngine = base.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
   const ocrOptions = availableOcrOptions();
   if (
@@ -867,7 +855,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     ? value.smartTemplateCatalogVersion
     : 1;
   const storedBlockedApps = value.activeAppContextBlockedApps;
-  const storedContextMethod = value.activeAppContextExtractionMethod;
   const storedOcrEngine = value.activeAppContextOcrEngine;
   const storedOcrModel = value.activeAppContextOcrModel;
   const storedOcrApprovals = value.activeAppContextOcrApprovedProviders;
@@ -880,6 +867,9 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   );
   const next = readStored();
   Object.assign(next, value);
+  // 已去掉的设置：读软件上下文的方式固定为先读文字再截图识别，动态上下文常开。
+  delete (next as unknown as Record<string, unknown>).activeAppContextExtractionMethod;
+  delete (next as unknown as Record<string, unknown>).activeAppContextDynamic;
   if (!isSupportedDictationModel(next.asrModel)) {
     next.asrModel = DEFAULT_REALTIME_ASR_MODEL;
   }
@@ -898,7 +888,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
   );
   next.smartTemplateTrash = normalizeSmartTemplateTrash(next.smartTemplateTrash);
   next.smartTemplateCatalogVersion = SMART_TEMPLATE_CATALOG_VERSION;
-  next.activeAppContextExtractionMethod = normalizeExtractionMethod(next.activeAppContextExtractionMethod);
   next.activeAppContextOcrEngine = next.activeAppContextOcrEngine === "ppocr" ? "ppocr" : "system";
   const ocrOptions = availableOcrOptions();
   if (
@@ -936,7 +925,6 @@ export function hydrateDictPrefs(value: Record<string, unknown>): boolean {
     storedCatalogVersion !== next.smartTemplateCatalogVersion ||
     storedSmartProcessingMinChars !== next.smartProcessingMinChars ||
     JSON.stringify(value.smartPolishLevels) !== JSON.stringify(next.smartPolishLevels) ||
-    storedContextMethod !== next.activeAppContextExtractionMethod ||
     storedOcrEngine !== next.activeAppContextOcrEngine ||
     storedOcrModel !== next.activeAppContextOcrModel ||
     JSON.stringify(storedOcrApprovals ?? []) !== JSON.stringify(next.activeAppContextOcrApprovedProviders) ||

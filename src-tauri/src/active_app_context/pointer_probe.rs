@@ -10,7 +10,6 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use super::dynamic::PointerTracker;
-use super::model::ActiveAppContextExtractionMethod;
 use super::uia_point::{self, ComScope, ElementInfo, LineAt, PointSource};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
@@ -102,7 +101,7 @@ pub(crate) fn run(duration: Duration, cancelled: &AtomicBool) -> Result<ProbeRep
         }
         let Some((px, py)) = tracker.push(t_ms, x, y) else { continue };
         let result_started = Instant::now();
-        let found = super::dynamic_monitor::pointed_text((px, py), &[], ActiveAppContextExtractionMethod::Ocr, &closed);
+        let found = super::dynamic_monitor::pointed_text((px, py), &[], &closed);
         let result_ms = result_started.elapsed().as_millis() as u64;
         let ocr_started = Instant::now();
         let ocr_text = super::dynamic_monitor::window_at(px, py)

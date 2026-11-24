@@ -5,6 +5,8 @@ pub(crate) const NATIVE_TEXT_CAPTURE_TIMEOUT: Duration = Duration::from_millis(8
 pub(crate) const OCR_CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const DICTATION_RESOLVE_WAIT: Duration = Duration::from_millis(150);
 pub(crate) const DEFAULT_MAX_CHARS: usize = 3_000;
+/// 软件提供的文字不足这么多字时截图识别补上，见 `CapturedActiveAppContext::needs_ocr_supplement`。
+const NATIVE_ENOUGH_CHARS: usize = 200;
 pub(crate) const ABSOLUTE_MAX_CHARS: usize = 6_000;
 pub(crate) const SUMMARY_PREVIEW_CHARS: usize = 500;
 /// 窗口截图长边像素上限的默认值；调试窗口可临时覆盖，见 `CaptureOptions::max_capture_side_override`。
@@ -104,6 +106,23 @@ impl CaptureOptions {
             selection_only: false,
             copy_selection: true,
             max_capture_side_override: None,
+        }
+    }
+
+    /// 听写读软件上下文的固定做法：Windows 先读软件提供的文字（不够时另外截图识别补，见
+    /// `CapturedActiveAppContext::needs_ocr_supplement`）；macOS 截图识别。
+    pub(crate) fn for_context(ocr_provider: crate::providers::capabilities::OcrProvider) -> Self {
+        Self::for_method(ActiveAppContextExtractionMethod::default(), ocr_provider)
+    }
+
+    /// 同样的设置改成截图识别，截止时间从现在重新算。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn as_ocr(&self, ocr_provider: crate::providers::capabilities::OcrProvider) -> Self {
+        Self {
+            deadline: Instant::now() + OCR_CAPTURE_TIMEOUT,
+            method: ActiveAppContextExtractionMethod::Ocr,
+            ocr_provider,
+            ..self.clone()
         }
     }
 }
@@ -206,6 +225,49 @@ impl CapturedActiveAppContext {
     /// 给整理结果里的“这个”“这里”补上说话时选中或鼠标指着的内容，见 `references.rs`。
     pub(crate) fn annotate_references(&self, raw: &str, output: &str) -> String {
         super::references::annotate_references(raw, output, &self.dynamic, &self.spoken)
+    }
+
+    /// 软件提供的文字（选区、输入框、可见文字、文档文字）不足这么多字时要截图识别补上：自绘界面、
+    /// 画布、远程桌面往往只给得出窗口标题或一个输入框。密码框、黑名单不补。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn needs_ocr_supplement(&self) -> bool {
+        if matches!(self.status, CaptureStatus::Sensitive | CaptureStatus::Blocked) {
+            return false;
+        }
+        let chars: usize = [&self.selected_text, &self.focused_text, &self.caret_context]
+            .into_iter()
+            .flatten()
+            .chain(self.visible_text.iter())
+            .chain(self.document_text.iter())
+            .map(|text| text.chars().count())
+            .sum();
+        chars < NATIVE_ENOUGH_CHARS
+    }
+
+    /// 把截图识别到的窗口文字补进来，已经读到的选区、输入框照留。识别失败或没识别到字时原样返回；
+    /// 原来一个字都没读到时，来源记为截图识别。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn with_ocr(mut self, ocr: &CapturedActiveAppContext) -> Self {
+        if ocr.status != CaptureStatus::Captured || ocr.ocr_text.is_empty() {
+            return self;
+        }
+        let had_text = self.status == CaptureStatus::Captured && !self.text_lines().is_empty()
+            || self.selected_text.is_some()
+            || self.focused_text.is_some();
+        self.ocr_text = ocr.ocr_text.clone();
+        self.ocr_blocks = ocr.ocr_blocks.clone();
+        self.screenshot_width = ocr.screenshot_width;
+        self.screenshot_height = ocr.screenshot_height;
+        self.screenshot_elapsed_ms = ocr.screenshot_elapsed_ms;
+        self.screenshot_data_url = ocr.screenshot_data_url.clone();
+        self.model_init_ms = ocr.model_init_ms;
+        self.ocr_elapsed_ms = ocr.ocr_elapsed_ms;
+        self.truncated |= ocr.truncated;
+        self.status = CaptureStatus::Captured;
+        if !had_text {
+            self.source = Some(ContextSource::Ocr);
+        }
+        self
     }
 
     /// 窗口里读到的大段文字：原生读取的可见文字、文档文字和 OCR 文字。
@@ -458,6 +520,41 @@ mod tests {
             context.format_for_prompt(),
             "应用：Code\n窗口：main.rs\n选中文本：选区\n当前输入区域：输入\n光标附近内容：光标\n当前可见文字：可见\n当前文档文字：文档\n窗口可见文字：OCR"
         );
+    }
+
+    #[test]
+    fn scarce_software_text_is_supplemented_by_ocr_and_kept() {
+        let native = CapturedActiveAppContext {
+            status: CaptureStatus::Captured,
+            source: Some(ContextSource::UiaTextPattern),
+            app_name: "画图".into(),
+            focused_text: Some("标题".into()),
+            ..Default::default()
+        };
+        assert!(native.needs_ocr_supplement());
+        // 选区也算软件提供的文字，够了就不截图。
+        let selected = CapturedActiveAppContext { selected_text: Some("字".repeat(NATIVE_ENOUGH_CHARS)), ..native.clone() };
+        assert!(!selected.needs_ocr_supplement());
+        // 密码框不补。
+        let sensitive = CapturedActiveAppContext { status: CaptureStatus::Sensitive, ..native.clone() };
+        assert!(!sensitive.needs_ocr_supplement());
+
+        let ocr = CapturedActiveAppContext {
+            status: CaptureStatus::Captured,
+            ocr_text: vec!["画布上的字".into()],
+            ..Default::default()
+        };
+        let merged = native.clone().with_ocr(&ocr);
+        assert_eq!(merged.focused_text.as_deref(), Some("标题"));
+        assert_eq!(merged.ocr_text, vec!["画布上的字".to_string()]);
+        assert_eq!(merged.source, Some(ContextSource::UiaTextPattern));
+        // 软件一个字都没给（只拿到窗口信息、读取超时）时，来源记为截图识别。
+        let timed_out = CapturedActiveAppContext { status: CaptureStatus::TimedOut, app_name: "画图".into(), ..Default::default() };
+        let merged = timed_out.with_ocr(&ocr);
+        assert_eq!((merged.status, merged.source), (CaptureStatus::Captured, Some(ContextSource::Ocr)));
+        // 识别失败时原样保留已读到的。
+        let failed = CapturedActiveAppContext { status: CaptureStatus::Failed, ..Default::default() };
+        assert_eq!(native.clone().with_ocr(&failed).ocr_text, Vec::<String>::new());
     }
 
     /// 本地整理模型只看上下文开头一段，说话时的操作要排在大段窗口文字前面，总长仍守住上限。

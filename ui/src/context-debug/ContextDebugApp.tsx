@@ -210,7 +210,7 @@ export function ContextDebugApp() {
             </label>
           </div>
           <p className="mt-2 text-[11px] leading-4 text-[var(--color-fg-subtle)]">
-            仅在「提取方式」设为「窗口 OCR」时生效；调整后点击目标应用，再按快捷键重新捕获查看效果。
+            在软件提供的文字不够、需要截图识别补充时生效；调整后点击目标应用，再按快捷键重新捕获查看效果。
           </p>
         </section>
 
