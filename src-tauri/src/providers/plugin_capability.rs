@@ -127,12 +127,19 @@ pub fn validate_registry_with_sdk(
             .get("validateSayItPluginCapabilityRegistry")
             .map_err(|_| "AI SDK capability bundle 缺少插件 v5 validator".to_string())?;
         let json = serde_json::to_string(&capability_payload).map_err(|error| error.to_string())?;
-        validate.call::<_, String>((json,)).map_err(|error| {
-            format!(
-                "SDK capability 注册校验失败：{}",
-                CaughtError::from_error(&ctx, error)
-            )
-        })?;
+        let builtin_asr_module_ids = super::registry::models()
+            .iter()
+            .filter(|model| model.sdk_capability_source.is_some())
+            .filter_map(|model| model.capability_id.as_deref())
+            .collect::<Vec<_>>();
+        validate
+            .call::<_, String>((json, builtin_asr_module_ids))
+            .map_err(|error| {
+                format!(
+                    "SDK capability 注册校验失败：{}",
+                    CaughtError::from_error(&ctx, error)
+                )
+            })?;
         ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_LLM_BUNDLE)
             .map_err(|error| error.to_string())?;
         ctx.eval::<(), _>(super::sdk_runtime::AI_SDK_LLM_MODULES_BUNDLE)
@@ -392,6 +399,25 @@ mod tests {
         let error = validate_registry_with_sdk(&[("demo", "demo", &[first, second])]).unwrap_err();
         assert!(error.contains("demo.first"), "{error}");
         assert!(error.contains("demo.second"), "{error}");
+    }
+
+    #[test]
+    fn sdk_validator_reserves_only_builtin_asr_models_in_the_app_catalog() {
+        let mut file = capability("demo.speech-recognition.volcengine-file");
+        file.provider_ids = vec!["volcengine-speech".into()];
+        file.model_id = "seedasr-2.0-file".into();
+        file.features.clear();
+        file.execution_modes = vec!["request-response".into()];
+        validate_registry_with_sdk(&[("demo", "demo", &[file])]).unwrap();
+
+        let mut realtime = capability("demo.speech-recognition.volcengine-realtime");
+        realtime.provider_ids = vec!["volcengine-speech".into()];
+        realtime.model_id = "seedasr-2.0-realtime".into();
+        let error = validate_registry_with_sdk(&[("demo", "demo", &[realtime])]).unwrap_err();
+        assert!(
+            error.contains("volcengine.speech-recognition.seedasr-2.0-realtime"),
+            "{error}"
+        );
     }
 
     #[test]

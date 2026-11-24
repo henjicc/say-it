@@ -65,8 +65,9 @@ impl BuiltinSdkScope {
         match profile.kind.as_str() {
             "sdk:bailian" => Ok(Self::new("bailian", "bailian", "apiKey", "speech-recognition", &["*.aliyuncs.com"])),
             "sdk:volcengine" => Ok(Self::new(
-                "volcengine",
-                "volcengine",
+                crate::providers::VOLCENGINE_PROVIDER_ID,
+                // SDK 用豆包语音 ID 请求凭据，设置中的语音识别密钥归属火山引擎配置。
+                "volcengine-speech",
                 "apiKey",
                 "speech-recognition",
                 &["openspeech.bytedance.com"],
@@ -715,7 +716,7 @@ fn builtin_root() -> Result<PathBuf, String> {
     if let Some(root) = ROOT.get() {
         return Ok(root.clone());
     }
-    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.15.0");
+    let root = std::env::temp_dir().join("say-it-sdk-runtime-0.18.0");
     let connector = root.join("connector/index.js");
     std::fs::create_dir_all(connector.parent().unwrap_or(Path::new(".")))
         .map_err(|error| error.to_string())?;
@@ -735,7 +736,7 @@ mod tests {
     fn p0_asr_scopes_keep_provider_hosts_and_credential_owners_isolated() {
         let volcengine =
             BuiltinSdkScope::speech_recognition(&crate::providers::volcengine_profile()).unwrap();
-        assert_eq!(volcengine.provider_id(), "volcengine");
+        assert_eq!(volcengine.provider_id(), "volcengine-speech");
         assert_eq!(volcengine.profile_id, "volcengine");
         assert_eq!(volcengine.allowed_hosts(), ["openspeech.bytedance.com"]);
 

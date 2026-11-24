@@ -187,10 +187,14 @@ export function validateSayItPluginCapabilityDefinitions(
   return JSON.stringify(descriptors)
 }
 
-export function validateSayItPluginCapabilityRegistry(registryJson: string): string {
+export function validateSayItPluginCapabilityRegistry(
+  registryJson: string,
+  builtinAsrModuleIds: readonly string[]
+): string {
   const registry = parseRegistry(registryJson)
   const client = createCapabilityClient({ runtime: validationRuntime() })
-  registerSources(client, new Set(SAYIT_CAPABILITY_MODULE_SOURCES), { sources: [] })
+  // 仅为应用目录中实际可用的内置识别模型预留坐标。
+  registerSources(client, new Set(SAYIT_CAPABILITY_MODULE_SOURCES), { sources: [] }, new Set(builtinAsrModuleIds))
   for (const plugin of registry) {
     if (plugin.sourceNamespace !== plugin.pluginId) {
       throw new Error(
@@ -476,15 +480,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function registerSources(
   client: CapabilityClient,
   sources: ReadonlySet<SayItCapabilityModuleSource>,
-  options: SayItCapabilityRuntimeOptions
+  options: SayItCapabilityRuntimeOptions,
+  builtinAsrModuleIds?: ReadonlySet<string>
 ): void {
+  const includesAsrPreset = (preset: { id: string }) => builtinAsrModuleIds?.has(preset.id) ?? true
   if (sources.has('bailian-speech-recognition')) {
-    for (const preset of bailianNonRealtimeAsrPresets) {
+    for (const preset of bailianNonRealtimeAsrPresets.filter(includesAsrPreset)) {
       client.register(createBailianAsrModule(preset, options.bailianSpeechRecognition))
     }
   }
   if (sources.has('bailian-speech-recognition-realtime')) {
-    for (const preset of bailianRealtimeAsrPresets) {
+    for (const preset of bailianRealtimeAsrPresets.filter(includesAsrPreset)) {
       client.registerRealtime(
         createBailianRealtimeAsrModule(preset, options.bailianSpeechRecognitionRealtime)
       )
@@ -498,12 +504,12 @@ function registerSources(
     }
   }
   if (sources.has('volcengine-speech-recognition')) {
-    for (const preset of volcengineFileAsrPresets) {
+    for (const preset of volcengineFileAsrPresets.filter(includesAsrPreset)) {
       client.register(createVolcengineAsrModule(preset, options.volcengineSpeechRecognition))
     }
   }
   if (sources.has('volcengine-speech-recognition-realtime')) {
-    for (const preset of volcengineRealtimeAsrPresets) {
+    for (const preset of volcengineRealtimeAsrPresets.filter(includesAsrPreset)) {
       client.registerRealtime(
         createVolcengineRealtimeAsrModule(
           preset,
@@ -513,12 +519,12 @@ function registerSources(
     }
   }
   if (sources.has('siliconflow-speech-recognition')) {
-    for (const preset of siliconFlowAsrPresets) {
+    for (const preset of siliconFlowAsrPresets.filter(includesAsrPreset)) {
       client.register(createSiliconFlowAsrModule(preset, options.siliconflowSpeechRecognition))
     }
   }
   if (sources.has('groq-speech-recognition')) {
-    for (const preset of groqAsrPresets) {
+    for (const preset of groqAsrPresets.filter(includesAsrPreset)) {
       client.register(createGroqAsrModule(preset, options.groqSpeechRecognition))
     }
   }

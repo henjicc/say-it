@@ -313,6 +313,16 @@ mod tests {
     }
 
     #[test]
+    fn custom_openai_gateway_keeps_its_messages_path_prefix() {
+        let profile = custom_profile("fixture-key", "https://example.com/tenant/messages/");
+        let (_, _, base_url) = sdk_discovery_target(&profile).unwrap();
+        assert_eq!(
+            base_url.as_deref(),
+            Some("https://example.com/tenant/messages/v1")
+        );
+    }
+
+    #[test]
     fn builtin_volcengine_lists_models_with_the_ark_key() {
         let mut profile = crate::providers::volcengine_profile();
         profile.config = serde_json::json!({"apiKey": "speech-key"});

@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::{accept, Message};
 
+use super::online::{BuiltinSdkRuntime, BuiltinSdkScope};
 use super::{HostRuntimeRecorder, SdkHostBindings, AI_SDK_BUNDLE_MANIFEST};
 use crate::providers::credential_store::{CredentialKey, CredentialStore, CredentialStoreHandle};
 use crate::providers::plugin::PluginRuntimeSpec;
@@ -21,6 +22,7 @@ const FIXTURE_SECRET: &str = "fixture-sdk-secret";
 #[derive(Clone)]
 struct BundleCredentials {
     provider_id: String,
+    value: Option<&'static str>,
 }
 
 impl CredentialStore for BundleCredentials {
@@ -29,7 +31,7 @@ impl CredentialStore for BundleCredentials {
             key,
             &CredentialKey::provider(&self.provider_id, "apiKey").unwrap()
         );
-        Ok(Some(FIXTURE_SECRET.into()))
+        Ok(self.value.map(str::to_owned))
     }
 
     fn set(&self, _key: &CredentialKey, _value: &str) -> Result<(), String> {
@@ -93,6 +95,7 @@ fn fixture(
         credential_key: CredentialKey::provider(provider_id, "apiKey").unwrap(),
         credentials: CredentialStoreHandle::from_store(Arc::new(BundleCredentials {
             provider_id: provider_id.into(),
+            value: Some(FIXTURE_SECRET),
         })),
         recorder: Arc::new(BundleRecorder(Arc::new(Mutex::new(Vec::new())))),
     };
@@ -159,10 +162,10 @@ fn spawn_http_response(content_type: &str, body: Vec<u8>) -> (String, thread::Jo
 #[test]
 fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
     let manifest: Value = serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).unwrap();
-    assert_eq!(manifest["sdk"]["version"], "0.15.0");
+    assert_eq!(manifest["sdk"]["version"], "0.18.0");
     assert_eq!(
         manifest["sdk"]["integrity"],
-        "sha512-6+L0+oNhGm04qtrjnfrNJOL2HJa6eD4ooumIvPf8yCYo8+2rtp4N9eBDrpFds7BpWSqEbZxdC4+liP30TwJgVA=="
+        "sha512-qmX9AInyeTuxjv/qABjhYiMpPeDEoLMl3a+cT0oxJYm4b4mKkJhUY7fpkdCRTjNQrlqE9iCeo3fRE1y1QYIC8Q=="
     );
     assert!(manifest["bundles"]["capabilities"]["bytes"]
         .as_u64()
@@ -222,9 +225,9 @@ export default () => ({
     let result = runtime
         .call("invoke", &json!({}), Duration::from_secs(3))
         .unwrap();
-    assert_eq!(result["version"], "0.15.0");
+    assert_eq!(result["version"], "0.18.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 23);
+    assert_eq!(result["count"], 24);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
@@ -238,6 +241,7 @@ export default () => ({
         "bailian.speech-recognition.qwen-audio-3.1-asr-flash-filetrans",
         "bailian.speech-recognition.qwen-audio-3.1-asr-flash-streaming",
         "volcengine.speech-recognition.seedasr-2.0-file",
+        "volcengine.speech-recognition.bigasr-file-turbo",
         "volcengine.speech-recognition.seedasr-2.0-realtime",
         "siliconflow.speech-recognition.FunAudioLLM/SenseVoiceSmall",
         "bailian.speech-recognition.qwen-audio-3.0-asr-flash",
@@ -479,6 +483,36 @@ export default () => ({
     chat_server.join().unwrap();
     responses_server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn volcengine_realtime_looks_up_the_saved_speech_key() {
+    let profile = crate::providers::volcengine_profile();
+    let credentials = CredentialStoreHandle::from_store(Arc::new(BundleCredentials {
+        provider_id: profile.id.clone(),
+        value: None,
+    }));
+    let scope = BuiltinSdkScope::speech_recognition(&profile).unwrap();
+    let route = crate::providers::registry::builtin_sdk_asr_route("seedasr-2.0-realtime").unwrap();
+    let request_id = "fixture-volcengine-realtime";
+    let runtime = BuiltinSdkRuntime::create(
+        &profile,
+        credentials,
+        scope,
+        request_id,
+        Arc::new(CancellationFlag::new(false)),
+        HashMap::new(),
+    )
+    .unwrap();
+    let error = runtime
+        .realtime_start(
+            &route.source,
+            &route.module_id,
+            json!({"mediaType": "audio/pcm", "sampleRateHz": 16000, "channels": 1}),
+            request_id,
+        )
+        .unwrap_err();
+    assert!(error.contains("API key is not configured"), "{error}");
 }
 
 #[test]

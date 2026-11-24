@@ -611,7 +611,13 @@ pub fn sdk_llm_endpoint(profile: &ProviderProfile) -> Result<(String, Option<Str
             if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
                 return Err(format!("{} 的接口地址无效", profile.display_name));
             }
-            Some(endpoint.to_string())
+            // SDK 把末尾的 /messages 当作 Anthropic 请求路径。显式补 /v1 可保留 OpenAI 兼容网关的前缀。
+            let base = endpoint.trim_end_matches('/');
+            Some(if base.ends_with("/messages") {
+                format!("{base}/v1")
+            } else {
+                endpoint.to_string()
+            })
         }
         adapter => unregistered_llm_base_url(adapter).map(str::to_string),
     };
