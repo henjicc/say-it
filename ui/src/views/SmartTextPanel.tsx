@@ -20,7 +20,7 @@ import {
   DEFAULT_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_PROCESSING_MIN_CHARS,
   MAX_SMART_TEXT_TEMPLATES,
-  POLISH_SCENES,
+  POLISH_SCENE_GROUPS,
   SMART_TEXT_PLACEHOLDER,
   useDictPrefs,
   type PolishLevel,
@@ -280,14 +280,16 @@ export function SmartTextPanel() {
         title="整理程度"
         description="按语音输入时所在的软件决定改动多少。轻：保留原话，只加标点、去掉“嗯呃”和重复的字。中：再去掉口头禅和改口。高：把想表达的意思重新组织清楚，多件事会分点。只对「场景感知润色」「通用润色」两个模板和本地整理模型生效。"
       >
-        {POLISH_SCENES.map((scene) => (
-          <Row key={scene} label={scene}>
+        {POLISH_SCENE_GROUPS.map((group) => (
+          <Row key={group.label} label={group.label} hint={`包括：${group.scenes.join("、")}`}>
             <Tabs<PolishLevel>
               variant="view"
-              ariaLabel={`${scene}的整理程度`}
+              ariaLabel={`${group.label}的整理程度`}
               tabs={POLISH_LEVEL_OPTIONS}
-              active={prefs.smartPolishLevels[scene]}
-              onChange={(level) => void patch({ smartPolishLevels: { ...prefs.smartPolishLevels, [scene]: level } })}
+              active={prefs.smartPolishLevels[group.scenes[0]]}
+              onChange={(level) => void patch({
+                smartPolishLevels: { ...prefs.smartPolishLevels, ...Object.fromEntries(group.scenes.map((scene) => [scene, level])) },
+              })}
             />
           </Row>
         ))}
